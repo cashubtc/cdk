@@ -244,18 +244,7 @@ pub struct SendOptions {
 
 impl Default for SendOptions {
     fn default() -> Self {
-        Self {
-            memo: None,
-            conditions: None,
-            amount_split_target: SplitTarget::None,
-            send_kind: SendKind::OnlineExact,
-            include_fee: false,
-            max_proofs: None,
-            metadata: HashMap::new(),
-            use_p2bk: false,
-            p2pk_signing_keys: Vec::new(),
-            p2pk_locked_proof_send_mode: P2PKLockedProofSendMode::Swap,
-        }
+        cdk::wallet::SendOptions::default().into()
     }
 }
 
@@ -410,12 +399,7 @@ impl fmt::Debug for ReceiveOptions {
 
 impl Default for ReceiveOptions {
     fn default() -> Self {
-        Self {
-            amount_split_target: SplitTarget::None,
-            p2pk_signing_keys: Vec::new(),
-            preimages: Vec::new(),
-            metadata: HashMap::new(),
-        }
+        cdk::wallet::ReceiveOptions::default().into()
     }
 }
 
@@ -465,6 +449,61 @@ pub fn decode_receive_options(json: String) -> Result<ReceiveOptions, FfiError> 
 /// Encode ReceiveOptions to JSON string
 #[uniffi::export]
 pub fn encode_receive_options(options: ReceiveOptions) -> Result<String, FfiError> {
+    Ok(serde_json::to_string(&options)?)
+}
+
+/// FFI-compatible Melt prepare options
+#[derive(Clone, Default, Serialize, Deserialize, uniffi::Record)]
+pub struct MeltPrepareOptions {
+    /// Signing keys for P2PK/HTLC-locked input proofs; keys known to the
+    /// wallet are merged in automatically
+    #[serde(default)]
+    pub p2pk_signing_keys: Vec<SecretKey>,
+    /// Preimages for HTLC-locked input proofs
+    #[serde(default)]
+    pub preimages: Vec<String>,
+    /// Metadata
+    #[serde(default)]
+    pub metadata: HashMap<String, String>,
+}
+
+impl fmt::Debug for MeltPrepareOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MeltPrepareOptions")
+            .field("p2pk_signing_keys", &"[REDACTED]")
+            .field("preimages", &"[REDACTED]")
+            .field("metadata", &self.metadata)
+            .finish()
+    }
+}
+
+impl TryFrom<MeltPrepareOptions> for cdk::wallet::MeltPrepareOptions {
+    type Error = FfiError;
+
+    fn try_from(opts: MeltPrepareOptions) -> Result<Self, Self::Error> {
+        let p2pk_signing_keys = opts
+            .p2pk_signing_keys
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(cdk::wallet::MeltPrepareOptions {
+            p2pk_signing_keys,
+            preimages: opts.preimages,
+            metadata: opts.metadata,
+        })
+    }
+}
+
+/// Decode MeltPrepareOptions from JSON string
+#[uniffi::export]
+pub fn decode_melt_prepare_options(json: String) -> Result<MeltPrepareOptions, FfiError> {
+    Ok(serde_json::from_str(&json)?)
+}
+
+/// Encode MeltPrepareOptions to JSON string
+#[uniffi::export]
+pub fn encode_melt_prepare_options(options: MeltPrepareOptions) -> Result<String, FfiError> {
     Ok(serde_json::to_string(&options)?)
 }
 

@@ -1299,7 +1299,7 @@ impl Default for PostgresAuthConfig {
     fn default() -> Self {
         Self {
             url: String::new(),
-            tls_mode: Some("disable".to_string()),
+            tls_mode: None,
             max_connections: Some(20),
             connection_timeout_seconds: Some(10),
         }
@@ -1333,7 +1333,7 @@ impl Default for PostgresConfig {
     fn default() -> Self {
         Self {
             url: String::new(),
-            tls_mode: Some("disable".to_string()),
+            tls_mode: None,
             max_connections: Some(20),
             connection_timeout_seconds: Some(10),
         }
@@ -2178,6 +2178,23 @@ mod tests {
             Ok(OnchainBackend::FederatedBdk)
         );
         assert_eq!(OnchainBackend::default(), OnchainBackend::None);
+    }
+
+    #[test]
+    fn postgres_tls_defaults_preserve_connection_url_policy() {
+        let input = r#"url = "postgres://localhost/db?sslmode=verify-full""#;
+        let postgres: PostgresConfig = toml::from_str(input).expect("PostgreSQL config");
+        let auth: PostgresAuthConfig = toml::from_str(input).expect("auth PostgreSQL config");
+        assert!(postgres.tls_mode.is_none());
+        assert!(auth.tls_mode.is_none());
+
+        let explicit = format!("{input}\ntls_mode = \"require\"");
+        let postgres: PostgresConfig =
+            toml::from_str(&explicit).expect("explicit PostgreSQL config");
+        let auth: PostgresAuthConfig =
+            toml::from_str(&explicit).expect("explicit auth PostgreSQL config");
+        assert_eq!(postgres.tls_mode.as_deref(), Some("require"));
+        assert_eq!(auth.tls_mode.as_deref(), Some("require"));
     }
 
     #[test]

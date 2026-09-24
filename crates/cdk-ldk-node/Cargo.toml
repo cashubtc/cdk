@@ -33,6 +33,7 @@ web-time.workspace = true
 
 [dev-dependencies]
 cdk-sqlite.workspace = true
+tempfile = { version = "3", default-features = false }
 
 [lints]
 workspace = true

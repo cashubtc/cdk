@@ -388,21 +388,7 @@ impl fmt::Debug for CreateRequestParams {
 
 impl Default for CreateRequestParams {
     fn default() -> Self {
-        Self {
-            amount: None,
-            unit: "sat".to_string(),
-            description: None,
-            pubkeys: None,
-            num_sigs: 1,
-            hash: None,
-            preimage: None,
-            transport: "none".to_string(),
-            http_url: None,
-            nostr_relays: None,
-            mints: None,
-            mint_preferred: None,
-            supported_methods: vec![],
-        }
+        cdk::wallet::payment_request::CreateRequestParams::default().into()
     }
 }
 

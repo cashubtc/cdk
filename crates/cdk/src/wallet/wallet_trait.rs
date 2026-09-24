@@ -13,8 +13,8 @@ use cdk_common::nuts::{
 use cdk_common::rate_limit::RateLimitConfig;
 use cdk_common::subscription::WalletParams;
 use cdk_common::wallet::{
-    CrossMintTransferQuote, MeltQuote, MintQuote, ReceiveOptions, Restored, SendOptions,
-    Transaction, TransactionDirection, TransactionId, Wallet as WalletTrait,
+    CrossMintTransferQuote, MeltPrepareOptions, MeltQuote, MintQuote, ReceiveOptions, Restored,
+    SendOptions, Transaction, TransactionDirection, TransactionId, Wallet as WalletTrait,
 };
 use cdk_common::{Amount, PublicKey, SecretKey};
 use tracing::instrument;
@@ -287,6 +287,17 @@ impl WalletTrait for super::Wallet {
         self.prepare_melt_proofs(quote_id, proofs, metadata).await
     }
 
+    #[instrument(skip(self, proofs, options))]
+    async fn prepare_melt_proofs_with_options(
+        &self,
+        quote_id: &str,
+        proofs: Proofs,
+        options: MeltPrepareOptions,
+    ) -> Result<super::melt::PreparedMelt<'_>, Self::Error> {
+        self.prepare_melt_proofs_with_options(quote_id, proofs, options)
+            .await
+    }
+
     #[instrument(skip(self, encoded_token, metadata))]
     async fn prepare_melt_token(
         &self,
@@ -295,6 +306,17 @@ impl WalletTrait for super::Wallet {
         metadata: HashMap<String, String>,
     ) -> Result<super::melt::PreparedMelt<'_>, Self::Error> {
         self.prepare_melt_token(quote_id, encoded_token, metadata)
+            .await
+    }
+
+    #[instrument(skip(self, encoded_token, options))]
+    async fn prepare_melt_token_with_options(
+        &self,
+        quote_id: &str,
+        encoded_token: &str,
+        options: MeltPrepareOptions,
+    ) -> Result<super::melt::PreparedMelt<'_>, Self::Error> {
+        self.prepare_melt_token_with_options(quote_id, encoded_token, options)
             .await
     }
 

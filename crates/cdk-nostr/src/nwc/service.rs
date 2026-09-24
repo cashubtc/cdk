@@ -20,13 +20,16 @@
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
-use nostr_sdk::nips::nip47::{
-    ErrorCode, NIP47Error, NostrWalletConnectURI, Request, RequestParams, Response, ResponseResult,
+use nostr::prelude::nip47::{
+    ErrorCode, NIP47Error, NostrWalletConnectUri, Request, RequestParams, Response, ResponseResult,
 };
-use nostr_sdk::nips::{nip04, nip44};
-use nostr_sdk::prelude::*;
-use nostr_sdk::{Client as NostrClient, Keys, PublicKey, RelayUrl, SecretKey};
-use tokio::sync::broadcast::error::RecvError;
+use nostr::prelude::{
+    nip04, nip44, Event, EventBuilder, EventId, Filter, FinalizeEvent, Keys, Kind, PublicKey,
+    RelayUrl, SecretKey, Tag, Timestamp,
+};
+use nostr_sdk::prelude::{
+    Client as NostrClient, ClientNotification, SignerAuthenticator, StreamExt,
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::nwc::error::{Error, Result};
@@ -119,8 +122,8 @@ impl NwcService {
     }
 
     /// Build the `nostr+walletconnect://` connection URI to hand to the client.
-    pub fn connection_uri(&self) -> NostrWalletConnectURI {
-        NostrWalletConnectURI::new(
+    pub fn connection_uri(&self) -> NostrWalletConnectUri {
+        NostrWalletConnectUri::new(
             self.service_keys.public_key(),
             self.relays.clone(),
             self.client_secret.clone(),
@@ -151,7 +154,9 @@ impl NwcService {
     where
         H: NwcRequestHandler + 'static,
     {
-        let client = NostrClient::new(self.service_keys.clone());
+        let client = NostrClient::builder()
+            .authenticator(SignerAuthenticator::new(self.service_keys.clone()))
+            .build();
 
         for relay in &self.relays {
             client
@@ -175,7 +180,7 @@ impl NwcService {
         let mut notifications = client.notifications();
 
         client
-            .subscribe(filter, None)
+            .subscribe(filter)
             .await
             .map_err(|e| Error::Subscription(e.to_string()))?;
 
@@ -188,23 +193,19 @@ impl NwcService {
         let res = loop {
             let notification = tokio::select! {
                 _ = cancel.cancelled() => break Ok(()),
-                notification = notifications.recv() => notification,
+                notification = notifications.next() => notification,
             };
 
             let notification = match notification {
-                Ok(notification) => notification,
-                Err(RecvError::Lagged(skipped)) => {
-                    tracing::warn!("NWC notification stream lagged; skipped {skipped}");
-                    continue;
-                }
-                Err(RecvError::Closed) => {
+                Some(notification) => notification,
+                None => {
                     break Err(Error::Subscription(
-                        "notification channel closed".to_string(),
+                        "notification stream closed".to_string(),
                     ));
                 }
             };
 
-            let RelayPoolNotification::Event { event, .. } = notification else {
+            let ClientNotification::Event { event, .. } = notification else {
                 continue;
             };
 
@@ -245,7 +246,7 @@ impl NwcService {
 
         let event = EventBuilder::new(Kind::WalletConnectInfo, content)
             .tags([info_event_encryption_tag()])
-            .sign_with_keys(&self.service_keys)
+            .finalize(&self.service_keys)
             .map_err(|e| Error::Event(e.to_string()))?;
 
         client
@@ -258,10 +259,7 @@ impl NwcService {
 }
 
 fn info_event_encryption_tag() -> Tag {
-    Tag::custom(
-        TagKind::custom("encryption"),
-        [SUPPORTED_ENCRYPTION_SCHEMES],
-    )
+    Tag::custom("encryption", [SUPPORTED_ENCRYPTION_SCHEMES])
 }
 
 /// Decrypt, dispatch, and respond to a single request event.
@@ -388,7 +386,7 @@ async fn send_response(
 
     let event = EventBuilder::new(Kind::WalletConnectResponse, content)
         .tags([Tag::public_key(*client_pubkey), Tag::event(request_id)])
-        .sign_with_keys(service_keys)
+        .finalize(service_keys)
         .map_err(|e| Error::Event(e.to_string()))?;
 
     client
@@ -442,7 +440,7 @@ mod tests {
         let keys = Keys::generate();
         let mk = |content: &str| {
             EventBuilder::new(Kind::TextNote, content)
-                .sign_with_keys(&keys)
+                .finalize(&keys)
                 .expect("sign dummy event")
                 .id
         };
@@ -466,7 +464,7 @@ mod tests {
     }
 
     use async_trait::async_trait;
-    use nostr_sdk::nips::nip47::{
+    use nostr::prelude::nip47::{
         GetBalanceResponse, GetInfoResponse, ListTransactionsRequest, LookupInvoiceRequest,
         LookupInvoiceResponse, MakeInvoiceRequest, MakeInvoiceResponse, PayInvoiceRequest,
         PayInvoiceResponse, Request,
@@ -563,7 +561,7 @@ mod tests {
     #[tokio::test]
     async fn dispatch_unsupported_method_is_not_implemented() {
         // pay_keysend is outside the supported set.
-        let request = Request::pay_keysend(nostr_sdk::nips::nip47::PayKeysendRequest {
+        let request = Request::pay_keysend(nostr::prelude::nip47::PayKeysendRequest {
             id: None,
             amount: 1000,
             pubkey: "00".repeat(32),

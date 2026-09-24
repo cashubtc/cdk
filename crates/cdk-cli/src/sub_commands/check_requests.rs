@@ -6,7 +6,8 @@ use cdk::mint_url::MintUrl;
 use cdk::nuts::Token;
 use cdk::wallet::{ReceiveOptions, WalletRepository};
 use cdk_common::PaymentRequestPayload;
-use nostr_sdk::{Filter, Keys, Kind, PublicKey, SecretKey};
+use nostr::prelude::{Filter, Keys, Kind, PublicKey, SecretKey, UnwrappedGift};
+use nostr_sdk::prelude::{Client, SignerAuthenticator};
 
 use super::create_request::StoredNostrWaitInfo;
 use crate::terminal::escape_control;
@@ -48,17 +49,22 @@ pub async fn check_requests(wallet_repository: &WalletRepository) -> Result<()> 
                 let keys = Keys::new(secret_key);
                 let pubkey = PublicKey::from_hex(&info.pubkey_hex)?;
 
-                let client = nostr_sdk::Client::new(keys);
+                let client = Client::builder()
+                    .authenticator(SignerAuthenticator::new(keys.clone()))
+                    .build();
                 for r in &info.relays {
                     client.add_relay(r).await?;
                 }
                 client.connect().await;
 
                 let filter = Filter::new().pubkey(pubkey).kind(Kind::GiftWrap);
-                let events = client.fetch_events(filter, Duration::from_secs(10)).await?;
+                let events = client
+                    .fetch_events(filter)
+                    .timeout(Duration::from_secs(10))
+                    .await?;
 
                 for event in events {
-                    if let Ok(unwrapped) = client.unwrap_gift_wrap(&event).await {
+                    if let Ok(unwrapped) = UnwrappedGift::from_gift_wrap(&keys, &event) {
                         if let Ok(payload) =
                             serde_json::from_str::<PaymentRequestPayload>(&unwrapped.rumor.content)
                         {

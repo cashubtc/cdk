@@ -27,6 +27,7 @@ npubcash = [
 ]
 
 [dependencies]
+nostr = { workspace = true }
 nostr-sdk = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

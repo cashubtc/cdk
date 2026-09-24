@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::ops::Deref;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use cdk_common::common::PaymentProcessorKey;
 use cdk_common::database::DynMintDatabase;
@@ -13,9 +13,9 @@ use cdk_common::pub_sub::{Pubsub, Spec, Subscriber};
 use cdk_common::subscription::SubId;
 use cdk_common::{
     Amount, BlindSignature, CurrencyUnit, MeltQuoteBolt11Response, MeltQuoteBolt12Response,
-    MeltQuoteOnchainResponse, MeltQuoteState, MintQuoteBolt11Response, MintQuoteBolt12Response,
-    MintQuoteCustomResponse, MintQuoteOnchainResponse, MintQuoteState, NotificationPayload,
-    ProofState, PublicKey, QuoteId,
+    MeltQuoteOnchainResponse, MeltQuoteResponse, MeltQuoteState, MintQuoteBolt11Response,
+    MintQuoteBolt12Response, MintQuoteCustomResponse, MintQuoteOnchainResponse, MintQuoteState,
+    NotificationPayload, ProofState, PublicKey, QuoteId,
 };
 
 use super::Mint;
@@ -28,6 +28,8 @@ pub struct MintPubSubSpec {
     db: DynMintDatabase,
     payment_processors: Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
     query_backend: bool,
+    // The manager owns this spec; a strong reference back would retain both forever.
+    pubsub_manager: Weak<PubSubManager>,
 }
 
 impl MintPubSubSpec {
@@ -53,7 +55,7 @@ impl MintPubSubSpec {
                 Mint::check_mint_quote_payments(
                     self.db.clone(),
                     self.payment_processors.clone(),
-                    None,
+                    self.pubsub_manager.upgrade(),
                     &mut quote,
                 )
                 .await?;
@@ -63,6 +65,35 @@ impl MintPubSubSpec {
         }
 
         Ok(quotes)
+    }
+
+    async fn get_melt_quote_response(
+        &self,
+        quote_id: &QuoteId,
+    ) -> Result<Option<MeltQuoteResponse<QuoteId>>, String> {
+        let quote = match self
+            .db
+            .get_melt_quote(quote_id)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            Some(quote) => quote,
+            None => return Ok(None),
+        };
+        let change = if matches!(
+            quote.state,
+            MeltQuoteState::Pending | MeltQuoteState::Unknown
+        ) {
+            None
+        } else {
+            let signatures = self
+                .db
+                .get_blind_signatures_for_quote(quote_id)
+                .await
+                .map_err(|e| e.to_string())?;
+            (!signatures.is_empty()).then_some(signatures)
+        };
+        Ok(Some(quote.into_response(change)))
     }
 
     async fn get_events_from_db(
@@ -76,7 +107,8 @@ impl MintPubSubSpec {
             .filter_map(|idx| match idx {
                 NotificationId::MintQuoteBolt11(uuid)
                 | NotificationId::MintQuoteBolt12(uuid)
-                | NotificationId::MintQuoteOnchain(uuid) => Some(uuid.clone()),
+                | NotificationId::MintQuoteOnchain(uuid)
+                | NotificationId::MintQuoteCustom(_, uuid) => Some(uuid.clone()),
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -88,44 +120,45 @@ impl MintPubSubSpec {
         for idx in request.iter() {
             match idx {
                 NotificationId::ProofState(pk) => public_keys.push(*pk),
-                NotificationId::MeltQuoteBolt11(uuid) => {
-                    // TODO: In the HTTP handler, we check with the payment backend if a payment is in a pending quote state to resolve stuck payments.
-                    // Implement similar logic here for WebSocket-only wallets.
-                    if let Some(melt_quote) = self
-                        .db
-                        .get_melt_quote(uuid)
-                        .await
-                        .map_err(|e| e.to_string())?
-                    {
-                        let melt_quote: MeltQuoteBolt11Response<_> = melt_quote.into();
-                        to_return.push(melt_quote.into());
-                    }
-                }
-                NotificationId::MeltQuoteBolt12(uuid) => {
-                    if let Some(melt_quote) = self
-                        .db
-                        .get_melt_quote(uuid)
-                        .await
-                        .map_err(|e| e.to_string())?
-                    {
-                        let melt_quote: MeltQuoteBolt12Response<_> = melt_quote.into();
-                        to_return.push(melt_quote.into());
-                    }
-                }
-                NotificationId::MeltQuoteOnchain(uuid) => {
-                    if let Some(melt_quote) = self
-                        .db
-                        .get_melt_quote(uuid)
-                        .await
-                        .map_err(|e| e.to_string())?
-                    {
-                        let melt_quote: MeltQuoteOnchainResponse<_> = melt_quote.into();
-                        to_return.push(melt_quote.into());
+                NotificationId::MeltQuoteBolt11(uuid)
+                | NotificationId::MeltQuoteBolt12(uuid)
+                | NotificationId::MeltQuoteOnchain(uuid)
+                | NotificationId::MeltQuoteCustom(_, uuid) => {
+                    // TODO: Check pending payments with the backend, as the HTTP handler does.
+                    if let Some(response) = self.get_melt_quote_response(uuid).await? {
+                        let event: MintEvent<QuoteId> = match (idx, response) {
+                            (NotificationId::MeltQuoteBolt11(_), MeltQuoteResponse::Bolt11(r)) => {
+                                r.into()
+                            }
+                            (NotificationId::MeltQuoteBolt12(_), MeltQuoteResponse::Bolt12(r)) => {
+                                r.into()
+                            }
+                            (
+                                NotificationId::MeltQuoteOnchain(_),
+                                MeltQuoteResponse::Onchain(r),
+                            ) => r.into(),
+                            (
+                                NotificationId::MeltQuoteCustom(method, _),
+                                MeltQuoteResponse::Custom((
+                                    cdk_common::PaymentMethod::Custom(stored_method),
+                                    response,
+                                )),
+                            ) if method == &stored_method => {
+                                NotificationPayload::CustomMeltQuoteResponse(
+                                    stored_method,
+                                    response,
+                                )
+                                .into()
+                            }
+                            _ => continue,
+                        };
+                        to_return.push(event);
                     }
                 }
                 NotificationId::MintQuoteBolt11(uuid)
                 | NotificationId::MintQuoteBolt12(uuid)
-                | NotificationId::MintQuoteOnchain(uuid) => {
+                | NotificationId::MintQuoteOnchain(uuid)
+                | NotificationId::MintQuoteCustom(_, uuid) => {
                     if let Some(mint_quote) = mint_quotes.get(uuid).cloned() {
                         let mint_quote = match idx {
                             NotificationId::MintQuoteBolt11(_) => {
@@ -146,14 +179,24 @@ impl MintPubSubSpec {
                                 }
                                 Err(_) => continue,
                             },
+                            NotificationId::MintQuoteCustom(method, _)
+                                if mint_quote.payment_method
+                                    == cdk_common::PaymentMethod::Custom(method.clone()) =>
+                            {
+                                match MintQuoteCustomResponse::try_from(mint_quote) {
+                                    Ok(response) => NotificationPayload::CustomMintQuoteResponse(
+                                        method.clone(),
+                                        response,
+                                    )
+                                    .into(),
+                                    Err(_) => continue,
+                                }
+                            }
                             _ => continue,
                         };
 
                         to_return.push(mint_quote);
                     }
-                }
-                NotificationId::MintQuoteCustom(_, _) | NotificationId::MeltQuoteCustom(_, _) => {
-                    continue;
                 }
             }
         }
@@ -194,6 +237,7 @@ impl Spec for MintPubSubSpec {
             db: context.0,
             payment_processors: context.1,
             query_backend: context.2,
+            pubsub_manager: Weak::new(),
         })
     }
 
@@ -222,7 +266,14 @@ impl PubSubManager {
             bool,
         ),
     ) -> Arc<Self> {
-        Arc::new(Self(Pubsub::new(MintPubSubSpec::new_instance(context))))
+        Arc::new_cyclic(|manager| {
+            Self(Pubsub::new(Arc::new(MintPubSubSpec {
+                db: context.0,
+                payment_processors: context.1,
+                pubsub_manager: manager.clone(),
+                query_backend: context.2,
+            })))
+        })
     }
 
     /// Helper function to emit a ProofState status
@@ -374,14 +425,26 @@ impl Deref for PubSubManager {
 
 #[cfg(test)]
 mod tests {
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
     use cdk_common::database::DynMintDatabase;
     use cdk_common::mint::MintQuote;
-    use cdk_common::payment::PaymentIdentifier;
+    use cdk_common::payment::{
+        self, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions, MakePaymentResponse,
+        MintPayment, OutgoingPaymentOptions, PaymentIdentifier, PaymentQuoteResponse,
+        SettingsResponse, WaitPaymentResponse,
+    };
+    use cdk_common::subscription::Params;
     use cdk_common::QuoteId;
+    use futures::Stream;
+    use tokio::sync::Notify;
+    use tokio::time::timeout;
 
     use super::*;
 
-    fn paid_bolt11_quote(id: QuoteId, amount: u64) -> MintQuote {
+    fn bolt11_quote(id: QuoteId, amount: u64) -> MintQuote {
         MintQuote::new(
             Some(id),
             format!("lnbc1test{amount}"),
@@ -424,13 +487,14 @@ mod tests {
         );
         let first_quote_id = QuoteId::new();
         let second_quote_id = QuoteId::new();
-        add_mint_quote(&db, paid_bolt11_quote(first_quote_id.clone(), 21)).await;
-        add_mint_quote(&db, paid_bolt11_quote(second_quote_id.clone(), 34)).await;
+        add_mint_quote(&db, bolt11_quote(first_quote_id.clone(), 21)).await;
+        add_mint_quote(&db, bolt11_quote(second_quote_id.clone(), 34)).await;
 
         let spec = MintPubSubSpec {
             db,
             payment_processors: Arc::new(HashMap::new()),
             query_backend: true,
+            pubsub_manager: Weak::new(),
         };
         let events = spec
             .get_events_from_db(&[
@@ -449,5 +513,383 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(quote_ids, vec![first_quote_id, second_quote_id]);
+    }
+
+    fn melt_quote(method: cdk_common::PaymentMethod, state: MeltQuoteState) -> MeltQuote {
+        use cdk_common::mint::MeltPaymentRequest;
+        use cdk_common::nut00::KnownMethod;
+
+        let request = match &method {
+            cdk_common::PaymentMethod::Known(KnownMethod::Bolt11) => MeltPaymentRequest::Bolt11 {
+                bolt11: cdk_fake_wallet::create_fake_invoice(21_000, "backfill".to_owned()),
+            },
+            cdk_common::PaymentMethod::Known(KnownMethod::Bolt12) => {
+                let key = cdk_common::SecretKey::generate().public_key();
+                let offer = lightning::offers::offer::OfferBuilder::new(
+                    bitcoin::secp256k1::PublicKey::from_slice(&key.to_bytes()).expect("public key"),
+                )
+                .build()
+                .expect("offer");
+                MeltPaymentRequest::Bolt12 {
+                    offer: Box::new(offer),
+                }
+            }
+            cdk_common::PaymentMethod::Known(KnownMethod::Onchain) => MeltPaymentRequest::Onchain {
+                address: "bcrt1qtest".to_owned(),
+            },
+            cdk_common::PaymentMethod::Custom(method) => MeltPaymentRequest::Custom {
+                method: method.clone(),
+                request: "custom-payment".to_owned(),
+            },
+        };
+        let mut quote = MeltQuote::new(
+            None,
+            request,
+            CurrencyUnit::Sat,
+            Amount::new(21, CurrencyUnit::Sat),
+            Amount::new(2, CurrencyUnit::Sat),
+            0,
+            None,
+            None,
+            method,
+            None,
+            Some(1),
+        );
+        quote.state = state;
+        if state == MeltQuoteState::Paid {
+            quote.payment_proof = Some("payment-proof".to_owned());
+        }
+        quote
+    }
+
+    async fn add_melt_quote(
+        db: &DynMintDatabase,
+        quote: MeltQuote,
+        with_change: bool,
+    ) -> Option<Vec<BlindSignature>> {
+        let mut tx = db.begin_transaction().await.expect("begin transaction");
+        tx.add_melt_quote(quote.clone())
+            .await
+            .expect("add melt quote");
+        let change = if with_change {
+            let signature = BlindSignature {
+                amount: 2.into(),
+                keyset_id: "009a1f293253e41e".parse().expect("keyset id"),
+                c: cdk_common::SecretKey::generate().public_key(),
+                dleq: None,
+            };
+            let signatures = vec![signature];
+            tx.add_blind_signatures(
+                &[cdk_common::SecretKey::generate().public_key()],
+                &signatures,
+                Some(quote.id),
+            )
+            .await
+            .expect("add change signatures");
+            Some(signatures)
+        } else {
+            None
+        };
+        tx.commit().await.expect("commit transaction");
+        change
+    }
+
+    #[tokio::test]
+    async fn get_events_from_db_returns_persisted_melt_change() {
+        use cdk_common::nut00::KnownMethod;
+
+        let db: DynMintDatabase =
+            Arc::new(cdk_sqlite::mint::memory::empty().await.expect("database"));
+        let spec = MintPubSubSpec::new_instance((db.clone(), Arc::new(HashMap::new()), true));
+        for method in [
+            KnownMethod::Bolt11,
+            KnownMethod::Bolt12,
+            KnownMethod::Onchain,
+        ] {
+            for (state, with_change) in [
+                (MeltQuoteState::Paid, true),
+                (MeltQuoteState::Paid, false),
+                (MeltQuoteState::Pending, true),
+            ] {
+                let quote = melt_quote(cdk_common::PaymentMethod::Known(method), state);
+                let stored_change = add_melt_quote(&db, quote.clone(), with_change).await;
+                let topic = match method {
+                    KnownMethod::Bolt11 => NotificationId::MeltQuoteBolt11(quote.id.clone()),
+                    KnownMethod::Bolt12 => NotificationId::MeltQuoteBolt12(quote.id.clone()),
+                    KnownMethod::Onchain => NotificationId::MeltQuoteOnchain(quote.id.clone()),
+                };
+                let events = spec.get_events_from_db(&[topic]).await.expect("backfill");
+                assert_eq!(events.len(), 1);
+                let (id, actual_state, change) = match events[0].inner() {
+                    NotificationPayload::MeltQuoteBolt11Response(r) => {
+                        assert_eq!(r.payment_preimage, quote.payment_proof);
+                        (&r.quote, r.state, &r.change)
+                    }
+                    NotificationPayload::MeltQuoteBolt12Response(r) => {
+                        assert_eq!(r.payment_preimage, quote.payment_proof);
+                        (&r.quote, r.state, &r.change)
+                    }
+                    NotificationPayload::MeltQuoteOnchainResponse(r) => {
+                        (&r.quote, r.state, &r.change)
+                    }
+                    payload => panic!("unexpected payload: {payload:?}"),
+                };
+                assert_eq!(id, &quote.id);
+                assert_eq!(actual_state, state);
+                let expected = if state == MeltQuoteState::Paid {
+                    stored_change
+                } else {
+                    None
+                };
+                assert_eq!(change, &expected);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn get_events_from_db_backfills_custom_mint_quotes() {
+        let db: DynMintDatabase =
+            Arc::new(cdk_sqlite::mint::memory::empty().await.expect("database"));
+        let method = "test_method".to_owned();
+        let mut quote = bolt11_quote(QuoteId::new(), 21);
+        quote.payment_method = cdk_common::PaymentMethod::Custom(method.clone());
+        quote.extra_json = Some(serde_json::json!({"receipt": "mint-receipt"}));
+        add_mint_quote(&db, quote.clone()).await;
+        // Model a recently checked payment; no backend call is needed for this snapshot.
+        assert!(db
+            .try_update_mint_quote_last_checked(&quote.id, cdk_common::util::unix_time(), 0)
+            .await
+            .expect("record payment check"));
+        let spec = MintPubSubSpec::new_instance((db, Arc::new(HashMap::new()), true));
+        let events = spec
+            .get_events_from_db(&[
+                NotificationId::MintQuoteCustom(method.clone(), quote.id.clone()),
+                NotificationId::MintQuoteCustom("wrong_method".to_owned(), quote.id.clone()),
+                NotificationId::MintQuoteCustom(method.clone(), QuoteId::new()),
+            ])
+            .await
+            .expect("backfill");
+        assert_eq!(events.len(), 1);
+        match events[0].inner() {
+            NotificationPayload::CustomMintQuoteResponse(actual_method, response) => {
+                assert_eq!(actual_method, &method);
+                assert_eq!(response.quote, quote.id);
+                assert_eq!(response.method, quote.payment_method);
+                assert_eq!(response.amount_paid, Amount::from(21));
+                assert_eq!(response.amount_issued, Amount::ZERO);
+                assert_eq!(response.extra, quote.extra_json.expect("extra fields"));
+            }
+            payload => panic!("unexpected payload: {payload:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_events_from_db_backfills_custom_melt_quotes() {
+        let db: DynMintDatabase =
+            Arc::new(cdk_sqlite::mint::memory::empty().await.expect("database"));
+        let method = "test_method".to_owned();
+        let mut quote = melt_quote(
+            cdk_common::PaymentMethod::Custom(method.clone()),
+            MeltQuoteState::Paid,
+        );
+        quote.extra_json = Some(serde_json::json!({"receipt": "melt-receipt"}));
+        let change = add_melt_quote(&db, quote.clone(), true).await;
+        let spec = MintPubSubSpec::new_instance((db, Arc::new(HashMap::new()), true));
+        let events = spec
+            .get_events_from_db(&[
+                NotificationId::MeltQuoteCustom(method.clone(), quote.id.clone()),
+                NotificationId::MeltQuoteCustom("wrong_method".to_owned(), quote.id.clone()),
+                NotificationId::MeltQuoteCustom(method.clone(), QuoteId::new()),
+            ])
+            .await
+            .expect("backfill");
+        assert_eq!(events.len(), 1);
+        match events[0].inner() {
+            NotificationPayload::CustomMeltQuoteResponse(actual_method, response) => {
+                assert_eq!(actual_method, &method);
+                assert_eq!(response.quote, quote.id);
+                assert_eq!(response.method, quote.payment_method);
+                assert_eq!(response.state, MeltQuoteState::Paid);
+                assert_eq!(response.payment_preimage, quote.payment_proof);
+                assert_eq!(response.change, change);
+                assert_eq!(response.extra, quote.extra_json.expect("extra fields"));
+            }
+            payload => panic!("unexpected payload: {payload:?}"),
+        }
+    }
+
+    #[derive(Default)]
+    struct BlockingPaymentBackend {
+        entered: Notify,
+        release: Notify,
+        checks: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl MintPayment for BlockingPaymentBackend {
+        type Err = payment::Error;
+
+        async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
+            Err(payment::Error::UnsupportedPaymentOption)
+        }
+
+        async fn create_incoming_payment_request(
+            &self,
+            _options: IncomingPaymentOptions,
+        ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
+            Err(payment::Error::UnsupportedPaymentOption)
+        }
+
+        async fn get_payment_quote(
+            &self,
+            _unit: &CurrencyUnit,
+            _options: OutgoingPaymentOptions,
+        ) -> Result<PaymentQuoteResponse, Self::Err> {
+            Err(payment::Error::UnsupportedPaymentOption)
+        }
+
+        async fn make_payment(
+            &self,
+            _unit: &CurrencyUnit,
+            _options: OutgoingPaymentOptions,
+        ) -> Result<MakePaymentResponse, Self::Err> {
+            Err(payment::Error::UnsupportedPaymentOption)
+        }
+
+        async fn wait_payment_event(
+            &self,
+        ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, Self::Err> {
+            Ok(Box::pin(futures::stream::pending()))
+        }
+
+        fn is_payment_event_stream_active(&self) -> bool {
+            false
+        }
+
+        fn cancel_payment_event_stream(&self) {}
+
+        async fn check_incoming_payment_status(
+            &self,
+            payment_identifier: &PaymentIdentifier,
+        ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
+            self.checks.fetch_add(1, Ordering::Relaxed);
+            self.entered.notify_one();
+            self.release.notified().await;
+            Ok(vec![WaitPaymentResponse {
+                payment_identifier: payment_identifier.clone(),
+                payment_amount: Amount::new(21, CurrencyUnit::Sat),
+                payment_id: "backfill-payment".to_owned(),
+            }])
+        }
+
+        async fn check_outgoing_payment(
+            &self,
+            _payment_identifier: &PaymentIdentifier,
+        ) -> Result<MakePaymentResponse, Self::Err> {
+            Err(payment::Error::UnsupportedPaymentOption)
+        }
+    }
+
+    #[tokio::test]
+    async fn backfill_payment_transition_notifies_concurrent_subscriber() {
+        use cdk_common::nut00::KnownMethod;
+        use cdk_common::nut17::Kind;
+        use cdk_common::PaymentMethod;
+
+        for (method, kind) in [
+            (
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                Kind::Bolt11MintQuote,
+            ),
+            (
+                PaymentMethod::Custom("test_method".to_owned()),
+                Kind::Custom("test_method_mint_quote".to_owned()),
+            ),
+        ] {
+            timeout(Duration::from_secs(5), async {
+                let db: DynMintDatabase =
+                    Arc::new(cdk_sqlite::mint::memory::empty().await.expect("database"));
+                let mut quote = bolt11_quote(QuoteId::new(), 21);
+                quote.payment_method = method.clone();
+                let mut tx = db.begin_transaction().await.expect("transaction");
+                tx.add_mint_quote(quote.clone())
+                    .await
+                    .expect("unpaid quote");
+                tx.commit().await.expect("commit");
+
+                let backend = Arc::new(BlockingPaymentBackend::default());
+                let processors = HashMap::from([(
+                    PaymentProcessorKey::new(CurrencyUnit::Sat, method),
+                    backend.clone() as DynMintPayment,
+                )]);
+                let manager = PubSubManager::new((db.clone(), Arc::new(processors)));
+                let params = Params {
+                    kind,
+                    filters: vec![quote.id.to_string()],
+                    id: Arc::new(SubId::from("first")),
+                };
+                let mut first = manager
+                    .subscribe(params.clone())
+                    .expect("first subscription");
+                backend.entered.notified().await;
+
+                let mut second = manager
+                    .subscribe(Params {
+                        id: Arc::new(SubId::from("second")),
+                        ..params
+                    })
+                    .expect("second subscription");
+                let initial = second.recv().await.expect("unpaid backfill");
+                match initial.inner() {
+                    NotificationPayload::MintQuoteBolt11Response(r) => {
+                        assert_eq!(r.state, MintQuoteState::Unpaid)
+                    }
+                    NotificationPayload::CustomMintQuoteResponse(_, r) => {
+                        assert_eq!(r.amount_paid, Amount::ZERO)
+                    }
+                    payload => panic!("unexpected payload: {payload:?}"),
+                }
+                assert_eq!(backend.checks.load(Ordering::Relaxed), 1);
+
+                backend.release.notify_one();
+                for subscriber in [&mut first, &mut second] {
+                    let event = subscriber.recv().await.expect("paid notification");
+                    match event.inner() {
+                        NotificationPayload::MintQuoteBolt11Response(r) => {
+                            assert_eq!(r.quote, quote.id);
+                            assert_eq!(r.state, MintQuoteState::Paid);
+                        }
+                        NotificationPayload::CustomMintQuoteResponse(method, r) => {
+                            assert_eq!(method, "test_method");
+                            assert_eq!(r.quote, quote.id);
+                            assert_eq!(r.amount_paid, Amount::from(21));
+                            assert_eq!(r.amount_issued, Amount::ZERO);
+                        }
+                        payload => panic!("unexpected payload: {payload:?}"),
+                    }
+                    let stored = db
+                        .get_mint_quote(&quote.id)
+                        .await
+                        .expect("read quote")
+                        .expect("quote");
+                    assert_eq!(stored.amount_paid(), Amount::new(21, CurrencyUnit::Sat));
+                }
+                assert_eq!(backend.checks.load(Ordering::Relaxed), 1);
+            })
+            .await
+            .expect("both subscribers must observe the committed payment");
+        }
+    }
+
+    #[tokio::test]
+    async fn pubsub_manager_does_not_retain_its_database() {
+        let db: DynMintDatabase =
+            Arc::new(cdk_sqlite::mint::memory::empty().await.expect("database"));
+        let db_weak = Arc::downgrade(&db);
+        let manager = PubSubManager::new((db, Arc::new(HashMap::new())));
+        let manager_weak = Arc::downgrade(&manager);
+        drop(manager);
+        assert!(manager_weak.upgrade().is_none());
+        assert!(db_weak.upgrade().is_none());
     }
 }

@@ -48,6 +48,12 @@ impl Mint {
             )
             .await?;
         if !claimed {
+            tracing::trace!(
+                quote_id = %quote.id,
+                request_lookup_id = %quote.request_lookup_id,
+                check_interval_seconds = MINT_QUOTE_PAYMENT_CHECK_INTERVAL_SECS,
+                "mint quote payment check skipped because another recent check holds the rate limit",
+            );
             return Ok(());
         }
         quote.set_last_checked(now);
@@ -66,9 +72,27 @@ impl Mint {
 
         let payment_status = payment_backend
             .check_incoming_payment_status(&quote.request_lookup_id)
-            .await?;
+            .await
+            .inspect_err(|err| {
+                tracing::warn!(
+                    quote_id = %quote.id,
+                    method = %quote.payment_method,
+                    unit = %quote.unit,
+                    request_lookup_id = %quote.request_lookup_id,
+                    error = %err,
+                    "mint quote payment status check failed; quote state is unchanged",
+                );
+            })?;
 
         if payment_status.is_empty() {
+            tracing::trace!(
+                quote_id = %quote.id,
+                method = %quote.payment_method,
+                unit = %quote.unit,
+                request_lookup_id = %quote.request_lookup_id,
+                quote_state = %quote.state(),
+                "mint quote payment check found no new payments",
+            );
             return Ok(());
         }
 
@@ -90,6 +114,7 @@ impl Mint {
         }
 
         let mut should_notify = false;
+        let mut recorded_payment_count = 0usize;
 
         for payment in payment_status {
             if !new_quote.payment_ids().contains(&&payment.payment_id)
@@ -108,6 +133,7 @@ impl Mint {
                     Ok(()) => {
                         tx.update_mint_quote(&mut new_quote).await?;
                         should_notify = true;
+                        recorded_payment_count += 1;
                     }
                     Err(crate::Error::DuplicatePaymentId) => {
                         tracing::debug!(
@@ -122,6 +148,22 @@ impl Mint {
         }
 
         tx.commit().await?;
+
+        if should_notify {
+            tracing::info!(
+                quote_id = %new_quote.id,
+                method = %new_quote.payment_method,
+                unit = %new_quote.unit,
+                request_lookup_id = %new_quote.request_lookup_id,
+                previous_state = %current_state,
+                new_state = %new_quote.state(),
+                recorded_payment_count,
+                amount_paid = %new_quote.amount_paid(),
+                amount_issued = %new_quote.amount_issued(),
+                amount_mintable = %new_quote.amount_mintable(),
+                "mint quote payment committed after backend status check",
+            );
+        }
 
         // Publish notification AFTER transaction commits so subscribers
         // see the committed state when they query.

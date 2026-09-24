@@ -245,6 +245,35 @@ async fn validate_melt_quote_method(
     Ok(())
 }
 
+// Validate batch bounds before any per-quote database work, including on cache hits.
+async fn validate_batch_quote_ids(
+    state: &MintState,
+    quote_ids: &[QuoteId],
+) -> Result<(), cdk::Error> {
+    if quote_ids.is_empty() {
+        return Err(cdk::Error::UnknownQuote);
+    }
+
+    if let Some(max) = state.mint.mint_info().await?.nuts.nut29.max_batch_size {
+        let max = usize::try_from(max).unwrap_or(usize::MAX);
+        if quote_ids.len() > max {
+            return Err(cdk::Error::BatchSizeExceeded {
+                actual: quote_ids.len(),
+                max,
+            });
+        }
+    }
+
+    let mut unique_ids = std::collections::HashSet::new();
+    for quote_id in quote_ids {
+        if !unique_ids.insert(quote_id) {
+            return Err(cdk::Error::DuplicateQuoteIds);
+        }
+    }
+
+    Ok(())
+}
+
 async fn validate_mint_quote_methods(
     state: &MintState,
     method: &str,
@@ -785,6 +814,10 @@ pub async fn post_batch_check_mint_quote(
         .await
         .map_err(into_response)?;
 
+    validate_batch_quote_ids(&state, &payload.quotes)
+        .await
+        .map_err(into_response)?;
+
     validate_mint_quote_methods(&state, &method, &payload.quotes)
         .await
         .map_err(into_response)?;
@@ -1259,7 +1292,20 @@ pub async fn cache_post_batch_mint(
     let method = method.0;
     let payload = payload.0;
 
-    validate_mint_request_route(auth, &mint_state, &method, &payload.quotes)
+    mint_state
+        .mint
+        .verify_auth(
+            auth.into(),
+            &ProtectedEndpoint::new(Method::Post, RoutePath::Mint(method.clone())),
+        )
+        .await
+        .map_err(into_response)?;
+
+    validate_batch_quote_ids(&mint_state, &payload.quotes)
+        .await
+        .map_err(into_response)?;
+
+    validate_mint_quote_methods(&mint_state, &method, &payload.quotes)
         .await
         .map_err(into_response)?;
 

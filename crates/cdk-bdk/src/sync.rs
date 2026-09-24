@@ -1,3 +1,4 @@
+use futures::future::BoxFuture;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::Error;
@@ -56,9 +57,17 @@ impl CdkBdk {
         }
     }
 
-    pub(crate) async fn sync_wallet(&self, cancel_token: CancellationToken) -> Result<(), Error> {
+    pub(crate) fn sync_wallet(
+        &self,
+        cancel_token: CancellationToken,
+    ) -> BoxFuture<'_, Result<(), Error>> {
+        Box::pin(self.sync_wallet_inner(cancel_token))
+    }
+
+    async fn sync_wallet_inner(&self, cancel_token: CancellationToken) -> Result<(), Error> {
         let interval = std::time::Duration::from_secs(self.sync_interval_secs);
         let mut ticker = tokio::time::interval(interval);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut consecutive_failures = 0_u32;
         loop {
             tokio::select! {

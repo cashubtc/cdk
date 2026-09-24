@@ -48,6 +48,19 @@ fn automatic_batch_size(
     (max_batch_size >= 2).then_some(max_batch_size)
 }
 
+fn validate_mint_quote_response_id(
+    quote_id: &str,
+    response: &MintQuoteResponse<String>,
+) -> Result<(), Error> {
+    if response.quote() != quote_id {
+        return Err(Error::InvalidMintResponse(format!(
+            "Quote ID mismatch: expected {quote_id}, received {}",
+            response.quote()
+        )));
+    }
+    Ok(())
+}
+
 pub(crate) fn apply_mint_quote_response(
     quote: &mut MintQuote,
     response: &MintQuoteResponse<String>,
@@ -330,6 +343,7 @@ impl Wallet {
             .client
             .get_mint_quote_status(mint_quote.payment_method.clone(), &mint_quote.id)
             .await?;
+        validate_mint_quote_response_id(&mint_quote.id, &mint_quote_response)?;
         apply_mint_quote_response(mint_quote, &mint_quote_response);
 
         Ok(())
@@ -407,6 +421,7 @@ impl Wallet {
     ///
     /// Calls `GET /v1/mint/quote/{method}/{quote_id}` per NUT-04.
     /// Updates local store with current state from mint.
+    /// Rejects a mismatched response quote ID before changing local state.
     /// If there was a crashed mid-mint (pending saga), attempts to complete it.
     /// Does NOT mint tokens directly - use mint() for that.
     ///
@@ -745,6 +760,7 @@ impl Wallet {
     /// # Errors
     /// Returns `Error::PaymentMethodRequired` if the quote is not found locally
     /// and no payment method is provided.
+    /// Returns `Error::InvalidMintResponse` if the response quote ID does not match.
     #[instrument(skip(self, quote_id))]
     pub async fn fetch_mint_quote(
         &self,
@@ -766,6 +782,7 @@ impl Wallet {
             .client
             .get_mint_quote_status(method.clone(), quote_id)
             .await?;
+        validate_mint_quote_response_id(quote_id, &response)?;
 
         let quote = match existing_quote {
             Some(mut existing) => {
@@ -807,6 +824,7 @@ impl Wallet {
     /// Calls `POST /v1/mint/quote/{method}/check` per NUT-29.
     /// All quotes must share the same payment method.
     /// Updates local store with current state from mint for each quote.
+    /// Rejects mismatched response counts or quote IDs before updating any quote.
     #[instrument(skip(self, quote_ids))]
     pub async fn batch_check_mint_quote_status(
         &self,
@@ -844,6 +862,19 @@ impl Wallet {
             .client
             .post_batch_check_mint_quote_status(&payment_method, request)
             .await?;
+
+        // NUT-29 requires one response per requested quote, in request order.
+        // Validate the entire batch before writing any local updates.
+        if responses.len() != quote_ids.len() {
+            return Err(Error::InvalidMintResponse(format!(
+                "Quote response count mismatch: expected {}, received {}",
+                quote_ids.len(),
+                responses.len()
+            )));
+        }
+        for (quote_id, response) in quote_ids.iter().zip(&responses) {
+            validate_mint_quote_response_id(quote_id, response)?;
+        }
 
         // Update local quotes with response data
         for (quote, response) in quotes.iter_mut().zip(responses.iter()) {
@@ -1164,6 +1195,134 @@ mod tests {
         }
 
         (wallet, mock_client, quotes)
+    }
+
+    #[tokio::test]
+    async fn batch_quote_status_rejects_inconsistent_responses_without_updates() {
+        // Include a valid first response in several cases to verify that the
+        // entire batch is validated before any quote is persisted.
+        for indices in [
+            vec![],
+            vec![0],
+            vec![0, 1, 2],
+            vec![1, 0],
+            vec![0, 0],
+            vec![0, 2],
+        ] {
+            let (wallet, mock_client, quotes) = batch_claim_wallet(3).await;
+            let responses = indices
+                .iter()
+                .map(|&index| issued_bolt11_quote_response(&quotes[index]))
+                .collect();
+            mock_client.push_post_batch_check_mint_quote_status_response(Ok(responses));
+
+            let result = wallet
+                .batch_check_mint_quote_status(&[&quotes[0].id, &quotes[1].id])
+                .await;
+
+            assert!(matches!(result, Err(Error::InvalidMintResponse(_))));
+            for quote in &quotes {
+                assert_eq!(
+                    wallet.localstore.get_mint_quote(&quote.id).await.unwrap(),
+                    Some(quote.clone()),
+                    "invalid batch {indices:?} must leave all quotes unchanged"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn batch_quote_status_applies_matching_responses() {
+        let (wallet, mock_client, quotes) = batch_claim_wallet(2).await;
+        mock_client.push_post_batch_check_mint_quote_status_response(Ok(vec![
+            issued_bolt11_quote_response(&quotes[0]),
+            paid_bolt11_quote_response(&quotes[1]),
+        ]));
+
+        let refreshed = wallet
+            .batch_check_mint_quote_status(&[&quotes[0].id, &quotes[1].id])
+            .await
+            .unwrap();
+
+        assert_eq!(refreshed.len(), 2);
+        assert_eq!(refreshed[0].state, MintQuoteState::Issued);
+        assert_eq!(refreshed[0].amount_issued, quotes[0].amount_paid);
+        assert_eq!(refreshed[1].state, MintQuoteState::Paid);
+        assert_eq!(refreshed[1].amount_issued, Amount::ZERO);
+        for (original, refreshed) in quotes.iter().zip(refreshed) {
+            assert_eq!(refreshed.id, original.id);
+            let stored = wallet
+                .localstore
+                .get_mint_quote(&original.id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(stored.state, refreshed.state);
+            assert_eq!(stored.amount_paid, refreshed.amount_paid);
+            assert_eq!(stored.amount_issued, refreshed.amount_issued);
+            assert_eq!(stored.updated_at, refreshed.updated_at);
+        }
+    }
+
+    #[tokio::test]
+    async fn single_quote_status_rejects_mismatched_id_without_updates() {
+        let (wallet, mock_client, quotes) = batch_claim_wallet(2).await;
+        mock_client.set_mint_quote_status_response(
+            &quotes[0].id,
+            issued_bolt11_quote_response(&quotes[1]),
+        );
+
+        let result = wallet.check_mint_quote_status(&quotes[0].id).await;
+        assert!(matches!(result, Err(Error::InvalidMintResponse(_))));
+        for quote in &quotes {
+            assert_eq!(
+                wallet.localstore.get_mint_quote(&quote.id).await.unwrap(),
+                Some(quote.clone())
+            );
+        }
+
+        mock_client.set_mint_quote_status_response(
+            &quotes[0].id,
+            issued_bolt11_quote_response(&quotes[0]),
+        );
+        let refreshed = wallet.check_mint_quote_status(&quotes[0].id).await.unwrap();
+        assert_eq!(refreshed.state, MintQuoteState::Issued);
+        assert_eq!(refreshed.amount_issued, quotes[0].amount_paid);
+    }
+
+    #[tokio::test]
+    async fn fetch_quote_rejects_mismatched_id_without_storing_response() {
+        let (wallet, mock_client, quotes) = batch_claim_wallet(2).await;
+        for quote_id in [quotes[0].id.as_str(), "unknown-quote"] {
+            mock_client
+                .set_mint_quote_status_response(quote_id, issued_bolt11_quote_response(&quotes[1]));
+            let result = wallet
+                .fetch_mint_quote(quote_id, Some(PaymentMethod::BOLT11))
+                .await;
+            assert!(matches!(result, Err(Error::InvalidMintResponse(_))));
+        }
+
+        for quote in &quotes {
+            assert_eq!(
+                wallet.localstore.get_mint_quote(&quote.id).await.unwrap(),
+                Some(quote.clone())
+            );
+        }
+        assert!(wallet
+            .localstore
+            .get_mint_quote("unknown-quote")
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    fn issued_bolt11_quote_response(quote: &MintQuote) -> MintQuoteResponse<String> {
+        let mut response = paid_bolt11_quote_response(quote);
+        if let MintQuoteResponse::Bolt11(response) = &mut response {
+            response.state = MintQuoteState::Issued;
+            response.amount_issued = response.amount_paid;
+        }
+        response
     }
 
     #[tokio::test]

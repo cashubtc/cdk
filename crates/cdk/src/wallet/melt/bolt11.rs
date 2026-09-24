@@ -55,7 +55,7 @@ impl Wallet {
                 .ok_or(Error::InvoiceAmountUndefined)?;
 
             let amount_quote_unit = Amount::new(amount_msat, CurrencyUnit::Msat)
-                .convert_to(&self.unit)?
+                .convert_to_ceil(&self.unit)?
                 .into();
 
             if quote_res.amount != amount_quote_unit {

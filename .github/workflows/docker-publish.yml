@@ -13,8 +13,18 @@ env:
   REGISTRY: docker.io
   IMAGE_NAME: cashubtc/mintd
 
+permissions:
+  contents: read
+  actions: read
+
 jobs:
+  release-ci:
+    uses: ./.github/workflows/release-ci.yml
+    with:
+      ref: ${{ inputs.tag || github.ref }}
+
   build:
+    needs: release-ci
     strategy:
       fail-fast: false
       matrix:
@@ -133,13 +143,23 @@ jobs:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
           INPUT_TAG: ${{ github.event.inputs.tag }}
           IS_STABLE: ${{ !github.event.release.prerelease && !contains(github.event.release.tag_name, 'rc') }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [[ "$EVENT_NAME" == "release" ]]; then
             RAW_VERSION="$RELEASE_TAG"
             echo "is_stable=$IS_STABLE" >> "$GITHUB_OUTPUT"
+            # A patch on an older line must not move :latest backwards, so
+            # follow GitHub's own latest-release marker (highest semver).
+            LATEST_TAG=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)
+            if [[ "$IS_STABLE" == "true" && "$RELEASE_TAG" == "$LATEST_TAG" ]]; then
+              echo "is_latest=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "is_latest=false" >> "$GITHUB_OUTPUT"
+            fi
           else
             RAW_VERSION="$INPUT_TAG"
             echo "is_stable=false" >> "$GITHUB_OUTPUT"
+            echo "is_latest=false" >> "$GITHUB_OUTPUT"
           fi
           echo "raw_version=${RAW_VERSION}" >> "$GITHUB_OUTPUT"
           echo "version=${RAW_VERSION#v}" >> "$GITHUB_OUTPUT"
@@ -178,7 +198,7 @@ jobs:
             "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION}${{ matrix.variant.tag_suffix }}-arm64"
 
       - name: Create latest manifest
-        if: ${{ steps.tag.outputs.is_stable == 'true' }}
+        if: ${{ steps.tag.outputs.is_latest == 'true' }}
         env:
           VERSION: ${{ steps.tag.outputs.version }}
         run: |

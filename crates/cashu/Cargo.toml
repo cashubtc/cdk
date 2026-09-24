@@ -14,7 +14,7 @@ readme = "README.md"
 default = ["mint", "wallet"]
 mint = []
 wallet = []
-nostr = ["dep:nostr-sdk"]
+nostr = ["dep:nostr"]
 bench = []
 federation = ["dep:bls12_381", "dep:ff", "dep:group", "dep:sha2_09"]
 
@@ -37,7 +37,7 @@ url.workspace = true
 serde_json.workspace = true
 serde_with.workspace = true
 sha2_09 = { workspace = true, optional = true }
-nostr-sdk = { workspace = true, optional = true }
+nostr = { workspace = true, optional = true }
 zeroize = "1"
 web-time.workspace = true
 unicode-normalization = "0.1.25"
@@ -47,7 +47,7 @@ uuid = { workspace = true, features = ["js"], optional = true }
 
 [dev-dependencies]
 bip39.workspace = true
-nostr-sdk.workspace = true
+nostr.workspace = true
 
 [[example]]
 name = "bls_batch_verification_benchmark"

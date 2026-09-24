@@ -10,7 +10,7 @@ use cdk::nuts::CurrencyUnit;
 use cdk::wallet::{Wallet, WalletRepository};
 use cdk::StreamExt;
 use clap::Subcommand;
-use nostr_sdk::ToBech32;
+use nostr::prelude::ToBech32;
 
 use crate::utils::get_or_create_wallet;
 

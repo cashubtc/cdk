@@ -8,7 +8,6 @@ use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use bitcoin::hashes::sha256;
@@ -311,9 +310,11 @@ impl MintPayment for Cln {
                             break Some((event, (cln_client, last_pay_idx, cancel_token, is_active, kv_store)));
                                 }
                                 Err(e) => {
-                                    tracing::warn!("CLN: Error fetching invoice: {e}");
-                                    tokio::time::sleep(Duration::from_secs(1)).await;
-                                    continue;
+                                    tracing::warn!("CLN: Error fetching invoice, closing payment event stream: {e}");
+                                    // ClnRpc cannot reconnect a broken socket. Let the
+                                    // supervisor create a fresh stream with backoff.
+                                    is_active.store(false, Ordering::SeqCst);
+                                    return None;
                                 }
                             }
                         }
@@ -365,7 +366,7 @@ impl MintPayment for Cln {
                 };
                 // Convert to target unit
                 let amount =
-                    Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to(unit)?;
+                    Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to_ceil(unit)?;
 
                 // Calculate fee
                 let relative_fee_reserve =
@@ -403,7 +404,7 @@ impl MintPayment for Cln {
                 };
 
                 // Convert to target unit
-                let amount = Amount::new(amount_msat, CurrencyUnit::Msat).convert_to(unit)?;
+                let amount = Amount::new(amount_msat, CurrencyUnit::Msat).convert_to_ceil(unit)?;
 
                 // Calculate fee
                 let relative_fee_reserve =
@@ -559,13 +560,12 @@ impl MintPayment for Cln {
             })
             .await;
 
-        let response = match cln_response {
+        let mut response = match cln_response {
             Ok(pay_response) => MakePaymentResponse {
                 payment_lookup_id,
                 payment_proof: Some(hex::encode(pay_response.payment_preimage.to_vec())),
                 status: MeltQuoteState::Paid,
-                total_spent: Amount::new(pay_response.amount_sent_msat.msat(), CurrencyUnit::Msat)
-                    .convert_to(unit)?,
+                total_spent: Amount::new(pay_response.amount_sent_msat.msat(), CurrencyUnit::Msat),
             },
             Err(err) => {
                 tracing::warn!("xpay returned an error: {}", err);
@@ -641,6 +641,10 @@ impl MintPayment for Cln {
                 response
             }
         };
+
+        // Both xpay and reconciliation report principal plus fees in Msat.
+        // Return the quote unit and round the combined total only once.
+        response.total_spent = response.total_spent.convert_to_ceil(unit)?;
 
         Ok(response)
     }
@@ -1370,12 +1374,16 @@ mod tests {
     use std::collections::{BTreeSet, HashMap};
     use std::str::FromStr;
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     use cdk_common::database::{
         DbTransactionFinalizer, Error as DatabaseError, KVStore, KVStoreDatabase,
         KVStoreTransaction,
     };
     use cdk_common::payment::Bolt11OutgoingPaymentOptions;
+    use futures::SinkExt;
+    use tokio::net::{UnixListener, UnixStream};
+    use tokio_util::codec::Framed;
 
     use super::*;
 
@@ -1701,9 +1709,248 @@ mod tests {
         test_cln_with_kv(Arc::new(MemoryKvStore::default()))
     }
 
+    struct TestRpcSocket(PathBuf);
+
+    impl TestRpcSocket {
+        fn new() -> Self {
+            Self(std::env::temp_dir().join(format!("cdk-cln-{}.sock", Uuid::new_v4())))
+        }
+    }
+
+    impl Drop for TestRpcSocket {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    async fn receive_wait_request(
+        connection: &mut Framed<UnixStream, cln_rpc::codec::JsonCodec>,
+        last_pay_index: u64,
+    ) -> serde_json::Value {
+        let request = connection.next().await.unwrap().unwrap();
+        assert_eq!(request["method"], "waitanyinvoice");
+        assert_eq!(request["params"]["lastpay_index"], last_pay_index);
+        request
+    }
+
+    async fn send_paid_invoice(
+        connection: &mut Framed<UnixStream, cln_rpc::codec::JsonCodec>,
+        last_pay_index: u64,
+    ) {
+        let request = receive_wait_request(connection, last_pay_index).await;
+        connection
+            .send(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": {
+                    "status": "paid",
+                    "created_index": 1,
+                    "expires_at": 2000000000,
+                    "label": "reconnect-test",
+                    "payment_hash": "01".repeat(32),
+                    "pay_index": last_pay_index + 1,
+                    "amount_received_msat": 1000
+                }
+            }))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn payment_event_stream_recovers_after_disconnect() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let socket = TestRpcSocket::new();
+            let listener = UnixListener::bind(&socket.0).unwrap();
+            let mut cln = test_cln_with_memory_kv();
+            cln.rpc_socket = socket.0.clone();
+            let mut tx = cln.kv_store.begin_transaction().await.unwrap();
+            tx.kv_write(
+                CLN_KV_PRIMARY_NAMESPACE,
+                CLN_KV_SECONDARY_NAMESPACE,
+                LAST_PAY_INDEX_KV_KEY,
+                b"41",
+            )
+            .await
+            .unwrap();
+            tx.commit().await.unwrap();
+
+            let mut stream = cln.wait_payment_event().await.unwrap();
+            let (connection, _) = listener.accept().await.unwrap();
+            let mut connection = Framed::new(connection, cln_rpc::codec::JsonCodec::default());
+            let (event, ()) = tokio::join!(stream.next(), send_paid_invoice(&mut connection, 41));
+            assert!(matches!(event, Some(Event::PaymentReceived(_))));
+            assert!(cln.is_payment_event_stream_active());
+            assert_eq!(cln.get_last_pay_index().await.unwrap(), Some(42));
+
+            // Simulate CLN going away while waitanyinvoice is outstanding.
+            let (event, ()) = tokio::join!(stream.next(), async {
+                receive_wait_request(&mut connection, 42).await;
+                drop(connection);
+                drop(listener);
+                std::fs::remove_file(&socket.0).unwrap();
+            });
+            assert!(event.is_none(), "a dead connection must close the stream");
+            assert!(!cln.is_payment_event_stream_active());
+            assert!(cln.wait_payment_event().await.is_err());
+            assert!(!cln.is_payment_event_stream_active());
+
+            // The supervisor retries this entry point when CLN comes back.
+            let listener = UnixListener::bind(&socket.0).unwrap();
+            let mut stream = cln.wait_payment_event().await.unwrap();
+            let (connection, _) = listener.accept().await.unwrap();
+            let mut connection = Framed::new(connection, cln_rpc::codec::JsonCodec::default());
+            let (event, ()) = tokio::join!(stream.next(), send_paid_invoice(&mut connection, 42));
+            match event {
+                Some(Event::PaymentReceived(payment)) => {
+                    assert_eq!(
+                        payment.payment_identifier,
+                        PaymentIdentifier::PaymentHash([1; 32])
+                    );
+                    assert_eq!(
+                        payment.payment_amount,
+                        Amount::new(1000, CurrencyUnit::Msat)
+                    );
+                }
+                event => panic!("expected a payment after reconnect, got {event:?}"),
+            }
+            assert!(cln.is_payment_event_stream_active());
+            assert_eq!(cln.get_last_pay_index().await.unwrap(), Some(43));
+
+            cln.cancel_payment_event_stream();
+            assert!(stream.next().await.is_none());
+            assert!(!cln.is_payment_event_stream_active());
+        })
+        .await
+        .expect("payment stream recovery must complete promptly");
+    }
+
     fn test_invoice() -> Bolt11Invoice {
         Bolt11Invoice::from_str("lnbc100n1pnvpufspp5djn8hrq49r8cghwye9kqw752qjncwyfnrprhprpqk43mwcy4yfsqdq5g9kxy7fqd9h8vmmfvdjscqzzsxqyz5vqsp5uhpjt36rj75pl7jq2sshaukzfkt7uulj456s4mh7uy7l6vx7lvxs9qxpqysgqedwz08acmqwtk8g4vkwm2w78suwt2qyzz6jkkwcgrjm3r3hs6fskyhvud4fan3keru7emjm8ygqpcrwtlmhfjfmer3afs5hhwamgr4cqtactdq")
             .expect("test invoice must parse")
+    }
+
+    #[tokio::test]
+    async fn payment_quotes_round_up_sat_principals() {
+        for (msat, sat) in [
+            (1, 1),
+            (999, 1),
+            (1_000, 1),
+            (1_999, 2),
+            (2_000, 2),
+            (u64::MAX, u64::MAX / 1_000 + 1),
+        ] {
+            for (unit, expected) in [(CurrencyUnit::Sat, sat), (CurrencyUnit::Msat, msat)] {
+                let quote = test_cln()
+                    .get_payment_quote(
+                        &unit,
+                        OutgoingPaymentOptions::Bolt11(Box::new(Bolt11OutgoingPaymentOptions {
+                            bolt11: test_invoice(),
+                            max_fee_amount: None,
+                            timeout_secs: None,
+                            melt_options: Some(MeltOptions::new_mpp(msat)),
+                            quote_id: QuoteId::new(),
+                        })),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(quote.amount, Amount::new(expected, unit.clone()));
+                let quote = test_cln()
+                    .get_payment_quote(
+                        &unit,
+                        OutgoingPaymentOptions::Bolt12(Box::new(
+                            payment::Bolt12OutgoingPaymentOptions {
+                                offer:
+                                    "lno1zcss9mk8y3wkklfvevcrszlmu23kfrxh49px20665dqwmn4p72pksese"
+                                        .parse()
+                                        .unwrap(),
+                                max_fee_amount: None,
+                                timeout_secs: None,
+                                melt_options: Some(MeltOptions::new_amountless(msat)),
+                                quote_id: QuoteId::new(),
+                            },
+                        )),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(quote.amount, Amount::new(expected, unit));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn synchronous_payment_rounds_up_total_for_sat_quotes() {
+        for reconcile in [false, true] {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let socket = TestRpcSocket::new();
+                let listener = UnixListener::bind(&socket.0).unwrap();
+                let mut cln = test_cln();
+                cln.rpc_socket = socket.0.clone();
+                let payment = cln.make_payment(
+                    &CurrencyUnit::Sat,
+                    OutgoingPaymentOptions::Bolt11(Box::new(Bolt11OutgoingPaymentOptions {
+                        bolt11: test_invoice(),
+                        max_fee_amount: None,
+                        timeout_secs: None,
+                        melt_options: None,
+                        quote_id: QuoteId::new(),
+                    })),
+                );
+                let server = async {
+                    // make_payment opens its xpay connection before checking listpays.
+                    let (connection, _) = listener.accept().await.unwrap();
+                    let mut pay = Framed::new(connection, cln_rpc::codec::JsonCodec::default());
+                    let (connection, _) = listener.accept().await.unwrap();
+                    let mut check = Framed::new(connection, cln_rpc::codec::JsonCodec::default());
+                    let request = check.next().await.unwrap().unwrap();
+                    assert_eq!(request["method"], "listpays");
+                    check
+                        .send(serde_json::json!({
+                            "jsonrpc": "2.0", "id": request["id"], "result": {"pays": []}
+                        }))
+                        .await
+                        .unwrap();
+                    let request = pay.next().await.unwrap().unwrap();
+                    assert_eq!(request["method"], "xpay");
+                    if reconcile {
+                        pay.send(serde_json::json!({
+                            "jsonrpc": "2.0", "id": request["id"],
+                            "error": {"code": 219, "message": "already paid"}
+                        }))
+                        .await
+                        .unwrap();
+                        let (connection, _) = listener.accept().await.unwrap();
+                        let mut check =
+                            Framed::new(connection, cln_rpc::codec::JsonCodec::default());
+                        let request = check.next().await.unwrap().unwrap();
+                        assert_eq!(request["method"], "listpays");
+                        let mut payment = test_listpays_payment(1, ListpaysPaysStatus::COMPLETE);
+                        payment.amount_sent_msat = Some(CLN_Amount::from_msat(10001));
+                        check
+                            .send(serde_json::json!({
+                                "jsonrpc": "2.0", "id": request["id"], "result": {"pays": [payment]}
+                            }))
+                            .await
+                            .unwrap();
+                    } else {
+                        pay.send(serde_json::json!({
+                            "jsonrpc": "2.0", "id": request["id"], "result": {
+                                "amount_msat": 10000, "amount_sent_msat": 10001,
+                                "failed_parts": 0, "successful_parts": 1,
+                                "payment_preimage": "01".repeat(32)
+                            }
+                        }))
+                        .await
+                        .unwrap();
+                    }
+                };
+                let (response, ()) = tokio::join!(payment, server);
+                let response = response.unwrap();
+                assert_eq!(response.status, MeltQuoteState::Paid);
+                assert_eq!(response.total_spent, Amount::new(11, CurrencyUnit::Sat));
+            })
+            .await
+            .expect("mock payment must complete promptly");
+        }
     }
 
     #[tokio::test]

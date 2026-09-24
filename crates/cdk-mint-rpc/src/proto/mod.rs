@@ -1,7 +1,5 @@
 //! CDK mint proto types
 
-tonic::include_proto!("cdk_mint_management_v1");
-
 /// Mint metadata administration service
 pub mod info {
     tonic::include_proto!("cdk_mint_info_v1");

@@ -8792,6 +8792,85 @@ async fn cache_post_batch_mint_rejects_cached_url_method_quote_method_mismatch()
 }
 
 #[tokio::test]
+async fn batch_routes_reject_invalid_bounds_before_loading_quotes() {
+    let state = create_test_state().await;
+    // These IDs do not exist. Any premature quote lookup would return UnknownQuote.
+    let duplicate_id = QuoteId::new();
+    for (quotes, expected) in [
+        (
+            vec![duplicate_id.clone(), duplicate_id],
+            cdk::Error::DuplicateQuoteIds,
+        ),
+        (
+            (0..11).map(|_| QuoteId::new()).collect(),
+            cdk::Error::BatchSizeExceeded {
+                actual: 11,
+                max: 10,
+            },
+        ),
+    ] {
+        let status_error = post_batch_check_mint_quote(
+            AuthHeader::None,
+            State(state.clone()),
+            Path("bolt11".to_string()),
+            Json(BatchCheckMintQuoteRequest {
+                quotes: quotes.clone(),
+            }),
+        )
+        .await
+        .unwrap_err();
+        let mint_error = cache_post_batch_mint(
+            AuthHeader::None,
+            State(state.clone()),
+            Path("bolt11".to_string()),
+            Json(BatchMintRequest {
+                quotes,
+                outputs: vec![],
+                quote_amounts: None,
+                signatures: None,
+            }),
+        )
+        .await
+        .unwrap_err();
+
+        let expected = into_response(expected);
+        let expected_status = expected.status();
+        let expected_body = axum::body::to_bytes(expected.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        for response in [status_error, mint_error] {
+            assert_eq!(response.status(), expected_status);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            assert_eq!(body, expected_body);
+        }
+    }
+}
+
+#[tokio::test]
+async fn batch_status_accepts_configured_limit() {
+    let state = create_test_state().await;
+    let mut quotes = Vec::new();
+    for _ in 0..10 {
+        quotes.push(create_paid_bolt11_quote(&state).await);
+    }
+    let response = post_batch_check_mint_quote(
+        AuthHeader::None,
+        State(state),
+        Path("bolt11".to_string()),
+        Json(BatchCheckMintQuoteRequest { quotes }),
+    )
+    .await
+    .unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let quotes: Vec<MintQuoteBolt11Response<QuoteId>> = serde_json::from_slice(&body).unwrap();
+    assert_eq!(quotes.len(), 10);
+}
+
+#[tokio::test]
 async fn post_batch_check_mint_quote_rejects_url_method_quote_method_mismatch() {
     let state = create_test_state_with_custom_methods(&["paypal", "venmo"]).await;
     let quote_id = create_custom_quote(&state, "venmo", 2).await;
