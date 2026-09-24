@@ -35,7 +35,6 @@
 use std::collections::HashMap;
 
 use cdk_common::amount::SplitTarget;
-use cdk_common::dhke::construct_proofs;
 use cdk_common::wallet::{
     KeysetLoadPolicy, MeltOperationData, MeltPrepareOptions, MeltQuote, MeltSagaState,
     OperationData, ProofInfo, Transaction, TransactionDirection, TransactionStatus, WalletSaga,
@@ -52,9 +51,7 @@ use crate::nuts::nut00::{KnownMethod, ProofsMethods};
 use crate::nuts::nut11::{enforce_sig_flag, SigFlag};
 use crate::nuts::{MeltRequest, PreMintSecrets, Proofs, State};
 use crate::util::unix_time;
-use crate::wallet::blind_signature::{
-    validate_mint_response_signatures, SignatureAmountValidation,
-};
+use crate::wallet::blind_signature::{construct_mint_response_proofs, SignatureAmountValidation};
 use crate::wallet::saga::{add_compensation, new_compensations, Compensations};
 use crate::{ensure_cdk, Amount, Error, Wallet};
 
@@ -125,23 +122,14 @@ async fn finalize_melt_common<'a>(
                 _ => num_change_proof,
             };
 
-            validate_mint_response_signatures(
+            let proofs = construct_mint_response_proofs(
                 wallet,
-                &change,
-                premint_secrets.secrets[..num_change_proof]
-                    .iter()
-                    .map(|p| &p.blinded_message),
+                change,
+                &premint_secrets.secrets[..num_change_proof],
+                &active_keys,
                 SignatureAmountValidation::AllowZeroAmountPlaceholder,
             )
             .await?;
-
-            let mut proofs = construct_proofs(
-                change,
-                premint_secrets.rs()[..num_change_proof].to_vec(),
-                premint_secrets.secrets()[..num_change_proof].to_vec(),
-                &active_keys,
-            )?;
-            premint_secrets.attach_spend_info(&mut proofs);
             Some(proofs)
         }
         None => None,

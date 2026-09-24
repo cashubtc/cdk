@@ -52,6 +52,38 @@ async fn wallet_signs_blinded_multisig_leaves_without_key_path_bypass() {
         .unwrap();
     signed.verify_spending_conditions().unwrap();
     assert!(signed.inputs()[0].spend_info.is_none());
+    // Replay retains noncanonical JSON bytes, but cannot bypass metadata checks.
+    let transaction = super::Transaction::new(signed.inputs(), &[], signed.outputs(), &[]).unwrap();
+    let digest = transaction.input_digest(0).unwrap();
+    let now = cdk_common::util::unix_time();
+    let mut replay = signed.inputs()[0].clone();
+    let crate::nuts::Witness::NutrootWitness(raw) = replay.witness.as_ref().unwrap() else {
+        panic!("expected Nutroot witness");
+    };
+    let witness: super::nutroot::Witness = serde_json::from_str(raw).unwrap();
+    let raw = serde_json::to_string_pretty(&witness).unwrap();
+    replay.witness = Some(crate::nuts::Witness::NutrootWitness(raw.clone()));
+    replay.spend_info = request.inputs()[0].spend_info.clone();
+    let signing_keys: Vec<_> = keys
+        .iter()
+        .map(|key| *key.as_secp256k1().unwrap())
+        .collect();
+    assert_eq!(
+        super::input_witness(&replay, &signing_keys, &[], digest, now).unwrap(),
+        raw
+    );
+    replay.spend_info.as_mut().unwrap().internal_key =
+        Some(*SecretKey::generate().public_key().as_secp256k1().unwrap());
+    assert!(super::input_witness(&replay, &signing_keys, &[], digest, now).is_err());
+    replay.spend_info = None;
+    assert_eq!(
+        super::input_witness(&replay, &[], &[], digest, now).unwrap(),
+        raw
+    );
+    let mut wrong_digest = digest;
+    wrong_digest[0] ^= 1;
+    assert!(super::input_witness(&replay, &[], &[], wrong_digest, now).is_err());
+
     let before = signed.inputs()[0].witness.clone();
     wallet
         .sign_nutroot_swap(&mut signed, &keys, &[])

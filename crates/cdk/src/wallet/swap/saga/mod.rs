@@ -38,12 +38,9 @@ use tracing::instrument;
 
 use self::state::{Finalized, Initial, Prepared};
 use crate::amount::SplitTarget;
-use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{nut10, Proofs, SpendingConditions, State};
-use crate::wallet::blind_signature::{
-    validate_mint_response_signatures, SignatureAmountValidation,
-};
+use crate::wallet::blind_signature::{construct_mint_response_proofs, SignatureAmountValidation};
 use crate::wallet::saga::{
     add_compensation, clear_compensations, execute_compensations, new_compensations, Compensations,
     RevertProofReservation as RevertSwapProofReservation,
@@ -279,24 +276,14 @@ impl<'a> SwapSaga<'a, Prepared> {
         let active_keyset_id = self.state_data.pre_swap.pre_mint_secrets.keyset_id;
         let active_keys = self.wallet.keyset(active_keyset_id).await?.keys;
 
-        validate_mint_response_signatures(
+        let post_swap_proofs = construct_mint_response_proofs(
             self.wallet,
-            &swap_response.signatures,
-            self.state_data.pre_swap.swap_request.outputs().iter(),
+            swap_response.signatures,
+            &self.state_data.pre_swap.pre_mint_secrets.secrets,
+            &active_keys,
             SignatureAmountValidation::Exact,
         )
         .await?;
-
-        let mut post_swap_proofs = construct_proofs(
-            swap_response.signatures,
-            self.state_data.pre_swap.pre_mint_secrets.rs(),
-            self.state_data.pre_swap.pre_mint_secrets.secrets(),
-            &active_keys,
-        )?;
-        self.state_data
-            .pre_swap
-            .pre_mint_secrets
-            .attach_spend_info(&mut post_swap_proofs);
 
         let mut added_proofs = Vec::new();
         let change_proofs;

@@ -1,5 +1,5 @@
 use crate::dhke::verify_bls_blind_signature;
-use crate::nuts::{nut12, BlindSignature, BlindedMessage, KeySetVersion};
+use crate::nuts::{nut12, BlindSignature, BlindedMessage, KeySetVersion, Keys, PreMint, Proofs};
 use crate::wallet::Wallet;
 use crate::{Amount, Error};
 
@@ -85,4 +85,36 @@ pub(crate) async fn validate_mint_response_signatures<'a>(
     }
 
     Ok(())
+}
+
+/// Unblind signatures using premints in response order and retain their spend metadata.
+/// Validate against these same outputs before constructing any proofs.
+pub(crate) async fn construct_mint_response_proofs<'a>(
+    wallet: &Wallet,
+    signatures: Vec<BlindSignature>,
+    premints: impl IntoIterator<Item = &'a PreMint>,
+    keys: &Keys,
+    amount_validation: SignatureAmountValidation,
+) -> Result<Proofs, Error> {
+    let premints: Vec<_> = premints.into_iter().collect();
+    validate_mint_response_signatures(
+        wallet,
+        &signatures,
+        premints.iter().map(|premint| &premint.blinded_message),
+        amount_validation,
+    )
+    .await?;
+    let mut proofs = crate::dhke::construct_proofs(
+        signatures,
+        premints.iter().map(|premint| premint.r.clone()).collect(),
+        premints
+            .iter()
+            .map(|premint| premint.secret.clone())
+            .collect(),
+        keys,
+    )?;
+    for (proof, premint) in proofs.iter_mut().zip(premints) {
+        proof.spend_info = premint.spend_info.clone();
+    }
+    Ok(proofs)
 }

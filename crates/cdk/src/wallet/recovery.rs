@@ -21,14 +21,11 @@ use cdk_common::wallet::{ProofInfo, WalletSagaState};
 use cdk_common::BlindedMessage;
 use tracing::instrument;
 
-use crate::dhke::construct_proofs;
 use crate::nuts::{
     BlindSignature, CheckStateRequest, PreMintSecrets, Proofs, RestoreRequest, RestoreResponse,
     State, SwapRequest,
 };
-use crate::wallet::blind_signature::{
-    validate_mint_response_signatures, SignatureAmountValidation,
-};
+use crate::wallet::blind_signature::{construct_mint_response_proofs, SignatureAmountValidation};
 use crate::wallet::util::escape_log_value;
 use crate::{Error, Wallet};
 
@@ -291,22 +288,14 @@ impl RecoveryHelpers for Wallet {
             swap_response.signatures.len()
         );
 
-        validate_mint_response_signatures(
+        let proofs = construct_mint_response_proofs(
             self,
-            &swap_response.signatures,
-            blinded_messages.iter(),
+            swap_response.signatures,
+            &premint_secrets.secrets,
+            &keys,
             SignatureAmountValidation::Exact,
         )
         .await?;
-
-        // Construct proofs
-        let mut proofs = construct_proofs(
-            swap_response.signatures,
-            premint_secrets.rs(),
-            premint_secrets.secrets(),
-            &keys,
-        )?;
-        premint_secrets.attach_spend_info(&mut proofs);
 
         // Convert to ProofInfo
         let proof_infos: Vec<ProofInfo> = proofs
@@ -672,25 +661,14 @@ impl Wallet {
         // Load keyset keys for proof construction
         let keys = self.keyset(keyset_id).await?.keys;
 
-        validate_mint_response_signatures(
+        let proofs = construct_mint_response_proofs(
             self,
-            &restore_response.signatures,
-            matched
-                .iter()
-                .map(|(_, requested_output)| *requested_output),
+            restore_response.signatures,
+            matched.iter().map(|(premint, _)| *premint),
+            &keys,
             SignatureAmountValidation::AllowZeroAmountPlaceholder,
         )
         .await?;
-
-        // Construct proofs from signatures
-        let mut proofs = construct_proofs(
-            restore_response.signatures,
-            matched.iter().map(|(p, _)| p.r.clone()).collect(),
-            matched.iter().map(|(p, _)| p.secret.clone()).collect(),
-            &keys,
-        )?;
-
-        premint_secrets.attach_spend_info(&mut proofs);
 
         tracing::info!(
             "{} saga {} - recovered {} proofs",

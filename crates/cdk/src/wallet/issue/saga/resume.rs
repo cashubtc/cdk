@@ -19,12 +19,10 @@ use cdk_common::wallet::{
 use cdk_common::{Amount, PaymentMethod};
 use tracing::instrument;
 
-use crate::dhke::{construct_proofs, hash_to_curve_for_version};
+use crate::dhke::hash_to_curve_for_version;
 use crate::nuts::{MintRequest, State};
 use crate::util::unix_time;
-use crate::wallet::blind_signature::{
-    validate_mint_response_signatures, SignatureAmountValidation,
-};
+use crate::wallet::blind_signature::{construct_mint_response_proofs, SignatureAmountValidation};
 use crate::wallet::issue::saga::compensation::ReleaseMintQuote;
 use crate::wallet::issue::saga::state::PreparedMintRequest;
 use crate::wallet::recovery::{OutputRecoveryMode, OutputRecoveryResult, RecoveryAction};
@@ -429,19 +427,12 @@ impl Wallet {
             let mut signatures: Vec<Option<String>> = Vec::new();
             for quote in &quote_infos {
                 if let Some(secret_key) = self.mint_quote_signing_key(quote).await? {
-                    let sig = if crate::wallet::nutroot::is_nutroot_outputs(&batch_request.outputs)
-                    {
-                        crate::wallet::nutroot::sign_quote(
-                            &batch_request.outputs,
-                            &quote_infos,
-                            &quote.id,
-                            &secret_key,
-                        )?
-                    } else {
-                        batch_request
-                            .sign_quote(&quote.id, &secret_key)
-                            .map_err(|e| Error::Custom(format!("NUT-20 signing failed: {}", e)))?
-                    };
+                    let sig = crate::wallet::nutroot::sign_batch_quote(
+                        &batch_request,
+                        &quote_infos,
+                        quote,
+                        &secret_key,
+                    )?;
                     signatures.push(Some(sig));
                 } else {
                     if crate::wallet::nutroot::is_nutroot_outputs(&batch_request.outputs) {
@@ -518,21 +509,14 @@ impl Wallet {
 
             let keys = self.keyset(keyset_id).await?.keys;
 
-            validate_mint_response_signatures(
+            let proofs = construct_mint_response_proofs(
                 self,
-                &mint_response.signatures,
-                blinded_messages.iter(),
+                mint_response.signatures,
+                &premint_secrets.secrets,
+                &keys,
                 SignatureAmountValidation::Exact,
             )
             .await?;
-
-            let mut proofs = construct_proofs(
-                mint_response.signatures,
-                premint_secrets.rs(),
-                premint_secrets.secrets(),
-                &keys,
-            )?;
-            premint_secrets.attach_spend_info(&mut proofs);
 
             let proof_infos: Vec<ProofInfo> = proofs
                 .into_iter()
@@ -664,21 +648,14 @@ impl Wallet {
 
         let keys = self.keyset(keyset_id).await?.keys;
 
-        validate_mint_response_signatures(
+        let proofs = construct_mint_response_proofs(
             self,
-            &mint_response.signatures,
-            blinded_messages.iter(),
+            mint_response.signatures,
+            &premint_secrets.secrets,
+            &keys,
             SignatureAmountValidation::Exact,
         )
         .await?;
-
-        let mut proofs = construct_proofs(
-            mint_response.signatures,
-            premint_secrets.rs(),
-            premint_secrets.secrets(),
-            &keys,
-        )?;
-        premint_secrets.attach_spend_info(&mut proofs);
 
         let proof_infos: Vec<ProofInfo> = proofs
             .into_iter()

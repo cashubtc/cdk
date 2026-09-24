@@ -89,14 +89,19 @@ impl Wallet {
     #[tracing::instrument(skip_all)]
     pub async fn sign_nutroot_package(&self, encoded: &str) -> Result<String, Error> {
         let mut package: nutroot::SigningPackage = encoded.parse().map_err(error)?;
+        let keys = self.nutroot_signing_keys().await?;
+        package.sign(&keys).map_err(error)?;
+        package.encode().map_err(error)
+    }
+
+    async fn nutroot_signing_keys(&self) -> Result<Vec<SecpSecretKey>, Error> {
         let mut keys = vec![];
         for stored in self.localstore.list_p2pk_keys().await? {
             if let Some(key) = self.get_signing_key(&stored.pubkey).await? {
                 keys.push(*key.as_secp256k1()?);
             }
         }
-        package.sign(&keys).map_err(error)?;
-        package.encode().map_err(error)
+        Ok(keys)
     }
 
     /// Include the transfer scalar for a seed-derived bare proof when sending it.
@@ -173,11 +178,7 @@ impl Wallet {
             .iter()
             .map(|key| key.as_secp256k1().copied())
             .collect::<Result<Vec<_>, _>>()?;
-        for stored in self.localstore.list_p2pk_keys().await? {
-            if let Some(key) = self.get_signing_key(&stored.pubkey).await? {
-                known_keys.push(*key.as_secp256k1()?);
-            }
-        }
+        known_keys.extend(self.nutroot_signing_keys().await?);
         let stored = self.localstore.get_proofs_by_ys(inputs.ys()?).await?;
         let now = cdk_common::util::unix_time();
         let mut updates = vec![];
@@ -186,8 +187,6 @@ impl Wallet {
                 continue;
             }
             let digest = transaction.input_digest(index).map_err(error)?;
-            let secret = proof.secret.to_string();
-            let public = nutroot::parse_secret(&secret).map_err(error)?;
             let stored = stored.iter().find(|info| {
                 info.proof.keyset_id == proof.keyset_id && info.proof.secret == proof.secret
             });
@@ -228,113 +227,9 @@ impl Wallet {
                     }
                 }
             }
-            let mut signed = None;
-            if let Some(info) = &proof.spend_info {
-                let candidates: Vec<Option<&SecpSecretKey>> =
-                    std::iter::once(None).chain(keys.iter().map(Some)).collect();
-                // Reconstruction is mandatory even when an old witness is present.
-                let internal = candidates
-                    .iter()
-                    .find_map(|key| info.verify(&secret, *key).ok())
-                    .ok_or(Error::NUT10(
-                        cdk_common::nuts::nut10::Error::SpendConditionsNotMet,
-                    ))?;
-                for candidate in &candidates {
-                    if let Ok(key) = info.key_path_key(&secret, *candidate) {
-                        signed = Some(nutroot::Witness::key_path(&key, digest));
-                        break;
-                    }
-                }
-                if signed.is_none() {
-                    if let Some(tree) = info.parsed_tree().map_err(error)? {
-                        let slots = tree
-                            .leaves()
-                            .iter()
-                            .map(|leaf| leaf.keys().len())
-                            .sum::<usize>();
-                        let mut leaf_keys = keys.clone();
-                        if let Some(ephemeral) = info.ephemeral_key {
-                            for key in &keys {
-                                for slot in 1..=slots {
-                                    if let Ok(derived) =
-                                        nutroot::receiver_key(key, &ephemeral, slot as u8)
-                                    {
-                                        leaf_keys.push(derived);
-                                    }
-                                }
-                            }
-                        }
-                        for (leaf_index, leaf) in tree.leaves().iter().enumerate() {
-                            if matches!(leaf.condition(), Condition::Commit(_)) {
-                                continue;
-                            }
-                            let mut witness =
-                                nutroot::Witness::script_path(&tree, leaf_index, internal)
-                                    .map_err(error)?;
-                            if let Condition::Hashlock(hash) = leaf.condition() {
-                                witness.preimage = preimages
-                                    .iter()
-                                    .find(|value| {
-                                        cdk_common::util::hex::decode(value).ok().is_some_and(
-                                            |bytes| {
-                                                bytes.len() <= 32
-                                                    && sha256::Hash::hash(&bytes).to_byte_array()
-                                                        == *hash
-                                            },
-                                        )
-                                    })
-                                    .cloned();
-                            }
-                            for public in leaf.keys() {
-                                if let Some(key) = leaf_keys.iter().find(|key| {
-                                    SecpPublicKey::from_secret_key(&cdk_common::SECP256K1, key)
-                                        .x_only_public_key()
-                                        .0
-                                        == public.x_only_public_key().0
-                                }) {
-                                    witness
-                                        .signatures
-                                        .extend(nutroot::Witness::key_path(key, digest).signatures);
-                                }
-                            }
-                            if witness.verify(&secret, digest, now).is_ok() {
-                                signed = Some(witness);
-                                break;
-                            }
-                        }
-                    }
-                }
-            } else if let Some(key) = keys
-                .iter()
-                .find(|key| SecpPublicKey::from_secret_key(&cdk_common::SECP256K1, key) == public)
-            {
-                signed = Some(nutroot::Witness::key_path(key, digest));
-            }
-            // A persisted request may already carry the signature needed to replay it.
-            if signed.is_none() {
-                if let Some(Witness::NutrootWitness(raw)) = &proof.witness {
-                    if let Ok(witness) = serde_json::from_str::<nutroot::Witness>(raw) {
-                        if witness.verify(&secret, digest, now).is_ok() {
-                            signed = Some(witness);
-                        }
-                    }
-                }
-            }
-            let witness = signed.ok_or(Error::NUT10(
-                cdk_common::nuts::nut10::Error::SpendConditionsNotMet,
-            ))?;
-            witness.verify(&secret, digest, now).map_err(error)?;
-            let existing = proof.witness.as_ref().and_then(|value| match value {
-                Witness::NutrootWitness(raw) => serde_json::from_str::<nutroot::Witness>(raw)
-                    .ok()
-                    .filter(|w| w.verify(&secret, digest, now).is_ok())
-                    .map(|_| raw.clone()),
-                _ => None,
-            });
-            proof.witness = Some(Witness::NutrootWitness(match existing {
-                Some(raw) => raw,
-                None => serde_json::to_string(&witness)?,
-            }));
+            proof.witness = Some(Witness::NutrootWitness(input_witness(
+                proof, &keys, preimages, digest, now,
+            )?));
             if let Some(stored) = stored {
                 let mut update = stored.clone();
                 update.proof.witness = proof.witness.clone();
@@ -373,6 +268,115 @@ impl Wallet {
         }
         Ok(())
     }
+}
+
+/// Select a witness without performing wallet I/O. Reconstruct transfer metadata
+/// before accepting even a valid persisted witness, and retain its exact bytes.
+fn input_witness(
+    proof: &crate::nuts::Proof,
+    keys: &[SecpSecretKey],
+    preimages: &[String],
+    digest: [u8; 32],
+    now: u64,
+) -> Result<String, Error> {
+    let secret = proof.secret.to_string();
+    let public = nutroot::parse_secret(&secret).map_err(error)?;
+    let candidates = || std::iter::once(None).chain(keys.iter().map(Some));
+    let internal = proof
+        .spend_info
+        .as_ref()
+        .map(|info| {
+            candidates()
+                .find_map(|key| info.verify(&secret, key).ok())
+                .ok_or(Error::NUT10(
+                    cdk_common::nuts::nut10::Error::SpendConditionsNotMet,
+                ))
+        })
+        .transpose()?;
+
+    if let Some(Witness::NutrootWitness(raw)) = &proof.witness {
+        if serde_json::from_str::<nutroot::Witness>(raw)
+            .is_ok_and(|witness| witness.verify(&secret, digest, now).is_ok())
+        {
+            return Ok(raw.clone());
+        }
+    }
+
+    let mut signed = None;
+    if let Some((info, internal)) = proof.spend_info.as_ref().zip(internal) {
+        for candidate in candidates() {
+            if let Ok(key) = info.key_path_key(&secret, candidate) {
+                signed = Some(nutroot::Witness::key_path(&key, digest));
+                break;
+            }
+        }
+        if signed.is_none() {
+            if let Some(tree) = info.parsed_tree().map_err(error)? {
+                let slots = tree
+                    .leaves()
+                    .iter()
+                    .map(|leaf| leaf.keys().len())
+                    .sum::<usize>();
+                let mut leaf_keys = keys.to_vec();
+                if let Some(ephemeral) = info.ephemeral_key {
+                    for key in keys {
+                        for slot in 1..=slots {
+                            if let Ok(derived) = nutroot::receiver_key(key, &ephemeral, slot as u8)
+                            {
+                                leaf_keys.push(derived);
+                            }
+                        }
+                    }
+                }
+                for (leaf_index, leaf) in tree.leaves().iter().enumerate() {
+                    if matches!(leaf.condition(), Condition::Commit(_)) {
+                        continue;
+                    }
+                    let mut witness = nutroot::Witness::script_path(&tree, leaf_index, internal)
+                        .map_err(error)?;
+                    if let Condition::Hashlock(hash) = leaf.condition() {
+                        witness.preimage = preimages
+                            .iter()
+                            .find(|value| {
+                                cdk_common::util::hex::decode(value)
+                                    .ok()
+                                    .is_some_and(|bytes| {
+                                        bytes.len() <= 32
+                                            && sha256::Hash::hash(&bytes).to_byte_array() == *hash
+                                    })
+                            })
+                            .cloned();
+                    }
+                    for public in leaf.keys() {
+                        if let Some(key) = leaf_keys.iter().find(|key| {
+                            SecpPublicKey::from_secret_key(&cdk_common::SECP256K1, key)
+                                .x_only_public_key()
+                                .0
+                                == public.x_only_public_key().0
+                        }) {
+                            witness
+                                .signatures
+                                .extend(nutroot::Witness::key_path(key, digest).signatures);
+                        }
+                    }
+                    if witness.verify(&secret, digest, now).is_ok() {
+                        signed = Some(witness);
+                        break;
+                    }
+                }
+            }
+        }
+    } else if let Some(key) = keys
+        .iter()
+        .find(|key| SecpPublicKey::from_secret_key(&cdk_common::SECP256K1, key) == public)
+    {
+        signed = Some(nutroot::Witness::key_path(key, digest));
+    }
+    let witness = signed.ok_or(Error::NUT10(
+        cdk_common::nuts::nut10::Error::SpendConditionsNotMet,
+    ))?;
+    witness.verify(&secret, digest, now).map_err(error)?;
+    Ok(serde_json::to_string(&witness)?)
 }
 
 pub(crate) fn is_nutroot_outputs(outputs: &[crate::nuts::BlindedMessage]) -> bool {
@@ -414,6 +418,21 @@ pub(crate) fn sign_quote(
     .into_iter()
     .next()
     .ok_or(Error::SignatureMissingOrInvalid)
+}
+
+pub(crate) fn sign_batch_quote(
+    request: &crate::nuts::BatchMintRequest<String>,
+    quotes: &[cdk_common::wallet::MintQuote],
+    quote: &cdk_common::wallet::MintQuote,
+    key: &SecretKey,
+) -> Result<String, Error> {
+    if is_nutroot_outputs(&request.outputs) {
+        sign_quote(&request.outputs, quotes, &quote.id, key)
+    } else {
+        request
+            .sign_quote(&quote.id, key)
+            .map_err(|e| Error::Custom(format!("NUT-20 signing failed: {}", e)))
+    }
 }
 
 pub(crate) fn sign_mint_request(

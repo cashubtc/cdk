@@ -45,13 +45,11 @@ use tracing::instrument;
 use self::compensation::{MintCompensation, ReleaseMintQuote};
 use self::state::{Finalized, Initial, Prepared, PreparedMintRequest};
 use crate::amount::SplitTarget;
-use crate::dhke::{construct_proofs, hash_to_curve_for_version, verify_bls_message};
+use crate::dhke::{hash_to_curve_for_version, verify_bls_message};
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{KeySetVersion, MintRequest, PreMintSecrets, Proofs, SpendingConditions, State};
 use crate::util::unix_time;
-use crate::wallet::blind_signature::{
-    validate_mint_response_signatures, SignatureAmountValidation,
-};
+use crate::wallet::blind_signature::{construct_mint_response_proofs, SignatureAmountValidation};
 use crate::wallet::saga::{
     add_compensation, clear_compensations, execute_compensations, new_compensations, Compensations,
 };
@@ -782,18 +780,12 @@ impl<'a> MintSaga<'a, Initial> {
 
             if requires_signature {
                 let sk = secret_key.ok_or(Error::SignatureMissingOrInvalid)?;
-                let sig = if crate::wallet::nutroot::is_nutroot_outputs(&batch_request.outputs) {
-                    crate::wallet::nutroot::sign_quote(
-                        &batch_request.outputs,
-                        &quote_infos,
-                        &quote.id,
-                        &sk,
-                    )?
-                } else {
-                    batch_request
-                        .sign_quote(&quote.id, &sk)
-                        .map_err(|e| Error::Custom(format!("NUT-20 signing failed: {}", e)))?
-                };
+                let sig = crate::wallet::nutroot::sign_batch_quote(
+                    &batch_request,
+                    &quote_infos,
+                    quote,
+                    &sk,
+                )?;
                 signatures.push(Some(sig));
             } else {
                 // Quote is unlocked
@@ -1019,21 +1011,14 @@ impl<'a> MintSaga<'a, Prepared> {
                 .await?
                 .keys;
 
-            validate_mint_response_signatures(
+            let proofs = construct_mint_response_proofs(
                 wallet,
-                &mint_res.signatures,
-                premint_secrets.secrets.iter().map(|p| &p.blinded_message),
+                mint_res.signatures,
+                &premint_secrets.secrets,
+                &keys,
                 SignatureAmountValidation::Exact,
             )
             .await?;
-
-            let mut proofs = construct_proofs(
-                mint_res.signatures,
-                premint_secrets.rs(),
-                premint_secrets.secrets(),
-                &keys,
-            )?;
-        premint_secrets.attach_spend_info(&mut proofs);
 
             for proof in &proofs {
                 if proof.keyset_id.get_version() == KeySetVersion::Version02 {

@@ -46,14 +46,12 @@ use tracing::instrument;
 use self::compensation::RemovePendingProofs;
 use self::state::{Finalized, Initial, Prepared};
 use super::ReceiveOptions;
-use crate::dhke::{construct_proofs, verify_bls_message};
+use crate::dhke::verify_bls_message;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut10::Kind;
 use crate::nuts::{Conditions, KeySetVersion, Proofs, PublicKey, SecretKey, SigFlag, State};
 use crate::util::hex;
-use crate::wallet::blind_signature::{
-    validate_mint_response_signatures, SignatureAmountValidation,
-};
+use crate::wallet::blind_signature::{construct_mint_response_proofs, SignatureAmountValidation};
 use crate::wallet::saga::{
     add_compensation, clear_compensations, execute_compensations, new_compensations, Compensations,
 };
@@ -483,14 +481,11 @@ impl<'a> ReceiveSaga<'a, Prepared> {
 
         // Preserve the pending saga on an invalid response: the mint may have
         // already spent the inputs, so recovery must still be able to retry.
-        validate_mint_response_signatures(
+        let recv_proofs = construct_mint_response_proofs(
             self.wallet,
-            &swap_response.signatures,
-            pre_swap
-                .pre_mint_secrets
-                .secrets
-                .iter()
-                .map(|premint| &premint.blinded_message),
+            swap_response.signatures,
+            &pre_swap.pre_mint_secrets.secrets,
+            &keys,
             SignatureAmountValidation::Exact,
         )
         .await
@@ -502,16 +497,6 @@ impl<'a> ReceiveSaga<'a, Prepared> {
                 "Mint response signature validation failed"
             );
         })?;
-
-        let mut recv_proofs = construct_proofs(
-            swap_response.signatures,
-            pre_swap.pre_mint_secrets.rs(),
-            pre_swap.pre_mint_secrets.secrets(),
-            &keys,
-        )?;
-        pre_swap
-            .pre_mint_secrets
-            .attach_spend_info(&mut recv_proofs);
 
         self.wallet
             .localstore
