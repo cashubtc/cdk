@@ -15,7 +15,7 @@ pub const ENV_FAKE_WALLET_CUSTOM_PAYMENT_METHODS: &str =
 pub const ENV_FAKE_WALLET_MIN_DELAY: &str = "CDK_MINTD_FAKE_WALLET_MIN_DELAY";
 pub const ENV_FAKE_WALLET_MAX_DELAY: &str = "CDK_MINTD_FAKE_WALLET_MAX_DELAY";
 /// JSON array of keyset rotations, e.g.:
-/// `[{"unit":"sat","version":"v1","input_fee_ppk":0,"expired":true}]`
+/// `[{"unit":"sat","version":"v3","input_fee_ppk":0,"expired":true}]`
 pub const ENV_FAKE_WALLET_KEYSET_ROTATIONS: &str = "CDK_MINTD_FAKE_WALLET_KEYSET_ROTATIONS";
 
 impl FakeWallet {

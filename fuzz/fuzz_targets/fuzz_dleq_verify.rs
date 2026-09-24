@@ -135,8 +135,8 @@ fuzz_target!(|input: Input| {
     // Build a BlindSignature with a DLEQ attached. `verify_dleq` consumes
     // the dleq field, so construct via struct literal.
     let dleq_bs = BlindSignatureDleq {
-        e: SecretKey::from_slice(e.as_secret_bytes()).expect("roundtrip"),
-        s: SecretKey::from_slice(s.as_secret_bytes()).expect("roundtrip"),
+        e: SecretKey::from_slice(&e.as_secret_bytes()).expect("roundtrip"),
+        s: SecretKey::from_slice(&s.as_secret_bytes()).expect("roundtrip"),
     };
     let bsig = BlindSignature {
         amount: Amount::from(input.amount),
@@ -148,8 +148,8 @@ fuzz_target!(|input: Input| {
 
     // --- Target 2: Proof::verify_dleq ---
     let dleq_proof = ProofDleq::new(
-        SecretKey::from_slice(e.as_secret_bytes()).expect("roundtrip"),
-        SecretKey::from_slice(s.as_secret_bytes()).expect("roundtrip"),
+        SecretKey::from_slice(&e.as_secret_bytes()).expect("roundtrip"),
+        SecretKey::from_slice(&s.as_secret_bytes()).expect("roundtrip"),
         r,
     );
     // `Proof::verify_dleq` hashes `self.secret.as_bytes()` onto the curve,

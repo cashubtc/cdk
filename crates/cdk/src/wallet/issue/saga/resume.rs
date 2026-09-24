@@ -19,7 +19,7 @@ use cdk_common::wallet::{
 use cdk_common::{Amount, PaymentMethod};
 use tracing::instrument;
 
-use crate::dhke::{construct_proofs, hash_to_curve};
+use crate::dhke::{construct_proofs, hash_to_curve_for_version};
 use crate::nuts::{MintRequest, PreMintSecrets, State};
 use crate::util::unix_time;
 use crate::wallet::blind_signature::{
@@ -200,7 +200,12 @@ impl Wallet {
         let ys = premint_secrets
             .secrets
             .iter()
-            .map(|pre_mint| hash_to_curve(pre_mint.secret.as_bytes()))
+            .map(|pre_mint| {
+                hash_to_curve_for_version(
+                    pre_mint.secret.as_bytes(),
+                    pre_mint.blinded_message.keyset_id.get_version(),
+                )
+            })
             .collect::<Result<Vec<_>, _>>()?;
 
         let quote_ids = data.quote_ids();
