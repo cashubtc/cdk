@@ -432,11 +432,24 @@ impl Wallet {
             let mut signatures: Vec<Option<String>> = Vec::new();
             for quote in &quote_infos {
                 if let Some(secret_key) = self.mint_quote_signing_key(quote).await? {
-                    let sig = batch_request
-                        .sign_quote(&quote.id, &secret_key)
-                        .map_err(|e| Error::Custom(format!("NUT-20 signing failed: {}", e)))?;
+                    let sig = if crate::wallet::nutroot::is_nutroot_outputs(&batch_request.outputs)
+                    {
+                        crate::wallet::nutroot::sign_quote(
+                            &batch_request.outputs,
+                            &quote_infos,
+                            &quote.id,
+                            &secret_key,
+                        )?
+                    } else {
+                        batch_request
+                            .sign_quote(&quote.id, &secret_key)
+                            .map_err(|e| Error::Custom(format!("NUT-20 signing failed: {}", e)))?
+                    };
                     signatures.push(Some(sig));
                 } else {
+                    if crate::wallet::nutroot::is_nutroot_outputs(&batch_request.outputs) {
+                        return Ok(None);
+                    }
                     signatures.push(None);
                 }
             }
@@ -519,12 +532,13 @@ impl Wallet {
             )
             .await?;
 
-            let proofs = construct_proofs(
+            let mut proofs = construct_proofs(
                 mint_response.signatures,
                 premint_secrets.rs(),
                 premint_secrets.secrets(),
                 &keys,
             )?;
+            premint_secrets.attach_spend_info(&mut proofs);
 
             let proof_infos: Vec<ProofInfo> = proofs
                 .into_iter()
@@ -572,7 +586,9 @@ impl Wallet {
 
         // Sign the request if the quote has a signing key (required for bolt12)
         if let Some(secret_key) = self.mint_quote_signing_key(&quote).await? {
-            if let Err(e) = mint_request.sign(&secret_key) {
+            if let Err(e) =
+                crate::wallet::nutroot::sign_mint_request(&mut mint_request, &quote, &secret_key)
+            {
                 tracing::warn!(
                     "Issue saga {} - failed to sign mint request: {}, cannot replay",
                     saga_id,
@@ -580,6 +596,12 @@ impl Wallet {
                 );
                 return Ok(None);
             }
+        }
+
+        if crate::wallet::nutroot::is_nutroot_outputs(&mint_request.outputs)
+            && mint_request.signature.is_none()
+        {
+            return Ok(None);
         }
 
         tracing::info!(
@@ -659,12 +681,13 @@ impl Wallet {
         )
         .await?;
 
-        let proofs = construct_proofs(
+        let mut proofs = construct_proofs(
             mint_response.signatures,
             premint_secrets.rs(),
             premint_secrets.secrets(),
             &keys,
         )?;
+        premint_secrets.attach_spend_info(&mut proofs);
 
         let proof_infos: Vec<ProofInfo> = proofs
             .into_iter()
@@ -772,9 +795,12 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        let expected: crate::nuts::PublicKey =
-            crate::nuts::nut01::BlsG1PublicKey::hash_to_curve(premint.secrets[0].secret.as_bytes())
-                .into();
+        let expected: crate::nuts::PublicKey = crate::nuts::nut01::BlsG1PublicKey::hash_to_curve(
+            &crate::nuts::nut10::nutroot::parse_secret(&premint.secrets[0].secret.to_string())
+                .unwrap()
+                .serialize(),
+        )
+        .into();
         assert_eq!(transaction.ys, vec![expected]);
         assert_eq!(transaction.status, TransactionStatus::Pending);
     }

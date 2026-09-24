@@ -228,6 +228,10 @@ impl<'a> SwapSaga<'a, Prepared> {
             return Err(Error::ConcurrentUpdate);
         }
 
+        self.wallet
+            .sign_nutroot_swap(&mut self.state_data.pre_swap.swap_request, &[], &[])
+            .await?;
+
         let swap_response = match self
             .wallet
             .client
@@ -257,12 +261,16 @@ impl<'a> SwapSaga<'a, Prepared> {
         )
         .await?;
 
-        let post_swap_proofs = construct_proofs(
+        let mut post_swap_proofs = construct_proofs(
             swap_response.signatures,
             self.state_data.pre_swap.pre_mint_secrets.rs(),
             self.state_data.pre_swap.pre_mint_secrets.secrets(),
             &active_keys,
         )?;
+        self.state_data
+            .pre_swap
+            .pre_mint_secrets
+            .attach_spend_info(&mut post_swap_proofs);
 
         let mut added_proofs = Vec::new();
         let change_proofs;

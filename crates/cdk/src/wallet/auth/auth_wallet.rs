@@ -510,12 +510,13 @@ impl AuthWallet {
             }
         }
 
-        let proofs = construct_proofs(
+        let mut proofs = construct_proofs(
             mint_res.signatures,
             premint_secrets.rs(),
             premint_secrets.secrets(),
             &keys,
         )?;
+        premint_secrets.attach_spend_info(&mut proofs);
 
         let proof_infos = proofs
             .clone()

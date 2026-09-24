@@ -131,7 +131,10 @@ async fn post_mint_request_with_legacy_fallback(
             .await
         {
             Ok(response) => Ok(response),
-            Err(error) if should_retry_with_legacy_quote_signature(&error) => {
+            Err(error)
+                if !crate::wallet::nutroot::is_nutroot_outputs(&request.outputs)
+                    && should_retry_with_legacy_quote_signature(&error) =>
+            {
                 let secret_key = match wallet.mint_quote_signing_key(quote_info).await {
                     Ok(Some(secret_key)) => secret_key,
                     Ok(None) => return Err(error),
@@ -191,7 +194,10 @@ async fn post_mint_request_with_legacy_fallback(
                 .await
             {
                 Ok(response) => Ok(response),
-                Err(error) if should_retry_with_legacy_quote_signature(&error) => {
+                Err(error)
+                    if !crate::wallet::nutroot::is_nutroot_outputs(&request.outputs)
+                        && should_retry_with_legacy_quote_signature(&error) =>
+                {
                     let legacy_signatures = match legacy_batch_signatures(
                         wallet,
                         request,
@@ -450,8 +456,10 @@ impl<'a> MintSaga<'a, Initial> {
         };
 
         if let Some(secret_key) = self.wallet.mint_quote_signing_key(quote_info).await? {
-            request.sign(&secret_key)?;
-        } else if quote_info.payment_method.is_bolt12() {
+            crate::wallet::nutroot::sign_mint_request(&mut request, quote_info, &secret_key)?;
+        } else if quote_info.payment_method.is_bolt12()
+            || crate::wallet::nutroot::is_nutroot_outputs(&request.outputs)
+        {
             // Bolt12 requires signature
             tracing::error!("Signature is required for bolt12.");
             return Err(Error::SignatureMissingOrInvalid);
@@ -767,13 +775,24 @@ impl<'a> MintSaga<'a, Initial> {
                 None => external_keys.and_then(|keys| keys.get(&quote.id)).cloned(),
             };
 
-            let requires_signature = secret_key.is_some() || quote.payment_method.is_bolt12();
+            let requires_signature = secret_key.is_some()
+                || quote.payment_method.is_bolt12()
+                || crate::wallet::nutroot::is_nutroot_outputs(&batch_request.outputs);
 
             if requires_signature {
                 let sk = secret_key.ok_or(Error::SignatureMissingOrInvalid)?;
-                let sig = batch_request
-                    .sign_quote(&quote.id, &sk)
-                    .map_err(|e| Error::Custom(format!("NUT-20 signing failed: {}", e)))?;
+                let sig = if crate::wallet::nutroot::is_nutroot_outputs(&batch_request.outputs) {
+                    crate::wallet::nutroot::sign_quote(
+                        &batch_request.outputs,
+                        &quote_infos,
+                        &quote.id,
+                        &sk,
+                    )?
+                } else {
+                    batch_request
+                        .sign_quote(&quote.id, &sk)
+                        .map_err(|e| Error::Custom(format!("NUT-20 signing failed: {}", e)))?
+                };
                 signatures.push(Some(sig));
             } else {
                 // Quote is unlocked
@@ -1005,12 +1024,13 @@ impl<'a> MintSaga<'a, Prepared> {
             )
             .await?;
 
-            let proofs = construct_proofs(
+            let mut proofs = construct_proofs(
                 mint_res.signatures,
                 premint_secrets.rs(),
                 premint_secrets.secrets(),
                 &keys,
             )?;
+        premint_secrets.attach_spend_info(&mut proofs);
 
             for proof in &proofs {
                 if proof.keyset_id.get_version() == KeySetVersion::Version02 {

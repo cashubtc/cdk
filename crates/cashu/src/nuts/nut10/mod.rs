@@ -279,6 +279,11 @@ use super::Proofs;
 
 /// Trait for requests that spend proofs (SwapRequest, MeltRequest)
 pub trait SpendingConditionVerification {
+    /// Rebuild a Nutroot transcript when the request contains all required state.
+    /// Melt requests require a quote amount resolved by the caller instead.
+    fn nutroot_transaction(&self) -> Result<Option<nutroot::Transaction>, Error> {
+        Ok(None)
+    }
     /// Get the input proofs
     fn inputs(&self) -> &Proofs;
 
@@ -295,6 +300,9 @@ pub trait SpendingConditionVerification {
     /// If any proof has this flag, we need to verify signatures on all proofs.
     fn has_at_least_one_sig_all(&self) -> Result<bool, Error> {
         for proof in self.inputs() {
+            if proof.keyset_id.get_version() == super::KeySetVersion::Version02 {
+                continue;
+            }
             // Try to extract spending conditions from the proof's secret
             if let Ok(spending_conditions) = super::SpendingConditions::try_from(&proof.secret) {
                 // Check for SIG_ALL flag in either P2PK or HTLC conditions
@@ -372,6 +380,16 @@ pub trait SpendingConditionVerification {
     /// This is the main entry point for spending condition verification.
     /// It checks if any input has SIG_ALL and dispatches to the appropriate verification path.
     fn verify_spending_conditions(&self) -> Result<(), Error> {
+        let transaction = self.nutroot_transaction()?;
+        self.verify_spending_conditions_with_transaction(transaction.as_ref())
+    }
+
+    /// Verify conditions using a transcript rebuilt from this request and trusted
+    /// quote state. The caller must bind the exact request inputs and outputs.
+    fn verify_spending_conditions_with_transaction(
+        &self,
+        transaction: Option<&nutroot::Transaction>,
+    ) -> Result<(), Error> {
         // Check if any input has SIG_ALL flag
         if self.has_at_least_one_sig_all()? {
             // at least one input has SIG_ALL
@@ -380,7 +398,7 @@ pub trait SpendingConditionVerification {
             // none of the inputs are SIG_ALL, so we can simply check
             // each independently and verify any spending conditions
             // that may - or may not - be there.
-            self.verify_inputs_individually()
+            self.verify_inputs_with_transaction(transaction)
         }
     }
 
@@ -420,11 +438,38 @@ pub trait SpendingConditionVerification {
     /// are verified independently rather than as a group.
     /// This function will NOT be called if any input has SIG_ALL.
     fn verify_inputs_individually(&self) -> Result<(), Error> {
+        let transaction = self.nutroot_transaction()?;
+        self.verify_inputs_with_transaction(transaction.as_ref())
+    }
+
+    /// Verify individual inputs against a transcript reconstructed by the caller.
+    fn verify_inputs_with_transaction(
+        &self,
+        transaction: Option<&nutroot::Transaction>,
+    ) -> Result<(), Error> {
         debug_assert!(
             !(self.has_at_least_one_sig_all()?),
             "verify_inputs_individually() called on SIG_ALL. This shouldn't happen"
         );
-        for proof in self.inputs() {
+        for (index, proof) in self.inputs().iter().enumerate() {
+            if proof.keyset_id.get_version() == super::KeySetVersion::Version02 {
+                let transaction = transaction.ok_or(Error::SpendConditionsNotMet)?;
+                let witness = proof.witness.as_ref().ok_or(Error::SpendConditionsNotMet)?;
+                let raw = match witness {
+                    super::Witness::NutrootWitness(raw) => raw.clone(),
+                    _ => serde_json::from_str::<String>(&serde_json::to_string(witness)?)?,
+                };
+                if raw.len() > 4096 {
+                    return Err(Error::SpendConditionsNotMet);
+                }
+                let witness: nutroot::Witness = serde_json::from_str(&raw)?;
+                witness.verify(
+                    &proof.secret.to_string(),
+                    transaction.input_digest(index)?,
+                    crate::util::unix_time(),
+                )?;
+                continue;
+            }
             // Check if secret is a nut10 secret with conditions
             if let Ok(secret) = Secret::try_from(&proof.secret) {
                 // Verify this function isn't being called with SIG_ALL proofs (development check)

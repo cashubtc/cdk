@@ -135,12 +135,14 @@ async fn finalize_melt_common<'a>(
             )
             .await?;
 
-            Some(construct_proofs(
+            let mut proofs = construct_proofs(
                 change,
                 premint_secrets.rs()[..num_change_proof].to_vec(),
                 premint_secrets.secrets()[..num_change_proof].to_vec(),
                 &active_keys,
-            )?)
+            )?;
+            premint_secrets.attach_spend_info(&mut proofs);
+            Some(proofs)
         }
         None => None,
     };
@@ -1057,6 +1059,29 @@ impl<'a> MeltSaga<'a, MeltRequested> {
             request
         };
 
+        let mut request = request;
+        if request
+            .inputs()
+            .iter()
+            .any(|proof| proof.keyset_id.get_version() == crate::nuts::KeySetVersion::Version02)
+        {
+            let transaction = crate::nuts::nut10::nutroot::Transaction::new(
+                request.inputs(),
+                &[],
+                request.outputs().as_deref().unwrap_or_default(),
+                &[crate::nuts::nut10::nutroot::Quote {
+                    id: quote_info.id.clone(),
+                    amount: quote_info
+                        .amount
+                        .checked_add(quote_info.fee_reserve)
+                        .ok_or(Error::AmountOverflow)?,
+                }],
+            )
+            .map_err(crate::nuts::nut10::Error::from)?;
+            self.wallet
+                .sign_nutroot_inputs(request.inputs_mut(), &transaction, &[], &[])
+                .await?;
+        }
         let melt_result = self
             .wallet
             .client

@@ -249,7 +249,8 @@ impl RecoveryHelpers for Wallet {
         }
 
         // Reconstruct the swap request
-        let swap_request = SwapRequest::new(inputs, blinded_messages.to_vec());
+        let mut swap_request = SwapRequest::new(inputs, blinded_messages.to_vec());
+        self.sign_nutroot_swap(&mut swap_request, &[], &[]).await?;
 
         tracing::info!(
             "{} saga {} - attempting replay of post_swap request",
@@ -298,12 +299,13 @@ impl RecoveryHelpers for Wallet {
         .await?;
 
         // Construct proofs
-        let proofs = construct_proofs(
+        let mut proofs = construct_proofs(
             swap_response.signatures,
             premint_secrets.rs(),
             premint_secrets.secrets(),
             &keys,
         )?;
+        premint_secrets.attach_spend_info(&mut proofs);
 
         // Convert to ProofInfo
         let proof_infos: Vec<ProofInfo> = proofs

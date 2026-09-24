@@ -51,7 +51,11 @@ impl Mint {
             .find(|k| k.id == token.auth_proof.keyset_id)
             .ok_or(Error::UnknownKeySet)?;
 
-        if keyset.unit != CurrencyUnit::Auth {
+        // Version-02 BATs require the exact HTTP request transcript. This API
+        // has no request bytes, so it must not treat them as bearer tokens.
+        if keyset.unit != CurrencyUnit::Auth
+            || keyset.id.get_version() == cdk_common::nuts::KeySetVersion::Version02
+        {
             return Err(Error::BlindAuthFailed);
         }
 
@@ -205,7 +209,11 @@ impl Mint {
             .get_keyset_info(&blinded_message.keyset_id)
             .ok_or(Error::UnknownKeySet)?;
 
-        if keyset.unit != CurrencyUnit::Auth {
+        // Version-02 BATs require the exact HTTP request transcript. This API
+        // has no request bytes, so it must not treat them as bearer tokens.
+        if keyset.unit != CurrencyUnit::Auth
+            || keyset.id.get_version() == cdk_common::nuts::KeySetVersion::Version02
+        {
             return Err(Error::BlindAuthFailed);
         }
 
@@ -242,7 +250,7 @@ mod tests {
                 .expect("auth db"),
         );
 
-        let mut mint_builder = MintBuilder::new(db.clone());
+        let mut mint_builder = MintBuilder::new(db.clone()).with_keyset_v2(Some(true));
 
         let fee_reserve = FeeReserve {
             min_fee_reserve: 1.into(),

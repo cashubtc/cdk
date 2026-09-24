@@ -365,6 +365,19 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             )
             .await?;
 
+        self.wallet
+            .sign_nutroot_swap(
+                &mut pre_swap.swap_request,
+                &self
+                    .state_data
+                    .p2pk_signing_keys
+                    .values()
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                &self.state_data.options.preimages,
+            )
+            .await?;
+
         // Determine if SigAll signing is needed
         let sig_flag = self.determine_sig_flag()?;
         if sig_flag == SigFlag::SigAll {
@@ -462,12 +475,15 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             );
         })?;
 
-        let recv_proofs = construct_proofs(
+        let mut recv_proofs = construct_proofs(
             swap_response.signatures,
             pre_swap.pre_mint_secrets.rs(),
             pre_swap.pre_mint_secrets.secrets(),
             &keys,
         )?;
+        pre_swap
+            .pre_mint_secrets
+            .attach_spend_info(&mut recv_proofs);
 
         self.wallet
             .localstore

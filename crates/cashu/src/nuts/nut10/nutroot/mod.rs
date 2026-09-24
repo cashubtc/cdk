@@ -3,10 +3,9 @@
 //! Implements the draft in NUTs PR #443, revision
 //! `9fdc29b104fd703402e98aab130303a685ef9b41`.
 //!
-//! These are standalone protocol primitives, not an activation of Nutroot in
-//! CDK's mint or wallet. In particular, the existing proof, token, database,
-//! quote-signing, and wallet derivation paths have not been migrated. Do not
-//! advertise PR #443 support based on this module alone.
+//! CDK uses these primitives for version-02 transaction authorization. The
+//! draft also specifies payment requests, receipts, and request-bound blind
+//! authentication; those integrations require separate support.
 //!
 //! [`Transaction`] binds quote amounts supplied by its caller; mints must load
 //! those amounts from their own quote state. [`SpendInfo::verify`] checks the

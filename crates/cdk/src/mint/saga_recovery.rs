@@ -479,7 +479,7 @@ mod tests {
         }
 
         let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
-        let mut mint_builder = MintBuilder::new(db.clone());
+        let mut mint_builder = MintBuilder::new(db.clone()).with_keyset_v2(Some(true));
         let backend = HangingStatusBackend {
             inner: cdk_fake_wallet::FakeWallet::new(
                 FeeReserve {
@@ -1724,7 +1724,7 @@ mod tests {
         use crate::types::{FeeReserve, QuoteTTL};
 
         let db = std::sync::Arc::new(cdk_sqlite::mint::memory::empty().await?);
-        let mut mint_builder = MintBuilder::new(db.clone());
+        let mut mint_builder = MintBuilder::new(db.clone()).with_keyset_v2(Some(true));
 
         let fee_reserve = FeeReserve {
             min_fee_reserve: 1.into(),

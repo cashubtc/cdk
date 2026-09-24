@@ -877,6 +877,10 @@ impl<'a> SendSaga<'a, Prepared> {
             }
 
             self.wallet
+                .attach_nutroot_transfer_keys(&mut final_proofs_to_send)
+                .await?;
+
+            self.wallet
                 .localstore
                 .update_proofs_state(final_proofs_to_send.ys()?, State::PendingSpent)
                 .await?;

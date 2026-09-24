@@ -1050,6 +1050,9 @@ impl<'de> Deserialize<'de> for PaymentMethod {
 #[cfg(feature = "wallet")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PreMint {
+    /// Nutroot spend information for random or condition-locked outputs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spend_info: Option<crate::nuts::nut10::nutroot::SpendInfo>,
     /// Blinded message
     pub blinded_message: BlindedMessage,
     /// Secret
@@ -1089,6 +1092,32 @@ pub struct PreMintSecrets {
 
 #[cfg(feature = "wallet")]
 impl PreMintSecrets {
+    fn random_secret(keyset_id: Id) -> (Secret, Option<crate::nuts::nut10::nutroot::SpendInfo>) {
+        if keyset_id.get_version() == crate::nuts::KeySetVersion::Version02 {
+            let key = SecretKey::generate();
+            (
+                Secret::new(key.public_key().to_string()),
+                Some(crate::nuts::nut10::nutroot::SpendInfo {
+                    bearer_key: Some(key),
+                    ..Default::default()
+                }),
+            )
+        } else {
+            (Secret::generate(), None)
+        }
+    }
+
+    /// Attach the metadata for matching outputs after unblinding signatures.
+    pub fn attach_spend_info(&self, proofs: &mut [Proof]) {
+        for proof in proofs {
+            if let Some(premint) = self.secrets.iter().find(|premint| {
+                premint.secret == proof.secret
+                    && premint.blinded_message.keyset_id == proof.keyset_id
+            }) {
+                proof.spend_info = premint.spend_info.clone();
+            }
+        }
+    }
     /// Create new [`PreMintSecrets`]
     pub fn new(keyset_id: Id) -> Self {
         Self {
@@ -1109,13 +1138,14 @@ impl PreMintSecrets {
         let mut output = Vec::with_capacity(amount_split.len());
 
         for amount in amount_split {
-            let secret = Secret::generate();
+            let (secret, spend_info) = Self::random_secret(keyset_id);
             let (blinded, r) =
                 blind_message_for_version(&secret.to_bytes(), None, keyset_id.get_version())?;
 
             let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
 
             output.push(PreMint {
+                spend_info,
                 secret,
                 blinded_message,
                 r,
@@ -1145,6 +1175,7 @@ impl PreMintSecrets {
             let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
 
             output.push(PreMint {
+                spend_info: None,
                 secret,
                 blinded_message,
                 r,
@@ -1166,13 +1197,14 @@ impl PreMintSecrets {
         let mut output = Vec::with_capacity(count as usize);
 
         for _i in 0..count {
-            let secret = Secret::generate();
+            let (secret, spend_info) = Self::random_secret(keyset_id);
             let (blinded, r) =
                 blind_message_for_version(&secret.to_bytes(), None, keyset_id.get_version())?;
 
             let blinded_message = BlindedMessage::new(Amount::ZERO, keyset_id, blinded);
 
             output.push(PreMint {
+                spend_info,
                 secret,
                 blinded_message,
                 r,
@@ -1270,6 +1302,7 @@ impl PreMintSecrets {
             let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
 
             output.push(PreMint {
+                spend_info: None,
                 secret,
                 blinded_message,
                 r: rs,
@@ -1306,6 +1339,7 @@ impl PreMintSecrets {
             let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
 
             output.push(PreMint {
+                spend_info: None,
                 secret,
                 blinded_message,
                 r,
@@ -1434,7 +1468,9 @@ mod tests {
 
     #[test]
     fn proof_y_matches_keyset_version() {
-        let secret = Secret::from_str("test proof secret").expect("secret");
+        let secret =
+            Secret::from_str("02e6e7cfa7b82d4b3b449fa6466c893469a727d0214d48db4956a6054b8022a29b")
+                .expect("secret");
         let secp_c = crate::nuts::SecretKey::generate().public_key();
         let bls_c = crate::nuts::nut01::BlsG1PublicKey::hash_to_curve(b"signature").into();
 
