@@ -1635,7 +1635,6 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
 
 #[cfg(test)]
 mod test {
-    use std::path::PathBuf;
     use std::str::FromStr;
 
     use cdk_common::database::{self, WalletDatabase};
@@ -1644,7 +1643,7 @@ mod test {
     use super::WalletRedbDatabase;
 
     async fn provide_db(test_id: String) -> WalletRedbDatabase {
-        let path = PathBuf::from(format!("/tmp/cdk-test-{}.redb", test_id));
+        let path = std::env::temp_dir().join(format!("cdk-test-{}.redb", test_id));
         WalletRedbDatabase::new(&path).expect("database")
     }
 

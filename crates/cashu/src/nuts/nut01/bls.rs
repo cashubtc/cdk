@@ -10,6 +10,7 @@ use bls12_381::{
 };
 use group::Curve;
 use sha2_09::Sha256;
+use zeroize::Zeroize;
 
 use super::Error;
 
@@ -80,7 +81,7 @@ impl BlsSecretKey {
 
 impl Drop for BlsSecretKey {
     fn drop(&mut self) {
-        self.scalar = Scalar::zero();
+        self.scalar.zeroize();
     }
 }
 

@@ -285,6 +285,7 @@ impl<'de> Deserialize<'de> for SecretKey {
 
 impl Drop for SecretKey {
     fn drop(&mut self) {
+        // The BLS variant is zeroized by BlsSecretKey::drop when fields are dropped.
         if let Self::Secp256k1(inner) = self {
             inner.non_secure_erase();
         }
