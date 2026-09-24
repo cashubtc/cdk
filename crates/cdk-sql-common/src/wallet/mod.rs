@@ -902,11 +902,21 @@ where
         let unit = transaction.unit.to_string();
         let amount = u64::from(transaction.amount) as i64;
         let fee = u64::from(transaction.fee) as i64;
-        let ys = transaction
+        // Keep the legacy encoding for secp256k1-only transactions. BLS and
+        // mixed-curve transactions need boundaries between variable-length points.
+        let ys = if transaction
             .ys
             .iter()
-            .flat_map(|y| y.to_bytes().to_vec())
-            .collect::<Vec<_>>();
+            .all(|y| matches!(y, PublicKey::Secp256k1(_)))
+        {
+            transaction
+                .ys
+                .iter()
+                .flat_map(PublicKey::to_bytes)
+                .collect::<Vec<_>>()
+        } else {
+            serde_json::to_vec(&transaction.ys)?
+        };
 
         let id = transaction.id();
 
@@ -2336,10 +2346,19 @@ fn sql_row_to_transaction(row: Vec<Column>) -> Result<Transaction, Error> {
         unit: column_as_string!(unit, CurrencyUnit::from_str),
         amount: Amount::from(amount),
         fee: Amount::from(fee),
-        ys: column_as_binary!(ys)
-            .chunks(33)
-            .map(PublicKey::from_slice)
-            .collect::<Result<Vec<_>, _>>()?,
+        ys: {
+            let bytes = column_as_binary!(ys);
+            // JSON arrays start with '[', whereas legacy compressed secp256k1
+            // points start with 0x02 or 0x03. Empty legacy arrays remain valid.
+            if bytes.first() == Some(&b'[') {
+                serde_json::from_slice(&bytes)?
+            } else {
+                bytes
+                    .chunks(33)
+                    .map(PublicKey::from_slice)
+                    .collect::<Result<Vec<_>, _>>()?
+            }
+        },
         timestamp: column_as_number!(timestamp),
         memo: column_as_nullable_string!(memo),
         metadata: column_as_nullable_string!(metadata, |v| serde_json::from_str(&v).ok(), |v| {

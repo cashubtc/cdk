@@ -172,6 +172,16 @@ pub(crate) fn verify_pairing(
     pairing(&signature.point(), &G2Affine::generator()) == pairing(&y.point(), &mint_pubkey.point())
 }
 
+/// Verify `e(signature, G2) == e(blinded_message, mint_pubkey)`.
+pub(crate) fn verify_blind_signature_pairing(
+    signature: &BlsG1PublicKey,
+    blinded_message: &BlsG1PublicKey,
+    mint_pubkey: &BlsG2PublicKey,
+) -> bool {
+    pairing(&signature.point(), &G2Affine::generator())
+        == pairing(&blinded_message.point(), &mint_pubkey.point())
+}
+
 fn derive_batch_weights(
     mint_pubkeys: &[BlsG2PublicKey],
     signatures: &[BlsG1PublicKey],

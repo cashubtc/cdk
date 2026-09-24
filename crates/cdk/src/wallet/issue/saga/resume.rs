@@ -739,6 +739,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_pending_bls_issue_transaction_uses_bls_proof_identifiers() {
+        let db = create_test_db().await;
+        let wallet =
+            create_test_wallet_with_mock(db.clone(), Arc::new(MockMintConnector::new())).await;
+        let mut id_bytes = [0u8; 33];
+        id_bytes[0] = 2;
+        let keyset_id = crate::nuts::Id::from_bytes(&id_bytes).unwrap();
+        let premint = PreMintSecrets::from_seed(
+            keyset_id,
+            0,
+            &wallet.seed,
+            Amount::from(1),
+            &SplitTarget::None,
+            &FeeAndAmounts::from((0, vec![1])),
+        )
+        .unwrap();
+        let saga_id = uuid::Uuid::new_v4();
+        let data = MintOperationData::new_single(
+            "bls-recovery-quote".to_string(),
+            Amount::from(1),
+            Some(0),
+            Some(1),
+            Some(premint.blinded_messages()),
+        );
+        wallet
+            .ensure_pending_issue_transaction(&saga_id, &data)
+            .await
+            .unwrap();
+        let transaction = db
+            .get_transaction(TransactionId::from_saga_id(saga_id))
+            .await
+            .unwrap()
+            .unwrap();
+        let expected: crate::nuts::PublicKey =
+            crate::nuts::nut01::BlsG1PublicKey::hash_to_curve(premint.secrets[0].secret.as_bytes())
+                .into();
+        assert_eq!(transaction.ys, vec![expected]);
+        assert_eq!(transaction.status, TransactionStatus::Pending);
+    }
+
+    #[tokio::test]
     async fn test_recovered_batch_transaction_missing_mid_quote_keeps_offset() {
         let db = create_test_db().await;
         let mint_url = test_mint_url();
