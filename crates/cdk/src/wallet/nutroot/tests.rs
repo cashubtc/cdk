@@ -62,7 +62,11 @@ async fn wallet_signs_blinded_multisig_leaves_without_key_path_bypass() {
     assert_eq!(ids.len(), 1, "replay preserves the exact receipt opening");
     let bytes = wallet
         .localstore
-        .kv_read("nutroot_receipts", &wallet.mint_url.to_string(), &ids[0])
+        .kv_read(
+            "nutroot_receipts",
+            &wallet.nutroot_receipt_namespace(),
+            &ids[0],
+        )
         .await
         .unwrap()
         .unwrap();
@@ -90,4 +94,82 @@ async fn wallet_signs_blinded_multisig_leaves_without_key_path_bypass() {
     receipt
         .verify(&keysets, &[state], cdk_common::util::unix_time())
         .unwrap();
+}
+
+#[tokio::test]
+async fn nutroot_payment_outputs_keep_policy_and_separate_seed_change() {
+    use crate::fees::ProofsFeeBreakdown;
+    use crate::wallet::swap::ProofReservation;
+    let wallet = create_test_wallet(create_test_db().await).await;
+    let receiver = SecretKey::generate();
+    let policy = NutrootOption {
+        key: *receiver.public_key().as_secp256k1().unwrap(),
+        leaves: None,
+        blind_keys: None,
+    };
+    let id = Id::from_bytes(&[vec![2], vec![1; 32]].concat()).unwrap();
+    let premints = PreMintSecrets::with_nutroot(
+        id,
+        8.into(),
+        &SplitTarget::None,
+        &policy,
+        &(0, vec![1, 2, 4, 8]).into(),
+    )
+    .unwrap();
+    let c = crate::nuts::nut01::BlsG1PublicKey::hash_to_curve(b"test signature").into();
+    let proof = Proof::new(8.into(), id, premints.secrets[0].secret.clone(), c);
+    let fees = ProofsFeeBreakdown {
+        total: 0.into(),
+        per_keyset: Default::default(),
+    };
+    let swap = wallet
+        .create_swap(
+            &uuid::Uuid::now_v7(),
+            id,
+            &(0, vec![1, 2, 4, 8]).into(),
+            Some(4.into()),
+            SplitTarget::None,
+            vec![proof],
+            None,
+            Some(policy.clone()),
+            false,
+            false,
+            &fees,
+            ProofReservation::Skip,
+        )
+        .await
+        .unwrap();
+    let outputs = swap.pre_mint_secrets.secrets;
+    assert!(outputs.len() >= 2);
+    let locked = outputs
+        .iter()
+        .find(|p| {
+            p.spend_info
+                .as_ref()
+                .is_some_and(|info| info.ephemeral_key.is_some())
+        })
+        .unwrap();
+    policy
+        .verify_output(
+            &locked.secret.to_string(),
+            locked.spend_info.as_ref().unwrap(),
+            &[*receiver.as_secp256k1().unwrap()],
+        )
+        .unwrap();
+    assert_eq!(locked.amount, 4.into());
+    assert!(locked.derivation_index.is_none());
+    let change = outputs
+        .iter()
+        .find(|p| p.derivation_index.is_some())
+        .unwrap();
+    assert!(change
+        .spend_info
+        .as_ref()
+        .is_none_or(|info| info.ephemeral_key.is_none()));
+    let change_amount: u64 = outputs
+        .iter()
+        .filter(|p| p.derivation_index.is_some())
+        .map(|p| u64::from(p.amount))
+        .sum();
+    assert_eq!(change_amount, 4);
 }

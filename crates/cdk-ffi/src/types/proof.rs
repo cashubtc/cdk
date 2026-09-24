@@ -797,3 +797,44 @@ impl TryFrom<NutrootSpendInfo> for cdk::nuts::nut10::nutroot::SpendInfo {
         })
     }
 }
+
+/// Requested Nutroot receiver key, exact leaves, and keys requiring blinding.
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct NutrootOption {
+    /// Compressed receiver public key, or the NUMS point, in lowercase hex.
+    pub key: String,
+    /// Serialized condition leaves in hex.
+    pub leaves: Option<Vec<String>>,
+    /// Leaf public keys whose owners require blinding.
+    pub blind_keys: Option<Vec<String>>,
+}
+
+impl From<cdk::nuts::nut10::nutroot::NutrootOption> for NutrootOption {
+    fn from(policy: cdk::nuts::nut10::nutroot::NutrootOption) -> Self {
+        Self {
+            key: policy.key.to_string(),
+            leaves: policy.leaves,
+            blind_keys: policy
+                .blind_keys
+                .map(|keys| keys.into_iter().map(|key| key.to_string()).collect()),
+        }
+    }
+}
+
+impl TryFrom<NutrootOption> for cdk::nuts::nut10::nutroot::NutrootOption {
+    type Error = FfiError;
+    fn try_from(policy: NutrootOption) -> Result<Self, Self::Error> {
+        let parse =
+            |key: String| cdk::nuts::nut10::nutroot::parse_secret(&key).map_err(FfiError::internal);
+        let result = Self {
+            key: parse(policy.key)?,
+            leaves: policy.leaves,
+            blind_keys: policy
+                .blind_keys
+                .map(|keys| keys.into_iter().map(parse).collect::<Result<Vec<_>, _>>())
+                .transpose()?,
+        };
+        result.validate().map_err(FfiError::internal)?;
+        Ok(result)
+    }
+}

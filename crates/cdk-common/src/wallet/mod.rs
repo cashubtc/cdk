@@ -459,6 +459,8 @@ impl NUT13Options {
 /// Send options
 #[derive(Clone, Default)]
 pub struct SendOptions {
+    /// Nutroot output policy; mutually exclusive with legacy conditions.
+    pub nutroot: Option<crate::nuts::nut10::nutroot::NutrootOption>,
     /// Memo
     pub memo: Option<SendMemo>,
     /// Spending conditions
@@ -533,6 +535,8 @@ impl SendMemo {
 /// Receive options
 #[derive(Clone, Default)]
 pub struct ReceiveOptions {
+    /// Require an exact Nutroot payment policy before signing received inputs.
+    pub nutroot: Option<crate::nuts::nut10::nutroot::NutrootOption>,
     /// Amount split target
     pub amount_split_target: SplitTarget,
     /// P2PK signing keys

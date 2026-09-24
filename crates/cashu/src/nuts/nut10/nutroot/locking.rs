@@ -11,7 +11,7 @@ use crate::util::hex;
 use crate::SECP256K1;
 
 /// Payment-request locking policy for version-02 outputs (NUT-18).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct NutrootOption {
     /// Static receiver key, or the NUMS point for script-only outputs.
     #[serde(rename = "k")]

@@ -8,7 +8,7 @@ use cdk_common::bitcoin;
 use serde::{Deserialize, Serialize};
 
 use super::amount::{Amount, SplitTarget};
-use super::proof::{Proofs, SpendingConditions};
+use super::proof::{NutrootOption, Proofs, SpendingConditions};
 use crate::error::FfiError;
 use crate::token::Token;
 use crate::{CurrencyUnit, MintUrl, PublicKey};
@@ -219,6 +219,9 @@ impl From<cdk::wallet::P2PKLockedProofSendMode> for P2PKLockedProofSendMode {
 /// FFI-compatible Send options
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct SendOptions {
+    /// Explicit Nutroot payment policy.
+    #[serde(default)]
+    pub nutroot: Option<NutrootOption>,
     /// Memo
     pub memo: Option<SendMemo>,
     /// Spending conditions
@@ -259,6 +262,7 @@ impl TryFrom<SendOptions> for cdk::wallet::SendOptions {
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(cdk::wallet::SendOptions {
+            nutroot: opts.nutroot.map(TryInto::try_into).transpose()?,
             memo: opts.memo.map(Into::into),
             conditions: opts.conditions.map(TryInto::try_into).transpose()?,
             amount_split_target: opts.amount_split_target.into(),
@@ -276,6 +280,7 @@ impl TryFrom<SendOptions> for cdk::wallet::SendOptions {
 impl From<cdk::wallet::SendOptions> for SendOptions {
     fn from(opts: cdk::wallet::SendOptions) -> Self {
         Self {
+            nutroot: opts.nutroot.map(Into::into),
             memo: opts.memo.map(Into::into),
             conditions: opts.conditions.map(Into::into),
             amount_split_target: opts.amount_split_target.into(),
@@ -375,6 +380,9 @@ impl From<cdk::nuts::SecretKey> for SecretKey {
 /// FFI-compatible Receive options
 #[derive(Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct ReceiveOptions {
+    /// Explicit Nutroot payment policy.
+    #[serde(default)]
+    pub nutroot: Option<NutrootOption>,
     /// Amount split target
     pub amount_split_target: SplitTarget,
     /// P2PK signing keys
@@ -414,6 +422,7 @@ impl TryFrom<ReceiveOptions> for cdk::wallet::ReceiveOptions {
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(cdk::wallet::ReceiveOptions {
+            nutroot: opts.nutroot.map(TryInto::try_into).transpose()?,
             amount_split_target: opts.amount_split_target.into(),
             p2pk_signing_keys,
             preimages: opts.preimages,
@@ -425,6 +434,7 @@ impl TryFrom<ReceiveOptions> for cdk::wallet::ReceiveOptions {
 impl From<cdk::wallet::ReceiveOptions> for ReceiveOptions {
     fn from(opts: cdk::wallet::ReceiveOptions) -> Self {
         Self {
+            nutroot: opts.nutroot.map(Into::into),
             amount_split_target: opts.amount_split_target.into(),
             p2pk_signing_keys: opts.p2pk_signing_keys.into_iter().map(Into::into).collect(),
             preimages: opts.preimages,

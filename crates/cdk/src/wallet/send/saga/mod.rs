@@ -447,7 +447,16 @@ impl<'a> SendSaga<'a, Initial> {
             }
         }
 
-        let mut force_swap = false;
+        if let Some(policy) = &opts.nutroot {
+            if opts.conditions.is_some()
+                || opts.send_kind.is_offline()
+                || active_keyset_id.get_version() != crate::nuts::KeySetVersion::Version02
+            {
+                return Err(crate::nuts::nut10::Error::SpendConditionsNotMet.into());
+            }
+            policy.validate().map_err(crate::nuts::nut10::Error::from)?;
+        }
+        let mut force_swap = opts.nutroot.is_some();
         let available_sum = available_proofs.total_amount()?;
         if available_sum < amount {
             if opts.conditions.is_none() || opts.send_kind.is_offline() {
@@ -862,6 +871,7 @@ impl<'a> SendSaga<'a, Prepared> {
                         options.conditions.clone(),
                         false,
                         options.use_p2bk,
+                        options.nutroot.clone(),
                         &keys,
                     )
                     .await?
@@ -1039,6 +1049,7 @@ impl<'a> SendSaga<'a, TokenCreated> {
                 None,
                 false,
                 false,
+                None,
                 &[],
             )
             .await;

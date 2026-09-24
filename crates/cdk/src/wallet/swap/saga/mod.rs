@@ -73,10 +73,20 @@ impl<'a> SwapSaga<'a, Initial> {
             wallet,
             compensations: new_compensations(),
             state_data: Initial {
+                nutroot: None,
                 operation_id,
                 keyset_policy: Default::default(),
             },
         }
+    }
+
+    /// Select an explicit Nutroot payment policy for the desired outputs.
+    pub fn with_nutroot(
+        mut self,
+        policy: Option<crate::nuts::nut10::nutroot::NutrootOption>,
+    ) -> Self {
+        self.state_data.nutroot = policy;
+        self
     }
 
     /// Prepare the swap operation.
@@ -133,6 +143,7 @@ impl<'a> SwapSaga<'a, Initial> {
                 amount_split_target.clone(),
                 input_proofs.clone(),
                 spending_conditions.clone(),
+                self.state_data.nutroot.clone(),
                 include_fees,
                 use_p2bk,
                 &fee_breakdown,
@@ -191,6 +202,7 @@ impl<'a> SwapSaga<'a, Initial> {
             wallet: self.wallet,
             compensations: self.compensations,
             state_data: Prepared {
+                nutroot: self.state_data.nutroot.is_some(),
                 operation_id: self.state_data.operation_id,
                 amount,
                 amount_split_target,
@@ -306,34 +318,35 @@ impl<'a> SwapSaga<'a, Prepared> {
                             })
                     });
 
-                let (mut proofs_to_send, proofs_to_keep) =
-                    match &self.state_data.spending_conditions {
-                        Some(_) => (proofs_with_condition, proofs_without_condition),
-                        None => {
-                            let mut all_proofs = proofs_without_condition;
-                            all_proofs.reverse();
+                let (mut proofs_to_send, proofs_to_keep) = match (
+                    &self.state_data.spending_conditions,
+                    self.state_data.nutroot,
+                ) {
+                    (Some(_), _) | (_, true) => (proofs_with_condition, proofs_without_condition),
+                    (None, false) => {
+                        let mut all_proofs = proofs_without_condition;
+                        all_proofs.reverse();
 
-                            let mut proofs_to_send = Proofs::new();
-                            let mut proofs_to_keep = Proofs::new();
-                            let mut amount_split = amount.split_targeted(
-                                &self.state_data.amount_split_target,
-                                &fee_and_amounts,
-                            )?;
+                        let mut proofs_to_send = Proofs::new();
+                        let mut proofs_to_keep = Proofs::new();
+                        let mut amount_split = amount.split_targeted(
+                            &self.state_data.amount_split_target,
+                            &fee_and_amounts,
+                        )?;
 
-                            for proof in all_proofs {
-                                if let Some(idx) =
-                                    amount_split.iter().position(|&a| a == proof.amount)
-                                {
-                                    proofs_to_send.push(proof);
-                                    amount_split.remove(idx);
-                                } else {
-                                    proofs_to_keep.push(proof);
-                                }
+                        for proof in all_proofs {
+                            if let Some(idx) = amount_split.iter().position(|&a| a == proof.amount)
+                            {
+                                proofs_to_send.push(proof);
+                                amount_split.remove(idx);
+                            } else {
+                                proofs_to_keep.push(proof);
                             }
-
-                            (proofs_to_send, proofs_to_keep)
                         }
-                    };
+
+                        (proofs_to_send, proofs_to_keep)
+                    }
+                };
 
                 if let Some(ephemeral_keys) = &self.state_data.pre_swap.p2bk_secret_keys {
                     for (i, proof) in proofs_to_send.iter_mut().enumerate() {

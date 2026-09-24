@@ -142,6 +142,31 @@ impl<'a> ReceiveSaga<'a, Initial> {
             .map(|s| Ok((s.as_secp256k1()?.x_only_public_key(&SECP256K1).0, s.clone())))
             .collect::<Result<_, Error>>()?;
 
+        if let Some(policy) = &opts.nutroot {
+            let mut receiver_keys = opts
+                .p2pk_signing_keys
+                .iter()
+                .map(|key| key.as_secp256k1().copied())
+                .collect::<Result<Vec<_>, _>>()?;
+            for stored in self.wallet.localstore.list_p2pk_keys().await? {
+                if let Some(key) = self.wallet.get_signing_key(&stored.pubkey).await? {
+                    receiver_keys.push(*key.as_secp256k1()?);
+                }
+            }
+            for proof in &proofs {
+                if proof.keyset_id.get_version() != KeySetVersion::Version02 {
+                    return Err(crate::nuts::nut10::Error::SpendConditionsNotMet.into());
+                }
+                let info = proof
+                    .spend_info
+                    .as_ref()
+                    .ok_or(crate::nuts::nut10::Error::SpendConditionsNotMet)?;
+                policy
+                    .verify_output(&proof.secret.to_string(), info, &receiver_keys)
+                    .map_err(crate::nuts::nut10::Error::from)?;
+            }
+        }
+
         // Process each proof: verify mint signature, handle P2PK/HTLC
         for proof in &mut proofs {
             // Verify that the proof was signed by the mint.
@@ -358,6 +383,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
                 None,
                 self.state_data.options.amount_split_target.clone(),
                 proofs,
+                None,
                 None,
                 false,
                 false,
