@@ -486,7 +486,7 @@ impl<'a> MintSaga<'a, Initial> {
         let counter_start = counter_end.saturating_sub(premint_secrets.secrets.len() as u32);
 
         // Persist saga state for crash recovery
-        let saga = WalletSaga::new(
+        let mut saga = WalletSaga::new(
             operation_id,
             WalletSagaState::Issue(IssueSagaState::SecretsPrepared),
             amount,
@@ -501,6 +501,7 @@ impl<'a> MintSaga<'a, Initial> {
             )),
         );
 
+        saga.data.set_premint_secrets(premint_secrets.clone());
         self.wallet.localstore.add_saga(saga.clone()).await?;
 
         // Register compensation (deletes saga on failure)
@@ -825,7 +826,7 @@ impl<'a> MintSaga<'a, Initial> {
         let counter_start = counter_end.saturating_sub(premint_secrets.secrets.len() as u32);
 
         // Persist saga state
-        let saga = WalletSaga::new(
+        let mut saga = WalletSaga::new(
             self.state_data.operation_id,
             WalletSagaState::Issue(IssueSagaState::SecretsPrepared),
             total_amount,
@@ -842,6 +843,7 @@ impl<'a> MintSaga<'a, Initial> {
             )),
         );
 
+        saga.data.set_premint_secrets(premint_secrets.clone());
         self.wallet.localstore.add_saga(saga.clone()).await?;
 
         // Register compensation
@@ -951,6 +953,7 @@ impl<'a> MintSaga<'a, Prepared> {
                 data.counter_start = Some(counter_start);
                 data.counter_end = Some(counter_end);
                 data.blinded_messages = Some(outputs.clone());
+                data.premint_secrets = Some(premint_secrets.clone());
             }
 
             if !wallet.localstore.update_saga(updated_saga).await? {

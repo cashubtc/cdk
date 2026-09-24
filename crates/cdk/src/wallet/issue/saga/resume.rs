@@ -20,7 +20,7 @@ use cdk_common::{Amount, PaymentMethod};
 use tracing::instrument;
 
 use crate::dhke::{construct_proofs, hash_to_curve_for_version};
-use crate::nuts::{MintRequest, PreMintSecrets, State};
+use crate::nuts::{MintRequest, State};
 use crate::util::unix_time;
 use crate::wallet::blind_signature::{
     validate_mint_response_signatures, SignatureAmountValidation,
@@ -191,12 +191,9 @@ impl Wallet {
             _ => return Ok(()),
         };
 
-        let premint_secrets = PreMintSecrets::restore_batch(
-            blinded_messages[0].keyset_id,
-            &self.seed,
-            counter_start,
-            counter_end,
-        )?;
+        let premint_secrets = self
+            .recover_premint_secrets(saga_id, &blinded_messages, counter_start, counter_end)
+            .await?;
         let ys = premint_secrets
             .secrets
             .iter()
@@ -515,12 +512,9 @@ impl Wallet {
 
             let keyset_id = blinded_messages[0].keyset_id;
 
-            let premint_secrets = crate::nuts::PreMintSecrets::restore_batch(
-                keyset_id,
-                &self.seed,
-                counter_start,
-                counter_end,
-            )?;
+            let premint_secrets = self
+                .recover_premint_secrets(saga_id, &blinded_messages, counter_start, counter_end)
+                .await?;
 
             let keys = self.keyset(keyset_id).await?.keys;
 
@@ -664,12 +658,9 @@ impl Wallet {
 
         let keyset_id = blinded_messages[0].keyset_id;
 
-        let premint_secrets = crate::nuts::PreMintSecrets::restore_batch(
-            keyset_id,
-            &self.seed,
-            counter_start,
-            counter_end,
-        )?;
+        let premint_secrets = self
+            .recover_premint_secrets(saga_id, &blinded_messages, counter_start, counter_end)
+            .await?;
 
         let keys = self.keyset(keyset_id).await?.keys;
 

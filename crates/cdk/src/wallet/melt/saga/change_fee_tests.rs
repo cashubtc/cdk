@@ -65,6 +65,7 @@ impl Fixture {
             test_mint_url(),
             CurrencyUnit::Sat,
             OperationData::Melt(MeltOperationData {
+                premint_secrets: None,
                 quote_id: quote.id.clone(),
                 amount: quote.amount,
                 fee_reserve: quote.fee_reserve,

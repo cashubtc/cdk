@@ -295,6 +295,7 @@ mod tests {
             mint_url.clone(),
             CurrencyUnit::Sat,
             OperationData::Receive(ReceiveOperationData {
+                premint_secrets: None,
                 token: Some("test_token".to_string()),
                 counter_start: None,
                 counter_end: None,
@@ -337,6 +338,7 @@ mod tests {
             mint_url.clone(),
             CurrencyUnit::Sat,
             OperationData::Receive(ReceiveOperationData {
+                premint_secrets: None,
                 token: Some("test_token".to_string()),
                 counter_start: Some(0),
                 counter_end: Some(1),
@@ -401,6 +403,7 @@ mod tests {
             mint_url.clone(),
             CurrencyUnit::Sat,
             OperationData::Receive(ReceiveOperationData {
+                premint_secrets: None,
                 token: Some("test_token".to_string()),
                 counter_start: Some(0),
                 counter_end: Some(10),
@@ -466,6 +469,7 @@ mod tests {
             mint_url.clone(),
             CurrencyUnit::Sat,
             OperationData::Receive(ReceiveOperationData {
+                premint_secrets: None,
                 token: Some("test_token".to_string()),
                 counter_start: Some(0),
                 counter_end: Some(10),

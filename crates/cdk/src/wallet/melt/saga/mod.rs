@@ -364,6 +364,7 @@ impl<'a> MeltSaga<'a, Initial> {
                 self.wallet.mint_url.clone(),
                 self.wallet.unit.clone(),
                 OperationData::Melt(MeltOperationData {
+                    premint_secrets: None,
                     quote_id: quote_id.to_string(),
                     amount: quote_info.amount,
                     fee_reserve: quote_info.fee_reserve,
@@ -463,6 +464,7 @@ impl<'a> MeltSaga<'a, Initial> {
             self.wallet.mint_url.clone(),
             self.wallet.unit.clone(),
             OperationData::Melt(MeltOperationData {
+                premint_secrets: None,
                 quote_id: quote_id.to_string(),
                 amount: quote_info.amount,
                 fee_reserve: quote_info.fee_reserve,
@@ -617,6 +619,7 @@ impl<'a> MeltSaga<'a, Initial> {
             self.wallet.mint_url.clone(),
             self.wallet.unit.clone(),
             OperationData::Melt(MeltOperationData {
+                premint_secrets: None,
                 quote_id: quote_id.to_string(),
                 amount: quote_info.amount,
                 fee_reserve: quote_info.fee_reserve,
@@ -925,6 +928,7 @@ impl<'a> MeltSaga<'a, Prepared> {
             };
             data.final_proof_ys = Some(final_proof_ys);
             data.change_blinded_messages = change_blinded_messages.clone();
+            data.premint_secrets = Some(premint_secrets.clone());
         }
 
         let metadata = match &saga.data {

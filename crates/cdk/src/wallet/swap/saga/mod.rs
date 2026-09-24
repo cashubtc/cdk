@@ -160,6 +160,7 @@ impl<'a> SwapSaga<'a, Initial> {
             self.wallet.mint_url.clone(),
             self.wallet.unit.clone(),
             OperationData::Swap(SwapOperationData {
+                premint_secrets: None,
                 input_amount,
                 output_amount,
                 counter_start: Some(counter_start),
@@ -222,6 +223,7 @@ impl<'a> SwapSaga<'a, Prepared> {
         saga.update_state(WalletSagaState::Swap(SwapSagaState::SwapRequested));
         if let OperationData::Swap(ref mut data) = saga.data {
             data.blinded_messages = Some(self.state_data.pre_swap.swap_request.outputs().clone());
+            data.premint_secrets = Some(self.state_data.pre_swap.pre_mint_secrets.clone());
         }
 
         if !self.wallet.localstore.update_saga(saga).await? {

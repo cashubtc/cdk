@@ -314,6 +314,7 @@ mod tests {
             mint_url.clone(),
             CurrencyUnit::Sat,
             OperationData::Swap(SwapOperationData {
+                premint_secrets: None,
                 input_amount: Amount::from(100),
                 output_amount: Amount::from(90),
                 counter_start: Some(0),
@@ -366,6 +367,7 @@ mod tests {
             mint_url.clone(),
             CurrencyUnit::Sat,
             OperationData::Swap(SwapOperationData {
+                premint_secrets: None,
                 input_amount: Amount::from(100),
                 output_amount: Amount::from(90),
                 counter_start: Some(0),
@@ -424,6 +426,7 @@ mod tests {
             mint_url,
             CurrencyUnit::Sat,
             OperationData::Swap(SwapOperationData {
+                premint_secrets: None,
                 input_amount: Amount::from(100),
                 output_amount: Amount::from(90),
                 counter_start: Some(0),
@@ -469,6 +472,7 @@ mod tests {
             mint_url.clone(),
             CurrencyUnit::Sat,
             OperationData::Swap(SwapOperationData {
+                premint_secrets: None,
                 input_amount: Amount::from(100),
                 output_amount: Amount::from(90),
                 counter_start: Some(0),
@@ -551,6 +555,7 @@ mod tests {
             mint_url.clone(),
             CurrencyUnit::Sat,
             OperationData::Swap(SwapOperationData {
+                premint_secrets: None,
                 input_amount: Amount::from(100),
                 output_amount: Amount::from(50),
                 counter_start: Some(counter_start),

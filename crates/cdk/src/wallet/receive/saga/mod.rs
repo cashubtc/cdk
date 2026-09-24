@@ -328,6 +328,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             self.wallet.mint_url.clone(),
             self.wallet.unit.clone(),
             OperationData::Receive(ReceiveOperationData {
+                premint_secrets: None,
                 token: self.state_data.token.clone(),
                 counter_start: None,
                 counter_end: None,
@@ -406,6 +407,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             data.counter_start = Some(counter_start);
             data.counter_end = Some(counter_end);
             data.blinded_messages = Some(pre_swap.swap_request.outputs().clone());
+            data.premint_secrets = Some(pre_swap.pre_mint_secrets.clone());
         }
 
         // Update saga state - if this fails due to version conflict, another instance

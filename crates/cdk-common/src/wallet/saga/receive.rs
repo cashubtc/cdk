@@ -40,6 +40,9 @@ impl std::str::FromStr for ReceiveSagaState {
 /// Operation-specific data for Receive operations
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReceiveOperationData {
+    /// Exact output secrets and transfer metadata, persisted before transmission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub premint_secrets: Option<cashu::PreMintSecrets>,
     /// Token to receive
     pub token: Option<String>,
     /// Derivation counter start
@@ -88,6 +91,7 @@ mod tests {
     #[test]
     fn receive_operation_data_and_wallet_saga_debug_redact_token() {
         let data = ReceiveOperationData {
+            premint_secrets: None,
             token: Some(TOKEN_MARKER.to_string()),
             counter_start: Some(4),
             counter_end: Some(5),

@@ -1048,7 +1048,7 @@ impl<'de> Deserialize<'de> for PaymentMethod {
 
 /// PreMint
 #[cfg(feature = "wallet")]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreMint {
     /// Nutroot spend information for random or condition-locked outputs.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1062,7 +1062,7 @@ pub struct PreMint {
     /// Amount
     pub amount: Amount,
     /// NUT-13 derivation index for deterministic secrets.
-    #[serde(skip)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub derivation_index: Option<u32>,
 }
 
@@ -1082,7 +1082,7 @@ impl PartialOrd for PreMint {
 
 /// Premint Secrets
 #[cfg(feature = "wallet")]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreMintSecrets {
     /// Secrets
     pub secrets: Vec<PreMint>,
