@@ -12,6 +12,18 @@ use url::Url;
 use crate::{HttpClient, HttpClientBuilder};
 use crate::{HttpError, RawResponse};
 
+pub(super) fn bind_auth(
+    mut auth: AuthToken,
+    method: &str,
+    url: &Url,
+    body: &[u8],
+) -> Result<AuthToken, HttpError> {
+    let target = &url[url::Position::BeforePath..url::Position::AfterQuery];
+    auth.bind_request(method, target, body)
+        .map_err(|_| HttpError::Other("Could not authorize HTTP request".to_owned()))?;
+    Ok(auth)
+}
+
 /// Expected HTTP transport.
 ///
 /// Callers that construct a transport implicitly may add a [`Default`] bound,
@@ -149,6 +161,7 @@ impl Transport for Async {
         let mut request = self.inner.get(&url_str);
 
         if let Some(auth) = auth {
+            let auth = bind_auth(auth, "GET", &url, &[])?;
             request = request.header(auth.header_key(), auth.to_string());
         }
 
@@ -166,9 +179,16 @@ impl Transport for Async {
         R: DeserializeOwned,
     {
         let url_str = url.to_string();
-        let mut request = self.inner.post(&url_str).json(payload);
+        let body =
+            serde_json::to_vec(payload).map_err(|e| HttpError::Serialization(e.to_string()))?;
+        let mut request = self
+            .inner
+            .post(&url_str)
+            .body_bytes(body.clone())
+            .header("Content-Type", "application/json");
 
         if let Some(auth) = auth_token {
+            let auth = bind_auth(auth, "POST", &url, &body)?;
             request = request.header(auth.header_key(), auth.to_string());
         }
 
@@ -185,9 +205,17 @@ impl Transport for Async {
         P: Serialize + Send + Sync,
     {
         let url_str = url.to_string();
-        let mut request = self.inner.post(&url_str).form(payload);
+        let body = serde_urlencoded::to_string(payload)
+            .map_err(|e| HttpError::Serialization(e.to_string()))?
+            .into_bytes();
+        let mut request = self
+            .inner
+            .post(&url_str)
+            .body_bytes(body.clone())
+            .header("Content-Type", "application/x-www-form-urlencoded");
 
         if let Some(auth) = auth_token {
+            let auth = bind_auth(auth, "POST", &url, &body)?;
             request = request.header(auth.header_key(), auth.to_string());
         }
 
@@ -212,3 +240,93 @@ mod tor_transport;
 
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
 pub use self::tor_transport::TorAsync;
+
+#[cfg(all(
+    test,
+    not(target_arch = "wasm32"),
+    any(feature = "bitreq", feature = "reqwest")
+))]
+mod tests {
+    use cashu::nuts::nut10::nutroot::SpendInfo;
+    use cashu::nuts::{BlindAuthToken, Id, Proof, SecretKey};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn nutroot_transport_signs_the_exact_post_body_and_query() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url: Url = format!("http://{}/v1/swap?x=%2F", listener.local_addr().unwrap())
+            .parse()
+            .unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = vec![];
+            let mut byte = [0];
+            while !request.ends_with(b"\r\n\r\n") {
+                socket.read_exact(&mut byte).await.unwrap();
+                request.push(byte[0]);
+            }
+            let headers = String::from_utf8(request).unwrap();
+            let mut length = 0;
+            let mut token = None;
+            for line in headers.lines().skip(1) {
+                if let Some((key, value)) = line.split_once(':') {
+                    if key.eq_ignore_ascii_case("content-length") {
+                        length = value.trim().parse::<usize>().unwrap();
+                    }
+                    if key.eq_ignore_ascii_case("blind-auth") {
+                        token = Some(value.trim().parse::<BlindAuthToken>().unwrap());
+                    }
+                }
+            }
+            let mut body = vec![0; length];
+            socket.read_exact(&mut body).await.unwrap();
+            let first: Vec<_> = headers.lines().next().unwrap().split_whitespace().collect();
+            let mut token = token.unwrap();
+            token
+                .set_request_context(first[0], first[1], &body)
+                .unwrap();
+            token.verify_request().unwrap();
+            assert_eq!(first[1], "/v1/swap?x=%2F");
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+                serde_json::json!({"z": "last", "a": "first"})
+            );
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").await.unwrap();
+        });
+        let key = SecretKey::from_slice(&[9; 32]).unwrap();
+        let id = Id::from_bytes(&[vec![2], vec![1; 32]].concat()).unwrap();
+        let c = cashu::nuts::nut01::BlsG1PublicKey::hash_to_curve(b"signature").into();
+        let mut proof = Proof::new(
+            1.into(),
+            id,
+            key.public_key().to_string().parse().unwrap(),
+            c,
+        );
+        proof.spend_info = Some(SpendInfo {
+            bearer_key: Some(key),
+            ..Default::default()
+        });
+        let auth = AuthToken::BlindAuth(BlindAuthToken::from_proof(proof).unwrap());
+        #[derive(Serialize)]
+        struct Payload<'a> {
+            z: &'a str,
+            a: &'a str,
+        }
+        let transport = Async::default();
+        let result: serde_json::Value = transport
+            .http_post(
+                url,
+                Some(auth),
+                &Payload {
+                    z: "last",
+                    a: "first",
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(result, serde_json::json!({}));
+        server.await.unwrap();
+    }
+}

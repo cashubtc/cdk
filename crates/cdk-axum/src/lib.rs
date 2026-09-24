@@ -146,6 +146,7 @@ pub async fn create_mint_router_with_custom_cache(
         metrics::global_metrics_middleware,
     ));
     let mint_router = mint_router
+        .layer(from_fn(auth::bind_blind_auth_request))
         .layer(from_fn(cors_middleware))
         .with_state(state);
 

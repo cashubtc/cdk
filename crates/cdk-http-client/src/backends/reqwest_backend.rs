@@ -201,6 +201,11 @@ impl ReqwestRequestBuilder {
         self.map_inner(|inner| inner.header(key, value))
     }
 
+    /// Set exact serialized request bytes.
+    pub fn body_bytes(self, bytes: Vec<u8>) -> Self {
+        self.map_inner(|inner| inner.body(bytes))
+    }
+
     /// Set the request body as JSON.
     pub fn json<T>(self, body: &T) -> Self
     where

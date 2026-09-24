@@ -42,6 +42,7 @@ redis = { version = "0.31.0", default-features = false, features = [
 ], optional = true }
 
 [dev-dependencies]
+tower = { workspace = true, features = ["util"] }
 cdk-fake-wallet = { workspace = true }
 cdk-sqlite = { workspace = true, features = ["mint"] }
 cdk-signatory = { workspace = true }

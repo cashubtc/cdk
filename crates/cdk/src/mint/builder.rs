@@ -167,15 +167,9 @@ impl MintBuilder {
         self
     }
 
-    fn preferred_keyset_version(&self, unit: &CurrencyUnit) -> KeySetVersion {
-        let version = self
-            .explicit_keyset_version()
-            .unwrap_or(KeySetVersion::Version02);
-        // Version-02 BATs need HTTP request binding, which is not yet wired.
-        match (unit, version) {
-            (CurrencyUnit::Auth, KeySetVersion::Version02) => KeySetVersion::Version01,
-            _ => version,
-        }
+    fn preferred_keyset_version(&self, _unit: &CurrencyUnit) -> KeySetVersion {
+        self.explicit_keyset_version()
+            .unwrap_or(KeySetVersion::Version02)
     }
 
     /// Add a keyset rotation to execute during build.
@@ -675,11 +669,6 @@ impl MintBuilder {
                 if keyset.is_expired() {
                     tracing::warn!("Active keyset for unit {} has expired; not rotating", unit);
                     continue;
-                }
-                if *unit == CurrencyUnit::Auth
-                    && keyset.id.get_version() == KeySetVersion::Version02
-                {
-                    rotate = true;
                 }
                 // Check if fee matches
                 if keyset.input_fee_ppk != *fee {
@@ -1817,7 +1806,7 @@ mod tests {
         );
     }
     #[tokio::test]
-    async fn v3_issuance_keeps_auth_on_a_request_compatible_version() {
+    async fn v3_issuance_includes_request_bound_auth_keysets() {
         let db = Arc::new(memory::empty().await.unwrap());
         let mut builder =
             MintBuilder::new(db.clone()).with_keyset_version(KeySetVersion::Version02);
@@ -1835,7 +1824,7 @@ mod tests {
         );
         assert_eq!(
             active[&CurrencyUnit::Auth].get_version(),
-            KeySetVersion::Version01
+            KeySetVersion::Version02
         );
     }
 }

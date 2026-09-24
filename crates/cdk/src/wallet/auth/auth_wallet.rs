@@ -345,12 +345,12 @@ impl AuthWallet {
                 self.localstore
                     .update_proofs(vec![], vec![proof.proof.y()?])
                     .await?;
-                proof.proof.try_into()?
+                BlindAuthToken::from_proof(proof.proof)?
             }
             None => return Ok(None),
         };
 
-        Ok(Some(BlindAuthToken { auth_proof }))
+        Ok(Some(auth_proof))
     }
 
     /// Auth for request

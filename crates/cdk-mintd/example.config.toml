@@ -14,7 +14,7 @@ mnemonic = "env:CDK_MINTD_MNEMONIC"
 # Explicit issuance version: "00", "01", or "02" (Nutroot draft).
 # Startup rotates to this version, retaining old keysets for redemption.
 # Each unit still has exactly one active issuance keyset.
-# The auth unit uses "01" until request-bound v3 blind authentication is implemented.
+# Version "02" also enables request-bound blind authentication for the auth unit.
 # keyset_version = "02"
 # Remove use_keyset_v2 when switching to keyset_version; conflicting values fail startup.
 
