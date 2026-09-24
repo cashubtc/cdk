@@ -3,9 +3,8 @@
 //! Implements the draft in NUTs PR #443, revision
 //! `9fdc29b104fd703402e98aab130303a685ef9b41`.
 //!
-//! CDK uses these primitives for version-02 transaction authorization. The
-//! draft also specifies payment requests, receipts, and request-bound blind
-//! authentication; those integrations require separate support.
+//! CDK uses these primitives for version-02 transaction authorization, payment
+//! policies, signing packages, receipts, and request-bound blind authentication.
 //!
 //! [`Transaction`] binds quote amounts supplied by its caller; mints must load
 //! those amounts from their own quote state. [`SpendInfo::verify`] checks the

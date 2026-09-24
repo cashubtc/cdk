@@ -1,8 +1,9 @@
 # Nutroot draft implementation
 
 This work targets cashubtc/nuts PR #443 at revision
-`9fdc29b104fd703402e98aab130303a685ef9b41`. It is experimental and does not yet
-implement the entire proposal.
+`9fdc29b104fd703402e98aab130303a685ef9b41`. The protocol remains a draft;
+this implementation targets that revision rather than following later changes
+automatically.
 
 ## Issuance and migration
 
@@ -23,8 +24,9 @@ outstanding proofs, subject to their existing expiry rules. Wallets can swap
 old proofs into the newly active keyset. Restarting with the same version does
 not rotate again merely because the option is present. Without an explicit
 selection, existing active keysets are preserved; new keysets use version `02`,
-as on the BLS branch before this change. The `auth` unit stays on version `01` when `02` is selected,
-until request-bound v3 BAT authorization is integrated.
+as on the BLS branch before this change. This includes the `auth` unit:
+version-02 BATs authorize the exact HTTP method, path/query, and body bytes.
+Previously issued version-00/01 BATs remain redeemable as bearer tokens.
 
 Deploy wallets that understand Nutroot before changing issuance. A legacy
 wallet can no longer obtain legacy outputs once the mint issues version `02`.
@@ -56,19 +58,67 @@ key derivation. They are not compatible with these Nutroot rules. The
 - Saving output secrets and transfer metadata before requests, with recovery
   through persisted saga data and ordered seed recovery for older records.
 
-## Remaining before full PR support
+- Durable NUT-07/NUT-17 spend commitments, stored atomically with input
+  reservation. Only spent disclosure leaves expose the exact accepted witness
+  and input digest; private leaves, key paths, and pending inputs reveal no opening.
+- NUT-18/NUT-26 Nutroot policies, fresh per-output blinding, wallet send/receive
+  enforcement, and FFI policy types. Both request encodings preserve leaf bytes.
+- `nutspA` signing packages with transaction reconstruction, partial-signature
+  verification, receiver-slot fallback, merging, and atomic witness application.
+- `nutrcA` receipts with canonical transcript parsing and independent mint-state
+  verification. Wallets journal signed attempts before sending them and retain
+  the journal after the spent proofs are removed.
+- NUT-22 request-bound BATs through wallet storage, HTTP transports, and Axum.
+  JSON is serialized once before signing; Axum binds the original request URI
+  and exact body under the configured body limit. Non-HTTP mint adapters must
+  set trusted request context with `BlindAuthToken::set_request_context` before
+  verifying a version-02 BAT. Context and private signing keys are never serialized.
 
-- NUT-07/NUT-17 spend commitment storage and disclosure openings. Version-02
-  witnesses are currently suppressed in check-state responses to protect
-  private leaves; even disclosure leaves have no opening response yet.
-- NUT-18/NUT-26 request serialization, wallet payment/receive-policy integration,
-  and FFI exposure of the Nutroot request option. Core locking helpers exist.
-- Signing-package (`nutspA`) and spend-receipt (`nutrcA`) transport workflows.
-- NUT-22 authorization bound to exact HTTP request bytes. APIs without request
-  bytes reject version-02 BATs; the builder retains legacy auth keysets until
-  this is integrated.
-- Full cross-wallet interoperability and end-to-end regression coverage,
-  including disclosure, multi-party signing, and locked-quote recovery.
+## Wallet interfaces
 
-Passing core cryptographic and wallet tests does not constitute conformance
-with all of PR #443. Do not advertise complete support while these remain.
+Set `SendOptions.nutroot` to request freshly locked outputs. It cannot be combined
+with legacy `conditions`, and requires online version-02 issuance. Payment
+requests carrying both encodings select `nutroot` for version 02 and `nut10`
+for legacy issuance. A Nutroot-only request cannot be paid using legacy outputs.
+A legacy-only locking request cannot silently fall back to bearer v3 outputs.
+
+On receipt, set `ReceiveOptions.nutroot` to the advertised policy and supply
+receiver keys through the wallet keyring or `p2pk_signing_keys`. This verifies
+blinding, NUMS offsets, ephemeral-key presence, and the complete leaf set before
+signing. Merely being able to spend one leaf does not verify the payment policy.
+
+Use `SigningPackage::new`, `sign`, `merge`, and `apply` for multi-party script
+spends. `Wallet::sign_nutroot_package` signs a caller-approved package using its
+keyring; inspect the package's inputs, outputs, and trusted melt quote amount
+before approving it. The package carries no trusted digest or private transfer
+keys. Signatures from another transaction cannot be merged into it.
+
+`Wallet::nutroot_receipt_ids` lists signed attempts. `export_nutroot_receipt`
+exports an entry only after checking mint signatures and the mint's spent
+commitments. `verify_nutroot_receipt` performs the same checks for an imported
+receipt. Receipts expose the transaction and exercised witness, so disclosure
+is the payer's choice. These operations are also exposed through FFI.
+
+## Validation scope
+
+Tests cover the pinned crypto vectors, transaction and receipt tampering,
+partial multisignature merging, payment-policy construction, stored exact witness
+bytes, spend-state disclosure, live and snapshot subscriptions, issuance-version
+migration, request-bound BAT verification/replay, and raw HTTP authorization.
+The `nutroot` integration test exercises payments between two CDK wallets,
+policy rejection, receipt export, and mixed legacy/version-02 redemption.
+
+Run the integration tests without external services:
+
+```sh
+CDK_TEST_DB_TYPE=memory cargo test -p cdk-integration-tests --test nutroot
+```
+
+These are implementation tests; independent interoperability with another wallet
+or mint implementation has not been certified. Deploy the pinned draft only with
+compatible clients and retain database backups for migration and recovery.
+
+Strict workspace Clippy still reports pre-existing BLS warnings about redundant
+conversions and missing panic documentation in `nut01`, `nut12`, `nut28`, and
+DHKE helpers. The nightly toolchain also emits existing future-recursion warnings.
+These lint results are separate from the passing compilation and runtime checks.
