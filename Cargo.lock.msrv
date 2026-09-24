@@ -385,9 +385,9 @@ dependencies = [
 
 [[package]]
 name = "async-compat"
-version = "0.2.5"
+version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1ba85bc55464dcbf728b56d97e119d673f4cf9062be330a9a26f3acf504a590"
+checksum = "4c97d7ff3c25d6c10d64170c12acaf5d4245e76dece3779c1d92b153a64f11df"
 dependencies = [
  "futures-core",
  "futures-io",
@@ -1466,6 +1466,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdk-ffi-python"
+version = "0.18.0"
+dependencies = [
+ "cdk-ffi",
+ "uniffi",
+]
+
+[[package]]
 name = "cdk-ffi-swift"
 version = "0.18.0"
 dependencies = [
@@ -2127,7 +2135,7 @@ dependencies = [
  "serde-untagged",
  "serde_core",
  "serde_json",
- "toml 1.1.5+spec-1.1.0",
+ "toml 1.1.6+spec-1.1.0",
  "winnow 1.0.4",
  "yaml-rust2",
 ]
@@ -2271,9 +2279,9 @@ checksum = "338089f42c427b86394a5ee60ff321da23a5c89c9d89514c829687b26359fcff"
 
 [[package]]
 name = "crc32fast"
-version = "1.5.1"
+version = "1.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8498c871161e1742aaa9d52551b2d6ebdd4c3d45a3be423e3728f33b955be550"
+checksum = "01a7799fd6b852db0e61728dde9a204c423b44d689dbd432522543614b490e78"
 dependencies = [
  "cfg-if",
 ]
@@ -4353,9 +4361,9 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "libredox"
-version = "0.1.23"
+version = "0.1.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d8f1ea3f21fd3405dcaf6c9b5c1630af9afc422d9073ea39c5f6d6c772e08ed"
+checksum = "6480ccc157a1389bb2e4891b24751b0f798ba640d22386f23143fbcc89da195a"
 dependencies = [
  "libc",
 ]
@@ -4822,9 +4830,9 @@ dependencies = [
 
 [[package]]
 name = "nostr"
-version = "0.45.4"
+version = "0.45.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "67bacf4195a119bc55d576ec6b54cc103723cb46fff5f907b8bdac8fd29ac4a0"
+checksum = "38ca5c25a6df8d4d78fdf39b42792438f6ce22b4809ccbfdb27582ed9ca45407"
 dependencies = [
  "aes 0.8.4",
  "base64 0.22.1",
@@ -4848,9 +4856,9 @@ dependencies = [
 
 [[package]]
 name = "nostr-database"
-version = "0.45.1"
+version = "0.45.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b1fdb9fcba732e32719662afad1b267e50322dbe89e506017ec13f24361bddf"
+checksum = "309950383c9854ca413d195705400e78b1376aedc48f3256754a86c609c047e8"
 dependencies = [
  "nostr",
  "opaquerr",
@@ -4858,9 +4866,9 @@ dependencies = [
 
 [[package]]
 name = "nostr-gossip"
-version = "0.45.0"
+version = "0.45.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa07539e52a71cb91fe0d693facaa298f03fcf9edcd66a521094e18e286e2336"
+checksum = "4ea822fd48ff6b84b81ddf84169e6edf1dc0bc9b312c8e41685b2278debaac3d"
 dependencies = [
  "nostr",
  "opaquerr",
@@ -4868,9 +4876,9 @@ dependencies = [
 
 [[package]]
 name = "nostr-sdk"
-version = "0.45.2"
+version = "0.45.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "245f8642b10feecb0a40739a886ca1850e3be4e35dc6592b806ec437403ab9c9"
+checksum = "c53a37469ce2df8fe6471b6a4d1c4da833f86c7ba0138ac95299b6f37f69ec84"
 dependencies = [
  "async-utility",
  "async-wsocket",
@@ -5003,9 +5011,9 @@ dependencies = [
 
 [[package]]
 name = "nwc"
-version = "0.45.0"
+version = "0.45.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27eaec15793663f05eb584604245b0ed0b84f099a6fc2390826019bd8dd8ab1e"
+checksum = "b8ce4fad7ce258066ea8ca68f58f8843118a4df34de1df9a6c40bd6b1ff73b11"
 dependencies = [
  "futures-core",
  "nostr",
@@ -5664,7 +5672,7 @@ version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e67ba7e9b2b56446f1d419b1d807906278ffa1a658a8a5d8a39dcb1f5a78614f"
 dependencies = [
- "toml_edit 0.25.13+spec-1.1.0",
+ "toml_edit 0.25.15+spec-1.1.0",
 ]
 
 [[package]]
@@ -7154,9 +7162,9 @@ dependencies = [
 
 [[package]]
 name = "smallvec"
-version = "1.16.0"
+version = "1.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b9be42f50aa861c555654aa3a37f52f4b1074bacf4e48fe0ef7fa584e80f1f0f"
+checksum = "ba467056f1b547ed52077911161fc86985becbc60e8e1857c8a144dab0def891"
 
 [[package]]
 name = "smawk"
@@ -7847,9 +7855,9 @@ dependencies = [
 
 [[package]]
 name = "toml"
-version = "1.1.5+spec-1.1.0"
+version = "1.1.6+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "12c0ba9680044b4ce98d391a62094047eada0d64860b80166c39f4a6b5640785"
+checksum = "920602543f0911ab71da12c50d59701da54c196d1a2bf5cb4b75667f137a406a"
 dependencies = [
  "serde_core",
  "serde_spanned 1.1.1",
@@ -7912,9 +7920,9 @@ dependencies = [
 
 [[package]]
 name = "toml_edit"
-version = "0.25.13+spec-1.1.0"
+version = "0.25.15+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6975367e4d2ef766d86af01ffad14b622fecc8d4357a998fbc4deb6e9bacaf9b"
+checksum = "1340ea94a5856333492c9064b02c778b191dd2c853778d9609debdcdfea3a614"
 dependencies = [
  "indexmap 2.14.2",
  "toml_datetime 1.1.1+spec-1.1.0",

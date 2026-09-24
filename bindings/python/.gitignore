@@ -1,0 +1,20 @@
+# Python build artifacts
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+
+# Native libraries are shipped inside the wheels, never committed loose.
+# The generated src/cdk/cdk_ffi.py is deliberately absent here: it is committed
+# in cdk-python, and the monorepo's root .gitignore keeps it out of cdk.
+src/cdk/*.so
+src/cdk/*.dylib
+src/cdk/*.dll
+rust/target/
+
+# Produced by the release workflow and by build.sh inside the repo checkout
+generated-bindings/
+wheelhouse/
+.build-venv/

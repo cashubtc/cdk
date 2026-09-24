@@ -78,3 +78,17 @@ jobs:
       cdk_ref: ${{ inputs.cdk_ref }}
       prerelease: ${{ needs.detect-prerelease.outputs.prerelease == 'true' }}
     secrets: inherit
+
+  python:
+    name: "Trigger Python bindings"
+    needs: detect-prerelease
+    uses: ./.github/workflows/python-publish.yml
+    with:
+      release_tag: ${{ inputs.release_tag }}
+      cdk_version: ${{ inputs.cdk_version }}
+      cdk_ref: ${{ inputs.cdk_ref }}
+      prerelease: ${{ needs.detect-prerelease.outputs.prerelease == 'true' }}
+      # A pre-release still gets wheels on the cdk-python release, just not a
+      # PyPI version that cannot be taken back.
+      publish_target: ${{ needs.detect-prerelease.outputs.prerelease == 'true' && 'none' || 'pypi' }}
+    secrets: inherit
