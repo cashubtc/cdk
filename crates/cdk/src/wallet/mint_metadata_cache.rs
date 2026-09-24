@@ -716,6 +716,10 @@ impl MintMetadataCache {
         // Fetch keys for each keyset
         new_metadata.active_keysets.clear();
         for keyset_info in keysets_to_fetch {
+            keyset_info
+                .id
+                .get_version()
+                .validate_unit(&keyset_info.unit)?;
             let keyset_arc = Arc::new(keyset_info.clone());
             new_metadata
                 .keysets
