@@ -58,12 +58,17 @@ pub(super) fn sql_row_to_proof(row: Vec<Column>) -> Result<Proof, Error> {
     );
 
     let amount: u64 = column_as_number!(amount);
+    let keyset_id = column_as_string!(keyset_id, Id::from_str);
     Ok(Proof {
         amount: Amount::from(amount),
-        keyset_id: column_as_string!(keyset_id, Id::from_str),
+        keyset_id,
         secret: column_as_string!(secret, Secret::from_str),
         c: column_as_string!(c, PublicKey::from_hex, PublicKey::from_slice),
-        witness: column_as_nullable_string!(witness).and_then(|w| serde_json::from_str(&w).ok()),
+        witness: column_as_nullable_string!(witness)
+            .map(|value| {
+                cdk_common::Witness::from_json_for_version(&value, keyset_id.get_version())
+            })
+            .transpose()?,
         dleq: None,
         p2pk_e: None,
         spend_info: None,
@@ -82,14 +87,18 @@ pub(super) fn sql_row_to_proof_with_state(row: Vec<Column>) -> Result<(Proof, St
         .and_then(|s| State::from_str(&s).ok())
         .unwrap_or(State::Pending);
 
+    let keyset_id = column_as_string!(keyset_id, Id::from_str, Id::from_bytes);
     Ok((
         Proof {
             amount: Amount::from(amount),
-            keyset_id: column_as_string!(keyset_id, Id::from_str, Id::from_bytes),
+            keyset_id,
             secret: column_as_string!(secret, Secret::from_str),
             c: column_as_string!(c, PublicKey::from_hex, PublicKey::from_slice),
             witness: column_as_nullable_string!(witness)
-                .and_then(|w| serde_json::from_str(&w).ok()),
+                .map(|value| {
+                    cdk_common::Witness::from_json_for_version(&value, keyset_id.get_version())
+                })
+                .transpose()?,
             dleq: None,
             p2pk_e: None,
             spend_info: None,

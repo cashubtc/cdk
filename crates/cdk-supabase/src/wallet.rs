@@ -2834,6 +2834,8 @@ struct ProofTable {
 impl TryInto<ProofInfo> for ProofTable {
     type Error = DatabaseError;
     fn try_into(self) -> Result<ProofInfo, Self::Error> {
+        let keyset_id =
+            Id::from_str(&self.keyset_id).map_err(|_| DatabaseError::InvalidKeysetId)?;
         let y = PublicKey::from_hex(&self.y)
             .map_err(|_| DatabaseError::Internal("Invalid y".into()))?;
         let c = PublicKey::from_hex(&self.c)
@@ -2858,15 +2860,16 @@ impl TryInto<ProofInfo> for ProofTable {
                 .map_err(|_| DatabaseError::Internal("Invalid derivation index".to_owned()))?,
             proof: cdk_common::Proof {
                 amount: cdk_common::Amount::from(self.amount as u64),
-                keyset_id: Id::from_str(&self.keyset_id)
-                    .map_err(|_| DatabaseError::InvalidKeysetId)?,
+                keyset_id,
                 secret: Secret::from_str(&self.secret)
                     .map_err(|_| DatabaseError::Internal("Invalid secret".into()))?,
                 c,
                 witness: self
                     .witness
                     .filter(|w| !w.trim().is_empty())
-                    .map(|w| serde_json::from_str(&w))
+                    .map(|w| {
+                        cdk_common::Witness::from_json_for_version(&w, keyset_id.get_version())
+                    })
                     .transpose()?,
                 dleq: match (self.dleq_e, self.dleq_s, self.dleq_r) {
                     (Some(e), Some(s), Some(r)) => Some(cdk_common::ProofDleq {

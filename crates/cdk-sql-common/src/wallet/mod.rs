@@ -2209,13 +2209,16 @@ fn sql_row_to_proof_info(row: Vec<Column>) -> Result<ProofInfo, Error> {
     };
 
     let amount: u64 = column_as_number!(amount);
+    let keyset_id = column_as_string!(keyset_id, Id::from_str);
     let proof = Proof {
         amount: Amount::from(amount),
-        keyset_id: column_as_string!(keyset_id, Id::from_str),
+        keyset_id,
         secret: column_as_string!(secret, Secret::from_str),
-        witness: column_as_nullable_string!(witness, |v| { serde_json::from_str(&v).ok() }, |v| {
-            serde_json::from_slice(&v).ok()
-        }),
+        witness: column_as_nullable_string!(witness)
+            .map(|value| {
+                cdk_common::Witness::from_json_for_version(&value, keyset_id.get_version())
+            })
+            .transpose()?,
         c: column_as_string!(c, PublicKey::from_str, PublicKey::from_slice),
         dleq,
         spend_info: column_as_nullable_string!(spend_info)

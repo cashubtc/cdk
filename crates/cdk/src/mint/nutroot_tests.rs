@@ -23,7 +23,7 @@ async fn nutroot_mint_and_swap_require_transaction_authorization() {
             .key_path_key(&proof.secret.to_string(), None)
             .unwrap();
         proof.witness = Some(Witness::NutrootWitness(
-            serde_json::to_string(&NutrootWitness::key_path(
+            serde_json::to_string_pretty(&NutrootWitness::key_path(
                 &key,
                 transaction.input_digest(index).unwrap(),
             ))
@@ -37,7 +37,16 @@ async fn nutroot_mint_and_swap_require_transaction_authorization() {
     assert!(mint.process_swap_request(redirected).await.is_err());
 
     let ys = cdk_common::nuts::ProofsMethods::ys(request.inputs()).unwrap();
+    let expected_witnesses: Vec<_> = request
+        .inputs()
+        .iter()
+        .map(|proof| proof.witness.clone())
+        .collect();
     let response = mint.process_swap_request(request).await.unwrap();
+    let stored = mint.localstore.get_proofs_by_ys(&ys).await.unwrap();
+    for (proof, witness) in stored.iter().zip(expected_witnesses) {
+        assert_eq!(proof.as_ref().unwrap().witness, witness);
+    }
     let states = mint
         .check_state(&cdk_common::nuts::CheckStateRequest { ys })
         .await

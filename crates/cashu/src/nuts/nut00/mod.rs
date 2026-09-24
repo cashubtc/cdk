@@ -336,6 +336,20 @@ impl From<HTLCWitness> for Witness {
 }
 
 impl Witness {
+    /// Decode a JSON-serialized witness from storage, preserving the exact v3
+    /// string rather than interpreting it as a legacy P2PK/HTLC witness.
+    pub fn from_json_for_version(
+        value: &str,
+        version: crate::nuts::KeySetVersion,
+    ) -> Result<Self, serde_json::Error> {
+        match version {
+            crate::nuts::KeySetVersion::Version02 => {
+                serde_json::from_str::<String>(value).map(Self::NutrootWitness)
+            }
+            _ => serde_json::from_str(value),
+        }
+    }
+
     /// Add signatures to [`Witness`]
     pub fn add_signatures(&mut self, signatures: Vec<String>) {
         match self {
