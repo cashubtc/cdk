@@ -45,6 +45,9 @@ pub enum Error {
     /// Short keyset id does not match any of the provided IDv2s
     #[error("Short keyset id does not match any of the provided IDv2s")]
     UnknownShortKeysetId,
+    /// Short keyset id matches multiple distinct full IDs
+    #[error("Short keyset id is ambiguous")]
+    AmbiguousShortKeysetId,
     /// Short keyset id is ill-formed
     #[error("Short keyset id is ill-formed")]
     MalformedShortKeysetId,
@@ -325,15 +328,18 @@ impl Id {
                 })
             }
             KeySetVersion::Version01 | KeySetVersion::Version02 => {
-                // We return the first match or error
-                for keyset_info in keysets_info.iter() {
+                let mut resolved = None;
+                for keyset_info in keysets_info {
                     if keyset_info.id.version == short_id.version
                         && keyset_info.id.id.to_vec().starts_with(&short_id.prefix)
                     {
-                        return Ok(keyset_info.id);
+                        if resolved.is_some_and(|id| id != keyset_info.id) {
+                            return Err(Error::AmbiguousShortKeysetId);
+                        }
+                        resolved = Some(keyset_info.id);
                     }
                 }
-                Err(Error::UnknownShortKeysetId)
+                resolved.ok_or(Error::UnknownShortKeysetId)
             }
         }
     }
@@ -1292,6 +1298,39 @@ mod test {
         let id_with_same_inputs = Id::v2_from_data(&keys, &unit, 0, Some(2059210353));
 
         assert_eq!(id_without_fee, id_with_same_inputs);
+    }
+
+    #[test]
+    fn test_short_keyset_resolution_requires_a_unique_full_id() {
+        for version in [1, 2] {
+            let mut bytes = [0x11; 33];
+            bytes[0] = version;
+            let first = Id::from_bytes(&bytes).unwrap();
+            bytes[32] = 0x22;
+            let second = Id::from_bytes(&bytes).unwrap();
+            let keyset = |id| KeySetInfo {
+                id,
+                unit: CurrencyUnit::Sat,
+                active: true,
+                input_fee_ppk: 0,
+                final_expiry: None,
+            };
+            let short = ShortKeysetId::from(first);
+            for ids in [[first, second], [second, first]] {
+                let keysets = ids.map(keyset);
+                assert!(matches!(
+                    Id::from_short_keyset_id(&short, &keysets),
+                    Err(Error::AmbiguousShortKeysetId),
+                ));
+                let full = ShortKeysetId::from_bytes(&first.to_bytes()).unwrap();
+                assert_eq!(Id::from_short_keyset_id(&full, &keysets).unwrap(), first);
+            }
+            // Repeated metadata for one full ID does not create ambiguity.
+            assert_eq!(
+                Id::from_short_keyset_id(&short, &[keyset(first), keyset(first)],).unwrap(),
+                first
+            );
+        }
     }
 
     #[test]
