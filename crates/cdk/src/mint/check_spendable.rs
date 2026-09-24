@@ -53,6 +53,12 @@ impl Mint {
                 .await?
                 .into_iter()
                 .flatten()
+                // Nutroot witnesses are private unless a disclosed leaf and its
+                // persisted input digest can open a spend commitment. Never use
+                // the legacy unconditional witness response for version 02.
+                .filter(|proof| {
+                    proof.keyset_id.get_version() != cdk_common::nuts::KeySetVersion::Version02
+                })
                 .filter_map(|p| p.y().ok().map(|y| (y, p.witness)))
                 .collect()
         };

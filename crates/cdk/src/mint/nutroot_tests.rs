@@ -36,7 +36,16 @@ async fn nutroot_mint_and_swap_require_transaction_authorization() {
     *redirected.outputs_mut() = other_outputs;
     assert!(mint.process_swap_request(redirected).await.is_err());
 
+    let ys = cdk_common::nuts::ProofsMethods::ys(request.inputs()).unwrap();
     let response = mint.process_swap_request(request).await.unwrap();
+    let states = mint
+        .check_state(&cdk_common::nuts::CheckStateRequest { ys })
+        .await
+        .unwrap();
+    assert!(states
+        .states
+        .iter()
+        .all(|state| state.state == cdk_common::nuts::State::Spent && state.witness.is_none()));
     assert!(!response.signatures.is_empty());
     assert_eq!(mint.get_active_keysets().len(), 1);
     assert_eq!(
