@@ -127,10 +127,15 @@ impl Spec for MintSubTopics {
         Arc::new(Self {})
     }
 
-    async fn fetch_events(self: &Arc<Self>, _topics: Vec<Self::Topic>, _reply_to: Subscriber<Self>)
+    async fn fetch_events(
+        self: &Arc<Self>,
+        _topics: Vec<Self::Topic>,
+        _reply_to: Subscriber<Self>,
+    ) -> Result<(), cdk_common::pub_sub::Error>
     where
         Self: Sized,
     {
+        Ok(())
     }
 }
 

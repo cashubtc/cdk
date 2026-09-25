@@ -1,9 +1,14 @@
 use cdk::subscription::Params;
 use cdk::ws::WsResponseResult;
+use cdk_common::pub_sub::Error as PubSubError;
 
-use super::{WsContext, WsError, MAX_FILTERS_PER_SUBSCRIPTION, MAX_SUBSCRIPTIONS_PER_CONNECTION};
+use super::{SubscriptionSlot, WsContext, WsError};
 
-/// The `handle` method is called when a client sends a subscription request
+/// The `handle` method is called when a client sends a subscription request.
+///
+/// The read loop has already charged the connection's request budget for this
+/// frame and its filters, so everything below is about what the mint can admit,
+/// not about what the client can afford.
 pub(crate) async fn handle(
     context: &mut WsContext,
     params: Params,
@@ -15,23 +20,37 @@ pub(crate) async fn handle(
         return Err(WsError::InvalidParams);
     }
 
-    if context.subscriptions.len() >= MAX_SUBSCRIPTIONS_PER_CONNECTION {
+    let limits = context.state.ws_limiter.limits();
+
+    if context.subscriptions.len() >= limits.max_subscriptions_per_connection {
         tracing::warn!(
             "WebSocket subscription request exceeds per-connection limit: {} >= {}",
             context.subscriptions.len(),
-            MAX_SUBSCRIPTIONS_PER_CONNECTION
+            limits.max_subscriptions_per_connection
+        );
+        return Err(WsError::ServerBusy);
+    }
+
+    if params.filters.len() > limits.max_filters_per_subscription {
+        tracing::warn!(
+            "WebSocket subscription request exceeds max filters limit: {} > {}",
+            params.filters.len(),
+            limits.max_filters_per_subscription
         );
         return Err(WsError::InvalidParams);
     }
 
-    let max_filters = MAX_FILTERS_PER_SUBSCRIPTION;
-    if params.filters.len() > max_filters {
+    // Each filter registers one topic, so the filter count is what this
+    // subscription will claim from the connection's topic budget.
+    let requested = params.filters.len();
+    let topics_in_use = context.topics_in_use.saturating_add(requested);
+    if topics_in_use > limits.max_topics_per_connection {
         tracing::warn!(
-            "WebSocket subscription request exceeds max filters limit: {} > {}",
-            params.filters.len(),
-            max_filters
+            "WebSocket subscription request exceeds per-connection topic budget: {} > {}",
+            topics_in_use,
+            limits.max_topics_per_connection
         );
-        return Err(WsError::InvalidParams);
+        return Err(WsError::ServerBusy);
     }
 
     let mut subscription = context
@@ -39,18 +58,46 @@ pub(crate) async fn handle(
         .mint
         .pubsub_manager()
         .subscribe(params)
-        .map_err(|_| WsError::ParseError)?;
+        .map_err(|err| match err {
+            PubSubError::ParsingError(_) => WsError::InvalidParams,
+            PubSubError::TooManyTopics => {
+                tracing::warn!("Mint-wide subscription topic budget exhausted: {err}");
+                WsError::ServerBusy
+            }
+            err => {
+                tracing::warn!("Could not create subscription: {err}");
+                WsError::InternalError
+            }
+        })?;
 
     let publisher = context.publisher.clone();
+    let delivery_failed = context.delivery_failed.clone();
+    let delivery_timeout = limits.idle_timeout;
     let sub_id_for_sender = sub_id.clone();
     context.subscriptions.insert(
         sub_id.clone(),
-        tokio::spawn(async move {
-            while let Some(response) = subscription.recv().await {
-                let _ = publisher.try_send((sub_id_for_sender.clone(), response.into_inner()));
-            }
-        }),
+        SubscriptionSlot {
+            handle: tokio::spawn(async move {
+                while let Some(response) = subscription.recv().await {
+                    let event = (sub_id_for_sender.clone(), response.into_inner());
+                    let Err(err) = publisher.send_timeout(event, delivery_timeout).await else {
+                        continue;
+                    };
+
+                    tracing::debug!("Could not deliver a notification, closing: {err}");
+                    if let Err(err) = delivery_failed.try_send(()) {
+                        tracing::debug!(
+                            "Delivery failure not signalled, the connection is already closing: {err}"
+                        );
+                    }
+                    return;
+                }
+            }),
+            topics: requested,
+        },
     );
+    context.topics_in_use = topics_in_use;
+
     Ok(WsResponseResult {
         status: "OK".to_string(),
         sub_id,
