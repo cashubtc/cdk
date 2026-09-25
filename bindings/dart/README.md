@@ -17,7 +17,6 @@ dependencies:
 ## Requirements
 
 - Dart SDK `^3.10.0`
-- Rust toolchain (the native library is compiled from source via [native_toolchain_rust](https://pub.dev/packages/native_toolchain_rust))
 
 ## Usage
 
@@ -25,25 +24,49 @@ dependencies:
 import 'package:cdk/cdk.dart';
 ```
 
-## Building
+## Native library
 
-The Rust native library is built automatically when you run `dart pub get` or `dart run`. No manual compilation step is needed.
-
-If you're in a Nix environment, OpenSSL paths are detected automatically from `NIX_CFLAGS_COMPILE` and `NIX_LDFLAGS`.
-
-## Pre-built binaries
-
-Pre-built native libraries for all supported platforms are available as [GitHub release assets](https://github.com/cashubtc/cdk-dart/releases).
+Consuming this package involves no compilation step, no Rust toolchain and no
+network access. The native libraries are committed in this package under
+`prebuilt/<target-triple>/`, and the build hook copies the one matching your
+target. They are built from the CDK monorepo at the commit this version was
+tagged from, so the binary and the Dart bindings always come from one tree.
 
 Supported targets:
 
 | Platform | Architecture |
 |----------|-------------|
 | Linux | x86_64, aarch64 |
-| macOS | aarch64 |
+| macOS | aarch64, x86_64 |
 | Windows | x86_64 |
 | Android | aarch64, armv7, x86_64 |
 | iOS | aarch64 |
+
+Each target ships the flavour Dart asks for on that platform: dynamic
+everywhere except iOS, which is statically linked. A target or link mode with no
+committed library fails the build naming what it wanted, because this package
+ships no Rust sources to fall back to.
+
+## Building from source
+
+The native library and the generated Dart sources are built in the
+[CDK monorepo](https://github.com/cashubtc/cdk). This package carries release
+artifacts only, so there is no Rust crate here to build.
+
+```bash
+git clone https://github.com/cashubtc/cdk
+cd cdk
+just binding-dart
+```
+
+`just binding-dart` runs `nix build .#dart-bindings` and copies the generated
+sources and the native library into `bindings/dart/lib/src/generated/`. It needs
+[nix](https://nixos.org/download) with flakes enabled and
+[just](https://github.com/casey/just). Nix supplies the Rust toolchain pinned in
+`rust-toolchain.toml`, so a separate rustup install is not required.
+
+Run the tests from the monorepo root with `just test-dart`. The recipe needs the
+Dart SDK on PATH; `nix develop .#bindings` provides it.
 
 ## CI/CD — Publishing Workflow
 

@@ -1,0 +1,4 @@
+# Synced to the cdk-dart binding repo. The prebuilt libraries under prebuilt/
+# are committed there; only local build output is ignored.
+.dart_tool/
+pubspec.lock

@@ -288,6 +288,21 @@ sha256sum ./result/bin/*
 # Compare against SHA256SUMS from the release
 ```
 
+### Cargo Profiles
+
+The workspace defines four profiles beyond `dev` and `release`:
+
+| Profile | Used by | Notes |
+|---|---|---|
+| `ci` | CI test builds | Inherits `dev`, LTO off, no incremental compilation. |
+| `release-smaller` | Size-sensitive binaries | `opt-level = "z"`, LTO, `panic = "abort"`. |
+| `release-static` | `static-build-publish.yml` | Thin LTO and `codegen-units = 1` for reproducibility, `panic = "abort"`. |
+| `release-ffi` | The four FFI binding releases | LTO and `codegen-units = 1`. Deliberately **not** `panic = "abort"`: UniFFI turns a Rust panic into a foreign exception through `catch_unwind`, and aborting would take the host app down instead. `strip = "debuginfo"` keeps the symbol table that `uniffi-bindgen` reads the component interface from; the release workflows strip fully after generating bindings. |
+
+`release-ffi` is the only profile the FFI binding releases use. The binding
+repositories contain no Rust crate, so it is also the only profile those
+libraries are ever built under.
+
 ### Nix Troubleshooting
 
 - **Updating Dependencies**: If you notice dependencies are out of date or a new tool has been added to the flake, run `nix flake update` to refresh the `flake.lock` file.
