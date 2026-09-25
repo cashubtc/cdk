@@ -16,6 +16,30 @@ bindings. This keeps bindings as first-class citizens alongside the Rust core:
 they evolve together, are tested together, and breakage is caught before it
 reaches downstream consumers.
 
+That extends to the released artifacts. The four wrapper crates are workspace
+members, so every native library and every generated binding is compiled from
+this checkout with `cargo --locked` against the root `Cargo.lock` and the
+`release-ffi` profile. There is no dependency pin anywhere in that build: the
+release tag decides which tree is compiled, and it is chosen before the build
+starts.
+
+The binding repositories carry build artifacts, not sources. They receive
+generated bindings, the platform project files and the compiled libraries, and
+they carry the GitHub release. They contain no Rust crate and nothing in them is
+buildable, so no binding release goes through crates.io.
+
+Every repository commits its compiled libraries, so whatever a tag points at
+contains everything that tag delivers. That matters because not every language
+has a second channel: Kotlin's release uploads no assets and nightlies skip
+Maven Central, so a nightly would otherwise deliver nothing at all.
+
+| Language | Committed at | Also published as |
+|---|---|---|
+| Swift | `CashuDevKitFFI.xcframework.zip` at the root, a local `binaryTarget(path:)` | a release asset |
+| Dart | `prebuilt/<target-triple>/` | per-platform release archives |
+| Kotlin | `cdk-android/src/main/jniLibs/<abi>/` | the Maven Central AAR |
+| Go | `bindings/cdkffi/native/<goos>_<goarch>/` | a release tarball |
+
 ## Architecture
 
 The bindings follow a two-tier architecture:
@@ -84,24 +108,30 @@ wrapper crate and the appropriate build tooling.
 
 ## Building and testing
 
-Prerequisites: Rust toolchain, and the target language SDK.
+Every binding builds from a clone of this monorepo; the publishing repositories
+carry artifacts only. Each language has one recipe that generates the bindings
+and builds the native library, and one that tests them.
 
 ```bash
 # Dart
-just binding-dart    # Generate bindings
-just test-dart       # Run tests
-
-# Swift (macOS only — build runs in CI via swift-publish workflow)
-just test-swift      # Run tests
-
-# Kotlin
-just binding-kotlin  # Generate bindings
-just test-kotlin     # Run tests
+just binding-dart    && just test-dart
 
 # Go
-just binding-go      # Generate bindings
-just test-go         # Run tests
+just binding-go      && just test-go
+
+# Kotlin
+just binding-kotlin  && just test-kotlin
+
+# Swift (macOS only)
+just binding-swift   && just test-swift
 ```
+
+Prerequisites: `just`, plus [nix](https://nixos.org/download) with flakes enabled
+for Dart, Go and Kotlin, whose `binding-*` recipes wrap
+`nix build .#<lang>-bindings` and get their Rust toolchain from nix. Swift is the
+exception: `binding-swift` is plain cargo and needs a rustup toolchain and Xcode
+instead. The test recipes additionally need that language's SDK on PATH, which
+`nix develop .#bindings` provides for Dart, Go and Kotlin.
 
 ## Releasing
 
@@ -120,7 +150,10 @@ This runs the **FFI - Publish All Bindings** GitHub Actions workflow
 - Creates the corresponding releases in the separate binding repositories
 
 The `release` just recipe calls `ffi-release-all` automatically after publishing
-Rust crates.
+Rust crates, but the two are independent. Binding builds compile `cdk-ffi` from
+this repository at the release commit, so `ffi-release-all` needs only the tag
+and green CI on it. It can run before, after, or without the crates.io publish,
+and it can be re-run on its own if a language fails.
 
 All `ffi-release-*` recipes dispatch with `--ref v<VERSION>`, so GitHub loads
 the workflow definitions from the release tag. The unified workflow's relative
@@ -156,7 +189,8 @@ repository:
 
 Nightly tags include the UTC date and short source commit, for example
 `v0.18.0-nightly.20260801.g1a2b3c4`. The release notes link the full CDK source
-commit, and the generated Rust wrapper pins `cdk-ffi` to that exact commit.
+commit. Stable and nightly builds follow the same path, so a nightly is a real
+rehearsal of a release.
 
 The workflow checks each binding repository independently and skips a language
 when that CDK commit already has a nightly release. This also allows a later run

@@ -17,7 +17,7 @@ files for the `arm64-v8a` and `x86_64` Android ABIs, so the published artifact
 is self-contained.
 
 Only Android is published to Maven Central. Desktop JVM users build from source
-(see [Building from Source](#building-from-source)). This keeps the published
+(see [Building from source](#building-from-source)). This keeps the published
 footprint within Maven Central's per-organization publishing limits.
 
 ## Maven Artifacts
@@ -45,7 +45,7 @@ dependencies {
 ### Desktop JVM
 
 Not published to Maven Central. Build the bindings and native library from
-source (see [Building from Source](#building-from-source)) and depend on the
+source (see [Building from source](#building-from-source)) and depend on the
 local `cdk-jvm` module.
 
 ## Quick Start
@@ -89,17 +89,36 @@ fun main() = runBlocking {
 }
 ```
 
-## Building from Source
+## Building from source
 
-Requires Rust and the [just](https://github.com/casey/just) command runner.
+The native library and the generated Kotlin sources are built in the
+[CDK monorepo](https://github.com/cashubtc/cdk), not here.
 
 ```bash
-# Generate Kotlin bindings and build native library
+git clone https://github.com/cashubtc/cdk
+cd cdk
 just binding-kotlin
-
-# Run tests
-just test-kotlin
 ```
+
+`just binding-kotlin` runs `nix build .#kotlin-bindings` and copies the generated
+sources and the host native library into `bindings/kotlin/cdk-jvm/src/main/`. It
+needs [nix](https://nixos.org/download) with flakes enabled and
+[just](https://github.com/casey/just). Nix supplies the Rust toolchain pinned in
+`rust-toolchain.toml`, so a separate rustup install is not required.
+
+Run the tests from the monorepo root with `just test-kotlin`. That runs the JVM
+module only (`-PcdkJvmOnly=true`), so it needs a JDK but no Android SDK.
+
+The published Android libraries are cross-compiled in the CDK monorepo's
+`.#kotlin-build` Nix devshell under the `release-ffi` profile, against the
+workspace `Cargo.lock`.
+
+The cdk-kotlin repository carries build artifacts, not sources: generated Kotlin
+sources, the Gradle projects and the Android libraries under
+`cdk-android/src/main/jniLibs/`, but no Rust crate. Desktop JVM users build here
+in the monorepo, where the FFI crate and the lockfile live. The libraries are
+committed as well as published to Maven Central, so a nightly tag, which skips
+the Maven publish, still carries them.
 
 ## CI/CD — Publishing Workflow
 

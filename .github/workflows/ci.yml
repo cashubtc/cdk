@@ -54,6 +54,10 @@ jobs:
         run: nix develop --fallback -i -L .#stable --command bash -c "find . -name '*.nix' -not -path './.git/*' -not -path './.jj/*' -print0 | xargs -0 nixpkgs-fmt --check"
       - name: typos
         run: nix develop --fallback -i -L .#stable --command typos
+      # The release workflows build the bindings with --locked, so a lock that
+      # drifted from Cargo.toml would otherwise first surface on release day.
+      - name: Cargo.lock is up to date
+        run: nix develop --fallback -i -L .#stable --command cargo metadata --locked --format-version 1 --no-deps > /dev/null
 
   fuzz-check:
     name: "Fuzz targets compile and smoke test"
