@@ -8,7 +8,7 @@ use cdk::amount::{amount_for_offer, Amount, MSAT_IN_SAT};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::KnownMethod;
 use cdk::nuts::{CurrencyUnit, MeltOptions, MintInfo, PaymentMethod};
-use cdk::wallet::WalletRepository;
+use cdk::wallet::{Wallet, WalletRepository};
 use cdk::Bolt11Invoice;
 use cdk_common::wallet::WalletKey;
 use clap::{Args, ValueEnum};
@@ -106,7 +106,7 @@ pub struct MeltSubCommand {
     /// Bitcoin network to use for BIP353 (bitcoin, testnet, signet, regtest)
     #[arg(long, default_value = "bitcoin")]
     network: BitcoinNetwork,
-    /// Amount to pay. For BOLT11/BOLT12 this is sats; for custom methods this is denominated in the selected wallet unit.
+    /// Amount to pay. For bolt11, bolt12, bip353, and onchain this is sats; for custom methods this is denominated in the selected wallet unit.
     #[arg(long)]
     amount: Option<u64>,
     /// MPP split entry in the form <mint_url>=<amount_sats>; repeat for multiple mints
@@ -165,18 +165,58 @@ fn parse_and_validate_extra(extra_str: Option<&str>) -> Result<Option<serde_json
     }
 }
 
-fn select_mint_for_custom_melt<'a>(
+fn custom_payment_method_supported(
+    mint_info: &MintInfo,
+    payment_method: &PaymentMethod,
+    unit: &CurrencyUnit,
+) -> bool {
+    !mint_info.nuts.nut05.disabled
+        && mint_info
+            .nuts
+            .nut05
+            .methods
+            .iter()
+            .any(|m| m.method == *payment_method && m.unit == *unit)
+}
+
+fn select_mint_for_custom_melt<'a, F>(
     balances: &'a [(WalletKey, Amount)],
     unit: &CurrencyUnit,
     required_amount: Option<Amount>,
-) -> Option<&'a MintUrl> {
+    custom_method: &str,
+    mut is_supported: F,
+) -> Result<&'a MintUrl>
+where
+    F: FnMut(&MintUrl) -> bool,
+{
     let min_balance = required_amount.unwrap_or(Amount::ZERO);
-    balances
-        .iter()
-        .find(|(key, balance)| {
-            key.unit == *unit && *balance > Amount::ZERO && *balance >= min_balance
-        })
-        .map(|(key, _)| &key.mint_url)
+    let mut has_funded_mint = false;
+
+    for (key, balance) in balances {
+        if key.unit == *unit && *balance > Amount::ZERO && *balance >= min_balance {
+            has_funded_mint = true;
+            if is_supported(&key.mint_url) {
+                return Ok(&key.mint_url);
+            }
+        }
+    }
+
+    if has_funded_mint {
+        bail!(
+            "No mint with sufficient balance supports payment method '{}' for unit {}",
+            custom_method,
+            unit
+        );
+    } else if let Some(req_amt) = required_amount {
+        bail!(
+            "No mint with sufficient balance (>= {} {}) for unit {}",
+            req_amt,
+            unit,
+            unit
+        );
+    } else {
+        bail!("No mint with balance for unit {}", unit);
+    }
 }
 
 fn validate_custom_payment_method_support(
@@ -190,14 +230,7 @@ fn validate_custom_payment_method_support(
         bail!("Melting is disabled for mint {}", mint_url);
     }
 
-    let is_supported = mint_info
-        .nuts
-        .nut05
-        .methods
-        .iter()
-        .any(|m| m.method == *payment_method && m.unit == *unit);
-
-    if !is_supported {
+    if !custom_payment_method_supported(mint_info, payment_method, unit) {
         let method_supported_for_other_unit = mint_info
             .nuts
             .nut05
@@ -640,39 +673,71 @@ pub async fn pay(
                 }
             }
 
-            let mint_url = if let Some(specific_mint) = selected_mint {
-                specific_mint
+            let payment_method = PaymentMethod::from_str(custom_method)?;
+
+            let wallet = if let Some(specific_mint) = selected_mint {
+                let wallet = get_or_create_wallet(wallet_repository, &specific_mint, unit).await?;
+                let mint_info = wallet.load_mint_info().await?;
+                validate_custom_payment_method_support(
+                    &mint_info,
+                    &payment_method,
+                    custom_method,
+                    unit,
+                    &specific_mint,
+                )?;
+                wallet
             } else {
                 let balances_map = wallet_repository.get_balances().await?;
                 let balances_vec: Vec<(WalletKey, Amount)> = balances_map.into_iter().collect();
 
-                select_mint_for_custom_melt(&balances_vec, unit, requested_amount)
-                    .cloned()
-                    .ok_or_else(|| {
-                        if let Some(req_amt) = requested_amount {
-                            anyhow::anyhow!(
-                                "No mint with sufficient balance (>= {} {}) for unit {}",
-                                req_amt,
-                                unit,
-                                unit
-                            )
-                        } else {
-                            anyhow::anyhow!("No mint with balance for unit {}", unit)
+                let min_balance = requested_amount.unwrap_or(Amount::ZERO);
+                let mut supported_candidate: Option<(MintUrl, Wallet)> = None;
+
+                for (key, balance) in &balances_vec {
+                    if key.unit == *unit && *balance > Amount::ZERO && *balance >= min_balance {
+                        let candidate_wallet = match get_or_create_wallet(
+                            wallet_repository,
+                            &key.mint_url,
+                            unit,
+                        )
+                        .await
+                        {
+                            Ok(w) => w,
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Failed to get wallet for mint {}: {e}",
+                                    key.mint_url
+                                );
+                                continue;
+                            }
+                        };
+
+                        if let Ok(mint_info) = candidate_wallet.load_mint_info().await {
+                            if custom_payment_method_supported(&mint_info, &payment_method, unit) {
+                                supported_candidate =
+                                    Some((key.mint_url.clone(), candidate_wallet));
+                                break;
+                            }
                         }
-                    })?
+                    }
+                }
+
+                select_mint_for_custom_melt(
+                    &balances_vec,
+                    unit,
+                    requested_amount,
+                    custom_method,
+                    |url| {
+                        supported_candidate
+                            .as_ref()
+                            .map(|(u, _)| u == url)
+                            .unwrap_or(false)
+                    },
+                )?;
+
+                let (_, wallet) = supported_candidate.expect("candidate was selected");
+                wallet
             };
-
-            let wallet = get_or_create_wallet(wallet_repository, &mint_url, unit).await?;
-
-            let payment_method = PaymentMethod::from_str(custom_method)?;
-            let mint_info = wallet.load_mint_info().await?;
-            validate_custom_payment_method_support(
-                &mint_info,
-                &payment_method,
-                custom_method,
-                unit,
-                &mint_url,
-            )?;
 
             // For custom methods, explicitly use --request
             let request_str = input_or_prompt(
@@ -1057,17 +1122,245 @@ mod tests {
         ];
 
         // Should select mint_c because mint_a has only 10 (< 500) and mint_b has sat unit (!= ora)
-        let selected = select_mint_for_custom_melt(&balances, &ora_unit, Some(Amount::from(500)));
-        assert_eq!(selected, Some(&mint_c));
+        let selected = select_mint_for_custom_melt(
+            &balances,
+            &ora_unit,
+            Some(Amount::from(500)),
+            "branch",
+            |_| true,
+        )
+        .unwrap();
+        assert_eq!(selected, &mint_c);
 
-        // When amount exceeds all matching mint balances, returns None
-        let selected_none =
-            select_mint_for_custom_melt(&balances, &ora_unit, Some(Amount::from(2000)));
-        assert_eq!(selected_none, None);
+        // When amount exceeds all matching mint balances, returns error with required amount
+        let err_exceed = select_mint_for_custom_melt(
+            &balances,
+            &ora_unit,
+            Some(Amount::from(2000)),
+            "branch",
+            |_| true,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err_exceed.to_string(),
+            "No mint with sufficient balance (>= 2000 ora) for unit ora"
+        );
 
         // When amount is None, selects first mint with matching unit and non-zero balance
-        let selected_first = select_mint_for_custom_melt(&balances, &ora_unit, None);
-        assert_eq!(selected_first, Some(&mint_a));
+        let selected_first =
+            select_mint_for_custom_melt(&balances, &ora_unit, None, "branch", |_| true).unwrap();
+        assert_eq!(selected_first, &mint_a);
+    }
+
+    #[test]
+    fn test_select_mint_for_custom_melt_capabilities() {
+        let mint_a = MintUrl::from_str("https://mint-a.com").unwrap();
+        let mint_b = MintUrl::from_str("https://mint-b.com").unwrap();
+
+        let ora_unit = CurrencyUnit::Custom("ora".into());
+        let usd_unit = CurrencyUnit::Usd;
+        let branch_method = PaymentMethod::from_str("branch").unwrap();
+
+        let branch_ora_settings = MeltMethodSettings {
+            method: branch_method.clone(),
+            unit: ora_unit.clone(),
+            method_name: None,
+            min_amount: None,
+            max_amount: None,
+            options: None,
+        };
+
+        let branch_usd_settings = MeltMethodSettings {
+            method: branch_method.clone(),
+            unit: usd_unit.clone(),
+            method_name: None,
+            min_amount: None,
+            max_amount: None,
+            options: None,
+        };
+
+        let mint_info_empty = MintInfo::default();
+
+        let mint_info_ora = MintInfo {
+            nuts: Nuts {
+                nut05: Nut05Settings {
+                    methods: vec![branch_ora_settings.clone()],
+                    disabled: false,
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let mint_info_usd = MintInfo {
+            nuts: Nuts {
+                nut05: Nut05Settings {
+                    methods: vec![branch_usd_settings],
+                    disabled: false,
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let mint_info_disabled = MintInfo {
+            nuts: Nuts {
+                nut05: Nut05Settings {
+                    methods: vec![branch_ora_settings],
+                    disabled: true,
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        // TEST A: Two matching-unit mints. Mint A unsupported, Mint B supported.
+        // Auto-selection must choose Mint B.
+        let balances_a_b = vec![
+            (
+                WalletKey::new(mint_a.clone(), ora_unit.clone()),
+                Amount::from(1000),
+            ),
+            (
+                WalletKey::new(mint_b.clone(), ora_unit.clone()),
+                Amount::from(1000),
+            ),
+        ];
+        let selected_a = select_mint_for_custom_melt(
+            &balances_a_b,
+            &ora_unit,
+            Some(Amount::from(500)),
+            "branch",
+            |url| {
+                if url == &mint_a {
+                    custom_payment_method_supported(&mint_info_empty, &branch_method, &ora_unit)
+                } else if url == &mint_b {
+                    custom_payment_method_supported(&mint_info_ora, &branch_method, &ora_unit)
+                } else {
+                    false
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(selected_a, &mint_b);
+
+        // TEST B: Both mints support branch, but Mint A has balance 10, Mint B has 1000.
+        // Requested 500 must choose Mint B.
+        let balances_b = vec![
+            (
+                WalletKey::new(mint_a.clone(), ora_unit.clone()),
+                Amount::from(10),
+            ),
+            (
+                WalletKey::new(mint_b.clone(), ora_unit.clone()),
+                Amount::from(1000),
+            ),
+        ];
+        let selected_b = select_mint_for_custom_melt(
+            &balances_b,
+            &ora_unit,
+            Some(Amount::from(500)),
+            "branch",
+            |url| {
+                if url == &mint_a || url == &mint_b {
+                    custom_payment_method_supported(&mint_info_ora, &branch_method, &ora_unit)
+                } else {
+                    false
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(selected_b, &mint_b);
+
+        // TEST C: Mint A has branch for usd, Mint B has branch for ora.
+        // Requested unit ora must choose Mint B.
+        let balances_c = vec![
+            (
+                WalletKey::new(mint_a.clone(), ora_unit.clone()),
+                Amount::from(1000),
+            ),
+            (
+                WalletKey::new(mint_b.clone(), ora_unit.clone()),
+                Amount::from(1000),
+            ),
+        ];
+        let selected_c = select_mint_for_custom_melt(
+            &balances_c,
+            &ora_unit,
+            Some(Amount::from(500)),
+            "branch",
+            |url| {
+                if url == &mint_a {
+                    custom_payment_method_supported(&mint_info_usd, &branch_method, &ora_unit)
+                } else if url == &mint_b {
+                    custom_payment_method_supported(&mint_info_ora, &branch_method, &ora_unit)
+                } else {
+                    false
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(selected_c, &mint_b);
+
+        // TEST D: Matching unit and balance exist, but no mint advertises branch.
+        // Must return the capability-specific error.
+        let err_d = select_mint_for_custom_melt(
+            &balances_a_b,
+            &ora_unit,
+            Some(Amount::from(500)),
+            "branch",
+            |url| {
+                if url == &mint_a || url == &mint_b {
+                    custom_payment_method_supported(&mint_info_empty, &branch_method, &ora_unit)
+                } else {
+                    false
+                }
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            err_d.to_string(),
+            "No mint with sufficient balance supports payment method 'branch' for unit ora"
+        );
+
+        // TEST E: Explicitly selected mint does not support branch.
+        // Must fail on that mint with specific error, must NOT silently switch to another mint.
+        let err_e = validate_custom_payment_method_support(
+            &mint_info_empty,
+            &branch_method,
+            "branch",
+            &ora_unit,
+            &mint_a,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err_e.to_string(),
+            "Payment method 'branch' is not supported by mint https://mint-a.com"
+        );
+
+        // TEST F: NUT-05 disabled mint is not a valid auto-selection candidate.
+        assert!(!custom_payment_method_supported(
+            &mint_info_disabled,
+            &branch_method,
+            &ora_unit
+        ));
+        let selected_f = select_mint_for_custom_melt(
+            &balances_a_b,
+            &ora_unit,
+            Some(Amount::from(500)),
+            "branch",
+            |url| {
+                if url == &mint_a {
+                    custom_payment_method_supported(&mint_info_disabled, &branch_method, &ora_unit)
+                } else if url == &mint_b {
+                    custom_payment_method_supported(&mint_info_ora, &branch_method, &ora_unit)
+                } else {
+                    false
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(selected_f, &mint_b);
     }
 
     #[test]
