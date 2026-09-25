@@ -1997,12 +1997,14 @@ pub async fn concurrent_mint_quote_batches_use_consistent_lock_order(db: DynMint
     assert_eq!(second_quotes[1].as_ref().unwrap().id, quote1.id);
 }
 
-/// Test that mint quotes across all payment/issuance combinations:
+/// Test that mint quotes with multiple payments and multiple issuances are reconstructed
+/// accurately without duplicate payments or issuances across single and batch fetches.
+///
+/// Exercises all four relation combinations:
 /// - zero payments / zero issuance
 /// - multiple payments without issuance
 /// - multiple issuance without payments
 /// - multiple payments and multiple issuance
-/// are reconstructed accurately without duplicate payments or issuances across single and batch fetches.
 pub async fn mint_quotes_load_payments_and_issuance_without_duplicates<DB>(db: DB)
 where
     DB: Database<Error> + KeysDatabase<Err = Error>,
