@@ -68,6 +68,32 @@ sources and the native library into `bindings/dart/lib/src/generated/`. It needs
 Run the tests from the monorepo root with `just test-dart`. The recipe needs the
 Dart SDK on PATH; `nix develop .#bindings` provides it.
 
+Each target ships the flavour Dart asks for on that platform: dynamic
+everywhere except iOS, which is statically linked. A target or link mode with no
+committed library fails the build naming what it wanted, because this package
+ships no Rust sources to fall back to.
+
+## Building from source
+
+The native library and the generated Dart sources are built in the
+[CDK monorepo](https://github.com/cashubtc/cdk). This package carries release
+artifacts only, so there is no Rust crate here to build.
+
+```bash
+git clone https://github.com/cashubtc/cdk
+cd cdk
+just binding-dart
+```
+
+`just binding-dart` runs `nix build .#dart-bindings` and copies the generated
+sources and the native library into `bindings/dart/lib/src/generated/`. It needs
+[nix](https://nixos.org/download) with flakes enabled and
+[just](https://github.com/casey/just). Nix supplies the Rust toolchain pinned in
+`rust-toolchain.toml`, so a separate rustup install is not required.
+
+Run the tests from the monorepo root with `just test-dart`. The recipe needs the
+Dart SDK on PATH; `nix develop .#bindings` provides it.
+
 ## CI/CD — Publishing Workflow
 
 The `dart-publish.yml` workflow (in the CDK monorepo) builds native binaries,
@@ -79,12 +105,12 @@ and variables must be configured in the **CDK monorepo** repository settings
 
 | Name | Purpose |
 |---|---|
-| `FFI_DEPLOY_KEY` | Personal access token (PAT) with `repo` scope on the FFI target repos (`cdk-dart`, `cdk-kotlin`, `cdk-swift`). Used to clone, push, and create releases. Shared across all FFI publish workflows. |
+| `FFI_DEPLOY_KEY` | Personal access token (PAT) with `repo` scope on the FFI target repos. Used to clone, push, and create releases. Shared across all FFI publish workflows. |
 
 #### How to create the PAT
 
 1. Go to **GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens**.
-2. Create a token scoped to the `cdk-dart`, `cdk-kotlin`, and `cdk-swift` repositories with **Contents** (read/write) and **Metadata** (read) permissions.
+2. Create a token scoped to the FFI target repositories with **Contents** (read/write) and **Metadata** (read) permissions.
 3. Add it as a repository secret named `FFI_DEPLOY_KEY` in the monorepo.
 
 ### Variables
