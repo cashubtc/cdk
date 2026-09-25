@@ -44,6 +44,9 @@ __pycache__
 libcdk_ffi*
 cdk_ffi.py
 pubspec.lock
+bindings/python/dist/
+bindings/python/build/
+*.egg-info/
 
 # Kotlin bindings
 .gradle/

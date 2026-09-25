@@ -1,0 +1,24 @@
+[package]
+name = "cdk-ffi-python"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+version.workspace = true
+readme.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+name = "cdk_ffi_python"
+
+[[bin]]
+name = "uniffi-bindgen-python"
+path = "uniffi-bindgen.rs"
+
+[dependencies]
+cdk-ffi = { workspace = true, default-features = false, features = ["npubcash", "nwc", "bip353"] }
+uniffi = { workspace = true, features = ["cli"] }
+
+[lints]
+workspace = true
