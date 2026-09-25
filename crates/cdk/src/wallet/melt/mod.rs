@@ -1796,9 +1796,16 @@ impl Wallet {
                 self.melt_bolt12_quote(request_str, options).await
             }
             PaymentMethod::Custom(custom_method) => {
-                let extra_json =
+                let mut extra_json =
                     extra.map(|s| serde_json::from_str(&s).unwrap_or(serde_json::Value::Null));
-                self.melt_quote_custom(&custom_method, request_str, options, extra_json)
+                let amount = if let Some(serde_json::Value::Object(ref mut map)) = extra_json {
+                    map.remove("amount")
+                        .and_then(|v| v.as_u64())
+                        .map(Amount::from)
+                } else {
+                    None
+                };
+                self.melt_quote_custom(&custom_method, request_str, amount, extra_json)
                     .await
             }
             PaymentMethod::Known(KnownMethod::Onchain) => {

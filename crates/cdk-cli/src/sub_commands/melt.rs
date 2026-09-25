@@ -7,7 +7,7 @@ use anyhow::{bail, Result};
 use cdk::amount::{amount_for_offer, Amount, MSAT_IN_SAT};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::KnownMethod;
-use cdk::nuts::{CurrencyUnit, MeltOptions, PaymentMethod};
+use cdk::nuts::{CurrencyUnit, MeltOptions, MintInfo, PaymentMethod};
 use cdk::wallet::WalletRepository;
 use cdk::Bolt11Invoice;
 use cdk_common::wallet::WalletKey;
@@ -17,8 +17,8 @@ use lightning::offers::offer::Offer;
 use crate::terminal::escape_control;
 use crate::utils::{get_number_input, get_or_create_wallet, get_user_input};
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum MeltPaymentMethod {
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PaymentType {
     /// BOLT11 invoice
     Bolt11,
     /// BOLT12 offer
@@ -31,7 +31,7 @@ pub enum MeltPaymentMethod {
     Custom(String),
 }
 
-impl FromStr for MeltPaymentMethod {
+impl FromStr for PaymentType {
     type Err = Infallible;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -45,7 +45,7 @@ impl FromStr for MeltPaymentMethod {
     }
 }
 
-impl fmt::Display for MeltPaymentMethod {
+impl fmt::Display for PaymentType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Bolt11 => write!(f, "bolt11"),
@@ -90,7 +90,7 @@ pub struct MeltSubCommand {
     mint_url: Option<String>,
     /// Payment method (bolt11, bolt12, bip353, onchain, or custom)
     #[arg(long, default_value = "bolt11")]
-    method: MeltPaymentMethod,
+    method: PaymentType,
     /// BOLT11 invoice to pay (for bolt11 method)
     #[arg(long, conflicts_with_all = ["offer", "address", "request"])]
     invoice: Option<String>,
@@ -106,13 +106,13 @@ pub struct MeltSubCommand {
     /// Bitcoin network to use for BIP353 (bitcoin, testnet, signet, regtest)
     #[arg(long, default_value = "bitcoin")]
     network: BitcoinNetwork,
-    /// Amount in unit for amountless payments, onchain melts, or custom melts
+    /// Amount to pay. For BOLT11/BOLT12 this is sats; for custom methods this is denominated in the selected wallet unit.
     #[arg(long)]
     amount: Option<u64>,
     /// MPP split entry in the form <mint_url>=<amount_sats>; repeat for multiple mints
     #[arg(long = "mpp-split", value_name = "MINT_URL=AMOUNT", action = clap::ArgAction::Append, requires = "mpp")]
     mpp_split: Vec<String>,
-    /// Extra JSON data for custom payment methods
+    /// Extra JSON data for custom payment methods (must be a valid JSON object)
     #[arg(long)]
     extra: Option<String>,
 }
@@ -134,10 +134,13 @@ fn create_melt_options(
         }
         None => {
             // Payment doesn't have an amount; use CLI amount if supplied, otherwise prompt.
-            let user_amount = match cli_amount_sat {
-                Some(amount_sat) => amount_sat * MSAT_IN_SAT,
-                None => get_number_input::<u64>(prompt)? * MSAT_IN_SAT,
+            let amount_sat = match cli_amount_sat {
+                Some(amount_sat) => amount_sat,
+                None => get_number_input::<u64>(prompt)?,
             };
+            let user_amount = amount_sat
+                .checked_mul(MSAT_IN_SAT)
+                .ok_or_else(|| anyhow::anyhow!("Amount overflow"))?;
 
             if user_amount > available_funds {
                 bail!("Not enough funds");
@@ -146,6 +149,77 @@ fn create_melt_options(
             Ok(Some(MeltOptions::new_amountless(user_amount)))
         }
     }
+}
+
+fn parse_and_validate_extra(extra_str: Option<&str>) -> Result<Option<serde_json::Value>> {
+    match extra_str {
+        Some(s) => {
+            let value: serde_json::Value = serde_json::from_str(s)
+                .map_err(|e| anyhow::anyhow!("--extra must be a valid JSON object: {e}"))?;
+            if !value.is_object() {
+                bail!("--extra must be a valid JSON object");
+            }
+            Ok(Some(value))
+        }
+        None => Ok(None),
+    }
+}
+
+fn select_mint_for_custom_melt<'a>(
+    balances: &'a [(WalletKey, Amount)],
+    unit: &CurrencyUnit,
+    required_amount: Option<Amount>,
+) -> Option<&'a MintUrl> {
+    let min_balance = required_amount.unwrap_or(Amount::ZERO);
+    balances
+        .iter()
+        .find(|(key, balance)| {
+            key.unit == *unit && *balance > Amount::ZERO && *balance >= min_balance
+        })
+        .map(|(key, _)| &key.mint_url)
+}
+
+fn validate_custom_payment_method_support(
+    mint_info: &MintInfo,
+    payment_method: &PaymentMethod,
+    custom_method: &str,
+    unit: &CurrencyUnit,
+    mint_url: &MintUrl,
+) -> Result<()> {
+    if mint_info.nuts.nut05.disabled {
+        bail!("Melting is disabled for mint {}", mint_url);
+    }
+
+    let is_supported = mint_info
+        .nuts
+        .nut05
+        .methods
+        .iter()
+        .any(|m| m.method == *payment_method && m.unit == *unit);
+
+    if !is_supported {
+        let method_supported_for_other_unit = mint_info
+            .nuts
+            .nut05
+            .supported_methods()
+            .contains(&payment_method);
+        if method_supported_for_other_unit {
+            bail!(
+                "Payment method '{}' for unit {} is not supported by mint {}",
+                custom_method,
+                unit,
+                mint_url
+            );
+        } else {
+            bail!(
+                "Payment method '{}' is not supported by mint {}",
+                custom_method,
+                mint_url
+            );
+        }
+    }
+
+    Ok(())
 }
 
 fn input_or_prompt(arg: Option<&String>, prompt: &str) -> Result<String> {
@@ -221,7 +295,7 @@ pub async fn pay(
 
     // Handle MPP mode separately
     if sub_command_args.mpp {
-        if sub_command_args.method != MeltPaymentMethod::Bolt11 {
+        if sub_command_args.method != PaymentType::Bolt11 {
             bail!("MPP is only supported for BOLT11 invoices");
         }
         return pay_mpp(wallet_repository, sub_command_args, unit).await;
@@ -280,7 +354,7 @@ pub async fn pay(
 
     // Process payment based on payment method using individual wallets
     match &sub_command_args.method {
-        MeltPaymentMethod::Bolt11 => {
+        PaymentType::Bolt11 => {
             // Process BOLT11 payment
             let bolt11_str =
                 input_or_prompt(sub_command_args.invoice.as_ref(), "Enter bolt11 invoice")?;
@@ -356,7 +430,7 @@ pub async fn pay(
                 println!("Payment preimage: {}", escape_control(preimage));
             }
         }
-        MeltPaymentMethod::Bolt12 => {
+        PaymentType::Bolt12 => {
             // Process BOLT12 payment (offer)
             let offer_str = input_or_prompt(sub_command_args.offer.as_ref(), "Enter BOLT12 offer")?;
             let offer = Offer::from_str(&offer_str)
@@ -428,7 +502,7 @@ pub async fn pay(
                 println!("Payment preimage: {}", escape_control(preimage));
             }
         }
-        MeltPaymentMethod::Bip353 => {
+        PaymentType::Bip353 => {
             let bip353_addr =
                 input_or_prompt(sub_command_args.address.as_ref(), "Enter Bip353 address")?;
 
@@ -488,7 +562,7 @@ pub async fn pay(
                 println!("Payment preimage: {}", escape_control(preimage));
             }
         }
-        MeltPaymentMethod::Onchain => {
+        PaymentType::Onchain => {
             let onchain_address =
                 input_or_prompt(sub_command_args.address.as_ref(), "Enter onchain address")?;
 
@@ -549,50 +623,80 @@ pub async fn pay(
                 println!("Payment proof: {}", escape_control(payment_proof));
             }
         }
-        MeltPaymentMethod::Custom(custom_method) => {
-            let request_str = input_or_prompt(
-                sub_command_args
-                    .request
-                    .as_ref()
-                    .or(sub_command_args.invoice.as_ref())
-                    .or(sub_command_args.offer.as_ref())
-                    .or(sub_command_args.address.as_ref()),
-                &format!("Enter payment request for {custom_method}"),
-            )?;
+        PaymentType::Custom(custom_method) => {
+            // Validate --extra as a JSON object before creating the quote
+            let validated_extra = parse_and_validate_extra(sub_command_args.extra.as_deref())?;
 
-            if let Some(amount) = sub_command_args.amount {
-                if Amount::from(amount) > total_balance {
-                    bail!("Not enough funds: balance is {} {}", total_balance, unit);
+            let requested_amount = sub_command_args.amount.map(Amount::from);
+            if let Some(req_amt) = requested_amount {
+                if req_amt > total_balance {
+                    bail!(
+                        "Not enough funds: balance is {} {}, requested {} {}",
+                        total_balance,
+                        unit,
+                        req_amt,
+                        unit
+                    );
                 }
             }
-
-            let options = sub_command_args.amount.map(MeltOptions::new_amountless);
 
             let mint_url = if let Some(specific_mint) = selected_mint {
                 specific_mint
             } else {
-                let balances = wallet_repository.get_balances().await?;
+                let balances_map = wallet_repository.get_balances().await?;
+                let balances_vec: Vec<(WalletKey, Amount)> = balances_map.into_iter().collect();
 
-                balances
-                    .into_iter()
-                    .find(|(key, balance)| key.unit == *unit && *balance > Amount::ZERO)
-                    .map(|(key, _)| key.mint_url)
+                select_mint_for_custom_melt(&balances_vec, unit, requested_amount)
+                    .cloned()
                     .ok_or_else(|| {
-                        anyhow::anyhow!("No mint with sufficient balance for unit {}", unit)
+                        if let Some(req_amt) = requested_amount {
+                            anyhow::anyhow!(
+                                "No mint with sufficient balance (>= {} {}) for unit {}",
+                                req_amt,
+                                unit,
+                                unit
+                            )
+                        } else {
+                            anyhow::anyhow!("No mint with balance for unit {}", unit)
+                        }
                     })?
             };
 
             let wallet = get_or_create_wallet(wallet_repository, &mint_url, unit).await?;
 
             let payment_method = PaymentMethod::from_str(custom_method)?;
+            let mint_info = wallet.load_mint_info().await?;
+            validate_custom_payment_method_support(
+                &mint_info,
+                &payment_method,
+                custom_method,
+                unit,
+                &mint_url,
+            )?;
+
+            // For custom methods, explicitly use --request
+            let request_str = input_or_prompt(
+                sub_command_args.request.as_ref(),
+                &format!("Enter payment request for {custom_method}"),
+            )?;
+
+            let mut extra_map = match validated_extra {
+                Some(serde_json::Value::Object(map)) => map,
+                _ => serde_json::Map::new(),
+            };
+            if let Some(amount) = sub_command_args.amount {
+                extra_map.insert("amount".to_string(), serde_json::Value::from(amount));
+            }
+            let extra_str = if extra_map.is_empty() {
+                None
+            } else {
+                Some(serde_json::to_string(&serde_json::Value::Object(
+                    extra_map,
+                ))?)
+            };
 
             let quote = wallet
-                .melt_quote(
-                    payment_method,
-                    request_str,
-                    options,
-                    sub_command_args.extra.clone(),
-                )
+                .melt_quote(payment_method, request_str, None, extra_str)
                 .await?;
 
             println!("Melt quote created:");
@@ -601,6 +705,23 @@ pub async fn pay(
             println!("  Fee Reserve: {}", quote.fee_reserve);
             println!("  State: {}", quote.state);
             println!("  Expiry: {}", quote.expiry);
+
+            let required_total = quote
+                .amount
+                .checked_add(quote.fee_reserve)
+                .ok_or_else(|| anyhow::anyhow!("Amount overflow in quote calculation"))?;
+
+            let current_wallet_balance = wallet.total_balance().await?;
+            if current_wallet_balance < required_total {
+                bail!(
+                    "Insufficient funds in selected mint: balance is {} {}, but quote requires {} (amount: {}, fee reserve: {})",
+                    current_wallet_balance,
+                    unit,
+                    required_total,
+                    quote.amount,
+                    quote.fee_reserve
+                );
+            }
 
             let melted = wallet
                 .prepare_melt(&quote.id, HashMap::new())
@@ -629,7 +750,7 @@ async fn pay_mpp(
     sub_command_args: &MeltSubCommand,
     unit: &CurrencyUnit,
 ) -> Result<()> {
-    if sub_command_args.method != MeltPaymentMethod::Bolt11 {
+    if sub_command_args.method != PaymentType::Bolt11 {
         bail!("MPP is only supported for BOLT11 invoices");
     }
 
@@ -780,6 +901,9 @@ async fn pay_mpp(
 
 #[cfg(test)]
 mod tests {
+    use cdk::nuts::nut00::PaymentMethod;
+    use cdk::nuts::nut05::{MeltMethodSettings, Settings as Nut05Settings};
+    use cdk::nuts::{CurrencyUnit, MintInfo, Nuts};
     use clap::Parser;
 
     use super::*;
@@ -793,17 +917,17 @@ mod tests {
     #[test]
     fn parses_default_method_as_bolt11() {
         let cli = TestMeltCli::try_parse_from(["test"]).expect("parse test");
-        assert_eq!(cli.melt.method, MeltPaymentMethod::Bolt11);
+        assert_eq!(cli.melt.method, PaymentType::Bolt11);
         assert_eq!(cli.melt.method.to_string(), "bolt11");
     }
 
     #[test]
     fn parses_standard_methods() {
         let cases = [
-            ("bolt11", MeltPaymentMethod::Bolt11),
-            ("bolt12", MeltPaymentMethod::Bolt12),
-            ("bip353", MeltPaymentMethod::Bip353),
-            ("onchain", MeltPaymentMethod::Onchain),
+            ("bolt11", PaymentType::Bolt11),
+            ("bolt12", PaymentType::Bolt12),
+            ("bip353", PaymentType::Bip353),
+            ("onchain", PaymentType::Onchain),
         ];
 
         for (input, expected) in cases {
@@ -821,10 +945,7 @@ mod tests {
         for method in custom_methods {
             let cli = TestMeltCli::try_parse_from(["test", "--method", method])
                 .unwrap_or_else(|e| panic!("failed to parse custom method {method}: {e}"));
-            assert_eq!(
-                cli.melt.method,
-                MeltPaymentMethod::Custom(method.to_string())
-            );
+            assert_eq!(cli.melt.method, PaymentType::Custom(method.to_string()));
             assert_eq!(cli.melt.method.to_string(), method);
         }
     }
@@ -844,10 +965,7 @@ mod tests {
         ])
         .expect("parse full custom melt");
 
-        assert_eq!(
-            cli.melt.method,
-            MeltPaymentMethod::Custom("branch".to_string())
-        );
+        assert_eq!(cli.melt.method, PaymentType::Custom("branch".to_string()));
         assert_eq!(cli.melt.request.as_deref(), Some("branch_req_123"));
         assert_eq!(cli.melt.amount, Some(500));
         assert_eq!(cli.melt.extra.as_deref(), Some(r#"{"branch_id":"abc"}"#));
@@ -877,5 +995,184 @@ mod tests {
             "bc1q123",
         ])
         .is_err());
+    }
+
+    #[test]
+    fn test_parse_and_validate_extra_valid_object() {
+        let extra_str = r#"{"branch_id":"abc","nested":{"foo":123}}"#;
+        let parsed = parse_and_validate_extra(Some(extra_str)).expect("valid object");
+        assert!(parsed.is_some());
+        let val = parsed.unwrap();
+        assert_eq!(val["branch_id"], "abc");
+        assert_eq!(val["nested"]["foo"], 123);
+    }
+
+    #[test]
+    fn test_parse_and_validate_extra_none() {
+        let parsed = parse_and_validate_extra(None).expect("none is ok");
+        assert!(parsed.is_none());
+    }
+
+    #[test]
+    fn test_parse_and_validate_extra_malformed() {
+        let extra_str = r#"{"branch_id":"abc""#;
+        let err = parse_and_validate_extra(Some(extra_str)).expect_err("malformed must fail");
+        assert!(err
+            .to_string()
+            .contains("--extra must be a valid JSON object"));
+    }
+
+    #[test]
+    fn test_parse_and_validate_extra_non_object_rejected() {
+        for invalid in ["[1, 2, 3]", "\"hello\"", "123", "true", "null"] {
+            let err = parse_and_validate_extra(Some(invalid)).expect_err("non-object must fail");
+            assert!(err
+                .to_string()
+                .contains("--extra must be a valid JSON object"));
+        }
+    }
+
+    #[test]
+    fn test_select_mint_for_custom_melt_filters_by_amount_and_unit() {
+        let mint_a = MintUrl::from_str("https://mint-a.com").unwrap();
+        let mint_b = MintUrl::from_str("https://mint-b.com").unwrap();
+        let mint_c = MintUrl::from_str("https://mint-c.com").unwrap();
+
+        let ora_unit = CurrencyUnit::Custom("ora".into());
+        let sat_unit = CurrencyUnit::Sat;
+
+        let balances = vec![
+            (
+                WalletKey::new(mint_a.clone(), ora_unit.clone()),
+                Amount::from(10),
+            ),
+            (
+                WalletKey::new(mint_b.clone(), sat_unit.clone()),
+                Amount::from(1000),
+            ),
+            (
+                WalletKey::new(mint_c.clone(), ora_unit.clone()),
+                Amount::from(1000),
+            ),
+        ];
+
+        // Should select mint_c because mint_a has only 10 (< 500) and mint_b has sat unit (!= ora)
+        let selected = select_mint_for_custom_melt(&balances, &ora_unit, Some(Amount::from(500)));
+        assert_eq!(selected, Some(&mint_c));
+
+        // When amount exceeds all matching mint balances, returns None
+        let selected_none =
+            select_mint_for_custom_melt(&balances, &ora_unit, Some(Amount::from(2000)));
+        assert_eq!(selected_none, None);
+
+        // When amount is None, selects first mint with matching unit and non-zero balance
+        let selected_first = select_mint_for_custom_melt(&balances, &ora_unit, None);
+        assert_eq!(selected_first, Some(&mint_a));
+    }
+
+    #[test]
+    fn test_validate_custom_payment_method_support() {
+        let mint_url = MintUrl::from_str("https://mint.example.com").unwrap();
+        let branch_method = PaymentMethod::from_str("branch").unwrap();
+        let bolt11_method = PaymentMethod::from_str("bolt11").unwrap();
+        let ora_unit = CurrencyUnit::Custom("ora".into());
+        let sat_unit = CurrencyUnit::Sat;
+        let usd_unit = CurrencyUnit::Usd;
+
+        let mut mint_info = MintInfo {
+            nuts: Nuts {
+                nut05: Nut05Settings {
+                    methods: vec![
+                        MeltMethodSettings {
+                            method: branch_method.clone(),
+                            unit: ora_unit.clone(),
+                            method_name: None,
+                            min_amount: None,
+                            max_amount: None,
+                            options: None,
+                        },
+                        MeltMethodSettings {
+                            method: bolt11_method.clone(),
+                            unit: sat_unit.clone(),
+                            method_name: None,
+                            min_amount: None,
+                            max_amount: None,
+                            options: None,
+                        },
+                    ],
+                    disabled: false,
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        // 1. Advertised custom method and matching unit succeeds
+        assert!(validate_custom_payment_method_support(
+            &mint_info,
+            &branch_method,
+            "branch",
+            &ora_unit,
+            &mint_url
+        )
+        .is_ok());
+
+        // 2. Typo in payment method fails with clean error
+        let typo_method = PaymentMethod::from_str("bbolt11").unwrap();
+        let typo_err = validate_custom_payment_method_support(
+            &mint_info,
+            &typo_method,
+            "bbolt11",
+            &sat_unit,
+            &mint_url,
+        )
+        .unwrap_err();
+        assert_eq!(
+            typo_err.to_string(),
+            "Payment method 'bbolt11' is not supported by mint https://mint.example.com"
+        );
+
+        // 3. Supported method for different unit fails with unit-specific message
+        let wrong_unit_err = validate_custom_payment_method_support(
+            &mint_info,
+            &branch_method,
+            "branch",
+            &usd_unit,
+            &mint_url,
+        )
+        .unwrap_err();
+        assert_eq!(
+            wrong_unit_err.to_string(),
+            "Payment method 'branch' for unit usd is not supported by mint https://mint.example.com"
+        );
+
+        // 4. Disabled NUT-05 fails
+        mint_info.nuts.nut05.disabled = true;
+        let disabled_err = validate_custom_payment_method_support(
+            &mint_info,
+            &branch_method,
+            "branch",
+            &ora_unit,
+            &mint_url,
+        )
+        .unwrap_err();
+        assert_eq!(
+            disabled_err.to_string(),
+            "Melting is disabled for mint https://mint.example.com"
+        );
+    }
+
+    #[test]
+    fn test_create_melt_options_checked_arithmetic_overflow() {
+        let err = create_melt_options(1_000_000, None, Some(u64::MAX), "prompt").unwrap_err();
+        assert_eq!(err.to_string(), "Amount overflow");
+    }
+
+    #[test]
+    fn test_create_melt_options_amountless_converts_sat_to_msat() {
+        let options = create_melt_options(1_000_000, None, Some(500), "prompt")
+            .unwrap()
+            .unwrap();
+        assert_eq!(options.amount_msat(), Amount::from(500_000));
     }
 }
