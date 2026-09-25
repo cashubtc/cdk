@@ -32,13 +32,13 @@ func main() {
 
 ## Supported platforms
 
-| OS      | Arch  | Library            |
-|---------|-------|--------------------|
-| Linux   | amd64 | `libcdk_ffi.so`    |
-| Linux   | arm64 | `libcdk_ffi.so`    |
-| macOS   | arm64 | `libcdk_ffi.dylib` |
-| macOS   | amd64 | `libcdk_ffi.dylib` |
-| Windows | amd64 | `cdk_ffi.dll`      |
+| OS      | Arch  | Library               |
+|---------|-------|-----------------------|
+| Linux   | amd64 | `libcdk_ffi_go.so`    |
+| Linux   | arm64 | `libcdk_ffi_go.so`    |
+| macOS   | arm64 | `libcdk_ffi_go.dylib` |
+| macOS   | amd64 | `libcdk_ffi_go.dylib` |
+| Windows | amd64 | `cdk_ffi_go.dll`      |
 
 CGO link flags are automatically selected per platform via build tags. No manual setup required.
 
