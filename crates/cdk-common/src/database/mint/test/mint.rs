@@ -1997,13 +1997,17 @@ pub async fn concurrent_mint_quote_batches_use_consistent_lock_order(db: DynMint
     assert_eq!(second_quotes[1].as_ref().unwrap().id, quote1.id);
 }
 
-/// Test that mint quotes with multiple payments and multiple issuances are reconstructed
-/// accurately without duplicate payments or issuances across single and batch fetches.
+/// Test that mint quotes across all payment/issuance combinations:
+/// - zero payments / zero issuance
+/// - multiple payments without issuance
+/// - multiple issuance without payments
+/// - multiple payments and multiple issuance
+/// are reconstructed accurately without duplicate payments or issuances across single and batch fetches.
 pub async fn mint_quotes_load_payments_and_issuance_without_duplicates<DB>(db: DB)
 where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
-    // Quote 1: 3 payments, 2 issuances (multiple payments AND multiple issuance)
+    // Quote 1: 3 payments, 2 issuances (multiple payments and multiple issuance)
     let quote1 = MintQuote::new(
         None,
         unique_string(),
@@ -2022,7 +2026,7 @@ where
         None,
     );
 
-    // Quote 2: 0 payments, 0 issuances (zero payments + zero issuance)
+    // Quote 2: 0 payments, 0 issuances (zero payments / zero issuance)
     let quote2 = MintQuote::new(
         None,
         unique_string(),
@@ -2041,7 +2045,7 @@ where
         None,
     );
 
-    // Quote 3: 2 payments, 0 issuances (multiple payments)
+    // Quote 3: 2 payments, 0 issuances (multiple payments without issuance)
     let quote3 = MintQuote::new(
         None,
         unique_string(),
@@ -2060,7 +2064,7 @@ where
         None,
     );
 
-    // Quote 4: 1 payment, 2 issuances (single payment, multiple issuance)
+    // Quote 4: 0 payments, 2 issuances (multiple issuance only)
     let quote4 = MintQuote::new(
         None,
         unique_string(),
@@ -2084,7 +2088,15 @@ where
     let quote1 = tx.add_mint_quote(quote1).await.unwrap();
     let quote2 = tx.add_mint_quote(quote2).await.unwrap();
     let quote3 = tx.add_mint_quote(quote3).await.unwrap();
-    let quote4 = tx.add_mint_quote(quote4).await.unwrap();
+    let mut quote4 = tx.add_mint_quote(quote4).await.unwrap();
+    // Add 2 issuances to quote4 (multiple issuance only, no payments)
+    quote4
+        .add_issuance(Amount::from(350).with_unit(CurrencyUnit::Sat))
+        .unwrap();
+    quote4
+        .add_issuance(Amount::from(250).with_unit(CurrencyUnit::Sat))
+        .unwrap();
+    tx.update_mint_quote(&mut quote4).await.unwrap();
     tx.commit().await.unwrap();
 
     // Add 3 payments and 2 issuances to quote1
@@ -2138,27 +2150,6 @@ where
     tx.update_mint_quote(&mut q3).await.unwrap();
     tx.commit().await.unwrap();
 
-    // Add 1 payment and 2 issuances to quote4
-    let mut tx = Database::begin_transaction(&db).await.unwrap();
-    let mut q4 = tx.get_mint_quote(&quote4.id).await.unwrap().unwrap();
-    q4.add_payment(
-        Amount::from(600).with_unit(CurrencyUnit::Sat),
-        "quote4_pay_1".to_string(),
-        Some(120),
-    )
-    .unwrap();
-    tx.update_mint_quote(&mut q4).await.unwrap();
-    tx.commit().await.unwrap();
-
-    let mut tx = Database::begin_transaction(&db).await.unwrap();
-    let mut q4 = tx.get_mint_quote(&quote4.id).await.unwrap().unwrap();
-    q4.add_issuance(Amount::from(350).with_unit(CurrencyUnit::Sat))
-        .unwrap();
-    q4.add_issuance(Amount::from(250).with_unit(CurrencyUnit::Sat))
-        .unwrap();
-    tx.update_mint_quote(&mut q4).await.unwrap();
-    tx.commit().await.unwrap();
-
     // Verifiers
     let verify_q1 = |q: &MintQuote| {
         assert_eq!(q.id, quote1.id);
@@ -2193,15 +2184,13 @@ where
 
     let verify_q4 = |q: &MintQuote| {
         assert_eq!(q.id, quote4.id);
-        assert_eq!(q.payments.len(), 1, "quote4 must have 1 payment");
-        assert_eq!(q.payments[0].payment_id, "quote4_pay_1");
-        assert_eq!(q.payments[0].amount.value(), 600);
+        assert_eq!(q.payments.len(), 0, "quote4 must have 0 payments");
         assert_eq!(q.issuance.len(), 2, "quote4 must have exactly 2 issuances");
         assert_eq!(q.issuance[0].amount.value(), 350);
         assert_eq!(q.issuance[1].amount.value(), 250);
     };
 
-    // 1. Single quote lookups (zero payments/issuance, multiple payments without issuance, single payment with multiple issuance, multiple of both)
+    // 1. Single quote lookups (zero payments / zero issuance, multiple payments without issuance, multiple issuance without payments, multiple payments and multiple issuance)
     let retrieved1 = db.get_mint_quote(&quote1.id).await.unwrap().unwrap();
     verify_q1(&retrieved1);
 
@@ -2218,6 +2207,8 @@ where
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     let tx_q1 = tx.get_mint_quote(&quote1.id).await.unwrap().unwrap();
     verify_q1(&tx_q1);
+    let tx_q4 = tx.get_mint_quote(&quote4.id).await.unwrap().unwrap();
+    verify_q4(&tx_q4);
     tx.commit().await.unwrap();
 
     // 3. get_mint_quote_by_request
