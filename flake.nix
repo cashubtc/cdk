@@ -891,6 +891,7 @@
             jq
             just
             protobuf
+            buf
             nixpkgs-fmt
             typos
             tokei

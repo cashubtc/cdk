@@ -64,6 +64,30 @@ final-check: lint clippy test
 
 quick-check: lint clippy test-units
 
+# Compile the mint management RPC schemas.
+proto-build:
+  buf build
+
+# Check mint management RPC compatibility against a local Git revision.
+proto-breaking base="upstream/main":
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  base_ref={{quote(base)}}
+  if command -v jj >/dev/null 2>&1 && jj root --ignore-working-copy >/dev/null 2>&1; then
+    git_dir=$(jj git root --ignore-working-copy)
+  else
+    git_dir=$(git rev-parse --git-common-dir)
+  fi
+
+  if ! baseline=$(git --git-dir="$git_dir" rev-parse --verify --quiet --end-of-options "${base_ref}^{commit}"); then
+    echo "Error: baseline '$base_ref' is unavailable locally." >&2
+    echo "Set up and fetch the remote, or choose an existing ref: just proto-breaking <ref>" >&2
+    exit 1
+  fi
+
+  buf breaking --against "${git_dir}#format=git,ref=${baseline},subdir=crates/cdk-mint-rpc/src/proto"
+
 # run `cargo build` on everything
 build *ARGS="--workspace --all-targets":
   #!/usr/bin/env bash

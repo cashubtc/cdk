@@ -352,6 +352,32 @@ just build
 just test
 ```
 
+### Checking Mint RPC Compatibility
+
+[Buf](https://buf.build/docs/) is included in the Nix development shells. The root
+`buf.yaml` scopes checks to `crates/cdk-mint-rpc/src/proto`.
+
+```bash
+nix develop
+git fetch upstream
+just proto-build     # Compile schemas without generating Rust code
+just proto-breaking  # Check compatibility against upstream/main
+```
+
+`proto-breaking` compares the working tree, including uncommitted changes, with
+the local `upstream/main`. [Configure `upstream`](#first-time-setup) or select an
+existing branch, tag, or commit, for example `just proto-breaking origin/main`.
+
+In JJ workspaces, refresh the baseline with `jj git fetch --remote upstream`.
+The recipe reads Git refs from JJ's backing repository.
+
+The [`FILE` rules](https://buf.build/docs/breaking/rules/) check wire and
+generated-code compatibility. Compatible additions pass; breaking changes are
+reported and exit nonzero.
+
+Buf style lints are disabled. These checks are opt-in and are not part of
+`quick-check` or CI.
+
 ### Running Integration Tests
 ```bash
 just itest REDB/SQLITE/MEMORY
