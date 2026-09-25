@@ -150,6 +150,11 @@ impl WasmRequestBuilder {
         }
     }
 
+    /// A refused redirect has to stay distinguishable from a network failure:
+    /// `RequestRedirect::Error` rejects the fetch promise, which is
+    /// indistinguishable from a connection error, so `Manual` is used and the
+    /// opaque-redirect response it yields is reported as
+    /// [`HttpError::Redirect`].
     async fn execute(self) -> Response<RawResponse> {
         if let Some(err) = self.error {
             return Err(err);
@@ -157,7 +162,7 @@ impl WasmRequestBuilder {
         let opts = web_sys::RequestInit::new();
         opts.set_method(&self.method);
         if self.no_redirects {
-            opts.set_redirect(web_sys::RequestRedirect::Error);
+            opts.set_redirect(web_sys::RequestRedirect::Manual);
         }
 
         if let Some(body) = &self.body {
@@ -189,6 +194,14 @@ impl WasmRequestBuilder {
         let resp: web_sys::Response = resp_value
             .dyn_into()
             .map_err(|_| HttpError::Other("Response is not a web_sys::Response".to_string()))?;
+
+        if resp.type_() == web_sys::ResponseType::Opaqueredirect {
+            return Err(HttpError::Redirect(format!(
+                "{} {}",
+                self.method,
+                url_for_debug(&self.url)
+            )));
+        }
 
         let status = resp.status();
 
