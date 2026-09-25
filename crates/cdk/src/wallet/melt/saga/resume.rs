@@ -651,6 +651,7 @@ mod tests {
             mint_url.clone(),
             CurrencyUnit::Sat,
             OperationData::Melt(MeltOperationData {
+                premint_secrets: None,
                 quote_id,
                 amount: Amount::from(100),
                 fee_reserve: Amount::from(10),
@@ -708,6 +709,7 @@ mod tests {
             mint_url,
             CurrencyUnit::Sat,
             OperationData::Melt(MeltOperationData {
+                premint_secrets: None,
                 quote_id: quote_id.clone(),
                 amount: Amount::from(100),
                 fee_reserve: Amount::from(10),
@@ -779,6 +781,7 @@ mod tests {
             mint_url,
             CurrencyUnit::Sat,
             OperationData::Melt(MeltOperationData {
+                premint_secrets: None,
                 quote_id,
                 amount: Amount::from(100),
                 fee_reserve: Amount::from(10),
@@ -832,6 +835,7 @@ mod tests {
             mint_url.clone(),
             CurrencyUnit::Sat,
             OperationData::Melt(MeltOperationData {
+                premint_secrets: None,
                 quote_id: quote_id.clone(),
                 amount: Amount::from(100),
                 fee_reserve: Amount::from(10),
@@ -926,6 +930,7 @@ mod tests {
             mint_url,
             CurrencyUnit::Sat,
             OperationData::Melt(MeltOperationData {
+                premint_secrets: None,
                 quote_id: quote_id.clone(),
                 amount: Amount::from(100),
                 fee_reserve: Amount::from(10),
@@ -997,6 +1002,7 @@ mod tests {
             mint_url,
             CurrencyUnit::Sat,
             OperationData::Melt(MeltOperationData {
+                premint_secrets: None,
                 quote_id: quote_id.clone(),
                 amount: Amount::from(100),
                 fee_reserve: Amount::from(10),
@@ -1067,6 +1073,7 @@ mod tests {
             mint_url.clone(),
             CurrencyUnit::Sat,
             OperationData::Melt(MeltOperationData {
+                premint_secrets: None,
                 quote_id: quote_id.clone(),
                 amount: Amount::from(1000),
                 fee_reserve: Amount::from(10),
@@ -1180,6 +1187,7 @@ mod tests {
             mint_url.clone(),
             CurrencyUnit::Sat,
             OperationData::Melt(MeltOperationData {
+                premint_secrets: None,
                 quote_id: quote_id.clone(),
                 amount: Amount::from(1000),
                 fee_reserve: Amount::from(10),
@@ -1278,6 +1286,7 @@ mod tests {
             mint_url.clone(),
             CurrencyUnit::Sat,
             OperationData::Melt(MeltOperationData {
+                premint_secrets: None,
                 quote_id: quote_id.clone(),
                 amount: Amount::from(1000),
                 fee_reserve: Amount::from(10),
@@ -1410,6 +1419,7 @@ mod tests {
             mint_url.clone(),
             CurrencyUnit::Sat,
             OperationData::Melt(MeltOperationData {
+                premint_secrets: None,
                 quote_id: quote_id.clone(),
                 amount: Amount::from(1000),
                 fee_reserve: Amount::from(10),
@@ -1479,6 +1489,7 @@ mod tests {
             mint_url.clone(),
             CurrencyUnit::Sat,
             OperationData::Melt(MeltOperationData {
+                premint_secrets: None,
                 quote_id: quote_id.clone(),
                 amount: Amount::from(1000),
                 fee_reserve: Amount::from(10),
@@ -1557,6 +1568,7 @@ mod tests {
             mint_url.clone(),
             CurrencyUnit::Sat,
             OperationData::Melt(MeltOperationData {
+                premint_secrets: None,
                 quote_id: quote_id.clone(),
                 amount: Amount::from(1000),
                 fee_reserve: Amount::from(10),
@@ -1647,6 +1659,7 @@ mod tests {
             mint_url.clone(),
             CurrencyUnit::Sat,
             OperationData::Melt(MeltOperationData {
+                premint_secrets: None,
                 quote_id: quote_id.clone(),
                 amount: Amount::from(1000),
                 fee_reserve: Amount::from(10),
@@ -1746,6 +1759,7 @@ mod tests {
             mint_url.clone(),
             CurrencyUnit::Sat,
             OperationData::Melt(MeltOperationData {
+                premint_secrets: None,
                 quote_id: quote_id.clone(),
                 amount: Amount::from(1000),
                 fee_reserve: Amount::from(10),
@@ -1825,6 +1839,7 @@ mod tests {
             mint_url.clone(),
             CurrencyUnit::Sat,
             OperationData::Melt(MeltOperationData {
+                premint_secrets: None,
                 quote_id: quote_id.clone(),
                 amount: Amount::from(1000),
                 fee_reserve: Amount::from(10),
@@ -1899,6 +1914,7 @@ mod tests {
             mint_url.clone(),
             CurrencyUnit::Sat,
             OperationData::Melt(MeltOperationData {
+                premint_secrets: None,
                 quote_id: quote_id.clone(),
                 amount: Amount::from(1000),
                 fee_reserve: Amount::from(10),
@@ -1976,6 +1992,7 @@ mod tests {
             mint_url.clone(),
             CurrencyUnit::Sat,
             OperationData::Melt(MeltOperationData {
+                premint_secrets: None,
                 quote_id: quote_id.clone(),
                 amount: Amount::from(1000),
                 fee_reserve: Amount::from(10),
@@ -2057,6 +2074,7 @@ mod tests {
             mint_url.clone(),
             CurrencyUnit::Sat,
             OperationData::Melt(MeltOperationData {
+                premint_secrets: None,
                 quote_id: quote_id.clone(),
                 amount: Amount::from(100),
                 fee_reserve: Amount::from(10),
@@ -2141,6 +2159,7 @@ mod tests {
             mint_url.clone(),
             CurrencyUnit::Sat,
             OperationData::Melt(MeltOperationData {
+                premint_secrets: None,
                 quote_id: quote_id.clone(),
                 amount: Amount::from(100),
                 fee_reserve: Amount::from(10),

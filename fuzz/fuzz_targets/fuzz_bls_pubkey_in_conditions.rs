@@ -184,6 +184,7 @@ fuzz_target!(|input: Input| {
         witness: Some(witness),
         dleq: None,
         p2pk_e: None,
+        spend_info: None,
     };
 
     // Primary targets: the full verification pipelines must not panic.

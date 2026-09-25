@@ -296,6 +296,8 @@ impl TryFrom<TransactionId> for cdk::wallet::types::TransactionId {
 /// FFI-compatible AuthProof
 #[derive(Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct AuthProof {
+    /// Request-bound version-02 witness.
+    pub witness: Option<String>,
     /// Keyset ID
     pub keyset_id: String,
     /// Secret message
@@ -320,6 +322,7 @@ impl fmt::Debug for AuthProof {
 impl From<cdk::nuts::AuthProof> for AuthProof {
     fn from(auth_proof: cdk::nuts::AuthProof) -> Self {
         Self {
+            witness: auth_proof.witness.clone(),
             keyset_id: auth_proof.keyset_id.to_string(),
             secret: auth_proof.secret.to_string(),
             c: auth_proof.c.to_string(),
@@ -337,6 +340,7 @@ impl TryFrom<AuthProof> for cdk::nuts::AuthProof {
     fn try_from(auth_proof: AuthProof) -> Result<Self, Self::Error> {
         use std::str::FromStr;
         Ok(Self {
+            witness: auth_proof.witness.clone(),
             keyset_id: cdk::nuts::Id::from_str(&auth_proof.keyset_id)
                 .map_err(|e| FfiError::internal(format!("Invalid keyset ID: {}", e)))?,
             secret: {
@@ -401,6 +405,7 @@ mod tests {
             status: TransactionStatus::Completed,
         };
         let auth_proof = AuthProof {
+            witness: None,
             keyset_id: "public-keyset-id".to_string(),
             secret: auth_secret.to_string(),
             c: "public-signature".to_string(),

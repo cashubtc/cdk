@@ -1,0 +1,768 @@
+//! Vectors from cashubtc/nuts PR #443 at 9fdc29b1, tests/10-tests.md.
+use serde_json::Value;
+
+use super::*;
+use crate::util::hex;
+
+fn vectors() -> Vec<Value> {
+    serde_json::from_str(include_str!("test_vectors.json")).unwrap()
+}
+
+#[test]
+fn framed_derivation_vectors() {
+    let vectors: Vec<Value> =
+        serde_json::from_str(include_str!("derivation_vectors.json")).unwrap();
+    let seed = bytes(&vectors[8]["seed_hex"]);
+    let id = vectors[8]["keyset_id"].as_str().unwrap().parse().unwrap();
+    for vector in vectors[9].as_array().unwrap() {
+        let counter = vector["counter"].as_u64().unwrap();
+        let derived = derive_key(&seed, id, counter, KeyPurpose::Internal).unwrap();
+        assert_eq!(derived.secret_bytes(), hash(&vector["secret_key"]));
+        assert_eq!(
+            PublicKey::from_secret_key(&crate::SECP256K1, &derived),
+            key(&vector["secret"])
+        );
+        assert_eq!(
+            derive_blinding_factor(&seed, id, counter)
+                .unwrap()
+                .to_bytes(),
+            hash(&vector["blinding_factor"])
+        );
+        assert_eq!(
+            derive_key(&seed, id, counter, KeyPurpose::NumsOffset)
+                .unwrap()
+                .secret_bytes(),
+            hash(&vector["nums_offset"])
+        );
+    }
+    for vector in vectors[10].as_array().unwrap() {
+        let derived = derive_key(
+            &seed,
+            id,
+            0,
+            KeyPurpose::Leaf(vector["index"].as_u64().unwrap() as u32),
+        )
+        .unwrap();
+        assert_eq!(derived.secret_bytes(), hash(&vector["privkey"]));
+    }
+    for vector in vectors[12].as_array().unwrap() {
+        let derived = derive_quote_key(
+            &seed,
+            key(&vectors[11]["mint_pubkey"]),
+            vector["counter"].as_u64().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(derived.secret_bytes(), hash(&vector["privkey"]));
+    }
+}
+
+#[test]
+fn spend_info_reconstruction_vectors() {
+    let vectors = vectors();
+    let receiver =
+        bitcoin::secp256k1::SecretKey::from_slice(&[vec![0; 31], vec![3]].concat()).unwrap();
+    for vector in &vectors[27..=31] {
+        let info: SpendInfo = serde_json::from_value(vector["spend_info"].clone()).unwrap();
+        let secret = vector["secret"].as_str().unwrap();
+        info.verify(secret, Some(&receiver)).unwrap();
+        if info.bearer_key.is_some() || (info.ephemeral_key.is_some() && info.nums_offset.is_none())
+        {
+            let signing = info.key_path_key(secret, Some(&receiver)).unwrap();
+            assert_eq!(
+                PublicKey::from_secret_key(&crate::SECP256K1, &signing),
+                parse_secret(secret).unwrap()
+            );
+        }
+        let mut corrupted = info.clone();
+        corrupted.internal_key = Some(PublicKey::from_secret_key(&crate::SECP256K1, &receiver));
+        assert!(corrupted.verify(secret, Some(&receiver)).is_err());
+    }
+}
+
+#[test]
+fn script_paths_require_distinct_keys_and_bind_compressed_secret() {
+    use bitcoin::secp256k1::SecretKey;
+    let one = SecretKey::from_slice(&[1; 32]).unwrap();
+    let two = SecretKey::from_slice(&[2; 32]).unwrap();
+    let keys = [one, two].map(|k| PublicKey::from_secret_key(&crate::SECP256K1, &k));
+    let tree = Tree::new(vec![Leaf::new(
+        2,
+        keys.to_vec(),
+        Condition::Threshold,
+        false,
+    )
+    .unwrap()])
+    .unwrap();
+    let internal = keys[0];
+    let secret = tweaked_key(internal, Some(tree.root())).unwrap();
+    let digest = [42; 32];
+    let mut witness = Witness::script_path(&tree, 0, internal).unwrap();
+    // Two independently randomized signatures by the same key are one signer.
+    witness
+        .signatures
+        .extend(Witness::key_path(&one, digest).signatures);
+    witness
+        .signatures
+        .extend(Witness::key_path(&one, digest).signatures);
+    assert!(witness.verify(&secret.to_string(), digest, 0).is_err());
+    witness.signatures.pop();
+    witness
+        .signatures
+        .extend(Witness::key_path(&two, digest).signatures);
+    witness.verify(&secret.to_string(), digest, 0).unwrap();
+    let negated = secret.negate(&crate::SECP256K1);
+    assert!(witness.verify(&negated.to_string(), digest, 0).is_err());
+    witness.control.as_mut().unwrap().path = vec![hex::encode([0; 32]); 4];
+    assert!(witness.verify(&secret.to_string(), digest, 0).is_err());
+}
+
+#[test]
+fn hashlock_and_commit_satisfaction() {
+    use bitcoin::secp256k1::SecretKey;
+    use sha2::{Digest, Sha256};
+    let key = SecretKey::from_slice(&[1; 32]).unwrap();
+    let internal = PublicKey::from_secret_key(&crate::SECP256K1, &key);
+    let preimage = [42; 32];
+    let hash = Sha256::digest(preimage).into();
+    let tree = Tree::new(vec![
+        Leaf::new(1, vec![internal], Condition::Hashlock(hash), false).unwrap(),
+        Leaf::new(0, vec![], Condition::Commit(hash), false).unwrap(),
+    ])
+    .unwrap();
+    let secret = tweaked_key(internal, Some(tree.root()))
+        .unwrap()
+        .to_string();
+    let digest = [7; 32];
+    let mut witness = Witness::script_path(&tree, 0, internal).unwrap();
+    witness.signatures = Witness::key_path(&key, digest).signatures;
+    assert!(witness.verify(&secret, digest, 0).is_err());
+    witness.preimage = Some(hex::encode(preimage));
+    witness.verify(&secret, digest, 0).unwrap();
+    witness.preimage = Some(hex::encode([42; 33]));
+    assert!(witness.verify(&secret, digest, 0).is_err());
+    assert!(Witness::script_path(&tree, 1, internal).is_err());
+    witness.leaf = Some(hex::encode(tree.leaves()[1].to_bytes()));
+    witness.control.as_mut().unwrap().path =
+        tree.path(1).unwrap().into_iter().map(hex::encode).collect();
+    assert!(witness.verify(&secret, digest, 0).is_err());
+}
+
+fn bytes(value: &Value) -> Vec<u8> {
+    hex::decode(value.as_str().unwrap()).unwrap()
+}
+fn hash(value: &Value) -> [u8; 32] {
+    bytes(value).try_into().unwrap()
+}
+fn key(value: &Value) -> PublicKey {
+    parse_secret(value.as_str().unwrap()).unwrap()
+}
+fn leaf(value: &Value) -> Leaf {
+    Leaf::from_bytes(&bytes(value)).unwrap()
+}
+
+#[test]
+fn canonical_leaves_and_rejections() {
+    let vectors = vectors();
+    for (name, value) in vectors[0].as_object().unwrap() {
+        if name == "hashlock_hash" {
+            continue;
+        }
+        assert_eq!(leaf(value).to_bytes(), bytes(value));
+    }
+    for index in [11, 12] {
+        for value in vectors[index].as_object().unwrap().values() {
+            assert!(Leaf::from_bytes(&bytes(value)).is_err());
+        }
+    }
+    let good = bytes(&vectors[0]["threshold_1of1_key3"]);
+    for len in 0..good.len() {
+        assert!(Leaf::from_bytes(&good[..len]).is_err());
+    }
+    let mut unknown = good.clone();
+    unknown[0] = 1;
+    assert!(Leaf::from_bytes(&unknown).is_err());
+    unknown[0] = 0;
+    unknown[1] = 5;
+    assert!(Leaf::from_bytes(&unknown).is_err());
+    let k = leaf(&vectors[0]["threshold_1of1_key3"]).keys()[0];
+    assert!(Leaf::new(
+        1,
+        vec![k, k.negate(&crate::SECP256K1)],
+        Condition::Threshold,
+        false
+    )
+    .is_err());
+    assert!(Leaf::new(0, vec![k], Condition::Threshold, false).is_err());
+    assert!(Leaf::new(2, vec![k], Condition::Threshold, false).is_err());
+    assert!(Leaf::new(1, vec![k], Condition::After(1 << 53), false).is_err());
+    assert!(Leaf::new(0, vec![], Condition::Hashlock([0; 32]), false).is_err());
+    let zero = Leaf::new(1, vec![k], Condition::After(0), false).unwrap();
+    assert_eq!(Leaf::from_bytes(&zero.to_bytes()).unwrap(), zero);
+    let mut padded = zero.to_bytes();
+    *padded.last_mut().unwrap() = 1;
+    padded.push(0);
+    assert!(Leaf::from_bytes(&padded).is_err());
+}
+
+#[test]
+fn normative_tree_fold_and_tweaks() {
+    let vectors = vectors();
+    for (index, leaves_field, root_field) in
+        [(1, "three_leaf_tree", "root"), (2, "leaves", "merkle_root")]
+    {
+        let vector = &vectors[index];
+        let leaves: Vec<_> = vector[leaves_field]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(leaf)
+            .collect();
+        let tree = Tree::new(leaves.clone()).unwrap();
+        assert_eq!(tree.root(), hash(&vector[root_field]));
+        assert_eq!(
+            tweaked_key(key(&vector["internal_key"]), Some(tree.root())).unwrap(),
+            key(&vector["secret"])
+        );
+        for (i, leaf) in leaves.iter().enumerate() {
+            let root = tree.path(i).unwrap().into_iter().fold(leaf.hash(), branch);
+            assert_eq!(root, tree.root());
+        }
+        let reversed = Tree::new(leaves.into_iter().rev().collect()).unwrap();
+        assert_eq!(tree.root(), reversed.root());
+    }
+    let leaf = leaf(&vectors[0]["threshold_1of1_key3"]);
+    assert!(Tree::new(vec![]).is_err());
+    assert!(Tree::new(vec![leaf.clone(); 9]).is_err());
+    for count in 1..=8 {
+        let tree = Tree::new(vec![leaf.clone(); count]).unwrap();
+        for index in 0..count {
+            assert!(tree.path(index).unwrap().len() <= 3);
+        }
+    }
+    let vector = &vectors[13];
+    let internal = key(&vector["internal_key"]);
+    assert_eq!(tweak(&internal, None).to_be_bytes(), hash(&vector["tweak"]));
+    assert_eq!(tweaked_key(internal, None).unwrap(), key(&vector["secret"]));
+    assert_eq!(
+        reduce_scalar([0xff; 32]).to_be_bytes(),
+        hex::decode("000000000000000000000000000000014551231950b75fc4402da1732fc9bebe")
+            .unwrap()
+            .as_slice()
+    );
+}
+
+#[test]
+fn key_and_script_witness_vectors() {
+    let vectors = vectors();
+    let secret = vectors[3]["secret"].as_str().unwrap();
+    let digest = hex::decode("e1d7170b89a2b6eedec90453e32b6c320dfadd590e6a6454bddec95a0e3834cd")
+        .unwrap()
+        .try_into()
+        .unwrap();
+    for index in [4, 5] {
+        let mut witness: Witness = serde_json::from_value(vectors[index].clone()).unwrap();
+        assert!(!witness.verify(secret, digest, 1755561600).unwrap());
+        assert!(witness.verify(secret, [0; 32], 1755561600).is_err());
+        if index == 5 {
+            assert!(witness.verify(secret, digest, 1755561599).is_err());
+        }
+        witness.signatures.push(witness.signatures[0].clone());
+        assert!(witness.verify(secret, digest, 1755561600).is_err());
+    }
+    let witness: Witness = serde_json::from_value(vectors[10].clone()).unwrap();
+    assert!(witness
+        .verify(
+            vectors[8]["secret"].as_str().unwrap(),
+            hash(&vectors[9]["input_digest"]),
+            0
+        )
+        .unwrap());
+}
+
+#[test]
+fn transaction_and_input_digest_vectors() {
+    let vectors = vectors();
+    let proofs: Vec<crate::Proof> = serde_json::from_value(vectors[14]["inputs"].clone()).unwrap();
+    let outputs =
+        serde_json::from_value::<Vec<crate::BlindedMessage>>(vectors[14]["outputs"].clone())
+            .unwrap();
+    let transaction = Transaction::new(&proofs, &[], &outputs, &[]).unwrap();
+    assert_eq!(transaction.as_bytes(), bytes(&vectors[15]["transcript"]));
+    assert_eq!(transaction.digest(), hash(&vectors[15]["digest"]));
+    assert_eq!(
+        transaction.input_id(0).unwrap(),
+        hash(&vectors[15]["input_id"])
+    );
+    assert_eq!(
+        transaction.input_digest(0).unwrap(),
+        hash(&vectors[15]["input_digest"])
+    );
+    let witness: Witness = serde_json::from_value(vectors[16].clone()).unwrap();
+    witness
+        .verify(
+            &proofs[0].secret.to_string(),
+            transaction.input_digest(0).unwrap(),
+            0,
+        )
+        .unwrap();
+    assert!(Transaction::new(&[proofs[0].clone(), proofs[0].clone()], &[], &outputs, &[]).is_err());
+    assert!(Transaction::new(&proofs, &[], &[], &[]).is_err());
+    assert!(Transaction::new(&[], &[], &outputs, &[]).is_err());
+    assert!(transaction.input_digest(1).is_err());
+    let mut multiple = proofs;
+    multiple.push(serde_json::from_value(vectors[17].clone()).unwrap());
+    let mut outputs = outputs;
+    outputs[0].amount = 8.into();
+    let transaction = Transaction::new(&multiple, &[], &outputs, &[]).unwrap();
+    assert_eq!(transaction.digest(), hash(&vectors[18]["digest"]));
+    assert_eq!(
+        Transaction::from_bytes(transaction.as_bytes()).unwrap(),
+        transaction
+    );
+    for index in 0..2 {
+        assert_eq!(
+            transaction.input_digest(index).unwrap(),
+            hash(&vectors[18]["inputs"][index]["input_digest"])
+        );
+    }
+}
+
+#[test]
+fn token_spend_info_vectors_and_witness_stripping() {
+    use std::str::FromStr;
+    let vectors = vectors();
+    for vector in &vectors[27..=31] {
+        let mut token = crate::nuts::TokenV4::from_str(vector["token"].as_str().unwrap()).unwrap();
+        let expected: SpendInfo = serde_json::from_value(vector["spend_info"].clone()).unwrap();
+        assert_eq!(
+            token.token[0].proofs[0].spend_info.as_ref(),
+            Some(&expected)
+        );
+        token.token[0].proofs[0].witness = Some(crate::nuts::Witness::NutrootWitness(
+            "{\"signatures\":[]}".to_owned(),
+        ));
+        let encoded = token.to_string();
+        let decoded = crate::nuts::TokenV4::from_str(&encoded).unwrap();
+        assert!(decoded.token[0].proofs[0].witness.is_none());
+        assert_eq!(
+            decoded.token[0].proofs[0].spend_info.as_ref(),
+            Some(&expected)
+        );
+        // A token received with a transaction witness must drop it too.
+        let mut value = serde_json::to_value(&decoded).unwrap();
+        value["t"][0]["p"][0]["witness"] = "{\"signatures\":[]}".into();
+        let decoded: crate::nuts::TokenV4 = serde_json::from_value(value).unwrap();
+        assert!(decoded.token[0].proofs[0].witness.is_none());
+        let raw = decoded.to_raw_bytes().unwrap();
+        let restored = crate::nuts::TokenV4::try_from(&raw).unwrap();
+        assert_eq!(restored, decoded);
+    }
+}
+
+#[test]
+fn proof_preserves_exact_nutroot_witness_for_commitments() {
+    let mut value = vectors()[14]["inputs"][0].clone();
+    let witness = "{ \"signatures\": [] }";
+    value["witness"] = witness.into();
+    let proof: crate::Proof = serde_json::from_value(value).unwrap();
+    assert_eq!(
+        proof.witness,
+        Some(crate::nuts::Witness::NutrootWitness(witness.to_owned()))
+    );
+    assert_eq!(serde_json::to_value(proof).unwrap()["witness"], witness);
+}
+
+#[test]
+fn locking_policies_preserve_thresholds_and_blind_all_slots() {
+    use bitcoin::secp256k1::SecretKey;
+    let one = SecretKey::from_slice(&[1; 32]).unwrap();
+    let two = SecretKey::from_slice(&[2; 32]).unwrap();
+    let ephemeral = SecretKey::from_slice(&[3; 32]).unwrap();
+    let offset = SecretKey::from_slice(&[4; 32]).unwrap();
+    let keys = [one, two].map(|key| PublicKey::from_secret_key(&crate::SECP256K1, &key));
+    let leaf = Leaf::new(2, keys.to_vec(), Condition::Threshold, false).unwrap();
+    let option = NutrootOption {
+        key: nums_point(),
+        leaves: Some(vec![hex::encode(leaf.to_bytes())]),
+        blind_keys: Some(keys.to_vec()),
+    };
+    let (secret, info) = option.create_output(&ephemeral, &offset).unwrap();
+    let internal = info.verify(&secret, None).unwrap();
+    option.verify_output(&secret, &info, &[one, two]).unwrap();
+    let mut wrong_policy = option.clone();
+    wrong_policy.leaves = Some(vec![hex::encode(
+        Leaf::new(1, keys.to_vec(), Condition::Threshold, false)
+            .unwrap()
+            .to_bytes(),
+    )]);
+    assert!(wrong_policy
+        .verify_output(&secret, &info, &[one, two])
+        .is_err());
+    let mut wrong_ephemeral = info.clone();
+    wrong_ephemeral.ephemeral_key = Some(keys[0]);
+    assert!(option
+        .verify_output(&secret, &wrong_ephemeral, &[one, two])
+        .is_err());
+    assert!(info.key_path_key(&secret, Some(&one)).is_err());
+    let tree = info.parsed_tree().unwrap().unwrap();
+    let mut witness = Witness::script_path(&tree, 0, internal).unwrap();
+    let e = info.ephemeral_key.unwrap();
+    let first = receiver_key(&one, &e, 1).unwrap();
+    let second = receiver_key(&two, &e, 2).unwrap();
+    witness
+        .signatures
+        .extend(Witness::key_path(&first, [42; 32]).signatures);
+    assert!(witness.verify(&secret, [42; 32], 0).is_err());
+    witness
+        .signatures
+        .extend(Witness::key_path(&second, [42; 32]).signatures);
+    witness.verify(&secret, [42; 32], 0).unwrap();
+    assert!(witness.verify(&secret, [43; 32], 0).is_err());
+    assert_eq!(
+        sender_key(&keys[0], &ephemeral, 255).unwrap(),
+        PublicKey::from_secret_key(&crate::SECP256K1, &receiver_key(&one, &e, 255).unwrap())
+    );
+    let (_, another) = option.create_output(&ephemeral, &two).unwrap();
+    assert_ne!(info.internal_key, another.internal_key);
+}
+
+#[test]
+fn legacy_keyless_policies_are_not_silently_weakened_for_nutroot() {
+    let key = crate::nuts::SecretKey::generate();
+    let policy = crate::nuts::SpendingConditions::P2PKConditions {
+        data: key.public_key(),
+        conditions: Some(crate::nuts::Conditions {
+            locktime: Some(100),
+            ..Default::default()
+        }),
+    };
+    assert!(NutrootOption::from_spending_conditions(&policy, false).is_err());
+    let policy = crate::nuts::SpendingConditions::HTLCConditions {
+        data: "00".repeat(32).parse().unwrap(),
+        conditions: None,
+    };
+    assert!(NutrootOption::from_spending_conditions(&policy, false).is_err());
+}
+
+#[test]
+fn receipt_requires_exact_transcript_witness_and_trusted_spent_commitment() {
+    use crate::nuts::{CurrencyUnit, ProofState, State};
+    let vectors = vectors();
+    let mut proofs: Vec<crate::Proof> =
+        serde_json::from_value(vectors[14]["inputs"].clone()).unwrap();
+    let outputs: Vec<crate::BlindedMessage> =
+        serde_json::from_value(vectors[14]["outputs"].clone()).unwrap();
+    let transaction = Transaction::new(&proofs, &[], &outputs, &[]).unwrap();
+    assert_eq!(
+        Transaction::from_bytes(transaction.as_bytes()).unwrap(),
+        transaction
+    );
+    assert_eq!(
+        transaction.proof_digest(&proofs[0]).unwrap(),
+        transaction.input_digest(0).unwrap()
+    );
+    for length in 0..transaction.as_bytes().len() {
+        // A prefix containing complete containers can itself be a valid transaction.
+        if let Ok(prefix) = Transaction::from_bytes(&transaction.as_bytes()[..length]) {
+            assert_ne!(
+                prefix.proof_digest(&proofs[0]).unwrap(),
+                transaction.input_digest(0).unwrap()
+            );
+        }
+    }
+    let raw = serde_json::to_string_pretty(&vectors[16]).unwrap();
+    proofs[0].witness = Some(crate::nuts::Witness::NutrootWitness(raw));
+    let receipt = SpendReceipt::new(
+        "https://mint.test".parse().unwrap(),
+        CurrencyUnit::Sat,
+        &proofs,
+        &transaction,
+        0,
+    )
+    .unwrap();
+    let mut mismatched = proofs.clone();
+    mismatched[0].amount = 99.into();
+    assert!(SpendReceipt::new(
+        "https://mint.test".parse().unwrap(),
+        CurrencyUnit::Sat,
+        &mismatched,
+        &transaction,
+        0,
+    )
+    .is_err());
+    let encoded = receipt.encode().unwrap();
+    let decoded: SpendReceipt = encoded.parse().unwrap();
+    assert_eq!(receipt, decoded);
+    let mut state = ProofState::from((proofs[0].y().unwrap(), State::Spent));
+    let record = SpendRecord::new(&proofs[0], &transaction, 0, 0).unwrap();
+    record.apply_to(&mut state);
+    let keysets = vec![crate::KeySetInfo {
+        id: proofs[0].keyset_id,
+        unit: CurrencyUnit::Sat,
+        active: true,
+        input_fee_ppk: 0,
+        final_expiry: None,
+    }];
+    receipt.verify(&keysets, &[state.clone()], 0).unwrap();
+    let mut wrong = receipt.clone();
+    wrong.receipts[0].witness.push(' ');
+    assert!(wrong.verify(&keysets, &[state.clone()], 0).is_err());
+    wrong.receipts[0].commitment = hex::encode(spend_commitment(
+        &state.y,
+        record.input_digest,
+        &wrong.receipts[0].witness,
+    ));
+    assert!(wrong.verify(&keysets, &[state.clone()], 0).is_err());
+    wrong = receipt.clone();
+    wrong.receipts[0].transcript = hex::encode([0; 64]);
+    assert!(wrong.verify(&keysets, &[state.clone()], 0).is_err());
+    state.state = State::Pending;
+    assert!(receipt.verify(&keysets, &[state], 0).is_err());
+    assert!(receipt.verify(&keysets, &[], 0).is_err());
+}
+
+#[test]
+fn signing_packages_merge_only_matching_transactions_and_distinct_signers() {
+    use bitcoin::secp256k1::SecretKey;
+    let vectors = vectors();
+    let mut proofs: Vec<crate::Proof> =
+        serde_json::from_value(vectors[14]["inputs"].clone()).unwrap();
+    let outputs: Vec<crate::BlindedMessage> =
+        serde_json::from_value(vectors[14]["outputs"].clone()).unwrap();
+    let keys = [
+        SecretKey::from_slice(&[1; 32]).unwrap(),
+        SecretKey::from_slice(&[2; 32]).unwrap(),
+    ];
+    let ephemeral = SecretKey::from_slice(&[3; 32]).unwrap();
+    let ephemeral_public = PublicKey::from_secret_key(&crate::SECP256K1, &ephemeral);
+    let public = keys.map(|k| {
+        sender_key(
+            &PublicKey::from_secret_key(&crate::SECP256K1, &k),
+            &ephemeral,
+            17,
+        )
+        .unwrap()
+    });
+    let tree = Tree::new(vec![Leaf::new(
+        2,
+        public.to_vec(),
+        Condition::Threshold,
+        false,
+    )
+    .unwrap()])
+    .unwrap();
+    let internal = nums_point();
+    let secret = tweaked_key(internal, Some(tree.root()))
+        .unwrap()
+        .to_string();
+    proofs[0].secret = secret.parse().unwrap();
+    proofs[0].spend_info = Some(SpendInfo {
+        bearer_key: Some(crate::nuts::SecretKey::from_slice(&[7; 32]).unwrap()),
+        ..Default::default()
+    });
+    let witness = Witness::script_path(&tree, 0, internal).unwrap();
+    let mut package = SigningPackage::new(
+        &proofs,
+        &outputs,
+        None,
+        vec![SigningSpend {
+            secret,
+            witness,
+            ephemeral_key: Some(ephemeral_public),
+            slots: Some(vec![1, 2]),
+        }],
+    )
+    .unwrap();
+    let encoded = package.encode().unwrap();
+    assert_eq!(encoded.parse::<SigningPackage>().unwrap(), package);
+    assert!(!serde_json::to_string(&package)
+        .unwrap()
+        .contains("spend_info"));
+    let mut invalid = serde_json::to_value(&package).unwrap();
+    invalid["spends"][0]["signatures"] = serde_json::json!(["invalid"]);
+    let mut invalid: SigningPackage = serde_json::from_value(invalid).unwrap();
+    let before = invalid.clone();
+    assert!(invalid.sign(&keys).is_err());
+    assert_eq!(invalid, before);
+    let before = package.clone();
+    assert!(package.merge(&invalid).is_err());
+    assert_eq!(package, before);
+    let mut second = package.clone();
+    assert_eq!(package.sign(&keys[..1]).unwrap(), 1);
+    assert!(package.apply(&mut proofs, &outputs, None, 0).is_err());
+    assert!(proofs[0].witness.is_none());
+    assert_eq!(package.sign(&keys[..1]).unwrap(), 0);
+    assert_eq!(second.sign(&keys[1..]).unwrap(), 1);
+    package.merge(&second).unwrap();
+    package.merge(&second).unwrap();
+    package.apply(&mut proofs, &outputs, None, 0).unwrap();
+    let transaction = Transaction::new(&proofs, &[], &outputs, &[]).unwrap();
+    SpendRecord::new(&proofs[0], &transaction, 0, 0).unwrap();
+    let mut wrong_outputs = outputs.clone();
+    wrong_outputs[0].amount = 99.into();
+    assert!(package.apply(&mut proofs, &wrong_outputs, None, 0).is_err());
+    let altered = SigningPackage::new(&proofs, &wrong_outputs, None, second.spends().to_vec());
+    assert!(altered.is_err());
+}
+
+#[test]
+fn authorized_request_binds_exact_http_bytes() {
+    let digest = authorized_request_digest("POST", "/v1/swap?x=1", b"{}").unwrap();
+    assert_ne!(
+        digest,
+        authorized_request_digest("POST", "/v1/swap?x=1", b"{ }").unwrap()
+    );
+    assert_ne!(
+        digest,
+        authorized_request_digest("POST", "/v1/swap?x=2", b"{}").unwrap()
+    );
+    assert_ne!(
+        digest,
+        authorized_request_digest("GET", "/v1/swap?x=1", b"{}").unwrap()
+    );
+    assert!(authorized_request_digest("post", "/v1/swap", b"").is_err());
+    assert!(authorized_request_digest("POST", "https://mint/v1/swap", b"").is_err());
+}
+
+#[test]
+fn upstream_spend_commitment_vector() {
+    let vectors = vectors();
+    let receipt: SpendReceipt = serde_json::from_value(vectors[26].clone()).unwrap();
+    let opening = &receipt.receipts[0];
+    let digest: [u8; 32] = hex::decode(&opening.input_digest)
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_eq!(
+        hex::encode(spend_commitment(&opening.y, digest, &opening.witness)),
+        opening.commitment
+    );
+    let transaction = Transaction::from_bytes(&hex::decode(&opening.transcript).unwrap()).unwrap();
+    assert_eq!(transaction.input_digest(0).unwrap(), digest);
+}
+
+#[test]
+fn upstream_authorized_request_vectors() {
+    let vectors: Vec<Value> = serde_json::from_str(include_str!("auth_vectors.json")).unwrap();
+    for (vector, body) in vectors
+        .iter()
+        .zip([&b"illustrative request body"[..], &b""[..]])
+    {
+        let digest = authorized_request_digest(
+            vector["method"].as_str().unwrap(),
+            vector["target"].as_str().unwrap(),
+            body,
+        )
+        .unwrap();
+        assert_eq!(digest, hash(&vector["digest"]));
+        let witness: Witness = serde_json::from_value(vector["witness"].clone()).unwrap();
+        witness
+            .verify(vector["secret"].as_str().unwrap(), digest, 0)
+            .unwrap();
+    }
+}
+
+#[test]
+fn receipt_indexes_preserve_duplicate_and_distinct_transcript_checks() {
+    use bitcoin::secp256k1::SecretKey;
+
+    use crate::nuts::{CurrencyUnit, ProofState, State};
+    let vectors = vectors();
+    let template: Vec<crate::Proof> =
+        serde_json::from_value(vectors[14]["inputs"].clone()).unwrap();
+    let outputs: Vec<crate::BlindedMessage> =
+        serde_json::from_value(vectors[14]["outputs"].clone()).unwrap();
+    let keys = [
+        SecretKey::from_slice(&[1; 32]).unwrap(),
+        SecretKey::from_slice(&[2; 32]).unwrap(),
+    ];
+    let mut proofs: Vec<_> = keys
+        .iter()
+        .map(|key| {
+            let mut proof = template[0].clone();
+            proof.secret = PublicKey::from_secret_key(&crate::SECP256K1, key)
+                .to_string()
+                .parse()
+                .unwrap();
+            proof
+        })
+        .collect();
+    let keysets = [crate::KeySetInfo {
+        id: proofs[0].keyset_id,
+        unit: CurrencyUnit::Sat,
+        active: true,
+        input_fee_ppk: 0,
+        final_expiry: None,
+    }];
+    for shared_transcript in [true, false] {
+        let shared = Transaction::new(&proofs, &[], &outputs, &[]).unwrap();
+        let mut openings = vec![];
+        let mut states = vec![];
+        for (i, (proof, key)) in proofs.iter_mut().zip(keys).enumerate() {
+            let individual =
+                Transaction::new(std::slice::from_ref(proof), &[], &outputs, &[]).unwrap();
+            let (transaction, index) = if shared_transcript {
+                (&shared, i)
+            } else {
+                (&individual, 0)
+            };
+            let witness = Witness::key_path(&key, transaction.input_digest(index).unwrap());
+            proof.witness = Some(crate::nuts::Witness::NutrootWitness(
+                serde_json::to_string(&witness).unwrap(),
+            ));
+            let record = SpendRecord::new(proof, transaction, index, 0).unwrap();
+            let mut state = ProofState::from((proof.y().unwrap(), State::Spent));
+            record.apply_to(&mut state);
+            states.push(state);
+            if !shared_transcript {
+                openings.extend(
+                    SpendReceipt::new(
+                        "https://mint.test".parse().unwrap(),
+                        CurrencyUnit::Sat,
+                        std::slice::from_ref(proof),
+                        &individual,
+                        0,
+                    )
+                    .unwrap()
+                    .receipts,
+                );
+            }
+        }
+        let mut receipt = if shared_transcript {
+            SpendReceipt::new(
+                "https://mint.test".parse().unwrap(),
+                CurrencyUnit::Sat,
+                &proofs,
+                &shared,
+                0,
+            )
+            .unwrap()
+        } else {
+            SpendReceipt {
+                token: crate::nuts::Token::new(
+                    "https://mint.test".parse().unwrap(),
+                    proofs.clone(),
+                    None,
+                    CurrencyUnit::Sat,
+                )
+                .to_string(),
+                receipts: openings,
+            }
+        };
+        receipt.receipts.reverse();
+        states.reverse();
+        receipt.verify(&keysets, &states, 0).unwrap();
+        let mut duplicate = receipt.clone();
+        duplicate.receipts[1] = duplicate.receipts[0].clone();
+        assert!(duplicate.verify(&keysets, &states, 0).is_err());
+        let mut duplicate_states = states.clone();
+        duplicate_states.push(states[0].clone());
+        assert!(receipt.verify(&keysets, &duplicate_states, 0).is_err());
+        assert!(receipt.verify(&keysets, &states[..1], 0).is_err());
+        let unrelated = ProofState::from((template[0].y().unwrap(), State::Unspent));
+        states.extend([unrelated.clone(), unrelated]);
+        receipt.verify(&keysets, &states, 0).unwrap();
+        receipt.receipts[0].transcript = hex::encode([0; 4]);
+        assert!(receipt.verify(&keysets, &states, 0).is_err());
+    }
+}

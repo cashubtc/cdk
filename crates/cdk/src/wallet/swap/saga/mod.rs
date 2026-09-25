@@ -38,12 +38,9 @@ use tracing::instrument;
 
 use self::state::{Finalized, Initial, Prepared};
 use crate::amount::SplitTarget;
-use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{nut10, Proofs, SpendingConditions, State};
-use crate::wallet::blind_signature::{
-    validate_mint_response_signatures, SignatureAmountValidation,
-};
+use crate::wallet::blind_signature::{construct_mint_response_proofs, SignatureAmountValidation};
 use crate::wallet::saga::{
     add_compensation, clear_compensations, execute_compensations, new_compensations, Compensations,
     RevertProofReservation as RevertSwapProofReservation,
@@ -73,10 +70,20 @@ impl<'a> SwapSaga<'a, Initial> {
             wallet,
             compensations: new_compensations(),
             state_data: Initial {
+                nutroot: None,
                 operation_id,
                 keyset_policy: Default::default(),
             },
         }
+    }
+
+    /// Select an explicit Nutroot payment policy for the desired outputs.
+    pub fn with_nutroot(
+        mut self,
+        policy: Option<crate::nuts::nut10::nutroot::NutrootOption>,
+    ) -> Self {
+        self.state_data.nutroot = policy;
+        self
     }
 
     /// Prepare the swap operation.
@@ -133,6 +140,7 @@ impl<'a> SwapSaga<'a, Initial> {
                 amount_split_target.clone(),
                 input_proofs.clone(),
                 spending_conditions.clone(),
+                self.state_data.nutroot.clone(),
                 include_fees,
                 use_p2bk,
                 &fee_breakdown,
@@ -160,6 +168,7 @@ impl<'a> SwapSaga<'a, Initial> {
             self.wallet.mint_url.clone(),
             self.wallet.unit.clone(),
             OperationData::Swap(SwapOperationData {
+                premint_secrets: None,
                 input_amount,
                 output_amount,
                 counter_start: Some(counter_start),
@@ -190,6 +199,7 @@ impl<'a> SwapSaga<'a, Initial> {
             wallet: self.wallet,
             compensations: self.compensations,
             state_data: Prepared {
+                nutroot: self.state_data.nutroot.is_some(),
                 operation_id: self.state_data.operation_id,
                 amount,
                 amount_split_target,
@@ -207,8 +217,16 @@ impl<'a> SwapSaga<'a, Prepared> {
     ///
     /// Updates saga state for recovery, posts swap to mint, constructs new
     /// proofs from response, updates database, and deletes saga record.
+    #[cfg(test)]
     #[instrument(skip_all)]
-    pub async fn execute(mut self) -> Result<SwapSaga<'a, Finalized>, Error> {
+    pub async fn execute(self) -> Result<SwapSaga<'a, Finalized>, Error> {
+        self.execute_with_keys(&[]).await
+    }
+
+    pub(crate) async fn execute_with_keys(
+        mut self,
+        signing_keys: &[crate::nuts::SecretKey],
+    ) -> Result<SwapSaga<'a, Finalized>, Error> {
         tracing::info!(
             "Executing swap for operation {}",
             self.state_data.operation_id
@@ -222,11 +240,20 @@ impl<'a> SwapSaga<'a, Prepared> {
         saga.update_state(WalletSagaState::Swap(SwapSagaState::SwapRequested));
         if let OperationData::Swap(ref mut data) = saga.data {
             data.blinded_messages = Some(self.state_data.pre_swap.swap_request.outputs().clone());
+            data.premint_secrets = Some(self.state_data.pre_swap.pre_mint_secrets.clone());
         }
 
         if !self.wallet.localstore.update_saga(saga).await? {
             return Err(Error::ConcurrentUpdate);
         }
+
+        self.wallet
+            .sign_nutroot_swap(
+                &mut self.state_data.pre_swap.swap_request,
+                signing_keys,
+                &[],
+            )
+            .await?;
 
         let swap_response = match self
             .wallet
@@ -249,20 +276,14 @@ impl<'a> SwapSaga<'a, Prepared> {
         let active_keyset_id = self.state_data.pre_swap.pre_mint_secrets.keyset_id;
         let active_keys = self.wallet.keyset(active_keyset_id).await?.keys;
 
-        validate_mint_response_signatures(
+        let post_swap_proofs = construct_mint_response_proofs(
             self.wallet,
-            &swap_response.signatures,
-            self.state_data.pre_swap.swap_request.outputs().iter(),
+            swap_response.signatures,
+            &self.state_data.pre_swap.pre_mint_secrets.secrets,
+            &active_keys,
             SignatureAmountValidation::Exact,
         )
         .await?;
-
-        let post_swap_proofs = construct_proofs(
-            swap_response.signatures,
-            self.state_data.pre_swap.pre_mint_secrets.rs(),
-            self.state_data.pre_swap.pre_mint_secrets.secrets(),
-            &active_keys,
-        )?;
 
         let mut added_proofs = Vec::new();
         let change_proofs;
@@ -279,36 +300,40 @@ impl<'a> SwapSaga<'a, Prepared> {
                     post_swap_proofs.into_iter().partition(|p| {
                         let nut10_secret: Result<nut10::Secret, _> = p.secret.clone().try_into();
                         nut10_secret.is_ok()
+                            || p.spend_info.as_ref().is_some_and(|info| {
+                                info.tree.is_some() || info.ephemeral_key.is_some()
+                            })
                     });
 
-                let (mut proofs_to_send, proofs_to_keep) =
-                    match &self.state_data.spending_conditions {
-                        Some(_) => (proofs_with_condition, proofs_without_condition),
-                        None => {
-                            let mut all_proofs = proofs_without_condition;
-                            all_proofs.reverse();
+                let (mut proofs_to_send, proofs_to_keep) = match (
+                    &self.state_data.spending_conditions,
+                    self.state_data.nutroot,
+                ) {
+                    (Some(_), _) | (_, true) => (proofs_with_condition, proofs_without_condition),
+                    (None, false) => {
+                        let mut all_proofs = proofs_without_condition;
+                        all_proofs.reverse();
 
-                            let mut proofs_to_send = Proofs::new();
-                            let mut proofs_to_keep = Proofs::new();
-                            let mut amount_split = amount.split_targeted(
-                                &self.state_data.amount_split_target,
-                                &fee_and_amounts,
-                            )?;
+                        let mut proofs_to_send = Proofs::new();
+                        let mut proofs_to_keep = Proofs::new();
+                        let mut amount_split = amount.split_targeted(
+                            &self.state_data.amount_split_target,
+                            &fee_and_amounts,
+                        )?;
 
-                            for proof in all_proofs {
-                                if let Some(idx) =
-                                    amount_split.iter().position(|&a| a == proof.amount)
-                                {
-                                    proofs_to_send.push(proof);
-                                    amount_split.remove(idx);
-                                } else {
-                                    proofs_to_keep.push(proof);
-                                }
+                        for proof in all_proofs {
+                            if let Some(idx) = amount_split.iter().position(|&a| a == proof.amount)
+                            {
+                                proofs_to_send.push(proof);
+                                amount_split.remove(idx);
+                            } else {
+                                proofs_to_keep.push(proof);
                             }
-
-                            (proofs_to_send, proofs_to_keep)
                         }
-                    };
+
+                        (proofs_to_send, proofs_to_keep)
+                    }
+                };
 
                 if let Some(ephemeral_keys) = &self.state_data.pre_swap.p2bk_secret_keys {
                     for (i, proof) in proofs_to_send.iter_mut().enumerate() {
@@ -317,7 +342,9 @@ impl<'a> SwapSaga<'a, Prepared> {
                         } else {
                             &ephemeral_keys[i]
                         };
-                        proof.p2pk_e = Some(e_key.public_key());
+                        if proof.keyset_id.get_version() != crate::nuts::KeySetVersion::Version02 {
+                            proof.p2pk_e = Some(e_key.public_key());
+                        }
                     }
                 }
 

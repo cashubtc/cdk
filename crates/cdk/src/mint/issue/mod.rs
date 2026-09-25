@@ -764,12 +764,50 @@ impl Mint {
                 }
             }
 
+            let nutroot_transaction = if input.outputs().iter().any(|output| {
+                output.keyset_id.get_version() == crate::nuts::KeySetVersion::Version02
+            }) {
+                let keyset = input
+                    .outputs()
+                    .first()
+                    .ok_or(Error::SignatureMissingOrInvalid)?
+                    .keyset_id;
+                ensure_cdk!(
+                    input
+                        .outputs()
+                        .iter()
+                        .all(|output| output.keyset_id == keyset),
+                    Error::SignatureMissingOrInvalid
+                );
+                let quotes = quote_entries
+                    .iter()
+                    .map(|entry| {
+                        let quote = quote_map.get(&entry.quote_id).ok_or(Error::UnknownQuote)?;
+                        Ok(crate::nuts::nut10::nutroot::Quote {
+                            id: entry.quote_id.to_string(),
+                            amount: quote.amount.clone().map(Into::into).unwrap_or(Amount::ZERO),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, Error>>()?;
+                Some(
+                    crate::nuts::nut10::nutroot::Transaction::new(
+                        &[],
+                        &quotes,
+                        input.outputs(),
+                        &[],
+                    )
+                    .map_err(crate::nuts::nut10::Error::from)?,
+                )
+            } else {
+                None
+            };
+
             // Phase 2: Per-quote validation
             let mut total_expected_value: u64 = 0;
             let mut expected_amounts: std::collections::HashMap<QuoteId, Amount<CurrencyUnit>> =
                 std::collections::HashMap::new();
 
-            for entry in &quote_entries {
+            for (quote_index, entry) in quote_entries.iter().enumerate() {
                 let mint_quote = quote_map.get(&entry.quote_id).ok_or(Error::UnknownQuote)?;
 
                 // Validate quote state
@@ -838,7 +876,33 @@ impl Mint {
                 }
 
                 // Verify NUT-20 signature
-                if let Some(ref pubkey) = mint_quote.pubkey {
+                if let Some(transaction) = &nutroot_transaction {
+                    let pubkey = mint_quote.pubkey.ok_or(Error::SignatureMissingOrInvalid)?;
+                    let raw = entry
+                        .signature
+                        .as_ref()
+                        .ok_or(Error::SignatureMissingOrInvalid)?;
+                    ensure_cdk!(raw.len() <= 4096, Error::SignatureMissingOrInvalid);
+                    let witness = if raw.len() == 128 {
+                        crate::nuts::nut10::nutroot::Witness {
+                            signatures: vec![raw.clone()],
+                            leaf: None,
+                            control: None,
+                            preimage: None,
+                        }
+                    } else {
+                        serde_json::from_str(raw).map_err(|_| Error::SignatureMissingOrInvalid)?
+                    };
+                    witness
+                        .verify(
+                            &pubkey.to_string(),
+                            transaction
+                                .input_digest(quote_index)
+                                .map_err(crate::nuts::nut10::Error::from)?,
+                            cdk_common::util::unix_time(),
+                        )
+                        .map_err(crate::nuts::nut10::Error::from)?;
+                } else if let Some(ref pubkey) = mint_quote.pubkey {
                     match &input {
                         MintInput::Single(request) => request
                             .verify_signature(*pubkey)
@@ -1202,7 +1266,7 @@ mod batch_mint_tests {
     ) -> (Mint, Arc<AtomicUsize>) {
         let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
 
-        let mut mint_builder = MintBuilder::new(db.clone());
+        let mut mint_builder = MintBuilder::new(db.clone()).with_keyset_v2(Some(true));
 
         let fee_reserve = FeeReserve {
             min_fee_reserve: 1.into(),

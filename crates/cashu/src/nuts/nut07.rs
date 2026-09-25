@@ -78,6 +78,7 @@ pub struct CheckStateRequest {
 
 /// Proof state [NUT-07]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "ProofStateWire")]
 pub struct ProofState {
     /// Y of proof
     #[serde(rename = "Y")]
@@ -86,6 +87,43 @@ pub struct ProofState {
     pub state: State,
     /// Witness data if it is supplied
     pub witness: Option<Witness>,
+    /// Published per-input v3 digest, only for a spent disclosure leaf.
+    #[serde(default)]
+    pub input_digest: Option<String>,
+    /// Commitment to a spent v3 input's accepted witness and input digest.
+    #[serde(default)]
+    pub commitment: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ProofStateWire {
+    #[serde(rename = "Y")]
+    y: PublicKey,
+    state: State,
+    witness: Option<String>,
+    input_digest: Option<String>,
+    commitment: Option<String>,
+}
+
+impl TryFrom<ProofStateWire> for ProofState {
+    type Error = serde_json::Error;
+    fn try_from(value: ProofStateWire) -> Result<Self, Self::Error> {
+        let version = if matches!(value.y, PublicKey::BlsG1(_)) {
+            super::KeySetVersion::Version02
+        } else {
+            super::KeySetVersion::Version01
+        };
+        Ok(Self {
+            y: value.y,
+            state: value.state,
+            witness: value
+                .witness
+                .map(|raw| Witness::from_json_for_version(&serde_json::to_string(&raw)?, version))
+                .transpose()?,
+            input_digest: value.input_digest,
+            commitment: value.commitment,
+        })
+    }
 }
 
 impl From<(PublicKey, State)> for ProofState {
@@ -94,6 +132,8 @@ impl From<(PublicKey, State)> for ProofState {
             y: value.0,
             state: value.1,
             witness: None,
+            input_digest: None,
+            commitment: None,
         }
     }
 }

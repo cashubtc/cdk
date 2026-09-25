@@ -46,14 +46,12 @@ use tracing::instrument;
 use self::compensation::RemovePendingProofs;
 use self::state::{Finalized, Initial, Prepared};
 use super::ReceiveOptions;
-use crate::dhke::{construct_proofs, verify_bls_message};
+use crate::dhke::verify_bls_message;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut10::Kind;
 use crate::nuts::{Conditions, KeySetVersion, Proofs, PublicKey, SecretKey, SigFlag, State};
 use crate::util::hex;
-use crate::wallet::blind_signature::{
-    validate_mint_response_signatures, SignatureAmountValidation,
-};
+use crate::wallet::blind_signature::{construct_mint_response_proofs, SignatureAmountValidation};
 use crate::wallet::saga::{
     add_compensation, clear_compensations, execute_compensations, new_compensations, Compensations,
 };
@@ -141,6 +139,31 @@ impl<'a> ReceiveSaga<'a, Initial> {
             .iter()
             .map(|s| Ok((s.as_secp256k1()?.x_only_public_key(&SECP256K1).0, s.clone())))
             .collect::<Result<_, Error>>()?;
+
+        if let Some(policy) = &opts.nutroot {
+            let mut receiver_keys = opts
+                .p2pk_signing_keys
+                .iter()
+                .map(|key| key.as_secp256k1().copied())
+                .collect::<Result<Vec<_>, _>>()?;
+            for stored in self.wallet.localstore.list_p2pk_keys().await? {
+                if let Some(key) = self.wallet.get_signing_key(&stored.pubkey).await? {
+                    receiver_keys.push(*key.as_secp256k1()?);
+                }
+            }
+            for proof in &proofs {
+                if proof.keyset_id.get_version() != KeySetVersion::Version02 {
+                    return Err(crate::nuts::nut10::Error::SpendConditionsNotMet.into());
+                }
+                let info = proof
+                    .spend_info
+                    .as_ref()
+                    .ok_or(crate::nuts::nut10::Error::SpendConditionsNotMet)?;
+                policy
+                    .verify_output(&proof.secret.to_string(), info, &receiver_keys)
+                    .map_err(crate::nuts::nut10::Error::from)?;
+            }
+        }
 
         // Process each proof: verify mint signature, handle P2PK/HTLC
         for proof in &mut proofs {
@@ -328,6 +351,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             self.wallet.mint_url.clone(),
             self.wallet.unit.clone(),
             OperationData::Receive(ReceiveOperationData {
+                premint_secrets: None,
                 token: self.state_data.token.clone(),
                 counter_start: None,
                 counter_end: None,
@@ -358,10 +382,24 @@ impl<'a> ReceiveSaga<'a, Prepared> {
                 self.state_data.options.amount_split_target.clone(),
                 proofs,
                 None,
+                None,
                 false,
                 false,
                 &fee_breakdown,
                 ProofReservation::Skip,
+            )
+            .await?;
+
+        self.wallet
+            .sign_nutroot_swap(
+                &mut pre_swap.swap_request,
+                &self
+                    .state_data
+                    .p2pk_signing_keys
+                    .values()
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                &self.state_data.options.preimages,
             )
             .await?;
 
@@ -393,6 +431,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             data.counter_start = Some(counter_start);
             data.counter_end = Some(counter_end);
             data.blinded_messages = Some(pre_swap.swap_request.outputs().clone());
+            data.premint_secrets = Some(pre_swap.pre_mint_secrets.clone());
         }
 
         // Update saga state - if this fails due to version conflict, another instance
@@ -442,14 +481,11 @@ impl<'a> ReceiveSaga<'a, Prepared> {
 
         // Preserve the pending saga on an invalid response: the mint may have
         // already spent the inputs, so recovery must still be able to retry.
-        validate_mint_response_signatures(
+        let recv_proofs = construct_mint_response_proofs(
             self.wallet,
-            &swap_response.signatures,
-            pre_swap
-                .pre_mint_secrets
-                .secrets
-                .iter()
-                .map(|premint| &premint.blinded_message),
+            swap_response.signatures,
+            &pre_swap.pre_mint_secrets.secrets,
+            &keys,
             SignatureAmountValidation::Exact,
         )
         .await
@@ -461,13 +497,6 @@ impl<'a> ReceiveSaga<'a, Prepared> {
                 "Mint response signature validation failed"
             );
         })?;
-
-        let recv_proofs = construct_proofs(
-            swap_response.signatures,
-            pre_swap.pre_mint_secrets.rs(),
-            pre_swap.pre_mint_secrets.secrets(),
-            &keys,
-        )?;
 
         self.wallet
             .localstore

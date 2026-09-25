@@ -300,7 +300,7 @@ impl PartialOrd for BlindSignature {
 }
 
 /// Witness
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Witness {
     /// HTLC Witness
@@ -309,6 +309,18 @@ pub enum Witness {
     /// P2PK Witness
     #[serde(with = "serde_p2pk_witness")]
     P2PKWitness(P2PKWitness),
+    /// Exact Nutroot witness JSON, retained for spend commitments.
+    NutrootWitness(String),
+}
+
+impl fmt::Debug for Witness {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::HTLCWitness(witness) => f.debug_tuple("HTLCWitness").field(witness).finish(),
+            Self::P2PKWitness(witness) => f.debug_tuple("P2PKWitness").field(witness).finish(),
+            Self::NutrootWitness(_) => f.write_str("NutrootWitness([REDACTED])"),
+        }
+    }
 }
 
 impl From<P2PKWitness> for Witness {
@@ -324,9 +336,33 @@ impl From<HTLCWitness> for Witness {
 }
 
 impl Witness {
+    /// Decode a JSON-serialized witness from storage, preserving the exact v3
+    /// string rather than interpreting it as a legacy P2PK/HTLC witness.
+    pub fn from_json_for_version(
+        value: &str,
+        version: crate::nuts::KeySetVersion,
+    ) -> Result<Self, serde_json::Error> {
+        match version {
+            crate::nuts::KeySetVersion::Version02 => {
+                serde_json::from_str::<String>(value).map(Self::NutrootWitness)
+            }
+            _ => serde_json::from_str(value),
+        }
+    }
+
     /// Add signatures to [`Witness`]
     pub fn add_signatures(&mut self, signatures: Vec<String>) {
         match self {
+            Self::NutrootWitness(raw) => {
+                if let Ok(mut witness) =
+                    serde_json::from_str::<crate::nuts::nut10::nutroot::Witness>(raw)
+                {
+                    witness.signatures.extend(signatures);
+                    if let Ok(updated) = serde_json::to_string(&witness) {
+                        *raw = updated;
+                    }
+                }
+            }
             Self::P2PKWitness(p2pk_witness) => p2pk_witness.signatures.extend(signatures),
             Self::HTLCWitness(htlc_witness) => match &mut htlc_witness.signatures {
                 Some(sigs) => sigs.extend(signatures),
@@ -338,6 +374,11 @@ impl Witness {
     /// Get signatures on [`Witness`]
     pub fn signatures(&self) -> Option<Vec<String>> {
         match self {
+            Self::NutrootWitness(raw) => {
+                serde_json::from_str::<crate::nuts::nut10::nutroot::Witness>(raw)
+                    .ok()
+                    .map(|w| w.signatures)
+            }
             Self::P2PKWitness(witness) => Some(witness.signatures.clone()),
             Self::HTLCWitness(witness) => witness.signatures.clone(),
         }
@@ -346,6 +387,11 @@ impl Witness {
     /// Get preimage from [`Witness`]
     pub fn preimage(&self) -> Option<String> {
         match self {
+            Self::NutrootWitness(raw) => {
+                serde_json::from_str::<crate::nuts::nut10::nutroot::Witness>(raw)
+                    .ok()
+                    .and_then(|w| w.preimage)
+            }
             Self::P2PKWitness(_witness) => None,
             Self::HTLCWitness(witness) => Some(witness.preimage.clone()),
         }
@@ -364,6 +410,7 @@ impl std::fmt::Display for Witness {
 
 /// Proofs
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "ProofWire")]
 pub struct Proof {
     /// Amount
     pub amount: Amount,
@@ -385,6 +432,51 @@ pub struct Proof {
     /// Used for Pay-to-Blinded-Key privacy feature
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub p2pk_e: Option<PublicKey>,
+    /// Nutroot transfer and spending information; preserve across storage and transport.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spend_info: Option<crate::nuts::nut10::nutroot::SpendInfo>,
+}
+
+#[derive(Deserialize)]
+struct ProofWire {
+    amount: Amount,
+    #[serde(rename = "id")]
+    keyset_id: Id,
+    secret: Secret,
+    #[serde(rename = "C")]
+    c: PublicKey,
+    #[serde(default)]
+    witness: Option<String>,
+    #[serde(default)]
+    dleq: Option<ProofDleq>,
+    #[serde(default)]
+    p2pk_e: Option<PublicKey>,
+    #[serde(default)]
+    spend_info: Option<crate::nuts::nut10::nutroot::SpendInfo>,
+}
+
+impl TryFrom<ProofWire> for Proof {
+    type Error = serde_json::Error;
+
+    fn try_from(wire: ProofWire) -> Result<Self, Self::Error> {
+        let witness = wire
+            .witness
+            .map(|raw| match wire.keyset_id.get_version() {
+                crate::nuts::KeySetVersion::Version02 => Ok(Witness::NutrootWitness(raw)),
+                _ => serde_json::from_value(serde_json::Value::String(raw)),
+            })
+            .transpose()?;
+        Ok(Self {
+            amount: wire.amount,
+            keyset_id: wire.keyset_id,
+            secret: wire.secret,
+            c: wire.c,
+            witness,
+            dleq: wire.dleq,
+            p2pk_e: wire.p2pk_e,
+            spend_info: wire.spend_info,
+        })
+    }
 }
 
 impl Proof {
@@ -398,6 +490,7 @@ impl Proof {
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         }
     }
 
@@ -460,6 +553,14 @@ pub struct ProofV4 {
     /// P2BK Ephemeral Public Key (NUT-28)
     #[serde(rename = "pe", default, skip_serializing_if = "Option::is_none")]
     pub p2pk_e: Option<PublicKey>,
+    /// Nutroot spend information, encoded as CBOR byte strings.
+    #[serde(
+        rename = "si",
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::nuts::nut10::nutroot::serde_spend_info"
+    )]
+    pub spend_info: Option<crate::nuts::nut10::nutroot::SpendInfo>,
 }
 
 impl ProofV4 {
@@ -470,9 +571,14 @@ impl ProofV4 {
             keyset_id: *keyset_id,
             secret: self.secret.clone(),
             c: self.c,
-            witness: self.witness.clone(),
+            witness: if keyset_id.get_version() == crate::nuts::KeySetVersion::Version02 {
+                None
+            } else {
+                self.witness.clone()
+            },
             dleq: self.dleq.clone(),
             p2pk_e: self.p2pk_e,
+            spend_info: self.spend_info.clone(),
         }
     }
 }
@@ -484,7 +590,10 @@ impl Hash for ProofV4 {
 }
 
 impl From<Proof> for ProofV4 {
-    fn from(proof: Proof) -> ProofV4 {
+    fn from(mut proof: Proof) -> ProofV4 {
+        if proof.keyset_id.get_version() == crate::nuts::KeySetVersion::Version02 {
+            proof.witness = None;
+        }
         let Proof {
             amount,
             secret,
@@ -492,6 +601,7 @@ impl From<Proof> for ProofV4 {
             witness,
             dleq,
             p2pk_e,
+            spend_info,
             ..
         } = proof;
         ProofV4 {
@@ -501,6 +611,7 @@ impl From<Proof> for ProofV4 {
             witness,
             dleq,
             p2pk_e,
+            spend_info,
         }
     }
 }
@@ -514,6 +625,7 @@ impl From<ProofV3> for ProofV4 {
             witness: proof.witness,
             dleq: proof.dleq,
             p2pk_e: None,
+            spend_info: proof.spend_info,
         }
     }
 }
@@ -537,6 +649,9 @@ pub struct ProofV3 {
     /// DLEQ Proof
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dleq: Option<ProofDleq>,
+    /// Nutroot spend information, retained when converting token formats.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spend_info: Option<crate::nuts::nut10::nutroot::SpendInfo>,
 }
 
 impl ProofV3 {
@@ -547,15 +662,23 @@ impl ProofV3 {
             keyset_id: *keyset_id,
             secret: self.secret.clone(),
             c: self.c,
-            witness: self.witness.clone(),
+            witness: if keyset_id.get_version() == crate::nuts::KeySetVersion::Version02 {
+                None
+            } else {
+                self.witness.clone()
+            },
             dleq: self.dleq.clone(),
             p2pk_e: None,
+            spend_info: self.spend_info.clone(),
         }
     }
 }
 
 impl From<Proof> for ProofV3 {
-    fn from(proof: Proof) -> ProofV3 {
+    fn from(mut proof: Proof) -> ProofV3 {
+        if proof.keyset_id.get_version() == crate::nuts::KeySetVersion::Version02 {
+            proof.witness = None;
+        }
         let Proof {
             amount,
             keyset_id,
@@ -563,6 +686,7 @@ impl From<Proof> for ProofV3 {
             c,
             witness,
             dleq,
+            spend_info,
             ..
         } = proof;
         ProofV3 {
@@ -571,6 +695,7 @@ impl From<Proof> for ProofV3 {
             c,
             witness,
             dleq,
+            spend_info,
             keyset_id: keyset_id.into(),
         }
     }
@@ -937,8 +1062,11 @@ impl<'de> Deserialize<'de> for PaymentMethod {
 
 /// PreMint
 #[cfg(feature = "wallet")]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreMint {
+    /// Nutroot spend information for random or condition-locked outputs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spend_info: Option<crate::nuts::nut10::nutroot::SpendInfo>,
     /// Blinded message
     pub blinded_message: BlindedMessage,
     /// Secret
@@ -948,7 +1076,7 @@ pub struct PreMint {
     /// Amount
     pub amount: Amount,
     /// NUT-13 derivation index for deterministic secrets.
-    #[serde(skip)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub derivation_index: Option<u32>,
 }
 
@@ -968,7 +1096,7 @@ impl PartialOrd for PreMint {
 
 /// Premint Secrets
 #[cfg(feature = "wallet")]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreMintSecrets {
     /// Secrets
     pub secrets: Vec<PreMint>,
@@ -978,6 +1106,32 @@ pub struct PreMintSecrets {
 
 #[cfg(feature = "wallet")]
 impl PreMintSecrets {
+    fn random_secret(keyset_id: Id) -> (Secret, Option<crate::nuts::nut10::nutroot::SpendInfo>) {
+        if keyset_id.get_version() == crate::nuts::KeySetVersion::Version02 {
+            let key = SecretKey::generate();
+            (
+                Secret::new(key.public_key().to_string()),
+                Some(crate::nuts::nut10::nutroot::SpendInfo {
+                    bearer_key: Some(key),
+                    ..Default::default()
+                }),
+            )
+        } else {
+            (Secret::generate(), None)
+        }
+    }
+
+    /// Attach the metadata for matching outputs after unblinding signatures.
+    pub fn attach_spend_info(&self, proofs: &mut [Proof]) {
+        for proof in proofs {
+            if let Some(premint) = self.secrets.iter().find(|premint| {
+                premint.secret == proof.secret
+                    && premint.blinded_message.keyset_id == proof.keyset_id
+            }) {
+                proof.spend_info = premint.spend_info.clone();
+            }
+        }
+    }
     /// Create new [`PreMintSecrets`]
     pub fn new(keyset_id: Id) -> Self {
         Self {
@@ -998,13 +1152,14 @@ impl PreMintSecrets {
         let mut output = Vec::with_capacity(amount_split.len());
 
         for amount in amount_split {
-            let secret = Secret::generate();
+            let (secret, spend_info) = Self::random_secret(keyset_id);
             let (blinded, r) =
                 blind_message_for_version(&secret.to_bytes(), None, keyset_id.get_version())?;
 
             let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
 
             output.push(PreMint {
+                spend_info,
                 secret,
                 blinded_message,
                 r,
@@ -1034,6 +1189,7 @@ impl PreMintSecrets {
             let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
 
             output.push(PreMint {
+                spend_info: None,
                 secret,
                 blinded_message,
                 r,
@@ -1055,13 +1211,14 @@ impl PreMintSecrets {
         let mut output = Vec::with_capacity(count as usize);
 
         for _i in 0..count {
-            let secret = Secret::generate();
+            let (secret, spend_info) = Self::random_secret(keyset_id);
             let (blinded, r) =
                 blind_message_for_version(&secret.to_bytes(), None, keyset_id.get_version())?;
 
             let blinded_message = BlindedMessage::new(Amount::ZERO, keyset_id, blinded);
 
             output.push(PreMint {
+                spend_info,
                 secret,
                 blinded_message,
                 r,
@@ -1087,6 +1244,22 @@ impl PreMintSecrets {
         ephemeral_keys: &[crate::nuts::nut01::SecretKey],
         fee_and_amounts: &FeeAndAmounts,
     ) -> Result<Self, Error> {
+        if keyset_id.get_version() == crate::nuts::KeySetVersion::Version02 {
+            let policy = nut10::SpendingConditions::P2PKConditions {
+                data: receiver_pubkey,
+                conditions,
+            };
+            let lock = nut10::nutroot::NutrootOption::from_spending_conditions(&policy, true)
+                .map_err(nut10::Error::from)?;
+            return Self::with_nutroot_keys(
+                keyset_id,
+                amount,
+                amount_split_target,
+                &lock,
+                Some(ephemeral_keys),
+                fee_and_amounts,
+            );
+        }
         use crate::nuts::nut10::spending_conditions::{check_locking_slots, validate_p2pk};
         use crate::nuts::nut28::{blind_public_key, ecdh_kdf};
 
@@ -1159,6 +1332,7 @@ impl PreMintSecrets {
             let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
 
             output.push(PreMint {
+                spend_info: None,
                 secret,
                 blinded_message,
                 r: rs,
@@ -1181,6 +1355,17 @@ impl PreMintSecrets {
         conditions: &nut10::SpendingConditions,
         fee_and_amounts: &FeeAndAmounts,
     ) -> Result<Self, Error> {
+        if keyset_id.get_version() == crate::nuts::KeySetVersion::Version02 {
+            let lock = nut10::nutroot::NutrootOption::from_spending_conditions(conditions, false)
+                .map_err(nut10::Error::from)?;
+            return Self::with_nutroot(
+                keyset_id,
+                amount,
+                amount_split_target,
+                &lock,
+                fee_and_amounts,
+            );
+        }
         let amount_split = amount.split_targeted(amount_split_target, fee_and_amounts)?;
 
         let mut output = Vec::with_capacity(amount_split.len());
@@ -1195,6 +1380,7 @@ impl PreMintSecrets {
             let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
 
             output.push(PreMint {
+                spend_info: None,
                 secret,
                 blinded_message,
                 r,
@@ -1207,6 +1393,73 @@ impl PreMintSecrets {
             secrets: output,
             keyset_id,
         })
+    }
+
+    /// Create v3 outputs satisfying a Nutroot payment-request locking policy.
+    pub fn with_nutroot(
+        keyset_id: Id,
+        amount: Amount,
+        amount_split_target: &SplitTarget,
+        locking: &nut10::nutroot::NutrootOption,
+        fee_and_amounts: &FeeAndAmounts,
+    ) -> Result<Self, Error> {
+        Self::with_nutroot_keys(
+            keyset_id,
+            amount,
+            amount_split_target,
+            locking,
+            None,
+            fee_and_amounts,
+        )
+    }
+
+    fn with_nutroot_keys(
+        keyset_id: Id,
+        amount: Amount,
+        amount_split_target: &SplitTarget,
+        locking: &nut10::nutroot::NutrootOption,
+        ephemeral_keys: Option<&[SecretKey]>,
+        fee_and_amounts: &FeeAndAmounts,
+    ) -> Result<Self, Error> {
+        if keyset_id.get_version() != crate::nuts::KeySetVersion::Version02 {
+            return Err(nut10::Error::from(nut10::nutroot::Error::InvalidKeyset).into());
+        }
+        let amounts = amount.split_targeted(amount_split_target, fee_and_amounts)?;
+        if ephemeral_keys.is_some_and(|keys| keys.len() != amounts.len()) {
+            return Err(nut10::Error::from(nut10::nutroot::Error::InvalidSpendInfo).into());
+        }
+        if let Some(keys) = ephemeral_keys {
+            let unique: std::collections::HashSet<_> =
+                keys.iter().map(SecretKey::public_key).collect();
+            if unique.len() != keys.len() {
+                return Err(nut10::Error::from(nut10::nutroot::Error::InvalidSpendInfo).into());
+            }
+        }
+        let mut secrets = Vec::with_capacity(amounts.len());
+        for (index, amount) in amounts.into_iter().enumerate() {
+            let ephemeral = ephemeral_keys
+                .map(|keys| keys[index].clone())
+                .unwrap_or_else(SecretKey::generate);
+            let offset = SecretKey::generate();
+            let (secret, info) = locking
+                .create_output(
+                    ephemeral.as_secp256k1().map_err(nut10::Error::from)?,
+                    offset.as_secp256k1().map_err(nut10::Error::from)?,
+                )
+                .map_err(nut10::Error::from)?;
+            let secret = Secret::new(secret);
+            let (blinded, r) =
+                blind_message_for_version(secret.as_bytes(), None, keyset_id.get_version())?;
+            secrets.push(PreMint {
+                blinded_message: BlindedMessage::new(amount, keyset_id, blinded),
+                secret,
+                r,
+                amount,
+                spend_info: Some(info),
+                derivation_index: None,
+            });
+        }
+        Ok(Self { secrets, keyset_id })
     }
 
     /// Iterate over secrets
@@ -1323,7 +1576,9 @@ mod tests {
 
     #[test]
     fn proof_y_matches_keyset_version() {
-        let secret = Secret::from_str("test proof secret").expect("secret");
+        let secret =
+            Secret::from_str("02e6e7cfa7b82d4b3b449fa6466c893469a727d0214d48db4956a6054b8022a29b")
+                .expect("secret");
         let secp_c = crate::nuts::SecretKey::generate().public_key();
         let bls_c = crate::nuts::nut01::BlsG1PublicKey::hash_to_curve(b"signature").into();
 

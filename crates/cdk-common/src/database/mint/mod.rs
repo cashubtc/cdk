@@ -430,6 +430,17 @@ pub trait QuotesDatabase {
 /// Mint Proof Transaction trait
 #[async_trait]
 pub trait ProofsTransaction {
+    /// Record verified v3 spend openings atomically with proof reservation.
+    async fn set_proof_spends(
+        &mut self,
+        records: &[(PublicKey, cashu::nuts::nut10::nutroot::SpendRecord)],
+    ) -> Result<(), Self::Err>;
+    /// Load accepted v3 spend openings in the requested order.
+    async fn get_proof_spends(
+        &mut self,
+        ys: &[PublicKey],
+    ) -> Result<Vec<Option<cashu::nuts::nut10::nutroot::SpendRecord>>, Self::Err>;
+
     /// Mint Proof Database Error
     type Err: Into<Error> + From<Error>;
 
@@ -483,6 +494,12 @@ pub trait ProofsTransaction {
 /// Mint Proof Database trait
 #[async_trait]
 pub trait ProofsDatabase {
+    /// Load accepted v3 spend openings in the requested order.
+    async fn get_proof_spends(
+        &self,
+        ys: &[PublicKey],
+    ) -> Result<Vec<Option<cashu::nuts::nut10::nutroot::SpendRecord>>, Self::Err>;
+
     /// Mint Proof Database Error
     type Err: Into<Error> + From<Error>;
 

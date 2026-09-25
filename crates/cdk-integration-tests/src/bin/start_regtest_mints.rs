@@ -464,6 +464,7 @@ fn create_ldk_settings(
 ) -> cdk_mintd::config::Settings {
     cdk_mintd::config::Settings {
         info: cdk_mintd::config::Info {
+            keyset_version: None,
             quote_ttl: None,
             url: format!("http://127.0.0.1:{port}"),
             listen_host: "127.0.0.1".to_string(),
@@ -565,6 +566,7 @@ fn signal_mints_ready(temp_dir: &Path) -> Result<()> {
 fn create_onchain_settings(port: u16, mint_mnemonic: &Mnemonic) -> cdk_mintd::config::Settings {
     cdk_mintd::config::Settings {
         info: cdk_mintd::config::Info {
+            keyset_version: None,
             quote_ttl: None,
             url: format!("http://127.0.0.1:{port}"),
             listen_host: "127.0.0.1".to_string(),

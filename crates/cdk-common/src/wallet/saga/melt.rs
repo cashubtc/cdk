@@ -44,6 +44,9 @@ impl std::str::FromStr for MeltSagaState {
 /// Operation-specific data for Melt operations
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeltOperationData {
+    /// Exact output secrets and transfer metadata, persisted before transmission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub premint_secrets: Option<cashu::PreMintSecrets>,
     /// Quote ID
     pub quote_id: String,
     /// Amount to melt

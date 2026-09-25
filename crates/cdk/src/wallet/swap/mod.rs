@@ -53,6 +53,8 @@ impl Wallet {
             include_fees,
             use_p2bk,
             ProofReservation::Reserve,
+            None,
+            &[],
         )
         .await
     }
@@ -62,7 +64,7 @@ impl Wallet {
     /// This is intended for internal use by parent sagas (send, melt, receive)
     /// that have already reserved the proofs. Calling this on unreserved proofs
     /// bypasses the reservation safety check.
-    #[instrument(skip(self, input_proofs))]
+    #[instrument(skip(self, input_proofs, signing_keys))]
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn swap_no_reserve(
         &self,
@@ -72,6 +74,8 @@ impl Wallet {
         spending_conditions: Option<SpendingConditions>,
         include_fees: bool,
         use_p2bk: bool,
+        nutroot: Option<crate::nuts::nut10::nutroot::NutrootOption>,
+        signing_keys: &[crate::nuts::SecretKey],
     ) -> Result<Option<Proofs>, Error> {
         self.swap_internal(
             amount,
@@ -81,6 +85,8 @@ impl Wallet {
             include_fees,
             use_p2bk,
             ProofReservation::Skip,
+            nutroot,
+            signing_keys,
         )
         .await
     }
@@ -96,11 +102,13 @@ impl Wallet {
         include_fees: bool,
         use_p2bk: bool,
         proof_reservation: ProofReservation,
+        nutroot: Option<crate::nuts::nut10::nutroot::NutrootOption>,
+        signing_keys: &[crate::nuts::SecretKey],
     ) -> Result<Option<Proofs>, Error> {
         tracing::info!("Swapping");
 
         self.retry_on_inactive_keyset(|| async {
-            let saga = SwapSaga::new(self);
+            let saga = SwapSaga::new(self).with_nutroot(nutroot.clone());
             let saga = saga
                 .prepare(
                     amount,
@@ -112,7 +120,7 @@ impl Wallet {
                     proof_reservation,
                 )
                 .await?;
-            let saga = saga.execute().await?;
+            let saga = saga.execute_with_keys(signing_keys).await?;
             Ok(saga.into_send_proofs())
         })
         .await
@@ -130,12 +138,21 @@ impl Wallet {
         amount_split_target: SplitTarget,
         proofs: Proofs,
         spending_conditions: Option<SpendingConditions>,
+        nutroot: Option<crate::nuts::nut10::nutroot::NutrootOption>,
         include_fees: bool,
         use_p2bk: bool,
         proofs_fee_breakdown: &ProofsFeeBreakdown,
         proof_reservation: ProofReservation,
     ) -> Result<PreSwap, Error> {
         tracing::info!("Creating swap");
+        if let Some(policy) = &nutroot {
+            if spending_conditions.is_some()
+                || active_keyset_id.get_version() != crate::nuts::KeySetVersion::Version02
+            {
+                return Err(crate::nuts::nut10::Error::SpendConditionsNotMet.into());
+            }
+            policy.validate().map_err(crate::nuts::nut10::Error::from)?;
+        }
 
         // Desired amount is either amount passed or value of all proof
         let proofs_total = proofs.total_amount()?;
@@ -187,17 +204,15 @@ impl Wallet {
             s => s,
         };
 
-        let derived_secret_count;
-
         // Calculate total secrets needed and atomically reserve counter range
-        let total_secrets_needed = match spending_conditions {
-            Some(_) => {
+        let total_secrets_needed = match (spending_conditions.as_ref(), nutroot.as_ref()) {
+            (Some(_), _) | (_, Some(_)) => {
                 // For spending conditions, we only need to count change secrets
                 change_amount
                     .split_targeted(&change_split_target, fee_and_amounts)?
                     .len() as u32
             }
-            None => {
+            (None, None) => {
                 // For no spending conditions, count both send and change secrets
                 let send_count = send_amount
                     .unwrap_or(Amount::ZERO)
@@ -229,21 +244,16 @@ impl Wallet {
         };
 
         let mut count = starting_counter;
-
         let mut p2bk_ephemeral_key = None;
-        let (mut desired_messages, change_messages) = match spending_conditions {
-            Some(conditions) => {
-                let change_premint_secrets = PreMintSecrets::from_seed(
-                    active_keyset_id,
-                    count,
-                    &self.seed,
-                    change_amount,
-                    &change_split_target,
-                    fee_and_amounts,
-                )?;
-
-                derived_secret_count = change_premint_secrets.len();
-
+        let mut desired_messages = match (nutroot, spending_conditions) {
+            (Some(policy), _) => PreMintSecrets::with_nutroot(
+                active_keyset_id,
+                send_amount.unwrap_or(Amount::ZERO),
+                &SplitTarget::default(),
+                &policy,
+                fee_and_amounts,
+            )?,
+            (None, Some(conditions)) => {
                 let (send_secrets, ephemeral_key) = if use_p2bk {
                     if let SpendingConditions::P2PKConditions { data, conditions } = conditions {
                         let is_sig_all = conditions
@@ -285,10 +295,10 @@ impl Wallet {
                 };
 
                 p2bk_ephemeral_key = ephemeral_key;
-                (send_secrets, change_premint_secrets)
+                send_secrets
             }
-            None => {
-                let premint_secrets = PreMintSecrets::from_seed(
+            (None, None) => {
+                let desired = PreMintSecrets::from_seed(
                     active_keyset_id,
                     count,
                     &self.seed,
@@ -296,23 +306,19 @@ impl Wallet {
                     &SplitTarget::default(),
                     fee_and_amounts,
                 )?;
-
-                count += premint_secrets.len() as u32;
-
-                let change_premint_secrets = PreMintSecrets::from_seed(
-                    active_keyset_id,
-                    count,
-                    &self.seed,
-                    change_amount,
-                    &change_split_target,
-                    fee_and_amounts,
-                )?;
-
-                derived_secret_count = change_premint_secrets.len() + premint_secrets.len();
-
-                (premint_secrets, change_premint_secrets)
+                count += desired.len() as u32;
+                desired
             }
         };
+        let change_messages = PreMintSecrets::from_seed(
+            active_keyset_id,
+            count,
+            &self.seed,
+            change_amount,
+            &change_split_target,
+            fee_and_amounts,
+        )?;
+        let derived_secret_count = (count - starting_counter) as usize + change_messages.len();
 
         // Combine the BlindedMessages totaling the desired amount with change
         desired_messages.combine(change_messages);

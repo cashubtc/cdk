@@ -38,6 +38,9 @@ impl std::str::FromStr for SwapSagaState {
 /// Operation-specific data for Swap operations
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SwapOperationData {
+    /// Exact output secrets and transfer metadata, persisted before transmission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub premint_secrets: Option<cashu::PreMintSecrets>,
     /// Input amount
     pub input_amount: Amount,
     /// Output amount

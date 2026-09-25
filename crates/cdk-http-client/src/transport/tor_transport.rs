@@ -186,6 +186,18 @@ impl TorAsync {
             .parse::<Uri>()
             .map_err(|e| HttpError::Other(e.to_string()))?;
 
+        let auth = auth
+            .map(|auth| {
+                super::bind_auth(
+                    auth,
+                    method.as_str(),
+                    &url,
+                    body.as_ref()
+                        .map(|(bytes, _)| bytes.as_slice())
+                        .unwrap_or_default(),
+                )
+            })
+            .transpose()?;
         let mut builder = Request::builder().method(method).uri(uri);
         builder = builder.header(header::ACCEPT, accept);
 

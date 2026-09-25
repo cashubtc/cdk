@@ -393,6 +393,7 @@ impl<'a> Arbitrary<'a> for ProofArb {
             witness,
             dleq,
             p2pk_e: None,
+            spend_info: None,
         }))
     }
 }
@@ -505,6 +506,7 @@ impl<'a> Arbitrary<'a> for TokenV4Arb {
                     witness: p.witness,
                     dleq: None,
                     p2pk_e: None,
+                    spend_info: None,
                 };
                 proofs.push(pv4);
             }

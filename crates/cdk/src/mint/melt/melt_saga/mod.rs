@@ -220,10 +220,6 @@ impl MeltSaga<Initial> {
             }
         }
 
-        // Verify spending conditions (NUT-10/NUT-11/NUT-14), i.e. P2PK
-        // and HTLC (including SIGALL)
-        melt_request.verify_spending_conditions()?;
-
         let mut tx = self.db.begin_transaction().await?;
 
         let mut quote =
@@ -309,6 +305,29 @@ impl MeltSaga<Initial> {
                 tx.rollback().await?;
                 return Err(err);
             }
+        }
+
+        let nutroot_transaction = if melt_request.inputs().iter().any(|proof| {
+            proof.keyset_id.get_version() == cdk_common::nuts::KeySetVersion::Version02
+        }) {
+            Some(
+                cdk_common::nuts::nut10::nutroot::Transaction::new(
+                    melt_request.inputs(),
+                    &[],
+                    melt_request.outputs().as_deref().unwrap_or_default(),
+                    &[cdk_common::nuts::nut10::nutroot::Quote {
+                        id: melt_request.quote_id().to_string(),
+                        amount: quote.amount().checked_add(&quote.fee_reserve())?.into(),
+                    }],
+                )
+                .map_err(cdk_common::nuts::nut10::Error::from)?,
+            )
+        } else {
+            None
+        };
+        melt_request.verify_spending_conditions_with_transaction(nutroot_transaction.as_ref())?;
+        if let Some(transaction) = &nutroot_transaction {
+            Mint::record_nutroot_spends(&mut tx, melt_request.inputs(), transaction).await?;
         }
 
         match previous_state {

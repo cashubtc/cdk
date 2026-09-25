@@ -55,6 +55,8 @@ impl Mint {
             return Err(Error::BlindAuthFailed);
         }
 
+        token.verify_request().map_err(|_| Error::BlindAuthFailed)?;
+
         if keyset.is_expired() {
             return Err(Error::ExpiredKeyset);
         }
@@ -235,6 +237,10 @@ mod tests {
     use crate::types::FeeReserve;
 
     async fn create_auth_enabled_mint() -> Mint {
+        create_auth_enabled_mint_version(cdk_common::nuts::KeySetVersion::Version01).await
+    }
+
+    async fn create_auth_enabled_mint_version(version: cdk_common::nuts::KeySetVersion) -> Mint {
         let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
         let auth_db = Arc::new(
             cdk_sqlite::mint::MintSqliteAuthDatabase::new(":memory:")
@@ -242,7 +248,7 @@ mod tests {
                 .expect("auth db"),
         );
 
-        let mut mint_builder = MintBuilder::new(db.clone());
+        let mut mint_builder = MintBuilder::new(db.clone()).with_keyset_version(version);
 
         let fee_reserve = FeeReserve {
             min_fee_reserve: 1.into(),
@@ -299,6 +305,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn nutroot_bat_requires_matching_request_before_burning() {
+        let mint =
+            create_auth_enabled_mint_version(cdk_common::nuts::KeySetVersion::Version02).await;
+        let id = mint.get_active_keysets()[&CurrencyUnit::Auth];
+        let premints =
+            PreMintSecrets::random(id, 1.into(), &SplitTarget::None, &(0, vec![1]).into()).unwrap();
+        let premint = &premints.secrets[0];
+        let signature = mint
+            .auth_blind_sign(&premint.blinded_message)
+            .await
+            .unwrap();
+        let keys = mint
+            .auth_pubkeys()
+            .unwrap()
+            .keysets
+            .into_iter()
+            .find(|keyset| keyset.id == id)
+            .unwrap()
+            .keys;
+        let mut proofs = crate::dhke::construct_proofs(
+            vec![signature],
+            premints.rs(),
+            premints.secrets(),
+            &keys,
+        )
+        .unwrap();
+        premints.attach_spend_info(&mut proofs);
+        let mut token = BlindAuthToken::from_proof(proofs.remove(0)).unwrap();
+        token.sign_request("POST", "/v1/swap", b"{}").unwrap();
+        let mut incoming: BlindAuthToken = token.to_string().parse().unwrap();
+        assert!(mint.verify_blind_auth(&incoming).await.is_err());
+        incoming
+            .set_request_context("POST", "/v1/swap", b"{ }")
+            .unwrap();
+        assert!(mint.verify_blind_auth(&incoming).await.is_err());
+        incoming
+            .set_request_context("POST", "/v1/swap", b"{}")
+            .unwrap();
+        mint.verify_blind_auth(&incoming).await.unwrap();
+        mint.check_blind_auth_proof_spendable(incoming.auth_proof.clone())
+            .await
+            .unwrap();
+        assert!(matches!(
+            mint.check_blind_auth_proof_spendable(incoming.auth_proof)
+                .await,
+            Err(Error::TokenAlreadySpent)
+        ));
+        mint.stop().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn auth_blind_sign_rejects_non_auth_keysets() {
         let mint = create_auth_enabled_mint().await;
         let active_keysets = mint.get_active_keysets();
@@ -334,6 +391,7 @@ mod tests {
             .copied()
             .expect("auth keyset");
         let proof = AuthProof {
+            witness: None,
             keyset_id,
             secret: Secret::generate(),
             c: SecretKey::generate().public_key(),

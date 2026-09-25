@@ -88,6 +88,7 @@ fn test_proof(keyset_id: Id, amount: u64) -> Proof {
         witness: None,
         dleq: None,
         p2pk_e: None,
+        spend_info: None,
     }
 }
 
@@ -162,6 +163,7 @@ fn test_wallet_saga(mint_url: MintUrl) -> WalletSaga {
         mint_url,
         CurrencyUnit::Sat,
         OperationData::Swap(SwapOperationData {
+            premint_secrets: None,
             input_amount: Amount::from(1000),
             output_amount: Amount::from(990),
             counter_start: Some(0),
@@ -1674,6 +1676,65 @@ where
     assert_eq!(stored[0].used_by_operation, Some(operation_id));
 }
 
+/// Test preserving Nutroot spend information across proof storage and state changes.
+pub async fn nutroot_spend_info_roundtrip<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    use cashu::nuts::nut10::nutroot::{self, Condition, Leaf, Tree};
+    let mut info = test_proof_info(test_keyset_id(), 1, test_mint_url());
+    let key = SecretKey::generate();
+    let public = *key.public_key().as_secp256k1().unwrap();
+    let tree = Tree::new(vec![Leaf::new(
+        1,
+        vec![public],
+        Condition::Threshold,
+        false,
+    )
+    .unwrap()])
+    .unwrap();
+    info.proof.keyset_id = Id::from_bytes(&[vec![2], vec![8; 32]].concat()).unwrap();
+    info.proof.secret = Secret::new(
+        nutroot::tweaked_key(public, Some(tree.root()))
+            .unwrap()
+            .to_string(),
+    );
+    info.proof.c =
+        cashu::nuts::nut01::BlsG1PublicKey::hash_to_curve(b"stored proof signature").into();
+    info.proof.dleq = None;
+    info.y = info.proof.y().unwrap();
+    let spend_info = nutroot::SpendInfo {
+        bearer_key: Some(key.clone()),
+        internal_key: Some(public),
+        tree: Some(
+            tree.leaves()
+                .iter()
+                .map(|leaf| cashu::util::hex::encode(leaf.to_bytes()))
+                .collect(),
+        ),
+        ..Default::default()
+    };
+    let mut witness = nutroot::Witness::script_path(&tree, 0, public).unwrap();
+    witness.signatures =
+        nutroot::Witness::key_path(key.as_secp256k1().unwrap(), [7; 32]).signatures;
+    let raw = format!(" {} ", serde_json::to_string_pretty(&witness).unwrap());
+    info.proof.witness = Some(cashu::Witness::NutrootWitness(raw));
+    info.proof.spend_info = Some(spend_info.clone());
+    db.update_proofs(vec![info.clone()], vec![]).await.unwrap();
+    let stored = db.get_proofs_by_ys(vec![info.y]).await.unwrap();
+    assert_eq!(stored[0].proof.spend_info, Some(spend_info.clone()));
+    assert_eq!(stored[0].proof.witness, info.proof.witness);
+    let all = db.get_proofs(None, None, None, None).await.unwrap();
+    assert_eq!(all[0].proof.spend_info, Some(spend_info.clone()));
+    assert_eq!(all[0].proof.witness, info.proof.witness);
+    db.update_proofs_state(vec![info.y], State::Reserved)
+        .await
+        .unwrap();
+    let stored = db.get_proofs_by_ys(vec![info.y]).await.unwrap();
+    assert_eq!(stored[0].proof.spend_info, Some(spend_info));
+    assert_eq!(stored[0].proof.witness, info.proof.witness);
+}
+
 /// Test getting proofs reserved by an operation
 pub async fn get_reserved_proofs<DB>(db: DB)
 where
@@ -1817,6 +1878,7 @@ macro_rules! wallet_db_test {
             add_mint_quote_optimistic_locking,
             add_melt_quote_optimistic_locking,
             add_and_get_proofs,
+            nutroot_spend_info_roundtrip,
             get_proofs_in_transaction,
             update_proofs,
             update_proofs_state,

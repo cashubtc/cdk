@@ -92,6 +92,24 @@ impl SwapRequest {
 }
 
 impl super::nut10::SpendingConditionVerification for SwapRequest {
+    fn nutroot_transaction(
+        &self,
+    ) -> Result<Option<super::nut10::nutroot::Transaction>, super::nut10::Error> {
+        if self
+            .inputs
+            .iter()
+            .any(|p| p.keyset_id.get_version() == super::KeySetVersion::Version02)
+        {
+            Ok(Some(super::nut10::nutroot::Transaction::new(
+                &self.inputs,
+                &[],
+                &self.outputs,
+                &[],
+            )?))
+        } else {
+            Ok(None)
+        }
+    }
     fn inputs(&self) -> &Proofs {
         &self.inputs
     }

@@ -940,7 +940,7 @@ mod tests {
                     amount: Amount::from(2u64),
                     unit: CurrencyUnit::Sat,
                     description: None,
-                    pubkey: None,
+                    pubkey: Some(SecretKey::from_slice(&[9; 32]).unwrap().public_key()),
                 }
                 .into(),
             )
@@ -976,8 +976,33 @@ mod tests {
         vec![BlindedMessage::new(
             Amount::from(amount),
             keyset_id,
-            SecretKey::generate().public_key(),
+            match keyset_id.get_version() {
+                cdk::nuts::KeySetVersion::Version02 => {
+                    cdk::nuts::nut01::BlsG1PublicKey::hash_to_curve(b"test blinded output").into()
+                }
+                _ => SecretKey::generate().public_key(),
+            },
         )]
+    }
+
+    fn nutroot_quote_witness(quote: &QuoteId, outputs: &[BlindedMessage]) -> String {
+        use cdk::nuts::nut10::nutroot::{Quote, Transaction, Witness};
+        let transaction = Transaction::new(
+            &[],
+            &[Quote {
+                id: quote.to_string(),
+                amount: 2.into(),
+            }],
+            outputs,
+            &[],
+        )
+        .unwrap();
+        let key = SecretKey::from_slice(&[9; 32]).unwrap();
+        serde_json::to_string(&Witness::key_path(
+            key.as_secp256k1().unwrap(),
+            transaction.input_digest(0).unwrap(),
+        ))
+        .unwrap()
     }
 
     #[tokio::test]
@@ -1056,12 +1081,16 @@ mod tests {
     async fn cache_post_mint_custom_rejects_cached_url_method_quote_method_mismatch() {
         let state = create_test_state().await;
         let quote_id = create_paid_bolt11_quote(&state).await;
-        let mint_request = MintRequest {
+        let mut mint_request = MintRequest {
             quote: quote_id,
             outputs: outputs_for_amount(&state, 2),
             signature: None,
         };
 
+        mint_request.signature = Some(nutroot_quote_witness(
+            &mint_request.quote,
+            &mint_request.outputs,
+        ));
         let result = cache_post_mint_custom(
             AuthHeader::None,
             State(state.clone()),
@@ -1089,13 +1118,17 @@ mod tests {
     async fn cache_post_batch_mint_rejects_cached_url_method_quote_method_mismatch() {
         let state = create_test_state().await;
         let quote_id = create_paid_bolt11_quote(&state).await;
-        let batch_request = BatchMintRequest {
+        let mut batch_request = BatchMintRequest {
             quotes: vec![quote_id],
             quote_amounts: None,
             outputs: outputs_for_amount(&state, 2),
             signatures: None,
         };
 
+        batch_request.signatures = Some(vec![Some(nutroot_quote_witness(
+            &batch_request.quotes[0],
+            &batch_request.outputs,
+        ))]);
         let result = cache_post_batch_mint(
             AuthHeader::None,
             State(state.clone()),

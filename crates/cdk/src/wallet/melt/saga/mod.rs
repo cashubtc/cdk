@@ -35,7 +35,6 @@
 use std::collections::HashMap;
 
 use cdk_common::amount::SplitTarget;
-use cdk_common::dhke::construct_proofs;
 use cdk_common::wallet::{
     KeysetLoadPolicy, MeltOperationData, MeltPrepareOptions, MeltQuote, MeltSagaState,
     OperationData, ProofInfo, Transaction, TransactionDirection, TransactionStatus, WalletSaga,
@@ -52,9 +51,7 @@ use crate::nuts::nut00::{KnownMethod, ProofsMethods};
 use crate::nuts::nut11::{enforce_sig_flag, SigFlag};
 use crate::nuts::{MeltRequest, PreMintSecrets, Proofs, State};
 use crate::util::unix_time;
-use crate::wallet::blind_signature::{
-    validate_mint_response_signatures, SignatureAmountValidation,
-};
+use crate::wallet::blind_signature::{construct_mint_response_proofs, SignatureAmountValidation};
 use crate::wallet::saga::{add_compensation, new_compensations, Compensations};
 use crate::{ensure_cdk, Amount, Error, Wallet};
 
@@ -125,22 +122,15 @@ async fn finalize_melt_common<'a>(
                 _ => num_change_proof,
             };
 
-            validate_mint_response_signatures(
+            let proofs = construct_mint_response_proofs(
                 wallet,
-                &change,
-                premint_secrets.secrets[..num_change_proof]
-                    .iter()
-                    .map(|p| &p.blinded_message),
+                change,
+                &premint_secrets.secrets[..num_change_proof],
+                &active_keys,
                 SignatureAmountValidation::AllowZeroAmountPlaceholder,
             )
             .await?;
-
-            Some(construct_proofs(
-                change,
-                premint_secrets.rs()[..num_change_proof].to_vec(),
-                premint_secrets.secrets()[..num_change_proof].to_vec(),
-                &active_keys,
-            )?)
+            Some(proofs)
         }
         None => None,
     };
@@ -362,6 +352,7 @@ impl<'a> MeltSaga<'a, Initial> {
                 self.wallet.mint_url.clone(),
                 self.wallet.unit.clone(),
                 OperationData::Melt(MeltOperationData {
+                    premint_secrets: None,
                     quote_id: quote_id.to_string(),
                     amount: quote_info.amount,
                     fee_reserve: quote_info.fee_reserve,
@@ -461,6 +452,7 @@ impl<'a> MeltSaga<'a, Initial> {
             self.wallet.mint_url.clone(),
             self.wallet.unit.clone(),
             OperationData::Melt(MeltOperationData {
+                premint_secrets: None,
                 quote_id: quote_id.to_string(),
                 amount: quote_info.amount,
                 fee_reserve: quote_info.fee_reserve,
@@ -615,6 +607,7 @@ impl<'a> MeltSaga<'a, Initial> {
             self.wallet.mint_url.clone(),
             self.wallet.unit.clone(),
             OperationData::Melt(MeltOperationData {
+                premint_secrets: None,
                 quote_id: quote_id.to_string(),
                 amount: quote_info.amount,
                 fee_reserve: quote_info.fee_reserve,
@@ -801,6 +794,8 @@ impl<'a> MeltSaga<'a, Prepared> {
                         None,
                         false,
                         false,
+                        None,
+                        &[],
                     )
                     .await?
                 {
@@ -923,6 +918,7 @@ impl<'a> MeltSaga<'a, Prepared> {
             };
             data.final_proof_ys = Some(final_proof_ys);
             data.change_blinded_messages = change_blinded_messages.clone();
+            data.premint_secrets = Some(premint_secrets.clone());
         }
 
         let metadata = match &saga.data {
@@ -1057,6 +1053,29 @@ impl<'a> MeltSaga<'a, MeltRequested> {
             request
         };
 
+        let mut request = request;
+        if request
+            .inputs()
+            .iter()
+            .any(|proof| proof.keyset_id.get_version() == crate::nuts::KeySetVersion::Version02)
+        {
+            let transaction = crate::nuts::nut10::nutroot::Transaction::new(
+                request.inputs(),
+                &[],
+                request.outputs().as_deref().unwrap_or_default(),
+                &[crate::nuts::nut10::nutroot::Quote {
+                    id: quote_info.id.clone(),
+                    amount: quote_info
+                        .amount
+                        .checked_add(quote_info.fee_reserve)
+                        .ok_or(Error::AmountOverflow)?,
+                }],
+            )
+            .map_err(crate::nuts::nut10::Error::from)?;
+            self.wallet
+                .sign_nutroot_inputs(request.inputs_mut(), &transaction, &[], &[])
+                .await?;
+        }
         let melt_result = self
             .wallet
             .client

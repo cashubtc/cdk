@@ -21,14 +21,11 @@ use cdk_common::wallet::{ProofInfo, WalletSagaState};
 use cdk_common::BlindedMessage;
 use tracing::instrument;
 
-use crate::dhke::construct_proofs;
 use crate::nuts::{
     BlindSignature, CheckStateRequest, PreMintSecrets, Proofs, RestoreRequest, RestoreResponse,
     State, SwapRequest,
 };
-use crate::wallet::blind_signature::{
-    validate_mint_response_signatures, SignatureAmountValidation,
-};
+use crate::wallet::blind_signature::{construct_mint_response_proofs, SignatureAmountValidation};
 use crate::wallet::util::escape_log_value;
 use crate::{Error, Wallet};
 
@@ -248,8 +245,20 @@ impl RecoveryHelpers for Wallet {
             return Ok(None);
         }
 
+        // Get keyset ID from the first blinded message
+        let keyset_id = blinded_messages[0].keyset_id;
+
+        // Re-derive premint secrets
+        let premint_secrets = self
+            .recover_premint_secrets(saga_id, blinded_messages, counter_start, counter_end)
+            .await?;
+
+        // Load keyset keys
+        let keys = self.keyset(keyset_id).await?.keys;
+
         // Reconstruct the swap request
-        let swap_request = SwapRequest::new(inputs, blinded_messages.to_vec());
+        let mut swap_request = SwapRequest::new(inputs, blinded_messages.to_vec());
+        self.sign_nutroot_swap(&mut swap_request, &[], &[]).await?;
 
         tracing::info!(
             "{} saga {} - attempting replay of post_swap request",
@@ -279,31 +288,14 @@ impl RecoveryHelpers for Wallet {
             swap_response.signatures.len()
         );
 
-        // Get keyset ID from the first blinded message
-        let keyset_id = blinded_messages[0].keyset_id;
-
-        // Re-derive premint secrets
-        let premint_secrets =
-            PreMintSecrets::restore_batch(keyset_id, &self.seed, counter_start, counter_end)?;
-
-        // Load keyset keys
-        let keys = self.keyset(keyset_id).await?.keys;
-
-        validate_mint_response_signatures(
+        let proofs = construct_mint_response_proofs(
             self,
-            &swap_response.signatures,
-            blinded_messages.iter(),
+            swap_response.signatures,
+            &premint_secrets.secrets,
+            &keys,
             SignatureAmountValidation::Exact,
         )
         .await?;
-
-        // Construct proofs
-        let proofs = construct_proofs(
-            swap_response.signatures,
-            premint_secrets.rs(),
-            premint_secrets.secrets(),
-            &keys,
-        )?;
 
         // Convert to ProofInfo
         let proof_infos: Vec<ProofInfo> = proofs
@@ -324,6 +316,52 @@ impl RecoveryHelpers for Wallet {
 }
 
 impl Wallet {
+    /// Prefer saved output material; old sagas fall back to seed recovery.
+    pub(crate) async fn recover_premint_secrets(
+        &self,
+        saga_id: &uuid::Uuid,
+        outputs: &[BlindedMessage],
+        counter_start: u32,
+        counter_end: u32,
+    ) -> Result<PreMintSecrets, Error> {
+        if let Some(saga) = self.localstore.get_saga(saga_id).await? {
+            if let Some(saved) = saga.data.premint_secrets() {
+                if saved.blinded_messages() != outputs {
+                    return Err(Error::InvalidMintResponse(
+                        "saved output material does not match the request".to_owned(),
+                    ));
+                }
+                return Ok(saved.clone());
+            }
+        }
+        let keyset_id = outputs
+            .first()
+            .ok_or(Error::InvalidOperationState)?
+            .keyset_id;
+        let derived =
+            PreMintSecrets::restore_batch(keyset_id, &self.seed, counter_start, counter_end)?;
+        // Seed recovery returns counter order; the request may have been sorted.
+        let mut secrets = Vec::with_capacity(outputs.len());
+        for output in outputs {
+            let mut premint = derived
+                .secrets
+                .iter()
+                .find(|premint| {
+                    premint.blinded_message.blinded_secret == output.blinded_secret
+                        && premint.blinded_message.keyset_id == output.keyset_id
+                })
+                .cloned()
+                .ok_or_else(|| {
+                    Error::InvalidMintResponse(
+                        "output cannot be recovered from its saved counter range".to_owned(),
+                    )
+                })?;
+            premint.amount = output.amount;
+            premint.blinded_message = output.clone();
+            secrets.push(premint);
+        }
+        Ok(PreMintSecrets { keyset_id, secrets })
+    }
     /// Restore outputs, requiring complete coverage for fixed-output operations.
     pub(crate) async fn restore_outputs_with_result(
         &self,
@@ -577,12 +615,14 @@ impl Wallet {
         // Get keyset ID from the first blinded message
         let keyset_id = params.blinded_messages[0].keyset_id;
 
-        let premint_secrets = PreMintSecrets::restore_batch(
-            keyset_id,
-            &self.seed,
-            params.counter_start,
-            params.counter_end,
-        )?;
+        let premint_secrets = self
+            .recover_premint_secrets(
+                saga_id,
+                params.blinded_messages,
+                params.counter_start,
+                params.counter_end,
+            )
+            .await?;
 
         let premints_by_blinded_secret = premint_secrets
             .secrets
@@ -621,23 +661,14 @@ impl Wallet {
         // Load keyset keys for proof construction
         let keys = self.keyset(keyset_id).await?.keys;
 
-        validate_mint_response_signatures(
+        let proofs = construct_mint_response_proofs(
             self,
-            &restore_response.signatures,
-            matched
-                .iter()
-                .map(|(_, requested_output)| *requested_output),
+            restore_response.signatures,
+            matched.iter().map(|(premint, _)| *premint),
+            &keys,
             SignatureAmountValidation::AllowZeroAmountPlaceholder,
         )
         .await?;
-
-        // Construct proofs from signatures
-        let proofs = construct_proofs(
-            restore_response.signatures,
-            matched.iter().map(|(p, _)| p.r.clone()).collect(),
-            matched.iter().map(|(p, _)| p.secret.clone()).collect(),
-            &keys,
-        )?;
 
         tracing::info!(
             "{} saga {} - recovered {} proofs",
@@ -1027,6 +1058,7 @@ mod tests {
                 "Receive" => (
                     WalletSagaState::Receive(ReceiveSagaState::SwapRequested),
                     OperationData::Receive(ReceiveOperationData {
+                        premint_secrets: None,
                         token: None,
                         counter_start: Some(0),
                         counter_end: Some(output_count as u32),
@@ -1037,6 +1069,7 @@ mod tests {
                 _ => (
                     WalletSagaState::Swap(SwapSagaState::SwapRequested),
                     OperationData::Swap(SwapOperationData {
+                        premint_secrets: None,
                         input_amount: amount,
                         output_amount: amount,
                         counter_start: Some(0),
@@ -1166,6 +1199,7 @@ mod tests {
             mint_url.clone(),
             cdk_common::nuts::CurrencyUnit::Sat,
             OperationData::Receive(ReceiveOperationData {
+                premint_secrets: None,
                 token: Some("cashu...".to_string()),
                 counter_start: None,
                 counter_end: None,
@@ -1261,6 +1295,7 @@ mod tests {
             mint_url.clone(),
             cdk_common::nuts::CurrencyUnit::Sat,
             OperationData::Melt(MeltOperationData {
+                premint_secrets: None,
                 quote_id: quote.id.clone(),
                 amount: Amount::from(100),
                 fee_reserve: Amount::from(10),
@@ -1338,6 +1373,7 @@ mod tests {
                 mint_url.clone(),
                 cdk_common::nuts::CurrencyUnit::Sat,
                 OperationData::Melt(MeltOperationData {
+                    premint_secrets: None,
                     quote_id: quote.id.clone(),
                     amount: Amount::from(100),
                     fee_reserve: Amount::from(10),
@@ -1439,6 +1475,7 @@ mod tests {
             mint_url.clone(),
             cdk_common::nuts::CurrencyUnit::Sat,
             OperationData::Melt(MeltOperationData {
+                premint_secrets: None,
                 quote_id: quote_id.clone(),
                 amount: Amount::from(100),
                 fee_reserve: Amount::from(10),
@@ -1517,6 +1554,7 @@ mod tests {
             mint_url.clone(),
             cdk_common::nuts::CurrencyUnit::Sat,
             OperationData::Melt(MeltOperationData {
+                premint_secrets: None,
                 quote_id: quote_id.clone(),
                 amount: Amount::from(100),
                 fee_reserve: Amount::from(10),
@@ -1589,6 +1627,7 @@ mod tests {
             mint_url.clone(),
             cdk_common::nuts::CurrencyUnit::Sat,
             OperationData::Melt(MeltOperationData {
+                premint_secrets: None,
                 quote_id: quote_id.clone(),
                 amount: Amount::from(100),
                 fee_reserve: Amount::from(10),
@@ -1671,6 +1710,7 @@ mod tests {
             mint_url.clone(),
             cdk_common::nuts::CurrencyUnit::Sat,
             OperationData::Melt(MeltOperationData {
+                premint_secrets: None,
                 quote_id: quote_id.clone(),
                 amount: Amount::from(100),
                 fee_reserve: Amount::from(10),
@@ -1751,6 +1791,7 @@ mod tests {
             mint_url.clone(),
             cdk_common::nuts::CurrencyUnit::Sat,
             OperationData::Receive(ReceiveOperationData {
+                premint_secrets: None,
                 token: Some("cashu...".to_string()),
                 counter_start: None,
                 counter_end: None,
@@ -1768,6 +1809,7 @@ mod tests {
             other_mint_url.clone(),
             cdk_common::nuts::CurrencyUnit::Sat,
             OperationData::Receive(ReceiveOperationData {
+                premint_secrets: None,
                 token: Some("cashu...".to_string()),
                 counter_start: None,
                 counter_end: None,
@@ -1785,6 +1827,7 @@ mod tests {
             mint_url.clone(),
             cdk_common::nuts::CurrencyUnit::Usd,
             OperationData::Receive(ReceiveOperationData {
+                premint_secrets: None,
                 token: Some("cashu...".to_string()),
                 counter_start: None,
                 counter_end: None,
@@ -1900,3 +1943,6 @@ mod tests {
             .is_some());
     }
 }
+
+#[cfg(test)]
+mod nutroot_recovery_tests;

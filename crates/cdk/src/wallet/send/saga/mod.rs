@@ -233,11 +233,13 @@ fn split_proofs_for_send_respecting_p2pk_locks(
     // keys alone cannot provide; routing HTLC proofs to a swap here would cause a mint
     // rejection. HTLC support in the send path (including a `htlc_preimages` field on
     // `SendOptions` and its own partition logic) is left for a follow-up PR.
-    let has_p2pk_locked = proofs.iter().any(crate::wallet::util::is_p2pk_locked);
-    if has_p2pk_locked && p2pk_locked_proof_send_mode == P2PKLockedProofSendMode::Swap {
-        let (p2pk_locked, rest): (Proofs, Proofs) = proofs
-            .into_iter()
-            .partition(crate::wallet::util::is_p2pk_locked);
+    let must_swap = |proof: &crate::nuts::Proof| {
+        crate::wallet::nutroot::requires_swap_before_send(proof)
+            || (p2pk_locked_proof_send_mode == P2PKLockedProofSendMode::Swap
+                && crate::wallet::util::is_p2pk_locked(proof))
+    };
+    if proofs.iter().any(must_swap) {
+        let (p2pk_locked, rest): (Proofs, Proofs) = proofs.into_iter().partition(must_swap);
         let mut proofs_to_swap = p2pk_locked;
         let mut proofs_to_send = Proofs::new();
 
@@ -438,11 +440,23 @@ impl<'a> SendSaga<'a, Initial> {
                 filter_signable_proofs(self.wallet, available_proofs, &opts.p2pk_signing_keys)
                     .await?;
             if opts.send_kind.is_offline() {
-                available_proofs.retain(|proof| !crate::wallet::util::is_p2pk_locked(proof));
+                available_proofs.retain(|proof| {
+                    !crate::wallet::util::is_p2pk_locked(proof)
+                        && !crate::wallet::nutroot::requires_swap_before_send(proof)
+                });
             }
         }
 
-        let mut force_swap = false;
+        if let Some(policy) = &opts.nutroot {
+            if opts.conditions.is_some()
+                || opts.send_kind.is_offline()
+                || active_keyset_id.get_version() != crate::nuts::KeySetVersion::Version02
+            {
+                return Err(crate::nuts::nut10::Error::SpendConditionsNotMet.into());
+            }
+            policy.validate().map_err(crate::nuts::nut10::Error::from)?;
+        }
+        let mut force_swap = opts.nutroot.is_some();
         let available_sum = available_proofs.total_amount()?;
         if available_sum < amount {
             if opts.conditions.is_none() || opts.send_kind.is_offline() {
@@ -491,11 +505,11 @@ impl<'a> SendSaga<'a, Initial> {
         };
         let selection_amount = amount + send_amounts.1;
 
-        let may_swap_p2pk_locked = opts.p2pk_locked_proof_send_mode
-            == P2PKLockedProofSendMode::Swap
-            && available_proofs
-                .iter()
-                .any(crate::wallet::util::is_p2pk_locked);
+        let may_swap_p2pk_locked = available_proofs.iter().any(|proof| {
+            crate::wallet::nutroot::requires_swap_before_send(proof)
+                || (opts.p2pk_locked_proof_send_mode == P2PKLockedProofSendMode::Swap
+                    && crate::wallet::util::is_p2pk_locked(proof))
+        });
 
         let proof_pool = available_proofs.clone();
         let derivation_indices = self.wallet.unspent_proof_derivation_indices().await?;
@@ -857,6 +871,8 @@ impl<'a> SendSaga<'a, Prepared> {
                         options.conditions.clone(),
                         false,
                         options.use_p2bk,
+                        options.nutroot.clone(),
+                        &keys,
                     )
                     .await?
                 {
@@ -875,6 +891,10 @@ impl<'a> SendSaga<'a, Prepared> {
             if amount > final_proofs_to_send.total_amount()? {
                 return Err(Error::InsufficientFunds);
             }
+
+            self.wallet
+                .attach_nutroot_transfer_keys(&mut final_proofs_to_send)
+                .await?;
 
             self.wallet
                 .localstore
@@ -1029,6 +1049,8 @@ impl<'a> SendSaga<'a, TokenCreated> {
                 None,
                 false,
                 false,
+                None,
+                &[],
             )
             .await;
 

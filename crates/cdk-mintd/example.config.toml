@@ -11,7 +11,14 @@ mnemonic = "env:CDK_MINTD_MNEMONIC"
 # input_fee_ppk = 0
 # enable_info_page = true
 
-# Set keyset version preference.
+# Explicit issuance version: "00", "01", or "02" (Nutroot draft).
+# Startup rotates to this version, retaining old keysets for redemption.
+# Each unit still has exactly one active issuance keyset.
+# Version "02" also enables request-bound blind authentication for the auth unit.
+# keyset_version = "02"
+# Remove use_keyset_v2 when switching to keyset_version; conflicting values fail startup.
+
+# Legacy keyset version preference.
 # true = Force upgrade to V2 (Version01).
 # false = Force downgrade to V1 (Version00).
 # If unset (default), existing keysets are preserved, but new ones use V3 (Version02).

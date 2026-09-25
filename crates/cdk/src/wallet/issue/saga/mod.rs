@@ -45,13 +45,11 @@ use tracing::instrument;
 use self::compensation::{MintCompensation, ReleaseMintQuote};
 use self::state::{Finalized, Initial, Prepared, PreparedMintRequest};
 use crate::amount::SplitTarget;
-use crate::dhke::{construct_proofs, hash_to_curve_for_version, verify_bls_message};
+use crate::dhke::{hash_to_curve_for_version, verify_bls_message};
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{KeySetVersion, MintRequest, PreMintSecrets, Proofs, SpendingConditions, State};
 use crate::util::unix_time;
-use crate::wallet::blind_signature::{
-    validate_mint_response_signatures, SignatureAmountValidation,
-};
+use crate::wallet::blind_signature::{construct_mint_response_proofs, SignatureAmountValidation};
 use crate::wallet::saga::{
     add_compensation, clear_compensations, execute_compensations, new_compensations, Compensations,
 };
@@ -131,7 +129,10 @@ async fn post_mint_request_with_legacy_fallback(
             .await
         {
             Ok(response) => Ok(response),
-            Err(error) if should_retry_with_legacy_quote_signature(&error) => {
+            Err(error)
+                if !crate::wallet::nutroot::is_nutroot_outputs(&request.outputs)
+                    && should_retry_with_legacy_quote_signature(&error) =>
+            {
                 let secret_key = match wallet.mint_quote_signing_key(quote_info).await {
                     Ok(Some(secret_key)) => secret_key,
                     Ok(None) => return Err(error),
@@ -191,7 +192,10 @@ async fn post_mint_request_with_legacy_fallback(
                 .await
             {
                 Ok(response) => Ok(response),
-                Err(error) if should_retry_with_legacy_quote_signature(&error) => {
+                Err(error)
+                    if !crate::wallet::nutroot::is_nutroot_outputs(&request.outputs)
+                        && should_retry_with_legacy_quote_signature(&error) =>
+                {
                     let legacy_signatures = match legacy_batch_signatures(
                         wallet,
                         request,
@@ -450,8 +454,10 @@ impl<'a> MintSaga<'a, Initial> {
         };
 
         if let Some(secret_key) = self.wallet.mint_quote_signing_key(quote_info).await? {
-            request.sign(&secret_key)?;
-        } else if quote_info.payment_method.is_bolt12() {
+            crate::wallet::nutroot::sign_mint_request(&mut request, quote_info, &secret_key)?;
+        } else if quote_info.payment_method.is_bolt12()
+            || crate::wallet::nutroot::is_nutroot_outputs(&request.outputs)
+        {
             // Bolt12 requires signature
             tracing::error!("Signature is required for bolt12.");
             return Err(Error::SignatureMissingOrInvalid);
@@ -478,7 +484,7 @@ impl<'a> MintSaga<'a, Initial> {
         let counter_start = counter_end.saturating_sub(premint_secrets.secrets.len() as u32);
 
         // Persist saga state for crash recovery
-        let saga = WalletSaga::new(
+        let mut saga = WalletSaga::new(
             operation_id,
             WalletSagaState::Issue(IssueSagaState::SecretsPrepared),
             amount,
@@ -493,6 +499,7 @@ impl<'a> MintSaga<'a, Initial> {
             )),
         );
 
+        saga.data.set_premint_secrets(premint_secrets.clone());
         self.wallet.localstore.add_saga(saga.clone()).await?;
 
         // Register compensation (deletes saga on failure)
@@ -767,13 +774,18 @@ impl<'a> MintSaga<'a, Initial> {
                 None => external_keys.and_then(|keys| keys.get(&quote.id)).cloned(),
             };
 
-            let requires_signature = secret_key.is_some() || quote.payment_method.is_bolt12();
+            let requires_signature = secret_key.is_some()
+                || quote.payment_method.is_bolt12()
+                || crate::wallet::nutroot::is_nutroot_outputs(&batch_request.outputs);
 
             if requires_signature {
                 let sk = secret_key.ok_or(Error::SignatureMissingOrInvalid)?;
-                let sig = batch_request
-                    .sign_quote(&quote.id, &sk)
-                    .map_err(|e| Error::Custom(format!("NUT-20 signing failed: {}", e)))?;
+                let sig = crate::wallet::nutroot::sign_batch_quote(
+                    &batch_request,
+                    &quote_infos,
+                    quote,
+                    &sk,
+                )?;
                 signatures.push(Some(sig));
             } else {
                 // Quote is unlocked
@@ -806,7 +818,7 @@ impl<'a> MintSaga<'a, Initial> {
         let counter_start = counter_end.saturating_sub(premint_secrets.secrets.len() as u32);
 
         // Persist saga state
-        let saga = WalletSaga::new(
+        let mut saga = WalletSaga::new(
             self.state_data.operation_id,
             WalletSagaState::Issue(IssueSagaState::SecretsPrepared),
             total_amount,
@@ -823,6 +835,7 @@ impl<'a> MintSaga<'a, Initial> {
             )),
         );
 
+        saga.data.set_premint_secrets(premint_secrets.clone());
         self.wallet.localstore.add_saga(saga.clone()).await?;
 
         // Register compensation
@@ -932,6 +945,7 @@ impl<'a> MintSaga<'a, Prepared> {
                 data.counter_start = Some(counter_start);
                 data.counter_end = Some(counter_end);
                 data.blinded_messages = Some(outputs.clone());
+                data.premint_secrets = Some(premint_secrets.clone());
             }
 
             if !wallet.localstore.update_saga(updated_saga).await? {
@@ -997,20 +1011,14 @@ impl<'a> MintSaga<'a, Prepared> {
                 .await?
                 .keys;
 
-            validate_mint_response_signatures(
+            let proofs = construct_mint_response_proofs(
                 wallet,
-                &mint_res.signatures,
-                premint_secrets.secrets.iter().map(|p| &p.blinded_message),
+                mint_res.signatures,
+                &premint_secrets.secrets,
+                &keys,
                 SignatureAmountValidation::Exact,
             )
             .await?;
-
-            let proofs = construct_proofs(
-                mint_res.signatures,
-                premint_secrets.rs(),
-                premint_secrets.secrets(),
-                &keys,
-            )?;
 
             for proof in &proofs {
                 if proof.keyset_id.get_version() == KeySetVersion::Version02 {

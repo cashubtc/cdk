@@ -126,6 +126,18 @@ impl PaymentRequest {
         Ok(Arc::new(Self { inner }))
     }
 
+    /// Return a copy requesting the specified Nutroot output policy.
+    pub fn with_nutroot(&self, policy: super::proof::NutrootOption) -> Result<Arc<Self>, FfiError> {
+        let mut inner = self.inner.clone();
+        inner.nutroot = Some(policy.try_into()?);
+        Ok(Arc::new(Self { inner }))
+    }
+
+    /// Requested Nutroot locking policy.
+    pub fn nutroot(&self) -> Option<super::proof::NutrootOption> {
+        self.inner.nutroot.clone().map(Into::into)
+    }
+
     /// Encode the payment request to a string
     pub fn to_string_encoded(&self) -> String {
         self.inner.to_string()
