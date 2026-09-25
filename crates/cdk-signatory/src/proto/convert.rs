@@ -407,7 +407,104 @@ impl TryInto<cdk_common::KeySetInfo> for KeySet {
 
 #[cfg(test)]
 mod tests {
+    use prost::Message;
+
     use super::*;
+
+    #[test]
+    fn rotation_versions_roundtrip_through_protobuf() {
+        for (version, wire_version) in [
+            (KeySetVersion::Version00, KeysetVersion::V1),
+            (KeySetVersion::Version01, KeysetVersion::V2),
+            (KeySetVersion::Version02, KeysetVersion::V3),
+        ] {
+            let args = crate::signatory::RotateKeyArguments {
+                unit: cdk_common::CurrencyUnit::Sat,
+                amounts: vec![1, 2, 4],
+                input_fee_ppk: 100,
+                keyset_id_type: version,
+                final_expiry: None,
+            };
+            let request: RotationRequest = args.into();
+            let decoded = RotationRequest::decode(request.encode_to_vec().as_slice()).unwrap();
+            assert_eq!(decoded.keyset_id_type(), wire_version);
+            let restored: crate::signatory::RotateKeyArguments = decoded.try_into().unwrap();
+            assert_eq!(restored.keyset_id_type, version);
+            assert_eq!(restored.amounts, vec![1, 2, 4]);
+            assert_eq!(restored.input_fee_ppk, 100);
+        }
+    }
+
+    #[test]
+    fn signatory_schema_rejects_pre_bls_peers() {
+        use cdk_common::grpc::{
+            create_version_check_interceptor, VersionInterceptor, VERSION_SIGNATORY_HEADER,
+        };
+        use tonic::service::Interceptor;
+
+        let current = (Constants::SchemaVersion as i32).to_string();
+        let expected = Box::leak(current.clone().into_boxed_str());
+        let check = create_version_check_interceptor(VERSION_SIGNATORY_HEADER, expected);
+        for version in ["1", "2"] {
+            let request = VersionInterceptor::new(VERSION_SIGNATORY_HEADER, version)
+                .call(tonic::Request::new(()))
+                .unwrap();
+            assert_eq!(
+                check(request).unwrap_err().code(),
+                tonic::Code::FailedPrecondition
+            );
+        }
+        let request = VersionInterceptor::new(VERSION_SIGNATORY_HEADER, current)
+            .call(tonic::Request::new(()))
+            .unwrap();
+        assert!(check(request).is_ok());
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn v3_rotation_through_rpc_handler_returns_bls_keyset() {
+        use std::sync::Arc;
+
+        use super::super::signatory_server::Signatory;
+        use crate::db_signatory::DbSignatory;
+        use crate::proto::server::CdkSignatoryServer;
+
+        let store = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
+        let signatory = Arc::new(
+            DbSignatory::new(
+                store,
+                b"v3-rpc-rotation-test",
+                Default::default(),
+                Default::default(),
+            )
+            .await
+            .unwrap(),
+        );
+        let server = CdkSignatoryServer::new(signatory);
+        let request = RotationRequest {
+            unit: Some(cdk_common::CurrencyUnit::Sat.into()),
+            amounts: vec![1, 2, 4],
+            input_fee_ppk: 100,
+            keyset_id_type: KeysetVersion::V3 as i32,
+            final_expiry: None,
+        };
+        let decoded = RotationRequest::decode(request.encode_to_vec().as_slice()).unwrap();
+        let response = server
+            .rotate_keyset(tonic::Request::new(decoded))
+            .await
+            .unwrap()
+            .into_inner();
+        let decoded = KeyRotationResponse::decode(response.encode_to_vec().as_slice()).unwrap();
+        assert!(decoded.error.is_none());
+        let keyset: crate::signatory::SignatoryKeySet = decoded.keyset.unwrap().try_into().unwrap();
+        assert_eq!(keyset.id.get_version(), KeySetVersion::Version02);
+        assert!(keyset
+            .keys
+            .values()
+            .all(|key| matches!(key, PublicKey::BlsG2(_))));
+        let public_keyset: cdk_common::KeySet = keyset.into();
+        public_keyset.verify_id().unwrap();
+    }
 
     #[test]
     fn custom_currency_unit_is_lowercase_across_proto_boundary() {
