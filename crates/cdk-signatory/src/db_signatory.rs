@@ -27,7 +27,9 @@ use tracing::instrument;
 use crate::common::{
     check_unit_string_collision, create_new_keyset, derivation_path_from_unit, init_keysets,
 };
-use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet, SignatoryKeysets};
+use crate::signatory::{
+    ReconstructDleqArguments, RotateKeyArguments, Signatory, SignatoryKeySet, SignatoryKeysets,
+};
 
 /// Immutable in-memory view of the keysets, swapped atomically on every change.
 ///
@@ -496,6 +498,34 @@ impl Signatory for DbSignatory {
         self.load_keys_from_db().await?;
 
         Ok(signatory_keyset)
+    }
+
+    async fn reconstruct_dleq(
+        &self,
+        args: ReconstructDleqArguments,
+    ) -> Result<BlindSignature, Error> {
+        let (mut blind_signature, blind_secret) = (args.blind_signature, args.blind_secret);
+
+        let keysets = self.keysets.load();
+        let (_, key) = keysets
+            .by_id
+            .get(&blind_signature.keyset_id)
+            .ok_or(Error::UnknownKeySet)?;
+
+        let key_pair = key
+            .keys
+            .get(&blind_signature.amount)
+            .ok_or(Error::UnknownKeySet)?;
+
+        let restored_signature = sign_message(&key_pair.secret_key, &blind_secret)?;
+
+        if blind_signature.c != restored_signature {
+            return Err(Error::SignatureMissingOrInvalid);
+        }
+
+        blind_signature.add_dleq_proof(&blind_secret, &key_pair.secret_key)?;
+
+        Ok(blind_signature)
     }
 }
 
