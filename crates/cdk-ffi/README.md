@@ -6,7 +6,8 @@ UniFFI bindings for the CDK (Cashu Development Kit), providing foreign function 
 
 - **🎯 Dart** - Flutter and Dart VM
 - **🐹 Go** - With cgo
-- **🐍 Python** - With REPL integration for development
+- **🐍 Python** - With REPL integration for development; packaged as a wheel
+  by `just binding-python` (see `bindings/python/`)
 - **🍎 Swift** - iOS and macOS development
 - **🎯 Kotlin** - Android and JVM development
 
@@ -73,3 +74,5 @@ For production use, see language-specific repositories:
 - [cdk-swift](https://github.com/cashubtc/cdk-swift) - iOS/macOS packages
 - [cdk-kotlin](https://github.com/cashubtc/cdk-kotlin) - Android/JVM packages
 - [cdk-go](https://github.com/cashubtc/cdk-go) - Golang packages
+- [cdk-python](https://github.com/cashubtc/cdk-python) - Python wheels,
+  published to PyPI and attached to the cdk-python release

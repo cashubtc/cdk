@@ -853,7 +853,7 @@ release *ARGS:
     echo
   done
 
-  # Trigger all FFI binding releases (Dart, Kotlin, Swift, Go). These build
+  # Trigger all FFI binding releases (Dart, Kotlin, Swift, Go, Python). These build
   # cdk-ffi from the tagged source, not from crates.io, so they do not depend
   # on the publish loop above and can be re-run on their own.
   echo "📦 Triggering all FFI binding releases for version $VERSION..."
@@ -1158,7 +1158,7 @@ ffi-test-live-python:
   echo "🧪 Running live Python FFI tests..."
   python3 crates/cdk-ffi/tests/test_live_async_onchain_melt.py
 
-# Trigger all FFI binding releases (Dart, Kotlin, Swift, Go)
+# Trigger all FFI binding releases (Dart, Kotlin, Swift, Go, Python)
 ffi-release-all VERSION:
   #!/usr/bin/env bash
   set -euo pipefail
@@ -1342,3 +1342,219 @@ test-swift:
   else
     DYLD_LIBRARY_PATH="$LIB_DIR" swift test
   fi
+
+# Build the Python wheel for the host platform
+binding-python:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}"
+
+  case "$(uname -s)" in
+    Darwin) LIB_EXT=dylib ;;
+    MINGW*|MSYS*|CYGWIN*)
+      echo "error: Windows is not a supported platform for the Python bindings." >&2
+      echo "  Wheels are built for Linux and macOS only; see bindings/python/README.md." >&2
+      exit 1
+      ;;
+    *)      LIB_EXT=so ;;
+  esac
+
+  PKG_DIR="bindings/python/src/cdk"
+  # uniffi names the library it loads after the cdk-ffi namespace rather than
+  # the wrapper crate, so the built cdylib is renamed on the way into the
+  # package.
+  # Absolute: the wheel build below runs from bindings/python, and the wheel
+  # tag is read back off this file from there.
+  INSTALLED="${PWD}/${PKG_DIR}/libcdk_ffi.${LIB_EXT}"
+
+  echo "🔨 Building cdk-ffi-python..."
+  # Plain release, unlike the release workflow's release-ffi: the LTO that
+  # profile turns on costs minutes and changes nothing a local wheel is for.
+  cargo build --locked --release -p cdk-ffi-python
+
+  # Respect CARGO_TARGET_DIR and any .cargo/config.toml override rather than
+  # assuming ./target.
+  TARGET_DIR=$(cargo metadata --format-version 1 --no-deps \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
+  BUILT="${TARGET_DIR}/release/libcdk_ffi_python.${LIB_EXT}"
+
+  if [[ ! -f "$BUILT" ]]; then
+    echo "error: expected the built library at $BUILT" >&2
+    exit 1
+  fi
+
+  echo "🔨 Generating Python bindings..."
+  rm -rf bindings/python/generated-bindings
+  mkdir -p bindings/python/generated-bindings
+  cargo run --locked --release -p cdk-ffi-python --bin uniffi-bindgen-python -- \
+    generate \
+    --library "$BUILT" \
+    --language python \
+    --out-dir bindings/python/generated-bindings \
+    --no-format
+
+  if ! grep -q "class Wallet" bindings/python/generated-bindings/cdk_ffi.py; then
+    echo "error: uniffi-bindgen produced no usable bindings." >&2
+    echo "  It reads the component interface from the library's symbol table," >&2
+    echo "  so a fully stripped build yields nothing. Strip after generating," >&2
+    echo "  never through the cargo profile." >&2
+    exit 1
+  fi
+
+  echo "📦 Assembling the package..."
+  rm -rf bindings/python/build bindings/python/dist
+  find "$PKG_DIR" -type f \
+    \( -name '*.so' -o -name '*.dylib' \) -delete
+  cp bindings/python/generated-bindings/cdk_ffi.py "${PKG_DIR}/cdk_ffi.py"
+  cp "$BUILT" "$INSTALLED"
+
+  # Best effort: a missing strip costs size, not correctness.
+  if command -v strip >/dev/null 2>&1; then
+    case "$(uname -s)" in
+      Darwin) strip -S "$INSTALLED" ;;
+      *)      strip --strip-all "$INSTALLED" ;;
+    esac
+  else
+    echo "note: strip not found, shipping an unstripped library"
+  fi
+
+  cd bindings/python
+
+  # The nix ffi shell already provides build and wheel. Elsewhere the system
+  # interpreter is often externally managed and refuses installs, so fall back
+  # to a throwaway venv rather than touching it.
+  if python3 -c 'import build, wheel' 2>/dev/null; then
+    PY=python3
+  else
+    BUILD_VENV=".build-venv"
+    # Check that the venv actually works rather than that it merely exists: a
+    # copied or half-installed one has absolute paths pointing somewhere else.
+    if ! "$BUILD_VENV/bin/python" -c 'import build, wheel' 2>/dev/null; then
+      rm -rf "$BUILD_VENV"
+      python3 -m venv "$BUILD_VENV"
+      "$BUILD_VENV/bin/pip" install --quiet --upgrade pip "build" "wheel>=0.42"
+    fi
+    PY="$BUILD_VENV/bin/python"
+  fi
+
+  echo "📦 Building wheel..."
+  "$PY" -m build --wheel
+
+  # The library is loaded with ctypes rather than linked as a CPython
+  # extension, so the wheel is valid for any Python 3 and is retagged to say so.
+  #
+  # On macOS the platform tag comes off the library cargo just built, not from
+  # sysconfig, which describes the interpreter: a universal2 Python reports two
+  # architectures for this single-arch dylib, and reports the macOS version
+  # Python itself targets rather than the deployment target Rust stamped. Either
+  # mismatch hands pip a wheel it cannot load, or refuses one it could.
+  case "$(uname -s)" in
+    Darwin)
+      ARCHS=$(lipo -archs "$INSTALLED")
+      if [[ "$ARCHS" == *" "* ]]; then
+        echo "error: $INSTALLED carries architectures '$ARCHS'; expected one" >&2
+        exit 1
+      fi
+
+      # Which load command carries the minimum depends on the deployment
+      # target: arm64 builds get LC_BUILD_VERSION, older x86_64 ones still get
+      # LC_VERSION_MIN_MACOSX.
+      MINOS=$(vtool -show-build "$INSTALLED" | awk '
+        $1 == "cmd" && $2 == "LC_BUILD_VERSION"      { key = "minos";   next }
+        $1 == "cmd" && $2 == "LC_VERSION_MIN_MACOSX" { key = "version"; next }
+        key != "" && $1 == key                       { print $2; exit }
+      ')
+      if [[ -z "$MINOS" ]]; then
+        echo "error: no macOS version load command in $INSTALLED" >&2
+        exit 1
+      fi
+
+      IFS=. read -r MAJOR MINOR _ <<< "$MINOS"
+      PLATFORM="macosx_${MAJOR}_${MINOR:-0}_${ARCHS}"
+      ;;
+    *)
+      PLATFORM=$("$PY" -c 'import sysconfig; print(sysconfig.get_platform().replace("-", "_").replace(".", "_"))')
+      ;;
+  esac
+  echo "   Platform tag: $PLATFORM"
+  "$PY" -m wheel tags \
+    --python-tag py3 \
+    --abi-tag none \
+    --platform-tag "$PLATFORM" \
+    --remove \
+    dist/*.whl
+
+  echo "✅ Wheel built:"
+  ls -1 dist/*.whl
+
+# Run Python binding tests against the built wheel
+test-python: binding-python
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}/bindings/python"
+
+  # Installed into a plain directory rather than a venv: nixpkgs builds CPython
+  # --without-ensurepip, so a venv there cannot bootstrap pip, and pip's
+  # --target path is also the one that skips the EXTERNALLY-MANAGED marker.
+  SITE=$(mktemp -d)
+  trap 'rm -rf "$SITE"' EXIT
+
+  if ! python3 -m pip --version >/dev/null 2>&1; then
+    echo "error: python3 has no pip." >&2
+    echo "  Install it, or run inside 'nix develop .#ffi'." >&2
+    exit 1
+  fi
+
+  echo "🧪 Installing wheel..."
+  python3 -m pip install --quiet --no-index --target "$SITE" dist/*.whl
+  if ! python3 -c 'import pytest, pytest_asyncio' 2>/dev/null; then
+    python3 -m pip install --quiet --target "$SITE" -r requirements-dev.txt
+  fi
+
+  # Run from outside the package directory so the tests import the installed
+  # package, never the source tree next to them.
+  echo "🧪 Running Python binding tests..."
+  PYTEST_ARGS=("$PWD/tests" "-c" "$PWD/pytest.ini" "--rootdir" "$PWD")
+  (cd "$SITE" && PYTHONPATH="$SITE" python3 -m pytest "${PYTEST_ARGS[@]}" -q)
+
+  PYTHONPATH="$SITE" just examples-python
+  echo "✅ Python binding tests passed!"
+
+# Run the offline Python examples as a smoke check
+examples-python PYTHON="python3":
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}/bindings/python"
+
+  if ! "{{PYTHON}}" -c "import cdk" 2>/dev/null; then
+    echo "❌ The cdk package is not installed for {{PYTHON}}."
+    echo "   Run 'just test-python', which builds the wheel and runs these against it,"
+    echo "   or install the wheel yourself: pip install bindings/python/dist/*.whl"
+    exit 1
+  fi
+
+  echo "🧪 Running offline Python examples..."
+  for example in examples/wallet_setup.py examples/token_inspect.py examples/transaction_history.py; do
+    echo "  → $example"
+    "{{PYTHON}}" "$example" > /dev/null
+  done
+  echo "✅ Offline examples ran successfully!"
+
+# Trigger Python Bindings release workflow (PUBLISH_TARGET: auto, none, test-pypi, pypi)
+ffi-release-python VERSION PUBLISH_TARGET="auto":
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  echo "🚀 Triggering Python bindings workflow..."
+  echo "   Version: {{VERSION}}"
+  echo "   Tag: v{{VERSION}}"
+  echo "   Publish target: {{PUBLISH_TARGET}}"
+
+  gh workflow run "FFI - Python Bindings" \
+    --repo cashubtc/cdk \
+    --ref "v{{VERSION}}" \
+    --field release_tag="v{{VERSION}}" \
+    --field cdk_ref="v{{VERSION}}" \
+    --field publish_target="{{PUBLISH_TARGET}}"
+
+  echo "✅ Python workflow triggered successfully!"

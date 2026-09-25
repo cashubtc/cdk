@@ -76,6 +76,28 @@ jobs:
         run: nix develop --fallback -i -L .#stable --command bash -c "find . -name '*.nix' -not -path './.git/*' -not -path './.jj/*' -print0 | xargs -0 nixpkgs-fmt --check"
       - name: typos
         run: nix develop --fallback -i -L .#stable --command typos
+      - name: actionlint
+        run: nix develop --fallback -i -L .#stable --command actionlint
+      # A local action is resolved when the workflow runs, and actionlint does
+      # not check that it exists, so a dangling reference first fails on
+      # release day. python-publish.yml shipped with one.
+      - name: Local actions and reusable workflows exist
+        run: |
+          set -euo pipefail
+          status=0
+          while IFS= read -r ref; do
+            case "${ref}" in
+              *.yml|*.yaml)
+                [ -f "${ref}" ] || { echo "::error::${ref} is referenced but does not exist"; status=1; }
+                continue
+                ;;
+            esac
+            if [ ! -f "${ref}/action.yml" ] && [ ! -f "${ref}/action.yaml" ]; then
+              echo "::error::${ref} is referenced by a workflow but has no action.yml"
+              status=1
+            fi
+          done < <(grep -rho 'uses:[[:space:]]*\./[^[:space:]]*' .github/workflows/ | awk '{print $2}' | sort -u)
+          exit "${status}"
       # The release workflows build the bindings with --locked, so a lock that
       # drifted from Cargo.toml would otherwise first surface on release day.
       - name: Cargo.lock is up to date
@@ -97,6 +119,7 @@ jobs:
         continue-on-error: true
       - name: Compile every fuzz target and run seeded smoke tests
         run: |
+          # shellcheck disable=SC2016
           nix develop --fallback -i -L .#nightly --command bash -c '
             set -euo pipefail
             cargo check --manifest-path fuzz/Cargo.toml --bins
@@ -495,7 +518,7 @@ jobs:
         continue-on-error: true
       - name: Resolve nextest archive path
         id: archive
-        run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> $GITHUB_OUTPUT
+        run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> "$GITHUB_OUTPUT"
       - name: Test
         run: |
           export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}'
@@ -522,7 +545,7 @@ jobs:
         continue-on-error: true
       - name: Resolve nextest archive path
         id: archive
-        run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> $GITHUB_OUTPUT
+        run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> "$GITHUB_OUTPUT"
       - name: Test
         run: |
           export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}'
@@ -549,7 +572,7 @@ jobs:
         continue-on-error: true
       - name: Resolve nextest archive path
         id: archive
-        run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> $GITHUB_OUTPUT
+        run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> "$GITHUB_OUTPUT"
       - name: Test fake mint
         run: |
           export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}'
@@ -576,7 +599,7 @@ jobs:
         continue-on-error: true
       - name: Resolve nextest archive path
         id: archive
-        run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> $GITHUB_OUTPUT
+        run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> "$GITHUB_OUTPUT"
       - name: Test pure
         run: |
           export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}'
@@ -613,7 +636,7 @@ jobs:
         continue-on-error: true
       - name: Resolve nextest archive path
         id: archive
-        run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> $GITHUB_OUTPUT
+        run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> "$GITHUB_OUTPUT"
       - name: Test
         run: |
           export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}'
@@ -682,11 +705,13 @@ jobs:
         continue-on-error: true
       - name: Resolve nextest archive path
         id: archive
-        run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> $GITHUB_OUTPUT
+        run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> "$GITHUB_OUTPUT"
       - name: Start Keycloak with Backup
         run: |
           docker compose -f misc/keycloak/docker-compose-recover.yml up -d
-          until docker logs $(docker ps -q --filter "ancestor=quay.io/keycloak/keycloak:25.0.6") | grep "Keycloak 25.0.6 on JVM (powered by Quarkus 3.8.5) started"; do sleep 1; done
+          until container="$(docker ps -q --filter "ancestor=quay.io/keycloak/keycloak:25.0.6")" && [ -n "${container}" ] && docker logs "${container}" | grep -q "Keycloak 25.0.6 on JVM (powered by Quarkus 3.8.5) started"; do
+            sleep 1
+          done
       - name: Verify Keycloak Import
         run: |
           # Wait a bit more for import to complete
@@ -697,7 +722,15 @@ jobs:
             exit 1
           fi
           # Check if the realm endpoint is accessible (better verification than log grep)
-          "$curl_bin" -fsS http://127.0.0.1:8080/realms/cdk-test-realm/.well-known/openid-configuration > /dev/null && echo "Keycloak realm successfully imported" || (docker logs $(docker ps -q --filter "ancestor=quay.io/keycloak/keycloak:25.0.6") && exit 1)
+          if "$curl_bin" -fsS http://127.0.0.1:8080/realms/cdk-test-realm/.well-known/openid-configuration > /dev/null; then
+            echo "Keycloak realm successfully imported"
+          else
+            container="$(docker ps -q --filter "ancestor=quay.io/keycloak/keycloak:25.0.6")"
+            if [ -n "${container}" ]; then
+              docker logs "${container}"
+            fi
+            exit 1
+          fi
       - name: Test fake auth mint
         run: |
           export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}'
@@ -775,6 +808,23 @@ jobs:
           files: lcov.info
           fail_ci_if_error: true
 
+  python-binding-tests:
+    name: "Python binding tests"
+    runs-on: self-hosted
+    timeout-minutes: 30
+    needs: warm-nix-cache
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+      - uses: cachix/cachix-action@v17
+        with:
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
+      - name: Build the wheel and test it
+        run: nix develop --fallback -i -L .#ffi --command just test-python
+
   dart-binding-tests:
     name: "Dart binding tests"
     runs-on: self-hosted
@@ -851,7 +901,7 @@ jobs:
           mkdir -p target/bindings/go target/release
           cp -r "$result"/bindings/* target/bindings/go/
           cp "$lib" target/release/
-          chmod -R u+w target/bindings/go target/release/$(basename "$lib")
+          chmod -R u+w target/bindings/go "target/release/$(basename "$lib")"
       - name: Run Go tests
         run: nix develop --fallback -L .#bindings --command just test-go
 
@@ -890,7 +940,7 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [pre-commit-checks, rusqlite-compat, fuzz-check, warm-nix-cache, warm-msrv-nix-cache, quick-check, discover_ci_groups, examples, clippy-and-test, build-itest-binaries, postgres-tests, supabase-tests, redis-tests, regtest-ln-itest, regtest-onchain-itest, fake-mint-itest, pure-itest, payment-processor-itests, msrv-build, check-wasm, fake-mint-auth-itest, docs, ffi-tests, coverage, dart-binding-tests, kotlin-binding-tests, go-binding-tests, swift-binding-tests]
+    needs: [pre-commit-checks, rusqlite-compat, fuzz-check, warm-nix-cache, warm-msrv-nix-cache, quick-check, discover_ci_groups, examples, clippy-and-test, build-itest-binaries, postgres-tests, supabase-tests, redis-tests, regtest-ln-itest, regtest-onchain-itest, fake-mint-itest, pure-itest, payment-processor-itests, msrv-build, check-wasm, fake-mint-auth-itest, docs, ffi-tests, coverage, python-binding-tests, dart-binding-tests, kotlin-binding-tests, go-binding-tests, swift-binding-tests]
     steps:
       - name: Verify required jobs
         uses: actions/github-script@v8

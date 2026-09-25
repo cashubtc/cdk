@@ -24,7 +24,7 @@ jobs:
         run: |
           # Fetch the latest stable Rust version from GitHub releases API
           LATEST_VERSION=$(curl -s https://api.github.com/repos/rust-lang/rust/releases | jq -r '[.[] | select(.prerelease == false and .draft == false)][0].tag_name')
-          echo "version=$LATEST_VERSION" >> $GITHUB_OUTPUT
+          echo "version=$LATEST_VERSION" >> "$GITHUB_OUTPUT"
           echo "Latest stable Rust version: $LATEST_VERSION"
 
       - name: Get current Rust version
@@ -36,17 +36,17 @@ jobs:
             echo "Unable to determine current Rust version from rust-toolchain.toml" >&2
             exit 1
           fi
-          echo "version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
           echo "Current Rust version: $CURRENT_VERSION"
 
       - name: Compare versions
         id: compare
         run: |
           if [ "${{ steps.latest-rust.outputs.version }}" != "${{ steps.current-rust.outputs.version }}" ]; then
-            echo "needs_update=true" >> $GITHUB_OUTPUT
+            echo "needs_update=true" >> "$GITHUB_OUTPUT"
             echo "Rust version needs update: ${{ steps.current-rust.outputs.version }} -> ${{ steps.latest-rust.outputs.version }}"
           else
-            echo "needs_update=false" >> $GITHUB_OUTPUT
+            echo "needs_update=false" >> "$GITHUB_OUTPUT"
             echo "Rust version is up to date"
           fi
 
