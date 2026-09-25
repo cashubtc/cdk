@@ -8,6 +8,7 @@ use cdk_common::database::Error;
 use cdk_common::util::unix_time;
 use cdk_common::{mint, Amount, PaymentMethod};
 
+use super::keyset_ledger::{self, LedgerMove};
 use super::{SQLMintDatabase, SQLTransaction};
 use crate::pool::DatabasePool;
 use crate::stmt::{query, Column};
@@ -91,25 +92,9 @@ where
         .execute(&self.inner)
         .await?;
 
-        // Acquire fee row locks in keyset ID order so concurrent fee updates
-        // cannot deadlock by visiting shared keysets in opposite orders.
-        let mut fees = fee_by_keyset.iter().collect::<Vec<_>>();
-        fees.sort_unstable_by_key(|(keyset_id, _)| *keyset_id);
-
-        for (keyset_id, fee) in fees {
+        for (keyset_id, fee) in fee_by_keyset {
             if fee.to_u64() > 0 {
-                query(
-                    r#"
-                    INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed, fee_collected)
-                    VALUES (:keyset_id, 0, 0, :fee)
-                    ON CONFLICT (keyset_id)
-                    DO UPDATE SET fee_collected = keyset_amounts.fee_collected + EXCLUDED.fee_collected
-                    "#,
-                )?
-                .bind("keyset_id", keyset_id.to_string())
-                .bind("fee", fee.to_u64() as i64)
-                .execute(&self.inner)
-                .await?;
+                keyset_ledger::accumulate(self.ledger(), *keyset_id, LedgerMove::fee(*fee))?;
             }
         }
 

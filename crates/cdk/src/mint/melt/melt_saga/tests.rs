@@ -4397,6 +4397,211 @@ async fn test_setup_complete_state_compensates() {
 /// Uses `create_fake_invoice()` from cdk-fake-wallet to generate a valid
 /// bolt11 invoice that FakeWallet will process. The FakeInvoiceDescription
 /// controls payment behavior (success/failure).
+/// A melt of proofs no keyset can back must be refused before the mint pays.
+///
+/// The proofs here carry real signatures but no recorded issuance, which is
+/// exactly what a leaked signing key produces: `Mint::blind_sign` does not touch
+/// the keyset ledger, so they pass verification while the keyset has nothing
+/// behind them. The refusal has to land in `setup_melt`, because the spend that
+/// used to carry the check runs only after the invoice is paid.
+#[tokio::test]
+async fn melt_of_unbacked_proofs_attempts_no_payment() {
+    use std::sync::atomic::Ordering;
+
+    use cdk_common::dhke::construct_proofs;
+
+    use crate::test_helpers::mint::{
+        create_test_blinded_messages, create_test_mint_with_backend, get_active_keyset_id,
+        CountingPaymentBackend,
+    };
+
+    let (backend, payments) = CountingPaymentBackend::new();
+    let mint = create_test_mint_with_backend(backend).await.unwrap();
+
+    let keyset_id = get_active_keyset_id(&mint).await.unwrap();
+    let keys = mint
+        .keyset_pubkeys(&keyset_id)
+        .unwrap()
+        .keysets
+        .first()
+        .unwrap()
+        .keys
+        .clone();
+
+    let (blinded_messages, pre_mint) = create_test_blinded_messages(&mint, Amount::from(10_000))
+        .await
+        .unwrap();
+    let signatures = mint.blind_sign(blinded_messages).await.unwrap();
+    let unbacked = construct_proofs(signatures, pre_mint.rs(), pre_mint.secrets(), &keys).unwrap();
+
+    let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+    let melt_request = create_test_melt_request(&unbacked, &quote);
+    let input_ys = melt_request.inputs().ys().unwrap();
+
+    let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
+
+    let saga = MeltSaga::new(
+        std::sync::Arc::new(mint.clone()),
+        mint.localstore(),
+        mint.pubsub_manager(),
+    );
+
+    let err = match saga
+        .setup_melt(
+            &melt_request,
+            verification,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+        )
+        .await
+    {
+        Ok(_) => panic!("a keyset that issued nothing must not take custody of proofs"),
+        Err(err) => err,
+    };
+
+    assert!(
+        matches!(
+            err,
+            crate::Error::Database(cdk_common::database::Error::KeysetOverRedeemed(id))
+                if id == keyset_id
+        ),
+        "the refusal must name the keyset that cannot back the proofs, got {err:?}"
+    );
+
+    assert_eq!(
+        payments.load(Ordering::SeqCst),
+        0,
+        "the mint must not dispatch a payment for a melt it refused"
+    );
+
+    assert_proofs_state(&mint, &input_ys, None).await;
+    assert_eq!(
+        mint.localstore()
+            .get_melt_quote(&quote.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        MeltQuoteState::Unpaid,
+        "a refused melt leaves its quote untouched"
+    );
+
+    // Positive control: the counter above is only evidence if it moves when a
+    // payment really is dispatched. Melt proofs the mint did issue.
+    let backed = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+    let paid_quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+    let paid_request = create_test_melt_request(&backed, &paid_quote);
+    let verification = mint.verify_inputs(paid_request.inputs()).await.unwrap();
+
+    let saga = MeltSaga::new(
+        std::sync::Arc::new(mint.clone()),
+        mint.localstore(),
+        mint.pubsub_manager(),
+    );
+    let (payment_saga, decision) = saga
+        .setup_melt(
+            &paid_request,
+            verification,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+        )
+        .await
+        .expect("a keyset that issued these proofs can take custody of them")
+        .attempt_internal_settlement(&paid_request)
+        .await
+        .unwrap();
+
+    let PaymentOutcome::Confirmed(confirmed) = payment_saga.make_payment(decision).await.unwrap()
+    else {
+        panic!("the fake backend is configured to pay");
+    };
+    confirmed.finalize().await.unwrap();
+
+    assert_eq!(
+        payments.load(Ordering::SeqCst),
+        1,
+        "a backed melt must dispatch exactly one payment"
+    );
+}
+
+/// Starting a mint repairs a keyset whose recorded debits exceed what it
+/// issued, so an incomplete issuance history does not freeze every proof held
+/// against that keyset.
+///
+/// The drift is written directly, because the cap makes it unreachable through
+/// the mint's own API: that is the situation this repair exists for, not one a
+/// running mint can produce.
+#[tokio::test]
+async fn startup_reconciles_a_keyset_that_owes_more_than_it_issued() {
+    use std::sync::Arc;
+
+    use cdk_common::database::MintSignaturesDatabase;
+    use cdk_common::nuts::Id;
+    use cdk_sql_common::pool::Pool;
+    use cdk_sql_common::stmt::query;
+    use cdk_sqlite::SqliteConnectionManager;
+
+    use crate::test_helpers::mint::{create_test_mint_on, CountingPaymentBackend};
+
+    let path = std::env::temp_dir().join(format!(
+        "cdk-startup-reconcile-{}.db",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock before the unix epoch")
+            .as_nanos()
+    ));
+    let db_path = path.to_str().expect("non utf8 temp dir").to_owned();
+    let keyset_id = Id::from_str("00916bbf7ef91a36").unwrap();
+
+    let db = Arc::new(
+        cdk_sqlite::MintSqliteDatabase::new(db_path.as_str())
+            .await
+            .unwrap(),
+    );
+
+    {
+        let pool = Pool::<SqliteConnectionManager>::new(db_path.as_str().into());
+        let conn = pool.get().await.unwrap();
+        query(
+            r#"
+            INSERT INTO keyset_amounts
+                (keyset_id, total_issued, total_redeemed, total_reserved)
+            VALUES (:keyset_id, 10, 70, 30)
+            "#,
+        )
+        .unwrap()
+        .bind("keyset_id", keyset_id.to_string())
+        .execute(&*conn)
+        .await
+        .unwrap();
+    }
+
+    assert_eq!(
+        db.get_total_issued()
+            .await
+            .unwrap()
+            .get(&keyset_id)
+            .copied(),
+        Some(Amount::from(10)),
+        "the drifted row is in place before the mint starts"
+    );
+
+    let (backend, _payments) = CountingPaymentBackend::new();
+    let mint = create_test_mint_on(db.clone(), backend).await.unwrap();
+
+    assert_eq!(
+        db.get_total_issued()
+            .await
+            .unwrap()
+            .get(&keyset_id)
+            .copied(),
+        Some(Amount::from(100)),
+        "starting the mint must raise issued to cover what the keyset owes"
+    );
+
+    drop(mint);
+    drop(db);
+    let _ = std::fs::remove_file(&path);
+}
+
 async fn create_test_melt_quote(
     mint: &crate::mint::Mint,
     amount: Amount,

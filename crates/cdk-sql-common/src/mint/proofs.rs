@@ -13,6 +13,7 @@ use cdk_common::secret::Secret;
 use cdk_common::util::unix_time;
 use cdk_common::{Amount, Id, Proof, Proofs, PublicKey, State};
 
+use super::keyset_ledger::{self, LedgerMove, LedgerMoves};
 use super::{SQLMintDatabase, SQLTransaction};
 use crate::database::DatabaseExecutor;
 use crate::pool::DatabasePool;
@@ -96,6 +97,47 @@ pub(super) fn sql_row_to_proof_with_state(row: Vec<Column>) -> Result<(Proof, St
     ))
 }
 
+/// Stage the move of the amount being spent out of each keyset's reservation
+/// and into its redeemed total.
+///
+/// The amount was already reserved when the mint took custody of the proofs, so
+/// this cannot raise what the keyset owes. Only a transaction that also takes
+/// proofs into custody can be refused, and the post-payment melt transaction
+/// takes none, so a melt that paid can always settle.
+async fn credit_redeemed<C>(
+    conn: &C,
+    moves: &mut LedgerMoves,
+    ys: &[PublicKey],
+) -> Result<(), Error>
+where
+    C: DatabaseExecutor + Send + Sync,
+{
+    if ys.is_empty() {
+        return Ok(());
+    }
+
+    let spent_per_keyset = query(
+        r#"
+        SELECT keyset_id, COALESCE(SUM(amount), 0) as amount
+        FROM proof
+        WHERE y IN (:ys)
+        GROUP BY keyset_id
+        "#,
+    )?
+    .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
+    .fetch_all(conn)
+    .await?
+    .into_iter()
+    .map(sql_row_to_hashmap_amount)
+    .collect::<Result<Vec<_>, _>>()?;
+
+    for (keyset_id, amount) in spent_per_keyset {
+        keyset_ledger::accumulate(moves, keyset_id, LedgerMove::redeem(amount))?;
+    }
+
+    Ok(())
+}
+
 pub(super) fn sql_row_to_hashmap_amount(row: Vec<Column>) -> Result<(Id, Amount), Error> {
     unpack_into!(
         let (
@@ -126,6 +168,13 @@ where
     /// On success, returns the proofs wrapped in [`Acquired<ProofsWithState>`] with
     /// state set to `Unspent`, indicating the rows are locked for the duration of
     /// the transaction.
+    ///
+    /// Taking custody also reserves the amount against each keyset. The
+    /// reservation is staged and checked when the transaction commits, so
+    /// proofs a keyset cannot back are refused with
+    /// [`Error::KeysetOverRedeemed`] from `commit`. Both callers commit this
+    /// transaction before they sign or pay anything, so the refusal still
+    /// lands before the mint acts on the proofs.
     async fn add_proofs(
         &mut self,
         proofs: Proofs,
@@ -184,6 +233,14 @@ where
             .await?;
         }
 
+        for proof in proofs.iter() {
+            keyset_ledger::accumulate(
+                &mut self.pending_ledger,
+                proof.keyset_id,
+                LedgerMove::reserve(proof.amount),
+            )?;
+        }
+
         Ok(ProofsWithState::new(proofs, State::Unspent).into())
     }
 
@@ -192,8 +249,11 @@ where
     /// Also updates the `state` field on the [`ProofsWithState`] wrapper to reflect
     /// the new state after the database update succeeds.
     ///
-    /// When the new state is `Spent`, this method also updates the `keyset_amounts`
-    /// table to track the total redeemed amount per keyset for analytics purposes.
+    /// When the new state is `Spent`, this method also moves the amount from each
+    /// keyset's reservation into its redeemed total. Only proofs that were not
+    /// already spent are credited, since this layer applies no state-machine
+    /// validation of its own and a repeated call would otherwise move the
+    /// counters twice. See `credit_redeemed`.
     ///
     /// # Prerequisites
     ///
@@ -206,6 +266,12 @@ where
     ) -> Result<(), Self::Err> {
         let ys = proofs.ys()?;
 
+        let previous_states = if new_state == State::Spent {
+            get_current_states(&self.inner, &ys, true).await?
+        } else {
+            HashMap::new()
+        };
+
         query(r#"UPDATE proof SET state = :new_state WHERE y IN (:ys)"#)?
             .bind("new_state", new_state.to_string())
             .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
@@ -213,21 +279,13 @@ where
             .await?;
 
         if new_state == State::Spent {
-            query(
-                    r#"
-                    INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
-                    SELECT keyset_id, 0, COALESCE(SUM(amount), 0)
-                    FROM proof
-                    WHERE y IN (:ys)
-                    GROUP BY keyset_id
-                    ORDER BY keyset_id
-                    ON CONFLICT (keyset_id)
-                    DO UPDATE SET total_redeemed = keyset_amounts.total_redeemed + EXCLUDED.total_redeemed
-                    "#,
-                )?
-                .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
-                .execute(&self.inner)
-                .await?;
+            let newly_spent = ys
+                .iter()
+                .filter(|y| previous_states.get(y) != Some(&State::Spent))
+                .copied()
+                .collect::<Vec<_>>();
+
+            credit_redeemed(&self.inner, &mut self.pending_ledger, &newly_spent).await?;
         }
 
         proofs.state = new_state;
@@ -235,6 +293,14 @@ where
         Ok(())
     }
 
+    /// Deletes proofs that are not spent and returns their amount to each
+    /// keyset's reservation.
+    ///
+    /// The release is staged before the spent-proof error below, because
+    /// callers swallow that error and commit anyway, and the transaction would
+    /// otherwise commit the deletes without the matching debit. The diagnostic
+    /// read for that error takes no locks, since locking more proof rows on the
+    /// way out of a failed call buys nothing.
     async fn remove_proofs(
         &mut self,
         ys: &[PublicKey],
@@ -243,9 +309,9 @@ where
         // Acquire all rows that can be deleted in primary-key order. This keeps
         // concurrent proof cleanup and finalization from locking batches in
         // different orders.
-        query(
+        let removable = query(
             r#"
-            SELECT y
+            SELECT y, keyset_id, amount
             FROM proof
             WHERE y IN (:ys) AND state NOT IN (:exclude_state)
             ORDER BY y
@@ -257,6 +323,16 @@ where
         .fetch_all(&self.inner)
         .await?;
 
+        for row in removable.iter() {
+            let keyset_id = column_as_string!(&row[1], Id::from_str, Id::from_bytes);
+            let amount: u64 = column_as_number!(row[2].clone());
+            keyset_ledger::accumulate(
+                &mut self.pending_ledger,
+                keyset_id,
+                LedgerMove::release(Amount::from(amount)),
+            )?;
+        }
+
         let total_deleted = query(
             r#"
             DELETE FROM proof WHERE y IN (:ys) AND state NOT IN (:exclude_state)
@@ -267,9 +343,16 @@ where
         .execute(&self.inner)
         .await?;
 
+        if total_deleted != removable.len() {
+            return Err(Self::Err::Internal(format!(
+                "remove_proofs deleted {} of the {} rows it had locked",
+                total_deleted,
+                removable.len()
+            )));
+        }
+
         if total_deleted != ys.len() {
-            // Query current states to provide detailed logging
-            let current_states = get_current_states(&self.inner, ys, true).await?;
+            let current_states = get_current_states(&self.inner, ys, false).await?;
 
             let missing_count = ys.len() - current_states.len();
             let spent_count = current_states
@@ -545,6 +628,29 @@ where
         .unzip();
 
         Ok((proofs, states.into_iter().map(Some).collect()))
+    }
+
+    /// Get the amount by keyset id that the mint is holding but has not burned
+    async fn get_total_reserved(&self) -> Result<HashMap<Id, Amount>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT
+                keyset_id,
+                total_reserved as amount
+            FROM
+                keyset_amounts
+        "#,
+        )?
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_hashmap_amount)
+        .collect()
     }
 
     /// Get total proofs redeemed by keyset id

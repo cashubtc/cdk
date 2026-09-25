@@ -319,15 +319,15 @@ where
     async fn begin_transaction<'a>(
         &'a self,
     ) -> Result<Box<dyn MintKeyDatabaseTransaction<'a, Error> + Send + Sync + 'a>, Error> {
-        let tx = SQLTransaction {
-            inner: ConnectionWithTransaction::new(
+        let tx = SQLTransaction::new(
+            ConnectionWithTransaction::new(
                 self.pool
                     .get()
                     .await
                     .map_err(|e| Error::Database(Box::new(e)))?,
             )
             .await?,
-        };
+        );
 
         // Serialize every keyset transaction on one global advisory lock, held
         // to commit. All keyset reads and writes then see a consistent snapshot

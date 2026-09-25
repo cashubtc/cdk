@@ -32,6 +32,37 @@ fn standard_keyset_amounts(max_order: u32) -> Vec<u64> {
     (0..max_order).map(|n| 2u64.pow(n)).collect()
 }
 
+/// Record the issuance behind `proofs`, so they can later be spent.
+///
+/// A proof only exists because the mint signed it, and the per-keyset cap
+/// refuses to redeem more than a keyset issued. Tests that fabricate proofs
+/// have to state that issuance too, or spending them is rejected.
+async fn seed_issuance<DB>(db: &DB, proofs: &[Proof])
+where
+    DB: Database<crate::database::Error> + ?Sized,
+{
+    let (blinded_messages, blind_signatures): (Vec<_>, Vec<_>) = proofs
+        .iter()
+        .map(|proof| {
+            (
+                proof.y().unwrap(),
+                cashu::BlindSignature {
+                    amount: proof.amount,
+                    keyset_id: proof.keyset_id,
+                    c: proof.c,
+                    dleq: None,
+                },
+            )
+        })
+        .unzip();
+
+    let mut tx = Database::begin_transaction(db).await.expect("db.begin()");
+    tx.add_blind_signatures(&blinded_messages, &blind_signatures, None)
+        .await
+        .unwrap();
+    tx.commit().await.expect("commit()");
+}
+
 #[inline]
 async fn setup_keyset<DB>(db: &DB) -> Id
 where
@@ -425,6 +456,12 @@ macro_rules! mint_db_test {
             get_proofs_with_inconsistent_states_fails,
             get_proofs_fails_when_some_not_found,
             update_proofs_state_updates_proofs_with_state,
+            reserving_beyond_issuance_is_refused,
+            spending_moves_reserved_to_redeemed,
+            removing_proofs_returns_the_reservation,
+            repeated_spend_does_not_double_credit,
+            partial_removal_debits_only_the_deleted_rows,
+            reserved_matches_the_proofs_in_custody,
             get_mint_quotes_by_ids,
             get_melt_quotes_by_request_lookup_id,
             lock_melt_quote_and_related,
