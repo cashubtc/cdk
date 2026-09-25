@@ -477,6 +477,36 @@ cdk-mint-cli rotate-next-keyset --use-keyset-v2 true  # Rotate to V2
 cdk-mint-cli rotate-next-keyset --use-keyset-v2 false # Rotate to V1
 ```
 
+**Automatic Rotation:**
+An embedded signatory can rotate active keysets automatically once they reach a
+given age. The replacement keeps the previous amounts, input fee and version.
+Meant for long periods (days), so 7776000 seconds (90 days) is a reasonable
+interval.
+
+- **Default**: `0`, auto-rotation is off. Upgrading a mint never starts
+  rotating its keysets until you ask for it.
+- `[info].keyset_rotation_interval_seconds = <seconds>` (or
+  `CDK_MINTD_KEYSET_ROTATION_INTERVAL_SECONDS=<seconds>`): enable rotation at
+  that interval.
+
+Rotation follows the database, not the configuration file. Every unit that
+holds an active keyset is rotated, including a unit you have removed from the
+configuration and the `auth` unit, so each of those gains a keyset per interval
+for as long as rotation runs. Old keysets are kept, so tokens issued under them
+stay redeemable.
+
+A unit whose active keyset has already expired is not rotated: the replacement
+would inherit an expiry in the past. Rotate it explicitly to get the unit
+serving again.
+
+A unit is also skipped when the derivation path its next keyset would use
+already holds one, since keys derive from the seed and the path alone and the
+rotation would hand the unit back the keys it has. The rest of the units rotate
+normally; the skip is logged with the unit and the path.
+
+This applies only to an embedded signatory; a remote signatory manages its own
+rotation schedule.
+
 ## Production Examples
 
 ### With LDK Node (Recommended for Testing)
