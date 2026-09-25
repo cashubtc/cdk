@@ -172,12 +172,7 @@ impl From<cdk::nuts::KeySet> for KeySet {
             unit: keyset.unit.into(),
             active: keyset.active,
             input_fee_ppk: keyset.input_fee_ppk,
-            keys: keyset
-                .keys
-                .keys()
-                .iter()
-                .map(|(amount, pubkey)| (u64::from(*amount), pubkey.to_string()))
-                .collect(),
+            keys: Keys::from(keyset.keys).keys,
             final_expiry: keyset.final_expiry,
         }
     }
@@ -187,7 +182,6 @@ impl TryFrom<KeySet> for cdk::nuts::KeySet {
     type Error = FfiError;
 
     fn try_from(keyset: KeySet) -> Result<Self, Self::Error> {
-        use std::collections::BTreeMap;
         use std::str::FromStr;
 
         // Convert id
@@ -198,16 +192,9 @@ impl TryFrom<KeySet> for cdk::nuts::KeySet {
         let unit: cdk::nuts::CurrencyUnit = keyset.unit.into();
 
         // Convert keys
-        let mut keys_map = BTreeMap::new();
-        for (amount_u64, pubkey_hex) in keyset.keys {
-            let amount = cdk::Amount::from(amount_u64);
-            let pubkey = cdk::nuts::PublicKey::from_str(&pubkey_hex)
-                .map_err(|e| FfiError::internal(format!("Invalid public key: {}", e)))?;
-            keys_map.insert(amount, pubkey);
-        }
-        let keys = cdk::nuts::Keys::new(keys_map);
+        let keys = Keys { keys: keyset.keys }.try_into()?;
 
-        Ok(cdk::nuts::KeySet {
+        Ok(Self {
             id,
             unit,
             active: keyset.active,

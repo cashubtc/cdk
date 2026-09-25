@@ -261,6 +261,9 @@ test-pure db="memory":
     run_test test_swap_flow -j 1
     run_test wallet_saga -j 1
     run_test nwc_e2e -j 1
+    if [ "{{db}}" = memory ]; then
+      run_test nip17_inbox_e2e -j 1
+    fi
   else
     # Run pure integration tests (cargo test will only build what's needed for the test)
     CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test integration_tests_pure -- --test-threads 1
@@ -273,6 +276,9 @@ test-pure db="memory":
 
     # Run NWC (NIP-47) e2e tests (requires nostr-rs-relay on PATH; skipped locally if absent)
     CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test nwc_e2e -- --test-threads 1
+    if [ "{{db}}" = memory ]; then
+      cargo test -p cdk-integration-tests --test nip17_inbox_e2e -- --test-threads 1
+    fi
   fi
 
 # Run Redis cache clippy and unit tests against both single-node and cluster Redis.
@@ -744,16 +750,50 @@ check-wasm *ARGS="--target wasm32-unknown-unknown":
     echo
   done
 
-release m="":
+# Publish release crates; --skip-ci overrides the green-CI requirement.
+release *ARGS:
   #!/usr/bin/env bash
   set -euo pipefail
+
+  skip_ci=false
+  publish_args=()
+  for arg in "$@"; do
+    case "$arg" in
+      --skip-ci) skip_ci=true ;;
+      *) publish_args+=("$arg") ;;
+    esac
+  done
 
   # Extract version from the cdk-ffi crate
   VERSION=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "cdk-ffi") | .version')
 
-  if ! git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" > /dev/null; then
-    echo "Tag v$VERSION does not exist on origin. Push the release tag before publishing crates."
+  if ! git ls-remote --exit-code --tags upstream "refs/tags/v$VERSION" > /dev/null; then
+    echo "Tag v$VERSION does not exist on upstream. Push the release tag before publishing crates."
     exit 1
+  fi
+
+  # Publish only a clean checkout of the release commit.
+  SOURCE_SHA=$(gh api "repos/cashubtc/cdk/commits/v$VERSION" --jq .sha)
+  # In a colocated JJ workspace, `jj new <release>` puts Git HEAD at the release.
+  WORKTREE_STATUS=$(git status --porcelain --untracked-files=all)
+  if [ "$(git rev-parse HEAD)" != "$SOURCE_SHA" ] || [ -n "$WORKTREE_STATUS" ]; then
+    echo "Check out the clean release commit $SOURCE_SHA before publishing."
+    echo "For a colocated JJ workspace, use: jj new $SOURCE_SHA"
+    exit 1
+  fi
+  if [ "$skip_ci" = true ]; then
+    echo "Skipping green-CI requirement for release commit $SOURCE_SHA (--skip-ci)."
+  else
+    for workflow in ci.yml nutshell_itest.yml; do
+      result=$(gh api --paginate --slurp \
+        "repos/cashubtc/cdk/actions/workflows/$workflow/runs?head_sha=$SOURCE_SHA&per_page=100" \
+        --jq '[.[].workflow_runs[] | select(.event == "workflow_dispatch" or .event == "release" or (.event == "push" and (.head_branch == "main" or ((.head_branch // "") | test("^v[0-9][^/]*[.][0-9][^/]*[.]x$")))))] | max_by(.id) | if . == null then "missing" else (.status + "/" + .conclusion) end')
+      if [ "$result" != completed/success ]; then
+        echo "$workflow must pass full CI on $SOURCE_SHA before publishing (latest: $result)."
+        echo "To override the green-CI requirement, use: just release --skip-ci"
+        exit 1
+      fi
+    done
   fi
 
   args=(
@@ -785,7 +825,7 @@ release m="":
   for arg in "${args[@]}";
   do
     echo "Publishing '$arg'"
-    cargo publish $arg {{m}}
+    cargo publish $arg "${publish_args[@]}"
     echo
   done
 
@@ -1103,6 +1143,7 @@ ffi-release-all VERSION:
 
   gh workflow run "FFI - Publish All Bindings" \
     --repo cashubtc/cdk \
+    --ref "v{{VERSION}}" \
     --field release_tag="v{{VERSION}}" \
     --field cdk_version="{{VERSION}}" \
     --field cdk_ref="v{{VERSION}}"
@@ -1120,6 +1161,7 @@ ffi-release-dart VERSION:
 
   gh workflow run "FFI - Dart Bindings" \
     --repo cashubtc/cdk \
+    --ref "v{{VERSION}}" \
     --field release_tag="v{{VERSION}}" \
     --field cdk_version="{{VERSION}}"
 
@@ -1136,6 +1178,7 @@ ffi-release-swift VERSION:
   # Trigger the workflow using GitHub CLI
   gh workflow run "FFI - Swift Bindings" \
     --repo cashubtc/cdk \
+    --ref "v{{VERSION}}" \
     --field release_tag="v{{VERSION}}" \
     --field cdk_version="{{VERSION}}" \
     --field cdk_ref="v{{VERSION}}"
@@ -1154,6 +1197,7 @@ ffi-release-kotlin VERSION:
   # Trigger the workflow using GitHub CLI
   gh workflow run "FFI - Kotlin Bindings" \
     --repo cashubtc/cdk \
+    --ref "v{{VERSION}}" \
     --field release_tag="v{{VERSION}}" \
     --field cdk_version="{{VERSION}}" \
     --field cdk_ref="v{{VERSION}}"
@@ -1205,6 +1249,7 @@ ffi-release-go VERSION:
 
   gh workflow run "FFI - Go Bindings" \
     --repo cashubtc/cdk \
+    --ref "v{{VERSION}}" \
     --field release_tag="v{{VERSION}}" \
     --field cdk_version="{{VERSION}}" \
     --field cdk_ref="v{{VERSION}}"

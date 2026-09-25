@@ -4,7 +4,7 @@ use bdk_esplora::esplora_client::{AsyncClient, Builder};
 use bdk_esplora::EsploraAsyncExt;
 use bdk_wallet::bitcoin::Transaction;
 use cdk_common::redact::url_for_logs;
-use tokio::time::{interval, Duration};
+use tokio::time::{interval, Duration, MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 
 use crate::chain::{BroadcastErrorKind, BroadcastFailure, BroadcastOutcome, EsploraConfig};
@@ -13,6 +13,14 @@ use crate::CdkBdk;
 
 const MIN_ESPLORA_BACKOFF: Duration = Duration::from_secs(5);
 const MAX_ESPLORA_BACKOFF: Duration = Duration::from_secs(300);
+
+const ESPLORA_REQUEST_TIMEOUT_SECS: u64 = 10;
+
+fn new_esplora_client(url: &str) -> Result<AsyncClient, bdk_esplora::esplora_client::Error> {
+    Builder::new(url)
+        .timeout(ESPLORA_REQUEST_TIMEOUT_SECS)
+        .build_async()
+}
 
 fn next_esplora_backoff(backoff: &mut Duration) -> Duration {
     let current = *backoff;
@@ -30,6 +38,8 @@ pub(crate) async fn sync_esplora(
     let configured_interval = Duration::from_secs(cdk_bdk.sync_interval_secs);
     let initial_backoff = configured_interval.max(MIN_ESPLORA_BACKOFF);
     let mut sync_interval = interval(configured_interval);
+    // Skip the backlog after a slow sync to avoid catch-up bursts.
+    sync_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let warn_ms = cdk_bdk.sync_config.lock_hold_warn_ms;
 
     // Persist Esplora client across sync iterations; re-create on error.
@@ -53,7 +63,7 @@ pub(crate) async fn sync_esplora(
                 let client = match &esplora_client {
                     Some(c) => c.clone(),
                     None => {
-                        match Builder::new(url).build_async() {
+                        match new_esplora_client(url) {
                             Ok(c) => {
                                 esplora_client = Some(c.clone());
                                 c
@@ -216,8 +226,7 @@ pub(crate) async fn broadcast_esplora(
     config: &EsploraConfig,
     tx: Transaction,
 ) -> Result<BroadcastOutcome, BroadcastFailure> {
-    let client = Builder::new(&config.url)
-        .build_async()
+    let client = new_esplora_client(&config.url)
         .map_err(|e| BroadcastFailure::new(BroadcastErrorKind::Transient, e.to_string()))?;
 
     tracing::info!(
@@ -248,9 +257,7 @@ pub(crate) async fn fetch_fee_rate_esplora(
     config: &EsploraConfig,
     target_blocks: u16,
 ) -> Result<f64, Error> {
-    let client = Builder::new(&config.url)
-        .build_async()
-        .map_err(|e| Error::Esplora(e.to_string()))?;
+    let client = new_esplora_client(&config.url).map_err(|e| Error::Esplora(e.to_string()))?;
 
     let estimates = client
         .get_fee_estimates()
@@ -286,7 +293,36 @@ pub(crate) async fn fetch_fee_rate_esplora(
 
 #[cfg(test)]
 mod tests {
+    use tokio::io::AsyncReadExt;
+    use tokio::net::TcpListener;
+    use tokio::time::{pause, timeout, Duration};
+
     use super::*;
+
+    #[tokio::test]
+    async fn stalled_esplora_request_times_out() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let client = new_esplora_client(&format!(
+            "http://{}",
+            listener.local_addr().expect("address")
+        ))
+        .expect("client");
+        let request = tokio::spawn(async move { client.get_fee_estimates().await });
+        let (mut stream, _) = listener.accept().await.expect("accept request");
+        assert!(stream.read(&mut [0; 1024]).await.expect("read request") > 0);
+        // Keep the connection open without sending a response. Pause only
+        // after I/O has started so virtual time cannot race TCP setup.
+        pause();
+        let error = timeout(Duration::from_secs(11), request)
+            .await
+            .expect("request timeout must fire")
+            .expect("request task")
+            .expect_err("stalled request");
+        assert!(
+            matches!(error, bdk_esplora::esplora_client::Error::Reqwest(error) if error.is_timeout())
+        );
+        drop(stream);
+    }
 
     #[test]
     fn classify_esplora_broadcast_errors() {

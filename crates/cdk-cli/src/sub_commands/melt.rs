@@ -265,14 +265,20 @@ pub async fn pay(
             } else {
                 // Auto-select the first mint with sufficient balance
                 let balances = wallet_repository.get_balances().await?;
-                let required_amount = bolt11
-                    .amount_milli_satoshis()
-                    .map(|a| Amount::from(a / MSAT_IN_SAT))
+                let required_amount = options
+                    .map(|options| options.amount_msat().into())
+                    .or_else(|| bolt11.amount_milli_satoshis())
+                    .map(|amount| {
+                        Amount::new(amount, CurrencyUnit::Msat)
+                            .convert_to_ceil(unit)
+                            .map(Into::into)
+                    })
+                    .transpose()?
                     .unwrap_or(Amount::ZERO);
 
                 balances
                     .into_iter()
-                    .find(|(_, balance)| *balance >= required_amount)
+                    .find(|(key, balance)| &key.unit == unit && *balance >= required_amount)
                     .map(|(key, _)| key.mint_url)
                     .ok_or_else(|| anyhow::anyhow!("No mint with sufficient balance"))?
             };

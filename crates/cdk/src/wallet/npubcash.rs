@@ -10,6 +10,7 @@ use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 use bitcoin::Network;
 use cdk_common::{database, SECP256K1};
 use cdk_nostr::npubcash::{JwtAuthProvider, NpubCashClient, Quote};
+use nostr::prelude::{Keys as NostrKeys, SecretKey as NostrSecretKey};
 use tracing::instrument;
 
 use crate::error::Error;
@@ -190,21 +191,21 @@ impl Wallet {
     /// # Errors
     ///
     /// Returns an error if the key derivation fails
-    fn derive_npubcash_keys(&self) -> Result<nostr_sdk::Keys, Error> {
+    fn derive_npubcash_keys(&self) -> Result<NostrKeys, Error> {
         let secret_key = self.derive_npubcash_secret_key()?;
 
-        let nostr_secret = nostr_sdk::SecretKey::from_slice(&secret_key.to_secret_bytes())
+        let nostr_secret = NostrSecretKey::from_slice(&secret_key.to_secret_bytes())
             .map_err(|e| Error::Custom(format!("Failed to derive Nostr keys: {}", e)))?;
 
-        Ok(nostr_sdk::Keys::new(nostr_secret))
+        Ok(NostrKeys::new(nostr_secret))
     }
 
-    fn derive_legacy_npubcash_keys(&self) -> Result<nostr_sdk::Keys, Error> {
+    fn derive_legacy_npubcash_keys(&self) -> Result<NostrKeys, Error> {
         let secret_key = self.derive_legacy_npubcash_secret_key()?;
-        let nostr_secret = nostr_sdk::SecretKey::from_slice(&secret_key.to_secret_bytes())
+        let nostr_secret = NostrSecretKey::from_slice(&secret_key.to_secret_bytes())
             .map_err(|e| Error::Custom(format!("Failed to derive legacy Nostr keys: {}", e)))?;
 
-        Ok(nostr_sdk::Keys::new(nostr_secret))
+        Ok(NostrKeys::new(nostr_secret))
     }
 
     /// Get the Nostr keys used for NpubCash authentication
@@ -215,7 +216,7 @@ impl Wallet {
     /// # Errors
     ///
     /// Returns an error if the key derivation fails
-    pub fn get_npubcash_keys(&self) -> Result<nostr_sdk::Keys, Error> {
+    pub fn get_npubcash_keys(&self) -> Result<NostrKeys, Error> {
         self.derive_npubcash_keys()
     }
 

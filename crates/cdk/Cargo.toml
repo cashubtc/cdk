@@ -19,7 +19,7 @@ wallet = [
     "cdk-common/http",
     "dep:rustls",
 ]
-nostr = ["wallet", "dep:nostr-sdk", "cdk-common/nostr"]
+nostr = ["wallet", "dep:nostr", "dep:nostr-sdk", "cdk-common/nostr"]
 npubcash = ["wallet", "nostr", "dep:cdk-nostr", "cdk-nostr/npubcash"]
 nwc = ["wallet", "nostr", "dep:cdk-nostr", "cdk-nostr/nwc"]
 mint = ["dep:futures", "cdk-common/mint", "cdk-common/http", "cdk-signatory"]
@@ -49,6 +49,7 @@ futures = { workspace = true, optional = true, features = ["alloc"] }
 url.workspace = true
 uuid.workspace = true
 nostr-sdk = { workspace = true, optional = true }
+nostr = { workspace = true, optional = true }
 cdk-nostr = { workspace = true, default-features = false, optional = true }
 cdk-prometheus = {workspace = true, optional = true}
 bitcoin-payment-instructions = { workspace = true }

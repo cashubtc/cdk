@@ -349,6 +349,9 @@ impl Wallet {
     /// **Note:** The mint quote must be known to the wallet (stored locally) for this
     /// function to work. If the quote is not stored locally, use `fetch_mint_quote`
     /// instead.
+    ///
+    /// # Errors
+    /// Returns an error for a mismatched response quote ID before changing local state.
     pub async fn check_mint_quote_status(&self, quote_id: String) -> Result<MintQuote, FfiError> {
         let quote = self.inner.check_mint_quote_status(&quote_id).await?;
         Ok(quote.into())
@@ -367,6 +370,9 @@ impl Wallet {
     /// * `payment_method` - The payment method for the quote. Required if the quote
     ///   is not already stored locally. If the quote exists locally, the stored
     ///   payment method will be used and this parameter is ignored.
+    ///
+    /// # Errors
+    /// Returns an error for a mismatched response quote ID before storing the quote.
     pub async fn fetch_mint_quote(
         &self,
         quote_id: String,
@@ -449,6 +455,39 @@ impl Wallet {
         Ok(PreparedMelt::new(Arc::clone(&self.inner), &prepared))
     }
 
+    /// Prepare a melt operation with specific proofs and additional options
+    ///
+    /// Same as `prepare_melt_proofs`, with P2PK/HTLC-locked proofs signed
+    /// using `options.p2pk_signing_keys` plus any signing keys known to the
+    /// wallet, and HTLC preimages from `options.preimages` attached, before
+    /// the proofs are reserved.
+    ///
+    /// # Arguments
+    ///
+    /// * `quote_id` - The melt quote ID (obtained from `melt_quote`)
+    /// * `proofs` - The proofs to melt (can be external proofs not in the wallet's database)
+    /// * `options` - Signing keys, preimages, and metadata for the prepare step
+    ///
+    /// # Returns
+    ///
+    /// A `PreparedMelt` that can be confirmed or cancelled
+    pub async fn prepare_melt_proofs_with_options(
+        &self,
+        quote_id: String,
+        proofs: Proofs,
+        options: MeltPrepareOptions,
+    ) -> Result<PreparedMelt, FfiError> {
+        let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
+            proofs.into_iter().map(|p| p.try_into()).collect();
+        let cdk_proofs = cdk_proofs?;
+
+        let prepared = self
+            .inner
+            .prepare_melt_proofs_with_options(&quote_id, cdk_proofs, options.try_into()?)
+            .await?;
+        Ok(PreparedMelt::new(Arc::clone(&self.inner), &prepared))
+    }
+
     /// Prepare a melt operation from an encoded token
     ///
     /// Decodes the token internally (handling keyset state for v2 keysets),
@@ -470,6 +509,33 @@ impl Wallet {
         let prepared = self
             .inner
             .prepare_melt_token(&quote_id, &encoded_token, std::collections::HashMap::new())
+            .await?;
+        Ok(PreparedMelt::new(Arc::clone(&self.inner), &prepared))
+    }
+
+    /// Prepare a melt operation from an encoded token with additional options
+    ///
+    /// Same as `prepare_melt_token`, with locked inputs handled as described
+    /// in `prepare_melt_proofs_with_options`.
+    ///
+    /// # Arguments
+    ///
+    /// * `quote_id` - The melt quote ID (obtained from `melt_quote`)
+    /// * `encoded_token` - The encoded token string (cashuA or cashuB format)
+    /// * `options` - Signing keys, preimages, and metadata for the prepare step
+    ///
+    /// # Returns
+    ///
+    /// A `PreparedMelt` that can be confirmed or cancelled
+    pub async fn prepare_melt_token_with_options(
+        &self,
+        quote_id: String,
+        encoded_token: String,
+        options: MeltPrepareOptions,
+    ) -> Result<PreparedMelt, FfiError> {
+        let prepared = self
+            .inner
+            .prepare_melt_token_with_options(&quote_id, &encoded_token, options.try_into()?)
             .await?;
         Ok(PreparedMelt::new(Arc::clone(&self.inner), &prepared))
     }
@@ -708,7 +774,7 @@ impl Wallet {
         &self,
         params: SubscribeParams,
     ) -> Result<std::sync::Arc<ActiveSubscription>, FfiError> {
-        let cdk_params: cdk::nuts::nut17::Params<Arc<String>> = params.clone().into();
+        let cdk_params: cdk::nuts::nut17::Params<Arc<String>> = params.into();
         let sub_id = cdk_params.id.to_string();
         let active_sub = self.inner.subscribe(cdk_params).await?;
         Ok(std::sync::Arc::new(ActiveSubscription::new(

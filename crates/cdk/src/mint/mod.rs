@@ -1147,11 +1147,12 @@ impl Mint {
             .get_mint_quote_by_request_lookup_id(&wait_payment_response.payment_identifier)
             .await
         {
+            let previous_state = mint_quote.state();
             let notify =
                 Self::handle_mint_quote_payment(&mut tx, &mut mint_quote, wait_payment_response)
                     .await?;
             if notify {
-                Some((mint_quote.clone(), mint_quote.amount_paid()))
+                Some((mint_quote.clone(), mint_quote.amount_paid(), previous_state))
             } else {
                 None
             }
@@ -1167,7 +1168,19 @@ impl Mint {
 
         // Publish notification AFTER transaction commits so subscribers
         // see the committed state when they query.
-        if let Some((quote, amount_paid)) = should_notify {
+        if let Some((quote, amount_paid, previous_state)) = should_notify {
+            tracing::info!(
+                quote_id = %quote.id,
+                method = %quote.payment_method,
+                unit = %quote.unit,
+                request_lookup_id = %quote.request_lookup_id,
+                previous_state = %previous_state,
+                new_state = %quote.state(),
+                amount_paid = %amount_paid,
+                amount_issued = %quote.amount_issued(),
+                amount_mintable = %quote.amount_mintable(),
+                "mint quote payment notification committed",
+            );
             pubsub_manager.mint_quote_payment(&quote, amount_paid);
         }
 
@@ -1200,7 +1213,7 @@ impl Mint {
             if mint_quote.payment_method.is_bolt11()
                 && (quote_state == MintQuoteState::Issued || quote_state == MintQuoteState::Paid)
             {
-                tracing::info!("Received payment notification for already issued quote.");
+                tracing::debug!("Received payment notification for already issued quote.");
             } else {
                 let payment_amount_quote_unit: Amount<CurrencyUnit> = wait_payment_response
                     .payment_amount
@@ -1227,7 +1240,7 @@ impl Mint {
                         return Ok(true);
                     }
                     Err(Error::DuplicatePaymentId) => {
-                        tracing::info!(
+                        tracing::debug!(
                             "Payment ID {} already processed (caught race condition)",
                             wait_payment_response.payment_id
                         );
@@ -1237,7 +1250,7 @@ impl Mint {
                 }
             }
         } else {
-            tracing::info!("Received payment notification for already seen payment.");
+            tracing::debug!("Received payment notification for already seen payment.");
         }
 
         Ok(false)

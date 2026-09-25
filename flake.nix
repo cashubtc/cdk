@@ -922,26 +922,19 @@
         regtestBuildInputs =
           (with pkgsUnstable; [
             lnd
-            # Apple Clang treats certain warnings as errors via -Werror, breaking
-            # the clightning build on macOS. These are fixed upstream in commit
-            # c22538ec (milestone v26.04) but not yet released. The override is
-            # Darwin-only so Linux builds still use the binary cache unmodified.
-            # TODO: Remove this override once clightning >= 26.04 lands in nixpkgs.
-            (
-              if pkgs.stdenv.hostPlatform.isDarwin then
-                (clightning.overrideAttrs (old: {
-                  env = (old.env or { }) // {
-                    NIX_CFLAGS_COMPILE =
-                      (old.env.NIX_CFLAGS_COMPILE or "")
-                      + " -Wno-error=uninitialized-const-pointer"
-                      + " -Wno-error=gnu-folding-constant"
-                      + " -Wno-error=default-const-init-var-unsafe"
-                      + " -Wno-error=sometimes-uninitialized";
-                  };
-                }))
-              else
-                clightning
-            )
+            # TODO: Drop this override once nixpkgs ships CLN >= 26.06.7.
+            (clightning.overrideAttrs (finalAttrs: old: {
+              version = "26.06.7";
+              src = fetchurl {
+                url = "https://github.com/ElementsProject/lightning/releases/download/v${finalAttrs.version}/clightning-v${finalAttrs.version}.zip";
+                hash = "sha256-sxPSB+U/Hi2/n7rHnVr0jDUuh0plM5C924G1J5WhU9w=";
+              };
+              # The release archive omits the executable bit on this doc helper.
+              postPatch = (old.postPatch or "") + ''
+                chmod +x devtools/blockreplace.py
+                patchShebangs devtools/blockreplace.py
+              '';
+            }))
             bitcoind
           ])
           ++ (with pkgs; [
@@ -1576,6 +1569,46 @@
               exampleChecks
           ))
           // {
+            # PRs run the default unit suite once; alternate feature combinations
+            # remain in the full matrix. PostgreSQL has a separate service job.
+            pr-unit-tests = craneLib.mkCargoDerivation (
+              commonCraneArgs
+              // {
+                pname = "cdk-pr-unit-tests";
+                cargoArtifacts = workspaceDeps;
+                buildPhaseCargoCommand = ''
+                  cargo test --lib --workspace --exclude cdk-postgres --exclude cdk-integration-tests
+                  cargo test --bins -p cdk-cli
+                  cargo test --lib -p cdk-nostr --all-features
+                '';
+                doCheck = false;
+                installPhaseCommand = "mkdir -p $out";
+                doInstallCargoArtifacts = false;
+              }
+            );
+
+            # Keep optional features and minimal package builds covered on PRs.
+            # The full matrix already covers these configurations separately.
+            pr-feature-tests = craneLib.mkCargoDerivation (
+              commonCraneArgs
+              // {
+                pname = "cdk-pr-feature-tests";
+                cargoArtifacts = workspaceDeps;
+                buildPhaseCargoCommand = ''
+                  cargo test --lib -p cdk-sqlite --features sqlcipher
+                  cargo test --bins -p cdk-cli --features redb
+                  cargo check -p cdk-mintd --features redis
+                  cargo test --lib -p cdk-common --no-default-features --features wallet
+                  cargo test --lib -p cdk-common --no-default-features --features mint
+                  cargo test --lib -p cdk-sql-common --no-default-features --features wallet
+                  cargo test --lib -p cdk-sql-common --no-default-features --features mint
+                '';
+                doCheck = false;
+                installPhaseCommand = "mkdir -p $out";
+                doInstallCargoArtifacts = false;
+              }
+            );
+
             # Workspace-wide all-targets clippy check
             workspace-clippy-all-targets = workspaceClippyAllTargets;
 

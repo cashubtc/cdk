@@ -16,12 +16,10 @@ pub const ENV_MINT_MANAGEMENT_ALLOW_MINT_QUOTE_PAYMENT_OVERRIDE: &str =
 
 impl MintManagementRpc {
     pub fn from_env(mut self) -> Self {
-        if let Ok(enabled) = env::var(ENV_MINT_MANAGEMENT_ENABLED)
-            .or_else(|_| env::var(ENV_MINT_MANAGEMENT_ENABLED_LEGACY))
+        if let Some(enabled) = super::bool_override(ENV_MINT_MANAGEMENT_ENABLED)
+            .or_else(|| super::bool_override(ENV_MINT_MANAGEMENT_ENABLED_LEGACY))
         {
-            if let Ok(enabled) = enabled.parse() {
-                self.enabled = enabled;
-            }
+            self.enabled = enabled;
         }
 
         if let Ok(address) = env::var(ENV_MINT_MANAGEMENT_ADDRESS) {
@@ -38,10 +36,8 @@ impl MintManagementRpc {
             self.tls_dir = Some(tls_dir.into());
         }
 
-        if let Ok(allow_insecure) = env::var(ENV_MINT_MANAGEMENT_ALLOW_INSECURE) {
-            if let Ok(allow_insecure) = allow_insecure.parse() {
-                self.allow_insecure = allow_insecure;
-            }
+        if let Some(allow_insecure) = super::bool_override(ENV_MINT_MANAGEMENT_ALLOW_INSECURE) {
+            self.allow_insecure = allow_insecure;
         }
 
         if let Ok(allow_override) = env::var(ENV_MINT_MANAGEMENT_ALLOW_MINT_QUOTE_PAYMENT_OVERRIDE)
@@ -160,6 +156,74 @@ mod tests {
         assert!(!management_rpc.allow_insecure);
         assert!(!management_rpc.allow_mint_quote_payment_override);
 
+        clear_env_vars();
+    }
+
+    #[test]
+    fn management_rpc_security_overrides_fail_closed() {
+        let _guard = env_lock();
+        clear_env_vars();
+        for name in [
+            ENV_MINT_MANAGEMENT_ENABLED,
+            ENV_MINT_MANAGEMENT_ENABLED_LEGACY,
+            ENV_MINT_MANAGEMENT_ALLOW_INSECURE,
+        ] {
+            for value in ["false", "not-a-boolean"] {
+                env::set_var(name, value);
+                let config = MintManagementRpc {
+                    enabled: true,
+                    allow_insecure: true,
+                    ..Default::default()
+                }
+                .from_env();
+                let actual = if name == ENV_MINT_MANAGEMENT_ALLOW_INSECURE {
+                    config.allow_insecure
+                } else {
+                    config.enabled
+                };
+                assert!(!actual, "{name}={value}");
+            }
+            env::remove_var(name);
+        }
+        let configured = MintManagementRpc {
+            enabled: true,
+            allow_insecure: true,
+            ..Default::default()
+        }
+        .from_env();
+        assert!(configured.enabled);
+        assert!(configured.allow_insecure);
+
+        env::set_var(ENV_MINT_MANAGEMENT_ENABLED_LEGACY, "true");
+        for value in ["false", "invalid"] {
+            env::set_var(ENV_MINT_MANAGEMENT_ENABLED, value);
+            assert!(!MintManagementRpc::default().from_env().enabled);
+        }
+        clear_env_vars();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn management_rpc_non_unicode_overrides_fail_closed() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let _guard = env_lock();
+        clear_env_vars();
+        env::set_var(ENV_MINT_MANAGEMENT_ENABLED_LEGACY, "true");
+        for name in [
+            ENV_MINT_MANAGEMENT_ENABLED,
+            ENV_MINT_MANAGEMENT_ALLOW_INSECURE,
+        ] {
+            env::set_var(name, std::ffi::OsString::from_vec(vec![0xff]));
+        }
+        let config = MintManagementRpc {
+            enabled: true,
+            allow_insecure: true,
+            ..Default::default()
+        }
+        .from_env();
+        assert!(!config.enabled);
+        assert!(!config.allow_insecure);
         clear_env_vars();
     }
 

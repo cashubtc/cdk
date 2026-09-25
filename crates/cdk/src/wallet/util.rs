@@ -1,14 +1,19 @@
 //! Wallet Utility Functions
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::str::FromStr;
 
+use bitcoin::hashes::sha256::Hash as Sha256Hash;
+use bitcoin::hashes::Hash;
+use bitcoin::secp256k1::schnorr::Signature;
 use bitcoin::XOnlyPublicKey;
 use cdk_common::terminal::escape_control;
 
 use crate::nuts::nut10::Kind;
 use crate::nuts::{Conditions, Proof, Proofs, PublicKey, SecretKey};
+use crate::util::hex;
+use crate::wallet::Wallet;
 use crate::{Error, SECP256K1};
 
 /// Render a value without allowing terminal controls to reach a log sink.
@@ -145,6 +150,19 @@ pub(crate) fn sign_proofs(
         let ephemeral_key = proof.p2pk_e;
         let mut signed_with_ephemeral_key = false;
         for (i, pubkey) in pubkeys.iter().enumerate() {
+            let already_signed = proof
+                .witness
+                .as_ref()
+                .and_then(|witness| witness.signatures())
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|signature| Signature::from_str(signature).ok())
+                .any(|signature| pubkey.verify(proof.secret.as_bytes(), &signature).is_ok());
+            if already_signed {
+                signed_with_ephemeral_key |= ephemeral_key.is_some();
+                continue;
+            }
+
             let slot = match secret.kind() {
                 Kind::P2PK => i as u8,
                 Kind::HTLC => (i + 1) as u8,
@@ -168,6 +186,88 @@ pub(crate) fn sign_proofs(
 
         if signed_with_ephemeral_key {
             proof.p2pk_e = None;
+        }
+    }
+
+    Ok(())
+}
+
+/// Verify the spending witness on every P2PK/HTLC-locked proof.
+pub(crate) fn verify_locked_proofs(proofs: &Proofs) -> Result<(), Error> {
+    for proof in proofs {
+        let Ok(secret) = <crate::secret::Secret as TryInto<crate::nuts::nut10::Secret>>::try_into(
+            proof.secret.clone(),
+        ) else {
+            continue;
+        };
+
+        match secret.kind() {
+            Kind::P2PK => proof.verify_p2pk()?,
+            Kind::HTLC => proof.verify_htlc()?,
+        }
+    }
+
+    Ok(())
+}
+
+/// Build the signing key list for the given proofs by merging explicitly-provided keys with
+/// any matching keys found in the wallet keyring.
+///
+/// Explicit keys take precedence; the keyring is only consulted for pubkeys not already
+/// covered by the explicit set.
+pub(crate) async fn merge_keyring_keys(
+    wallet: &Wallet,
+    proofs: &Proofs,
+    explicit_keys: &[SecretKey],
+) -> Result<Vec<SecretKey>, Error> {
+    let mut keys = explicit_keys.to_vec();
+    let covered: HashSet<XOnlyPublicKey> = keys
+        .iter()
+        .map(|k| k.x_only_public_key(&SECP256K1).0)
+        .collect();
+
+    let pubkeys = collect_p2pk_pubkeys(proofs)?;
+    for pubkey in pubkeys {
+        let x_only = pubkey.x_only_public_key();
+        if !covered.contains(&x_only) {
+            if let Some(secret_key) = wallet.get_signing_key(&pubkey).await? {
+                keys.push(secret_key);
+            }
+        }
+    }
+
+    Ok(keys)
+}
+
+/// Attach HTLC preimages to matching HTLC-locked proofs.
+///
+/// Each preimage is hex-decoded and hashed; proofs whose HTLC hash matches a provided
+/// preimage have it added to their witness. Proofs without a matching preimage are left
+/// unchanged (e.g. refund-path spends after locktime need only a refund key signature).
+pub(crate) fn add_htlc_preimages(proofs: &mut Proofs, preimages: &[String]) -> Result<(), Error> {
+    if preimages.is_empty() {
+        return Ok(());
+    }
+
+    let hashed_to_preimage: HashMap<String, &String> = preimages
+        .iter()
+        .map(|p| {
+            let hex_bytes = hex::decode(p)?;
+            Ok::<(String, &String), Error>((Sha256Hash::hash(&hex_bytes).to_string(), p))
+        })
+        .collect::<Result<HashMap<String, &String>, _>>()?;
+
+    for proof in proofs.iter_mut() {
+        let Ok(secret) = <crate::secret::Secret as TryInto<crate::nuts::nut10::Secret>>::try_into(
+            proof.secret.clone(),
+        ) else {
+            continue;
+        };
+
+        if secret.kind() == Kind::HTLC {
+            if let Some(preimage) = hashed_to_preimage.get(secret.secret_data().data()) {
+                proof.add_preimage(preimage.to_string());
+            }
         }
     }
 
@@ -246,6 +346,21 @@ mod tests {
         sign_proofs(&mut proofs, &[secret_key]).unwrap();
 
         assert!(proofs[0].witness.is_some());
+    }
+
+    #[test]
+    fn sign_proofs_does_not_duplicate_existing_signature() {
+        let secret_key = SecretKey::generate();
+        let pubkey = secret_key.public_key();
+        let mut proofs = vec![make_p2pk_proof(pubkey)];
+
+        sign_proofs(&mut proofs, std::slice::from_ref(&secret_key)).unwrap();
+        let first_witness = proofs[0].witness.clone();
+
+        sign_proofs(&mut proofs, &[secret_key]).unwrap();
+
+        assert_eq!(proofs[0].witness, first_witness);
+        assert!(proofs[0].verify_p2pk().is_ok());
     }
 
     #[test]

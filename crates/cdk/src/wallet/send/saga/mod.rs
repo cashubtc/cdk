@@ -61,9 +61,8 @@
 //! | `[compensated]` | Send cancelled before token created, reserved proofs released |
 //! | `[skipped]` | Recovery deferred (mint unreachable), will retry on next recovery |
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
-use bitcoin::XOnlyPublicKey;
 use cdk_common::amount::KeysetFeeAndAmounts;
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{
@@ -84,6 +83,7 @@ use crate::wallet::saga::{
     add_compensation, execute_compensations, new_compensations, Compensations,
     RevertProofReservation,
 };
+use crate::wallet::util::merge_keyring_keys;
 use crate::wallet::SendKind;
 use crate::{Amount, Error, Wallet};
 
@@ -136,35 +136,6 @@ async fn filter_signable_proofs(
     }
 
     Ok(out)
-}
-
-/// Build the signing key list for the given proofs by merging explicitly-provided keys with
-/// any matching keys found in the wallet keyring.
-///
-/// Explicit keys (from `SendOptions.p2pk_signing_keys`) take precedence; the keyring is only
-/// consulted for pubkeys not already covered by the explicit set.
-async fn merge_keyring_keys(
-    wallet: &Wallet,
-    proofs: &crate::nuts::Proofs,
-    explicit_keys: &[crate::nuts::SecretKey],
-) -> Result<Vec<crate::nuts::SecretKey>, Error> {
-    let mut keys = explicit_keys.to_vec();
-    let covered: HashSet<XOnlyPublicKey> = keys
-        .iter()
-        .map(|k| k.x_only_public_key(&crate::SECP256K1).0)
-        .collect();
-
-    let pubkeys = crate::wallet::util::collect_p2pk_pubkeys(proofs)?;
-    for pubkey in pubkeys {
-        let x_only = pubkey.x_only_public_key();
-        if !covered.contains(&x_only) {
-            if let Some(secret_key) = wallet.get_signing_key(&pubkey).await? {
-                keys.push(secret_key);
-            }
-        }
-    }
-
-    Ok(keys)
 }
 
 struct SendSplitContext<'a> {

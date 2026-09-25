@@ -456,7 +456,8 @@ impl CdkLdkNode {
                 .amount_msat
                 .ok_or(Error::CouldNotGetAmountSpent)?
                 + payment_details.fee_paid_msat.unwrap_or_default();
-            Amount::new(total_spent, CurrencyUnit::Msat).convert_to(unit)?
+            // Round the principal and routing fees together, only once.
+            Amount::new(total_spent, CurrencyUnit::Msat).convert_to_ceil(unit)?
         } else {
             Amount::new(0, unit.clone())
         };
@@ -992,7 +993,7 @@ impl MintPayment for CdkLdkNode {
                 };
 
                 let amount =
-                    Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to(unit)?;
+                    Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to_ceil(unit)?;
 
                 let relative_fee_reserve =
                     (self.fee_reserve.percent_fee_reserve * amount.value() as f32) as u64;
@@ -1036,7 +1037,7 @@ impl MintPayment for CdkLdkNode {
                     }
                 };
                 let amount =
-                    Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to(unit)?;
+                    Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to_ceil(unit)?;
 
                 let relative_fee_reserve =
                     (self.fee_reserve.percent_fee_reserve * amount.value() as f32) as u64;
@@ -1198,10 +1199,17 @@ impl MintPayment for CdkLdkNode {
                         quote_id = %quote_id,
                         "Could not persist BOLT12 dispatch claim before sending: {err}"
                     );
-                    return Ok(outgoing_payment_failure_response(
-                        unit,
-                        quote_payment_identifier,
-                    ));
+                    if matches!(&err, Error::Bolt12QuoteAlreadyClaimed { .. }) {
+                        // A previous invocation may still settle. Resolve its
+                        // durable state instead of reporting a terminal failure.
+                        let mut response = self
+                            .check_outgoing_payment(&quote_payment_identifier)
+                            .await?;
+                        response.total_spent = response.total_spent.convert_to_ceil(unit)?;
+                        return Ok(response);
+                    }
+
+                    return Err(err.into());
                 }
 
                 // BOLT12 payment ids are assigned by `send`, so subscribe
@@ -1788,6 +1796,96 @@ mod tests {
         assert_eq!(response.total_spent, Amount::new(0, CurrencyUnit::Msat));
     }
 
+    #[tokio::test]
+    async fn payment_quotes_round_up_sat_principals() {
+        let storage = std::env::temp_dir().join(format!("cdk-ldk-rounding-{}", QuoteId::new()));
+        let node = CdkLdkNodeBuilder::new(
+            Network::Regtest,
+            ChainSource::Esplora("http://127.0.0.1:1".to_owned()),
+            GossipSource::P2P,
+            storage.to_str().unwrap().to_owned(),
+            FeeReserve {
+                min_fee_reserve: Amount::ZERO,
+                percent_fee_reserve: 0.0,
+            },
+            vec!["127.0.0.1:0".parse().unwrap()],
+            test_kv_store().await,
+        )
+        .build()
+        .unwrap();
+        for (msat, sat) in [(1, 1), (999, 1), (1_000, 1), (1_999, 2), (2_000, 2)] {
+            let invoice = node
+                .inner
+                .bolt11_payment()
+                .receive(
+                    msat,
+                    &Bolt11InvoiceDescription::Direct(
+                        Description::new("rounding".to_owned()).unwrap(),
+                    ),
+                    3600,
+                )
+                .unwrap();
+            let offer = ldk_node::lightning::offers::offer::OfferBuilder::new(node.inner.node_id())
+                .amount_msats(msat)
+                .build()
+                .unwrap();
+            for (unit, expected) in [(CurrencyUnit::Sat, sat), (CurrencyUnit::Msat, msat)] {
+                for options in [
+                    OutgoingPaymentOptions::Bolt11(Box::new(Bolt11OutgoingPaymentOptions {
+                        bolt11: invoice.clone(),
+                        max_fee_amount: None,
+                        timeout_secs: None,
+                        melt_options: None,
+                        quote_id: QuoteId::new(),
+                    })),
+                    OutgoingPaymentOptions::Bolt12(Box::new(Bolt12OutgoingPaymentOptions {
+                        offer: offer.clone(),
+                        max_fee_amount: None,
+                        timeout_secs: None,
+                        melt_options: None,
+                        quote_id: QuoteId::new(),
+                    })),
+                ] {
+                    let quote = node.get_payment_quote(&unit, options).await.unwrap();
+                    assert_eq!(quote.amount, Amount::new(expected, unit.clone()));
+                }
+            }
+        }
+        drop(node);
+        std::fs::remove_dir_all(storage).unwrap();
+    }
+
+    #[test]
+    fn paid_payment_response_rounds_total_once_for_sat_quotes() {
+        for (principal, fee, expected_sat) in
+            [(1_999, 0, 2), (2_000, 1, 3), (1_999, 1, 2), (2_000, 0, 2)]
+        {
+            let mut details = test_payment_details(PaymentStatus::Succeeded, Some(principal));
+            details.fee_paid_msat = Some(fee);
+            let payment_id = PaymentIdentifier::PaymentId([2; 32]);
+            let synchronous = CdkLdkNode::make_payment_response_from_details(
+                &CurrencyUnit::Sat,
+                payment_id.clone(),
+                &details,
+            )
+            .unwrap();
+            let recovered = CdkLdkNode::make_payment_response_from_details(
+                &CurrencyUnit::Msat,
+                payment_id,
+                &details,
+            )
+            .unwrap();
+            assert_eq!(
+                synchronous.total_spent,
+                Amount::new(expected_sat, CurrencyUnit::Sat)
+            );
+            assert_eq!(
+                recovered.total_spent,
+                Amount::new(principal + fee, CurrencyUnit::Msat)
+            );
+        }
+    }
+
     #[test]
     fn paid_payment_response_requires_amount() {
         let details = test_payment_details(PaymentStatus::Succeeded, None);
@@ -1978,6 +2076,122 @@ mod tests {
 
     async fn test_kv_store() -> DynKVStore {
         std::sync::Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap())
+    }
+
+    #[tokio::test]
+    async fn duplicate_bolt12_claim_resolves_existing_state() {
+        use ldk_node::io::sqlite_store::{SqliteStore, KV_TABLE_NAME, SQLITE_DB_FILE_NAME};
+        use ldk_node::lightning::offers::offer::Offer;
+        use ldk_node::lightning::util::persist::KVStoreSync;
+        use ldk_node::lightning::util::ser::Writeable;
+
+        let storage = tempfile::tempdir().unwrap();
+        let offer: Offer = "lno1zcss9mk8y3wkklfvevcrszlmu23kfrxh49px20665dqwmn4p72pksese"
+            .parse()
+            .unwrap();
+        let details = PaymentDetails {
+            kind: PaymentKind::Bolt12Offer {
+                hash: Some(PaymentHash([1; 32])),
+                preimage: None,
+                secret: None,
+                offer_id: offer.id(),
+                payer_note: None,
+                quantity: None,
+            },
+            fee_paid_msat: Some(1),
+            ..test_payment_details(PaymentStatus::Succeeded, Some(1_000))
+        };
+        // Seed a settled payment before constructing the node so the duplicate
+        // dispatch exercises recovery from LDK's persisted payment store.
+        let store = SqliteStore::new(
+            storage.path().to_path_buf(),
+            Some(SQLITE_DB_FILE_NAME.to_string()),
+            Some(KV_TABLE_NAME.to_string()),
+        )
+        .unwrap();
+        store
+            .write("payments", "", &hex::encode(details.id.0), details.encode())
+            .unwrap();
+        drop(store);
+        let kv_store = test_kv_store().await;
+        let node = CdkLdkNodeBuilder::new(
+            Network::Regtest,
+            ChainSource::Esplora("http://127.0.0.1:1".to_string()),
+            GossipSource::P2P,
+            storage.path().to_str().unwrap().to_string(),
+            FeeReserve {
+                min_fee_reserve: 0.into(),
+                percent_fee_reserve: 0.0,
+            },
+            vec!["127.0.0.1:0".parse().unwrap()],
+            kv_store.clone(),
+        )
+        .build()
+        .unwrap();
+        for (stored, expected) in [
+            (String::new(), Some(MeltQuoteState::Pending)),
+            ("corrupt".to_string(), Some(MeltQuoteState::Unknown)),
+            (hex::encode([7; 32]), None),
+            (hex::encode(details.id.0), Some(MeltQuoteState::Paid)),
+        ] {
+            let quote_id = QuoteId::new();
+            let key = bolt12_quote_payment_id_key(&quote_id).unwrap();
+            let mut tx = kv_store.begin_transaction().await.unwrap();
+            tx.kv_write(
+                LDK_KV_PRIMARY_NAMESPACE,
+                LDK_KV_BOLT12_OUTGOING_SECONDARY_NAMESPACE,
+                &key,
+                stored.as_bytes(),
+            )
+            .await
+            .unwrap();
+            tx.commit().await.unwrap();
+
+            let result = node
+                .make_payment(
+                    &CurrencyUnit::Sat,
+                    OutgoingPaymentOptions::Bolt12(Box::new(Bolt12OutgoingPaymentOptions {
+                        offer: offer.clone(),
+                        max_fee_amount: None,
+                        timeout_secs: None,
+                        melt_options: None,
+                        quote_id: quote_id.clone(),
+                    })),
+                )
+                .await;
+
+            match expected {
+                Some(status) => {
+                    let response = result.unwrap();
+                    assert_eq!(response.status, status);
+                    let expected_sat = match status {
+                        MeltQuoteState::Paid => 2,
+                        _ => 0,
+                    };
+                    assert_eq!(
+                        response.total_spent,
+                        Amount::new(expected_sat, CurrencyUnit::Sat)
+                    );
+                    assert_eq!(
+                        response.payment_lookup_id,
+                        PaymentIdentifier::QuoteId(quote_id)
+                    );
+                }
+                None => assert!(result.is_err(), "missing LDK payment must be indeterminate"),
+            }
+            assert_eq!(
+                kv_store
+                    .kv_read(
+                        LDK_KV_PRIMARY_NAMESPACE,
+                        LDK_KV_BOLT12_OUTGOING_SECONDARY_NAMESPACE,
+                        &key,
+                    )
+                    .await
+                    .unwrap(),
+                Some(stored.into_bytes()),
+                "a duplicate must preserve the existing dispatch binding"
+            );
+        }
     }
 
     /// The mapping must resolve Missing before any dispatch, Dispatching

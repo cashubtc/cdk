@@ -14,7 +14,7 @@ readme = "README.md"
 default = ["mint", "wallet"]
 mint = []
 wallet = []
-nostr = ["dep:nostr-sdk"]
+nostr = ["dep:nostr"]
 bench = []
 
 [dependencies]
@@ -32,7 +32,7 @@ tracing.workspace = true
 url.workspace = true
 serde_json.workspace = true
 serde_with.workspace = true
-nostr-sdk = { workspace = true, optional = true }
+nostr = { workspace = true, optional = true }
 zeroize = "1"
 web-time.workspace = true
 unicode-normalization = "0.1.25"
@@ -42,7 +42,7 @@ uuid = { workspace = true, features = ["js"], optional = true }
 
 [dev-dependencies]
 bip39.workspace = true
-nostr-sdk.workspace = true
+nostr.workspace = true
 
 [lints.rust]
 unsafe_code = "forbid"

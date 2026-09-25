@@ -122,6 +122,26 @@ This runs the **FFI - Publish All Bindings** GitHub Actions workflow
 The `release` just recipe calls `ffi-release-all` automatically after publishing
 Rust crates.
 
+All `ffi-release-*` recipes dispatch with `--ref v<VERSION>`, so GitHub loads
+the workflow definitions from the release tag. The unified workflow's relative
+calls load the language workflows from that same commit. This keeps backport
+releases, such as those from `0.17.x`, on their matching build workflows.
+The `release_tag` and `cdk_ref` inputs control the source checkout; they do not
+select the workflow definition.
+
+For an existing release tag, you can dispatch directly:
+
+```bash
+gh workflow run ffi-publish-all.yml --repo cashubtc/cdk \
+  --ref v0.17.0 --field release_tag=v0.17.0
+```
+
+If a workflow fix was added to `0.17.x` after the tag was created, use
+`--ref 0.17.x` with the same `release_tag` to run the corrected branch workflow
+against the tagged sources. In the Actions UI, select `0.17.x` in **Use workflow
+from** when dispatching manually. Backport workflow fixes before tagging future
+releases so the tag contains the matching workflows.
+
 ### Nightly bindings
 
 The **FFI - Nightly Bindings** workflow (`.github/workflows/ffi-nightly.yml`)
@@ -165,6 +185,7 @@ just ffi-release-go 0.17.0
 ### Prerequisites
 
 - The version tag (e.g. `v0.17.0`) must exist on the remote
+- The tag must contain the dispatchable FFI workflows and their reusable workflows
 - Dart, Go, Kotlin, and Swift stable release workflows check out `refs/tags/<release_tag>`
   and reject `cdk_ref` values that differ from `release_tag`
 - The `FFI_DEPLOY_KEY` GitHub secret must have write access to `cdk-dart`,

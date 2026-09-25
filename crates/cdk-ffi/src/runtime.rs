@@ -56,3 +56,19 @@ impl RuntimeGuard {
         }
     }
 }
+
+impl Drop for RuntimeGuard {
+    /// Dropping a Tokio runtime shuts it down by blocking, which panics when it
+    /// happens inside an async context. Foreign callers construct the guard from
+    /// a sync thread but can release the owning object from the runtime's own
+    /// threads, so detach instead of blocking when that is where we are.
+    fn drop(&mut self) {
+        if let Some(runtime) = self._runtime.take() {
+            if Handle::try_current().is_ok() {
+                runtime.shutdown_background();
+            } else {
+                drop(runtime);
+            }
+        }
+    }
+}

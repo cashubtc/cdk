@@ -27,10 +27,8 @@ impl Signatory {
             self.tls_dir = Some(tls_dir.into());
         }
 
-        if let Ok(allow_insecure) = env::var(ENV_SIGNATORY_ALLOW_INSECURE) {
-            if let Ok(allow_insecure) = allow_insecure.parse() {
-                self.allow_insecure = allow_insecure;
-            }
+        if let Some(allow_insecure) = super::bool_override(ENV_SIGNATORY_ALLOW_INSECURE) {
+            self.allow_insecure = allow_insecure;
         }
 
         self
@@ -53,6 +51,31 @@ mod tests {
         env::remove_var(ENV_SIGNATORY_PORT);
         env::remove_var(ENV_SIGNATORY_TLS_DIR);
         env::remove_var(ENV_SIGNATORY_ALLOW_INSECURE);
+    }
+
+    #[test]
+    fn signatory_allow_insecure_override_fails_closed() {
+        let _guard = env_lock();
+        clear_env_vars();
+        let config = Signatory {
+            allow_insecure: true,
+            ..Default::default()
+        };
+        assert!(config.clone().from_env().allow_insecure);
+        for value in ["false", "not-a-boolean"] {
+            env::set_var(ENV_SIGNATORY_ALLOW_INSECURE, value);
+            assert!(!config.clone().from_env().allow_insecure);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            env::set_var(
+                ENV_SIGNATORY_ALLOW_INSECURE,
+                std::ffi::OsString::from_vec(vec![0xff]),
+            );
+            assert!(!config.from_env().allow_insecure);
+        }
+        clear_env_vars();
     }
 
     #[test]

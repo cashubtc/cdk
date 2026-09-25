@@ -17,7 +17,7 @@ pub mod terminal;
 pub mod auth;
 
 /// Protocol version for gRPC Mint RPC communication
-pub const MINT_RPC_PROTOCOL_VERSION: &str = "1.0.0";
+pub const MINT_RPC_PROTOCOL_VERSION: &str = "2.0.0";
 
 /// Protocol version for gRPC Payment Processor communication
 pub const PAYMENT_PROCESSOR_PROTOCOL_VERSION: &str = "4.0.0";

@@ -39,7 +39,7 @@ use cdk_nostr::nwc::nip47::{
 };
 use cdk_nostr::nwc::service::SUPPORTED_METHODS;
 use lightning_invoice::Bolt11Invoice;
-use nostr_sdk::Timestamp;
+use nostr::prelude::Timestamp;
 use tracing::instrument;
 
 use crate::error::Error;

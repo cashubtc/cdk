@@ -408,7 +408,27 @@ pub fn setup_tracing(
     work_dir: &Path,
     logging_config: &config::LoggingConfig,
 ) -> Result<Option<tracing_appender::non_blocking::WorkerGuard>> {
-    let default_filter = "debug";
+    use config::LoggingOutput;
+
+    let console_level = logging_config
+        .console_level
+        .as_deref()
+        .unwrap_or("info")
+        .parse::<tracing::Level>()
+        .unwrap_or(tracing::Level::INFO);
+    let file_level = logging_config
+        .file_level
+        .as_deref()
+        .unwrap_or("debug")
+        .parse::<tracing::Level>()
+        .unwrap_or(tracing::Level::DEBUG);
+    // Enable spans and events up to the most verbose active output. Writer
+    // filters below still enforce each output's individual level.
+    let default_filter = match logging_config.output {
+        LoggingOutput::Stderr => console_level,
+        LoggingOutput::File => file_level,
+        LoggingOutput::Both => console_level.max(file_level),
+    };
     let hyper_filter = "hyper=warn,rustls=warn,reqwest=warn";
     let h2_filter = "h2=warn";
     let tower_filter = "tower=warn";
@@ -421,17 +441,9 @@ pub fn setup_tracing(
         "{default_filter},{hyper_filter},{h2_filter},{tower_filter},{tower_http},{rustls},{tungstenite},{tokio_postgres}"
     ));
 
-    use config::LoggingOutput;
     match logging_config.output {
         LoggingOutput::Stderr => {
             // Console output only (stderr)
-            let console_level = logging_config
-                .console_level
-                .as_deref()
-                .unwrap_or("info")
-                .parse::<tracing::Level>()
-                .unwrap_or(tracing::Level::INFO);
-
             let stderr = std::io::stderr.with_max_level(console_level);
 
             tracing_subscriber::fmt()
@@ -445,13 +457,6 @@ pub fn setup_tracing(
         }
         LoggingOutput::File => {
             // File output only
-            let file_level = logging_config
-                .file_level
-                .as_deref()
-                .unwrap_or("debug")
-                .parse::<tracing::Level>()
-                .unwrap_or(tracing::Level::DEBUG);
-
             // Create logs directory in work_dir if it doesn't exist
             let logs_dir = work_dir.join("logs");
             std::fs::create_dir_all(&logs_dir)?;
@@ -477,19 +482,6 @@ pub fn setup_tracing(
         }
         LoggingOutput::Both => {
             // Both console and file output (stderr + file)
-            let console_level = logging_config
-                .console_level
-                .as_deref()
-                .unwrap_or("info")
-                .parse::<tracing::Level>()
-                .unwrap_or(tracing::Level::INFO);
-            let file_level = logging_config
-                .file_level
-                .as_deref()
-                .unwrap_or("debug")
-                .parse::<tracing::Level>()
-                .unwrap_or(tracing::Level::DEBUG);
-
             // Create logs directory in work_dir if it doesn't exist
             let logs_dir = work_dir.join("logs");
             std::fs::create_dir_all(&logs_dir)?;
@@ -607,6 +599,13 @@ fn validate_database_config(settings: &config::Settings) -> Result<()> {
         if pg_config.url.is_empty() {
             bail!("PostgreSQL URL is required. Set it in config file [database.postgres] section or via CDK_MINTD_POSTGRES_URL/CDK_MINTD_DATABASE_URL environment variable");
         }
+
+        #[cfg(feature = "postgres")]
+        cdk_postgres::PgConfig::new(&pg_config.url, pg_config.tls_mode.as_deref(), None, None)
+            .validate()
+            .map_err(|err| {
+                anyhow!("Invalid PostgreSQL configuration [database.postgres]: {err}")
+            })?;
     }
 
     Ok(())
@@ -630,8 +629,6 @@ fn validate_listen_config(settings: &config::Settings) -> Result<()> {
 }
 
 fn validate_signing_config(settings: &config::Settings) -> Result<()> {
-    const MIN_SEED_BYTES: usize = 32;
-
     if let Some(signatory) = settings.enabled_signatory() {
         let has_local_seed = settings
             .info
@@ -671,12 +668,7 @@ fn validate_signing_config(settings: &config::Settings) -> Result<()> {
         if seed.is_empty() {
             bail!("Seed in [info].seed must not be empty");
         }
-        if seed.len() < MIN_SEED_BYTES {
-            bail!(
-                "Seed in [info].seed is too short ({} bytes); require at least {MIN_SEED_BYTES} bytes",
-                seed.len()
-            );
-        }
+        // Preserve compatibility with existing CDK and Nutshell mint seeds of any length.
         return Ok(());
     }
 
@@ -822,6 +814,18 @@ fn validate_auth_config(settings: &config::Settings) -> Result<()> {
         if auth_pg_config.url.is_empty() {
             bail!("Auth database PostgreSQL URL is required. Set [auth_database.postgres].url to an env: or file: secret reference");
         }
+
+        #[cfg(feature = "postgres")]
+        cdk_postgres::PgConfig::new(
+            &auth_pg_config.url,
+            auth_pg_config.tls_mode.as_deref(),
+            None,
+            None,
+        )
+        .validate()
+        .map_err(|err| {
+            anyhow!("Invalid PostgreSQL configuration [auth_database.postgres]: {err}")
+        })?;
     }
 
     Ok(())
@@ -3244,9 +3248,11 @@ engine = "sqlite"
     async fn initialization_mode_distinguishes_existing_mint_state() {
         let work_dir = crate::test_utils::unique_temp_path("cdk_mintd_existing_init");
         fs::create_dir_all(&work_dir).expect("create work dir");
-        let secret_path = work_dir.join("mnemonic.secret");
-        fs::write(&secret_path, TEST_MNEMONIC).expect("write mnemonic secret");
-        let document = sqlite_configuration_document(&secret_path, "existing");
+        let seed = "legacy";
+        let secret_path = work_dir.join("seed.secret");
+        fs::write(&secret_path, seed).expect("write original short seed");
+        let document =
+            sqlite_configuration_document(&secret_path, "existing").replace("mnemonic =", "seed =");
 
         #[cfg(feature = "sqlcipher")]
         let password = Some("test-password".to_string());
@@ -3262,9 +3268,8 @@ engine = "sqlite"
         builder
             .configure_unit(CurrencyUnit::Sat, Default::default())
             .expect("configure sat unit");
-        let mnemonic = Mnemonic::parse(TEST_MNEMONIC).expect("test mnemonic");
         let mint = builder
-            .build_with_seed(keystore, &mnemonic.to_seed_normalized(""))
+            .build_with_seed(keystore, seed.as_bytes())
             .await
             .expect("create existing mint state");
         drop(mint);
@@ -4402,11 +4407,18 @@ backend = "fakewallet"
 
     #[cfg(feature = "fakewallet")]
     #[test]
-    fn test_load_settings_reports_short_seed() {
-        assert_load_settings_error(
-            r#"
+    fn test_load_settings_accepts_nonempty_seeds_of_any_length() {
+        let _env_lock = crate::test_utils::env_lock();
+        clear_mintd_env();
+
+        for seed_len in [1, 7, 16, 31, 32, 64, 65] {
+            let seed = "a".repeat(seed_len);
+            let settings = load_settings_from_toml(
+                "cdk_mintd_seed_length",
+                &format!(
+                    r#"
 [info]
-seed = "tooshort"
+seed = "{seed}"
 
 [database]
 engine = "sqlite"
@@ -4414,8 +4426,11 @@ engine = "sqlite"
 [payment_backend]
 backend = "fakewallet"
 "#,
-            "Seed in [info].seed is too short",
-        );
+                ),
+            )
+            .expect("Nonempty legacy mint seeds should pass validation");
+            assert_eq!(settings.info.seed.as_deref(), Some(seed.as_str()));
+        }
     }
 
     #[cfg(feature = "fakewallet")]

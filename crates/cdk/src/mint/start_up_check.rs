@@ -4,16 +4,21 @@
 //! These ensure that the status of the mint or melt quote matches in the mint db and on the backend.
 
 use std::str::FromStr;
+use std::time::Duration;
 
 use cdk_common::database::DynMintTransaction;
 use cdk_common::mint::{MeltPaymentRequest, OperationKind, Saga};
 use cdk_common::payment::PaymentIdentifier;
+use cdk_common::util::unix_time;
 use cdk_common::{PublicKey, QuoteId, State};
 
 use super::{Error, Mint};
 use crate::mint::swap::swap_saga::compensation::{CompensatingAction, RemoveSwapSetup};
 use crate::mint::{MeltQuote, MeltQuoteState};
 use crate::types::PaymentProcessorKey;
+
+/// Bound status lookups so an unresponsive backend cannot stall recovery.
+const PAYMENT_STATUS_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Recovery decision for an incomplete swap saga found during startup.
 #[derive(Debug, PartialEq, Eq)]
@@ -91,20 +96,27 @@ impl Mint {
 
         let lookup_id = Self::melt_payment_lookup_id(quote);
 
-        // Check payment status with the payment backend
-        let pay_invoice_response = payment_backend
-            .check_outgoing_payment(&lookup_id)
-            .await
-            .map_err(|err| {
-                tracing::error!(
-                    "Failed to check payment status for quote {}: {}",
-                    quote.id,
-                    err
-                );
-                Error::Internal
-            })?;
+        // A status check must not wait for settlement. On timeout, leave the
+        // saga and its reserved proofs intact for a later recovery attempt.
+        let pay_invoice_response = tokio::time::timeout(
+            PAYMENT_STATUS_TIMEOUT,
+            payment_backend.check_outgoing_payment(&lookup_id),
+        )
+        .await
+        .map_err(|_| {
+            tracing::warn!("Payment status check timed out for quote {}", quote.id);
+            Error::Internal
+        })?
+        .map_err(|err| {
+            tracing::error!(
+                "Failed to check payment status for quote {}: {}",
+                quote.id,
+                err
+            );
+            Error::Internal
+        })?;
 
-        tracing::info!(
+        tracing::debug!(
             "Payment status for melt quote {}: {}",
             quote.id,
             pay_invoice_response.status
@@ -420,20 +432,31 @@ impl Mint {
             .await?;
 
         if incomplete_sagas.is_empty() {
-            tracing::info!("No incomplete melt sagas found to recover.");
+            tracing::info!(
+                incomplete_saga_count = 0,
+                "melt saga recovery found no incomplete operations",
+            );
             return Ok(());
         }
 
         let total_sagas = incomplete_sagas.len();
-        tracing::info!("Found {} incomplete melt sagas to recover.", total_sagas);
+        let recovery_started_at = unix_time();
+        tracing::info!(
+            incomplete_saga_count = total_sagas,
+            "melt saga recovery inventory loaded",
+        );
 
         for saga in incomplete_sagas {
+            let observed_at = unix_time();
             tracing::info!(
-                "Recovering melt saga {} in state '{}' (created: {}, updated: {})",
-                saga.operation_id,
-                saga.state.state(),
-                saga.created_at,
-                saga.updated_at
+                saga_id = %saga.operation_id,
+                quote_id = ?saga.quote_id,
+                saga_state = %saga.state.state(),
+                created_at = saga.created_at,
+                updated_at = saga.updated_at,
+                age_seconds = observed_at.saturating_sub(saga.created_at),
+                idle_seconds = observed_at.saturating_sub(saga.updated_at),
+                "recovering incomplete melt saga",
             );
 
             // Look up input_ys and blinded_secrets from the proof and blind_signature tables
@@ -792,12 +815,24 @@ impl Mint {
                             MeltQuoteState::Pending | MeltQuoteState::Unknown => {
                                 // Not authoritative: an orchestrator may be
                                 // between payment attempts.
-                                tracing::info!(
-                                    "Saga {} for quote {} - payment {} on the payment backend, skipping",
-                                    saga.operation_id,
-                                    quote_id,
-                                    payment_response.status
-                                );
+                                if payment_response.status == MeltQuoteState::Unknown {
+                                    tracing::warn!(
+                                        saga_id = %saga.operation_id,
+                                        quote_id = %quote_id,
+                                        payment_lookup_id = %payment_response.payment_lookup_id,
+                                        payment_status = %payment_response.status,
+                                        proof_count = input_ys.len(),
+                                        "recovery cannot prove payment failure; quote and proofs remain pending",
+                                    );
+                                } else {
+                                    tracing::info!(
+                                        saga_id = %saga.operation_id,
+                                        quote_id = %quote_id,
+                                        payment_lookup_id = %payment_response.payment_lookup_id,
+                                        proof_count = input_ys.len(),
+                                        "recovery found an in-flight payment; quote and proofs remain pending",
+                                    );
+                                }
                                 continue; // Skip this saga
                             }
                         }
@@ -866,8 +901,9 @@ impl Mint {
         }
 
         tracing::info!(
-            "Successfully recovered {} incomplete melt sagas.",
-            total_sagas
+            examined_saga_count = total_sagas,
+            recovery_duration_seconds = unix_time().saturating_sub(recovery_started_at),
+            "melt saga recovery pass completed; individual outcomes are logged by quote and saga id",
         );
 
         Ok(())

@@ -83,7 +83,7 @@ pub(crate) async fn process_melt_saga_outcome(
         }
         MeltQuoteState::Pending => {
             persist_pending_after_dispatch(saga, quote, payment_response, db).await?;
-            tracing::debug!(
+            tracing::trace!(
                 "Melt quote {} (saga {}) payment remains Pending",
                 quote.id,
                 saga.operation_id
@@ -91,11 +91,13 @@ pub(crate) async fn process_melt_saga_outcome(
             Ok(())
         }
         MeltQuoteState::Unknown => {
-            tracing::debug!(
-                "Melt quote {} (saga {}) payment status still {}, skipping action",
-                quote.id,
-                saga.operation_id,
-                payment_response.status
+            // Dispatch and startup recovery report unresolved outcomes at WARN.
+            // Status requests can repeat indefinitely without a state change.
+            tracing::trace!(
+                quote_id = %quote.id,
+                saga_id = %saga.operation_id,
+                payment_lookup_id = %payment_response.payment_lookup_id,
+                "payment status is unknown; quote and proofs remain pending because payment failure is not authoritative",
             );
             Ok(())
         }

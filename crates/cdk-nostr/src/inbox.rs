@@ -12,11 +12,12 @@
 
 use std::sync::{Arc, Mutex};
 
-use nostr_sdk::{
-    Client, EventId, Filter, Keys, Kind, PublicKey, RelayPoolNotification, RelayUrl, SecretKey,
-    Timestamp, UnsignedEvent,
+use nostr::prelude::{
+    EventId, Filter, Keys, Kind, PublicKey, RelayUrl, SecretKey, Timestamp, UnsignedEvent,
 };
-use tokio::sync::broadcast::error::RecvError;
+use nostr_sdk::prelude::{
+    Client, ClientNotification, SignerAuthenticator, StreamExt, UnwrappedGift,
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::{Error, Result};
@@ -128,7 +129,9 @@ impl NostrInbox {
             current.clone()
         };
 
-        let client = Client::new(self.keys.clone());
+        let client = Client::builder()
+            .authenticator(SignerAuthenticator::new(self.keys.clone()))
+            .build();
 
         for relay in &self.relays {
             client
@@ -151,24 +154,25 @@ impl NostrInbox {
         let mut notifications = client.notifications();
 
         client
-            .subscribe(filter, None)
+            .subscribe(filter)
             .await
             .map_err(|e| Error::Subscription(e.to_string()))?;
 
+        let keys = self.keys.clone();
         tokio::spawn(async move {
             loop {
                 let notification = tokio::select! {
                     _ = cancel.cancelled() => break,
-                    notification = notifications.recv() => notification,
+                    notification = notifications.next() => notification,
                 };
 
                 match notification {
-                    Ok(RelayPoolNotification::Event { event, .. }) => {
+                    Some(ClientNotification::Event { event, .. }) => {
                         // Defense in depth: never trust a relay to honor the filter.
                         if event.kind != Kind::GiftWrap {
                             continue;
                         }
-                        match client.unwrap_gift_wrap(&event).await {
+                        match UnwrappedGift::from_gift_wrap(&keys, &event) {
                             Ok(unwrapped) => listener.on_event(Nip17Event {
                                 wrap_id: event.id,
                                 wrap_created_at: event.created_at,
@@ -181,11 +185,8 @@ impl NostrInbox {
                             }
                         }
                     }
-                    Ok(_) => {}
-                    Err(RecvError::Lagged(skipped)) => {
-                        tracing::warn!("inbox: notification stream lagged; skipped {skipped}");
-                    }
-                    Err(RecvError::Closed) => break,
+                    Some(_) => {}
+                    None => break,
                 }
             }
             client.disconnect().await;

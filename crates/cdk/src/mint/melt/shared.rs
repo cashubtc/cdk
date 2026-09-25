@@ -6,7 +6,6 @@
 //!
 //! The functions here ensure consistency between these two code paths.
 
-use cdk_common::amount::MSAT_IN_SAT;
 use cdk_common::database::mint::Acquired;
 use cdk_common::database::{self, DynMintDatabase, DynMintTransaction};
 use cdk_common::mint::{self as mint_types};
@@ -80,14 +79,7 @@ pub(crate) fn total_spent_for_quote_unit(
     total_spent: &Amount<CurrencyUnit>,
     quote_unit: &CurrencyUnit,
 ) -> Result<Amount<CurrencyUnit>, Error> {
-    match (total_spent.unit(), quote_unit) {
-        (spent_unit, quote_unit) if spent_unit == quote_unit => Ok(total_spent.clone()),
-        (CurrencyUnit::Msat, CurrencyUnit::Sat) => {
-            let rounded_sats = total_spent.value().div_ceil(MSAT_IN_SAT);
-            Ok(Amount::new(rounded_sats, CurrencyUnit::Sat))
-        }
-        _ => total_spent.convert_to(quote_unit).map_err(Error::from),
-    }
+    total_spent.convert_to_ceil(quote_unit).map_err(Error::from)
 }
 
 /// Persist a paid payment result as a durable finalization handoff.
@@ -374,14 +366,19 @@ async fn rollback_melt_quote_inner(
         }
     }
 
+    let quote_reset = quote_option.is_some();
     if let Some(quote) = quote_option {
         pubsub.melt_quote_status(&quote, None, None, MeltQuoteState::Unpaid);
     }
 
     tracing::info!(
-        "Successfully rolled back melt quote {} and deleted saga {}",
-        quote_id,
-        operation_id
+        quote_id = %quote_id,
+        saga_id = %operation_id,
+        quote_state_reset_to_unpaid = quote_reset,
+        proof_count = input_ys.len(),
+        proofs_recovered,
+        change_output_count = blinded_secrets.len(),
+        "melt rollback committed; reservation cleanup completed",
     );
 
     Ok(())
@@ -496,22 +493,35 @@ pub(super) async fn process_melt_change(
         .and_then(|rem| rem.checked_sub(&inputs_fee).ok())
     {
         Some(amt) if amt.value() > 0 => amt.into(),
-        Some(_) => {
+        Some(change_target) => {
+            tracing::debug!(
+                quote_id = %quote_id,
+                inputs_amount = %inputs_amount,
+                total_spent = %total_spent,
+                inputs_fee = %inputs_fee,
+                change_target = %change_target,
+                "melt has no change to return after payment and input fees",
+            );
             return begin_melt_change_without_signatures(db, quote_id).await;
         }
         None => {
             tracing::warn!(
-                "Fee was too high for quote {}. inputs_amount: {}, total_spent: {}, inputs_fee: {}",
-                quote_id,
-                inputs_amount,
-                total_spent,
-                inputs_fee
+                quote_id = %quote_id,
+                inputs_amount = %inputs_amount,
+                total_spent = %total_spent,
+                inputs_fee = %inputs_fee,
+                "payment and input fees exceed the provided melt inputs; no change can be returned",
             );
             return begin_melt_change_without_signatures(db, quote_id).await;
         }
     };
 
     if change_outputs.is_empty() {
+        tracing::info!(
+            quote_id = %quote_id,
+            change_target = %change_target,
+            "melt has refundable change but the wallet supplied no change outputs",
+        );
         return begin_melt_change_without_signatures(db, quote_id).await;
     }
 
@@ -522,10 +532,12 @@ pub(super) async fn process_melt_change(
     let mut amounts: Vec<Amount> = change_target.split(&fee_and_amounts)?;
 
     if change_outputs.len() < amounts.len() {
-        tracing::debug!(
-            "Providing change requires {} blinded messages, but only {} provided",
-            amounts.len(),
-            change_outputs.len()
+        tracing::info!(
+            quote_id = %quote_id,
+            change_target = %change_target,
+            required_change_output_count = amounts.len(),
+            provided_change_output_count = change_outputs.len(),
+            "wallet supplied too few change outputs; returned change may be less than the available amount",
         );
         amounts.sort_by(|a, b| b.cmp(a));
     }
@@ -538,7 +550,18 @@ pub(super) async fn process_melt_change(
     }
 
     // External call: sign change outputs (no DB transaction held)
-    let change_sigs = mint.blind_sign(blinded_messages_to_sign.clone()).await?;
+    let change_sigs = mint
+        .blind_sign(blinded_messages_to_sign.clone())
+        .await
+        .inspect_err(|err| {
+            tracing::error!(
+                quote_id = %quote_id,
+                change_target = %change_target,
+                change_output_count = blinded_messages_to_sign.len(),
+                error = %err,
+                "melt change signing failed; paid melt remains available for finalization recovery",
+            );
+        })?;
 
     // Open a transaction with quote, melt-request, and change-output locks
     // acquired in the same order as finalization and rollback.
@@ -705,7 +728,7 @@ pub(crate) async fn finalize_melt_core(
 
     // Convert total_spent to the same unit as net_inputs for comparison.
     // Backends should return total_spent in the quote's unit, but we convert defensively.
-    let total_spent = match total_spent.convert_to(net_inputs.unit()) {
+    let total_spent = match total_spent.convert_to_ceil(net_inputs.unit()) {
         Ok(total_spent) => total_spent,
         Err(err) => {
             tx.rollback().await?;
@@ -834,7 +857,7 @@ pub async fn finalize_melt_quote(
     payment_lookup_id: &cdk_common::payment::PaymentIdentifier,
     operation_id: Option<uuid::Uuid>,
 ) -> Result<Option<Vec<BlindSignature>>, Error> {
-    tracing::info!("Finalizing melt quote {}", quote.id);
+    tracing::debug!("Finalizing melt quote {}", quote.id);
 
     let total_spent = total_spent_for_quote_unit(&total_spent, &quote.unit)?;
 
@@ -996,6 +1019,11 @@ pub async fn finalize_melt_quote(
         }
     };
 
+    let change_amount_for_log = change_sigs
+        .as_ref()
+        .and_then(|sigs| Amount::try_sum(sigs.iter().map(|s| s.amount)).ok());
+    let payment_fee_for_log = total_spent.checked_sub(&quote.amount()).ok();
+
     // Compute the fee breakdown from the spent proofs before cleanup.
     // We reuse the cloned proofs from TX1 / recovery so TX2 can atomically
     // persist the completed operation with the rest of the post-payment work.
@@ -1074,7 +1102,23 @@ pub async fn finalize_melt_quote(
         MeltQuoteState::Paid,
     );
 
-    tracing::info!("Successfully finalized melt quote {}", quote.id);
+    tracing::info!(
+        quote_id = %quote.id,
+        saga_id = ?operation_id,
+        payment_lookup_id = %payment_lookup_id,
+        new_quote_state = %MeltQuoteState::Paid,
+        quote_amount = %quote.amount(),
+        fee_reserve = %quote.fee_reserve(),
+        payment_fee = ?payment_fee_for_log,
+        input_fee = %melt_request_info.inputs_fee,
+        inputs_amount = %melt_request_info.inputs_amount,
+        total_spent = %total_spent,
+        change_amount = ?change_amount_for_log,
+        proof_count = input_ys.len(),
+        requested_change_output_count = melt_request_info.change_outputs.len(),
+        change_signature_count = change_sigs.as_ref().map_or(0, Vec::len),
+        "melt finalized; quote is paid and input proofs are spent",
+    );
 
     #[cfg(feature = "prometheus")]
     if should_record_payment_metrics {

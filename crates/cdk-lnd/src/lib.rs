@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
-use cdk_common::amount::{Amount, MSAT_IN_SAT};
+use cdk_common::amount::Amount;
 use cdk_common::bitcoin::hashes::Hash;
 use cdk_common::common::FeeReserve;
 use cdk_common::database::DynKVStore;
@@ -71,6 +71,53 @@ impl std::fmt::Debug for Lnd {
 }
 
 impl Lnd {
+    fn bolt11_payment_quote(
+        unit: &CurrencyUnit,
+        bolt11_options: payment::Bolt11OutgoingPaymentOptions,
+        fee_reserve: &FeeReserve,
+    ) -> Result<PaymentQuoteResponse, payment::Error> {
+        let amount_msat = match bolt11_options.melt_options {
+            Some(MeltOptions::Amountless { amountless }) => {
+                let amount_msat = amountless.amount_msat;
+
+                if let Some(invoice_amount) = bolt11_options.bolt11.amount_milli_satoshis() {
+                    if invoice_amount != u64::from(amount_msat) {
+                        return Err(payment::Error::AmountMismatch);
+                    }
+                }
+
+                amount_msat
+            }
+            Some(MeltOptions::Mpp { mpp }) => mpp.amount,
+            None => bolt11_options
+                .bolt11
+                .amount_milli_satoshis()
+                .ok_or(Error::UnknownInvoiceAmount)?
+                .into(),
+        };
+
+        // The quote must cover the entire millisatoshi principal.
+        let amount = Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to_ceil(unit)?;
+
+        let relative_fee_reserve = (fee_reserve.percent_fee_reserve * amount.value() as f32) as u64;
+
+        let absolute_fee_reserve: u64 = fee_reserve.min_fee_reserve.into();
+
+        let fee = max(relative_fee_reserve, absolute_fee_reserve);
+
+        Ok(PaymentQuoteResponse {
+            request_lookup_id: Some(PaymentIdentifier::PaymentHash(
+                *bolt11_options.bolt11.payment_hash().as_ref(),
+            )),
+            amount,
+            fee: Amount::new(fee, unit.clone()),
+            state: MeltQuoteState::Unpaid,
+            extra_json: None,
+            estimated_blocks: None,
+            fee_options: None,
+        })
+    }
+
     /// Maximum number of attempts at a partial payment
     pub const MAX_ROUTE_RETRIES: usize = 50;
 
@@ -198,22 +245,6 @@ fn lnrpc_payment_total_spent(payment: &lnrpc::Payment) -> Result<Amount<Currency
     Ok(Amount::new(total_msat, CurrencyUnit::Msat))
 }
 
-fn msat_total_spent_for_unit(
-    total_msat: u64,
-    unit: &CurrencyUnit,
-) -> Result<Amount<CurrencyUnit>, Error> {
-    match unit {
-        CurrencyUnit::Msat => Ok(Amount::new(total_msat, CurrencyUnit::Msat)),
-        CurrencyUnit::Sat => Ok(Amount::new(
-            total_msat.div_ceil(MSAT_IN_SAT),
-            CurrencyUnit::Sat,
-        )),
-        _ => Amount::new(total_msat, CurrencyUnit::Msat)
-            .convert_to(unit)
-            .map_err(Error::from),
-    }
-}
-
 /// Build an authoritative terminal-failure response for a payment that was
 /// rejected before dispatch.
 ///
@@ -237,6 +268,30 @@ fn outgoing_payment_failure_response(
         status: MeltQuoteState::Failed,
         total_spent: Amount::new(0, unit.clone()),
     }
+}
+
+/// Preserve an existing payment, or reject an expired invoice before dispatch.
+fn bolt11_pre_dispatch_response(
+    unit: &CurrencyUnit,
+    bolt11: &Bolt11Invoice,
+    pay_state: MakePaymentResponse,
+) -> Result<Option<MakePaymentResponse>, payment::Error> {
+    let payment_lookup_id = PaymentIdentifier::PaymentHash(*bolt11.payment_hash().as_ref());
+    Ok(match pay_state.status {
+        MeltQuoteState::Paid | MeltQuoteState::Pending => Some(MakePaymentResponse {
+            payment_lookup_id,
+            total_spent: pay_state.total_spent.convert_to_ceil(unit)?,
+            ..pay_state
+        }),
+        MeltQuoteState::Unpaid | MeltQuoteState::Unknown | MeltQuoteState::Failed => {
+            // LND rejects expired invoices before recording a payment, so a
+            // later lookup cannot resolve that rejection. Return an authoritative
+            // failure locally while we know no dispatch has been attempted.
+            bolt11
+                .is_expired()
+                .then(|| outgoing_payment_failure_response(unit, payment_lookup_id))
+        }
+    })
 }
 
 #[async_trait]
@@ -412,48 +467,7 @@ impl MintPayment for Lnd {
     ) -> Result<PaymentQuoteResponse, Self::Err> {
         match options {
             OutgoingPaymentOptions::Bolt11(bolt11_options) => {
-                let amount_msat = match bolt11_options.melt_options {
-                    Some(MeltOptions::Amountless { amountless }) => {
-                        let amount_msat = amountless.amount_msat;
-
-                        if let Some(invoice_amount) = bolt11_options.bolt11.amount_milli_satoshis()
-                        {
-                            if invoice_amount != u64::from(amount_msat) {
-                                return Err(payment::Error::AmountMismatch);
-                            }
-                        }
-
-                        amount_msat
-                    }
-                    Some(MeltOptions::Mpp { mpp }) => mpp.amount,
-                    None => bolt11_options
-                        .bolt11
-                        .amount_milli_satoshis()
-                        .ok_or(Error::UnknownInvoiceAmount)?
-                        .into(),
-                };
-
-                let amount =
-                    Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to(unit)?;
-
-                let relative_fee_reserve =
-                    (self.fee_reserve.percent_fee_reserve * amount.value() as f32) as u64;
-
-                let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
-
-                let fee = max(relative_fee_reserve, absolute_fee_reserve);
-
-                Ok(PaymentQuoteResponse {
-                    request_lookup_id: Some(PaymentIdentifier::PaymentHash(
-                        *bolt11_options.bolt11.payment_hash().as_ref(),
-                    )),
-                    amount,
-                    fee: Amount::new(fee, unit.clone()),
-                    state: MeltQuoteState::Unpaid,
-                    extra_json: None,
-                    estimated_blocks: None,
-                    fee_options: None,
-                })
+                Self::bolt11_payment_quote(unit, *bolt11_options, &self.fee_reserve)
             }
             OutgoingPaymentOptions::Bolt12(_) => {
                 Err(Self::Err::Anyhow(anyhow!("BOLT12 not supported by LND")))
@@ -482,22 +496,8 @@ impl MintPayment for Lnd {
                 // as an ambiguous dispatch failure.
                 let pay_state = self.check_outgoing_payment(&payment_lookup_id).await?;
 
-                match pay_state.status {
-                    MeltQuoteState::Unpaid | MeltQuoteState::Unknown | MeltQuoteState::Failed => (),
-                    MeltQuoteState::Paid => {
-                        tracing::debug!("Melt attempted on invoice already paid");
-                        return Ok(MakePaymentResponse {
-                            payment_lookup_id: payment_lookup_id.clone(),
-                            ..pay_state
-                        });
-                    }
-                    MeltQuoteState::Pending => {
-                        tracing::debug!("Melt attempted on invoice already pending");
-                        return Ok(MakePaymentResponse {
-                            payment_lookup_id: payment_lookup_id.clone(),
-                            ..pay_state
-                        });
-                    }
+                if let Some(response) = bolt11_pre_dispatch_response(unit, &bolt11, pay_state)? {
+                    return Ok(response);
                 }
 
                 // Detect partial payments
@@ -508,6 +508,10 @@ impl MintPayment for Lnd {
                             None => {
                                 // Invoice carries no amount; a local parse
                                 // failure before any dispatch.
+                                tracing::warn!(
+                                    payment_lookup_id = %payment_lookup_id,
+                                    "LND MPP payment rejected before dispatch: invoice has no amount",
+                                );
                                 return Ok(outgoing_payment_failure_response(
                                     unit,
                                     payment_lookup_id,
@@ -549,6 +553,15 @@ impl MintPayment for Lnd {
                                     .lightning()
                                     .query_routes(route_req)
                                     .await
+                                    .inspect_err(|err| {
+                                        tracing::warn!(
+                                            payment_lookup_id = %payment_lookup_id,
+                                            attempt = attempt + 1,
+                                            rpc_code = %err.code(),
+                                            error = %err.message(),
+                                            "LND MPP route query failed",
+                                        );
+                                    })
                                     .map_err(Error::LndError)?
                                     .into_inner();
 
@@ -558,6 +571,11 @@ impl MintPayment for Lnd {
                                 let route = match routes_response.routes.first_mut() {
                                     Some(route) => route,
                                     None => {
+                                        tracing::warn!(
+                                            payment_lookup_id = %payment_lookup_id,
+                                            attempt = attempt + 1,
+                                            "LND MPP route query returned no routes",
+                                        );
                                         return Ok(outgoing_payment_failure_response(
                                             unit,
                                             payment_lookup_id,
@@ -569,6 +587,11 @@ impl MintPayment for Lnd {
                                 let last_hop: &mut Hop = match route.hops.last_mut() {
                                     Some(last_hop) => last_hop,
                                     None => {
+                                        tracing::warn!(
+                                            payment_lookup_id = %payment_lookup_id,
+                                            attempt = attempt + 1,
+                                            "LND MPP route has no hops",
+                                        );
                                         return Ok(outgoing_payment_failure_response(
                                             unit,
                                             payment_lookup_id,
@@ -589,17 +612,38 @@ impl MintPayment for Lnd {
                                         ..Default::default()
                                     })
                                     .await
+                                    .inspect_err(|err| {
+                                        tracing::warn!(
+                                            payment_lookup_id = %payment_lookup_id,
+                                            attempt = attempt + 1,
+                                            rpc_code = %err.code(),
+                                            error = %err.message(),
+                                            "LND MPP dispatch RPC failed; payment outcome requires verification",
+                                        );
+                                    })
                                     .map_err(Error::LndError)?
                                     .into_inner();
 
                                 if let Some(failure) = payment_response.failure {
                                     if failure.code == 15 {
                                         tracing::debug!(
-                                            "Attempt number {}: route has failed. Re-querying...",
-                                            attempt + 1
+                                            payment_lookup_id = %payment_lookup_id,
+                                            attempt = attempt + 1,
+                                            failure_code = failure.code,
+                                            failure_reason = failure.code().as_str_name(),
+                                            failure_source_index = failure.failure_source_index,
+                                            "LND MPP route failed; querying another route",
                                         );
                                         continue;
                                     }
+                                    tracing::warn!(
+                                        payment_lookup_id = %payment_lookup_id,
+                                        attempt = attempt + 1,
+                                        failure_code = failure.code,
+                                        failure_reason = failure.code().as_str_name(),
+                                        failure_source_index = failure.failure_source_index,
+                                        "LND MPP attempt returned a failure",
+                                    );
                                 }
 
                                 // Get status and maybe the preimage
@@ -624,14 +668,18 @@ impl MintPayment for Lnd {
                                     ),
                                     payment_proof: payment_preimage,
                                     status,
-                                    total_spent: msat_total_spent_for_unit(total_amt_msat, unit)?,
+                                    total_spent: Amount::new(total_amt_msat, CurrencyUnit::Msat)
+                                        .convert_to_ceil(unit)?,
                                 });
                             }
 
                             // "We have exhausted all tactical options" -- STEM, Upgrade (2018)
-                            // Every route query ended in a no-route result, so
-                            // no payment was ever dispatched.
-                            tracing::error!("Limit of retries reached, payment couldn't succeed.");
+                            // All route attempts returned retryable failures.
+                            tracing::warn!(
+                                payment_lookup_id = %payment_lookup_id,
+                                attempts = Self::MAX_ROUTE_RETRIES,
+                                "LND MPP payment exhausted route retries",
+                            );
                             Ok(outgoing_payment_failure_response(unit, payment_lookup_id))
                         }
                     }
@@ -649,6 +697,12 @@ impl MintPayment for Lnd {
                                         // Invoice/request amount disagreement is
                                         // a local validation failure, before any
                                         // dispatch to LND.
+                                        tracing::warn!(
+                                            payment_lookup_id = %payment_lookup_id,
+                                            invoice_amount_msat = invoice_amount,
+                                            requested_amount_msat = u64::from(amount_msat),
+                                            "LND payment rejected before dispatch: invoice and requested amounts differ",
+                                        );
                                         return Ok(outgoing_payment_failure_response(
                                             unit,
                                             payment_lookup_id,
@@ -679,7 +733,12 @@ impl MintPayment for Lnd {
                             .send_payment_v2(pay_req)
                             .await
                             .map_err(|err| {
-                                tracing::warn!("Lightning payment dispatch error: {}", err);
+                                tracing::warn!(
+                                    payment_lookup_id = %payment_lookup_id,
+                                    rpc_code = %err.code(),
+                                    error = %err.message(),
+                                    "LND payment dispatch RPC failed; payment outcome requires verification",
+                                );
                                 // A gRPC error here may arrive after LND accepted
                                 // the payment; the dispatch outcome is unknown.
                                 Error::AmbiguousDispatch
@@ -687,7 +746,12 @@ impl MintPayment for Lnd {
                             .into_inner();
 
                         while let Some(update) = payment_stream.message().await.map_err(|err| {
-                            tracing::warn!("Lightning payment stream error: {}", err);
+                            tracing::warn!(
+                                payment_lookup_id = %payment_lookup_id,
+                                rpc_code = %err.code(),
+                                error = %err.message(),
+                                "LND payment stream failed after dispatch; payment may still settle",
+                            );
                             // The stream dropped after dispatch began; the payment
                             // may still settle.
                             Error::AmbiguousDispatch
@@ -699,7 +763,15 @@ impl MintPayment for Lnd {
                                     continue;
                                 }
                                 PaymentStatus::Succeeded => MeltQuoteState::Paid,
-                                PaymentStatus::Failed => MeltQuoteState::Failed,
+                                PaymentStatus::Failed => {
+                                    tracing::warn!(
+                                        payment_lookup_id = %payment_lookup_id,
+                                        failure_code = update.failure_reason,
+                                        failure_reason = update.failure_reason().as_str_name(),
+                                        "LND outgoing payment failed",
+                                    );
+                                    MeltQuoteState::Failed
+                                }
                                 #[allow(deprecated)]
                                 PaymentStatus::Unknown => MeltQuoteState::Unknown,
                             };
@@ -722,10 +794,14 @@ impl MintPayment for Lnd {
                                 payment_lookup_id: payment_identifier,
                                 payment_proof: payment_preimage,
                                 status: response_status,
-                                total_spent: msat_total_spent_for_unit(total_msat as u64, unit)?,
+                                total_spent: Amount::new(total_msat as u64, CurrencyUnit::Msat).convert_to_ceil(unit)?,
                             });
                         }
 
+                        tracing::warn!(
+                            payment_lookup_id = %payment_lookup_id,
+                            "LND payment stream ended without a terminal result; payment outcome remains unknown",
+                        );
                         Err(Error::UnknownPaymentStatus.into())
                     }
                 }
@@ -848,6 +924,10 @@ impl MintPayment for Lnd {
             Err(err) => {
                 let err_code = err.code();
                 if err_code == tonic::Code::NotFound {
+                    tracing::debug!(
+                        payment_lookup_id = %payment_identifier,
+                        "LND does not know this outgoing payment; reporting Unknown because absence is not authoritative proof of permanent failure",
+                    );
                     return Ok(MakePaymentResponse {
                         payment_lookup_id: payment_identifier.clone(),
                         payment_proof: None,
@@ -855,6 +935,12 @@ impl MintPayment for Lnd {
                         total_spent: Amount::new(0, self.unit.clone()),
                     });
                 } else {
+                    tracing::warn!(
+                        payment_lookup_id = %payment_identifier,
+                        rpc_code = %err_code,
+                        error = %err.message(),
+                        "LND outgoing payment status RPC failed; payment outcome remains unknown",
+                    );
                     return Err(payment::Error::UnknownPaymentState);
                 }
             }
@@ -887,31 +973,194 @@ impl MintPayment for Lnd {
                                 total_spent,
                             }
                         }
-                        PaymentStatus::Failed => MakePaymentResponse {
-                            payment_lookup_id: payment_identifier.clone(),
-                            payment_proof: Some(update.payment_preimage),
-                            status: MeltQuoteState::Failed,
-                            total_spent: Amount::new(0, self.unit.clone()),
-                        },
+                        PaymentStatus::Failed => {
+                            // Status checks also run before dispatch and may
+                            // repeatedly observe the same recorded failure.
+                            tracing::debug!(
+                                payment_lookup_id = %payment_identifier,
+                                failure_code = update.failure_reason,
+                                failure_reason = update.failure_reason().as_str_name(),
+                                "LND outgoing payment status is failed",
+                            );
+                            MakePaymentResponse {
+                                payment_lookup_id: payment_identifier.clone(),
+                                payment_proof: Some(update.payment_preimage),
+                                status: MeltQuoteState::Failed,
+                                total_spent: Amount::new(0, self.unit.clone()),
+                            }
+                        }
                     };
 
                     return Ok(response);
                 }
-                Err(_) => {
+                Err(err) => {
                     // Handle the case where the update itself is an error (e.g., stream failure)
+                    tracing::warn!(
+                        payment_lookup_id = %payment_identifier,
+                        rpc_code = %err.code(),
+                        error = %err.message(),
+                        "LND outgoing payment status stream failed; payment outcome remains unknown",
+                    );
                     return Err(Error::UnknownPaymentStatus.into());
                 }
             }
         }
 
         // If the stream is exhausted without a final status
+        tracing::warn!(
+            payment_lookup_id = %payment_identifier,
+            "LND outgoing payment status stream ended without a terminal result; payment outcome remains unknown",
+        );
         Err(Error::UnknownPaymentStatus.into())
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use cdk_common::bitcoin::hashes::sha256;
+    use cdk_common::bitcoin::secp256k1::{Secp256k1, SecretKey};
+    use cdk_common::lightning_invoice::{Currency, InvoiceBuilder, PaymentSecret};
+
     use super::*;
+
+    fn invoice_with_timestamp(timestamp: Duration) -> Bolt11Invoice {
+        invoice_with_amount(timestamp, None)
+    }
+
+    fn invoice_with_amount(timestamp: Duration, amount_msat: Option<u64>) -> Bolt11Invoice {
+        let key = SecretKey::from_slice(&[1; 32]).unwrap();
+        let builder = InvoiceBuilder::new(Currency::Regtest)
+            .description("expiry test".to_owned())
+            .payment_hash(sha256::Hash::from_byte_array([42; 32]))
+            .payment_secret(PaymentSecret([43; 32]))
+            .duration_since_epoch(timestamp)
+            .expiry_time(Duration::from_secs(3600))
+            .min_final_cltv_expiry_delta(144);
+        let builder = match amount_msat {
+            Some(amount) => builder.amount_milli_satoshis(amount),
+            None => builder,
+        };
+        builder
+            .build_signed(|hash| Secp256k1::new().sign_ecdsa_recoverable(hash, &key))
+            .unwrap()
+    }
+
+    #[test]
+    fn payment_quotes_round_up_sat_principals() {
+        let fee_reserve = FeeReserve {
+            min_fee_reserve: Amount::ZERO,
+            percent_fee_reserve: 0.0,
+        };
+        for (msat, sat) in [(1, 1), (999, 1), (1_000, 1), (1_999, 2), (2_000, 2)] {
+            for (unit, expected) in [(CurrencyUnit::Sat, sat), (CurrencyUnit::Msat, msat)] {
+                for melt_options in [
+                    None,
+                    Some(MeltOptions::new_mpp(msat)),
+                    Some(MeltOptions::new_amountless(msat)),
+                ] {
+                    let invoice_amount = melt_options.is_none().then_some(msat);
+                    let quote = Lnd::bolt11_payment_quote(
+                        &unit,
+                        payment::Bolt11OutgoingPaymentOptions {
+                            bolt11: invoice_with_amount(
+                                Duration::from_secs(unix_time()),
+                                invoice_amount,
+                            ),
+                            max_fee_amount: None,
+                            timeout_secs: None,
+                            melt_options,
+                            quote_id: cdk_common::QuoteId::new(),
+                        },
+                        &fee_reserve,
+                    )
+                    .unwrap();
+                    assert_eq!(quote.amount, Amount::new(expected, unit.clone()));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn expired_invoice_without_active_payment_fails_before_dispatch() {
+        let invoice = invoice_with_timestamp(Duration::from_secs(1));
+        let payment_lookup_id = PaymentIdentifier::PaymentHash(*invoice.payment_hash().as_ref());
+
+        for status in [
+            MeltQuoteState::Unknown,
+            MeltQuoteState::Unpaid,
+            MeltQuoteState::Failed,
+        ] {
+            let pay_state = MakePaymentResponse {
+                status,
+                ..outgoing_payment_failure_response(&CurrencyUnit::Msat, payment_lookup_id.clone())
+            };
+            let response = bolt11_pre_dispatch_response(&CurrencyUnit::Sat, &invoice, pay_state)
+                .unwrap()
+                .unwrap();
+
+            assert_eq!(response.status, MeltQuoteState::Failed);
+            assert_eq!(response.payment_lookup_id, payment_lookup_id);
+            assert_eq!(response.total_spent, Amount::new(0, CurrencyUnit::Sat));
+            assert!(response.payment_proof.is_none());
+        }
+    }
+
+    #[test]
+    fn existing_payment_response_uses_requested_unit() {
+        for timestamp in [Duration::from_secs(1), Duration::from_secs(unix_time())] {
+            let invoice = invoice_with_timestamp(timestamp);
+            let payment_lookup_id =
+                PaymentIdentifier::PaymentHash(*invoice.payment_hash().as_ref());
+
+            for status in [MeltQuoteState::Paid, MeltQuoteState::Pending] {
+                for (total_msat, total_sat) in [(0, 0), (1_234, 2), (2_000, 2)] {
+                    for (unit, expected) in [
+                        (CurrencyUnit::Sat, total_sat),
+                        (CurrencyUnit::Msat, total_msat),
+                    ] {
+                        let pay_state = MakePaymentResponse {
+                            payment_lookup_id: payment_lookup_id.clone(),
+                            payment_proof: Some("existing preimage".to_owned()),
+                            status,
+                            total_spent: Amount::new(total_msat, CurrencyUnit::Msat),
+                        };
+                        let response = bolt11_pre_dispatch_response(&unit, &invoice, pay_state)
+                            .unwrap()
+                            .unwrap();
+
+                        assert_eq!(response.status, status);
+                        assert_eq!(response.payment_lookup_id, payment_lookup_id);
+                        assert_eq!(response.total_spent, Amount::new(expected, unit));
+                        assert_eq!(response.payment_proof.as_deref(), Some("existing preimage"));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn unexpired_invoice_without_active_payment_can_dispatch() {
+        let invoice = invoice_with_timestamp(Duration::from_secs(unix_time()));
+        let payment_lookup_id = PaymentIdentifier::PaymentHash(*invoice.payment_hash().as_ref());
+
+        for status in [
+            MeltQuoteState::Unknown,
+            MeltQuoteState::Unpaid,
+            MeltQuoteState::Failed,
+        ] {
+            let pay_state = MakePaymentResponse {
+                status,
+                ..outgoing_payment_failure_response(&CurrencyUnit::Msat, payment_lookup_id.clone())
+            };
+            assert!(
+                bolt11_pre_dispatch_response(&CurrencyUnit::Sat, &invoice, pay_state)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
 
     #[test]
     fn lnrpc_payment_total_spent_uses_msat_fields() {
@@ -947,14 +1196,6 @@ mod tests {
             .expect_err("overflowing payment total should be rejected");
 
         assert!(matches!(err, Error::AmountOverflow));
-    }
-
-    #[test]
-    fn msat_total_spent_for_unit_rounds_up_sats() {
-        let total_spent = msat_total_spent_for_unit(1501, &CurrencyUnit::Sat)
-            .expect("msat total should convert to sat");
-
-        assert_eq!(total_spent, Amount::new(2, CurrencyUnit::Sat));
     }
 
     #[test]

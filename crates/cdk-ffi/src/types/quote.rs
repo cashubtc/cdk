@@ -76,13 +76,13 @@ impl fmt::Debug for MintQuote {
 impl From<cdk::wallet::MintQuote> for MintQuote {
     fn from(quote: cdk::wallet::MintQuote) -> Self {
         Self {
-            id: quote.id.clone(),
+            id: quote.id,
             amount: quote.amount.map(Into::into),
-            unit: quote.unit.clone().into(),
-            request: quote.request.clone(),
+            unit: quote.unit.into(),
+            request: quote.request,
             state: quote.state.into(),
             expiry: quote.expiry,
-            mint_url: quote.mint_url.clone().into(),
+            mint_url: quote.mint_url.into(),
             amount_issued: quote.amount_issued.into(),
             amount_paid: quote.amount_paid.into(),
             updated_at: quote.updated_at,

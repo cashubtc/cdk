@@ -651,7 +651,6 @@ impl MintQuote {
     }
 
     /// Amount paid
-    #[instrument(skip(self))]
     pub fn amount_paid(&self) -> Amount<CurrencyUnit> {
         self.amount_paid.clone()
     }
@@ -705,7 +704,6 @@ impl MintQuote {
     }
 
     /// Amount issued
-    #[instrument(skip(self))]
     pub fn amount_issued(&self) -> Amount<CurrencyUnit> {
         self.amount_issued.clone()
     }
@@ -731,7 +729,6 @@ impl MintQuote {
     }
 
     /// Get state of mint quote
-    #[instrument(skip(self))]
     pub fn state(&self) -> MintQuoteState {
         self.compute_quote_state()
     }
@@ -818,7 +815,6 @@ impl MintQuote {
     }
 
     /// Compute quote state
-    #[instrument(skip(self))]
     fn compute_quote_state(&self) -> MintQuoteState {
         let zero_amount = Amount::new(0, self.unit.clone());
 
