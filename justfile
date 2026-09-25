@@ -853,7 +853,9 @@ release *ARGS:
     echo
   done
 
-  # Trigger all FFI binding releases (Dart, Kotlin, Swift, Go)
+  # Trigger all FFI binding releases (Dart, Kotlin, Swift, Go). These build
+  # cdk-ffi from the tagged source, not from crates.io, so they do not depend
+  # on the publish loop above and can be re-run on their own.
   echo "📦 Triggering all FFI binding releases for version $VERSION..."
   just ffi-release-all $VERSION
 
@@ -1169,7 +1171,6 @@ ffi-release-all VERSION:
     --repo cashubtc/cdk \
     --ref "v{{VERSION}}" \
     --field release_tag="v{{VERSION}}" \
-    --field cdk_version="{{VERSION}}" \
     --field cdk_ref="v{{VERSION}}"
 
   echo "✅ All FFI binding workflows triggered successfully!"
@@ -1186,8 +1187,7 @@ ffi-release-dart VERSION:
   gh workflow run "FFI - Dart Bindings" \
     --repo cashubtc/cdk \
     --ref "v{{VERSION}}" \
-    --field release_tag="v{{VERSION}}" \
-    --field cdk_version="{{VERSION}}"
+    --field release_tag="v{{VERSION}}"
 
   echo "✅ Dart workflow triggered successfully!"
 
@@ -1204,7 +1204,6 @@ ffi-release-swift VERSION:
     --repo cashubtc/cdk \
     --ref "v{{VERSION}}" \
     --field release_tag="v{{VERSION}}" \
-    --field cdk_version="{{VERSION}}" \
     --field cdk_ref="v{{VERSION}}"
 
   echo "✅ Swift workflow triggered successfully!"
@@ -1223,7 +1222,6 @@ ffi-release-kotlin VERSION:
     --repo cashubtc/cdk \
     --ref "v{{VERSION}}" \
     --field release_tag="v{{VERSION}}" \
-    --field cdk_version="{{VERSION}}" \
     --field cdk_ref="v{{VERSION}}"
 
   echo "✅ Kotlin workflow triggered successfully!"
@@ -1275,7 +1273,6 @@ ffi-release-go VERSION:
     --repo cashubtc/cdk \
     --ref "v{{VERSION}}" \
     --field release_tag="v{{VERSION}}" \
-    --field cdk_version="{{VERSION}}" \
     --field cdk_ref="v{{VERSION}}"
 
   echo "✅ Go workflow triggered successfully!"
@@ -1315,6 +1312,9 @@ test-kotlin:
   cd "{{justfile_directory()}}/bindings/kotlin"
   ./gradlew -PcdkJvmOnly=true :cdk-jvm:test
 
+# Generate Swift bindings and the local SPM package
+binding-swift *ARGS="--release":
+  just ffi-generate-swift {{ARGS}}
 
 # Run Swift binding tests
 test-swift:
