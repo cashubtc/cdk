@@ -144,8 +144,12 @@ pub struct WsErrorResponse {
     pub jsonrpc: String,
     /// The result
     pub error: WsErrorBody,
-    /// The request ID
-    pub id: usize,
+    /// The request ID, `null` when the request was too malformed to carry one.
+    ///
+    /// JSON-RPC 2.0 requires the member to be present and null in that case, so
+    /// this serializes as `null` rather than being skipped.
+    #[serde(default)]
+    pub id: Option<usize>,
 }
 
 /// Message from the server to the client
@@ -193,8 +197,29 @@ impl<I> From<(usize, Result<WsResponseResult<I>, WsErrorBody>)> for WsMessageOrR
             Err(err) => WsMessageOrResponse::ErrorResponse(WsErrorResponse {
                 jsonrpc: JSON_RPC_VERSION.to_owned(),
                 error: err,
-                id,
+                id: Some(id),
             }),
+        }
+    }
+}
+
+/// Carries an error whose request could not be identified, which the tuple
+/// conversion above cannot express: it pairs an id with a `Result`, so it has no
+/// way to say "no id" without also allowing a success response without one.
+impl<I> From<WsErrorResponse> for WsMessageOrResponse<I> {
+    fn from(response: WsErrorResponse) -> Self {
+        WsMessageOrResponse::ErrorResponse(response)
+    }
+}
+
+impl WsErrorResponse {
+    /// Build an error response, for a request whose id may not have survived
+    /// parsing.
+    pub fn new(id: Option<usize>, error: WsErrorBody) -> Self {
+        WsErrorResponse {
+            jsonrpc: JSON_RPC_VERSION.to_owned(),
+            error,
+            id,
         }
     }
 }
@@ -230,6 +255,41 @@ mod tests {
         assert_eq!(
             serde_json::to_value(decoded).expect("serialized NUT-17 response"),
             encoded
+        );
+    }
+
+    #[test]
+    fn error_response_without_an_id_round_trips_as_null() {
+        let encoded = json!({
+            "jsonrpc": "2.0",
+            "error": { "code": -32700, "message": "Parse error" },
+            "id": null
+        });
+
+        let decoded: WsErrorResponse =
+            serde_json::from_value(encoded.clone()).expect("NUT-17 error response");
+        assert_eq!(decoded.id, None);
+        assert_eq!(decoded.error.code, -32700);
+        assert_eq!(
+            serde_json::to_value(decoded).expect("serialized error response"),
+            encoded
+        );
+    }
+
+    #[test]
+    fn error_response_keeps_a_numeric_id() {
+        let response: WsMessageOrResponse<String> = (
+            9usize,
+            Err(WsErrorBody {
+                code: -32602,
+                message: "Invalid params".to_string(),
+            }),
+        )
+            .into();
+
+        assert_eq!(
+            serde_json::to_value(response).expect("serialized error response")["id"],
+            json!(9)
         );
     }
 

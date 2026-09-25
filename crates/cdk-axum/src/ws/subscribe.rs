@@ -1,5 +1,7 @@
 use cdk::subscription::Params;
 use cdk::ws::WsResponseResult;
+use cdk_common::pub_sub::Error as PubSubError;
+use cdk_common::terminal::escape_control;
 
 use super::{WsContext, WsError, MAX_FILTERS_PER_SUBSCRIPTION, MAX_SUBSCRIPTIONS_PER_CONNECTION};
 
@@ -39,7 +41,19 @@ pub(crate) async fn handle(
         .mint
         .pubsub_manager()
         .subscribe(params)
-        .map_err(|_| WsError::ParseError)?;
+        .map_err(|err| match err {
+            PubSubError::ParsingError(reason) => {
+                tracing::warn!(
+                    "Invalid WebSocket subscription params: {}",
+                    escape_control(&reason)
+                );
+                WsError::InvalidParams
+            }
+            other => {
+                tracing::error!("Could not subscribe: {other}");
+                WsError::InternalError
+            }
+        })?;
 
     let publisher = context.publisher.clone();
     let sub_id_for_sender = sub_id.clone();

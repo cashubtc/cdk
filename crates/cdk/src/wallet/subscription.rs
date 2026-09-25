@@ -652,7 +652,7 @@ async fn stream_client(
                         );
                     }
                     RawWsMessageOrResponse::ErrorResponse(error) => {
-                        match pending_requests.remove(&error.id) {
+                        match error.id.and_then(|id| pending_requests.remove(&id)) {
                             Some(request) => tracing::debug!(
                                 "Received an error from server for {} request and subId {}: {}",
                                 request.method(),
@@ -660,7 +660,7 @@ async fn stream_client(
                                 error.error.message
                             ),
                             None => tracing::debug!(
-                                "Received an error from server for unknown request id {}: {}",
+                                "Received an error from server for unknown request id {:?}: {}",
                                 error.id,
                                 error.error.message
                             ),
