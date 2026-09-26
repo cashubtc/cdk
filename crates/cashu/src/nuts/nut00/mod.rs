@@ -2193,52 +2193,64 @@ mod tests {
         );
     }
 
-    /// Twelve slots have to fail as TooManyPubkeys, not as the
+    /// Primary and refund keys share the eleven-slot budget. Twelve slots
+    /// have to fail as TooManyPubkeys, not as the
     /// InvalidCanonicalSlot the key derivation would raise on its own.
     #[test]
     #[cfg(feature = "wallet")]
-    fn test_with_p2bk_rejects_more_slots_than_nut28_allows() {
+    fn test_with_p2bk_enforces_shared_nut28_slot_limit() {
         use crate::amount::{FeeAndAmounts, SplitTarget};
         use crate::nuts::nut11::SigFlag;
         use crate::Conditions;
 
-        let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
-        let receiver_pubkey = crate::nuts::nut01::SecretKey::generate().public_key();
-        let pubkeys: Vec<PublicKey> = (0..11)
-            .map(|_| crate::nuts::nut01::SecretKey::generate().public_key())
-            .collect();
+        for (pubkey_count, refund_count) in [(10, 0), (11, 0), (5, 5), (5, 6)] {
+            let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
+            let receiver_pubkey = crate::nuts::nut01::SecretKey::generate().public_key();
+            let pubkeys: Vec<PublicKey> = (0..pubkey_count)
+                .map(|_| crate::nuts::nut01::SecretKey::generate().public_key())
+                .collect();
 
-        let conditions = Conditions {
-            locktime: None,
-            pubkeys: Some(pubkeys),
-            refund_keys: None,
-            num_sigs: Some(1),
-            sig_flag: SigFlag::SigAll,
-            num_sigs_refund: None,
-        };
-        let ephemeral_key = crate::nuts::nut01::SecretKey::generate();
-        let fee_and_amounts = FeeAndAmounts::from((0, (0..32).map(|x| 2u64.pow(x)).collect()));
+            let refund_keys = (refund_count > 0).then(|| {
+                (0..refund_count)
+                    .map(|_| crate::nuts::nut01::SecretKey::generate().public_key())
+                    .collect()
+            });
+            let conditions = Conditions {
+                locktime: Some(u64::MAX),
+                pubkeys: Some(pubkeys),
+                refund_keys,
+                num_sigs: Some(1),
+                sig_flag: SigFlag::SigAll,
+                num_sigs_refund: None,
+            };
+            let ephemeral_key = crate::nuts::nut01::SecretKey::generate();
+            let fee_and_amounts = FeeAndAmounts::from((0, (0..32).map(|x| 2u64.pow(x)).collect()));
 
-        let err = PreMintSecrets::with_p2bk(
-            keyset_id,
-            Amount::from(1_u64),
-            &SplitTarget::default(),
-            receiver_pubkey,
-            Some(conditions),
-            std::slice::from_ref(&ephemeral_key),
-            &fee_and_amounts,
-        )
-        .expect_err("twelve slots should be rejected");
+            let result = PreMintSecrets::with_p2bk(
+                keyset_id,
+                Amount::from(1_u64),
+                &SplitTarget::default(),
+                receiver_pubkey,
+                Some(conditions),
+                std::slice::from_ref(&ephemeral_key),
+                &fee_and_amounts,
+            );
+            if pubkey_count + refund_count == 10 {
+                assert_eq!(result.expect("eleven slots should be accepted").len(), 1);
+                continue;
+            }
+            let err = result.expect_err("twelve slots should be rejected");
 
-        assert!(
-            matches!(
-                err,
-                Error::NUT10(crate::nuts::nut10::Error::NUT11(
-                    crate::nuts::nut11::Error::TooManyPubkeys { slots: 12 }
-                ))
-            ),
-            "Expected TooManyPubkeys, got: {err:?}"
-        );
+            assert!(
+                matches!(
+                    err,
+                    Error::NUT10(crate::nuts::nut10::Error::NUT11(
+                        crate::nuts::nut11::Error::TooManyPubkeys { slots: 12 }
+                    ))
+                ),
+                "Expected TooManyPubkeys, got: {err:?}"
+            );
+        }
     }
 
     #[test]

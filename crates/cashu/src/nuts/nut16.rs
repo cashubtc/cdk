@@ -432,8 +432,10 @@ mod tests {
         assert_eq!(part.matches('/').count(), 1);
 
         let mut decoder = TokenUrDecoder::default();
+        assert_eq!(decoder.resolved_fragment_count(), None);
         decoder.receive(&part).expect("valid receive");
         assert!(decoder.complete());
+        assert_eq!(decoder.resolved_fragment_count(), Some(1));
         assert_eq!(decoder.token().expect("valid token"), Some(token));
     }
 
@@ -473,6 +475,7 @@ mod tests {
 
         let mut decoder = TokenUrDecoder::default();
         let mut parts = 0;
+        assert_eq!(decoder.resolved_fragment_count(), None);
         while !decoder.complete() {
             let part = encoder.next_part().expect("valid part");
             assert!(part.starts_with("ur:bytes/"));
@@ -481,6 +484,8 @@ mod tests {
             assert_eq!(part.matches('/').count(), 2);
             decoder.receive(&part).expect("valid receive");
             parts += 1;
+            // The initial frames each resolve one distinct source fragment.
+            assert_eq!(decoder.resolved_fragment_count(), Some(parts));
             assert!(parts <= 100, "decoder should complete");
         }
 
