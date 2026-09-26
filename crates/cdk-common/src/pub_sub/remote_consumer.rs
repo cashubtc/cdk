@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use parking_lot::RwLock;
 use tokio::sync::mpsc;
-use tokio::time::{sleep, Instant};
+use tokio::time::{sleep, sleep_until, Instant};
 
 use super::subscriber::{ActiveSubscription, SubscriptionRequest};
 use super::{Error, Event, Pubsub, Spec};
@@ -18,9 +18,32 @@ const STREAM_CONNECTION_BACKOFF: Duration = Duration::from_millis(2_000);
 
 const STREAM_CONNECTION_MAX_BACKOFF: Duration = Duration::from_millis(30_000);
 
+/// A stream that failed permanently may still recover (the mint fixes its TLS,
+/// or deploys the websocket endpoint), so it is retried on a much slower
+/// schedule rather than abandoned. Polling covers the gap meanwhile.
+const STREAM_TERMINAL_BACKOFF: Duration = Duration::from_millis(60_000);
+
+const STREAM_TERMINAL_MAX_BACKOFF: Duration = Duration::from_millis(300_000);
+
+/// A stream that stayed up this long counts as healthy, so its next failure
+/// starts the backoff over instead of inheriting the escalated one.
+const STREAM_HEALTHY_THRESHOLD: Duration = Duration::from_millis(30_000);
+
 const INTERNAL_POLL_SIZE: usize = 1_000;
 
 const POLL_SLEEP: Duration = Duration::from_millis(2_000);
+
+/// Pick the backoff floor and cap for a failed stream, or `None` when the
+/// transport cannot stream at all and dialing should stop for good. A terminal
+/// failure waits on the slow tier rather than giving up, since the mint may
+/// still recover; polling covers the gap either way.
+fn retry_bounds(err: &Error) -> Option<(Duration, Duration)> {
+    match err {
+        Error::NotSupported => None,
+        Error::Terminal(_) => Some((STREAM_TERMINAL_BACKOFF, STREAM_TERMINAL_MAX_BACKOFF)),
+        _ => Some((STREAM_CONNECTION_BACKOFF, STREAM_CONNECTION_MAX_BACKOFF)),
+    }
+}
 
 struct UniqueSubscription<S>
 where
@@ -212,7 +235,8 @@ where
                         .collect::<Vec<_>>()
                 };
 
-                if let Err(err) = instance
+                let started_at = Instant::now();
+                let outcome = instance
                     .transport
                     .stream(
                         receiver,
@@ -223,17 +247,25 @@ where
                             cached_events: instance.cached_events.clone(),
                         },
                     )
-                    .await
-                {
-                    if matches!(&err, Error::NotSupported | Error::Terminal(_)) {
-                        stream_supported = false;
-                    } else {
-                        retry_at = Some(Instant::now() + backoff);
-                        backoff = backoff.saturating_mul(2).min(STREAM_CONNECTION_MAX_BACKOFF);
+                    .await;
+                let stayed_up = started_at.elapsed() >= STREAM_HEALTHY_THRESHOLD;
+
+                if let Err(err) = outcome {
+                    match retry_bounds(&err) {
+                        None => stream_supported = false,
+                        Some((floor, cap)) => {
+                            if stayed_up {
+                                backoff = STREAM_CONNECTION_BACKOFF;
+                            }
+                            backoff = backoff.clamp(floor, cap);
+                            retry_at = Some(Instant::now() + backoff);
+                            backoff = backoff.saturating_mul(2).min(cap);
+                        }
                     }
                     tracing::error!("Long connection failed with error {:?}", err);
                 } else {
                     backoff = STREAM_CONNECTION_BACKOFF;
+                    retry_at = None;
                 }
 
                 // remove sender to stream, as there is no stream
@@ -269,6 +301,11 @@ where
                 }
 
                 sleep(POLL_SLEEP).await;
+            } else {
+                match retry_at {
+                    Some(retry_at) => sleep_until(retry_at).await,
+                    None => sleep(POLL_SLEEP).await,
+                }
             }
         }
     }
@@ -486,7 +523,7 @@ mod tests {
     use std::sync::Arc;
 
     use tokio::sync::{mpsc, Mutex};
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{sleep, timeout, Duration};
 
     use super::{
         InternalRelay, RemoteActiveConsumer, StreamCtrl, SubscribeMessage, Transport,
@@ -538,10 +575,20 @@ mod tests {
         rx: Mutex<mpsc::Receiver<Message>>,
     }
 
+    #[derive(Clone, Copy)]
+    enum StreamFailure {
+        NotSupported,
+        Terminal,
+        Transient,
+    }
+
     struct FailingStreamTransport {
         name_ctr: AtomicUsize,
         attempts: Arc<AtomicUsize>,
-        terminal: bool,
+        failure: StreamFailure,
+        /// How long each successive stream stays up before failing; the last
+        /// entry repeats once the attempts run past it.
+        uptimes: Vec<Duration>,
     }
 
     impl TestTransport {
@@ -570,13 +617,14 @@ mod tests {
     }
 
     impl FailingStreamTransport {
-        fn new(terminal: bool) -> (Self, Arc<AtomicUsize>) {
+        fn new(failure: StreamFailure, uptimes: Vec<Duration>) -> (Self, Arc<AtomicUsize>) {
             let attempts = Arc::new(AtomicUsize::new(0));
             (
                 Self {
                     name_ctr: AtomicUsize::new(1),
                     attempts: attempts.clone(),
-                    terminal,
+                    failure,
+                    uptimes,
                 },
                 attempts,
             )
@@ -666,11 +714,22 @@ mod tests {
             _topics: Vec<SubscribeMessage<Self::Spec>>,
             _reply_to: InternalRelay<Self::Spec>,
         ) -> Result<(), Error> {
-            self.attempts.fetch_add(1, Ordering::Relaxed);
-            match self.terminal {
-                true => Err(Error::Terminal("permanent failure".to_string())),
-                false => Err(Error::InternalStr("temporary failure".to_string())),
+            let attempt = self.attempts.fetch_add(1, Ordering::Relaxed);
+            let uptime = self
+                .uptimes
+                .get(attempt)
+                .or_else(|| self.uptimes.last())
+                .copied()
+                .unwrap_or(Duration::ZERO);
+            if !uptime.is_zero() {
+                sleep(uptime).await;
             }
+
+            Err(match self.failure {
+                StreamFailure::NotSupported => Error::NotSupported,
+                StreamFailure::Terminal => Error::Terminal("permanent failure".to_string()),
+                StreamFailure::Transient => Error::InternalStr("temporary failure".to_string()),
+            })
         }
 
         async fn poll(
@@ -922,23 +981,72 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn terminal_stream_failure_is_not_retried() {
-        let (transport, attempts) = FailingStreamTransport::new(true);
+    async fn unsupported_stream_is_not_retried() {
+        let (transport, attempts) =
+            FailingStreamTransport::new(StreamFailure::NotSupported, vec![Duration::ZERO]);
         let consumer = Consumer::new(transport, false, ());
         let _subscription = consumer
             .subscribe(SubscriptionReq::Foo("t".to_owned(), 1))
             .expect("subscribe");
 
         wait_for_attempts(&attempts, 1).await;
-        tokio::time::advance(Duration::from_secs(60)).await;
+        tokio::time::advance(Duration::from_secs(600)).await;
         tokio::task::yield_now().await;
 
         assert_eq!(attempts.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test(start_paused = true)]
+    async fn terminal_stream_failure_retries_on_the_slow_tier() {
+        let (transport, attempts) =
+            FailingStreamTransport::new(StreamFailure::Terminal, vec![Duration::ZERO]);
+        let consumer = Consumer::new(transport, false, ());
+        let _subscription = consumer
+            .subscribe(SubscriptionReq::Foo("t".to_owned(), 1))
+            .expect("subscribe");
+
+        wait_for_attempts(&attempts, 1).await;
+
+        tokio::time::advance(Duration::from_secs(30)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(attempts.load(Ordering::Relaxed), 1);
+
+        tokio::time::advance(Duration::from_secs(35)).await;
+        wait_for_attempts(&attempts, 2).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_healthy_stream_restarts_the_backoff() {
+        let (transport, attempts) = FailingStreamTransport::new(
+            StreamFailure::Transient,
+            vec![
+                Duration::ZERO,
+                Duration::ZERO,
+                Duration::from_secs(40),
+                Duration::ZERO,
+            ],
+        );
+        let consumer = Consumer::new(transport, false, ());
+        let _subscription = consumer
+            .subscribe(SubscriptionReq::Foo("t".to_owned(), 1))
+            .expect("subscribe");
+
+        wait_for_attempts(&attempts, 1).await;
+        tokio::time::advance(Duration::from_secs(3)).await;
+        wait_for_attempts(&attempts, 2).await;
+        tokio::time::advance(Duration::from_secs(5)).await;
+        wait_for_attempts(&attempts, 3).await;
+
+        tokio::time::advance(Duration::from_secs(40)).await;
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(3)).await;
+        wait_for_attempts(&attempts, 4).await;
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn transient_stream_failures_use_increasing_backoff() {
-        let (transport, attempts) = FailingStreamTransport::new(false);
+        let (transport, attempts) =
+            FailingStreamTransport::new(StreamFailure::Transient, vec![Duration::ZERO]);
         let consumer = Consumer::new(transport, false, ());
         let _subscription = consumer
             .subscribe(SubscriptionReq::Foo("t".to_owned(), 1))

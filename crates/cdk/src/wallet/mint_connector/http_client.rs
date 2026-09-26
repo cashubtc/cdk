@@ -5,11 +5,13 @@ use std::sync::{Arc, RwLock as StdRwLock};
 
 use async_trait::async_trait;
 use cdk_common::auth::oidc::{OidcHttpResponse, OidcHttpTransport};
+use cdk_common::stream_channel::{StreamRx, StreamTx};
 use cdk_common::{
     nut19, MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse, Method,
     MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteCustomResponse,
     MintQuoteOnchainResponse, MintQuoteRequest, MintQuoteResponse, ProtectedEndpoint, RoutePath,
 };
+use cdk_http_client::ws::WsError;
 use cdk_http_client::HttpError;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -40,6 +42,46 @@ const HTTP_RETRY_INITIAL_BACKOFF: Duration = Duration::from_millis(50);
 
 /// Upper bound for the exponential backoff between replays.
 const HTTP_RETRY_MAX_BACKOFF: Duration = Duration::from_secs(1);
+
+/// Classify a websocket dial failure. A mint with no NUT-17 endpoint becomes
+/// `StreamingNotSupported` and a permanent failure (TLS, auth, protocol) becomes
+/// `StreamingTerminal`, both of which latch the subscription layer to poll
+/// fallback; a transient failure stays a `Custom` error and is retried.
+fn ws_error_to_error(e: WsError) -> Error {
+    match e {
+        WsError::NotSupported(detail) => {
+            tracing::debug!("mint has no websocket endpoint ({detail}); using poll fallback");
+            Error::StreamingNotSupported
+        }
+        WsError::Terminal(detail) => Error::StreamingTerminal(detail),
+        WsError::Transient(detail) => {
+            Error::Custom(format!("open_stream connect failed: {detail}"))
+        }
+    }
+}
+
+/// Build the NUT-17 websocket URL for a mint.
+///
+/// A mint URL that is not http(s) cannot carry a websocket, so it latches the
+/// subscription layer to poll fallback instead of dialing a URL that can never
+/// work.
+fn ws_url(mint_url: &MintUrl) -> Result<Url, Error> {
+    let mut url = mint_url.join_paths(&["v1", "ws"])?;
+    let scheme = match url.scheme() {
+        "https" => "wss",
+        "http" => "ws",
+        other => {
+            return Err(Error::StreamingTerminal(format!(
+                "mint url scheme {other} cannot carry a websocket"
+            )))
+        }
+    };
+    url.set_scheme(scheme).map_err(|_| {
+        Error::StreamingTerminal(format!("could not switch mint url scheme to {scheme}"))
+    })?;
+
+    Ok(url)
+}
 
 fn payment_method_path_segment(method: &PaymentMethod) -> Result<&str, Error> {
     match method {
@@ -424,20 +466,6 @@ where
                 transport: self.transport.clone(),
             }),
         )
-    }
-
-    async fn connect_websocket(
-        &self,
-        url: &str,
-        headers: &[(&str, &str)],
-    ) -> Result<
-        (
-            cdk_common::ws_client::WsSender,
-            cdk_common::ws_client::WsReceiver,
-        ),
-        cdk_common::ws_client::WsError,
-    > {
-        self.transport.ws_connect(url, headers).await
     }
 
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
@@ -959,6 +987,43 @@ where
 
     async fn set_auth_wallet(&self, wallet: Option<AuthWallet>) {
         *self.auth_wallet.write().await = wallet;
+    }
+
+    async fn open_stream(&self) -> Result<(StreamTx, StreamRx), Error> {
+        let url = ws_url(&self.mint_url)?;
+
+        let mut headers: Vec<(String, String)> = Vec::new();
+        // WebSocket auth is not specified yet (tracked in cashubtc/nuts#413).
+        // Until the spec lands we attach a token opportunistically rather than
+        // aborting the connection when one cannot be minted.
+        if let Some(auth_wallet) = self.get_auth_wallet().await {
+            let endpoint = ProtectedEndpoint::new(Method::Get, RoutePath::Ws);
+            match auth_wallet.get_auth_for_request(&endpoint).await {
+                Ok(Some(token)) => {
+                    let key = match &token {
+                        AuthToken::ClearAuth(_) => "Clear-auth",
+                        AuthToken::BlindAuth(_) => "Blind-auth",
+                    };
+                    headers.push((key.to_string(), token.to_string()));
+                }
+                Ok(None) => {}
+                Err(err) => tracing::warn!("could not attach ws auth token: {err}"),
+            }
+        }
+
+        let url_str = url.to_string();
+        let header_refs: Vec<(&str, &str)> = headers
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+
+        let (sender, receiver) = self
+            .transport
+            .ws_connect(&url_str, &header_refs)
+            .await
+            .map_err(ws_error_to_error)?;
+
+        Ok(cdk_common::stream_channel::from_ws(sender, receiver))
     }
 
     /// Spendable check [NUT-07]
@@ -1770,5 +1835,54 @@ mod tests {
             get_urls.lock().expect("lock").is_empty(),
             "invalid LNURL callback must be rejected before transport"
         );
+    }
+
+    #[test]
+    fn ws_unsupported_maps_to_streaming_not_supported() {
+        // Latches the poll fallback so a mint without /v1/ws is not re-dialed forever.
+        assert!(matches!(
+            ws_error_to_error(WsError::NotSupported("404".to_string())),
+            Error::StreamingNotSupported
+        ));
+    }
+
+    #[test]
+    fn ws_terminal_error_is_not_retried() {
+        assert!(matches!(
+            ws_error_to_error(WsError::Terminal("attestation failed".to_string())),
+            Error::StreamingTerminal(_)
+        ));
+    }
+
+    #[test]
+    fn ws_transient_error_stays_retryable() {
+        assert!(matches!(
+            ws_error_to_error(WsError::Transient("boom".to_string())),
+            Error::Custom(_)
+        ));
+    }
+
+    #[test]
+    fn ws_url_upgrades_http_schemes() {
+        let secure = MintUrl::from_str("https://mint.example.com").expect("parse url");
+        assert_eq!(
+            ws_url(&secure).expect("ws url").as_str(),
+            "wss://mint.example.com/v1/ws"
+        );
+
+        let plain = MintUrl::from_str("http://mint.example.com").expect("parse url");
+        assert_eq!(
+            ws_url(&plain).expect("ws url").as_str(),
+            "ws://mint.example.com/v1/ws"
+        );
+    }
+
+    #[test]
+    fn ws_url_rejects_non_http_scheme() {
+        let mint_url = MintUrl::from_str("ftp://mint.example.com").expect("parse url");
+        assert!(matches!(
+            ws_url(&mint_url),
+            Err(Error::StreamingTerminal(_))
+        ));
     }
 }
