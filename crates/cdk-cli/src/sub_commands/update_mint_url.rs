@@ -29,7 +29,11 @@ pub async fn update_mint_url(
 
     wallet.update_mint_url(new_mint_url.clone()).await?;
 
-    println!("Mint Url changed from {old_mint_url} to {new_mint_url}");
+    println!(
+        "Mint Url changed from {} to {}",
+        cdk_common::redact::url_for_logs(&old_mint_url.to_string()),
+        cdk_common::redact::url_for_logs(&new_mint_url.to_string())
+    );
 
     Ok(())
 }

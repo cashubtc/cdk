@@ -63,13 +63,9 @@ impl fmt::Debug for MintQuote {
             .field("updated_at", &self.updated_at)
             .field("estimated_blocks", &self.estimated_blocks)
             .field("payment_method", &self.payment_method)
-            .field(
-                "secret_key",
-                &self.secret_key.as_ref().map(|_| "[REDACTED]"),
-            )
             .field("used_by_operation", &self.used_by_operation)
             .field("version", &self.version)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -301,7 +297,7 @@ impl From<cdk::nuts::MintQuoteCustomResponse<String>> for MintQuoteCustomRespons
 }
 
 /// FFI-compatible MeltQuoteBolt11Response
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+#[derive(Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct MeltQuoteBolt11Response {
     /// Quote ID
     pub quote: String,
@@ -321,6 +317,21 @@ pub struct MeltQuoteBolt11Response {
     pub request: Option<String>,
     /// Unit (optional)
     pub unit: Option<CurrencyUnit>,
+}
+
+impl fmt::Debug for MeltQuoteBolt11Response {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MeltQuoteBolt11Response")
+            .field("quote", &self.quote)
+            .field("method", &self.method)
+            .field("amount", &self.amount)
+            .field("fee_reserve", &self.fee_reserve)
+            .field("state", &self.state)
+            .field("expiry", &self.expiry)
+            .field("request", &self.request)
+            .field("unit", &self.unit)
+            .finish_non_exhaustive()
+    }
 }
 
 impl From<cdk::nuts::MeltQuoteBolt11Response<String>> for MeltQuoteBolt11Response {
@@ -585,16 +596,12 @@ impl fmt::Debug for MeltQuote {
             .field("fee_reserve", &self.fee_reserve)
             .field("state", &self.state)
             .field("expiry", &self.expiry)
-            .field(
-                "payment_proof",
-                &self.payment_proof.as_ref().map(|_| "[REDACTED]"),
-            )
             .field("estimated_blocks", &self.estimated_blocks)
             .field("fee_index", &self.fee_index)
             .field("payment_method", &self.payment_method)
             .field("used_by_operation", &self.used_by_operation)
             .field("version", &self.version)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -748,7 +755,7 @@ mod tests {
 
         assert!(debug.contains("public-quote-id"));
         assert!(!debug.contains(secret));
-        assert!(debug.contains("secret_key: Some(\"[REDACTED]\")"));
+        assert!(!debug.contains("secret_key"));
     }
 
     #[test]
@@ -774,7 +781,7 @@ mod tests {
         let debug = format!("{quote:?}");
 
         assert!(debug.contains("public-melt-quote-id"));
-        assert!(debug.contains("payment_proof: Some(\"[REDACTED]\")"));
+        assert!(!debug.contains("payment_proof"));
         assert!(!debug.contains(secret));
     }
 }

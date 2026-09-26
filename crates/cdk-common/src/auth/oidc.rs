@@ -1,7 +1,7 @@
 //! Open Id Connect
 
 use std::collections::HashMap;
-use std::fmt::Debug;
+use std::fmt;
 use std::ops::Deref;
 use std::sync::Arc;
 
@@ -100,10 +100,17 @@ pub struct OidcConfig {
 }
 
 /// Raw OIDC HTTP response.
-#[derive(Debug)]
 pub struct OidcHttpResponse {
     status: u16,
     body: Vec<u8>,
+}
+
+impl fmt::Debug for OidcHttpResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OidcHttpResponse")
+            .field("status", &self.status)
+            .finish_non_exhaustive()
+    }
 }
 
 impl OidcHttpResponse {
@@ -142,7 +149,7 @@ impl OidcHttpResponse {
 /// HTTP transport used by [`OidcClient`].
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-pub trait OidcHttpTransport: Debug + Send + Sync {
+pub trait OidcHttpTransport: fmt::Debug + Send + Sync {
     /// HTTP GET returning raw response bytes.
     async fn get(&self, url: &str) -> Result<OidcHttpResponse, HttpError>;
 
@@ -202,7 +209,7 @@ pub enum GrantType {
 
 /// Request to refresh an access token
 #[cfg(feature = "wallet")]
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone, Serialize)]
 pub struct RefreshTokenRequest {
     /// The grant type for this request
     pub grant_type: GrantType,
@@ -212,9 +219,19 @@ pub struct RefreshTokenRequest {
     pub refresh_token: String,
 }
 
+#[cfg(feature = "wallet")]
+impl fmt::Debug for RefreshTokenRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RefreshTokenRequest")
+            .field("grant_type", &self.grant_type)
+            .field("client_id", &self.client_id)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Response from token endpoint
 #[cfg(feature = "wallet")]
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct TokenResponse {
     /// The access token issued by the authorization server
     pub access_token: String,
@@ -224,6 +241,16 @@ pub struct TokenResponse {
     pub expires_in: Option<i64>,
     /// The type of token issued (typically "Bearer")
     pub token_type: String,
+}
+
+#[cfg(feature = "wallet")]
+impl fmt::Debug for TokenResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TokenResponse")
+            .field("expires_in", &self.expires_in)
+            .field("token_type", &self.token_type)
+            .finish_non_exhaustive()
+    }
 }
 
 impl OidcClient {
@@ -414,6 +441,49 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn debug_omits_tokens_without_changing_wire_data() {
+        let request = RefreshTokenRequest {
+            grant_type: GrantType::RefreshToken,
+            client_id: "public-client".to_owned(),
+            refresh_token: "refresh-secret".to_owned(),
+        };
+        let response: TokenResponse = serde_json::from_value(json!({
+            "access_token": "access-secret",
+            "refresh_token": "refresh-secret",
+            "expires_in": 3600,
+            "token_type": "Bearer"
+        }))
+        .expect("valid token response");
+        let raw = OidcHttpResponse::new(200, b"access-secret".to_vec());
+
+        for debug in [
+            format!("{request:?}"),
+            format!("{request:#?}"),
+            format!("{response:?}"),
+            format!("{response:#?}"),
+            format!("{raw:?}"),
+            format!("{raw:#?}"),
+        ] {
+            for secret in [
+                "access-secret",
+                "refresh-secret",
+                "access_token:",
+                "refresh_token:",
+                "body:",
+            ] {
+                assert!(!debug.contains(secret));
+            }
+        }
+        assert_eq!(
+            serde_json::to_value(request).expect("serializable request"),
+            json!({"grant_type": "refresh_token", "client_id": "public-client", "refresh_token": "refresh-secret"})
+        );
+        assert_eq!(response.access_token, "access-secret");
+        assert_eq!(response.refresh_token.as_deref(), Some("refresh-secret"));
+    }
 
     fn claims(value: serde_json::Value) -> HashMap<String, serde_json::Value> {
         serde_json::from_value(value).expect("claims should be an object")

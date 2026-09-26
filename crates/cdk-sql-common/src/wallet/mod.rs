@@ -859,7 +859,7 @@ where
         Ok(())
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self, ys), fields(proof_count = ys.len()))]
     async fn update_proofs_state(
         &self,
         ys: Vec<PublicKey>,
@@ -1613,7 +1613,7 @@ where
         rows.into_iter().map(sql_row_to_wallet_saga).collect()
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self, ys), fields(proof_count = ys.len()))]
     async fn reserve_proofs(
         &self,
         ys: Vec<PublicKey>,
