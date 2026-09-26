@@ -254,6 +254,7 @@ onchain_backend = "fakewallet"
 # macaroon_file = "/path/to/.lnd/data/chain/bitcoin/mainnet/admin.macaroon"
 # fee_percent = 0.02         # Optional, defaults to 2%
 # reserve_fee_min = 2        # Optional, defaults to 2 sats
+# allow_self_payment = false # Optional. Allow circular payments back to this LND node.
 
 # [ldk_node]
 # fee_percent = 0.02         # Optional, defaults to 2%

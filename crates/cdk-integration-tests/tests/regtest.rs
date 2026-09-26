@@ -25,14 +25,96 @@ use cdk::nuts::{
     NotificationPayload, PaymentMethod, PreMintSecrets,
 };
 use cdk::wallet::{HttpClient, MintConnector, Wallet, WalletSubscription};
+use cdk_common::payment::{
+    Bolt11IncomingPaymentOptions, Bolt11OutgoingPaymentOptions, IncomingPaymentOptions,
+    MintPayment, OutgoingPaymentOptions,
+};
+use cdk_integration_tests::init_regtest::{create_lnd_backend, get_temp_dir};
 use cdk_integration_tests::{
     attempt_manual_mint, get_mint_url_from_env, get_second_mint_url_from_env, get_test_client,
+    init_lnd_client,
 };
 use cdk_sqlite::wallet::{self, memory};
 use futures::join;
 use tokio::time::timeout;
 
 const LDK_URL: &str = "http://127.0.0.1:8089";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_lnd_self_payment() {
+    // Requires funded channels with a peer that permits circular forwarding.
+    let ln_client = init_lnd_client(&get_temp_dir()).await;
+    let backend = create_lnd_backend(&ln_client).await.unwrap();
+    let amount = Amount::new(100_000, CurrencyUnit::Msat);
+    let max_fee = Amount::new(10_000, CurrencyUnit::Msat);
+
+    // Use the backend directly so the mint cannot settle this invoice internally.
+    let invoice = backend
+        .create_incoming_payment_request(IncomingPaymentOptions::Bolt11(
+            Bolt11IncomingPaymentOptions {
+                amount: amount.clone(),
+                ..Default::default()
+            },
+        ))
+        .await
+        .unwrap();
+    let payment = timeout(
+        Duration::from_secs(60),
+        backend.make_payment(
+            &CurrencyUnit::Msat,
+            OutgoingPaymentOptions::Bolt11(Box::new(Bolt11OutgoingPaymentOptions {
+                bolt11: invoice.request.parse().unwrap(),
+                max_fee_amount: Some(max_fee.clone()),
+                timeout_secs: Some(60),
+                melt_options: None,
+                quote_id: uuid::Uuid::new_v4().into(),
+            })),
+        ),
+    )
+    .await
+    .expect("self-payment timed out")
+    .expect("self-payment failed");
+
+    assert_eq!(payment.status, MeltQuoteState::Paid);
+    assert_eq!(payment.payment_lookup_id, invoice.request_lookup_id);
+    assert!(payment.payment_proof.is_some());
+
+    let received = backend
+        .check_incoming_payment_status(&invoice.request_lookup_id)
+        .await
+        .unwrap();
+    assert_eq!(received.len(), 1);
+    assert_eq!(received[0].payment_amount, amount);
+
+    // Compare CDK's accounting with LND's recorded principal and routing fee.
+    let mut client = fedimint_tonic_lnd::connect(
+        ln_client.address,
+        ln_client.cert_file,
+        ln_client.macaroon_file,
+    )
+    .await
+    .unwrap();
+    let mut updates = client
+        .router()
+        .track_payment_v2(fedimint_tonic_lnd::routerrpc::TrackPaymentRequest {
+            payment_hash: cashu::util::hex::decode(invoice.request_lookup_id.to_string()).unwrap(),
+            no_inflight_updates: true,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let recorded = updates.message().await.unwrap().unwrap();
+    assert_eq!(recorded.value_msat as u64, amount.value());
+    assert!(recorded.fee_msat >= 0);
+    assert!(recorded.fee_msat as u64 <= max_fee.value());
+    assert_eq!(
+        payment.total_spent,
+        Amount::new(
+            (recorded.value_msat + recorded.fee_msat) as u64,
+            CurrencyUnit::Msat,
+        )
+    );
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_internal_payment() {

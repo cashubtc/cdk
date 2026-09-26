@@ -194,7 +194,8 @@ pub async fn create_lnd_backend(lnd_client: &LndClient) -> Result<CdkLnd> {
         fee_reserve,
         kv_store,
     )
-    .await?)
+    .await?
+    .with_allow_self_payment(true))
 }
 
 /// Wait for an LN client's RPC to be ready, retrying with backoff.
