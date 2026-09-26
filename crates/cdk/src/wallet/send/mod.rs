@@ -14,6 +14,7 @@ use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{Proofs, Token};
 use crate::{Amount, Error, Wallet};
 
+mod fees;
 pub(crate) mod saga;
 
 use saga::SendSaga;
@@ -46,7 +47,7 @@ impl PreparedSend<'_> {
         self.amount
     }
 
-    /// Send options
+    /// Prepared send options, including the denomination plan for fee-inclusive exact sends.
     pub fn options(&self) -> &SendOptions {
         &self.options
     }
@@ -66,7 +67,7 @@ impl PreparedSend<'_> {
         &self.proofs_to_send
     }
 
-    /// Fee the recipient will pay to redeem the token
+    /// Fee the recipient will pay to redeem an exact send.
     pub fn send_fee(&self) -> Amount {
         self.send_fee
     }
