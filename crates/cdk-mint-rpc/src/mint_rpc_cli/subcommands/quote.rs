@@ -1,11 +1,12 @@
 use anyhow::{bail, Result};
 use clap::Args;
+use tonic::transport::Channel;
 use tonic::Request;
 
+use crate::quote::quote_service_client::QuoteServiceClient;
 use crate::quote::{
     GetQuoteTtlRequest, MintQuoteState, UpdateMintQuoteStateRequest, UpdateQuoteTtlRequest,
 };
-use crate::InterceptedQuoteServiceClient;
 
 /// Command to update the time-to-live (TTL) settings for quotes
 ///
@@ -29,7 +30,7 @@ pub struct UpdateQuoteTtlCommand {
 /// * `client` - The RPC client used to communicate with the mint
 /// * `sub_command_args` - The new TTL values to set for quotes
 pub async fn update_quote_ttl(
-    client: &mut InterceptedQuoteServiceClient,
+    client: &mut QuoteServiceClient<Channel>,
     sub_command_args: &UpdateQuoteTtlCommand,
 ) -> Result<()> {
     let response = client
@@ -59,7 +60,7 @@ pub struct GetQuoteTtlCommand {}
 ///
 /// # Arguments
 /// * `client` - The RPC client used to communicate with the mint
-pub async fn get_quote_ttl(client: &mut InterceptedQuoteServiceClient) -> Result<()> {
+pub async fn get_quote_ttl(client: &mut QuoteServiceClient<Channel>) -> Result<()> {
     let response = client
         .get_quote_ttl(Request::new(GetQuoteTtlRequest {}))
         .await?
@@ -94,7 +95,7 @@ pub struct UpdateMintQuoteStateCommand {
 /// * `client` - The RPC client used to communicate with the mint
 /// * `sub_command_args` - The quote ID and new state to set
 pub async fn update_mint_quote_state(
-    client: &mut InterceptedQuoteServiceClient,
+    client: &mut QuoteServiceClient<Channel>,
     sub_command_args: &UpdateMintQuoteStateCommand,
 ) -> Result<()> {
     let state = match sub_command_args.state.as_str() {
