@@ -1771,4 +1771,47 @@ mod tests {
             "invalid LNURL callback must be rejected before transport"
         );
     }
+
+    #[test]
+    fn test_melt_quote_custom_request_serialization_with_flattened_extra() {
+        let request = MeltQuoteCustomRequest {
+            method: "branch".to_string(),
+            request: "test-request".to_string(),
+            unit: crate::nuts::CurrencyUnit::Custom("ora".into()),
+            amount: None,
+            extra: serde_json::json!({
+                "amount": 500,
+                "branch_id": "abc"
+            }),
+        };
+
+        let serialized = serde_json::to_value(&request).expect("serialize custom request");
+
+        assert_eq!(
+            serialized,
+            serde_json::json!({
+                "method": "branch",
+                "request": "test-request",
+                "unit": "ora",
+                "amount": 500,
+                "branch_id": "abc"
+            })
+        );
+
+        let obj = serialized.as_object().expect("json object");
+        assert_eq!(obj.get("method").and_then(|v| v.as_str()), Some("branch"));
+        assert_eq!(
+            obj.get("request").and_then(|v| v.as_str()),
+            Some("test-request")
+        );
+        assert_eq!(obj.get("unit").and_then(|v| v.as_str()), Some("ora"));
+        assert_eq!(obj.get("amount").and_then(|v| v.as_u64()), Some(500));
+        assert_eq!(obj.get("branch_id").and_then(|v| v.as_str()), Some("abc"));
+        assert!(obj.get("extra").is_none());
+        assert_eq!(
+            obj.iter().filter(|(k, _)| k.as_str() == "amount").count(),
+            1
+        );
+        assert!(!obj.values().any(|v| v.is_null()));
+    }
 }
