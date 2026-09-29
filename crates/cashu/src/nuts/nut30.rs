@@ -252,6 +252,7 @@ mod tests {
                 "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
             )
             .unwrap(),
+            expiry_seconds: None,
         };
 
         let serialized = serde_json::to_string(&request).unwrap();

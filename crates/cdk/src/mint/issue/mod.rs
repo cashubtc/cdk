@@ -299,9 +299,7 @@ impl Mint {
                             }
                             if s > mint_ttl {
                                 return Err(Error::QuoteExpiryInvalid {
-                                    detail: format!(
-                                        "expiry_seconds {s} exceeds max {mint_ttl}"
-                                    ),
+                                    detail: format!("expiry_seconds {s} exceeds max {mint_ttl}"),
                                 });
                             }
                             Some(unix_time() + s)
@@ -2251,5 +2249,71 @@ mod batch_mint_tests {
             quote.expiry, None,
             "quote expiry must follow the offer (none when the offer has no absolute_expiry)"
         );
+    }
+
+    #[tokio::test]
+    async fn bolt12_mint_quote_requested_expiry_sets_offer_and_quote() {
+        let mint = create_test_mint().await;
+
+        let quote: MintQuoteBolt12Response<QuoteId> = mint
+            .get_mint_quote(
+                MintQuoteBolt12Request {
+                    amount: Some(Amount::from(32)),
+                    unit: CurrencyUnit::Sat,
+                    description: None,
+                    pubkey: PublicKey::from_hex(
+                        "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
+                    )
+                    .expect("test public key"),
+                    expiry_seconds: Some(600),
+                }
+                .into(),
+            )
+            .await
+            .unwrap()
+            .try_into()
+            .unwrap();
+
+        let offer = Offer::from_str(&quote.request).expect("BOLT12 offer");
+        let offer_expiry = offer
+            .absolute_expiry()
+            .map(|d| d.as_secs())
+            .expect("requested expiry must set offer absolute_expiry");
+        let quote_expiry = quote.expiry.expect("quote expiry must be set");
+        assert_eq!(
+            offer_expiry, quote_expiry,
+            "offer and quote expiry must match"
+        );
+    }
+
+    #[tokio::test]
+    async fn bolt12_mint_quote_rejects_bad_expiry() {
+        let mint = create_test_mint().await;
+        let pubkey = PublicKey::from_hex(
+            "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
+        )
+        .expect("test public key");
+
+        for bad in [0, 1_000_000] {
+            let err = mint
+                .get_mint_quote(
+                    MintQuoteBolt12Request {
+                        amount: Some(Amount::from(32)),
+                        unit: CurrencyUnit::Sat,
+                        description: None,
+                        pubkey,
+                        expiry_seconds: Some(bad),
+                    }
+                    .into(),
+                )
+                .await
+                .expect_err("bad expiry must fail");
+            assert!(
+                matches!(err, Error::QuoteExpiryInvalid { .. }),
+                "expected QuoteExpiryInvalid, got {err:?}"
+            );
+            let code = cdk_common::error::ErrorResponse::from(err).code;
+            assert_eq!(code.to_code(), 11018);
+        }
     }
 }

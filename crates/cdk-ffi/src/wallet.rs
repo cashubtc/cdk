@@ -307,13 +307,27 @@ impl Wallet {
         description: Option<String>,
         extra: Option<String>,
     ) -> Result<MintQuote, FfiError> {
+        self.mint_quote_with_expiry(payment_method, amount, description, extra, None)
+            .await
+    }
+
+    /// Get a mint quote with an optional requested expiry (nuts#415).
+    pub async fn mint_quote_with_expiry(
+        &self,
+        payment_method: PaymentMethod,
+        amount: Option<Amount>,
+        description: Option<String>,
+        extra: Option<String>,
+        expiry_seconds: Option<u64>,
+    ) -> Result<MintQuote, FfiError> {
         let quote = self
             .inner
-            .mint_quote(
+            .mint_quote_with_expiry(
                 payment_method.into(),
                 amount.map(Into::into),
                 description,
                 extra,
+                expiry_seconds,
             )
             .await?;
         Ok(quote.into())

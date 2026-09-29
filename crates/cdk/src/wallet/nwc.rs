@@ -1584,6 +1584,7 @@ mod tests {
                     max_amount: Some(Amount::from(500_000_u64)),
                     options: Some(crate::nuts::nut04::MintMethodOptions::Bolt11 {
                         description: false,
+                        max_expiry_seconds: None,
                     }),
                 }],
                 false,

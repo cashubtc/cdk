@@ -131,8 +131,8 @@ impl Serialize for MintMethodSettings {
         match &self.options {
             // NUT-23 (bolt11) and NUT-25 (bolt12) advertise description support
             // in a nested options object.
-            Some(MintMethodOptions::Bolt11 { description })
-            | Some(MintMethodOptions::Bolt12 { description }) => {
+            Some(MintMethodOptions::Bolt11 { description, .. })
+            | Some(MintMethodOptions::Bolt12 { description, .. }) => {
                 nested_description = Some(*description);
                 num_fields += 1; // for the "options" field
             }
@@ -251,6 +251,7 @@ impl<'de> Visitor<'de> for MintMethodSettingsVisitor {
 
                     if let Some(MintMethodOptions::Bolt11 {
                         description: desc_from_options,
+                        ..
                     }) = options
                     {
                         // If we already found a top-level description, use that instead
@@ -281,9 +282,15 @@ impl<'de> Visitor<'de> for MintMethodSettingsVisitor {
         // {"description": bool}, which untagged deserialization maps to the
         // Bolt11 variant. It is remapped here based on the method.
         let options = if method == PaymentMethod::Known(KnownMethod::Bolt11) {
-            description.map(|desc| MintMethodOptions::Bolt11 { description: desc })
+            description.map(|desc| MintMethodOptions::Bolt11 {
+                description: desc,
+                max_expiry_seconds: None,
+            })
         } else if method == PaymentMethod::Known(KnownMethod::Bolt12) {
-            description.map(|desc| MintMethodOptions::Bolt12 { description: desc })
+            description.map(|desc| MintMethodOptions::Bolt12 {
+                description: desc,
+                max_expiry_seconds: None,
+            })
         } else if method == PaymentMethod::Known(KnownMethod::Onchain) {
             confirmations.map(|conf| MintMethodOptions::Onchain {
                 confirmations: conf,
@@ -320,11 +327,17 @@ pub enum MintMethodOptions {
     Bolt11 {
         /// Mint supports setting bolt11 description
         description: bool,
+        /// Maximum requested quote lifetime in seconds (NUT-23, nuts#415)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_expiry_seconds: Option<u64>,
     },
     /// Bolt12 Options
     Bolt12 {
         /// Mint supports setting bolt12 description
         description: bool,
+        /// Maximum requested quote lifetime in seconds (NUT-25, nuts#415)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_expiry_seconds: Option<u64>,
     },
     /// Onchain Options
     Onchain {
@@ -789,7 +802,10 @@ mod tests {
             method_name: None,
             min_amount: Some(Amount::from(1)),
             max_amount: Some(Amount::from(1000)),
-            options: Some(MintMethodOptions::Bolt11 { description: true }),
+            options: Some(MintMethodOptions::Bolt11 {
+                description: true,
+                max_expiry_seconds: None,
+            }),
         });
 
         assert_mint_method_settings_field_count(&MintMethodSettings {
@@ -816,7 +832,10 @@ mod tests {
             method_name: None,
             min_amount: None,
             max_amount: None,
-            options: Some(MintMethodOptions::Bolt11 { description: true }),
+            options: Some(MintMethodOptions::Bolt11 {
+                description: true,
+                max_expiry_seconds: None,
+            }),
         });
 
         assert_mint_method_settings_field_count(&MintMethodSettings {
@@ -860,7 +879,10 @@ mod tests {
         assert_eq!(settings.max_amount, Some(Amount::from(10000)));
 
         match settings.options {
-            Some(MintMethodOptions::Bolt11 { description }) => {
+            Some(MintMethodOptions::Bolt11 {
+                description,
+                max_expiry_seconds: None,
+            }) => {
                 assert!(description);
             }
             _ => panic!("Expected Bolt11 options with description = true"),
@@ -882,7 +904,10 @@ mod tests {
             method_name: None,
             min_amount: None,
             max_amount: None,
-            options: Some(MintMethodOptions::Bolt11 { description: false }),
+            options: Some(MintMethodOptions::Bolt11 {
+                description: false,
+                max_expiry_seconds: None,
+            }),
         };
 
         let serialized = to_string(&settings).unwrap();
@@ -908,7 +933,10 @@ mod tests {
         let settings: MintMethodSettings = from_str(json_str).unwrap();
 
         match settings.options {
-            Some(MintMethodOptions::Bolt11 { description }) => {
+            Some(MintMethodOptions::Bolt11 {
+                description,
+                max_expiry_seconds: None,
+            }) => {
                 assert!(description);
             }
             _ => panic!("Expected Bolt11 options with description = true"),
@@ -939,7 +967,10 @@ mod tests {
         let settings: MintMethodSettings = from_str(json_str).unwrap();
 
         match settings.options {
-            Some(MintMethodOptions::Bolt11 { description }) => {
+            Some(MintMethodOptions::Bolt11 {
+                description,
+                max_expiry_seconds: None,
+            }) => {
                 assert!(description, "Top-level description should take precedence");
             }
             _ => panic!("Expected Bolt11 options with description = true"),
@@ -1134,7 +1165,10 @@ mod tests {
         assert_eq!(settings.unit, CurrencyUnit::Sat);
 
         match settings.options {
-            Some(MintMethodOptions::Bolt12 { description }) => {
+            Some(MintMethodOptions::Bolt12 {
+                description,
+                max_expiry_seconds: None,
+            }) => {
                 assert!(description);
             }
             _ => panic!("Expected Bolt12 options with description = true"),
@@ -1164,7 +1198,10 @@ mod tests {
 
         assert_eq!(settings.method, PaymentMethod::Known(KnownMethod::Bolt12));
         match settings.options {
-            Some(MintMethodOptions::Bolt12 { description }) => {
+            Some(MintMethodOptions::Bolt12 {
+                description,
+                max_expiry_seconds: None,
+            }) => {
                 assert!(description);
             }
             _ => panic!("Expected Bolt12 options with description = true"),
