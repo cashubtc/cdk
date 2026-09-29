@@ -30,23 +30,6 @@ enum SwapSagaRecoveryAction {
 }
 
 impl Mint {
-    /// Get incomplete melt saga by quote_id
-    async fn get_melt_saga_by_quote_id(&self, quote_id: &str) -> Result<Option<Saga>, Error> {
-        let incomplete_sagas = self
-            .localstore
-            .get_incomplete_sagas(OperationKind::Melt)
-            .await?;
-
-        for saga in incomplete_sagas {
-            if let Some(ref qid) = saga.quote_id {
-                if qid == quote_id {
-                    return Ok(Some(saga));
-                }
-            }
-        }
-        Ok(None)
-    }
-
     /// Returns the stable identifier a payment backend receives for this
     /// quote, including quotes created before that identifier was persisted.
     fn melt_payment_lookup_id(quote: &MeltQuote) -> PaymentIdentifier {
@@ -925,10 +908,7 @@ impl Mint {
             .await?
             .ok_or(Error::UnknownQuote)?;
 
-        let saga = match self
-            .get_melt_saga_by_quote_id(&quote.id.to_string())
-            .await?
-        {
+        let saga = match self.localstore.get_melt_saga_by_quote_id(&quote.id).await? {
             Some(saga) => saga,
             None => {
                 if quote.state == MeltQuoteState::Pending {
