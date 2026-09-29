@@ -37,6 +37,8 @@ pub enum OperationKind {
     Melt,
     /// Batch mint
     BatchMint,
+    /// NUT-XX transaction settled without a melt
+    Transaction,
 }
 
 /// A collection of proofs that share a common state.
@@ -107,6 +109,7 @@ impl fmt::Display for OperationKind {
             OperationKind::Mint => write!(f, "mint"),
             OperationKind::Melt => write!(f, "melt"),
             OperationKind::BatchMint => write!(f, "batch_mint"),
+            OperationKind::Transaction => write!(f, "transaction"),
         }
     }
 }
@@ -120,6 +123,7 @@ impl FromStr for OperationKind {
             "mint" => Ok(OperationKind::Mint),
             "melt" => Ok(OperationKind::Melt),
             "batch_mint" => Ok(OperationKind::BatchMint),
+            "transaction" => Ok(OperationKind::Transaction),
             _ => Err(Error::Custom(format!("Invalid operation kind: {value}"))),
         }
     }
@@ -220,7 +224,7 @@ impl SagaStateEnum {
         match operation_kind {
             OperationKind::Swap => Ok(SagaStateEnum::Swap(SwapSagaState::from_str(s)?)),
             OperationKind::Melt => Ok(SagaStateEnum::Melt(MeltSagaState::from_str(s)?)),
-            OperationKind::Mint | OperationKind::BatchMint => {
+            OperationKind::Mint | OperationKind::BatchMint | OperationKind::Transaction => {
                 Err(Error::Custom("Mint saga not implemented yet".to_string()))
             }
         }
@@ -708,6 +712,18 @@ impl MintQuote {
         self.amount_issued.clone()
     }
 
+    /// Reverses an issuance in memory; the database layer persists the reversal.
+    pub fn remove_issuance(
+        &mut self,
+        amount: Amount<CurrencyUnit>,
+    ) -> Result<Amount<CurrencyUnit>, crate::Error> {
+        self.amount_issued = self
+            .amount_issued
+            .checked_sub(&amount)
+            .map_err(|_| crate::Error::AmountOverflow)?;
+        Ok(self.amount_issued.clone())
+    }
+
     /// Unix timestamp indicating when this quote was last updated.
     pub fn updated_at(&self) -> u64 {
         self.updated_at
@@ -869,6 +885,34 @@ impl Issuance {
     pub fn new(amount: Amount<CurrencyUnit>, time: u64) -> Self {
         Self { amount, time }
     }
+}
+
+/// NUT-XX transaction record, keyed by transaction digest.
+///
+/// `excess` is `amount_in - fee - sum(outputs) - melt.amount`, fixed at
+/// acceptance; the change returned on settlement is `excess - melt_fee_paid`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransactionRecord {
+    /// Transaction digest, lowercase hex
+    pub digest: String,
+    /// State
+    pub state: cashu::nuts::TransactionState,
+    /// Unit of every input and output
+    pub unit: cashu::CurrencyUnit,
+    /// The melt quote this transaction pays, if any
+    pub melt_quote_id: Option<QuoteId>,
+    /// Mint quote inputs and the amount issued against each
+    pub quote_inputs: Vec<(QuoteId, cashu::Amount)>,
+    /// Change quote lock key
+    pub change_pubkey: Option<cashu::PublicKey>,
+    /// Inputs less fee, outputs and melt amount; the fee reserve is inside it
+    pub excess: cashu::Amount,
+    /// Change quote created on settlement
+    pub change_quote_id: Option<QuoteId>,
+    /// Saga or operation id the transaction runs under
+    pub operation_id: Uuid,
+    /// Unix time the transaction was accepted
+    pub created_time: u64,
 }
 
 /// Melt Quote Info

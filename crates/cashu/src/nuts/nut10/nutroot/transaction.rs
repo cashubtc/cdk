@@ -13,12 +13,14 @@ const PROOF_INPUT: u8 = 0x11;
 const MINT_QUOTE_INPUT: u8 = 0x12;
 const BLINDED_OUTPUT: u8 = 0x21;
 const MELT_QUOTE_OUTPUT: u8 = 0x22;
+const CHANGE_QUOTE_OUTPUT: u8 = 0x23;
 const AUTHORIZED_REQUEST: u8 = 0xf1;
 
 /// Quote identity and amount bound by a transaction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Quote {
-    /// Mint quote face amount, or melt amount including selected fee reserve.
+    /// Amount a mint quote issues in this transaction, or melt amount including
+    /// the selected fee reserve.
     pub amount: Amount,
     /// Quote identifier exactly as supplied by the mint.
     pub id: String,
@@ -52,8 +54,19 @@ impl Transaction {
         outputs: &[BlindedMessage],
         melt_quotes: &[Quote],
     ) -> Result<Self, Error> {
+        Self::with_change(proofs, mint_quotes, outputs, melt_quotes, None)
+    }
+
+    /// [`Transaction::new`] with a change quote output locked to `change_pubkey`.
+    pub fn with_change(
+        proofs: &[Proof],
+        mint_quotes: &[MintQuoteInput],
+        outputs: &[BlindedMessage],
+        melt_quotes: &[Quote],
+        change_pubkey: Option<&bitcoin::secp256k1::PublicKey>,
+    ) -> Result<Self, Error> {
         if (proofs.is_empty() && mint_quotes.is_empty())
-            || (outputs.is_empty() && melt_quotes.is_empty())
+            || (outputs.is_empty() && melt_quotes.is_empty() && change_pubkey.is_none())
         {
             return Err(Error::InvalidTransaction);
         }
@@ -118,6 +131,9 @@ impl Transaction {
                 ],
             )?);
         }
+        if let Some(key) = change_pubkey {
+            transcript.extend(container(CHANGE_QUOTE_OUTPUT, &[key.serialize().to_vec()])?);
+        }
         Ok(Self::from_parts(transcript, inputs))
     }
 
@@ -133,7 +149,11 @@ impl Transaction {
         let mut quotes = HashSet::new();
         let mut output = false;
         for (tag, value, full) in records {
-            if tag < last || !matches!(tag >> 4, 1 | 2) {
+            // A transaction has at most one change quote, so its container may not repeat.
+            if tag < last
+                || !matches!(tag >> 4, 1 | 2)
+                || (tag == CHANGE_QUOTE_OUTPUT && last == CHANGE_QUOTE_OUTPUT)
+            {
                 return Err(Error::InvalidTransaction);
             }
             last = tag;
@@ -142,6 +162,7 @@ impl Transaction {
                 PROOF_INPUT => 4,
                 MELT_QUOTE_OUTPUT => 2,
                 MINT_QUOTE_INPUT | BLINDED_OUTPUT => 3,
+                CHANGE_QUOTE_OUTPUT => 1,
                 _ => return Err(Error::InvalidTransaction),
             };
             if fields.len() != count
@@ -151,6 +172,15 @@ impl Transaction {
                     .any(|(i, (tag, _, _))| usize::from(*tag) != i + 1)
             {
                 return Err(Error::InvalidTransaction);
+            }
+            if tag == 6 {
+                let key = crate::nuts::PublicKey::from_slice(fields[0].1)
+                    .map_err(|_| Error::InvalidTransaction)?;
+                if !matches!(key, crate::nuts::PublicKey::Secp256k1(_)) {
+                    return Err(Error::InvalidTransaction);
+                }
+                output = true;
+                continue;
             }
             let amount = fields[0].1;
             if amount.len() > 8 || amount.first() == Some(&0) {
