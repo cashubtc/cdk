@@ -34,6 +34,10 @@ impl Mint {
         {
             return Ok(());
         }
+        // A change quote is paid at creation and has no backend behind it (NUT-XX).
+        if quote.payment_method.is_change() {
+            return Ok(());
+        }
 
         // Claim this check before contacting the backend. The conditional update prevents
         // concurrent HTTP or WebSocket status requests, including requests handled by different
