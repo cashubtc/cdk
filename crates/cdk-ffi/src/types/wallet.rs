@@ -612,8 +612,11 @@ impl PreparedSend {
     }
 
     /// Get the total fee for this send operation
+    ///
+    /// Saturates rather than wrapping; both operands are already-computed fees
+    /// and this getter is infallible across the FFI boundary.
     pub fn fee(&self) -> Amount {
-        Amount::new(self.swap_fee.value + self.send_fee.value)
+        Amount::new(self.swap_fee.value.saturating_add(self.send_fee.value))
     }
 
     /// Confirm the prepared send and create a token
@@ -877,8 +880,10 @@ impl PreparedMelt {
     }
 
     /// Get the total fee (swap fee + input fee)
+    ///
+    /// Saturates for the same reason as [`PreparedSend::fee`].
     pub fn total_fee(&self) -> Amount {
-        Amount::new(self.swap_fee.value + self.input_fee.value)
+        Amount::new(self.swap_fee.value.saturating_add(self.input_fee.value))
     }
 
     /// Returns true if a swap would be performed (proofs_to_swap is not empty)
@@ -887,8 +892,10 @@ impl PreparedMelt {
     }
 
     /// Get the total fee if swap is performed (current default behavior)
+    ///
+    /// Saturates for the same reason as [`PreparedSend::fee`].
     pub fn total_fee_with_swap(&self) -> Amount {
-        Amount::new(self.swap_fee.value + self.input_fee.value)
+        Amount::new(self.swap_fee.value.saturating_add(self.input_fee.value))
     }
 
     /// Get the input fee if swap is skipped (fee on all proofs sent directly)
@@ -898,25 +905,28 @@ impl PreparedMelt {
 
     /// Get the fee savings from skipping the swap
     pub fn fee_savings_without_swap(&self) -> Amount {
-        let total_with = self.swap_fee.value + self.input_fee.value;
+        let total_with = self.swap_fee.value.saturating_add(self.input_fee.value);
         let total_without = self.input_fee_without_swap.value;
-        if total_with > total_without {
-            Amount::new(total_with - total_without)
-        } else {
-            Amount::new(0)
-        }
+        Amount::new(total_with.saturating_sub(total_without))
     }
 
     /// Get the expected change amount if swap is skipped
     pub fn change_amount_without_swap(&self) -> Amount {
         use cdk::nuts::nut00::ProofsMethods;
-        let all_proofs_total = self.proofs.total_amount().unwrap_or(cdk::Amount::ZERO)
-            + self
-                .proofs_to_swap
-                .total_amount()
-                .unwrap_or(cdk::Amount::ZERO);
-        let needed =
-            self.quote.amount + self.quote.fee_reserve + self.input_fee_without_swap.into();
+        let all_proofs_total = self
+            .proofs
+            .total_amount()
+            .unwrap_or(cdk::Amount::ZERO)
+            .saturating_add(
+                self.proofs_to_swap
+                    .total_amount()
+                    .unwrap_or(cdk::Amount::ZERO),
+            );
+        let needed = self
+            .quote
+            .amount
+            .saturating_add(self.quote.fee_reserve)
+            .saturating_add(self.input_fee_without_swap.into());
         all_proofs_total
             .checked_sub(needed)
             .map(|a| a.into())

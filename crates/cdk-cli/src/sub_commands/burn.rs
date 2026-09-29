@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use cdk::mint_url::MintUrl;
 use cdk::wallet::WalletRepository;
 use cdk::Amount;
@@ -19,13 +19,17 @@ pub async fn burn(
     match &sub_command_args.mint_url {
         Some(mint_url) => {
             for wallet in wallet_repository.get_wallets_for_mint(mint_url).await {
-                total_burnt += wallet.check_all_pending_proofs().await?;
+                total_burnt = total_burnt
+                    .checked_add(wallet.check_all_pending_proofs().await?)
+                    .ok_or_else(|| anyhow!("total burnt amount overflowed"))?;
             }
         }
         None => {
             for wallet in wallet_repository.get_wallets().await {
                 let amount_burnt = wallet.check_all_pending_proofs().await?;
-                total_burnt += amount_burnt;
+                total_burnt = total_burnt
+                    .checked_add(amount_burnt)
+                    .ok_or_else(|| anyhow!("total burnt amount overflowed"))?;
             }
         }
     }

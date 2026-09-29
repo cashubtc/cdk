@@ -966,7 +966,13 @@ impl MintPayment for CdkBdk {
                 crate::send::payment_intent::record::SendIntentState::AwaitingConfirmation {
                     fee_contribution_sat,
                     ..
-                } => Amount::new(record.amount_sat + fee_contribution_sat, CurrencyUnit::Sat),
+                } => Amount::new(
+                    record
+                        .amount_sat
+                        .checked_add(*fee_contribution_sat)
+                        .ok_or(cdk_common::amount::Error::AmountOverflow)?,
+                    CurrencyUnit::Sat,
+                ),
                 crate::send::payment_intent::record::SendIntentState::Failed { .. } => {
                     Amount::new(0, CurrencyUnit::Sat)
                 }
