@@ -199,7 +199,9 @@ pub async fn mint(
             // A batch of proofs was issued.
             Ok(Some(Ok(proofs))) => {
                 let batch = proofs.total_amount()?;
-                amount_minted += batch;
+                amount_minted = amount_minted
+                    .checked_add(batch)
+                    .ok_or_else(|| anyhow!("minted amount overflowed"))?;
                 println!("Minted {batch} {unit} (total: {amount_minted} {unit})");
             }
             // The stream surfaced an error.

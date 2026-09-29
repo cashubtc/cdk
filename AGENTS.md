@@ -308,6 +308,7 @@ Conventional commits: `feat:`, `fix:`, `docs:`, `chore:`, `refactor:`, `test:`.
 | Regtest testing guide | `REGTEST_GUIDE.md` |
 | Security policy | `SECURITY.md` |
 | v0.15 migration guide | `docs/migrations/v0.15.md` |
+| v0.19 migration guide | `docs/migrations/v0.19.md` |
 | Wallet architecture | `crates/cdk/src/wallet/README.md` |
 | Mint daemon example config | `crates/cdk-mintd/example.config.toml` |
 | LDK Node networking | `crates/cdk-ldk-node/NETWORK_GUIDE.md` |

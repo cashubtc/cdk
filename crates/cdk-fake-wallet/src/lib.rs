@@ -11,7 +11,6 @@
 
 #![doc = include_str!("../README.md")]
 
-use std::cmp::max;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -283,9 +282,10 @@ impl SecondaryRepaymentQueue {
                     // Create amount based on unit, ensuring minimum of 1 sat worth
                     let secondary_amount = match &unit {
                         CurrencyUnit::Sat => Amount::new(random_amount, unit.clone()),
-                        CurrencyUnit::Msat => {
-                            Amount::new(u64::max(random_amount * 1000, 1000), unit.clone())
-                        }
+                        CurrencyUnit::Msat => Amount::new(
+                            u64::max(random_amount.saturating_mul(1000), 1000),
+                            unit.clone(),
+                        ),
                         _ => Amount::new(u64::max(random_amount, 1), unit.clone()), // fallback
                     };
 
@@ -428,13 +428,8 @@ impl FakeWallet {
     }
 
     fn fee_for_amount(&self, amount: &Amount<CurrencyUnit>) -> Amount<CurrencyUnit> {
-        let relative_fee_reserve =
-            (self.fee_reserve.percent_fee_reserve * amount.value() as f32) as u64;
-
-        let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
-
         Amount::new(
-            max(relative_fee_reserve, absolute_fee_reserve),
+            self.fee_reserve.for_amount(amount.clone().into()).to_u64(),
             amount.unit().clone(),
         )
     }
@@ -752,7 +747,7 @@ impl MintPayment for FakeWallet {
                     ),
                     payment_proof: Some("".to_string()),
                     status: payment_status,
-                    total_spent: Amount::new(total_spent.value() + 1, unit.clone()),
+                    total_spent: Amount::new(total_spent.value().saturating_add(1), unit.clone()),
                 })
             }
             OutgoingPaymentOptions::Bolt12(bolt12_options) => {
@@ -780,7 +775,7 @@ impl MintPayment for FakeWallet {
                     payment_lookup_id: PaymentIdentifier::CustomId(Uuid::new_v4().to_string()),
                     payment_proof: Some("".to_string()),
                     status: MeltQuoteState::Paid,
-                    total_spent: Amount::new(total_spent.value() + 1, unit.clone()),
+                    total_spent: Amount::new(total_spent.value().saturating_add(1), unit.clone()),
                 })
             }
             OutgoingPaymentOptions::Custom(custom_options) => {
@@ -798,7 +793,7 @@ impl MintPayment for FakeWallet {
                     payment_lookup_id: PaymentIdentifier::CustomId(Uuid::new_v4().to_string()),
                     payment_proof: Some(custom_options.request),
                     status: MeltQuoteState::Paid,
-                    total_spent: Amount::new(total_spent.value() + 1, unit.clone()),
+                    total_spent: Amount::new(total_spent.value().saturating_add(1), unit.clone()),
                 })
             }
             OutgoingPaymentOptions::Onchain(onchain_options) => {
@@ -806,7 +801,10 @@ impl MintPayment for FakeWallet {
                 let quote_id = onchain_options.quote_id;
                 let fee = self.fee_for_amount(&amount);
 
-                let total_spent = Amount::new(amount.value() + fee.value(), amount.unit().clone());
+                let total_spent = Amount::new(
+                    amount.value().saturating_add(fee.value()),
+                    amount.unit().clone(),
+                );
                 let payment_proof = fake_onchain_outpoint(&quote_id.to_string());
 
                 self.payment_states.lock().await.insert(

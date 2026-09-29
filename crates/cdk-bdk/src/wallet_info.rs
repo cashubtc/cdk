@@ -249,7 +249,7 @@ impl CdkBdk {
                     received_sat,
                     sent_sat,
                     fee_sat: wallet.calculate_fee(tx).ok().map(|fee| fee.to_sat()),
-                    balance_delta_sat: received_signed - sent_signed,
+                    balance_delta_sat: received_signed.saturating_sub(sent_signed),
                     confirmation_height,
                     confirmation_time,
                     first_seen,
