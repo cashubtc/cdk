@@ -176,6 +176,7 @@ pub mod test_utils {
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         }
     }
 
@@ -206,6 +207,7 @@ pub mod test_utils {
             mint_url,
             CurrencyUnit::Sat,
             OperationData::Swap(SwapOperationData {
+                premint_secrets: None,
                 input_amount: Amount::from(1000),
                 output_amount: Amount::from(990),
                 counter_start: Some(0),

@@ -69,13 +69,16 @@ pub enum Error {
 }
 
 /// Keyset version
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum KeySetVersion {
     /// Version 00
+    #[serde(rename = "00")]
     Version00,
     /// Version 01
+    #[serde(rename = "01")]
     Version01,
     /// Version 02
+    #[serde(rename = "02")]
     Version02,
 }
 

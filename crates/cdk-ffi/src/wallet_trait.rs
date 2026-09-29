@@ -19,6 +19,19 @@ use crate::wallet::Wallet;
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl WalletTraitDef for Wallet {
+    async fn nutroot_receipt_ids(&self) -> Result<Vec<String>, Self::Error> {
+        Ok(self.inner().nutroot_receipt_ids().await?)
+    }
+    async fn export_nutroot_receipt(&self, id: &str) -> Result<String, Self::Error> {
+        Ok(self.inner().export_nutroot_receipt(id).await?)
+    }
+    async fn verify_nutroot_receipt(&self, encoded: &str) -> Result<(), Self::Error> {
+        Ok(self.inner().verify_nutroot_receipt(encoded).await?)
+    }
+    async fn sign_nutroot_package(&self, encoded: &str) -> Result<String, Self::Error> {
+        Ok(self.inner().sign_nutroot_package(encoded).await?)
+    }
+
     type Error = FfiError;
     type Amount = Amount;
     type MintUrl = MintUrl;

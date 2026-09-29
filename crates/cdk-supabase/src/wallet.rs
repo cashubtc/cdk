@@ -243,7 +243,7 @@ impl SupabaseWalletDatabase {
     /// This must match the latest `schema_version` value set in the migration files.
     /// When adding new migrations, update this constant and set the same value
     /// in the new migration's `INSERT INTO schema_info` statement.
-    pub const REQUIRED_SCHEMA_VERSION: u32 = 10;
+    pub const REQUIRED_SCHEMA_VERSION: u32 = 11;
 
     /// Get the full database schema SQL
     ///
@@ -2824,6 +2824,8 @@ struct ProofTable {
     created_by_operation: Option<String>,
     #[serde(default)]
     p2pk_e: Option<String>,
+    #[serde(default)]
+    spend_info: Option<String>,
     /// Extra fields from other applications (captured during deserialization, ignored during serialization)
     #[serde(default, skip_serializing, flatten)]
     _extra: serde_json::Map<String, serde_json::Value>,
@@ -2832,6 +2834,8 @@ struct ProofTable {
 impl TryInto<ProofInfo> for ProofTable {
     type Error = DatabaseError;
     fn try_into(self) -> Result<ProofInfo, Self::Error> {
+        let keyset_id =
+            Id::from_str(&self.keyset_id).map_err(|_| DatabaseError::InvalidKeysetId)?;
         let y = PublicKey::from_hex(&self.y)
             .map_err(|_| DatabaseError::Internal("Invalid y".into()))?;
         let c = PublicKey::from_hex(&self.c)
@@ -2856,15 +2860,16 @@ impl TryInto<ProofInfo> for ProofTable {
                 .map_err(|_| DatabaseError::Internal("Invalid derivation index".to_owned()))?,
             proof: cdk_common::Proof {
                 amount: cdk_common::Amount::from(self.amount as u64),
-                keyset_id: Id::from_str(&self.keyset_id)
-                    .map_err(|_| DatabaseError::InvalidKeysetId)?,
+                keyset_id,
                 secret: Secret::from_str(&self.secret)
                     .map_err(|_| DatabaseError::Internal("Invalid secret".into()))?,
                 c,
                 witness: self
                     .witness
                     .filter(|w| !w.trim().is_empty())
-                    .map(|w| serde_json::from_str(&w))
+                    .map(|w| {
+                        cdk_common::Witness::from_json_for_version(&w, keyset_id.get_version())
+                    })
                     .transpose()?,
                 dleq: match (self.dleq_e, self.dleq_s, self.dleq_r) {
                     (Some(e), Some(s), Some(r)) => Some(cdk_common::ProofDleq {
@@ -2877,6 +2882,11 @@ impl TryInto<ProofInfo> for ProofTable {
                     }),
                     _ => None,
                 },
+                spend_info: self
+                    .spend_info
+                    .map(|value| serde_json::from_str(&value))
+                    .transpose()
+                    .map_err(|e| DatabaseError::Internal(e.to_string()))?,
                 p2pk_e: self
                     .p2pk_e
                     .map(|s| PublicKey::from_hex(&s))
@@ -2936,6 +2946,13 @@ impl TryFrom<ProofInfo> for ProofTable {
                 .map(|d| hex::encode(d.r.to_secret_bytes())),
             used_by_operation: p.used_by_operation.map(|u| u.to_string()),
             created_by_operation: p.created_by_operation.map(|u| u.to_string()),
+            spend_info: p
+                .proof
+                .spend_info
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(|e| DatabaseError::Internal(e.to_string()))?,
             p2pk_e: p.proof.p2pk_e.map(|e| hex::encode(e.to_bytes())),
             _extra: Default::default(),
         })

@@ -74,9 +74,14 @@ pub(crate) fn should_fail_for(operation: &str) -> bool {
 /// }
 /// ```
 pub async fn create_test_mint() -> Result<Mint, Error> {
+    create_test_mint_with_version(Some(true)).await
+}
+
+/// Create a mint with an explicit issuance version (`None` selects Nutroot).
+pub async fn create_test_mint_with_version(version: Option<bool>) -> Result<Mint, Error> {
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await?);
 
-    let mut mint_builder = MintBuilder::new(db.clone());
+    let mut mint_builder = MintBuilder::new(db.clone()).with_keyset_v2(version);
 
     let fee_reserve = FeeReserve {
         min_fee_reserve: 1.into(),
@@ -132,14 +137,14 @@ pub async fn create_test_mint() -> Result<Mint, Error> {
 /// * `mint` - The test mint to use for creating proofs
 /// * `amount` - The total amount to create proofs for
 pub async fn mint_test_proofs(mint: &Mint, amount: Amount) -> Result<Proofs, Error> {
-    // Just use fund_mint_with_proofs which creates proofs via swap
+    let quote_key = cdk_common::nuts::SecretKey::generate();
     let mint_quote: MintQuoteBolt11Response<_> = mint
         .get_mint_quote(
             MintQuoteBolt11Request {
                 amount,
                 unit: CurrencyUnit::Sat,
                 description: None,
-                pubkey: None,
+                pubkey: Some(quote_key.public_key()),
             }
             .into(),
         )
@@ -178,22 +183,48 @@ pub async fn mint_test_proofs(mint: &Mint, amount: Amount) -> Result<Proofs, Err
     let premint_secrets =
         PreMintSecrets::random(keysets, amount, &SplitTarget::None, &fees.into()).unwrap();
 
-    let request = MintRequest {
-        quote: mint_quote.quote,
+    let mut request = MintRequest {
+        quote: mint_quote.quote.clone(),
         outputs: premint_secrets.blinded_messages(),
         signature: None,
     };
 
+    if keysets.get_version() == cdk_common::nuts::KeySetVersion::Version02 {
+        let transaction = cdk_common::nuts::nut10::nutroot::Transaction::new(
+            &[],
+            &[cdk_common::nuts::nut10::nutroot::Quote {
+                id: mint_quote.quote,
+                amount,
+            }],
+            &request.outputs,
+            &[],
+        )
+        .map_err(cdk_common::nuts::nut10::Error::from)?;
+        request.signature = Some(
+            cdk_common::nuts::nut10::nutroot::Witness::key_path(
+                quote_key.as_secp256k1()?,
+                transaction
+                    .input_digest(0)
+                    .map_err(cdk_common::nuts::nut10::Error::from)?,
+            )
+            .signatures[0]
+                .clone(),
+        );
+    } else {
+        request.sign(&quote_key)?;
+    }
     let mint_res = mint
         .process_mint_request(crate::mint::MintInput::Single(request.try_into().unwrap()))
         .await?;
 
-    Ok(construct_proofs(
+    let mut proofs = construct_proofs(
         mint_res.signatures,
         premint_secrets.rs(),
         premint_secrets.secrets(),
         &keys,
-    )?)
+    )?;
+    premint_secrets.attach_spend_info(&mut proofs);
+    Ok(proofs)
 }
 
 /// Creates test blinded messages for the given amount.

@@ -276,7 +276,26 @@ impl Wallet {
 
         self.keysets(Default::default()).await?;
 
-        let secret_key = self.next_mint_quote_signing_key().await?;
+        let secret_key = if self.active_keyset().await?.id.get_version()
+            == crate::nuts::KeySetVersion::Version02
+        {
+            let identity = mint_info.pubkey.ok_or(Error::SignatureMissingOrInvalid)?;
+            let namespace = format!("nutroot_quote:{}", identity);
+            let next = self
+                .localstore
+                .increment_derivation_counter(&namespace, 1)
+                .await?;
+            let counter = next.checked_sub(1).ok_or(Error::AmountOverflow)?;
+            crate::nuts::nut10::nutroot::derive_quote_key(
+                &self.seed,
+                *identity.as_secp256k1()?,
+                counter.into(),
+            )
+            .map_err(crate::nuts::nut10::Error::from)?
+            .into()
+        } else {
+            self.next_mint_quote_signing_key().await?
+        };
 
         let request = match &method {
             PaymentMethod::Known(KnownMethod::Bolt11) => {

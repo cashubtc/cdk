@@ -20,6 +20,9 @@ use crate::{Amount, SECP256K1};
 /// NUT13 Error
 #[derive(Debug, Error)]
 pub enum Error {
+    /// Nutroot derivation error.
+    #[error(transparent)]
+    Nutroot(#[from] crate::nuts::nut10::nutroot::Error),
     /// DHKE error
     #[error(transparent)]
     DHKE(#[from] crate::dhke::Error),
@@ -51,8 +54,17 @@ impl Secret {
     pub fn from_seed(seed: &[u8; 64], keyset_id: Id, counter: u32) -> Result<Self, Error> {
         match keyset_id.get_version() {
             KeySetVersion::Version00 => Self::legacy_derive(seed, keyset_id, counter),
-            KeySetVersion::Version01 | KeySetVersion::Version02 => {
-                Self::derive(seed, keyset_id, counter)
+            KeySetVersion::Version01 => Self::derive(seed, keyset_id, counter),
+            KeySetVersion::Version02 => {
+                let key = crate::nuts::nut10::nutroot::derive_key(
+                    seed,
+                    keyset_id,
+                    u64::from(counter),
+                    crate::nuts::nut10::nutroot::KeyPurpose::Internal,
+                )?;
+                Ok(Self::new(
+                    secp256k1::PublicKey::from_secret_key(&SECP256K1, &key).to_string(),
+                ))
             }
         }
     }
@@ -133,6 +145,7 @@ impl SecretKey {
     ) -> Result<(Self, u32), Error> {
         let mut message = Vec::new();
         message.extend_from_slice(b"Cashu_KDF_HMAC_SHA256");
+        message.extend_from_slice(&(keyset_id.to_bytes().len() as u32).to_be_bytes());
         message.extend_from_slice(&keyset_id.to_bytes());
         message.extend_from_slice(&(counter as u64).to_be_bytes());
         message.extend_from_slice(b"\x01");
@@ -188,6 +201,7 @@ impl PreMintSecrets {
             let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
 
             let pre_mint = PreMint {
+                spend_info: None,
                 blinded_message,
                 secret: secret.clone(),
                 r,
@@ -229,6 +243,7 @@ impl PreMintSecrets {
             let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
 
             let pre_mint = PreMint {
+                spend_info: None,
                 blinded_message,
                 secret: secret.clone(),
                 r,
@@ -265,6 +280,7 @@ impl PreMintSecrets {
             let blinded_message = BlindedMessage::new(Amount::ZERO, keyset_id, blinded);
 
             let pre_mint = PreMint {
+                spend_info: None,
                 blinded_message,
                 secret: secret.clone(),
                 r,
@@ -569,19 +585,26 @@ mod tests {
                 .unwrap();
         let counter = 0;
 
-        let secret = Secret::derive(seed, keyset_id, counter).unwrap();
+        let key = crate::nuts::nut10::nutroot::derive_key(
+            seed,
+            keyset_id,
+            counter.into(),
+            crate::nuts::nut10::nutroot::KeyPurpose::Internal,
+        )
+        .unwrap();
+        let secret = secp256k1::PublicKey::from_secret_key(&SECP256K1, &key);
         let (blinding_factor, accepted_attempt) =
             SecretKey::derive_bls_with_attempt(seed, keyset_id, counter).unwrap();
 
         assert_eq!(
             secret.to_string(),
-            "1b46679baea2775038059f5c6aa74a1d82526b33836668219ccdec01aa7d82ef"
+            "02e6e7cfa7b82d4b3b449fa6466c893469a727d0214d48db4956a6054b8022a29b"
         );
         assert_eq!(
             blinding_factor.to_secret_hex(),
-            "513d1a0f0f01a09fdad2f7cea1403143fb86a1be2d152969b46b45cdaabd21aa"
+            "156857a0bce1b2788895f1885a21c56cf000df0de1e855608c7ccb6d9e2d7728"
         );
-        assert_eq!(accepted_attempt, 3);
+        assert_eq!(accepted_attempt, 7);
     }
 
     #[test]

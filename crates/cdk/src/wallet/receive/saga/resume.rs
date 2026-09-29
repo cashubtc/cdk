@@ -295,6 +295,7 @@ mod tests {
             mint_url.clone(),
             CurrencyUnit::Sat,
             OperationData::Receive(ReceiveOperationData {
+                premint_secrets: None,
                 token: Some("test_token".to_string()),
                 counter_start: None,
                 counter_end: None,
@@ -337,6 +338,7 @@ mod tests {
             mint_url.clone(),
             CurrencyUnit::Sat,
             OperationData::Receive(ReceiveOperationData {
+                premint_secrets: None,
                 token: Some("test_token".to_string()),
                 counter_start: Some(0),
                 counter_end: Some(1),
@@ -401,6 +403,7 @@ mod tests {
             mint_url.clone(),
             CurrencyUnit::Sat,
             OperationData::Receive(ReceiveOperationData {
+                premint_secrets: None,
                 token: Some("test_token".to_string()),
                 counter_start: Some(0),
                 counter_end: Some(10),
@@ -415,6 +418,8 @@ mod tests {
         let mock_client = Arc::new(MockMintConnector::new());
         mock_client.set_check_state_response(Ok(CheckStateResponse {
             states: vec![ProofState {
+                input_digest: None,
+                commitment: None,
                 y: proof_y,
                 state: State::Unspent, // Not spent yet
                 witness: None,
@@ -466,6 +471,7 @@ mod tests {
             mint_url.clone(),
             CurrencyUnit::Sat,
             OperationData::Receive(ReceiveOperationData {
+                premint_secrets: None,
                 token: Some("test_token".to_string()),
                 counter_start: Some(0),
                 counter_end: Some(10),
@@ -480,6 +486,8 @@ mod tests {
         let mock_client = Arc::new(MockMintConnector::new());
         mock_client.set_check_state_response(Ok(CheckStateResponse {
             states: vec![ProofState {
+                input_digest: None,
+                commitment: None,
                 y: proof_y,
                 state: State::Spent, // Spent at mint
                 witness: None,

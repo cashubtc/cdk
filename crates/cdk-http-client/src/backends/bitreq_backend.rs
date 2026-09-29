@@ -286,6 +286,12 @@ impl BitreqRequestBuilder {
         }
     }
 
+    /// Set exact serialized request bytes.
+    pub fn body_bytes(mut self, bytes: Vec<u8>) -> Self {
+        self.inner = self.inner.with_body(bytes);
+        self
+    }
+
     /// Set the request body as JSON.
     pub fn json<T>(mut self, body: &T) -> Self
     where

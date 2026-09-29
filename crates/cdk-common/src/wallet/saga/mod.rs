@@ -119,6 +119,28 @@ pub enum OperationData {
 }
 
 impl OperationData {
+    /// Exact output material saved before the network request, if available.
+    pub fn premint_secrets(&self) -> Option<&cashu::PreMintSecrets> {
+        match self {
+            Self::Swap(data) => data.premint_secrets.as_ref(),
+            Self::Receive(data) => data.premint_secrets.as_ref(),
+            Self::Mint(data) => data.premint_secrets.as_ref(),
+            Self::Melt(data) => data.premint_secrets.as_ref(),
+            Self::Send(_) => None,
+        }
+    }
+
+    /// Persist the exact output material for crash recovery.
+    pub fn set_premint_secrets(&mut self, secrets: cashu::PreMintSecrets) {
+        match self {
+            Self::Swap(data) => data.premint_secrets = Some(secrets),
+            Self::Receive(data) => data.premint_secrets = Some(secrets),
+            Self::Mint(data) => data.premint_secrets = Some(secrets),
+            Self::Melt(data) => data.premint_secrets = Some(secrets),
+            Self::Send(_) => {}
+        }
+    }
+
     /// Get the operation kind
     pub fn kind(&self) -> OperationKind {
         match self {

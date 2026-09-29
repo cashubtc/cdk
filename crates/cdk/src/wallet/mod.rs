@@ -58,6 +58,7 @@ mod mint_connector;
 mod mint_metadata_cache;
 #[cfg(feature = "npubcash")]
 mod npubcash;
+mod nutroot;
 #[cfg(feature = "nwc")]
 pub mod nwc;
 mod p2pk;
@@ -1339,6 +1340,7 @@ mod tests {
         let (blinded3, r3) = crate::dhke::blind_message(&secret3.to_bytes(), None).unwrap();
 
         let premint1 = PreMint {
+            spend_info: None,
             blinded_message: BlindedMessage::new(Amount::from(1), keyset_id, blinded1),
             secret: secret1.clone(),
             r: r1.clone(),
@@ -1346,6 +1348,7 @@ mod tests {
             derivation_index: None,
         };
         let premint2 = PreMint {
+            spend_info: None,
             blinded_message: BlindedMessage::new(Amount::from(2), keyset_id, blinded2),
             secret: secret2.clone(),
             r: r2.clone(),
@@ -1353,6 +1356,7 @@ mod tests {
             derivation_index: None,
         };
         let premint3 = PreMint {
+            spend_info: None,
             blinded_message: BlindedMessage::new(Amount::from(4), keyset_id, blinded3),
             secret: secret3.clone(),
             r: r3.clone(),
@@ -1440,6 +1444,7 @@ mod tests {
         let (blinded3, r3) = crate::dhke::blind_message(&secret3.to_bytes(), None).unwrap();
 
         let premint1 = PreMint {
+            spend_info: None,
             blinded_message: BlindedMessage::new(Amount::from(1), keyset_id, blinded1),
             secret: secret1.clone(),
             r: r1.clone(),
@@ -1447,6 +1452,7 @@ mod tests {
             derivation_index: None,
         };
         let premint2 = PreMint {
+            spend_info: None,
             blinded_message: BlindedMessage::new(Amount::from(2), keyset_id, blinded2),
             secret: secret2.clone(),
             r: r2.clone(),
@@ -1454,6 +1460,7 @@ mod tests {
             derivation_index: None,
         };
         let premint3 = PreMint {
+            spend_info: None,
             blinded_message: BlindedMessage::new(Amount::from(4), keyset_id, blinded3),
             secret: secret3.clone(),
             r: r3.clone(),
@@ -1541,6 +1548,7 @@ mod tests {
         let (blinded3, r3) = crate::dhke::blind_message(&secret3.to_bytes(), None).unwrap();
 
         let premint1 = PreMint {
+            spend_info: None,
             blinded_message: BlindedMessage::new(Amount::from(1), keyset_id, blinded1),
             secret: secret1.clone(),
             r: r1.clone(),
@@ -1548,6 +1556,7 @@ mod tests {
             derivation_index: None,
         };
         let premint2 = PreMint {
+            spend_info: None,
             blinded_message: BlindedMessage::new(Amount::from(2), keyset_id, blinded2),
             secret: secret2.clone(),
             r: r2.clone(),
@@ -1555,6 +1564,7 @@ mod tests {
             derivation_index: None,
         };
         let premint3 = PreMint {
+            spend_info: None,
             blinded_message: BlindedMessage::new(Amount::from(4), keyset_id, blinded3),
             secret: secret3.clone(),
             r: r3.clone(),

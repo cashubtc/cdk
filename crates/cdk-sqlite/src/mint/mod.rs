@@ -94,6 +94,7 @@ mod test {
         );
 
         let proof = AuthProof {
+            witness: None,
             keyset_id: Id::from_str("00916bbf7ef91a36").expect("valid keyset id"),
             secret: Secret::generate(),
             c: SecretKey::generate().public_key(),

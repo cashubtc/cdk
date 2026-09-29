@@ -66,8 +66,11 @@ impl<'a> TlvReader<'a> {
     }
 
     fn read_tlv(&mut self) -> Result<Option<(u8, Vec<u8>)>, Error> {
-        if self.position + 3 > self.data.len() {
+        if self.position == self.data.len() {
             return Ok(None);
+        }
+        if self.position + 3 > self.data.len() {
+            return Err(Error::InvalidLength);
         }
 
         let tag = self.data[self.position];
@@ -153,6 +156,7 @@ impl PaymentRequest {
     ///     description: None,
     ///     transports: vec![],
     ///     nut10: None,
+    ///     nutroot: None,
     /// };
     ///
     /// let encoded = payment_request.to_bech32_string()?;
@@ -231,6 +235,7 @@ impl PaymentRequest {
         let mut description: Option<String> = None;
         let mut transports: Vec<Transport> = Vec::new();
         let mut nut10: Option<Nut10SecretRequest> = None;
+        let mut nutroot = None;
 
         while let Some((tag, value)) = reader.read_tlv()? {
             match tag {
@@ -321,6 +326,12 @@ impl PaymentRequest {
                     let method = Self::decode_supported_method(&value)?;
                     supported_methods.push(method);
                 }
+                0x0b => {
+                    if nutroot.is_some() {
+                        return Err(Error::InvalidStructure);
+                    }
+                    nutroot = Some(Self::decode_nutroot(&value)?);
+                }
                 _ => {
                     // Unknown tags are ignored
                 }
@@ -338,6 +349,7 @@ impl PaymentRequest {
             description,
             transports,
             nut10,
+            nutroot,
         })
     }
 
@@ -385,6 +397,10 @@ impl PaymentRequest {
         for transport in &self.transports {
             let transport_bytes = Self::encode_transport(transport)?;
             writer.write_tlv(0x07, &transport_bytes)?;
+        }
+
+        if let Some(policy) = &self.nutroot {
+            writer.write_tlv(0x0b, &Self::encode_nutroot(policy)?)?;
         }
 
         // 0x08 nut10: sub-TLV
@@ -622,6 +638,72 @@ impl PaymentRequest {
     }
 
     /// Decode NUT-10 sub-TLV
+    fn decode_nutroot(bytes: &[u8]) -> Result<crate::nuts::nut10::nutroot::NutrootOption, Error> {
+        let mut reader = TlvReader::new(bytes);
+        let mut key = None;
+        let mut leaves = vec![];
+        let mut blind_keys = vec![];
+        while let Some((tag, value)) = reader.read_tlv()? {
+            match tag {
+                1 => {
+                    if key.is_some() || value.len() != 33 {
+                        return Err(Error::InvalidStructure);
+                    }
+                    key = Some(
+                        bitcoin::secp256k1::PublicKey::from_slice(&value)
+                            .map_err(|_| Error::InvalidPubkey)?,
+                    );
+                }
+                2 => {
+                    leaves.push(crate::util::hex::encode(value));
+                }
+                3 => {
+                    if value.len() != 33 {
+                        return Err(Error::InvalidLength);
+                    }
+                    blind_keys.push(
+                        bitcoin::secp256k1::PublicKey::from_slice(&value)
+                            .map_err(|_| Error::InvalidPubkey)?,
+                    );
+                }
+                _ => return Err(Error::InvalidStructure),
+            }
+        }
+        let policy = crate::nuts::nut10::nutroot::NutrootOption {
+            key: key.ok_or(Error::InvalidStructure)?,
+            leaves: if leaves.is_empty() {
+                None
+            } else {
+                Some(leaves)
+            },
+            blind_keys: if blind_keys.is_empty() {
+                None
+            } else {
+                Some(blind_keys)
+            },
+        };
+        policy.validate().map_err(|_| Error::InvalidStructure)?;
+        Ok(policy)
+    }
+
+    fn encode_nutroot(
+        policy: &crate::nuts::nut10::nutroot::NutrootOption,
+    ) -> Result<Vec<u8>, Error> {
+        policy.validate().map_err(|_| Error::InvalidStructure)?;
+        let mut writer = TlvWriter::new();
+        writer.write_tlv(1, &policy.key.serialize())?;
+        for leaf in policy.leaves.iter().flatten() {
+            writer.write_tlv(
+                2,
+                &crate::util::hex::decode(leaf).map_err(|_| Error::InvalidStructure)?,
+            )?;
+        }
+        for key in policy.blind_keys.iter().flatten() {
+            writer.write_tlv(3, &key.serialize())?;
+        }
+        Ok(writer.into_bytes())
+    }
+
     fn decode_nut10(bytes: &[u8]) -> Result<Nut10SecretRequest, Error> {
         let mut reader = TlvReader::new(bytes);
 
@@ -899,7 +981,7 @@ mod tests {
         assert_eq!(reader.read_tlv().unwrap(), None);
 
         let mut reader = TlvReader::new(&[0x01, 0x00]);
-        assert_eq!(reader.read_tlv().unwrap(), None);
+        assert!(matches!(reader.read_tlv(), Err(Error::InvalidLength)));
 
         let mut reader = TlvReader::new(&[0x01, 0x00, 0x02, b'a']);
         assert!(matches!(reader.read_tlv(), Err(Error::InvalidLength)));
@@ -961,6 +1043,7 @@ mod tests {
             description: None,
             transports: vec![transport],
             nut10: None,
+            nutroot: None,
         };
 
         let encoded = payment_request.to_bech32_string().unwrap();
@@ -1022,6 +1105,7 @@ mod tests {
             description: Some("Test payment".to_string()),
             transports: vec![transport],
             nut10: None,
+            nutroot: None,
         };
 
         let encoded = payment_request
@@ -1056,6 +1140,7 @@ mod tests {
             description: None,
             transports: vec![],
             nut10: None,
+            nutroot: None,
         };
 
         let expected_encoded = "CREQB1QYQP2URJV4NX2UNJV4J97EN9V40K6ET5DPHKGUCZQQYQQQQQQQQQQQRYQVQQZQQ9QQVXSAR5WPEN5TE0D45KUAPWV4UXZMTSD3JJUCM0D5YSQQGPPGQQJQGQQE3X7MR5XYCS5QQ5QYQQVCN0D36RZVSZQQYQQQQQQQQQQQQ9FJ2568";
@@ -1083,6 +1168,7 @@ mod tests {
             description: None,
             transports: vec![],
             nut10: None,
+            nutroot: None,
         };
 
         let encoded = payment_request
@@ -1113,6 +1199,7 @@ mod tests {
             description: Some("P2PK locked payment".to_string()),
             transports: vec![],
             nut10: Some(nut10.clone()),
+            nutroot: None,
         };
 
         let encoded = payment_request
@@ -1137,6 +1224,7 @@ mod tests {
             description: None,
             transports: vec![],
             nut10: None,
+            nutroot: None,
         };
 
         let encoded = payment_request
@@ -1184,6 +1272,7 @@ mod tests {
             description: None,
             transports: vec![],
             nut10: None,
+            nutroot: None,
         };
 
         let encoded = payment_request
@@ -1205,6 +1294,7 @@ mod tests {
             description: None,
             transports: vec![],
             nut10: None,
+            nutroot: None,
         };
 
         let encoded_usd = payment_request_usd
@@ -1383,6 +1473,7 @@ mod tests {
             description: Some("Nostr payment".to_string()),
             transports: vec![transport],
             nut10: None,
+            nutroot: None,
         };
 
         let encoded = payment_request
@@ -1429,6 +1520,7 @@ mod tests {
             description: Some("Nostr payment with relays".to_string()),
             transports: vec![transport],
             nut10: None,
+            nutroot: None,
         };
 
         let encoded = payment_request
@@ -1478,6 +1570,7 @@ mod tests {
             description: Some("Coffee".to_string()),
             transports: vec![transport],
             nut10: None,
+            nutroot: None,
         };
 
         // Encode and decode
@@ -1556,6 +1649,7 @@ mod tests {
             description: Some("Payment with multiple transports and mints".to_string()),
             transports: vec![transport1, transport2],
             nut10: None,
+            nutroot: None,
         };
 
         // Encode to bech32 string
@@ -2052,6 +2146,7 @@ mod tests {
             description: Some("Test payment description".to_string()),
             transports: vec![],
             nut10: None,
+            nutroot: None,
         };
 
         let encoded = payment_request
@@ -2089,6 +2184,7 @@ mod tests {
             description: None,
             transports: vec![],
             nut10: None,
+            nutroot: None,
         };
 
         let encoded = payment_request
@@ -2121,6 +2217,7 @@ mod tests {
             description: None,
             transports: vec![],
             nut10: None,
+            nutroot: None,
         };
 
         let encoded = payment_request
@@ -2153,6 +2250,7 @@ mod tests {
             description: None,
             transports: vec![],
             nut10: None,
+            nutroot: None,
         };
 
         let encoded = payment_request
@@ -2186,6 +2284,7 @@ mod tests {
             description: None,
             transports: vec![],
             nut10: None,
+            nutroot: None,
         };
 
         let encoded = payment_request
@@ -2382,6 +2481,7 @@ mod tests {
             description: None,
             transports: vec![], // Empty transports = in-band per NUT-26
             nut10: None,
+            nutroot: None,
         };
 
         let encoded = payment_request
@@ -2483,6 +2583,7 @@ mod tests {
             description: None,
             transports: vec![],
             nut10: None,
+            nutroot: None,
         };
 
         let uppercase = payment_request
@@ -2522,6 +2623,7 @@ mod tests {
             description: None,
             transports: vec![],
             nut10: None,
+            nutroot: None,
         };
 
         let encoded = payment_request
@@ -2551,6 +2653,7 @@ mod tests {
             description: Some("x".repeat(usize::from(u16::MAX) + 1)),
             transports: vec![],
             nut10: None,
+            nutroot: None,
         };
 
         assert!(matches!(
@@ -2641,4 +2744,35 @@ mod tests {
             Err(Error::TagTooLong)
         ));
     }
+}
+
+#[cfg(test)]
+#[test]
+fn nutroot_policy_roundtrips_without_changing_leaf_bytes() {
+    use crate::nuts::nut10::nutroot::{nums_point, Condition, Leaf, NutrootOption};
+    let key = bitcoin::secp256k1::SecretKey::from_slice(&[7; 32]).unwrap();
+    let public = bitcoin::secp256k1::PublicKey::from_secret_key(&crate::SECP256K1, &key);
+    let leaf = Leaf::new(1, vec![public], Condition::Threshold, true).unwrap();
+    let policy = NutrootOption {
+        key: nums_point(),
+        leaves: Some(vec![crate::util::hex::encode(leaf.to_bytes())]),
+        blind_keys: Some(vec![public]),
+    };
+    let request = PaymentRequest::builder().nutroot(policy.clone()).build();
+    let encoded = request.to_bech32_string().unwrap();
+    assert_eq!(
+        PaymentRequest::from_bech32_string(&encoded).unwrap(),
+        request
+    );
+    assert_eq!(
+        request.to_string().parse::<PaymentRequest>().unwrap(),
+        request
+    );
+    let mut bytes = PaymentRequest::encode_nutroot(&policy).unwrap();
+    bytes.push(1);
+    assert!(PaymentRequest::decode_nutroot(&bytes).is_err());
+    let mut bytes = PaymentRequest::encode_nutroot(&policy).unwrap();
+    let duplicate = bytes[..36].to_vec();
+    bytes.extend(duplicate);
+    assert!(PaymentRequest::decode_nutroot(&bytes).is_err());
 }

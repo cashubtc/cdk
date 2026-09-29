@@ -111,6 +111,7 @@ mod tests {
             mint_url,
             CurrencyUnit::Sat,
             OperationData::Swap(SwapOperationData {
+                premint_secrets: None,
                 input_amount: Amount::from(1000),
                 output_amount: Amount::from(990),
                 counter_start: Some(0),

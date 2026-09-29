@@ -18,6 +18,8 @@ use crate::Amount;
 /// The swap saga starts in this state. Only `prepare()` is available.
 #[derive(Debug)]
 pub struct Initial {
+    /// Requested Nutroot output policy.
+    pub nutroot: Option<crate::nuts::nut10::nutroot::NutrootOption>,
     /// Unique operation identifier for tracking and crash recovery
     pub operation_id: Uuid,
     /// Policy controlling how keysets are loaded during this saga
@@ -29,6 +31,8 @@ pub struct Initial {
 /// After successful preparation, the saga transitions to this state.
 /// Methods available: `execute()`
 pub struct Prepared {
+    /// Whether desired outputs carry a Nutroot payment policy.
+    pub nutroot: bool,
     /// Unique operation identifier
     pub operation_id: Uuid,
     /// Amount to swap (None means swap all)
@@ -146,6 +150,7 @@ mod tests {
             test_mint_url(),
             CurrencyUnit::Sat,
             OperationData::Swap(SwapOperationData {
+                premint_secrets: None,
                 input_amount: Amount::from(1),
                 output_amount: Amount::from(1),
                 counter_start: Some(0),
@@ -175,6 +180,7 @@ mod tests {
             .collect();
 
         let prepared = Prepared {
+            nutroot: false,
             operation_id,
             amount: Some(Amount::from(1)),
             amount_split_target: SplitTarget::default(),

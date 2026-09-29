@@ -19,12 +19,10 @@ use cdk_common::wallet::{
 use cdk_common::{Amount, PaymentMethod};
 use tracing::instrument;
 
-use crate::dhke::{construct_proofs, hash_to_curve_for_version};
-use crate::nuts::{MintRequest, PreMintSecrets, State};
+use crate::dhke::hash_to_curve_for_version;
+use crate::nuts::{MintRequest, State};
 use crate::util::unix_time;
-use crate::wallet::blind_signature::{
-    validate_mint_response_signatures, SignatureAmountValidation,
-};
+use crate::wallet::blind_signature::{construct_mint_response_proofs, SignatureAmountValidation};
 use crate::wallet::issue::saga::compensation::ReleaseMintQuote;
 use crate::wallet::issue::saga::state::PreparedMintRequest;
 use crate::wallet::recovery::{OutputRecoveryMode, OutputRecoveryResult, RecoveryAction};
@@ -191,12 +189,9 @@ impl Wallet {
             _ => return Ok(()),
         };
 
-        let premint_secrets = PreMintSecrets::restore_batch(
-            blinded_messages[0].keyset_id,
-            &self.seed,
-            counter_start,
-            counter_end,
-        )?;
+        let premint_secrets = self
+            .recover_premint_secrets(saga_id, &blinded_messages, counter_start, counter_end)
+            .await?;
         let ys = premint_secrets
             .secrets
             .iter()
@@ -432,11 +427,17 @@ impl Wallet {
             let mut signatures: Vec<Option<String>> = Vec::new();
             for quote in &quote_infos {
                 if let Some(secret_key) = self.mint_quote_signing_key(quote).await? {
-                    let sig = batch_request
-                        .sign_quote(&quote.id, &secret_key)
-                        .map_err(|e| Error::Custom(format!("NUT-20 signing failed: {}", e)))?;
+                    let sig = crate::wallet::nutroot::sign_batch_quote(
+                        &batch_request,
+                        &quote_infos,
+                        quote,
+                        &secret_key,
+                    )?;
                     signatures.push(Some(sig));
                 } else {
+                    if crate::wallet::nutroot::is_nutroot_outputs(&batch_request.outputs) {
+                        return Ok(None);
+                    }
                     signatures.push(None);
                 }
             }
@@ -502,29 +503,20 @@ impl Wallet {
 
             let keyset_id = blinded_messages[0].keyset_id;
 
-            let premint_secrets = crate::nuts::PreMintSecrets::restore_batch(
-                keyset_id,
-                &self.seed,
-                counter_start,
-                counter_end,
-            )?;
+            let premint_secrets = self
+                .recover_premint_secrets(saga_id, &blinded_messages, counter_start, counter_end)
+                .await?;
 
             let keys = self.keyset(keyset_id).await?.keys;
 
-            validate_mint_response_signatures(
+            let proofs = construct_mint_response_proofs(
                 self,
-                &mint_response.signatures,
-                blinded_messages.iter(),
+                mint_response.signatures,
+                &premint_secrets.secrets,
+                &keys,
                 SignatureAmountValidation::Exact,
             )
             .await?;
-
-            let proofs = construct_proofs(
-                mint_response.signatures,
-                premint_secrets.rs(),
-                premint_secrets.secrets(),
-                &keys,
-            )?;
 
             let proof_infos: Vec<ProofInfo> = proofs
                 .into_iter()
@@ -572,7 +564,9 @@ impl Wallet {
 
         // Sign the request if the quote has a signing key (required for bolt12)
         if let Some(secret_key) = self.mint_quote_signing_key(&quote).await? {
-            if let Err(e) = mint_request.sign(&secret_key) {
+            if let Err(e) =
+                crate::wallet::nutroot::sign_mint_request(&mut mint_request, &quote, &secret_key)
+            {
                 tracing::warn!(
                     "Issue saga {} - failed to sign mint request: {}, cannot replay",
                     saga_id,
@@ -580,6 +574,12 @@ impl Wallet {
                 );
                 return Ok(None);
             }
+        }
+
+        if crate::wallet::nutroot::is_nutroot_outputs(&mint_request.outputs)
+            && mint_request.signature.is_none()
+        {
+            return Ok(None);
         }
 
         tracing::info!(
@@ -642,29 +642,20 @@ impl Wallet {
 
         let keyset_id = blinded_messages[0].keyset_id;
 
-        let premint_secrets = crate::nuts::PreMintSecrets::restore_batch(
-            keyset_id,
-            &self.seed,
-            counter_start,
-            counter_end,
-        )?;
+        let premint_secrets = self
+            .recover_premint_secrets(saga_id, &blinded_messages, counter_start, counter_end)
+            .await?;
 
         let keys = self.keyset(keyset_id).await?.keys;
 
-        validate_mint_response_signatures(
+        let proofs = construct_mint_response_proofs(
             self,
-            &mint_response.signatures,
-            blinded_messages.iter(),
+            mint_response.signatures,
+            &premint_secrets.secrets,
+            &keys,
             SignatureAmountValidation::Exact,
         )
         .await?;
-
-        let proofs = construct_proofs(
-            mint_response.signatures,
-            premint_secrets.rs(),
-            premint_secrets.secrets(),
-            &keys,
-        )?;
 
         let proof_infos: Vec<ProofInfo> = proofs
             .into_iter()
@@ -772,9 +763,12 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        let expected: crate::nuts::PublicKey =
-            crate::nuts::nut01::BlsG1PublicKey::hash_to_curve(premint.secrets[0].secret.as_bytes())
-                .into();
+        let expected: crate::nuts::PublicKey = crate::nuts::nut01::BlsG1PublicKey::hash_to_curve(
+            &crate::nuts::nut10::nutroot::parse_secret(&premint.secrets[0].secret.to_string())
+                .unwrap()
+                .serialize(),
+        )
+        .into();
         assert_eq!(transaction.ys, vec![expected]);
         assert_eq!(transaction.status, TransactionStatus::Pending);
     }

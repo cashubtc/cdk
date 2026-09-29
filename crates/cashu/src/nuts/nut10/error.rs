@@ -8,6 +8,9 @@ use crate::util::hex;
 /// NUT10 Error
 #[derive(Debug, Error)]
 pub enum Error {
+    /// Nutroot validation error.
+    #[error(transparent)]
+    Nutroot(#[from] super::nutroot::Error),
     /// Unknown Kind
     #[error("Kind not found")]
     KindNotFound,

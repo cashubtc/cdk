@@ -190,7 +190,7 @@ async fn create_onchain_test_mint_with_fee_options(
         Arc::new(OnchainQuoteMock::with_fee_options(echo, fee_options));
 
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await?);
-    let mut mint_builder = MintBuilder::new(db.clone());
+    let mut mint_builder = MintBuilder::new(db.clone()).with_keyset_v2(Some(true));
 
     mint_builder
         .add_payment_processor(

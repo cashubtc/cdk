@@ -1207,6 +1207,9 @@ fn configure_basic_info(settings: &config::Settings, mint_builder: MintBuilder) 
     }
 
     builder = builder.with_keyset_v2(settings.info.use_keyset_v2);
+    if let Some(version) = settings.info.keyset_version {
+        builder = builder.with_keyset_version(version);
+    }
 
     builder
 }

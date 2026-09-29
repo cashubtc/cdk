@@ -304,7 +304,22 @@ impl Wallet {
         // ecash, we need full NUT-10 secrets, so we:
         //   1. Convert `Nut10SecretRequest` -> `Nut10Secret` (adds nonce, keeps tags)
         //   2. Convert `Nut10Secret` -> `SpendingConditions` (NUT-11 helper)
-        let conditions = if let Some(nut10_request) = &payment_request.nut10 {
+        let version = self.active_keyset().await?.id.get_version();
+        let nutroot = match version {
+            crate::nuts::KeySetVersion::Version02
+                if payment_request.nut10.is_some() && payment_request.nutroot.is_none() =>
+            {
+                return Err(crate::nuts::nut10::Error::SpendConditionsNotMet.into())
+            }
+            crate::nuts::KeySetVersion::Version02 => payment_request.nutroot.clone(),
+            _ if payment_request.nutroot.is_some() && payment_request.nut10.is_none() => {
+                return Err(crate::nuts::nut10::Error::SpendConditionsNotMet.into())
+            }
+            _ => None,
+        };
+        let conditions = if nutroot.is_some() {
+            None
+        } else if let Some(nut10_request) = &payment_request.nut10 {
             let secret: Nut10Secret = nut10_request.clone().into();
             Some(SpendingConditions::try_from(secret)?)
         } else {
@@ -323,6 +338,7 @@ impl Wallet {
             .prepare_send(
                 payment_amount,
                 SendOptions {
+                    nutroot,
                     conditions,
                     include_fee: true,
                     ..Default::default()
@@ -1007,6 +1023,7 @@ mod tests {
             description: None,
             transports: vec![],
             nut10: None,
+            nutroot: None,
         }
     }
 
@@ -1029,6 +1046,7 @@ mod tests {
                 tags: vec![],
             }],
             nut10: None,
+            nutroot: None,
         }
     }
 
@@ -1668,6 +1686,7 @@ impl WalletRepository {
             description: params.description,
             transports,
             nut10,
+            nutroot: None,
         };
 
         Ok((req, nostr_info))
@@ -1740,6 +1759,7 @@ impl WalletRepository {
             description: params.description,
             transports,
             nut10,
+            nutroot: None,
         };
 
         Ok(req)

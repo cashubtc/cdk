@@ -99,6 +99,7 @@ fn minimal_comparison() -> Result<(), Box<dyn std::error::Error>> {
         description: None,
         transports: vec![],
         nut10: None,
+        nutroot: None,
     };
 
     compare_formats(&payment_request, "Minimal")?;
@@ -117,6 +118,7 @@ fn amount_unit_comparison() -> Result<(), Box<dyn std::error::Error>> {
         description: None,
         transports: vec![],
         nut10: None,
+        nutroot: None,
     };
 
     compare_formats(&payment_request, "Amount + Unit")?;
@@ -140,6 +142,7 @@ fn multiple_mints_comparison() -> Result<(), Box<dyn std::error::Error>> {
         description: Some("Payment with multiple mint options".to_string()),
         transports: vec![],
         nut10: None,
+        nutroot: None,
     };
 
     compare_formats(&payment_request, "Multiple Mints")?;
@@ -167,6 +170,7 @@ fn transport_comparison() -> Result<(), Box<dyn std::error::Error>> {
         description: Some("Payment with callback transport".to_string()),
         transports: vec![transport],
         nut10: None,
+        nutroot: None,
     };
 
     compare_formats(&payment_request, "With Transport")?;
@@ -206,6 +210,7 @@ fn complete_with_nut10_comparison() -> Result<(), Box<dyn std::error::Error>> {
         description: Some("Complete payment with P2PK locking and refund key".to_string()),
         transports: vec![transport],
         nut10: Some(nut10),
+        nutroot: None,
     };
 
     compare_formats(&payment_request, "Complete with NUT-10")?;
@@ -260,6 +265,7 @@ fn very_complex_comparison() -> Result<(), Box<dyn std::error::Error>> {
         description: Some("Complex payment with multiple mints and transports".to_string()),
         transports: vec![transport1, transport2],
         nut10: Some(nut10),
+        nutroot: None,
     };
 
     compare_formats(&payment_request, "Very Complex")?;
@@ -520,6 +526,7 @@ mod tests {
             description: Some("Test".to_string()),
             transports: vec![],
             nut10: None,
+            nutroot: None,
         };
 
         // Encode both ways

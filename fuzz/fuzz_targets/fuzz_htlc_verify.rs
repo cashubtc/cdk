@@ -171,6 +171,7 @@ fuzz_target!(|input: Input| {
                 })),
                 dleq: None,
                 p2pk_e: None,
+                spend_info: None,
             };
             assert!(
                 proof.verify_htlc().is_ok(),
@@ -232,6 +233,7 @@ fuzz_target!(|input: Input| {
                 })),
                 dleq: None,
                 p2pk_e: None,
+                spend_info: None,
             };
             assert!(
                 proof.verify_htlc().is_ok(),
@@ -316,6 +318,7 @@ fuzz_target!(|input: Input| {
         witness: Some(witness),
         dleq: None,
         p2pk_e: None,
+        spend_info: None,
     };
 
     // Silence unused-variant lint when SigFlag enum may grow.

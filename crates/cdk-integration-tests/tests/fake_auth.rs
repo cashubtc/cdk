@@ -604,6 +604,7 @@ async fn test_melt_with_invalid_auth() {
     let client = HttpClient::new(MintUrl::from_str(MINT_URL).expect("Valid mint url"), None);
     {
         let invalid_auth_proof = AuthProof {
+            witness: None,
             keyset_id: proof.keyset_id,
             secret: proof.secret.clone(),
             c: proof.c,

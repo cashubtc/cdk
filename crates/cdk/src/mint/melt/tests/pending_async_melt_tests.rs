@@ -203,7 +203,7 @@ where
         + Sync
         + 'static,
 {
-    let mut mint_builder = MintBuilder::new(db.clone());
+    let mut mint_builder = MintBuilder::new(db.clone()).with_keyset_v2(Some(true));
 
     mint_builder
         .add_payment_processor(

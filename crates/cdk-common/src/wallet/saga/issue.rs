@@ -38,6 +38,9 @@ impl std::str::FromStr for IssueSagaState {
 /// Operation-specific data for Mint operations
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MintOperationData {
+    /// Exact output secrets and transfer metadata, persisted before transmission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub premint_secrets: Option<cashu::PreMintSecrets>,
     /// Quote ID (for single mint, or first quote in batch)
     quote_id: String,
     /// Quote IDs for batch operations
@@ -82,6 +85,7 @@ impl MintOperationData {
         blinded_messages: Option<Vec<BlindedMessage>>,
     ) -> Self {
         Self {
+            premint_secrets: None,
             quote_ids: Some(vec![quote_id.clone()]),
             quote_id,
             is_batch: Some(false),
@@ -105,6 +109,7 @@ impl MintOperationData {
         let quote_id = quote_ids.first().cloned().unwrap_or_default();
 
         Self {
+            premint_secrets: None,
             quote_id,
             quote_ids: Some(quote_ids),
             is_batch: Some(true),
@@ -130,6 +135,7 @@ impl MintOperationData {
         let quote_id = quote_ids.first().cloned().unwrap_or_default();
 
         Self {
+            premint_secrets: None,
             quote_id,
             quote_ids: Some(quote_ids),
             is_batch: Some(true),

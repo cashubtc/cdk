@@ -202,6 +202,7 @@ mod tests {
         };
 
         let options = SendOptions {
+            nutroot: None,
             memo: Some(memo),
             conditions: Some(conditions),
             amount_split_target: SplitTarget::Value {
@@ -242,6 +243,7 @@ mod tests {
         metadata.insert("key1".to_string(), "value1".to_string());
 
         let options = ReceiveOptions {
+            nutroot: None,
             amount_split_target: SplitTarget::Values {
                 amounts: vec![Amount::new(100), Amount::new(200)],
             },
@@ -262,6 +264,7 @@ mod tests {
     #[test]
     fn test_receive_options_invalid_secret_key_returns_error() {
         let options = ReceiveOptions {
+            nutroot: None,
             amount_split_target: SplitTarget::None,
             p2pk_signing_keys: vec![SecretKey {
                 hex: "z".repeat(64),
@@ -278,6 +281,7 @@ mod tests {
     #[test]
     fn test_send_options_invalid_secret_key_returns_error() {
         let options = SendOptions {
+            nutroot: None,
             p2pk_signing_keys: vec![SecretKey {
                 hex: "z".repeat(64),
             }],
@@ -292,6 +296,7 @@ mod tests {
     #[test]
     fn test_send_options_invalid_conditions_returns_error() {
         let options = SendOptions {
+            nutroot: None,
             conditions: Some(SpendingConditions::P2PK {
                 pubkey: "not_a_valid_pubkey".to_string(),
                 conditions: None,
@@ -309,6 +314,7 @@ mod tests {
         let secret_hex =
             "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f".to_string();
         let options = SendOptions {
+            nutroot: None,
             p2pk_signing_keys: vec![SecretKey {
                 hex: secret_hex.clone(),
             }],
@@ -366,6 +372,7 @@ mod tests {
         let secret_hex =
             "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f".to_string();
         let options = ReceiveOptions {
+            nutroot: None,
             p2pk_signing_keys: vec![SecretKey {
                 hex: secret_hex.clone(),
             }],
@@ -425,6 +432,7 @@ mod tests {
                 r: "b".repeat(64),
             }),
             p2pk_e: None,
+            spend_info: None,
         };
 
         let result: Result<cdk::nuts::Proof, _> = proof.try_into();

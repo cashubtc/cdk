@@ -202,6 +202,26 @@ impl Wallet {
         Ok(info.into())
     }
 
+    /// Nutroot wallet operation; receipts reveal transaction details.
+    pub async fn nutroot_receipt_ids(&self) -> Result<Vec<String>, FfiError> {
+        Ok(self.inner.nutroot_receipt_ids().await?)
+    }
+
+    /// Nutroot wallet operation; receipts reveal transaction details.
+    pub async fn export_nutroot_receipt(&self, id: String) -> Result<String, FfiError> {
+        Ok(self.inner.export_nutroot_receipt(&id).await?)
+    }
+
+    /// Nutroot wallet operation; receipts reveal transaction details.
+    pub async fn verify_nutroot_receipt(&self, encoded: String) -> Result<(), FfiError> {
+        Ok(self.inner.verify_nutroot_receipt(&encoded).await?)
+    }
+
+    /// Nutroot wallet operation; receipts reveal transaction details.
+    pub async fn sign_nutroot_package(&self, encoded: String) -> Result<String, FfiError> {
+        Ok(self.inner.sign_nutroot_package(&encoded).await?)
+    }
+
     /// Receive tokens.
     ///
     /// This verifies and persists received proofs in the local store. Mobile

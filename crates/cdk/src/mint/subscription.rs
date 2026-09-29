@@ -199,16 +199,25 @@ impl MintPubSubSpec {
         }
 
         if !public_keys.is_empty() {
-            to_return.extend(
-                self.db
-                    .get_proofs_states(public_keys.as_slice())
-                    .await
-                    .map_err(|e| e.to_string())?
-                    .into_iter()
-                    .enumerate()
-                    .filter_map(|(idx, state)| state.map(|state| (public_keys[idx], state).into()))
-                    .map(|state: ProofState| state.into()),
-            );
+            let states = self
+                .db
+                .get_proofs_states(&public_keys)
+                .await
+                .map_err(|e| e.to_string())?;
+            let records = self
+                .db
+                .get_proof_spends(&public_keys)
+                .await
+                .map_err(|e| e.to_string())?;
+            for ((y, state), record) in public_keys.iter().zip(states).zip(records) {
+                if let Some(state) = state {
+                    let mut state: ProofState = (*y, state).into();
+                    if let Some(record) = record {
+                        record.apply_to(&mut state);
+                    }
+                    to_return.push(state.into());
+                }
+            }
         }
 
         Ok(to_return)

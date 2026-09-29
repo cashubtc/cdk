@@ -212,6 +212,12 @@ impl WasmRequestBuilder {
         self
     }
 
+    /// Set exact serialized request bytes. The content type is set separately.
+    pub fn body_bytes(mut self, bytes: Vec<u8>) -> Self {
+        self.body = Some(WasmBody::Json(bytes));
+        self
+    }
+
     /// Set the request body as JSON.
     pub fn json<T>(mut self, body: &T) -> Self
     where

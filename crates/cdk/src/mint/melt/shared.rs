@@ -807,11 +807,10 @@ pub(crate) async fn finalize_melt_core(
         return Err(err);
     }
 
+    let states = Mint::spent_proof_states(&mut tx, input_ys).await?;
     tx.commit().await?;
-
-    // Publish proof state changes
-    for pk in input_ys.iter() {
-        pubsub.proof_state((*pk, State::Spent));
+    for state in states {
+        pubsub.proof_state(state);
     }
 
     // Clone the proofs out of the Acquired wrapper so that no database
@@ -966,10 +965,11 @@ pub async fn finalize_melt_quote(
             }
         }
         let proofs = proofs_with_state.to_vec();
+        let states = Mint::spent_proof_states(&mut tx, &input_ys).await?;
         tx.commit().await?;
         if spend_pending {
-            for pk in input_ys.iter() {
-                pubsub.proof_state((*pk, State::Spent));
+            for state in states {
+                pubsub.proof_state(state);
             }
         }
         (proofs, locked_quote)

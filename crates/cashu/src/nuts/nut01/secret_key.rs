@@ -341,7 +341,7 @@ mod tests {
         use crate::dhke::{blind_message_for_version, sign_message, verify_bls_message};
         use crate::nuts::KeySetVersion;
 
-        let message = b"persisted blinding factor";
+        let message = b"02e6e7cfa7b82d4b3b449fa6466c893469a727d0214d48db4956a6054b8022a29b";
         let (blinded, r) =
             blind_message_for_version(message, None, KeySetVersion::Version02).unwrap();
         let mint_key = SecretKey::generate_bls();

@@ -73,6 +73,7 @@ pub struct MintBuilder {
     supported_units: HashMap<CurrencyUnit, (u64, Vec<u64>)>,
     custom_paths: HashMap<CurrencyUnit, DerivationPath>,
     use_keyset_v2: Option<bool>,
+    keyset_version: Option<KeySetVersion>,
     keyset_rotations: Vec<KeysetRotation>,
     max_inputs: usize,
     max_outputs: usize,
@@ -121,6 +122,7 @@ impl MintBuilder {
             supported_units: HashMap::new(),
             custom_paths: HashMap::new(),
             use_keyset_v2: None,
+            keyset_version: None,
             keyset_rotations: Vec::new(),
             max_inputs: 1000,
             max_outputs: 1000,
@@ -135,6 +137,26 @@ impl MintBuilder {
         self
     }
 
+    /// Select the issuance version. Startup rotates each unit's active keyset
+    /// when necessary; inactive keysets remain available for redemption.
+    /// Conflicting legacy `with_keyset_v2` settings are rejected at build time.
+    pub fn with_keyset_version(mut self, version: KeySetVersion) -> Self {
+        self.keyset_version = Some(version);
+        self
+    }
+
+    fn explicit_keyset_version(&self) -> Option<KeySetVersion> {
+        self.keyset_version.or_else(|| {
+            self.use_keyset_v2.map(|v2| {
+                if v2 {
+                    KeySetVersion::Version01
+                } else {
+                    KeySetVersion::Version00
+                }
+            })
+        })
+    }
+
     /// Set how often the built signatory reloads keysets from the shared
     /// database. `None` (the default) disables the reload: a single mint owns
     /// its database and needs no polling. Set an interval only to run several
@@ -145,12 +167,9 @@ impl MintBuilder {
         self
     }
 
-    fn preferred_keyset_version(&self) -> KeySetVersion {
-        match self.use_keyset_v2 {
-            Some(false) => KeySetVersion::Version00,
-            Some(true) => KeySetVersion::Version01,
-            None => KeySetVersion::Version02,
-        }
+    fn preferred_keyset_version(&self, _unit: &CurrencyUnit) -> KeySetVersion {
+        self.explicit_keyset_version()
+            .unwrap_or(KeySetVersion::Version02)
     }
 
     /// Add a keyset rotation to execute during build.
@@ -615,6 +634,18 @@ impl MintBuilder {
         #[allow(unused_mut)] mut self,
         signatory: Arc<dyn Signatory + Send + Sync>,
     ) -> Result<Mint, Error> {
+        if let (Some(version), Some(legacy)) = (self.keyset_version, self.use_keyset_v2) {
+            let legacy_version = if legacy {
+                KeySetVersion::Version01
+            } else {
+                KeySetVersion::Version00
+            };
+            if version != legacy_version {
+                return Err(Error::Custom(
+                    "Conflicting keyset_version and use_keyset_v2 settings".to_owned(),
+                ));
+            }
+        }
         // Check active keysets and rotate if necessary
         let active_keysets = signatory.keysets().await?;
 
@@ -657,12 +688,8 @@ impl MintBuilder {
                 }
 
                 // Check if version matches explicit preference
-                if let Some(want_v2) = self.use_keyset_v2 {
-                    let desired_version = if want_v2 {
-                        KeySetVersion::Version01
-                    } else {
-                        KeySetVersion::Version00
-                    };
+                if self.explicit_keyset_version().is_some() {
+                    let desired_version = self.preferred_keyset_version(unit);
                     if keyset.id.get_version() != desired_version {
                         tracing::info!(
                             "Rotating keyset for unit {} due to explicit {} preference (current is {})",
@@ -685,7 +712,7 @@ impl MintBuilder {
                         unit: unit.clone(),
                         amounts: amounts.clone(),
                         input_fee_ppk: *fee,
-                        keyset_id_type: self.preferred_keyset_version(),
+                        keyset_id_type: self.preferred_keyset_version(unit),
                         final_expiry: None,
                     })
                     .await?;
@@ -1673,5 +1700,131 @@ mod tests {
         // Should have both methods in NUT04 and NUT05
         assert_eq!(mint_info.nuts.nut04.methods.len(), 2);
         assert_eq!(mint_info.nuts.nut05.methods.len(), 2);
+    }
+    #[tokio::test]
+    async fn explicit_v3_upgrade_keeps_one_active_keyset_and_redeems_legacy_proofs() {
+        use cdk_common::amount::SplitTarget;
+        use cdk_common::nuts::{PreMintSecrets, SwapRequest};
+        for old_version in [KeySetVersion::Version00, KeySetVersion::Version01] {
+            let db = Arc::new(memory::empty().await.unwrap());
+            let seed = seed();
+            let mut builder = MintBuilder::new(db.clone()).with_keyset_version(old_version);
+            builder
+                .supported_units
+                .insert(CurrencyUnit::Sat, (0, vec![1, 2, 4, 8]));
+            let old = builder.build_with_seed(db.clone(), &seed).await.unwrap();
+            let old_id = old.get_active_keysets()[&CurrencyUnit::Sat];
+            assert_eq!(old_id.get_version(), old_version);
+            let premints = PreMintSecrets::random(
+                old_id,
+                8.into(),
+                &SplitTarget::None,
+                &(0, vec![1, 2, 4, 8]).into(),
+            )
+            .unwrap();
+            let signatures = old
+                .signatory
+                .blind_sign(premints.blinded_messages())
+                .await
+                .unwrap();
+            let keys = old.keyset_pubkeys(&old_id).unwrap().keysets[0].keys.clone();
+            let proofs = cdk_common::dhke::construct_proofs(
+                signatures,
+                premints.rs(),
+                premints.secrets(),
+                &keys,
+            )
+            .unwrap();
+
+            let mut builder =
+                MintBuilder::new(db.clone()).with_keyset_version(KeySetVersion::Version02);
+            builder
+                .supported_units
+                .insert(CurrencyUnit::Sat, (0, vec![1, 2, 4, 8]));
+            let upgraded = builder.build_with_seed(db.clone(), &seed).await.unwrap();
+            let new_id = upgraded.get_active_keysets()[&CurrencyUnit::Sat];
+            assert_eq!(new_id.get_version(), KeySetVersion::Version02);
+            assert_ne!(new_id, old_id);
+            assert_eq!(
+                upgraded
+                    .keysets
+                    .load()
+                    .iter()
+                    .filter(|keyset| keyset.active)
+                    .count(),
+                1
+            );
+            assert!(upgraded
+                .keysets
+                .load()
+                .iter()
+                .any(|keyset| keyset.id == old_id && !keyset.active));
+            let outputs = PreMintSecrets::random(
+                new_id,
+                8.into(),
+                &SplitTarget::None,
+                &(0, vec![1, 2, 4, 8]).into(),
+            )
+            .unwrap();
+            let response = upgraded
+                .process_swap_request(SwapRequest::new(proofs, outputs.blinded_messages()))
+                .await
+                .unwrap();
+            let keys = upgraded.keyset_pubkeys(&new_id).unwrap().keysets[0]
+                .keys
+                .clone();
+            cdk_common::dhke::construct_proofs(
+                response.signatures,
+                outputs.rs(),
+                outputs.secrets(),
+                &keys,
+            )
+            .unwrap();
+
+            let mut builder =
+                MintBuilder::new(db.clone()).with_keyset_version(KeySetVersion::Version02);
+            builder
+                .supported_units
+                .insert(CurrencyUnit::Sat, (0, vec![1, 2, 4, 8]));
+            let restarted = builder.build_with_seed(db, &seed).await.unwrap();
+            assert_eq!(restarted.get_active_keysets()[&CurrencyUnit::Sat], new_id);
+        }
+    }
+
+    #[tokio::test]
+    async fn conflicting_issuance_version_settings_fail_before_rotation() {
+        let db = Arc::new(memory::empty().await.unwrap());
+        let error = MintBuilder::new(db.clone())
+            .with_keyset_v2(Some(true))
+            .with_keyset_version(KeySetVersion::Version02)
+            .build_with_seed(db, &seed())
+            .await
+            .err()
+            .unwrap();
+        assert!(
+            matches!(error, Error::Custom(message) if message.contains("Conflicting keyset_version"))
+        );
+    }
+    #[tokio::test]
+    async fn v3_issuance_includes_request_bound_auth_keysets() {
+        let db = Arc::new(memory::empty().await.unwrap());
+        let mut builder =
+            MintBuilder::new(db.clone()).with_keyset_version(KeySetVersion::Version02);
+        builder
+            .supported_units
+            .insert(CurrencyUnit::Sat, (0, vec![1]));
+        builder
+            .supported_units
+            .insert(CurrencyUnit::Auth, (0, vec![1]));
+        let mint = builder.build_with_seed(db, &seed()).await.unwrap();
+        let active = mint.get_active_keysets();
+        assert_eq!(
+            active[&CurrencyUnit::Sat].get_version(),
+            KeySetVersion::Version02
+        );
+        assert_eq!(
+            active[&CurrencyUnit::Auth].get_version(),
+            KeySetVersion::Version02
+        );
     }
 }

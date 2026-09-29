@@ -314,6 +314,7 @@ mod tests {
             mint_url.clone(),
             CurrencyUnit::Sat,
             OperationData::Swap(SwapOperationData {
+                premint_secrets: None,
                 input_amount: Amount::from(100),
                 output_amount: Amount::from(90),
                 counter_start: Some(0),
@@ -366,6 +367,7 @@ mod tests {
             mint_url.clone(),
             CurrencyUnit::Sat,
             OperationData::Swap(SwapOperationData {
+                premint_secrets: None,
                 input_amount: Amount::from(100),
                 output_amount: Amount::from(90),
                 counter_start: Some(0),
@@ -379,6 +381,8 @@ mod tests {
         let mock_client = Arc::new(MockMintConnector::new());
         mock_client.set_check_state_response(Ok(CheckStateResponse {
             states: vec![ProofState {
+                input_digest: None,
+                commitment: None,
                 y: proof_y,
                 state: State::Unspent, // NOT spent - swap failed
                 witness: None,
@@ -424,6 +428,7 @@ mod tests {
             mint_url,
             CurrencyUnit::Sat,
             OperationData::Swap(SwapOperationData {
+                premint_secrets: None,
                 input_amount: Amount::from(100),
                 output_amount: Amount::from(90),
                 counter_start: Some(0),
@@ -469,6 +474,7 @@ mod tests {
             mint_url.clone(),
             CurrencyUnit::Sat,
             OperationData::Swap(SwapOperationData {
+                premint_secrets: None,
                 input_amount: Amount::from(100),
                 output_amount: Amount::from(90),
                 counter_start: Some(0),
@@ -532,6 +538,7 @@ mod tests {
                     witness: None,
                     dleq: None,
                     p2pk_e: None,
+                    spend_info: None,
                 };
                 ProofInfo::new(proof, mint_url.clone(), State::Unspent, CurrencyUnit::Sat).unwrap()
             })
@@ -550,6 +557,7 @@ mod tests {
             mint_url.clone(),
             CurrencyUnit::Sat,
             OperationData::Swap(SwapOperationData {
+                premint_secrets: None,
                 input_amount: Amount::from(100),
                 output_amount: Amount::from(50),
                 counter_start: Some(counter_start),
