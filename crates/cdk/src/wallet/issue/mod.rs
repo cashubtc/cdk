@@ -289,6 +289,7 @@ impl Wallet {
                     unit: unit.clone(),
                     description,
                     pubkey: Some(secret_key.public_key()),
+                    expiry_seconds: None,
                 })
             }
             PaymentMethod::Known(KnownMethod::Bolt12) => {
@@ -297,6 +298,7 @@ impl Wallet {
                     unit: unit.clone(),
                     description,
                     pubkey: secret_key.public_key(),
+                    expiry_seconds: None,
                 })
             }
             PaymentMethod::Custom(_) => {
@@ -316,6 +318,7 @@ impl Wallet {
                 MintQuoteRequest::Onchain(cdk_common::nuts::nut30::MintQuoteOnchainRequest {
                     unit: unit.clone(),
                     pubkey: secret_key.public_key(),
+                    expiry_seconds: None,
                 })
             }
         };

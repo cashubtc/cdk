@@ -278,13 +278,35 @@ impl Mint {
                         }
                     }
 
-                    // BOLT12 mint quotes are long-lived reusable offers. Do not
-                    // bind them to mint_ttl; quote expiry follows the offer
-                    // (`create_invoice_response.expiry`, none when perpetual).
+                    // BOLT12 mint quotes are long-lived by default (perpetual offer).
+                    // If the wallet requests `expiry_seconds` (NUT-25, nuts#415),
+                    // honor it exactly: offer absolute_expiry == quote expiry.
+                    // Otherwise the offer has no absolute_expiry and the quote
+                    // uses the 0 (never-expires) sentinel.
+                    let requested_expiry = bolt12_request.expiry_seconds;
+                    let mint_ttl = self.quote_ttl().await?.mint_ttl;
+                    let unix_expiry = match requested_expiry {
+                        None => None,
+                        Some(s) => {
+                            if s == 0 {
+                                return Err(Error::QuoteExpiryInvalid {
+                                    detail: "expiry_seconds must be positive".to_string(),
+                                });
+                            }
+                            if s > mint_ttl {
+                                return Err(Error::QuoteExpiryInvalid {
+                                    detail: format!(
+                                        "expiry_seconds {s} exceeds max {mint_ttl}"
+                                    ),
+                                });
+                            }
+                            Some(unix_time() + s)
+                        }
+                    };
                     let bolt12_options = Bolt12IncomingPaymentOptions {
                         description,
                         amount: amount.map(|a| a.with_unit(unit.clone())),
-                        unix_expiry: None,
+                        unix_expiry,
                     };
 
                     IncomingPaymentOptions::Bolt12(Box::new(bolt12_options))
@@ -1444,6 +1466,7 @@ mod batch_mint_tests {
                     unit: CurrencyUnit::Sat,
                     description: None,
                     pubkey: None,
+                    expiry_seconds: None,
                 }
                 .into(),
             )
@@ -1459,6 +1482,7 @@ mod batch_mint_tests {
                     unit: CurrencyUnit::Sat,
                     description: None,
                     pubkey: None,
+                    expiry_seconds: None,
                 }
                 .into(),
             )
@@ -1561,6 +1585,7 @@ mod batch_mint_tests {
                     unit: CurrencyUnit::Sat,
                     description: None,
                     pubkey: None,
+                    expiry_seconds: None,
                 }
                 .into(),
             )
@@ -1576,6 +1601,7 @@ mod batch_mint_tests {
                     unit: CurrencyUnit::Sat,
                     description: None,
                     pubkey: None,
+                    expiry_seconds: None,
                 }
                 .into(),
             )
@@ -1636,6 +1662,7 @@ mod batch_mint_tests {
                     unit: CurrencyUnit::Sat,
                     description: None,
                     pubkey: None,
+                    expiry_seconds: None,
                 }
                 .into(),
             )
@@ -1651,6 +1678,7 @@ mod batch_mint_tests {
                     unit: CurrencyUnit::Sat,
                     description: None,
                     pubkey: None,
+                    expiry_seconds: None,
                 }
                 .into(),
             )
@@ -1711,6 +1739,7 @@ mod batch_mint_tests {
                     unit: CurrencyUnit::Sat,
                     description: None,
                     pubkey: None,
+                    expiry_seconds: None,
                 }
                 .into(),
             )
@@ -1767,6 +1796,7 @@ mod batch_mint_tests {
                     unit: CurrencyUnit::Sat,
                     description: None,
                     pubkey: None,
+                    expiry_seconds: None,
                 }
                 .into(),
             )
@@ -1782,6 +1812,7 @@ mod batch_mint_tests {
                     unit: CurrencyUnit::Sat,
                     description: None,
                     pubkey: None,
+                    expiry_seconds: None,
                 }
                 .into(),
             )
@@ -1843,6 +1874,7 @@ mod batch_mint_tests {
                     unit: CurrencyUnit::Sat,
                     description: None,
                     pubkey: None,
+                    expiry_seconds: None,
                 }
                 .into(),
             )
@@ -1890,6 +1922,7 @@ mod batch_mint_tests {
                     unit: CurrencyUnit::Sat,
                     description: None,
                     pubkey: None,
+                    expiry_seconds: None,
                 }
                 .into(),
             )
@@ -1962,6 +1995,7 @@ mod batch_mint_tests {
                     unit: CurrencyUnit::Sat,
                     description: None,
                     pubkey: None,
+                    expiry_seconds: None,
                 }
                 .into(),
             )
@@ -1977,6 +2011,7 @@ mod batch_mint_tests {
                     unit: CurrencyUnit::Sat,
                     description: None,
                     pubkey: None,
+                    expiry_seconds: None,
                 }
                 .into(),
             )
@@ -2037,6 +2072,7 @@ mod batch_mint_tests {
                     unit: CurrencyUnit::Sat,
                     description: None,
                     pubkey: None,
+                    expiry_seconds: None,
                 }
                 .into(),
             )
@@ -2052,6 +2088,7 @@ mod batch_mint_tests {
                     unit: CurrencyUnit::Sat,
                     description: None,
                     pubkey: None,
+                    expiry_seconds: None,
                 }
                 .into(),
             )
@@ -2112,6 +2149,7 @@ mod batch_mint_tests {
                     unit: CurrencyUnit::Sat,
                     description: None,
                     pubkey: None,
+                    expiry_seconds: None,
                 }
                 .into(),
             )
@@ -2127,6 +2165,7 @@ mod batch_mint_tests {
                     unit: CurrencyUnit::Sat,
                     description: None,
                     pubkey: None,
+                    expiry_seconds: None,
                 }
                 .into(),
             )
@@ -2189,6 +2228,7 @@ mod batch_mint_tests {
                         "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
                     )
                     .expect("test public key"),
+                    expiry_seconds: None,
                 }
                 .into(),
             )

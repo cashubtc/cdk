@@ -650,7 +650,7 @@ async fn test_finalizing_recovery_without_metadata_uses_internal_settlement() {
                 amount: Amount::from(4_000),
                 unit: cdk_common::CurrencyUnit::Sat,
                 description: None,
-                pubkey: None,
+                pubkey: None, expiry_seconds: None,
             }
             .into(),
         )
@@ -1051,7 +1051,7 @@ async fn test_crash_recovery_internal_settlement() {
                 amount: Amount::from(4_000),
                 unit: cdk_common::CurrencyUnit::Sat,
                 description: None,
-                pubkey: None,
+                pubkey: None, expiry_seconds: None,
             }
             .into(),
         )
@@ -1228,7 +1228,7 @@ async fn setup_internal_melt(
                 amount: Amount::from(4_000),
                 unit: CurrencyUnit::Sat,
                 description: None,
-                pubkey: None,
+                pubkey: None, expiry_seconds: None,
             }
             .into(),
         )
