@@ -3,7 +3,7 @@
 use std::str::FromStr;
 
 use cdk::mint::MintKeySetInfo;
-use cdk::nuts::CurrencyUnit;
+use cdk::nuts::{CurrencyUnit, KeySetVersion};
 use tonic::{Request, Response, Status};
 
 use super::MintRPCServer;
@@ -16,16 +16,16 @@ impl MintRPCServer {
         unit: CurrencyUnit,
         amounts: Vec<u64>,
         input_fee_ppk: Option<u64>,
-        use_keyset_v2: Option<bool>,
+        keyset_version: KeySetVersion,
         final_expiry: Option<u64>,
     ) -> Result<MintKeySetInfo, Status> {
         self.ensure_mutation_allowed().await?;
         self.mint
-            .rotate_keyset(
+            .rotate_keyset_by_version(
                 unit,
                 amounts,
                 input_fee_ppk.unwrap_or(0),
-                use_keyset_v2.unwrap_or(true),
+                keyset_version,
                 final_expiry,
             )
             .await
@@ -45,12 +45,28 @@ impl KeysetService for MintRPCServer {
         let unit = CurrencyUnit::from_str(&request.unit)
             .map_err(|_| Status::invalid_argument("Invalid unit".to_string()))?;
 
+        let keyset_version = match request.keyset_version.as_deref() {
+            Some("v1") | Some("00") => KeySetVersion::Version00,
+            Some("v2") | Some("01") => KeySetVersion::Version01,
+            Some("v3") | Some("02") => KeySetVersion::Version02,
+            Some(version) => {
+                return Err(Status::invalid_argument(format!(
+                    "Invalid keyset version: {version}"
+                )));
+            }
+            None => match request.use_keyset_v2 {
+                Some(true) => KeySetVersion::Version01,
+                Some(false) => KeySetVersion::Version00,
+                None => KeySetVersion::Version02,
+            },
+        };
+
         let keyset_info = self
             .rotate_keyset(
                 unit,
                 request.amounts,
                 request.input_fee_ppk,
-                request.use_keyset_v2,
+                keyset_version,
                 request.final_expiry,
             )
             .await?;
@@ -80,6 +96,7 @@ mod tests {
                 amounts: vec![1, 2, 4, 8],
                 input_fee_ppk: Some(1),
                 use_keyset_v2: Some(true),
+                keyset_version: None,
                 final_expiry: None,
             }),
         )
@@ -91,5 +108,28 @@ mod tests {
         assert_eq!(response.unit, "sat");
         assert_eq!(response.amounts, vec![1, 2, 4, 8]);
         assert_eq!(response.input_fee_ppk, 1);
+    }
+
+    #[tokio::test]
+    async fn test_keyset_service_selects_bls_version() {
+        let server = create_test_rpc_server().await;
+        for (keyset_version, legacy_version) in [(None, None), (Some("v3"), Some(false))] {
+            let response = KeysetService::rotate_next_keyset(
+                &server,
+                Request::new(crate::keyset::RotateNextKeysetRequest {
+                    unit: "sat".to_string(),
+                    amounts: vec![1, 2, 4, 8],
+                    input_fee_ppk: Some(0),
+                    use_keyset_v2: legacy_version,
+                    keyset_version: keyset_version.map(str::to_owned),
+                    final_expiry: None,
+                }),
+            )
+            .await
+            .unwrap()
+            .into_inner();
+            let id = cdk::nuts::Id::from_str(&response.id).unwrap();
+            assert_eq!(id.get_version(), KeySetVersion::Version02);
+        }
     }
 }

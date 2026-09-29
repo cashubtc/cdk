@@ -79,17 +79,33 @@ impl Mint {
         use_keyset_v2: bool,
         final_expiry: Option<u64>,
     ) -> Result<MintKeySetInfo, Error> {
+        let keyset_id_type = if use_keyset_v2 {
+            cdk_common::nut02::KeySetVersion::Version01
+        } else {
+            cdk_common::nut02::KeySetVersion::Version00
+        };
+        self.rotate_keyset_by_version(unit, amounts, input_fee_ppk, keyset_id_type, final_expiry)
+            .await
+    }
+
+    /// Add current keyset to inactive keysets and generate a new keyset
+    /// with the specified keyset version.
+    #[instrument(skip(self))]
+    pub async fn rotate_keyset_by_version(
+        &self,
+        unit: CurrencyUnit,
+        amounts: Vec<u64>,
+        input_fee_ppk: u64,
+        keyset_id_type: cdk_common::nut02::KeySetVersion,
+        final_expiry: Option<u64>,
+    ) -> Result<MintKeySetInfo, Error> {
         let result = self
             .signatory
             .rotate_keyset(RotateKeyArguments {
                 unit,
                 amounts,
                 input_fee_ppk,
-                keyset_id_type: if use_keyset_v2 {
-                    cdk_common::nut02::KeySetVersion::Version01
-                } else {
-                    cdk_common::nut02::KeySetVersion::Version00
-                },
+                keyset_id_type,
                 final_expiry,
             })
             .await?;

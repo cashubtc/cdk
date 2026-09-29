@@ -351,6 +351,7 @@ mod tests {
                 amounts: vec![1, 2, 4, 8],
                 input_fee_ppk: Some(1),
                 use_keyset_v2: Some(true),
+                keyset_version: None,
                 final_expiry: None,
             }),
         )

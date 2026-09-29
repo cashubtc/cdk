@@ -497,6 +497,86 @@ mod test {
             .expect("database")
     }
 
+    #[tokio::test]
+    async fn wallet_transaction_ys_migration() {
+        let db_url = std::env::var("CDK_MINTD_DATABASE_URL")
+            .or_else(|_| std::env::var("PG_DB_URL"))
+            .unwrap_or(
+                "host=localhost user=cdk_user password=cdk_password dbname=cdk_mint port=5432"
+                    .to_owned(),
+            );
+        let (mut client, connection) = tokio_postgres::connect(&db_url, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        tokio::spawn(async move {
+            connection.await.unwrap();
+        });
+        // Temporary tables keep this migration fixture isolated from other tests.
+        client.batch_execute("CREATE TEMP TABLE transactions (id BYTEA PRIMARY KEY, ys BYTEA NOT NULL, memo TEXT);").await.unwrap();
+        let first = cdk_common::SecretKey::generate().public_key().to_bytes();
+        let second = cdk_common::SecretKey::generate().public_key().to_bytes();
+        let points = [first.clone(), second, first];
+        client
+            .execute(
+                "INSERT INTO transactions VALUES ($1, $2, 'retained'), ($3, $4, 'empty')",
+                &[&vec![1u8], &points.concat(), &vec![2u8], &Vec::<u8>::new()],
+            )
+            .await
+            .unwrap();
+        // The migration's child table is temporary too, so all fixture data is removed on disconnect.
+        let migration = include_str!("../../cdk-sql-common/src/wallet/migrations/postgres/20260924000000_normalize_transaction_ys.sql")
+            .replace("CREATE TABLE transaction_ys", "CREATE TEMP TABLE transaction_ys");
+        let tx = client.transaction().await.unwrap();
+        tx.batch_execute(&migration).await.unwrap();
+        tx.commit().await.unwrap();
+        let rows = client
+            .query(
+                "SELECT y FROM transaction_ys WHERE transaction_id = $1 ORDER BY position",
+                &[&vec![1u8]],
+            )
+            .await
+            .unwrap();
+        let stored: Vec<Vec<u8>> = rows.iter().map(|row| row.get(0)).collect();
+        assert_eq!(stored, points);
+        let empty_count: i64 = client
+            .query_one(
+                "SELECT count(*) FROM transaction_ys WHERE transaction_id = $1",
+                &[&vec![2u8]],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(empty_count, 0);
+        let memo: String = client
+            .query_one("SELECT memo FROM transactions WHERE id = $1", &[&vec![1u8]])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(memo, "retained");
+        assert!(client
+            .query("SELECT ys FROM transactions", &[])
+            .await
+            .is_err());
+
+        client.batch_execute("DROP TABLE transaction_ys; DROP TABLE transactions; CREATE TEMP TABLE transactions (id BYTEA PRIMARY KEY, ys BYTEA NOT NULL);").await.unwrap();
+        client
+            .execute(
+                "INSERT INTO transactions VALUES ($1, $2)",
+                &[&vec![1u8], &vec![2u8; 34]],
+            )
+            .await
+            .unwrap();
+        let tx = client.transaction().await.unwrap();
+        assert!(tx.batch_execute(&migration).await.is_err());
+        tx.rollback().await.unwrap();
+        let stored: Vec<u8> = client
+            .query_one("SELECT ys FROM transactions", &[])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(stored, vec![2u8; 34]);
+    }
+
     wallet_db_test!(provide_wallet_db);
 
     #[tokio::test]
