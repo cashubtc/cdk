@@ -1369,6 +1369,13 @@ impl Mint {
         let result = async {
             let output_len = request.outputs.len();
 
+            if output_len == 0 {
+                return Ok(RestoreResponse {
+                    outputs: Vec::new(),
+                    signatures: Vec::new(),
+                });
+            }
+
             // Check max outputs limit
             if output_len > self.max_outputs {
                 tracing::warn!(
@@ -2254,6 +2261,21 @@ mod tests {
             .get_keyset_info(&keyset_info.id)
             .expect("keyset should be found");
         assert_eq!(stored.final_expiry, Some(expiry));
+    }
+
+    #[tokio::test]
+    async fn restore_empty_outputs() {
+        let mint = create_test_mint().await.unwrap();
+
+        let response = mint
+            .restore(RestoreRequest {
+                outputs: Vec::new(),
+            })
+            .await
+            .expect("empty restore should succeed");
+
+        assert!(response.outputs.is_empty());
+        assert!(response.signatures.is_empty());
     }
 
     #[tokio::test]
