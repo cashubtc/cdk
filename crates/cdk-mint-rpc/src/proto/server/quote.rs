@@ -265,6 +265,7 @@ mod tests {
                     unit: CurrencyUnit::Sat,
                     description: None,
                     pubkey: None,
+                    expiry_seconds: None,
                 }
                 .into(),
             )

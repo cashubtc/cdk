@@ -139,7 +139,8 @@ pub async fn mint_test_proofs(mint: &Mint, amount: Amount) -> Result<Proofs, Err
                 amount,
                 unit: CurrencyUnit::Sat,
                 description: None,
-                pubkey: None, expiry_seconds: None,
+                pubkey: None,
+                expiry_seconds: None,
             }
             .into(),
         )
