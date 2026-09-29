@@ -299,7 +299,7 @@ Conventional commits: `feat:`, `fix:`, `docs:`, `chore:`, `refactor:`, `test:`.
 
 ## Docs & References
 
-**If you are reviewing PRs or code changes, always refer to the specific review guidelines in `.github/agents/review.md` for project-specific feedback standards.**
+**If you are reviewing PRs or code changes, always read the [CDK Code Review Guidelines](docs/code-review.md) for project-specific feedback standards.**
 
 | Document | Path |
 |---|---|
