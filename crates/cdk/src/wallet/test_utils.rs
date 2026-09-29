@@ -270,6 +270,7 @@ pub fn test_mint_info() -> MintInfo {
                             max_amount: Some(Amount::from(500_000_u64)),
                             options: Some(crate::nuts::nut04::MintMethodOptions::Bolt11 {
                                 description: true,
+                                max_expiry_seconds: None,
                             }),
                         },
                         MintMethodSettings {
