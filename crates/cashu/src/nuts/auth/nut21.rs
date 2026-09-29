@@ -156,6 +156,8 @@ pub enum RoutePath {
     Melt(String),
     /// Swap
     Swap,
+    /// Transaction (NUT-XX)
+    Transaction,
     /// Checkstate
     Checkstate,
     /// Restore
@@ -186,6 +188,7 @@ impl std::str::FromStr for RoutePath {
         // Try to parse as a known static path first
         match s {
             "/v1/swap" => Ok(RoutePath::Swap),
+            "/v1/transaction" => Ok(RoutePath::Transaction),
             "/v1/checkstate" => Ok(RoutePath::Checkstate),
             "/v1/restore" => Ok(RoutePath::Restore),
             "/v1/auth/blind/mint" => Ok(RoutePath::MintBlindAuth),
@@ -284,6 +287,7 @@ impl RoutePath {
     pub fn static_paths() -> Vec<RoutePath> {
         vec![
             RoutePath::Swap,
+            RoutePath::Transaction,
             RoutePath::Checkstate,
             RoutePath::Restore,
             RoutePath::MintBlindAuth,
@@ -361,6 +365,7 @@ impl std::fmt::Display for RoutePath {
             RoutePath::MeltQuote(method) => write!(f, "/v1/melt/quote/{}", method),
             RoutePath::Melt(method) => write!(f, "/v1/melt/{}", method),
             RoutePath::Swap => write!(f, "/v1/swap"),
+            RoutePath::Transaction => write!(f, "/v1/transaction"),
             RoutePath::Checkstate => write!(f, "/v1/checkstate"),
             RoutePath::Restore => write!(f, "/v1/restore"),
             RoutePath::MintBlindAuth => write!(f, "/v1/auth/blind/mint"),

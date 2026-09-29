@@ -915,10 +915,19 @@ impl Mint {
         quote: &mut MeltQuote,
     ) -> Result<(), Error> {
         let quote_lock = self.melt_quote_lock(&quote.id).await;
-        let _quote_guard = quote_lock.lock_owned().await;
+        let quote_guard = quote_lock.lock_owned().await;
+        self.handle_pending_melt_quote_locked(quote, quote_guard)
+            .await
+    }
 
-        // The caller may have loaded the quote before waiting for an active
-        // dispatch/finalization. Refresh it after acquiring the guard.
+    /// Reconcile a melt while holding its dispatch guard.
+    pub(crate) async fn handle_pending_melt_quote_locked(
+        &self,
+        quote: &mut MeltQuote,
+        _quote_guard: tokio::sync::OwnedMutexGuard<()>,
+    ) -> Result<(), Error> {
+        // The caller may have loaded the quote before dispatch/finalization
+        // completed. Refresh it after acquiring the guard.
         *quote = self
             .localstore
             .get_melt_quote(&quote.id)

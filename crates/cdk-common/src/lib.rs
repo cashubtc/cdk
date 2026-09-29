@@ -47,6 +47,7 @@ pub mod redact;
 pub mod state;
 pub mod stream;
 pub mod subscription;
+pub mod transaction;
 #[cfg(feature = "wallet")]
 pub mod wallet;
 pub mod ws;

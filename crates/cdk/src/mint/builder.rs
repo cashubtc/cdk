@@ -107,7 +107,11 @@ impl MintBuilder {
                 .nut12(true)
                 .nut14(true)
                 .nut20(true)
-                .nut29(cdk_common::nut29::Settings::default()),
+                .nut29(cdk_common::nut29::Settings::default())
+                .nutxx(cdk_common::nuts::NutXXSettings {
+                    supported: true,
+                    quote_input_fee_ppk: 0,
+                }),
             ..Default::default()
         };
 

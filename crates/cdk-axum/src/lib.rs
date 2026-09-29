@@ -104,6 +104,8 @@ pub async fn create_mint_router_with_custom_cache(
         .route("/keysets", get(get_keysets))
         .route("/keys/{keyset_id}", get(get_keyset_pubkeys))
         .route("/swap", post(cache_post_swap))
+        .route("/transaction", post(post_transaction))
+        .route("/transaction/{digest}", get(get_transaction))
         .route("/ws", get(ws_handler))
         .route("/checkstate", post(post_check))
         .route("/info", get(get_mint_info))

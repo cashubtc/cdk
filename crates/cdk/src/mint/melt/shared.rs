@@ -148,10 +148,6 @@ pub async fn rollback_melt_quote(
     blinded_secrets: &[PublicKey],
     operation_id: &uuid::Uuid,
 ) -> Result<(), Error> {
-    if input_ys.is_empty() && blinded_secrets.is_empty() {
-        return Ok(());
-    }
-
     let mut tx = db.begin_transaction().await?;
     tx.lock_quotes(std::slice::from_ref(quote_id)).await?;
     rollback_melt_quote_inner(
@@ -175,10 +171,6 @@ pub(crate) async fn rollback_setup_melt_quote(
     blinded_secrets: &[PublicKey],
     operation_id: &uuid::Uuid,
 ) -> Result<(), Error> {
-    if input_ys.is_empty() && blinded_secrets.is_empty() {
-        return Ok(());
-    }
-
     let mut tx = db.begin_transaction().await?;
     tx.lock_quotes(std::slice::from_ref(quote_id)).await?;
     rollback_melt_quote_inner(
@@ -202,10 +194,6 @@ pub(crate) async fn rollback_failed_melt_quote(
     blinded_secrets: &[PublicKey],
     operation_id: &uuid::Uuid,
 ) -> Result<(), Error> {
-    if input_ys.is_empty() && blinded_secrets.is_empty() {
-        return Ok(());
-    }
-
     let mut tx = db.begin_transaction().await?;
     tx.lock_quotes(std::slice::from_ref(quote_id)).await?;
     rollback_melt_quote_inner(
@@ -229,11 +217,6 @@ async fn rollback_melt_quote_inner(
     operation_id: &uuid::Uuid,
     required_saga_state: Option<mint_types::MeltSagaState>,
 ) -> Result<(), Error> {
-    if input_ys.is_empty() && blinded_secrets.is_empty() {
-        tx.rollback().await?;
-        return Ok(());
-    }
-
     tracing::info!(
         "Rolling back melt quote {} ({} proofs, {} blinded messages, saga {})",
         quote_id,
@@ -319,6 +302,20 @@ async fn rollback_melt_quote_inner(
         None
     };
 
+    // A failed transaction releases its quote inputs and keeps its record as FAILED.
+    let mut transaction = tx.get_transaction_by_melt_quote(quote_id).await?;
+    if let Some(record) = transaction.as_mut() {
+        if record.state == cdk_common::nuts::TransactionState::Pending {
+            crate::mint::transaction::release_quote_inputs(&mut tx, record).await?;
+            tx.update_transaction(record, cdk_common::nuts::TransactionState::Failed, None)
+                .await?;
+        }
+    }
+    if input_ys.is_empty() && blinded_secrets.is_empty() && transaction.is_none() {
+        tx.rollback().await?;
+        return Ok(());
+    }
+
     // Finalization locks melt-request and blinded-signature rows before proofs.
     // Delete them in that same order during rollback.
     tx.delete_melt_request(quote_id).await?;
@@ -384,12 +381,12 @@ async fn rollback_melt_quote_inner(
     Ok(())
 }
 
-enum MeltCleanupTransaction {
+pub(crate) enum MeltCleanupTransaction {
     Ready(Box<dyn database::MintTransaction<database::Error> + Send + Sync>),
     AlreadyCompleted,
 }
 
-async fn begin_melt_cleanup_transaction(
+pub(crate) async fn begin_melt_cleanup_transaction(
     db: &DynMintDatabase,
     quote_id: &QuoteId,
 ) -> Result<MeltCleanupTransaction, Error> {
@@ -419,7 +416,7 @@ async fn begin_melt_cleanup_transaction(
     Ok(MeltCleanupTransaction::Ready(tx))
 }
 
-pub(super) enum MeltChangeResult {
+pub(crate) enum MeltChangeResult {
     Ready {
         change_sigs: Option<Vec<BlindSignature>>,
         tx: Box<dyn database::MintTransaction<database::Error> + Send + Sync>,
@@ -794,28 +791,34 @@ pub(crate) async fn finalize_melt_core(
         }
     }
 
-    let mut proofs = match tx.get_proofs(input_ys).await {
-        Ok(proofs) => proofs,
-        Err(err) => {
+    // A transaction paid from quote inputs alone has no proofs to spend.
+    let (proofs, states) = if input_ys.is_empty() {
+        (vec![], vec![])
+    } else {
+        let mut proofs = match tx.get_proofs(input_ys).await {
+            Ok(proofs) => proofs,
+            Err(err) => {
+                tx.rollback().await?;
+                return Err(err.into());
+            }
+        };
+
+        if let Err(err) = Mint::update_proofs_state(&mut tx, &mut proofs, State::Spent).await {
             tx.rollback().await?;
-            return Err(err.into());
+            return Err(err);
         }
+
+        let states = Mint::spent_proof_states(&mut tx, input_ys).await?;
+        // Clone the proofs out of the Acquired wrapper so that no database
+        // row locks are held after this function returns.
+        (proofs.to_vec(), states)
     };
-
-    if let Err(err) = Mint::update_proofs_state(&mut tx, &mut proofs, State::Spent).await {
-        tx.rollback().await?;
-        return Err(err);
-    }
-
-    let states = Mint::spent_proof_states(&mut tx, input_ys).await?;
     tx.commit().await?;
     for state in states {
         pubsub.proof_state(state);
     }
 
-    // Clone the proofs out of the Acquired wrapper so that no database
-    // row locks are held after this function returns.
-    Ok((proofs.to_vec(), quote.inner()))
+    Ok((proofs, quote.inner()))
 }
 
 /// High-level melt finalization that handles the complete workflow.
@@ -909,7 +912,14 @@ pub async fn finalize_melt_quote(
     // Get input proof Y values
     let input_ys = tx.get_proof_ys_by_quote_id(&quote.id).await?;
 
-    if input_ys.is_empty() {
+    // A NUT-XX transaction settles through this path; it may have no proofs at all.
+    let transaction = tx
+        .get_transaction_by_melt_quote(&quote.id)
+        .await?
+        .map(|record| record.inner())
+        .filter(|record| record.state == cdk_common::nuts::TransactionState::Pending);
+
+    if input_ys.is_empty() && transaction.is_none() {
         tracing::warn!(
             "No input proofs found for quote {} - may have been completed already",
             quote.id
@@ -954,18 +964,22 @@ pub async fn finalize_melt_quote(
             "Melt quote {} already Paid, skipping to change/cleanup",
             quote.id
         );
-        let mut proofs_with_state = tx.get_proofs(&input_ys).await?;
-        let spend_pending = proofs_with_state.state == State::Pending;
-        if spend_pending {
-            if let Err(err) =
-                Mint::update_proofs_state(&mut tx, &mut proofs_with_state, State::Spent).await
-            {
-                tx.rollback().await?;
-                return Err(err);
+        let (proofs, spend_pending, states) = if input_ys.is_empty() {
+            (vec![], false, vec![])
+        } else {
+            let mut proofs_with_state = tx.get_proofs(&input_ys).await?;
+            let spend_pending = proofs_with_state.state == State::Pending;
+            if spend_pending {
+                if let Err(err) =
+                    Mint::update_proofs_state(&mut tx, &mut proofs_with_state, State::Spent).await
+                {
+                    tx.rollback().await?;
+                    return Err(err);
+                }
             }
-        }
-        let proofs = proofs_with_state.to_vec();
-        let states = Mint::spent_proof_states(&mut tx, &input_ys).await?;
+            let states = Mint::spent_proof_states(&mut tx, &input_ys).await?;
+            (proofs_with_state.to_vec(), spend_pending, states)
+        };
         tx.commit().await?;
         if spend_pending {
             for state in states {
@@ -990,17 +1004,33 @@ pub async fn finalize_melt_quote(
         (proofs, quote)
     };
 
-    // Process change (if needed) - opens new transaction
-    let change_result = process_melt_change(
-        mint,
-        db,
-        &quote.id,
-        melt_request_info.inputs_amount.clone(),
-        total_spent.clone(),
-        melt_request_info.inputs_fee.clone(),
-        melt_request_info.change_outputs.clone(),
-    )
-    .await?;
+    // Process change (if needed) - opens new transaction. A transaction signs
+    // its fixed outputs and parks the change in a change quote instead.
+    let change_result = match transaction {
+        Some(_) => {
+            crate::mint::transaction::settle_with_melt(
+                mint,
+                db,
+                pubsub,
+                &quote,
+                &melt_request_info,
+                total_spent.clone(),
+            )
+            .await?
+        }
+        None => {
+            process_melt_change(
+                mint,
+                db,
+                &quote.id,
+                melt_request_info.inputs_amount.clone(),
+                total_spent.clone(),
+                melt_request_info.inputs_fee.clone(),
+                melt_request_info.change_outputs.clone(),
+            )
+            .await?
+        }
+    };
 
     let (change_sigs, mut tx) = match change_result {
         MeltChangeResult::Ready { change_sigs, tx } => (change_sigs, tx),

@@ -165,8 +165,17 @@ impl MeltSaga<Initial> {
             operation_id,
             #[cfg(feature = "prometheus")]
             metrics,
-            state_data: Initial { operation_id },
+            state_data: Initial {
+                operation_id,
+                transaction: None,
+            },
         }
+    }
+
+    /// Reserve a NUT-XX transaction in the setup transaction and settle it with the melt.
+    pub fn with_transaction(mut self, setup: crate::mint::transaction::TransactionSetup) -> Self {
+        self.state_data.transaction = Some(setup);
+        self
     }
 
     /// Sets up the melt by atomically verifying and reserving inputs/outputs.
@@ -233,6 +242,20 @@ impl MeltSaga<Initial> {
 
         // Calculate fee to create Operation with actual amounts
         let fee_breakdown = self.mint.get_proofs_fee(melt_request.inputs()).await?;
+        let transaction = self.state_data.transaction.as_ref();
+        let fee_collected = transaction
+            .map(|setup| setup.inputs_fee.clone().into())
+            .unwrap_or(fee_breakdown.total);
+
+        // Lock order: melt quote, then the mint quotes a transaction draws on, then proofs.
+        if let Some(setup) = transaction {
+            if let Err(err) =
+                crate::mint::transaction::reserve_quote_inputs(&mut tx, &setup.record).await
+            {
+                tx.rollback().await?;
+                return Err(err);
+            }
+        }
 
         // Create Operation with actual amounts now that we know them
         // total_redeemed = input_amount (proofs being burnt)
@@ -242,35 +265,41 @@ impl MeltSaga<Initial> {
             cdk_common::mint::OperationKind::Melt,
             Amount::ZERO, // total_issued (change will be calculated later)
             input_amount.clone().into(), // total_redeemed (convert to untyped)
-            fee_breakdown.total, // fee_collected
-            None,         // complete_at
+            fee_collected,
+            None,                         // complete_at
             Some(payment_method.clone()), // payment_method
         );
 
-        // Add proofs to the database
-        if let Err(err) = tx
-            .add_proofs(
-                melt_request.inputs().clone(),
-                Some(melt_request.quote_id().to_owned()),
-                &operation,
-            )
-            .await
-        {
-            tx.rollback().await?;
-            return Err(match err {
-                cdk_common::database::Error::Duplicate => Error::TokenPending,
-                cdk_common::database::Error::AttemptUpdateSpentProof => Error::TokenAlreadySpent,
-                err => Error::Database(err),
-            });
-        }
-
         let input_ys = melt_request.inputs().ys()?;
 
-        let mut proofs = tx.get_proofs(&input_ys).await?;
+        // A transaction may pay the melt from quote inputs alone.
+        if !input_ys.is_empty() {
+            // Add proofs to the database
+            if let Err(err) = tx
+                .add_proofs(
+                    melt_request.inputs().clone(),
+                    Some(melt_request.quote_id().to_owned()),
+                    &operation,
+                )
+                .await
+            {
+                tx.rollback().await?;
+                return Err(match err {
+                    cdk_common::database::Error::Duplicate => Error::TokenPending,
+                    cdk_common::database::Error::AttemptUpdateSpentProof => {
+                        Error::TokenAlreadySpent
+                    }
+                    err => Error::Database(err),
+                });
+            }
 
-        if let Err(err) = Mint::update_proofs_state(&mut tx, &mut proofs, State::Pending).await {
-            tx.rollback().await?;
-            return Err(err);
+            let mut proofs = tx.get_proofs(&input_ys).await?;
+
+            if let Err(err) = Mint::update_proofs_state(&mut tx, &mut proofs, State::Pending).await
+            {
+                tx.rollback().await?;
+                return Err(err);
+            }
         }
 
         let previous_state = quote.state;
@@ -307,27 +336,39 @@ impl MeltSaga<Initial> {
             }
         }
 
-        let nutroot_transaction = if melt_request.inputs().iter().any(|proof| {
-            proof.keyset_id.get_version() == cdk_common::nuts::KeySetVersion::Version02
-        }) {
-            Some(
-                cdk_common::nuts::nut10::nutroot::Transaction::new(
-                    melt_request.inputs(),
-                    &[],
-                    melt_request.outputs().as_deref().unwrap_or_default(),
-                    &[cdk_common::nuts::nut10::nutroot::Quote {
-                        id: melt_request.quote_id().to_string(),
-                        amount: quote.amount().checked_add(&quote.fee_reserve())?.into(),
-                    }],
-                )
-                .map_err(cdk_common::nuts::nut10::Error::from)?,
-            )
-        } else {
-            None
-        };
-        melt_request.verify_spending_conditions_with_transaction(nutroot_transaction.as_ref())?;
-        if let Some(transaction) = &nutroot_transaction {
-            Mint::record_nutroot_spends(&mut tx, melt_request.inputs(), transaction).await?;
+        match transaction {
+            // A transaction's inputs were verified against its own transcript already.
+            Some(setup) => {
+                if let Some(transcript) = &setup.transcript {
+                    Mint::record_nutroot_spends(&mut tx, melt_request.inputs(), transcript).await?;
+                }
+            }
+            None => {
+                let nutroot_transaction = if melt_request.inputs().iter().any(|proof| {
+                    proof.keyset_id.get_version() == cdk_common::nuts::KeySetVersion::Version02
+                }) {
+                    Some(
+                        cdk_common::nuts::nut10::nutroot::Transaction::new(
+                            melt_request.inputs(),
+                            &[],
+                            melt_request.outputs().as_deref().unwrap_or_default(),
+                            &[cdk_common::nuts::nut10::nutroot::Quote {
+                                id: melt_request.quote_id().to_string(),
+                                amount: quote.amount().checked_add(&quote.fee_reserve())?.into(),
+                            }],
+                        )
+                        .map_err(cdk_common::nuts::nut10::Error::from)?,
+                    )
+                } else {
+                    None
+                };
+                melt_request
+                    .verify_spending_conditions_with_transaction(nutroot_transaction.as_ref())?;
+                if let Some(transaction) = &nutroot_transaction {
+                    Mint::record_nutroot_spends(&mut tx, melt_request.inputs(), transaction)
+                        .await?;
+                }
+            }
         }
 
         match previous_state {
@@ -358,14 +399,18 @@ impl MeltSaga<Initial> {
             }
         };
 
-        let inputs_fee_breakdown = self.mint.get_proofs_fee(melt_request.inputs()).await?;
-        let inputs_fee = inputs_fee_breakdown.total.with_unit(quote.unit.clone());
+        let inputs_fee = fee_collected.with_unit(quote.unit.clone());
         let fee_reserve = quote.fee_reserve();
 
+        // A transaction's outputs carry fixed amounts the inputs must also cover.
+        let outputs_amount = transaction
+            .map(|setup| setup.outputs_amount.clone())
+            .unwrap_or_else(|| Amount::ZERO.with_unit(quote.unit.clone()));
         let required_total = quote
             .amount()
             .checked_add(&fee_reserve)?
-            .checked_add(&inputs_fee)?;
+            .checked_add(&inputs_fee)?
+            .checked_add(&outputs_amount)?;
 
         let amount_mismatch = input_amount < required_total.clone();
 
@@ -389,7 +434,7 @@ impl MeltSaga<Initial> {
         // Add melt request tracking record
         tx.add_melt_request(
             melt_request.quote_id(),
-            melt_request.inputs_amount()?.with_unit(quote.unit.clone()),
+            input_amount.clone(),
             inputs_fee.clone(),
         )
         .await?;
@@ -421,6 +466,15 @@ impl MeltSaga<Initial> {
         if let Err(err) = tx.add_saga(&saga).await {
             tx.rollback().await?;
             return Err(err.into());
+        }
+
+        if let Some(setup) = transaction {
+            let mut record = setup.record.clone();
+            record.operation_id = self.operation_id;
+            if let Err(err) = tx.add_transaction(&record).await {
+                tx.rollback().await?;
+                return Err(err.into());
+            }
         }
 
         tx.commit().await?;
@@ -572,28 +626,23 @@ impl MeltSaga<SetupComplete> {
             return Err(Error::RequestAlreadyPaid);
         }
 
-        let inputs_amount_quote_unit = melt_request
-            .inputs_amount()
-            .map_err(|_| {
-                tracing::error!("Proof inputs in melt quote overflowed");
-                Error::AmountOverflow
-            })?
-            .with_unit(mint_quote.unit.clone());
+        // Setup already checked the inputs (proofs, and any NUT-XX quote inputs)
+        // cover the melt amount, so the credit is bounded by the melt quote itself.
+        let _ = melt_request;
+        let amount = self.state_data.quote.amount();
 
-        if let Some(ref amount) = mint_quote.amount {
-            if amount > &inputs_amount_quote_unit {
+        if let Some(ref mint_amount) = mint_quote.amount {
+            if mint_amount > &amount {
                 tracing::debug!(
                     "Not enough inputs provided: {} needed {}",
-                    inputs_amount_quote_unit,
-                    amount
+                    amount,
+                    mint_amount
                 );
                 tx.rollback().await?;
                 self.compensate_all().await?;
                 return Err(Error::InsufficientFunds);
             }
         }
-
-        let amount = self.state_data.quote.amount();
 
         tracing::info!(
             "Mint quote {} paid {} from internal payment.",

@@ -27,7 +27,9 @@ use super::{
     CurrencyUnit, MeltQuote, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
     MeltQuoteBolt12Response, MeltRequest, Mint, PaymentMethod,
 };
-use crate::mint::verification::{validate_custom_payment_method, MAX_REQUEST_FIELD_LEN};
+use crate::mint::verification::{
+    validate_custom_payment_method, Verification, MAX_REQUEST_FIELD_LEN,
+};
 use crate::nuts::MeltQuoteState;
 use crate::types::PaymentProcessorKey;
 use crate::util::unix_time;
@@ -896,12 +898,25 @@ impl Mint {
         let verification = self.verify_inputs(melt_request.inputs()).await?;
 
         // Fetch the quote to get payment_method for operation tracking
-        let quote_id = melt_request.quote().clone();
         let quote = self
             .localstore
-            .get_melt_quote(&quote_id)
+            .get_melt_quote(melt_request.quote())
             .await?
             .ok_or(Error::UnknownQuote)?;
+
+        self.melt_inner(melt_request, verification, quote, None)
+            .await
+    }
+
+    /// Run the melt saga; `transaction` reserves a NUT-XX transaction with it.
+    pub(crate) async fn melt_inner(
+        &self,
+        melt_request: &MeltRequest<QuoteId>,
+        verification: Verification,
+        quote: MeltQuote,
+        transaction: Option<crate::mint::transaction::TransactionSetup>,
+    ) -> Result<PendingMelt, Error> {
+        let quote_id = melt_request.quote().clone();
 
         // Keep status checks and payment events behind the live dispatch for
         // this quote. Without this process-local guard, a check could observe
@@ -910,11 +925,14 @@ impl Mint {
         let quote_lock = self.melt_quote_lock(&quote_id).await;
         let active_melt_guard = quote_lock.lock_owned().await;
 
-        let init_saga = MeltSaga::new(
+        let mut init_saga = MeltSaga::new(
             std::sync::Arc::new(self.clone()),
             self.localstore.clone(),
             std::sync::Arc::clone(&self.pubsub_manager),
         );
+        if let Some(setup) = transaction {
+            init_saga = init_saga.with_transaction(setup);
+        }
 
         // Step 1: Setup (TX1 - reserves inputs and outputs)
         let setup_saga = init_saga
