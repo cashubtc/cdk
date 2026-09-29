@@ -172,6 +172,10 @@ fn ensure_selected_proofs_cover_input_fees(
         .into_iter()
         .filter(|proof| !selected_proofs.contains(proof))
         .collect();
+    let amount_with_fee = context
+        .amount
+        .checked_add(context.send_fee)
+        .ok_or(Error::AmountOverflow)?;
 
     loop {
         let selected_net = selected_proofs_net_after_swap_fees(
@@ -186,7 +190,7 @@ fn ensure_selected_proofs_cover_input_fees(
             },
         )?;
 
-        if selected_net >= context.amount + context.send_fee {
+        if selected_net >= amount_with_fee {
             return Ok(selected_proofs);
         }
 
@@ -194,7 +198,7 @@ fn ensure_selected_proofs_cover_input_fees(
             return Err(Error::InsufficientFunds);
         }
 
-        let shortfall = (context.amount + context.send_fee)
+        let shortfall = amount_with_fee
             .checked_sub(selected_net)
             .unwrap_or(Amount::ZERO);
         let additional = Wallet::select_proofs_with_derivation_indices(
@@ -260,7 +264,10 @@ fn split_proofs_for_send_respecting_p2pk_locks(
             }
 
             if !proofs_to_swap.is_empty() {
-                let swap_output_needed = (context.amount + context.send_fee)
+                let swap_output_needed = context
+                    .amount
+                    .checked_add(context.send_fee)
+                    .ok_or(Error::AmountOverflow)?
                     .checked_sub(proofs_to_send.total_amount()?)
                     .unwrap_or(Amount::ZERO);
 
@@ -325,7 +332,9 @@ fn selected_proofs_net_after_swap_fees(
         .checked_sub(split.swap_fee)
         .unwrap_or(Amount::ZERO);
 
-    Ok(direct_total + swap_net)
+    direct_total
+        .checked_add(swap_net)
+        .ok_or(Error::AmountOverflow)
 }
 
 /// Saga pattern implementation for send operations.
@@ -489,7 +498,9 @@ impl<'a> SendSaga<'a, Initial> {
         } else {
             (amount.split(&fee_and_amounts)?, Amount::ZERO)
         };
-        let selection_amount = amount + send_amounts.1;
+        let selection_amount = amount
+            .checked_add(send_amounts.1)
+            .ok_or(Error::AmountOverflow)?;
 
         let may_swap_p2pk_locked = opts.p2pk_locked_proof_send_mode
             == P2PKLockedProofSendMode::Swap
@@ -513,9 +524,10 @@ impl<'a> SendSaga<'a, Initial> {
         } else {
             Amount::ZERO
         };
+        let amount_with_fee = amount.checked_add(send_fee).ok_or(Error::AmountOverflow)?;
 
         if may_swap_p2pk_locked {
-            let is_exact_or_offline = selected_proofs.total_amount()? == amount + send_fee
+            let is_exact_or_offline = selected_proofs.total_amount()? == amount_with_fee
                 || opts.send_kind.is_offline()
                 || opts.send_kind.has_tolerance();
             selected_proofs = ensure_selected_proofs_cover_input_fees(
@@ -536,7 +548,7 @@ impl<'a> SendSaga<'a, Initial> {
 
         let selected_total = selected_proofs.total_amount()?;
 
-        if selected_total == amount + send_fee {
+        if selected_total == amount_with_fee {
             return self
                 .internal_prepare(amount, opts, selected_proofs, force_swap, keyset_policy)
                 .await;
@@ -550,7 +562,7 @@ impl<'a> SendSaga<'a, Initial> {
             _ => None,
         };
         if let Some(tolerance) = tolerance {
-            if selected_total - amount > tolerance && opts.send_kind.is_offline() {
+            if selected_total.saturating_sub(amount) > tolerance && opts.send_kind.is_offline() {
                 return Err(Error::InsufficientFunds);
             }
         }
@@ -600,7 +612,10 @@ impl<'a> SendSaga<'a, Initial> {
             (send_split, send_fee)
         };
 
-        let mut exact_proofs = proofs.total_amount()? == amount + send_fee.total;
+        let mut exact_proofs = proofs.total_amount()?
+            == amount
+                .checked_add(send_fee.total)
+                .ok_or(Error::AmountOverflow)?;
         if let Some(max_proofs) = opts.max_proofs {
             exact_proofs &= proofs.len() <= max_proofs;
         }
@@ -784,10 +799,12 @@ impl<'a> SendSaga<'a, Prepared> {
         tracing::info!("Confirming prepared send for operation {}", operation_id);
 
         let logic_res = async {
-            let total_send_fee = swap_fee + send_fee;
+            let total_send_fee = swap_fee
+                .checked_add(send_fee)
+                .ok_or(Error::AmountOverflow)?;
             let mut final_proofs_to_send = proofs_to_send.clone();
 
-            let total_send_amount = amount + send_fee;
+            let total_send_amount = amount.checked_add(send_fee).ok_or(Error::AmountOverflow)?;
 
             let mut counter_start = None;
             let mut counter_end = None;
