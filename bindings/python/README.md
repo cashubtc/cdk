@@ -43,7 +43,8 @@ Each release carries a `checksums.sha256` asset to verify the download against.
 - Supported platforms:
   - Linux (x86_64, ARM64) — `manylinux_2_28`, so glibc 2.28 or newer
   - macOS — Apple Silicon on 11 or newer, Intel on 10.12 or newer
-  - Windows (x86_64)
+
+Windows wheels are not built for now.
 
 One wheel covers every supported Python version: the native library is loaded
 through `ctypes` rather than the CPython ABI, so every wheel is tagged
@@ -354,32 +355,59 @@ The upload comes before the release on purpose, matching the Kotlin workflow: if
 it fails, no release is cut and the branch stays in place so the run can be
 retried.
 
-Before a maintainer can run it, the monorepo needs these configured:
-
-- `PYPI_TOKEN`, a GitHub Actions secret holding a PyPI API token authorized to
-  publish the `cdk-python` project. Used when `publish_target` is `pypi`
-- `TEST_PYPI_TOKEN`, the same for TestPyPI, which is a separate account with
-  its own tokens. Used when `publish_target` is `test-pypi`
-- `CDK_PYTHON_REPO`, a GitHub Actions variable naming the downstream
-  repository the wheels are published to, for example `cashubtc/cdk-python`
-- `FFI_DEPLOY_KEY`, a GitHub Actions secret holding a write credential for that
-  repository
-
-`FFI_DEPLOY_KEY` is used both as a git credential and as `GH_TOKEN`, so it needs
-enough scope to push the `release/<tag>` branch, squash-merge it into the
-default branch and delete it, and to run `gh release create`, which creates the
-tag and uploads the wheels and `checksums.sha256` as assets.
-
-Both registry tokens are optional. When the one the selected target needs is
-missing, the workflow logs a warning and skips the upload rather than failing
-the release, so the wheels still reach the GitHub release.
-
 The `publish_target` input decides where the wheels go: `none` builds and
 attaches them without touching a registry, `test-pypi` uploads to TestPyPI, and
 `pypi` uploads to PyPI. `just ffi-release-all` sets it to `pypi` for a stable
 tag and `none` for a pre-release. `just ffi-release-python` and the nightly
 workflow leave it at `none`, so reaching a registry from a single-language run
 means dispatching the workflow directly with the input set.
+
+The following secrets and variables must be configured in the **CDK monorepo**
+repository settings (Settings → Secrets and variables → Actions).
+
+#### Secrets
+
+| Name | Purpose |
+|---|---|
+| `FFI_DEPLOY_KEY` | Personal access token (PAT) with `repo` scope on the FFI target repos. Used to clone, push, and create releases. Shared across all FFI publish workflows. |
+| `PYPI_TOKEN` | PyPI API token authorized to publish the `cdk-python` project. Used when `publish_target` is `pypi`. |
+| `TEST_PYPI_TOKEN` | The same for TestPyPI, a separate account with its own tokens. Used when `publish_target` is `test-pypi`. |
+
+#### How to create the PAT
+
+1. Go to **GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens**.
+2. Create a token scoped to the FFI target repositories with **Contents** (read/write) and **Metadata** (read) permissions.
+3. Add it as a repository secret named `FFI_DEPLOY_KEY` in the monorepo.
+
+`FFI_DEPLOY_KEY` is used both as a git credential and as `GH_TOKEN`, so it needs
+enough scope to push the `release/<tag>` branch, squash-merge it into the
+default branch and delete it, and to run `gh release create`, which creates the
+tag and uploads the wheels and `checksums.sha256` as assets.
+
+#### How to create the registry tokens
+
+pypi.org and test.pypi.org are separate accounts with separate token stores, so
+a token issued on one is rejected by the other.
+
+1. On [pypi.org](https://pypi.org), go to **Account settings → API tokens** and add a token scoped to the `cdk-python` project.
+2. Add it as a repository secret named `PYPI_TOKEN` in the monorepo.
+3. Repeat on [test.pypi.org](https://test.pypi.org) and add that token as `TEST_PYPI_TOKEN`.
+
+The upload authenticates with these API tokens rather than trusted publishing.
+The workflow grants no `id-token: write`, so there is no OIDC publisher to
+configure on either registry.
+
+Both registry tokens are optional. When the one the selected target needs is
+missing, the workflow logs a warning and skips the upload rather than failing
+the release, so the wheels still reach the GitHub release.
+
+#### Variables
+
+| Name | Purpose | Example |
+|---|---|---|
+| `CDK_PYTHON_REPO` | Owner/repo of the target Python package repository. | `cashubtc/cdk-python` |
+
+Set this under **Settings → Secrets and variables → Actions → Variables**.
 
 ## Project Structure
 

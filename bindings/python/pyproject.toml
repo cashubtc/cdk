@@ -40,4 +40,4 @@ zip-safe = false
 where = ["src"]
 
 [tool.setuptools.package-data]
-cdk = ["*.so", "*.dylib", "*.dll"]
+cdk = ["*.so", "*.dylib"]

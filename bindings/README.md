@@ -110,8 +110,8 @@ own `uniffi.toml` controlling language-specific code generation.
   `wheels/`, the way cdk-go commits its bindings and native libraries. cdk-python
   carries no `rust/`, so nothing there is compiled
 - Wheels go to PyPI and are attached to the cdk-python GitHub release, for
-  Linux (`manylinux_2_28`, x86_64 and aarch64), macOS (arm64 on 11, x86_64 on
-  10.12) and Windows (x86_64)
+  Linux (`manylinux_2_28`, x86_64 and aarch64) and macOS (arm64 on 11, x86_64
+  on 10.12). Windows wheels are not built for now
 - Every wheel is tagged `py3-none-<platform>`: the library is loaded with
   `ctypes`, not linked against the CPython ABI
 - uniffi names the loaded library after the `cdk-ffi` namespace, so the built

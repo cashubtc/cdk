@@ -1350,16 +1350,15 @@ binding-python:
   cd "{{justfile_directory()}}"
 
   case "$(uname -s)" in
-    Darwin)               LIB_EXT=dylib; LIB_PREFIX=lib ;;
-    MINGW*|MSYS*|CYGWIN*) LIB_EXT=dll;   LIB_PREFIX=    ;;
-    *)                    LIB_EXT=so;    LIB_PREFIX=lib ;;
+    Darwin) LIB_EXT=dylib ;;
+    *)      LIB_EXT=so ;;
   esac
 
   PKG_DIR="bindings/python/src/cdk"
   # uniffi names the library it loads after the cdk-ffi namespace rather than
   # the wrapper crate, so the built cdylib is renamed on the way into the
   # package.
-  INSTALLED="${PKG_DIR}/${LIB_PREFIX}cdk_ffi.${LIB_EXT}"
+  INSTALLED="${PKG_DIR}/libcdk_ffi.${LIB_EXT}"
 
   echo "🔨 Building cdk-ffi-python..."
   # Plain release, unlike the release workflow's release-ffi: the LTO that
@@ -1370,7 +1369,7 @@ binding-python:
   # assuming ./target.
   TARGET_DIR=$(cargo metadata --format-version 1 --no-deps \
     | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
-  BUILT="${TARGET_DIR}/release/${LIB_PREFIX}cdk_ffi_python.${LIB_EXT}"
+  BUILT="${TARGET_DIR}/release/libcdk_ffi_python.${LIB_EXT}"
 
   if [[ ! -f "$BUILT" ]]; then
     echo "error: expected the built library at $BUILT" >&2
@@ -1405,9 +1404,8 @@ binding-python:
   # Best effort: a missing strip costs size, not correctness.
   if command -v strip >/dev/null 2>&1; then
     case "$(uname -s)" in
-      Darwin)               strip -S "$INSTALLED" ;;
-      MINGW*|MSYS*|CYGWIN*) : ;;
-      *)                    strip --strip-all "$INSTALLED" ;;
+      Darwin) strip -S "$INSTALLED" ;;
+      *)      strip --strip-all "$INSTALLED" ;;
     esac
   else
     echo "note: strip not found, shipping an unstripped library"

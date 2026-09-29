@@ -270,10 +270,6 @@ jobs:
             container: ""
             artifact: libcdk_ffi_python.dylib
             deployment_target: "10.12"
-          - target: x86_64-pc-windows-msvc
-            runner: windows-latest
-            container: ""
-            artifact: cdk_ffi_python.dll
 
     steps:
       - name: Checkout monorepo
@@ -341,8 +337,7 @@ jobs:
       # Must run after generation: release-ffi keeps the symbol table on
       # purpose, because that is where uniffi reads the component interface
       # from, and --strip-all would leave the bindings silently empty.
-      - name: Strip debug symbols (MSVC keeps them in a separate .pdb)
-        if: "!contains(matrix.target, 'windows')"
+      - name: Strip debug symbols
         run: |
           FILE="target/${{ matrix.target }}/release-ffi/${{ matrix.artifact }}"
           case "${{ matrix.target }}" in
@@ -420,7 +415,6 @@ jobs:
           ARTIFACT_MAP[aarch64-unknown-linux-gnu]="libcdk_ffi_python.so"
           ARTIFACT_MAP[aarch64-apple-darwin]="libcdk_ffi_python.dylib"
           ARTIFACT_MAP[x86_64-apple-darwin]="libcdk_ffi_python.dylib"
-          ARTIFACT_MAP[x86_64-pc-windows-msvc]="cdk_ffi_python.dll"
 
           # uniffi names the loaded library after the cdk-ffi namespace rather
           # than the wrapper crate, so each artifact is renamed on the way in.
@@ -429,7 +423,6 @@ jobs:
           INSTALLED_MAP[aarch64-unknown-linux-gnu]="libcdk_ffi.so"
           INSTALLED_MAP[aarch64-apple-darwin]="libcdk_ffi.dylib"
           INSTALLED_MAP[x86_64-apple-darwin]="libcdk_ffi.dylib"
-          INSTALLED_MAP[x86_64-pc-windows-msvc]="cdk_ffi.dll"
 
           # A tag is a compatibility claim pip acts on, so each one has to be
           # backed by how the artifact was actually built: the manylinux legs by
@@ -441,7 +434,6 @@ jobs:
           PLATFORM_MAP[aarch64-unknown-linux-gnu]="manylinux_2_28_aarch64"
           PLATFORM_MAP[aarch64-apple-darwin]="macosx_11_0_arm64"
           PLATFORM_MAP[x86_64-apple-darwin]="macosx_10_12_x86_64"
-          PLATFORM_MAP[x86_64-pc-windows-msvc]="win_amd64"
 
           PKG_DIR="bindings/python/src/cdk"
           OUT_DIR="${PWD}/wheelhouse"
@@ -484,8 +476,8 @@ jobs:
         run: |
           set -euo pipefail
           COUNT=$(ls -1 wheelhouse/*.whl | wc -l)
-          if [[ "${COUNT}" -ne 5 ]]; then
-            echo "::error::Expected 5 wheels, found ${COUNT}"
+          if [[ "${COUNT}" -ne 4 ]]; then
+            echo "::error::Expected 4 wheels, found ${COUNT}"
             exit 1
           fi
           if ls wheelhouse/*0.0.0* >/dev/null 2>&1; then
