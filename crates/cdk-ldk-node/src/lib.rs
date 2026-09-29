@@ -455,7 +455,8 @@ impl CdkLdkNode {
             let total_spent = payment_details
                 .amount_msat
                 .ok_or(Error::CouldNotGetAmountSpent)?
-                + payment_details.fee_paid_msat.unwrap_or_default();
+                .checked_add(payment_details.fee_paid_msat.unwrap_or_default())
+                .ok_or(cdk_common::amount::Error::AmountOverflow)?;
             // Round the principal and routing fees together, only once.
             Amount::new(total_spent, CurrencyUnit::Msat).convert_to_ceil(unit)?
         } else {
@@ -877,12 +878,12 @@ impl MintPayment for CdkLdkNode {
                     .convert_to(&CurrencyUnit::Msat)?
                     .into();
                 let description = bolt11_options.description.unwrap_or_default();
-                let time = match bolt11_options.unix_expiry {
-                    Some(t) => t
-                        .checked_sub(unix_time())
-                        .ok_or(payment::Error::InvalidExpiry)?,
+                let now = unix_time();
+                let ttl = match bolt11_options.unix_expiry {
+                    Some(t) => t.checked_sub(now).ok_or(payment::Error::InvalidExpiry)?,
                     None => 36000,
                 };
+                let ttl = u32::try_from(ttl).unwrap_or(u32::MAX);
 
                 let description = Bolt11InvoiceDescription::Direct(
                     Description::new(description).map_err(|_| Error::InvalidDescription)?,
@@ -891,7 +892,7 @@ impl MintPayment for CdkLdkNode {
                 let payment = self
                     .inner
                     .bolt11_payment()
-                    .receive(amount_msat.into(), &description, time as u32)
+                    .receive(amount_msat.into(), &description, ttl)
                     .map_err(Error::LdkNode)?;
 
                 let payment_hash = payment.payment_hash().to_string();
@@ -904,7 +905,7 @@ impl MintPayment for CdkLdkNode {
                 Ok(CreateIncomingPaymentResponse {
                     request_lookup_id: payment_identifier,
                     request: payment.to_string(),
-                    expiry: Some(unix_time() + time),
+                    expiry: Some(now.saturating_add(ttl.into())),
                     extra_json: None,
                 })
             }
@@ -995,15 +996,7 @@ impl MintPayment for CdkLdkNode {
                 let amount =
                     Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to_ceil(unit)?;
 
-                let relative_fee_reserve =
-                    (self.fee_reserve.percent_fee_reserve * amount.value() as f32) as u64;
-
-                let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
-
-                let fee = match relative_fee_reserve > absolute_fee_reserve {
-                    true => relative_fee_reserve,
-                    false => absolute_fee_reserve,
-                };
+                let fee = self.fee_reserve.for_amount(amount.clone().into());
 
                 let payment_hash = bolt11.payment_hash().to_string();
                 let payment_hash_bytes = hex::decode(&payment_hash)?
@@ -1013,7 +1006,7 @@ impl MintPayment for CdkLdkNode {
                 Ok(PaymentQuoteResponse {
                     request_lookup_id: Some(PaymentIdentifier::PaymentHash(payment_hash_bytes)),
                     amount,
-                    fee: Amount::new(fee, unit.clone()),
+                    fee: Amount::new(fee.to_u64(), unit.clone()),
                     state: MeltQuoteState::Unpaid,
                     extra_json: None,
                     estimated_blocks: None,
@@ -1039,22 +1032,14 @@ impl MintPayment for CdkLdkNode {
                 let amount =
                     Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to_ceil(unit)?;
 
-                let relative_fee_reserve =
-                    (self.fee_reserve.percent_fee_reserve * amount.value() as f32) as u64;
-
-                let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
-
-                let fee = match relative_fee_reserve > absolute_fee_reserve {
-                    true => relative_fee_reserve,
-                    false => absolute_fee_reserve,
-                };
+                let fee = self.fee_reserve.for_amount(amount.clone().into());
 
                 Ok(PaymentQuoteResponse {
                     request_lookup_id: Some(PaymentIdentifier::QuoteId(
                         bolt12_options.quote_id.clone(),
                     )),
                     amount,
-                    fee: Amount::new(fee, unit.clone()),
+                    fee: Amount::new(fee.to_u64(), unit.clone()),
                     state: MeltQuoteState::Unpaid,
                     extra_json: None,
                     estimated_blocks: None,
