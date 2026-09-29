@@ -10,7 +10,8 @@ use crate::Amount;
 /// Quote identity and amount bound by a transaction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Quote {
-    /// Mint quote face amount, or melt amount including selected fee reserve.
+    /// Amount a mint quote issues in this transaction, or melt amount including
+    /// the selected fee reserve.
     pub amount: Amount,
     /// Quote identifier exactly as supplied by the mint.
     pub id: String,
@@ -33,8 +34,19 @@ impl Transaction {
         outputs: &[BlindedMessage],
         melt_quotes: &[Quote],
     ) -> Result<Self, Error> {
+        Self::with_change(proofs, mint_quotes, outputs, melt_quotes, None)
+    }
+
+    /// [`Transaction::new`] with a change quote output locked to `change_pubkey`.
+    pub fn with_change(
+        proofs: &[Proof],
+        mint_quotes: &[Quote],
+        outputs: &[BlindedMessage],
+        melt_quotes: &[Quote],
+        change_pubkey: Option<&bitcoin::secp256k1::PublicKey>,
+    ) -> Result<Self, Error> {
         if (proofs.is_empty() && mint_quotes.is_empty())
-            || (outputs.is_empty() && melt_quotes.is_empty())
+            || (outputs.is_empty() && melt_quotes.is_empty() && change_pubkey.is_none())
         {
             return Err(Error::InvalidTransaction);
         }
@@ -98,6 +110,9 @@ impl Transaction {
                 ],
             )?);
         }
+        if let Some(key) = change_pubkey {
+            transcript.extend(container(6, &[key.serialize().to_vec()])?);
+        }
         Ok(Self::from_parts(transcript, inputs))
     }
 
@@ -113,7 +128,8 @@ impl Transaction {
         let mut quotes = HashSet::new();
         let mut output = false;
         for (tag, value, full) in records {
-            if tag < last || !(1..=4).contains(&tag) {
+            // A transaction has at most one change quote, so 6 may not repeat.
+            if tag < last || !((1..=4).contains(&tag) || tag == 6) || (tag == 6 && last == 6) {
                 return Err(Error::InvalidTransaction);
             }
             last = tag;
@@ -121,6 +137,7 @@ impl Transaction {
             let count = match tag {
                 1 => 4,
                 2 | 4 => 2,
+                6 => 1,
                 _ => 3,
             };
             if fields.len() != count
@@ -130,6 +147,15 @@ impl Transaction {
                     .any(|(i, (tag, _, _))| usize::from(*tag) != i + 1)
             {
                 return Err(Error::InvalidTransaction);
+            }
+            if tag == 6 {
+                let key = crate::nuts::PublicKey::from_slice(fields[0].1)
+                    .map_err(|_| Error::InvalidTransaction)?;
+                if !matches!(key, crate::nuts::PublicKey::Secp256k1(_)) {
+                    return Err(Error::InvalidTransaction);
+                }
+                output = true;
+                continue;
             }
             let amount = fields[0].1;
             if amount.len() > 8 || amount.first() == Some(&0) {

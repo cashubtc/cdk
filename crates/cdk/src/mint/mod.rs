@@ -40,6 +40,7 @@ mod saga_recovery;
 mod start_up_check;
 mod subscription;
 mod swap;
+pub(crate) mod transaction;
 mod verification;
 
 pub use builder::{KeysetRotation, MintBuilder, MintMeltLimits, UnitConfig};

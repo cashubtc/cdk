@@ -385,9 +385,15 @@ pub(crate) fn is_nutroot_outputs(outputs: &[crate::nuts::BlindedMessage]) -> boo
         .any(|output| output.keyset_id.get_version() == KeySetVersion::Version02)
 }
 
+/// Sign a quote input over a mint transcript.
+///
+/// A quote input commits the amount issued against it (NUT-10): `amounts`
+/// gives that per quote, else the outputs total for a single quote and the
+/// quote's own amount in a batch.
 pub(crate) fn sign_quote(
     outputs: &[crate::nuts::BlindedMessage],
     quotes: &[cdk_common::wallet::MintQuote],
+    amounts: Option<&[crate::Amount]>,
     id: &str,
     key: &SecretKey,
 ) -> Result<String, Error> {
@@ -402,11 +408,17 @@ pub(crate) fn sign_quote(
         .iter()
         .position(|quote| quote.id == id)
         .ok_or(Error::UnknownQuote)?;
+    let outputs_total = crate::Amount::try_sum(outputs.iter().map(|o| o.amount))?;
     let quotes: Vec<_> = quotes
         .iter()
-        .map(|quote| nutroot::Quote {
+        .enumerate()
+        .map(|(i, quote)| nutroot::Quote {
             id: quote.id.clone(),
-            amount: quote.amount.unwrap_or(crate::Amount::ZERO),
+            amount: match amounts {
+                Some(amounts) => amounts.get(i).copied().unwrap_or(crate::Amount::ZERO),
+                None if quotes.len() == 1 => outputs_total,
+                None => quote.amount.unwrap_or(crate::Amount::ZERO),
+            },
         })
         .collect();
     let transaction = Transaction::new(&[], &quotes, outputs, &[]).map_err(error)?;
@@ -427,7 +439,13 @@ pub(crate) fn sign_batch_quote(
     key: &SecretKey,
 ) -> Result<String, Error> {
     if is_nutroot_outputs(&request.outputs) {
-        sign_quote(&request.outputs, quotes, &quote.id, key)
+        sign_quote(
+            &request.outputs,
+            quotes,
+            request.quote_amounts.as_deref(),
+            &quote.id,
+            key,
+        )
     } else {
         request
             .sign_quote(&quote.id, key)
@@ -444,6 +462,7 @@ pub(crate) fn sign_mint_request(
         request.signature = Some(sign_quote(
             &request.outputs,
             std::slice::from_ref(quote),
+            None,
             &quote.id,
             key,
         )?);
