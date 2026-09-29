@@ -25,6 +25,9 @@ pub struct MintQuoteOnchainRequest {
     pub unit: CurrencyUnit,
     /// NUT-20 Pubkey (required)
     pub pubkey: PublicKey,
+    /// Requested quote lifetime in seconds (NUT-30, nuts#415). Optional.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expiry_seconds: Option<u64>,
 }
 
 /// Mint quote onchain response

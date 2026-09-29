@@ -325,6 +325,12 @@ pub enum Error {
         /// Maximum allowed batch size
         max: usize,
     },
+    /// Requested quote expiry cannot be honored (NUT-23/25, nuts#415, 11018)
+    #[error("Quote expiry cannot be honored: {detail}")]
+    QuoteExpiryInvalid {
+        /// Human-readable reason
+        detail: String,
+    },
     /// Proof content too large (secret or witness exceeds max length)
     #[error("Proof content too large: {actual} bytes, max {max}")]
     ProofContentTooLarge {
@@ -1198,6 +1204,10 @@ impl From<Error> for ErrorResponse {
                 code: ErrorCode::BatchSizeExceeded,
                 detail: err.to_string(),
             },
+            Error::QuoteExpiryInvalid { .. } => ErrorResponse {
+                code: ErrorCode::QuoteExpiryInvalid,
+                detail: err.to_string(),
+            },
             // Fallback for any remaining errors - use Unknown(99999) instead of TokenNotVerified
             _ => ErrorResponse {
                 code: ErrorCode::Unknown(50000),
@@ -1266,6 +1276,9 @@ impl From<ErrorResponse> for Error {
             }
             ErrorCode::DuplicateQuoteIds => Self::DuplicateQuoteIds,
             ErrorCode::BatchSizeExceeded => Self::BatchSizeExceeded { actual: 0, max: 0 },
+            ErrorCode::QuoteExpiryInvalid => Self::QuoteExpiryInvalid {
+                detail: err.detail.clone(),
+            },
             ErrorCode::MultipleUnits => Self::MultipleUnits,
             ErrorCode::UnitMismatch => Self::UnitMismatch,
             ErrorCode::AmountlessInvoiceNotSupported => Self::AmountLessNotAllowed,
@@ -1352,6 +1365,8 @@ pub enum ErrorCode {
     DuplicateQuoteIds,
     /// Batch size exceeds mint limit (11017)
     BatchSizeExceeded,
+    /// Requested quote expiry cannot be honored (11018)
+    QuoteExpiryInvalid,
     // 12xxx - Keyset errors
     /// Keyset is not known (12001)
     KeysetNotFound,
@@ -1427,6 +1442,7 @@ impl ErrorCode {
             11015 => Self::MaxOutputsExceeded,
             11016 => Self::DuplicateQuoteIds,
             11017 => Self::BatchSizeExceeded,
+            11018 => Self::QuoteExpiryInvalid,
             // 12xxx - Keyset errors
             12001 => Self::KeysetNotFound,
             12002 => Self::KeysetInactive,
@@ -1476,6 +1492,7 @@ impl ErrorCode {
             Self::MaxOutputsExceeded => 11015,
             Self::DuplicateQuoteIds => 11016,
             Self::BatchSizeExceeded => 11017,
+            Self::QuoteExpiryInvalid => 11018,
             // 12xxx - Keyset errors
             Self::KeysetNotFound => 12001,
             Self::KeysetInactive => 12002,

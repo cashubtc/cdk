@@ -37,6 +37,9 @@ pub struct MintQuoteBolt12Request {
     pub description: Option<String>,
     /// Pubkey
     pub pubkey: PublicKey,
+    /// Requested quote lifetime in seconds (NUT-25, nuts#415). Optional.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expiry_seconds: Option<u64>,
 }
 
 /// Mint quote response [NUT-24]

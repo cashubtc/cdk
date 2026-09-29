@@ -1248,7 +1248,7 @@ mod tests {
                     amount: Amount::from(4_000),
                     unit: CurrencyUnit::Sat,
                     description: None,
-                    pubkey: None,
+                    pubkey: None, expiry_seconds: None,
                 }
                 .into(),
             )
