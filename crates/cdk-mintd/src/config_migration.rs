@@ -657,7 +657,7 @@ fn parse_released_v017_signatory_url(url: &str) -> Result<(String, u16)> {
         if host.is_empty() {
             bail!("released v0.17 signatory URL {url:?} has an empty host");
         }
-        let suffix = &ipv6[end + 1..];
+        let suffix = &ipv6[end.saturating_add(1)..];
         let port = match suffix.strip_prefix(':') {
             Some(port) => parse_released_v017_signatory_port(url, port)?,
             None if suffix.is_empty() => default_port,
@@ -858,7 +858,7 @@ fn prepare_write_destinations(
         prepare_secrets_directory(&secrets.directory, secrets.manage_directory_permissions)?;
     }
 
-    let mut destinations = Vec::with_capacity(secrets.files.len() + 1);
+    let mut destinations = Vec::with_capacity(secrets.files.len().saturating_add(1));
     destinations.push(output_destination);
     for secret in &secrets.files {
         destinations.push((
@@ -908,7 +908,9 @@ fn ensure_distinct_write_destinations(
     }
 
     for (index, (kind, path, resolved)) in destinations.iter().enumerate() {
-        for (other_kind, other_path, other_resolved) in destinations.iter().skip(index + 1) {
+        for (other_kind, other_path, other_resolved) in
+            destinations.iter().skip(index.saturating_add(1))
+        {
             if resolved == other_resolved || same_file(path, other_path)? {
                 bail!(
                     "{kind} {} must differ from {other_kind} {}",
@@ -1047,7 +1049,7 @@ fn create_secret_directory(path: &Path) -> io::Result<()> {
 }
 
 fn write_forced_migration(output: &Path, document: &str, secrets: &MigrationSecrets) -> Result<()> {
-    let mut staged = Vec::with_capacity(secrets.files.len() + 1);
+    let mut staged = Vec::with_capacity(secrets.files.len().saturating_add(1));
     for secret in &secrets.files {
         match stage_migration_file("secret file", &secret.path, &secret.value, true) {
             Ok(file) => staged.push(file),

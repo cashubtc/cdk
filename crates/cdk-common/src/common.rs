@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::Error;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{CurrencyUnit, MeltQuoteState, PaymentMethod, Proofs};
+use crate::util::unix_time;
 // Re-export ProofInfo from wallet module for backwards compatibility
 #[cfg(feature = "wallet")]
 pub use crate::wallet::ProofInfo;
@@ -171,6 +172,17 @@ impl PaymentProcessorKey {
     }
 }
 
+/// Largest unix timestamp a quote expiry can carry: expiries persist as a signed
+/// 64-bit integer, so an operator-settable TTL has to clamp here rather than at
+/// `u64::MAX`, which the database would reject on insert.
+pub const MAX_QUOTE_EXPIRY: u64 = i64::MAX as u64;
+
+/// Absolute expiry of a quote created now with `ttl` seconds of validity, clamped
+/// so it can neither wrap nor overflow storage.
+pub fn expiry_from_ttl(ttl: u64) -> u64 {
+    unix_time().saturating_add(ttl).min(MAX_QUOTE_EXPIRY)
+}
+
 /// Seconds quotes are valid
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuoteTTL {
@@ -203,6 +215,26 @@ pub struct FeeReserve {
     pub min_fee_reserve: Amount,
     /// Percentage expected fee
     pub percent_fee_reserve: f32,
+}
+
+impl FeeReserve {
+    /// Fee reserve for `amount`: the larger of the absolute minimum and the
+    /// percentage of `amount`, rounded up.
+    ///
+    /// The percentage is applied in `f64` and the product clamped to `u64`:
+    /// `f32` carries only a 24-bit mantissa, so multiplying a large amount in
+    /// `f32` silently loses precision and rounds the reserve down.
+    pub fn for_amount(&self, amount: Amount) -> Amount {
+        let percent = f64::from(self.percent_fee_reserve.max(0.0));
+        let relative = (amount.to_u64() as f64 * percent).ceil();
+        let relative = if relative.is_finite() && relative >= 0.0 {
+            relative as u64
+        } else {
+            u64::MAX
+        };
+
+        Amount::from(relative).max(self.min_fee_reserve)
+    }
 }
 
 /// CDK Version
@@ -318,10 +350,40 @@ impl<'de> Deserialize<'de> for IssuerVersion {
 mod tests {
     use std::str::FromStr;
 
-    use super::FinalizedMelt;
+    use super::{FeeReserve, FinalizedMelt};
     use crate::nuts::{Id, Proof, PublicKey};
     use crate::secret::Secret;
     use crate::Amount;
+
+    /// The percentage reserve is computed in f64 and clamped, so a large amount
+    /// neither loses precision to an f32 mantissa nor wraps on the cast.
+    #[test]
+    fn fee_reserve_for_amount_is_lossless_and_clamped() {
+        let reserve = FeeReserve {
+            min_fee_reserve: Amount::from(10),
+            percent_fee_reserve: 0.01,
+        };
+
+        // Below the absolute minimum, the minimum wins.
+        assert_eq!(reserve.for_amount(Amount::from(100)), Amount::from(10));
+
+        // Well past the 2^24 point where f32 starts rounding.
+        assert_eq!(
+            reserve.for_amount(Amount::from(1_000_000_000)),
+            Amount::from(10_000_000)
+        );
+
+        // An extreme amount saturates rather than wrapping.
+        let huge = reserve.for_amount(Amount::from(u64::MAX));
+        assert!(huge >= reserve.min_fee_reserve);
+
+        // A negative configured percentage is treated as zero.
+        let negative = FeeReserve {
+            min_fee_reserve: Amount::from(7),
+            percent_fee_reserve: -1.0,
+        };
+        assert_eq!(negative.for_amount(Amount::from(1_000)), Amount::from(7));
+    }
 
     #[test]
     fn test_finalized_melt() {

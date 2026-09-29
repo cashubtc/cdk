@@ -296,6 +296,8 @@ impl Id {
 // Used to generate a compressed unique identifier as part of the NUT13 spec
 // This is a one-way function
 impl From<Id> for u32 {
+    /// Keyset-id derivation per NUT-02; the modulus is a non-zero constant.
+    #[allow(clippy::arithmetic_side_effects)]
     fn from(value: Id) -> Self {
         let id_bytes = value.to_bytes();
         let mut hex_bytes: [u8; 8] = [0; 8];

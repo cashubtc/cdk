@@ -1,6 +1,7 @@
 //! Build script
 
 #![allow(clippy::unwrap_used)]
+#![allow(clippy::arithmetic_side_effects)]
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=src/proto/lnrpc.proto");

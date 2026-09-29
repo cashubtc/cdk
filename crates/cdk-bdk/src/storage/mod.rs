@@ -1,5 +1,6 @@
 //! BDK storage operations using KV store
 
+use std::fmt;
 use std::sync::Arc;
 
 use cdk_common::database::KVStore;
@@ -90,9 +91,13 @@ fn outpoint_to_key(outpoint: &str) -> String {
     outpoint.replace(':', "-")
 }
 
+/// A record the backend persists in the KV store, namespaced by type so
+/// records of different kinds cannot collide on a key.
 pub trait KvRecord: Serialize + DeserializeOwned + Sized {
+    /// KV namespace every record of this type is stored under.
     const NAMESPACE: &'static str;
 
+    /// Key identifying this record within its namespace.
     fn key(&self) -> String;
 }
 
@@ -104,6 +109,12 @@ pub(crate) trait ReplaceState<S>: KvRecord {
 #[derive(Clone)]
 pub struct BdkStorage {
     pub(crate) kv_store: Arc<dyn KVStore<Err = cdk_common::database::Error> + Send + Sync>,
+}
+
+impl fmt::Debug for BdkStorage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BdkStorage").finish_non_exhaustive()
+    }
 }
 
 impl BdkStorage {

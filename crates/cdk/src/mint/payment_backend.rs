@@ -133,7 +133,7 @@ impl Mint {
                     Ok(()) => {
                         tx.update_mint_quote(&mut new_quote).await?;
                         should_notify = true;
-                        recorded_payment_count += 1;
+                        recorded_payment_count = recorded_payment_count.saturating_add(1);
                     }
                     Err(crate::Error::DuplicatePaymentId) => {
                         tracing::debug!(

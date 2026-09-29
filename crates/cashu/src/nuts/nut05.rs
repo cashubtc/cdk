@@ -253,6 +253,8 @@ impl MeltMethodSettings {
 }
 
 impl Serialize for MeltMethodSettings {
+    /// Counts serde fields; the tally is bounded by the struct's field count.
+    #[allow(clippy::arithmetic_side_effects)]
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,

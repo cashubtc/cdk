@@ -61,7 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (i, proof) in token_data.proofs.iter().enumerate() {
         println!(
             "  Proof {}: {} sats, keyset: {}",
-            i + 1,
+            i.saturating_add(1),
             proof.amount,
             proof.keyset_id
         );

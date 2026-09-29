@@ -1,3 +1,6 @@
+//! Chain sources the backend syncs from, broadcasts through and reads fee
+//! rates from. Each concrete source is gated behind its own feature.
+
 use core::fmt;
 
 use bdk_wallet::bitcoin::Transaction;
@@ -176,6 +179,8 @@ impl ChainSource {
         }
     }
 
+    /// Brings the wallet up to date from this chain source. `cancel_token`
+    /// aborts a long sync so shutdown is not held up by it.
     pub async fn sync_wallet(
         &self,
         cdk_bdk: &crate::CdkBdk,
@@ -215,6 +220,7 @@ impl ChainSource {
         }
     }
 
+    /// Fee rate in sat/vB estimated to confirm within `target_blocks`.
     pub async fn fetch_fee_rate(&self, target_blocks: u16) -> Result<f64, Error> {
         match self {
             #[cfg(feature = "esplora")]

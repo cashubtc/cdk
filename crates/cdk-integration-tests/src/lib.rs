@@ -96,10 +96,10 @@ pub async fn pay_if_regtest(_work_dir: &Path, invoice: &Bolt11Invoice) -> Result
     // Check if the invoice is for the regtest network
     if invoice.network() == bitcoin::Network::Regtest {
         let client = get_test_client().await;
-        let mut tries = 0;
+        let mut tries: usize = 0;
         while let Err(err) = client.pay_invoice(invoice.to_string()).await {
             println!("Could not pay invoice.retrying {err}");
-            tries += 1;
+            tries = tries.saturating_add(1);
             if tries > 10 {
                 bail!("Could not pay invoice");
             }
@@ -139,10 +139,11 @@ pub async fn create_invoice_for_env(amount_sat: Option<u64>) -> Result<String> {
             .map_err(|e| anyhow!("Failed to create regtest invoice: {}", e))
     } else {
         // Not in regtest mode, create a fake invoice
-        let fake_invoice = create_fake_invoice(
-            amount_sat.expect("Amount must be defined") * 1_000,
-            "".to_string(),
-        );
+        let amount_msat = amount_sat
+            .expect("Amount must be defined")
+            .checked_mul(1_000)
+            .ok_or_else(|| anyhow!("amount is too large to express in millisatoshis"))?;
+        let fake_invoice = create_fake_invoice(amount_msat, "".to_string());
         Ok(fake_invoice.to_string())
     }
 }
@@ -203,7 +204,7 @@ fn get_work_dir() -> PathBuf {
 
 // Helper function to create CLN client with retries
 async fn create_cln_client_with_retry() -> ClnClient {
-    let mut retries = 0;
+    let mut retries: usize = 0;
     let max_retries = 10;
 
     let cln_dir = get_cln_dir(&get_work_dir(), "one");
@@ -211,7 +212,7 @@ async fn create_cln_client_with_retry() -> ClnClient {
         match ClnClient::new(cln_dir.clone(), None).await {
             Ok(client) => return client,
             Err(e) => {
-                retries += 1;
+                retries = retries.saturating_add(1);
                 if retries >= max_retries {
                     panic!("Could not connect to CLN client after {max_retries} retries: {e}");
                 }

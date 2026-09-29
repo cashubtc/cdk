@@ -5,7 +5,7 @@
 #[macro_export]
 macro_rules! unpack_into {
     (let ($($var:ident),+) = $array:expr) => {
-        #[allow(unused_parens)]
+        #[allow(unused_parens, clippy::arithmetic_side_effects)]
         let ($($var),+) = {
             let mut vec = $array.to_vec();
             vec.reverse();

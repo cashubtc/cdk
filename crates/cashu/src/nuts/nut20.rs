@@ -67,6 +67,8 @@ fn append_len_prefixed(msg: &mut Vec<u8>, bytes: &[u8]) {
     msg.extend_from_slice(bytes);
 }
 
+/// Buffer capacity hint only; a wrong value costs a reallocation, not correctness.
+#[allow(clippy::arithmetic_side_effects)]
 pub(crate) fn mint_quote_msg_to_sign(quote_id: &str, outputs: &[BlindedMessage]) -> Vec<u8> {
     let mut msg = Vec::with_capacity(
         MINT_QUOTE_SIG_DOMAIN_TAG.len() + 4 + quote_id.len() + outputs.len() * (4 + 8 + 4 + 33),
@@ -83,6 +85,8 @@ pub(crate) fn mint_quote_msg_to_sign(quote_id: &str, outputs: &[BlindedMessage])
     msg
 }
 
+/// Buffer capacity hint only; a wrong value costs a reallocation, not correctness.
+#[allow(clippy::arithmetic_side_effects)]
 pub(crate) fn legacy_mint_quote_msg_to_sign(quote_id: &str, outputs: &[BlindedMessage]) -> Vec<u8> {
     let capacity = quote_id.len() + (outputs.len() * 66);
     let mut msg = Vec::with_capacity(capacity);

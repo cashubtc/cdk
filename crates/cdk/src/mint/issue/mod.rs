@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use cdk_common::common::{expiry_from_ttl, MAX_QUOTE_EXPIRY};
 use cdk_common::database::mint::Acquired;
 use cdk_common::mint::{MintQuote, Operation};
 use cdk_common::payment::{
@@ -238,7 +239,7 @@ impl Mint {
 
                     let mint_ttl = self.quote_ttl().await?.mint_ttl;
 
-                    let quote_expiry = unix_time() + mint_ttl;
+                    let quote_expiry = expiry_from_ttl(mint_ttl);
 
                     let settings = payment_backend.get_settings().await?;
 
@@ -273,7 +274,7 @@ impl Mint {
                     let description = bolt12_request.description;
 
                     let mint_ttl = self.quote_ttl().await?.mint_ttl;
-                    let quote_expiry = unix_time() + mint_ttl;
+                    let quote_expiry = expiry_from_ttl(mint_ttl);
 
                     // Check that the backend supports offer descriptions
                     let settings = payment_backend.get_settings().await?;
@@ -316,7 +317,7 @@ impl Mint {
                     }
 
                     let mint_ttl = self.quote_ttl().await?.mint_ttl;
-                    let quote_expiry = unix_time() + mint_ttl;
+                    let quote_expiry = expiry_from_ttl(mint_ttl);
 
                     // Convert extra serde_json::Value to JSON string if not null
                     let extra_json = if request.extra.is_null() {
@@ -358,7 +359,10 @@ impl Mint {
                 create_invoice_response.request.to_string(),
                 unit.clone(),
                 amount.map(|a| a.with_unit(unit.clone())),
-                create_invoice_response.expiry.unwrap_or(0),
+                create_invoice_response
+                    .expiry
+                    .unwrap_or(0)
+                    .min(MAX_QUOTE_EXPIRY),
                 create_invoice_response.request_lookup_id.clone(),
                 pubkey,
                 Amount::new(0, unit.clone()),
@@ -1084,7 +1088,7 @@ mod batch_mint_tests {
     use crate::mint::payment_backend::MINT_QUOTE_PAYMENT_CHECK_INTERVAL_SECS;
     use crate::mint::verification::MAX_CUSTOM_PAYMENT_METHOD_LEN;
     use crate::mint::{Mint, MintBuilder, MintMeltLimits, MintQuoteRequest};
-    use crate::types::{FeeReserve, QuoteTTL};
+    use crate::types::{FeeReserve, QuoteTTL, MAX_QUOTE_EXPIRY};
 
     struct OnchainTestBackend {
         unit: CurrencyUnit,
@@ -1163,6 +1167,176 @@ mod batch_mint_tests {
 
     async fn create_test_mint() -> Mint {
         create_test_mint_with_onchain_limits(1, 10_000).await
+    }
+
+    /// A backend is free to report whatever expiry it likes, and ldk-node
+    /// derives one by adding a ttl back to the clock, so the value can land
+    /// above what the quote table can hold.
+    struct OverflowingExpiryBackend {
+        inner: FakeWallet,
+    }
+
+    #[async_trait]
+    impl MintPayment for OverflowingExpiryBackend {
+        type Err = payment::Error;
+
+        async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
+            self.inner.get_settings().await
+        }
+
+        async fn create_incoming_payment_request(
+            &self,
+            options: IncomingPaymentOptions,
+        ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
+            let mut response = self.inner.create_incoming_payment_request(options).await?;
+            response.expiry = Some(u64::MAX);
+            Ok(response)
+        }
+
+        async fn get_payment_quote(
+            &self,
+            unit: &CurrencyUnit,
+            options: OutgoingPaymentOptions,
+        ) -> Result<PaymentQuoteResponse, Self::Err> {
+            self.inner.get_payment_quote(unit, options).await
+        }
+
+        async fn make_payment(
+            &self,
+            unit: &CurrencyUnit,
+            options: OutgoingPaymentOptions,
+        ) -> Result<MakePaymentResponse, Self::Err> {
+            self.inner.make_payment(unit, options).await
+        }
+
+        async fn wait_payment_event(
+            &self,
+        ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, Self::Err> {
+            self.inner.wait_payment_event().await
+        }
+
+        fn is_payment_event_stream_active(&self) -> bool {
+            self.inner.is_payment_event_stream_active()
+        }
+
+        fn cancel_payment_event_stream(&self) {
+            self.inner.cancel_payment_event_stream()
+        }
+
+        async fn check_incoming_payment_status(
+            &self,
+            payment_identifier: &PaymentIdentifier,
+        ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
+            self.inner
+                .check_incoming_payment_status(payment_identifier)
+                .await
+        }
+
+        async fn check_outgoing_payment(
+            &self,
+            payment_identifier: &PaymentIdentifier,
+        ) -> Result<MakePaymentResponse, Self::Err> {
+            self.inner.check_outgoing_payment(payment_identifier).await
+        }
+    }
+
+    /// The expiry the mint stores comes from the backend, not from the ttl it
+    /// asked for, and it persists as a signed 64-bit integer. An out-of-range
+    /// report has to clamp, or the insert fails after the invoice already
+    /// exists.
+    #[tokio::test]
+    async fn out_of_range_backend_expiry_clamps_before_persisting() {
+        let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
+        let mut mint_builder = MintBuilder::new(db.clone());
+
+        let backend = Arc::new(OverflowingExpiryBackend {
+            inner: FakeWallet::new(
+                FeeReserve {
+                    min_fee_reserve: 1.into(),
+                    percent_fee_reserve: 1.0,
+                },
+                HashMap::default(),
+                HashSet::default(),
+                2,
+                CurrencyUnit::Sat,
+            ),
+        });
+
+        mint_builder
+            .add_payment_processor(
+                CurrencyUnit::Sat,
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                MintMeltLimits::new(1, 10_000),
+                backend,
+            )
+            .await
+            .unwrap();
+
+        let mnemonic = Mnemonic::generate(12).unwrap();
+        let mint = mint_builder
+            .with_name("test mint".to_string())
+            .with_description("test mint for unit tests".to_string())
+            .with_urls(vec!["https://test-mint".to_string()])
+            .build_with_seed(db.clone(), &mnemonic.to_seed_normalized(""))
+            .await
+            .unwrap();
+        mint.set_quote_ttl(QuoteTTL::new(10000, 10000))
+            .await
+            .unwrap();
+
+        let quote = mint
+            .get_mint_quote(MintQuoteRequest::Bolt11(
+                cdk_common::nuts::nut23::MintQuoteBolt11Request {
+                    amount: Amount::from(100),
+                    unit: CurrencyUnit::Sat,
+                    description: None,
+                    pubkey: None,
+                },
+            ))
+            .await
+            .expect("a quote the mint can store");
+
+        assert_eq!(quote.expiry(), Some(MAX_QUOTE_EXPIRY));
+
+        let stored = mint
+            .localstore
+            .get_mint_quote(quote.quote())
+            .await
+            .expect("read back")
+            .expect("quote is persisted");
+        assert_eq!(stored.expiry, MAX_QUOTE_EXPIRY);
+    }
+
+    /// `mint_ttl` is operator-settable, so `unix_time() + mint_ttl` could wrap
+    /// and hand out a quote that is already expired. It must clamp at the
+    /// largest storable timestamp instead.
+    #[tokio::test]
+    async fn huge_mint_ttl_saturates_quote_expiry() {
+        let mint = crate::test_helpers::mint::create_test_mint()
+            .await
+            .expect("test mint");
+        mint.set_quote_ttl(QuoteTTL::new(u64::MAX, u64::MAX))
+            .await
+            .expect("set ttl");
+
+        let quote = mint
+            .get_mint_quote(MintQuoteRequest::Bolt11(
+                cdk_common::nuts::nut23::MintQuoteBolt11Request {
+                    amount: Amount::from(100),
+                    unit: CurrencyUnit::Sat,
+                    description: None,
+                    pubkey: None,
+                },
+            ))
+            .await
+            .expect("quote with an extreme ttl");
+
+        let expiry = quote.expiry().expect("expiry");
+        assert_eq!(expiry, MAX_QUOTE_EXPIRY);
+        assert!(
+            expiry > cdk_common::util::unix_time(),
+            "a saturating expiry must still be in the future"
+        );
     }
 
     #[tokio::test]
@@ -2214,5 +2388,41 @@ mod batch_mint_tests {
         assert_eq!(offer_expiry, quote_expiry);
         assert!(offer_expiry >= before + mint_ttl);
         assert!(offer_expiry <= after + mint_ttl);
+    }
+
+    /// The bolt12 branch computes its expiry separately from bolt11, so it
+    /// needs its own guard against an operator-settable `mint_ttl` wrapping and
+    /// handing out a quote that is already expired.
+    #[tokio::test]
+    async fn huge_mint_ttl_saturates_bolt12_quote_expiry() {
+        let mint = create_test_mint().await;
+        mint.set_quote_ttl(QuoteTTL::new(u64::MAX, u64::MAX))
+            .await
+            .expect("set ttl");
+
+        let quote: MintQuoteBolt12Response<QuoteId> = mint
+            .get_mint_quote(
+                MintQuoteBolt12Request {
+                    amount: Some(Amount::from(32)),
+                    unit: CurrencyUnit::Sat,
+                    description: None,
+                    pubkey: PublicKey::from_hex(
+                        "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
+                    )
+                    .expect("test public key"),
+                }
+                .into(),
+            )
+            .await
+            .expect("quote with an extreme ttl")
+            .try_into()
+            .unwrap();
+
+        let expiry = quote.expiry.expect("quote must include expiry");
+        assert_eq!(expiry, MAX_QUOTE_EXPIRY);
+        assert!(
+            expiry > cdk_common::util::unix_time(),
+            "a saturating expiry must still be in the future"
+        );
     }
 }

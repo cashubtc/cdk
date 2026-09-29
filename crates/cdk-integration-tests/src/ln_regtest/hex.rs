@@ -1,3 +1,6 @@
+// Byte-level codec arithmetic: nibble maths guarded by the surrounding match
+// arms, and buffer offsets bounded by the input length. No amounts here.
+#![allow(clippy::arithmetic_side_effects)]
 // Copyright (c) 2022-2023 Yuki Kishimoto
 // Distributed under the MIT software license
 

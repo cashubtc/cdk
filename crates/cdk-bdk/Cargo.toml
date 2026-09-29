@@ -36,3 +36,6 @@ uuid.workspace = true
 [dev-dependencies]
 cdk-sqlite = { workspace = true }
 tempfile = "3"
+
+[lints]
+workspace = true

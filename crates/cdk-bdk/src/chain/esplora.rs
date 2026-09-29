@@ -1,3 +1,5 @@
+//! Esplora chain source.
+
 use std::time::Instant;
 
 use bdk_esplora::esplora_client::{AsyncClient, Builder};

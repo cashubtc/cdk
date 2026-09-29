@@ -1,3 +1,5 @@
+//! Operator web dashboard.
+
 pub mod csrf;
 pub mod handlers;
 pub mod server;

@@ -21,6 +21,9 @@ missing_docs = "warn"
 # pedantic = { level = "warn", priority = -1 }
 # nursery = { level = "warn", priority = -1 }
 unwrap_used = "deny"
+# Unchecked arithmetic on amounts wraps in release; every value-carrying
+# operation must go through checked_*/saturating_*.
+arithmetic_side_effects = "deny"
 # clone_on_ref_ptr = "warn"
 # missing_errors_doc = "warn"
 missing_panics_doc = "warn"

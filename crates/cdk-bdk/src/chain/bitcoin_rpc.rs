@@ -1,3 +1,5 @@
+//! Bitcoin Core RPC chain source.
+
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -612,7 +614,7 @@ mod tests {
                             "bits": "207fffff", "difficulty": 1.0,
                             "chainwork": "00", "nTx": block.txdata.len(),
                             "previousblockhash": block.header.prev_blockhash,
-                            "nextblockhash": active.and_then(|height| self.chain.get(height + 1))
+                            "nextblockhash": active.and_then(|height| self.chain.get(height.saturating_add(1)))
                                 .map(Block::block_hash),
                         }),
                         _ => panic!("unexpected verbosity"),

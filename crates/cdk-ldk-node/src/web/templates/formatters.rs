@@ -8,7 +8,7 @@ pub fn format_sats_as_btc(sats: u64) -> String {
 
         for (i, ch) in chars.iter().enumerate() {
             // Add comma before every group of 3 digits from right to left
-            if i > 0 && (len - i) % 3 == 0 {
+            if i > 0 && len.saturating_sub(i) % 3 == 0 {
                 result.push(',');
             }
             result.push(*ch);
@@ -32,7 +32,7 @@ pub fn format_msats_as_btc(msats: u64) -> String {
 
         for (i, ch) in chars.iter().enumerate() {
             // Add comma before every group of 3 digits from right to left
-            if i > 0 && (len - i) % 3 == 0 {
+            if i > 0 && len.saturating_sub(i) % 3 == 0 {
                 result.push(',');
             }
             result.push(*ch);
@@ -70,7 +70,7 @@ pub fn format_timestamp(timestamp: u64) -> String {
             let days = total_hours / 24;
 
             // Calculate year, month, day from days since epoch (1970-01-01)
-            let mut year = 1970;
+            let mut year: u64 = 1970;
             let mut remaining_days = days;
 
             // Simple year calculation
@@ -79,8 +79,8 @@ pub fn format_timestamp(timestamp: u64) -> String {
                 let days_in_year = if is_leap_year { 366 } else { 365 };
 
                 if remaining_days >= days_in_year {
-                    remaining_days -= days_in_year;
-                    year += 1;
+                    remaining_days = remaining_days.saturating_sub(days_in_year);
+                    year = year.saturating_add(1);
                 } else {
                     break;
                 }
@@ -94,13 +94,13 @@ pub fn format_timestamp(timestamp: u64) -> String {
                 [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
             };
 
-            let mut month = 1;
-            let mut day = remaining_days + 1;
+            let mut month: u64 = 1;
+            let mut day = remaining_days.saturating_add(1);
 
-            for &days_in_month in &days_in_months {
+            for days_in_month in days_in_months {
                 if day > days_in_month {
-                    day -= days_in_month;
-                    month += 1;
+                    day = day.saturating_sub(days_in_month);
+                    month = month.saturating_add(1);
                 } else {
                     break;
                 }

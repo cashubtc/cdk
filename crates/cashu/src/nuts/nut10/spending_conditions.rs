@@ -181,6 +181,8 @@ pub struct Conditions {
 }
 
 impl Conditions {
+    /// Counts pubkey slots, each bounded by `MAX_LOCKING_SLOTS`.
+    #[allow(clippy::arithmetic_side_effects)]
     fn validate(&self, primary_key_count: u64) -> Result<(), Error> {
         if let Some(n) = self.num_sigs {
             if n == 0 {
@@ -295,6 +297,7 @@ impl Conditions {
 /// than [`MAX_LOCKING_SLOTS`] entries. Plain NUT-11 and NUT-14 locks have no
 /// such limit, and verification never counts slots.
 #[cfg(feature = "wallet")]
+#[allow(clippy::arithmetic_side_effects)]
 pub(crate) fn check_locking_slots(
     pubkeys: usize,
     refund_keys: Option<&[PublicKey]>,

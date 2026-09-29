@@ -1,3 +1,7 @@
+// Assertion bookkeeping over test fixtures, where a wrap is not a money
+// bug; the lint stays denied for the helpers this crate ships.
+#![allow(clippy::arithmetic_side_effects)]
+
 use std::env;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;

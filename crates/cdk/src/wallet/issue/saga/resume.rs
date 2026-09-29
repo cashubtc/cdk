@@ -230,7 +230,8 @@ impl Wallet {
                 .await?
                 .is_some()
             {
-                offset += output_counts.get(index).copied().unwrap_or_default();
+                offset =
+                    offset.saturating_add(output_counts.get(index).copied().unwrap_or_default());
                 continue;
             }
 

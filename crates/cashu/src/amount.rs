@@ -41,7 +41,27 @@ pub enum Error {
     /// Cannot represent amount with available denominations
     #[error("Cannot represent amount {0} with available denominations (got {1})")]
     CannotSplitAmount(u64, u64),
+    /// Splitting would produce more parts than `MAX_SPLIT_PARTS`
+    #[error("Splitting {0} would produce {1} parts, more than the {MAX_SPLIT_PARTS} allowed")]
+    SplitTooManyParts(u64, u64),
+    /// `split_with_fee` did not converge within `MAX_SPLIT_WITH_FEE_STEPS`
+    #[error("Could not cover the swap fee for {0} within {MAX_SPLIT_WITH_FEE_STEPS} steps")]
+    SplitWithFeeDidNotConverge(u64),
 }
+
+/// Upper bound on the number of parts a single [`Amount::split`] may produce.
+///
+/// Denominations come from the mint's keyset, so without a bound a keyset
+/// offering only small denominations makes the split allocate one element per
+/// denomination unit. A power-of-two keyset never needs more than 64.
+pub const MAX_SPLIT_PARTS: u64 = 4096;
+
+/// Upper bound on the one-satoshi steps [`Amount::split_with_fee`] may take
+/// looking for a total that still covers its own swap fee.
+///
+/// The fee comes from the mint's keyset, so a large one can push convergence
+/// arbitrarily far; realistic fees converge within a handful of steps.
+pub const MAX_SPLIT_WITH_FEE_STEPS: u64 = 1024;
 
 /// Amount can be any unit
 ///
@@ -202,11 +222,27 @@ impl Amount<()> {
     ///
     /// Returns an error if the amount cannot be fully represented
     /// with the available denominations.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "only `/` and `%` by a denomination, and zero denominations are rejected below"
+    )]
     pub fn split(&self, fee_and_amounts: &FeeAndAmounts) -> Result<Vec<Self>, Error> {
         if fee_and_amounts.amounts.contains(&0) {
             return Err(Error::InvalidAmount(
                 "denominations must be greater than zero".to_owned(),
             ));
+        }
+
+        let mut part_count: u64 = 0;
+        let mut remaining = self.value;
+        for &amount in fee_and_amounts.amounts.iter().rev() {
+            part_count = part_count
+                .checked_add(remaining / amount)
+                .ok_or(Error::AmountOverflow)?;
+            if part_count > MAX_SPLIT_PARTS {
+                return Err(Error::SplitTooManyParts(self.value, part_count));
+            }
+            remaining %= amount;
         }
 
         let parts: Vec<Self> = fee_and_amounts
@@ -222,9 +258,9 @@ impl Amount<()> {
             })
             .0;
 
-        let sum: u64 = parts.iter().map(|a| a.value).sum();
-        if sum != self.value {
-            return Err(Error::CannotSplitAmount(self.value, sum));
+        let sum = Self::try_sum(parts.iter().copied())?;
+        if sum.value != self.value {
+            return Err(Error::CannotSplitAmount(self.value, sum.value));
         }
 
         Ok(parts)
@@ -303,28 +339,35 @@ impl Amount<()> {
 
     /// Splits amount into powers of two while accounting for the swap fee
     pub fn split_with_fee(&self, fee_and_amounts: &FeeAndAmounts) -> Result<Vec<Self>, Error> {
-        let without_fee_amounts = self.split(fee_and_amounts)?;
-        let total_fee_ppk = fee_and_amounts
-            .fee
-            .checked_mul(without_fee_amounts.len() as u64)
-            .ok_or(Error::AmountOverflow)?;
-        let fee = Amount::from(total_fee_ppk.div_ceil(1000));
-        let new_amount = self.checked_add(fee).ok_or(Error::AmountOverflow)?;
+        let mut target = *self;
 
-        let split = new_amount.split(fee_and_amounts)?;
-        let split_fee_ppk = (split.len() as u64)
-            .checked_mul(fee_and_amounts.fee)
-            .ok_or(Error::AmountOverflow)?;
-        let split_fee = Amount::from(split_fee_ppk.div_ceil(1000));
+        for _ in 0..MAX_SPLIT_WITH_FEE_STEPS {
+            let without_fee_amounts = target.split(fee_and_amounts)?;
+            let total_fee_ppk = fee_and_amounts
+                .fee
+                .checked_mul(without_fee_amounts.len() as u64)
+                .ok_or(Error::AmountOverflow)?;
+            let fee = Amount::from(total_fee_ppk.div_ceil(1000));
+            let new_amount = target.checked_add(fee).ok_or(Error::AmountOverflow)?;
 
-        if let Some(net_amount) = new_amount.checked_sub(split_fee) {
-            if net_amount >= *self {
-                return Ok(split);
+            let split = new_amount.split(fee_and_amounts)?;
+            let split_fee_ppk = (split.len() as u64)
+                .checked_mul(fee_and_amounts.fee)
+                .ok_or(Error::AmountOverflow)?;
+            let split_fee = Amount::from(split_fee_ppk.div_ceil(1000));
+
+            if let Some(net_amount) = new_amount.checked_sub(split_fee) {
+                if net_amount >= target {
+                    return Ok(split);
+                }
             }
+
+            target = target
+                .checked_add(Amount::ONE)
+                .ok_or(Error::AmountOverflow)?;
         }
-        self.checked_add(Amount::ONE)
-            .ok_or(Error::AmountOverflow)?
-            .split_with_fee(fee_and_amounts)
+
+        Err(Error::SplitWithFeeDidNotConverge(self.value))
     }
 
     /// Checked addition for Amount. Returns None if overflow occurs.
@@ -357,10 +400,17 @@ impl Amount<()> {
 
     /// Subtracts `other` from `self`, returning zero if the result would be negative.
     pub fn saturating_sub(self, other: Self) -> Self {
-        if other > self {
-            Self::ZERO
-        } else {
-            self - other
+        self.checked_sub(other).unwrap_or(Self::ZERO)
+    }
+
+    /// Adds `other` to `self`, clamping at [`u64::MAX`] instead of overflowing.
+    ///
+    /// For infallible getters where the operands are already bounded; prefer
+    /// [`Self::checked_add`] anywhere an error can be returned.
+    pub fn saturating_add(self, other: Self) -> Self {
+        Amount {
+            value: self.value.saturating_add(other.value),
+            unit: (),
         }
     }
 
@@ -668,58 +718,6 @@ impl AsRef<u64> for Amount<()> {
     }
 }
 
-impl std::ops::Add for Amount<()> {
-    type Output = Amount<()>;
-
-    fn add(self, rhs: Amount<()>) -> Self::Output {
-        self.checked_add(rhs)
-            .expect("Addition overflow: the sum of the amounts exceeds the maximum value")
-    }
-}
-
-impl std::ops::AddAssign for Amount<()> {
-    fn add_assign(&mut self, rhs: Self) {
-        *self = self
-            .checked_add(rhs)
-            .expect("AddAssign overflow: the sum of the amounts exceeds the maximum value");
-    }
-}
-
-impl std::ops::Sub for Amount<()> {
-    type Output = Amount<()>;
-
-    fn sub(self, rhs: Amount<()>) -> Self::Output {
-        self.checked_sub(rhs)
-            .expect("Subtraction underflow: cannot subtract a larger amount from a smaller amount")
-    }
-}
-
-impl std::ops::SubAssign for Amount<()> {
-    fn sub_assign(&mut self, other: Self) {
-        *self = self
-            .checked_sub(other)
-            .expect("SubAssign underflow: cannot subtract a larger amount from a smaller amount");
-    }
-}
-
-impl std::ops::Mul for Amount<()> {
-    type Output = Self;
-
-    fn mul(self, other: Self) -> Self::Output {
-        self.checked_mul(other)
-            .expect("Multiplication overflow: the product of the amounts exceeds the maximum value")
-    }
-}
-
-impl std::ops::Div for Amount<()> {
-    type Output = Self;
-
-    fn div(self, other: Self) -> Self::Output {
-        self.checked_div(other)
-            .expect("Division error: cannot divide by zero or overflow occurred")
-    }
-}
-
 /// Convert offer to amount in unit
 pub fn amount_for_offer(offer: &Offer, unit: &CurrencyUnit) -> Result<Amount, Error> {
     let offer_amount = offer.amount().ok_or(Error::AmountUndefined)?;
@@ -992,6 +990,46 @@ mod tests {
         );
     }
 
+    /// A keyset offering only the smallest denomination must not make `split`
+    /// allocate one element per satoshi.
+    #[test]
+    fn test_split_rejects_unbounded_part_count() {
+        let fee_and_amounts = (0, vec![1u64]).into();
+        let amount = Amount::from(MAX_SPLIT_PARTS + 1);
+
+        match amount.split(&fee_and_amounts) {
+            Err(Error::SplitTooManyParts(value, parts)) => {
+                assert_eq!(value, MAX_SPLIT_PARTS + 1);
+                assert!(parts > MAX_SPLIT_PARTS);
+            }
+            other => panic!("expected SplitTooManyParts, got {other:?}"),
+        }
+
+        // Just under the bound still succeeds.
+        let amount = Amount::from(MAX_SPLIT_PARTS);
+        let parts = amount.split(&fee_and_amounts).expect("within the bound");
+        assert_eq!(parts.len() as u64, MAX_SPLIT_PARTS);
+    }
+
+    /// `split_with_fee` steps one satoshi at a time; a fee it can never cover
+    /// must terminate with an error rather than recursing until the stack dies.
+    #[test]
+    fn test_split_with_fee_terminates_when_it_cannot_converge() {
+        let fee_and_amounts = (u64::MAX / 2, vec![1u64]).into();
+
+        let result = Amount::from(1).split_with_fee(&fee_and_amounts);
+
+        assert!(
+            matches!(
+                result,
+                Err(Error::SplitWithFeeDidNotConverge(_))
+                    | Err(Error::AmountOverflow)
+                    | Err(Error::SplitTooManyParts(_, _))
+            ),
+            "expected a bounded failure, got {result:?}"
+        );
+    }
+
     #[test]
     fn test_split_values() {
         let fee_and_amounts = (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into();
@@ -1223,15 +1261,14 @@ mod tests {
     /// rather than wrap around on underflow. This is critical for preventing
     /// bugs where negative amounts could be interpreted as very large positive amounts.
     ///
-    /// Mutant testing: Catches mutations that remove the panic behavior or return
-    /// default values instead of properly handling underflow.
+    /// Mutant testing: Catches mutations that return a default value instead of
+    /// reporting the underflow.
     #[test]
-    #[should_panic(expected = "Subtraction underflow")]
     fn test_amount_sub_underflow() {
         let amount1 = Amount::from(30);
         let amount2 = Amount::from(100);
 
-        let _result = amount1 - amount2;
+        assert_eq!(amount1.checked_sub(amount2), None);
     }
 
     /// Tests that checked_add correctly computes the sum and returns the actual value.
@@ -1735,48 +1772,6 @@ mod tests {
         assert_ne!(result, Some(Amount::ZERO));
     }
 
-    /// Tests AddAssign actually modifies the value.
-    ///
-    /// Mutant testing: Catches mutation that replaces add_assign with ().
-    #[test]
-    fn test_add_assign() {
-        let mut amount = Amount::from(100);
-        amount += Amount::from(50);
-        assert_eq!(amount, Amount::from(150));
-        assert_ne!(amount, Amount::from(100)); // Should have changed
-
-        let mut amount = Amount::from(1);
-        amount += Amount::from(1);
-        assert_eq!(amount, Amount::from(2));
-        assert_ne!(amount, Amount::ONE); // Should have changed
-
-        let mut amount = Amount::ZERO;
-        amount += Amount::from(42);
-        assert_eq!(amount, Amount::from(42));
-        assert_ne!(amount, Amount::ZERO); // Should have changed
-    }
-
-    /// Tests SubAssign actually modifies the value.
-    ///
-    /// Mutant testing: Catches mutation that replaces sub_assign with ().
-    #[test]
-    fn test_sub_assign() {
-        let mut amount = Amount::from(100);
-        amount -= Amount::from(30);
-        assert_eq!(amount, Amount::from(70));
-        assert_ne!(amount, Amount::from(100)); // Should have changed
-
-        let mut amount = Amount::from(50);
-        amount -= Amount::from(1);
-        assert_eq!(amount, Amount::from(49));
-        assert_ne!(amount, Amount::from(50)); // Should have changed
-
-        let mut amount = Amount::from(10);
-        amount -= Amount::from(10);
-        assert_eq!(amount, Amount::ZERO);
-        assert_ne!(amount, Amount::from(10)); // Should have changed
-    }
-
     // Phase 2 tests: Amount<CurrencyUnit> methods
 
     #[test]
@@ -2184,15 +2179,6 @@ mod tests {
 
         let amount = Amount::new(123, CurrencyUnit::Custom("BTC".into()));
         assert_eq!(amount.display_with_unit(), "123 btc");
-    }
-
-    #[test]
-    fn test_amount_add_operator() {
-        let a = Amount::from(100);
-        let b = Amount::from(50);
-        let sum = a + b;
-        assert_eq!(sum, Amount::from(150));
-        assert_ne!(sum, Amount::ZERO);
     }
 
     /// Tests that saturating_sub correctly subtracts amounts without underflow.

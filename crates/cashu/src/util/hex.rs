@@ -3,6 +3,10 @@
 
 //! Hex
 
+// Byte-level codec arithmetic: nibble maths guarded by the surrounding match
+// arms, and buffer offsets bounded by the input length. No amounts here.
+#![allow(clippy::arithmetic_side_effects)]
+
 use core::fmt;
 
 use crate::ensure_cdk;

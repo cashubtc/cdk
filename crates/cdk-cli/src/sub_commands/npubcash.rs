@@ -201,7 +201,7 @@ async fn list(
                 println!("\nQuotes:");
                 println!("{:-<80}", "");
                 for (i, quote) in quotes.iter().enumerate() {
-                    println!("{}. ID: {}", i + 1, quote.id);
+                    println!("{}. ID: {}", i.saturating_add(1), quote.id);
                     let amount_str = quote
                         .amount
                         .map_or("unknown".to_string(), |a| a.to_string());
@@ -551,7 +551,7 @@ mod tests {
 
             if let Some(header_end) = find_header_end(&buffer) {
                 let content_length = parse_content_length(&buffer[..header_end]);
-                let request_len = header_end + 4 + content_length;
+                let request_len = header_end.saturating_add(4).saturating_add(content_length);
                 if buffer.len() >= request_len {
                     break;
                 }

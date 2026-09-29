@@ -50,7 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let one_hour_ago = web_time::SystemTime::now()
         .duration_since(web_time::UNIX_EPOCH)?
         .as_secs()
-        - 3600;
+        .saturating_sub(3600);
 
     println!("\n=== Fetching quotes from last hour ===");
     match client.get_quotes(Some(one_hour_ago)).await {

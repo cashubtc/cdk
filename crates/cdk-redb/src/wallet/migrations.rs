@@ -187,7 +187,7 @@ pub(crate) fn migrate_03_to_04(db: Arc<Database>) -> Result<u32, Error> {
         let mut table = write_txn.open_table(KEYSET_COUNTER).map_err(Error::from)?;
 
         for (keyset_id, current_counter) in keyset_ids_to_increment {
-            let new_counter = current_counter + 1;
+            let new_counter = current_counter.saturating_add(1);
             table
                 .insert(keyset_id.as_str(), new_counter)
                 .map_err(Error::from)?;

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use cdk::amount::{amount_for_offer, Amount, MSAT_IN_SAT};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::KnownMethod;
@@ -98,10 +98,13 @@ fn create_melt_options(
         }
         None => {
             // Payment doesn't have an amount; use CLI amount if supplied, otherwise prompt.
-            let user_amount = match cli_amount_sat {
-                Some(amount_sat) => amount_sat * MSAT_IN_SAT,
-                None => get_number_input::<u64>(prompt)? * MSAT_IN_SAT,
+            let amount_sat = match cli_amount_sat {
+                Some(amount_sat) => amount_sat,
+                None => get_number_input::<u64>(prompt)?,
             };
+            let user_amount = amount_sat
+                .checked_mul(MSAT_IN_SAT)
+                .ok_or_else(|| anyhow!("amount is too large to express in millisatoshis"))?;
 
             if user_amount > available_funds {
                 bail!("Not enough funds");
@@ -237,7 +240,9 @@ pub async fn pay(
         }
     };
 
-    let available_funds = <cdk::Amount as Into<u64>>::into(total_balance) * MSAT_IN_SAT;
+    let available_funds = <cdk::Amount as Into<u64>>::into(total_balance)
+        .checked_mul(MSAT_IN_SAT)
+        .ok_or_else(|| anyhow!("balance is too large to express in millisatoshis"))?;
 
     // Process payment based on payment method using individual wallets
     match sub_command_args.method {
@@ -609,7 +614,9 @@ async fn pay_mpp(
         let wallet = get_or_create_wallet(wallet_repository, mint_url, unit).await?;
 
         // Convert amount to millisats for MPP
-        let amount_msat = u64::from(*amount) * MSAT_IN_SAT;
+        let amount_msat = u64::from(*amount)
+            .checked_mul(MSAT_IN_SAT)
+            .ok_or_else(|| anyhow!("amount is too large to express in millisatoshis"))?;
         let options = Some(MeltOptions::new_mpp(amount_msat));
 
         let quote = wallet
@@ -648,8 +655,12 @@ async fn pay_mpp(
             melted.amount(),
             melted.fee_paid()
         );
-        total_paid += melted.amount();
-        total_fees += melted.fee_paid();
+        total_paid = total_paid
+            .checked_add(melted.amount())
+            .ok_or_else(|| anyhow!("total paid amount overflowed"))?;
+        total_fees = total_fees
+            .checked_add(melted.fee_paid())
+            .ok_or_else(|| anyhow!("total fees overflowed"))?;
 
         if let Some(preimage) = melted.payment_proof() {
             println!("    Preimage: {}", escape_control(preimage));

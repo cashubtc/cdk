@@ -76,12 +76,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 for (i, quote) in quotes.iter().enumerate() {
                     tracing::debug!(
                         "Quote {}: ID={}, amount={}, unit={}",
-                        i + 1,
+                        i.saturating_add(1),
                         quote.id,
                         quote.amount,
                         quote.unit
                     );
-                    println!("\n{}. Quote ID: {}", i + 1, quote.id);
+                    println!("\n{}. Quote ID: {}", i.saturating_add(1), quote.id);
                     println!("   Amount: {} {}", quote.amount, quote.unit);
                 }
             }

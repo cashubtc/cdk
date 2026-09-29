@@ -168,7 +168,7 @@ async fn get_device_code_token(
             if error == "authorization_pending" || error == "slow_down" {
                 if error == "slow_down" {
                     // If we're polling too fast, slow down
-                    sleep(Duration::from_secs(interval + 5)).await;
+                    sleep(Duration::from_secs(interval.saturating_add(5))).await;
                 }
                 println!("Waiting for user to complete authentication...");
                 continue;

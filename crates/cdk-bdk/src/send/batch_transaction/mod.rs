@@ -48,6 +48,10 @@ pub(crate) struct BroadcastResult {
 
 /// Allocate a batch fee across intents using equal-first distribution with
 /// iterative capping.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "`active` is non-empty while the loop runs, so `/` and `%` cannot divide by zero; each `capped` is bounded by that intent's remaining headroom and by `remaining_fee`, which the guards above keep within `total_max`"
+)]
 pub(crate) fn allocate_batch_fee(
     actual_fee: u64,
     max_fees: &[u64],

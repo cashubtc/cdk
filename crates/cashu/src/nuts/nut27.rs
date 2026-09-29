@@ -102,6 +102,10 @@ impl MintBackup {
 /// let seed: [u8; 64] = mnemonic.to_seed("");
 /// let keys = derive_nostr_keys(&seed).unwrap();
 /// ```
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "buffer capacity hint over two fixed-size constants"
+)]
 pub fn derive_nostr_keys(seed: &[u8; 64]) -> Result<Keys, Error> {
     let mut combined_data = Vec::with_capacity(seed.len() + DOMAIN_SEPARATOR.len());
     combined_data.extend_from_slice(seed);

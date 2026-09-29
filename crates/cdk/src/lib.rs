@@ -1,5 +1,8 @@
 //! Rust implementation of the Cashu Protocol
 #![doc = include_str!("../README.md")]
+// Test code does bookkeeping arithmetic on fixtures where a wrap is not a
+// money bug; the lint stays denied for everything the crate ships.
+#![cfg_attr(test, allow(clippy::arithmetic_side_effects))]
 
 // Disallow enabling `tor` feature on wasm32 with a clear error.
 #[cfg(all(target_arch = "wasm32", feature = "tor"))]

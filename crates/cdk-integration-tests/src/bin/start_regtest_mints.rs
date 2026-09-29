@@ -282,7 +282,7 @@ async fn start_ldk_mint(
         gossip_source_type: None,
         rgs_url: None,
         webserver_host: Some("127.0.0.1".to_string()),
-        webserver_port: Some(port + 1), // Use next port for web interface
+        webserver_port: Some(port.saturating_add(1)), // Use next port for web interface
         ldk_node_mnemonic: Some(mnemonics.ldk_node.to_string()),
     };
 
@@ -334,7 +334,7 @@ async fn wait_for_ldk_bolt12_ready(
     let readiness_amount = Amount::from(1);
     let start_time = std::time::Instant::now();
     let max_wait = Duration::from_secs(120);
-    let mut attempt = 1;
+    let mut attempt: usize = 1;
     let mut last_error = None;
 
     println!("Waiting for LDK mint BOLT12 readiness on port {ldk_port}...");
@@ -378,7 +378,7 @@ async fn wait_for_ldk_bolt12_ready(
                         "LDK BOLT12 readiness attempt {attempt}: CLN reconnect to LDK mint node failed: {err}"
                     );
                     sleep(Duration::from_secs(2)).await;
-                    attempt += 1;
+                    attempt = attempt.saturating_add(1);
                     continue;
                 }
             }
@@ -395,7 +395,7 @@ async fn wait_for_ldk_bolt12_ready(
                     "LDK BOLT12 readiness attempt {attempt}: quote creation failed: {err}"
                 );
                 sleep(Duration::from_secs(2)).await;
-                attempt += 1;
+                attempt = attempt.saturating_add(1);
                 continue;
             }
         };
@@ -409,7 +409,7 @@ async fn wait_for_ldk_bolt12_ready(
                 last_error = Some(format!("payment failed: {err}"));
                 tracing::warn!("LDK BOLT12 readiness attempt {attempt}: payment failed: {err}");
                 sleep(Duration::from_secs(2)).await;
-                attempt += 1;
+                attempt = attempt.saturating_add(1);
                 continue;
             }
         }
@@ -453,7 +453,7 @@ async fn wait_for_ldk_bolt12_ready(
                 mint_quote.id
             ),
         });
-        attempt += 1;
+        attempt = attempt.saturating_add(1);
     }
 }
 

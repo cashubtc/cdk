@@ -16,10 +16,15 @@ fn fees(inactive: Id) -> KeysetFeeAndAmounts {
 
 fn net(proofs: &Proofs, fees: &KeysetFeeAndAmounts) -> Amount {
     let rates = fees.iter().map(|(id, fee)| (*id, fee.fee())).collect();
-    proofs.total_amount().unwrap()
-        - calculate_fee(&proofs.count_by_keyset(), &rates)
-            .unwrap()
-            .total
+    proofs
+        .total_amount()
+        .unwrap()
+        .checked_sub(
+            calculate_fee(&proofs.count_by_keyset(), &rates)
+                .unwrap()
+                .total,
+        )
+        .expect("net")
 }
 
 #[test]

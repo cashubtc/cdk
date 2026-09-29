@@ -195,7 +195,7 @@ impl Wallet {
             )
             .await?;
 
-        balance += amount;
+        balance = balance.checked_add(amount).ok_or(Error::AmountOverflow)?;
 
         Ok(balance)
     }
@@ -400,7 +400,7 @@ impl Wallet {
         tracing::debug!("Selecting proofs with the remaining amounts");
         for remaining_amount in remaining_amounts {
             // Number of proofs to select
-            let mut n = 2;
+            let mut n: usize = 2;
 
             let mut target_amount = remaining_amount;
             let mut found = false;
@@ -410,15 +410,15 @@ impl Wallet {
                 }
 
                 // Select proofs with the current amount
-                let mut count = 0;
+                let mut count: usize = 0;
                 for _ in 0..n {
                     if select_proof(&proofs, curr_amount, true) {
-                        count += 1;
+                        count = count.saturating_add(1);
                     } else {
                         break;
                     }
                 }
-                n -= count;
+                n = n.saturating_sub(count);
 
                 // All proofs with the current amount are selected
                 if n == 0 {
@@ -427,7 +427,7 @@ impl Wallet {
                 }
 
                 // Try to find double the number of the next amount
-                n *= 2;
+                n = n.saturating_mul(2);
                 target_amount = curr_amount;
             }
 
@@ -531,7 +531,9 @@ impl Wallet {
                 .map(|(key, values)| (*key, values.fee()))
                 .collect(),
         )?;
-        let net_amount = selected_proofs.total_amount()? - fee_breakdown.total;
+        let net_amount = selected_proofs
+            .total_amount()?
+            .saturating_sub(fee_breakdown.total);
         tracing::debug!(
             "Net amount={}, fee={}, total amount={}",
             net_amount,
@@ -562,7 +564,7 @@ impl Wallet {
         loop {
             let fee = calculate_fee(&selected_proofs.count_by_keyset(), &keyset_fees)?.total;
             let total = selected_proofs.total_amount()?;
-            let net_amount = total - fee;
+            let net_amount = total.saturating_sub(fee);
 
             tracing::debug!(
                 "Net amount={}, fee={}, total amount={}",
@@ -586,7 +588,9 @@ impl Wallet {
                 return Err(Error::InsufficientFunds);
             }
 
-            let shortfall = amount - net_amount;
+            let shortfall = amount
+                .checked_sub(net_amount)
+                .ok_or(Error::InsufficientFunds)?;
             tracing::debug!("Net amount is less than required, shortfall={}", shortfall);
 
             let additional = Wallet::select_proofs_with_derivation_indices(
@@ -655,9 +659,9 @@ mod tests {
 
     use cdk_common::amount::KeysetFeeAndAmounts;
     use cdk_common::secret::Secret;
-    use cdk_common::{Amount, Id, Proof, PublicKey};
+    use cdk_common::{Amount, Id, Proof, Proofs, PublicKey};
 
-    use crate::Wallet;
+    use crate::{Error, Wallet};
 
     fn id() -> Id {
         Id::from_bytes(&[0; 8]).unwrap()
@@ -692,6 +696,72 @@ mod tests {
             id(),
             (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into(),
         )])
+    }
+
+    /// A mint can advertise an `input_fee_ppk` large enough that the fee on the
+    /// selected proofs exceeds their total value. That must surface as
+    /// `InsufficientFunds`, not as an underflow panic in the wallet.
+    #[test]
+    fn test_select_proofs_fee_exceeding_total_is_insufficient_funds() {
+        let fees_and_amounts: KeysetFeeAndAmounts = HashMap::from([(
+            id(),
+            (2_000u64, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into(),
+        )]);
+
+        // Ten 1-sat proofs are worth 10, but at 2000 ppk the fee on them is 20.
+        let proofs: Proofs = (0..10).map(|_| proof(1)).collect();
+
+        let result = Wallet::select_proofs(
+            Amount::from(8),
+            proofs,
+            &vec![id()],
+            &fees_and_amounts,
+            true,
+        );
+
+        assert!(
+            matches!(result, Err(Error::InsufficientFunds)),
+            "expected InsufficientFunds, got {result:?}"
+        );
+    }
+
+    /// The same oversized `input_fee_ppk`, but the wallet also holds a proof
+    /// large enough to cover the fee. Selection must reach for it instead of
+    /// giving up while it still has proofs in hand.
+    #[test]
+    fn test_select_proofs_fee_exceeding_selected_total_keeps_selecting() {
+        use cdk_common::nuts::nut00::ProofsMethods;
+
+        use crate::fees::calculate_fee;
+
+        let fee_ppk = 2_000u64;
+        let fees_and_amounts: KeysetFeeAndAmounts = HashMap::from([(
+            id(),
+            (fee_ppk, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into(),
+        )]);
+
+        // The eight 1-sat proofs the split reaches for first are worth 8 while
+        // their own fee is 16; the 64-sat proof is what makes the send possible.
+        let mut proofs: Proofs = (0..10).map(|_| proof(1)).collect();
+        proofs.push(proof(64));
+
+        let amount = Amount::from(8);
+        let selected = Wallet::select_proofs(amount, proofs, &vec![id()], &fees_and_amounts, true)
+            .expect("the 64-sat proof covers the fee");
+
+        let total = selected.total_amount().expect("total");
+        let fee = calculate_fee(
+            &selected.count_by_keyset(),
+            &HashMap::from([(id(), fee_ppk)]),
+        )
+        .expect("fee")
+        .total;
+        let net = total.checked_sub(fee).expect("net");
+
+        assert!(
+            net >= amount,
+            "net {net} should cover {amount} (total {total}, fee {fee})"
+        );
     }
 
     #[test]
@@ -1029,7 +1099,7 @@ mod tests {
         )
         .unwrap()
         .total;
-        let net = total - fee;
+        let net = total.checked_sub(fee).expect("net");
 
         assert!(
             net >= amount,
@@ -1081,7 +1151,7 @@ mod tests {
         )
         .unwrap()
         .total;
-        let net = total - fee;
+        let net = total.checked_sub(fee).expect("net");
 
         assert!(
             net >= amount,
@@ -1227,7 +1297,7 @@ mod tests {
         )
         .unwrap()
         .total;
-        let net = total - fee;
+        let net = total.checked_sub(fee).expect("net");
 
         assert_eq!(selected_proofs.len(), 1);
         assert_eq!(selected_proofs[0].amount, 4096.into());
@@ -1284,7 +1354,7 @@ mod tests {
         )
         .unwrap()
         .total;
-        let net = total - fee;
+        let net = total.checked_sub(fee).expect("net");
 
         assert!(net >= amount, "5120 - 1 = 5119 >= 5000");
     }
@@ -1327,7 +1397,7 @@ mod tests {
         )
         .unwrap()
         .total;
-        let net = total - fee;
+        let net = total.checked_sub(fee).expect("net");
 
         assert!(
             net >= amount,
@@ -1376,7 +1446,7 @@ mod tests {
         )
         .unwrap()
         .total;
-        let net = total - fee;
+        let net = total.checked_sub(fee).expect("net");
 
         assert!(
             net >= amount,
@@ -1417,7 +1487,7 @@ mod tests {
         )
         .unwrap()
         .total;
-        let net = total - fee;
+        let net = total.checked_sub(fee).expect("net");
 
         assert!(
             net >= amount,
@@ -1461,7 +1531,7 @@ mod tests {
         )
         .unwrap()
         .total;
-        let net = total - fee;
+        let net = total.checked_sub(fee).expect("net");
 
         assert!(
             net >= amount,
@@ -1576,7 +1646,7 @@ mod tests {
         .unwrap()
         .total;
 
-        let net = total - fee;
+        let net = total.checked_sub(fee).expect("net");
 
         assert!(
             net == amount,
@@ -1623,7 +1693,7 @@ mod tests {
         )
         .unwrap()
         .total;
-        let net = total - fee;
+        let net = total.checked_sub(fee).expect("net");
 
         assert!(net >= amount, "Net amount {} should be >= {}", net, amount);
     }
@@ -1659,7 +1729,7 @@ mod tests {
         )
         .unwrap()
         .total;
-        let net = total - fee;
+        let net = total.checked_sub(fee).expect("net");
 
         assert_eq!(selected_proofs.len(), 2);
         assert_eq!(net, 5118.into(), "5120 - 2 = 5118");
@@ -1696,7 +1766,7 @@ mod tests {
         )
         .unwrap()
         .total;
-        let net = total - fee;
+        let net = total.checked_sub(fee).expect("net");
 
         assert!(
             net >= amount,
@@ -1797,7 +1867,7 @@ mod tests {
         )
         .unwrap()
         .total;
-        let net = total - fee;
+        let net = total.checked_sub(fee).expect("net");
 
         assert!(net >= amount, "Net {} should be >= {}", net, amount);
     }
@@ -1863,7 +1933,7 @@ mod tests {
         )
         .unwrap()
         .total;
-        let net = total - fee;
+        let net = total.checked_sub(fee).expect("net");
 
         assert!(
             net >= amount,
@@ -1913,7 +1983,7 @@ mod tests {
         )
         .unwrap()
         .total;
-        let net = total - fee;
+        let net = total.checked_sub(fee).expect("net");
 
         assert!(
             net >= amount,
@@ -1957,7 +2027,7 @@ mod tests {
         )
         .unwrap()
         .total;
-        let net = total - fee;
+        let net = total.checked_sub(fee).expect("net");
 
         assert!(
             net >= amount,
@@ -2001,7 +2071,7 @@ mod tests {
         )
         .unwrap()
         .total;
-        let net = total - fee;
+        let net = total.checked_sub(fee).expect("net");
 
         assert!(
             net >= amount,
@@ -2056,7 +2126,7 @@ mod tests {
         )
         .unwrap()
         .total;
-        let net = total - fee;
+        let net = total.checked_sub(fee).expect("net");
 
         assert!(
             net >= amount,
@@ -2134,7 +2204,7 @@ mod tests {
         )
         .unwrap()
         .total;
-        let net = total - fee;
+        let net = total.checked_sub(fee).expect("net");
 
         assert!(
             net >= amount,
@@ -2185,7 +2255,7 @@ mod tests {
         )
         .unwrap()
         .total;
-        let net = total - fee;
+        let net = total.checked_sub(fee).expect("net");
 
         assert!(
             net >= amount,

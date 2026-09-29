@@ -55,29 +55,39 @@ fn calculate_usage_metrics(payments: &[ldk_node::payment::PaymentDetails]) -> Us
             | PaymentKind::Spontaneous { .. }
             | PaymentKind::Bolt11Jit { .. } => match payment.direction {
                 PaymentDirection::Inbound => {
-                    metrics.lightning_inflow_all_time += amount_sats;
+                    metrics.lightning_inflow_all_time = metrics
+                        .lightning_inflow_all_time
+                        .saturating_add(amount_sats);
                     if is_recent {
-                        metrics.lightning_inflow_24h += amount_sats;
+                        metrics.lightning_inflow_24h =
+                            metrics.lightning_inflow_24h.saturating_add(amount_sats);
                     }
                 }
                 PaymentDirection::Outbound => {
-                    metrics.lightning_outflow_all_time += amount_sats;
+                    metrics.lightning_outflow_all_time = metrics
+                        .lightning_outflow_all_time
+                        .saturating_add(amount_sats);
                     if is_recent {
-                        metrics.lightning_outflow_24h += amount_sats;
+                        metrics.lightning_outflow_24h =
+                            metrics.lightning_outflow_24h.saturating_add(amount_sats);
                     }
                 }
             },
             PaymentKind::Onchain { .. } => match payment.direction {
                 PaymentDirection::Inbound => {
-                    metrics.onchain_inflow_all_time += amount_sats;
+                    metrics.onchain_inflow_all_time =
+                        metrics.onchain_inflow_all_time.saturating_add(amount_sats);
                     if is_recent {
-                        metrics.onchain_inflow_24h += amount_sats;
+                        metrics.onchain_inflow_24h =
+                            metrics.onchain_inflow_24h.saturating_add(amount_sats);
                     }
                 }
                 PaymentDirection::Outbound => {
-                    metrics.onchain_outflow_all_time += amount_sats;
+                    metrics.onchain_outflow_all_time =
+                        metrics.onchain_outflow_all_time.saturating_add(amount_sats);
                     if is_recent {
-                        metrics.onchain_outflow_24h += amount_sats;
+                        metrics.onchain_outflow_24h =
+                            metrics.onchain_outflow_24h.saturating_add(amount_sats);
                     }
                 }
             },
@@ -106,28 +116,13 @@ pub async fn dashboard(State(state): State<AppState>) -> Result<Html<String>, St
         .map(|a| a.to_string())
         .collect();
 
-    let (num_peers, num_connected_peers) =
-        node.list_peers()
-            .iter()
-            .fold((0, 0), |(mut peers, mut connected), p| {
-                if p.is_connected {
-                    connected += 1;
-                }
-                peers += 1;
-                (peers, connected)
-            });
+    let peers = node.list_peers();
+    let num_peers = peers.len();
+    let num_connected_peers = peers.iter().filter(|p| p.is_connected).count();
 
-    let (num_active_channels, num_inactive_channels) =
-        node.list_channels()
-            .iter()
-            .fold((0, 0), |(mut active, mut inactive), c| {
-                if c.is_usable {
-                    active += 1;
-                } else {
-                    inactive += 1;
-                }
-                (active, inactive)
-            });
+    let channels = node.list_channels();
+    let num_channels = channels.len();
+    let num_active_channels = channels.iter().filter(|c| c.is_usable).count();
 
     let balances = node.list_balances();
 
@@ -155,7 +150,7 @@ pub async fn dashboard(State(state): State<AppState>) -> Result<Html<String>, St
                     div class="metric-label" { "Spendable Balance" }
                 }
                 div class="metric-card" {
-                    div class="metric-value" { (format_sats_as_btc(balances.total_lightning_balance_sats + balances.total_onchain_balance_sats)) }
+                    div class="metric-value" { (format_sats_as_btc(balances.total_lightning_balance_sats.saturating_add(balances.total_onchain_balance_sats))) }
                     div class="metric-label" { "Combined Total" }
                 }
             }
@@ -219,7 +214,7 @@ pub async fn dashboard(State(state): State<AppState>) -> Result<Html<String>, St
                             div class="metric-label" { "Connected Peers" }
                         }
                         div class="metric-card" {
-                            div class="metric-value" { (format!("{}/{}", num_active_channels, num_active_channels + num_inactive_channels)) }
+                            div class="metric-value" { (format!("{}/{}", num_active_channels, num_channels)) }
                             div class="metric-label" { "Active Channels" }
                         }
                     }

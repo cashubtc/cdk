@@ -1,5 +1,8 @@
 #![allow(missing_docs)]
 //! Cdk mintd lib
+// Test code does bookkeeping arithmetic on fixtures where a wrap is not a
+// money bug; the lint stays denied for everything the crate ships.
+#![cfg_attr(test, allow(clippy::arithmetic_side_effects))]
 
 // std
 use std::collections::{HashMap, HashSet};

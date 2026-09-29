@@ -1,6 +1,9 @@
 //! CDK onchain backend using BDK
 
 #![doc = include_str!("../README.md")]
+// Test code does bookkeeping arithmetic on fixtures where a wrap is not a
+// money bug; the lint stays denied for everything the crate ships.
+#![cfg_attr(test, allow(clippy::arithmetic_side_effects))]
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -207,6 +210,16 @@ pub struct CdkBdk {
     pub(crate) fee_rate_cache: Arc<Mutex<std::collections::HashMap<PaymentTier, (f64, u64)>>>,
 }
 
+impl fmt::Debug for CdkBdk {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CdkBdk")
+            .field("network", &self.network)
+            .field("num_confs", &self.num_confs)
+            .field("shutdown_timeout", &self.shutdown_timeout)
+            .finish_non_exhaustive()
+    }
+}
+
 impl CdkBdk {
     fn outgoing_payment_failure_response(
         unit: &CurrencyUnit,
@@ -307,7 +320,7 @@ impl CdkBdk {
             return false;
         }
 
-        tip_height - anchor_height + 1 >= self.num_confs
+        tip_height.saturating_sub(anchor_height).saturating_add(1) >= self.num_confs
     }
 
     pub(crate) fn should_ignore_receive_amount(&self, amount_sat: u64) -> bool {
@@ -435,7 +448,10 @@ impl CdkBdk {
             ));
         }
 
-        let channel_capacity = batch_config.max_batch_size * 2 + 16;
+        let channel_capacity = batch_config
+            .max_batch_size
+            .saturating_mul(2)
+            .saturating_add(16);
         let (payment_sender, _) = tokio::sync::broadcast::channel(channel_capacity);
 
         Ok(Self {
@@ -937,7 +953,13 @@ impl MintPayment for CdkBdk {
                 crate::send::payment_intent::record::SendIntentState::AwaitingConfirmation {
                     fee_contribution_sat,
                     ..
-                } => Amount::new(record.amount_sat + fee_contribution_sat, CurrencyUnit::Sat),
+                } => Amount::new(
+                    record
+                        .amount_sat
+                        .checked_add(*fee_contribution_sat)
+                        .ok_or(cdk_common::amount::Error::AmountOverflow)?,
+                    CurrencyUnit::Sat,
+                ),
                 crate::send::payment_intent::record::SendIntentState::Failed { .. } => {
                     Amount::new(0, CurrencyUnit::Sat)
                 }

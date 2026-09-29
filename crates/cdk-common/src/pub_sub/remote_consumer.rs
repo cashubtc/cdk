@@ -360,7 +360,7 @@ where
 
         for topic in topics.iter() {
             if let Some(subscription) = remote_subscriptions.get_mut(topic) {
-                subscription.total_subscribers += 1;
+                subscription.total_subscribers = subscription.total_subscribers.saturating_add(1);
 
                 if let Some(v) = cached_events.get(topic).cloned() {
                     previous_messages.push(v);

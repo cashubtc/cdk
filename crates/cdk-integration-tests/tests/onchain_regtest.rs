@@ -1,3 +1,7 @@
+// Assertion bookkeeping over test fixtures, where a wrap is not a money
+// bug; the lint stays denied for the helpers this crate ships.
+#![allow(clippy::arithmetic_side_effects)]
+
 //! Onchain Regtest Integration Tests
 //!
 //! This file contains tests for NUT-26 onchain payments against a regtest environment.

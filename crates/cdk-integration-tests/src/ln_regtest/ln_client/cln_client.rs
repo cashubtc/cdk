@@ -162,7 +162,7 @@ impl ClnClient {
 
     pub async fn wait_channel_active_with_peer(&self, peer_id: &str) -> Result<()> {
         let peer_id = PublicKey::from_str(peer_id)?.to_string();
-        let mut count = 0;
+        let mut count: usize = 0;
         while count < 100 {
             let channels = self.list_channels().await?;
             let peer_channels = channels
@@ -185,7 +185,7 @@ impl ClnClient {
                 tracing::warn!("CLN channel with peer {peer_id} is not active yet");
             }
 
-            count += 1;
+            count = count.saturating_add(1);
             sleep(Duration::from_secs(2)).await;
         }
 
@@ -197,12 +197,14 @@ impl ClnClient {
         amount_msat: Option<u64>,
         offer: String,
     ) -> Result<String> {
-        let max_attempts = 5;
+        let max_attempts: usize = 5;
         let mut attempts_remaining = max_attempts;
         let mut delay = Duration::from_millis(500);
 
         let invoice = loop {
-            let attempt = max_attempts - attempts_remaining + 1;
+            let attempt = max_attempts
+                .saturating_sub(attempts_remaining)
+                .saturating_add(1);
             let cln_response = timeout(Duration::from_secs(15), async {
                 let mut cln_client = self.client.lock().await;
                 cln_client
@@ -230,7 +232,7 @@ impl ClnClient {
                         "CLN fetchinvoice for BOLT12 offer failed on attempt {attempt}/{max_attempts}: {err}"
                     );
 
-                    attempts_remaining -= 1;
+                    attempts_remaining = attempts_remaining.saturating_sub(1);
                     if attempts_remaining == 0 {
                         return Err(err);
                     }
@@ -250,7 +252,7 @@ impl ClnClient {
                         );
                     }
 
-                    attempts_remaining -= 1;
+                    attempts_remaining = attempts_remaining.saturating_sub(1);
                     if attempts_remaining == 0 {
                         return Err(err);
                     }
@@ -436,21 +438,27 @@ impl LightningClient for ClnClient {
 
         let balance = match cln_response {
             cln_rpc::Response::ListFunds(funds_response) => {
-                let mut on_chain_total = Amount::from_msat(0);
-                let mut on_chain_spendable = Amount::from_msat(0);
-                let mut ln = Amount::from_msat(0);
+                let mut on_chain_total: u64 = 0;
+                let mut on_chain_spendable: u64 = 0;
+                let mut ln: u64 = 0;
+
+                let add_msat = |total: u64, amount: Amount| {
+                    total
+                        .checked_add(amount.msat())
+                        .ok_or_else(|| anyhow!("millisatoshi balance overflowed"))
+                };
 
                 for output in funds_response.outputs {
                     match output.status {
                         ListfundsOutputsStatus::UNCONFIRMED => {
-                            on_chain_total = on_chain_total + output.amount_msat;
+                            on_chain_total = add_msat(on_chain_total, output.amount_msat)?;
                         }
                         ListfundsOutputsStatus::IMMATURE => {
-                            on_chain_total = on_chain_total + output.amount_msat;
+                            on_chain_total = add_msat(on_chain_total, output.amount_msat)?;
                         }
                         ListfundsOutputsStatus::CONFIRMED => {
-                            on_chain_total = on_chain_total + output.amount_msat;
-                            on_chain_spendable = on_chain_spendable + output.amount_msat;
+                            on_chain_total = add_msat(on_chain_total, output.amount_msat)?;
+                            on_chain_spendable = add_msat(on_chain_spendable, output.amount_msat)?;
                         }
                         ListfundsOutputsStatus::SPENT => (),
                     }
@@ -458,13 +466,13 @@ impl LightningClient for ClnClient {
                 }
 
                 for channel in funds_response.channels {
-                    ln = ln + channel.our_amount_msat;
+                    ln = add_msat(ln, channel.our_amount_msat)?;
                 }
 
                 Balance {
-                    on_chain_spendable: on_chain_spendable.msat(),
-                    on_chain_total: on_chain_total.msat(),
-                    ln: ln.msat(),
+                    on_chain_spendable,
+                    on_chain_total,
+                    ln,
                 }
             }
             _ => {
@@ -532,7 +540,7 @@ impl LightningClient for ClnClient {
     }
 
     async fn wait_chain_sync(&self) -> Result<()> {
-        let mut count = 0;
+        let mut count: usize = 0;
         while count < 100 {
             let info = self.get_info().await?;
 
@@ -540,7 +548,7 @@ impl LightningClient for ClnClient {
                 tracing::info!("CLN completed chain sync");
                 return Ok(());
             }
-            count += 1;
+            count = count.saturating_add(1);
 
             sleep(Duration::from_secs(2)).await;
         }
@@ -549,7 +557,7 @@ impl LightningClient for ClnClient {
     }
 
     async fn wait_channels_active(&self) -> Result<()> {
-        let mut count = 0;
+        let mut count: usize = 0;
         while count < 100 {
             let mut cln_client = self.client.lock().await;
             let cln_response = cln_client
@@ -573,7 +581,7 @@ impl LightningClient for ClnClient {
                         return Ok(());
                     }
 
-                    count += 1;
+                    count = count.saturating_add(1);
 
                     sleep(Duration::from_secs(2)).await;
                 }

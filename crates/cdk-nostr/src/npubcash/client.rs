@@ -165,7 +165,7 @@ impl NpubCashClient {
             );
 
             // Check if we should continue paginating
-            offset += PAGINATION_LIMIT;
+            offset = offset.saturating_add(PAGINATION_LIMIT);
             if !Self::should_fetch_next_page(offset, response.metadata.total) {
                 break;
             }

@@ -1,3 +1,5 @@
+//! KV store operations for receive intents.
+
 use uuid::Uuid;
 
 use super::{
