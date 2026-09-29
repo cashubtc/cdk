@@ -764,6 +764,8 @@ impl Mint {
                 }
             }
 
+            // A v3 quote input commits the amount this request issues against it
+            // (NUT-10): the outputs total for a single quote, the batch entry otherwise.
             let nutroot_transaction = if input.outputs().iter().any(|output| {
                 output.keyset_id.get_version() == crate::nuts::KeySetVersion::Version02
             }) {
@@ -783,9 +785,17 @@ impl Mint {
                     .iter()
                     .map(|entry| {
                         let quote = quote_map.get(&entry.quote_id).ok_or(Error::UnknownQuote)?;
+                        let amount = match (input.is_batch(), entry.expected_amount) {
+                            (false, _) => outputs_amount.clone().into(),
+                            (true, Some(expected)) => Amount::from(expected),
+                            (true, None) if quote.payment_method.is_bolt11() => {
+                                quote.amount.clone().map(Into::into).unwrap_or(Amount::ZERO)
+                            }
+                            (true, None) => quote.amount_mintable().into(),
+                        };
                         Ok(crate::nuts::nut10::nutroot::Quote {
                             id: entry.quote_id.to_string(),
-                            amount: quote.amount.clone().map(Into::into).unwrap_or(Amount::ZERO),
+                            amount,
                         })
                     })
                     .collect::<Result<Vec<_>, Error>>()?;
@@ -882,18 +892,7 @@ impl Mint {
                         .signature
                         .as_ref()
                         .ok_or(Error::SignatureMissingOrInvalid)?;
-                    ensure_cdk!(raw.len() <= 4096, Error::SignatureMissingOrInvalid);
-                    let witness = if raw.len() == 128 {
-                        crate::nuts::nut10::nutroot::Witness {
-                            signatures: vec![raw.clone()],
-                            leaf: None,
-                            control: None,
-                            preimage: None,
-                        }
-                    } else {
-                        serde_json::from_str(raw).map_err(|_| Error::SignatureMissingOrInvalid)?
-                    };
-                    witness
+                    crate::mint::transaction::parse_quote_witness(raw)?
                         .verify(
                             &pubkey.to_string(),
                             transaction
