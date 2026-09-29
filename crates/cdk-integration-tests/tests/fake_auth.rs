@@ -104,6 +104,7 @@ async fn test_mint_without_auth() {
             amount: 10.into(),
             description: None,
             pubkey: None,
+            expiry_seconds: None,
         };
 
         let quote_res = client.post_mint_quote(request.into()).await;
@@ -617,6 +618,7 @@ async fn test_melt_with_invalid_auth() {
             amount: 10.into(),
             description: None,
             pubkey: None,
+            expiry_seconds: None,
         };
 
         let quote_res = client.post_mint_quote(request.into()).await;
