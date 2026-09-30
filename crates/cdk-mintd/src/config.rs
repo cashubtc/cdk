@@ -946,6 +946,7 @@ pub enum DatabaseEngine {
     #[default]
     Sqlite,
     Postgres,
+    Turso,
 }
 
 impl std::str::FromStr for DatabaseEngine {
@@ -955,6 +956,7 @@ impl std::str::FromStr for DatabaseEngine {
         match s.to_lowercase().as_str() {
             "sqlite" => Ok(DatabaseEngine::Sqlite),
             "postgres" => Ok(DatabaseEngine::Postgres),
+            "turso" => Ok(Self::Turso),
             _ => Err(format!("Unknown database engine: {s}")),
         }
     }

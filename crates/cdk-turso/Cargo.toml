@@ -11,7 +11,8 @@ rust-version = "1.88.0"
 readme = "README.md"
 
 [features]
-default = ["wallet"]
+default = ["mint", "wallet"]
+mint = ["cdk-common/mint", "cdk-sql-common/mint"]
 wallet = ["cdk-common/wallet", "cdk-sql-common/wallet"]
 prometheus = ["cdk-sql-common/prometheus"]
 

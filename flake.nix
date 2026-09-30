@@ -805,6 +805,7 @@
             "-p cdk-redb"
             "-p cdk-turso"
             "-p cdk-turso --no-default-features --features wallet"
+            "-p cdk-turso --no-default-features --features mint"
             "-p cdk-sqlite"
             "-p cdk-sqlite --features sqlcipher"
             "-p cdk-cli"
@@ -842,6 +843,11 @@
             "-p cdk-mintd --no-default-features --features grpc-processor,sqlite"
             "-p cdk-mintd --no-default-features --features management-rpc,lnd,sqlite"
             "-p cdk-mintd --no-default-features --features cln,sqlite"
+          ];
+
+          "mintd-backends-turso" = [
+            "-p cdk-mintd --no-default-features --features fakewallet,turso"
+            "-p cdk-mintd --no-default-features --features fakewallet,turso,prometheus"
           ];
 
           "mintd-backends-postgres" = [

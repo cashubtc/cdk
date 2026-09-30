@@ -87,9 +87,11 @@ tti = 60
 
 
 [database]
-# Database engine (sqlite/postgres) defaults to sqlite
+# Database engine (sqlite/postgres/turso) defaults to sqlite
 # Only one active mint process may use a database. PostgreSQL is supported but
 # does not currently make multiple active replicas safe.
+# Turso requires building with --features turso (Rust 1.88+).
+# It uses cdk-mintd.turso and cdk-mintd-auth.turso in the work directory.
 engine = "sqlite"
 
 # PostgreSQL configuration (when engine = "postgres")

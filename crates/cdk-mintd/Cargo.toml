@@ -15,6 +15,7 @@ default = ["management-rpc", "cln", "lnd", "fakewallet", "grpc-processor", "sqli
 # Database features - at least one must be enabled
 sqlite = ["dep:cdk-sqlite"]
 postgres = ["dep:cdk-postgres"]
+turso = ["dep:cdk-turso"]
 # Ensure at least one payment backend is enabled
 management-rpc = ["cdk-mint-rpc"]
 cln = ["dep:cdk-cln"]
@@ -25,7 +26,7 @@ bdk = ["dep:cdk-bdk", "cdk-bdk/bitcoin-rpc", "cdk-bdk/electrum", "cdk-bdk/esplor
 grpc-processor = ["dep:cdk-payment-processor", "cdk-signatory/grpc"]
 sqlcipher = ["sqlite", "cdk-sqlite/sqlcipher"]
 redis = ["cdk-axum/redis"]
-prometheus = ["cdk/prometheus", "dep:cdk-prometheus", "cdk-sqlite?/prometheus", "cdk-axum/prometheus"]
+prometheus = ["cdk/prometheus", "dep:cdk-prometheus", "cdk-sqlite?/prometheus", "cdk-turso?/prometheus", "cdk-axum/prometheus"]
 info-page = ["cdk-axum/info-page"]
 
 [dependencies]
@@ -40,6 +41,7 @@ cdk-sqlite = { workspace = true, features = [
     "mint"
 ], optional = true  }
 cdk-common = {workspace = true, features = ["prometheus"]}
+cdk-turso = { workspace = true, features = ["mint"], optional = true }
 cdk-postgres = { workspace = true, features = ["mint"], optional = true}
 cdk-cln = { workspace = true, optional = true }
 cdk-lnd = { workspace = true, optional = true }

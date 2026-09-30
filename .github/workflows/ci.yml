@@ -538,7 +538,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        database: [memory, sqlite, redb]
+        database: [memory, sqlite, redb, turso]
     steps:
       - name: checkout
         uses: actions/checkout@v5

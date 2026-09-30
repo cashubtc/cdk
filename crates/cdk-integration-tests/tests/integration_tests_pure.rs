@@ -2519,22 +2519,9 @@ async fn test_custom_melt_quote_status_preserves_extra_json() {
     setup_tracing();
 
     let db_type = std::env::var("CDK_TEST_DB_TYPE").unwrap_or_else(|_| "memory".to_string());
-    let localstore = match db_type.to_lowercase().as_str() {
-        "memory" => Arc::new(cdk_sqlite::mint::memory::empty().await.expect("memory db")),
-        _ => {
-            let temp_dir = std::env::temp_dir().join(format!(
-                "cdk-test-custom-melt-extra-{}",
-                uuid::Uuid::new_v4()
-            ));
-            std::fs::create_dir_all(&temp_dir).expect("temp dir");
-            let path = temp_dir.join("mint.db");
-            Arc::new(
-                cdk_sqlite::MintSqliteDatabase::new(path.to_str().expect("db path"))
-                    .await
-                    .expect("sqlite db"),
-            )
-        }
-    };
+    let (localstore, keystore) = create_test_mint_stores(&db_type)
+        .await
+        .expect("mint stores");
 
     let mut mint_builder = cdk::mint::MintBuilder::new(localstore.clone());
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
@@ -2556,7 +2543,7 @@ async fn test_custom_melt_quote_status_preserves_extra_json() {
         .with_batch_minting(Some(100), Some(vec!["bolt11".to_string()]));
 
     let mint = mint_builder
-        .build_with_seed(localstore.clone(), &mnemonic.to_seed_normalized(""))
+        .build_with_seed(keystore, &mnemonic.to_seed_normalized(""))
         .await
         .expect("mint build");
 
@@ -2596,7 +2583,10 @@ async fn test_custom_melt_quote_status_preserves_extra_json() {
 async fn test_custom_melt_quote_id_propagates_to_payment_processor() {
     setup_tracing();
 
-    let localstore = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("memory db"));
+    let db_type = std::env::var("CDK_TEST_DB_TYPE").unwrap_or_else(|_| "memory".to_string());
+    let (localstore, keystore) = create_test_mint_stores(&db_type)
+        .await
+        .expect("mint stores");
     let processor = Arc::new(CustomPaymentProcessor::default());
 
     let mut mint_builder = cdk::mint::MintBuilder::new(localstore.clone());
@@ -2618,7 +2608,7 @@ async fn test_custom_melt_quote_id_propagates_to_payment_processor() {
         .with_limits(2000, 2000);
 
     let mint = mint_builder
-        .build_with_seed(localstore.clone(), &mnemonic.to_seed_normalized(""))
+        .build_with_seed(keystore, &mnemonic.to_seed_normalized(""))
         .await
         .expect("mint build");
 
@@ -2657,7 +2647,10 @@ async fn test_custom_melt_quote_id_propagates_to_payment_processor() {
 async fn test_custom_mint_quote_id_and_pubkey_propagate_to_payment_processor() {
     setup_tracing();
 
-    let localstore = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("memory db"));
+    let db_type = std::env::var("CDK_TEST_DB_TYPE").unwrap_or_else(|_| "memory".to_string());
+    let (localstore, keystore) = create_test_mint_stores(&db_type)
+        .await
+        .expect("mint stores");
     let processor = Arc::new(CustomPaymentProcessor::default());
 
     let mut mint_builder = cdk::mint::MintBuilder::new(localstore.clone());
@@ -2679,7 +2672,7 @@ async fn test_custom_mint_quote_id_and_pubkey_propagate_to_payment_processor() {
         .with_limits(2000, 2000);
 
     let mint = mint_builder
-        .build_with_seed(localstore.clone(), &mnemonic.to_seed_normalized(""))
+        .build_with_seed(keystore, &mnemonic.to_seed_normalized(""))
         .await
         .expect("mint build");
 

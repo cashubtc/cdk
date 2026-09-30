@@ -23,6 +23,7 @@ use cdk::types::{FeeReserve, QuoteTTL};
 use cdk::util::unix_time;
 use cdk::wallet::{AuthWallet, MintConnector, Wallet, WalletBuilder};
 use cdk::{Amount, Error, MeltQuoteCreateResponse, Mint, StreamExt};
+use cdk_common::database::{DynMintDatabase, MintKeysDatabase};
 use cdk_common::{MeltQuoteRequest, MeltQuoteResponse, MintQuoteRequest, MintQuoteResponse};
 use cdk_fake_wallet::FakeWallet;
 use tokio::sync::RwLock;
@@ -386,9 +387,10 @@ pub fn setup_tracing() {
     let hyper_filter = "hyper=warn";
     let tower_filter = "tower=warn";
     let tokio_postgres = "tokio_postgres=warn";
+    let turso_filter = "turso_core=warn";
 
     let env_filter = EnvFilter::new(format!(
-        "{default_filter},{h2_filter},{hyper_filter},{tower_filter},{tokio_postgres}"
+        "{default_filter},{h2_filter},{hyper_filter},{tower_filter},{tokio_postgres},{turso_filter}"
     ));
 
     // Ok if successful, Err if already initialized
@@ -402,23 +404,37 @@ pub async fn create_and_start_test_mint() -> Result<Mint> {
     create_mint_with_limits(None).await
 }
 
+/// Mint and signing-key interfaces backed by the same test database.
+pub type TestMintStores = (
+    DynMintDatabase,
+    Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
+);
+
+/// Create mint storage for the requested integration-test backend.
+pub async fn create_test_mint_stores(db_type: &str) -> Result<TestMintStores> {
+    match db_type.to_lowercase().as_str() {
+        "memory" => {
+            let db = Arc::new(cdk_sqlite::mint::memory::empty().await?);
+            Ok((db.clone(), db))
+        }
+        "turso" => {
+            let temp_dir = create_temp_dir("cdk-test-turso-mint")?;
+            let db = Arc::new(cdk_turso::mint::open(temp_dir.join("mint.db")).await?);
+            Ok((db.clone(), db))
+        }
+        _ => {
+            let temp_dir = create_temp_dir("cdk-test-sqlite-mint")?;
+            let db = Arc::new(cdk_sqlite::MintSqliteDatabase::new(temp_dir.join("mint.db")).await?);
+            Ok((db.clone(), db))
+        }
+    }
+}
+
 pub async fn create_mint_with_fee(fee_ppk: u64) -> Result<Mint> {
     // Read environment variable to determine database type
     let db_type = env::var("CDK_TEST_DB_TYPE").expect("Database type set");
 
-    let localstore = match db_type.to_lowercase().as_str() {
-        "memory" => Arc::new(cdk_sqlite::mint::memory::empty().await?),
-        _ => {
-            // Create a temporary directory for SQLite database
-            let temp_dir = create_temp_dir("cdk-test-sqlite-mint")?;
-            let path = temp_dir.join("mint.db").to_str().unwrap().to_string();
-            Arc::new(
-                cdk_sqlite::MintSqliteDatabase::new(path.as_str())
-                    .await
-                    .expect("Could not create sqlite db"),
-            )
-        }
-    };
+    let (localstore, keystore) = create_test_mint_stores(&db_type).await?;
 
     let mut mint_builder = MintBuilder::new(localstore.clone());
 
@@ -476,7 +492,7 @@ pub async fn create_mint_with_fee(fee_ppk: u64) -> Result<Mint> {
     let quote_ttl = QuoteTTL::new(10000, 10000);
 
     let mint = mint_builder
-        .build_with_seed(localstore.clone(), &mnemonic.to_seed_normalized(""))
+        .build_with_seed(keystore, &mnemonic.to_seed_normalized(""))
         .await?;
 
     mint.set_quote_ttl(quote_ttl).await?;
@@ -490,19 +506,7 @@ pub async fn create_mint_with_limits(limits: Option<(usize, usize)>) -> Result<M
     // Read environment variable to determine database type
     let db_type = env::var("CDK_TEST_DB_TYPE").expect("Database type set");
 
-    let localstore = match db_type.to_lowercase().as_str() {
-        "memory" => Arc::new(cdk_sqlite::mint::memory::empty().await?),
-        _ => {
-            // Create a temporary directory for SQLite database
-            let temp_dir = create_temp_dir("cdk-test-sqlite-mint")?;
-            let path = temp_dir.join("mint.db").to_str().unwrap().to_string();
-            Arc::new(
-                cdk_sqlite::MintSqliteDatabase::new(path.as_str())
-                    .await
-                    .expect("Could not create sqlite db"),
-            )
-        }
-    };
+    let (localstore, keystore) = create_test_mint_stores(&db_type).await?;
 
     let mut mint_builder = MintBuilder::new(localstore.clone());
 
@@ -563,7 +567,7 @@ pub async fn create_mint_with_limits(limits: Option<(usize, usize)>) -> Result<M
     let quote_ttl = QuoteTTL::new(10000, 10000);
 
     let mint = mint_builder
-        .build_with_seed(localstore.clone(), &mnemonic.to_seed_normalized(""))
+        .build_with_seed(keystore, &mnemonic.to_seed_normalized(""))
         .await?;
 
     mint.set_quote_ttl(quote_ttl).await?;
@@ -607,6 +611,10 @@ pub async fn create_test_wallet_for_mint_with_seed(mint: Mint, seed: [u8; 64]) -
                     .await
                     .expect("Could not create sqlite db");
                 Arc::new(database)
+            }
+            "turso" => {
+                let temp_dir = create_temp_dir("cdk-test-turso-wallet")?;
+                Arc::new(cdk_turso::wallet::open(temp_dir.join("wallet.db")).await?)
             }
             "redb" => {
                 // Create a temporary directory for ReDB database
