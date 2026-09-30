@@ -497,6 +497,26 @@ impl Signatory for DbSignatory {
 
         Ok(signatory_keyset)
     }
+
+    #[tracing::instrument(skip_all)]
+    async fn add_dleq_proof(
+        &self,
+        blinded_message: &BlindedMessage,
+        mut blinded_signature: BlindSignature,
+    ) -> Result<BlindSignature, Error> {
+        let keysets = self.keysets.load();
+        let (_, key) = keysets
+            .by_id
+            .get(&blinded_signature.keyset_id)
+            .ok_or(Error::UnknownKeySet)?;
+        let key_pair = key
+            .keys
+            .get(&blinded_signature.amount)
+            .ok_or(Error::UnknownKeySet)?;
+
+        blinded_signature.add_dleq_proof(&blinded_message.blinded_secret, &key_pair.secret_key)?;
+        Ok(blinded_signature)
+    }
 }
 
 #[cfg(test)]
@@ -511,6 +531,88 @@ mod test {
     use cdk_common::{Amount, MintKeySet, PublicKey};
 
     use super::*;
+
+    #[tokio::test]
+    async fn embedded_add_dleq_proof_restores_verifiable_proof() {
+        let store = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("database"));
+        let signatory = Arc::new(
+            DbSignatory::new(
+                store,
+                b"dleq-test-seed",
+                Default::default(),
+                Default::default(),
+            )
+            .await
+            .expect("signatory"),
+        );
+        let keyset = signatory
+            .rotate_keyset(RotateKeyArguments {
+                unit: CurrencyUnit::Sat,
+                amounts: vec![1],
+                input_fee_ppk: 0,
+                keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                final_expiry: None,
+            })
+            .await
+            .expect("keyset");
+        let message = BlindedMessage::new(
+            Amount::from(1),
+            keyset.id,
+            SecretKey::generate().public_key(),
+        );
+        let mut signature = signatory
+            .blind_sign(vec![message.clone()])
+            .await
+            .expect("sign")
+            .remove(0);
+        let original = signature.clone();
+        signature.dleq = None;
+        let public_key = signatory.keysets.load().by_id[&keyset.id].1.keys[&Amount::from(1)]
+            .secret_key
+            .public_key();
+        #[cfg(feature = "grpc")]
+        {
+            use crate::proto::signatory_server::Signatory as RpcSignatory;
+
+            let server = crate::proto::server::CdkSignatoryServer::new(signatory.clone());
+            let response = RpcSignatory::add_dleq_proof(
+                &server,
+                tonic::Request::new(crate::proto::AddDleqProofRequest {
+                    message: Some(message.clone().into()),
+                    signature: Some(signature.clone().into()),
+                }),
+            )
+            .await
+            .expect("RPC DLEQ")
+            .into_inner();
+            assert!(response.error.is_none());
+            let restored: BlindSignature = response
+                .signature
+                .expect("signature")
+                .try_into()
+                .expect("decode");
+            assert_eq!(restored, original);
+            let error = RpcSignatory::add_dleq_proof(
+                &server,
+                tonic::Request::new(crate::proto::AddDleqProofRequest {
+                    message: None,
+                    signature: None,
+                }),
+            )
+            .await
+            .expect_err("missing fields");
+            assert_eq!(error.code(), tonic::Code::InvalidArgument);
+        }
+        let service = crate::embedded::Service::new(signatory);
+        let restored = service
+            .add_dleq_proof(&message, signature)
+            .await
+            .expect("DLEQ");
+        assert_eq!(restored, original);
+        restored
+            .verify_dleq(public_key, message.blinded_secret)
+            .expect("valid DLEQ");
+    }
 
     #[tokio::test]
     async fn keysets_epoch_moves_only_on_change() {

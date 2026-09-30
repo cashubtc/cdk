@@ -287,4 +287,22 @@ impl Signatory for SignatoryRpcClient {
             .map(|response| handle_error!(response, keyset).try_into())
             .map_err(|e| Error::Custom(e.to_string()))?
     }
+
+    #[tracing::instrument(skip_all)]
+    async fn add_dleq_proof(
+        &self,
+        blinded_message: &BlindedMessage,
+        blinded_signature: BlindSignature,
+    ) -> Result<BlindSignature, Error> {
+        let request = super::AddDleqProofRequest {
+            message: Some(blinded_message.clone().into()),
+            signature: Some(blinded_signature.into()),
+        };
+        self.client
+            .clone()
+            .add_dleq_proof(tonic::Request::new(request))
+            .await
+            .map(|response| handle_error!(response, signature).try_into())
+            .map_err(|e| Error::Custom(e.to_string()))?
+    }
 }

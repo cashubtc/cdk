@@ -86,6 +86,35 @@ where
     }
 
     #[tracing::instrument(skip_all)]
+    async fn add_dleq_proof(
+        &self,
+        request: Request<proto::AddDleqProofRequest>,
+    ) -> Result<Response<proto::AddDleqProofResponse>, Status> {
+        let signatory = self.load_signatory(request.metadata()).await?;
+        let request = request.into_inner();
+        let message = request
+            .message
+            .ok_or_else(|| Status::invalid_argument("Missing blinded message"))?
+            .try_into()?;
+        let signature = request
+            .signature
+            .ok_or_else(|| Status::invalid_argument("Missing blind signature"))?
+            .try_into()
+            .map_err(|error: cdk_common::Error| Status::invalid_argument(error.to_string()))?;
+        let result = match signatory.add_dleq_proof(&message, signature).await {
+            Ok(signature) => proto::AddDleqProofResponse {
+                signature: Some(signature.into()),
+                ..Default::default()
+            },
+            Err(error) => proto::AddDleqProofResponse {
+                error: Some(error.into()),
+                ..Default::default()
+            },
+        };
+        Ok(Response::new(result))
+    }
+
+    #[tracing::instrument(skip_all)]
     async fn verify_proofs(
         &self,
         request: Request<proto::Proofs>,
