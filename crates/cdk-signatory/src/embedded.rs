@@ -8,14 +8,14 @@ use tokio::task::JoinHandle;
 
 use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet, SignatoryKeysets};
 
+struct AddDleqProofRequest {
+    message: BlindedMessage,
+    signature: BlindSignature,
+    response: oneshot::Sender<Result<BlindSignature, Error>>,
+}
+
 enum Request {
-    AddDleqProof(
-        (
-            BlindedMessage,
-            BlindSignature,
-            oneshot::Sender<Result<BlindSignature, Error>>,
-        ),
-    ),
+    AddDleqProof(Box<AddDleqProofRequest>),
     BlindSign(
         (
             Vec<BlindedMessage>,
@@ -72,7 +72,12 @@ impl Service {
     ) {
         while let Some(request) = receiver.recv().await {
             match request {
-                Request::AddDleqProof((message, signature, response)) => {
+                Request::AddDleqProof(payload) => {
+                    let AddDleqProofRequest {
+                        message,
+                        signature,
+                        response,
+                    } = *payload;
                     let output = handler.add_dleq_proof(&message, signature).await;
                     if response.send(output).is_err() {
                         tracing::error!("Error sending DLEQ response: receiver dropped");
@@ -143,11 +148,11 @@ impl Signatory for Service {
     ) -> Result<BlindSignature, Error> {
         let (tx, rx) = oneshot::channel();
         self.pipeline
-            .send(Request::AddDleqProof((
-                blinded_message.clone(),
-                blinded_signature,
-                tx,
-            )))
+            .send(Request::AddDleqProof(Box::new(AddDleqProofRequest {
+                message: blinded_message.clone(),
+                signature: blinded_signature,
+                response: tx,
+            })))
             .await
             .map_err(|e| Error::SendError(e.to_string()))?;
         rx.await.map_err(|e| Error::RecvError(e.to_string()))?
