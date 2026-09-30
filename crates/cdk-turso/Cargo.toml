@@ -1,0 +1,31 @@
+[package]
+name = "cdk-turso"
+version.workspace = true
+edition.workspace = true
+authors = ["CDK Developers"]
+description = "Turso storage backend for CDK"
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version = "1.88.0"
+readme = "README.md"
+
+[features]
+default = ["wallet"]
+wallet = ["cdk-common/wallet", "cdk-sql-common/wallet"]
+prometheus = ["cdk-sql-common/prometheus"]
+
+[dependencies]
+async-trait.workspace = true
+cdk-common.workspace = true
+cdk-sql-common.workspace = true
+tokio.workspace = true
+turso = { version = "0.8.1", default-features = false }
+
+[dev-dependencies]
+cdk-common = { workspace = true, features = ["test"] }
+paste.workspace = true
+tempfile = "3"
+
+[lints]
+workspace = true

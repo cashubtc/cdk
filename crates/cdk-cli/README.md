@@ -449,6 +449,16 @@ cdk-cli --engine sqlite --password mypassword balance
 cdk-cli --engine redb balance
 ```
 
+### Turso
+
+Build with `--features turso` (Rust 1.88 or newer) to use the native embedded
+Turso engine. It stores data in `cdk-cli.turso` in the work directory and does
+not support SQLCipher passwords.
+
+```sh
+cdk-cli --engine turso balance
+```
+
 ### Seed Management
 
 The wallet seed is automatically generated and stored in `<work-dir>/seed` on first run. This seed is used to derive all keys and can be used to restore your wallet.
