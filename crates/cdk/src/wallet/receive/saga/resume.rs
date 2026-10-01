@@ -90,14 +90,24 @@ impl Wallet {
         let pending_proofs = self.localstore.get_reserved_proofs(saga_id).await?;
 
         if pending_proofs.is_empty() {
-            tracing::warn!(
-                "No pending proofs found for receive saga {} - cleaning up orphaned saga",
-                saga_id
-            );
-            self.update_transaction_status_by_saga_id(*saga_id, TransactionStatus::Completed)
+            // Missing inputs are not evidence of payment: another operation may
+            // have replaced their ownership. Only an already terminal transaction
+            // permits orphan cleanup; retain uncertain operations for recovery.
+            let transaction = self
+                .localstore
+                .get_transaction(TransactionId::from_saga_id(*saga_id))
                 .await?;
-            self.localstore.delete_saga(saga_id).await?;
-            return Ok(RecoveryAction::Recovered);
+            if transaction.is_some_and(|tx| {
+                matches!(
+                    tx.status,
+                    TransactionStatus::Completed | TransactionStatus::Failed
+                )
+            }) {
+                self.localstore.delete_saga(saga_id).await?;
+                return Ok(RecoveryAction::Recovered);
+            }
+            tracing::warn!(%saga_id, "Receive inputs missing; retaining uncertain saga");
+            return Ok(RecoveryAction::Skipped);
         }
 
         let proof_ys: Vec<_> = pending_proofs.iter().map(|proof| proof.y).collect();
@@ -177,8 +187,7 @@ impl Wallet {
                     saga_id
                 );
                 self.complete_receive_from_restore(saga_id, data, &pending_proofs)
-                    .await?;
-                Ok(RecoveryAction::Recovered)
+                    .await
             }
             Ok(false) => {
                 tracing::info!(
@@ -206,7 +215,7 @@ impl Wallet {
         saga_id: &uuid::Uuid,
         data: &ReceiveOperationData,
         pending_proofs: &[cdk_common::wallet::ProofInfo],
-    ) -> Result<(), Error> {
+    ) -> Result<RecoveryAction, Error> {
         let new_proofs = self
             .restore_outputs(
                 saga_id,
@@ -225,11 +234,11 @@ impl Wallet {
             }
             None => {
                 tracing::warn!(
-                    "Receive saga {} - couldn't restore outputs, removing spent inputs. \
-                     Run wallet.restore() to recover any missing proofs.",
+                    "Receive saga {} - couldn't restore outputs, preserving the saga \
+                     and pending proofs for retry",
                     saga_id
                 );
-                self.localstore.update_proofs(vec![], input_ys).await?;
+                return Ok(RecoveryAction::Skipped);
             }
         }
 
@@ -237,7 +246,7 @@ impl Wallet {
             .await?;
         self.localstore.delete_saga(saga_id).await?;
 
-        Ok(())
+        Ok(RecoveryAction::Recovered)
     }
 
     /// Compensate a receive saga by removing pending proofs.
@@ -380,6 +389,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pending_receive_without_inputs_is_not_marked_paid() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let saga_id = uuid::Uuid::new_v4();
+
+        let saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Receive(ReceiveSagaState::SwapRequested),
+            Amount::from(100),
+            mint_url.clone(),
+            CurrencyUnit::Sat,
+            OperationData::Receive(ReceiveOperationData {
+                token: Some("test_token".to_string()),
+                counter_start: Some(0),
+                counter_end: Some(1),
+                amount: Some(Amount::from(100)),
+                blinded_messages: Some(vec![]),
+            }),
+        );
+        db.add_saga(saga).await.unwrap();
+        db.add_transaction(Transaction {
+            mint_url,
+            direction: TransactionDirection::Incoming,
+            amount: Amount::from(100),
+            fee: Amount::ZERO,
+            unit: CurrencyUnit::Sat,
+            ys: vec![],
+            timestamp: 0,
+            memo: None,
+            metadata: HashMap::new(),
+            quote_id: None,
+            payment_request: None,
+            payment_proof: None,
+            payment_method: None,
+            saga_id: Some(saga_id),
+            status: TransactionStatus::Pending,
+        })
+        .await
+        .unwrap();
+
+        let wallet =
+            create_test_wallet_with_mock(db.clone(), Arc::new(MockMintConnector::new())).await;
+        let action = wallet
+            .resume_receive_saga(&db.get_saga(&saga_id).await.unwrap().unwrap())
+            .await
+            .expect("uncertain saga should be retained");
+
+        assert_eq!(action, RecoveryAction::Skipped);
+        assert!(db.get_saga(&saga_id).await.unwrap().is_some());
+        let transactions = db.list_transactions(None, None, None).await.unwrap();
+        assert_eq!(transactions.len(), 1);
+        assert_eq!(transactions[0].status, TransactionStatus::Pending);
+    }
+
+    #[tokio::test]
     async fn test_recover_receive_swap_requested_replay_succeeds() {
         // Mock: post_swap succeeds → recovered
         let db = create_test_db().await;
@@ -445,8 +509,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_recover_receive_swap_requested_proofs_spent() {
-        // Mock: check_state returns Spent, restore succeeds → recovered
+    async fn test_recover_receive_preserves_spent_inputs_without_recovery_parameters() {
         let db = create_test_db().await;
         let mint_url = test_mint_url();
         let keyset_id = test_keyset_id();
@@ -475,8 +538,7 @@ mod tests {
         );
         db.add_saga(saga).await.unwrap();
 
-        // Mock: check_state returns Spent (swap happened at mint)
-        // and restore returns new proofs
+        // Spent inputs alone cannot prove that outputs were recovered.
         let mock_client = Arc::new(MockMintConnector::new());
         mock_client.set_check_state_response(Ok(CheckStateResponse {
             states: vec![ProofState {
@@ -495,22 +557,20 @@ mod tests {
             .resume_receive_saga(&db.get_saga(&saga_id).await.unwrap().unwrap())
             .await;
 
-        // Should recover via restore
+        // Missing output messages prevent recovery; keep the operation pending.
         assert!(result.is_ok());
         let recovery_action = result.unwrap();
-        assert_eq!(recovery_action, RecoveryAction::Recovered);
+        assert_eq!(recovery_action, RecoveryAction::Skipped);
 
-        // Saga should be deleted
-        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+        assert!(db.get_saga(&saga_id).await.unwrap().is_some());
 
-        // Proof marked spent/removed
         let proofs = db.get_proofs(None, None, None, None).await.unwrap();
-        assert!(proofs.is_empty());
+        assert_eq!(proofs.len(), 1);
         let reserved = db.get_reserved_proofs(&saga_id).await.unwrap();
-        assert!(reserved.is_empty());
+        assert_eq!(reserved.len(), 1);
 
         let transactions = db.list_transactions(None, None, None).await.unwrap();
         assert_eq!(transactions.len(), 1);
-        assert_eq!(transactions[0].status, TransactionStatus::Completed);
+        assert_eq!(transactions[0].status, TransactionStatus::Pending);
     }
 }

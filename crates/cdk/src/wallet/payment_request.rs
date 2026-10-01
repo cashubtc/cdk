@@ -13,20 +13,16 @@ use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use cdk_common::{
     Amount, HttpClient, PaymentRequest, PaymentRequestPayload, SupportedMethod, TransportType,
 };
-#[cfg(feature = "nostr")]
+#[cfg(all(feature = "nostr", test))]
 use futures::StreamExt;
 #[cfg(feature = "nostr")]
 use nostr::prelude::nip19::Nip19Profile;
 #[cfg(all(feature = "nostr", test))]
 use nostr::prelude::EventId;
-#[cfg(all(feature = "nostr", target_arch = "wasm32"))]
-use nostr::prelude::{Filter, Kind, UnwrappedGift};
 #[cfg(feature = "nostr")]
 use nostr::prelude::{
     FinalizeEvent, FromBech32, Keys, PrivateDirectMessageBuilder, PublicKey, RelayUrl, ToBech32,
 };
-#[cfg(all(feature = "nostr", target_arch = "wasm32"))]
-use nostr_sdk::prelude::ClientNotification;
 #[cfg(feature = "nostr")]
 use nostr_sdk::prelude::{
     Client as NostrClient, RelayCapabilities, SendEventOutput, SignerAuthenticator,
@@ -39,8 +35,10 @@ use crate::nuts::nut05::MeltMethodSettings;
 use crate::nuts::nut10::{Conditions, SpendingConditions};
 use crate::nuts::nut11::SigFlag;
 use crate::nuts::nut18::Nut10SecretRequest;
-use crate::nuts::{CurrencyUnit, Nut10Secret, PaymentMethod, Transport};
 #[cfg(feature = "nostr")]
+use crate::nuts::ProofsMethods;
+use crate::nuts::{CurrencyUnit, Nut10Secret, PaymentMethod, Transport};
+#[cfg(all(feature = "nostr", test))]
 use crate::wallet::ReceiveOptions;
 use crate::wallet::{SendOptions, WalletRepository};
 use crate::Wallet;
@@ -498,6 +496,479 @@ mod tests {
             .build()
             .await
             .expect("repository")
+    }
+
+    #[cfg(feature = "nostr")]
+    async fn nostr_request_and_payload() -> (NostrWaitInfo, PaymentRequestPayload) {
+        use crate::wallet::test_utils::{test_keyset_id, test_mint_url, test_proof};
+
+        let (request, info) = test_repository()
+            .await
+            .create_request(CreateRequestParams {
+                amount: Some(64),
+                transport: "nostr".to_string(),
+                nostr_relays: Some(vec!["wss://relay.example".to_string()]),
+                mints: Some(vec![test_mint_url().to_string()]),
+                ..Default::default()
+            })
+            .await
+            .expect("request");
+        let payload = PaymentRequestPayload {
+            id: request.payment_id.clone(),
+            memo: None,
+            mint: test_mint_url(),
+            unit: CurrencyUnit::Sat,
+            proofs: vec![test_proof(test_keyset_id(), 64)],
+        };
+        (info.expect("Nostr wait info"), payload)
+    }
+
+    #[cfg(feature = "nostr")]
+    #[tokio::test]
+    async fn nostr_wait_info_captures_request_and_creation_time_trust() {
+        use crate::wallet::test_utils::test_mint_url;
+        let repo = test_repository().await;
+        repo.create_wallet(test_mint_url(), CurrencyUnit::Sat, None)
+            .await
+            .unwrap();
+        let (request, info) = repo
+            .create_request(CreateRequestParams {
+                amount: Some(64),
+                transport: "nostr".to_owned(),
+                nostr_relays: Some(vec!["wss://relay.example".to_owned()]),
+                mint_preferred: Some(true),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let info = info.unwrap();
+        assert_eq!(info.request, request);
+        assert_eq!(info.trusted_mints, vec![test_mint_url()]);
+        assert_eq!(request.mints, info.trusted_mints);
+        let later_mint = MintUrl::from_str("https://later.example").unwrap();
+        repo.create_wallet(later_mint.clone(), CurrencyUnit::Sat, None)
+            .await
+            .unwrap();
+        let (_, mut payload) = nostr_request_and_payload().await;
+        payload.id = request.payment_id;
+        payload.mint = later_mint;
+        assert!(matches!(
+            repo.receive_nostr_payment(&info, payload).await,
+            Err(Error::InvalidPaymentRequest)
+        ));
+    }
+
+    #[cfg(feature = "nostr")]
+    #[tokio::test]
+    async fn nostr_payment_rejects_mismatches_before_creating_wallets() {
+        let (info, payload) = nostr_request_and_payload().await;
+        assert!(info.request.payment_id.is_some());
+        info.validate_payload(&payload).expect("matching payment");
+        let mut invalid = Vec::new();
+        let mut wrong = payload.clone();
+        wrong.id = Some("unrelated-request".to_string());
+        invalid.push(wrong);
+        let mut wrong = payload.clone();
+        wrong.id = None;
+        invalid.push(wrong);
+        let mut wrong = payload.clone();
+        wrong.unit = CurrencyUnit::Msat;
+        invalid.push(wrong);
+        let mut wrong = payload.clone();
+        wrong.proofs[0].amount = Amount::from(1);
+        invalid.push(wrong);
+        let mut wrong = payload.clone();
+        wrong.proofs.clear();
+        invalid.push(wrong);
+        let mut wrong = payload.clone();
+        wrong.mint = MintUrl::from_str("https://attacker.example").expect("mint");
+        invalid.push(wrong.clone());
+        // Open or preferred protocol policies do not grant local mint trust.
+        let mut open = info.clone();
+        open.request.mints.clear();
+        assert!(open.validate_payload(&wrong).is_err());
+        open.request.mint_preferred = Some(true);
+        assert!(open.validate_payload(&wrong).is_err());
+
+        let repository = test_repository().await;
+        repository
+            .persist_nostr_request(&info)
+            .await
+            .expect("save request");
+        for payload in invalid {
+            assert!(matches!(
+                repository.receive_nostr_payment(&info, payload).await,
+                Err(Error::InvalidPaymentRequest)
+            ));
+        }
+        assert!(repository.get_wallets().await.is_empty());
+        let mut overpaid = payload;
+        overpaid.proofs[0].amount = Amount::from(128);
+        info.validate_payload(&overpaid)
+            .expect("overpayment allowed");
+    }
+
+    #[cfg(feature = "nostr")]
+    #[tokio::test]
+    async fn nostr_payment_enforces_requested_locks_on_every_proof() {
+        let (mut info, mut payload) = nostr_request_and_payload().await;
+        let pubkeys = (0..3)
+            .map(|_| crate::nuts::SecretKey::generate().public_key().to_hex())
+            .collect();
+        let params = CreateRequestParams {
+            pubkeys: Some(pubkeys),
+            num_sigs: 2,
+            ..Default::default()
+        };
+        let conditions = test_repository()
+            .await
+            .get_pr_spending_conditions(&params)
+            .expect("conditions")
+            .expect("P2PK");
+        info.request.nut10 = Some(Nut10SecretRequest::try_from(conditions).expect("request lock"));
+        assert!(info.validate_payload(&payload).is_err(), "unlocked proof");
+
+        // Use the same conversion as the payer, including fresh nonces and tag ordering.
+        let conditions =
+            SpendingConditions::try_from(Nut10Secret::from(info.request.nut10.clone().unwrap()))
+                .expect("payer conditions");
+        payload.proofs[0].secret = conditions.try_into().expect("payer secret");
+        info.validate_payload(&payload).expect("matching lock");
+        let mut unlocked = payload.proofs[0].clone();
+        unlocked.secret = crate::secret::Secret::generate();
+        payload.proofs.push(unlocked);
+        assert!(
+            info.validate_payload(&payload).is_err(),
+            "mixed locked and unlocked proofs"
+        );
+        payload.proofs.pop();
+        info.request.nut10.as_mut().unwrap().data =
+            crate::nuts::SecretKey::generate().public_key().to_hex();
+        assert!(info.validate_payload(&payload).is_err(), "wrong lock key");
+
+        let hash = "00".repeat(32);
+        let lock = Nut10SecretRequest::new(
+            crate::nuts::nut10::Kind::HTLC,
+            hash,
+            None::<Vec<Vec<String>>>,
+        );
+        info.request.nut10 = Some(lock.clone());
+        assert!(
+            info.validate_payload(&payload).is_err(),
+            "P2PK instead of HTLC"
+        );
+        payload.proofs[0].secret = Nut10Secret::from(lock).try_into().expect("HTLC secret");
+        info.validate_payload(&payload).expect("matching HTLC");
+        info.request.nut10.as_mut().unwrap().data = "11".repeat(32);
+        assert!(info.validate_payload(&payload).is_err(), "wrong HTLC hash");
+    }
+
+    #[cfg(feature = "nostr")]
+    #[tokio::test]
+    async fn nostr_payment_rejects_underpayment_after_fees_before_swap() {
+        use crate::wallet::test_utils::MockMintConnector;
+        use crate::wallet::WalletConfig;
+
+        let (info, payload) = nostr_request_and_payload().await;
+        let repository = test_repository().await;
+        repository
+            .persist_nostr_request(&info)
+            .await
+            .expect("save request");
+        let connector = Arc::new(MockMintConnector::new());
+        repository
+            .create_wallet(
+                payload.mint.clone(),
+                payload.unit.clone(),
+                Some(WalletConfig {
+                    mint_connector: Some(connector.clone()),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .expect("wallet");
+        assert!(matches!(
+            repository.receive_nostr_payment(&info, payload).await,
+            Err(Error::InvalidPaymentRequest)
+        ));
+        assert!(connector.captured_swap_requests().is_empty());
+    }
+
+    #[cfg(feature = "nostr")]
+    #[tokio::test]
+    async fn nostr_payment_receives_matching_payment_after_rejecting_wrong_id() {
+        use crate::nuts::{BlindSignature, SwapResponse};
+        use crate::wallet::test_utils::{test_keyset_id, MockMintConnector};
+        use crate::wallet::WalletConfig;
+
+        let (mut info, mut payload) = nostr_request_and_payload().await;
+        info.request.amount = Some(Amount::from(1));
+        payload.proofs[0].amount = Amount::from(1);
+        let connector = Arc::new(MockMintConnector::new());
+        for keyset in connector.keysets.lock().unwrap().iter_mut() {
+            keyset.input_fee_ppk = 0;
+        }
+        connector.set_post_swap_response(Ok(SwapResponse {
+            signatures: vec![BlindSignature {
+                amount: Amount::from(1),
+                keyset_id: test_keyset_id(),
+                c: crate::nuts::SecretKey::generate().public_key(),
+                dleq: None,
+            }],
+        }));
+        let repository = test_repository().await;
+        repository
+            .persist_nostr_request(&info)
+            .await
+            .expect("save request");
+        let wallet = repository
+            .create_wallet(
+                payload.mint.clone(),
+                payload.unit.clone(),
+                Some(WalletConfig {
+                    mint_connector: Some(connector.clone()),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .expect("wallet");
+        let mut wrong = payload.clone();
+        wrong.id = None;
+        assert!(repository
+            .receive_nostr_payment(&info, wrong)
+            .await
+            .is_err());
+        assert!(connector.captured_swap_requests().is_empty());
+        assert_eq!(
+            repository
+                .receive_nostr_payment(&info, payload)
+                .await
+                .expect("receive payment"),
+            Amount::from(1)
+        );
+        assert_eq!(
+            wallet.total_balance().await.expect("balance"),
+            Amount::from(1)
+        );
+        assert_eq!(connector.captured_swap_requests().len(), 1);
+    }
+
+    #[cfg(feature = "nostr")]
+    #[tokio::test]
+    async fn nostr_request_defaults_to_configured_mints_for_requested_unit() {
+        use crate::wallet::test_utils::{test_mint_url, MockMintConnector};
+        use crate::wallet::WalletConfig;
+
+        let repository = test_repository().await;
+        let params = CreateRequestParams {
+            transport: "nostr".to_string(),
+            nostr_relays: Some(vec!["wss://relay.example".to_string()]),
+            ..Default::default()
+        };
+        assert!(matches!(
+            repository.create_request(params.clone()).await,
+            Err(Error::InvalidPaymentRequest)
+        ));
+        repository
+            .create_wallet(
+                test_mint_url(),
+                CurrencyUnit::Sat,
+                Some(WalletConfig {
+                    mint_connector: Some(Arc::new(MockMintConnector::new())),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .expect("wallet");
+        let (request, info) = repository
+            .create_request(params.clone())
+            .await
+            .expect("request");
+        assert_eq!(request.mints, vec![test_mint_url()]);
+        assert_eq!(info.unwrap().trusted_mints, request.mints);
+        assert!(matches!(
+            repository
+                .create_request(CreateRequestParams {
+                    unit: "msat".to_string(),
+                    ..params
+                })
+                .await,
+            Err(Error::InvalidPaymentRequest)
+        ));
+    }
+
+    #[cfg(feature = "nostr")]
+    #[tokio::test]
+    async fn nostr_payment_checks_method_fee_and_support_before_swap() {
+        use crate::nuts::{BlindSignature, SwapResponse};
+        use crate::wallet::test_utils::{test_keyset_id, MockMintConnector};
+        use crate::wallet::WalletConfig;
+
+        for (listed, method, method_fee, accepted) in [
+            (false, "bolt11", 1, false),
+            (true, "bolt11", 100, true),
+            (true, "unsupported", 0, false),
+        ] {
+            let (mut validation, mut payload) = nostr_request_and_payload().await;
+            validation.request.amount = Some(Amount::from(1));
+            validation.request.supported_methods =
+                vec![SupportedMethod::with_fee(method, method_fee)];
+            validation.request.mint_preferred = Some(true);
+            if !listed {
+                validation.request.mints.clear();
+            }
+            payload.proofs[0].amount = Amount::from(1);
+            let repository = test_repository().await;
+            let connector = Arc::new(MockMintConnector::new());
+            for keyset in connector.keysets.lock().unwrap().iter_mut() {
+                keyset.input_fee_ppk = 0;
+            }
+            connector.set_post_swap_response(Ok(SwapResponse {
+                signatures: vec![BlindSignature {
+                    amount: Amount::from(1),
+                    keyset_id: test_keyset_id(),
+                    c: crate::nuts::SecretKey::generate().public_key(),
+                    dleq: None,
+                }],
+            }));
+            repository
+                .create_wallet(
+                    payload.mint.clone(),
+                    payload.unit.clone(),
+                    Some(WalletConfig {
+                        mint_connector: Some(connector.clone()),
+                        ..Default::default()
+                    }),
+                )
+                .await
+                .unwrap();
+            repository.persist_nostr_request(&validation).await.unwrap();
+            let result = repository.receive_nostr_payment(&validation, payload).await;
+            assert_eq!(result.is_ok(), accepted, "{listed} {method} {method_fee}");
+            assert_eq!(
+                connector.captured_swap_requests().len(),
+                usize::from(accepted)
+            );
+        }
+    }
+
+    #[cfg(feature = "nostr")]
+    #[tokio::test]
+    async fn nostr_listener_skips_fee_short_forged_and_spent_payments() {
+        use crate::nuts::{BlindSignature, CheckStateResponse, ProofState, State, SwapResponse};
+        use crate::wallet::test_utils::{test_keyset_id, MockMintConnector};
+        use crate::wallet::WalletConfig;
+
+        let (mut validation, payload) = nostr_request_and_payload().await;
+        validation.request.amount = Some(Amount::from(1));
+        let repo = test_repository().await;
+        let connector = Arc::new(MockMintConnector::new());
+        for keyset in connector.keysets.lock().unwrap().iter_mut() {
+            keyset.input_fee_ppk = 1000;
+        }
+        let wallet = repo
+            .create_wallet(
+                payload.mint.clone(),
+                payload.unit.clone(),
+                Some(WalletConfig {
+                    mint_connector: Some(connector.clone()),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+        // Each mock response is installed when the next notification is polled,
+        // after the preceding payment has been processed by the actual wait loop.
+        let stream = futures::stream::iter(0..4).map(|case| {
+            let mut payment = payload.clone();
+            payment.proofs[0].amount = Amount::from(if case == 0 { 1 } else { 2 });
+            connector.set_check_state_response(Ok(CheckStateResponse {
+                states: vec![ProofState {
+                    y: payment.proofs[0].y().unwrap(),
+                    state: if case == 2 {
+                        State::Spent
+                    } else {
+                        State::Unspent
+                    },
+                    witness: None,
+                }],
+            }));
+            connector.set_post_swap_response(match case {
+                1 => Err(Error::DHKE(crate::dhke::Error::TokenNotVerified)),
+                _ => Ok(SwapResponse {
+                    signatures: vec![BlindSignature {
+                        amount: Amount::from(1),
+                        keyset_id: test_keyset_id(),
+                        c: crate::nuts::SecretKey::generate().public_key(),
+                        dleq: None,
+                    }],
+                }),
+            });
+            Ok(payment)
+        });
+        assert_eq!(
+            repo.receive_nostr_payment_stream(&validation.validation(), stream)
+                .await
+                .unwrap(),
+            Amount::from(1)
+        );
+        assert_eq!(wallet.total_balance().await.unwrap(), Amount::from(1));
+        assert_eq!(connector.captured_swap_requests().len(), 2);
+    }
+
+    #[cfg(feature = "nostr")]
+    #[tokio::test]
+    async fn nostr_listener_returns_operational_and_indeterminate_failures() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use crate::nuts::{CheckStateResponse, ProofState, State};
+        use crate::wallet::test_utils::MockMintConnector;
+        use crate::wallet::WalletConfig;
+
+        for error in [
+            Error::Timeout,
+            Error::ClearAuthRequired,
+            Error::TokenAlreadySpent,
+            Error::CouldNotVerifyDleq,
+            Error::InvalidMintResponse("missing outputs".to_owned()),
+        ] {
+            let expected = error.to_string();
+            let (validation, payload) = nostr_request_and_payload().await;
+            let repo = test_repository().await;
+            let connector = Arc::new(MockMintConnector::new());
+            for keyset in connector.keysets.lock().unwrap().iter_mut() {
+                keyset.input_fee_ppk = 0;
+            }
+            repo.create_wallet(
+                payload.mint.clone(),
+                payload.unit.clone(),
+                Some(WalletConfig {
+                    mint_connector: Some(connector.clone()),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+            connector.set_check_state_response(Ok(CheckStateResponse {
+                states: vec![ProofState {
+                    y: payload.proofs[0].y().unwrap(),
+                    state: State::Unspent,
+                    witness: None,
+                }],
+            }));
+            connector.set_post_swap_response(Err(error));
+            let polled = AtomicUsize::new(0);
+            let stream = futures::stream::iter([payload.clone(), payload]).map(|payment| {
+                polled.fetch_add(1, Ordering::SeqCst);
+                Ok(payment)
+            });
+            let result = repo
+                .receive_nostr_payment_stream(&validation.validation(), stream)
+                .await;
+            assert_eq!(result.unwrap_err().to_string(), expected);
+            assert_eq!(polled.load(Ordering::SeqCst), 1);
+            assert_eq!(connector.captured_swap_requests().len(), 1);
+        }
     }
 
     /// A request advertising the same key twice would build a lock the payer
@@ -1080,7 +1551,7 @@ fn payment_request_uses_unlisted_mint(
     !payment_request.mints.is_empty() && !payment_request.mints.contains(mint_url)
 }
 
-async fn payment_request_amount_for_wallet(
+pub(super) async fn payment_request_amount_for_wallet(
     amount: Amount,
     payment_request: &PaymentRequest,
     wallet: &Wallet,
@@ -1238,7 +1709,9 @@ pub struct CreateRequestParams {
     pub http_url: Option<String>, // when transport == http
     /// List of Nostr relay URLs to include in the nprofile (used if `transport == nostr`)
     pub nostr_relays: Option<Vec<String>>, // when transport == nostr
-    /// Optional list of mint URLs the receiver accepts or prefers; `None` emits no mint list
+    /// Optional list of mint URLs the receiver accepts or prefers.
+    /// For Nostr, an empty list defaults to locally configured mints for the unit;
+    /// other transports emit no mint list.
     pub mints: Option<Vec<String>>,
     /// Whether the mint list is preferred rather than required
     pub mint_preferred: Option<bool>,
@@ -1300,10 +1773,91 @@ pub struct NostrWaitInfo {
     pub relays: Vec<String>,
     /// The recipient public key to subscribe to for incoming events
     pub pubkey: PublicKey,
-    /// Mint URLs accepted or preferred by the original payment request
-    pub mints: Vec<MintUrl>,
-    /// Whether the original request's mint list is preferred instead of strict
-    pub mint_preferred: Option<bool>,
+    /// Original request, including the constraints required for successful reception.
+    pub request: PaymentRequest,
+    /// Mints explicitly listed or configured locally when the request was created.
+    /// A preferred or empty request mint list never grants trust to an unknown mint.
+    pub trusted_mints: Vec<MintUrl>,
+}
+
+#[cfg(feature = "nostr")]
+#[derive(Debug, Clone)]
+pub(super) struct NostrRequestValidation {
+    request: PaymentRequest,
+    trusted_mints: Vec<MintUrl>,
+}
+
+#[cfg(feature = "nostr")]
+impl NostrRequestValidation {
+    pub(super) fn validate_amount(&self, amount: Amount) -> Result<(), Error> {
+        if amount == Amount::ZERO
+            || self
+                .request
+                .amount
+                .is_some_and(|expected| amount < expected)
+        {
+            return Err(Error::InvalidPaymentRequest);
+        }
+        Ok(())
+    }
+
+    pub(super) fn validate_payload(&self, payload: &PaymentRequestPayload) -> Result<(), Error> {
+        if !self.trusted_mints.contains(&payload.mint)
+            || !payment_request_mint_policy_accepts_mint(
+                &self.request.mints,
+                self.request.mint_preferred,
+                &payload.mint,
+            )
+            || self.request.unit.as_ref() != Some(&payload.unit)
+            || self.request.payment_id != payload.id
+        {
+            return Err(Error::InvalidPaymentRequest);
+        }
+        self.validate_amount(payload.proofs.total_amount()?)?;
+        if let Some(expected) = &self.request.nut10 {
+            for proof in &payload.proofs {
+                let secret = Nut10Secret::try_from(proof.secret.clone())
+                    .map_err(|_| Error::InvalidPaymentRequest)?;
+                let mut actual = Nut10SecretRequest::from(secret);
+                let mut expected = expected.clone();
+                // Tag ordering is not significant; nonce is deliberately excluded.
+                for tags in [&mut actual.tags, &mut expected.tags] {
+                    let tags = tags.get_or_insert_default();
+                    for tag in tags.iter_mut() {
+                        if tag
+                            .first()
+                            .is_some_and(|name| name == "pubkeys" || name == "refund")
+                        {
+                            tag[1..].sort();
+                        }
+                    }
+                    tags.sort();
+                }
+                if actual != expected {
+                    return Err(Error::InvalidPaymentRequest);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "nostr")]
+impl NostrWaitInfo {
+    pub(super) fn validation(&self) -> NostrRequestValidation {
+        NostrRequestValidation {
+            request: self.request.clone(),
+            trusted_mints: self.trusted_mints.clone(),
+        }
+    }
+
+    pub(super) fn validate_amount(&self, amount: Amount) -> Result<(), Error> {
+        self.validation().validate_amount(amount)
+    }
+
+    pub(super) fn validate_payload(&self, payload: &PaymentRequestPayload) -> Result<(), Error> {
+        self.validation().validate_payload(payload)
+    }
 }
 
 impl WalletRepository {
@@ -1563,7 +2117,8 @@ impl WalletRepository {
     /// - Optionally embeds a transport; Nostr is preferred to reduce IP exposure for the payer.
     ///
     /// Behavior summary (focus on rationale rather than steps):
-    /// - Uses `unit` to discover mints with balances as a hint to senders (helps route payments without leaking more data than necessary).
+    /// - Defaults Nostr requests to configured mints for `unit`; automatic reception
+    ///   only trusts configured or explicitly listed mints, even with `mint_preferred`.
     /// - Translates P2PK/multisig and HTLC inputs (pubkeys/num_sigs/hash/preimage) into a NUT-10 secret request so the receiver can enforce spending constraints.
     /// - For `transport == "nostr"`, generates ephemeral keys and an nprofile pointing at the chosen relays; returns `NostrWaitInfo` so callers can wait for the incoming payment without coupling construction and reception logic.
     /// - For `transport == "http"`, attaches the provided endpoint; for `none` or unknown, omits transports to let the caller deliver out-of-band.
@@ -1574,83 +2129,94 @@ impl WalletRepository {
     ///
     /// Errors when:
     /// - `unit` cannot be parsed, relay URLs are invalid, or P2PK/HTLC parameters are malformed.
+    /// - Nostr reception has neither explicitly listed nor locally configured mints for the unit.
     ///
     /// Notes:
     /// - Sets `single_use = true` to discourage replays.
-    /// - Ephemeral Nostr keys are intentional; keep `NostrWaitInfo` only as long as needed for reception.
+    /// - Persists Nostr keys, request constraints, and mint trust in the repository KV
+    ///   before returning. After restarting, use the payment ID with
+    ///   `check_nostr_request` or `wait_for_nostr_request`.
+    /// - Persistence failures are returned before the public request can be shared.
     #[cfg(feature = "nostr")]
     pub async fn create_request(
         &self,
         params: CreateRequestParams,
     ) -> Result<(PaymentRequest, Option<NostrWaitInfo>), Error> {
-        // Parse the explicitly configured mint policy. No list means any mint.
-        let mints = parse_payment_request_mints(params.mints.as_deref())?;
-
-        // Transports
+        let unit = CurrencyUnit::from_str(&params.unit)?;
         let transport_type = params.transport.to_lowercase();
-        let (transports, nostr_info): (Vec<Transport>, Option<NostrWaitInfo>) =
-            match transport_type.as_str() {
-                "nostr" => {
-                    let keys = Keys::generate();
-                    let relays = if let Some(custom_relays) = &params.nostr_relays {
-                        if !custom_relays.is_empty() {
-                            custom_relays.clone()
-                        } else {
-                            return Err(Error::Custom("No relays provided".to_string()));
-                        }
+        let mut mints = parse_payment_request_mints(params.mints.as_deref())?;
+        let mut trusted_mints = mints.clone();
+        if transport_type == "nostr" {
+            for wallet in self.get_wallets().await {
+                if wallet.unit == unit && !trusted_mints.contains(&wallet.mint_url) {
+                    trusted_mints.push(wallet.mint_url.clone());
+                }
+            }
+            if trusted_mints.is_empty() {
+                return Err(Error::InvalidPaymentRequest);
+            }
+            // Advertise configured mints when no explicit list was supplied.
+            if mints.is_empty() {
+                mints = trusted_mints.clone();
+            }
+        }
+
+        let (transports, nostr_transport) = match transport_type.as_str() {
+            "nostr" => {
+                let keys = Keys::generate();
+                let relays = if let Some(custom_relays) = &params.nostr_relays {
+                    if !custom_relays.is_empty() {
+                        custom_relays.clone()
                     } else {
                         return Err(Error::Custom("No relays provided".to_string()));
-                    };
-
-                    // Parse relay URLs for nprofile
-                    let relay_urls = relays
-                        .iter()
-                        .map(|r| RelayUrl::parse(r))
-                        .collect::<Result<Vec<_>, _>>()
-                        .map_err(|e| Error::Custom(format!("Couldn't parse relays: {e}")))?;
-
-                    let nprofile = Nip19Profile::new(keys.public_key(), relay_urls);
-                    let nostr_transport = Transport {
-                        _type: TransportType::Nostr,
-                        target: nprofile.to_bech32().map_err(|e| {
-                            Error::Custom(format!("Couldn't convert nprofile to bech32: {e}"))
-                        })?,
-                        tags: vec![vec!["n".to_string(), "17".to_string()]],
-                    };
-
-                    (
-                        vec![nostr_transport],
-                        Some(NostrWaitInfo {
-                            keys,
-                            relays,
-                            pubkey: nprofile.public_key,
-                            mints: mints.clone(),
-                            mint_preferred: params.mint_preferred,
-                        }),
-                    )
-                }
-                "http" => {
-                    if let Some(url) = &params.http_url {
-                        let http_transport = Transport {
-                            _type: TransportType::HttpPost,
-                            target: url.clone(),
-                            tags: vec![],
-                        };
-                        (vec![http_transport], None)
-                    } else {
-                        return Err(Error::Custom(
-                            "HTTP transport requires an HTTP URL".to_string(),
-                        ));
                     }
+                } else {
+                    return Err(Error::Custom("No relays provided".to_string()));
+                };
+
+                // Parse relay URLs for nprofile
+                let relay_urls = relays
+                    .iter()
+                    .map(|r| RelayUrl::parse(r))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| Error::Custom(format!("Couldn't parse relays: {e}")))?;
+
+                let nprofile = Nip19Profile::new(keys.public_key(), relay_urls);
+                let nostr_transport = Transport {
+                    _type: TransportType::Nostr,
+                    target: nprofile.to_bech32().map_err(|e| {
+                        Error::Custom(format!("Couldn't convert nprofile to bech32: {e}"))
+                    })?,
+                    tags: vec![vec!["n".to_string(), "17".to_string()]],
+                };
+
+                (
+                    vec![nostr_transport],
+                    Some((keys, relays, nprofile.public_key)),
+                )
+            }
+            "http" => {
+                if let Some(url) = &params.http_url {
+                    let http_transport = Transport {
+                        _type: TransportType::HttpPost,
+                        target: url.clone(),
+                        tags: vec![],
+                    };
+                    (vec![http_transport], None)
+                } else {
+                    return Err(Error::Custom(
+                        "HTTP transport requires an HTTP URL".to_string(),
+                    ));
                 }
-                "none" => (vec![], None),
-                _ => {
-                    return Err(Error::Custom(format!(
-                        "Unsupported payment request transport `{}`",
-                        params.transport
-                    )))
-                }
-            };
+            }
+            "none" => (vec![], None),
+            _ => {
+                return Err(Error::Custom(format!(
+                    "Unsupported payment request transport `{}`",
+                    params.transport
+                )))
+            }
+        };
 
         let nut10 = self
             .get_pr_spending_conditions(&params)?
@@ -1658,9 +2224,9 @@ impl WalletRepository {
             .transpose()?;
 
         let req = PaymentRequest {
-            payment_id: None,
+            payment_id: (transport_type == "nostr").then(|| uuid::Uuid::new_v4().to_string()),
             amount: params.amount.map(Amount::from),
-            unit: Some(CurrencyUnit::from_str(&params.unit)?),
+            unit: Some(unit),
             single_use: Some(true),
             mints,
             mint_preferred: params.mint_preferred,
@@ -1670,6 +2236,17 @@ impl WalletRepository {
             nut10,
         };
 
+        let nostr_info = nostr_transport.map(|(keys, relays, pubkey)| NostrWaitInfo {
+            keys,
+            relays,
+            pubkey,
+            request: req.clone(),
+            trusted_mints,
+        });
+
+        if let Some(info) = &nostr_info {
+            self.persist_nostr_request(info).await?;
+        }
         Ok((req, nostr_info))
     }
 
@@ -1745,160 +2322,185 @@ impl WalletRepository {
         Ok(req)
     }
 
-    /// Wait for a Nostr payment for the previously constructed PaymentRequest and receive it into the wallet.
-    #[cfg(all(feature = "nostr", not(target_arch = "wasm32")))]
-    pub async fn wait_for_nostr_payment(&self, info: NostrWaitInfo) -> Result<Amount> {
-        use crate::wallet::streams::nostr::NostrPaymentEventStream;
-
-        let NostrWaitInfo {
-            keys,
-            relays,
-            pubkey,
-            mints,
-            mint_preferred,
-        } = info;
-
-        let mut stream = NostrPaymentEventStream::new(keys, relays, pubkey);
-        let cancel = stream.cancel_token();
-
-        // Optional: you may expose cancel to caller, or use a timeout here.
-        // tokio::spawn(async move { tokio::time::sleep(Duration::from_secs(120)).await; cancel.cancel(); });
-
-        while let Some(item) = stream.next().await {
-            match item {
-                Ok(payload) => {
-                    if !payment_request_mint_policy_accepts_mint(
-                        &mints,
-                        mint_preferred,
-                        &payload.mint,
-                    ) {
-                        continue;
-                    }
-
-                    let token = crate::nuts::Token::new(
-                        payload.mint.clone(),
-                        payload.proofs,
-                        payload.memo,
-                        payload.unit.clone(),
-                    );
-
-                    // Get or create wallet for the token's mint
-                    let unit = payload.unit.clone();
-                    let wallet = match self.get_wallet(&payload.mint, &unit).await {
-                        Ok(w) => w,
-                        Err(_) => self.create_wallet(payload.mint.clone(), unit, None).await?,
-                    };
-
-                    // Receive using the individual wallet
-                    let token_str = token.to_string();
-                    let received = wallet
-                        .receive(&token_str, ReceiveOptions::default())
-                        .await?;
-
-                    // Stop after first successful receipt
-                    cancel.cancel();
-                    return Ok(received);
-                }
-                Err(_) => {
-                    // Keep listening on parse errors; if you prefer fail-fast, return the error
-                    continue;
-                }
-            }
+    #[cfg(feature = "nostr")]
+    async fn preflight_nostr_payment(
+        &self,
+        validation: &NostrRequestValidation,
+        payload: &PaymentRequestPayload,
+    ) -> Result<Wallet, Error> {
+        validation.validate_payload(payload)?;
+        let wallet = self
+            .get_or_create_wallet(payload.mint.clone(), payload.unit.clone(), None)
+            .await?;
+        if wallet
+            .localstore
+            .get_proofs_by_ys(payload.proofs.ys()?)
+            .await?
+            .iter()
+            .any(|proof| proof.used_by_operation.is_some())
+        {
+            return Err(Error::PaymentPending);
         }
-
-        // If stream ended without receiving a payment, return zero.
-        Ok(Amount::ZERO)
+        let required = payment_request_amount_for_wallet(
+            validation.request.amount.unwrap_or(Amount::ZERO),
+            &validation.request,
+            &wallet,
+            &payload.unit,
+        )
+        .await?;
+        let fee = wallet.get_proofs_fee(&payload.proofs).await?.total;
+        let net = payload
+            .proofs
+            .total_amount()?
+            .checked_sub(fee)
+            .ok_or(Error::InvalidPaymentRequest)?;
+        validation.validate_amount(net)?;
+        if net < required {
+            return Err(Error::InvalidPaymentRequest);
+        }
+        Ok(wallet)
     }
 
-    /// Wait for a Nostr payment for the previously constructed PaymentRequest and receive it into the wallet.
-    ///
-    /// wasm32 fallback: Streams are not available; we await the first matching notification and process it.
-    #[cfg(all(feature = "nostr", target_arch = "wasm32"))]
-    pub async fn wait_for_nostr_payment(&self, info: NostrWaitInfo) -> Result<Amount> {
-        let NostrWaitInfo {
-            keys,
-            relays,
-            pubkey,
-            mints,
-            mint_preferred,
-        } = info;
+    // None means this payload was definitively rejected, so keep listening.
+    // Errors mean infrastructure failure or a potentially committed swap.
+    #[cfg(feature = "nostr")]
+    pub(super) async fn preflight_nostr_stream_payload(
+        &self,
+        validation: &NostrRequestValidation,
+        payload: &PaymentRequestPayload,
+    ) -> Result<Option<Wallet>, Error> {
+        use std::collections::HashSet;
 
-        let client = NostrClient::builder()
-            .authenticator(SignerAuthenticator::new(keys.clone()))
-            .build();
+        use crate::nuts::{CheckStateRequest, State};
 
-        for r in &relays {
-            client
-                .add_relay(r.clone())
-                .capabilities(RelayCapabilities::READ)
-                .await
-                .map_err(|e| crate::error::Error::Custom(format!("Add relay {r}: {e}")))?;
+        let wallet = match self.preflight_nostr_payment(validation, payload).await {
+            Ok(wallet) => wallet,
+            Err(
+                Error::InvalidPaymentRequest
+                | Error::UnknownKeySet
+                | Error::KeysetUnknown(_)
+                | Error::AmountOverflow
+                | Error::UnsupportedUnit
+                | Error::UnsupportedPaymentMethod,
+            ) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let ys = payload.proofs.ys()?;
+        let mut expected: HashSet<_> = ys.iter().copied().collect();
+        if expected.len() != ys.len() {
+            return Ok(None);
+        }
+        // Query without mutating local proofs. The ordinary check_proofs_spent
+        // helper removes spent inputs, which would destroy recovery ownership.
+        let states = wallet
+            .client
+            .post_check_state(CheckStateRequest { ys })
+            .await?
+            .states;
+        if states.len() != expected.len() || !states.iter().all(|state| expected.remove(&state.y)) {
+            return Err(Error::InvalidMintResponse(
+                "proof state response does not match requested inputs".to_owned(),
+            ));
+        }
+        if states.iter().any(|state| state.state == State::Spent) {
+            return Ok(None);
+        }
+        if states.iter().any(|state| state.state != State::Unspent) {
+            return Err(Error::TokenPending);
         }
 
-        client.connect().await;
+        Ok(Some(wallet))
+    }
 
-        // Subscribe to events addressed to `pubkey`
-        let filter = Filter::new().pubkey(pubkey).kind(Kind::GiftWrap);
-        let mut notifications = client.notifications();
-        client
-            .subscribe(filter)
+    #[cfg(all(feature = "nostr", test))]
+    async fn receive_nostr_stream_payload(
+        &self,
+        validation: &NostrRequestValidation,
+        payload: PaymentRequestPayload,
+    ) -> Result<Option<Amount>, Error> {
+        let Some(wallet) = self
+            .preflight_nostr_stream_payload(validation, &payload)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let token =
+            crate::nuts::Token::new(payload.mint, payload.proofs, payload.memo, payload.unit);
+        match wallet
+            .receive(&token.to_string(), ReceiveOptions::default())
             .await
-            .map_err(|e| crate::error::Error::Custom(format!("Subscribe: {e}")))?;
+        {
+            Ok(amount) => Ok(Some(amount)),
+            // These errors identify invalid inputs (including local lock/DLEQ
+            // checks). Do not use is_definitive_failure here: authentication and
+            // HTTP failures can be operational, and bad output signatures can
+            // arrive after the mint has spent the inputs.
+            Err(
+                Error::SignatureMissingOrInvalid
+                | Error::DHKE(crate::dhke::Error::TokenNotVerified)
+                | Error::DuplicateInputs
+                | Error::P2PKConditionsNotMet(_)
+                | Error::InvalidSpendConditions(_)
+                | Error::NUT11(_)
+                | Error::NUT12(_)
+                | Error::NUT14(_),
+            ) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
 
-        // Await notifications until we successfully parse a payment payload and receive it
-        while let Some(notification) = notifications.next().await {
-            if let ClientNotification::Event { event, .. } = notification {
-                match UnwrappedGift::from_gift_wrap(&keys, &event) {
-                    Ok(unwrapped) => {
-                        let rumor = unwrapped.rumor;
-                        match serde_json::from_str::<PaymentRequestPayload>(&rumor.content) {
-                            Ok(payload) => {
-                                if !payment_request_mint_policy_accepts_mint(
-                                    &mints,
-                                    mint_preferred,
-                                    &payload.mint,
-                                ) {
-                                    continue;
-                                }
-
-                                let token = crate::nuts::Token::new(
-                                    payload.mint.clone(),
-                                    payload.proofs,
-                                    payload.memo,
-                                    payload.unit.clone(),
-                                );
-
-                                // Get or create wallet for the token's mint
-                                let unit = payload.unit.clone();
-                                let wallet = match self.get_wallet(&payload.mint, &unit).await {
-                                    Ok(w) => w,
-                                    Err(_) => {
-                                        self.create_wallet(payload.mint.clone(), unit, None).await?
-                                    }
-                                };
-
-                                // Receive using the individual wallet
-                                let token_str = token.to_string();
-                                let received = wallet
-                                    .receive(&token_str, ReceiveOptions::default())
-                                    .await?;
-
-                                return Ok(received);
-                            }
-                            Err(_) => {
-                                // Ignore malformed payloads and continue listening
-                                continue;
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        // Ignore unwrap errors and continue listening
-                        continue;
-                    }
+    #[cfg(all(feature = "nostr", test))]
+    async fn receive_nostr_payment_stream<S>(
+        &self,
+        validation: &NostrRequestValidation,
+        mut stream: S,
+    ) -> Result<Amount, Error>
+    where
+        S: futures::Stream<Item = Result<PaymentRequestPayload, Error>> + Unpin,
+    {
+        while let Some(item) = stream.next().await {
+            if let Ok(payload) = item {
+                if let Some(amount) = self
+                    .receive_nostr_stream_payload(validation, payload)
+                    .await?
+                {
+                    return Ok(amount);
                 }
             }
         }
+        Err(Error::PaymentPending)
+    }
 
-        Ok(Amount::ZERO)
+    /// Validate and redeem a payload for a persisted Nostr request.
+    ///
+    /// The saved request is authoritative. Completed requests return the original
+    /// received amount without redeeming another token.
+    #[cfg(feature = "nostr")]
+    #[instrument(skip_all)]
+    pub async fn receive_nostr_payment(
+        &self,
+        info: &NostrWaitInfo,
+        payload: PaymentRequestPayload,
+    ) -> Result<Amount, Error> {
+        let id = info
+            .request
+            .payment_id
+            .as_deref()
+            .ok_or(Error::InvalidPaymentRequest)?;
+        self.receive_nostr_request(id, payload).await
+    }
+
+    /// Resume listening for a previously persisted Nostr request.
+    ///
+    /// Callers may instead use `wait_for_nostr_request` with the payment ID after
+    /// restarting. Dropping this future stops listening without cancelling the request.
+    #[cfg(feature = "nostr")]
+    pub async fn wait_for_nostr_payment(&self, info: NostrWaitInfo) -> Result<Amount> {
+        let id = info
+            .request
+            .payment_id
+            .as_deref()
+            .ok_or(Error::InvalidPaymentRequest)?;
+        Ok(self.wait_for_nostr_request(id).await?)
     }
 }

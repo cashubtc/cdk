@@ -231,6 +231,13 @@ cdk-cli melt --mpp --invoice <bolt11_invoice> \
 
 ### Payment Requests
 
+Nostr reception always validates the original request's ID, unit, spending
+conditions, mint policy, and amount after fees. Requests use explicitly listed
+mints (`--mints`) or configured mints for the requested unit. Requests are saved
+automatically; use `check-requests` after restarting or
+`cancel-request <payment-id>` to cancel. Offline delivery depends on relay
+retention. Requests from the older CLI-only store must be recreated.
+
 ```bash
 # Create a payment request (interactive via Nostr)
 cdk-cli create-request

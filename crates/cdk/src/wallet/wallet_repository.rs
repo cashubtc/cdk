@@ -266,6 +266,8 @@ impl WalletRepositoryBuilder {
         let wallet = WalletRepository {
             rate_limiter,
             localstore,
+            #[cfg(feature = "nostr")]
+            nostr_request_lock: Arc::new(tokio::sync::Mutex::new(())),
             seed,
             wallets: Arc::new(RwLock::new(BTreeMap::new())),
             proxy_config: self.proxy_config,
@@ -344,7 +346,9 @@ fn validate_proxy_url(proxy_url: &url::Url) -> Result<(), Error> {
 #[derive(Clone)]
 pub struct WalletRepository {
     /// Storage backend
-    localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
+    pub(super) localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
+    #[cfg(feature = "nostr")]
+    pub(super) nostr_request_lock: Arc<tokio::sync::Mutex<()>>,
     seed: [u8; 64],
     /// Wallets indexed by (mint URL, currency unit)
     wallets: Arc<RwLock<BTreeMap<WalletKey, Wallet>>>,

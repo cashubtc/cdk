@@ -53,6 +53,16 @@ just ffi-dev-python
 >>> help(cdk_ffi.generate_mnemonic)  # Get help
 ```
 
+## Nostr Payment Requests
+
+`WalletRepository.create_request(params)` persists Nostr requests. With a durable
+`WalletStore`, reopen using the same database and seed, then use
+`list_nostr_requests()`, `check_nostr_request(id)`, or `wait_for_nostr_request(id)`
+to resume reception. Use `cancel_nostr_request(id)` to cancel a pending request.
+
+Use one repository or its clones per database. Offline delivery depends on relay
+retention. See the method documentation for validation and recovery details.
+
 ## Live Tests
 
 The live Python test in `tests/test_live_async_onchain_melt.py` covers
