@@ -170,6 +170,24 @@ pub fn proof_verify_dleq(
 }
 
 /// Sign a P2PK proof with a secret key, returning a new signed proof
+///
+/// This is a low-level helper: it signs the proof's secret with exactly the key
+/// you pass and appends the signature to the proof's witness. It does not look
+/// at the proof's spending conditions, so a successful call does not mean the
+/// proof is now spendable.
+///
+/// # P2BK (NUT-28) proofs
+///
+/// A proof that carries `p2pk_e` is locked to a blinded public key, so its
+/// spending key is derived from the receiver's key, the ephemeral key and the
+/// key's slot in the conditions. This helper does not do that derivation.
+/// Passing the receiver's base key here signs with the wrong key, and the
+/// signature will not verify against the blinded key. The caller must pass the
+/// already-derived signing key.
+///
+/// To receive P2BK proofs without deriving anything yourself, put the base
+/// key(s) in `ReceiveOptions.p2pk_signing_keys` and receive through the wallet,
+/// which derives the signing key per proof and signs for you.
 #[uniffi::export]
 pub fn proof_sign_p2pk(proof: Proof, secret_key_hex: String) -> Result<Proof, FfiError> {
     let mut cdk_proof: cdk::nuts::Proof = proof.try_into()?;
