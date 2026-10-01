@@ -3,8 +3,9 @@ use uuid::Uuid;
 use super::{
     finalized_receive_intent_by_quote_namespace, outpoint_to_key, BdkStorage,
     FinalizedReceiveIntentRecord, BDK_NAMESPACE, FINALIZED_RECEIVE_INTENT_NAMESPACE,
-    FINALIZED_RECEIVE_INTENT_OUTPOINT_NAMESPACE, RECEIVE_ADDRESS_QUOTE_ID_NAMESPACE,
-    RECEIVE_INTENT_NAMESPACE, RECEIVE_INTENT_OUTPOINT_NAMESPACE,
+    FINALIZED_RECEIVE_INTENT_OUTPOINT_NAMESPACE, IGNORED_RECEIVE_OUTPOINT_NAMESPACE,
+    RECEIVE_ADDRESS_QUOTE_ID_NAMESPACE, RECEIVE_INTENT_NAMESPACE,
+    RECEIVE_INTENT_OUTPOINT_NAMESPACE,
 };
 use crate::error::Error;
 use crate::receive::receive_intent::record::ReceiveIntentRecord;
@@ -81,6 +82,33 @@ impl BdkStorage {
             .kv_list(BDK_NAMESPACE, RECEIVE_ADDRESS_QUOTE_ID_NAMESPACE)
             .await
             .map_err(Error::from)
+    }
+
+    /// Mark a below-minimum receive outpoint as logged, returning true only once.
+    pub async fn mark_ignored_receive_outpoint_if_absent(
+        &self,
+        outpoint: &str,
+    ) -> Result<bool, Error> {
+        let mut tx = self
+            .kv_store
+            .begin_transaction()
+            .await
+            .map_err(Error::from)?;
+        let inserted = tx
+            .kv_write_if_absent(
+                BDK_NAMESPACE,
+                IGNORED_RECEIVE_OUTPOINT_NAMESPACE,
+                &outpoint_to_key(outpoint),
+                &[],
+            )
+            .await
+            .map_err(Error::from)?;
+        if inserted {
+            tx.commit().await.map_err(Error::from)?;
+        } else {
+            tx.rollback().await.map_err(Error::from)?;
+        }
+        Ok(inserted)
     }
 
     // ── Receive Intent storage ───────────────────────────────────────

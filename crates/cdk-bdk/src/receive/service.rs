@@ -125,14 +125,26 @@ impl CdkBdk {
 
         for (address, txid, outpoint, amount_sat, block_height) in utxos {
             if self.should_ignore_receive_amount(amount_sat) {
-                tracing::debug!(
-                    address,
-                    txid,
-                    outpoint,
-                    amount_sat,
-                    min_receive_amount_sat = self.min_receive_amount_sat,
-                    "Ignoring tracked receive UTXO below configured minimum amount"
-                );
+                match self
+                    .storage
+                    .mark_ignored_receive_outpoint_if_absent(&outpoint)
+                    .await
+                {
+                    Ok(true) => tracing::debug!(
+                        address,
+                        txid,
+                        outpoint,
+                        amount_sat,
+                        min_receive_amount_sat = self.min_receive_amount_sat,
+                        "Ignoring tracked receive UTXO below configured minimum amount"
+                    ),
+                    Ok(false) => {}
+                    Err(err) => tracing::warn!(
+                        outpoint,
+                        error = %err,
+                        "Failed to record ignored receive outpoint"
+                    ),
+                }
                 continue;
             }
 

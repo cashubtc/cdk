@@ -55,6 +55,9 @@ pub const RECEIVE_INTENT_NAMESPACE: &str = "receive_intent";
 /// Secondary namespace for receive intent outpoint index (outpoint -> intent_id)
 pub const RECEIVE_INTENT_OUTPOINT_NAMESPACE: &str = "receive_intent_outpoint";
 
+/// Secondary namespace for below-minimum receive outpoints already logged.
+pub const IGNORED_RECEIVE_OUTPOINT_NAMESPACE: &str = "ignored_receive_outpoint";
+
 /// Secondary namespace for finalized (confirmed) receive intents.
 /// Stores tombstone records so `check_incoming_payment_status` can
 /// return historical data after the active intent has been deleted.
