@@ -125,7 +125,7 @@ impl CdkBdk {
 
         for (address, txid, outpoint, amount_sat, block_height) in utxos {
             if self.should_ignore_receive_amount(amount_sat) {
-                tracing::debug!(
+                tracing::trace!(
                     address,
                     txid,
                     outpoint,
