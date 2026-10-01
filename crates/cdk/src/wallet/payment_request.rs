@@ -1334,6 +1334,71 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn repository_prepare_pay_request_ignores_underfunded_delivery_refusals() {
+        use crate::wallet::test_utils::{
+            create_test_db, test_keyset_id, test_mint_url, test_proof_info, MockMintConnector,
+            PaymentRequestDeliverability,
+        };
+        use crate::wallet::WalletConfig;
+
+        for undeliverable_balance in [0, 32] {
+            let localstore = create_test_db().await;
+            let deliverable_mint =
+                MintUrl::from_str("https://deliverable-mint.example.com").expect("mint url");
+            let mut proofs = vec![test_proof_info(
+                test_keyset_id(),
+                64,
+                deliverable_mint.clone(),
+            )];
+            if undeliverable_balance > 0 {
+                proofs.push(test_proof_info(
+                    test_keyset_id(),
+                    undeliverable_balance,
+                    test_mint_url(),
+                ));
+            }
+            localstore
+                .update_proofs(proofs, vec![])
+                .await
+                .expect("store proofs");
+
+            let repository = crate::wallet::WalletRepositoryBuilder::new()
+                .localstore(localstore)
+                .seed([0u8; 64])
+                .build()
+                .await
+                .expect("repository");
+
+            for (mint_url, deliverability) in [
+                (test_mint_url(), PaymentRequestDeliverability::Unsupported),
+                (deliverable_mint, PaymentRequestDeliverability::Deliverable),
+            ] {
+                let mock = MockMintConnector::new();
+                mock.set_payment_request_deliverability(deliverability);
+                repository
+                    .create_wallet(
+                        mint_url,
+                        CurrencyUnit::Sat,
+                        Some(WalletConfig::new().with_mint_connector(Arc::new(mock))),
+                    )
+                    .await
+                    .expect("wallet");
+            }
+
+            let request = payment_request_with_http_transport(Amount::from(100), Amount::ZERO);
+            let error = repository
+                .prepare_pay_request(request, None, None)
+                .await
+                .expect_err("neither wallet can fund the payment");
+
+            assert!(
+                matches!(error, Error::InsufficientFunds),
+                "unexpected error with undeliverable balance {undeliverable_balance}: {error:?}"
+            );
+        }
+    }
+
     fn melt_method(method: PaymentMethod, unit: CurrencyUnit) -> MeltMethodSettings {
         MeltMethodSettings {
             method,
@@ -1733,16 +1798,6 @@ impl WalletRepository {
                     }
                 };
 
-                if let Err(err) = ensure_wallet_can_deliver(&wallet, &transport) {
-                    tracing::warn!(
-                        "Skipping mint {} because its connector cannot deliver to the request's transport: {}",
-                        wallet_key.mint_url,
-                        err
-                    );
-                    delivery_refusal = delivery_refusal.or(Some(err));
-                    continue;
-                }
-
                 let required_amount = match payment_request_amount_for_wallet(
                     amount,
                     &payment_request,
@@ -1762,8 +1817,18 @@ impl WalletRepository {
                     }
                 };
 
-                // Check balance meets requirements and is best so far
+                // Only funded, eligible wallets can make delivery the reason for refusal.
                 if *balance < required_amount {
+                    continue;
+                }
+
+                if let Err(err) = ensure_wallet_can_deliver(&wallet, &transport) {
+                    tracing::warn!(
+                        "Skipping mint {} because its connector cannot deliver to the request's transport: {}",
+                        wallet_key.mint_url,
+                        err
+                    );
+                    delivery_refusal = delivery_refusal.or(Some(err));
                     continue;
                 }
 
