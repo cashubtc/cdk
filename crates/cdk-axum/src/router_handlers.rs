@@ -6,8 +6,8 @@ use axum::response::{IntoResponse, Response};
 use cdk::error::ErrorResponse;
 use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{
-    CheckStateRequest, CheckStateResponse, Id, KeysResponse, KeysetResponse, MintInfo,
-    RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
+    AuthRequired, AuthToken, CheckStateRequest, CheckStateResponse, Id, KeysResponse,
+    KeysetResponse, MintInfo, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
 use cdk::util::unix_time;
 use paste::paste;
@@ -123,22 +123,63 @@ pub(crate) async fn get_keysets(
     Ok(Json(state.mint.keysets()))
 }
 
+/// Largest websocket frame the mint will buffer.
+///
+/// Comfortably above the biggest legitimate request (a subscribe carrying the
+/// maximum number of filters) while keeping an unauthenticated connection from
+/// making the mint hold megabytes on its behalf.
+const MAX_WS_MESSAGE_SIZE: usize = 1024 * 1024;
+
+/// Upgrade a websocket connection, authenticating it when the endpoint is
+/// protected.
+///
+/// A browser WebSocket cannot set the `Blind-auth` header, so a header-less
+/// upgrade to a blind-protected endpoint is deferred to the in-band NUT-22
+/// `authenticate` command instead of being rejected here. Clear auth has no
+/// in-band command, so it stays a header check and a missing token is refused
+/// at the upgrade.
 #[instrument(skip_all)]
 pub(crate) async fn ws_handler(
     auth: AuthHeader,
     State(state): State<MintState>,
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, Response> {
-    state
-        .mint
-        .verify_auth(
-            auth.into(),
-            &ProtectedEndpoint::new(Method::Get, RoutePath::Ws),
-        )
-        .await
-        .map_err(into_response)?;
+    let endpoint = ProtectedEndpoint::new(Method::Get, RoutePath::Ws);
+    let token: Option<AuthToken> = auth.into();
 
-    Ok(ws.on_upgrade(|ws| main_websocket(ws, state)))
+    let authenticated = match state
+        .mint
+        .is_protected(&endpoint)
+        .await
+        .map_err(into_response)?
+    {
+        None => true,
+        Some(AuthRequired::Blind) => match token {
+            Some(token) => {
+                state
+                    .mint
+                    .verify_auth(Some(token), &endpoint)
+                    .await
+                    .map_err(into_response)?;
+                true
+            }
+            None => false,
+        },
+        Some(AuthRequired::Clear) => {
+            state
+                .mint
+                .verify_auth(token, &endpoint)
+                .await
+                .map_err(into_response)?;
+            true
+        }
+    };
+
+    let ws = ws
+        .max_message_size(MAX_WS_MESSAGE_SIZE)
+        .max_frame_size(MAX_WS_MESSAGE_SIZE);
+
+    Ok(ws.on_upgrade(move |ws| main_websocket(ws, state, authenticated)))
 }
 
 /// Check whether a proof is spent already or is pending in a transaction

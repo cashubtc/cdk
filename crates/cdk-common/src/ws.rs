@@ -23,6 +23,9 @@ pub type WsNotification = nut17::ws::WsNotification<SubId>;
 /// Result part of a websocket response
 pub type WsResponseResult = nut17::ws::WsResponseResult<SubId>;
 
+/// Result of a subscribe or unsubscribe request
+pub type WsSubscriptionResult = nut17::ws::WsSubscriptionResult<SubId>;
+
 /// Generic websocket request
 pub type WsRequest = nut17::ws::WsRequest<SubId>;
 
@@ -31,6 +34,11 @@ pub type WsResponse = nut17::ws::WsResponse<SubId>;
 
 /// Method-specific websocket request
 pub type WsMethodRequest = nut17::ws::WsMethodRequest<SubId>;
+
+/// Request to authenticate a connection (NUT-22)
+pub use nut17::ws::WsAuthenticateRequest;
+/// Response to an authenticate request (NUT-22)
+pub use nut17::ws::WsAuthenticateResponse;
 
 /// Error body for websocket responses
 pub type WsErrorBody = nut17::ws::WsErrorBody;
