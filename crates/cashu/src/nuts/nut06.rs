@@ -3,8 +3,12 @@
 //! <https://github.com/cashubtc/nuts/blob/main/06.md>
 
 use std::collections::{HashMap, HashSet};
+use std::str::FromStr;
 
+use bitcoin::secp256k1::schnorr::Signature;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::Value;
+use thiserror::Error;
 
 use super::nut01::PublicKey;
 use super::nut17::SupportedMethods;
@@ -13,8 +17,41 @@ use super::{
     nut04, nut05, nut15, nut19, nut29, AuthRequired, BlindAuthSettings, ClearAuthSettings,
     MppMethodSettings, ProtectedEndpoint,
 };
+use crate::util::jcs;
 use crate::util::serde_helpers::deserialize_empty_string_as_none;
 use crate::CurrencyUnit;
+
+/// NUT-06 Error
+#[derive(Debug, Error)]
+pub enum Error {
+    /// Response is not a JSON object
+    #[error("Mint info is not a JSON object")]
+    NotAnObject,
+    /// Mint did not publish an identity pubkey
+    #[error("Mint info is missing a pubkey")]
+    PubkeyMissing,
+    /// Pubkey is not a compressed secp256k1 point in hex
+    #[error("Mint info pubkey is malformed")]
+    MalformedPubkey,
+    /// Mint did not sign its info
+    #[error("Mint info is missing a signature")]
+    SignatureMissing,
+    /// Signature is not 64 bytes of lowercase hex
+    #[error("Mint info signature is malformed")]
+    MalformedSignature,
+    /// BIP-340 verification failed
+    #[error("Mint info signature is invalid")]
+    InvalidSignature,
+    /// Nut01 error
+    #[error(transparent)]
+    NUT01(#[from] super::nut01::Error),
+    /// JSON canonicalization error
+    #[error(transparent)]
+    Jcs(#[from] jcs::Error),
+    /// Serde JSON error
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
+}
 
 /// Mint Version
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -78,6 +115,9 @@ pub struct MintInfo {
         deserialize_with = "deserialize_empty_string_as_none"
     )]
     pub pubkey: Option<PublicKey>,
+    /// BIP-340 signature over the canonical response, lowercase hex
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
     /// implementation name and the version running
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<MintVersion>,
@@ -110,6 +150,57 @@ pub struct MintInfo {
     /// max length the mint accepts for any array in a request
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_array_length: Option<u64>,
+}
+
+/// Members NUT-06 excludes from the signed payload.
+///
+/// `signature` cannot cover itself, and `time` changes on every response, so
+/// including it would mean a fresh signature per request for an otherwise
+/// unchanged mint info.
+const UNSIGNED_MEMBERS: [&str; 2] = ["signature", "time"];
+
+/// The canonical bytes a `GetInfoResponse` is signed over, per NUT-06.
+///
+/// Takes the response as JSON rather than as a [`MintInfo`] so that members
+/// this crate does not model still take part in the payload, which is what a
+/// mint advertising a NUT that CDK has not implemented yet will have signed.
+pub fn signing_payload(response: &Value) -> Result<Vec<u8>, Error> {
+    let mut members = response.as_object().ok_or(Error::NotAnObject)?.clone();
+
+    for member in UNSIGNED_MEMBERS {
+        members.remove(member);
+    }
+
+    Ok(jcs::to_canonical_bytes(&Value::Object(members))?)
+}
+
+/// Verify a `GetInfoResponse` exactly as the mint served it.
+///
+/// `pubkey` and `signature` are read out of the response itself, so this is
+/// the check to run before deserializing into a [`MintInfo`].
+pub fn verify_response_signature(response: &Value) -> Result<(), Error> {
+    let pubkey = member_str(response, "pubkey").ok_or(Error::PubkeyMissing)?;
+    let pubkey = PublicKey::from_hex(pubkey).map_err(|_| Error::MalformedPubkey)?;
+    let signature = member_str(response, "signature").ok_or(Error::SignatureMissing)?;
+
+    verify(&pubkey, signature, &signing_payload(response)?)
+}
+
+/// A non-empty string member. Mints are known to send `""` for an unset
+/// `pubkey`, which the deserializer already treats as absent.
+fn member_str<'a>(response: &'a Value, member: &str) -> Option<&'a str> {
+    response
+        .get(member)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+}
+
+fn verify(pubkey: &PublicKey, signature: &str, payload: &[u8]) -> Result<(), Error> {
+    let signature = Signature::from_str(signature).map_err(|_| Error::MalformedSignature)?;
+
+    pubkey
+        .verify(payload, &signature)
+        .map_err(|_| Error::InvalidSignature)
 }
 
 impl MintInfo {
@@ -230,6 +321,38 @@ impl MintInfo {
             max_array_length: Some(max_array_length),
             ..self
         }
+    }
+
+    /// Set signature
+    pub fn signature<S>(self, signature: S) -> Self
+    where
+        S: Into<String>,
+    {
+        Self {
+            signature: Some(signature.into()),
+            ..self
+        }
+    }
+
+    /// The canonical bytes this response is signed over, per NUT-06.
+    ///
+    /// Sound only for a response this crate produced. A response received from
+    /// a mint must go through [`signing_payload`] on the JSON as it arrived,
+    /// because deserializing drops members `MintInfo` does not model and they
+    /// were part of what the mint signed.
+    pub fn signing_payload(&self) -> Result<Vec<u8>, Error> {
+        signing_payload(&serde_json::to_value(self)?)
+    }
+
+    /// Verify the NUT-06 signature against the advertised `pubkey`.
+    ///
+    /// Carries the same round-trip caveat as [`MintInfo::signing_payload`].
+    /// Verify a received response with [`verify_response_signature`] instead.
+    pub fn verify_signature(&self) -> Result<(), Error> {
+        let pubkey = self.pubkey.ok_or(Error::PubkeyMissing)?;
+        let signature = self.signature.as_ref().ok_or(Error::SignatureMissing)?;
+
+        verify(&pubkey, signature, &self.signing_payload()?)
     }
 
     /// Get protected endpoints
@@ -525,6 +648,7 @@ mod tests {
     use super::*;
     use crate::nut00::KnownMethod;
     use crate::nut04::MintMethodOptions;
+    use crate::nuts::nut01::SecretKey;
     use crate::{Amount, Method, PaymentMethod, RoutePath};
 
     #[test]
@@ -765,7 +889,8 @@ mod tests {
             .motd("hello")
             .time(123_u64)
             .tos_url("https://example.com/tos")
-            .max_array_length(1000);
+            .max_array_length(1000)
+            .signature("aa".repeat(64));
 
         assert_eq!(info.name.as_deref(), Some("Test mint"));
         assert_eq!(info.pubkey, Some(pubkey));
@@ -785,6 +910,7 @@ mod tests {
         assert_eq!(info.time, Some(123));
         assert_eq!(info.tos_url.as_deref(), Some("https://example.com/tos"));
         assert_eq!(info.max_array_length, Some(1000));
+        assert_eq!(info.signature.as_deref(), Some("aa".repeat(64).as_str()));
     }
 
     #[test]
@@ -894,5 +1020,191 @@ mod tests {
         let supported_units = info.supported_units();
         assert!(supported_units.contains(&&CurrencyUnit::Eur));
         assert!(supported_units.contains(&&CurrencyUnit::Usd));
+    }
+
+    fn signed_response() -> (SecretKey, Value) {
+        let secret_key =
+            SecretKey::from_hex("0000000000000000000000000000000000000000000000000000000000000042")
+                .expect("secret key");
+
+        let info = MintInfo::new()
+            .name("Test mint")
+            .pubkey(secret_key.public_key())
+            .motd("hello")
+            .max_array_length(1000);
+
+        let signature = secret_key
+            .sign(&info.signing_payload().expect("payload"))
+            .expect("sign");
+
+        let response = serde_json::to_value(info.signature(signature.to_string()))
+            .expect("serialize response");
+
+        (secret_key, response)
+    }
+
+    #[test]
+    fn signing_payload_ignores_signature_and_time() {
+        let base = MintInfo::new().name("Test mint");
+        let payload = base.signing_payload().expect("payload");
+
+        assert_eq!(
+            base.clone()
+                .time(1_u64)
+                .signature("ab".repeat(64))
+                .signing_payload()
+                .expect("payload"),
+            payload
+        );
+        assert_eq!(
+            base.clone().time(2_u64).signing_payload().expect("payload"),
+            payload
+        );
+        assert_ne!(
+            base.motd("changed").signing_payload().expect("payload"),
+            payload
+        );
+    }
+
+    #[test]
+    fn signing_payload_is_canonical_json() {
+        let info = MintInfo::new()
+            .name("Test mint")
+            .motd("hello")
+            .time(1_u64)
+            .signature("ab".repeat(64));
+
+        let payload = String::from_utf8(info.signing_payload().expect("payload")).expect("utf8");
+
+        assert!(payload.starts_with(r#"{"motd":"hello","name":"Test mint","nuts":{"#));
+
+        let reparsed: Value = serde_json::from_str(&payload).expect("parse");
+        assert_eq!(
+            jcs::to_canonical_string(&reparsed).expect("canonicalize"),
+            payload,
+            "canonicalization is a fixpoint"
+        );
+    }
+
+    #[test]
+    fn a_signed_response_verifies() {
+        let (_, response) = signed_response();
+
+        verify_response_signature(&response).expect("verify");
+        serde_json::from_value::<MintInfo>(response)
+            .expect("deserialize")
+            .verify_signature()
+            .expect("verify through the struct");
+    }
+
+    /// A mint advertising a NUT this crate does not model still signed those
+    /// members. Verification therefore runs on the response as received, and
+    /// the struct round trip cannot stand in for it.
+    #[test]
+    fn verification_survives_members_mint_info_does_not_model() {
+        let (secret_key, mut response) = signed_response();
+
+        let members = response.as_object_mut().expect("object");
+        members.remove("signature");
+        members.insert("some_future_field".to_string(), Value::from("kept"));
+        members
+            .get_mut("nuts")
+            .and_then(Value::as_object_mut)
+            .expect("nuts")
+            .insert("99".to_string(), serde_json::json!({"supported": true}));
+
+        let signature = secret_key
+            .sign(&signing_payload(&response).expect("payload"))
+            .expect("sign");
+        response
+            .as_object_mut()
+            .expect("object")
+            .insert("signature".to_string(), Value::from(signature.to_string()));
+
+        verify_response_signature(&response).expect("the raw response verifies");
+
+        assert!(matches!(
+            serde_json::from_value::<MintInfo>(response)
+                .expect("deserialize")
+                .verify_signature(),
+            Err(Error::InvalidSignature),
+        ));
+    }
+
+    #[test]
+    fn a_tampered_member_does_not_verify() {
+        let (_, mut response) = signed_response();
+        response
+            .as_object_mut()
+            .expect("object")
+            .insert("motd".to_string(), Value::from("tampered"));
+
+        assert!(matches!(
+            verify_response_signature(&response),
+            Err(Error::InvalidSignature)
+        ));
+    }
+
+    #[test]
+    fn an_unsigned_response_is_told_apart_from_a_bad_one() {
+        let (_, response) = signed_response();
+
+        let without = |member: &str| {
+            let mut response = response.clone();
+            response.as_object_mut().expect("object").remove(member);
+            response
+        };
+
+        assert!(matches!(
+            verify_response_signature(&without("signature")),
+            Err(Error::SignatureMissing)
+        ));
+        assert!(matches!(
+            verify_response_signature(&without("pubkey")),
+            Err(Error::PubkeyMissing)
+        ));
+    }
+
+    /// Mints are known to send `""` for members they have not set.
+    #[test]
+    fn an_empty_signature_reads_as_absent() {
+        let (_, mut response) = signed_response();
+        response
+            .as_object_mut()
+            .expect("object")
+            .insert("signature".to_string(), Value::from(""));
+
+        assert!(matches!(
+            verify_response_signature(&response),
+            Err(Error::SignatureMissing)
+        ));
+    }
+
+    #[test]
+    fn a_malformed_signature_is_rejected_before_deserialization() {
+        let (_, mut response) = signed_response();
+        response
+            .as_object_mut()
+            .expect("object")
+            .insert("signature".to_string(), Value::from("zz".repeat(64)));
+
+        assert!(matches!(
+            verify_response_signature(&response),
+            Err(Error::MalformedSignature)
+        ));
+    }
+
+    #[test]
+    fn a_malformed_pubkey_is_rejected() {
+        let (_, mut response) = signed_response();
+        response
+            .as_object_mut()
+            .expect("object")
+            .insert("pubkey".to_string(), Value::from("not a pubkey"));
+
+        assert!(matches!(
+            verify_response_signature(&response),
+            Err(Error::MalformedPubkey)
+        ));
     }
 }

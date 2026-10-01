@@ -41,6 +41,7 @@ pub struct WalletBuilder {
     use_http_subscription: bool,
     client: Option<Arc<dyn MintConnector + Send + Sync>>,
     metadata_cache_ttl: Option<Duration>,
+    require_signed_mint_info: bool,
     metadata_cache: Option<Arc<MintMetadataCache>>,
     metadata_caches: HashMap<MintUrl, Arc<MintMetadataCache>>,
     rate_limit: Option<RateLimitConfig>,
@@ -70,6 +71,7 @@ impl Default for WalletBuilder {
             seed: None,
             client: None,
             metadata_cache_ttl: Some(Duration::from_secs(3600)),
+            require_signed_mint_info: false,
             use_http_subscription: false,
             metadata_cache: None,
             metadata_caches: HashMap::new(),
@@ -108,6 +110,16 @@ impl WalletBuilder {
     /// The default value is 1 hour (3600 seconds).
     pub fn set_metadata_cache_ttl(mut self, metadata_cache_ttl: Option<Duration>) -> Self {
         self.metadata_cache_ttl = metadata_cache_ttl;
+        self
+    }
+
+    /// Reject mint info that carries no NUT-06 signature.
+    ///
+    /// Off by default. A signature the mint does provide is always verified and
+    /// a bad one is always rejected; this only decides whether an unsigned
+    /// response is an error or a warning. Most deployed mints do not sign yet.
+    pub fn set_require_signed_mint_info(mut self, required: bool) -> Self {
+        self.require_signed_mint_info = required;
         self
     }
 
@@ -343,15 +355,30 @@ impl WalletBuilder {
         };
 
         let client = match self.client.take() {
-            Some(client) => client,
+            Some(client) => {
+                if self.require_signed_mint_info {
+                    tracing::warn!(
+                        %mint_url,
+                        "Ignoring require_signed_mint_info: the injected connector owns the policy"
+                    );
+                }
+                client
+            }
             None => match shared_transport {
-                Some(transport) => Arc::new(RateLimitedHttpClient::with_shared_transport(
-                    mint_url.clone(),
-                    transport,
-                    auth_wallet.clone(),
-                )) as Arc<dyn MintConnector + Send + Sync>,
-                None => Arc::new(HttpClient::new(mint_url.clone(), auth_wallet.clone()))
-                    as Arc<dyn MintConnector + Send + Sync>,
+                Some(transport) => {
+                    let client = RateLimitedHttpClient::with_shared_transport(
+                        mint_url.clone(),
+                        transport,
+                        auth_wallet.clone(),
+                    );
+                    client.set_require_signed_mint_info(self.require_signed_mint_info);
+                    Arc::new(client) as Arc<dyn MintConnector + Send + Sync>
+                }
+                None => {
+                    let client = HttpClient::new(mint_url.clone(), auth_wallet.clone());
+                    client.set_require_signed_mint_info(self.require_signed_mint_info);
+                    Arc::new(client) as Arc<dyn MintConnector + Send + Sync>
+                }
             },
         };
 

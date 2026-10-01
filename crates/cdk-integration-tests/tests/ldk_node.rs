@@ -24,6 +24,10 @@ async fn test_ldk_node_mint_info() -> Result<()> {
     assert!(info.get("version").is_some());
     assert!(info.get("description").is_some());
 
+    // NUT-06: verify against the response as served, not a re-serialized
+    // MintInfo, so members this crate does not model still take part.
+    cdk::nuts::nut06::verify_response_signature(&info).expect("mint info signature");
+
     println!("LDK-Node mint info: {:?}", info);
 
     Ok(())
