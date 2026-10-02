@@ -273,7 +273,8 @@ impl WalletTraitDef for Wallet {
         Wallet::mint_unissued_quotes(self).await
     }
 
-    /// Propagates quote ID validation errors before any local status update.
+    /// Forwards the persisted quote, including its database version and ownership.
+    /// Propagates quote ID validation and database reload errors.
     async fn check_mint_quote_status(
         &self,
         quote_id: &str,
