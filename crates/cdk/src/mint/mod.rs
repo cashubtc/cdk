@@ -33,6 +33,7 @@ mod builder;
 mod check_spendable;
 mod issue;
 mod keysets;
+mod limits;
 mod melt;
 mod payment_backend;
 mod proofs;
@@ -46,6 +47,7 @@ pub use builder::{KeysetRotation, MintBuilder, MintMeltLimits, UnitConfig};
 pub use cdk_common::mint::{MeltQuote, MintKeySetInfo, MintQuote};
 pub use cdk_common::mint_quote::{MintQuoteRequest, MintQuoteResponse};
 pub use issue::MintInput;
+pub use limits::MintLimits;
 pub use melt::PendingMelt;
 pub use verification::Verification;
 
@@ -245,8 +247,7 @@ impl Mint {
         signatory: Arc<dyn Signatory + Send + Sync>,
         localstore: DynMintDatabase,
         payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
-        max_inputs: usize,
-        max_outputs: usize,
+        limits: MintLimits,
     ) -> Result<Self, Error> {
         Self::new_internal(
             mint_info,
@@ -254,8 +255,7 @@ impl Mint {
             localstore,
             None,
             payment_processors,
-            max_inputs,
-            max_outputs,
+            limits,
         )
         .await
     }
@@ -267,8 +267,7 @@ impl Mint {
         localstore: DynMintDatabase,
         auth_localstore: DynMintAuthDatabase,
         payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
-        max_inputs: usize,
-        max_outputs: usize,
+        limits: MintLimits,
     ) -> Result<Self, Error> {
         Self::new_internal(
             mint_info,
@@ -276,8 +275,7 @@ impl Mint {
             localstore,
             Some(auth_localstore),
             payment_processors,
-            max_inputs,
-            max_outputs,
+            limits,
         )
         .await
     }
@@ -290,9 +288,10 @@ impl Mint {
         localstore: DynMintDatabase,
         auth_localstore: Option<DynMintAuthDatabase>,
         payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
-        max_inputs: usize,
-        max_outputs: usize,
+        limits: MintLimits,
     ) -> Result<Self, Error> {
+        let pubsub_limits = limits.pubsub.validate()?;
+
         // Subscribe up front and bootstrap the in-memory snapshot from the same
         // receiver that keeps it fresh. `borrow_and_update` pins the receiver
         // cursor to this snapshot, so any signatory rotation that lands before
@@ -388,7 +387,10 @@ impl Mint {
 
         Ok(Self {
             signatory,
-            pubsub_manager: PubSubManager::new((localstore.clone(), payment_processors.clone())),
+            pubsub_manager: PubSubManager::with_limits(
+                (localstore.clone(), payment_processors.clone()),
+                pubsub_limits,
+            ),
             localstore,
             oidc_client: computed_info.nuts.nut21.as_ref().map(|nut21| {
                 OidcClient::new(
@@ -405,8 +407,8 @@ impl Mint {
                 keyset_updates: Some(keyset_updates),
                 ..Default::default()
             })),
-            max_inputs,
-            max_outputs,
+            max_inputs: limits.max_inputs,
+            max_outputs: limits.max_outputs,
         })
     }
 
@@ -1526,6 +1528,7 @@ mod tests {
     use cdk_common::nut00::KnownMethod;
     use cdk_common::nuts::MeltQuoteBolt11Request;
     use cdk_common::payment::{MakePaymentResponse, PaymentIdentifier};
+    use cdk_common::pub_sub::{PubsubLimits, PubsubLimitsField};
     use cdk_common::PaymentMethod;
     use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
     use cdk_signatory::db_signatory::DbSignatory;
@@ -1667,11 +1670,54 @@ mod tests {
             signatory,
             localstore,
             HashMap::new(),
-            1000,
-            1000,
+            MintLimits::default(),
         )
         .await
         .unwrap()
+    }
+
+    /// Nothing between the constructor and the semaphore can report an
+    /// unservable budget, so the refusal has to happen here.
+    #[tokio::test]
+    async fn a_zero_backfill_budget_is_refused_at_construction() {
+        let localstore = Arc::new(
+            new_with_state(
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                MintInfo::default(),
+            )
+            .await
+            .unwrap(),
+        );
+
+        let err = Mint::new(
+            MintInfo::default(),
+            Arc::new(MockSignatory::new(rotated_snapshots(1).await[0].clone())),
+            localstore,
+            HashMap::new(),
+            MintLimits {
+                pubsub: PubsubLimits {
+                    max_concurrent_backfills: 0,
+                    ..PubsubLimits::default()
+                },
+                ..MintLimits::default()
+            },
+        )
+        .await
+        .expect_err("a zero backfill budget would park every backfill forever");
+
+        match err {
+            Error::PubsubLimits(err) => assert_eq!(
+                err.field(),
+                PubsubLimitsField::MaxConcurrentBackfills,
+                "the operator must be told which field to edit: {err}"
+            ),
+            other => panic!("expected an unservable-limits error, got {other}"),
+        }
     }
 
     #[tokio::test]
@@ -2163,8 +2209,7 @@ mod tests {
             signatory,
             localstore,
             HashMap::new(),
-            1000,
-            1000,
+            MintLimits::default(),
         )
         .await
         .unwrap()

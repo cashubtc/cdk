@@ -988,8 +988,15 @@ impl Mint {
                                 };
 
                                 let mut sub = match pubsub.subscribe(params) {
-                                    Ok(sub) => sub,
-                                    Err(_err) => return Err(Error::Internal),
+                                    Ok(sub) => Some(sub),
+                                    Err(err) => {
+                                        tracing::warn!(
+                                            "Melt {} waits by polling, its subscription was refused: {}",
+                                            quote_id_for_log,
+                                            err
+                                        );
+                                        None
+                                    }
                                 };
 
                                 let start = tokio::time::Instant::now();
@@ -1010,51 +1017,62 @@ impl Mint {
                                         });
                                     }
 
+                                    let Some(active) = sub.as_mut() else {
+                                        tokio::time::sleep(
+                                            pending_melt_notification_wait_interval(),
+                                        )
+                                        .await;
+                                        continue;
+                                    };
+
                                     let Ok(maybe_event) = tokio::time::timeout(
                                         pending_melt_notification_wait_interval(),
-                                        sub.recv(),
+                                        active.recv(),
                                     )
                                     .await
                                     else {
                                         continue;
                                     };
 
-                                    if let Some(event) = maybe_event {
-                                        let (event_quote_id, state) = match event.into_inner() {
-                                            NotificationPayload::MeltQuoteBolt11Response(r) => {
-                                                (r.quote, r.state)
-                                            }
-                                            NotificationPayload::MeltQuoteBolt12Response(r) => {
-                                                (r.quote, r.state)
-                                            }
-                                            NotificationPayload::CustomMeltQuoteResponse(_, r) => {
-                                                (r.quote, r.state)
-                                            }
-                                            // Onchain is the one method where the subscription
-                                            // fast-path is most valuable, because confirmation is
-                                            // inherently asynchronous. We subscribe to
-                                            // `OnchainMeltQuote` events above (see `Kind` mapping)
-                                            // and must handle them here; otherwise onchain waiters
-                                            // would rely solely on the
-                                            // explicit quote-check path.
-                                            NotificationPayload::MeltQuoteOnchainResponse(r) => {
-                                                (r.quote, r.state)
-                                            }
-                                            _ => continue,
-                                        };
+                                    let Some(event) = maybe_event else {
+                                        sub = None;
+                                        continue;
+                                    };
 
-                                        if event_quote_id == quote_id_for_log
-                                            && state != MeltQuoteState::Pending
+                                    let (event_quote_id, state) = match event.into_inner() {
+                                        NotificationPayload::MeltQuoteBolt11Response(r) => {
+                                            (r.quote, r.state)
+                                        }
+                                        NotificationPayload::MeltQuoteBolt12Response(r) => {
+                                            (r.quote, r.state)
+                                        }
+                                        NotificationPayload::CustomMeltQuoteResponse(_, r) => {
+                                            (r.quote, r.state)
+                                        }
+                                        // Onchain is the one method where the subscription
+                                        // fast-path is most valuable, because confirmation is
+                                        // inherently asynchronous. We subscribe to
+                                        // `OnchainMeltQuote` events above (see `Kind` mapping)
+                                        // and must handle them here; otherwise onchain waiters
+                                        // would rely solely on the
+                                        // explicit quote-check path.
+                                        NotificationPayload::MeltQuoteOnchainResponse(r) => {
+                                            (r.quote, r.state)
+                                        }
+                                        _ => continue,
+                                    };
+
+                                    if event_quote_id == quote_id_for_log
+                                        && state != MeltQuoteState::Pending
+                                    {
+                                        if let Some(response) =
+                                            Self::load_settled_melt_response(
+                                                &localstore,
+                                                &quote_id_for_log,
+                                            )
+                                            .await?
                                         {
-                                            if let Some(response) =
-                                                Self::load_settled_melt_response(
-                                                    &localstore,
-                                                    &quote_id_for_log,
-                                                )
-                                                .await?
-                                            {
-                                                return Ok(response);
-                                            }
+                                            return Ok(response);
                                         }
                                     }
                                 }
