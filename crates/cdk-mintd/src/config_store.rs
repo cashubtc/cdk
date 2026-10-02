@@ -227,7 +227,7 @@ impl ConfigRepository {
     ///
     /// Transition: `Pending | Applied` → `Pending`. The currently applied
     /// document, when there is one, is retained for rollback.
-    #[cfg(test)]
+    #[cfg(all(test, any(feature = "sqlite", feature = "turso")))]
     pub(crate) async fn replace(
         &self,
         toml: String,
@@ -364,14 +364,22 @@ impl ConfigRepository {
     }
 }
 
-#[cfg(all(test, feature = "sqlite"))]
+#[cfg(all(test, any(feature = "sqlite", feature = "turso")))]
 mod tests {
+    #[cfg(feature = "sqlite")]
     use cdk_sqlite::mint::memory;
 
     use super::*;
 
     async fn repository() -> ConfigRepository {
+        #[cfg(feature = "sqlite")]
         let database = Arc::new(memory::empty().await.expect("in-memory database"));
+        #[cfg(all(not(feature = "sqlite"), feature = "turso"))]
+        let database = Arc::new(
+            cdk_turso::mint::open(":memory:")
+                .await
+                .expect("in-memory database"),
+        );
         ConfigRepository::new(database)
     }
 

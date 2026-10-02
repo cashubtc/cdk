@@ -944,6 +944,20 @@ async fn setup_database(
 )> {
     tracing::info!("Using database engine: {:?}", settings.database.engine);
     match settings.database.engine {
+        DatabaseEngine::Turso => {
+            #[cfg(feature = "turso")]
+            {
+                if _db_password.is_some() {
+                    bail!("SQLCipher passwords are not supported by Turso");
+                }
+                let db = Arc::new(cdk_turso::mint::open(_work_dir.join("cdk-mintd.turso")).await?);
+                let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> =
+                    db.clone();
+                Ok((localstore, db.clone(), db.clone(), db))
+            }
+            #[cfg(not(feature = "turso"))]
+            bail!("Turso support not compiled in. Enable the 'turso' feature.")
+        }
         #[cfg(feature = "sqlite")]
         DatabaseEngine::Sqlite => {
             let db = setup_sqlite_database(_work_dir, _db_password).await?;
@@ -1118,7 +1132,7 @@ async fn configure_mint_builder_with_wallet_info(
     Ok((mint_builder, wallet_info_provider))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "sqlite", feature = "fakewallet"))]
 async fn configure_mint_builder(
     settings: &config::Settings,
     mint_builder: MintBuilder,
@@ -1545,7 +1559,7 @@ async fn configure_onchain_backend_with_wallet_info(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "sqlite", feature = "fakewallet"))]
 async fn configure_onchain_backend(
     settings: &config::Settings,
     mint_builder: MintBuilder,
@@ -1718,6 +1732,19 @@ async fn setup_authentication(
 
         tracing::info!("Auth settings are defined. {:?}", auth_settings);
         let auth_localstore: DynMintAuthDatabase = match settings.database.engine {
+            DatabaseEngine::Turso => {
+                #[cfg(feature = "turso")]
+                {
+                    if _password.is_some() {
+                        bail!("SQLCipher passwords are not supported by Turso");
+                    }
+                    Arc::new(
+                        cdk_turso::mint::open_auth(_work_dir.join("cdk-mintd-auth.turso")).await?,
+                    )
+                }
+                #[cfg(not(feature = "turso"))]
+                bail!("Turso support not compiled in. Enable the 'turso' feature.")
+            }
             #[cfg(feature = "sqlite")]
             DatabaseEngine::Sqlite => {
                 #[cfg(feature = "sqlite")]
@@ -2859,6 +2886,45 @@ mod tests {
     use cdk::nuts::{CurrencyUnit, MintMethodSettings, PaymentMethod};
 
     use super::*;
+
+    #[cfg(feature = "turso")]
+    #[tokio::test]
+    async fn turso_database_stores_configuration_across_reopen() {
+        let work_dir = std::env::temp_dir().join(format!(
+            "cdk-mintd-turso-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos(),
+        ));
+        fs::create_dir_all(&work_dir).expect("work directory");
+        let mut settings = config::Settings::default();
+        settings.database.engine = DatabaseEngine::Turso;
+        {
+            let (_, _, _, store) = setup_database(&settings, &work_dir, None)
+                .await
+                .expect("Turso setup");
+            assert!(store
+                .kv_compare_and_swap("settings", "mint", "name", None, b"mint")
+                .await
+                .expect("configuration write"));
+        }
+        {
+            let (_, _, _, store) = setup_database(&settings, &work_dir, None)
+                .await
+                .expect("Turso reopen");
+            assert_eq!(
+                store
+                    .kv_read("settings", "mint", "name")
+                    .await
+                    .expect("configuration read"),
+                Some(b"mint".to_vec())
+            );
+        }
+        assert!(work_dir.join("cdk-mintd.turso").exists());
+        fs::remove_dir_all(work_dir).expect("remove work directory");
+    }
 
     const TEST_MNEMONIC: &str =
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";

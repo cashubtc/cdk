@@ -4,12 +4,13 @@
 
 fn main() {
     // Check that at least one database feature is enabled
-    let has_database = cfg!(feature = "sqlite") || cfg!(feature = "postgres");
+    let has_database =
+        cfg!(feature = "sqlite") || cfg!(feature = "postgres") || cfg!(feature = "turso");
 
     if !has_database {
         panic!(
             "cdk-mintd requires at least one database backend to be enabled.\n\
-             Available database features: sqlite, postgres\n\
+             Available database features: sqlite, postgres, turso\n\
              Example: cargo build --features sqlite"
         );
     }

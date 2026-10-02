@@ -386,12 +386,12 @@
         );
 
         # MSRV dependencies (separate cache due to different toolchain)
-        # Exclude cdk-redb (and its dependents) and cdk-cli from MSRV coverage
+        # Exclude cdk-turso, cdk-redb (and its dependents) and cdk-cli from MSRV coverage
         workspaceDepsMsrv = craneLibMsrv.buildDepsOnly (
           commonCraneArgsMsrv
           // {
             pname = "cdk-deps-msrv";
-            cargoExtraArgs = "--workspace --exclude cdk-redb --exclude cdk-integration-tests --exclude cdk-ffi-dart --exclude cdk-ffi-swift --exclude cdk-ffi-kotlin --exclude cdk-cli";
+            cargoExtraArgs = "--workspace --exclude cdk-turso --exclude cdk-redb --exclude cdk-integration-tests --exclude cdk-ffi-dart --exclude cdk-ffi-swift --exclude cdk-ffi-kotlin --exclude cdk-cli";
           }
         );
 
@@ -803,11 +803,15 @@
             "-p cdk-sql-common --no-default-features --features wallet"
             "-p cdk-sql-common --no-default-features --features mint"
             "-p cdk-redb"
+            "-p cdk-turso"
+            "-p cdk-turso --no-default-features --features wallet"
+            "-p cdk-turso --no-default-features --features mint"
             "-p cdk-sqlite"
             "-p cdk-sqlite --features sqlcipher"
             "-p cdk-cli"
             "-p cdk-cli --features sqlcipher"
             "-p cdk-cli --features redb"
+            "-p cdk-cli --features turso"
           ];
 
           "lightning-and-api" = [
@@ -839,6 +843,11 @@
             "-p cdk-mintd --no-default-features --features grpc-processor,sqlite"
             "-p cdk-mintd --no-default-features --features management-rpc,lnd,sqlite"
             "-p cdk-mintd --no-default-features --features cln,sqlite"
+          ];
+
+          "mintd-backends-turso" = [
+            "-p cdk-mintd --no-default-features --features fakewallet,turso"
+            "-p cdk-mintd --no-default-features --features fakewallet,turso,prometheus"
           ];
 
           "mintd-backends-postgres" = [

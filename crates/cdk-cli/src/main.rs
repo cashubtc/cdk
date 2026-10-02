@@ -41,7 +41,7 @@ enum TorToggle {
 #[derive(Parser)]
 #[command(name = "cdk-cli", author = "thesimplekid <tsk@thesimplekid.com>", version = CARGO_PKG_VERSION.unwrap_or("Unknown"), about, long_about = None)]
 struct Cli {
-    /// Database engine to use (sqlite/redb)
+    /// Database engine to use (sqlite/redb/turso)
     #[arg(short, long, default_value = "sqlite")]
     engine: String,
     /// Database password for sqlcipher
@@ -187,6 +187,18 @@ async fn main() -> Result<()> {
                 };
 
                 Arc::new(sql)
+            }
+            "turso" => {
+                #[cfg(feature = "turso")]
+                {
+                    #[cfg(feature = "sqlcipher")]
+                    if args.password.is_some() {
+                        bail!("SQLCipher passwords are not supported by Turso");
+                    }
+                    Arc::new(cdk_turso::wallet::open(work_dir.join("cdk-cli.turso")).await?)
+                }
+                #[cfg(not(feature = "turso"))]
+                bail!("turso feature not enabled");
             }
             "redb" => {
                 #[cfg(feature = "redb")]

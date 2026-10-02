@@ -731,7 +731,7 @@ cdk-mint-cli get-info --addr https://127.0.0.1:8086 --tls-dir /path/to/tls
 ## Bootstrap Environment Variables
 
 - `CDK_MINTD_WORK_DIR`: Working directory used for SQLite and local files.
-- `CDK_MINTD_DATABASE`: Primary database engine (`sqlite` or `postgres`).
+- `CDK_MINTD_DATABASE`: Primary database engine (`sqlite`, `postgres`, or `turso`). Turso requires the `turso` build feature and Rust 1.88 or newer; it uses local `cdk-mintd.turso` and `cdk-mintd-auth.turso` files in the work directory.
 - `CDK_MINTD_DATABASE_URL`: PostgreSQL connection string
 - `CDK_MINTD_POSTGRES_URL`: Canonical PostgreSQL connection variable.
 
