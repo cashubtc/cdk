@@ -6,6 +6,9 @@ use std::collections::HashMap;
 
 pub(crate) mod saga;
 
+#[cfg(test)]
+mod status_tests;
+
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nut04::MintMethodOptions;
 use cdk_common::{MintQuoteRequest, MintQuoteResponse, PaymentMethod};
@@ -352,16 +355,21 @@ impl Wallet {
     /// This method:
     /// 1. Fetches the current quote state from the mint
     /// 2. If there's an in-progress saga for this quote, attempts to complete it
-    /// 3. If the saga was compensated (rolled back), attempts a fresh mint
-    /// 4. Returns the updated quote
+    /// 3. Persists the current accounting without overwriting recovery changes
+    /// 4. Returns the persisted quote
     #[instrument(skip_all)]
     async fn inner_check_mint_quote_status(
         &self,
         mut mint_quote: MintQuote,
     ) -> Result<MintQuote, Error> {
         let quote_id = mint_quote.id.clone();
-        // First, check/update the state from the mint
-        self.check_state(&mut mint_quote).await?;
+        // Validate the response before recovery can change local state. Apply it
+        // below to the latest snapshot so recovery accounting is not overwritten.
+        let response = self
+            .client
+            .get_mint_quote_status(mint_quote.payment_method.clone(), &quote_id)
+            .await?;
+        validate_mint_quote_response_id(&quote_id, &response)?;
 
         // Check if there's an in-progress saga for this quote
         if let Some(ref operation_id_str) = mint_quote.used_by_operation {
@@ -377,22 +385,14 @@ impl Wallet {
 
                         let recovery_action = self.resume_issue_saga(&saga).await?;
 
-                        // If compensated, the saga was rolled back - attempt to mint again
+                        // Compensation makes the quote available for a later mint.
                         if recovery_action == RecoveryAction::Compensated {
                             tracing::info!(
-                                "Saga {} was compensated, attempting fresh mint for quote {}",
+                                "Saga {} was compensated for quote {}",
                                 operation_id,
                                 quote_id
                             );
-                        } else {
-                            // If the saga completed we need to get the updated state of the mint quote fn the db
-                            mint_quote = self
-                                .localstore
-                                .get_mint_quote(&quote_id)
-                                .await?
-                                .ok_or(Error::UnknownQuote)?;
                         }
-                        // If Recovered or Skipped, just continue with the updated quote
                     }
                     Ok(None) => {
                         // Orphaned reservation - release it
@@ -410,17 +410,29 @@ impl Wallet {
                         return Err(Error::Database(e));
                     }
                 }
+                // Recovery and reservation release may change accounting, version,
+                // or ownership. Never write the pre-recovery snapshot back.
+                mint_quote = self
+                    .localstore
+                    .get_mint_quote(&quote_id)
+                    .await?
+                    .ok_or(Error::UnknownQuote)?;
             }
         }
 
-        self.localstore.add_mint_quote(mint_quote.clone()).await?;
-        Ok(mint_quote)
+        apply_mint_quote_response(&mut mint_quote, &response);
+        self.localstore.add_mint_quote(mint_quote).await?;
+        self.localstore
+            .get_mint_quote(&quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)
     }
 
     /// Check the status of a single mint quote from the mint.
     ///
     /// Calls `GET /v1/mint/quote/{method}/{quote_id}` per NUT-04.
     /// Updates local store with current state from mint.
+    /// Returns the persisted quote, including its database version and ownership.
     /// Rejects a mismatched response quote ID before changing local state.
     /// If there was a crashed mid-mint (pending saga), attempts to complete it.
     /// Does NOT mint tokens directly - use mint() for that.
@@ -813,10 +825,12 @@ impl Wallet {
             }
         };
 
-        // Store the quote
-        self.localstore.add_mint_quote(quote.clone()).await?;
-
-        Ok(quote)
+        // Return the authoritative version assigned by the database.
+        self.localstore.add_mint_quote(quote).await?;
+        self.localstore
+            .get_mint_quote(quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)
     }
 
     /// Batch check status of multiple mint quotes from the mint.
@@ -880,6 +894,11 @@ impl Wallet {
         for (quote, response) in quotes.iter_mut().zip(responses.iter()) {
             apply_mint_quote_response(quote, response);
             self.localstore.add_mint_quote(quote.clone()).await?;
+            *quote = self
+                .localstore
+                .get_mint_quote(&quote.id)
+                .await?
+                .ok_or(Error::UnknownQuote)?;
         }
 
         Ok(quotes)
@@ -933,6 +952,54 @@ mod tests {
     use cdk_common::nuts::CurrencyUnit;
 
     use super::*;
+
+    #[tokio::test]
+    async fn quote_status_returns_persisted_onchain_quote() {
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock, test_mint_quote, test_mint_url,
+            MockMintConnector,
+        };
+
+        let db = create_test_db().await;
+        let client = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db.clone(), client.clone()).await;
+        let mut quote = test_mint_quote(test_mint_url());
+        quote.payment_method = PaymentMethod::Known(KnownMethod::Onchain);
+        quote.amount = None;
+        db.add_mint_quote(quote.clone()).await.unwrap();
+        client.set_mint_quote_status_response(
+            &quote.id,
+            MintQuoteResponse::Onchain(cdk_common::nuts::nut30::MintQuoteOnchainResponse {
+                quote: quote.id.clone(),
+                request: quote.request.clone(),
+                unit: quote.unit.clone(),
+                method: quote.payment_method.clone(),
+                expiry: Some(quote.expiry),
+                pubkey: SecretKey::generate().public_key(),
+                amount_paid: Amount::from(1_000),
+                amount_issued: Amount::ZERO,
+                updated_at: 1,
+            }),
+        );
+
+        // All entry points must return the current SQLite version, including
+        // repeated checks with an unchanged mint response.
+        for expected_version in 1..=4 {
+            let returned = match expected_version {
+                1 => wallet.check_mint_quote_status(&quote.id).await.unwrap(),
+                2 => wallet.check_mint_quote(&quote.id).await.unwrap(),
+                3 => wallet.check_all_mint_quotes().await.unwrap().remove(0),
+                _ => wallet.fetch_mint_quote(&quote.id, None).await.unwrap(),
+            };
+            let stored = db.get_mint_quote(&quote.id).await.unwrap().unwrap();
+            assert_eq!(stored.version, expected_version);
+            assert_eq!(returned, stored);
+            assert_eq!(returned.amount_paid, Amount::from(1_000));
+            assert_eq!(returned.amount_issued, Amount::ZERO);
+            assert_eq!(returned.state, MintQuoteState::Paid);
+            assert_eq!(returned.used_by_operation, None);
+        }
+    }
 
     #[tokio::test]
     async fn mint_quote_signing_keys_follow_nut20_counter_across_wallet_instances() {
@@ -1261,6 +1328,7 @@ mod tests {
             assert_eq!(stored.amount_paid, refreshed.amount_paid);
             assert_eq!(stored.amount_issued, refreshed.amount_issued);
             assert_eq!(stored.updated_at, refreshed.updated_at);
+            assert_eq!(stored, refreshed);
         }
     }
 
