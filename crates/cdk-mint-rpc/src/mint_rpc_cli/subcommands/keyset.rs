@@ -1,10 +1,11 @@
 use anyhow::Result;
 use cdk_common::terminal::escape_control;
 use clap::Args;
+use tonic::transport::Channel;
 use tonic::Request;
 
+use crate::keyset::keyset_service_client::KeysetServiceClient;
 use crate::keyset::RotateNextKeysetRequest;
-use crate::InterceptedKeysetServiceClient;
 
 /// Command to rotate to the next keyset for the mint
 ///
@@ -39,7 +40,7 @@ pub struct RotateNextKeysetCommand {
 /// * `client` - The RPC client used to communicate with the mint
 /// * `sub_command_args` - The arguments specifying how the new keyset should be configured
 pub async fn rotate_next_keyset(
-    client: &mut InterceptedKeysetServiceClient,
+    client: &mut KeysetServiceClient<Channel>,
     sub_command_args: &RotateNextKeysetCommand,
 ) -> Result<()> {
     let amounts = if let Some(amounts_str) = &sub_command_args.amounts {
