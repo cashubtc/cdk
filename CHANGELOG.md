@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- cdk-common: `MakePaymentResponse` gained optional `bolt12_payer_proof_inputs`. Downstream `MintPayment` backends that construct the struct with a literal must set the field, or use `MakePaymentResponse::new(...)` which leaves it unset.
+
 ## [0.18.0](https://github.com/cashubtc/cdk/releases/tag/v0.18.0)
 
 ### Summary
