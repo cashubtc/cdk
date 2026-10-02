@@ -1,0 +1,66 @@
+{
+  "name": "@cashu/cashu-native",
+  "version": "0.18.0",
+  "description": "Native cashu crypto for React Native, generated from the CDK Rust crates",
+  "main": "lib/index.js",
+  "module": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "react-native": "src/index.ts",
+  "source": "src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./creator": {
+      "types": "./lib/NativeOutputDataCreator.d.ts",
+      "default": "./lib/NativeOutputDataCreator.js"
+    }
+  },
+  "scripts": {
+    "nitrogen": "nitrogen",
+    "prepack": "node scripts/check-generated.mjs && tsc",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc",
+    "test": "node --test test/*.test.mjs",
+    "bench": "node test/benchmark.mjs"
+  },
+  "peerDependencies": {
+    "@cashu/cashu-ts": "^5.0.0-rc.8",
+    "react": "*",
+    "react-native": "*",
+    "react-native-nitro-modules": ">=0.36.0"
+  },
+  "peerDependenciesMeta": {
+    "@cashu/cashu-ts": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@cashu/cashu-ts": "^5.0.0-rc.8",
+    "koffi": "^2.9.0",
+    "nitrogen": "^0.36.5",
+    "react": "^19.2.0",
+    "react-native": "0.84.1",
+    "react-native-nitro-modules": "^0.36.5",
+    "typescript": "^5.9.3"
+  },
+  "files": [
+    "lib/",
+    "scripts/",
+    "src/",
+    "cpp/generated/",
+    "android/",
+    "ios/",
+    "nitrogen/",
+    "nitro.json",
+    "CashuNative.podspec"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cashubtc/cdk.git",
+    "directory": "bindings/react-native"
+  },
+  "license": "MIT OR Apache-2.0",
+  "keywords": ["react-native", "cashu", "ecash", "nitro", "uniffi"]
+}

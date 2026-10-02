@@ -9,6 +9,7 @@
 use std::sync::{Arc, Mutex};
 
 use cdk::wallet::WalletNwcHandler;
+use cdk_common::util::wipe::ZeroOnDrop;
 use cdk_nostr::nostr::prelude::{Keys, RelayUrl, SecretKey};
 use cdk_nostr::nwc::{NwcService as CdkNwcService, NwcServiceConfig};
 use tokio::task::JoinHandle;
@@ -259,6 +260,7 @@ impl NwcService {
 /// Returns an error if the seed is shorter than 64 bytes or derivation fails.
 #[uniffi::export]
 pub fn nwc_derive_service_secret_key_from_seed(seed: Vec<u8>) -> Result<String, FfiError> {
+    let seed = ZeroOnDrop::new(seed);
     if seed.len() < 64 {
         return Err(FfiError::internal("Seed must be at least 64 bytes"));
     }
@@ -266,7 +268,7 @@ pub fn nwc_derive_service_secret_key_from_seed(seed: Vec<u8>) -> Result<String, 
     let seed: [u8; 64] = seed[..64]
         .try_into()
         .map_err(|_| FfiError::internal("Failed to read wallet seed bytes"))?;
-
+    let seed = ZeroOnDrop::new(seed);
     let secret_key = cdk::wallet::derive_nwc_secret_key_from_seed(&seed)
         .map_err(|e| FfiError::internal(format!("Failed to derive secret key: {e}")))?;
 

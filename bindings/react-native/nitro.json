@@ -1,0 +1,20 @@
+{
+  "$schema": "https://nitro.margelo.com/nitro.schema.json",
+  "cxxNamespace": ["cashucrypto"],
+  "ios": {
+    "iosModuleName": "CashuNative"
+  },
+  "android": {
+    "androidNamespace": ["cashucrypto"],
+    "androidCxxLibName": "CashuNative"
+  },
+  "autolinking": {
+    "CashuCrypto": {
+      "all": {
+        "language": "c++",
+        "implementationClassName": "HybridCashuCrypto"
+      }
+    }
+  },
+  "ignorePaths": ["node_modules", "lib", "test"]
+}

@@ -5,6 +5,7 @@ members = [
     "bindings/swift/rust",
     "bindings/kotlin/rust",
     "bindings/go/rust",
+    "tools/uniffi-bindgen-nitro",
 ]
 exclude = [
     "fuzz",
@@ -52,6 +53,7 @@ bitcoin = { version = "0.32.2", features = ["base64", "serde", "rand", "rand-std
 bip39 = { version = "2.0", features = ["rand"] }
 jsonwebtoken = "9.2.0"
 cashu = { path = "./crates/cashu", default-features = false, version = "=0.18.0" }
+cashu-ffi = { path = "./crates/cashu-ffi", default-features = false, version = "=0.18.0" }
 cdk = { path = "./crates/cdk", default-features = false, version = "=0.18.0" }
 cdk-common = { path = "./crates/cdk-common", default-features = false, version = "=0.18.0" }
 cdk-axum = { path = "./crates/cdk-axum", default-features = false, version = "=0.18.0" }

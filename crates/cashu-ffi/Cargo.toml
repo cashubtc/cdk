@@ -1,0 +1,30 @@
+[package]
+name = "cashu-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+readme.workspace = true
+description = "UniFFI bindings for the cashu crate protocol and crypto primitives"
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+name = "cashu_ffi"
+
+[dependencies]
+bitcoin = { workspace = true }
+cashu = { workspace = true, default-features = false, features = ["wallet"] }
+thiserror = { workspace = true }
+uniffi = { workspace = true, features = ["cli"] }
+
+[dev-dependencies]
+bip39 = { workspace = true }
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+
+[lints]
+workspace = true
