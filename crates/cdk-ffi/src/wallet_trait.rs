@@ -305,6 +305,8 @@ impl WalletTraitDef for Wallet {
         Ok(amount.into())
     }
 
+    /// Forwards the persisted quote, including its database version and ownership.
+    /// Propagates quote ID validation and database reload errors.
     async fn check_mint_quote_status(
         &self,
         quote_id: &str,
