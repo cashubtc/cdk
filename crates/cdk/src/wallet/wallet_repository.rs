@@ -403,7 +403,7 @@ impl WalletRepository {
     }
 
     /// Create an OIDC client using a wallet connector for this mint when available.
-    #[instrument(skip(self))]
+    #[instrument(skip(self, openid_discovery), fields(openid_discovery = %cdk_common::redact::url_for_logs(&openid_discovery)))]
     pub async fn oidc_client_for_mint(
         &self,
         mint_url: &MintUrl,
@@ -1079,6 +1079,29 @@ mod tests {
             .build()
             .await
             .expect("Failed to create WalletRepository")
+    }
+
+    #[tokio::test]
+    async fn unknown_mint_preserves_requested_url() {
+        let repository = create_test_repository().await;
+        for url in [
+            "https://mint.example",
+            "https://alice:password@mint.example/api?token=secret#fragment",
+        ] {
+            let mint_url: MintUrl = url.parse().expect("valid mint URL");
+            let error = repository
+                .check_all_mint_quotes(Some(mint_url.clone()))
+                .await
+                .expect_err("mint is not registered");
+            assert!(!error.to_string().contains("password"));
+            assert!(!format!("{error:?}").contains("secret"));
+            match error {
+                Error::UnknownMint { mint_url: actual } => {
+                    assert_eq!(actual, mint_url.to_string());
+                }
+                _ => panic!("expected UnknownMint"),
+            }
+        }
     }
 
     async fn create_test_repository_with_proxy(proxy_url: url::Url) -> WalletRepository {

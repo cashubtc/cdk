@@ -213,15 +213,9 @@ pub struct AuthResponse {
 impl fmt::Debug for AuthResponse {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AuthResponse")
-            .field("access_token", &"[REDACTED]")
             .field("token_type", &self.token_type)
             .field("expires_in", &self.expires_in)
-            .field(
-                "refresh_token",
-                &self.refresh_token.as_ref().map(|_| "[REDACTED]"),
-            )
-            .field("user_json", &self.user_json)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -310,7 +304,7 @@ mod tests {
 
         let debug = format!("{response:?}");
 
-        assert!(debug.contains("public-user-id"));
+        assert!(!debug.contains("public-user-id"));
         assert!(!debug.contains(access_token));
         assert!(!debug.contains(refresh_token));
     }
