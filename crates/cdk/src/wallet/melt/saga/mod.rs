@@ -870,7 +870,10 @@ impl<'a> MeltSaga<'a, Prepared> {
         .await;
 
         // Calculate change accounting for input fees
-        let change_amount = proofs_total - quote_info.amount - actual_input_fee;
+        let change_amount = proofs_total
+            .checked_sub(quote_info.amount)
+            .and_then(|rem| rem.checked_sub(actual_input_fee))
+            .ok_or(Error::InsufficientFunds)?;
 
         let premint_secrets = if change_amount <= Amount::ZERO {
             PreMintSecrets::new(active_keyset_id)
@@ -884,7 +887,9 @@ impl<'a> MeltSaga<'a, Prepared> {
                 .increment_keyset_counter(&active_keyset_id, num_secrets)
                 .await?;
 
-            let count = new_counter - num_secrets;
+            let count = new_counter
+                .checked_sub(num_secrets)
+                .ok_or(Error::AmountOverflow)?;
 
             PreMintSecrets::from_seed_blank(
                 active_keyset_id,

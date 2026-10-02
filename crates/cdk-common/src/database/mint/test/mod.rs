@@ -2,7 +2,13 @@
 //!
 //! This set is generic and checks the default and expected behaviour for a mint database
 //! implementation
-#![allow(clippy::unwrap_used, clippy::missing_panics_doc)]
+// Shared database conformance harness: builds fixtures from loop indices, so
+// its arithmetic is bookkeeping rather than protocol amounts.
+#![allow(
+    clippy::unwrap_used,
+    clippy::missing_panics_doc,
+    clippy::arithmetic_side_effects
+)]
 use std::str::FromStr;
 
 // For derivation path parsing

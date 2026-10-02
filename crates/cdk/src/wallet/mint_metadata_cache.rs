@@ -364,7 +364,7 @@ impl MintMetadataCache {
         // Don't update `updated_at` — the TTL should reflect when we last
         // fetched from the mint, not when we read from the local DB.
         new_metadata.status.is_populated = !new_metadata.keysets.is_empty();
-        new_metadata.status.version += 1;
+        new_metadata.status.version = new_metadata.status.version.saturating_add(1);
 
         tracing::info!(
             "Loaded cache from database for {} with {} keysets (version {})",
@@ -755,13 +755,13 @@ impl MintMetadataCache {
         if client.is_some() {
             new_metadata.status.is_populated = true;
             new_metadata.status.updated_at = Instant::now();
-            new_metadata.status.version += 1;
+            new_metadata.status.version = new_metadata.status.version.saturating_add(1);
         }
 
         if auth_client.is_some() {
             new_metadata.auth_status.is_populated = true;
             new_metadata.auth_status.updated_at = Instant::now();
-            new_metadata.auth_status.version += 1;
+            new_metadata.auth_status.version = new_metadata.auth_status.version.saturating_add(1);
         }
 
         tracing::info!(

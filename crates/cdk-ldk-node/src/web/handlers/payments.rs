@@ -50,19 +50,19 @@ pub async fn payments_page(
     let filter = query.filter.as_deref().unwrap_or("all");
     let page = query.page.unwrap_or(1).max(1);
     let per_page = query.per_page.unwrap_or(25).clamp(10, 100); // Limit between 10-100 items per page
+    let page_size = usize::try_from(per_page).unwrap_or(25);
 
     // Use efficient pagination function
-    let (current_page_payments, total_count) = get_paginated_payments_streaming(
-        &state.node.inner,
-        filter,
-        ((page - 1) * per_page) as usize,
-        per_page as usize,
-    );
+    let start_index = usize::try_from(page.saturating_sub(1))
+        .unwrap_or(usize::MAX)
+        .saturating_mul(page_size);
+
+    let (current_page_payments, total_count) =
+        get_paginated_payments_streaming(&state.node.inner, filter, start_index, page_size);
 
     // Calculate pagination
-    let total_pages = ((total_count as f64) / (per_page as f64)).ceil() as u32;
-    let start_index = ((page - 1) * per_page) as usize;
-    let end_index = (start_index + per_page as usize).min(total_count);
+    let total_pages = ((total_count as f64) / f64::from(per_page)).ceil() as u32;
+    let end_index = start_index.saturating_add(page_size).min(total_count);
 
     // Helper function to build URL with pagination params
     let build_url = |new_page: u32, new_filter: &str, new_per_page: u32| -> String {
@@ -163,7 +163,7 @@ pub async fn payments_page(
 
                     @let amount_str = {
                         match (payment.amount_msat, payment.fee_paid_msat) {
-                            (Some(amount), Some(fee)) if payment.direction == PaymentDirection::Outbound => format_msats_as_btc(amount + fee),
+                            (Some(amount), Some(fee)) if payment.direction == PaymentDirection::Outbound => format_msats_as_btc(amount.saturating_add(fee)),
                             (Some(amount), _) => format_msats_as_btc(amount),
                             _ => "Unknown".to_string()
                         }
@@ -189,14 +189,14 @@ pub async fn payments_page(
                     div class="pagination" style="display: flex; justify-content: center; align-items: center; gap: 0.5rem;" {
                         // Previous page
                         @if page > 1 {
-                            a href=(build_url(page - 1, filter, per_page)) class="pagination-btn" { "← Previous" }
+                            a href=(build_url(page.saturating_sub(1), filter, per_page)) class="pagination-btn" { "← Previous" }
                         } @else {
                             span class="pagination-btn disabled" { "← Previous" }
                         }
 
                         // Page numbers
                         @let start_page = (page.saturating_sub(2)).max(1);
-                        @let end_page = (page + 2).min(total_pages);
+                        @let end_page = page.saturating_add(2).min(total_pages);
 
                         @if start_page > 1 {
                             a href=(build_url(1, filter, per_page)) class="pagination-number" { "1" }
@@ -214,7 +214,7 @@ pub async fn payments_page(
                         }
 
                         @if end_page < total_pages {
-                            @if end_page < total_pages - 1 {
+                            @if end_page < total_pages.saturating_sub(1) {
                                 span class="pagination-ellipsis" { "..." }
                             }
                             a href=(build_url(total_pages, filter, per_page)) class="pagination-number" { (total_pages) }
@@ -222,7 +222,7 @@ pub async fn payments_page(
 
                         // Next page
                         @if page < total_pages {
-                            a href=(build_url(page + 1, filter, per_page)) class="pagination-btn" { "Next →" }
+                            a href=(build_url(page.saturating_add(1), filter, per_page)) class="pagination-btn" { "Next →" }
                         } @else {
                             span class="pagination-btn disabled" { "Next →" }
                         }

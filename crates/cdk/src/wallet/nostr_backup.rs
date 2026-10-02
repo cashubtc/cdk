@@ -243,7 +243,7 @@ impl WalletRepository {
             .map_err(|e| Error::Custom(format!("Failed to decrypt backup event: {e}")))?;
 
         let mint_count = backup.mints.len();
-        let mut mints_added = 0;
+        let mut mints_added: usize = 0;
 
         if add_mints {
             for mint_url in &backup.mints {
@@ -251,7 +251,7 @@ impl WalletRepository {
                     // Ignore errors for individual mints to continue restoring others
                     // add_wallet fetches mint info and creates wallets for all supported units
                     if self.add_wallet(mint_url.clone()).await.is_ok() {
-                        mints_added += 1;
+                        mints_added = mints_added.saturating_add(1);
                     }
                 }
             }

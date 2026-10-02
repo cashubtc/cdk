@@ -22,7 +22,7 @@ fn main() {
     let output_dir = args
         .iter()
         .position(|arg| arg == "--out-dir")
-        .and_then(|idx| args.get(idx + 1))
+        .and_then(|idx| args.get(idx.saturating_add(1)))
         .expect("--out-dir is required");
 
     // Get absolute path to uniffi.toml

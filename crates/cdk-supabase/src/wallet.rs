@@ -547,7 +547,7 @@ impl SupabaseWalletDatabase {
                         .duration_since(UNIX_EPOCH)
                         .map_err(|e| Error::Supabase(format!("SystemTime error: {}", e)))?
                         .as_secs()
-                        + expires_in as u64;
+                        .saturating_add(expires_in as u64);
                     let mut exp = self.token_expiration.write().await;
                     *exp = Some(expiration);
                 }
@@ -573,7 +573,7 @@ impl SupabaseWalletDatabase {
                         .duration_since(UNIX_EPOCH)
                         .map_err(|e| Error::Supabase(format!("SystemTime error: {}", e)))?
                         .as_secs()
-                        + expires_in as u64;
+                        .saturating_add(expires_in as u64);
                     let mut exp = self.token_expiration.write().await;
                     *exp = Some(expiration);
                 }
@@ -613,7 +613,7 @@ impl SupabaseWalletDatabase {
                 .duration_since(UNIX_EPOCH)
                 .map_err(|e| Error::Supabase(format!("SystemTime error: {}", e)))?
                 .as_secs()
-                + expires_in as u64;
+                .saturating_add(expires_in as u64);
             let mut exp = self.token_expiration.write().await;
             *exp = Some(expiration);
         }
@@ -676,7 +676,7 @@ impl SupabaseWalletDatabase {
                 .expect("SystemTime should be after UNIX_EPOCH")
                 .as_secs();
             // Refresh if expired or expiring in 60 seconds
-            if now + 60 > exp {
+            if now.saturating_add(60) > exp {
                 if let Err(e) = self.refresh_access_token().await {
                     tracing::warn!("Failed to refresh token: {}", e);
                 }
@@ -3291,8 +3291,8 @@ mod tests {
         schema_sql
             .lines()
             .filter_map(|line| {
-                let start = line.find(PREFIX)? + PREFIX.len();
-                let end = line[start..].find('\'')? + start;
+                let start = line.find(PREFIX)?.saturating_add(PREFIX.len());
+                let end = line[start..].find('\'')?.saturating_add(start);
                 line[start..end].parse().ok()
             })
             .collect()

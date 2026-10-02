@@ -1,6 +1,7 @@
 //! Build script
 
 #![allow(clippy::unwrap_used)]
+#![allow(clippy::arithmetic_side_effects)]
 
 use std::cmp::Ordering;
 use std::env;

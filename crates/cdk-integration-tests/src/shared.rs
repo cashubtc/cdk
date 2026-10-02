@@ -179,7 +179,7 @@ pub fn write_env_file(temp_dir: &Path, env_vars: &[(&str, &str)]) -> Result<()> 
 
 /// Quote a string for safe use as one POSIX shell word.
 pub fn shell_quote(value: &str) -> String {
-    let mut quoted = String::with_capacity(value.len() + 2);
+    let mut quoted = String::with_capacity(value.len().saturating_add(2));
     quoted.push('\'');
 
     for ch in value.chars() {

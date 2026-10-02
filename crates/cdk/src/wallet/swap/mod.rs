@@ -206,7 +206,7 @@ impl Wallet {
                 let change_count = change_amount
                     .split_targeted(&change_split_target, fee_and_amounts)?
                     .len() as u32;
-                send_count + change_count
+                send_count.saturating_add(change_count)
             }
         };
 
@@ -223,7 +223,9 @@ impl Wallet {
                 .increment_keyset_counter(&active_keyset_id, total_secrets_needed)
                 .await?;
 
-            new_counter - total_secrets_needed
+            new_counter
+                .checked_sub(total_secrets_needed)
+                .ok_or(Error::AmountOverflow)?
         } else {
             0
         };
@@ -297,7 +299,11 @@ impl Wallet {
                     fee_and_amounts,
                 )?;
 
-                count += premint_secrets.len() as u32;
+                count = count
+                    .checked_add(
+                        u32::try_from(premint_secrets.len()).map_err(|_| Error::AmountOverflow)?,
+                    )
+                    .ok_or(Error::AmountOverflow)?;
 
                 let change_premint_secrets = PreMintSecrets::from_seed(
                     active_keyset_id,
@@ -308,7 +314,9 @@ impl Wallet {
                     fee_and_amounts,
                 )?;
 
-                derived_secret_count = change_premint_secrets.len() + premint_secrets.len();
+                derived_secret_count = change_premint_secrets
+                    .len()
+                    .saturating_add(premint_secrets.len());
 
                 (premint_secrets, change_premint_secrets)
             }

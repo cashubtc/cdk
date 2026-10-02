@@ -141,7 +141,7 @@ impl TorAsync {
             h = fnv1a(h, b);
         }
 
-        (h as usize) % pool_len.max(1)
+        (h as usize).checked_rem(pool_len).unwrap_or(0)
     }
 
     async fn raw_request(

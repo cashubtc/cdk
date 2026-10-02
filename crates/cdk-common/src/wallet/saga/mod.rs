@@ -242,6 +242,6 @@ impl WalletSaga {
             .duration_since(web_time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        self.version += 1;
+        self.version = self.version.saturating_add(1);
     }
 }

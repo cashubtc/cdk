@@ -196,7 +196,7 @@ async fn main() -> Result<(), Error> {
 
     let stop = stream.get_cancel_token();
 
-    let mut processed = 0;
+    let mut processed: usize = 0;
 
     while let Some(proofs) = stream.next().await {
         let (mint_quote, proofs) = proofs?;
@@ -210,7 +210,7 @@ async fn main() -> Result<(), Error> {
         let token = prepared_send.confirm(None).await?;
         tracing::info!("Token: {}", token);
 
-        processed += 1;
+        processed = processed.saturating_add(1);
 
         if processed == 3 {
             stop.cancel()

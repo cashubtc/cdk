@@ -5,6 +5,9 @@
 //! internal crates.
 
 #![doc = include_str!("../README.md")]
+// Test code does bookkeeping arithmetic on fixtures where a wrap is not a
+// money bug; the lint stays denied for everything the crate ships.
+#![cfg_attr(test, allow(clippy::arithmetic_side_effects))]
 
 pub mod task;
 pub mod terminal;

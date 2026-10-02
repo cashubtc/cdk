@@ -3,6 +3,10 @@
 //! This module provides bech32m encoding and decoding functionality for Cashu payment requests,
 //! implementing the CREQ-B format using TLV (Tag-Length-Value) encoding as specified in NUT-26.
 
+// TLV parser cursor arithmetic: offsets and wire-supplied lengths, each
+// bounds-checked against the buffer before use. No amounts here.
+#![allow(clippy::arithmetic_side_effects)]
+
 use std::str::FromStr;
 
 use bitcoin::bech32::{self, Bech32, Bech32m, Hrp};

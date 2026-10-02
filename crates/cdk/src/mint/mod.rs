@@ -1277,7 +1277,7 @@ impl Mint {
 
             proofs_per_keyset
                 .entry(proof.keyset_id)
-                .and_modify(|count| *count += 1)
+                .and_modify(|count: &mut u64| *count = count.saturating_add(1))
                 .or_insert(1);
         }
 

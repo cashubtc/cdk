@@ -4,6 +4,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use cdk_common::common::expiry_from_ttl;
 use cdk_common::database::DynMintDatabase;
 use cdk_common::melt::MeltQuoteRequest;
 use cdk_common::mint::MeltPaymentRequest;
@@ -30,7 +31,6 @@ use super::{
 use crate::mint::verification::{validate_custom_payment_method, MAX_REQUEST_FIELD_LEN};
 use crate::nuts::MeltQuoteState;
 use crate::types::PaymentProcessorKey;
-use crate::util::unix_time;
 use crate::{ensure_cdk, Amount, Error};
 
 pub(crate) mod melt_saga;
@@ -343,7 +343,7 @@ impl Mint {
                 unit.clone(),
                 quote_amount.clone(),
                 quote_fee,
-                unix_time() + melt_ttl,
+                expiry_from_ttl(melt_ttl),
                 payment_quote.request_lookup_id.clone(),
                 *options,
                 PaymentMethod::Known(KnownMethod::Bolt11),
@@ -462,7 +462,7 @@ impl Mint {
                 unit.clone(),
                 quote_amount.clone(),
                 quote_fee,
-                unix_time() + self.quote_ttl().await?.melt_ttl,
+                expiry_from_ttl(self.quote_ttl().await?.melt_ttl),
                 payment_quote.request_lookup_id.clone(),
                 *options,
                 PaymentMethod::Known(KnownMethod::Bolt12),
@@ -610,7 +610,7 @@ impl Mint {
                 },
                 unit.clone(),
                 payment_quote.amount,
-                unix_time() + melt_ttl,
+                expiry_from_ttl(melt_ttl),
                 request_lookup_id,
                 payment_quote.extra_json,
                 fee_options,
@@ -740,7 +740,7 @@ impl Mint {
                 unit.clone(),
                 quote_amount.clone(),
                 quote_fee,
-                unix_time() + melt_ttl,
+                expiry_from_ttl(melt_ttl),
                 payment_quote.request_lookup_id.clone(),
                 None, // Custom methods don't use options
                 payment_method,

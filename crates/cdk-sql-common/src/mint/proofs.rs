@@ -271,7 +271,7 @@ where
             // Query current states to provide detailed logging
             let current_states = get_current_states(&self.inner, ys, true).await?;
 
-            let missing_count = ys.len() - current_states.len();
+            let missing_count = ys.len().saturating_sub(current_states.len());
             let spent_count = current_states
                 .values()
                 .filter(|s| **s == State::Spent)

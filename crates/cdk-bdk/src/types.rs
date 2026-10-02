@@ -1,3 +1,5 @@
+//! Configuration and metadata types shared across the onchain backend.
+
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};

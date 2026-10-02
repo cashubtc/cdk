@@ -10,17 +10,9 @@ pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>,
     let balances = state.node.inner.list_balances();
     let channels = state.node.inner.list_channels();
 
-    let (num_active_channels, num_inactive_channels) =
-        channels
-            .iter()
-            .fold((0, 0), |(mut active, mut inactive), c| {
-                if c.is_usable {
-                    active += 1;
-                } else {
-                    inactive += 1;
-                }
-                (active, inactive)
-            });
+    let num_channels = channels.len();
+    let num_active_channels = channels.iter().filter(|c| c.is_usable).count();
+    let num_inactive_channels = channels.iter().filter(|c| !c.is_usable).count();
 
     let content = if channels.is_empty() {
         html! {
@@ -58,7 +50,7 @@ pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>,
                         div class="metric-label" { "Lightning Balance" }
                     }
                     div class="metric-card" {
-                        div class="metric-value" { (format!("{}", num_active_channels + num_inactive_channels)) }
+                        div class="metric-value" { (format!("{}", num_channels)) }
                         div class="metric-label" { "Total Channels" }
                     }
                     div class="metric-card" {
@@ -114,7 +106,7 @@ pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>,
                         div class="metric-label" { "Lightning Balance" }
                     }
                     div class="metric-card" {
-                        div class="metric-value" { (format!("{}", num_active_channels + num_inactive_channels)) }
+                        div class="metric-value" { (format!("{}", num_channels)) }
                         div class="metric-label" { "Total Channels" }
                     }
                     div class="metric-card" {
@@ -136,7 +128,7 @@ pub async fn balance_page(State(state): State<AppState>) -> Result<Html<String>,
                     // Channels list
                     @for (index, channel) in channels.iter().enumerate() {
                 @let node_id = channel.counterparty_node_id.to_string();
-                @let channel_number = index + 1;
+                @let channel_number = index.saturating_add(1);
 
                 div class="channel-box" {
                     // Channel header with number on left and status badge on right

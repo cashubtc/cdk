@@ -59,7 +59,7 @@ pub fn calculate_fee(
         }
 
         // Calculate proportional fee, rounding down
-        let keyset_fee = if i == keyset_count - 1 {
+        let keyset_fee = if i == keyset_count.saturating_sub(1) {
             // Last keyset gets the remainder to ensure total matches
             total_fee.saturating_sub(distributed_fee)
         } else {

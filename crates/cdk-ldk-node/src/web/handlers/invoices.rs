@@ -239,7 +239,7 @@ pub async fn post_create_bolt11(
                 ("Description", description_display),
                 (
                     "Expires At",
-                    format!("{}", current_time + expiry_seconds as u64),
+                    format!("{}", current_time.saturating_add(u64::from(expiry_seconds))),
                 ),
             ];
 
@@ -326,7 +326,7 @@ pub async fn post_create_bolt12(
                 ("Description", description_display),
                 (
                     "Expires At",
-                    format!("{}", current_time + expiry_seconds as u64),
+                    format!("{}", current_time.saturating_add(u64::from(expiry_seconds))),
                 ),
             ];
 

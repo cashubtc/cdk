@@ -438,15 +438,15 @@ impl Wallet {
             match result {
                 Ok(RecoveryAction::Recovered) => {
                     tracing::info!("Saga {} recovered successfully", saga.id);
-                    report.recovered += 1;
+                    report.recovered = report.recovered.saturating_add(1);
                 }
                 Ok(RecoveryAction::Compensated) => {
                     tracing::info!("Saga {} compensated (rolled back)", saga.id);
-                    report.compensated += 1;
+                    report.compensated = report.compensated.saturating_add(1);
                 }
                 Ok(RecoveryAction::Skipped) => {
                     tracing::info!("Saga {} skipped", saga.id);
-                    report.skipped += 1;
+                    report.skipped = report.skipped.saturating_add(1);
                 }
                 Err(e) => {
                     tracing::error!(
@@ -454,7 +454,7 @@ impl Wallet {
                         saga.id,
                         escape_log_value(&e)
                     );
-                    report.failed += 1;
+                    report.failed = report.failed.saturating_add(1);
                 }
             }
         }

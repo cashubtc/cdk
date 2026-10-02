@@ -1,3 +1,5 @@
+//! KV store operations for send intents and their batches.
+
 use std::str::FromStr;
 
 use uuid::Uuid;

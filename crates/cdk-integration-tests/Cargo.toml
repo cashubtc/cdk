@@ -77,6 +77,8 @@ unsafe_code = "forbid"
 
 [lints.clippy]
 unwrap_used = "allow"
+# See the workspace manifest: unchecked arithmetic wraps in release.
+arithmetic_side_effects = "deny"
 
 [lints.rustdoc]
 missing_docs = "warn"

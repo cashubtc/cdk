@@ -292,7 +292,8 @@ impl Statement {
                             can_be_cached = false;
                             let start_size = placeholder_values.len();
                             placeholder_values.append(&mut values);
-                            let placeholders = (start_size + 1..=placeholder_values.len())
+                            let placeholders = (start_size.saturating_add(1)
+                                ..=placeholder_values.len())
                                 .map(|i| format!("${i}"))
                                 .collect::<Vec<_>>()
                                 .join(", ");

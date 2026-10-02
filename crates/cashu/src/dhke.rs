@@ -46,6 +46,10 @@ pub fn hash_to_curve(message: &[u8]) -> Result<PublicKey, Error> {
     let msg_hash: [u8; 32] = Sha256Hash::hash(&msg_to_hash).to_byte_array();
 
     let mut counter: u32 = 0;
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "loop counter bounded by 2^16"
+    )]
     while counter < 2_u32.pow(16) {
         let mut bytes_to_hash: Vec<u8> = Vec::with_capacity(36);
         bytes_to_hash.extend_from_slice(&msg_hash);

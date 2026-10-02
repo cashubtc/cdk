@@ -136,7 +136,7 @@ fn normalize(input: &str) -> Result<(String, Option<TlsPolicy>), Error> {
                         value.push(escaped);
                     }
                     '\'' if quoted => {
-                        end = index + 1;
+                        end = index.saturating_add(1);
                         closed = true;
                         break;
                     }
@@ -155,7 +155,7 @@ fn normalize(input: &str) -> Result<(String, Option<TlsPolicy>), Error> {
                 policy = Some(TlsPolicy::parse(&value)?);
                 output.push_str("sslmode=disable");
             } else {
-                output.push_str(&start[..start.len() - rest.len()]);
+                output.push_str(&start[..start.len().saturating_sub(rest.len())]);
             }
             output.push(' ');
         }

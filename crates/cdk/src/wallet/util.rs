@@ -165,7 +165,7 @@ pub(crate) fn sign_proofs(
 
             let slot = match secret.kind() {
                 Kind::P2PK => i as u8,
-                Kind::HTLC => (i + 1) as u8,
+                Kind::HTLC => i.saturating_add(1) as u8,
             };
             if let Some(ephemeral_key) = ephemeral_key {
                 for signing_key in key_map.values() {
@@ -279,7 +279,7 @@ pub fn token_from_text(text: &str) -> Option<&str> {
     let text = text.trim();
     if let Some(start) = text.find("cashu") {
         match text[start..].find(' ') {
-            Some(end) => return Some(&text[start..(end + start)]),
+            Some(end) => return Some(&text[start..end.saturating_add(start)]),
             None => return Some(&text[start..]),
         }
     }

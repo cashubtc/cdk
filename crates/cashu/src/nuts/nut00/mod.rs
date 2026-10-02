@@ -48,7 +48,7 @@ pub trait ProofsMethods {
     fn count_by_keyset(&self) -> HashMap<Id, u64>;
 
     /// Sum proofs by keyset
-    fn sum_by_keyset(&self) -> HashMap<Id, Amount>;
+    fn sum_by_keyset(&self) -> Result<HashMap<Id, Amount>, Error>;
 
     /// Try to sum up the amounts of all [Proof]s
     fn total_amount(&self) -> Result<Amount, Error>;
@@ -68,7 +68,7 @@ impl ProofsMethods for Proofs {
         count_by_keyset(self.iter())
     }
 
-    fn sum_by_keyset(&self) -> HashMap<Id, Amount> {
+    fn sum_by_keyset(&self) -> Result<HashMap<Id, Amount>, Error> {
         sum_by_keyset(self.iter())
     }
 
@@ -106,7 +106,7 @@ impl ProofsMethods for HashSet<Proof> {
         count_by_keyset(self.iter())
     }
 
-    fn sum_by_keyset(&self) -> HashMap<Id, Amount> {
+    fn sum_by_keyset(&self) -> Result<HashMap<Id, Amount>, Error> {
         sum_by_keyset(self.iter())
     }
 
@@ -139,6 +139,8 @@ impl ProofsMethods for HashSet<Proof> {
     }
 }
 
+/// Counts proofs per keyset; one increment per proof, bounded by the input length.
+#[allow(clippy::arithmetic_side_effects)]
 fn count_by_keyset<'a, I: Iterator<Item = &'a Proof>>(proofs: I) -> HashMap<Id, u64> {
     let mut counts = HashMap::new();
     for proof in proofs {
@@ -147,12 +149,17 @@ fn count_by_keyset<'a, I: Iterator<Item = &'a Proof>>(proofs: I) -> HashMap<Id, 
     counts
 }
 
-fn sum_by_keyset<'a, I: Iterator<Item = &'a Proof>>(proofs: I) -> HashMap<Id, Amount> {
-    let mut sums = HashMap::new();
+fn sum_by_keyset<'a, I: Iterator<Item = &'a Proof>>(
+    proofs: I,
+) -> Result<HashMap<Id, Amount>, Error> {
+    let mut sums: HashMap<Id, Amount> = HashMap::new();
     for proof in proofs {
-        *sums.entry(proof.keyset_id).or_insert(Amount::ZERO) += proof.amount;
+        let entry = sums.entry(proof.keyset_id).or_insert(Amount::ZERO);
+        *entry = entry
+            .checked_add(proof.amount)
+            .ok_or(crate::amount::Error::AmountOverflow)?;
     }
-    sums
+    Ok(sums)
 }
 
 fn total_amount<'a, I: Iterator<Item = &'a Proof>>(proofs: I) -> Result<Amount, Error> {
@@ -1070,7 +1077,13 @@ impl PreMintSecrets {
     }
 
     /// Outputs with P2BK spending conditions
+    ///
+    /// The `pubkeys` and refund tags in `conditions` take NUT-28 slot indices,
+    /// so a key set larger than [`MAX_LOCKING_SLOTS`] is rejected.
+    ///
+    /// [`MAX_LOCKING_SLOTS`]: crate::nuts::nut10::MAX_LOCKING_SLOTS
     #[cfg(feature = "wallet")]
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn with_p2bk(
         keyset_id: Id,
         amount: Amount,
@@ -1727,7 +1740,7 @@ mod tests {
             ]"#,
         ).unwrap();
 
-        let sums = proofs.sum_by_keyset();
+        let sums = proofs.sum_by_keyset().unwrap();
         assert_eq!(sums.len(), 2);
         assert_eq!(
             sums[&Id::from_str("009a1f293253e41e").unwrap()],
@@ -1784,7 +1797,7 @@ mod tests {
         let counts = proof_set.count_by_keyset();
         assert_eq!(counts.len(), 2);
 
-        let sums = proof_set.sum_by_keyset();
+        let sums = proof_set.sum_by_keyset().unwrap();
         assert_eq!(sums.len(), 2);
         // Total should be 14 (2 + 8 + 4)
         let total: u64 = sums.values().map(|a| u64::from(*a)).sum();

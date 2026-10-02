@@ -1,6 +1,7 @@
 //! Build script
 
 #![allow(clippy::unwrap_used)]
+#![allow(clippy::arithmetic_side_effects)]
 
 fn main() {
     println!("cargo:rerun-if-changed=src/proto/signatory.proto");

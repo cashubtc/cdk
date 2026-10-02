@@ -233,7 +233,7 @@ pub async fn transfer(
             }
 
             source_balance_after = next_source_balance;
-            completed_transfers += 1;
+            completed_transfers = completed_transfers.saturating_add(1);
 
             if source_balance_after == Amount::ZERO {
                 break;

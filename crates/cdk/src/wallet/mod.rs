@@ -208,7 +208,8 @@ impl From<WalletSubscription> for WalletParams {
             buffer
                 .iter()
                 .map(|&byte| {
-                    let index = byte as usize % ALPHANUMERIC.len(); // 62 alphanumeric characters (A-Z, a-z, 0-9)
+                    // 62 alphanumeric characters (A-Z, a-z, 0-9); the table is never empty
+                    let index = (byte as usize).checked_rem(ALPHANUMERIC.len()).unwrap_or(0);
                     ALPHANUMERIC[index] as char
                 })
                 .collect::<String>(),
@@ -624,7 +625,7 @@ impl Wallet {
                 .fold(HashMap::new(), |mut acc, proof| {
                     let amount = proof.amount;
                     let counter = acc.entry(u64::from(amount)).or_insert(0);
-                    *counter += 1;
+                    *counter = counter.saturating_add(1);
                     acc
                 });
 
@@ -749,7 +750,7 @@ impl Wallet {
                 }
 
                 if response.signatures.is_empty() {
-                    empty_batch += 1;
+                    empty_batch = empty_batch.saturating_add(1);
                     start_counter = start_counter.saturating_add(batch_size);
                     continue;
                 }
@@ -778,7 +779,7 @@ impl Wallet {
 
                 // Update highest counter based on matched indices
                 if let Some(&(max_idx, _, _)) = matched_secrets.last() {
-                    let counter_value = start_counter + max_idx as u32;
+                    let counter_value = start_counter.saturating_add(max_idx as u32);
                     highest_counter =
                         Some(highest_counter.map_or(counter_value, |c| c.max(counter_value)));
                 }
@@ -848,7 +849,7 @@ impl Wallet {
                             .ok()
                             .map(|proof_info| {
                                 proof_info.with_derivation_index(
-                                    start_counter + matched_secrets[index].0 as u32,
+                                    start_counter.saturating_add(matched_secrets[index].0 as u32),
                                 )
                             })
                     })
@@ -896,12 +897,12 @@ impl Wallet {
 
             if let Some(highest) = highest_counter {
                 self.localstore
-                    .increment_keyset_counter(&keyset.id, highest + 1)
+                    .increment_keyset_counter(&keyset.id, highest.saturating_add(1))
                     .await?;
                 tracing::debug!(
                     "Set keyset {} counter to {} after restore",
                     keyset.id,
-                    highest + 1
+                    highest.saturating_add(1)
                 );
             }
         }

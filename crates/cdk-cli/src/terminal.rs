@@ -54,7 +54,7 @@ pub fn escape_cbor_diag(input: &str) -> String {
         if ch == '\n' && !in_text_string {
             output.push_str(&escape_control(&input[segment_start..index]));
             output.push('\n');
-            segment_start = index + ch.len_utf8();
+            segment_start = index.saturating_add(ch.len_utf8());
             continue;
         }
 

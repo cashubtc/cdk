@@ -76,7 +76,7 @@ pub async fn resolve(
     } else {
         println!("Cashu payment requests: {}", parsed.cashu_requests.len());
         for (index, request) in parsed.cashu_requests.iter().enumerate() {
-            println!("  Request {}", index + 1);
+            println!("  Request {}", index.saturating_add(1));
             println!("    Encoded: {}", request.to_bech32_string()?);
             println!(
                 "    Payment ID: {}",

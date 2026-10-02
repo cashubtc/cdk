@@ -1,5 +1,5 @@
 #![allow(missing_docs)]
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::arithmetic_side_effects)]
 #![allow(clippy::use_debug)]
 
 use std::sync::Arc;

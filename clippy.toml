@@ -1,4 +1,16 @@
 allow-unwrap-in-tests = true
 
+# Time arithmetic is not money arithmetic: these types already saturate or
+# panic loudly on their own, and their operands are local constants.
+arithmetic-side-effects-allowed = [
+    "std::time::Duration",
+    "std::time::Instant",
+    "std::time::SystemTime",
+    "tokio::time::Instant",
+    "web_time::Duration",
+    "web_time::Instant",
+    "web_time::SystemTime",
+]
+
 # Axum handlers intentionally use fully constructed HTTP responses as errors.
 large-error-ignored = ["axum::http::Response"]

@@ -138,7 +138,7 @@ impl DbSignatory {
     /// inter-node messaging. The task holds a `Weak`, so it stops on its own once
     /// the signatory is dropped.
     pub fn spawn_keyset_refresh(self: &Arc<Self>, interval: Option<Duration>) {
-        let interval_ms = match interval.map(|d| d.as_millis() as u64) {
+        let interval_ms = match interval.map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX)) {
             Some(ms) if ms > 0 => ms,
             _ => return,
         };
@@ -151,8 +151,8 @@ impl DbSignatory {
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_millis() as u64;
-                let next = (now_ms / interval_ms + 1) * interval_ms;
-                tokio::time::sleep(Duration::from_millis(next.saturating_sub(now_ms))).await;
+                let sleep_ms = ms_until_next_boundary(now_ms, interval_ms);
+                tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
 
                 let Some(signatory) = weak.upgrade() else {
                     break;
@@ -499,6 +499,17 @@ impl Signatory for DbSignatory {
     }
 }
 
+/// Milliseconds to wait for the next interval boundary on the shared wall
+/// clock, so every instance reloads at about the same moment.
+///
+/// Never zero: a refresh loop that slept for nothing would hammer the database
+/// in a tight loop rather than degrade to a slower cadence.
+fn ms_until_next_boundary(now_ms: u64, interval_ms: u64) -> u64 {
+    let elapsed_in_interval = now_ms.checked_rem(interval_ms).unwrap_or(0);
+
+    interval_ms.saturating_sub(elapsed_in_interval).max(1)
+}
+
 #[cfg(test)]
 mod test {
     use std::collections::HashSet;
@@ -511,6 +522,44 @@ mod test {
     use cdk_common::{Amount, MintKeySet, PublicKey};
 
     use super::*;
+
+    /// The refresh cadence is the contract; aligning to the shared wall clock is
+    /// only what keeps a fleet reloading together. Every input must yield a
+    /// positive sleep, including the extremes where the previous checked chain
+    /// could overflow and fall back to sleeping for nothing, which would have
+    /// turned the refresh task into a database hot loop.
+    #[test]
+    fn boundary_sleep_is_aligned_and_never_zero() {
+        assert_eq!(ms_until_next_boundary(5_500, 5_000), 4_500);
+        assert_eq!(ms_until_next_boundary(9_999, 5_000), 1);
+
+        assert_eq!(
+            ms_until_next_boundary(10_000, 5_000),
+            5_000,
+            "on a boundary the wait is a whole interval, never zero"
+        );
+        assert_eq!(ms_until_next_boundary(0, 5_000), 5_000);
+
+        let interval = 5_000;
+        let boundary_from = |now: u64| now + ms_until_next_boundary(now, interval);
+        assert_eq!(
+            boundary_from(7_001),
+            boundary_from(9_999),
+            "two instances in the same interval must target the same boundary"
+        );
+
+        for (now_ms, interval_ms) in [
+            (u64::MAX, u64::MAX),
+            (u64::MAX - 1, u64::MAX),
+            (1_700_000_000_000, u64::MAX),
+            (1_234, 0),
+        ] {
+            assert!(
+                ms_until_next_boundary(now_ms, interval_ms) > 0,
+                "now_ms={now_ms} interval_ms={interval_ms} must not invite a spin"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn keysets_epoch_moves_only_on_change() {

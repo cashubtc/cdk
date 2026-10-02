@@ -1,6 +1,7 @@
 //! Build script
 
 #![allow(clippy::unwrap_used)]
+#![allow(clippy::arithmetic_side_effects)]
 
 fn main() {
     // Check that at least one database feature is enabled

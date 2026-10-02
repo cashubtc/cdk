@@ -126,7 +126,7 @@ impl LndClient {
         max_checks: u32,
     ) -> Result<()> {
         let peer = hex::decode(peer_id)?;
-        let mut count = 0;
+        let mut count: u32 = 0;
         while count < max_checks {
             let channels = self
                 .client
@@ -150,7 +150,7 @@ impl LndClient {
             }
 
             tracing::warn!("LND channel with peer {peer_id} is not active yet");
-            count += 1;
+            count = count.saturating_add(1);
             sleep(Duration::from_secs(2)).await;
         }
 
@@ -339,7 +339,15 @@ impl LightningClient for LndClient {
     }
 
     async fn create_invoice(&self, amount_sat: Option<u64>) -> Result<String> {
-        let value_msat = amount_sat.map(|a| (a * 1_000) as i64).unwrap_or(0);
+        let value_msat = match amount_sat {
+            Some(amount_sat) => {
+                let msat = amount_sat
+                    .checked_mul(1_000)
+                    .ok_or_else(|| anyhow!("amount is too large to express in millisatoshis"))?;
+                i64::try_from(msat)?
+            }
+            None => 0,
+        };
 
         let invoice_request = fedimint_tonic_lnd::lnrpc::Invoice {
             value_msat,
@@ -360,7 +368,7 @@ impl LightningClient for LndClient {
     }
 
     async fn wait_channels_active(&self) -> Result<()> {
-        let mut count = 0;
+        let mut count: usize = 0;
         while count < 100 {
             let pending = self
                 .client
@@ -383,7 +391,7 @@ impl LightningClient for LndClient {
                 return Ok(());
             }
 
-            count += 1;
+            count = count.saturating_add(1);
 
             sleep(Duration::from_secs(2)).await;
         }
@@ -392,7 +400,7 @@ impl LightningClient for LndClient {
     }
 
     async fn wait_chain_sync(&self) -> Result<()> {
-        let mut count = 0;
+        let mut count: usize = 0;
         while count < 100 {
             let info = self.get_info().await?;
 
@@ -400,7 +408,7 @@ impl LightningClient for LndClient {
                 tracing::info!("LND completed chain sync");
                 return Ok(());
             }
-            count += 1;
+            count = count.saturating_add(1);
 
             sleep(Duration::from_secs(2)).await;
         }

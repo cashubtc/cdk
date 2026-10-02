@@ -165,10 +165,14 @@ impl PreMintSecrets {
         if amount <= Amount::ZERO {
             return Ok(PreMintSecrets::new(keyset_id));
         }
-        let count = ((u64::from(amount) as f64).log2().ceil() as u64).max(1);
+        let count = u32::try_from(((u64::from(amount) as f64).log2().ceil() as u64).max(1))
+            .map_err(|_| crate::amount::Error::AmountOverflow)?;
+        let counter_end = counter
+            .checked_add(count)
+            .ok_or(crate::amount::Error::AmountOverflow)?;
         let mut pre_mint_secrets = PreMintSecrets::new(keyset_id);
 
-        for counter in counter..(counter + count as u32) {
+        for counter in counter..counter_end {
             let secret = Secret::from_seed(seed, keyset_id, counter)?;
             let blinding_factor = SecretKey::from_seed(seed, keyset_id, counter)?;
 

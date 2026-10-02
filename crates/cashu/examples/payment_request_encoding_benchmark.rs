@@ -2,6 +2,9 @@
 //!
 //! Compares NUT-18 (CBOR/base64) vs NUT-26 (Bech32m) encoding formats across
 //! various payment request complexities to demonstrate format efficiency tradeoffs.
+
+// Benchmark statistics over local fixtures, not protocol amounts.
+#![allow(clippy::arithmetic_side_effects)]
 //!
 //! # Format Overview
 //!
