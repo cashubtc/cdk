@@ -20,6 +20,13 @@ use crate::wallet::{
 pub mod test;
 
 /// Wallet Database trait
+///
+/// A mint is identified internally, not by its URL: the URL is one mutable
+/// attribute of a stored mint. Writing a row that refers to a mint (keysets,
+/// proofs, quotes, transactions, sagas) stores the mint first if the URL is not
+/// known yet, so a wallet handed an empty database can write straight away.
+/// [`Database::add_mint`] attaches metadata to that identity and is not a
+/// precondition for anything.
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait Database<Err>: Debug
@@ -105,7 +112,13 @@ where
     /// Add transaction to storage
     async fn add_transaction(&self, transaction: Transaction) -> Result<(), Err>;
 
-    /// Update mint url
+    /// Change the URL a stored mint is reached at.
+    ///
+    /// The mint keeps its identity, so every row attached to it (keysets,
+    /// proofs, mint and melt quotes, transactions, sagas) is reachable under
+    /// `new_mint_url` afterwards and nothing is left behind under
+    /// `old_mint_url`. Returns [`Error::UnknownMint`] if `old_mint_url` is not
+    /// stored.
     async fn update_mint_url(
         &self,
         old_mint_url: MintUrl,
@@ -118,10 +131,23 @@ where
     /// Atomically increment a namespaced derivation counter and return its new value.
     async fn increment_derivation_counter(&self, namespace: &str, count: u32) -> Result<u32, Err>;
 
-    /// Add Mint to storage
+    /// Attach metadata to a mint.
+    ///
+    /// Not a precondition for anything: writes that refer to a mint register it
+    /// on demand when its URL is not stored yet.
     async fn add_mint(&self, mint_url: MintUrl, mint_info: Option<MintInfo>) -> Result<(), Err>;
 
-    /// Remove Mint from storage
+    /// Stop tracking a mint, without destroying anything it holds.
+    ///
+    /// The mint and every row attached to it (keysets, proofs, mint and melt
+    /// quotes, transactions, sagas) disappear from every read, including
+    /// [`Database::get_mints`] and the balance. Nothing is deleted: proofs an
+    /// unspent token depends on would be gone for good, so they are hidden
+    /// rather than removed, and [`Database::add_mint`] with the same URL brings
+    /// the mint back with all of it.
+    ///
+    /// Removing an unknown or already-removed mint is not an error. Keysets and
+    /// keys stay reachable by keyset id, which carries no mint identity.
     async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), Err>;
 
     /// Add mint keyset to storage
