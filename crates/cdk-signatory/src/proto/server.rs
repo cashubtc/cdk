@@ -119,6 +119,28 @@ where
         Ok(Response::new(result))
     }
 
+    #[tracing::instrument(skip_all)]
+    async fn sign(
+        &self,
+        request: Request<proto::SignRequest>,
+    ) -> Result<Response<proto::SignResponse>, Status> {
+        let metadata = request.metadata();
+        let signatory = self.load_signatory(metadata).await?;
+
+        let result = match signatory.sign(request.into_inner().payload).await {
+            Ok(signature) => proto::SignResponse {
+                signature: signature.serialize().to_vec(),
+                ..Default::default()
+            },
+            Err(err) => proto::SignResponse {
+                error: Some(err.into()),
+                ..Default::default()
+            },
+        };
+
+        Ok(Response::new(result))
+    }
+
     async fn keysets(
         &self,
         request: Request<proto::EmptyRequest>,
