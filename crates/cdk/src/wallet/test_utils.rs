@@ -514,7 +514,7 @@ pub struct MockMintConnector {
     /// test stage a sequence of status responses (e.g. a subscription event
     /// followed by an authoritative HTTP recheck).
     pub melt_quote_status_responses:
-        Mutex<std::collections::VecDeque<Result<MeltQuoteBolt11Response<String>, Error>>>,
+        Mutex<std::collections::VecDeque<Result<MeltQuoteResponse<String>, Error>>>,
     /// Response for post_mint calls
     pub post_mint_response: Mutex<Option<Result<MintResponse, Error>>>,
     /// Queue of responses for successive post_mint_quote calls.
@@ -694,7 +694,7 @@ impl MockMintConnector {
         self.melt_quote_status_responses
             .lock()
             .unwrap()
-            .push_back(response);
+            .push_back(response.map(MeltQuoteResponse::Bolt11));
     }
 
     pub fn set_post_mint_response(&self, response: Result<MintResponse, Error>) {
@@ -1008,7 +1008,7 @@ impl MintConnector for MockMintConnector {
     ) -> Result<MeltQuoteResponse<String>, Error> {
         let queued = self.melt_quote_status_responses.lock().unwrap().pop_front();
         let response = match queued {
-            Some(response) => response,
+            Some(response) => return response,
             None => self
                 .melt_quote_status_response
                 .lock()

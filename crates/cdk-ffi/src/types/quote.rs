@@ -722,6 +722,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mint_quote_conversion_preserves_persisted_state() {
+        let mut quote = cdk::wallet::MintQuote::new(
+            "quote-id".to_string(),
+            "https://mint.example.com".parse().unwrap(),
+            cdk::nuts::PaymentMethod::Known(cdk::nuts::nut00::KnownMethod::Onchain),
+            None,
+            cdk::nuts::CurrencyUnit::Sat,
+            "address".to_string(),
+            1_000,
+            None,
+        );
+        quote.version = 7;
+        quote.used_by_operation = Some("operation-id".to_string());
+        quote.amount_paid = 1_000.into();
+        quote.amount_issued = 250.into();
+        quote.updated_at = 123;
+        quote.update_state_from_amounts();
+
+        let ffi = MintQuote::from(quote.clone());
+        let round_trip = cdk::wallet::MintQuote::try_from(ffi).unwrap();
+        assert_eq!(round_trip, quote);
+    }
+
+    #[test]
     fn mint_quote_debug_redacts_secret_key_and_keeps_quote_id() {
         let secret = "mint-quote-secret-key";
         let quote = MintQuote {

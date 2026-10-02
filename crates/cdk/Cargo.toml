@@ -178,6 +178,7 @@ name = "revoke_send"
 required-features = ["wallet"]
 
 [dev-dependencies]
+rusqlite = { version = "0.31", default-features = false }
 rand.workspace = true
 cdk-sqlite.workspace = true
 cdk-postgres.workspace = true

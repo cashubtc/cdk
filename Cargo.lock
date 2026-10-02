@@ -1250,6 +1250,7 @@ dependencies = [
  "nwc",
  "rand 0.9.5",
  "ring 0.17.14",
+ "rusqlite",
  "rustls",
  "serde",
  "serde_json",
