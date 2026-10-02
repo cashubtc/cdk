@@ -9,8 +9,9 @@ environment:
 
 dependencies:
   ffi: ^2.1.4
-  native_toolchain_rust: ^1.0.3
   hooks: ^1.0.0
+  native_toolchain_rust: ^1.0.3
+  path: ^1.9.0
 
 dev_dependencies:
   test: ^1.26.2
