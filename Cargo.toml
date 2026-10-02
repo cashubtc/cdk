@@ -172,5 +172,16 @@ codegen-units = 1   # Single codegen unit (better optimization + reproducibility
 panic = "abort"     # No unwinding overhead, smaller binary
 strip = "debuginfo" # Strip debug info, keep symbol names for backtraces
 
+# Shipped FFI binding libraries. No panic = "abort": UniFFI's scaffolding turns
+# a Rust panic into a foreign exception via catch_unwind, and aborting would
+# kill the host app instead. strip = "debuginfo" keeps the symbol table that
+# uniffi-bindgen reads the component interface from; the release workflows
+# strip fully after generating bindings.
+[profile.release-ffi]
+inherits = "release"
+lto = true
+codegen-units = 1
+strip = "debuginfo"
+
 [workspace.metadata.crane]
 name = "cdk-workspace"

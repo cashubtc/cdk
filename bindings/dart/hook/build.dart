@@ -19,7 +19,7 @@ void main(List<String> args) async {
         p.join(packageRoot, 'prebuilt', targetTriple, libFileName);
 
     if (File(prebuiltPath).existsSync()) {
-      // Pre-built binary found — skip cargo build.
+      // Pre-built binary found, so skip cargo entirely.
       final outputPath =
           p.join(p.fromUri(input.outputDirectory), libFileName);
       await File(prebuiltPath).copy(outputPath);
@@ -35,7 +35,17 @@ void main(List<String> args) async {
       return;
     }
 
-    // No pre-built binary — fall back to building from source via cargo.
+    // Only a monorepo checkout ships the Rust crate; the published package does
+    // not. Its absence is terminal, so name what was missing rather than
+    // failing somewhere deeper in cargo.
+    if (!File(p.join(packageRoot, 'rust', 'Cargo.toml')).existsSync()) {
+      throw StateError(
+        'No prebuilt library at prebuilt/$targetTriple/$libFileName, and this '
+        'package ships no Rust sources to build one from.',
+      );
+    }
+
+    // No pre-built binary, so build from source via cargo.
     // native_toolchain_rust replaces the process environment entirely when
     // spawning cargo (Dart's Process.run with an explicit environment map).
     // On Linux this results in an empty environment, so cargo can't find
