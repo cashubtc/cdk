@@ -2,6 +2,7 @@
 use std::collections::BTreeMap;
 use std::str::FromStr;
 
+use bitcoin::bip32::DerivationPath;
 use cdk_common::common::IssuerVersion;
 use cdk_common::nut02::KeySetVersion;
 use cdk_common::secret::Secret;
@@ -72,6 +73,8 @@ impl TryInto<crate::signatory::SignatoryKeySet> for KeySet {
                 .map(|v| IssuerVersion::from_str(&v))
                 .transpose()
                 .map_err(|e| cdk_common::Error::Custom(e.to_string()))?,
+            derivation_path: DerivationPath::from_str(&self.derivation_path)
+                .map_err(|e| cdk_common::Error::Custom(e.to_string()))?,
         })
     }
 }
@@ -93,6 +96,7 @@ impl From<crate::signatory::SignatoryKeySet> for KeySet {
             final_expiry: keyset.final_expiry,
             version: Default::default(),
             issuer_version: keyset.issuer_version.map(|v| v.to_string()),
+            derivation_path: keyset.derivation_path.to_string(),
         }
     }
 }
@@ -383,6 +387,7 @@ impl From<cdk_common::KeySetInfo> for KeySet {
             final_expiry: value.final_expiry,
             version: Default::default(),
             issuer_version: None,
+            derivation_path: Default::default(),
         }
     }
 }
@@ -429,5 +434,40 @@ mod tests {
         .unwrap();
 
         assert_eq!(common, cdk_common::CurrencyUnit::Custom("badcoin".into()));
+    }
+
+    /// A mint refuses a rotation onto an occupied custom path from the paths the
+    /// signatory reports, so the path has to survive the wire. `version` on the
+    /// same message does not, which is what this guards against.
+    #[test]
+    fn derivation_path_survives_the_proto_boundary() {
+        let path: DerivationPath = "m/8'/0'/7'".parse().expect("derivation path");
+        let keys = cdk_common::Keys::new(BTreeMap::from([(
+            Amount::from(1),
+            PublicKey::from_hex(
+                "0249098aa8b9d2fbec49ff8598feb17b592b986e62319a4fa488a3dc36387157f7",
+            )
+            .expect("public key"),
+        )]));
+
+        let keyset = crate::signatory::SignatoryKeySet {
+            id: Id::from_str("009a1f293253e41e").expect("keyset id"),
+            unit: cdk_common::CurrencyUnit::Sat,
+            active: true,
+            keys,
+            amounts: vec![1],
+            input_fee_ppk: 0,
+            final_expiry: None,
+            issuer_version: None,
+            version: 1,
+            derivation_path: path.clone(),
+        };
+
+        let proto: KeySet = keyset.into();
+        assert_eq!(proto.derivation_path, path.to_string());
+
+        let back: crate::signatory::SignatoryKeySet =
+            proto.try_into().expect("keyset crosses back");
+        assert_eq!(back.derivation_path, path);
     }
 }

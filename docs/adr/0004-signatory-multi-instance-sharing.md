@@ -148,6 +148,61 @@ sees no change and does not reload. Recording the epoch from a bare
 post-commit read would be unsafe: it could already reflect a peer change this
 instance has not loaded, and the instance would then skip it.
 
+### Auto-rotation across instances
+
+Keyset auto-rotation (`spawn_auto_rotation`, off when the interval is zero) adds
+a third writer to the picture: every instance sweeps its own keysets and rotates
+the ones older than the interval.
+
+The sweep needs no coordination of its own because it runs entirely inside one
+rotation transaction. `begin_rotation` opens that transaction, which takes the
+global keyset lock, and reloads the in-memory keysets through it; only then does
+the sweep read its due set. A unit a peer already rotated therefore carries that
+peer's fresh `valid_from` and is not due, and the lock is held until commit, so
+no peer can rotate in between. Age alone decides, with no identity check and no
+lost-race error to distinguish from a real failure.
+
+Because the loop polls faster than the interval (age has to drive rotation, not
+process uptime), nearly every tick has nothing to do, and taking the global lock
+that often would tax every instance in the fleet. So a tick first checks the
+in-memory snapshot lock-free and returns when nothing looks due. That cannot
+skip a due keyset: the snapshot only ever lags the database, and a lagging
+snapshot carries an older `valid_from`, so it over-reports due-ness and never
+under-reports. A false positive costs one transaction that the authoritative
+under-lock read then discards.
+
+Reading the due set outside the transaction was what made an identity check
+necessary, and it is also what forced a transaction per unit. Staging every due
+unit into the one transaction makes a failed statement all-or-nothing: none of
+them rotate and the tick is retried later. That is not a preference, Postgres
+aborts a transaction on the first failed statement, so continuing past one is
+not available once the units share a transaction. The realistic failure is a
+database error, which would have failed every unit anyway.
+
+`rotate_keyset` runs through the same two pieces with a single unit, so a
+mint-initiated rotation and a sweep share the loading and the commit. Staging
+several units into one transaction does put one thing out of the snapshot's
+reach: the transaction is not reloaded until it commits, so a path staged for an
+earlier unit is invisible to the next one. The paths staged so far are therefore
+carried through the sweep and checked alongside the snapshot, which is what
+keeps two units off a single derivation path and the identical keys it yields.
+
+A unit refused for a contested path is the one refusal the sweep does not fail
+on. That decision is made in memory, before the unit writes anything, so the
+transaction is untouched and the rest of the units still rotate. It has to work
+that way: a contested path is permanent, because the unit's derivation index only
+advances when a rotation commits, so failing the sweep over it would stall every
+other unit for as long as the mint runs. Configuration cannot reach that state
+any more, since a pin inside another unit's branch of the `m/129372'` tree is
+refused when the signatory is built, but a keyset an older configuration already
+committed there is data, and no construction check can undo it.
+
+The sweep's due set comes from the database, so it covers every unit that holds
+an active keyset, including units dropped from the mint's configuration and the
+auth unit. Deliberate: the signatory rotates what it signs with, and the mint's
+configuration is not a thing it can see. An expired keyset is the one exception,
+skipped because its replacement would inherit an expiry already in the past.
+
 ### Positive Consequences
 
 * Multiple signatory instances can run active/active against one database.
