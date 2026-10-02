@@ -503,6 +503,14 @@ pub struct MockMintConnector {
     pub mint_info: Mutex<MintInfo>,
     /// Response for post_check_state calls
     pub check_state_response: Mutex<Option<Result<CheckStateResponse, Error>>>,
+    /// Persistent response for post_check_state calls: unlike
+    /// `check_state_response` (consumed by the first call), this one is
+    /// answered on EVERY call — for tests whose code path legitimately
+    /// asks the mint more than once (e.g. a batched pre-flight followed
+    /// by sequential recovery). Errors are stored by display string and
+    /// rebuilt as `Error::Custom` (`Error` is not `Clone`).
+    pub check_state_response_persistent:
+        Mutex<Option<Result<CheckStateResponse, String>>>,
     /// Response for post_restore calls
     pub restore_response: Mutex<Option<Result<RestoreResponse, Error>>>,
     /// Response for get_melt_quote_status calls
@@ -601,6 +609,7 @@ impl MockMintConnector {
             keysets: Mutex::new(vec![keyset]),
             mint_info: Mutex::new(mint_info),
             check_state_response: Mutex::new(None),
+            check_state_response_persistent: Mutex::new(None),
             restore_response: Mutex::new(None),
             melt_quote_status_response: Mutex::new(None),
             melt_quote_status_responses: Mutex::new(std::collections::VecDeque::new()),
@@ -633,6 +642,16 @@ impl MockMintConnector {
 
     pub fn set_check_state_response(&self, response: Result<CheckStateResponse, Error>) {
         *self.check_state_response.lock().unwrap() = Some(response);
+    }
+
+    /// Stage a check-state response answered identically on EVERY call
+    /// (see `check_state_response_persistent`).
+    pub fn set_check_state_response_persistent(
+        &self,
+        response: Result<CheckStateResponse, Error>,
+    ) {
+        let stored = response.map_err(|e| e.to_string());
+        *self.check_state_response_persistent.lock().unwrap() = Some(stored);
     }
 
     pub fn set_mint_keys_response(&self, response: Result<Vec<KeySet>, Error>) {
@@ -1083,11 +1102,23 @@ impl MintConnector for MockMintConnector {
         &self,
         _request: CheckStateRequest,
     ) -> Result<CheckStateResponse, Error> {
-        self.check_state_response
+        if let Some(response) = self.check_state_response.lock().unwrap().take() {
+            return response;
+        }
+        let persistent = self
+            .check_state_response_persistent
             .lock()
             .unwrap()
-            .take()
-            .expect("MockMintConnector: post_check_state called without configured response")
+            .take();
+        if let Some(response) = persistent {
+            // Put it back: persistent means every call gets the same answer.
+            *self.check_state_response_persistent.lock().unwrap() = Some(response.clone());
+            return match response {
+                Ok(response) => Ok(response),
+                Err(message) => Err(Error::Custom(message)),
+            };
+        }
+        panic!("MockMintConnector: post_check_state called without configured response")
     }
 
     async fn post_restore(&self, _request: RestoreRequest) -> Result<RestoreResponse, Error> {
