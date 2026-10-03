@@ -80,18 +80,10 @@ impl Default for WalletBuilder {
     }
 }
 
-impl WalletBuilder {
-    /// Zeroize the credentials the builder owns: the wallet seed and any
-    /// pending clear-auth token that `build()` has not yet handed on.
-    fn zeroize_secrets(&mut self) {
-        self.seed.zeroize();
-        self.auth_cat.zeroize();
-    }
-}
-
 impl Drop for WalletBuilder {
     fn drop(&mut self) {
-        self.zeroize_secrets();
+        self.seed.zeroize();
+        self.auth_cat.zeroize();
     }
 }
 
@@ -418,21 +410,6 @@ mod tests {
         // Construction is deferred to build(): only the raw CAT is stored.
         assert_eq!(builder.auth_cat.as_deref(), Some("cat"));
         assert!(builder.auth_wallet.is_none());
-    }
-
-    #[tokio::test]
-    async fn zeroize_secrets_clears_the_pending_auth_cat_and_seed() {
-        let mut builder = base_builder()
-            .await
-            .set_auth_cat("cat".to_string())
-            .unwrap();
-        builder.seed = Some([7u8; 64]);
-        assert!(builder.auth_cat.is_some());
-
-        builder.zeroize_secrets();
-
-        assert!(builder.auth_cat.is_none());
-        assert!(builder.seed.is_none_or(|seed| seed == [0u8; 64]));
     }
 
     #[test]
