@@ -1412,21 +1412,24 @@ impl Mint {
                 return Err(Error::Internal);
             }
 
+            // Add iff blinded signature has known keyset
+            // Check if the blinded signature has dleq proof, if not then recalculate
+
             for (blinded_message, blinded_signature) in
                 request.outputs.into_iter().zip(blinded_signatures)
             {
-                if let Some(blinded_signature) = blinded_signature {
-                    if let Some(keyset_info) = self.get_keyset_info(&blinded_signature.keyset_id) {
-                        if keyset_info.is_expired() {
-                            tracing::debug!(
-                                "Skipping restore for expired keyset {}",
-                                blinded_signature.keyset_id
-                            );
-                            continue;
+                if let Some(mut blinded_signature) = blinded_signature {
+                    if self.get_keyset_info(&blinded_signature.keyset_id).is_some() {
+                        if blinded_signature.dleq.is_none() {
+                            blinded_signature = self
+                                .signatory
+                                .add_dleq_proof(&blinded_message, blinded_signature)
+                                .await?;
                         }
+
+                        outputs.push(blinded_message);
+                        signatures.push(blinded_signature);
                     }
-                    outputs.push(blinded_message);
-                    signatures.push(blinded_signature);
                 }
             }
 
@@ -1572,6 +1575,14 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Signatory for MockSignatory {
+        async fn add_dleq_proof(
+            &self,
+            _blinded_message: &BlindedMessage,
+            _blinded_signature: BlindSignature,
+        ) -> Result<BlindSignature, Error> {
+            Err(Error::UnknownKeySet)
+        }
+
         fn name(&self) -> String {
             "mock".to_string()
         }
@@ -1979,6 +1990,16 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Signatory for GatedSignatory {
+        async fn add_dleq_proof(
+            &self,
+            blinded_message: &BlindedMessage,
+            blinded_signature: BlindSignature,
+        ) -> Result<BlindSignature, Error> {
+            self.inner
+                .add_dleq_proof(blinded_message, blinded_signature)
+                .await
+        }
+
         fn name(&self) -> String {
             self.inner.name()
         }

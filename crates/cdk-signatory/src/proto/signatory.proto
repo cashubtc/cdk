@@ -3,6 +3,7 @@ syntax = "proto3";
 package signatory;
 
 service Signatory {
+  rpc AddDleqProof(AddDleqProofRequest) returns (AddDleqProofResponse);
   rpc BlindSign(BlindedMessages) returns (BlindSignResponse);
   rpc VerifyProofs(Proofs) returns (BooleanResponse);
   // returns all the keysets for the mint
@@ -147,3 +148,13 @@ message Error {
 }
 
 message EmptyRequest {}
+
+message AddDleqProofRequest {
+  BlindedMessage message = 1;
+  BlindSignature signature = 2;
+}
+
+message AddDleqProofResponse {
+  Error error = 1;
+  BlindSignature signature = 2;
+}

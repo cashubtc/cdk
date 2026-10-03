@@ -169,6 +169,14 @@ pub trait Signatory {
     /// Add current keyset to inactive keysets
     /// Generate new keyset
     async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<SignatoryKeySet, Error>;
+
+    /// Add dleq proof to the signature
+    /// This maintains the closed accessibility of keypair of the Mint
+    async fn add_dleq_proof(
+        &self,
+        blinded_message: &BlindedMessage,
+        blinded_signature: BlindSignature,
+    ) -> Result<BlindSignature, Error>;
 }
 
 #[cfg(test)]

@@ -8,7 +8,14 @@ use tokio::task::JoinHandle;
 
 use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet, SignatoryKeysets};
 
+struct AddDleqProofRequest {
+    message: BlindedMessage,
+    signature: BlindSignature,
+    response: oneshot::Sender<Result<BlindSignature, Error>>,
+}
+
 enum Request {
+    AddDleqProof(Box<AddDleqProofRequest>),
     BlindSign(
         (
             Vec<BlindedMessage>,
@@ -65,6 +72,17 @@ impl Service {
     ) {
         while let Some(request) = receiver.recv().await {
             match request {
+                Request::AddDleqProof(payload) => {
+                    let AddDleqProofRequest {
+                        message,
+                        signature,
+                        response,
+                    } = *payload;
+                    let output = handler.add_dleq_proof(&message, signature).await;
+                    if response.send(output).is_err() {
+                        tracing::error!("Error sending DLEQ response: receiver dropped");
+                    }
+                }
                 Request::BlindSign((blinded_message, response)) => {
                     let output = handler.blind_sign(blinded_message).await;
                     if response.send(output).is_err() {
@@ -119,6 +137,24 @@ impl Signatory for Service {
             .await
             .map_err(|e| Error::SendError(e.to_string()))?;
 
+        rx.await.map_err(|e| Error::RecvError(e.to_string()))?
+    }
+
+    #[tracing::instrument(skip_all)]
+    async fn add_dleq_proof(
+        &self,
+        blinded_message: &BlindedMessage,
+        blinded_signature: BlindSignature,
+    ) -> Result<BlindSignature, Error> {
+        let (tx, rx) = oneshot::channel();
+        self.pipeline
+            .send(Request::AddDleqProof(Box::new(AddDleqProofRequest {
+                message: blinded_message.clone(),
+                signature: blinded_signature,
+                response: tx,
+            })))
+            .await
+            .map_err(|e| Error::SendError(e.to_string()))?;
         rx.await.map_err(|e| Error::RecvError(e.to_string()))?
     }
 
