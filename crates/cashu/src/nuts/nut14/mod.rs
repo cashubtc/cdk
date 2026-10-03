@@ -150,11 +150,10 @@ impl Proof {
                 _ => Error::SpendConditionsNotMet,
             })?;
 
-        // Try to extract HTLC witness - must be correct type
-        let htlc_witness = match &self.witness {
-            Some(Witness::HTLCWitness(witness)) => witness,
-            _ => {
-                // Wrong witness type or no witness
+        // Refunds can carry signatures without a preimage.
+        let witness = match &self.witness {
+            Some(witness) => witness,
+            None => {
                 // If refund path is available with 0 required sigs, anyone can spend
                 if let Some(refund_path) = &requirements.refund_path {
                     if refund_path.required_sigs == 0 {
@@ -166,7 +165,10 @@ impl Proof {
         };
 
         // Try to verify the preimage and capture the specific error if it fails
-        let preimage_result = verify_htlc_preimage(htlc_witness, &secret);
+        let preimage_result = match witness {
+            Witness::HTLCWitness(witness) => verify_htlc_preimage(witness, &secret),
+            Witness::P2PKWitness(_) => Err(Error::IncorrectSecretKind),
+        };
 
         // Determine which path to use:
         // - If preimage is valid → use receiver path (always available)
@@ -177,10 +179,7 @@ impl Proof {
                 return Ok(());
             }
 
-            let witness_signatures = htlc_witness
-                .signatures
-                .as_ref()
-                .ok_or(Error::SignaturesNotProvided)?;
+            let witness_signatures = witness.signatures().ok_or(Error::SignaturesNotProvided)?;
 
             let signatures: Vec<Signature> = witness_signatures
                 .iter()
@@ -203,10 +202,7 @@ impl Proof {
                 return Ok(());
             }
 
-            let witness_signatures = htlc_witness
-                .signatures
-                .as_ref()
-                .ok_or(Error::SignaturesNotProvided)?;
+            let witness_signatures = witness.signatures().ok_or(Error::SignaturesNotProvided)?;
 
             let signatures: Vec<Signature> = witness_signatures
                 .iter()
@@ -396,6 +392,7 @@ pub(crate) fn verify_sig_all_htlc(first_input: &Proof, msg_to_sign: String) -> R
 mod tests {
     use bitcoin::hashes::sha256::Hash as Sha256Hash;
     use bitcoin::hashes::Hash;
+    use bitcoin::secp256k1::{Keypair, Message};
 
     use super::*;
     use crate::nuts::nut00::Witness;
@@ -403,6 +400,102 @@ mod tests {
     use crate::nuts::Nut10Secret;
     use crate::secret::Secret as SecretString;
     use crate::{SecretData, SecretKey};
+
+    fn sign_refund_proof(proof: &mut Proof, key: &SecretKey) {
+        let digest = Sha256Hash::hash(proof.secret.as_bytes());
+        let message = Message::from_digest(digest.to_byte_array());
+        let keypair = Keypair::from_secret_key(&crate::SECP256K1, key);
+        let signature = crate::SECP256K1.sign_schnorr_no_aux_rand(&message, &keypair);
+        proof.witness = Some(Witness::P2PKWitness(crate::nuts::nut11::P2PKWitness {
+            signatures: vec![signature.to_string()],
+        }));
+    }
+
+    fn signed_htlc_refund_proof(locktime: Option<u64>) -> Proof {
+        let refund_key =
+            SecretKey::from_hex("0000000000000000000000000000000000000000000000000000000000000001")
+                .unwrap();
+        let refund_pubkey = refund_key.public_key().to_string();
+        let hash = Sha256Hash::hash(&[42u8; 32]).to_string();
+        let mut tags = vec![vec!["refund".to_string(), refund_pubkey]];
+        if let Some(locktime) = locktime {
+            tags.push(vec!["locktime".to_string(), locktime.to_string()]);
+        }
+        let secret_data: SecretData = serde_json::from_value(serde_json::json!({
+            "nonce": "0000000000000000000000000000000000000000000000000000000000000000",
+            "data": hash,
+            "tags": tags,
+        }))
+        .unwrap();
+        let nut10_secret = Nut10Secret::new(Kind::HTLC, secret_data);
+        let secret: SecretString = nut10_secret.try_into().unwrap();
+
+        let mut proof = Proof {
+            amount: crate::Amount::from(1),
+            keyset_id: crate::nuts::nut02::Id::from_str("00deadbeef123456").unwrap(),
+            secret,
+            c: crate::nuts::nut01::PublicKey::from_hex(
+                "02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2",
+            )
+            .unwrap(),
+            witness: None,
+            dleq: None,
+            p2pk_e: None,
+        };
+
+        sign_refund_proof(&mut proof, &refund_key);
+        proof
+    }
+
+    #[test]
+    fn test_verify_htlc_refund_signature_only_witness_repro() {
+        let proof = signed_htlc_refund_proof(Some(1));
+        assert!(matches!(proof.witness, Some(Witness::P2PKWitness(_))));
+        let result = proof.verify_htlc();
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn test_verify_htlc_refund_signature_only_wire_witness() {
+        use crate::nuts::nut03::SwapRequest;
+        use crate::nuts::nut10::SpendingConditionVerification;
+
+        let proof = signed_htlc_refund_proof(Some(1));
+        let signatures = proof.witness.as_ref().unwrap().signatures().unwrap();
+        for witness in [
+            serde_json::json!({"preimage": null, "signatures": &signatures}),
+            serde_json::json!({"signatures": &signatures}),
+        ] {
+            let mut encoded = serde_json::to_value(&proof).unwrap();
+            encoded["witness"] = serde_json::Value::String(witness.to_string());
+            let proof: Proof = serde_json::from_value(encoded).unwrap();
+            assert!(matches!(proof.witness, Some(Witness::P2PKWitness(_))));
+
+            let request = SwapRequest::new(vec![proof], vec![]);
+            let result = request.verify_spending_conditions();
+            assert!(result.is_ok(), "witness {witness}: {result:?}");
+        }
+    }
+
+    #[test]
+    fn test_verify_htlc_refund_signature_only_requires_expiry_and_refund_key() {
+        let mut control = signed_htlc_refund_proof(Some(1));
+        control.add_preimage(String::new());
+        assert!(control.verify_htlc().is_ok());
+
+        for locktime in [None, Some(u64::MAX)] {
+            let proof = signed_htlc_refund_proof(locktime);
+            assert!(proof.verify_htlc().is_err());
+        }
+
+        let mut proof = signed_htlc_refund_proof(Some(1));
+        proof.witness = None;
+        let wrong_key =
+            SecretKey::from_hex("0000000000000000000000000000000000000000000000000000000000000002")
+                .unwrap();
+        sign_refund_proof(&mut proof, &wrong_key);
+        assert!(proof.verify_htlc().is_err());
+    }
 
     #[allow(clippy::use_debug)]
     #[test]
