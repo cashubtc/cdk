@@ -83,6 +83,7 @@ impl Default for WalletBuilder {
 impl Drop for WalletBuilder {
     fn drop(&mut self) {
         self.seed.zeroize();
+        self.auth_cat.zeroize();
     }
 }
 
