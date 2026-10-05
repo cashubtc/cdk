@@ -1,6 +1,3 @@
-// Adapted from nut-fountain v0.1.0-alpha.0, Copyright (c) 2026 Egge21M.
-// See crates/cashu/NOTICE-nut-fountain for the MIT license.
-
 use std::fmt;
 
 use super::{Error, FRAME_OVERHEAD, MAX_FRAGMENT_COUNT, MAX_FRAGMENT_LENGTH, MAX_MESSAGE_LENGTH};

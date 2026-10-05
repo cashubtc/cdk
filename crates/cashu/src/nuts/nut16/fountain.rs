@@ -8,8 +8,7 @@
 //! can also transport arbitrary bytes.
 //!
 //! The [upstream specification] defines the framing and fragment selection.
-//! CRCs detect accidental corruption, not authenticity. See
-//! `crates/cashu/NOTICE-nut-fountain` for attribution and license terms.
+//! CRCs detect accidental corruption, not authenticity.
 //!
 //! [upstream specification]: https://github.com/Egge21M/nut-fountain/blob/v0.1.0-alpha.0/packages/nut-fountain/docs/protocol.md
 //!

@@ -1,4 +1,4 @@
-//! Compatibility with nut-fountain v0.1.0-alpha.0 (see NOTICE-nut-fountain).
+//! Compatibility with nut-fountain v0.1.0-alpha.0.
 
 use std::str::FromStr;
 

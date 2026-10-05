@@ -86,8 +86,7 @@ The existing UR encoder and decoder remain available for NUT-16 compatibility.
 
 Run `cargo run -p cashu --example nut16_binary_fountain` for a transfer example.
 The generic `FountainEncoder` and `FountainDecoder` in the same module transport
-arbitrary bytes. The format is experimental; its reference version and license
-are recorded in [NOTICE-nut-fountain](NOTICE-nut-fountain).
+arbitrary bytes. The format is experimental.
 
 ## License
 
