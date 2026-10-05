@@ -5,6 +5,8 @@ package signatory;
 service Signatory {
   rpc BlindSign(BlindedMessages) returns (BlindSignResponse);
   rpc VerifyProofs(Proofs) returns (BooleanResponse);
+  // signs an arbitrary payload with the signatory identity key
+  rpc Sign(SignRequest) returns (SignResponse);
   // returns all the keysets for the mint
   rpc Keysets(EmptyRequest) returns (KeysResponse);
   // streams the keysets: the current set is sent on subscribe and again on
@@ -17,7 +19,7 @@ service Signatory {
 enum Constants {
   CONSTANTS_UNSPECIFIED = 0;
   // this constant should be sent on the header of the grpc code for verification
-  CONSTANTS_SCHEMA_VERSION = 2;
+  CONSTANTS_SCHEMA_VERSION = 3;
 }
 
 message BlindSignResponse {
@@ -54,6 +56,16 @@ message KeysResponse {
 message SignatoryKeysets {
   bytes pubkey = 1;
   repeated KeySet keysets = 2;
+}
+
+message SignRequest {
+  bytes payload = 1;
+}
+
+message SignResponse {
+  Error error = 1;
+  // 64-byte BIP340 Schnorr signature
+  bytes signature = 2;
 }
 
 message KeySet {
