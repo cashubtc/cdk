@@ -81,7 +81,7 @@ criterion = "0.6.0"
 futures = { version = "0.3.28", default-features = false, features = ["async-await"] }
 gloo-timers = { version = "0.3", default-features = false, features = ["futures"] }
 lightning-invoice = { version = "0.34.0", features = ["serde", "std"] }
-lightning = { version = "0.2.0", default-features = false, features = ["std"]}
+lightning = { version = "0.2.7", default-features = false, features = ["std"]}
 ldk-node = "0.7.0"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_bytes = "0.11"
