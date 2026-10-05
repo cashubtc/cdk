@@ -1416,17 +1416,10 @@ impl Mint {
                 request.outputs.into_iter().zip(blinded_signatures)
             {
                 if let Some(blinded_signature) = blinded_signature {
-                    if let Some(keyset_info) = self.get_keyset_info(&blinded_signature.keyset_id) {
-                        if keyset_info.is_expired() {
-                            tracing::debug!(
-                                "Skipping restore for expired keyset {}",
-                                blinded_signature.keyset_id
-                            );
-                            continue;
-                        }
+                    if self.get_keyset_info(&blinded_signature.keyset_id).is_some() {
+                        outputs.push(blinded_message);
+                        signatures.push(blinded_signature);
                     }
-                    outputs.push(blinded_message);
-                    signatures.push(blinded_signature);
                 }
             }
 
