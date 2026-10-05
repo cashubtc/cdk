@@ -235,3 +235,16 @@ pub async fn get_active_keyset_id(mint: &Mint) -> Result<Id, Error> {
     keys.verify_id()?;
     Ok(keys.id)
 }
+
+/// Models abandoned executions whose recorded leases have expired.
+pub(crate) async fn expire_melt_leases(mint: &Mint) {
+    for quote in mint.localstore().get_melt_quotes().await.unwrap() {
+        if quote.is_locked() {
+            let mut tx = mint.localstore().begin_transaction().await.unwrap();
+            tx.renew_melt_quote_lease(&quote.id, &quote.melt_lock, 0)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+        }
+    }
+}

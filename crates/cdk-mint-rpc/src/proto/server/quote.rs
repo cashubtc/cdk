@@ -120,6 +120,48 @@ impl MintRPCServer {
             .map_err(|_| Status::invalid_argument("Could not find quote".to_string()))?
             .ok_or(Status::invalid_argument("Could not find quote".to_string()))
     }
+
+    /// Releases the melt execution lock on a melt quote, regardless of the
+    /// held token
+    ///
+    /// Returns whether a lock was held and released. The quote's state is
+    /// never changed.
+    async fn force_unlock_melt_quote(&self, quote_id: &str) -> Result<bool, Status> {
+        let quote_id = quote_id
+            .parse()
+            .map_err(|_| Status::invalid_argument("Invalid quote id".to_string()))?;
+
+        let localstore = self.mint.localstore();
+
+        localstore
+            .get_melt_quote(&quote_id)
+            .await
+            .map_err(|_| Status::invalid_argument("Could not find quote".to_string()))?
+            .ok_or(Status::invalid_argument("Could not find quote".to_string()))?;
+
+        let mut tx = localstore
+            .begin_transaction()
+            .await
+            .map_err(|_| Status::internal("Could not start db transaction".to_string()))?;
+
+        let was_locked = tx
+            .force_unlock_melt_quote(&quote_id)
+            .await
+            .map_err(|_| Status::internal("Could not unlock melt quote".to_string()))?;
+
+        tx.commit()
+            .await
+            .map_err(|_| Status::internal("Could not commit db transaction".to_string()))?;
+
+        if was_locked {
+            tracing::warn!(
+                "Operator released the melt execution lock on melt quote {}",
+                quote_id
+            );
+        }
+
+        Ok(was_locked)
+    }
 }
 
 #[tonic::async_trait]
@@ -187,6 +229,22 @@ impl QuoteService for MintRPCServer {
         Ok(Response::new(crate::quote::UpdateMintQuoteStateResponse {
             quote_id: mint_quote.id.to_string(),
             state: crate::quote::MintQuoteState::from(mint_quote.state()).into(),
+        }))
+    }
+
+    /// Releases the melt execution lock on a melt quote
+    async fn unlock_melt_quote(
+        &self,
+        request: Request<crate::quote::UnlockMeltQuoteRequest>,
+    ) -> Result<Response<crate::quote::UnlockMeltQuoteResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
+        let request = request.into_inner();
+
+        let was_locked = self.force_unlock_melt_quote(&request.quote_id).await?;
+
+        Ok(Response::new(crate::quote::UnlockMeltQuoteResponse {
+            quote_id: request.quote_id,
+            was_locked,
         }))
     }
 }
@@ -483,5 +541,111 @@ mod tests {
         assert_eq!(status.code(), tonic::Code::PermissionDenied);
         assert_eq!(status.message(), "Mint quote state override is disabled");
         assert_eq!(amount_paid(&server, &quote_id).await, 0);
+    }
+
+    /// Creates a melt quote and arms its melt execution lock, returning the
+    /// quote id
+    async fn create_locked_melt_quote(server: &MintRPCServer) -> String {
+        let invoice = cdk_fake_wallet::create_fake_invoice(100_000, String::new());
+        let response = server
+            .mint
+            .get_melt_quote(
+                cdk_common::MeltQuoteBolt11Request {
+                    request: invoice,
+                    unit: CurrencyUnit::Sat,
+                    options: None,
+                }
+                .into(),
+            )
+            .await
+            .unwrap();
+        let quote_id = response.quote().expect("single-quote method").clone();
+
+        let localstore = server.mint.localstore();
+        let mut tx = localstore.begin_transaction().await.unwrap();
+        let mut quote = tx.get_melt_quote(&quote_id).await.unwrap().unwrap();
+        quote.melt_lock = "test-lock-token".to_string();
+        tx.update_melt_quote_state(&mut quote, cdk::nuts::MeltQuoteState::Pending, None)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        quote_id.to_string()
+    }
+
+    #[tokio::test]
+    async fn test_quote_service_unlock_melt_quote_releases_lock() {
+        let server = create_test_rpc_server().await;
+        let quote_id = create_locked_melt_quote(&server).await;
+
+        let response = QuoteService::unlock_melt_quote(
+            &server,
+            Request::new(crate::quote::UnlockMeltQuoteRequest {
+                quote_id: quote_id.clone(),
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+
+        assert_eq!(response.quote_id, quote_id);
+        assert!(response.was_locked);
+
+        // The quote's state is untouched; only the lock was released.
+        let quote = server
+            .mint
+            .localstore()
+            .get_melt_quote(&quote_id.parse().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(quote.state, cdk::nuts::MeltQuoteState::Pending);
+        assert!(!quote.is_locked());
+
+        // Unlocking an unlocked quote reports that no lock was held.
+        let response = QuoteService::unlock_melt_quote(
+            &server,
+            Request::new(crate::quote::UnlockMeltQuoteRequest {
+                quote_id: quote_id.clone(),
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+        assert!(!response.was_locked);
+    }
+
+    #[tokio::test]
+    async fn test_quote_service_unlock_melt_quote_unknown_quote() {
+        let server = create_test_rpc_server().await;
+
+        let status = QuoteService::unlock_melt_quote(
+            &server,
+            Request::new(crate::quote::UnlockMeltQuoteRequest {
+                quote_id: UNKNOWN_QUOTE_ID.to_string(),
+            }),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert_eq!(status.message(), "Could not find quote");
+    }
+
+    #[tokio::test]
+    async fn test_quote_service_unlock_melt_quote_invalid_quote_id() {
+        let server = create_test_rpc_server().await;
+
+        let status = QuoteService::unlock_melt_quote(
+            &server,
+            Request::new(crate::quote::UnlockMeltQuoteRequest {
+                quote_id: "not-a-quote-id".to_string(),
+            }),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert_eq!(status.message(), "Invalid quote id");
     }
 }

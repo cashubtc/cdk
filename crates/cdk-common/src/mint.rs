@@ -918,6 +918,15 @@ pub struct MeltQuote {
     fee_options: Vec<MeltQuoteOnchainFeeOption>,
     /// Selected fee option index once an onchain quote is executed
     pub selected_fee_index: Option<u32>,
+    /// Melt execution lock token.
+    ///
+    /// Set atomically when the quote transitions to `Pending`. Until the
+    /// lease expires, status-resolution paths return the quote as-is and only
+    /// its token holder may finalize or roll it back. Mint-internal: never
+    /// exposed on the wire.
+    pub melt_lock: String,
+    /// Unix timestamp until which the recorded melt lease owner is valid.
+    pub melt_lock_expires_at: u64,
 }
 
 impl fmt::Debug for MeltQuote {
@@ -943,6 +952,8 @@ impl fmt::Debug for MeltQuote {
             .field("estimated_blocks", &self.estimated_blocks)
             .field("fee_options", &self.fee_options)
             .field("selected_fee_index", &self.selected_fee_index)
+            .field("melt_lock", &self.melt_lock)
+            .field("melt_lock_expires_at", &self.melt_lock_expires_at)
             .finish()
     }
 }
@@ -993,6 +1004,8 @@ impl MeltQuote {
             estimated_blocks,
             fee_options,
             selected_fee_index: None,
+            melt_lock: String::new(),
+            melt_lock_expires_at: 0,
         }
     }
 
@@ -1056,6 +1069,8 @@ impl MeltQuote {
             estimated_blocks,
             fee_options,
             selected_fee_index: None,
+            melt_lock: String::new(),
+            melt_lock_expires_at: 0,
         })
     }
 
@@ -1167,6 +1182,8 @@ impl MeltQuote {
         estimated_blocks: Option<u32>,
         fee_options: Vec<MeltQuoteOnchainFeeOption>,
         selected_fee_index: Option<u32>,
+        melt_lock: String,
+        melt_lock_expires_at: u64,
     ) -> Result<Self, crate::Error> {
         // For onchain quotes, re-validate the persisted `fee_options` so a
         // corrupted or hand-edited row cannot silently be served as a valid
@@ -1194,7 +1211,15 @@ impl MeltQuote {
             estimated_blocks,
             fee_options,
             selected_fee_index,
+            melt_lock,
+            melt_lock_expires_at,
         })
+    }
+
+    /// Whether an owner is recorded; lease validity uses database time.
+    #[inline]
+    pub fn is_locked(&self) -> bool {
+        !self.melt_lock.is_empty()
     }
 }
 
@@ -2325,6 +2350,8 @@ mod tests {
             None,
             options,
             None,
+            String::new(),
+            0,
         )
         .expect("duplicate onchain fee_options on reload must be preserved");
 
@@ -2385,6 +2412,8 @@ mod tests {
             Some(6),
             Vec::new(),
             None,
+            String::new(),
+            0,
         )
         .expect_err("empty onchain fee_options on reload must be rejected");
         assert!(matches!(err, crate::Error::OnchainFeeOptionsEmpty));

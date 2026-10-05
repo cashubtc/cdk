@@ -454,7 +454,7 @@ async fn unknown_status_poll_keeps_pending_melt_reserved() {
 }
 
 #[tokio::test]
-async fn payment_error_that_looks_local_records_pending_acknowledgement() {
+async fn payment_error_that_looks_local_preserves_uncertain_dispatch() {
     let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> = Arc::new(
         NoEventPendingBackend::new(usize::MAX, None).with_amount_mismatch_dispatch_error(),
     );
@@ -479,7 +479,7 @@ async fn payment_error_that_looks_local_records_pending_acknowledgement() {
                 .expect("ambiguous payment should remain recoverable");
             if saga.state
                 == cdk_common::mint::SagaStateEnum::Melt(
-                    cdk_common::mint::MeltSagaState::PaymentPending,
+                    cdk_common::mint::MeltSagaState::PaymentAttempted,
                 )
             {
                 break saga;
@@ -510,7 +510,7 @@ async fn payment_error_that_looks_local_records_pending_acknowledgement() {
         .all(|state| *state == Some(cdk_common::State::Pending)));
     assert_eq!(
         pending_saga.state,
-        cdk_common::mint::SagaStateEnum::Melt(cdk_common::mint::MeltSagaState::PaymentPending)
+        cdk_common::mint::SagaStateEnum::Melt(cdk_common::mint::MeltSagaState::PaymentAttempted)
     );
 }
 
@@ -818,6 +818,7 @@ async fn internal_settlement_without_lookup_id_finalizes_on_demand() {
         cdk_common::MintQuoteState::Paid
     );
 
+    crate::test_helpers::mint::expire_melt_leases(&mint).await;
     // On-demand check finalizes instead of requiring a restart.
     let mut quote = mint
         .localstore()
@@ -846,7 +847,7 @@ async fn internal_settlement_without_lookup_id_finalizes_on_demand() {
 /// the quote-scoped identifier (e.g. CLN's bolt12 binding is written before
 /// any dispatch, so its absence proves the payment never happened).
 #[tokio::test]
-async fn payment_attempt_without_lookup_id_compensates_at_startup() {
+async fn payment_attempt_without_lookup_id_keeps_proofs_at_startup() {
     let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> = Arc::new(
         NoEventPendingBackend::new(1, Some(MeltQuoteState::Unpaid)).with_stripped_quote_lookup_id(),
     );
@@ -916,6 +917,8 @@ async fn payment_attempt_without_lookup_id_compensates_at_startup() {
         .iter()
         .all(|s| *s == Some(cdk_common::State::Pending)));
 
+    crate::test_helpers::mint::expire_melt_leases(&mint).await;
+
     mint.recover_from_incomplete_melt_sagas()
         .await
         .expect("recovery should succeed");
@@ -927,20 +930,22 @@ async fn payment_attempt_without_lookup_id_compensates_at_startup() {
         .get_proofs_states(&input_ys)
         .await
         .unwrap();
-    assert!(states.iter().all(Option::is_none));
+    assert!(states
+        .iter()
+        .all(|state| *state == Some(cdk_common::State::Pending)));
     let stored_quote = mint
         .localstore()
         .get_melt_quote(&quote.id)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(stored_quote.state, MeltQuoteState::Unpaid);
+    assert_eq!(stored_quote.state, MeltQuoteState::Pending);
     let saga = mint
         .localstore()
         .get_melt_saga_by_quote_id(&quote.id)
         .await
         .unwrap();
-    assert!(saga.is_none());
+    assert!(saga.is_some());
 }
 
 /// A silent backend must not block startup or release proofs whose payment
@@ -988,7 +993,7 @@ async fn startup_defers_stalled_payment_checks_and_recovers_later() {
             tx.update_acquired_saga(
                 &mut saga,
                 cdk_common::mint::SagaStateEnum::Melt(
-                    cdk_common::mint::MeltSagaState::PaymentAttempted,
+                    cdk_common::mint::MeltSagaState::PaymentPending,
                 ),
             )
             .await
@@ -1037,6 +1042,7 @@ async fn startup_defers_stalled_payment_checks_and_recovers_later() {
         );
 
         backend.stall_status_checks.store(false, Ordering::SeqCst);
+        crate::test_helpers::mint::expire_melt_leases(&mint).await;
         mint.recover_from_incomplete_melt_sagas().await.unwrap();
 
         let states = mint
