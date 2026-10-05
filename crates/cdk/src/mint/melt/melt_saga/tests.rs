@@ -626,6 +626,8 @@ async fn test_finalizing_recovery_uses_persisted_payment_fee() {
 
     drop(setup_saga);
 
+    crate::test_helpers::mint::expire_melt_leases(&mint).await;
+
     mint.recover_from_incomplete_melt_sagas().await.unwrap();
 
     let completed_operation = mint
@@ -723,6 +725,8 @@ async fn test_finalizing_recovery_without_metadata_uses_internal_settlement() {
 
     drop(confirmed_saga);
 
+    crate::test_helpers::mint::expire_melt_leases(&mint).await;
+
     mint.recover_from_incomplete_melt_sagas().await.unwrap();
 
     assert_saga_not_exists(&mint, &operation_id).await;
@@ -805,6 +809,7 @@ async fn test_crash_recovery_setup_complete() {
     drop(setup_saga);
 
     // STEP 9: Run recovery (simulating mint restart)
+    crate::test_helpers::mint::expire_melt_leases(&mint).await;
     mint.recover_from_incomplete_melt_sagas()
         .await
         .expect("Recovery should succeed");
@@ -905,6 +910,7 @@ async fn test_crash_recovery_multiple_sagas() {
     }
 
     // STEP 4: Run recovery (should handle all sagas)
+    crate::test_helpers::mint::expire_melt_leases(&mint).await;
     mint.recover_from_incomplete_melt_sagas()
         .await
         .expect("Recovery should succeed");
@@ -991,6 +997,7 @@ async fn test_crash_recovery_orphaned_saga() {
 
     // STEP 3: Run recovery
     // Recovery should handle the saga gracefully, cleaning up all state
+    crate::test_helpers::mint::expire_melt_leases(&mint).await;
     mint.recover_from_incomplete_melt_sagas()
         .await
         .expect("Recovery should succeed");
@@ -1160,6 +1167,7 @@ async fn test_crash_recovery_internal_settlement() {
     );
 
     // STEP 8: Run recovery
+    crate::test_helpers::mint::expire_melt_leases(&mint).await;
     mint.recover_from_incomplete_melt_sagas()
         .await
         .expect("Recovery should succeed");
@@ -1459,6 +1467,7 @@ async fn test_startup_recovery_integration() {
     // Note: create_test_mint() already calls mint.start(), so recovery should
     // have run on startup. However, since we created the saga AFTER startup,
     // we need to manually trigger recovery to simulate a restart scenario.
+    crate::test_helpers::mint::expire_melt_leases(&mint).await;
     mint.recover_from_incomplete_melt_sagas()
         .await
         .expect("Recovery should succeed");
@@ -1543,6 +1552,7 @@ async fn test_compensation_removes_proofs() {
     drop(setup_saga);
 
     // Run recovery which triggers compensation
+    crate::test_helpers::mint::expire_melt_leases(&mint).await;
     mint.recover_from_incomplete_melt_sagas()
         .await
         .expect("Recovery should succeed");
@@ -1648,6 +1658,8 @@ async fn test_compensation_removes_change_outputs() {
     // STEP 6: Simulate crash and trigger compensation
     drop(setup_saga);
 
+    crate::test_helpers::mint::expire_melt_leases(&mint).await;
+
     mint.recover_from_incomplete_melt_sagas()
         .await
         .expect("Recovery should succeed");
@@ -1728,6 +1740,8 @@ async fn test_compensation_resets_quote_state() {
 
     // STEP 4: Simulate crash and trigger compensation
     drop(setup_saga);
+
+    crate::test_helpers::mint::expire_melt_leases(&mint).await;
 
     mint.recover_from_incomplete_melt_sagas()
         .await
@@ -1812,6 +1826,7 @@ async fn test_compensation_idempotent() {
     drop(setup_saga);
 
     // STEP 4: Run compensation first time
+    crate::test_helpers::mint::expire_melt_leases(&mint).await;
     mint.recover_from_incomplete_melt_sagas()
         .await
         .expect("First recovery should succeed");
@@ -1829,6 +1844,7 @@ async fn test_compensation_idempotent() {
     assert_eq!(quote_after_first.state, MeltQuoteState::Unpaid);
 
     // STEP 5: Run compensation second time (should be idempotent)
+    crate::test_helpers::mint::expire_melt_leases(&mint).await;
     mint.recover_from_incomplete_melt_sagas()
         .await
         .expect("Second recovery should succeed without errors");
@@ -1852,6 +1868,7 @@ async fn test_compensation_idempotent() {
     );
 
     // STEP 8: Run third time to be extra sure
+    crate::test_helpers::mint::expire_melt_leases(&mint).await;
     mint.recover_from_incomplete_melt_sagas()
         .await
         .expect("Third recovery should also succeed");
@@ -2028,7 +2045,7 @@ async fn test_authoritative_failure_is_durable_before_compensation() {
 /// authoritative by backend contract: the terminal failure is persisted
 /// durably as `PaymentFailed` before compensation.
 #[tokio::test]
-async fn test_failed_recheck_after_unknown_dispatch_is_durable_before_compensation() {
+async fn test_failed_recheck_after_unknown_dispatch_keeps_dispatch_uncertain() {
     let mint = create_test_mint().await.unwrap();
     let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
     let input_ys = proofs.ys().unwrap();
@@ -2066,11 +2083,11 @@ async fn test_failed_recheck_after_unknown_dispatch_is_durable_before_compensati
 
     let response = payment_saga.attempt_external_payment().await.unwrap();
 
-    assert_eq!(response.status, MeltQuoteState::Failed);
+    assert_eq!(response.status, MeltQuoteState::Unknown);
     let persisted_saga = assert_saga_exists(&mint, &operation_id).await;
     assert_eq!(
         persisted_saga.state,
-        SagaStateEnum::Melt(MeltSagaState::PaymentFailed)
+        SagaStateEnum::Melt(MeltSagaState::PaymentAttempted)
     );
     assert_proofs_state(&mint, &input_ys, Some(State::Pending)).await;
     assert_eq!(
@@ -2088,7 +2105,7 @@ async fn test_failed_recheck_after_unknown_dispatch_is_durable_before_compensati
 /// backend contract: the terminal failure is persisted durably as
 /// `PaymentFailed` before compensation.
 #[tokio::test]
-async fn test_failed_recheck_after_error_is_durable_before_compensation() {
+async fn test_failed_recheck_after_error_keeps_dispatch_uncertain() {
     let mint = create_test_mint().await.unwrap();
     let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
     let input_ys = proofs.ys().unwrap();
@@ -2126,11 +2143,11 @@ async fn test_failed_recheck_after_error_is_durable_before_compensation() {
 
     let response = payment_saga.attempt_external_payment().await.unwrap();
 
-    assert_eq!(response.status, MeltQuoteState::Failed);
+    assert_eq!(response.status, MeltQuoteState::Unknown);
     let persisted_saga = assert_saga_exists(&mint, &operation_id).await;
     assert_eq!(
         persisted_saga.state,
-        SagaStateEnum::Melt(MeltSagaState::PaymentFailed)
+        SagaStateEnum::Melt(MeltSagaState::PaymentAttempted)
     );
     assert_proofs_state(&mint, &input_ys, Some(State::Pending)).await;
     assert_eq!(
@@ -2191,10 +2208,12 @@ async fn test_payment_error_with_pending_check_does_not_compensate() {
     let pending_saga = assert_saga_exists(&mint, &operation_id).await;
     assert_eq!(
         pending_saga.state,
-        SagaStateEnum::Melt(MeltSagaState::PaymentPending),
+        SagaStateEnum::Melt(MeltSagaState::PaymentAttempted),
         "a pending backend response should remain recoverable"
     );
     assert_proofs_state(&mint, &input_ys, Some(State::Pending)).await;
+
+    crate::test_helpers::mint::expire_melt_leases(&mint).await;
 
     mint.recover_from_incomplete_melt_sagas()
         .await
@@ -2211,7 +2230,9 @@ async fn test_payment_error_with_pending_check_does_not_compensate() {
     assert_eq!(stored_quote.state, MeltQuoteState::Pending);
 }
 
-async fn assert_payment_error_with_terminal_follow_up_compensates(follow_up_state: MeltQuoteState) {
+async fn assert_payment_error_with_terminal_follow_up_keeps_pending(
+    follow_up_state: MeltQuoteState,
+) {
     assert!(matches!(
         follow_up_state,
         MeltQuoteState::Failed | MeltQuoteState::Unpaid
@@ -2254,38 +2275,38 @@ async fn assert_payment_error_with_terminal_follow_up_compensates(follow_up_stat
 
     // A terminal follow-up is authoritative by backend contract: the payment
     // can never settle, so the melt fails and the setup is compensated.
-    let err = match payment_saga.make_payment(decision).await {
-        Ok(_) => panic!("terminal follow-up should fail the melt"),
-        Err(err) => err,
-    };
-    assert!(matches!(err, crate::Error::PaymentFailed));
-
-    assert_saga_not_exists(&mint, &operation_id).await;
-    assert_proofs_state(&mint, &input_ys, None).await;
-    let stored_quote = mint
-        .localstore
+    let outcome = payment_saga.make_payment(decision).await.unwrap();
+    assert!(matches!(outcome, PaymentOutcome::Pending { .. }));
+    let saga = assert_saga_exists(&mint, &operation_id).await;
+    assert_eq!(
+        saga.state,
+        SagaStateEnum::Melt(MeltSagaState::PaymentAttempted)
+    );
+    assert_proofs_state(&mint, &input_ys, Some(State::Pending)).await;
+    let stored = mint
+        .localstore()
         .get_melt_quote(&quote.id)
         .await
         .unwrap()
-        .expect("quote should remain persisted");
-    assert_eq!(stored_quote.state, MeltQuoteState::Unpaid);
+        .unwrap();
+    assert_eq!(stored.state, MeltQuoteState::Pending);
 }
 
 #[tokio::test]
-async fn test_payment_error_with_failed_check_compensates() {
-    assert_payment_error_with_terminal_follow_up_compensates(MeltQuoteState::Failed).await;
+async fn test_payment_error_with_failed_check_keeps_pending() {
+    assert_payment_error_with_terminal_follow_up_keeps_pending(MeltQuoteState::Failed).await;
 }
 
 #[tokio::test]
-async fn test_payment_error_with_unpaid_check_compensates() {
-    assert_payment_error_with_terminal_follow_up_compensates(MeltQuoteState::Unpaid).await;
+async fn test_payment_error_with_unpaid_check_keeps_pending() {
+    assert_payment_error_with_terminal_follow_up_keeps_pending(MeltQuoteState::Unpaid).await;
 }
 
 /// An Unknown dispatch result is overridden by an authoritative Unpaid
 /// follow-up: by backend contract the payment can never settle, so the melt
 /// fails and the setup is compensated.
 #[tokio::test]
-async fn test_unknown_dispatch_with_unpaid_check_compensates() {
+async fn test_unknown_dispatch_with_unpaid_check_keeps_pending() {
     let mint = create_test_mint().await.unwrap();
     let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
     let input_ys = proofs.ys().unwrap();
@@ -2321,21 +2342,21 @@ async fn test_unknown_dispatch_with_unpaid_check_compensates() {
         .await
         .unwrap();
 
-    let err = match payment_saga.make_payment(decision).await {
-        Ok(_) => panic!("authoritative Unpaid follow-up should fail the melt"),
-        Err(err) => err,
-    };
-    assert!(matches!(err, crate::Error::PaymentFailed));
-
-    assert_saga_not_exists(&mint, &operation_id).await;
-    assert_proofs_state(&mint, &input_ys, None).await;
-    let stored_quote = mint
-        .localstore
+    let outcome = payment_saga.make_payment(decision).await.unwrap();
+    assert!(matches!(outcome, PaymentOutcome::Pending { .. }));
+    let saga = assert_saga_exists(&mint, &operation_id).await;
+    assert_eq!(
+        saga.state,
+        SagaStateEnum::Melt(MeltSagaState::PaymentAttempted)
+    );
+    assert_proofs_state(&mint, &input_ys, Some(State::Pending)).await;
+    let stored = mint
+        .localstore()
         .get_melt_quote(&quote.id)
         .await
         .unwrap()
-        .expect("quote should remain persisted");
-    assert_eq!(stored_quote.state, MeltQuoteState::Unpaid);
+        .unwrap();
+    assert_eq!(stored.state, MeltQuoteState::Pending);
 }
 
 // ============================================================================
@@ -2779,6 +2800,7 @@ async fn test_concurrent_recovery_and_operations() {
     assert_saga_exists(&mint, &incomplete_operation_id).await;
 
     // STEP 3: Create tasks for concurrent recovery and new operation
+    crate::test_helpers::mint::expire_melt_leases(&mint).await;
     let mint_for_recovery = mint.clone();
     let recovery_task = tokio::spawn(async move {
         mint_for_recovery
@@ -3817,6 +3839,7 @@ async fn test_recovery_no_melt_request() {
 
     // STEP 3: Run recovery
     // Should handle gracefully even with no change outputs to clean up
+    crate::test_helpers::mint::expire_melt_leases(&mint).await;
     mint.recover_from_incomplete_melt_sagas()
         .await
         .expect("Recovery should succeed without change outputs");
@@ -3885,6 +3908,7 @@ async fn test_recovery_order_on_startup() {
 
     // STEP 3: Manually trigger recovery (simulating startup)
     // Note: In production, mint.start() calls this automatically
+    crate::test_helpers::mint::expire_melt_leases(&mint).await;
     mint.recover_from_incomplete_melt_sagas()
         .await
         .expect("Recovery should succeed");
@@ -3971,6 +3995,7 @@ async fn test_no_duplicate_recovery() {
     assert_proofs_state(&mint, &input_ys, Some(State::Pending)).await;
 
     // STEP 3: Run recovery first time
+    crate::test_helpers::mint::expire_melt_leases(&mint).await;
     mint.recover_from_incomplete_melt_sagas()
         .await
         .expect("First recovery should succeed");
@@ -3989,6 +4014,7 @@ async fn test_no_duplicate_recovery() {
 
     // STEP 4: Run recovery again (simulating duplicate execution)
     // Should be idempotent - no errors even though saga is already cleaned up
+    crate::test_helpers::mint::expire_melt_leases(&mint).await;
     mint.recover_from_incomplete_melt_sagas()
         .await
         .expect("Second recovery should succeed (idempotent)");
@@ -4177,6 +4203,7 @@ async fn test_saga_drop_after_payment() {
     drop(confirmed_saga);
 
     // STEP 5: Run recovery to complete the operation
+    crate::test_helpers::mint::expire_melt_leases(&mint).await;
     mint.recover_from_incomplete_melt_sagas()
         .await
         .expect("Recovery should succeed");
@@ -4277,6 +4304,7 @@ async fn test_finalizing_state_resumes_paid_melt() {
     drop(confirmed_saga);
 
     // STEP 5: Run recovery from the durable finalization handoff
+    crate::test_helpers::mint::expire_melt_leases(&mint).await;
     mint.recover_from_incomplete_melt_sagas()
         .await
         .expect("Recovery should succeed");
@@ -4354,6 +4382,7 @@ async fn test_setup_complete_state_compensates() {
     drop(setup_saga);
 
     // STEP 4: Run recovery - should compensate without payment backend check
+    crate::test_helpers::mint::expire_melt_leases(&mint).await;
     mint.recover_from_incomplete_melt_sagas()
         .await
         .expect("Recovery should succeed");

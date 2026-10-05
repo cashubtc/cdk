@@ -286,7 +286,9 @@ where
             request_lookup_id_kind,
             extra_json,
             fee_options,
-            selected_fee_index
+            selected_fee_index,
+            melt_lock,
+            melt_lock_expires_at
         FROM
             melt_quote
         WHERE
@@ -400,7 +402,9 @@ where
             request_lookup_id_kind,
             extra_json,
             fee_options,
-            selected_fee_index
+            selected_fee_index,
+            melt_lock,
+            melt_lock_expires_at
         FROM
             melt_quote
         WHERE
@@ -458,7 +462,9 @@ where
             request_lookup_id_kind,
             extra_json,
             fee_options,
-            selected_fee_index
+            selected_fee_index,
+            melt_lock,
+            melt_lock_expires_at
         FROM
             melt_quote
         WHERE
@@ -575,7 +581,9 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<mint::MeltQuote, Error> {
                 request_lookup_id_kind,
                 extra_json,
                 fee_options,
-                selected_fee_index
+                selected_fee_index,
+                melt_lock,
+            melt_lock_expires_at
         ) = row
     );
 
@@ -596,6 +604,8 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<mint::MeltQuote, Error> {
         .and_then(|value| serde_json::from_str::<Vec<MeltQuoteOnchainFeeOption>>(&value).ok())
         .unwrap_or_default();
     let selected_fee_index: Option<u32> = column_as_nullable_number!(selected_fee_index);
+    let melt_lock = column_as_string!(&melt_lock);
+    let melt_lock_expires_at: u64 = column_as_number!(melt_lock_expires_at);
 
     let state =
         MeltQuoteState::from_str(&column_as_string!(&state)).map_err(ConversionError::from)?;
@@ -655,6 +665,8 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<mint::MeltQuote, Error> {
         estimated_blocks,
         fee_options,
         selected_fee_index,
+        melt_lock,
+        melt_lock_expires_at,
     )
     .map_err(|e| Error::Internal(format!("Invalid onchain melt quote row: {e}")))
 }
@@ -1059,14 +1071,14 @@ where
                 id, unit, amount, request, fee_reserve, state,
                 expiry, payment_proof, estimated_blocks, fee_options, selected_fee_index,
                 request_lookup_id, created_time, paid_time, options, request_lookup_id_kind,
-                payment_method, extra_json
+                payment_method, extra_json, melt_lock, melt_lock_expires_at
             )
             VALUES
             (
                 :id, :unit, :amount, :request, :fee_reserve, :state,
                 :expiry, :payment_proof, :estimated_blocks, :fee_options, :selected_fee_index,
                 :request_lookup_id, :created_time, :paid_time, :options, :request_lookup_id_kind,
-                :payment_method, :extra_json
+                :payment_method, :extra_json, :melt_lock, :melt_lock_expires_at
             )
         "#,
         )?
@@ -1103,6 +1115,11 @@ where
             "extra_json",
             quote.extra_json.as_ref().map(|value| value.to_string()),
         )
+        .bind(
+            "melt_lock_expires_at",
+            i64::try_from(quote.melt_lock_expires_at)?,
+        )
+        .bind("melt_lock", quote.melt_lock)
         .execute(&self.inner)
         .await?;
 
@@ -1131,6 +1148,9 @@ where
         payment_proof: Option<String>,
     ) -> Result<MeltQuoteState, Self::Err> {
         let old_state = quote.state;
+        if !quote.is_locked() {
+            quote.melt_lock_expires_at = 0;
+        }
 
         check_melt_quote_state_transition(old_state, state)?;
 
@@ -1138,28 +1158,32 @@ where
         // queries below. Per the NUT spec the returned `fee_options` are
         // fixed for the lifetime of the quote, so we never rewrite them
         // after insert. Only state/paid_time/payment_proof/fee_reserve/
-        // estimated_blocks/selected_fee_index may change over the
+        // estimated_blocks/selected_fee_index/melt_lock may change over the
         // quote's lifetime.
         let rec = if state == MeltQuoteState::Paid {
             let current_time = unix_time();
             quote.paid_time = Some(current_time);
             quote.payment_proof = payment_proof.clone();
-            query(r#"UPDATE melt_quote SET state = :state, paid_time = :paid_time, payment_proof = :payment_proof, fee_reserve = :fee_reserve, estimated_blocks = :estimated_blocks, selected_fee_index = :selected_fee_index WHERE id = :id"#)?
+            query(r#"UPDATE melt_quote SET state = :state, paid_time = :paid_time, payment_proof = :payment_proof, fee_reserve = :fee_reserve, estimated_blocks = :estimated_blocks, selected_fee_index = :selected_fee_index, melt_lock = :melt_lock, melt_lock_expires_at = :melt_lock_expires_at WHERE id = :id"#)?
                 .bind("state", state.to_string())
                 .bind("paid_time", i64::try_from(current_time)?)
                 .bind("payment_proof", payment_proof)
                 .bind("fee_reserve", i64::try_from(quote.fee_reserve().value())?)
                 .bind("estimated_blocks", quote.estimated_blocks.map(i64::from))
                 .bind("selected_fee_index", quote.selected_fee_index.map(i64::from))
+                .bind("melt_lock", quote.melt_lock.clone())
+                .bind("melt_lock_expires_at", i64::try_from(quote.melt_lock_expires_at)?)
                 .bind("id", quote.id.to_string())
                 .execute(&self.inner)
                 .await
         } else {
-            query(r#"UPDATE melt_quote SET state = :state, fee_reserve = :fee_reserve, estimated_blocks = :estimated_blocks, selected_fee_index = :selected_fee_index WHERE id = :id"#)?
+            query(r#"UPDATE melt_quote SET state = :state, fee_reserve = :fee_reserve, estimated_blocks = :estimated_blocks, selected_fee_index = :selected_fee_index, melt_lock = :melt_lock, melt_lock_expires_at = :melt_lock_expires_at WHERE id = :id"#)?
                 .bind("state", state.to_string())
                 .bind("fee_reserve", i64::try_from(quote.fee_reserve().value())?)
                 .bind("estimated_blocks", quote.estimated_blocks.map(i64::from))
                 .bind("selected_fee_index", quote.selected_fee_index.map(i64::from))
+                .bind("melt_lock", quote.melt_lock.clone())
+                .bind("melt_lock_expires_at", i64::try_from(quote.melt_lock_expires_at)?)
                 .bind("id", quote.id.to_string())
                 .execute(&self.inner)
                 .await
@@ -1180,6 +1204,115 @@ where
         }
 
         Ok(old_state)
+    }
+
+    async fn unlock_melt_quote(
+        &mut self,
+        quote_id: &QuoteId,
+        lock_token: &str,
+    ) -> Result<bool, Self::Err> {
+        let rows_affected = query(
+            r#"
+            UPDATE melt_quote
+            SET melt_lock = '', melt_lock_expires_at = 0
+            WHERE id = :id AND melt_lock = :lock_token AND melt_lock != ''
+            "#,
+        )?
+        .bind("id", quote_id.to_string())
+        .bind("lock_token", lock_token.to_string())
+        .execute(&self.inner)
+        .await?;
+
+        Ok(rows_affected > 0)
+    }
+
+    async fn force_unlock_melt_quote(&mut self, quote_id: &QuoteId) -> Result<bool, Self::Err> {
+        let rows_affected = query(
+            r#"
+            UPDATE melt_quote
+            SET melt_lock = '', melt_lock_expires_at = 0
+            WHERE id = :id AND melt_lock != ''
+            "#,
+        )?
+        .bind("id", quote_id.to_string())
+        .execute(&self.inner)
+        .await?;
+
+        Ok(rows_affected > 0)
+    }
+
+    async fn melt_lease_time(&mut self) -> Result<u64, Self::Err> {
+        let sql = match RM::Connection::name() {
+            "postgres" => "SELECT CAST(FLOOR(EXTRACT(EPOCH FROM clock_timestamp())) AS BIGINT)",
+            "sqlite" => "SELECT CAST(strftime('%s', 'now') AS BIGINT)",
+            driver => {
+                return Err(Error::Internal(format!(
+                    "Unsupported lease clock: {driver}"
+                )))
+            }
+        };
+        let value = query(sql)?
+            .pluck(&self.inner)
+            .await?
+            .ok_or_else(|| Error::Internal("Missing database clock".to_string()))?;
+        Ok(column_as_number!(value))
+    }
+
+    async fn claim_melt_quote_lease(
+        &mut self,
+        quote_id: &QuoteId,
+        lock_token: &str,
+        lease_seconds: u64,
+    ) -> Result<Option<mint::MeltQuote>, Self::Err> {
+        let Some(mut quote) = self.get_melt_quote(quote_id).await? else {
+            return Ok(None);
+        };
+        let now = self.melt_lease_time().await?;
+        if lock_token.is_empty()
+            || (quote.is_locked() && quote.melt_lock_expires_at > now)
+            || !matches!(quote.state, MeltQuoteState::Pending | MeltQuoteState::Paid)
+        {
+            return Ok(None);
+        }
+        let expiry = now
+            .checked_add(lease_seconds)
+            .ok_or_else(|| Error::Internal("Melt lease deadline overflow".to_string()))?;
+        query("UPDATE melt_quote SET melt_lock = :owner, melt_lock_expires_at = :expiry WHERE id = :id")?
+            .bind("owner", lock_token.to_string())
+            .bind("expiry", i64::try_from(expiry)?)
+            .bind("id", quote_id.to_string())
+            .execute(&self.inner).await?;
+        quote.melt_lock = lock_token.to_string();
+        quote.melt_lock_expires_at = expiry;
+        Ok(Some(quote.inner()))
+    }
+
+    async fn renew_melt_quote_lease(
+        &mut self,
+        quote_id: &QuoteId,
+        lock_token: &str,
+        lease_seconds: u64,
+    ) -> Result<bool, Self::Err> {
+        let Some(quote) = self.get_melt_quote(quote_id).await? else {
+            return Ok(false);
+        };
+        let now = self.melt_lease_time().await?;
+        if lock_token.is_empty()
+            || quote.melt_lock != lock_token
+            || quote.melt_lock_expires_at <= now
+            || !matches!(quote.state, MeltQuoteState::Pending | MeltQuoteState::Paid)
+        {
+            return Ok(false);
+        }
+        let expiry = now
+            .checked_add(lease_seconds)
+            .ok_or_else(|| Error::Internal("Melt lease deadline overflow".to_string()))?;
+        let affected = query("UPDATE melt_quote SET melt_lock_expires_at = :expiry WHERE id = :id AND melt_lock = :owner")?
+            .bind("expiry", i64::try_from(expiry)?)
+            .bind("id", quote_id.to_string())
+            .bind("owner", lock_token.to_string())
+            .execute(&self.inner).await?;
+        Ok(affected > 0)
     }
 
     async fn get_mint_quote(
@@ -1438,7 +1571,9 @@ where
                 request_lookup_id_kind,
                 extra_json,
                 fee_options,
-                selected_fee_index
+                selected_fee_index,
+                melt_lock,
+            melt_lock_expires_at
             FROM
                 melt_quote
             "#,

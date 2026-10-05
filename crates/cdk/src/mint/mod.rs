@@ -1112,17 +1112,25 @@ impl Mint {
             return Ok(());
         };
 
-        let payment_response = mint.check_melt_payment_status(&quote).await?;
-
-        saga_recovery::process_melt_saga_failure_event(
-            &saga,
-            &mut quote,
-            &payment_response,
-            localstore,
-            pubsub_manager,
-            mint,
-        )
-        .await
+        let Some(mut lease) = melt::lease::MeltLease::claim(localstore, &mut quote).await? else {
+            return Ok(());
+        };
+        let result = lease
+            .run(async {
+                let payment_response = mint.check_melt_payment_status(&quote).await?;
+                saga_recovery::process_melt_saga_outcome_with_lease(
+                    &saga,
+                    &mut quote,
+                    &payment_response,
+                    localstore,
+                    pubsub_manager,
+                    mint,
+                )
+                .await
+            })
+            .await;
+        lease.release().await?;
+        result
     }
 
     /// Handle payment notification without needing full Mint instance
