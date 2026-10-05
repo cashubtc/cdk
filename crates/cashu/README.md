@@ -69,11 +69,25 @@ println!("Token amount: {}", amount);
 | [13][13] | Deterministic secrets | Implemented |
 | [14][14] | Hashed Timelock Contracts (HTLCs) | Implemented |
 | [15][15] | Partial multi-path payments (MPP) | Implemented |
-| [16][16] | Animated QR codes | Not implemented |
+| [16][16] | Animated QR codes | Implemented |
 | [17][17] | WebSocket subscriptions  | Implemented |
 | [18][18] | Payment Requests  | Implemented |
 | [19][19] | Cached responses  | Implemented |
 | [20][20] | Signature on Mint Quote  | Implemented |
+
+### Experimental binary fountain transport
+
+`cashu::nuts::nut16::fountain` implements the binary format from
+[nut-fountain v0.1.0-alpha.0](https://github.com/Egge21M/nut-fountain/tree/v0.1.0-alpha.0).
+`Token::fountain_encoder()` and `TokenFountainDecoder` follow the existing
+NUT-16 API with raw byte frames. Encode QR frames in byte mode and preserve the
+scanner's raw bytes. Each frame adds 24 bytes to the requested payload size.
+The existing UR encoder and decoder remain available for NUT-16 compatibility.
+
+Run `cargo run -p cashu --example nut16_binary_fountain` for a transfer example.
+The generic `FountainEncoder` and `FountainDecoder` in the same module transport
+arbitrary bytes. The format is experimental; its reference version and license
+are recorded in [NOTICE-nut-fountain](NOTICE-nut-fountain).
 
 ## License
 
