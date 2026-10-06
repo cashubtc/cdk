@@ -877,27 +877,14 @@ impl MeltSaga<SetupComplete> {
                 Ok((pay, true))
             }
             Ok(pay) => {
-                let acknowledged = pay.status != MeltQuoteState::Unknown;
-                let mut response = self.verify_ambiguous_payment(payment_backend, pay).await?;
-                if !acknowledged
-                    && matches!(
-                        response.status,
-                        MeltQuoteState::Unpaid | MeltQuoteState::Failed
-                    )
-                {
-                    response.status = MeltQuoteState::Unknown;
-                }
+                let response = self.verify_ambiguous_payment(payment_backend, pay).await?;
+                let acknowledged = response.status != MeltQuoteState::Unknown;
                 Ok((response, acknowledged))
             }
             Err(err) => {
-                let mut response = self.handle_payment_error(payment_backend, err).await?;
-                if matches!(
-                    response.status,
-                    MeltQuoteState::Unpaid | MeltQuoteState::Failed
-                ) {
-                    response.status = MeltQuoteState::Unknown;
-                }
-                Ok((response, false))
+                let response = self.handle_payment_error(payment_backend, err).await?;
+                let acknowledged = response.status != MeltQuoteState::Unknown;
+                Ok((response, acknowledged))
             }
         }
     }
