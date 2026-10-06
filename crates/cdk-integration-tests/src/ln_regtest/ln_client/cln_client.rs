@@ -11,11 +11,11 @@ use cdk::util::hex;
 use cln_rpc::model::requests::{
     ConnectRequest, FetchinvoiceRequest, FundchannelRequest, GetinfoRequest, InvoiceRequest,
     ListchannelsRequest, ListfundsRequest, ListinvoicesRequest, ListpaysRequest,
-    ListtransactionsRequest, NewaddrRequest, OfferRequest, XpayRequest,
+    ListtransactionsRequest, NewaddrAddresstype, NewaddrRequest, OfferRequest, XpayRequest,
 };
 use cln_rpc::model::responses::{
-    GetinfoResponse, ListchannelsResponse, ListfundsOutputsStatus, ListinvoicesInvoicesStatus,
-    ListpaysPaysStatus,
+    GetinfoResponse, ListchannelsChannels, ListchannelsResponse, ListfundsOutputsStatus,
+    ListinvoicesInvoicesStatus, ListpaysPaysStatus,
 };
 use cln_rpc::primitives::{Amount, AmountOrAll, AmountOrAny, PublicKey};
 use cln_rpc::{ClnRpc, Request};
@@ -51,6 +51,23 @@ where
         Some(ListpaysPaysStatus::FAILED) => InvoiceStatus::Failed,
         None => InvoiceStatus::Unpaid,
     }
+}
+
+// Each public channel has a separate gossip update for each direction.
+fn channels_ready(channels: &[ListchannelsChannels], expected: &[(String, String)]) -> bool {
+    !channels.is_empty()
+        && channels.iter().all(|channel| channel.active)
+        && expected.iter().all(|(source, destination)| {
+            channels.iter().any(|forward| {
+                forward.source.to_string() == *source
+                    && forward.destination.to_string() == *destination
+                    && channels.iter().any(|reverse| {
+                        reverse.short_channel_id == forward.short_channel_id
+                            && reverse.source == forward.destination
+                            && reverse.destination == forward.source
+                    })
+            })
+        })
 }
 
 impl ClnClient {
@@ -158,6 +175,35 @@ impl ClnClient {
                 bail!("Wrong cln response");
             }
         }
+    }
+
+    /// Wait for active gossip in both directions for every expected channel.
+    /// Each pair identifies the endpoints of a channel in the regtest topology.
+    pub async fn wait_expected_channels_active(&self, expected: &[(String, String)]) -> Result<()> {
+        for _ in 0..100 {
+            let channels = self.list_channels().await?;
+            if channels_ready(&channels.channels, expected) {
+                tracing::info!("All expected CLN channels are active");
+                return Ok(());
+            }
+
+            tracing::debug!(
+                "Waiting for CLN gossip: {} directed announcements, {} expected channels",
+                channels.channels.len(),
+                expected.len()
+            );
+            sleep(Duration::from_secs(2)).await;
+        }
+
+        bail!(
+            "Timeout waiting for active CLN gossip at {} for channels: {}",
+            self.rpc_path.display(),
+            expected
+                .iter()
+                .map(|(source, destination)| format!("{source}<->{destination}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
     }
 
     pub async fn wait_channel_active_with_peer(&self, peer_id: &str) -> Result<()> {
@@ -348,7 +394,7 @@ impl LightningClient for ClnClient {
             .lock()
             .await
             .call(cln_rpc::Request::NewAddr(NewaddrRequest {
-                addresstype: None,
+                addresstype: Some(NewaddrAddresstype::BECH32),
             }))
             .await?;
 
@@ -549,42 +595,7 @@ impl LightningClient for ClnClient {
     }
 
     async fn wait_channels_active(&self) -> Result<()> {
-        let mut count = 0;
-        while count < 100 {
-            let mut cln_client = self.client.lock().await;
-            let cln_response = cln_client
-                .call(cln_rpc::Request::ListChannels(ListchannelsRequest {
-                    destination: None,
-                    short_channel_id: None,
-                    source: None,
-                }))
-                .await?;
-
-            match cln_response {
-                cln_rpc::Response::ListChannels(channels) => {
-                    let pending = channels
-                        .channels
-                        .iter()
-                        .filter(|c| !c.active)
-                        .collect::<Vec<_>>();
-
-                    if pending.is_empty() {
-                        tracing::info!("All CLN channels active");
-                        return Ok(());
-                    }
-
-                    count += 1;
-
-                    sleep(Duration::from_secs(2)).await;
-                }
-
-                _ => {
-                    bail!("Wrong cln response");
-                }
-            };
-        }
-
-        bail!("Time out exceeded wait for cln channels")
+        self.wait_expected_channels_active(&[]).await
     }
 
     async fn check_incoming_payment_status(&self, payment_hash: &str) -> Result<InvoiceStatus> {
@@ -726,6 +737,62 @@ pub fn amount_for_offer(offer: &Offer) -> Result<Amount> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn channel_announcements() -> Vec<ListchannelsChannels> {
+        let forward: ListchannelsChannels = serde_json::from_value(serde_json::json!({
+            "source": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+            "destination": "0379be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+            "short_channel_id": "1x1x0",
+            "public": true,
+            "amount_msat": 1_000_000,
+            "message_flags": 0,
+            "channel_flags": 0,
+            "active": true,
+            "last_update": 1,
+            "base_fee_millisatoshi": 0,
+            "fee_per_millionth": 0,
+            "delay": 6,
+            "htlc_minimum_msat": 0,
+            "features": "",
+            "direction": 0
+        }))
+        .unwrap();
+        let mut reverse = forward.clone();
+        reverse.source = forward.destination;
+        reverse.destination = forward.source;
+        reverse.direction = 1;
+        reverse.channel_flags = 1;
+        vec![forward, reverse]
+    }
+
+    #[test]
+    fn channel_readiness_rejects_empty_or_incomplete_gossip() {
+        let channels = channel_announcements();
+        let expected = vec![(
+            channels[0].source.to_string(),
+            channels[0].destination.to_string(),
+        )];
+
+        assert!(!channels_ready(&[], &[]));
+        assert!(!channels_ready(&[], &expected));
+        assert!(!channels_ready(&channels[..1], &expected));
+        assert!(channels_ready(&channels, &expected));
+
+        let mut inactive = channels.clone();
+        inactive[1].active = false;
+        assert!(!channels_ready(&inactive, &expected));
+
+        let mut different_channel = channels.clone();
+        different_channel[1].short_channel_id = "2x1x0".parse().unwrap();
+        assert!(!channels_ready(&different_channel, &expected));
+
+        let mut missing_channel = expected;
+        missing_channel.push((
+            channels[0].source.to_string(),
+            "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5".to_owned(),
+        ));
+        assert!(!channels_ready(&channels, &missing_channel));
+    }
 
     #[test]
     fn outgoing_payment_status_prefers_complete_over_stale_failure() {

@@ -923,12 +923,12 @@
         regtestBuildInputs =
           (with pkgsUnstable; [
             lnd
-            # TODO: Drop this override once nixpkgs ships CLN >= 26.06.7.
+            # TODO: Drop this override once nixpkgs ships CLN >= 26.06.8.
             (clightning.overrideAttrs (finalAttrs: old: {
-              version = "26.06.7";
+              version = "26.06.8";
               src = fetchurl {
                 url = "https://github.com/ElementsProject/lightning/releases/download/v${finalAttrs.version}/clightning-v${finalAttrs.version}.zip";
-                hash = "sha256-sxPSB+U/Hi2/n7rHnVr0jDUuh0plM5C924G1J5WhU9w=";
+                hash = "sha256-KAnE9qul6SgxfZhX+/9bKSMrXnme104RUIcqm/Ed4CU=";
               };
               # The release archive omits the executable bit on this doc helper.
               postPatch = (old.postPatch or "") + ''

@@ -482,7 +482,18 @@ pub async fn start_regtest_end(
 
     fund_ln(&bitcoin_client, &lnd_two_client).await.unwrap();
 
-    // Open channels concurrently
+    let cln_id = cln_client.get_connect_info().await?.pubkey;
+    let cln_two_id = cln_two_client.get_connect_info().await?.pubkey;
+    let lnd_id = lnd_client.get_connect_info().await?.pubkey;
+    let lnd_two_id = lnd_two_client.get_connect_info().await?.pubkey;
+    let mut expected_channels = vec![
+        (cln_id.clone(), lnd_id.clone()),
+        (cln_id.clone(), cln_two_id.clone()),
+        (lnd_id.clone(), lnd_two_id.clone()),
+        (cln_two_id, lnd_id),
+        (cln_id.clone(), lnd_two_id),
+    ];
+
     // Open channels
     {
         open_channel(&cln_client, &lnd_client).await.unwrap();
@@ -512,6 +523,7 @@ pub async fn start_regtest_end(
             node.sync_wallets()?;
 
             let pubkey = node.node_id();
+            expected_channels.push((cln_id, pubkey.to_string()));
             let listen_addr = node.listening_addresses();
             let listen_addr = listen_addr.as_ref().unwrap().first().unwrap();
 
@@ -611,7 +623,12 @@ pub async fn start_regtest_end(
                 .wait_channel_active_with_peer(&pubkey.to_string())
                 .await?;
 
-            cln_client.wait_channels_active().await?;
+            cln_client
+                .wait_expected_channels_active(&expected_channels)
+                .await?;
+            cln_two_client
+                .wait_expected_channels_active(&expected_channels)
+                .await?;
 
             lnd_client.wait_channels_active().await?;
 
@@ -622,7 +639,12 @@ pub async fn start_regtest_end(
             std::mem::forget(node);
             stop_result?;
         } else {
-            cln_client.wait_channels_active().await?;
+            cln_client
+                .wait_expected_channels_active(&expected_channels)
+                .await?;
+            cln_two_client
+                .wait_expected_channels_active(&expected_channels)
+                .await?;
 
             lnd_client.wait_channels_active().await?;
 
