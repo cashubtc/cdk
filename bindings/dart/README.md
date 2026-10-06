@@ -40,10 +40,10 @@ Supported targets:
 | macOS | aarch64, x86_64 |
 | Windows | x86_64 |
 | Android | aarch64, armv7, x86_64 |
-| iOS | aarch64 |
+| iOS | aarch64 (device), aarch64 and x86_64 (simulator) |
 
-Each target ships the flavour Dart asks for on that platform: dynamic
-everywhere except iOS, which is statically linked. A target or link mode with no
+Every target ships a dynamic library, because that is the link mode Dart and
+Flutter ask for on all of them, iOS included. A target or link mode with no
 committed library fails the build naming what it wanted, because this package
 ships no Rust sources to fall back to.
 

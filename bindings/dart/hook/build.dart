@@ -5,18 +5,20 @@ import 'package:hooks/hooks.dart';
 import 'package:native_toolchain_rust/native_toolchain_rust.dart';
 import 'package:path/path.dart' as p;
 
+import 'target.dart';
+
 void main(List<String> args) async {
   await build(args, (input, output) async {
     if (!input.config.buildCodeAssets) return;
 
     final codeConfig = input.config.code;
-    final targetTriple = _targetTriple(codeConfig);
-    final linkMode = _linkMode(codeConfig);
+    final triple = targetTriple(codeConfig);
+    final linkMode = linkModeFor(codeConfig);
     final packageRoot = p.fromUri(input.packageRoot);
     final libFileName =
         codeConfig.targetOS.libraryFileName('cdk_ffi_dart', linkMode);
     final prebuiltPath =
-        p.join(packageRoot, 'prebuilt', targetTriple, libFileName);
+        p.join(packageRoot, 'prebuilt', triple, libFileName);
 
     if (File(prebuiltPath).existsSync()) {
       // Pre-built binary found, so skip cargo entirely.
@@ -40,7 +42,7 @@ void main(List<String> args) async {
     // failing somewhere deeper in cargo.
     if (!File(p.join(packageRoot, 'rust', 'Cargo.toml')).existsSync()) {
       throw StateError(
-        'No prebuilt library at prebuilt/$targetTriple/$libFileName, and this '
+        'No prebuilt library at prebuilt/$triple/$libFileName, and this '
         'package ships no Rust sources to build one from.',
       );
     }
@@ -81,33 +83,4 @@ void main(List<String> args) async {
     );
     await builder.run(input: input, output: output);
   });
-}
-
-String _targetTriple(CodeConfig config) {
-  return switch ((config.targetOS, config.targetArchitecture)) {
-    (OS.android, Architecture.arm64) => 'aarch64-linux-android',
-    (OS.android, Architecture.arm) => 'armv7-linux-androideabi',
-    (OS.android, Architecture.x64) => 'x86_64-linux-android',
-    (OS.iOS, Architecture.arm64) => 'aarch64-apple-ios',
-    (OS.windows, Architecture.x64) => 'x86_64-pc-windows-msvc',
-    (OS.linux, Architecture.arm64) => 'aarch64-unknown-linux-gnu',
-    (OS.linux, Architecture.x64) => 'x86_64-unknown-linux-gnu',
-    (OS.macOS, Architecture.arm64) => 'aarch64-apple-darwin',
-    (OS.macOS, Architecture.x64) => 'x86_64-apple-darwin',
-    _ => throw UnsupportedError(
-        'Unsupported target: ${config.targetOS} / ${config.targetArchitecture}'),
-  };
-}
-
-LinkMode _linkMode(CodeConfig config) {
-  return switch (config.linkModePreference) {
-    LinkModePreference.dynamic ||
-    LinkModePreference.preferDynamic =>
-      DynamicLoadingBundled(),
-    LinkModePreference.static ||
-    LinkModePreference.preferStatic =>
-      StaticLinking(),
-    _ => throw UnsupportedError(
-        'Unsupported LinkModePreference: ${config.linkModePreference}'),
-  };
 }

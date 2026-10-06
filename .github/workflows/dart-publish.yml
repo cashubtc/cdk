@@ -122,7 +122,7 @@ jobs:
           rsync -av --delete \
             --exclude='.github' \
             --exclude='rust' \
-            --exclude='target' \
+            --exclude='target/' \
             --exclude='.git' \
             bindings/dart/ cdk-dart/
 
@@ -204,10 +204,18 @@ jobs:
             runner: ubuntu-22.04
             artifact: libcdk_ffi_dart.so
 
-          # iOS
+          # iOS. Flutter asks for dynamic linking on every platform,
+          # including iOS, so the device and both simulator slices ship a
+          # dylib rather than a static archive.
           - target: aarch64-apple-ios
             runner: macos-14
-            artifact: libcdk_ffi_dart.a
+            artifact: libcdk_ffi_dart.dylib
+          - target: aarch64-apple-ios-sim
+            runner: macos-14
+            artifact: libcdk_ffi_dart.dylib
+          - target: x86_64-apple-ios
+            runner: macos-14
+            artifact: libcdk_ffi_dart.dylib
 
     steps:
       - name: Checkout monorepo
@@ -307,7 +315,7 @@ jobs:
 
           for f in artifacts/*; do
             filename=$(basename "$f")
-            for suffix in libcdk_ffi_dart.so libcdk_ffi_dart.dylib libcdk_ffi_dart.a cdk_ffi_dart.dll; do
+            for suffix in libcdk_ffi_dart.so libcdk_ffi_dart.dylib cdk_ffi_dart.dll; do
               if [[ "$filename" == *"-${suffix}" ]]; then
                 target="${filename%-${suffix}}"
                 mkdir -p "cdk-dart/prebuilt/${target}"
@@ -316,6 +324,29 @@ jobs:
               fi
             done
           done
+
+      - name: Verify every target the hook advertises has a library
+        run: |
+          # hook/target.dart is the single source of truth for which
+          # prebuilt/<triple> the build hook will look in. A target it can
+          # return with nothing staged is a build failure for that consumer,
+          # and nothing downstream can fall back to cargo.
+          missing=0
+          for triple in $(grep -oE "'[a-z0-9_]+-[a-z0-9_]+-[a-z0-9-]+'" \
+                            cdk-dart/hook/target.dart | tr -d "'" | sort -u); do
+            case "${triple}" in
+              *windows*) lib=cdk_ffi_dart.dll ;;
+              *apple*)   lib=libcdk_ffi_dart.dylib ;;
+              *)         lib=libcdk_ffi_dart.so ;;
+            esac
+            if [[ ! -f "cdk-dart/prebuilt/${triple}/${lib}" ]]; then
+              echo "::error::missing prebuilt/${triple}/${lib}"
+              missing=1
+            else
+              echo "ok prebuilt/${triple}/${lib}"
+            fi
+          done
+          exit "${missing}"
 
       - name: Download generated bindings
         uses: actions/download-artifact@v8
