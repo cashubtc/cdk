@@ -13,10 +13,12 @@ use std::time::{Duration, Instant};
 use std::{fmt, fs};
 
 use async_trait::async_trait;
-use bdk_wallet::bitcoin::Network;
+use bdk_wallet::bitcoin::{secp256k1::Secp256k1, Network, Psbt};
+use bdk_wallet::descriptor::IntoWalletDescriptor;
 use bdk_wallet::keys::bip39::Mnemonic;
 use bdk_wallet::keys::{DerivableKey, ExtendedKey};
 use bdk_wallet::rusqlite::{Connection, OpenFlags};
+use bdk_wallet::signer::{SignerError, SignersContainer};
 use bdk_wallet::template::Bip84;
 use bdk_wallet::{ChangeSet, KeychainKind, PersistedWallet, Update, Wallet};
 use cdk_common::amount::MSAT_IN_SAT;
@@ -101,7 +103,6 @@ pub fn validate_existing_wallet(
     let wallet = Wallet::load()
         .descriptor(KeychainKind::External, Some(descriptor))
         .descriptor(KeychainKind::Internal, Some(change_descriptor))
-        .extract_keys()
         .check_network(network)
         .load_wallet_no_persist(changeset)
         .map_err(|e| Error::Wallet(e.to_string()))?;
@@ -186,6 +187,7 @@ pub struct CdkBdk {
     pub(crate) tasks: Arc<Mutex<Option<BackgroundTasks>>>,
     pub(crate) shutdown_timeout: Duration,
     pub(crate) wallet_with_db: Arc<Mutex<WalletWithDb>>,
+    pub(crate) signers: [SignersContainer; 2],
     pub(crate) chain_source: ChainSource,
     pub(crate) storage: BdkStorage,
     pub(crate) network: Network,
@@ -208,6 +210,14 @@ pub struct CdkBdk {
 }
 
 impl CdkBdk {
+    pub(crate) fn sign_psbt(&self, wallet: &Wallet, psbt: &mut Psbt) -> Result<bool, SignerError> {
+        wallet.sign_with_signers(
+            psbt,
+            &[&self.signers[0], &self.signers[1]],
+            Default::default(),
+        )
+    }
+
     fn outgoing_payment_failure_response(
         unit: &CurrencyUnit,
         quote_id: &cdk_common::QuoteId,
@@ -374,13 +384,17 @@ impl CdkBdk {
         let xkey: ExtendedKey = mnemonic.into_extended_key()?;
         let xprv = xkey.into_xprv(network.into()).ok_or(Error::Path)?;
 
-        let descriptor = Bip84(xprv, KeychainKind::External);
-        let change_descriptor = Bip84(xprv, KeychainKind::Internal);
+        let secp = Secp256k1::new();
+        let (descriptor, external_keys) = Bip84(xprv, KeychainKind::External)
+            .into_wallet_descriptor(&secp, network.into())
+            .map_err(|e| Error::Wallet(e.to_string()))?;
+        let (change_descriptor, internal_keys) = Bip84(xprv, KeychainKind::Internal)
+            .into_wallet_descriptor(&secp, network.into())
+            .map_err(|e| Error::Wallet(e.to_string()))?;
 
         let wallet_opt = Wallet::load()
             .descriptor(KeychainKind::External, Some(descriptor.clone()))
             .descriptor(KeychainKind::Internal, Some(change_descriptor.clone()))
-            .extract_keys()
             .check_network(network)
             .load_wallet(&mut db)
             .map_err(|e| Error::Wallet(e.to_string()))?;
@@ -419,6 +433,19 @@ impl CdkBdk {
 
         wallet.persist(&mut db)?;
 
+        // Keep signing keys outside the wallet and reconstruct them from the mnemonic on restart.
+        let signers = [
+            SignersContainer::build(
+                external_keys,
+                wallet.public_descriptor(KeychainKind::External),
+                wallet.secp_ctx(),
+            ),
+            SignersContainer::build(
+                internal_keys,
+                wallet.public_descriptor(KeychainKind::Internal),
+                wallet.secp_ctx(),
+            ),
+        ];
         let wallet_with_db = WalletWithDb::new(wallet, db);
 
         let batch_config = batch_config.unwrap_or_default();
@@ -446,6 +473,7 @@ impl CdkBdk {
             tasks: Arc::new(Mutex::new(None)),
             shutdown_timeout: Duration::from_secs(shutdown_timeout_secs.unwrap_or(30)),
             wallet_with_db: Arc::new(Mutex::new(wallet_with_db)),
+            signers,
             chain_source,
             storage: BdkStorage::new(kv_store),
             network,
@@ -1013,6 +1041,89 @@ mod tests {
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
     const OTHER_TEST_MNEMONIC: &str =
         "legal winner thank year wave sausage worth useful legal winner thank yellow";
+
+    #[tokio::test]
+    async fn signing_external_and_change_inputs_survives_wallet_reload() {
+        let (backend, tempdir) = build_test_instance_with_tempdir(1).await;
+        let mut psbt = {
+            let mut wallet_with_db = backend.wallet_with_db.lock().await;
+            let wallet = &mut wallet_with_db.wallet;
+            let outputs = [KeychainKind::External, KeychainKind::Internal].map(|keychain| TxOut {
+                value: bdk_wallet::bitcoin::Amount::from_sat(50_000),
+                script_pubkey: wallet.reveal_next_address(keychain).address.script_pubkey(),
+            });
+            let funding = Transaction {
+                version: transaction::Version::TWO,
+                lock_time: absolute::LockTime::ZERO,
+                input: vec![TxIn {
+                    previous_output: OutPoint::new(Txid::all_zeros(), 0),
+                    script_sig: Default::default(),
+                    sequence: Sequence::MAX,
+                    witness: Witness::new(),
+                }],
+                output: outputs.to_vec(),
+            };
+            wallet.apply_unconfirmed_txs([(funding, 0)]);
+            let destination = wallet.reveal_next_address(KeychainKind::External).address;
+            let mut builder = wallet.build_tx();
+            builder.drain_wallet().drain_to(destination.script_pubkey());
+            let psbt = builder
+                .finish()
+                .expect("build transaction spending both keychains");
+            assert_eq!(psbt.inputs.len(), 2);
+            wallet_with_db.persist().expect("persist funded wallet");
+            psbt
+        };
+        let unsigned_psbt = psbt.clone();
+        {
+            let wallet_with_db = backend.wallet_with_db.lock().await;
+            assert!(backend
+                .sign_psbt(&wallet_with_db.wallet, &mut psbt)
+                .expect("sign fresh wallet"));
+            assert!(psbt
+                .inputs
+                .iter()
+                .all(|input| input.final_script_witness.is_some()));
+        }
+        drop(backend);
+
+        let kv = cdk_sqlite::mint::memory::empty()
+            .await
+            .expect("in-memory kv store");
+        let backend = CdkBdk::new(
+            Mnemonic::from_str(TEST_MNEMONIC).expect("test mnemonic"),
+            Network::Regtest,
+            ChainSource::Esplora(EsploraConfig {
+                url: "http://127.0.0.1:1".to_string(),
+                parallel_requests: 1,
+            }),
+            tempdir.path().to_string_lossy().into_owned(),
+            FeeReserve {
+                min_fee_reserve: Amount::new(1, CurrencyUnit::Sat).into(),
+                percent_fee_reserve: 0.02,
+            },
+            Arc::new(kv),
+            None,
+            1,
+            0,
+            546,
+            60,
+            Some(1),
+            None,
+        )
+        .expect("reload persisted wallet");
+        let wallet_with_db = backend.wallet_with_db.lock().await;
+        let mut reloaded_psbt = unsigned_psbt;
+        assert!(backend
+            .sign_psbt(&wallet_with_db.wallet, &mut reloaded_psbt)
+            .expect("sign reloaded wallet"));
+        assert_eq!(
+            psbt.extract_tx().expect("fresh signed transaction"),
+            reloaded_psbt
+                .extract_tx()
+                .expect("reloaded signed transaction")
+        );
+    }
 
     #[tokio::test]
     async fn existing_wallet_preflight_requires_matching_persisted_wallet() {
