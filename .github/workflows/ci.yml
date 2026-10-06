@@ -683,6 +683,9 @@ jobs:
             --command misc/with_ci_tmpdir.sh just fake-auth-mint-itest \
             ${{ matrix.database }} \
             http://127.0.0.1:8080/realms/cdk-test-realm/.well-known/openid-configuration
+      - name: Capture auth service logs on failure
+        if: failure()
+        run: docker compose -f misc/keycloak/docker-compose-recover.yml logs --no-color --timestamps keycloak postgres
       - name: Stop and clean up Docker Compose
         if: always()
         run: |

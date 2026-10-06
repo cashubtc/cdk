@@ -793,6 +793,28 @@ async fn test_auth_token_spending_order() {
     }
 }
 
+fn token_request_error(response: &cdk_http_client::RawResponse, credentials: &[&str]) -> Error {
+    // Only report OAuth error fields; a response may also contain tokens.
+    let body = serde_json::from_str::<serde_json::Value>(&response.body_lossy()).ok();
+    let mut details = serde_json::Map::new();
+    if let Some(body) = body {
+        for field in ["error", "error_description"] {
+            if let Some(value) = body.get(field).and_then(serde_json::Value::as_str) {
+                let mut value = value.to_owned();
+                for credential in credentials.iter().filter(|value| !value.is_empty()) {
+                    value = value.replace(*credential, "[REDACTED]");
+                }
+                details.insert(field.to_owned(), serde_json::Value::String(value));
+            }
+        }
+    }
+    Error::Custom(format!(
+        "Token request failed with status: {}; OAuth error details: {}",
+        response.status(),
+        serde_json::Value::Object(details)
+    ))
+}
+
 async fn get_tokens(
     mint_info: &MintInfo,
     request_refresh_token: bool,
@@ -832,10 +854,7 @@ async fn get_tokens(
         .map_err(|_| Error::Custom("Failed to send token request".to_string()))?;
 
     if !response.is_success() {
-        return Err(Error::Custom(format!(
-            "Token request failed with status: {}",
-            response.status()
-        )));
+        return Err(token_request_error(&response, &[&user, &password]));
     }
 
     let token_response: serde_json::Value = response
@@ -895,10 +914,7 @@ async fn get_custom_access_token(
         .map_err(|_| Error::Custom("Failed to send token request".to_string()))?;
 
     if !response.is_success() {
-        return Err(Error::Custom(format!(
-            "Token request failed with status: {}",
-            response.status()
-        )));
+        return Err(token_request_error(&response, &[username, password]));
     }
 
     let token_response: serde_json::Value = response

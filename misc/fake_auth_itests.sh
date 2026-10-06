@@ -79,7 +79,7 @@ echo "Fake auth mint started with PID: $FAKE_AUTH_MINT_PID"
 
 # Run cargo test
 echo "Running fake auth integration tests..."
-run_test fake_auth
+run_test fake_auth -- --test-threads=1
 
 # Capture the exit status of cargo test
 test_status=$?
