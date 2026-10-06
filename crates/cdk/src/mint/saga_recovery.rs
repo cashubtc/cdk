@@ -174,11 +174,7 @@ async fn persist_permanent_payment_failure(
     };
 
     match &current_saga.state {
-        SagaStateEnum::Melt(MeltSagaState::PaymentPending) => {}
-        SagaStateEnum::Melt(MeltSagaState::PaymentAttempted) => {
-            tx.rollback().await?;
-            return Ok(());
-        }
+        SagaStateEnum::Melt(MeltSagaState::PaymentAttempted | MeltSagaState::PaymentPending) => {}
         SagaStateEnum::Melt(MeltSagaState::PaymentFailed) => {
             tx.rollback().await?;
             return Ok(());
@@ -934,15 +930,9 @@ mod tests {
             .await
             .unwrap();
 
-            if saga_state == MeltSagaState::PaymentAttempted {
-                assert_saga_exists(&mint, &operation_id).await;
-                assert_proofs_state(&mint, &input_ys, Some(State::Pending)).await;
-                assert_eq!(quote.state, MeltQuoteState::Pending);
-            } else {
-                assert_saga_not_exists(&mint, &operation_id).await;
-                assert_proofs_state(&mint, &input_ys, None).await;
-                assert_eq!(quote.state, MeltQuoteState::Unpaid);
-            }
+            assert_saga_not_exists(&mint, &operation_id).await;
+            assert_proofs_state(&mint, &input_ys, None).await;
+            assert_eq!(quote.state, MeltQuoteState::Unpaid);
         }
     }
 
@@ -1054,15 +1044,9 @@ mod tests {
                 .await
                 .unwrap();
 
-                if saga_state == MeltSagaState::PaymentAttempted {
-                    assert_saga_exists(&mint, &operation_id).await;
-                    assert_proofs_state(&mint, &input_ys, Some(State::Pending)).await;
-                    assert_eq!(quote.state, MeltQuoteState::Pending);
-                } else {
-                    assert_saga_not_exists(&mint, &operation_id).await;
-                    assert_proofs_state(&mint, &input_ys, None).await;
-                    assert_eq!(quote.state, MeltQuoteState::Unpaid);
-                }
+                assert_saga_not_exists(&mint, &operation_id).await;
+                assert_proofs_state(&mint, &input_ys, None).await;
+                assert_eq!(quote.state, MeltQuoteState::Unpaid);
 
                 let persisted_quote = mint
                     .localstore

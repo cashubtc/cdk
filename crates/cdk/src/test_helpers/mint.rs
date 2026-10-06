@@ -57,6 +57,20 @@ pub(crate) fn should_fail_for(operation: &str) -> bool {
     TEST_FAILURES.with(|failures| failures.borrow().contains(&operation.to_string()))
 }
 
+/// Consumes a failure flag so subsequent calls can succeed.
+pub(crate) fn take_fail_for(operation: &str) -> bool {
+    TEST_FAILURES.with(|failures| {
+        let mut failures = failures.borrow_mut();
+        match failures.iter().position(|failure| failure == operation) {
+            Some(index) => {
+                failures.remove(index);
+                true
+            }
+            None => false,
+        }
+    })
+}
+
 /// Creates and starts a test mint with in-memory storage and a fake payment backend.
 ///
 /// This mint can be used for unit tests without requiring external dependencies

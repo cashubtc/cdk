@@ -70,6 +70,10 @@ impl MeltLease {
                     loop {
                         tokio::time::sleep(interval).await;
                         let result = async {
+                            #[cfg(test)]
+                            if crate::test_helpers::mint::take_fail_for("MELT_LEASE_RENEW") {
+                                return Err(Error::Internal);
+                            }
                             let mut tx = db.begin_transaction().await?;
                             let renewed = tx
                                 .renew_melt_quote_lease(&quote_id, &owner, MELT_LEASE_SECONDS)
@@ -97,8 +101,6 @@ impl MeltLease {
                                     quote_id,
                                     err
                                 );
-                                lost.cancel();
-                                return;
                             }
                         }
                     }
@@ -121,6 +123,10 @@ impl MeltLease {
         db: &DynMintDatabase,
         quote: &mut MeltQuote,
     ) -> Result<Option<Self>, Error> {
+        #[cfg(test)]
+        if crate::test_helpers::mint::take_fail_for("MELT_LEASE_CLAIM") {
+            return Err(Error::Internal);
+        }
         let mut tx = db.begin_transaction().await?;
         let Some(current) = tx
             .claim_melt_quote_lease(
@@ -147,6 +153,17 @@ impl MeltLease {
         &self,
         work: impl Future<Output = Result<T, Error>>,
     ) -> Result<T, Error> {
+        #[cfg(test)]
+        {
+            if crate::test_helpers::mint::take_fail_for("MELT_LEASE_LOST") {
+                return Err(Error::MeltQuoteLocked);
+            }
+            if crate::test_helpers::mint::take_fail_for("MELT_LEASE_TIMEOUT") {
+                return Err(Error::PendingMeltTimeout {
+                    last_backend_error: None,
+                });
+            }
+        }
         tokio::select! {
             biased;
             _ = self.lost.cancelled() => Err(Error::MeltQuoteLocked),
@@ -159,6 +176,10 @@ impl MeltLease {
         if !self.released {
             self.heartbeat.abort();
             let _ = (&mut self.heartbeat).await;
+            #[cfg(test)]
+            if crate::test_helpers::mint::take_fail_for("MELT_LEASE_RELEASE") {
+                return Err(Error::Internal);
+            }
             release_owner(&self.db, &self.quote_id, &self.owner).await?;
             self.released = true;
         }

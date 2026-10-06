@@ -321,7 +321,7 @@ async fn expired_executor_cannot_override_replica_recovery() {
         DispatchBehavior::GatedFailure(Arc::clone(&gate)),
         Amount::new(100, CurrencyUnit::Sat),
     ));
-    backend.set_check_status(MeltQuoteState::Failed);
+    backend.set_check_status(MeltQuoteState::Unknown);
     let localstore = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
     let mint = create_mint_with_store(Arc::clone(&backend), localstore.clone()).await;
     let proofs = mint_proofs(&mint, Amount::from(1_000)).await;

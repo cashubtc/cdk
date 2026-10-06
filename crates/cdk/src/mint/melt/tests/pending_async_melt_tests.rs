@@ -479,7 +479,7 @@ async fn payment_error_that_looks_local_preserves_uncertain_dispatch() {
                 .expect("ambiguous payment should remain recoverable");
             if saga.state
                 == cdk_common::mint::SagaStateEnum::Melt(
-                    cdk_common::mint::MeltSagaState::PaymentAttempted,
+                    cdk_common::mint::MeltSagaState::PaymentPending,
                 )
             {
                 break saga;
@@ -510,7 +510,7 @@ async fn payment_error_that_looks_local_preserves_uncertain_dispatch() {
         .all(|state| *state == Some(cdk_common::State::Pending)));
     assert_eq!(
         pending_saga.state,
-        cdk_common::mint::SagaStateEnum::Melt(cdk_common::mint::MeltSagaState::PaymentAttempted)
+        cdk_common::mint::SagaStateEnum::Melt(cdk_common::mint::MeltSagaState::PaymentPending)
     );
 }
 
@@ -847,7 +847,7 @@ async fn internal_settlement_without_lookup_id_finalizes_on_demand() {
 /// the quote-scoped identifier (e.g. CLN's bolt12 binding is written before
 /// any dispatch, so its absence proves the payment never happened).
 #[tokio::test]
-async fn payment_attempt_without_lookup_id_keeps_proofs_at_startup() {
+async fn payment_attempt_without_lookup_id_releases_proofs_at_startup() {
     let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> = Arc::new(
         NoEventPendingBackend::new(1, Some(MeltQuoteState::Unpaid)).with_stripped_quote_lookup_id(),
     );
@@ -930,22 +930,20 @@ async fn payment_attempt_without_lookup_id_keeps_proofs_at_startup() {
         .get_proofs_states(&input_ys)
         .await
         .unwrap();
-    assert!(states
-        .iter()
-        .all(|state| *state == Some(cdk_common::State::Pending)));
+    assert!(states.iter().all(Option::is_none));
     let stored_quote = mint
         .localstore()
         .get_melt_quote(&quote.id)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(stored_quote.state, MeltQuoteState::Pending);
+    assert_eq!(stored_quote.state, MeltQuoteState::Unpaid);
     let saga = mint
         .localstore()
         .get_melt_saga_by_quote_id(&quote.id)
         .await
         .unwrap();
-    assert!(saga.is_some());
+    assert!(saga.is_none());
 }
 
 /// A silent backend must not block startup or release proofs whose payment
@@ -993,7 +991,7 @@ async fn startup_defers_stalled_payment_checks_and_recovers_later() {
             tx.update_acquired_saga(
                 &mut saga,
                 cdk_common::mint::SagaStateEnum::Melt(
-                    cdk_common::mint::MeltSagaState::PaymentPending,
+                    cdk_common::mint::MeltSagaState::PaymentAttempted,
                 ),
             )
             .await
@@ -1011,6 +1009,7 @@ async fn startup_defers_stalled_payment_checks_and_recovers_later() {
             .unwrap();
         mint.stop().await.unwrap();
         backend.stall_status_checks.store(true, Ordering::SeqCst);
+        crate::test_helpers::mint::expire_melt_leases(&mint).await;
 
         tokio::time::timeout(Duration::from_secs(20), mint.start())
             .await

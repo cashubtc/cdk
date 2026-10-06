@@ -2045,7 +2045,7 @@ async fn test_authoritative_failure_is_durable_before_compensation() {
 /// authoritative by backend contract: the terminal failure is persisted
 /// durably as `PaymentFailed` before compensation.
 #[tokio::test]
-async fn test_failed_recheck_after_unknown_dispatch_keeps_dispatch_uncertain() {
+async fn test_failed_recheck_after_unknown_dispatch_is_durable_before_compensation() {
     let mint = create_test_mint().await.unwrap();
     let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
     let input_ys = proofs.ys().unwrap();
@@ -2083,11 +2083,11 @@ async fn test_failed_recheck_after_unknown_dispatch_keeps_dispatch_uncertain() {
 
     let response = payment_saga.attempt_external_payment().await.unwrap();
 
-    assert_eq!(response.status, MeltQuoteState::Unknown);
+    assert_eq!(response.status, MeltQuoteState::Failed);
     let persisted_saga = assert_saga_exists(&mint, &operation_id).await;
     assert_eq!(
         persisted_saga.state,
-        SagaStateEnum::Melt(MeltSagaState::PaymentAttempted)
+        SagaStateEnum::Melt(MeltSagaState::PaymentFailed)
     );
     assert_proofs_state(&mint, &input_ys, Some(State::Pending)).await;
     assert_eq!(
@@ -2105,7 +2105,7 @@ async fn test_failed_recheck_after_unknown_dispatch_keeps_dispatch_uncertain() {
 /// backend contract: the terminal failure is persisted durably as
 /// `PaymentFailed` before compensation.
 #[tokio::test]
-async fn test_failed_recheck_after_error_keeps_dispatch_uncertain() {
+async fn test_failed_recheck_after_error_is_durable_before_compensation() {
     let mint = create_test_mint().await.unwrap();
     let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
     let input_ys = proofs.ys().unwrap();
@@ -2143,11 +2143,11 @@ async fn test_failed_recheck_after_error_keeps_dispatch_uncertain() {
 
     let response = payment_saga.attempt_external_payment().await.unwrap();
 
-    assert_eq!(response.status, MeltQuoteState::Unknown);
+    assert_eq!(response.status, MeltQuoteState::Failed);
     let persisted_saga = assert_saga_exists(&mint, &operation_id).await;
     assert_eq!(
         persisted_saga.state,
-        SagaStateEnum::Melt(MeltSagaState::PaymentAttempted)
+        SagaStateEnum::Melt(MeltSagaState::PaymentFailed)
     );
     assert_proofs_state(&mint, &input_ys, Some(State::Pending)).await;
     assert_eq!(
@@ -2208,7 +2208,7 @@ async fn test_payment_error_with_pending_check_does_not_compensate() {
     let pending_saga = assert_saga_exists(&mint, &operation_id).await;
     assert_eq!(
         pending_saga.state,
-        SagaStateEnum::Melt(MeltSagaState::PaymentAttempted),
+        SagaStateEnum::Melt(MeltSagaState::PaymentPending),
         "a pending backend response should remain recoverable"
     );
     assert_proofs_state(&mint, &input_ys, Some(State::Pending)).await;
@@ -2230,9 +2230,7 @@ async fn test_payment_error_with_pending_check_does_not_compensate() {
     assert_eq!(stored_quote.state, MeltQuoteState::Pending);
 }
 
-async fn assert_payment_error_with_terminal_follow_up_keeps_pending(
-    follow_up_state: MeltQuoteState,
-) {
+async fn assert_payment_error_with_terminal_follow_up_compensates(follow_up_state: MeltQuoteState) {
     assert!(matches!(
         follow_up_state,
         MeltQuoteState::Failed | MeltQuoteState::Unpaid
@@ -2275,38 +2273,38 @@ async fn assert_payment_error_with_terminal_follow_up_keeps_pending(
 
     // A terminal follow-up is authoritative by backend contract: the payment
     // can never settle, so the melt fails and the setup is compensated.
-    let outcome = payment_saga.make_payment(decision).await.unwrap();
-    assert!(matches!(outcome, PaymentOutcome::Pending { .. }));
-    let saga = assert_saga_exists(&mint, &operation_id).await;
-    assert_eq!(
-        saga.state,
-        SagaStateEnum::Melt(MeltSagaState::PaymentAttempted)
-    );
-    assert_proofs_state(&mint, &input_ys, Some(State::Pending)).await;
-    let stored = mint
-        .localstore()
+    let err = match payment_saga.make_payment(decision).await {
+        Ok(_) => panic!("terminal follow-up should fail the melt"),
+        Err(err) => err,
+    };
+    assert!(matches!(err, crate::Error::PaymentFailed));
+
+    assert_saga_not_exists(&mint, &operation_id).await;
+    assert_proofs_state(&mint, &input_ys, None).await;
+    let stored_quote = mint
+        .localstore
         .get_melt_quote(&quote.id)
         .await
         .unwrap()
-        .unwrap();
-    assert_eq!(stored.state, MeltQuoteState::Pending);
+        .expect("quote should remain persisted");
+    assert_eq!(stored_quote.state, MeltQuoteState::Unpaid);
 }
 
 #[tokio::test]
-async fn test_payment_error_with_failed_check_keeps_pending() {
-    assert_payment_error_with_terminal_follow_up_keeps_pending(MeltQuoteState::Failed).await;
+async fn test_payment_error_with_failed_check_compensates() {
+    assert_payment_error_with_terminal_follow_up_compensates(MeltQuoteState::Failed).await;
 }
 
 #[tokio::test]
-async fn test_payment_error_with_unpaid_check_keeps_pending() {
-    assert_payment_error_with_terminal_follow_up_keeps_pending(MeltQuoteState::Unpaid).await;
+async fn test_payment_error_with_unpaid_check_compensates() {
+    assert_payment_error_with_terminal_follow_up_compensates(MeltQuoteState::Unpaid).await;
 }
 
 /// An Unknown dispatch result is overridden by an authoritative Unpaid
 /// follow-up: by backend contract the payment can never settle, so the melt
 /// fails and the setup is compensated.
 #[tokio::test]
-async fn test_unknown_dispatch_with_unpaid_check_keeps_pending() {
+async fn test_unknown_dispatch_with_unpaid_check_compensates() {
     let mint = create_test_mint().await.unwrap();
     let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
     let input_ys = proofs.ys().unwrap();
@@ -2342,21 +2340,21 @@ async fn test_unknown_dispatch_with_unpaid_check_keeps_pending() {
         .await
         .unwrap();
 
-    let outcome = payment_saga.make_payment(decision).await.unwrap();
-    assert!(matches!(outcome, PaymentOutcome::Pending { .. }));
-    let saga = assert_saga_exists(&mint, &operation_id).await;
-    assert_eq!(
-        saga.state,
-        SagaStateEnum::Melt(MeltSagaState::PaymentAttempted)
-    );
-    assert_proofs_state(&mint, &input_ys, Some(State::Pending)).await;
-    let stored = mint
-        .localstore()
+    let err = match payment_saga.make_payment(decision).await {
+        Ok(_) => panic!("authoritative Unpaid follow-up should fail the melt"),
+        Err(err) => err,
+    };
+    assert!(matches!(err, crate::Error::PaymentFailed));
+
+    assert_saga_not_exists(&mint, &operation_id).await;
+    assert_proofs_state(&mint, &input_ys, None).await;
+    let stored_quote = mint
+        .localstore
         .get_melt_quote(&quote.id)
         .await
         .unwrap()
-        .unwrap();
-    assert_eq!(stored.state, MeltQuoteState::Pending);
+        .expect("quote should remain persisted");
+    assert_eq!(stored_quote.state, MeltQuoteState::Unpaid);
 }
 
 // ============================================================================
