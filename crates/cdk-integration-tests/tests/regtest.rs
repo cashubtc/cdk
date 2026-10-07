@@ -25,6 +25,12 @@ use cdk::nuts::{
     NotificationPayload, PaymentMethod, PreMintSecrets,
 };
 use cdk::wallet::{HttpClient, MintConnector, Wallet, WalletSubscription};
+use cdk_common::payment::{
+    Bolt11IncomingPaymentOptions, Bolt11OutgoingPaymentOptions, IncomingPaymentOptions,
+    MintPayment, OutgoingPaymentOptions,
+};
+use cdk_integration_tests::init_lnd_client;
+use cdk_integration_tests::init_regtest::{create_lnd_backend, get_temp_dir};
 use cdk_integration_tests::{
     attempt_manual_mint, get_mint_url_from_env, get_second_mint_url_from_env, get_test_client,
 };
@@ -33,6 +39,57 @@ use futures::join;
 use tokio::time::timeout;
 
 const LDK_URL: &str = "http://127.0.0.1:8089";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_lnd_rejects_invalid_amounts_before_dispatch() {
+    let ln_client = init_lnd_client(&get_temp_dir()).await;
+    let backend = create_lnd_backend(&ln_client).await.unwrap();
+
+    for (invoice_amount, melt_options) in [
+        (0, None),
+        (0, Some(MeltOptions::new_amountless(0))),
+        (10_000, Some(MeltOptions::new_amountless(9_999))),
+    ] {
+        let invoice = backend
+            .create_incoming_payment_request(IncomingPaymentOptions::Bolt11(
+                Bolt11IncomingPaymentOptions {
+                    amount: Amount::new(invoice_amount, CurrencyUnit::Msat),
+                    ..Default::default()
+                },
+            ))
+            .await
+            .unwrap();
+        let payment = timeout(
+            Duration::from_secs(10),
+            backend.make_payment(
+                &CurrencyUnit::Sat,
+                OutgoingPaymentOptions::Bolt11(Box::new(Bolt11OutgoingPaymentOptions {
+                    bolt11: invoice.request.parse().unwrap(),
+                    max_fee_amount: None,
+                    timeout_secs: Some(10),
+                    melt_options,
+                    quote_id: uuid::Uuid::new_v4().into(),
+                })),
+            ),
+        )
+        .await
+        .expect("invalid amount rejection timed out")
+        .expect("invalid amount should return an authoritative failure");
+
+        assert_eq!(payment.status, MeltQuoteState::Failed);
+        assert_eq!(payment.payment_lookup_id, invoice.request_lookup_id);
+        assert_eq!(payment.total_spent, Amount::new(0, CurrencyUnit::Sat));
+        assert!(payment.payment_proof.is_none());
+        assert_eq!(
+            backend
+                .check_outgoing_payment(&invoice.request_lookup_id)
+                .await
+                .unwrap()
+                .status,
+            MeltQuoteState::Unknown,
+        );
+    }
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_internal_payment() {
