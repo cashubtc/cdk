@@ -97,6 +97,6 @@ pub use nut30::{
     MintQuoteOnchainResponse,
 };
 pub use nutxx::{
-    Settings as NutXXSettings, TransactionMeltOutput, TransactionQuoteInput, TransactionRequest,
-    TransactionState,
+    Settings as NutXXSettings, TransactionChangeOutput, TransactionMeltOutput,
+    TransactionQuoteInput, TransactionRequest, TransactionState,
 };

@@ -812,20 +812,19 @@ fn shared_transcript_vectors() {
             .collect();
         let outputs: Vec<_> = list(&tx["blinded_outputs"]).iter().map(output).collect();
         let melt_quotes: Vec<_> = list(&tx["melt_quote_outputs"]).iter().map(quote).collect();
-        let change = tx["change_pubkey"].as_str().map(|hex| {
-            *crate::nuts::PublicKey::from_hex(hex)
-                .unwrap()
-                .as_secp256k1()
-                .unwrap()
-        });
-        let transaction = Transaction::with_change(
-            &proofs,
-            &mint_quotes,
-            &outputs,
-            &melt_quotes,
-            change.as_ref(),
-        )
-        .unwrap_or_else(|e| panic!("{name}: {e}"));
+        let change: Vec<_> = list(&tx["change_quote_outputs"])
+            .iter()
+            .map(|v| ChangeOutput {
+                amount: v["amount"].as_u64().map(Into::into),
+                pubkey: *crate::nuts::PublicKey::from_hex(v["pubkey"].as_str().unwrap())
+                    .unwrap()
+                    .as_secp256k1()
+                    .unwrap(),
+            })
+            .collect();
+        let transaction =
+            Transaction::with_change(&proofs, &mint_quotes, &outputs, &melt_quotes, &change)
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
         assert_eq!(transaction.as_bytes(), bytes(&case["transcript"]), "{name}");
         assert_eq!(transaction.digest(), hash(&case["digest"]), "{name}");
         assert_eq!(
@@ -851,7 +850,7 @@ fn shared_transcript_vectors() {
         }
         checked += 1;
     }
-    assert_eq!(checked, 9);
+    assert_eq!(checked, 10);
 }
 
 #[test]
