@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::{Arc, Weak};
 
+use arc_swap::ArcSwap;
 use cdk_common::common::PaymentProcessorKey;
 use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::{MeltQuote, MintQuote};
@@ -26,7 +27,9 @@ use crate::event::MintEvent;
 #[allow(missing_debug_implementations)]
 pub struct MintPubSubSpec {
     db: DynMintDatabase,
-    payment_processors: Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
+    /// A swappable handle, not a snapshot, so a processor registered or
+    /// removed on the running mint is visible here immediately.
+    payment_processors: Arc<ArcSwap<HashMap<PaymentProcessorKey, DynMintPayment>>>,
     // The manager owns this spec; a strong reference back would retain both forever.
     pubsub_manager: Weak<PubSubManager>,
 }
@@ -52,7 +55,7 @@ impl MintPubSubSpec {
         {
             Mint::check_mint_quote_payments(
                 self.db.clone(),
-                self.payment_processors.clone(),
+                self.payment_processors.load_full(),
                 self.pubsub_manager.upgrade(),
                 &mut quote,
             )
@@ -225,7 +228,7 @@ impl Spec for MintPubSubSpec {
 
     type Context = (
         DynMintDatabase,
-        Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
+        Arc<ArcSwap<HashMap<PaymentProcessorKey, DynMintPayment>>>,
     );
 
     fn new_instance(context: Self::Context) -> Arc<Self> {
@@ -257,7 +260,7 @@ impl PubSubManager {
     pub fn new(
         context: (
             DynMintDatabase,
-            Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
+            Arc<ArcSwap<HashMap<PaymentProcessorKey, DynMintPayment>>>,
         ),
     ) -> Arc<Self> {
         Arc::new_cyclic(|manager| {
@@ -483,7 +486,10 @@ mod tests {
         add_mint_quote(&db, bolt11_quote(first_quote_id.clone(), 21)).await;
         add_mint_quote(&db, bolt11_quote(second_quote_id.clone(), 34)).await;
 
-        let spec = MintPubSubSpec::new_instance((db, Arc::new(HashMap::new())));
+        let spec = MintPubSubSpec::new_instance((
+            db,
+            Arc::new(ArcSwap::new(Arc::new(HashMap::new()))),
+        ));
         let events = spec
             .get_events_from_db(&[
                 NotificationId::MintQuoteBolt11(first_quote_id.clone()),
@@ -588,7 +594,7 @@ mod tests {
 
         let db: DynMintDatabase =
             Arc::new(cdk_sqlite::mint::memory::empty().await.expect("database"));
-        let spec = MintPubSubSpec::new_instance((db.clone(), Arc::new(HashMap::new())));
+        let spec = MintPubSubSpec::new_instance((db.clone(), Arc::new(ArcSwap::new(Arc::new(HashMap::new())))));
         for method in [
             KnownMethod::Bolt11,
             KnownMethod::Bolt12,
@@ -648,7 +654,7 @@ mod tests {
             .try_update_mint_quote_last_checked(&quote.id, cdk_common::util::unix_time(), 0)
             .await
             .expect("record payment check"));
-        let spec = MintPubSubSpec::new_instance((db, Arc::new(HashMap::new())));
+        let spec = MintPubSubSpec::new_instance((db, Arc::new(ArcSwap::new(Arc::new(HashMap::new())))));
         let events = spec
             .get_events_from_db(&[
                 NotificationId::MintQuoteCustom(method.clone(), quote.id.clone()),
@@ -682,7 +688,7 @@ mod tests {
         );
         quote.extra_json = Some(serde_json::json!({"receipt": "melt-receipt"}));
         let change = add_melt_quote(&db, quote.clone(), true).await;
-        let spec = MintPubSubSpec::new_instance((db, Arc::new(HashMap::new())));
+        let spec = MintPubSubSpec::new_instance((db, Arc::new(ArcSwap::new(Arc::new(HashMap::new())))));
         let events = spec
             .get_events_from_db(&[
                 NotificationId::MeltQuoteCustom(method.clone(), quote.id.clone()),
@@ -810,7 +816,7 @@ mod tests {
                     PaymentProcessorKey::new(CurrencyUnit::Sat, method),
                     backend.clone() as DynMintPayment,
                 )]);
-                let manager = PubSubManager::new((db.clone(), Arc::new(processors)));
+                let manager = PubSubManager::new((db.clone(), Arc::new(ArcSwap::new(Arc::new(processors)))));
                 let params = Params {
                     kind,
                     filters: vec![quote.id.to_string()],
@@ -874,7 +880,7 @@ mod tests {
         let db: DynMintDatabase =
             Arc::new(cdk_sqlite::mint::memory::empty().await.expect("database"));
         let db_weak = Arc::downgrade(&db);
-        let manager = PubSubManager::new((db, Arc::new(HashMap::new())));
+        let manager = PubSubManager::new((db, Arc::new(ArcSwap::new(Arc::new(HashMap::new())))));
         let manager_weak = Arc::downgrade(&manager);
         drop(manager);
         assert!(manager_weak.upgrade().is_none());

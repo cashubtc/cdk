@@ -19,7 +19,7 @@ use cdk_signatory::signatory::{Signatory, SignatoryKeySet, SignatoryKeysets};
 use futures::{Stream, StreamExt};
 use nut21::ProtectedEndpoint;
 use subscription::PubSubManager;
-use tokio::sync::{watch, Mutex, Notify};
+use tokio::sync::{mpsc, watch, Mutex, Notify};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::instrument;
 
@@ -66,8 +66,14 @@ pub struct Mint {
     localstore: DynMintDatabase,
     /// Auth Storage backend (only available with auth feature)
     auth_localstore: Option<DynMintAuthDatabase>,
-    /// Payment processors for mint
-    payment_processors: Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
+    /// Payment processors for mint, keyed by (unit, method).
+    ///
+    /// Swappable so `register_payment_processor`/`deregister_payment_processor`
+    /// can add or remove entries on a running mint; reads are a lock-free `.load()`.
+    payment_processors: Arc<ArcSwap<HashMap<PaymentProcessorKey, DynMintPayment>>>,
+    /// Serializes `register_payment_processor`/`deregister_payment_processor`
+    /// read-modify-write cycles, mirroring `keyset_store_lock`.
+    payment_processor_lock: Arc<Mutex<()>>,
     /// Subscription manager
     pubsub_manager: Arc<PubSubManager>,
     oidc_client: Option<OidcClient>,
@@ -115,6 +121,11 @@ struct TaskState {
     /// Keyset subscription retained from construction, drained once by the first
     /// `start()`. `None` after it has been taken; a restart re-subscribes.
     keyset_updates: Option<watch::Receiver<SignatoryKeysets>>,
+    /// Feeds processors registered after `start()` to the running consumer
+    /// supervisor. `None` when the mint isn't started; may go stale (receiver
+    /// already dropped) right after `stop()`, which the send side treats as
+    /// "no running supervisor to notify" rather than an error.
+    new_processor_tx: Option<mpsc::Sender<DynMintPayment>>,
 }
 
 /// Supervised subscription to a single payment processor's event stream.
@@ -384,7 +395,7 @@ impl Mint {
             }
         }
 
-        let payment_processors = Arc::new(payment_processors);
+        let payment_processors = Arc::new(ArcSwap::new(Arc::new(payment_processors)));
 
         Ok(Self {
             signatory,
@@ -397,6 +408,7 @@ impl Mint {
                 )
             }),
             payment_processors,
+            payment_processor_lock: Arc::new(Mutex::new(())),
             auth_localstore,
             keysets: Arc::new(ArcSwap::new(keysets.keysets.into())),
             keyset_store_lock: Arc::new(Mutex::new(())),
@@ -451,8 +463,9 @@ impl Mint {
 
         // Start all payment processors first
         tracing::info!("Starting payment processors...");
+        let payment_processors = self.payment_processors.load_full();
         let mut seen_processors = Vec::new();
-        for (key, processor) in self.payment_processors.iter() {
+        for (key, processor) in payment_processors.iter() {
             // Skip if we've already spawned a task for this processor instance
             if seen_processors.iter().any(|p| Arc::ptr_eq(p, processor)) {
                 continue;
@@ -479,9 +492,12 @@ impl Mint {
         // Create shutdown signal
         let shutdown_notify = Arc::new(Notify::new());
 
+        // Channel for processors registered after this point; the supervisor
+        // task drains it to spawn consumers for units added while running.
+        let (new_processor_tx, new_processor_rx) = mpsc::channel::<DynMintPayment>(16);
+
         // Clone required components for the background task
         let mint_clone = Arc::new(self.clone());
-        let payment_processors = self.payment_processors.clone();
         let localstore = Arc::clone(&self.localstore);
         let pubsub_manager = Arc::clone(&self.pubsub_manager);
         let shutdown_clone = shutdown_notify.clone();
@@ -490,7 +506,8 @@ impl Mint {
         let supervisor_handle = tokio::spawn(async move {
             Self::wait_for_paid_invoices(
                 mint_clone,
-                &payment_processors,
+                payment_processors,
+                new_processor_rx,
                 localstore,
                 pubsub_manager,
                 shutdown_clone,
@@ -573,6 +590,7 @@ impl Mint {
         task_state.shutdown_notify = Some(shutdown_notify);
         task_state.supervisor_handle = Some(supervisor_handle);
         task_state.keyset_drain_handle = keyset_drain_handle;
+        task_state.new_processor_tx = Some(new_processor_tx);
 
         // Give the background task a tiny bit of time to start waiting
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -645,8 +663,9 @@ impl Mint {
     async fn stop_payment_processors(&self) -> Result<(), Error> {
         tracing::info!("Stopping payment processors...");
         let mut seen_processors = Vec::new();
+        let payment_processors = self.payment_processors.load_full();
 
-        for (key, processor) in self.payment_processors.iter() {
+        for (key, processor) in payment_processors.iter() {
             // Skip if we've already spawned a task for this processor instance
             if seen_processors.iter().any(|p| Arc::ptr_eq(p, processor)) {
                 continue;
@@ -676,8 +695,9 @@ impl Mint {
         use std::collections::HashSet;
         let mut custom_methods = HashSet::new();
         let mut seen_processors = Vec::new();
+        let payment_processors = self.payment_processors.load_full();
 
-        for processor in self.payment_processors.values() {
+        for processor in payment_processors.values() {
             // Skip if we've already queried this processor instance
             if seen_processors.iter().any(|p| Arc::ptr_eq(p, processor)) {
                 continue;
@@ -706,14 +726,166 @@ impl Mint {
         payment_method: PaymentMethod,
     ) -> Result<DynMintPayment, Error> {
         let key = PaymentProcessorKey::new(unit.clone(), payment_method.clone());
-        self.payment_processors.get(&key).cloned().ok_or_else(|| {
-            tracing::info!(
-                "No payment processor set for pair {}, {}",
-                unit,
-                payment_method
-            );
-            Error::UnsupportedUnit
-        })
+        self.payment_processors
+            .load()
+            .get(&key)
+            .cloned()
+            .ok_or_else(|| {
+                tracing::info!(
+                    "No payment processor set for pair {}, {}",
+                    unit,
+                    payment_method
+                );
+                Error::UnsupportedUnit
+            })
+    }
+
+    /// Registers a payment processor for `(unit, method)` on a running mint.
+    ///
+    /// Starts the processor if it isn't already running under another key,
+    /// spawns its payment-event consumer if the mint is started, and updates
+    /// stored mint info (NUT-04/NUT-05 method settings, and NUT-15 if the
+    /// backend advertises MPP) from `limits` and the processor's reported
+    /// settings. A duplicate `(unit, method)` is rejected, mirroring
+    /// [`MintBuilder::add_payment_processor`].
+    ///
+    /// Updates the map first and the stored mint info last: the map entry is
+    /// inert without the mint-info gate, so a crash between the two phases
+    /// leaves the mint still refusing quotes for the unit (fail-closed).
+    ///
+    /// Hot-swapping the processor behind an already-registered key is not
+    /// supported; deregister then register instead.
+    pub async fn register_payment_processor(
+        &self,
+        unit: CurrencyUnit,
+        method: PaymentMethod,
+        limits: MintMeltLimits,
+        processor: DynMintPayment,
+    ) -> Result<(), Error> {
+        let key = PaymentProcessorKey::new(unit.clone(), method.clone());
+        let _guard = self.payment_processor_lock.lock().await;
+
+        let current = self.payment_processors.load_full();
+        if current.contains_key(&key) {
+            return Err(Error::Custom(format!(
+                "Duplicate payment processor for unit {} and method {}",
+                unit, method
+            )));
+        }
+
+        // Start the backend and (if running) notify the consumer supervisor
+        // only for a genuinely new instance; one already live under another
+        // key keeps running, exactly as the boot-time dedup does.
+        let already_running = current.values().any(|p| Arc::ptr_eq(p, &processor));
+        if !already_running {
+            processor.start().await?;
+        }
+
+        // Phase 1 (first): the map entry.
+        self.insert_payment_processor(key.clone(), processor.clone());
+
+        if !already_running {
+            let new_processor_tx = {
+                let task_state = self.task_state.lock().await;
+                task_state.new_processor_tx.clone()
+            };
+            if let Some(tx) = new_processor_tx {
+                if tx.send(processor.clone()).await.is_err() {
+                    tracing::debug!(
+                        "No running consumer supervisor to notify for {:?}; \
+                         the next start() will pick it up",
+                        key
+                    );
+                }
+            }
+        }
+
+        // Phase 2 (last): the quotability gate.
+        let settings = processor.get_settings().await?;
+        let computed = builder::processor_method_settings(&unit, &method, &limits, &settings);
+        let mut mint_info = self.mint_info().await?;
+        if let Some(mpp_settings) = computed.mpp {
+            mint_info.nuts.nut15.methods.push(mpp_settings);
+        }
+        if let Some(mint_settings) = computed.mint {
+            mint_info.nuts.nut04.methods.push(mint_settings);
+            mint_info.nuts.nut04.disabled = false;
+        }
+        if let Some(melt_settings) = computed.melt {
+            mint_info.nuts.nut05.methods.push(melt_settings);
+            mint_info.nuts.nut05.disabled = false;
+        }
+        self.set_mint_info(mint_info).await?;
+
+        Ok(())
+    }
+
+    /// Removes a `(unit, method)` registration from a running mint.
+    ///
+    /// Removes the NUT-04/NUT-05 (and matching NUT-15) entries first, so no
+    /// new quote can be created for the pair; a crash before the map entry
+    /// is also removed leaves it inert (closed gate, orphaned map entry),
+    /// which is harmless. The processor is stopped only when no other key
+    /// still references the same instance; its already-running payment-event
+    /// consumer, if any, is not cancelled (there is no per-processor
+    /// supervision teardown), so an in-flight payment for an existing quote
+    /// still completes. Deregistering a `(unit, method)` that was never
+    /// registered is a no-op.
+    pub async fn deregister_payment_processor(
+        &self,
+        unit: CurrencyUnit,
+        method: PaymentMethod,
+    ) -> Result<(), Error> {
+        let key = PaymentProcessorKey::new(unit, method);
+        let _guard = self.payment_processor_lock.lock().await;
+
+        // Phase 1 (first): close the quotability gate.
+        let mut mint_info = self.mint_info().await?;
+        mint_info.nuts.nut04.remove_settings(&key.unit, &key.method);
+        mint_info.nuts.nut05.remove_settings(&key.unit, &key.method);
+        mint_info
+            .nuts
+            .nut15
+            .methods
+            .retain(|m| !(m.unit == key.unit && m.method == key.method));
+        self.set_mint_info(mint_info).await?;
+
+        // Phase 2 (last): the map entry, and the backend if orphaned.
+        if let Some(processor) = self.remove_payment_processor(&key) {
+            let still_referenced = self
+                .payment_processors
+                .load()
+                .values()
+                .any(|p| Arc::ptr_eq(p, &processor));
+            if !still_referenced {
+                if let Err(e) = processor.stop().await {
+                    tracing::error!("Failed to stop payment processor for {:?}: {}", key, e);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Inserts or replaces one entry in the live payment-processor map.
+    /// Caller must hold `payment_processor_lock`.
+    fn insert_payment_processor(&self, key: PaymentProcessorKey, processor: DynMintPayment) {
+        let mut updated = (*self.payment_processors.load_full()).clone();
+        updated.insert(key, processor);
+        self.payment_processors.store(Arc::new(updated));
+    }
+
+    /// Removes one entry from the live payment-processor map, if present.
+    /// Caller must hold `payment_processor_lock`.
+    fn remove_payment_processor(&self, key: &PaymentProcessorKey) -> Option<DynMintPayment> {
+        let current = self.payment_processors.load_full();
+        if !current.contains_key(key) {
+            return None;
+        }
+        let mut updated = (*current).clone();
+        let removed = updated.remove(key);
+        self.payment_processors.store(Arc::new(updated));
+        removed
     }
 
     /// Localstore
@@ -897,16 +1069,19 @@ impl Mint {
     #[instrument(skip_all)]
     async fn wait_for_paid_invoices(
         mint: Arc<Mint>,
-        payment_processors: &HashMap<PaymentProcessorKey, DynMintPayment>,
+        payment_processors: Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
+        mut new_processors: mpsc::Receiver<DynMintPayment>,
         localstore: DynMintDatabase,
         pubsub_manager: Arc<PubSubManager>,
         shutdown: Arc<Notify>,
     ) -> Result<(), Error> {
         let mut join_set = JoinSet::new();
 
-        // Group processors by unique instance (using Arc pointer equality)
+        // Group processors by unique instance (using Arc pointer equality).
+        // Carried through the select loop below so a later registration that
+        // shares an instance already spawned here is never double-spawned.
         let mut seen_processors = Vec::new();
-        for (key, processor) in payment_processors {
+        for (key, processor) in payment_processors.iter() {
             // Skip if processor is already active
             if processor.is_payment_event_stream_active() {
                 continue;
@@ -921,56 +1096,92 @@ impl Mint {
 
             tracing::info!("Starting payment wait task for {:?}", key);
 
-            // Clone for the spawned task
             let name = format!("payment processor {:?} {:?}", key.method, key.unit);
-            let mint = Arc::clone(&mint);
-            let processor = Arc::clone(processor);
-            let localstore = Arc::clone(&localstore);
-            let pubsub_manager = Arc::clone(&pubsub_manager);
-            let shutdown = Arc::clone(&shutdown);
-
-            join_set.spawn(async move {
-                let result = Self::wait_for_processor_payments(
-                    name,
-                    mint,
-                    processor,
-                    localstore,
-                    pubsub_manager,
-                    shutdown,
-                )
-                .await;
-
-                if let Err(e) = result {
-                    tracing::error!("Payment processor task failed: {:?}", e);
-                }
-            });
+            Self::spawn_payment_waiter(
+                &mut join_set,
+                name,
+                Arc::clone(&mint),
+                Arc::clone(processor),
+                Arc::clone(&localstore),
+                Arc::clone(&pubsub_manager),
+                Arc::clone(&shutdown),
+            );
         }
 
-        // If no payment processors, just wait for shutdown
-        if join_set.is_empty() {
-            shutdown.notified().await;
-        } else {
-            let shutdown_future = shutdown.notified();
-            tokio::pin!(shutdown_future);
-            // Wait for shutdown or all tasks to complete
-            loop {
-                tokio::select! {
-                    _ = &mut shutdown_future => {
-                        tracing::info!("Shutting down payment processors");
-                        break;
+        // Always run the full loop (rather than short-circuiting to just
+        // awaiting shutdown when `join_set` starts empty): a mint can start
+        // with zero processors and gain its first one later, and only this
+        // loop listens on `new_processors`.
+        let shutdown_future = shutdown.notified();
+        tokio::pin!(shutdown_future);
+        loop {
+            tokio::select! {
+                _ = &mut shutdown_future => {
+                    tracing::info!("Shutting down payment processors");
+                    break;
+                }
+                new_processor = new_processors.recv() => {
+                    let Some(processor) = new_processor else {
+                        // Sender dropped (mint stopping); the shutdown arm
+                        // above will fire momentarily.
+                        continue;
+                    };
+
+                    if processor.is_payment_event_stream_active()
+                        || seen_processors.iter().any(|p| Arc::ptr_eq(p, &processor))
+                    {
+                        continue;
                     }
-                    Some(result) = join_set.join_next() => {
-                        if let Err(e) = result {
-                            tracing::warn!("Task panicked: {:?}", e);
-                        }
+                    seen_processors.push(Arc::clone(&processor));
+
+                    tracing::info!("Starting payment wait task for a runtime-registered processor");
+                    Self::spawn_payment_waiter(
+                        &mut join_set,
+                        "payment processor (registered at runtime)".to_string(),
+                        Arc::clone(&mint),
+                        processor,
+                        Arc::clone(&localstore),
+                        Arc::clone(&pubsub_manager),
+                        Arc::clone(&shutdown),
+                    );
+                }
+                Some(result) = join_set.join_next(), if !join_set.is_empty() => {
+                    if let Err(e) = result {
+                        tracing::warn!("Task panicked: {:?}", e);
                     }
-                    else => break, // All tasks completed
                 }
             }
         }
 
         join_set.shutdown().await;
         Ok(())
+    }
+
+    /// Spawns one processor's payment-event consumer task into `join_set`.
+    fn spawn_payment_waiter(
+        join_set: &mut JoinSet<()>,
+        name: String,
+        mint: Arc<Mint>,
+        processor: DynMintPayment,
+        localstore: DynMintDatabase,
+        pubsub_manager: Arc<PubSubManager>,
+        shutdown: Arc<Notify>,
+    ) {
+        join_set.spawn(async move {
+            let result = Self::wait_for_processor_payments(
+                name,
+                mint,
+                processor,
+                localstore,
+                pubsub_manager,
+                shutdown,
+            )
+            .await;
+
+            if let Err(e) = result {
+                tracing::error!("Payment processor task failed: {:?}", e);
+            }
+        });
     }
 
     /// Handles payment waiting for a single processor
@@ -1518,24 +1729,29 @@ impl Mint {
 #[cfg(test)]
 mod tests {
 
+    use std::collections::HashSet;
     use std::str::FromStr;
     use std::sync::Arc;
 
+    use cdk_common::amount::SplitTarget;
     use cdk_common::melt::MeltQuoteRequest;
     use cdk_common::mint::{OperationKind, SagaStateEnum};
     use cdk_common::nut00::KnownMethod;
-    use cdk_common::nuts::MeltQuoteBolt11Request;
+    use cdk_common::nuts::nut04::MintQuoteCustomRequest;
+    use cdk_common::nuts::{MeltQuoteBolt11Request, PreMintSecrets};
     use cdk_common::payment::{MakePaymentResponse, PaymentIdentifier};
     use cdk_common::PaymentMethod;
-    use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
+    use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription, FakeWallet};
     use cdk_signatory::db_signatory::DbSignatory;
     use cdk_signatory::signatory::{RotateKeyArguments, SignatoryKeysets};
     use cdk_sqlite::mint::memory::new_with_state;
     use tokio::sync::watch;
+    use tokio::time::{sleep, timeout};
 
     use super::*;
     use crate::mint::melt::melt_saga::{MeltSaga, PaymentOutcome};
     use crate::test_helpers::mint::{create_test_mint, mint_test_proofs};
+    use crate::types::FeeReserve;
 
     #[derive(Default)]
     struct MintConfig<'a> {
@@ -2749,5 +2965,556 @@ mod tests {
             "expected ExpiredKeyset error, got: {:?}",
             result
         );
+    }
+
+    // --- Dynamic payment processor registration -----------------------
+
+    /// Full powers of 2 up to 2^31, 0 fee: matches `UnitConfig::default()`,
+    /// so a brand-new unit's keyset can represent any test amount below.
+    fn full_amounts() -> Vec<u64> {
+        (0..32).map(|i| 2u64.pow(i)).collect()
+    }
+
+    fn fake_fee_reserve() -> FeeReserve {
+        FeeReserve {
+            min_fee_reserve: Amount::from(1),
+            percent_fee_reserve: 1.0,
+        }
+    }
+
+    /// A `FakeWallet` configured for `unit`, advertising `custom_method` as a
+    /// supported custom payment method.
+    fn custom_processor(unit: CurrencyUnit, custom_method: &str, payment_delay: u64) -> DynMintPayment {
+        Arc::new(
+            FakeWallet::new(
+                fake_fee_reserve(),
+                HashMap::default(),
+                HashSet::default(),
+                payment_delay,
+                unit,
+            )
+            .with_custom_payment_methods(HashMap::from([(
+                custom_method.to_string(),
+                "{}".to_string(),
+            )])),
+        )
+    }
+
+    async fn create_custom_quote(
+        mint: &Mint,
+        unit: CurrencyUnit,
+        method: PaymentMethod,
+        amount: u64,
+    ) -> Result<QuoteId, Error> {
+        let request = MintQuoteRequest::Custom {
+            method,
+            request: MintQuoteCustomRequest {
+                amount: Some(Amount::from(amount)),
+                unit,
+                description: None,
+                pubkey: None,
+                extra: serde_json::Value::Null,
+            },
+        };
+        mint.get_mint_quote(request)
+            .await
+            .map(|response| response.quote().clone())
+    }
+
+    /// Polls `check_mint_quotes` until `quote_id` reaches `Paid`, or panics
+    /// after 5 seconds.
+    async fn wait_until_quote_paid(mint: &Mint, quote_id: &QuoteId) {
+        timeout(Duration::from_secs(5), async {
+            loop {
+                let responses = mint
+                    .check_mint_quotes(&[quote_id.clone()])
+                    .await
+                    .expect("check quote");
+                if responses[0].state() == Some(MintQuoteState::Paid) {
+                    return;
+                }
+                sleep(std::time::Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("quote did not reach Paid state in time");
+    }
+
+    /// Mints against `quote_id` in `unit` and returns the number of
+    /// blind signatures returned.
+    async fn mint_against_quote(mint: &Mint, unit: &CurrencyUnit, quote_id: QuoteId) -> usize {
+        let keyset_id = *mint
+            .get_active_keysets()
+            .get(unit)
+            .expect("active keyset for unit");
+
+        let pre_mint = PreMintSecrets::random(
+            keyset_id,
+            Amount::from(32),
+            &SplitTarget::default(),
+            &(0, full_amounts()).into(),
+        )
+        .expect("premint secrets");
+        let outputs = pre_mint.blinded_messages().to_vec();
+
+        let request = MintRequest {
+            quote: quote_id,
+            outputs: outputs.clone(),
+            signature: None,
+        };
+
+        let mint_res = mint
+            .process_mint_request(MintInput::Single(request))
+            .await
+            .expect("mint against quote");
+
+        assert_eq!(mint_res.signatures.len(), outputs.len());
+        mint_res.signatures.len()
+    }
+
+    /// A thin `MintPayment` wrapper counting `start()` and
+    /// `wait_payment_event()` calls, to verify the `Arc::ptr_eq` dedup: one
+    /// processor instance registered under two keys must start and spawn a
+    /// consumer exactly once.
+    struct CountingProcessor {
+        inner: FakeWallet,
+        start_calls: Arc<std::sync::atomic::AtomicUsize>,
+        wait_payment_event_calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl cdk_common::payment::MintPayment for CountingProcessor {
+        type Err = cdk_common::payment::Error;
+
+        async fn start(&self) -> Result<(), Self::Err> {
+            self.start_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.start().await
+        }
+
+        async fn stop(&self) -> Result<(), Self::Err> {
+            self.inner.stop().await
+        }
+
+        async fn get_settings(&self) -> Result<cdk_common::payment::SettingsResponse, Self::Err> {
+            self.inner.get_settings().await
+        }
+
+        async fn create_incoming_payment_request(
+            &self,
+            options: cdk_common::payment::IncomingPaymentOptions,
+        ) -> Result<cdk_common::payment::CreateIncomingPaymentResponse, Self::Err> {
+            self.inner.create_incoming_payment_request(options).await
+        }
+
+        async fn get_payment_quote(
+            &self,
+            unit: &CurrencyUnit,
+            options: cdk_common::payment::OutgoingPaymentOptions,
+        ) -> Result<cdk_common::payment::PaymentQuoteResponse, Self::Err> {
+            self.inner.get_payment_quote(unit, options).await
+        }
+
+        async fn make_payment(
+            &self,
+            unit: &CurrencyUnit,
+            options: cdk_common::payment::OutgoingPaymentOptions,
+        ) -> Result<MakePaymentResponse, Self::Err> {
+            self.inner.make_payment(unit, options).await
+        }
+
+        async fn wait_payment_event(
+            &self,
+        ) -> Result<Pin<Box<dyn Stream<Item = cdk_common::payment::Event> + Send>>, Self::Err>
+        {
+            self.wait_payment_event_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.wait_payment_event().await
+        }
+
+        fn is_payment_event_stream_active(&self) -> bool {
+            self.inner.is_payment_event_stream_active()
+        }
+
+        fn cancel_payment_event_stream(&self) {
+            self.inner.cancel_payment_event_stream()
+        }
+
+        async fn check_incoming_payment_status(
+            &self,
+            payment_identifier: &PaymentIdentifier,
+        ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
+            self.inner
+                .check_incoming_payment_status(payment_identifier)
+                .await
+        }
+
+        async fn check_outgoing_payment(
+            &self,
+            payment_identifier: &PaymentIdentifier,
+        ) -> Result<MakePaymentResponse, Self::Err> {
+            self.inner.check_outgoing_payment(payment_identifier).await
+        }
+    }
+
+    /// Spec case 1: register a custom-method processor on a started mint for
+    /// a brand-new unit; create and pay a quote in that unit; mint against it.
+    #[tokio::test]
+    async fn register_payment_processor_custom_unit_mint_end_to_end() {
+        let mint = create_test_mint().await.expect("test mint");
+
+        let unit = CurrencyUnit::Custom("custom_unit".into());
+        let method = PaymentMethod::Custom("custom_backend_method".to_string());
+
+        // The signatory already creates keysets for brand-new units; callers
+        // just need a non-empty amounts vector.
+        mint.rotate_keyset(unit.clone(), full_amounts(), 0, true, None)
+            .await
+            .expect("rotate keyset for new unit");
+
+        let processor = custom_processor(unit.clone(), method.as_str(), 0);
+        mint.register_payment_processor(
+            unit.clone(),
+            method.clone(),
+            MintMeltLimits::new(1, 10_000),
+            processor,
+        )
+        .await
+        .expect("register payment processor");
+
+        let quote_id = create_custom_quote(&mint, unit.clone(), method.clone(), 32)
+            .await
+            .expect("create custom quote");
+        wait_until_quote_paid(&mint, &quote_id).await;
+
+        mint_against_quote(&mint, &unit, quote_id).await;
+    }
+
+    /// Spec case 2: deregister; new quote creation fails `UnsupportedUnit`;
+    /// an existing unpaid quote can still be paid (via the still-running
+    /// payment-event consumer) and minted. This holds for bolt11-method
+    /// quotes because `check_mint_quote_payments` skips re-checking the
+    /// backend once a bolt11 quote is `Paid`/`Issued` — see the
+    /// `deregister_custom_method_existing_quote_cannot_be_minted` test below
+    /// for the custom-method case, where that skip doesn't apply.
+    #[tokio::test]
+    async fn deregister_blocks_new_quotes_existing_quote_still_payable_and_mintable() {
+        let mint = create_test_mint().await.expect("test mint");
+
+        // Msat rather than a `Custom` unit: `FakeWallet`'s bolt11 path only
+        // knows how to convert Sat/Msat/fiat amounts, and a `Custom` unit
+        // can't be converted, which would make invoice creation fail for a
+        // reason unrelated to what this test checks.
+        let unit = CurrencyUnit::Msat;
+        let method = PaymentMethod::Known(KnownMethod::Bolt11);
+
+        mint.rotate_keyset(unit.clone(), full_amounts(), 0, true, None)
+            .await
+            .expect("rotate keyset for new unit");
+
+        // Pays out after 1s: long enough to deregister first, so the
+        // payment genuinely arrives after deregistration.
+        let processor: DynMintPayment = Arc::new(FakeWallet::new(
+            fake_fee_reserve(),
+            HashMap::default(),
+            HashSet::default(),
+            1,
+            unit.clone(),
+        ));
+        mint.register_payment_processor(
+            unit.clone(),
+            method.clone(),
+            MintMeltLimits::new(1, 10_000),
+            processor,
+        )
+        .await
+        .expect("register payment processor");
+
+        let quote_response = mint
+            .get_mint_quote(
+                MintQuoteBolt11Request {
+                    amount: Amount::from(32),
+                    unit: unit.clone(),
+                    description: None,
+                    pubkey: None,
+                }
+                .into(),
+            )
+            .await
+            .expect("create quote while registered");
+        let quote_id = quote_response.quote().clone();
+
+        mint.deregister_payment_processor(unit.clone(), method.clone())
+            .await
+            .expect("deregister");
+
+        // No new quote can be created for the deregistered pair.
+        let new_quote_result = mint
+            .get_mint_quote(
+                MintQuoteBolt11Request {
+                    amount: Amount::from(16),
+                    unit: unit.clone(),
+                    description: None,
+                    pubkey: None,
+                }
+                .into(),
+            )
+            .await;
+        assert!(
+            matches!(new_quote_result, Err(Error::UnsupportedUnit)),
+            "expected UnsupportedUnit, got {:?}",
+            new_quote_result
+        );
+
+        // The pre-existing quote still gets paid (the consumer task spawned
+        // at registration keeps running) and can still be minted.
+        wait_until_quote_paid(&mint, &quote_id).await;
+        mint_against_quote(&mint, &unit, quote_id).await;
+    }
+
+    /// Documents a limitation: for a custom-method quote, deregistering its
+    /// processor DOES break minting an already-paid existing quote, unlike
+    /// the bolt11 case above. `check_mint_quote_payments` only short-circuits
+    /// the backend re-check for bolt11 (to support custom methods whose
+    /// quotes can receive further incremental payments after reaching
+    /// `Paid`); every other method keeps consulting the processor map on
+    /// every check/mint call, so once the
+    /// map entry is gone, `UnsupportedUnit` follows even for an
+    /// already-fully-paid quote. This is pre-existing `check_mint_quote_payments`
+    /// behavior that this feature's deregister surfaces, not a bug this
+    /// feature introduces.
+    #[tokio::test]
+    async fn deregister_custom_method_existing_quote_cannot_be_minted() {
+        let mint = create_test_mint().await.expect("test mint");
+
+        let unit = CurrencyUnit::Custom("custom_unit_gap".into());
+        let method = PaymentMethod::Custom("custom_backend_method".to_string());
+
+        mint.rotate_keyset(unit.clone(), full_amounts(), 0, true, None)
+            .await
+            .expect("rotate keyset for new unit");
+
+        let processor = custom_processor(unit.clone(), method.as_str(), 0);
+        mint.register_payment_processor(
+            unit.clone(),
+            method.clone(),
+            MintMeltLimits::new(1, 10_000),
+            processor,
+        )
+        .await
+        .expect("register payment processor");
+
+        let quote_id = create_custom_quote(&mint, unit.clone(), method.clone(), 32)
+            .await
+            .expect("create custom quote");
+        wait_until_quote_paid(&mint, &quote_id).await;
+
+        mint.deregister_payment_processor(unit.clone(), method.clone())
+            .await
+            .expect("deregister");
+
+        let keyset_id = *mint
+            .get_active_keysets()
+            .get(&unit)
+            .expect("active keyset for unit");
+        let pre_mint = PreMintSecrets::random(
+            keyset_id,
+            Amount::from(32),
+            &SplitTarget::default(),
+            &(0, full_amounts()).into(),
+        )
+        .expect("premint secrets");
+        let request = MintRequest {
+            quote: quote_id,
+            outputs: pre_mint.blinded_messages().to_vec(),
+            signature: None,
+        };
+
+        let result = mint.process_mint_request(MintInput::Single(request)).await;
+        assert!(
+            matches!(result, Err(Error::UnsupportedUnit)),
+            "expected the pre-existing custom-method recheck gap to surface as \
+             UnsupportedUnit, got {:?}",
+            result
+        );
+    }
+
+    /// Spec case 3: the same processor instance registered under a second
+    /// key starts and spawns a consumer exactly once; deregistering one key
+    /// leaves the other functional.
+    #[tokio::test]
+    async fn register_shared_instance_single_start_independent_deregister() {
+        let mint = create_test_mint().await.expect("test mint");
+
+        let unit_a = CurrencyUnit::Custom("custom_unit_shared_a".into());
+        let unit_b = CurrencyUnit::Custom("custom_unit_shared_b".into());
+        let method = PaymentMethod::Custom("custom_backend_method".to_string());
+
+        for unit in [&unit_a, &unit_b] {
+            mint.rotate_keyset(unit.clone(), full_amounts(), 0, true, None)
+                .await
+                .expect("rotate keyset");
+        }
+
+        // `CountingProcessor` needs the concrete `FakeWallet` to delegate
+        // to, so build it directly rather than through `custom_processor`
+        // (which returns an already type-erased `DynMintPayment`).
+        let inner = FakeWallet::new(
+            fake_fee_reserve(),
+            HashMap::default(),
+            HashSet::default(),
+            0,
+            unit_a.clone(),
+        )
+        .with_custom_payment_methods(HashMap::from([(
+            method.as_str().to_string(),
+            "{}".to_string(),
+        )]));
+        let start_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let wait_payment_event_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let processor: DynMintPayment = Arc::new(CountingProcessor {
+            inner,
+            start_calls: start_calls.clone(),
+            wait_payment_event_calls: wait_payment_event_calls.clone(),
+        });
+
+        mint.register_payment_processor(
+            unit_a.clone(),
+            method.clone(),
+            MintMeltLimits::new(1, 10_000),
+            processor.clone(),
+        )
+        .await
+        .expect("register under unit_a");
+        mint.register_payment_processor(
+            unit_b.clone(),
+            method.clone(),
+            MintMeltLimits::new(1, 10_000),
+            processor.clone(),
+        )
+        .await
+        .expect("register under unit_b");
+
+        // Give the consumer-spawn channel a moment to be drained.
+        sleep(std::time::Duration::from_millis(200)).await;
+
+        assert_eq!(
+            start_calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a shared instance must be started exactly once"
+        );
+        assert_eq!(
+            wait_payment_event_calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a shared instance must get exactly one payment-event consumer"
+        );
+
+        // Both units are quotable off the single shared instance.
+        create_custom_quote(&mint, unit_a.clone(), method.clone(), 10)
+            .await
+            .expect("quote on unit_a");
+        create_custom_quote(&mint, unit_b.clone(), method.clone(), 10)
+            .await
+            .expect("quote on unit_b");
+
+        // Deregistering unit_a leaves unit_b functional.
+        mint.deregister_payment_processor(unit_a.clone(), method.clone())
+            .await
+            .expect("deregister unit_a");
+
+        let unit_a_result =
+            create_custom_quote(&mint, unit_a.clone(), method.clone(), 10).await;
+        assert!(
+            matches!(unit_a_result, Err(Error::UnsupportedUnit)),
+            "expected UnsupportedUnit for deregistered unit_a, got {:?}",
+            unit_a_result
+        );
+
+        create_custom_quote(&mint, unit_b.clone(), method.clone(), 10)
+            .await
+            .expect("unit_b still functional after unit_a's deregistration");
+    }
+
+    /// Spec case 4 (crash-shaped): simulates a crash between phase 1 (map
+    /// insert) and phase 2 (mint-info update) of `register_payment_processor`
+    /// by performing only the map insert directly. The mint must still
+    /// refuse quote creation for the unit: an inert map entry alone never
+    /// makes a unit quotable.
+    #[tokio::test]
+    async fn register_interrupted_between_phases_leaves_mint_refusing_quotes() {
+        let mint = create_test_mint().await.expect("test mint");
+
+        let unit = CurrencyUnit::Custom("custom_unit_crash".into());
+        let method = PaymentMethod::Custom("custom_backend_method".to_string());
+        let key = PaymentProcessorKey::new(unit.clone(), method.clone());
+
+        mint.rotate_keyset(unit.clone(), full_amounts(), 0, true, None)
+            .await
+            .expect("rotate keyset for new unit");
+
+        let processor = custom_processor(unit.clone(), method.as_str(), 0);
+
+        // Phase 1 only: mirrors `register_payment_processor`'s map update,
+        // skipping phase 2 (the mint-info gate) to stand in for a crash
+        // between the two phases.
+        {
+            let _guard = mint.payment_processor_lock.lock().await;
+            mint.insert_payment_processor(key, processor);
+        }
+
+        let result = create_custom_quote(&mint, unit.clone(), method.clone(), 10).await;
+        assert!(
+            matches!(result, Err(Error::UnsupportedUnit)),
+            "an inert map entry without the mint-info gate must still refuse quotes, got {:?}",
+            result
+        );
+    }
+
+    /// Duplicate `(unit, method)` registration is rejected, mirroring
+    /// `MintBuilder::add_payment_processor`.
+    #[tokio::test]
+    async fn register_payment_processor_rejects_duplicate() {
+        let mint = create_test_mint().await.expect("test mint");
+
+        let unit = CurrencyUnit::Custom("custom_unit_dup".into());
+        let method = PaymentMethod::Custom("custom_backend_method".to_string());
+
+        mint.rotate_keyset(unit.clone(), full_amounts(), 0, true, None)
+            .await
+            .expect("rotate keyset for new unit");
+
+        mint.register_payment_processor(
+            unit.clone(),
+            method.clone(),
+            MintMeltLimits::new(1, 10_000),
+            custom_processor(unit.clone(), method.as_str(), 0),
+        )
+        .await
+        .expect("first registration succeeds");
+
+        let result = mint
+            .register_payment_processor(
+                unit.clone(),
+                method.clone(),
+                MintMeltLimits::new(1, 10_000),
+                custom_processor(unit.clone(), method.as_str(), 0),
+            )
+            .await;
+        assert!(
+            matches!(result, Err(Error::Custom(_))),
+            "expected duplicate registration to be rejected, got {:?}",
+            result
+        );
+    }
+
+    /// Deregistering a `(unit, method)` that was never registered is a no-op.
+    #[tokio::test]
+    async fn deregister_payment_processor_unregistered_is_noop() {
+        let mint = create_test_mint().await.expect("test mint");
+        let unit = CurrencyUnit::Custom("custom_unit_never_registered".into());
+        let method = PaymentMethod::Custom("custom_backend_method".to_string());
+
+        mint.deregister_payment_processor(unit, method)
+            .await
+            .expect("deregistering an unknown pair is a no-op");
     }
 }
