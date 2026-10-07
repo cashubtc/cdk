@@ -84,7 +84,10 @@ impl Lnd {
 
                 amount_msat
             }
-            Some(MeltOptions::Mpp { mpp }) => mpp.amount,
+            Some(MeltOptions::Mpp { mpp }) => {
+                bolt11_mpp_amounts(&bolt11_options.bolt11, u64::from(mpp.amount))?;
+                mpp.amount
+            }
             None => bolt11_options
                 .bolt11
                 .amount_milli_satoshis()
@@ -246,6 +249,46 @@ fn bolt11_rpc_amount_msat(
         None => requested_amount_msat
             .filter(|amount| *amount > 0)
             .ok_or_else(|| Error::UnknownInvoiceAmount.into()),
+    }
+}
+
+/// Validate the shard and total amounts before querying or sending an MPP route.
+fn bolt11_mpp_amounts(
+    bolt11: &Bolt11Invoice,
+    shard_msat: u64,
+) -> Result<(i64, i64), payment::Error> {
+    let total_msat = bolt11
+        .amount_milli_satoshis()
+        .ok_or(Error::UnknownInvoiceAmount)?;
+    if shard_msat == 0 || shard_msat > total_msat {
+        return Err(payment::Error::AmountMismatch);
+    }
+    let shard_msat = i64::try_from(shard_msat).map_err(|_| Error::AmountOverflow)?;
+    let total_msat = i64::try_from(total_msat).map_err(|_| Error::AmountOverflow)?;
+    Ok((shard_msat, total_msat))
+}
+
+fn mpp_fee_limit(max_fee: Option<&Amount<CurrencyUnit>>) -> Result<Option<FeeLimit>, Error> {
+    max_fee
+        .map(|fee| {
+            let fee_msat = i64::try_from(fee.to_msat()?).map_err(|_| Error::AmountOverflow)?;
+            Ok(FeeLimit {
+                limit: Some(Limit::FixedMsat(fee_msat)),
+            })
+        })
+        .transpose()
+}
+
+/// Only the first route query is guaranteed to precede any send attempt.
+fn mpp_route_query_failure(
+    err: tonic::Status,
+    attempt: usize,
+    unit: &CurrencyUnit,
+    payment_lookup_id: PaymentIdentifier,
+) -> Result<MakePaymentResponse, payment::Error> {
+    match attempt {
+        0 => Ok(outgoing_payment_failure_response(unit, payment_lookup_id)),
+        _ => Err(Error::LndError(err).into()),
     }
 }
 
@@ -539,26 +582,38 @@ impl MintPayment for Lnd {
                 // Detect partial payments
                 match bolt11_options.melt_options {
                     Some(MeltOptions::Mpp { mpp }) => {
-                        let amount_msat: u64 = match bolt11.amount_milli_satoshis() {
-                            Some(amount_msat) => amount_msat,
-                            None => {
-                                // Invoice carries no amount; a local parse
-                                // failure before any dispatch.
-                                tracing::warn!(
-                                    payment_lookup_id = %payment_lookup_id,
-                                    "LND MPP payment rejected before dispatch: invoice has no amount",
-                                );
-                                return Ok(outgoing_payment_failure_response(
-                                    unit,
-                                    payment_lookup_id,
-                                ));
-                            }
-                        };
+                        let (partial_amount_msat, amount_msat) =
+                            match bolt11_mpp_amounts(&bolt11, u64::from(mpp.amount)) {
+                                Ok(amounts) => amounts,
+                                Err(err) => {
+                                    tracing::warn!(
+                                        payment_lookup_id = %payment_lookup_id,
+                                        error = %err,
+                                        "LND MPP amount rejected before dispatch",
+                                    );
+                                    return Ok(outgoing_payment_failure_response(
+                                        unit,
+                                        payment_lookup_id,
+                                    ));
+                                }
+                            };
                         {
-                            let partial_amount_msat = mpp.amount;
                             let invoice = bolt11;
-                            let max_fee: Option<Amount<CurrencyUnit>> =
-                                bolt11_options.max_fee_amount.clone();
+                            let fee_limit =
+                                match mpp_fee_limit(bolt11_options.max_fee_amount.as_ref()) {
+                                    Ok(fee_limit) => fee_limit,
+                                    Err(err) => {
+                                        tracing::warn!(
+                                            payment_lookup_id = %payment_lookup_id,
+                                            error = %err,
+                                            "LND MPP fee limit rejected before dispatch",
+                                        );
+                                        return Ok(outgoing_payment_failure_response(
+                                            unit,
+                                            payment_lookup_id,
+                                        ));
+                                    }
+                                };
 
                             // Extract information from invoice
                             let pub_key = invoice.get_payee_pub_key();
@@ -571,35 +626,32 @@ impl MintPayment for Lnd {
                                 // Create a request for the routes
                                 let route_req = lnrpc::QueryRoutesRequest {
                                     pub_key: hex::encode(pub_key.serialize()),
-                                    amt_msat: u64::from(partial_amount_msat) as i64,
-                                    fee_limit: max_fee
-                                        .clone()
-                                        .map(|f| {
-                                            let fee_msat = f.to_msat()?;
-                                            let limit = Limit::FixedMsat(fee_msat as i64);
-                                            Ok::<_, Error>(FeeLimit { limit: Some(limit) })
-                                        })
-                                        .transpose()?,
+                                    amt_msat: partial_amount_msat,
+                                    fee_limit,
                                     use_mission_control: true,
                                     ..Default::default()
                                 };
 
                                 // Query the routes
-                                let mut routes_response = lnd_client
-                                    .lightning()
-                                    .query_routes(route_req)
-                                    .await
-                                    .inspect_err(|err| {
-                                        tracing::warn!(
-                                            payment_lookup_id = %payment_lookup_id,
-                                            attempt = attempt + 1,
-                                            rpc_code = %err.code(),
-                                            error = %err.message(),
-                                            "LND MPP route query failed",
-                                        );
-                                    })
-                                    .map_err(Error::LndError)?
-                                    .into_inner();
+                                let mut routes_response =
+                                    match lnd_client.lightning().query_routes(route_req).await {
+                                        Ok(response) => response.into_inner(),
+                                        Err(err) => {
+                                            tracing::warn!(
+                                                payment_lookup_id = %payment_lookup_id,
+                                                attempt = attempt + 1,
+                                                rpc_code = %err.code(),
+                                                error = %err.message(),
+                                                "LND MPP route query failed",
+                                            );
+                                            return mpp_route_query_failure(
+                                                err,
+                                                attempt,
+                                                unit,
+                                                payment_lookup_id,
+                                            );
+                                        }
+                                    };
 
                                 // Get first route and update its MPP record. An
                                 // empty route set means LND found no path; the
@@ -636,7 +688,7 @@ impl MintPayment for Lnd {
                                 };
                                 let mpp_record = MppRecord {
                                     payment_addr: payer_addr.clone(),
-                                    total_amt_msat: amount_msat as i64,
+                                    total_amt_msat: amount_msat,
                                 };
                                 last_hop.mpp_record = Some(mpp_record);
 
@@ -1147,6 +1199,108 @@ mod tests {
             )
             .unwrap();
             assert_eq!(quote.amount, Amount::new(10, CurrencyUnit::Sat));
+        }
+    }
+
+    #[test]
+    fn mpp_quotes_require_an_invoice_total_and_valid_shard() {
+        let fee_reserve = FeeReserve {
+            min_fee_reserve: Amount::ZERO,
+            percent_fee_reserve: 0.0,
+        };
+        for (invoice_amount, shard, valid) in [
+            (None, 1, false),
+            (Some(10_000), 0, false),
+            (Some(10_000), 10_001, false),
+            (Some(10_000), u64::MAX, false),
+            (Some(10_000), 1, true),
+            (Some(10_000), 5_000, true),
+            (Some(10_000), 10_000, true),
+        ] {
+            let invoice = invoice_with_amount(Duration::from_secs(unix_time()), invoice_amount);
+            let result = Lnd::bolt11_payment_quote(
+                &CurrencyUnit::Msat,
+                payment::Bolt11OutgoingPaymentOptions {
+                    bolt11: invoice.clone(),
+                    max_fee_amount: None,
+                    timeout_secs: None,
+                    melt_options: Some(MeltOptions::new_mpp(shard)),
+                    quote_id: cdk_common::QuoteId::new(),
+                },
+                &fee_reserve,
+            );
+            match valid {
+                true => {
+                    assert_eq!(
+                        result.unwrap().amount,
+                        Amount::new(shard, CurrencyUnit::Msat)
+                    );
+                    assert_eq!(
+                        bolt11_mpp_amounts(&invoice, shard).unwrap(),
+                        (shard as i64, 10_000)
+                    );
+                }
+                false => {
+                    assert!(result.is_err());
+                    assert!(bolt11_mpp_amounts(&invoice, shard).is_err());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mpp_fee_limits_use_checked_rpc_amounts() {
+        assert!(mpp_fee_limit(None).unwrap().is_none());
+        for fee_msat in [0, 1, i64::MAX as u64] {
+            let fee = Amount::new(fee_msat, CurrencyUnit::Msat);
+            assert_eq!(
+                mpp_fee_limit(Some(&fee)).unwrap().unwrap().limit,
+                Some(Limit::FixedMsat(fee_msat as i64)),
+            );
+        }
+        for fee in [
+            Amount::new(i64::MAX as u64 + 1, CurrencyUnit::Msat),
+            Amount::new(i64::MAX as u64 / 1_000 + 1, CurrencyUnit::Sat),
+        ] {
+            assert!(matches!(
+                mpp_fee_limit(Some(&fee)),
+                Err(Error::AmountOverflow)
+            ));
+        }
+    }
+
+    #[test]
+    fn first_mpp_route_query_failure_is_authoritative() {
+        let lookup_id = PaymentIdentifier::PaymentHash([42; 32]);
+        for code in [
+            tonic::Code::Unknown,
+            tonic::Code::Unavailable,
+            tonic::Code::InvalidArgument,
+        ] {
+            let response = mpp_route_query_failure(
+                tonic::Status::new(code, "route query failed"),
+                0,
+                &CurrencyUnit::Sat,
+                lookup_id.clone(),
+            )
+            .unwrap();
+            assert_eq!(response.status, MeltQuoteState::Failed);
+            assert_eq!(response.payment_lookup_id, lookup_id);
+            assert_eq!(response.total_spent, Amount::new(0, CurrencyUnit::Sat));
+            assert!(response.payment_proof.is_none());
+        }
+    }
+
+    #[test]
+    fn mpp_route_query_failure_after_a_send_remains_ambiguous() {
+        for attempt in [1, Lnd::MAX_ROUTE_RETRIES - 1] {
+            let response = mpp_route_query_failure(
+                tonic::Status::unavailable("route query failed"),
+                attempt,
+                &CurrencyUnit::Sat,
+                PaymentIdentifier::PaymentHash([42; 32]),
+            );
+            assert!(matches!(response, Err(payment::Error::Backend(_))));
         }
     }
 
