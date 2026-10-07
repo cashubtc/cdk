@@ -820,17 +820,22 @@ impl Mint {
         Ok(())
     }
 
-    /// Removes a `(unit, method)` registration from a running mint.
+    /// Removes a `(unit, method)` registration from a running mint: full
+    /// teardown. Removes the NUT-04/NUT-05 (and matching NUT-15) entries
+    /// first, so no new quote can be created for the pair, then removes the
+    /// map entry too and stops the processor if no other key still
+    /// references the same instance. A crash before the map entry is
+    /// removed leaves it inert (closed gate, orphaned map entry), which is
+    /// harmless. Deregistering a `(unit, method)` that was never registered
+    /// is a no-op.
     ///
-    /// Removes the NUT-04/NUT-05 (and matching NUT-15) entries first, so no
-    /// new quote can be created for the pair; a crash before the map entry
-    /// is also removed leaves it inert (closed gate, orphaned map entry),
-    /// which is harmless. The processor is stopped only when no other key
-    /// still references the same instance; its already-running payment-event
-    /// consumer, if any, is not cancelled (there is no per-processor
-    /// supervision teardown), so an in-flight payment for an existing quote
-    /// still completes. Deregistering a `(unit, method)` that was never
-    /// registered is a no-op.
+    /// Because the map entry is gone, a quote whose method re-consults the
+    /// processor on every check (every method except bolt11, which only
+    /// consults it before reaching `Paid`/`Issued`) can no longer be
+    /// resolved: an already-paid, not-yet-issued quote of such a method
+    /// becomes permanently unmintable once its processor is deregistered.
+    /// Use [`retire_payment_processor`](Self::retire_payment_processor)
+    /// instead when outstanding quotes for the pair must still resolve.
     pub async fn deregister_payment_processor(
         &self,
         unit: CurrencyUnit,
@@ -841,13 +846,7 @@ impl Mint {
 
         // Phase 1 (first): close the quotability gate.
         let mut mint_info = self.mint_info().await?;
-        mint_info.nuts.nut04.remove_settings(&key.unit, &key.method);
-        mint_info.nuts.nut05.remove_settings(&key.unit, &key.method);
-        mint_info
-            .nuts
-            .nut15
-            .methods
-            .retain(|m| !(m.unit == key.unit && m.method == key.method));
+        Self::remove_quotability_settings(&mut mint_info, &key);
         self.set_mint_info(mint_info).await?;
 
         // Phase 2 (last): the map entry, and the backend if orphaned.
@@ -865,6 +864,45 @@ impl Mint {
         }
 
         Ok(())
+    }
+
+    /// Closes the quotability gate for `(unit, method)` without tearing
+    /// down the processor: removes the NUT-04/NUT-05 (and matching NUT-15)
+    /// entries, so no new quote can be created, but deliberately leaves the
+    /// map entry in place. check_mint_quote_payments and the mint path keep
+    /// resolving the processor through the (unchanged) map, so a quote
+    /// already paid but not yet issued stays checkable and mintable for
+    /// every payment method, including the ones deregister would strand.
+    /// The processor itself is untouched: not stopped, and its
+    /// start/stop reference count is not adjusted. Retiring a pair that is
+    /// unregistered, or already retired, is a no-op.
+    pub async fn retire_payment_processor(
+        &self,
+        unit: CurrencyUnit,
+        method: PaymentMethod,
+    ) -> Result<(), Error> {
+        let key = PaymentProcessorKey::new(unit, method);
+        let _guard = self.payment_processor_lock.lock().await;
+
+        let mut mint_info = self.mint_info().await?;
+        Self::remove_quotability_settings(&mut mint_info, &key);
+        self.set_mint_info(mint_info).await?;
+
+        Ok(())
+    }
+
+    /// Removes the NUT-04/NUT-05 (and matching NUT-15) entries for `key`
+    /// from `mint_info`. Shared by `deregister_payment_processor` and
+    /// `retire_payment_processor`, which differ only in what they then do
+    /// with the map entry.
+    fn remove_quotability_settings(mint_info: &mut MintInfo, key: &PaymentProcessorKey) {
+        mint_info.nuts.nut04.remove_settings(&key.unit, &key.method);
+        mint_info.nuts.nut05.remove_settings(&key.unit, &key.method);
+        mint_info
+            .nuts
+            .nut15
+            .methods
+            .retain(|m| !(m.unit == key.unit && m.method == key.method));
     }
 
     /// Inserts or replaces one entry in the live payment-processor map.
@@ -3092,6 +3130,7 @@ mod tests {
         inner: FakeWallet,
         start_calls: Arc<std::sync::atomic::AtomicUsize>,
         wait_payment_event_calls: Arc<std::sync::atomic::AtomicUsize>,
+        stop_calls: Arc<std::sync::atomic::AtomicUsize>,
     }
 
     #[async_trait::async_trait]
@@ -3104,6 +3143,7 @@ mod tests {
         }
 
         async fn stop(&self) -> Result<(), Self::Err> {
+            self.stop_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.inner.stop().await
         }
 
@@ -3283,17 +3323,18 @@ mod tests {
         mint_against_quote(&mint, &unit, quote_id).await;
     }
 
-    /// Documents a limitation: for a custom-method quote, deregistering its
-    /// processor DOES break minting an already-paid existing quote, unlike
-    /// the bolt11 case above. `check_mint_quote_payments` only short-circuits
+    /// Pins down `deregister_payment_processor`'s deliberate full-teardown
+    /// behavior, not a latent bug: for a custom-method quote, deregistering
+    /// its processor DOES strand an already-paid existing quote, unlike the
+    /// bolt11 case above. `check_mint_quote_payments` only short-circuits
     /// the backend re-check for bolt11 (to support custom methods whose
     /// quotes can receive further incremental payments after reaching
     /// `Paid`); every other method keeps consulting the processor map on
     /// every check/mint call, so once the
     /// map entry is gone, `UnsupportedUnit` follows even for an
-    /// already-fully-paid quote. This is pre-existing `check_mint_quote_payments`
-    /// behavior that this feature's deregister surfaces, not a bug this
-    /// feature introduces.
+    /// already-fully-paid quote. This is exactly the case
+    /// `retire_payment_processor` exists for; see
+    /// `retire_lets_paid_custom_method_quote_be_minted` below.
     #[tokio::test]
     async fn deregister_custom_method_existing_quote_cannot_be_minted() {
         let mint = create_test_mint().await.expect("test mint");
@@ -3350,6 +3391,168 @@ mod tests {
         );
     }
 
+    /// The case `retire_payment_processor` exists for: a custom-method quote
+    /// that is already paid but not yet issued must still be mintable after
+    /// retiring its processor, unlike after deregistering it (the test
+    /// directly above this one). Retiring removes only the NUT-04/NUT-05
+    /// gate and keeps the processor map entry, so the mint path still
+    /// resolves the processor and genuinely signs against the quote.
+    #[tokio::test]
+    async fn retire_lets_paid_custom_method_quote_be_minted() {
+        let mint = create_test_mint().await.expect("test mint");
+
+        let unit = CurrencyUnit::Custom("custom_unit_retire_mint".into());
+        let method = PaymentMethod::Custom("custom_backend_method".to_string());
+
+        mint.rotate_keyset(unit.clone(), full_amounts(), 0, true, None)
+            .await
+            .expect("rotate keyset for new unit");
+
+        let processor = custom_processor(unit.clone(), method.as_str(), 0);
+        mint.register_payment_processor(
+            unit.clone(),
+            method.clone(),
+            MintMeltLimits::new(1, 10_000),
+            processor,
+        )
+        .await
+        .expect("register payment processor");
+
+        let quote_id = create_custom_quote(&mint, unit.clone(), method.clone(), 32)
+            .await
+            .expect("create custom quote");
+        wait_until_quote_paid(&mint, &quote_id).await;
+
+        mint.retire_payment_processor(unit.clone(), method.clone())
+            .await
+            .expect("retire");
+
+        // The point of the test: minting against the already-paid quote
+        // actually succeeds (real signatures, not just "no error") once the
+        // processor is merely retired rather than fully deregistered.
+        mint_against_quote(&mint, &unit, quote_id).await;
+    }
+
+    /// After retire, no new quote can be created for the retired pair.
+    #[tokio::test]
+    async fn retire_blocks_new_quote_creation() {
+        let mint = create_test_mint().await.expect("test mint");
+
+        let unit = CurrencyUnit::Custom("custom_unit_retire_block".into());
+        let method = PaymentMethod::Custom("custom_backend_method".to_string());
+
+        mint.rotate_keyset(unit.clone(), full_amounts(), 0, true, None)
+            .await
+            .expect("rotate keyset for new unit");
+
+        mint.register_payment_processor(
+            unit.clone(),
+            method.clone(),
+            MintMeltLimits::new(1, 10_000),
+            custom_processor(unit.clone(), method.as_str(), 0),
+        )
+        .await
+        .expect("register payment processor");
+
+        mint.retire_payment_processor(unit.clone(), method.clone())
+            .await
+            .expect("retire");
+
+        let result = create_custom_quote(&mint, unit.clone(), method.clone(), 10).await;
+        assert!(
+            matches!(result, Err(Error::UnsupportedUnit)),
+            "expected UnsupportedUnit for a retired pair, got {:?}",
+            result
+        );
+    }
+
+    /// Retiring one of two keys sharing a processor instance leaves the
+    /// other key fully functional and never stops the processor (no
+    /// start/stop refcounting is touched by retire at all).
+    #[tokio::test]
+    async fn retire_leaves_shared_instance_functional_and_not_stopped() {
+        let mint = create_test_mint().await.expect("test mint");
+
+        let unit_a = CurrencyUnit::Custom("custom_unit_retire_shared_a".into());
+        let unit_b = CurrencyUnit::Custom("custom_unit_retire_shared_b".into());
+        let method = PaymentMethod::Custom("custom_backend_method".to_string());
+
+        for unit in [&unit_a, &unit_b] {
+            mint.rotate_keyset(unit.clone(), full_amounts(), 0, true, None)
+                .await
+                .expect("rotate keyset");
+        }
+
+        let inner = FakeWallet::new(
+            fake_fee_reserve(),
+            HashMap::default(),
+            HashSet::default(),
+            0,
+            unit_a.clone(),
+        )
+        .with_custom_payment_methods(HashMap::from([(
+            method.as_str().to_string(),
+            "{}".to_string(),
+        )]));
+        let stop_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let processor: DynMintPayment = Arc::new(CountingProcessor {
+            inner,
+            start_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            wait_payment_event_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            stop_calls: stop_calls.clone(),
+        });
+
+        mint.register_payment_processor(
+            unit_a.clone(),
+            method.clone(),
+            MintMeltLimits::new(1, 10_000),
+            processor.clone(),
+        )
+        .await
+        .expect("register under unit_a");
+        mint.register_payment_processor(
+            unit_b.clone(),
+            method.clone(),
+            MintMeltLimits::new(1, 10_000),
+            processor.clone(),
+        )
+        .await
+        .expect("register under unit_b");
+
+        mint.retire_payment_processor(unit_a.clone(), method.clone())
+            .await
+            .expect("retire unit_a");
+
+        assert_eq!(
+            stop_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "retire must never stop the processor"
+        );
+
+        let unit_a_result = create_custom_quote(&mint, unit_a.clone(), method.clone(), 10).await;
+        assert!(
+            matches!(unit_a_result, Err(Error::UnsupportedUnit)),
+            "expected UnsupportedUnit for retired unit_a, got {:?}",
+            unit_a_result
+        );
+
+        create_custom_quote(&mint, unit_b.clone(), method.clone(), 10)
+            .await
+            .expect("unit_b still functional after unit_a's retirement");
+    }
+
+    /// Retiring an unregistered `(unit, method)` is a no-op.
+    #[tokio::test]
+    async fn retire_payment_processor_unregistered_is_noop() {
+        let mint = create_test_mint().await.expect("test mint");
+        let unit = CurrencyUnit::Custom("custom_unit_retire_never_registered".into());
+        let method = PaymentMethod::Custom("custom_backend_method".to_string());
+
+        mint.retire_payment_processor(unit, method)
+            .await
+            .expect("retiring an unknown pair is a no-op");
+    }
+
     /// Spec case 3: the same processor instance registered under a second
     /// key starts and spawns a consumer exactly once; deregistering one key
     /// leaves the other functional.
@@ -3387,6 +3590,7 @@ mod tests {
             inner,
             start_calls: start_calls.clone(),
             wait_payment_event_calls: wait_payment_event_calls.clone(),
+            stop_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         });
 
         mint.register_payment_processor(
