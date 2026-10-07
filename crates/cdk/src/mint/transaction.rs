@@ -689,11 +689,12 @@ impl Mint {
             {
                 let pubkey = quote.pubkey.ok_or(Error::SignatureMissingOrInvalid)?;
                 parse_quote_witness(&input.witness)?
-                    .verify(
+                    .verify_in(
                         &pubkey.to_string(),
                         transcript
                             .input_digest(proofs.len() + index)
                             .map_err(cdk_common::nuts::nut10::Error::from)?,
+                        Some(transcript.outputs()),
                         now,
                     )
                     .map_err(cdk_common::nuts::nut10::Error::from)?;

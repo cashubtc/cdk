@@ -894,11 +894,12 @@ impl Mint {
                         .as_ref()
                         .ok_or(Error::SignatureMissingOrInvalid)?;
                     crate::mint::transaction::parse_quote_witness(raw)?
-                        .verify(
+                        .verify_in(
                             &pubkey.to_string(),
                             transaction
                                 .input_digest(quote_index)
                                 .map_err(crate::nuts::nut10::Error::from)?,
+                            Some(transaction.outputs()),
                             cdk_common::util::unix_time(),
                         )
                         .map_err(crate::nuts::nut10::Error::from)?;

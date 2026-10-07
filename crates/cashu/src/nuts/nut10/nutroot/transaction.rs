@@ -299,6 +299,11 @@ impl Transaction {
     pub fn as_bytes(&self) -> &[u8] {
         &self.transcript
     }
+    /// The output section: every `0x2n` container, the bytes a template leaf hashes.
+    pub fn outputs(&self) -> &[u8] {
+        let inputs: usize = self.inputs.iter().map(Vec::len).sum();
+        &self.transcript[inputs..]
+    }
     /// Shared transaction digest, which is not itself a signing message.
     pub fn digest(&self) -> [u8; 32] {
         self.digest
