@@ -335,7 +335,12 @@ impl SigningPackage {
         let mut witnesses = vec![];
         for (spend, validated) in self.spends.iter().zip(validated) {
             let index = validated.index;
-            spend.witness.verify(&spend.secret, validated.digest, now)?;
+            spend.witness.verify_in(
+                &spend.secret,
+                validated.digest,
+                Some(transaction.outputs()),
+                now,
+            )?;
             let raw = serde_json::to_string(&spend.witness).map_err(|_| Error::InvalidWitness)?;
             witnesses.push((index, crate::nuts::Witness::NutrootWitness(raw)));
         }

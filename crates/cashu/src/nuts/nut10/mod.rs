@@ -463,9 +463,10 @@ pub trait SpendingConditionVerification {
                     return Err(Error::SpendConditionsNotMet);
                 }
                 let witness: nutroot::Witness = serde_json::from_str(&raw)?;
-                witness.verify(
+                witness.verify_in(
                     &proof.secret.to_string(),
                     transaction.input_digest(index)?,
+                    Some(transaction.outputs()),
                     crate::util::unix_time(),
                 )?;
                 continue;
