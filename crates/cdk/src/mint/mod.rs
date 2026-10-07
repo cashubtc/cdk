@@ -3021,16 +3021,28 @@ mod tests {
             .map(|response| response.quote().clone())
     }
 
-    /// Polls `check_mint_quotes` until `quote_id` reaches `Paid`, or panics
-    /// after 5 seconds.
+    /// Polls the quote's stored state directly until `quote_id` reaches
+    /// `Paid`, or panics after 5 seconds.
+    ///
+    /// Deliberately reads through `localstore()` rather than
+    /// `check_mint_quotes`/`check_mint_quote_paid`: those also perform an
+    /// active re-check against the processor map (unconditionally for
+    /// non-bolt11 methods, and for bolt11 too while the quote is still
+    /// `Unpaid`), which would make this helper itself depend on the
+    /// processor still being registered. Reading the stored state instead
+    /// observes only the push path (the payment-event consumer writing
+    /// through `handle_payment_notification`), which is what an existing
+    /// quote's "still gets paid after deregistration" guarantee rests on.
     async fn wait_until_quote_paid(mint: &Mint, quote_id: &QuoteId) {
         timeout(Duration::from_secs(5), async {
             loop {
-                let responses = mint
-                    .check_mint_quotes(&[quote_id.clone()])
+                let quote = mint
+                    .localstore()
+                    .get_mint_quote(quote_id)
                     .await
-                    .expect("check quote");
-                if responses[0].state() == Some(MintQuoteState::Paid) {
+                    .expect("read quote")
+                    .expect("quote exists");
+                if quote.state() == MintQuoteState::Paid {
                     return;
                 }
                 sleep(std::time::Duration::from_millis(50)).await;
