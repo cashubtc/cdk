@@ -844,15 +844,18 @@ fn shared_transcript_vectors() {
                 hash(&input["input_id"]),
                 "{name}"
             );
-            assert_eq!(
-                transaction.input_digest(index).unwrap(),
-                hash(&input["input_digest"]),
-                "{name}"
-            );
+            // A pre-v3 input (mixed keysets) signs no input digest.
+            if input.get("input_digest").is_some() {
+                assert_eq!(
+                    transaction.input_digest(index).unwrap(),
+                    hash(&input["input_digest"]),
+                    "{name}"
+                );
+            }
         }
         checked += 1;
     }
-    assert_eq!(checked, 10);
+    assert_eq!(checked, 11);
 }
 
 #[test]
