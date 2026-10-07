@@ -307,7 +307,7 @@ async fn rollback_melt_quote_inner(
     if let Some(record) = transaction.as_mut() {
         if record.state == cdk_common::nuts::TransactionState::Pending {
             crate::mint::transaction::release_quote_inputs(&mut tx, record).await?;
-            tx.update_transaction(record, cdk_common::nuts::TransactionState::Failed, None)
+            tx.update_transaction(record, cdk_common::nuts::TransactionState::Failed, vec![])
                 .await?;
         }
     }

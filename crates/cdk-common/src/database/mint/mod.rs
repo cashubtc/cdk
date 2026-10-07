@@ -402,12 +402,12 @@ pub trait QuotesTransaction {
         quote_id: &QuoteId,
     ) -> Result<Option<Acquired<mint::TransactionRecord>>, Self::Err>;
 
-    /// Set a NUT-XX transaction's state and change quote.
+    /// Set a NUT-XX transaction's state and change quotes.
     async fn update_transaction(
         &mut self,
         record: &mut Acquired<mint::TransactionRecord>,
         state: crate::nuts::TransactionState,
-        change_quote_id: Option<QuoteId>,
+        change_quote_ids: Vec<Option<QuoteId>>,
     ) -> Result<(), Self::Err>;
 }
 
