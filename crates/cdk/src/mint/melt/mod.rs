@@ -865,6 +865,44 @@ impl Mint {
         Ok(quote.payment_method)
     }
 
+    /// Construct a BOLT 12 payer proof for a paid melt quote.
+    ///
+    /// Returns [`Error::UnknownQuote`] if the quote does not exist.
+    /// Returns [`cdk_common::payment::Error::Bolt12PayerProofUnavailable`]
+    /// when the quote is not BOLT12, was never paid, or the backend did not
+    /// persist construction inputs. Current Lightning backends always take
+    /// that path until they can capture a paid invoice.
+    #[instrument(skip(self))]
+    pub async fn create_bolt12_payer_proof(&self, quote_id: &QuoteId) -> Result<String, Error> {
+        let quote = self
+            .localstore
+            .get_melt_quote(quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+
+        if !matches!(
+            quote.payment_method,
+            PaymentMethod::Known(KnownMethod::Bolt12)
+        ) {
+            return Err(cdk_common::payment::Error::Bolt12PayerProofUnavailable.into());
+        }
+
+        let inputs = quote
+            .bolt12_payer_proof_inputs
+            .as_ref()
+            .ok_or(cdk_common::payment::Error::Bolt12PayerProofUnavailable)?;
+        let payment_preimage = quote
+            .payment_proof
+            .as_ref()
+            .ok_or(cdk_common::payment::Error::Bolt12PayerProofUnavailable)?;
+
+        let processor =
+            self.get_payment_processor(quote.unit.clone(), quote.payment_method.clone())?;
+        Ok(processor
+            .create_bolt12_payer_proof(inputs, payment_preimage)
+            .await?)
+    }
+
     /// Get melt quotes
     #[instrument(skip_all)]
     pub async fn melt_quotes(&self) -> Result<Vec<MeltQuote>, Error> {
