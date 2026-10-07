@@ -524,31 +524,6 @@ impl Wallet {
         derivation_indices: &HashMap<Proof, u32>,
     ) -> Result<Proofs, Error> {
         tracing::debug!("Including fees");
-        let fee_breakdown = calculate_fee(
-            &selected_proofs.count_by_keyset(),
-            &fees_and_keyset_amounts
-                .iter()
-                .map(|(key, values)| (*key, values.fee()))
-                .collect(),
-        )?;
-        let net_amount = selected_proofs.total_amount()? - fee_breakdown.total;
-        tracing::debug!(
-            "Net amount={}, fee={}, total amount={}",
-            net_amount,
-            fee_breakdown.total,
-            selected_proofs.total_amount()?
-        );
-        if net_amount >= amount {
-            tracing::debug!(
-                "Selected proofs: {:?}",
-                selected_proofs
-                    .iter()
-                    .map(|p| p.amount.into())
-                    .collect::<Vec<u64>>(),
-            );
-            return Ok(selected_proofs);
-        }
-
         let keyset_fees: HashMap<Id, u64> = fees_and_keyset_amounts
             .iter()
             .map(|(key, values)| (*key, values.fee()))
@@ -562,16 +537,11 @@ impl Wallet {
         loop {
             let fee = calculate_fee(&selected_proofs.count_by_keyset(), &keyset_fees)?.total;
             let total = selected_proofs.total_amount()?;
-            let net_amount = total - fee;
+            let net_amount = total.checked_sub(fee);
 
-            tracing::debug!(
-                "Net amount={}, fee={}, total amount={}",
-                net_amount,
-                fee,
-                total
-            );
+            tracing::debug!("Fee={}, total amount={}", fee, total);
 
-            if net_amount >= amount {
+            if net_amount.is_some_and(|net| net >= amount) {
                 tracing::debug!(
                     "Selected proofs: {:?}",
                     selected_proofs
@@ -586,7 +556,13 @@ impl Wallet {
                 return Err(Error::InsufficientFunds);
             }
 
-            let shortfall = amount - net_amount;
+            let shortfall = match net_amount {
+                Some(net) => amount.checked_sub(net),
+                None => fee
+                    .checked_sub(total)
+                    .and_then(|deficit| amount.checked_add(deficit)),
+            }
+            .ok_or(Error::InsufficientFunds)?;
             tracing::debug!("Net amount is less than required, shortfall={}", shortfall);
 
             let additional = Wallet::select_proofs_with_derivation_indices(
@@ -1818,10 +1794,77 @@ mod tests {
             true,
         );
 
-        assert!(
-            result.is_err(),
-            "1 sat proof with 1 sat fee is uneconomical"
+        assert!(matches!(result, Err(crate::Error::InsufficientFunds)));
+    }
+
+    #[test]
+    fn test_select_proofs_include_fees_covers_fee_deficit() {
+        let keyset_fee_and_amounts = keyset_fee_and_amounts_with_fee(2000);
+        let proofs = vec![proof(1), proof(2), proof(4)];
+
+        let selected = Wallet::select_proofs(
+            1.into(),
+            proofs.clone(),
+            &vec![id()],
+            &keyset_fee_and_amounts,
+            true,
+        )
+        .unwrap();
+
+        // The first two inputs still have a fee deficit; all three are needed.
+        assert_eq!(selected.len(), proofs.len());
+        assert!(proofs.iter().all(|proof| selected.contains(proof)));
+    }
+
+    #[test]
+    fn test_select_proofs_include_fees_preserves_deficit_in_shortfall() {
+        let keyset_fee_and_amounts = keyset_fee_and_amounts_with_fee(2000);
+        let larger_proof = proof(4);
+        let proofs = vec![proof(1), proof(1), larger_proof.clone()];
+
+        let selected =
+            Wallet::select_proofs(1.into(), proofs, &vec![id()], &keyset_fee_and_amounts, true)
+                .unwrap();
+
+        assert_eq!(selected.len(), 2);
+        assert!(selected.contains(&larger_proof));
+        assert_eq!(
+            selected
+                .iter()
+                .filter(|proof| proof.amount == 1.into())
+                .count(),
+            1
         );
+    }
+
+    #[test]
+    fn test_select_proofs_include_fees_insufficient_for_fee_deficit() {
+        let keyset_fee_and_amounts = keyset_fee_and_amounts_with_fee(2000);
+
+        for proofs in [vec![proof(1)], vec![proof(1), proof(2)]] {
+            let result =
+                Wallet::select_proofs(1.into(), proofs, &vec![id()], &keyset_fee_and_amounts, true);
+
+            assert!(matches!(result, Err(crate::Error::InsufficientFunds)));
+        }
+    }
+
+    #[test]
+    fn test_select_proofs_include_fees_equal_initial_value_with_remaining_proofs() {
+        let keyset_fee_and_amounts = keyset_fee_and_amounts_with_fee(1000);
+        let proofs = vec![proof(1), proof(2)];
+
+        let selected = Wallet::select_proofs(
+            1.into(),
+            proofs.clone(),
+            &vec![id()],
+            &keyset_fee_and_amounts,
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(selected.len(), proofs.len());
+        assert!(proofs.iter().all(|proof| selected.contains(proof)));
     }
 
     #[test]
