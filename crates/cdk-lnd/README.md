@@ -14,6 +14,16 @@ viable route and liquidity, and peers must permit the selected circular route.
 Routing fees remain subject to the payment's fee limit. This does not enable
 partial self-payments through the separate MPP routing path.
 
+Backend initialization calls LND's `GetInfo` once and caches the node pubkey
+and invoice network. LND must be reachable and the macaroon must permit
+`info:read` (or `/lnrpc.Lightning/GetInfo` for an RPC-restricted macaroon).
+`admin.macaroon` already permits this. Restricted macaroons must be updated
+before upgrading; otherwise initialization returns an error.
+
+Invoices for another network are rejected when quoting and before dispatch.
+When `allow_self_payment` is false, self-payments are rejected locally before
+dispatch. Existing paid or pending outgoing payments are reconciled first.
+
 ## Installation
 
 Add this to your `Cargo.toml`:

@@ -15,8 +15,10 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use cdk_common::amount::Amount;
 use cdk_common::bitcoin::hashes::Hash;
+use cdk_common::bitcoin::secp256k1::PublicKey;
 use cdk_common::common::FeeReserve;
 use cdk_common::database::DynKVStore;
+use cdk_common::lightning_invoice::Currency;
 use cdk_common::nuts::{CurrencyUnit, MeltOptions, MeltQuoteState};
 use cdk_common::payment::{
     self, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions, MakePaymentResponse,
@@ -54,6 +56,8 @@ pub struct Lnd {
     _cert_file: PathBuf,
     _macaroon_file: PathBuf,
     lnd_client: client::Client,
+    node_pubkey: PublicKey,
+    invoice_currency: Currency,
     fee_reserve: FeeReserve,
     allow_self_payment: bool,
     kv_store: DynKVStore,
@@ -77,7 +81,11 @@ impl Lnd {
         unit: &CurrencyUnit,
         bolt11_options: payment::Bolt11OutgoingPaymentOptions,
         fee_reserve: &FeeReserve,
+        invoice_currency: &Currency,
     ) -> Result<PaymentQuoteResponse, payment::Error> {
+        if bolt11_options.bolt11.currency() != *invoice_currency {
+            return Err(Error::InvoiceNetworkMismatch.into());
+        }
         let amount_msat = match bolt11_options.melt_options {
             Some(MeltOptions::Amountless { amountless }) => {
                 let amount_msat = amountless.amount_msat;
@@ -122,7 +130,10 @@ impl Lnd {
     /// Maximum number of attempts at a partial payment
     pub const MAX_ROUTE_RETRIES: usize = 50;
 
-    /// Create new [`Lnd`]
+    /// Create new [`Lnd`].
+    ///
+    /// Fetches and caches the node identity and invoice network using `GetInfo`.
+    /// LND must be available and the macaroon must permit `info:read`.
     pub async fn new(
         address: String,
         cert_file: PathBuf,
@@ -154,12 +165,20 @@ impl Lnd {
             )));
         }
 
-        let lnd_client = client::connect(&address, &cert_file, &macaroon_file)
+        let mut lnd_client = client::connect(&address, &cert_file, &macaroon_file)
             .await
             .map_err(|err| {
                 tracing::error!("Connection error: {}", err.to_string());
                 Error::Connection
             })?;
+
+        let info = lnd_client
+            .lightning()
+            .get_info(lnrpc::GetInfoRequest {})
+            .await
+            .map_err(Error::GetInfo)?
+            .into_inner();
+        let (node_pubkey, invoice_currency) = lnd_node_identity(&info)?;
 
         let unit = CurrencyUnit::Msat;
         Ok(Self {
@@ -167,6 +186,8 @@ impl Lnd {
             _cert_file: cert_file,
             _macaroon_file: macaroon_file,
             lnd_client,
+            node_pubkey,
+            invoice_currency,
             fee_reserve,
             allow_self_payment: true,
             kv_store,
@@ -241,6 +262,35 @@ impl Lnd {
         );
         Ok((add_index, settle_index))
     }
+}
+
+/// Validate the immutable node identity and invoice network returned by LND.
+fn lnd_node_identity(info: &lnrpc::GetInfoResponse) -> Result<(PublicKey, Currency), Error> {
+    let node_pubkey = PublicKey::from_str(&info.identity_pubkey).map_err(|_| {
+        Error::InvalidConfig("LND GetInfo returned an invalid identity pubkey".to_owned())
+    })?;
+    let chain = match info.chains.as_slice() {
+        [chain] => chain,
+        _ => {
+            return Err(Error::InvalidConfig(
+                "LND GetInfo must report exactly one network".to_owned(),
+            ))
+        }
+    };
+    let invoice_currency = match chain.network.as_str() {
+        "mainnet" => Currency::Bitcoin,
+        "testnet" | "testnet4" => Currency::BitcoinTestnet,
+        "regtest" => Currency::Regtest,
+        "simnet" => Currency::Simnet,
+        "signet" => Currency::Signet,
+        _ => {
+            return Err(Error::InvalidConfig(format!(
+                "LND GetInfo returned an unsupported network: {}",
+                chain.network
+            )))
+        }
+    };
+    Ok((node_pubkey, invoice_currency))
 }
 
 /// Validate a full payment's amount and select the amount sent to LND.
@@ -337,11 +387,14 @@ fn outgoing_payment_failure_response(
     }
 }
 
-/// Preserve an existing payment, or reject an expired invoice before dispatch.
+/// Preserve an existing payment before rejecting expired, wrong-network, or
+/// disallowed self-payment invoices locally.
 fn bolt11_pre_dispatch_response(
     unit: &CurrencyUnit,
     bolt11: &Bolt11Invoice,
     pay_state: MakePaymentResponse,
+    invoice_currency: &Currency,
+    disallowed_payee: Option<&PublicKey>,
 ) -> Result<Option<MakePaymentResponse>, payment::Error> {
     let payment_lookup_id = PaymentIdentifier::PaymentHash(*bolt11.payment_hash().as_ref());
     Ok(match pay_state.status {
@@ -351,12 +404,12 @@ fn bolt11_pre_dispatch_response(
             ..pay_state
         }),
         MeltQuoteState::Unpaid | MeltQuoteState::Unknown | MeltQuoteState::Failed => {
-            // LND rejects expired invoices before recording a payment, so a
-            // later lookup cannot resolve that rejection. Return an authoritative
-            // failure locally while we know no dispatch has been attempted.
-            bolt11
-                .is_expired()
-                .then(|| outgoing_payment_failure_response(unit, payment_lookup_id))
+            // Validate locally while no dispatch has been attempted. LND does
+            // not record these validation failures for later status lookups.
+            let rejected = bolt11.is_expired()
+                || bolt11.currency() != *invoice_currency
+                || disallowed_payee.is_some_and(|pubkey| bolt11.get_payee_pub_key() == *pubkey);
+            rejected.then(|| outgoing_payment_failure_response(unit, payment_lookup_id))
         }
     })
 }
@@ -533,9 +586,12 @@ impl MintPayment for Lnd {
         options: OutgoingPaymentOptions,
     ) -> Result<PaymentQuoteResponse, Self::Err> {
         match options {
-            OutgoingPaymentOptions::Bolt11(bolt11_options) => {
-                Self::bolt11_payment_quote(unit, *bolt11_options, &self.fee_reserve)
-            }
+            OutgoingPaymentOptions::Bolt11(bolt11_options) => Self::bolt11_payment_quote(
+                unit,
+                *bolt11_options,
+                &self.fee_reserve,
+                &self.invoice_currency,
+            ),
             OutgoingPaymentOptions::Bolt12(_) => {
                 Err(Self::Err::Anyhow(anyhow!("BOLT12 not supported by LND")))
             }
@@ -563,7 +619,13 @@ impl MintPayment for Lnd {
                 // as an ambiguous dispatch failure.
                 let pay_state = self.check_outgoing_payment(&payment_lookup_id).await?;
 
-                if let Some(response) = bolt11_pre_dispatch_response(unit, &bolt11, pay_state)? {
+                if let Some(response) = bolt11_pre_dispatch_response(
+                    unit,
+                    &bolt11,
+                    pay_state,
+                    &self.invoice_currency,
+                    (!self.allow_self_payment).then_some(&self.node_pubkey),
+                )? {
                     return Ok(response);
                 }
 
@@ -1148,6 +1210,7 @@ mod tests {
                             quote_id: cdk_common::QuoteId::new(),
                         },
                         &fee_reserve,
+                        &Currency::Regtest,
                     )
                     .unwrap();
                     assert_eq!(quote.amount, Amount::new(expected, unit.clone()));
@@ -1202,6 +1265,7 @@ mod tests {
                     quote_id: cdk_common::QuoteId::new(),
                 },
                 &fee_reserve,
+                &Currency::Regtest,
             );
             assert!(result.is_err());
         }
@@ -1224,6 +1288,7 @@ mod tests {
                     quote_id: cdk_common::QuoteId::new(),
                 },
                 &fee_reserve,
+                &Currency::Regtest,
             )
             .unwrap();
             assert_eq!(quote.amount, Amount::new(10, CurrencyUnit::Sat));
@@ -1256,6 +1321,7 @@ mod tests {
                     quote_id: cdk_common::QuoteId::new(),
                 },
                 &fee_reserve,
+                &Currency::Regtest,
             );
             match valid {
                 true => {
@@ -1333,6 +1399,185 @@ mod tests {
     }
 
     #[test]
+    fn node_info_maps_supported_invoice_networks() {
+        let invoice = invoice_with_timestamp(Duration::from_secs(unix_time()));
+        let pubkey = invoice.get_payee_pub_key();
+        for (network, currency) in [
+            ("mainnet", Currency::Bitcoin),
+            ("testnet", Currency::BitcoinTestnet),
+            ("testnet4", Currency::BitcoinTestnet),
+            ("regtest", Currency::Regtest),
+            ("simnet", Currency::Simnet),
+            ("signet", Currency::Signet),
+        ] {
+            let info = lnrpc::GetInfoResponse {
+                identity_pubkey: pubkey.to_string(),
+                chains: vec![lnrpc::Chain {
+                    network: network.to_owned(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            assert_eq!(lnd_node_identity(&info).unwrap(), (pubkey, currency));
+        }
+    }
+
+    #[test]
+    fn node_info_rejects_invalid_identity_and_networks() {
+        let invoice = invoice_with_timestamp(Duration::from_secs(unix_time()));
+        let chain = lnrpc::Chain {
+            network: "regtest".to_owned(),
+            ..Default::default()
+        };
+        let info = lnrpc::GetInfoResponse {
+            identity_pubkey: invoice.get_payee_pub_key().to_string(),
+            chains: vec![chain.clone()],
+            ..Default::default()
+        };
+        for invalid in [
+            lnrpc::GetInfoResponse {
+                identity_pubkey: String::new(),
+                ..info.clone()
+            },
+            lnrpc::GetInfoResponse {
+                identity_pubkey: "invalid".to_owned(),
+                ..info.clone()
+            },
+            lnrpc::GetInfoResponse {
+                chains: vec![],
+                ..info.clone()
+            },
+            lnrpc::GetInfoResponse {
+                chains: vec![chain.clone(), chain],
+                ..info.clone()
+            },
+            lnrpc::GetInfoResponse {
+                chains: vec![lnrpc::Chain {
+                    network: "unknown".to_owned(),
+                    ..Default::default()
+                }],
+                ..info
+            },
+        ] {
+            assert!(matches!(
+                lnd_node_identity(&invalid),
+                Err(Error::InvalidConfig(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn wrong_network_quotes_are_rejected_for_all_bolt11_options() {
+        let fee_reserve = FeeReserve {
+            min_fee_reserve: Amount::ZERO,
+            percent_fee_reserve: 0.0,
+        };
+        for melt_options in [
+            None,
+            Some(MeltOptions::new_amountless(10_000)),
+            Some(MeltOptions::new_mpp(1_000)),
+        ] {
+            let result = Lnd::bolt11_payment_quote(
+                &CurrencyUnit::Sat,
+                payment::Bolt11OutgoingPaymentOptions {
+                    bolt11: invoice_with_amount(Duration::from_secs(unix_time()), Some(10_000)),
+                    max_fee_amount: None,
+                    timeout_secs: None,
+                    melt_options,
+                    quote_id: cdk_common::QuoteId::new(),
+                },
+                &fee_reserve,
+                &Currency::Bitcoin,
+            );
+            assert!(matches!(result, Err(payment::Error::Backend(_))));
+        }
+    }
+
+    #[test]
+    fn local_invoice_rejections_return_authoritative_failure() {
+        let invoice = invoice_with_timestamp(Duration::from_secs(unix_time()));
+        let pubkey = invoice.get_payee_pub_key();
+        let lookup_id = PaymentIdentifier::PaymentHash(*invoice.payment_hash().as_ref());
+        for (network, disallowed_payee) in [
+            (Currency::Bitcoin, None),
+            (Currency::Regtest, Some(&pubkey)),
+        ] {
+            for status in [
+                MeltQuoteState::Unknown,
+                MeltQuoteState::Unpaid,
+                MeltQuoteState::Failed,
+            ] {
+                let pay_state = MakePaymentResponse {
+                    status,
+                    ..outgoing_payment_failure_response(&CurrencyUnit::Msat, lookup_id.clone())
+                };
+                let response = bolt11_pre_dispatch_response(
+                    &CurrencyUnit::Sat,
+                    &invoice,
+                    pay_state,
+                    &network,
+                    disallowed_payee,
+                )
+                .unwrap()
+                .unwrap();
+                assert_eq!(response.status, MeltQuoteState::Failed);
+                assert_eq!(response.payment_lookup_id, lookup_id);
+                assert_eq!(response.total_spent, Amount::new(0, CurrencyUnit::Sat));
+                assert!(response.payment_proof.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn existing_payments_take_precedence_over_local_invoice_rejections() {
+        let invoice = invoice_with_timestamp(Duration::from_secs(unix_time()));
+        let pubkey = invoice.get_payee_pub_key();
+        for status in [MeltQuoteState::Paid, MeltQuoteState::Pending] {
+            let pay_state = MakePaymentResponse {
+                payment_lookup_id: PaymentIdentifier::PaymentHash(*invoice.payment_hash().as_ref()),
+                payment_proof: Some("existing preimage".to_owned()),
+                status,
+                total_spent: Amount::new(1_234, CurrencyUnit::Msat),
+            };
+            let response = bolt11_pre_dispatch_response(
+                &CurrencyUnit::Sat,
+                &invoice,
+                pay_state,
+                &Currency::Bitcoin,
+                Some(&pubkey),
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(response.status, status);
+            assert_eq!(response.total_spent, Amount::new(2, CurrencyUnit::Sat));
+            assert_eq!(response.payment_proof.as_deref(), Some("existing preimage"));
+        }
+    }
+
+    #[test]
+    fn self_payment_check_allows_another_payee() {
+        let invoice = invoice_with_timestamp(Duration::from_secs(unix_time()));
+        let key = SecretKey::from_slice(&[2; 32]).unwrap();
+        let other_pubkey = PublicKey::from_secret_key(&Secp256k1::new(), &key);
+        let pay_state = MakePaymentResponse {
+            status: MeltQuoteState::Unknown,
+            ..outgoing_payment_failure_response(
+                &CurrencyUnit::Msat,
+                PaymentIdentifier::PaymentHash(*invoice.payment_hash().as_ref()),
+            )
+        };
+        assert!(bolt11_pre_dispatch_response(
+            &CurrencyUnit::Sat,
+            &invoice,
+            pay_state,
+            &Currency::Regtest,
+            Some(&other_pubkey),
+        )
+        .unwrap()
+        .is_none());
+    }
+
+    #[test]
     fn expired_invoice_without_active_payment_fails_before_dispatch() {
         let invoice = invoice_with_timestamp(Duration::from_secs(1));
         let payment_lookup_id = PaymentIdentifier::PaymentHash(*invoice.payment_hash().as_ref());
@@ -1346,9 +1591,15 @@ mod tests {
                 status,
                 ..outgoing_payment_failure_response(&CurrencyUnit::Msat, payment_lookup_id.clone())
             };
-            let response = bolt11_pre_dispatch_response(&CurrencyUnit::Sat, &invoice, pay_state)
-                .unwrap()
-                .unwrap();
+            let response = bolt11_pre_dispatch_response(
+                &CurrencyUnit::Sat,
+                &invoice,
+                pay_state,
+                &Currency::Regtest,
+                None,
+            )
+            .unwrap()
+            .unwrap();
 
             assert_eq!(response.status, MeltQuoteState::Failed);
             assert_eq!(response.payment_lookup_id, payment_lookup_id);
@@ -1376,9 +1627,15 @@ mod tests {
                             status,
                             total_spent: Amount::new(total_msat, CurrencyUnit::Msat),
                         };
-                        let response = bolt11_pre_dispatch_response(&unit, &invoice, pay_state)
-                            .unwrap()
-                            .unwrap();
+                        let response = bolt11_pre_dispatch_response(
+                            &unit,
+                            &invoice,
+                            pay_state,
+                            &Currency::Regtest,
+                            None,
+                        )
+                        .unwrap()
+                        .unwrap();
 
                         assert_eq!(response.status, status);
                         assert_eq!(response.payment_lookup_id, payment_lookup_id);
@@ -1404,11 +1661,15 @@ mod tests {
                 status,
                 ..outgoing_payment_failure_response(&CurrencyUnit::Msat, payment_lookup_id.clone())
             };
-            assert!(
-                bolt11_pre_dispatch_response(&CurrencyUnit::Sat, &invoice, pay_state)
-                    .unwrap()
-                    .is_none()
-            );
+            assert!(bolt11_pre_dispatch_response(
+                &CurrencyUnit::Sat,
+                &invoice,
+                pay_state,
+                &Currency::Regtest,
+                None
+            )
+            .unwrap()
+            .is_none());
         }
     }
 
