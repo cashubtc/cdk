@@ -13,7 +13,8 @@ use std::time::{Duration, Instant};
 use std::{fmt, fs};
 
 use async_trait::async_trait;
-use bdk_wallet::bitcoin::{secp256k1::Secp256k1, Network, Psbt};
+use bdk_wallet::bitcoin::secp256k1::Secp256k1;
+use bdk_wallet::bitcoin::{Network, Psbt};
 use bdk_wallet::descriptor::IntoWalletDescriptor;
 use bdk_wallet::keys::bip39::Mnemonic;
 use bdk_wallet::keys::{DerivableKey, ExtendedKey};
