@@ -82,11 +82,7 @@ impl Lnd {
             Some(MeltOptions::Amountless { amountless }) => {
                 let amount_msat = amountless.amount_msat;
 
-                if let Some(invoice_amount) = bolt11_options.bolt11.amount_milli_satoshis() {
-                    if invoice_amount != u64::from(amount_msat) {
-                        return Err(payment::Error::AmountMismatch);
-                    }
-                }
+                bolt11_rpc_amount_msat(&bolt11_options.bolt11, Some(u64::from(amount_msat)))?;
 
                 amount_msat
             }
@@ -241,6 +237,25 @@ impl Lnd {
             settle_index
         );
         Ok((add_index, settle_index))
+    }
+}
+
+/// Validate a full payment's amount and select the amount sent to LND.
+/// LND requires an explicit positive amount only when the invoice omits it.
+fn bolt11_rpc_amount_msat(
+    bolt11: &Bolt11Invoice,
+    requested_amount_msat: Option<u64>,
+) -> Result<u64, payment::Error> {
+    match bolt11.amount_milli_satoshis() {
+        Some(invoice_amount) => {
+            if requested_amount_msat.is_some_and(|amount| amount != invoice_amount) {
+                return Err(payment::Error::AmountMismatch);
+            }
+            Ok(0)
+        }
+        None => requested_amount_msat
+            .filter(|amount| *amount > 0)
+            .ok_or_else(|| Error::UnknownInvoiceAmount.into()),
     }
 }
 
@@ -697,33 +712,27 @@ impl MintPayment for Lnd {
 
                         let max_fee: Option<Amount<CurrencyUnit>> = bolt11_options.max_fee_amount;
 
-                        let amount_msat = match bolt11_options.melt_options {
+                        let requested_amount_msat = match bolt11_options.melt_options {
                             Some(MeltOptions::Amountless { amountless }) => {
-                                let amount_msat = amountless.amount_msat;
-
-                                if let Some(invoice_amount) = bolt11.amount_milli_satoshis() {
-                                    if invoice_amount != u64::from(amount_msat) {
-                                        // Invoice/request amount disagreement is
-                                        // a local validation failure, before any
-                                        // dispatch to LND.
-                                        tracing::warn!(
-                                            payment_lookup_id = %payment_lookup_id,
-                                            invoice_amount_msat = invoice_amount,
-                                            requested_amount_msat = u64::from(amount_msat),
-                                            "LND payment rejected before dispatch: invoice and requested amounts differ",
-                                        );
-                                        return Ok(outgoing_payment_failure_response(
-                                            unit,
-                                            payment_lookup_id,
-                                        ));
-                                    }
-                                }
-
-                                u64::from(amount_msat)
+                                Some(u64::from(amountless.amount_msat))
                             }
-                            Some(MeltOptions::Mpp { mpp }) => u64::from(mpp.amount),
-                            None => 0,
+                            _ => None,
                         };
+                        let amount_msat =
+                            match bolt11_rpc_amount_msat(&bolt11, requested_amount_msat) {
+                                Ok(amount_msat) => amount_msat,
+                                Err(err) => {
+                                    tracing::warn!(
+                                        payment_lookup_id = %payment_lookup_id,
+                                        error = %err,
+                                        "LND payment amount rejected before dispatch",
+                                    );
+                                    return Ok(outgoing_payment_failure_response(
+                                        unit,
+                                        payment_lookup_id,
+                                    ));
+                                }
+                            };
 
                         let fee_limit_msat = match max_fee {
                             Some(fee) => fee.convert_to(&CurrencyUnit::Msat)?.value() as i64,
@@ -1089,6 +1098,80 @@ mod tests {
                     assert_eq!(quote.amount, Amount::new(expected, unit.clone()));
                 }
             }
+        }
+    }
+
+    #[test]
+    fn amountless_invoice_requires_a_positive_rpc_amount() {
+        let invoice = invoice_with_amount(Duration::from_secs(unix_time()), None);
+        for amount in [None, Some(0)] {
+            assert!(bolt11_rpc_amount_msat(&invoice, amount).is_err());
+        }
+        assert_eq!(bolt11_rpc_amount_msat(&invoice, Some(1)).unwrap(), 1);
+        assert_eq!(
+            bolt11_rpc_amount_msat(&invoice, Some(10_000)).unwrap(),
+            10_000
+        );
+    }
+
+    #[test]
+    fn invoice_amount_is_not_repeated_in_rpc_request() {
+        let invoice = invoice_with_amount(Duration::from_secs(unix_time()), Some(10_000));
+        for amount in [None, Some(10_000)] {
+            assert_eq!(bolt11_rpc_amount_msat(&invoice, amount).unwrap(), 0);
+        }
+        for amount in [0, 9_999, 10_001] {
+            assert!(matches!(
+                bolt11_rpc_amount_msat(&invoice, Some(amount)),
+                Err(payment::Error::AmountMismatch),
+            ));
+        }
+    }
+
+    #[test]
+    fn amountless_quotes_reject_zero_and_mismatched_amounts() {
+        let fee_reserve = FeeReserve {
+            min_fee_reserve: Amount::ZERO,
+            percent_fee_reserve: 0.0,
+        };
+        for (invoice_amount, requested_amount) in
+            [(None, 0), (Some(10_000), 0), (Some(10_000), 9_999)]
+        {
+            let result = Lnd::bolt11_payment_quote(
+                &CurrencyUnit::Sat,
+                payment::Bolt11OutgoingPaymentOptions {
+                    bolt11: invoice_with_amount(Duration::from_secs(unix_time()), invoice_amount),
+                    max_fee_amount: None,
+                    timeout_secs: None,
+                    melt_options: Some(MeltOptions::new_amountless(requested_amount)),
+                    quote_id: cdk_common::QuoteId::new(),
+                },
+                &fee_reserve,
+            );
+            assert!(result.is_err());
+        }
+    }
+
+    #[test]
+    fn matching_amountless_option_preserves_quote_principal() {
+        let fee_reserve = FeeReserve {
+            min_fee_reserve: Amount::ZERO,
+            percent_fee_reserve: 0.0,
+        };
+        for invoice_amount in [None, Some(10_000)] {
+            let quote = Lnd::bolt11_payment_quote(
+                &CurrencyUnit::Sat,
+                payment::Bolt11OutgoingPaymentOptions {
+                    bolt11: invoice_with_amount(Duration::from_secs(unix_time()), invoice_amount),
+                    max_fee_amount: None,
+                    timeout_secs: None,
+                    melt_options: Some(MeltOptions::new_amountless(10_000)),
+                    quote_id: cdk_common::QuoteId::new(),
+                },
+                &fee_reserve,
+            )
+            .unwrap();
+            assert_eq!(quote.amount, Amount::new(10, CurrencyUnit::Sat));
         }
     }
 

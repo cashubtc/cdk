@@ -117,6 +117,57 @@ async fn test_lnd_self_payment() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_lnd_rejects_invalid_amounts_before_dispatch() {
+    let ln_client = init_lnd_client(&get_temp_dir()).await;
+    let backend = create_lnd_backend(&ln_client).await.unwrap();
+
+    for (invoice_amount, melt_options) in [
+        (0, None),
+        (0, Some(MeltOptions::new_amountless(0))),
+        (10_000, Some(MeltOptions::new_amountless(9_999))),
+    ] {
+        let invoice = backend
+            .create_incoming_payment_request(IncomingPaymentOptions::Bolt11(
+                Bolt11IncomingPaymentOptions {
+                    amount: Amount::new(invoice_amount, CurrencyUnit::Msat),
+                    ..Default::default()
+                },
+            ))
+            .await
+            .unwrap();
+        let payment = timeout(
+            Duration::from_secs(10),
+            backend.make_payment(
+                &CurrencyUnit::Sat,
+                OutgoingPaymentOptions::Bolt11(Box::new(Bolt11OutgoingPaymentOptions {
+                    bolt11: invoice.request.parse().unwrap(),
+                    max_fee_amount: None,
+                    timeout_secs: Some(10),
+                    melt_options,
+                    quote_id: uuid::Uuid::new_v4().into(),
+                })),
+            ),
+        )
+        .await
+        .expect("invalid amount rejection timed out")
+        .expect("invalid amount should return an authoritative failure");
+
+        assert_eq!(payment.status, MeltQuoteState::Failed);
+        assert_eq!(payment.payment_lookup_id, invoice.request_lookup_id);
+        assert_eq!(payment.total_spent, Amount::new(0, CurrencyUnit::Sat));
+        assert!(payment.payment_proof.is_none());
+        assert_eq!(
+            backend
+                .check_outgoing_payment(&invoice.request_lookup_id)
+                .await
+                .unwrap()
+                .status,
+            MeltQuoteState::Unknown,
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_internal_payment() {
     let ln_client = get_test_client().await;
 
