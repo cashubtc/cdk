@@ -125,6 +125,9 @@ async fn test_lnd_rejects_invalid_amounts_before_dispatch() {
         (0, None),
         (0, Some(MeltOptions::new_amountless(0))),
         (10_000, Some(MeltOptions::new_amountless(9_999))),
+        (0, Some(MeltOptions::new_mpp(1))),
+        (10_000, Some(MeltOptions::new_mpp(0))),
+        (10_000, Some(MeltOptions::new_mpp(10_001))),
     ] {
         let invoice = backend
             .create_incoming_payment_request(IncomingPaymentOptions::Bolt11(
