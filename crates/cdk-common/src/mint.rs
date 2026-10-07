@@ -889,8 +889,9 @@ impl Issuance {
 
 /// NUT-XX transaction record, keyed by transaction digest.
 ///
-/// `excess` is `amount_in - fee - sum(outputs) - melt.amount`, fixed at
-/// acceptance; the change returned on settlement is `excess - melt_fee_paid`.
+/// `excess` is `amount_in - fee - sum(outputs) - sum(fixed change) - melt.amount`,
+/// fixed at acceptance; the remainder quote's amount on settlement is
+/// `excess - melt_fee_paid`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransactionRecord {
     /// Transaction digest, lowercase hex
@@ -903,12 +904,12 @@ pub struct TransactionRecord {
     pub melt_quote_id: Option<QuoteId>,
     /// Mint quote inputs and the amount issued against each
     pub quote_inputs: Vec<(QuoteId, cashu::Amount)>,
-    /// Change quote lock key
-    pub change_pubkey: Option<cashu::PublicKey>,
-    /// Inputs less fee, outputs and melt amount; the fee reserve is inside it
+    /// Change quote lock keys with their fixed amount, `None` on the remainder quote
+    pub change_outputs: Vec<(cashu::PublicKey, Option<cashu::Amount>)>,
+    /// Inputs less fee, outputs, fixed change and melt amount; the fee reserve is inside it
     pub excess: cashu::Amount,
-    /// Change quote created on settlement
-    pub change_quote_id: Option<QuoteId>,
+    /// Change quotes created on settlement, one per change output, `None` if not created
+    pub change_quote_ids: Vec<Option<QuoteId>>,
     /// Saga or operation id the transaction runs under
     pub operation_id: Uuid,
     /// Unix time the transaction was accepted

@@ -1,7 +1,7 @@
 //! NUT-XX: Transactions
 //!
 //! One endpoint carrying any NUT-10 transaction: proofs and paid mint quotes in;
-//! blinded messages, one melt quote and a change quote out.
+//! blinded messages, one melt quote and change quotes out.
 
 use core::fmt;
 use std::str::FromStr;
@@ -47,6 +47,16 @@ pub struct TransactionMeltOutput {
     pub fee_index: Option<u32>,
 }
 
+/// A change quote created by a transaction
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransactionChangeOutput {
+    /// Lock key of the change quote, a 33-byte compressed secp256k1 key
+    pub pubkey: String,
+    /// Fixed amount; omitted on the remainder quote, which takes the balance
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount: Option<Amount>,
+}
+
 /// `POST /v1/transaction` request
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct TransactionRequest {
@@ -62,9 +72,9 @@ pub struct TransactionRequest {
     /// At most one melt quote
     #[serde(default)]
     pub melt_quote_outputs: Vec<TransactionMeltOutput>,
-    /// Lock key of the change quote, a 33-byte compressed secp256k1 key
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub change_pubkey: Option<String>,
+    /// Change quotes to create, at most one without an amount
+    #[serde(default)]
+    pub change_quote_outputs: Vec<TransactionChangeOutput>,
     /// Return once the inputs are reserved rather than waiting for the melt
     #[serde(default)]
     pub prefer_async: bool,
@@ -87,7 +97,7 @@ impl super::nut10::SpendingConditionVerification for TransactionRequest {
 pub enum TransactionState {
     /// A melt payment is in flight
     Pending,
-    /// Settled: outputs signed, quotes issued, change quote created
+    /// Settled: outputs signed, quotes issued, change quotes created
     Paid,
     /// The payment failed and the inputs were released
     Failed,
@@ -122,10 +132,17 @@ mod tests {
 
     #[test]
     fn request_arrays_default_to_empty() {
-        let request: TransactionRequest =
-            serde_json::from_str(r#"{"change_pubkey":"02aa"}"#).unwrap();
+        let request: TransactionRequest = serde_json::from_str(
+            r#"{"change_quote_outputs":[{"pubkey":"02aa","amount":3},{"pubkey":"02bb"}]}"#,
+        )
+        .unwrap();
         assert!(request.proof_inputs.is_empty() && request.melt_quote_outputs.is_empty());
-        assert_eq!(request.change_pubkey.as_deref(), Some("02aa"));
+        assert_eq!(
+            request.change_quote_outputs[0].amount,
+            Some(Amount::from(3))
+        );
+        assert_eq!(request.change_quote_outputs[1].pubkey, "02bb");
+        assert_eq!(request.change_quote_outputs[1].amount, None);
         assert!(!request.prefer_async);
         assert_eq!(
             serde_json::to_string(&TransactionState::Pending).unwrap(),

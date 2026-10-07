@@ -37,6 +37,15 @@ pub struct MintQuoteInput {
     pub pubkey: PublicKey,
 }
 
+/// Change quote output bound by a transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChangeOutput {
+    /// Fixed amount, or `None` for the remainder quote that takes the balance.
+    pub amount: Option<Amount>,
+    /// Lock key of the change quote.
+    pub pubkey: bitcoin::secp256k1::PublicKey,
+}
+
 /// Canonical transaction transcript and its input records.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Transaction {
@@ -54,19 +63,21 @@ impl Transaction {
         outputs: &[BlindedMessage],
         melt_quotes: &[Quote],
     ) -> Result<Self, Error> {
-        Self::with_change(proofs, mint_quotes, outputs, melt_quotes, None)
+        Self::with_change(proofs, mint_quotes, outputs, melt_quotes, &[])
     }
 
-    /// [`Transaction::new`] with a change quote output locked to `change_pubkey`.
+    /// [`Transaction::new`] with change quote outputs, at most one of them the remainder.
     pub fn with_change(
         proofs: &[Proof],
         mint_quotes: &[MintQuoteInput],
         outputs: &[BlindedMessage],
         melt_quotes: &[Quote],
-        change_pubkey: Option<&bitcoin::secp256k1::PublicKey>,
+        change: &[ChangeOutput],
     ) -> Result<Self, Error> {
         if (proofs.is_empty() && mint_quotes.is_empty())
-            || (outputs.is_empty() && melt_quotes.is_empty() && change_pubkey.is_none())
+            || (outputs.is_empty() && melt_quotes.is_empty() && change.is_empty())
+            || change.iter().filter(|c| c.amount.is_none()).count() > 1
+            || change.iter().any(|c| c.amount == Some(Amount::ZERO))
         {
             return Err(Error::InvalidTransaction);
         }
@@ -131,8 +142,14 @@ impl Transaction {
                 ],
             )?);
         }
-        if let Some(key) = change_pubkey {
-            transcript.extend(container(CHANGE_QUOTE_OUTPUT, &[key.serialize().to_vec()])?);
+        for output in change {
+            // The amount record is omitted entirely on the remainder quote.
+            let mut body = vec![];
+            if let Some(amount) = output.amount {
+                record(&mut body, 1, &integer(u64::from(amount)))?;
+            }
+            record(&mut body, 2, &output.pubkey.serialize())?;
+            record(&mut transcript, CHANGE_QUOTE_OUTPUT, &body)?;
         }
         Ok(Self::from_parts(transcript, inputs))
     }
@@ -148,21 +165,39 @@ impl Transaction {
         let mut ys = HashSet::new();
         let mut quotes = HashSet::new();
         let mut output = false;
+        let mut remainder = false;
         for (tag, value, full) in records {
-            // A transaction has at most one change quote, so its container may not repeat.
-            if tag < last
-                || !matches!(tag >> 4, 1 | 2)
-                || (tag == CHANGE_QUOTE_OUTPUT && last == CHANGE_QUOTE_OUTPUT)
-            {
+            if tag < last || !matches!(tag >> 4, 1 | 2) {
                 return Err(Error::InvalidTransaction);
             }
             last = tag;
             let fields = parse_records(value)?;
+            if tag == CHANGE_QUOTE_OUTPUT {
+                // `01 amount, 02 lock key`, or `02 lock key` alone on the remainder quote.
+                let key = match fields.as_slice() {
+                    [(2, key, _)] if !remainder => {
+                        remainder = true;
+                        key
+                    }
+                    [(1, amount, _), (2, key, _)]
+                        if !amount.is_empty() && amount.len() <= 8 && amount[0] != 0 =>
+                    {
+                        key
+                    }
+                    _ => return Err(Error::InvalidTransaction),
+                };
+                let key = crate::nuts::PublicKey::from_slice(key)
+                    .map_err(|_| Error::InvalidTransaction)?;
+                if !matches!(key, crate::nuts::PublicKey::Secp256k1(_)) {
+                    return Err(Error::InvalidTransaction);
+                }
+                output = true;
+                continue;
+            }
             let count = match tag {
                 PROOF_INPUT => 4,
                 MELT_QUOTE_OUTPUT => 2,
                 MINT_QUOTE_INPUT | BLINDED_OUTPUT => 3,
-                CHANGE_QUOTE_OUTPUT => 1,
                 _ => return Err(Error::InvalidTransaction),
             };
             if fields.len() != count
@@ -172,15 +207,6 @@ impl Transaction {
                     .any(|(i, (tag, _, _))| usize::from(*tag) != i + 1)
             {
                 return Err(Error::InvalidTransaction);
-            }
-            if tag == 6 {
-                let key = crate::nuts::PublicKey::from_slice(fields[0].1)
-                    .map_err(|_| Error::InvalidTransaction)?;
-                if !matches!(key, crate::nuts::PublicKey::Secp256k1(_)) {
-                    return Err(Error::InvalidTransaction);
-                }
-                output = true;
-                continue;
             }
             let amount = fields[0].1;
             if amount.len() > 8 || amount.first() == Some(&0) {
