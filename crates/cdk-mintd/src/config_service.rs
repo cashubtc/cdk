@@ -425,9 +425,18 @@ pub(crate) fn require_existing_bdk_wallet(
             Ok(_) => {}
         }
     }
-    bdk.validate_existing_wallet(work_dir)
-        .map_err(ConfigurationServiceError::BdkWalletPreflight)?;
-    Ok(BdkWalletPolicy::RequireExisting)
+    match bdk.validate_existing_wallet(work_dir) {
+        Ok(()) => Ok(BdkWalletPolicy::RequireExisting),
+        // Loading a fresh BDK wallet creates the SQLite schema before the
+        // initial chain-tip request. Retain the explicit creation permission
+        // when that request failed and left an uninitialized database.
+        Err(cdk_bdk::Error::ExistingWalletNotInitialized { .. })
+            if bdk_wallet_policy == BdkWalletPolicy::AllowNew && wallet_path.is_file() =>
+        {
+            Ok(BdkWalletPolicy::AllowNew)
+        }
+        Err(error) => Err(ConfigurationServiceError::BdkWalletPreflight(error)),
+    }
 }
 
 #[cfg(not(feature = "bdk"))]
@@ -828,6 +837,139 @@ mod tests {
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
     const TEST_MNEMONIC_TWO: &str =
         "legal winner thank year wave sausage worth useful legal winner thank yellow";
+
+    #[cfg(all(feature = "sqlite", feature = "bdk"))]
+    #[tokio::test]
+    async fn bdk_preflight_retries_uninitialized_wallet_only_with_creation_permission() {
+        let work_dir = crate::test_utils::unique_temp_path("bdk_failed_initialization");
+        let wallet_path = work_dir.join("bdk_wallet/bdk_wallet.sqlite");
+        let mut settings = Settings {
+            bdk: Some(crate::config::Bdk {
+                mnemonic: Some(TEST_MNEMONIC_ONE.to_string()),
+                network: Some("regtest".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let kv = Arc::new(memory::empty().await.expect("in-memory database"));
+        let create_backend = |chain_source| {
+            cdk_bdk::CdkBdk::new(
+                bip39::Mnemonic::parse(TEST_MNEMONIC_ONE).expect("mnemonic"),
+                bitcoin::Network::Regtest,
+                chain_source,
+                work_dir.to_string_lossy().into_owned(),
+                cdk::types::FeeReserve {
+                    min_fee_reserve: cdk::Amount::new(1, cdk_common::CurrencyUnit::Sat).into(),
+                    percent_fee_reserve: 0.02,
+                },
+                kv.clone(),
+                None,
+                1,
+                0,
+                546,
+                60,
+                None,
+                None,
+            )
+        };
+        // Reserve a local port without listening so RPC reliably fails.
+        let socket = tokio::net::TcpSocket::new_v4().expect("RPC socket");
+        socket
+            .bind("127.0.0.1:0".parse().expect("RPC address"))
+            .expect("reserve RPC port");
+        let port = socket.local_addr().expect("RPC address").port();
+        let rpc = cdk_bdk::ChainSource::BitcoinRpc(cdk_bdk::BitcoinRpcConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            user: "user".to_string(),
+            password: "password".to_string(),
+            wallet_rescan_from_height: None,
+        });
+        for _ in 0..2 {
+            assert_eq!(
+                require_existing_bdk_wallet(&settings, &work_dir, BdkWalletPolicy::AllowNew)
+                    .expect("creation permission survives failed startup"),
+                BdkWalletPolicy::AllowNew
+            );
+            assert!(matches!(
+                create_backend(rpc.clone()),
+                Err(cdk_bdk::Error::ChainTipFetchFailed { .. })
+            ));
+            assert!(wallet_path.is_file());
+            assert!(matches!(
+                require_existing_bdk_wallet(&settings, &work_dir, BdkWalletPolicy::RequireExisting),
+                Err(ConfigurationServiceError::BdkWalletPreflight(
+                    cdk_bdk::Error::ExistingWalletNotInitialized { .. }
+                ))
+            ));
+        }
+
+        // Esplora initialization needs no live node, allowing us to verify that
+        // the leftover database can become a valid persisted wallet.
+        drop(
+            create_backend(cdk_bdk::ChainSource::Esplora(cdk_bdk::EsploraConfig {
+                url: "http://127.0.0.1:1".to_string(),
+                parallel_requests: 1,
+            }))
+            .expect("initialize leftover database"),
+        );
+        for policy in [BdkWalletPolicy::AllowNew, BdkWalletPolicy::RequireExisting] {
+            assert_eq!(
+                require_existing_bdk_wallet(&settings, &work_dir, policy)
+                    .expect("initialized wallet passes preflight"),
+                BdkWalletPolicy::RequireExisting
+            );
+        }
+        settings.bdk.as_mut().expect("BDK settings").mnemonic = Some(TEST_MNEMONIC_TWO.to_string());
+        assert!(matches!(
+            require_existing_bdk_wallet(&settings, &work_dir, BdkWalletPolicy::AllowNew),
+            Err(ConfigurationServiceError::BdkWalletPreflight(
+                cdk_bdk::Error::Wallet(_)
+            ))
+        ));
+        let bdk = settings.bdk.as_mut().expect("BDK settings");
+        bdk.mnemonic = Some(TEST_MNEMONIC_ONE.to_string());
+        bdk.network = Some("signet".to_string());
+        assert!(matches!(
+            require_existing_bdk_wallet(&settings, &work_dir, BdkWalletPolicy::AllowNew),
+            Err(ConfigurationServiceError::BdkWalletPreflight(
+                cdk_bdk::Error::Wallet(_)
+            ))
+        ));
+        std::fs::remove_dir_all(&work_dir).expect("remove test wallet");
+    }
+
+    #[cfg(feature = "bdk")]
+    #[test]
+    fn bdk_creation_permission_rejects_invalid_wallet_paths_and_databases() {
+        let work_dir = crate::test_utils::unique_temp_path("bdk_invalid_wallet");
+        let wallet_path = work_dir.join("bdk_wallet/bdk_wallet.sqlite");
+        let settings = Settings {
+            bdk: Some(crate::config::Bdk {
+                mnemonic: Some(TEST_MNEMONIC_ONE.to_string()),
+                network: Some("regtest".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        std::fs::create_dir_all(&wallet_path).expect("create invalid wallet directory");
+        assert!(
+            require_existing_bdk_wallet(&settings, &work_dir, BdkWalletPolicy::AllowNew).is_err()
+        );
+        std::fs::remove_dir(&wallet_path).expect("remove invalid wallet directory");
+        std::fs::write(&wallet_path, b"not a SQLite database").expect("write invalid database");
+        assert!(
+            require_existing_bdk_wallet(&settings, &work_dir, BdkWalletPolicy::AllowNew).is_err()
+        );
+        std::fs::write(&wallet_path, []).expect("write empty database");
+        assert_eq!(
+            require_existing_bdk_wallet(&settings, &work_dir, BdkWalletPolicy::AllowNew)
+                .expect("empty database permits initialization"),
+            BdkWalletPolicy::AllowNew
+        );
+        assert_eq!(std::fs::metadata(&wallet_path).expect("metadata").len(), 0);
+        std::fs::remove_dir_all(&work_dir).expect("remove test wallet");
+    }
 
     #[cfg(feature = "fakewallet")]
     fn document(secret_reference: &str, name: &str) -> String {
