@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 
 use super::leaf::integer;
 use super::{parse_secret, tagged_hash, Error};
-use crate::nuts::{BlindedMessage, KeySetVersion, Proof};
+use crate::nuts::{BlindedMessage, KeySetVersion, Proof, PublicKey};
 use crate::Amount;
 
 // Container types: the high nibble is the section, 0x1n inputs, 0x2n outputs, 0xFn never in a
@@ -24,6 +24,17 @@ pub struct Quote {
     pub id: String,
 }
 
+/// A mint quote input: the amount issued, the quote id and the key the quote is locked to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MintQuoteInput {
+    /// Amount this transaction issues against the quote.
+    pub amount: Amount,
+    /// Quote identifier exactly as supplied by the mint.
+    pub id: String,
+    /// The quote's lock key (NUT-04 `pubkey`), committed so a signer can tell which key the input needs.
+    pub pubkey: PublicKey,
+}
+
 /// Canonical transaction transcript and its input records.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Transaction {
@@ -37,7 +48,7 @@ impl Transaction {
     /// Quote amounts must be resolved from trusted quote state by the caller.
     pub fn new(
         proofs: &[Proof],
-        mint_quotes: &[Quote],
+        mint_quotes: &[MintQuoteInput],
         outputs: &[BlindedMessage],
         melt_quotes: &[Quote],
     ) -> Result<Self, Error> {
@@ -74,7 +85,7 @@ impl Transaction {
         }
         let mut ids = HashSet::new();
         for quote in mint_quotes {
-            if !ids.insert(&quote.id) {
+            if !ids.insert(&quote.id) || quote.pubkey.as_secp256k1().is_err() {
                 return Err(Error::InvalidTransaction);
             }
             let record = container(
@@ -82,6 +93,7 @@ impl Transaction {
                 &[
                     integer(u64::from(quote.amount)),
                     quote.id.as_bytes().to_vec(),
+                    quote.pubkey.to_bytes(),
                 ],
             )?;
             transcript.extend_from_slice(&record);
@@ -128,8 +140,8 @@ impl Transaction {
             let fields = parse_records(value)?;
             let count = match tag {
                 PROOF_INPUT => 4,
-                MINT_QUOTE_INPUT | MELT_QUOTE_OUTPUT => 2,
-                BLINDED_OUTPUT => 3,
+                MELT_QUOTE_OUTPUT => 2,
+                MINT_QUOTE_INPUT | BLINDED_OUTPUT => 3,
                 _ => return Err(Error::InvalidTransaction),
             };
             if fields.len() != count
@@ -167,7 +179,13 @@ impl Transaction {
                 }
                 MINT_QUOTE_INPUT | MELT_QUOTE_OUTPUT => {
                     std::str::from_utf8(fields[1].1).map_err(|_| Error::InvalidTransaction)?;
-                    if tag == MINT_QUOTE_INPUT && !quotes.insert(fields[1].1) {
+                    if tag == MINT_QUOTE_INPUT
+                        && (!quotes.insert(fields[1].1)
+                            || PublicKey::from_slice(fields[2].1)
+                                .map_err(|_| Error::InvalidTransaction)?
+                                .as_secp256k1()
+                                .is_err())
+                    {
                         return Err(Error::InvalidTransaction);
                     }
                 }

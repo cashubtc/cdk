@@ -404,11 +404,18 @@ pub(crate) fn sign_quote(
         .ok_or(Error::UnknownQuote)?;
     let quotes: Vec<_> = quotes
         .iter()
-        .map(|quote| nutroot::Quote {
-            id: quote.id.clone(),
-            amount: quote.amount.unwrap_or(crate::Amount::ZERO),
+        .map(|quote| {
+            Ok(nutroot::MintQuoteInput {
+                id: quote.id.clone(),
+                amount: quote.amount.unwrap_or(crate::Amount::ZERO),
+                pubkey: quote
+                    .secret_key
+                    .as_ref()
+                    .ok_or(Error::SignatureMissingOrInvalid)?
+                    .public_key(),
+            })
         })
-        .collect();
+        .collect::<Result<_, Error>>()?;
     let transaction = Transaction::new(&[], &quotes, outputs, &[]).map_err(error)?;
     nutroot::Witness::key_path(
         key.as_secp256k1()?,
