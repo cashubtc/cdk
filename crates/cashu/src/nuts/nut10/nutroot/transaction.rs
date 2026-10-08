@@ -4,8 +4,16 @@ use sha2::{Digest, Sha256};
 
 use super::leaf::integer;
 use super::{parse_secret, tagged_hash, Error};
-use crate::nuts::{BlindedMessage, KeySetVersion, Proof};
+use crate::nuts::{BlindedMessage, KeySetVersion, Proof, PublicKey};
 use crate::Amount;
+
+// Container types: the high nibble is the section, 0x1n inputs, 0x2n outputs, 0xFn never in a
+// transaction, so ascending order keeps inputs ahead of outputs (NUT-10).
+const PROOF_INPUT: u8 = 0x11;
+const MINT_QUOTE_INPUT: u8 = 0x12;
+const BLINDED_OUTPUT: u8 = 0x21;
+const MELT_QUOTE_OUTPUT: u8 = 0x22;
+const AUTHORIZED_REQUEST: u8 = 0xf1;
 
 /// Quote identity and amount bound by a transaction.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14,6 +22,17 @@ pub struct Quote {
     pub amount: Amount,
     /// Quote identifier exactly as supplied by the mint.
     pub id: String,
+}
+
+/// A mint quote input: the amount issued, the quote id and the key the quote is locked to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MintQuoteInput {
+    /// Amount this transaction issues against the quote.
+    pub amount: Amount,
+    /// Quote identifier exactly as supplied by the mint.
+    pub id: String,
+    /// The quote's lock key (NUT-04 `pubkey`), committed so a signer can tell which key the input needs.
+    pub pubkey: PublicKey,
 }
 
 /// Canonical transaction transcript and its input records.
@@ -29,7 +48,7 @@ impl Transaction {
     /// Quote amounts must be resolved from trusted quote state by the caller.
     pub fn new(
         proofs: &[Proof],
-        mint_quotes: &[Quote],
+        mint_quotes: &[MintQuoteInput],
         outputs: &[BlindedMessage],
         melt_quotes: &[Quote],
     ) -> Result<Self, Error> {
@@ -60,20 +79,21 @@ impl Transaction {
                 y,
                 proof.c.to_bytes(),
             ];
-            let record = container(1, &fields)?;
+            let record = container(PROOF_INPUT, &fields)?;
             transcript.extend_from_slice(&record);
             inputs.push(record);
         }
         let mut ids = HashSet::new();
         for quote in mint_quotes {
-            if !ids.insert(&quote.id) {
+            if !ids.insert(&quote.id) || quote.pubkey.as_secp256k1().is_err() {
                 return Err(Error::InvalidTransaction);
             }
             let record = container(
-                2,
+                MINT_QUOTE_INPUT,
                 &[
                     integer(u64::from(quote.amount)),
                     quote.id.as_bytes().to_vec(),
+                    quote.pubkey.to_bytes(),
                 ],
             )?;
             transcript.extend_from_slice(&record);
@@ -81,7 +101,7 @@ impl Transaction {
         }
         for output in outputs {
             transcript.extend(container(
-                3,
+                BLINDED_OUTPUT,
                 &[
                     integer(u64::from(output.amount)),
                     output.keyset_id.to_bytes(),
@@ -91,7 +111,7 @@ impl Transaction {
         }
         for quote in melt_quotes {
             transcript.extend(container(
-                4,
+                MELT_QUOTE_OUTPUT,
                 &[
                     integer(u64::from(quote.amount)),
                     quote.id.as_bytes().to_vec(),
@@ -113,15 +133,16 @@ impl Transaction {
         let mut quotes = HashSet::new();
         let mut output = false;
         for (tag, value, full) in records {
-            if tag < last || !(1..=4).contains(&tag) {
+            if tag < last || !matches!(tag >> 4, 1 | 2) {
                 return Err(Error::InvalidTransaction);
             }
             last = tag;
             let fields = parse_records(value)?;
             let count = match tag {
-                1 => 4,
-                2 | 4 => 2,
-                _ => 3,
+                PROOF_INPUT => 4,
+                MELT_QUOTE_OUTPUT => 2,
+                MINT_QUOTE_INPUT | BLINDED_OUTPUT => 3,
+                _ => return Err(Error::InvalidTransaction),
             };
             if fields.len() != count
                 || fields
@@ -136,7 +157,7 @@ impl Transaction {
                 return Err(Error::InvalidTransaction);
             }
             match tag {
-                1 | 3 => {
+                PROOF_INPUT | BLINDED_OUTPUT => {
                     let id = crate::nuts::Id::from_bytes(fields[1].1)
                         .map_err(|_| Error::InvalidTransaction)?;
                     for (_, point, _) in &fields[2..] {
@@ -152,19 +173,25 @@ impl Transaction {
                             return Err(Error::InvalidTransaction);
                         }
                     }
-                    if tag == 1 && !ys.insert(fields[2].1) {
+                    if tag == PROOF_INPUT && !ys.insert(fields[2].1) {
                         return Err(Error::InvalidTransaction);
                     }
                 }
-                2 | 4 => {
+                MINT_QUOTE_INPUT | MELT_QUOTE_OUTPUT => {
                     std::str::from_utf8(fields[1].1).map_err(|_| Error::InvalidTransaction)?;
-                    if tag == 2 && !quotes.insert(fields[1].1) {
+                    if tag == MINT_QUOTE_INPUT
+                        && (!quotes.insert(fields[1].1)
+                            || PublicKey::from_slice(fields[2].1)
+                                .map_err(|_| Error::InvalidTransaction)?
+                                .as_secp256k1()
+                                .is_err())
+                    {
                         return Err(Error::InvalidTransaction);
                     }
                 }
                 _ => return Err(Error::InvalidTransaction),
             }
-            if tag <= 2 {
+            if tag >> 4 == 1 {
                 inputs.push(full.to_vec());
             } else {
                 output = true;
@@ -188,7 +215,7 @@ impl Transaction {
     /// Find the digest of a held proof's exact input record in this transcript.
     pub fn proof_digest(&self, proof: &Proof) -> Result<[u8; 32], Error> {
         let record = container(
-            1,
+            PROOF_INPUT,
             &[
                 integer(u64::from(proof.amount)),
                 proof.keyset_id.to_bytes(),
@@ -274,7 +301,7 @@ pub fn authorized_request_digest(
         return Err(Error::InvalidTransaction);
     }
     let bytes = container(
-        5,
+        AUTHORIZED_REQUEST,
         &[
             method.as_bytes().to_vec(),
             target.as_bytes().to_vec(),
