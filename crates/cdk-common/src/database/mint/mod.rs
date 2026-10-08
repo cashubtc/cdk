@@ -376,6 +376,39 @@ pub trait QuotesTransaction {
         &mut self,
         request_lookup_id: &PaymentIdentifier,
     ) -> Result<Option<Acquired<MintMintQuote>>, Self::Err>;
+
+    /// Reverse an issuance recorded against a mint quote (a failed NUT-XX transaction).
+    ///
+    /// Requires an [`Acquired`] quote; `amount` must not exceed what is issued.
+    async fn remove_mint_quote_issuance(
+        &mut self,
+        quote: &mut Acquired<MintMintQuote>,
+        amount: Amount,
+    ) -> Result<(), Self::Err>;
+
+    /// Insert a NUT-XX transaction record, replacing a `FAILED` one with the same digest.
+    /// Returns a duplicate error if a pending or paid record already exists.
+    async fn add_transaction(&mut self, record: &mint::TransactionRecord) -> Result<(), Self::Err>;
+
+    /// Get a NUT-XX transaction record by digest and lock it.
+    async fn get_transaction(
+        &mut self,
+        digest: &str,
+    ) -> Result<Option<Acquired<mint::TransactionRecord>>, Self::Err>;
+
+    /// Get the pending NUT-XX transaction paying a melt quote, if any, and lock it.
+    async fn get_transaction_by_melt_quote(
+        &mut self,
+        quote_id: &QuoteId,
+    ) -> Result<Option<Acquired<mint::TransactionRecord>>, Self::Err>;
+
+    /// Set a NUT-XX transaction's state and change quotes.
+    async fn update_transaction(
+        &mut self,
+        record: &mut Acquired<mint::TransactionRecord>,
+        state: crate::nuts::TransactionState,
+        change_quote_ids: Vec<Option<QuoteId>>,
+    ) -> Result<(), Self::Err>;
 }
 
 /// Mint Quote Database trait
@@ -425,6 +458,11 @@ pub trait QuotesDatabase {
     ) -> Result<Option<mint::MeltQuote>, Self::Err>;
     /// Get all [`mint::MeltQuote`]s
     async fn get_melt_quotes(&self) -> Result<Vec<mint::MeltQuote>, Self::Err>;
+    /// Get a NUT-XX transaction record by digest
+    async fn get_transaction(
+        &self,
+        digest: &str,
+    ) -> Result<Option<mint::TransactionRecord>, Self::Err>;
 }
 
 /// Mint Proof Transaction trait

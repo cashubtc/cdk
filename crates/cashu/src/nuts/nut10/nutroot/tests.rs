@@ -766,3 +766,172 @@ fn receipt_indexes_preserve_duplicate_and_distinct_transcript_checks() {
         assert!(receipt.verify(&keysets, &states, 0).is_err());
     }
 }
+
+/// The transcript section of the vectors shared with cashu-ts and nutshell.
+#[test]
+fn shared_transcript_vectors() {
+    use std::str::FromStr;
+    let shared: Value = serde_json::from_str(include_str!("nutroot_v3_vectors.json")).unwrap();
+    let cases = shared["transcript"].as_object().unwrap();
+    let proof = |v: &Value| crate::Proof {
+        amount: v["amount"].as_u64().unwrap().into(),
+        keyset_id: crate::nuts::Id::from_str(v["keyset_id"].as_str().unwrap()).unwrap(),
+        secret: crate::secret::Secret::from_str(v["secret"].as_str().unwrap()).unwrap(),
+        c: crate::nuts::PublicKey::from_hex(v["C"].as_str().unwrap()).unwrap(),
+        witness: None,
+        dleq: None,
+        p2pk_e: None,
+        spend_info: None,
+    };
+    let quote = |v: &Value| Quote {
+        amount: v["amount"].as_u64().unwrap().into(),
+        id: v["quote_id"].as_str().unwrap().to_owned(),
+    };
+    let mint_quote = |v: &Value| MintQuoteInput {
+        amount: v["amount"].as_u64().unwrap().into(),
+        id: v["quote_id"].as_str().unwrap().to_owned(),
+        pubkey: crate::nuts::PublicKey::from_hex(v["lock_pubkey"].as_str().unwrap()).unwrap(),
+    };
+    let output = |v: &Value| crate::BlindedMessage {
+        amount: v["amount"].as_u64().unwrap().into(),
+        keyset_id: crate::nuts::Id::from_str(v["keyset_id"].as_str().unwrap()).unwrap(),
+        blinded_secret: crate::nuts::PublicKey::from_hex(v["B_"].as_str().unwrap()).unwrap(),
+        witness: None,
+    };
+    let list = |v: &Value| v.as_array().cloned().unwrap_or_default();
+    let mut checked = 0;
+    for (name, case) in cases {
+        if name == "comment" {
+            continue;
+        }
+        let tx = &case["tx"];
+        let proofs: Vec<_> = list(&tx["proof_inputs"]).iter().map(proof).collect();
+        let mint_quotes: Vec<_> = list(&tx["mint_quote_inputs"])
+            .iter()
+            .map(mint_quote)
+            .collect();
+        let outputs: Vec<_> = list(&tx["blinded_outputs"]).iter().map(output).collect();
+        let melt_quotes: Vec<_> = list(&tx["melt_quote_outputs"]).iter().map(quote).collect();
+        let change: Vec<_> = list(&tx["change_quote_outputs"])
+            .iter()
+            .map(|v| ChangeOutput {
+                amount: v["amount"].as_u64().map(Into::into),
+                pubkey: *crate::nuts::PublicKey::from_hex(v["pubkey"].as_str().unwrap())
+                    .unwrap()
+                    .as_secp256k1()
+                    .unwrap(),
+            })
+            .collect();
+        let transaction =
+            Transaction::with_change(&proofs, &mint_quotes, &outputs, &melt_quotes, &change)
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+        let expected_ids: Vec<String> = match (&case["quote_id"], &case["quote_ids"]) {
+            (Value::String(id), _) => vec![id.clone()],
+            (_, Value::Array(ids)) => ids.iter().map(|v| v.as_str().unwrap().to_owned()).collect(),
+            _ => vec![],
+        };
+        assert_eq!(
+            change
+                .iter()
+                .map(ChangeOutput::quote_id)
+                .collect::<Vec<_>>(),
+            expected_ids,
+            "{name}"
+        );
+        assert_eq!(transaction.as_bytes(), bytes(&case["transcript"]), "{name}");
+        assert_eq!(transaction.digest(), hash(&case["digest"]), "{name}");
+        assert_eq!(
+            Transaction::from_bytes(transaction.as_bytes()).unwrap(),
+            transaction,
+            "{name}"
+        );
+        let inputs: Vec<(usize, &Value)> = match case.get("inputs") {
+            Some(inputs) => inputs.as_array().unwrap().iter().enumerate().collect(),
+            None => vec![(0, case)],
+        };
+        for (index, input) in inputs {
+            assert_eq!(
+                transaction.input_id(index).unwrap(),
+                hash(&input["input_id"]),
+                "{name}"
+            );
+            assert_eq!(
+                transaction.input_digest(index).unwrap(),
+                hash(&input["input_digest"]),
+                "{name}"
+            );
+        }
+        checked += 1;
+    }
+    assert_eq!(checked, 10);
+}
+
+#[test]
+fn shared_mint_quote_input_vectors() {
+    use std::str::FromStr;
+    let shared: Value = serde_json::from_str(include_str!("nutroot_v3_vectors.json")).unwrap();
+    let list = |v: &Value| v.as_array().cloned().unwrap_or_default();
+    let transaction = |tx: &Value| {
+        let quotes: Vec<_> = list(&tx["mint_quote_inputs"])
+            .iter()
+            .map(|v| MintQuoteInput {
+                amount: v["amount"].as_u64().unwrap().into(),
+                id: v["quote_id"].as_str().unwrap().to_owned(),
+                pubkey: crate::nuts::PublicKey::from_hex(v["lock_pubkey"].as_str().unwrap())
+                    .unwrap(),
+            })
+            .collect();
+        let outputs: Vec<_> = list(&tx["blinded_outputs"])
+            .iter()
+            .map(|v| crate::BlindedMessage {
+                amount: v["amount"].as_u64().unwrap().into(),
+                keyset_id: crate::nuts::Id::from_str(v["keyset_id"].as_str().unwrap()).unwrap(),
+                blinded_secret: crate::nuts::PublicKey::from_hex(v["B_"].as_str().unwrap())
+                    .unwrap(),
+                witness: None,
+            })
+            .collect();
+        Transaction::new(&[], &quotes, &outputs, &[]).unwrap()
+    };
+    for name in ["mint", "partial_mint", "batch_mint"] {
+        let case = &shared["transcript"][name];
+        let transaction = transaction(&case["tx"]);
+        assert_eq!(transaction.as_bytes(), bytes(&case["transcript"]), "{name}");
+        assert_eq!(transaction.digest(), hash(&case["digest"]), "{name}");
+        assert_eq!(
+            Transaction::from_bytes(transaction.as_bytes()).unwrap(),
+            transaction,
+            "{name}"
+        );
+        let inputs: Vec<(usize, &Value)> = match case.get("inputs") {
+            Some(inputs) => inputs.as_array().unwrap().iter().enumerate().collect(),
+            None => vec![(0, case)],
+        };
+        for (index, input) in inputs {
+            assert_eq!(
+                transaction.input_id(index).unwrap(),
+                hash(&input["input_id"]),
+                "{name}"
+            );
+            let digest = transaction.input_digest(index).unwrap();
+            assert_eq!(digest, hash(&input["input_digest"]), "{name}");
+            let Some(signature) = input["signature"].as_str() else {
+                continue;
+            };
+            let key =
+                crate::nuts::PublicKey::from_hex(input["lock_pubkey"].as_str().unwrap()).unwrap();
+            let witness = Witness {
+                signatures: vec![signature.to_owned()],
+                leaf: None,
+                control: None,
+                preimage: None,
+            };
+            witness.verify(&key.to_string(), digest, 0).unwrap();
+        }
+    }
+    // A quote input without its lock key is not a transcript this mint accepts.
+    let transcript = bytes(&shared["transcript"]["mint"]["transcript"]);
+    let mut stripped = transcript[..3].to_vec();
+    stripped.extend_from_slice(&transcript[3..transcript.len() - 35]);
+    assert!(Transaction::from_bytes(&stripped).is_err());
+}

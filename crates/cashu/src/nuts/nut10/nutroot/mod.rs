@@ -36,7 +36,9 @@ pub use self::receipt::{ReceiptOpening, SpendReceipt};
 pub use self::signing::{SigningInput, SigningKind, SigningPackage, SigningSpend};
 pub use self::spend::{spend_commitment, SpendRecord};
 pub use self::spend_info::{nums_key, receiver_key, sender_key, SpendInfo};
-pub use self::transaction::{authorized_request_digest, Quote, Transaction};
+pub use self::transaction::{
+    authorized_request_digest, ChangeOutput, MintQuoteInput, Quote, Transaction,
+};
 pub use self::tree::Tree;
 pub use self::witness::{ControlBlock, Witness};
 

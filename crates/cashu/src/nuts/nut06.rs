@@ -10,7 +10,7 @@ use super::nut01::PublicKey;
 use super::nut17::SupportedMethods;
 use super::nut19::CachedEndpoint;
 use super::{
-    nut04, nut05, nut15, nut19, nut29, AuthRequired, BlindAuthSettings, ClearAuthSettings,
+    nut04, nut05, nut15, nut19, nut29, nutxx, AuthRequired, BlindAuthSettings, ClearAuthSettings,
     MppMethodSettings, ProtectedEndpoint,
 };
 use crate::util::serde_helpers::deserialize_empty_string_as_none;
@@ -348,6 +348,15 @@ pub struct Nuts {
     #[serde(rename = "29")]
     #[serde(skip_serializing_if = "nut29::Settings::is_empty")]
     pub nut29: nut29::Settings,
+    /// NUT-XX transactions
+    #[serde(default)]
+    #[serde(rename = "XX")]
+    #[serde(skip_serializing_if = "nutxx_unsupported")]
+    pub nutxx: nutxx::Settings,
+}
+
+fn nutxx_unsupported(settings: &nutxx::Settings) -> bool {
+    !settings.supported
 }
 
 impl Nuts {
@@ -461,6 +470,14 @@ impl Nuts {
     pub fn nut20(self, supported: bool) -> Self {
         Self {
             nut20: SupportedSettings { supported },
+            ..self
+        }
+    }
+
+    /// NUT-XX settings
+    pub fn nutxx(self, settings: nutxx::Settings) -> Self {
+        Self {
+            nutxx: settings,
             ..self
         }
     }

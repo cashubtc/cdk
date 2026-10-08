@@ -591,6 +591,7 @@ impl TryFrom<Nuts> for cdk::nuts::Nuts {
             nut21: n.nut21.map(|s| s.try_into()).transpose()?,
             nut22: n.nut22.map(|s| s.try_into()).transpose()?,
             nut29: n.nut29.into(),
+            nutxx: Default::default(),
         })
     }
 }
@@ -772,6 +773,7 @@ mod tests {
                 )],
             }),
             nut29: Default::default(),
+            nutxx: Default::default(),
         }
     }
 
@@ -912,6 +914,7 @@ mod tests {
             nut21: None,
             nut22: None,
             nut29: Default::default(),
+            nutxx: Default::default(),
         };
 
         let ffi_nuts: Nuts = cdk_nuts.into();

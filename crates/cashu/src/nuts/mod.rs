@@ -33,6 +33,7 @@ pub mod nut27;
 pub mod nut28;
 pub mod nut29;
 pub mod nut30;
+pub mod nutxx;
 
 mod auth;
 
@@ -94,4 +95,8 @@ pub use nut29::{BatchCheckMintQuoteRequest, BatchMintRequest, Settings as Nut29S
 pub use nut30::{
     MeltOnchainRequest, MeltQuoteOnchainRequest, MeltQuoteOnchainResponse, MintQuoteOnchainRequest,
     MintQuoteOnchainResponse,
+};
+pub use nutxx::{
+    Settings as NutXXSettings, TransactionChangeOutput, TransactionMeltOutput,
+    TransactionQuoteInput, TransactionRequest, TransactionState,
 };
