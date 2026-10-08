@@ -1184,10 +1184,6 @@ fn configure_basic_info(settings: &config::Settings, mint_builder: MintBuilder) 
         builder = builder.with_contact_info(contact);
     }
 
-    if let Some(pubkey) = settings.mint_info.pubkey {
-        builder = builder.with_pubkey(pubkey);
-    }
-
     if let Some(icon_url) = &settings.mint_info.icon_url {
         if !icon_url.is_empty() {
             builder = builder.with_icon_url(icon_url.to_string());
@@ -1960,7 +1956,7 @@ async fn ensure_signatory_identity(
 
 async fn reconcile_canonical_configuration(
     mint: &Mint,
-    mut configured_mint_info: cdk::nuts::MintInfo,
+    configured_mint_info: cdk::nuts::MintInfo,
     configured_quote_ttl: QuoteTTL,
     preserve_database_values: bool,
 ) -> Result<()> {
@@ -1968,11 +1964,6 @@ async fn reconcile_canonical_configuration(
         tracing::info!(
             "Applying mint info and quote TTL from the database-backed configuration document."
         );
-        if let Ok(stored_mint_info) = mint.mint_info().await {
-            if configured_mint_info.pubkey.is_none() {
-                configured_mint_info.pubkey = stored_mint_info.pubkey;
-            }
-        }
         mint.set_mint_info_and_quote_ttl(configured_mint_info, configured_quote_ttl)
             .await?;
         return Ok(());
@@ -2728,19 +2719,27 @@ pub async fn initialize_configuration(
     let bootstrap = load_database_bootstrap_settings()?;
     let (localstore, keystore, _kv, configuration_store) =
         initial_setup(work_dir, &bootstrap, db_password).await?;
-    let mut mint_builder = MintBuilder::new(localstore);
+    let mut mint_builder = MintBuilder::new(localstore.clone());
     mint_builder.init_from_db_if_present().await?;
     let database_pubkey = mint_builder.current_mint_info().pubkey;
     let mut keyset_transaction = keystore.begin_transaction().await?;
-    let has_keysets = !keyset_transaction.get_keyset_infos().await?.is_empty();
+    let keysets = keyset_transaction.get_keyset_infos().await?;
     keyset_transaction.commit().await?;
+    let mut used_keysets = HashSet::new();
+    if mode == MintInitializationMode::Existing {
+        used_keysets.extend(localstore.get_total_issued().await?.into_keys());
+        used_keysets.extend(localstore.get_total_redeemed().await?.into_keys());
+    }
 
     configuration_service(configuration_store, &bootstrap)
         .initialize(
             document,
             mode,
             database_pubkey,
-            has_keysets,
+            config_service::MintKeysetHistory {
+                keysets: &keysets,
+                used_keysets: &used_keysets,
+            },
             work_dir,
             bdk_wallet_policy,
         )
@@ -3091,7 +3090,7 @@ engine = "sqlite"
 
     #[cfg(feature = "sqlite")]
     #[tokio::test]
-    async fn unapplied_configuration_preserves_existing_mint_pubkey() {
+    async fn mint_pubkey_is_derived_on_startup_and_metadata_updates() {
         use cdk::nuts::PublicKey;
         use cdk_sqlite::mint::memory;
 
@@ -3105,33 +3104,165 @@ engine = "sqlite"
             .await
             .expect("build mint");
 
+        let expected_pubkey = mint.mint_info().await.expect("mint info").pubkey;
         let pubkey = PublicKey::from_hex(
             "02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619",
         )
         .expect("static pubkey");
-        let mut stored = MintBuilder::new(database.clone())
-            .with_name("stored".to_owned())
-            .current_mint_info();
+        assert_ne!(expected_pubkey, Some(pubkey));
+        let mut stored = mint.mint_info().await.expect("mint info");
         stored.pubkey = Some(pubkey);
-        mint.set_mint_info(stored)
+        // Simulate metadata persisted by v0.17, bypassing the new setter.
+        let mut tx = MintDatabase::begin_transaction(database.as_ref())
             .await
-            .expect("set stored mint info");
+            .expect("transaction");
+        tx.kv_write(
+            "cdk_mint",
+            "config",
+            "mint_info",
+            &serde_json::to_vec(&stored).expect("metadata"),
+        )
+        .await
+        .expect("legacy metadata");
+        tx.commit().await.expect("commit legacy metadata");
+        #[allow(deprecated)]
+        let mut builder = MintBuilder::new(database.clone()).with_pubkey(pubkey);
+        builder
+            .configure_unit(CurrencyUnit::Sat, Default::default())
+            .expect("configure unit");
+        let mint = builder
+            .build_with_seed(database.clone(), &[13; 32])
+            .await
+            .expect("restart mint");
+        assert_eq!(
+            mint.mint_info().await.expect("mint info").pubkey,
+            expected_pubkey
+        );
+        let mut metadata = mint.mint_info().await.expect("mint info");
+        metadata.pubkey = Some(pubkey);
+        mint.set_mint_info(metadata).await.expect("metadata update");
+        assert_eq!(
+            mint.mint_info().await.expect("mint info").pubkey,
+            expected_pubkey
+        );
 
         let mut imported = MintBuilder::new(database)
             .with_name("imported".to_owned())
             .current_mint_info();
-        imported.pubkey = None;
+        imported.pubkey = Some(pubkey);
         reconcile_canonical_configuration(&mint, imported, QuoteTTL::new(7, 8), false)
             .await
             .expect("apply imported values");
         assert_eq!(
             mint.mint_info().await.expect("mint info").pubkey,
-            Some(pubkey)
+            expected_pubkey
         );
         assert_eq!(
             mint.mint_info().await.expect("mint info").name.as_deref(),
             Some("imported")
         );
+    }
+
+    #[cfg(all(feature = "sqlite", feature = "fakewallet"))]
+    #[tokio::test]
+    async fn existing_mint_import_verifies_keysets_instead_of_legacy_pubkey() {
+        let work_dir = crate::test_utils::unique_temp_path("legacy_mint_identity_import");
+        fs::create_dir_all(&work_dir).expect("work directory");
+        let secret = work_dir.join("mnemonic");
+        fs::write(&secret, TEST_MNEMONIC).expect("original mnemonic");
+        let document = sqlite_configuration_document(&secret, "legacy")
+            .replace("[mint_info]", "[mint_info]\npubkey = \"obsolete metadata\"");
+        let bootstrap = load_database_bootstrap_settings().expect("bootstrap");
+        let (db, keystore, _, config_store) = initial_setup(&work_dir, &bootstrap, None)
+            .await
+            .expect("database");
+        let mut builder = MintBuilder::new(db.clone());
+        builder
+            .configure_unit(CurrencyUnit::Sat, Default::default())
+            .expect("unit");
+        let mnemonic = Mnemonic::from_str(TEST_MNEMONIC).expect("mnemonic");
+        let mint = builder
+            .build_with_seed(keystore.clone(), &mnemonic.to_seed_normalized(""))
+            .await
+            .expect("original mint");
+        let mut metadata = mint.mint_info().await.expect("metadata");
+        metadata.pubkey = Some(
+            cdk::nuts::PublicKey::from_hex(
+                "02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619",
+            )
+            .expect("legacy public key"),
+        );
+        let mut tx = db.begin_transaction().await.expect("transaction");
+        tx.kv_write(
+            "cdk_mint",
+            "config",
+            "mint_info",
+            &serde_json::to_vec(&metadata).expect("metadata"),
+        )
+        .await
+        .expect("legacy metadata");
+        tx.commit().await.expect("commit");
+        let mut tx = keystore.begin_transaction().await.expect("keysets");
+        let before = tx.get_keyset_infos().await.expect("historical keysets");
+        tx.commit().await.expect("commit");
+        drop(mint);
+        fs::write(
+            &secret,
+            "legal winner thank year wave sausage worth useful legal winner thank yellow",
+        )
+        .expect("different mnemonic");
+        let error = initialize_configuration(
+            &work_dir,
+            &document,
+            MintInitializationMode::Existing,
+            BdkWalletPolicy::RequireExisting,
+            None,
+        )
+        .await
+        .expect_err("wrong seed must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("cannot reproduce historical keyset"),
+            "{error}"
+        );
+        assert!(configuration_service(config_store.clone(), &bootstrap)
+            .document()
+            .await
+            .is_err());
+        fs::write(&secret, TEST_MNEMONIC).expect("restore original mnemonic");
+        initialize_configuration(
+            &work_dir,
+            &document,
+            MintInitializationMode::Existing,
+            BdkWalletPolicy::RequireExisting,
+            None,
+        )
+        .await
+        .expect("original seed with legacy metadata");
+        let mut tx = keystore.begin_transaction().await.expect("keysets");
+        assert_eq!(tx.get_keyset_infos().await.expect("keysets"), before);
+        tx.commit().await.expect("commit");
+        assert_eq!(
+            configuration_service(config_store, &bootstrap)
+                .startup()
+                .await
+                .expect("startup")
+                .signing_identity
+                .pubkey,
+            cdk::nuts::PublicKey::from(
+                bitcoin::bip32::Xpriv::new_master(
+                    bitcoin::Network::Bitcoin,
+                    &mnemonic.to_seed_normalized("")
+                )
+                .expect("master key")
+                .to_keypair(&bitcoin::secp256k1::Secp256k1::new())
+                .public_key()
+            )
+        );
+        drop(db);
+        drop(keystore);
+        fs::remove_dir_all(work_dir).expect("remove test database");
     }
 
     #[cfg(all(feature = "sqlite", feature = "fakewallet"))]

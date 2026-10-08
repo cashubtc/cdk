@@ -322,11 +322,9 @@ impl Mint {
             );
         }
 
-        // Persist missing pubkey early to avoid losing it on next boot and ensure stable identity across restarts
+        // The advertised mint public key always comes from the signer.
         let mut computed_info = mint_info;
-        if computed_info.pubkey.is_none() {
-            computed_info.pubkey = Some(keysets.pubkey);
-        }
+        computed_info.pubkey = Some(keysets.pubkey);
 
         match localstore
             .kv_read(
@@ -339,7 +337,12 @@ impl Mint {
             Some(bytes) => {
                 let mut stored: MintInfo = serde_json::from_slice(&bytes)?;
                 let mut mutated = false;
-                if stored.pubkey.is_none() && computed_info.pubkey.is_some() {
+                if stored.pubkey != computed_info.pubkey {
+                    if stored.pubkey.is_some() {
+                        tracing::warn!(
+                            "Replacing legacy mint metadata public key with the signer-derived public key"
+                        );
+                    }
                     stored.pubkey = computed_info.pubkey;
                     mutated = true;
                 }
@@ -790,10 +793,11 @@ impl Mint {
         Ok(mint_info)
     }
 
-    /// Set mint info
+    /// Set mint info, deriving its public key from the signer.
     #[instrument(skip_all)]
-    pub async fn set_mint_info(&self, mint_info: MintInfo) -> Result<(), Error> {
+    pub async fn set_mint_info(&self, mut mint_info: MintInfo) -> Result<(), Error> {
         tracing::info!("Updating mint info");
+        mint_info.pubkey = Some(self.signatory.keysets().await?.pubkey);
         let mint_info_bytes = serde_json::to_vec(&mint_info)?;
         let mut tx = self.localstore.begin_transaction().await?;
         tx.kv_write(
@@ -807,14 +811,15 @@ impl Mint {
         Ok(())
     }
 
-    /// Set mint info and quote TTL atomically.
+    /// Set mint info and quote TTL atomically, deriving the public key from the signer.
     #[instrument(skip_all)]
     pub async fn set_mint_info_and_quote_ttl(
         &self,
-        mint_info: MintInfo,
+        mut mint_info: MintInfo,
         quote_ttl: QuoteTTL,
     ) -> Result<(), Error> {
         tracing::info!("Updating mint info and quote TTL");
+        mint_info.pubkey = Some(self.signatory.keysets().await?.pubkey);
         let mint_info_bytes = serde_json::to_vec(&mint_info)?;
         let quote_ttl_bytes = serde_json::to_vec(&quote_ttl)?;
         let mut tx = self.localstore.begin_transaction().await?;

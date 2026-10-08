@@ -27,11 +27,10 @@ impl MintInfo {
         }
 
         // Optional fields
-        if let Ok(pubkey_str) = env::var(ENV_MINT_PUBKEY) {
-            // Assuming PublicKey has a from_str implementation
-            if let Ok(pubkey) = pubkey_str.parse() {
-                self.pubkey = Some(pubkey);
-            }
+        if env::var_os(ENV_MINT_PUBKEY).is_some() {
+            tracing::warn!(
+                "Ignoring legacy {ENV_MINT_PUBKEY}; the mint public key is derived from the signer"
+            );
         }
 
         if let Ok(desc_long) = env::var(ENV_MINT_DESCRIPTION_LONG) {

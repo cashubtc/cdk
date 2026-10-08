@@ -1195,7 +1195,12 @@ fn default_max_outputs() -> usize {
 pub struct MintInfo {
     /// name of the mint and should be recognizable
     pub name: String,
-    /// hex pubkey of the mint
+    /// Legacy metadata public key, retained for source compatibility and ignored.
+    #[deprecated(
+        since = "0.18.2",
+        note = "The mint public key is derived from the signer; this field is ignored and will be removed in 0.19"
+    )]
+    #[serde(skip)]
     pub pubkey: Option<PublicKey>,
     /// short description of the mint
     pub description: String,
@@ -1260,7 +1265,8 @@ impl Settings {
         let mut unknown_fields = Vec::new();
         let settings = serde_ignored::deserialize(configuration, |path| {
             let path = path.to_string().replace(".?.", ".");
-            if !allowed_unknown_fields.contains(&path.as_str()) {
+            // Retain acceptance of the deprecated field while serde ignores its value.
+            if path != "mint_info.pubkey" && !allowed_unknown_fields.contains(&path.as_str()) {
                 unknown_fields.push(path);
             }
         })?;
@@ -1402,6 +1408,30 @@ impl Settings {
 mod tests {
 
     use super::*;
+
+    #[test]
+    #[allow(deprecated)]
+    fn legacy_public_key_field_is_accepted_but_not_exported() {
+        let pubkey = PublicKey::from_hex(
+            "02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619",
+        )
+        .expect("legacy public key");
+        let settings = Settings {
+            mint_info: MintInfo {
+                pubkey: Some(pubkey),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let exported = toml::to_string(&settings).expect("export settings");
+        assert!(!exported.contains("pubkey"));
+        let legacy = Settings::try_from_toml(
+            "[mint_info]\nname = \"legacy\"\npubkey = \"obsolete metadata\"",
+        )
+        .expect("accept obsolete configuration value");
+        assert_eq!(legacy.mint_info.name, "legacy");
+        assert_eq!(legacy.mint_info.pubkey, None);
+    }
 
     #[test]
     fn postgres_tls_defaults_preserve_connection_url_policy() {

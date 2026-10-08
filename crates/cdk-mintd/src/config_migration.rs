@@ -196,6 +196,22 @@ impl MigrationSecrets {
     }
 }
 
+/// Reports a legacy metadata key that is no longer a signing identity input.
+pub(crate) fn warn_legacy_mint_pubkey(document: &str) {
+    if let Ok(value) = toml::from_str::<toml::Value>(document) {
+        if value
+            .get("mint_info")
+            .and_then(|info| info.get("pubkey"))
+            .is_some()
+        {
+            tracing::warn!(
+                "Ignoring legacy mint_info.pubkey; the mint public key is derived from the signer. \
+                 The advertised public key may change after the upgrade."
+            );
+        }
+    }
+}
+
 /// Converts a legacy TOML document and its active `CDK_MINTD_*` overrides into
 /// one database-importable TOML document.
 ///
@@ -220,6 +236,7 @@ pub fn migrate_legacy_configuration(
     let document = fs::read_to_string(&source)
         .with_context(|| format!("could not read legacy configuration {}", source.display()))?;
     let parse_context = format!("could not parse legacy configuration {}", source.display());
+    warn_legacy_mint_pubkey(&document);
     let released_v017 = released_v017_document(&document).with_context(|| parse_context.clone())?;
     let mut effective = Settings::try_from_toml_allowing(&document, RELEASED_V017_UNKNOWN_FIELDS)
         .with_context(|| parse_context)?;
@@ -1468,6 +1485,31 @@ mod tests {
                 std::env::set_var(name, value);
             }
         }
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn migration_removes_legacy_public_key_overrides() {
+        let _env_lock = crate::test_utils::env_lock();
+        let _environment = MintdEnvironment::cleared();
+        let (directory, source, output) = migration_paths("legacy_public_key");
+        fs::write(
+            &source,
+            format!(
+                "{}\n[mint_info]\npubkey = \"obsolete metadata\"\n",
+                legacy_document(TEST_MNEMONIC)
+            ),
+        )
+        .expect("legacy config");
+        std::env::set_var(
+            crate::env_vars::ENV_MINT_PUBKEY,
+            "obsolete environment metadata",
+        );
+        migrate_legacy_configuration(&source, &output, None, None, false).expect("migrate");
+        let migrated = fs::read_to_string(&output).expect("migrated config");
+        assert!(!migrated.contains("pubkey"));
+        Settings::try_from_toml(&migrated).expect("strict config without obsolete field");
+        fs::remove_dir_all(directory).expect("cleanup");
     }
 
     fn legacy_document(mnemonic: &str) -> String {

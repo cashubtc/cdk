@@ -355,6 +355,12 @@ authoritative database requires a separate data-migration procedure.
 
 ### Signing Modes
 
+The mint public key is derived from the signer. It cannot be overridden by
+configuration or metadata updates. Legacy `mint_info.pubkey` and
+`CDK_MINTD_MINT_PUBKEY` values are ignored; upgrading a mint with a custom
+metadata public key can change the advertised public key. Existing signing keys
+are verified against historical keysets before importing its configuration.
+
 Configure exactly one signing mode:
 
 - For an embedded signatory, set `[info].seed` or `[info].mnemonic` to a secret

@@ -282,10 +282,17 @@ impl MintBuilder {
         self
     }
 
-    /// Set pubkey
-    pub fn with_pubkey(mut self, pubkey: crate::nuts::PublicKey) -> Self {
-        self.mint_info.pubkey = Some(pubkey);
-
+    /// Accept a legacy metadata public key for source compatibility.
+    ///
+    /// The supplied value is ignored; the mint public key comes from the signer.
+    #[deprecated(
+        since = "0.18.2",
+        note = "The mint public key is derived from the signer; this method is ignored and will be removed in 0.19"
+    )]
+    pub fn with_pubkey(self, _pubkey: crate::nuts::PublicKey) -> Self {
+        tracing::warn!(
+            "Ignoring MintBuilder::with_pubkey; the mint public key is derived from the signer"
+        );
         self
     }
 
