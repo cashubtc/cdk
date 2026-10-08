@@ -627,10 +627,19 @@ fn verify_local_keysets(
             info.final_expiry,
             info.id.get_version(),
         );
-        if derived.id != info.id {
-            return Err(ConfigurationServiceError::HistoricalKeysetMismatch { keyset_id: info.id });
+        cdk::nuts::KeySet {
+            id: info.id,
+            unit: info.unit.clone(),
+            active: Some(info.active),
+            keys: derived.keys.into(),
+            input_fee_ppk: info.input_fee_ppk,
+            final_expiry: info.final_expiry,
         }
+        .verify_id_for_legacy_nutshell_migration()
+        .map_err(|_| ConfigurationServiceError::HistoricalKeysetMismatch { keyset_id: info.id })?;
     }
+    let mut used_keysets: Vec<_> = used_keysets.iter().collect();
+    used_keysets.sort_unstable();
     for id in used_keysets {
         if !keysets.iter().any(|info| info.id == *id) {
             return Err(ConfigurationServiceError::UsedKeysetMissingInfo { keyset_id: *id });
@@ -648,10 +657,17 @@ fn verify_remote_keysets(
     if keysets.is_empty() && used_keysets.is_empty() && database_pubkey != Some(remote.pubkey) {
         return Err(ConfigurationServiceError::RemoteSignerHistoryMissing);
     }
+    let mut used_keysets: Vec<_> = used_keysets.iter().collect();
+    used_keysets.sort_unstable();
     for id in keysets.iter().map(|info| &info.id).chain(used_keysets) {
-        if !remote.keysets.iter().any(|info| info.id == *id) {
-            return Err(ConfigurationServiceError::HistoricalKeysetMismatch { keyset_id: *id });
-        }
+        let keyset = remote
+            .keysets
+            .iter()
+            .find(|keyset| keyset.id == *id)
+            .ok_or(ConfigurationServiceError::HistoricalKeysetMismatch { keyset_id: *id })?;
+        cdk::nuts::KeySet::from(keyset)
+            .verify_id_for_legacy_nutshell_migration()
+            .map_err(|_| ConfigurationServiceError::HistoricalKeysetMismatch { keyset_id: *id })?;
     }
     Ok(())
 }
@@ -2140,6 +2156,78 @@ engine = "sqlite"
     }
 
     #[test]
+    fn historical_nutshell_zero_expiry_keyset_verifies_original_seed() {
+        use bitcoin::bip32::DerivationPath;
+        use cdk::nuts::{CurrencyUnit, Id};
+
+        // Captured from a real Nutshell 0.20.3 mint after keyset rotation and
+        // migration through PR #2016, which normalizes zero expiry to None.
+        let seed = b"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+        let id = Id::from_str("01c03c972f7daff964f08fe4efc7bf511013e6251f4bafb09f13b7b4eb0f507e77")
+            .expect("historical Nutshell ID");
+        let mut info = cdk::mint::MintKeySetInfo {
+            id,
+            unit: CurrencyUnit::Sat,
+            active: false,
+            valid_from: 0,
+            derivation_path: DerivationPath::from_str("m/0'/0'/1'").expect("Nutshell path"),
+            derivation_path_index: None,
+            amounts: (0..64).map(|i| 1_u64 << i).collect(),
+            input_fee_ppk: 0,
+            final_expiry: None,
+            issuer_version: Some(
+                cdk_common::common::IssuerVersion::from_str("nutshell/0.20.3")
+                    .expect("Nutshell version"),
+            ),
+        };
+        let used = HashSet::from([id]);
+        let derived = cdk::nuts::MintKeySet::generate_from_xpriv(
+            &Secp256k1::new(),
+            Xpriv::new_master(Network::Bitcoin, seed).expect("master key"),
+            &info.amounts,
+            info.unit.clone(),
+            info.derivation_path.clone(),
+            info.input_fee_ppk,
+            info.final_expiry,
+            info.id.get_version(),
+        );
+        for expiry in [None, Some(0)] {
+            info.final_expiry = expiry;
+            verify_local_keysets(seed, std::slice::from_ref(&info), &used)
+                .expect("original Nutshell seed matches legacy ID");
+            let remote = cdk_signatory::signatory::SignatoryKeysets {
+                pubkey: root_pubkey(seed).expect("public key"),
+                keysets: vec![cdk_signatory::signatory::SignatoryKeySet::from(&(
+                    info.clone(),
+                    derived.clone(),
+                ))],
+            };
+            verify_remote_keysets(&remote, std::slice::from_ref(&info), &HashSet::new(), None)
+                .expect("remote Nutshell keys match legacy ID from metadata");
+            verify_remote_keysets(&remote, &[], &used, None)
+                .expect("remote Nutshell keys match legacy ID from transaction history");
+            let mut invalid = remote.clone();
+            invalid.keysets[0].final_expiry = Some(1);
+            assert!(matches!(
+                verify_remote_keysets(&invalid, &[], &used, Some(remote.pubkey)),
+                Err(ConfigurationServiceError::HistoricalKeysetMismatch { keyset_id })
+                    if keyset_id == id
+            ));
+            assert!(matches!(
+                verify_local_keysets(&[14; 32], std::slice::from_ref(&info), &used),
+                Err(ConfigurationServiceError::HistoricalKeysetMismatch { keyset_id })
+                    if keyset_id == id
+            ));
+        }
+        info.final_expiry = Some(1);
+        assert!(matches!(
+            verify_local_keysets(seed, &[info], &used),
+            Err(ConfigurationServiceError::HistoricalKeysetMismatch { keyset_id })
+                if keyset_id == id
+        ));
+    }
+
+    #[test]
     fn historical_keysets_verify_original_seed_and_inactive_custom_paths() {
         use bitcoin::bip32::DerivationPath;
         use cdk::nuts::{CurrencyUnit, MintKeySet};
@@ -2211,6 +2299,48 @@ engine = "sqlite"
             .expect("historical keys prove remote identity despite legacy metadata");
         verify_remote_keysets(&verified_remote, &[], &used, None)
             .expect("issued and redeemed IDs prove remote identity");
+        for (index, info) in infos.iter().enumerate() {
+            let mut wrong_keys = verified_remote.clone();
+            wrong_keys.keysets[index].keys = verified_remote.keysets[1 - index].keys.clone();
+            let mut missing = verified_remote.clone();
+            missing.keysets.remove(index);
+            let mut invalid_snapshots = vec![wrong_keys, missing];
+            if info.id.get_version() == KeySetVersion::Version01 {
+                let mut wrong_unit = verified_remote.clone();
+                wrong_unit.keysets[index].unit = CurrencyUnit::Msat;
+                let mut wrong_fee = verified_remote.clone();
+                wrong_fee.keysets[index].input_fee_ppk += 1;
+                let mut wrong_expiry = verified_remote.clone();
+                wrong_expiry.keysets[index].final_expiry = None;
+                invalid_snapshots.extend([wrong_unit, wrong_fee, wrong_expiry]);
+            }
+            for remote in invalid_snapshots {
+                let pubkey = remote.pubkey;
+                let signing = SigningIdentityResolution {
+                    identity: signing_identity_from_pubkey(pubkey),
+                    remote_signatory: None,
+                    remote_keysets: Some(remote),
+                };
+                // Check each source of historical IDs independently, including
+                // when the database already has the remote signer's pubkey.
+                for (history, used) in [
+                    (std::slice::from_ref(info), HashSet::new()),
+                    (&[][..], HashSet::from([info.id])),
+                ] {
+                    assert!(matches!(
+                        verify_existing_signer(
+                            &Settings::default(),
+                            &signing,
+                            history,
+                            &used,
+                            Some(pubkey),
+                        ),
+                        Err(ConfigurationServiceError::HistoricalKeysetMismatch { keyset_id })
+                            if keyset_id == info.id
+                    ));
+                }
+            }
+        }
         let remote = cdk_signatory::signatory::SignatoryKeysets {
             pubkey: root_pubkey(&seed).expect("public key"),
             keysets: vec![],
@@ -2225,6 +2355,40 @@ engine = "sqlite"
         ));
         verify_remote_keysets(&remote, &[], &HashSet::new(), Some(remote.pubkey))
             .expect("unchanged remote identity without transaction history");
+    }
+
+    #[test]
+    fn missing_used_keysets_are_reported_in_id_order() {
+        let ids = [
+            "0000000000000001",
+            "0000000000000002",
+            "0000000000000003",
+            "0000000000000004",
+        ]
+        .map(|id| cdk::nuts::Id::from_str(id).expect("keyset ID"));
+        let seed = [13; 32];
+        let remote = cdk_signatory::signatory::SignatoryKeysets {
+            pubkey: root_pubkey(&seed).expect("public key"),
+            keysets: vec![],
+        };
+        let mut reversed = ids;
+        reversed.reverse();
+        for capacity in [0, 16, 64] {
+            for insertion_order in [ids, reversed] {
+                let mut used = HashSet::with_capacity(capacity);
+                used.extend(insertion_order);
+                assert!(matches!(
+                    verify_local_keysets(&seed, &[], &used),
+                    Err(ConfigurationServiceError::UsedKeysetMissingInfo { keyset_id })
+                        if keyset_id == ids[0]
+                ));
+                assert!(matches!(
+                    verify_remote_keysets(&remote, &[], &used, Some(remote.pubkey)),
+                    Err(ConfigurationServiceError::HistoricalKeysetMismatch { keyset_id })
+                        if keyset_id == ids[0]
+                ));
+            }
+        }
     }
 
     #[test]
