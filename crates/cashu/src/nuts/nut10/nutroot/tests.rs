@@ -825,6 +825,19 @@ fn shared_transcript_vectors() {
         let transaction =
             Transaction::with_change(&proofs, &mint_quotes, &outputs, &melt_quotes, &change)
                 .unwrap_or_else(|e| panic!("{name}: {e}"));
+        let expected_ids: Vec<String> = match (&case["quote_id"], &case["quote_ids"]) {
+            (Value::String(id), _) => vec![id.clone()],
+            (_, Value::Array(ids)) => ids.iter().map(|v| v.as_str().unwrap().to_owned()).collect(),
+            _ => vec![],
+        };
+        assert_eq!(
+            change
+                .iter()
+                .map(ChangeOutput::quote_id)
+                .collect::<Vec<_>>(),
+            expected_ids,
+            "{name}"
+        );
         assert_eq!(transaction.as_bytes(), bytes(&case["transcript"]), "{name}");
         assert_eq!(transaction.digest(), hash(&case["digest"]), "{name}");
         assert_eq!(
