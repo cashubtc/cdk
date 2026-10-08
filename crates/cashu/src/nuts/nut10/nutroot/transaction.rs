@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 use super::leaf::integer;
 use super::{parse_secret, tagged_hash, Error};
 use crate::nuts::{BlindedMessage, KeySetVersion, Proof, PublicKey};
+use crate::util::hex;
 use crate::Amount;
 
 // Container types: the high nibble is the section, 0x1n inputs, 0x2n outputs, 0xFn never in a
@@ -44,6 +45,13 @@ pub struct ChangeOutput {
     pub amount: Option<Amount>,
     /// Lock key of the change quote.
     pub pubkey: bitcoin::secp256k1::PublicKey,
+}
+
+impl ChangeOutput {
+    /// The id the mint gives this change quote: derived from its lock key, so one key names one quote.
+    pub fn quote_id(&self) -> String {
+        hex::encode(tagged_hash("Cashu_QuoteId", &self.pubkey.serialize()))
+    }
 }
 
 /// Canonical transaction transcript and its input records.
