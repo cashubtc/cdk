@@ -783,9 +783,10 @@ impl Mint {
                     .iter()
                     .map(|entry| {
                         let quote = quote_map.get(&entry.quote_id).ok_or(Error::UnknownQuote)?;
-                        Ok(crate::nuts::nut10::nutroot::Quote {
+                        Ok(crate::nuts::nut10::nutroot::MintQuoteInput {
                             id: entry.quote_id.to_string(),
                             amount: quote.amount.clone().map(Into::into).unwrap_or(Amount::ZERO),
+                            pubkey: quote.pubkey.ok_or(Error::SignatureMissingOrInvalid)?,
                         })
                     })
                     .collect::<Result<Vec<_>, Error>>()?;
