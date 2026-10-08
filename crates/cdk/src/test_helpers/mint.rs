@@ -192,9 +192,10 @@ pub async fn mint_test_proofs(mint: &Mint, amount: Amount) -> Result<Proofs, Err
     if keysets.get_version() == cdk_common::nuts::KeySetVersion::Version02 {
         let transaction = cdk_common::nuts::nut10::nutroot::Transaction::new(
             &[],
-            &[cdk_common::nuts::nut10::nutroot::Quote {
+            &[cdk_common::nuts::nut10::nutroot::MintQuoteInput {
                 id: mint_quote.quote,
                 amount,
+                pubkey: quote_key.public_key(),
             }],
             &request.outputs,
             &[],

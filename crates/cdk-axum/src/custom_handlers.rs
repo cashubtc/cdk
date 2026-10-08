@@ -986,18 +986,19 @@ mod tests {
     }
 
     fn nutroot_quote_witness(quote: &QuoteId, outputs: &[BlindedMessage]) -> String {
-        use cdk::nuts::nut10::nutroot::{Quote, Transaction, Witness};
+        use cdk::nuts::nut10::nutroot::{MintQuoteInput, Transaction, Witness};
+        let key = SecretKey::from_slice(&[9; 32]).unwrap();
         let transaction = Transaction::new(
             &[],
-            &[Quote {
+            &[MintQuoteInput {
                 id: quote.to_string(),
                 amount: 2.into(),
+                pubkey: key.public_key(),
             }],
             outputs,
             &[],
         )
         .unwrap();
-        let key = SecretKey::from_slice(&[9; 32]).unwrap();
         serde_json::to_string(&Witness::key_path(
             key.as_secp256k1().unwrap(),
             transaction.input_digest(0).unwrap(),
