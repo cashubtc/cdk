@@ -746,8 +746,11 @@ impl Mint {
     /// spawns its payment-event consumer if the mint is started, and updates
     /// stored mint info (NUT-04/NUT-05 method settings, and NUT-15 if the
     /// backend advertises MPP) from `limits` and the processor's reported
-    /// settings. A duplicate `(unit, method)` is rejected, mirroring
-    /// [`MintBuilder::add_payment_processor`].
+    /// settings. A duplicate `(unit, method)` already live in the
+    /// in-memory map is rejected, mirroring
+    /// [`MintBuilder::add_payment_processor`]; settings already persisted
+    /// for the key from an earlier process are replaced rather than
+    /// accumulated, so restarting with the same registration is idempotent.
     ///
     /// Updates the map first and the stored mint info last: the map entry is
     /// inert without the mint-info gate, so a crash between the two phases
@@ -800,10 +803,15 @@ impl Mint {
             }
         }
 
-        // Phase 2 (last): the quotability gate.
+        // Phase 2 (last): the quotability gate. Clear any entries already
+        // persisted for this key first: the in-memory map is empty on every
+        // fresh process, so it cannot tell a genuine re-register from the
+        // settings an earlier process already wrote, and a bare push would
+        // accumulate a duplicate on every restart.
         let settings = processor.get_settings().await?;
         let computed = builder::processor_method_settings(&unit, &method, &limits, &settings);
         let mut mint_info = self.mint_info().await?;
+        Self::remove_quotability_settings(&mut mint_info, &key);
         if let Some(mpp_settings) = computed.mpp {
             mint_info.nuts.nut15.methods.push(mpp_settings);
         }
@@ -3732,5 +3740,75 @@ mod tests {
         mint.deregister_payment_processor(unit, method)
             .await
             .expect("deregistering an unknown pair is a no-op");
+    }
+
+    /// Simulates a restart: the in-memory processor map is fresh (as it is
+    /// on every new process) but `mint_info` already carries the NUT-04/
+    /// NUT-05 entries a previous process persisted for this key. A
+    /// re-register must replace those entries, not add to them.
+    #[tokio::test]
+    async fn register_payment_processor_idempotent_against_persisted_settings() {
+        let mint = create_test_mint().await.expect("test mint");
+
+        let unit = CurrencyUnit::Custom("custom_restart".into());
+        let method = PaymentMethod::Custom("custom_method".to_string());
+        let key = PaymentProcessorKey::new(unit.clone(), method.clone());
+
+        mint.rotate_keyset(unit.clone(), full_amounts(), 0, true, None)
+            .await
+            .expect("rotate keyset for new unit");
+
+        mint.register_payment_processor(
+            unit.clone(),
+            method.clone(),
+            MintMeltLimits::new(1, 10_000),
+            custom_processor(unit.clone(), method.as_str(), 0),
+        )
+        .await
+        .expect("first registration persists settings");
+
+        // Drop the map entry directly, bypassing deregister (which would
+        // also clear the persisted settings): this leaves mint_info exactly
+        // as a previous process would have left it on disk, with the
+        // in-memory map empty for this key, as it is on every fresh start.
+        {
+            let _guard = mint.payment_processor_lock.lock().await;
+            mint.remove_payment_processor(&key);
+        }
+
+        mint.register_payment_processor(
+            unit.clone(),
+            method.clone(),
+            MintMeltLimits::new(1, 10_000),
+            custom_processor(unit.clone(), method.as_str(), 0),
+        )
+        .await
+        .expect("re-registration after simulated restart succeeds");
+
+        let mint_info = mint.mint_info().await.expect("mint info");
+        let nut04_count = mint_info
+            .nuts
+            .nut04
+            .methods
+            .iter()
+            .filter(|m| m.unit == unit && m.method == method)
+            .count();
+        let nut05_count = mint_info
+            .nuts
+            .nut05
+            .methods
+            .iter()
+            .filter(|m| m.unit == unit && m.method == method)
+            .count();
+        assert_eq!(
+            nut04_count, 1,
+            "expected exactly one persisted NUT-04 entry after re-register, got {}",
+            nut04_count
+        );
+        assert_eq!(
+            nut05_count, 1,
+            "expected exactly one persisted NUT-05 entry after re-register, got {}",
+            nut05_count
+        );
     }
 }
