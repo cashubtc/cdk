@@ -908,11 +908,23 @@ async fn fixed_change_quotes_settle_beside_the_remainder() {
     assert_eq!(remainder["amount_paid"], 7);
     assert_eq!(remainder["pubkey"], remainder_key.public_key().to_hex());
 
-    // A fixed quote alone needs an exact balance and is created at once, without a melt.
+    // A lock key names one change quote: reusing one is refused before anything is spent.
     let proofs = mint_test_proofs(&mint, 4.into()).await.unwrap();
     let mut request = TransactionRequest {
-        proof_inputs: proofs,
+        proof_inputs: proofs.clone(),
         change_quote_outputs: vec![change_output(&fixed_key, Some(4))],
+        ..Default::default()
+    };
+    sign(&mut request, &[], None);
+    assert!(matches!(
+        mint.process_transaction(request, false).await,
+        Err(Error::DuplicateOutputs)
+    ));
+
+    // A fixed quote alone needs an exact balance and is created at once, without a melt.
+    let mut request = TransactionRequest {
+        proof_inputs: proofs,
+        change_quote_outputs: vec![change_output(&SecretKey::generate(), Some(4))],
         ..Default::default()
     };
     sign(&mut request, &[], None);
@@ -927,9 +939,19 @@ async fn rejects_zero_amounts_and_a_second_remainder_quote() {
     let mint = v3_mint().await;
     let proofs = mint_test_proofs(&mint, 4.into()).await.unwrap();
     let key = SecretKey::generate();
+    let other = SecretKey::generate();
+    let request = TransactionRequest {
+        proof_inputs: proofs.clone(),
+        change_quote_outputs: vec![change_output(&key, Some(1)), change_output(&key, None)],
+        ..Default::default()
+    };
+    assert!(matches!(
+        mint.process_transaction(request, false).await,
+        Err(Error::DuplicateOutputs)
+    ));
     for outputs in [
-        vec![change_output(&key, None), change_output(&key, None)],
-        vec![change_output(&key, Some(0)), change_output(&key, None)],
+        vec![change_output(&key, None), change_output(&other, None)],
+        vec![change_output(&key, Some(0)), change_output(&other, None)],
     ] {
         let request = TransactionRequest {
             proof_inputs: proofs.clone(),

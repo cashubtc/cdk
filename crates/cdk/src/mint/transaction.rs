@@ -121,7 +121,7 @@ fn change_quote(
 ) -> MintQuote {
     let now = unix_time();
     MintQuote::new(
-        Some(QuoteId::new()),
+        Some(change_quote_id(&pubkey)),
         record.digest.clone(),
         record.unit.clone(),
         Some(amount.with_unit(record.unit.clone())),
@@ -137,6 +137,15 @@ fn change_quote(
         vec![],
         None,
     )
+}
+
+/// A change quote's id derives from its lock key (NUT-XX), so one key names one quote.
+fn change_quote_id(pubkey: &PublicKey) -> QuoteId {
+    let output = nutroot::ChangeOutput {
+        amount: None,
+        pubkey: *pubkey.as_secp256k1().expect("validated compressed key"),
+    };
+    QuoteId::BASE64(output.quote_id())
 }
 
 /// Lookup and payment id of a transaction's change quote, unique per output.
@@ -436,6 +445,7 @@ impl Mint {
             return Err(invalid("transaction requires at least one output"));
         }
         let mut change_outputs = Vec::with_capacity(request.change_quote_outputs.len());
+        let mut change_keys = HashSet::new();
         for output in &request.change_quote_outputs {
             let pubkey = PublicKey::from_hex(&output.pubkey)
                 .ok()
@@ -443,6 +453,9 @@ impl Mint {
                 .ok_or_else(|| invalid("change quote pubkey is not a compressed secp256k1 key"))?;
             if output.amount == Some(Amount::ZERO) {
                 return Err(invalid("change quote amount must be positive"));
+            }
+            if !change_keys.insert(pubkey) {
+                return Err(Error::DuplicateOutputs);
             }
             change_outputs.push((pubkey, output.amount));
         }
@@ -571,6 +584,19 @@ impl Mint {
         if let Some(record) = self.localstore.get_transaction(&digest).await? {
             if record.state != TransactionState::Failed {
                 return Ok(Preparation::Existing(digest));
+            }
+        }
+
+        // One lock key names one change quote, so a used key could never settle: refuse it
+        // here, before any payment.
+        for (pubkey, _) in &change_outputs {
+            if self
+                .localstore
+                .get_mint_quote(&change_quote_id(pubkey))
+                .await?
+                .is_some()
+            {
+                return Err(Error::DuplicateOutputs);
             }
         }
 
