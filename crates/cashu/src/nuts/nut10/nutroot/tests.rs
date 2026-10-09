@@ -140,6 +140,8 @@ fn hashlock_and_commit_satisfaction() {
     witness.verify(&secret, digest, 0).unwrap();
     witness.preimage = Some(hex::encode([42; 33]));
     assert!(witness.verify(&secret, digest, 0).is_err());
+    witness.preimage = Some(hex::encode([42; 31]));
+    assert!(witness.verify(&secret, digest, 0).is_err());
     assert!(Witness::script_path(&tree, 1, internal).is_err());
     witness.leaf = Some(hex::encode(tree.leaves()[1].to_bytes()));
     witness.control.as_mut().unwrap().path =
