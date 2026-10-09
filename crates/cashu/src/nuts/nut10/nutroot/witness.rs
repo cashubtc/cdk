@@ -165,10 +165,11 @@ impl Witness {
             Condition::After(time) if now < *time => return Err(Error::InvalidWitness),
             Condition::Hashlock(hash) => {
                 let preimage = self.preimage.as_ref().ok_or(Error::InvalidWitness)?;
-                if preimage.len() > 64 {
+                let preimage = hex::decode(preimage)?;
+                if preimage.len() != 32 {
                     return Err(Error::InvalidWitness);
                 }
-                let actual: [u8; 32] = Sha256::digest(hex::decode(preimage)?).into();
+                let actual: [u8; 32] = Sha256::digest(preimage).into();
                 if actual != *hash {
                     return Err(Error::InvalidWitness);
                 }
