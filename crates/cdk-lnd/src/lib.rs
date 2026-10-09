@@ -95,7 +95,8 @@ impl Lnd {
                 .into(),
         };
 
-        let amount = Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to(unit)?;
+        // The quote must cover the entire millisatoshi principal.
+        let amount = msat_total_spent_for_unit(amount_msat.into(), unit)?;
 
         let relative_fee_reserve = (fee_reserve.percent_fee_reserve * amount.value() as f32) as u64;
 
@@ -1139,6 +1140,44 @@ mod tests {
             bolt11_rpc_amount_msat(&invoice, Some(10_000)).unwrap(),
             10_000
         );
+    }
+
+    #[test]
+    fn payment_quotes_round_up_sat_principals() {
+        let fee_reserve = FeeReserve {
+            min_fee_reserve: Amount::ZERO,
+            percent_fee_reserve: 0.0,
+        };
+        for (msat, sat) in [(1, 1), (999, 1), (1_000, 1), (1_999, 2), (2_000, 2)] {
+            for (unit, expected) in [(CurrencyUnit::Sat, sat), (CurrencyUnit::Msat, msat)] {
+                for melt_options in [
+                    None,
+                    Some(MeltOptions::new_mpp(msat)),
+                    Some(MeltOptions::new_amountless(msat)),
+                ] {
+                    let invoice_amount = match melt_options {
+                        Some(MeltOptions::Amountless { .. }) => None,
+                        _ => Some(msat),
+                    };
+                    let quote = Lnd::bolt11_payment_quote(
+                        &unit,
+                        payment::Bolt11OutgoingPaymentOptions {
+                            bolt11: invoice_with_amount(
+                                Duration::from_secs(unix_time()),
+                                invoice_amount,
+                            ),
+                            max_fee_amount: None,
+                            timeout_secs: None,
+                            melt_options,
+                            quote_id: cdk_common::QuoteId::new(),
+                        },
+                        &fee_reserve,
+                    )
+                    .unwrap();
+                    assert_eq!(quote.amount, Amount::new(expected, unit.clone()));
+                }
+            }
+        }
     }
 
     #[test]
