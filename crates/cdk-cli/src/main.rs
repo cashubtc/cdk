@@ -419,6 +419,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parses_mint_quote_recovery_options() {
+        let cli = Cli::try_parse_from([
+            "cdk-cli",
+            "mint",
+            "https://mint.example.com",
+            "--quote-id",
+            "lost-quote",
+            "--method",
+            "onchain",
+            "--key-search-limit",
+            "10000",
+        ])
+        .expect("quote recovery should not require an amount");
+        assert!(matches!(cli.command, Commands::Mint(_)));
+    }
+
+    #[test]
     fn danger_accept_invalid_certs_defaults_to_false() {
         let cli = Cli::parse_from(["cdk-cli", "mint-info", "https://mint.example.com"]);
 
