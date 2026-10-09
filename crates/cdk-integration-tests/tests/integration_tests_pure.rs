@@ -2379,6 +2379,8 @@ async fn test_p2bk_multi_key_receive() {
 /// 3. Mints more tokens under the new active keyset
 /// 4. Creates a new wallet with the same seed but empty storage
 /// 5. Restores and verifies that proofs from BOTH keysets are recovered
+/// 6. Resumes recovery of newly minted proofs
+/// 7. Rescans without duplicating balance
 #[tokio::test]
 async fn test_restore_after_keyset_rotation() {
     setup_tracing();
@@ -2434,6 +2436,32 @@ async fn test_restore_after_keyset_rotation() {
         restored.unspent,
         Amount::from(total),
         "Restore should recover proofs from both active and inactive keysets"
+    );
+}
+
+    // Resuming from the saved counters finds only subsequently minted proofs.
+    fund_wallet(wallet.clone(), 8, None)
+        .await
+        .expect("Failed to fund wallet after restore");
+    let resumed = wallet_restored
+        .resume_restore(None)
+        .await
+        .expect("Resume restore failed");
+    assert_eq!(resumed.unspent, Amount::from(8));
+    assert_eq!(
+        wallet_restored.total_balance().await.unwrap(),
+        Amount::from(total + 8)
+    );
+
+    // Looking back across both keysets recovers the same proofs idempotently.
+    let rescanned = wallet_restored
+        .resume_restore_with_opts(Some(100), cdk::wallet::NUT13Options::new(10, 1).unwrap())
+        .await
+        .expect("Restore with lookback failed");
+    assert_eq!(rescanned.unspent, Amount::from(total + 8));
+    assert_eq!(
+        wallet_restored.total_balance().await.unwrap(),
+        Amount::from(total + 8)
     );
 }
 
