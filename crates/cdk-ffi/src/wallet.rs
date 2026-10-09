@@ -367,6 +367,10 @@ impl Wallet {
     ///
     /// Works with all payment methods (Bolt11, Bolt12, and custom payment methods).
     ///
+    /// A quote not created by this wallet instance, such as one fetched after
+    /// restoring from seed, is stored without its NUT-20 signing key. Use
+    /// `fetch_mint_quote_with_key_search` to recover that key.
+    ///
     /// # Arguments
     /// * `quote_id` - The ID of the quote to fetch
     /// * `payment_method` - The payment method for the quote. Required if the quote
@@ -382,6 +386,37 @@ impl Wallet {
     ) -> Result<MintQuote, FfiError> {
         let method = payment_method.map(Into::into);
         let quote = self.inner.fetch_mint_quote(&quote_id, method).await?;
+        Ok(quote.into())
+    }
+
+    /// Fetch a mint quote and try to recover its NUT-20 signing key from the seed.
+    ///
+    /// Use after restoring a wallet from seed to claim a quote whose ID is known
+    /// but whose signing key was lost. Searches the wallet's NUT-20 keys at
+    /// counters `0..key_search_limit` for the public key the mint reports and
+    /// stores the match, advancing the wallet's NUT-20 counter past it.
+    ///
+    /// Succeeds even if no key matched. Check `secret_key` on the returned quote:
+    /// if set, call `mint`; if not, retry with a larger limit. The limit must
+    /// exceed the index the original wallet used, which is below the number of
+    /// locked quotes it created. Zero disables the search. Existing keys and
+    /// NpubCash quotes are left unchanged, and random keys cannot be recovered.
+    ///
+    /// This performs network I/O and writes the quote and counter to the local store.
+    pub async fn fetch_mint_quote_with_key_search(
+        &self,
+        quote_id: String,
+        payment_method: Option<PaymentMethod>,
+        key_search_limit: u32,
+    ) -> Result<MintQuote, FfiError> {
+        let quote = self
+            .inner
+            .fetch_mint_quote_with_key_search(
+                &quote_id,
+                payment_method.map(Into::into),
+                key_search_limit,
+            )
+            .await?;
         Ok(quote.into())
     }
 

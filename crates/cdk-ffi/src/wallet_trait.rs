@@ -296,6 +296,22 @@ impl WalletTraitDef for Wallet {
         Ok(quote.into())
     }
 
+    async fn fetch_mint_quote_with_key_search(
+        &self,
+        quote_id: &str,
+        payment_method: Option<Self::PaymentMethod>,
+        key_search_limit: u32,
+    ) -> Result<Self::MintQuote, Self::Error> {
+        let quote = WalletTraitDef::fetch_mint_quote_with_key_search(
+            self.inner().as_ref(),
+            quote_id,
+            payment_method.map(Into::into),
+            key_search_limit,
+        )
+        .await?;
+        Ok(quote.into())
+    }
+
     async fn prepare_melt(
         &self,
         quote_id: &str,
