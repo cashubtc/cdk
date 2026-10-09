@@ -795,6 +795,27 @@ impl Mint {
 
             self.handle_pending_melt_quote(&mut quote).await?;
 
+            if quote.state == MeltQuoteState::Paid {
+                let mut tx = self.localstore.begin_transaction().await?;
+                quote = tx
+                    .get_melt_quote(quote_id)
+                    .await?
+                    .ok_or(Error::UnknownQuote)?
+                    .inner();
+
+                // Publish completion only after request cleanup commits.
+                if quote.state == MeltQuoteState::Paid
+                    && tx
+                        .get_melt_request_and_blinded_messages(quote_id)
+                        .await?
+                        .is_some()
+                {
+                    quote.state = MeltQuoteState::Pending;
+                    quote.payment_proof = None;
+                }
+                tx.rollback().await?;
+            }
+
             let blind_signatures = self
                 .localstore
                 .get_blind_signatures_for_quote(quote_id)

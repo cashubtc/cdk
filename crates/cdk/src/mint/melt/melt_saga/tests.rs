@@ -1220,6 +1220,7 @@ async fn test_crash_recovery_internal_settlement() {
 /// Returns (mint_quote_id, melt_quote, melt_request, setup saga, input_ys).
 async fn setup_internal_melt(
     mint: &crate::mint::Mint,
+    outputs: Option<Vec<cdk_common::BlindedMessage>>,
 ) -> (
     cdk_common::QuoteId,
     MeltQuote,
@@ -1264,7 +1265,7 @@ async fn setup_internal_melt(
         .unwrap()
         .expect("Melt quote should exist");
 
-    let melt_request = create_test_melt_request(&proofs, &melt_quote);
+    let melt_request = MeltRequest::new(melt_quote.id.clone(), proofs, outputs);
     let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
     let saga = MeltSaga::new(
         std::sync::Arc::new(mint.clone()),
@@ -1295,7 +1296,7 @@ async fn setup_internal_melt(
 async fn test_internal_settlement_aborts_after_rollback() {
     let mint = create_test_mint().await.unwrap();
     let (mint_quote_id, melt_quote, melt_request, setup_saga, input_ys) =
-        setup_internal_melt(&mint).await;
+        setup_internal_melt(&mint, None).await;
     let operation_id = setup_saga.operation_id;
 
     // Roll the melt back (proofs released, quote reset to Unpaid, saga deleted)
@@ -1350,13 +1351,80 @@ async fn test_internal_settlement_aborts_after_rollback() {
     assert_saga_not_exists(&mint, &operation_id).await;
 }
 
+#[tokio::test]
+async fn test_status_poll_waits_for_internal_melt_finalization() {
+    use crate::test_helpers::mint::create_test_blinded_messages;
+
+    let mint = create_test_mint().await.unwrap();
+    let (outputs, _premint) = create_test_blinded_messages(&mint, Amount::from(8_191))
+        .await
+        .unwrap();
+    let (_, melt_quote, melt_request, setup_saga, input_ys) =
+        setup_internal_melt(&mint, Some(outputs)).await;
+    let operation_id = setup_saga.operation_id;
+    let (payment_saga, decision) = setup_saga
+        .attempt_internal_settlement(&melt_request)
+        .await
+        .unwrap();
+    assert!(matches!(
+        decision,
+        crate::mint::melt::melt_saga::state::SettlementDecision::Internal { .. }
+    ));
+
+    let stored = mint
+        .localstore
+        .get_melt_quote(&melt_quote.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.state, MeltQuoteState::Paid);
+    assert_eq!(stored.melt_lock, operation_id.to_string());
+    assert_proofs_state(&mint, &input_ys, Some(State::Pending)).await;
+
+    let response = mint.check_melt_quote(&melt_quote.id).await.unwrap();
+    assert_eq!(response.state(), MeltQuoteState::Pending);
+    assert!(response.payment_proof().is_none());
+    assert!(response.change().is_none());
+    assert_proofs_state(&mint, &input_ys, Some(State::Pending)).await;
+    let stored = mint
+        .localstore
+        .get_melt_quote(&melt_quote.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.state, MeltQuoteState::Paid);
+    assert_eq!(stored.melt_lock, operation_id.to_string());
+
+    let PaymentOutcome::Confirmed(confirmed_saga) =
+        payment_saga.make_payment(decision).await.unwrap()
+    else {
+        panic!("internal settlement should confirm payment");
+    };
+    confirmed_saga.finalize().await.unwrap();
+
+    for _ in 0..2 {
+        let response = mint.check_melt_quote(&melt_quote.id).await.unwrap();
+        assert_eq!(response.state(), MeltQuoteState::Paid);
+        let change = response
+            .change()
+            .expect("finalized melt should return change");
+        assert_eq!(
+            Amount::try_sum(change.iter().map(|signature| signature.amount)).unwrap(),
+            Amount::from(6_000)
+        );
+        assert_proofs_state(&mint, &input_ys, Some(State::Spent)).await;
+        assert_saga_not_exists(&mint, &operation_id).await;
+    }
+    mint.stop().await.unwrap();
+}
+
 /// Test: rollback of an internally settled (Paid) melt quote is refused, and
 /// the in-band finalize still completes normally and spends the proofs.
 #[tokio::test]
 async fn test_rollback_refused_after_internal_settlement() {
     let mint = create_test_mint().await.unwrap();
     let (_mint_quote_id, melt_quote, melt_request, setup_saga, input_ys) =
-        setup_internal_melt(&mint).await;
+        setup_internal_melt(&mint, None).await;
     let operation_id = setup_saga.operation_id;
 
     let (payment_saga, decision) = setup_saga
