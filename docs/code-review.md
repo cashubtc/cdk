@@ -49,7 +49,7 @@ Review CDK changes for observable correctness, Cashu interoperability, safe upgr
 
 ## Wallet API and bindings
 
-- Keep changes to the CDK Wallet API synchronized with `crates/cdk-ffi/src/wallet.rs`, `wallet_trait.rs`, and the conversions under `types/`.
+- Keep changes to the CDK Wallet API synchronized with `crates/cdk-ffi/src/wallet.rs` and the conversions under `types/`.
 - Keep protocol/business logic in the canonical Rust implementation. Bindings should adapt that implementation rather than maintain a second version in another language or a binding-specific Rust crate.
 - Validate generated bindings and the target-language call path when conversions, ownership, errors, async behavior, or packaging change. Rust compilation alone does not verify a usable foreign-language API.
 

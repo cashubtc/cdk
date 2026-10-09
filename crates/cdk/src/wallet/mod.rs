@@ -76,7 +76,6 @@ pub mod test_utils;
 mod transactions;
 pub mod util;
 pub mod wallet_repository;
-mod wallet_trait;
 
 pub use auth::{AuthMintConnector, AuthWallet};
 #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
@@ -1210,12 +1209,78 @@ mod tests {
     use async_trait::async_trait;
     use bitcoin::bip32::DerivationPath;
     use bitcoin::secp256k1::Secp256k1;
+    use cdk_common::nut00::KnownMethod;
     use cdk_common::nut02::KeySetVersion;
-    use cdk_common::nuts::{KeySet, KeySetInfo, KeysetResponse, MintKeySet};
+    use cdk_common::nuts::{KeySet, KeySetInfo, KeysetResponse, MintKeySet, PaymentMethod};
 
     use super::*;
     use crate::nuts::{AuthToken, BlindSignature, BlindedMessage, PreMint, PreMintSecrets};
     use crate::secret::Secret;
+    use crate::wallet::test_utils::{MockMintConnector, TraceWriter};
+
+    async fn test_wallet() -> Wallet {
+        let store = Arc::new(cdk_sqlite::wallet::memory::empty().await.unwrap());
+        WalletBuilder::default()
+            .mint_url(MintUrl::from_str("https://mint.example.com").unwrap())
+            .unit(CurrencyUnit::Sat)
+            .localstore(store)
+            .seed([0u8; 64])
+            .build()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn rate_limiting_round_trips() {
+        let wallet = test_wallet().await;
+        assert!(Wallet::is_rate_limited(&wallet));
+
+        wallet.disable_rate_limiting();
+        assert!(!Wallet::is_rate_limited(&wallet));
+
+        wallet.set_rate_limiting_config(RateLimitConfig::default());
+        assert!(Wallet::is_rate_limited(&wallet));
+    }
+
+    #[tokio::test]
+    async fn flushing_an_untouched_wallet_returns() {
+        let wallet = test_wallet().await;
+        Wallet::flush_rate_limits(&wallet).await;
+    }
+
+    #[tokio::test]
+    async fn custom_payment_extra_is_omitted_from_mint_quote_spans() {
+        let extra = "private-custom-payment-extra";
+        let description = "public-description-marker";
+        let store = Arc::new(cdk_sqlite::wallet::memory::empty().await.unwrap());
+        let connector = Arc::new(MockMintConnector::new());
+        connector.push_post_mint_quote_response(Err(Error::UnsupportedPaymentMethod));
+        let wallet = WalletBuilder::default()
+            .mint_url(MintUrl::from_str("https://mint.example.com").unwrap())
+            .unit(CurrencyUnit::Sat)
+            .localstore(store)
+            .seed([0u8; 64])
+            .shared_client(connector)
+            .build()
+            .unwrap();
+        let capture = TraceWriter::default();
+        let subscriber = capture.subscriber();
+        let guard = tracing::subscriber::set_default(subscriber);
+
+        let _ = Wallet::mint_quote(
+            &wallet,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            Some(Amount::from(7)),
+            Some(description.to_string()),
+            Some(extra.to_string()),
+        )
+        .await;
+
+        drop(guard);
+        let trace = capture.output();
+        assert!(trace.contains("mint_quote"));
+        assert!(trace.contains(description));
+        assert!(!trace.contains(extra));
+    }
 
     fn build_test_auth_keyset(seed_byte: u8) -> KeySet {
         let secp = Secp256k1::new();

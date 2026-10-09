@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### Removed
+
+- cdk-common/cdk/cdk-ffi: **BREAKING** - Remove the shared `wallet::Wallet` trait and its forwarding implementations. Use concrete wallet methods instead; see the [v0.19 migration guide](docs/migrations/v0.19.md#wallet-trait-removal). The exported UniFFI API is unchanged.
+
 ## [0.18.0](https://github.com/cashubtc/cdk/releases/tag/v0.18.0)
 
 ### Summary
