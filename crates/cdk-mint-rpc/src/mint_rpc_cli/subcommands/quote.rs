@@ -3,7 +3,8 @@ use clap::Args;
 use tonic::Request;
 
 use crate::quote::{
-    GetQuoteTtlRequest, MintQuoteState, UpdateMintQuoteStateRequest, UpdateQuoteTtlRequest,
+    GetQuoteTtlRequest, MintQuoteState, UnlockMeltQuoteRequest, UpdateMintQuoteStateRequest,
+    UpdateQuoteTtlRequest,
 };
 use crate::InterceptedQuoteServiceClient;
 
@@ -130,4 +131,43 @@ fn state_name(state: MintQuoteState) -> &'static str {
         MintQuoteState::Paid => "PAID",
         MintQuoteState::Issued => "ISSUED",
     }
+}
+
+/// Command to release the melt execution lock on a melt quote
+///
+/// A locked melt quote has a payment execution in progress that owns its
+/// outcome. This operator override releases the lock without changing the
+/// quote's state, so status checks can resolve the quote again.
+#[derive(Args, Debug)]
+pub struct UnlockMeltQuoteCommand {
+    /// The ID of the melt quote to unlock
+    quote_id: String,
+}
+
+/// Executes the unlock_melt_quote command against the mint server
+///
+/// This function sends an RPC request to release the melt execution lock on
+/// a melt quote.
+///
+/// # Arguments
+/// * `client` - The RPC client used to communicate with the mint
+/// * `sub_command_args` - The quote ID to unlock
+pub async fn unlock_melt_quote(
+    client: &mut InterceptedQuoteServiceClient,
+    sub_command_args: &UnlockMeltQuoteCommand,
+) -> Result<()> {
+    let response = client
+        .unlock_melt_quote(Request::new(UnlockMeltQuoteRequest {
+            quote_id: sub_command_args.quote_id.clone(),
+        }))
+        .await?
+        .into_inner();
+
+    if response.was_locked {
+        println!("Quote {} unlocked", response.quote_id);
+    } else {
+        println!("Quote {} was not locked", response.quote_id);
+    }
+
+    Ok(())
 }
