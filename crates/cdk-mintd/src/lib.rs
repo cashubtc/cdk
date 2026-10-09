@@ -3145,6 +3145,11 @@ engine = "sqlite"
     #[cfg(all(feature = "sqlite", feature = "fakewallet"))]
     #[tokio::test]
     async fn existing_mint_import_verifies_keysets_instead_of_legacy_pubkey() {
+        #[cfg(feature = "sqlcipher")]
+        let password = Some("test-password".to_string());
+        #[cfg(not(feature = "sqlcipher"))]
+        let password: Option<String> = None;
+
         let work_dir = crate::test_utils::unique_temp_path("legacy_mint_identity_import");
         fs::create_dir_all(&work_dir).expect("work directory");
         let secret = work_dir.join("mnemonic");
@@ -3152,9 +3157,10 @@ engine = "sqlite"
         let document = sqlite_configuration_document(&secret, "legacy")
             .replace("[mint_info]", "[mint_info]\npubkey = \"02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619\"");
         let bootstrap = load_database_bootstrap_settings().expect("bootstrap");
-        let (db, keystore, _, config_store) = initial_setup(&work_dir, &bootstrap, None)
-            .await
-            .expect("database");
+        let (db, keystore, _, config_store) =
+            initial_setup(&work_dir, &bootstrap, password.clone())
+                .await
+                .expect("database");
         let mut builder = MintBuilder::new(db.clone());
         builder
             .configure_unit(CurrencyUnit::Sat, Default::default())
@@ -3195,7 +3201,7 @@ engine = "sqlite"
             &document,
             MintInitializationMode::Existing,
             BdkWalletPolicy::RequireExisting,
-            None,
+            password.clone(),
         )
         .await
         .expect_err("wrong seed must fail");
@@ -3215,7 +3221,7 @@ engine = "sqlite"
             &document,
             MintInitializationMode::Existing,
             BdkWalletPolicy::RequireExisting,
-            None,
+            password,
         )
         .await
         .expect("original seed with legacy metadata");
