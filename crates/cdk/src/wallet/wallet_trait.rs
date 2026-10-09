@@ -268,6 +268,17 @@ impl WalletTrait for super::Wallet {
         self.fetch_mint_quote(quote_id, payment_method).await
     }
 
+    #[instrument(skip_all)]
+    async fn fetch_mint_quote_with_key_search(
+        &self,
+        quote_id: &str,
+        payment_method: Option<Self::PaymentMethod>,
+        key_search_limit: u32,
+    ) -> Result<Self::MintQuote, Self::Error> {
+        self.fetch_mint_quote_with_key_search(quote_id, payment_method, key_search_limit)
+            .await
+    }
+
     #[instrument(skip(self, metadata))]
     async fn prepare_melt(
         &self,
