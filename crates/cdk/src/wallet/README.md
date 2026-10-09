@@ -36,3 +36,20 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 ```
+
+## Resume a seed restore
+
+`restore()` and `restore_with_opts()` scan from index zero. After an interrupted
+restore, reuse the same database and seed and call `resume_restore(None)` to
+continue from each keyset's stored next derivation index. To rescan recent
+history, pass a lookback: `resume_restore(Some(100))` starts 100 indices before
+each stored counter, clamped to zero. These methods apply to the wallet's mint
+and unit; keysets without a stored counter start at zero.
+
+Progress is saved after each successfully recovered batch. Empty batches do not
+advance the stored counter, so resuming may repeat the trailing empty portion
+of a scan. Returned amounts include all proofs found in the scanned range,
+including proofs already stored locally.
+
+Use `resume_restore_with_opts(how_far_back, opts)` to override the NUT-13 batch
+size and gap limit, just as with `restore_with_opts(opts)`.
