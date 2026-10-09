@@ -191,11 +191,20 @@ impl Mint {
         }))
     }
 
-    async fn recover_legacy_finalizing_saga(
+    async fn recover_finalizing_saga(
         &self,
         saga: &Saga,
         quote: &MeltQuote,
     ) -> Result<Option<crate::cdk_payment::MakePaymentResponse>, Error> {
+        if let Some(finalization_data) = &saga.finalization_data {
+            return Ok(Some(crate::cdk_payment::MakePaymentResponse {
+                payment_lookup_id: finalization_data.payment_lookup_id.clone(),
+                payment_proof: finalization_data.payment_proof.clone(),
+                status: MeltQuoteState::Paid,
+                total_spent: finalization_data.total_spent.clone(),
+            }));
+        }
+
         if let Some(payment_response) = self.internal_melt_settlement_response(quote).await? {
             tracing::info!(
                 "Legacy Finalizing saga {} identified as internal settlement",
@@ -620,34 +629,21 @@ impl Mint {
                                 saga.operation_id
                             );
 
-                            let payment_response = match saga.finalization_data.clone() {
-                                Some(finalization_data) => {
-                                    crate::cdk_payment::MakePaymentResponse {
-                                        payment_lookup_id: finalization_data.payment_lookup_id,
-                                        payment_proof: finalization_data.payment_proof,
-                                        status: MeltQuoteState::Paid,
-                                        total_spent: finalization_data.total_spent,
-                                    }
+                            let Some(payment_response) = (match self
+                                .recover_finalizing_saga(&saga, &quote)
+                                .await
+                            {
+                                Ok(payment_response) => payment_response,
+                                Err(err) => {
+                                    tracing::error!(
+                                        "Failed to recover Finalizing saga {}: {}. Skipping.",
+                                        saga.operation_id,
+                                        err
+                                    );
+                                    return Ok(());
                                 }
-                                None => {
-                                    let Some(payment_response) = (match self
-                                        .recover_legacy_finalizing_saga(&saga, &quote)
-                                        .await
-                                    {
-                                        Ok(payment_response) => payment_response,
-                                        Err(err) => {
-                                            tracing::error!(
-                                                "Failed to recover legacy Finalizing saga {}: {}. Skipping.",
-                                                saga.operation_id,
-                                                err
-                                            );
-                                            return Ok(());
-                                        }
-                                    }) else {
-                                        return Ok(());
-                                    };
-                                    payment_response
-                                }
+                            }) else {
+                                return Ok(());
                             };
                             let payment_lookup_id = payment_response.payment_lookup_id.clone();
                             let payment_proof = payment_response.payment_proof.clone();
@@ -969,6 +965,26 @@ impl Mint {
                         quote,
                         &self.localstore,
                         &self.pubsub_manager,
+                    )
+                    .await;
+                }
+
+                if saga.state
+                    == cdk_common::mint::SagaStateEnum::Melt(
+                        cdk_common::mint::MeltSagaState::Finalizing,
+                    )
+                {
+                    let Some(payment_response) = self.recover_finalizing_saga(&saga, quote).await?
+                    else {
+                        return Ok(());
+                    };
+                    return super::saga_recovery::process_melt_saga_outcome_with_lease(
+                        &saga,
+                        quote,
+                        &payment_response,
+                        &self.localstore,
+                        &self.pubsub_manager,
+                        self,
                     )
                     .await;
                 }

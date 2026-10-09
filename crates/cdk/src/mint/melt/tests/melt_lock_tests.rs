@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use cdk_common::melt::MeltQuoteRequest;
-use cdk_common::mint::{MeltSagaState, OperationKind, Saga, SagaStateEnum};
+use cdk_common::mint::{MeltFinalizationData, MeltSagaState, OperationKind, Saga, SagaStateEnum};
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nuts::{
     CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MeltRequest, ProofsMethods, State,
@@ -24,7 +24,7 @@ use crate::mint::melt::melt_saga::MeltSaga;
 use crate::mint::melt::shared;
 use crate::mint::saga_recovery;
 use crate::mint::{MeltQuote, Mint, MintBuilder, MintMeltLimits};
-use crate::test_helpers::mint::{create_test_mint, mint_test_proofs};
+use crate::test_helpers::mint::{create_test_blinded_messages, create_test_mint, mint_test_proofs};
 use crate::types::{FeeReserve, QuoteTTL};
 use crate::Error;
 
@@ -48,6 +48,14 @@ async fn create_mint_with_check_state(
     invoice: &Bolt11Invoice,
     check_state: MeltQuoteState,
 ) -> Mint {
+    create_mint_with_check_error(invoice, check_state, false).await
+}
+
+async fn create_mint_with_check_error(
+    invoice: &Bolt11Invoice,
+    check_state: MeltQuoteState,
+    check_error: bool,
+) -> Mint {
     let payment_states = HashMap::from([(
         invoice.payment_hash().to_string(),
         (
@@ -64,7 +72,11 @@ async fn create_mint_with_check_state(
             percent_fee_reserve: 1.0,
         },
         payment_states,
-        std::collections::HashSet::default(),
+        if check_error {
+            std::collections::HashSet::from([invoice.payment_hash().to_string()])
+        } else {
+            std::collections::HashSet::default()
+        },
         2,
         CurrencyUnit::Sat,
     );
@@ -102,6 +114,14 @@ struct PendingMeltSetup {
 /// Runs TX1 of the melt saga and drops the saga, leaving the quote Pending
 /// with the execution lock armed, as an interrupted executor would.
 async fn setup_interrupted_melt(mint: &Mint, invoice: &Bolt11Invoice) -> PendingMeltSetup {
+    setup_interrupted_melt_with_outputs(mint, invoice, None).await
+}
+
+async fn setup_interrupted_melt_with_outputs(
+    mint: &Mint,
+    invoice: &Bolt11Invoice,
+    outputs: Option<Vec<cdk_common::BlindedMessage>>,
+) -> PendingMeltSetup {
     let request = MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
         request: invoice.clone(),
         unit: CurrencyUnit::Sat,
@@ -119,7 +139,7 @@ async fn setup_interrupted_melt(mint: &Mint, invoice: &Bolt11Invoice) -> Pending
         .await
         .unwrap();
     let input_ys = proofs.ys().unwrap();
-    let melt_request = MeltRequest::new(quote.id.clone(), proofs, None);
+    let melt_request = MeltRequest::new(quote.id.clone(), proofs, outputs);
     let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
     let saga = MeltSaga::new(
         Arc::new(mint.clone()),
@@ -518,4 +538,102 @@ async fn status_poll_preserves_unknown_attempted_payment_after_lease_expires() {
         SagaStateEnum::Melt(MeltSagaState::PaymentAttempted)
     );
     mint.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn status_poll_replays_finalizing_handoff_after_lease_expires() {
+    for (check_state, check_error) in [
+        (MeltQuoteState::Unknown, false),
+        (MeltQuoteState::Failed, false),
+        (MeltQuoteState::Unknown, true),
+    ] {
+        let invoice = fake_invoice(MeltQuoteState::Paid, check_state);
+        let mint = create_mint_with_check_error(&invoice, check_state, check_error).await;
+        let (outputs, _premint) = create_test_blinded_messages(&mint, Amount::from(1_023))
+            .await
+            .unwrap();
+        let setup = setup_interrupted_melt_with_outputs(&mint, &invoice, Some(outputs)).await;
+        let finalization_data = MeltFinalizationData {
+            total_spent: Amount::from(9_250).with_unit(CurrencyUnit::Sat),
+            payment_lookup_id: PaymentIdentifier::CustomId("saved-payment".to_string()),
+            payment_proof: Some("saved-preimage".to_string()),
+        };
+        let mut tx = mint.localstore().begin_transaction().await.unwrap();
+        let mut saga = tx
+            .get_saga_for_update(&setup.operation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        tx.update_acquired_saga_with_finalization_data(
+            &mut saga,
+            SagaStateEnum::Melt(MeltSagaState::Finalizing),
+            Some(&finalization_data),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        mint.stop().await.unwrap();
+        mint.start().await.unwrap();
+        let response = mint.check_melt_quote(&setup.quote.id).await.unwrap();
+        assert_eq!(response.state(), MeltQuoteState::Pending);
+        assert!(proofs_state(&mint, &setup.input_ys)
+            .await
+            .iter()
+            .all(|state| *state == Some(State::Pending)));
+
+        let mut tx = mint.localstore().begin_transaction().await.unwrap();
+        assert!(tx
+            .renew_melt_quote_lease(&setup.quote.id, &setup.operation_id.to_string(), 0)
+            .await
+            .unwrap());
+        tx.commit().await.unwrap();
+
+        for _ in 0..2 {
+            let response = mint.check_melt_quote(&setup.quote.id).await.unwrap();
+            assert_eq!(response.state(), MeltQuoteState::Paid);
+            assert_eq!(
+                response.payment_proof(),
+                finalization_data.payment_proof.as_deref()
+            );
+            let change = response
+                .change()
+                .expect("finalized melt should return change");
+            assert_eq!(
+                Amount::try_sum(change.iter().map(|signature| signature.amount)).unwrap(),
+                Amount::from(750)
+            );
+            let quote = stored_quote(&mint, &setup.quote.id).await;
+            assert_eq!(
+                quote.request_lookup_id.as_ref(),
+                Some(&finalization_data.payment_lookup_id)
+            );
+            assert!(!quote.is_locked());
+            assert!(proofs_state(&mint, &setup.input_ys)
+                .await
+                .iter()
+                .all(|state| *state == Some(State::Spent)));
+            assert!(mint
+                .localstore()
+                .get_melt_saga_by_quote_id(&setup.quote.id)
+                .await
+                .unwrap()
+                .is_none());
+            let operation = mint
+                .localstore()
+                .get_completed_operation(&setup.operation_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(operation.total_issued(), Amount::from(750));
+            let mut tx = mint.localstore().begin_transaction().await.unwrap();
+            assert!(tx
+                .get_melt_request_and_blinded_messages(&setup.quote.id)
+                .await
+                .unwrap()
+                .is_none());
+            tx.rollback().await.unwrap();
+        }
+        mint.stop().await.unwrap();
+    }
 }
