@@ -148,7 +148,12 @@ impl SpendReceipt {
             }
             let witness: Witness =
                 serde_json::from_str(&receipt.witness).map_err(|_| Error::InvalidWitness)?;
-            witness.verify(&proof.secret.to_string(), digest, now)?;
+            witness.verify_in(
+                &proof.secret.to_string(),
+                digest,
+                Some(transaction.outputs()),
+                now,
+            )?;
             let state = states_by_y
                 .get(&y)
                 .copied()
