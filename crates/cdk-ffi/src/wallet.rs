@@ -1201,8 +1201,6 @@ pub fn mnemonic_to_entropy(mnemonic: String) -> Result<Vec<u8>, FfiError> {
 
 #[cfg(test)]
 mod tests {
-    use cdk_common::wallet::Wallet as WalletTrait;
-
     use super::*;
     use crate::database::custom_wallet_store;
     use crate::sqlite::WalletSqliteDatabase;
@@ -1228,7 +1226,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn mint_unissued_quotes_is_available_on_wallet_and_trait() {
+    async fn mint_unissued_quotes_is_available_on_wallet() {
         let wallet = test_wallet();
 
         let minted = wallet
@@ -1236,11 +1234,6 @@ mod tests {
             .await
             .expect("empty quote store should mint zero");
         assert!(minted.is_zero());
-
-        let trait_minted = <Wallet as WalletTrait>::mint_unissued_quotes(&wallet)
-            .await
-            .expect("trait call should mint zero from empty quote store");
-        assert!(trait_minted.is_zero());
     }
 
     #[test]
@@ -1356,26 +1349,22 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn flush_rate_limits_is_available_on_wallet_and_trait() {
+    async fn flush_rate_limits_is_available_on_wallet() {
         let wallet = test_wallet();
 
         wallet.flush_rate_limits().await;
-        <Wallet as WalletTrait>::flush_rate_limits(&wallet).await;
     }
 
     #[test]
-    fn rate_limiting_round_trips_through_the_trait() {
+    fn rate_limiting_round_trips() {
         let wallet = test_wallet();
-        assert!(<Wallet as WalletTrait>::is_rate_limited(&wallet));
+        assert!(wallet.is_rate_limited());
 
-        <Wallet as WalletTrait>::set_rate_limiting_config(&wallet, None);
-        assert!(!<Wallet as WalletTrait>::is_rate_limited(&wallet));
+        wallet.set_rate_limit(RateLimit::Disabled).unwrap();
+        assert!(!wallet.is_rate_limited());
 
-        <Wallet as WalletTrait>::set_rate_limiting_config(
-            &wallet,
-            Some(RateLimitConfig::default()),
-        );
-        assert!(<Wallet as WalletTrait>::is_rate_limited(&wallet));
+        wallet.set_rate_limit(RateLimit::Default).unwrap();
+        assert!(wallet.is_rate_limited());
     }
 
     #[cfg(feature = "npubcash")]
