@@ -996,6 +996,39 @@ impl Mint {
                     return Ok(());
                 }
 
+                if saga.state
+                    == cdk_common::mint::SagaStateEnum::Melt(
+                        cdk_common::mint::MeltSagaState::SetupComplete,
+                    )
+                {
+                    // Startup may have skipped this setup while its lease was live.
+                    // The claimed lease and durable state now permit compensation.
+                    let input_ys = self
+                        .localstore
+                        .get_proof_ys_by_operation_id(&saga.operation_id)
+                        .await?;
+                    let blinded_secrets = self
+                        .localstore
+                        .get_blinded_secrets_by_operation_id(&saga.operation_id)
+                        .await?;
+                    super::melt::shared::rollback_setup_melt_quote(
+                        &self.localstore,
+                        &self.pubsub_manager,
+                        &quote.id,
+                        &input_ys,
+                        &blinded_secrets,
+                        &saga.operation_id,
+                        &quote.melt_lock,
+                    )
+                    .await?;
+                    *quote = self
+                        .localstore
+                        .get_melt_quote(&quote.id)
+                        .await?
+                        .ok_or(Error::UnknownQuote)?;
+                    return Ok(());
+                }
+
                 let payment_response = self.check_melt_payment_status(quote).await?;
 
                 super::saga_recovery::process_melt_saga_outcome_with_lease(
