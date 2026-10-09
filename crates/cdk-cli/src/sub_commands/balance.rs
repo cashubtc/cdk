@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::CurrencyUnit;
 use cdk::wallet::WalletRepository;
@@ -20,7 +20,10 @@ pub async fn balance(
         // Aggregate totals per currency unit
         let mut unit_totals: BTreeMap<CurrencyUnit, Amount> = BTreeMap::new();
         for (_, unit, amount) in &mint_balances {
-            *unit_totals.entry(unit.clone()).or_insert(Amount::ZERO) += *amount;
+            let entry = unit_totals.entry(unit.clone()).or_insert(Amount::ZERO);
+            *entry = entry
+                .checked_add(*amount)
+                .ok_or_else(|| anyhow!("unit total overflowed"))?;
         }
 
         println!();

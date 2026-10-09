@@ -1493,7 +1493,10 @@ async fn test_p2pk_send_force_swap_with_fees() {
     );
 
     // Verify wallet balance decreased by amount + swap_fee
-    let expected_balance = Amount::from(64) - send_amount - swap_fee;
+    let expected_balance = Amount::from(64)
+        .checked_sub(send_amount)
+        .and_then(|b| b.checked_sub(swap_fee))
+        .expect("balance");
     assert_eq!(
         expected_balance,
         wallet.total_balance().await.unwrap(),
@@ -1566,7 +1569,7 @@ async fn test_p2pk_send_force_swap_with_fees_include_fee() {
     let keysets_info = to_keyset_infos(&wallet_sender.keysets(Default::default()).await.unwrap());
     let token_proofs = token.proofs(&keysets_info).unwrap();
     assert_eq!(
-        send_amount + send_fee,
+        send_amount.checked_add(send_fee).expect("total"),
         token_proofs.total_amount().unwrap(),
         "Token should contain send amount + redemption fee"
     );
@@ -1590,7 +1593,11 @@ async fn test_p2pk_send_force_swap_with_fees_include_fee() {
     );
 
     // Verify sender balance
-    let expected_sender_balance = Amount::from(64) - send_amount - swap_fee - send_fee;
+    let expected_sender_balance = Amount::from(64)
+        .checked_sub(send_amount)
+        .and_then(|b| b.checked_sub(swap_fee))
+        .and_then(|b| b.checked_sub(send_fee))
+        .expect("balance");
     assert_eq!(
         expected_sender_balance,
         wallet_sender.total_balance().await.unwrap(),

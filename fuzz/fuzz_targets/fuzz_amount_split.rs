@@ -4,7 +4,7 @@
 
 use std::collections::BTreeSet;
 
-use cashu::amount::{FeeAndAmounts, SplitTarget};
+use cashu::amount::{Error, FeeAndAmounts, SplitTarget};
 use cashu::Amount;
 use libfuzzer_sys::arbitrary::{Arbitrary, Unstructured};
 use libfuzzer_sys::fuzz_target;
@@ -84,10 +84,8 @@ fuzz_target!(|input: Input| {
     denominations.insert(1);
     denominations.retain(|&d| d > 0);
     let denominations = denominations.into_iter().collect::<Vec<_>>();
-    // Bound fee to keep split_with_fee's recursion converging.  With fee
-    // ppk >= 1000/len(denominations) the recursion diverges (stack overflow).
-    let fee_and_amounts = FeeAndAmounts::from((u64::from(input.fee % 11),
-        denominations.clone()));
+    let fee_and_amounts =
+        FeeAndAmounts::from((u64::from(input.fee), denominations.clone()));
 
     let split = amount
         .split(&fee_and_amounts)
@@ -118,21 +116,32 @@ fuzz_target!(|input: Input| {
         assert_split_invariants(&targeted, amount, &denominations);
     }
 
-    if let Ok(with_fee) = amount.split_with_fee(&fee_and_amounts) {
-        let total = Amount::try_sum(with_fee.iter().copied())
-            .expect("bounded fee-adjusted split cannot overflow");
-        let fee = Amount::from(
-            (with_fee.len() as u64 * fee_and_amounts.fee()).div_ceil(1000),
-        );
-        assert!(
-            total.checked_sub(fee).is_some_and(|net| net >= amount),
-            "fee-adjusted split must cover the requested net amount"
-        );
-        assert!(
-            with_fee
-                .iter()
-                .all(|part| denominations.contains(&part.to_u64())),
-            "fee-adjusted parts must use available denominations"
-        );
+    match amount.split_with_fee(&fee_and_amounts) {
+        Ok(with_fee) => {
+            let total = Amount::try_sum(with_fee.iter().copied())
+                .expect("bounded fee-adjusted split cannot overflow");
+            let fee = Amount::from(
+                (with_fee.len() as u64 * fee_and_amounts.fee()).div_ceil(1000),
+            );
+            assert!(
+                total.checked_sub(fee).is_some_and(|net| net >= amount),
+                "fee-adjusted split must cover the requested net amount"
+            );
+            assert!(
+                with_fee
+                    .iter()
+                    .all(|part| denominations.contains(&part.to_u64())),
+                "fee-adjusted parts must use available denominations"
+            );
+        }
+        Err(err) => assert!(
+            matches!(
+                err,
+                Error::SplitWithFeeDidNotConverge(_)
+                    | Error::AmountOverflow
+                    | Error::SplitTooManyParts(_, _)
+            ),
+            "split_with_fee must fail in a bounded way, got {err:?}"
+        ),
     }
 });

@@ -238,7 +238,10 @@ impl SendIntent<AwaitingConfirmation> {
     /// The tombstone preserves `total_spent` and `outpoint` so that
     /// `check_outgoing_payment` returns correct data after the intent is gone.
     pub async fn finalize(self, storage: &BdkStorage) -> Result<(), Error> {
-        let total_spent_sat = self.amount + self.state.fee_contribution_sat;
+        let total_spent_sat = self
+            .amount
+            .checked_add(self.state.fee_contribution_sat)
+            .ok_or(cdk_common::amount::Error::AmountOverflow)?;
 
         let tombstone = FinalizedSendIntentRecord {
             intent_id: self.intent_id,

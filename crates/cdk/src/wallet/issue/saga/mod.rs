@@ -660,7 +660,9 @@ impl<'a> MintSaga<'a, Initial> {
                 *quote = refreshed;
             }
 
-            total_amount += mintable;
+            total_amount = total_amount
+                .checked_add(mintable)
+                .ok_or(Error::AmountOverflow)?;
             quote_amounts.push(mintable);
         }
 
@@ -1030,7 +1032,10 @@ impl<'a> MintSaga<'a, Prepared> {
                     minted_amount
                 };
 
-                quote_info.amount_issued += amount_issued;
+                quote_info.amount_issued = quote_info
+                    .amount_issued
+                    .checked_add(amount_issued)
+                    .ok_or(Error::AmountOverflow)?;
                 wallet.localstore.add_mint_quote(quote_info.clone()).await?;
             }
 

@@ -339,7 +339,15 @@ impl LightningClient for LndClient {
     }
 
     async fn create_invoice(&self, amount_sat: Option<u64>) -> Result<String> {
-        let value_msat = amount_sat.map(|a| (a * 1_000) as i64).unwrap_or(0);
+        let value_msat = match amount_sat {
+            Some(amount_sat) => {
+                let msat = amount_sat
+                    .checked_mul(1_000)
+                    .ok_or_else(|| anyhow!("amount is too large to express in millisatoshis"))?;
+                i64::try_from(msat)?
+            }
+            None => 0,
+        };
 
         let invoice_request = fedimint_tonic_lnd::lnrpc::Invoice {
             value_msat,

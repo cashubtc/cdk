@@ -63,7 +63,12 @@ impl CdkBdk {
                 payment_lookup_id: PaymentIdentifier::QuoteId(quote_id.clone()),
                 payment_proof: Some(outpoint),
                 status: MeltQuoteState::Paid,
-                total_spent: Amount::new(amount + fee, CurrencyUnit::Sat),
+                total_spent: Amount::new(
+                    amount
+                        .checked_add(fee)
+                        .ok_or(cdk_common::amount::Error::AmountOverflow)?,
+                    CurrencyUnit::Sat,
+                ),
             };
 
             if let Err(err) = self

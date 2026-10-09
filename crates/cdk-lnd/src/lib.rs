@@ -4,7 +4,6 @@
 
 #![doc = include_str!("../README.md")]
 
-use std::cmp::max;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::str::FromStr;
@@ -108,18 +107,14 @@ impl Lnd {
         // The quote must cover the entire millisatoshi principal.
         let amount = Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to_ceil(unit)?;
 
-        let relative_fee_reserve = (fee_reserve.percent_fee_reserve * amount.value() as f32) as u64;
-
-        let absolute_fee_reserve: u64 = fee_reserve.min_fee_reserve.into();
-
-        let fee = max(relative_fee_reserve, absolute_fee_reserve);
+        let fee = fee_reserve.for_amount(amount.clone().into());
 
         Ok(PaymentQuoteResponse {
             request_lookup_id: Some(PaymentIdentifier::PaymentHash(
                 *bolt11_options.bolt11.payment_hash().as_ref(),
             )),
             amount,
-            fee: Amount::new(fee, unit.clone()),
+            fee: Amount::new(fee.to_u64(), unit.clone()),
             state: MeltQuoteState::Unpaid,
             extra_json: None,
             estimated_blocks: None,
@@ -796,9 +791,11 @@ impl MintPayment for Lnd {
                                 };
 
                                 // Get the actual amount paid in msats
-                                let total_amt_msat: u64 = payment_response
-                                    .route
-                                    .map_or(0, |route| route.total_amt_msat as u64);
+                                let total_amt_msat: u64 = match payment_response.route {
+                                    Some(route) => u64::try_from(route.total_amt_msat)
+                                        .map_err(|_| Error::AmountOverflow)?,
+                                    None => 0,
+                                };
 
                                 return Ok(MakePaymentResponse {
                                     payment_lookup_id: PaymentIdentifier::PaymentHash(
@@ -912,6 +909,7 @@ impl MintPayment for Lnd {
                             let total_msat = update
                                 .value_msat
                                 .checked_add(update.fee_msat)
+                                .and_then(|total| u64::try_from(total).ok())
                                 .ok_or(Error::AmountOverflow)?;
 
                             let payment_preimage = if update.payment_preimage.is_empty() {
@@ -927,7 +925,8 @@ impl MintPayment for Lnd {
                                 payment_lookup_id: payment_identifier,
                                 payment_proof: payment_preimage,
                                 status: response_status,
-                                total_spent: Amount::new(total_msat as u64, CurrencyUnit::Msat).convert_to_ceil(unit)?,
+                                total_spent: Amount::new(total_msat, CurrencyUnit::Msat)
+                                    .convert_to_ceil(unit)?,
                             });
                         }
 

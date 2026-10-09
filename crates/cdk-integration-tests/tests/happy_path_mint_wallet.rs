@@ -376,7 +376,9 @@ async fn test_restore() {
     // Since we have to do a swap we expect to restore amount - fee
     assert_eq!(
         wallet_2.total_balance().await.unwrap(),
-        Amount::from(100) - expected_fee
+        Amount::from(100)
+            .checked_sub(expected_fee)
+            .expect("balance")
     );
 
     let proofs = wallet.get_unspent_proofs().await.unwrap();
@@ -482,7 +484,7 @@ async fn test_restore_large_proof_count() {
     for batch in proofs.chunks(batch_size as usize) {
         let batch_vec = batch.to_vec();
         let batch_fee = wallet_2.get_proofs_fee(&batch_vec).await.unwrap().total;
-        total_fee += batch_fee;
+        total_fee = total_fee.checked_add(batch_fee).expect("total fee");
         wallet_2
             .swap(
                 None,
@@ -499,7 +501,9 @@ async fn test_restore_large_proof_count() {
     // Since we have to do a swap we expect to restore amount - fee
     assert_eq!(
         wallet_2.total_balance().await.unwrap(),
-        Amount::from(mint_amount) - total_fee
+        Amount::from(mint_amount)
+            .checked_sub(total_fee)
+            .expect("balance")
     );
 
     let proofs = wallet.get_unspent_proofs().await.unwrap();
@@ -631,7 +635,9 @@ async fn test_restore_with_counter_gap() {
         .await
         .expect("first swap after restore failed");
 
-    let balance_after_first_swap = Amount::from(200) - expected_fee;
+    let balance_after_first_swap = Amount::from(200)
+        .checked_sub(expected_fee)
+        .expect("balance");
     assert_eq!(
         wallet_restored.total_balance().await.unwrap(),
         balance_after_first_swap
@@ -1072,6 +1078,9 @@ async fn test_pay_invoice_twice() {
 
     assert_eq!(
         balance,
-        (Amount::from(100) - melt.fee_paid() - melt.amount())
+        (Amount::from(100)
+            .checked_sub(melt.fee_paid())
+            .and_then(|b| b.checked_sub(melt.amount()))
+            .expect("balance"))
     );
 }

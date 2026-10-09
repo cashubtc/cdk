@@ -647,7 +647,7 @@ impl WalletRepository {
         let mut by_unit: BTreeMap<CurrencyUnit, cdk_common::Amount> = BTreeMap::new();
         for (key, amount) in balances {
             let entry = by_unit.entry(key.unit).or_insert(cdk_common::Amount::ZERO);
-            *entry += amount;
+            *entry = entry.checked_add(amount).ok_or(Error::AmountOverflow)?;
         }
         Ok(by_unit)
     }
@@ -1055,7 +1055,9 @@ impl WalletRepository {
 
         for wallet in wallets_to_check {
             let minted = wallet.mint_unissued_quotes().await?;
-            total_minted += minted;
+            total_minted = total_minted
+                .checked_add(minted)
+                .ok_or(Error::AmountOverflow)?;
         }
 
         Ok(total_minted)
