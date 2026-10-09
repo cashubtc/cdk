@@ -432,3 +432,90 @@ async fn startup_recovers_only_expired_leases() {
         .iter()
         .all(|state| state.is_none()));
 }
+
+#[tokio::test]
+async fn status_poll_recovers_setup_skipped_at_restart_after_lease_expires() {
+    let invoice = fake_invoice(MeltQuoteState::Unknown, MeltQuoteState::Unknown);
+    let mint = create_mint_with_check_state(&invoice, MeltQuoteState::Unknown).await;
+    let setup = setup_interrupted_melt(&mint, &invoice).await;
+
+    mint.stop().await.unwrap();
+    mint.start().await.unwrap();
+
+    let response = mint.check_melt_quote(&setup.quote.id).await.unwrap();
+    assert_eq!(response.state(), MeltQuoteState::Pending);
+    let current = stored_quote(&mint, &setup.quote.id).await;
+    assert_eq!(current.melt_lock, setup.operation_id.to_string());
+    assert!(proofs_state(&mint, &setup.input_ys)
+        .await
+        .iter()
+        .all(|state| *state == Some(State::Pending)));
+
+    // Expire the abandoned lease without running startup recovery again.
+    let mut tx = mint.localstore().begin_transaction().await.unwrap();
+    assert!(tx
+        .renew_melt_quote_lease(&setup.quote.id, &setup.operation_id.to_string(), 0)
+        .await
+        .unwrap());
+    tx.commit().await.unwrap();
+
+    for _ in 0..2 {
+        let response = mint.check_melt_quote(&setup.quote.id).await.unwrap();
+        assert_eq!(response.state(), MeltQuoteState::Unpaid);
+        assert!(!stored_quote(&mint, &setup.quote.id).await.is_locked());
+        assert!(proofs_state(&mint, &setup.input_ys)
+            .await
+            .iter()
+            .all(Option::is_none));
+        assert!(mint
+            .localstore()
+            .get_melt_saga_by_quote_id(&setup.quote.id)
+            .await
+            .unwrap()
+            .is_none());
+        let mut tx = mint.localstore().begin_transaction().await.unwrap();
+        assert!(tx
+            .get_melt_request_and_blinded_messages(&setup.quote.id)
+            .await
+            .unwrap()
+            .is_none());
+        tx.rollback().await.unwrap();
+    }
+    mint.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn status_poll_preserves_unknown_attempted_payment_after_lease_expires() {
+    let invoice = fake_invoice(MeltQuoteState::Unknown, MeltQuoteState::Unknown);
+    let mint = create_mint_with_check_state(&invoice, MeltQuoteState::Unknown).await;
+    let setup = setup_interrupted_melt(&mint, &invoice).await;
+    set_saga_state(&mint, &setup.operation_id, MeltSagaState::PaymentAttempted).await;
+
+    mint.stop().await.unwrap();
+    mint.start().await.unwrap();
+    let mut tx = mint.localstore().begin_transaction().await.unwrap();
+    assert!(tx
+        .renew_melt_quote_lease(&setup.quote.id, &setup.operation_id.to_string(), 0)
+        .await
+        .unwrap());
+    tx.commit().await.unwrap();
+
+    let response = mint.check_melt_quote(&setup.quote.id).await.unwrap();
+    assert_eq!(response.state(), MeltQuoteState::Pending);
+    assert!(proofs_state(&mint, &setup.input_ys)
+        .await
+        .iter()
+        .all(|state| *state == Some(State::Pending)));
+    let saga = mint
+        .localstore()
+        .get_melt_saga_by_quote_id(&setup.quote.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(saga.operation_id, setup.operation_id);
+    assert_eq!(
+        saga.state,
+        SagaStateEnum::Melt(MeltSagaState::PaymentAttempted)
+    );
+    mint.stop().await.unwrap();
+}
