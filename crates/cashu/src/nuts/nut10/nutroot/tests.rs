@@ -954,7 +954,11 @@ fn shared_template_leaf_vectors() {
     let transaction = transaction_from_vector(&case["tx"]);
     assert_eq!(transaction.outputs(), bytes(&case["output_section"]));
     let leaf = Leaf::from_bytes(&bytes(&case["leaf"])).unwrap();
-    assert_eq!(leaf.condition(), &Condition::Template(hash(&case["hash"])));
+    let vest = shared["two_leaf_covenant"]["vest_time"].as_u64().unwrap();
+    assert_eq!(
+        leaf.condition(),
+        &Condition::Template(vest, hash(&case["hash"]))
+    );
     assert_eq!(leaf.to_bytes(), bytes(&case["leaf"]));
     let secret = case["secret"].as_str().unwrap();
     let digest = transaction.input_digest(0).unwrap();

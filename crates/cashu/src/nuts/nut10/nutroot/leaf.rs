@@ -16,7 +16,7 @@ pub enum Condition {
     /// An inert commitment to external data; never spendable.
     Commit([u8; 32]),
     /// Signatures are valid only in a transaction whose output section hashes to this digest.
-    Template([u8; 32]),
+    Template(u64, [u8; 32]),
 }
 
 /// Validated version-zero declarative condition leaf.
@@ -62,7 +62,7 @@ impl Leaf {
         {
             return Err(Error::InvalidLeaf);
         }
-        if matches!(self.condition, Condition::After(time) if time > (1 << 53) - 1)
+        if matches!(self.condition, Condition::After(time) | Condition::Template(time, _) if time > (1 << 53) - 1)
             || self.keys.len() > 15
             || self.to_bytes().len() > 513
         {
@@ -118,7 +118,7 @@ impl Leaf {
             (4, None, Some(hash)) if n.is_none() && keys.is_none() && !disclosure => {
                 Condition::Commit(hash)
             }
-            (5, None, Some(hash)) => Condition::Template(hash),
+            (5, Some(time), Some(hash)) => Condition::Template(time, hash),
             _ => return Err(Error::InvalidLeaf),
         };
         let leaf = match condition {
@@ -142,7 +142,7 @@ impl Leaf {
                 Condition::After(_) => 2,
                 Condition::Hashlock(_) => 3,
                 Condition::Commit(_) => 4,
-                Condition::Template(_) => 5,
+                Condition::Template(..) => 5,
             },
         ];
         if !matches!(self.condition, Condition::Commit(_)) {
@@ -152,9 +152,11 @@ impl Leaf {
         }
         match self.condition {
             Condition::After(time) => record(&mut bytes, 6, &integer(time)),
-            Condition::Hashlock(hash) | Condition::Commit(hash) | Condition::Template(hash) => {
+            Condition::Template(time, hash) => {
+                record(&mut bytes, 6, &integer(time));
                 record(&mut bytes, 8, &hash)
             }
+            Condition::Hashlock(hash) | Condition::Commit(hash) => record(&mut bytes, 8, &hash),
             Condition::Threshold => {}
         }
         if self.disclosure {

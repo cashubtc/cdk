@@ -186,7 +186,8 @@ impl Witness {
                     return Err(Error::InvalidWitness);
                 }
             }
-            Condition::Template(hash) => {
+            // Before its time a template is a covenant; from then on a threshold over its keys.
+            Condition::Template(time, hash) if now < *time => {
                 let outputs = outputs.ok_or(Error::InvalidWitness)?;
                 let actual: [u8; 32] = Sha256::digest(outputs).into();
                 if actual != *hash {
