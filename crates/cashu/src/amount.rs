@@ -343,7 +343,12 @@ impl Amount<()> {
         Ok(parts)
     }
 
-    /// Splits amount into powers of two while accounting for the swap fee
+    /// Splits into the available denominations, inflating the total until the
+    /// parts still cover their own swap fee.
+    ///
+    /// Walks at most [`MAX_SPLIT_WITH_FEE_STEPS`] one-unit steps before giving
+    /// up with [`Error::SplitWithFeeDidNotConverge`], since a fee large
+    /// relative to the smallest denomination may never converge.
     pub fn split_with_fee(&self, fee_and_amounts: &FeeAndAmounts) -> Result<Vec<Self>, Error> {
         let mut target = *self;
 

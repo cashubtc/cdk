@@ -788,7 +788,10 @@ mod tests {
                     } else {
                         Amount::ZERO
                     };
-                    assert!(selected.total_amount().unwrap() >= Amount::from(requested) + cost);
+                    assert!(
+                        selected.total_amount().unwrap()
+                            >= Amount::from(requested).checked_add(cost).unwrap()
+                    );
                     assert!(selected.iter().all(|p| proofs.contains(p)));
                     assert_eq!(
                         selected.iter().collect::<HashSet<_>>().len(),
@@ -843,7 +846,10 @@ mod tests {
                 } else {
                     Amount::ZERO
                 };
-                assert_eq!(selected.total_amount().unwrap(), Amount::from(4) + cost);
+                assert_eq!(
+                    selected.total_amount().unwrap(),
+                    Amount::from(4).checked_add(cost).unwrap()
+                );
                 assert_eq!(
                     selected.iter().collect::<std::collections::HashSet<_>>(),
                     proofs[..selected.len()].iter().collect()
