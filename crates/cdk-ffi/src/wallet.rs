@@ -231,6 +231,30 @@ impl Wallet {
         Ok(restored.into())
     }
 
+    /// Resume restoring this mint and unit from each keyset's stored next
+    /// derivation index minus `how_far_back`, clamped to zero.
+    /// `None` defaults to zero lookback. Progress is saved after each
+    /// recovered batch; returned amounts include already stored proofs
+    /// encountered in the scanned range.
+    #[uniffi::method(default(how_far_back = None))]
+    pub async fn resume_restore(&self, how_far_back: Option<u32>) -> Result<Restored, FfiError> {
+        let restored = self.inner.resume_restore(how_far_back).await?;
+        Ok(restored.into())
+    }
+
+    /// Resume restoring with a lookback and custom NUT-13 options.
+    pub async fn resume_restore_with_opts(
+        &self,
+        how_far_back: Option<u32>,
+        opts: NUT13Options,
+    ) -> Result<Restored, FfiError> {
+        let restored = self
+            .inner
+            .resume_restore_with_opts(how_far_back, opts.try_into()?)
+            .await?;
+        Ok(restored.into())
+    }
+
     /// Verify token DLEQ proofs
     pub async fn verify_token_dleq(&self, token: std::sync::Arc<Token>) -> Result<(), FfiError> {
         let cdk_token = token.inner.clone();

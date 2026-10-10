@@ -1312,6 +1312,17 @@ pub trait Wallet: Send + Sync {
     /// Restore wallet from seed with custom [`NUT13Options`]
     async fn restore_with_opts(&self, opts: NUT13Options) -> Result<Restored, Self::Error>;
 
+    /// Resume restoring from each keyset's stored next derivation index,
+    /// looking back by `how_far_back` indices (defaults to zero), clamped to zero.
+    async fn resume_restore(&self, how_far_back: Option<u32>) -> Result<Restored, Self::Error>;
+
+    /// Resume restoring with a lookback and custom [`NUT13Options`].
+    async fn resume_restore_with_opts(
+        &self,
+        how_far_back: Option<u32>,
+        opts: NUT13Options,
+    ) -> Result<Restored, Self::Error>;
+
     /// Verify DLEQ proofs in a token
     async fn verify_token_dleq(&self, token_str: &str) -> Result<(), Self::Error>;
 
