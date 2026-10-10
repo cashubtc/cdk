@@ -26,7 +26,11 @@ mod tests {
     use cdk_common::nut00::KnownMethod;
     use cdk_common::nuts::{ProofDleq, State};
     use cdk_common::secret::Secret;
+    use cdk_sql_common::database::ConnectionWithTransaction;
+    use cdk_sql_common::pool::Pool;
+    use cdk_sql_common::wallet::test::{assert_mint_id_migrated, seed_pre_mint_id};
 
+    use crate::common::SqliteConnectionManager;
     use crate::WalletSqliteDatabase;
 
     #[tokio::test]
@@ -78,6 +82,7 @@ mod tests {
         // Create a proof with DLEQ
         let keyset_id = Id::from_str("00deadbeef123456").unwrap();
         let mint_url = MintUrl::from_str("https://example.com").unwrap();
+        db.add_mint(mint_url.clone(), None).await.unwrap();
         let secret = Secret::new("test_secret_for_dleq");
 
         // Create DLEQ components
@@ -158,6 +163,7 @@ mod tests {
 
         // Test PaymentMethod variants
         let mint_url = MintUrl::from_str("https://example.com").unwrap();
+        db.add_mint(mint_url.clone(), None).await.unwrap();
         let quote_signing_key = SecretKey::generate();
         let payment_methods = [
             PaymentMethod::Known(KnownMethod::Bolt11),
@@ -239,6 +245,7 @@ mod tests {
 
         let keyset_id = Id::from_str("00deadbeef123456").unwrap();
         let mint_url = MintUrl::from_str("https://example.com").unwrap();
+        db.add_mint(mint_url.clone(), None).await.unwrap();
 
         let mut proof_infos = vec![];
         let mut expected_ys = vec![];
@@ -311,6 +318,7 @@ mod tests {
         let db = WalletSqliteDatabase::new(path).await.unwrap();
 
         let mint_url = MintUrl::from_str("https://example.com").unwrap();
+        db.add_mint(mint_url.clone(), None).await.unwrap();
 
         // Quote 1: Fully paid and issued (should NOT be returned)
         let quote1 = MintQuote {
@@ -411,5 +419,49 @@ mod tests {
 
         // Verify that fully paid and issued quote is not returned
         assert!(!quote_ids.contains(&"quote_fully_paid"));
+    }
+
+    /// Checks the `mint_url` to `mint_id` conversion over real rows.
+    ///
+    /// The seed and the assertions are shared with the Postgres test, since the two dialects take
+    /// completely different routes to the same end state and only a real row proves either one.
+    ///
+    /// The reopen at the end is load-bearing: the migration has to be recorded under its own name
+    /// and skipped, or the second run would try to convert a `mint_url` column that is gone.
+    #[tokio::test]
+    async fn migrates_mint_url_to_mint_id() {
+        let path = std::env::temp_dir()
+            .join(format!("cdk-test-mint-id-{}.sqlite", uuid::Uuid::new_v4()))
+            .to_string_lossy()
+            .to_string();
+
+        let pool = Pool::<SqliteConnectionManager>::new(path.as_str().into());
+
+        {
+            let conn = pool.get().await.expect("connection");
+            let tx = ConnectionWithTransaction::new(conn)
+                .await
+                .expect("transaction");
+
+            seed_pre_mint_id(&tx, "sqlite").await.expect("seed");
+
+            tx.commit().await.expect("commit");
+        }
+
+        let db = WalletSqliteDatabase::new(path.as_str())
+            .await
+            .expect("migration applies");
+
+        {
+            let conn = pool.get().await.expect("connection");
+            assert_mint_id_migrated(&*conn).await.expect("assertions");
+        }
+
+        WalletSqliteDatabase::new(path.as_str())
+            .await
+            .expect("migration is recorded and skipped on reopen");
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
     }
 }

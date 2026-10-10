@@ -20,7 +20,7 @@ use cdk_common::nuts::{
 };
 use cdk_common::redact::url_for_logs;
 use cdk_common::secret::Secret;
-use cdk_common::util::hex;
+use cdk_common::util::{hex, unix_time};
 use cdk_common::wallet::{
     self, MintQuote, Transaction, TransactionDirection, TransactionId, TransactionStatus,
     WalletSaga,
@@ -123,6 +123,18 @@ impl fmt::Debug for SupabaseTokenResponse {
     }
 }
 
+/// Mint ids resolved under the current identity, with the generation they were
+/// resolved in.
+///
+/// The generation exists because a lookup can be preempted: a sign-in can land
+/// between the request that resolved an id and the store that caches it, and an
+/// id resolved under one wallet id means nothing under another.
+#[derive(Debug, Default)]
+struct MintIdCache {
+    generation: u64,
+    ids: HashMap<MintUrl, i64>,
+}
+
 /// Supabase wallet database implementation
 ///
 /// This database uses two types of authentication:
@@ -151,6 +163,9 @@ pub struct SupabaseWalletDatabase {
     auth_provider: Arc<RwLock<AuthProvider>>,
     client: Client,
     encryption_key: Arc<RwLock<Option<Key<Aes256Gcm>>>>,
+    /// Mint ids already resolved, so a write does not spend a round trip
+    /// re-deriving the id of a mint this instance has seen.
+    mint_ids: Arc<RwLock<MintIdCache>>,
 }
 
 impl fmt::Debug for SupabaseWalletDatabase {
@@ -164,6 +179,7 @@ impl fmt::Debug for SupabaseWalletDatabase {
             .field("auth_provider", &"[REDACTED]")
             .field("client", &"Client")
             .field("encryption_key", &"[REDACTED]")
+            .field("mint_ids", &"[REDACTED]")
             .finish()
     }
 }
@@ -187,6 +203,7 @@ impl SupabaseWalletDatabase {
             auth_provider: Arc::new(RwLock::new(AuthProvider::None)),
             client: Client::new(),
             encryption_key: Arc::new(RwLock::new(None)),
+            mint_ids: Arc::new(RwLock::new(MintIdCache::default())),
         })
     }
 
@@ -209,6 +226,7 @@ impl SupabaseWalletDatabase {
             auth_provider: Arc::new(RwLock::new(AuthProvider::SupabaseAuth)),
             client: Client::new(),
             encryption_key: Arc::new(RwLock::new(None)),
+            mint_ids: Arc::new(RwLock::new(MintIdCache::default())),
         })
     }
 
@@ -235,6 +253,7 @@ impl SupabaseWalletDatabase {
             auth_provider: Arc::new(RwLock::new(AuthProvider::Oidc(oidc_client))),
             client: Client::new(),
             encryption_key: Arc::new(RwLock::new(None)),
+            mint_ids: Arc::new(RwLock::new(MintIdCache::default())),
         })
     }
 
@@ -243,7 +262,7 @@ impl SupabaseWalletDatabase {
     /// This must match the latest `schema_version` value set in the migration files.
     /// When adding new migrations, update this constant and set the same value
     /// in the new migration's `INSERT INTO schema_info` statement.
-    pub const REQUIRED_SCHEMA_VERSION: u32 = 10;
+    pub const REQUIRED_SCHEMA_VERSION: u32 = 11;
 
     /// Get the full database schema SQL
     ///
@@ -332,8 +351,25 @@ impl SupabaseWalletDatabase {
         }
     }
 
+    /// Forget every resolved mint id.
+    ///
+    /// `mint.wallet_id` comes from the JWT, server side, so an id resolved under
+    /// one token means nothing under another. Bumping the generation also tells
+    /// a resolution already in flight that its result belongs to an identity
+    /// that is gone.
+    async fn clear_mint_ids(&self) {
+        let mut cache = self.mint_ids.write().await;
+        cache.ids.clear();
+        cache.generation = cache.generation.wrapping_add(1);
+    }
+
     /// Set or update the JWT token for authentication
+    ///
+    /// Every path that changes the token comes through here, so this is where
+    /// the resolved mint ids are dropped.
     pub async fn set_jwt_token(&self, token: Option<String>) {
+        self.clear_mint_ids().await;
+
         let mut jwt = self.jwt_token.write().await;
         *jwt = token.clone();
 
@@ -815,6 +851,43 @@ impl SupabaseWalletDatabase {
         Ok((status, text))
     }
 
+    /// Make an upsert POST request and ask PostgREST to return the affected rows
+    /// as JSON (`Prefer: return=representation`).
+    ///
+    /// Only the columns present in `body` are written, so an upsert that carries
+    /// one column leaves the rest of an existing row alone.
+    async fn upsert_request_returning<T: Serialize + fmt::Debug>(
+        &self,
+        path: &str,
+        body: &T,
+    ) -> Result<(StatusCode, String), Error> {
+        let url = self.join_url(path)?;
+        let auth_bearer = self.get_auth_bearer().await;
+
+        tracing::debug!(method = "POST", url = %url, "Supabase upsert request (returning)");
+
+        let res = self
+            .client
+            .post(url.clone())
+            .header("apikey", &self.api_key)
+            .header("Authorization", format!("Bearer {}", auth_bearer))
+            .header(
+                "Prefer",
+                "resolution=merge-duplicates,missing=default,return=representation",
+            )
+            .json(body)
+            .send()
+            .await
+            .map_err(Error::Reqwest)?;
+
+        let status = res.status();
+        let text = res.text().await.map_err(Error::Reqwest)?;
+
+        tracing::debug!(method = "POST", url = %url, status = %status, response_len = text.len(), "Supabase upsert response (returning)");
+
+        Ok((status, text))
+    }
+
     /// Make a PATCH request and ask PostgREST to return the updated rows as JSON
     /// (`Prefer: return=representation`).  Returns `(status, body)` where body is
     /// an empty JSON array `[]` when the filter matched no rows.
@@ -882,6 +955,72 @@ impl SupabaseWalletDatabase {
         } else {
             Ok(Some(items))
         }
+    }
+
+    /// The internal id the mint URL is stored under, resolving it if this
+    /// instance has not seen it yet.
+    ///
+    /// Rows reference this id, never the URL, so a write has to have an id to
+    /// point at. Deriving it over the network on every write is what the cache
+    /// avoids: a mint keeps its id for life, so one resolution serves every
+    /// later write.
+    ///
+    /// The one mapping this instance cannot see change is a rename made on
+    /// another device. A write then lands on the mint under its new URL, where
+    /// before the cache it would have started a second mint at the old one.
+    async fn mint_id_for_write(&self, mint_url: &MintUrl) -> Result<i64, DatabaseError> {
+        let (generation, cached) = {
+            let cache = self.mint_ids.read().await;
+            (cache.generation, cache.ids.get(mint_url).copied())
+        };
+
+        if let Some(mint_id) = cached {
+            return Ok(mint_id);
+        }
+
+        let mint_id = self.resolve_mint_id(mint_url).await?;
+
+        let mut cache = self.mint_ids.write().await;
+        if cache.generation == generation {
+            cache.ids.insert(mint_url.clone(), mint_id);
+        }
+
+        Ok(mint_id)
+    }
+
+    /// Ask the database for the id of a mint URL, storing the mint if it is new.
+    ///
+    /// A wallet is built synchronously and can be handed an empty database, so
+    /// it has no opportunity to register its mint before its first write; the
+    /// store upserts it on demand instead.
+    ///
+    /// The body carries only the URL, so an existing mint keeps the metadata
+    /// [`SupabaseWalletDatabase::add_mint`] owns, and one request covers both
+    /// the mint that is already stored and the one that is not. That also
+    /// settles the race between two clients that both find the mint missing:
+    /// the conflict arm returns the row the other one inserted.
+    async fn resolve_mint_id(&self, mint_url: &MintUrl) -> Result<i64, DatabaseError> {
+        let row = MintUrlRow {
+            mint_url: mint_url.to_string(),
+        };
+        let (status, text) = self
+            .upsert_request_returning(
+                "rest/v1/mint?on_conflict=mint_url,wallet_id&select=mint_id",
+                &row,
+            )
+            .await?;
+
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "resolve_mint_id failed: HTTP {} - {}",
+                status, text
+            )));
+        }
+
+        Self::parse_response::<MintIdRow>(&text)?
+            .and_then(|rows| rows.into_iter().next())
+            .map(|row| row.mint_id)
+            .ok_or_else(|| DatabaseError::UnknownMint(mint_url.to_string()))
     }
 }
 
@@ -958,7 +1097,7 @@ impl KVStoreDatabase for SupabaseWalletDatabase {
 impl Database<DatabaseError> for SupabaseWalletDatabase {
     async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, DatabaseError> {
         let path = format!(
-            "rest/v1/mint?mint_url=eq.{}",
+            "rest/v1/mint?removed_at=is.null&mint_url=eq.{}",
             url_encode(&mint_url.to_string())
         );
         let (status, text) = self.get_request(&path).await?;
@@ -983,7 +1122,7 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
     }
 
     async fn get_mints(&self) -> Result<HashMap<MintUrl, Option<MintInfo>>, DatabaseError> {
-        let (status, text) = self.get_request("rest/v1/mint").await?;
+        let (status, text) = self.get_request("rest/v1/mint?removed_at=is.null").await?;
 
         if !status.is_success() {
             return Err(DatabaseError::Internal(format!(
@@ -1010,7 +1149,7 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         mint_url: MintUrl,
     ) -> Result<Option<Vec<KeySetInfo>>, DatabaseError> {
         let path = format!(
-            "rest/v1/keyset?mint_url=eq.{}",
+            "rest/v1/keyset?select=*,mint!inner(mint_id)&mint.removed_at=is.null&mint.mint_url=eq.{}",
             url_encode(&mint_url.to_string())
         );
         let (status, text) = self.get_request(&path).await?;
@@ -1054,7 +1193,11 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
     }
 
     async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, DatabaseError> {
-        let path = format!("rest/v1/mint_quote?id=eq.{}", url_encode(quote_id));
+        let path = format!(
+            "rest/v1/mint_quote?{}&id=eq.{}",
+            SELECT_WITH_MINT,
+            url_encode(quote_id)
+        );
         let (status, text) = self.get_request(&path).await?;
 
         if !status.is_success() {
@@ -1073,7 +1216,8 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
     }
 
     async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, DatabaseError> {
-        let (status, text) = self.get_request("rest/v1/mint_quote").await?;
+        let path = format!("rest/v1/mint_quote?{}", SELECT_WITH_MINT);
+        let (status, text) = self.get_request(&path).await?;
 
         if !status.is_success() {
             return Err(DatabaseError::Internal(format!(
@@ -1090,9 +1234,8 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
     }
 
     async fn get_unissued_mint_quotes(&self) -> Result<Vec<MintQuote>, DatabaseError> {
-        let (status, text) = self
-            .get_request("rest/v1/mint_quote?amount_issued=eq.0")
-            .await?;
+        let path = format!("rest/v1/mint_quote?{}&amount_issued=eq.0", SELECT_WITH_MINT);
+        let (status, text) = self.get_request(&path).await?;
 
         if !status.is_success() {
             return Err(DatabaseError::Internal(format!(
@@ -1112,7 +1255,11 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         &self,
         quote_id: &str,
     ) -> Result<Option<wallet::MeltQuote>, DatabaseError> {
-        let path = format!("rest/v1/melt_quote?id=eq.{}", url_encode(quote_id));
+        let path = format!(
+            "rest/v1/melt_quote?{}&id=eq.{}",
+            SELECT_WITH_OPTIONAL_MINT,
+            url_encode(quote_id)
+        );
         let (status, text) = self.get_request(&path).await?;
 
         if !status.is_success() {
@@ -1123,7 +1270,7 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         }
 
         if let Some(items) = Self::parse_response::<MeltQuoteTable>(&text)? {
-            if let Some(item) = items.into_iter().next() {
+            if let Some(item) = items.into_iter().find(|item| !item.mint_removed()) {
                 return Ok(Some(item.try_into()?));
             }
         }
@@ -1131,7 +1278,8 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
     }
 
     async fn get_melt_quotes(&self) -> Result<Vec<wallet::MeltQuote>, DatabaseError> {
-        let (status, text) = self.get_request("rest/v1/melt_quote").await?;
+        let path = format!("rest/v1/melt_quote?{}", SELECT_WITH_OPTIONAL_MINT);
+        let (status, text) = self.get_request(&path).await?;
 
         if !status.is_success() {
             return Err(DatabaseError::Internal(format!(
@@ -1141,7 +1289,11 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         }
 
         if let Some(quotes) = Self::parse_response::<MeltQuoteTable>(&text)? {
-            quotes.into_iter().map(|q| q.try_into()).collect()
+            quotes
+                .into_iter()
+                .filter(|q| !q.mint_removed())
+                .map(|q| q.try_into())
+                .collect()
         } else {
             Ok(Vec::new())
         }
@@ -1173,9 +1325,17 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
     ) -> Result<Vec<ProofInfo>, DatabaseError> {
-        let mut query = String::from("rest/v1/proof?select=*");
+        let mut query = match &mint_url {
+            Some(_) => {
+                String::from("rest/v1/proof?select=*,mint!inner(mint_url)&mint.removed_at=is.null")
+            }
+            None => format!("rest/v1/proof?{}", SELECT_WITH_MINT),
+        };
         if let Some(url) = mint_url {
-            query.push_str(&format!("&mint_url=eq.{}", url_encode(&url.to_string())));
+            query.push_str(&format!(
+                "&mint.mint_url=eq.{}",
+                url_encode(&url.to_string())
+            ));
         }
         if let Some(u) = unit {
             query.push_str(&format!("&unit=eq.{}", url_encode(&u.to_string())));
@@ -1224,7 +1384,7 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
 
         let ys_str: Vec<String> = ys.iter().map(|y| hex::encode(y.to_bytes())).collect();
         let filter = format!("({})", ys_str.join(","));
-        let path = format!("rest/v1/proof?y=in.{}", filter);
+        let path = format!("rest/v1/proof?{}&y=in.{}", SELECT_WITH_MINT, filter);
 
         let (status, text) = self.get_request(&path).await?;
 
@@ -1265,7 +1425,11 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         transaction_id: TransactionId,
     ) -> Result<Option<Transaction>, DatabaseError> {
         let id_hex = transaction_id.to_string();
-        let path = format!("rest/v1/transactions?id=eq.{}", url_encode(&id_hex));
+        let path = format!(
+            "rest/v1/transactions?{}&id=eq.{}",
+            SELECT_WITH_MINT,
+            url_encode(&id_hex)
+        );
 
         let (status, text) = self.get_request(&path).await?;
 
@@ -1294,9 +1458,17 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         direction: Option<TransactionDirection>,
         unit: Option<CurrencyUnit>,
     ) -> Result<Vec<Transaction>, DatabaseError> {
-        let mut query = String::from("rest/v1/transactions?select=*");
+        let mut query = match &mint_url {
+            Some(_) => String::from(
+                "rest/v1/transactions?select=*,mint!inner(mint_url)&mint.removed_at=is.null",
+            ),
+            None => format!("rest/v1/transactions?{}", SELECT_WITH_MINT),
+        };
         if let Some(url) = mint_url {
-            query.push_str(&format!("&mint_url=eq.{}", url_encode(&url.to_string())));
+            query.push_str(&format!(
+                "&mint.mint_url=eq.{}",
+                url_encode(&url.to_string())
+            ));
         }
         if let Some(d) = direction {
             query.push_str(&format!("&direction=eq.{}", url_encode(&d.to_string())));
@@ -1336,7 +1508,8 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         // Re-do serialization loop properly to allow await
         let mut proofs_json: Vec<serde_json::Value> = Vec::with_capacity(added.len());
         for p in added {
-            let mut table: ProofTable = p.try_into()?;
+            let mint_id = self.mint_id_for_write(&p.mint_url).await?;
+            let mut table = ProofTable::from_proof(mint_id, p)?;
 
             // Encrypt secret
             let secret_bytes = table.secret.as_bytes();
@@ -1435,7 +1608,8 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
     }
 
     async fn add_transaction(&self, transaction: Transaction) -> Result<(), DatabaseError> {
-        let item: TransactionTable = transaction.try_into()?;
+        let mint_id = self.mint_id_for_write(&transaction.mint_url).await?;
+        let item = TransactionTable::from_transaction(mint_id, transaction)?;
         let (status, response_text) = self
             .post_request("rest/v1/transactions?on_conflict=id,wallet_id", &item)
             .await?;
@@ -1464,63 +1638,39 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         Ok(())
     }
 
+    /// Every other table references the mint by its internal id, so the URL
+    /// lives only here and nothing else needs rewriting.
+    ///
+    /// The row keeps that id but is no longer reachable under the old URL, so
+    /// the old URL's cached id is dropped: left in place it would point a later
+    /// write at a mint that moved. Nothing is needed for `new_mint_url`, which
+    /// can have no entry, since the rename only succeeds when no row holds it.
     async fn update_mint_url(
         &self,
         old_mint_url: MintUrl,
         new_mint_url: MintUrl,
     ) -> Result<(), DatabaseError> {
-        let old_encoded = url_encode(&old_mint_url.to_string());
+        let path = format!(
+            "rest/v1/mint?removed_at=is.null&mint_url=eq.{}",
+            url_encode(&old_mint_url.to_string())
+        );
         let update_body = serde_json::json!({ "mint_url": new_mint_url.to_string() });
 
-        // Update mint table first (parent table)
-        let path = format!("rest/v1/mint?mint_url=eq.{}", old_encoded);
-        let (status, response_text) = self.patch_request(&path, &update_body).await?;
+        let (status, response_text) = self.patch_request_returning(&path, &update_body).await?;
         if !status.is_success() {
             return Err(DatabaseError::Internal(format!(
-                "update_mint_url (mint) failed: HTTP {} - {}",
+                "update_mint_url failed: HTTP {} - {}",
                 status, response_text
             )));
         }
 
-        // Update keyset table
-        let path = format!("rest/v1/keyset?mint_url=eq.{}", old_encoded);
-        let (status, response_text) = self.patch_request(&path, &update_body).await?;
-        if !status.is_success() {
-            return Err(DatabaseError::Internal(format!(
-                "update_mint_url (keyset) failed: HTTP {} - {}",
-                status, response_text
-            )));
+        let updated: serde_json::Value =
+            serde_json::from_str(&response_text).unwrap_or(serde_json::Value::Null);
+        if updated.as_array().map(|rows| rows.len()).unwrap_or(0) == 0 {
+            return Err(DatabaseError::UnknownMint(old_mint_url.to_string()));
         }
 
-        // Update mint_quote table
-        let path = format!("rest/v1/mint_quote?mint_url=eq.{}", old_encoded);
-        let (status, response_text) = self.patch_request(&path, &update_body).await?;
-        if !status.is_success() {
-            return Err(DatabaseError::Internal(format!(
-                "update_mint_url (mint_quote) failed: HTTP {} - {}",
-                status, response_text
-            )));
-        }
-
-        // Update proof table
-        let path = format!("rest/v1/proof?mint_url=eq.{}", old_encoded);
-        let (status, response_text) = self.patch_request(&path, &update_body).await?;
-        if !status.is_success() {
-            return Err(DatabaseError::Internal(format!(
-                "update_mint_url (proof) failed: HTTP {} - {}",
-                status, response_text
-            )));
-        }
-
-        // Update transactions table
-        let path = format!("rest/v1/transactions?mint_url=eq.{}", old_encoded);
-        let (status, response_text) = self.patch_request(&path, &update_body).await?;
-        if !status.is_success() {
-            return Err(DatabaseError::Internal(format!(
-                "update_mint_url (transactions) failed: HTTP {} - {}",
-                status, response_text
-            )));
-        }
+        self.mint_ids.write().await.ids.remove(&old_mint_url);
 
         Ok(())
     }
@@ -1615,6 +1765,7 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         )))
     }
 
+    /// A mint that is already stored keeps the id it has: rows point at it.
     async fn add_mint(
         &self,
         mint_url: MintUrl,
@@ -1641,12 +1792,32 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         Ok(())
     }
 
+    /// Stamps `removed_at` and clears the mint info, keeping the row, its id and
+    /// its URL. Deleting the row would cascade into every proof, destroying
+    /// spendable e-cash; hiding it leaves the secrets recoverable, and
+    /// [`Database::add_mint`] on the same URL brings the mint back whole.
     async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), DatabaseError> {
         let path = format!(
-            "rest/v1/mint?mint_url=eq.{}",
+            "rest/v1/mint?removed_at=is.null&mint_url=eq.{}",
             url_encode(&mint_url.to_string())
         );
-        let (status, response_text) = self.delete_request(&path).await?;
+        let update_body = serde_json::json!({
+            "removed_at": unix_time() as i64,
+            "name": null,
+            "pubkey": null,
+            "version": null,
+            "description": null,
+            "description_long": null,
+            "contact": null,
+            "nuts": null,
+            "icon_url": null,
+            "urls": null,
+            "motd": null,
+            "mint_time": null,
+            "tos_url": null,
+        });
+
+        let (status, response_text) = self.patch_request(&path, &update_body).await?;
 
         if !status.is_success() {
             return Err(DatabaseError::Internal(format!(
@@ -1666,11 +1837,11 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
             return Ok(());
         }
 
-        let items: Result<Vec<KeySetTable>, DatabaseError> = keysets
+        let mint_id = self.mint_id_for_write(&mint_url).await?;
+        let items = keysets
             .into_iter()
-            .map(|k| KeySetTable::from_info(mint_url.clone(), k))
-            .collect();
-        let items = items?;
+            .map(|k| KeySetTable::from_info(mint_id, k))
+            .collect::<Result<Vec<KeySetTable>, DatabaseError>>()?;
 
         let (status, response_text) = self
             .post_request("rest/v1/keyset?on_conflict=id,wallet_id", &items)
@@ -1687,7 +1858,8 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
 
     async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), DatabaseError> {
         let expected_version = quote.version;
-        let mut item: MintQuoteTable = quote.try_into()?;
+        let mint_id = self.mint_id_for_write(&quote.mint_url).await?;
+        let mut item = MintQuoteTable::from_quote(mint_id, quote)?;
 
         // Try UPDATE first: only matches a row whose stored version equals the
         // expected version, bumping it to `expected_version + 1`.
@@ -1756,7 +1928,11 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
 
     async fn add_melt_quote(&self, quote: wallet::MeltQuote) -> Result<(), DatabaseError> {
         let expected_version = quote.version;
-        let mut item: MeltQuoteTable = quote.try_into()?;
+        let mint_id = match &quote.mint_url {
+            Some(mint_url) => Some(self.mint_id_for_write(mint_url).await?),
+            None => None,
+        };
+        let mut item = MeltQuoteTable::from_quote(mint_id, quote)?;
 
         // Try UPDATE first: only matches a row whose stored version equals the
         // expected version, bumping it to `expected_version + 1`.
@@ -1932,12 +2108,13 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
     // ========== Saga methods ==========
 
     async fn add_saga(&self, saga: WalletSaga) -> Result<(), DatabaseError> {
-        let saga_json = serde_json::to_string(&saga)
-            .map_err(|e| DatabaseError::Internal(format!("Serialize saga: {e}")))?;
+        let mint_id = self.mint_id_for_write(&saga.mint_url).await?;
 
         let item = SagaTable {
             id: saga.id.to_string(),
-            data: saga_json,
+            mint_id,
+            mint: None,
+            data: saga_data(&saga)?,
             version: saga.version as i32,
             completed: false,
             created_at: saga.created_at as i64,
@@ -1959,7 +2136,11 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
     }
 
     async fn get_saga(&self, id: &uuid::Uuid) -> Result<Option<WalletSaga>, DatabaseError> {
-        let path = format!("rest/v1/saga?id=eq.{}", url_encode(&id.to_string()));
+        let path = format!(
+            "rest/v1/saga?{}&id=eq.{}",
+            SELECT_WITH_MINT,
+            url_encode(&id.to_string())
+        );
         let (status, text) = self.get_request(&path).await?;
 
         if !status.is_success() {
@@ -1971,9 +2152,7 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
 
         if let Some(items) = Self::parse_response::<SagaTable>(&text)? {
             if let Some(item) = items.into_iter().next() {
-                let saga: WalletSaga = serde_json::from_str(&item.data)
-                    .map_err(|e| DatabaseError::Internal(format!("Deserialize saga: {e}")))?;
-                return Ok(Some(saga));
+                return Ok(Some(saga_from_row(item)?));
             }
         }
         Ok(None)
@@ -1981,12 +2160,13 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
 
     async fn update_saga(&self, saga: WalletSaga) -> Result<bool, DatabaseError> {
         let expected_version = saga.version.saturating_sub(1);
-        let saga_json = serde_json::to_string(&saga)
-            .map_err(|e| DatabaseError::Internal(format!("Serialize saga: {e}")))?;
+        let mint_id = self.mint_id_for_write(&saga.mint_url).await?;
 
         let item = SagaTable {
             id: saga.id.to_string(),
-            data: saga_json,
+            mint_id,
+            mint: None,
+            data: saga_data(&saga)?,
             version: saga.version as i32,
             completed: false,
             created_at: saga.created_at as i64,
@@ -2034,8 +2214,11 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
     }
 
     async fn get_incomplete_sagas(&self) -> Result<Vec<WalletSaga>, DatabaseError> {
-        let path = "rest/v1/saga?completed=eq.false&order=created_at.asc";
-        let (status, text) = self.get_request(path).await?;
+        let path = format!(
+            "rest/v1/saga?{}&completed=eq.false&order=created_at.asc",
+            SELECT_WITH_MINT
+        );
+        let (status, text) = self.get_request(&path).await?;
 
         if !status.is_success() {
             return Err(DatabaseError::Internal(format!(
@@ -2045,13 +2228,7 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         }
 
         if let Some(items) = Self::parse_response::<SagaTable>(&text)? {
-            let mut sagas = Vec::new();
-            for item in items {
-                let saga: WalletSaga = serde_json::from_str(&item.data)
-                    .map_err(|e| DatabaseError::Internal(format!("Deserialize saga: {e}")))?;
-                sagas.push(saga);
-            }
-            Ok(sagas)
+            items.into_iter().map(saga_from_row).collect()
         } else {
             Ok(Vec::new())
         }
@@ -2136,7 +2313,8 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
     ) -> Result<Vec<ProofInfo>, DatabaseError> {
         let op_id_str = operation_id.to_string();
         let path = format!(
-            "rest/v1/proof?used_by_operation=eq.{}",
+            "rest/v1/proof?{}&used_by_operation=eq.{}",
+            SELECT_WITH_MINT,
             url_encode(&op_id_str)
         );
         let (status, text) = self.get_request(&path).await?;
@@ -2437,9 +2615,91 @@ struct KVStoreTable {
     _extra: serde_json::Map<String, serde_json::Value>,
 }
 
+/// URL of the mint PostgREST embedded with a row.
+///
+/// A row always points at a stored mint, so a missing embed means the select
+/// did not ask for it.
+fn embedded_mint_url(mint: Option<MintRef>) -> Result<MintUrl, DatabaseError> {
+    let mint = mint.ok_or_else(|| DatabaseError::Internal("Row has no mint".into()))?;
+    embedded_mint_url_ref(mint)
+}
+
+fn embedded_mint_url_ref(mint: MintRef) -> Result<MintUrl, DatabaseError> {
+    MintUrl::from_str(&mint.mint_url).map_err(|e| DatabaseError::Internal(e.to_string()))
+}
+
+/// Serialize a saga without its mint URL: the row's `mint_id` carries that, so
+/// the payload cannot go stale when the mint moves.
+fn saga_data(saga: &WalletSaga) -> Result<String, DatabaseError> {
+    let mut value = serde_json::to_value(saga)?;
+    value
+        .as_object_mut()
+        .ok_or_else(|| DatabaseError::Internal("Saga is not an object".into()))?
+        .remove("mint_url");
+
+    Ok(serde_json::to_string(&value)?)
+}
+
+/// Rebuild a saga, taking its mint URL from the row rather than the payload.
+fn saga_from_row(row: SagaTable) -> Result<WalletSaga, DatabaseError> {
+    let mint_url = embedded_mint_url(row.mint)?;
+    let mut value: serde_json::Value = serde_json::from_str(&row.data)?;
+    value
+        .as_object_mut()
+        .ok_or_else(|| DatabaseError::Internal("Saga is not an object".into()))?
+        .insert(
+            "mint_url".to_owned(),
+            serde_json::Value::String(mint_url.to_string()),
+        );
+
+    Ok(serde_json::from_value(value)?)
+}
+
+/// A mint's internal id, selected on its own.
+#[derive(Debug, Deserialize)]
+struct MintIdRow {
+    mint_id: i64,
+}
+
+/// The mint a row belongs to, embedded by PostgREST alongside the row.
+#[derive(Debug, Serialize, Deserialize)]
+struct MintRef {
+    mint_url: String,
+    /// Only selected where the embed is a left join and the filter therefore has
+    /// to happen after the response is parsed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    removed_at: Option<i64>,
+}
+
+/// PostgREST select that pulls a row's mint URL in with the row, dropping rows
+/// whose mint was removed. A removed mint keeps its row, so the inner join alone
+/// would still match it.
+const SELECT_WITH_MINT: &str = "select=*,mint!inner(mint_url)&mint.removed_at=is.null";
+
+/// As above, for a row whose mint reference is optional: `!inner` would also
+/// drop a row that never had a mint, so the removed one is filtered out of the
+/// parsed response instead.
+const SELECT_WITH_OPTIONAL_MINT: &str = "select=*,mint(mint_url,removed_at)";
+
+/// Upsert body that carries only the URL, so a write that has to create the
+/// mint does not blank the metadata of one that already exists.
+#[derive(Debug, Serialize)]
+struct MintUrlRow {
+    mint_url: String,
+}
+
 #[derive(Debug, Serialize, Deserialize, Default)]
 struct MintTable {
+    /// Omitted on insert: the database assigns it, and an upsert on an existing
+    /// mint must not overwrite the id its rows point at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mint_id: Option<i64>,
     mint_url: String,
+    /// Always serialized as `null` unless read back, so the upsert in
+    /// [`Database::add_mint`] brings a removed mint back with everything it
+    /// still holds.
+    #[serde(default)]
+    removed_at: Option<i64>,
     name: Option<String>,
     pubkey: Option<String>,
     version: Option<String>,
@@ -2460,7 +2720,9 @@ struct MintTable {
 impl MintTable {
     fn from_info(mint_url: MintUrl, info: MintInfo) -> Result<Self, DatabaseError> {
         Ok(Self {
+            mint_id: None,
             mint_url: mint_url.to_string(),
+            removed_at: None,
             name: info.name,
             pubkey: info.pubkey.map(|p| hex::encode(p.to_bytes())),
             version: info
@@ -2540,7 +2802,7 @@ impl TryInto<MintInfo> for MintTable {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct KeySetTable {
-    mint_url: String,
+    mint_id: i64,
     id: String,
     unit: String,
     active: bool,
@@ -2553,9 +2815,9 @@ struct KeySetTable {
 }
 
 impl KeySetTable {
-    fn from_info(mint_url: MintUrl, info: KeySetInfo) -> Result<Self, DatabaseError> {
+    fn from_info(mint_id: i64, info: KeySetInfo) -> Result<Self, DatabaseError> {
         Ok(Self {
-            mint_url: mint_url.to_string(),
+            mint_id,
             id: info.id.to_string(),
             unit: info.unit.to_string(),
             active: info.active,
@@ -2637,7 +2899,9 @@ impl TryInto<Keys> for KeyTable {
 #[derive(Debug, Serialize, Deserialize)]
 struct MintQuoteTable {
     id: String,
-    mint_url: String,
+    mint_id: i64,
+    #[serde(default, skip_serializing)]
+    mint: Option<MintRef>,
     amount: i64,
     unit: String,
     request: Option<String>,
@@ -2663,8 +2927,7 @@ impl TryInto<MintQuote> for MintQuoteTable {
     fn try_into(self) -> Result<MintQuote, Self::Error> {
         Ok(MintQuote {
             id: self.id,
-            mint_url: MintUrl::from_str(&self.mint_url)
-                .map_err(|e| DatabaseError::Internal(e.to_string()))?,
+            mint_url: embedded_mint_url(self.mint)?,
             amount: Some(cdk_common::Amount::from(self.amount as u64)),
             unit: CurrencyUnit::from_str(&self.unit)
                 .map_err(|_| DatabaseError::Internal("Invalid unit".into()))?,
@@ -2691,12 +2954,12 @@ impl TryInto<MintQuote> for MintQuoteTable {
     }
 }
 
-impl TryFrom<MintQuote> for MintQuoteTable {
-    type Error = DatabaseError;
-    fn try_from(q: MintQuote) -> Result<Self, Self::Error> {
+impl MintQuoteTable {
+    fn from_quote(mint_id: i64, q: MintQuote) -> Result<Self, DatabaseError> {
         Ok(Self {
             id: q.id,
-            mint_url: q.mint_url.to_string(),
+            mint_id,
+            mint: None,
             amount: q.amount.map(|a| a.to_u64() as i64).unwrap_or(0),
             unit: q.unit.to_string(),
             request: Some(q.request),
@@ -2730,7 +2993,9 @@ struct MeltQuoteTable {
     #[serde(default)]
     fee_index: Option<i64>,
     #[serde(default)]
-    mint_url: Option<String>,
+    mint_id: Option<i64>,
+    #[serde(default, skip_serializing)]
+    mint: Option<MintRef>,
     #[serde(default)]
     used_by_operation: Option<String>,
     #[serde(default)]
@@ -2740,17 +3005,24 @@ struct MeltQuoteTable {
     _extra: serde_json::Map<String, serde_json::Value>,
 }
 
+impl MeltQuoteTable {
+    /// Whether the quote belongs to a mint that was removed.
+    ///
+    /// The embed is a left join, because a melt quote may have no mint at all,
+    /// so this cannot be a PostgREST filter.
+    fn mint_removed(&self) -> bool {
+        self.mint
+            .as_ref()
+            .is_some_and(|mint| mint.removed_at.is_some())
+    }
+}
+
 impl TryInto<wallet::MeltQuote> for MeltQuoteTable {
     type Error = DatabaseError;
     fn try_into(self) -> Result<wallet::MeltQuote, Self::Error> {
         Ok(wallet::MeltQuote {
             id: self.id,
-            mint_url: self
-                .mint_url
-                .as_deref()
-                .map(cdk_common::mint_url::MintUrl::from_str)
-                .transpose()
-                .map_err(|_| DatabaseError::Internal("Invalid mint URL".into()))?,
+            mint_url: self.mint.map(embedded_mint_url_ref).transpose()?,
             unit: CurrencyUnit::from_str(&self.unit)
                 .map_err(|_| DatabaseError::Internal("Invalid unit".into()))?,
             amount: cdk_common::Amount::from(self.amount as u64),
@@ -2778,12 +3050,12 @@ impl TryInto<wallet::MeltQuote> for MeltQuoteTable {
     }
 }
 
-impl TryFrom<wallet::MeltQuote> for MeltQuoteTable {
-    type Error = DatabaseError;
-    fn try_from(q: wallet::MeltQuote) -> Result<Self, Self::Error> {
+impl MeltQuoteTable {
+    fn from_quote(mint_id: Option<i64>, q: wallet::MeltQuote) -> Result<Self, DatabaseError> {
         Ok(Self {
             id: q.id,
-            mint_url: q.mint_url.map(|u| u.to_string()),
+            mint_id,
+            mint: None,
             unit: q.unit.to_string(),
             amount: q.amount.to_u64() as i64,
             request: q.request,
@@ -2804,7 +3076,9 @@ impl TryFrom<wallet::MeltQuote> for MeltQuoteTable {
 #[derive(Debug, Serialize, Deserialize)]
 struct ProofTable {
     y: String,
-    mint_url: String,
+    mint_id: i64,
+    #[serde(default, skip_serializing)]
+    mint: Option<MintRef>,
     state: String,
     spending_condition: Option<String>,
     unit: String,
@@ -2838,8 +3112,7 @@ impl TryInto<ProofInfo> for ProofTable {
             .map_err(|_| DatabaseError::Internal("Invalid c".into()))?;
         Ok(ProofInfo {
             y,
-            mint_url: MintUrl::from_str(&self.mint_url)
-                .map_err(|e| DatabaseError::Internal(e.to_string()))?,
+            mint_url: embedded_mint_url(self.mint)?,
             state: cdk_common::nuts::State::from_str(&self.state)
                 .map_err(|_| DatabaseError::Internal("Invalid state".into()))?,
             spending_condition: self
@@ -2897,12 +3170,12 @@ impl TryInto<ProofInfo> for ProofTable {
     }
 }
 
-impl TryFrom<ProofInfo> for ProofTable {
-    type Error = DatabaseError;
-    fn try_from(p: ProofInfo) -> Result<Self, Self::Error> {
+impl ProofTable {
+    fn from_proof(mint_id: i64, p: ProofInfo) -> Result<Self, DatabaseError> {
         Ok(Self {
             y: hex::encode(p.y.to_bytes()),
-            mint_url: p.mint_url.to_string(),
+            mint_id,
+            mint: None,
             state: p.state.to_string(),
             spending_condition: p
                 .spending_condition
@@ -2945,7 +3218,9 @@ impl TryFrom<ProofInfo> for ProofTable {
 #[derive(Debug, Serialize, Deserialize)]
 struct TransactionTable {
     id: String,
-    mint_url: String,
+    mint_id: i64,
+    #[serde(default, skip_serializing)]
+    mint: Option<MintRef>,
     direction: String,
     unit: String,
     amount: i64,
@@ -2988,8 +3263,7 @@ impl TryInto<Transaction> for TransactionTable {
         };
 
         Ok(Transaction {
-            mint_url: MintUrl::from_str(&self.mint_url)
-                .map_err(|e| DatabaseError::Internal(e.to_string()))?,
+            mint_url: embedded_mint_url(self.mint)?,
             direction: TransactionDirection::from_str(&self.direction)
                 .map_err(|_| DatabaseError::Internal("Invalid direction".into()))?,
             unit: CurrencyUnit::from_str(&self.unit)
@@ -3024,12 +3298,12 @@ impl TryInto<Transaction> for TransactionTable {
     }
 }
 
-impl TryFrom<Transaction> for TransactionTable {
-    type Error = DatabaseError;
-    fn try_from(t: Transaction) -> Result<Self, Self::Error> {
+impl TransactionTable {
+    fn from_transaction(mint_id: i64, t: Transaction) -> Result<Self, DatabaseError> {
         Ok(Self {
             id: t.id().to_string(),
-            mint_url: t.mint_url.to_string(),
+            mint_id,
+            mint: None,
             direction: t.direction.to_string(),
             unit: t.unit.to_string(),
             amount: t.amount.to_u64() as i64,
@@ -3060,6 +3334,9 @@ fn default_transaction_status() -> String {
 #[derive(Debug, Serialize, Deserialize)]
 struct SagaTable {
     id: String,
+    mint_id: i64,
+    #[serde(default, skip_serializing)]
+    mint: Option<MintRef>,
     data: String, // JSON-serialized WalletSaga
     version: i32,
     completed: bool,
@@ -3189,6 +3466,7 @@ mod tests {
     use bitcoin::base64::engine::general_purpose;
     use bitcoin::base64::Engine as _;
     use cdk_common::database::{Error as DatabaseError, WalletDatabase};
+    use cdk_common::nuts::SecretKey;
     #[cfg(feature = "integration-tests")]
     use cdk_common::wallet_db_test;
     use mockito::Matcher;
@@ -3277,11 +3555,18 @@ mod tests {
             version: 0,
         };
 
-        let table = MintQuoteTable::try_from(quote).expect("quote converts to table row");
+        let mint_url = quote.mint_url.clone();
+        let mut table = MintQuoteTable::from_quote(1, quote).expect("quote converts to table row");
         assert_eq!(table.secret_key.as_deref(), Some(secret_hex.as_str()));
+
+        table.mint = Some(MintRef {
+            mint_url: mint_url.to_string(),
+            removed_at: None,
+        });
 
         let round_trip: MintQuote = table.try_into().expect("table row converts to quote");
         assert_eq!(round_trip.secret_key, Some(secret_key));
+        assert_eq!(round_trip.mint_url, mint_url);
     }
     use crate::SupabaseWalletDatabase;
 
@@ -3724,6 +4009,252 @@ mod tests {
         assert_eq!(key.as_slice(), expected.as_slice());
 
         get_mock.assert_async().await;
+    }
+
+    async fn cache_test_db(server: &mockito::Server) -> SupabaseWalletDatabase {
+        SupabaseWalletDatabase::new(
+            Url::parse(&server.url()).expect("mock server URL should parse"),
+            "anon-key".to_string(),
+        )
+        .await
+        .expect("database should initialize")
+    }
+
+    fn cache_test_transaction(mint_url: &MintUrl) -> Transaction {
+        Transaction {
+            mint_url: mint_url.clone(),
+            direction: TransactionDirection::Incoming,
+            amount: cdk_common::Amount::from(100),
+            fee: cdk_common::Amount::from(1),
+            unit: CurrencyUnit::Sat,
+            ys: vec![SecretKey::generate().public_key()],
+            timestamp: 1234567890,
+            memo: None,
+            metadata: HashMap::new(),
+            quote_id: None,
+            payment_request: None,
+            payment_proof: None,
+            payment_method: None,
+            saga_id: None,
+            status: TransactionStatus::Completed,
+        }
+    }
+
+    fn cache_test_mint_url() -> MintUrl {
+        MintUrl::from_str("https://cache-test-mint.example.com").expect("mint URL should parse")
+    }
+
+    #[tokio::test]
+    async fn mint_id_is_resolved_once_per_mint() {
+        let mut server = mockito::Server::new_async().await;
+        let mint_mock = server
+            .mock("POST", "/rest/v1/mint")
+            .match_query(Matcher::Any)
+            .with_status(201)
+            .with_header("content-type", "application/json")
+            .with_body(r#"[{"mint_id":7}]"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let transaction_mock = server
+            .mock("POST", "/rest/v1/transactions")
+            .match_query(Matcher::Any)
+            .match_body(Matcher::PartialJson(json!({ "mint_id": 7 })))
+            .with_status(201)
+            .expect(2)
+            .create_async()
+            .await;
+
+        let db = cache_test_db(&server).await;
+        let mint_url = cache_test_mint_url();
+
+        for _ in 0..2 {
+            db.add_transaction(cache_test_transaction(&mint_url))
+                .await
+                .expect("transaction should be stored");
+        }
+
+        mint_mock.assert_async().await;
+        transaction_mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn unknown_mint_is_upserted_on_the_first_write() {
+        let mut server = mockito::Server::new_async().await;
+        let mint_url = cache_test_mint_url();
+        let mint_mock = server
+            .mock("POST", "/rest/v1/mint")
+            .match_query(Matcher::Any)
+            .match_query(Matcher::Exact(
+                "on_conflict=mint_url,wallet_id&select=mint_id".to_string(),
+            ))
+            .match_header(
+                "prefer",
+                "resolution=merge-duplicates,missing=default,return=representation",
+            )
+            .match_body(Matcher::Json(json!({ "mint_url": mint_url.to_string() })))
+            .with_status(201)
+            .with_header("content-type", "application/json")
+            .with_body(r#"[{"mint_id":9}]"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let transaction_mock = server
+            .mock("POST", "/rest/v1/transactions")
+            .match_query(Matcher::Any)
+            .match_body(Matcher::PartialJson(json!({ "mint_id": 9 })))
+            .with_status(201)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let db = cache_test_db(&server).await;
+
+        db.add_transaction(cache_test_transaction(&mint_url))
+            .await
+            .expect("transaction should be stored");
+
+        mint_mock.assert_async().await;
+        transaction_mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn mint_ids_are_forgotten_when_the_jwt_changes() {
+        let mut server = mockito::Server::new_async().await;
+        let mint_mock = server
+            .mock("POST", "/rest/v1/mint")
+            .match_query(Matcher::Any)
+            .with_status(201)
+            .with_header("content-type", "application/json")
+            .with_body(r#"[{"mint_id":7}]"#)
+            .expect(2)
+            .create_async()
+            .await;
+        let transaction_mock = server
+            .mock("POST", "/rest/v1/transactions")
+            .match_query(Matcher::Any)
+            .with_status(201)
+            .expect(2)
+            .create_async()
+            .await;
+
+        let db = cache_test_db(&server).await;
+        let mint_url = cache_test_mint_url();
+
+        db.add_transaction(cache_test_transaction(&mint_url))
+            .await
+            .expect("transaction should be stored");
+
+        db.set_jwt_token(Some("another-identity".to_string())).await;
+
+        db.add_transaction(cache_test_transaction(&mint_url))
+            .await
+            .expect("transaction should be stored");
+
+        mint_mock.assert_async().await;
+        transaction_mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn a_renamed_mint_url_is_forgotten() {
+        let mut server = mockito::Server::new_async().await;
+        let mint_url = cache_test_mint_url();
+        let mint_mock = server
+            .mock("POST", "/rest/v1/mint")
+            .match_query(Matcher::Any)
+            .with_status(201)
+            .with_header("content-type", "application/json")
+            .with_body(r#"[{"mint_id":7}]"#)
+            .expect(2)
+            .create_async()
+            .await;
+        let rename_mock = server
+            .mock("PATCH", "/rest/v1/mint")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"[{"mint_id":7,"mint_url":"https://moved.example.com"}]"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let transaction_mock = server
+            .mock("POST", "/rest/v1/transactions")
+            .match_query(Matcher::Any)
+            .with_status(201)
+            .expect(2)
+            .create_async()
+            .await;
+
+        let db = cache_test_db(&server).await;
+
+        db.add_transaction(cache_test_transaction(&mint_url))
+            .await
+            .expect("transaction should be stored");
+
+        db.update_mint_url(
+            mint_url.clone(),
+            MintUrl::from_str("https://moved.example.com").expect("mint URL should parse"),
+        )
+        .await
+        .expect("rename should succeed");
+
+        db.add_transaction(cache_test_transaction(&mint_url))
+            .await
+            .expect("transaction should be stored");
+
+        mint_mock.assert_async().await;
+        rename_mock.assert_async().await;
+        transaction_mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn update_proofs_resolves_each_mint_once() {
+        let mut server = mockito::Server::new_async().await;
+        let mint_mock = server
+            .mock("POST", "/rest/v1/mint")
+            .match_query(Matcher::Any)
+            .with_status(201)
+            .with_header("content-type", "application/json")
+            .with_body(r#"[{"mint_id":7}]"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let rpc_mock = server
+            .mock("POST", "/rest/v1/rpc/update_proofs_atomic")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body("{}")
+            .expect(1)
+            .create_async()
+            .await;
+
+        let db = cache_test_db(&server).await;
+        *db.encryption_key.write().await = Some(Key::<Aes256Gcm>::from([7u8; 32]));
+
+        let mint_url = cache_test_mint_url();
+        let keyset_id = Id::from_str("00916bbf7ef91a36").expect("keyset id should parse");
+        let proofs = (0..2)
+            .map(|_| {
+                let proof = cdk_common::nuts::Proof {
+                    amount: cdk_common::Amount::from(1),
+                    keyset_id,
+                    secret: Secret::generate(),
+                    c: SecretKey::generate().public_key(),
+                    witness: None,
+                    dleq: None,
+                    p2pk_e: None,
+                };
+                ProofInfo::new(proof, mint_url.clone(), State::Unspent, CurrencyUnit::Sat)
+                    .expect("proof info should build")
+            })
+            .collect();
+
+        db.update_proofs(proofs, vec![])
+            .await
+            .expect("proofs should be stored");
+
+        mint_mock.assert_async().await;
+        rpc_mock.assert_async().await;
     }
 
     // -------------------------------------------------------------------------
