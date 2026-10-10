@@ -299,6 +299,7 @@ pub fn create_fake_wallet_settings(
         database: Database {
             engine,
             postgres: postgres_config,
+            pubsub: Default::default(),
         },
         auth_database: None,
         #[cfg(feature = "bdk")]
