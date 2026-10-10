@@ -5,7 +5,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use cdk::mint::Mint;
-use cdk_common::grpc::create_version_check_interceptor;
 use thiserror::Error;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
@@ -197,80 +196,20 @@ impl MintRPCServer {
 
                 Server::builder()
                     .tls_config(tls_config)?
-                    .add_service(MintInfoServiceServer::with_interceptor(
-                        self.clone(),
-                        create_version_check_interceptor(
-                            cdk_common::grpc::VERSION_HEADER,
-                            cdk_common::MINT_RPC_PROTOCOL_VERSION,
-                        ),
-                    ))
-                    .add_service(KeysetServiceServer::with_interceptor(
-                        self.clone(),
-                        create_version_check_interceptor(
-                            cdk_common::grpc::VERSION_HEADER,
-                            cdk_common::MINT_RPC_PROTOCOL_VERSION,
-                        ),
-                    ))
-                    .add_service(PaymentMethodServiceServer::with_interceptor(
-                        self.clone(),
-                        create_version_check_interceptor(
-                            cdk_common::grpc::VERSION_HEADER,
-                            cdk_common::MINT_RPC_PROTOCOL_VERSION,
-                        ),
-                    ))
-                    .add_service(QuoteServiceServer::with_interceptor(
-                        self.clone(),
-                        create_version_check_interceptor(
-                            cdk_common::grpc::VERSION_HEADER,
-                            cdk_common::MINT_RPC_PROTOCOL_VERSION,
-                        ),
-                    ))
-                    .add_service(WalletServiceServer::with_interceptor(
-                        self.clone(),
-                        create_version_check_interceptor(
-                            cdk_common::grpc::VERSION_HEADER,
-                            cdk_common::MINT_RPC_PROTOCOL_VERSION,
-                        ),
-                    ))
+                    .add_service(MintInfoServiceServer::new(self.clone()))
+                    .add_service(KeysetServiceServer::new(self.clone()))
+                    .add_service(PaymentMethodServiceServer::new(self.clone()))
+                    .add_service(QuoteServiceServer::new(self.clone()))
+                    .add_service(WalletServiceServer::new(self.clone()))
             }
             None => {
                 tracing::warn!("No valid TLS configuration found, starting insecure server");
                 Server::builder()
-                    .add_service(MintInfoServiceServer::with_interceptor(
-                        self.clone(),
-                        create_version_check_interceptor(
-                            cdk_common::grpc::VERSION_HEADER,
-                            cdk_common::MINT_RPC_PROTOCOL_VERSION,
-                        ),
-                    ))
-                    .add_service(KeysetServiceServer::with_interceptor(
-                        self.clone(),
-                        create_version_check_interceptor(
-                            cdk_common::grpc::VERSION_HEADER,
-                            cdk_common::MINT_RPC_PROTOCOL_VERSION,
-                        ),
-                    ))
-                    .add_service(PaymentMethodServiceServer::with_interceptor(
-                        self.clone(),
-                        create_version_check_interceptor(
-                            cdk_common::grpc::VERSION_HEADER,
-                            cdk_common::MINT_RPC_PROTOCOL_VERSION,
-                        ),
-                    ))
-                    .add_service(QuoteServiceServer::with_interceptor(
-                        self.clone(),
-                        create_version_check_interceptor(
-                            cdk_common::grpc::VERSION_HEADER,
-                            cdk_common::MINT_RPC_PROTOCOL_VERSION,
-                        ),
-                    ))
-                    .add_service(WalletServiceServer::with_interceptor(
-                        self.clone(),
-                        create_version_check_interceptor(
-                            cdk_common::grpc::VERSION_HEADER,
-                            cdk_common::MINT_RPC_PROTOCOL_VERSION,
-                        ),
-                    ))
+                    .add_service(MintInfoServiceServer::new(self.clone()))
+                    .add_service(KeysetServiceServer::new(self.clone()))
+                    .add_service(PaymentMethodServiceServer::new(self.clone()))
+                    .add_service(QuoteServiceServer::new(self.clone()))
+                    .add_service(WalletServiceServer::new(self.clone()))
             }
         };
 
@@ -327,16 +266,52 @@ fn page_limit(requested: u32, default: u32, maximum: u32) -> Result<usize, Statu
 
 #[cfg(test)]
 mod tests {
+    use std::net::TcpListener;
     use std::sync::Arc;
 
+    use tokio::time::{sleep, timeout, Duration};
+    use tonic::transport::Channel;
     use tonic::{Code, Request};
 
     use super::test_utils::{create_test_rpc_server, RejectingMutationGuard, UNKNOWN_QUOTE_ID};
+    use crate::info::mint_info_service_client::MintInfoServiceClient;
     use crate::info::mint_info_service_server::MintInfoService;
     use crate::keyset::keyset_service_server::KeysetService;
     use crate::payment_method::payment_method_service_server::PaymentMethodService;
     use crate::quote::quote_service_server::QuoteService;
     use crate::wallet::wallet_service_server::WalletService;
+
+    #[tokio::test]
+    async fn test_server_accepts_requests_without_version_header() {
+        let mut server = create_test_rpc_server().await;
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test RPC port");
+        server.socket_addr = listener.local_addr().expect("test RPC address");
+        drop(listener);
+        server.start(None).await.expect("RPC server should start");
+
+        let endpoint = Channel::from_shared(format!("http://{}", server.socket_addr))
+            .expect("valid RPC endpoint");
+        let channel = timeout(Duration::from_secs(5), async {
+            loop {
+                if let Ok(channel) = endpoint.connect().await {
+                    break channel;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("RPC server should accept connections");
+
+        MintInfoServiceClient::new(channel)
+            .get_info(crate::info::GetInfoRequest {})
+            .await
+            .expect("request without version header should succeed");
+
+        timeout(Duration::from_secs(5), server.stop())
+            .await
+            .expect("RPC server should stop in time")
+            .expect("RPC server should stop cleanly");
+    }
 
     #[tokio::test]
     async fn test_mutation_guard_rejects_updates_without_blocking_reads() {
