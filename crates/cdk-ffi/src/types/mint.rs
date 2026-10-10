@@ -507,7 +507,10 @@ pub struct Nuts {
     pub nut12_supported: bool,
     /// NUT14 Settings - Hashed Time Locked Contracts
     pub nut14_supported: bool,
-    /// NUT20 Settings - Web sockets
+    /// Whether NUT-17 advertises any WebSocket commands.
+    #[serde(default)]
+    pub nut17_supported: bool,
+    /// NUT20 Settings - Signature on mint quote
     pub nut20_supported: bool,
     /// NUT21 Settings - Clear authentication
     pub nut21: Option<ClearAuthSettings>,
@@ -544,6 +547,11 @@ impl From<cdk::nuts::Nuts> for Nuts {
             nut11_supported: nuts.nut11.supported,
             nut12_supported: nuts.nut12.supported,
             nut14_supported: nuts.nut14.supported,
+            nut17_supported: nuts
+                .nut17
+                .supported
+                .iter()
+                .any(|setting| !setting.commands.is_empty()),
             nut20_supported: nuts.nut20.supported,
             nut21: nuts.nut21.map(Into::into),
             nut22: nuts.nut22.map(Into::into),
@@ -940,6 +948,7 @@ mod tests {
             nut11_supported: false,
             nut12_supported: false,
             nut14_supported: false,
+            nut17_supported: false,
             nut20_supported: false,
             nut21: None,
             nut22: None,
@@ -1097,6 +1106,7 @@ mod tests {
                 nut11_supported: false,
                 nut12_supported: true,
                 nut14_supported: false,
+                nut17_supported: false,
                 nut20_supported: false,
                 nut21: None,
                 nut22: Some(BlindAuthSettings {

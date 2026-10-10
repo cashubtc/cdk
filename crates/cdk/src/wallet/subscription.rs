@@ -38,6 +38,8 @@ pub type NotificationPayload = crate::nuts::NotificationPayload<String>;
 /// Type alias
 pub type ActiveSubscription = RemoteActiveConsumer<SubscriptionClient>;
 
+type ConnectionKey = (MintUrl, bool, Option<Kind>);
+
 /// Subscription manager
 ///
 /// This structure should be instantiated once per wallet at most. It is
@@ -55,7 +57,7 @@ pub type ActiveSubscription = RemoteActiveConsumer<SubscriptionClient>;
 /// unsubscribe from updates automatically on the drop.
 #[derive(Clone)]
 pub struct SubscriptionManager {
-    all_connections: Arc<RwLock<HashMap<MintUrl, Arc<Consumer<SubscriptionClient>>>>>,
+    all_connections: Arc<RwLock<HashMap<ConnectionKey, Arc<Consumer<SubscriptionClient>>>>>,
     http_client: Arc<dyn MintConnector + Send + Sync>,
     prefer_http: bool,
 }
@@ -90,17 +92,34 @@ impl SubscriptionManager {
         mint_url: MintUrl,
         filter: WalletParams,
     ) -> Result<RemoteActiveConsumer<SubscriptionClient>, PubsubError> {
+        self.subscribe_with_options(mint_url, filter, true)
+    }
+
+    /// Subscribe with optional HTTP fallback. Stream-only subscriptions share
+    /// a separate connection per kind so other consumers cannot enable hidden
+    /// polling and an unsupported kind cannot disrupt supported subscriptions.
+    pub fn subscribe_with_options(
+        &self,
+        mint_url: MintUrl,
+        filter: WalletParams,
+        http_fallback: bool,
+    ) -> Result<RemoteActiveConsumer<SubscriptionClient>, PubsubError> {
         self.all_connections
             .write()
-            .entry(mint_url.clone())
+            .entry((
+                mint_url.clone(),
+                http_fallback,
+                (!http_fallback).then(|| filter.kind.clone()),
+            ))
             .or_insert_with(|| {
-                Consumer::new(
+                Consumer::with_http_fallback(
                     SubscriptionClient {
                         mint_url,
                         http_client: self.http_client.clone(),
                         req_id: 0.into(),
                     },
                     self.prefer_http,
+                    http_fallback,
                     (),
                 )
             })
@@ -245,6 +264,7 @@ impl Transport for SubscriptionClient {
         topics: Vec<SubscribeMessage<Self::Spec>>,
         reply_to: InternalRelay<Self::Spec>,
     ) -> Result<(), PubsubError> {
+        let mut failed = false;
         let proofs = topics
             .iter()
             .filter_map(|(_, x)| match &x {
@@ -285,6 +305,7 @@ impl Transport for SubscriptionClient {
                             }
                         },
                         Err(err) => {
+                            failed = true;
                             tracing::error!("Error with MintBolt11 {} with {:?}", id, err);
                             continue;
                         }
@@ -308,6 +329,7 @@ impl Transport for SubscriptionClient {
                             }
                         },
                         Err(err) => {
+                            failed = true;
                             tracing::error!("Error with MeltBolt11 {} with {:?}", id, err);
                             continue;
                         }
@@ -331,6 +353,7 @@ impl Transport for SubscriptionClient {
                             }
                         },
                         Err(err) => {
+                            failed = true;
                             tracing::error!("Error with MintBolt12 {} with {:?}", id, err);
                             continue;
                         }
@@ -354,6 +377,7 @@ impl Transport for SubscriptionClient {
                             }
                         },
                         Err(err) => {
+                            failed = true;
                             tracing::error!("Error with MeltBolt12 {} with {:?}", id, err);
                             continue;
                         }
@@ -377,6 +401,7 @@ impl Transport for SubscriptionClient {
                             }
                         },
                         Err(err) => {
+                            failed = true;
                             tracing::error!("Error with MintOnchain {} with {:?}", id, err);
                             continue;
                         }
@@ -400,6 +425,7 @@ impl Transport for SubscriptionClient {
                             }
                         },
                         Err(err) => {
+                            failed = true;
                             tracing::error!("Error with MeltOnchain {} with {:?}", id, err);
                             continue;
                         }
@@ -426,6 +452,7 @@ impl Transport for SubscriptionClient {
                             }
                         },
                         Err(err) => {
+                            failed = true;
                             tracing::error!("Error with Custom Mint Quote {} with {:?}", id, err);
                             continue;
                         }
@@ -452,6 +479,7 @@ impl Transport for SubscriptionClient {
                             }
                         },
                         Err(err) => {
+                            failed = true;
                             tracing::error!("Error with Custom Melt Quote {} with {:?}", id, err);
                             continue;
                         }
@@ -465,7 +493,13 @@ impl Transport for SubscriptionClient {
             }
         }
 
-        Ok(())
+        if failed {
+            Err(PubsubError::InternalStr(
+                "Subscription status poll failed".to_owned(),
+            ))
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -480,6 +514,8 @@ async fn stream_client(
     reply_to: InternalRelay<MintSubTopics>,
 ) -> Result<(), PubsubError> {
     let mut sub_id_to_kind = HashMap::new();
+    let mut request_deadlines = HashMap::new();
+    let mut deadline_tick = tokio::time::interval(std::time::Duration::from_secs(1));
     let mut pending_requests = HashMap::new();
 
     let mut url = client
@@ -526,14 +562,16 @@ async fn stream_client(
     let header_refs: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
 
     tracing::debug!("Connecting to {}", url);
-    let (mut sender, mut receiver) = client
-        .http_client
-        .connect_websocket(&url_str, &header_refs)
-        .await
-        .map_err(|err| {
-            tracing::error!("Error connecting: {err:?}");
-            map_ws_error(err)
-        })?;
+    let (mut sender, mut receiver) = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        client.http_client.connect_websocket(&url_str, &header_refs),
+    )
+    .await
+    .map_err(|_| PubsubError::InternalStr("WebSocket connect timed out".to_owned()))?
+    .map_err(|err| {
+        tracing::error!("Error connecting: {err:?}");
+        map_ws_error(err)
+    })?;
 
     tracing::debug!("Connected to {}", url);
 
@@ -546,12 +584,21 @@ async fn stream_client(
         };
 
         sub_id_to_kind.insert(name.clone(), kind);
-        sender.send(req).await.map_err(map_ws_error)?;
+        tokio::time::timeout(std::time::Duration::from_secs(10), sender.send(req))
+            .await
+            .map_err(|_| PubsubError::InternalStr("WebSocket send timed out".to_owned()))?
+            .map_err(map_ws_error)?;
         pending_requests.insert(request_id, PendingRequest::Subscribe { sub_id: name });
+        request_deadlines.insert(request_id, tokio::time::Instant::now());
     }
 
     loop {
         tokio::select! {
+            _ = deadline_tick.tick() => {
+                if request_deadlines.values().any(|sent: &tokio::time::Instant| sent.elapsed() >= std::time::Duration::from_secs(10)) {
+                    return Err(PubsubError::InternalStr("WebSocket acknowledgement timed out".to_owned()));
+                }
+            }
             Some(msg) = ctrl.recv() => {
                 match msg {
                     StreamCtrl::Subscribe(msg) => {
@@ -562,7 +609,10 @@ async fn stream_client(
                             continue;
                         };
                         sub_id_to_kind.insert(msg.0.clone(), kind);
-                        sender.send(req).await.map_err(map_ws_error)?;
+                        tokio::time::timeout(std::time::Duration::from_secs(10), sender.send(req))
+                            .await.map_err(|_| PubsubError::InternalStr("WebSocket send timed out".to_owned()))?
+                            .map_err(map_ws_error)?;
+                        request_deadlines.insert(request_id, tokio::time::Instant::now());
                         pending_requests.insert(
                             request_id,
                             PendingRequest::Subscribe { sub_id: msg.0 },
@@ -575,7 +625,10 @@ async fn stream_client(
                         } else {
                             continue;
                         };
-                        sender.send(req).await.map_err(map_ws_error)?;
+                        tokio::time::timeout(std::time::Duration::from_secs(10), sender.send(req))
+                            .await.map_err(|_| PubsubError::InternalStr("WebSocket send timed out".to_owned()))?
+                            .map_err(map_ws_error)?;
+                        request_deadlines.insert(request_id, tokio::time::Instant::now());
                         pending_requests.insert(
                             request_id,
                             PendingRequest::Unsubscribe { sub_id: msg },
@@ -605,16 +658,19 @@ async fn stream_client(
                     }
                 };
                 match handle_server_message(&msg, &sub_id_to_kind, &mut pending_requests) {
-                    ServerMessageAction::Ignore => continue,
+                    ServerMessageAction::Acknowledged(id) => reply_to.subscription_ready(id),
+                    ServerMessageAction::Ignore => {},
                     ServerMessageAction::Deliver(payload) => reply_to.send(*payload),
                     ServerMessageAction::Fail(err) => return Err(err),
                 }
+                request_deadlines.retain(|id, _| pending_requests.contains_key(id));
             }
         }
     }
 }
 
 enum ServerMessageAction {
+    Acknowledged(String),
     Deliver(Box<NotificationPayload>),
     Ignore,
     Fail(PubsubError),
@@ -667,7 +723,7 @@ fn handle_server_message(
             }
         }
         RawWsMessageOrResponse::Response(response) => {
-            let Some(request) = pending_requests.remove(&response.id) else {
+            let Some(request) = pending_requests.get(&response.id).cloned() else {
                 tracing::warn!(
                     "Received websocket response for unknown request id {}",
                     response.id
@@ -685,6 +741,7 @@ fn handle_server_message(
                 return ServerMessageAction::Ignore;
             }
 
+            pending_requests.remove(&response.id);
             tracing::debug!(
                 "Received {} response from server for subId {} with status {}",
                 request.method(),
@@ -692,7 +749,17 @@ fn handle_server_message(
                 response.result.status
             );
 
-            ServerMessageAction::Ignore
+            if matches!(request, PendingRequest::Subscribe { .. }) {
+                if response.result.status == "OK" {
+                    ServerMessageAction::Acknowledged(response.result.sub_id)
+                } else {
+                    ServerMessageAction::Fail(PubsubError::InternalStr(
+                        "WebSocket subscription was not accepted".to_owned(),
+                    ))
+                }
+            } else {
+                ServerMessageAction::Ignore
+            }
         }
         RawWsMessageOrResponse::ErrorResponse(error) => {
             match error.id.and_then(|id| pending_requests.remove(&id)) {
@@ -962,6 +1029,44 @@ mod tests {
         assert!(matches!(
             handle_server_message("not json", &sub_id_to_kind, &mut pending_requests),
             ServerMessageAction::Ignore
+        ));
+    }
+
+    #[test]
+    fn readiness_requires_a_matching_successful_acknowledgement() {
+        let kinds = HashMap::new();
+        let mut pending = HashMap::from([(
+            1,
+            PendingRequest::Subscribe {
+                sub_id: "expected".to_owned(),
+            },
+        )]);
+        assert!(matches!(
+            handle_server_message(&subscribe_response(1, "wrong"), &kinds, &mut pending),
+            ServerMessageAction::Ignore
+        ));
+        assert!(
+            pending.contains_key(&1),
+            "mismatched acknowledgement must still time out"
+        );
+        assert!(
+            matches!(handle_server_message(&subscribe_response(1, "expected"), &kinds, &mut pending), ServerMessageAction::Acknowledged(id) if id == "expected")
+        );
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn unsuccessful_acknowledgement_reconnects_instead_of_claiming_readiness() {
+        let mut pending = HashMap::from([(
+            1,
+            PendingRequest::Subscribe {
+                sub_id: "sub".to_owned(),
+            },
+        )]);
+        let response = subscribe_response(1, "sub").replace("OK", "ERROR");
+        assert!(matches!(
+            handle_server_message(&response, &HashMap::new(), &mut pending),
+            ServerMessageAction::Fail(_)
         ));
     }
 

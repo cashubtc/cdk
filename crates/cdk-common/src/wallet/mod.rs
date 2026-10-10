@@ -1361,6 +1361,13 @@ pub trait Wallet: Send + Sync {
         params: Self::SubscribeParams,
     ) -> Result<Self::Subscription, Self::Error>;
 
+    /// Subscribe with optional HTTP fallback for hosts owning retry schedules.
+    async fn subscribe_with_options(
+        &self,
+        params: Self::SubscribeParams,
+        http_fallback: bool,
+    ) -> Result<Self::Subscription, Self::Error>;
+
     /// Get a melt quote for a BIP353 address
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
     async fn melt_bip353_quote(
