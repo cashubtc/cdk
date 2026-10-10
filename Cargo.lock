@@ -1889,6 +1889,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdk-upgrade-tests"
+version = "0.18.0"
+dependencies = [
+ "clap",
+ "reqwest 0.13.5",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "toml 0.8.23",
+ "uuid",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

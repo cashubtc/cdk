@@ -1,0 +1,19 @@
+[package]
+name = "cdk-upgrade-tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+clap = { workspace = true, features = ["derive"] }
+reqwest.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "signal"] }
+toml = { workspace = true, features = ["parse"] }
+uuid = { workspace = true, features = ["v4"] }
+
+[lints]
+workspace = true
