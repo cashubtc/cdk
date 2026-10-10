@@ -756,10 +756,12 @@ impl MeltSaga<SetupComplete> {
         let payment_backend = self
             .mint
             .payment_processors
+            .load()
             .get(&crate::types::PaymentProcessorKey::new(
                 self.state_data.quote.unit.clone(),
                 self.state_data.quote.payment_method.clone(),
             ))
+            .cloned()
             .ok_or_else(|| {
                 tracing::info!(
                     "Could not get payment backend for {}, {}",
@@ -797,9 +799,7 @@ impl MeltSaga<SetupComplete> {
         // dispatch, payment events, and reconciliation for this quote. Do not
         // hold a database connection across payment-backend network I/O: a few
         // slow payments would otherwise exhaust PostgreSQL dispatch capacity.
-        let (response, acknowledged) = self
-            .execute_payment_and_verify(Arc::clone(payment_backend))
-            .await?;
+        let (response, acknowledged) = self.execute_payment_and_verify(payment_backend).await?;
         if response.status == MeltQuoteState::Paid {
             self.persist_paid_payment(&response).await?;
         } else {

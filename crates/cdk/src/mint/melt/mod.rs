@@ -307,10 +307,12 @@ impl Mint {
 
             let payment_backend = self
                 .payment_processors
+                .load()
                 .get(&PaymentProcessorKey::new(
                     unit.clone(),
                     PaymentMethod::Known(KnownMethod::Bolt11),
                 ))
+                .cloned()
                 .ok_or_else(|| {
                     tracing::info!("Could not get payment backend for {}, bolt11 ", unit);
 
@@ -427,10 +429,12 @@ impl Mint {
 
             let payment_backend = self
                 .payment_processors
+                .load()
                 .get(&PaymentProcessorKey::new(
                     unit.clone(),
                     PaymentMethod::Known(KnownMethod::Bolt12),
                 ))
+                .cloned()
                 .ok_or_else(|| {
                     tracing::info!("Could not get payment backend for {}, bolt12 ", unit);
 
@@ -542,10 +546,12 @@ impl Mint {
 
             let payment_backend = self
                 .payment_processors
+                .load()
                 .get(&PaymentProcessorKey::new(
                     unit.clone(),
                     PaymentMethod::Known(KnownMethod::Onchain),
                 ))
+                .cloned()
                 .ok_or_else(|| {
                     tracing::info!("Could not get payment backend for {}, onchain ", unit);
                     Error::UnsupportedUnit
@@ -698,10 +704,12 @@ impl Mint {
 
             let payment_backend = self
                 .payment_processors
+                .load()
                 .get(&PaymentProcessorKey::new(
                     unit.clone(),
                     payment_method.clone(),
                 ))
+                .cloned()
                 .ok_or_else(|| {
                     tracing::info!("Could not get payment backend for {}, {} ", unit, method);
                     Error::UnsupportedUnit
