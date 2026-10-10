@@ -227,6 +227,9 @@ cdk-cli melt --mpp
 cdk-cli melt --mpp --invoice <bolt11_invoice> \
   --mpp-split http://mint1.example.com=500 \
   --mpp-split http://mint2.example.com=700
+
+# Pay with a custom payment method
+cdk-cli --unit ora melt --method branch --request <branch_request>
 ```
 
 ### Payment Requests
