@@ -636,13 +636,13 @@ impl Mint {
             let mut responses = Vec::with_capacity(quote_ids.len());
 
             for quote_id in quote_ids {
-                let mut quote = self
+                let quote = self
                     .localstore
                     .get_mint_quote(quote_id)
                     .await?
                     .ok_or(Error::UnknownQuote)?;
 
-                self.check_mint_quote_paid(&mut quote).await?;
+                let quote = self.check_mint_quote_paid(quote).await?;
 
                 responses.push(quote.try_into()?);
             }
@@ -722,12 +722,12 @@ impl Mint {
             // Fetch all quotes
             let mut quote_map = std::collections::HashMap::new();
             for quote_id in &quote_ids {
-                let mut mint_quote = self
+                let mint_quote = self
                     .localstore
                     .get_mint_quote(quote_id)
                     .await?
                     .ok_or(Error::UnknownQuote)?;
-                self.check_mint_quote_paid(&mut mint_quote).await?;
+                let mint_quote = self.check_mint_quote_paid(mint_quote).await?;
                 quote_map.insert(quote_id.clone(), mint_quote);
             }
 
