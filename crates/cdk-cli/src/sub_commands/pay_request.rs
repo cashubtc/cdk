@@ -56,7 +56,10 @@ pub async fn pay_request(
     if let Some(payment_id) = &payment_request.payment_id {
         println!("  Payment ID: {}", escape_control(payment_id));
     }
-    println!("  Mint: {}", prepared.mint_url());
+    println!(
+        "  Mint: {}",
+        cdk_common::redact::url_for_logs(&prepared.mint_url().to_string())
+    );
     println!(
         "  Requested amount: {} {}",
         prepared.requested_amount(),

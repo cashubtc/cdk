@@ -1173,7 +1173,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
         Ok(sagas)
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self, ys), fields(proof_count = ys.len()))]
     async fn reserve_proofs(
         &self,
         ys: Vec<PublicKey>,
