@@ -455,6 +455,14 @@ impl WalletTraitDef for Wallet {
         Wallet::subscribe(self, params).await
     }
 
+    async fn subscribe_with_options(
+        &self,
+        params: Self::SubscribeParams,
+        http_fallback: bool,
+    ) -> Result<Self::Subscription, Self::Error> {
+        Wallet::subscribe_with_options(self, params, http_fallback).await
+    }
+
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
     async fn melt_bip353_quote(
         &self,

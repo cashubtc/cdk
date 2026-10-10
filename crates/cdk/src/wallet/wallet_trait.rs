@@ -419,6 +419,14 @@ impl WalletTrait for super::Wallet {
         self.subscribe(params).await
     }
 
+    async fn subscribe_with_options(
+        &self,
+        params: WalletParams,
+        http_fallback: bool,
+    ) -> Result<ActiveSubscription, Self::Error> {
+        self.subscribe_with_options(params, http_fallback).await
+    }
+
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
     #[instrument(skip(self, amount_msat), fields(address = %bip353_address))]
     async fn melt_bip353_quote(

@@ -785,6 +785,22 @@ impl Wallet {
         )))
     }
 
+    /// Subscribe with optional HTTP fallback. Set false when the mobile host
+    /// owns polling and persisted retry deadlines; WebSockets still reconnect.
+    pub async fn subscribe_with_options(
+        &self,
+        params: SubscribeParams,
+        http_fallback: bool,
+    ) -> Result<Arc<ActiveSubscription>, FfiError> {
+        let params: cdk::nuts::nut17::Params<Arc<String>> = params.into();
+        let id = params.id.to_string();
+        let subscription = self
+            .inner
+            .subscribe_with_options(params, http_fallback)
+            .await?;
+        Ok(Arc::new(ActiveSubscription::new(subscription, id)))
+    }
+
     /// Subscribe to mint quote state updates
     ///
     /// Convenience method that creates a subscription to receive notifications
@@ -1225,6 +1241,32 @@ mod tests {
 
     fn test_wallet() -> Wallet {
         wallet_with(None).expect("wallet should be created")
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn socket_only_subscription_can_stop_a_pending_recv() {
+        let wallet = test_wallet();
+        let subscription = wallet
+            .subscribe_with_options(
+                SubscribeParams {
+                    kind: SubscriptionKind::Bolt11MintQuote,
+                    filters: vec!["quote".to_owned()],
+                    id: None,
+                },
+                false,
+            )
+            .await
+            .expect("subscribe");
+        assert!(!subscription.is_streaming());
+        let (received, ()) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            tokio::join!(subscription.recv(), subscription.stop())
+        })
+        .await
+        .expect("stop must cancel a pending receive");
+        assert!(received.is_err());
+        assert!(!subscription.is_streaming());
+        assert!(subscription.try_recv().await.is_err());
+        subscription.stop().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
