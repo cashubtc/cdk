@@ -1,5 +1,6 @@
 //! Mint Quote Signatures
 
+use std::ops::Range;
 use std::str::FromStr;
 
 use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
@@ -35,17 +36,42 @@ const QUOTE_LOCKING_ACCOUNT: u32 = 20;
 /// Keys use the BIP32 path `m/129373'/20'/0'/0'/{counter}`, where `counter`
 /// is a non-hardened child index independent from all other wallet counters.
 pub fn derive_quote_locking_key(seed: &[u8; 64], counter: u32) -> Result<SecretKey, Error> {
+    let child = ChildNumber::from_normal_idx(counter)?;
+    let parent = quote_locking_parent(seed)?;
+    Ok(parent
+        .derive_priv(&crate::SECP256K1, &[child])?
+        .private_key
+        .into())
+}
+
+/// Lazily derive NUT-20 quote-locking keys for a range of non-hardened counters.
+///
+/// Derives the shared `m/129373'/20'/0'/0'` prefix once for the entire search.
+/// Each iterator item corresponds to the next counter and reports invalid
+/// non-hardened indices or child derivation failures as an error.
+pub fn derive_quote_locking_keys(
+    seed: &[u8; 64],
+    counters: Range<u32>,
+) -> Result<impl Iterator<Item = Result<SecretKey, Error>>, Error> {
+    let parent = quote_locking_parent(seed)?;
+    Ok(counters.map(move |counter| {
+        let child = ChildNumber::from_normal_idx(counter)?;
+        Ok(parent
+            .derive_priv(&crate::SECP256K1, &[child])?
+            .private_key
+            .into())
+    }))
+}
+
+fn quote_locking_parent(seed: &[u8; 64]) -> Result<Xpriv, Error> {
     let path = DerivationPath::from(vec![
         ChildNumber::from_hardened_idx(QUOTE_LOCKING_PURPOSE)?,
         ChildNumber::from_hardened_idx(QUOTE_LOCKING_ACCOUNT)?,
         ChildNumber::from_hardened_idx(0)?,
         ChildNumber::from_hardened_idx(0)?,
-        ChildNumber::from_normal_idx(counter)?,
     ]);
     let xpriv = Xpriv::new_master(Network::Bitcoin, seed)?;
-    let derived_key = xpriv.derive_priv(&crate::SECP256K1, &path)?.private_key;
-
-    Ok(derived_key.into())
+    Ok(xpriv.derive_priv(&crate::SECP256K1, &path)?)
 }
 
 fn amount_to_minimal_bytes(amount: crate::Amount) -> Vec<u8> {
@@ -185,11 +211,16 @@ mod tests {
             "02b8709bfce17c10f1864f5218844533ae60930d52089669b317d8b5f474eec071",
         ];
 
+        let mut keys = derive_quote_locking_keys(&seed, 0..expected.len() as u32)
+            .expect("test vector range should derive");
+
         for (counter, expected_pubkey) in expected.into_iter().enumerate() {
             let secret_key = derive_quote_locking_key(&seed, counter as u32)
                 .expect("test vector key should derive");
             assert_eq!(secret_key.public_key().to_hex(), expected_pubkey);
+            assert_eq!(keys.next().unwrap().unwrap(), secret_key);
         }
+        assert!(keys.next().is_none());
     }
 
     #[test]
@@ -197,6 +228,23 @@ mod tests {
         let seed = [0; 64];
 
         assert!(derive_quote_locking_key(&seed, 1 << 31).is_err());
+    }
+
+    #[test]
+    fn quote_locking_key_range_respects_bounds() {
+        let seed = [0; 64];
+        assert!(derive_quote_locking_keys(&seed, 7..7)
+            .unwrap()
+            .next()
+            .is_none());
+        let boundary = 1 << 31;
+        let mut keys = derive_quote_locking_keys(&seed, boundary - 1..boundary + 1).unwrap();
+        assert_eq!(
+            keys.next().unwrap().unwrap(),
+            derive_quote_locking_key(&seed, boundary - 1).unwrap()
+        );
+        assert!(keys.next().unwrap().is_err());
+        assert!(keys.next().is_none());
     }
 
     #[test]

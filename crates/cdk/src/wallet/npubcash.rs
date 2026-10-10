@@ -1559,4 +1559,66 @@ mod tests {
             .expect("unrelated quote is mintable afterwards");
         assert_eq!(minted, Amount::from(2_000u64));
     }
+
+    #[tokio::test]
+    async fn quote_key_search_skips_npubcash_quotes() {
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock_seed, test_mint_url, MockMintConnector,
+        };
+
+        let seed = [0x42u8; 64];
+        let db = create_test_db().await;
+        let mock_client = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock_seed(db.clone(), mock_client.clone(), seed).await;
+        let server_quote = paid_server_quote(
+            "npubcash-locked",
+            1_000,
+            Some(true),
+            &test_mint_url().to_string(),
+        );
+        let stored = wallet
+            .add_npubcash_mint_quote(server_quote)
+            .await
+            .expect("locked import succeeds")
+            .expect("quote is stored");
+
+        // Even a pubkey matching a seed-derived key must not be adopted, since
+        // the NpubCash identity signs this quote.
+        let seed_key = crate::nuts::nut20::derive_quote_locking_key(&seed, 0).expect("key derives");
+        mock_client.set_mint_quote_status_response(
+            "npubcash-locked",
+            cdk_common::MintQuoteResponse::Bolt11(crate::nuts::MintQuoteBolt11Response {
+                quote: stored.id.clone(),
+                request: stored.request.clone(),
+                amount: stored.amount,
+                unit: Some(stored.unit.clone()),
+                method: stored.payment_method.clone(),
+                amount_paid: Amount::from(1_000u64),
+                amount_issued: Amount::ZERO,
+                updated_at: 1,
+                state: MintQuoteState::Paid,
+                expiry: None,
+                pubkey: Some(seed_key.public_key()),
+            }),
+        );
+
+        let fetched = wallet
+            .fetch_mint_quote_with_key_search("npubcash-locked", None, 10)
+            .await
+            .expect("fetch succeeds");
+        assert_eq!(fetched.secret_key, None);
+        assert_eq!(
+            db.increment_derivation_counter("nut20_quote", 0)
+                .await
+                .expect("counter reads"),
+            0
+        );
+        assert_eq!(
+            wallet
+                .mint_quote_signing_key(&fetched)
+                .await
+                .expect("signing key resolves"),
+            Some(wallet.derive_npubcash_secret_key().expect("key derives"))
+        );
+    }
 }
