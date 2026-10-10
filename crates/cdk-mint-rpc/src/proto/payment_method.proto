@@ -65,6 +65,7 @@ message UpdateDisabledRequest {
     optional bool mint_disabled = 1;
     // True disables melting for every unit and method; false enables it.
     // Omit to keep the current value.
+    // Inflight quote will not be honored if melt disables mid response
     optional bool melt_disabled = 2;
 }
 
@@ -123,4 +124,3 @@ message UpdateMeltMethodResponse {
     // method by replacing '_' and '-' with spaces and title-casing words.
     optional string method_name = 6;
 }
-

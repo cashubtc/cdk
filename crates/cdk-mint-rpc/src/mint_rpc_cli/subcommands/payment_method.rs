@@ -185,6 +185,7 @@ pub struct UpdateDisabledCommand {
     #[arg(long)]
     mint_disabled: Option<bool>,
     /// Whether melting is disabled (true) or enabled (false) for every unit and method
+    /// Inflight quotes will not be honored if melt disables mid response
     #[arg(long)]
     melt_disabled: Option<bool>,
 }

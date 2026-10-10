@@ -1,6 +1,7 @@
 mod htlc_sigall_spending_conditions_tests;
 mod htlc_spending_conditions_tests;
 mod locktime_spending_conditions_tests;
+mod melt_disable_with_inflight_quote_contract;
 mod onchain_quote_id_tests;
 mod p2pk_sigall_spending_conditions_tests;
 mod p2pk_spending_conditions_tests;
