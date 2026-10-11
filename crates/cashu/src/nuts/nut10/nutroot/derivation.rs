@@ -1,7 +1,7 @@
 use bitcoin::hashes::{hmac, sha256, Hash, HashEngine, HmacEngine};
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 
-use super::Error;
+use super::{tagged_hash, Error};
 use crate::nuts::nut01::BlsSecretKey;
 use crate::nuts::{Id, KeySetVersion};
 
@@ -64,6 +64,23 @@ pub fn derive_quote_key(
     derive(seed, &mint_identity.serialize(), counter, 4, &[], |bytes| {
         SecretKey::from_slice(bytes).ok()
     })
+}
+
+/// Derive a quote id preimage (type `0x05`) on the same quote counter as its lock key.
+/// Any 32 bytes is valid, so there is no rejection sampling.
+pub fn derive_quote_id_preimage(
+    seed: &[u8],
+    mint_identity: PublicKey,
+    counter: u64,
+) -> Result<[u8; 32], Error> {
+    derive(seed, &mint_identity.serialize(), counter, 5, &[], |bytes| {
+        Some(*bytes)
+    })
+}
+
+/// NUT-04 derived quote id, `hex(tagged_hash("Cashu_QuoteId", id_preimage))`.
+pub fn derived_quote_id(id_preimage: &[u8; 32]) -> String {
+    crate::util::hex::encode(tagged_hash("Cashu_QuoteId", id_preimage))
 }
 
 fn derive<T, F>(

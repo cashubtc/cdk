@@ -99,13 +99,14 @@ impl Transaction {
             transcript.extend_from_slice(&record);
             inputs.push(record);
         }
+        // B_ enters as its hash (NUT-10); the request still carries B_ itself.
         for output in outputs {
             transcript.extend(container(
                 BLINDED_OUTPUT,
                 &[
                     integer(u64::from(output.amount)),
                     output.keyset_id.to_bytes(),
-                    output.blinded_secret.to_bytes(),
+                    Sha256::digest(output.blinded_secret.to_bytes()).to_vec(),
                 ],
             )?);
         }
@@ -157,7 +158,14 @@ impl Transaction {
                 return Err(Error::InvalidTransaction);
             }
             match tag {
-                PROOF_INPUT | BLINDED_OUTPUT => {
+                BLINDED_OUTPUT => {
+                    crate::nuts::Id::from_bytes(fields[1].1)
+                        .map_err(|_| Error::InvalidTransaction)?;
+                    if fields[2].1.len() != 32 {
+                        return Err(Error::InvalidTransaction);
+                    }
+                }
+                PROOF_INPUT => {
                     let id = crate::nuts::Id::from_bytes(fields[1].1)
                         .map_err(|_| Error::InvalidTransaction)?;
                     for (_, point, _) in &fields[2..] {
@@ -173,7 +181,7 @@ impl Transaction {
                             return Err(Error::InvalidTransaction);
                         }
                     }
-                    if tag == PROOF_INPUT && !ys.insert(fields[2].1) {
+                    if !ys.insert(fields[2].1) {
                         return Err(Error::InvalidTransaction);
                     }
                 }
