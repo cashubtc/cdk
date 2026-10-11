@@ -106,7 +106,9 @@ enum Commands {
     UpdateQuoteTtl(subcommands::UpdateQuoteTtlCommand),
     /// Get quote ttl
     GetQuoteTtl,
-    /// Update mint quote state
+    /// Force-mark a fixed-amount BOLT11 mint quote paid
+    ///
+    /// Other payment methods and amountless quotes fail with FAILED_PRECONDITION.
     #[command(alias = "update-nut04-quote-state")]
     UpdateMintQuoteState(subcommands::UpdateMintQuoteStateCommand),
     /// Rotate next keyset

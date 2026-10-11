@@ -72,15 +72,15 @@ pub async fn get_quote_ttl(client: &mut InterceptedQuoteServiceClient) -> Result
     Ok(())
 }
 
-/// Command to update the state of a mint quote
+/// Command to force-mark a fixed-amount BOLT11 mint quote paid.
 ///
-/// Mint quotes represent pending mint operations. This command allows updating
-/// the state of a quote (e.g., marking it as paid) to process the minting of tokens.
+/// Other payment methods and amountless quotes are rejected by the server with
+/// gRPC status `FAILED_PRECONDITION`.
 #[derive(Args, Debug)]
 pub struct UpdateMintQuoteStateCommand {
     /// The ID of the quote to update
     quote_id: String,
-    /// The new state to set for the quote (default: "PAID")
+    /// The new state to set for the quote; the server only supports "PAID"
     #[arg(default_value = "PAID")]
     state: String,
 }
