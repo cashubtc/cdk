@@ -799,6 +799,17 @@ fn shared_mint_quote_input_vectors() {
         let transaction = transaction(&case["tx"]);
         assert_eq!(transaction.as_bytes(), bytes(&case["transcript"]), "{name}");
         assert_eq!(transaction.digest(), hash(&case["digest"]), "{name}");
+        for output in list(&case["tx"]["blinded_outputs"]) {
+            let b_ = bytes(&output["B_"]);
+            let contains = |needle: &[u8]| {
+                transaction
+                    .as_bytes()
+                    .windows(needle.len())
+                    .any(|w| w == needle)
+            };
+            assert!(!contains(&b_), "{name}");
+            assert!(contains(sha2::Sha256::digest(&b_).as_slice()), "{name}");
+        }
         assert_eq!(
             Transaction::from_bytes(transaction.as_bytes()).unwrap(),
             transaction,
@@ -835,4 +846,27 @@ fn shared_mint_quote_input_vectors() {
     let mut stripped = transcript[..3].to_vec();
     stripped.extend_from_slice(&transcript[3..transcript.len() - 35]);
     assert!(Transaction::from_bytes(&stripped).is_err());
+}
+
+#[test]
+fn quote_id_preimage_vectors() {
+    let shared: Value = serde_json::from_str(include_str!("nutroot_v3_vectors.json")).unwrap();
+    let nut13 = &shared["nut13_v3"];
+    let seed = bytes(&nut13["seed_hex"]);
+    let mint = key(&nut13["mint_identity"]);
+    for vector in nut13["quote_locks"].as_array().unwrap() {
+        let counter = vector["counter"].as_u64().unwrap();
+        let preimage = derive_quote_id_preimage(&seed, mint, counter).unwrap();
+        assert_eq!(preimage, hash(&vector["id_preimage"]));
+        assert_eq!(
+            derived_quote_id(&preimage),
+            vector["quote_id"].as_str().unwrap()
+        );
+        assert_eq!(
+            derive_quote_key(&seed, mint, counter)
+                .unwrap()
+                .secret_bytes(),
+            hash(&vector["privkey"])
+        );
+    }
 }
