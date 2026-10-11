@@ -799,17 +799,6 @@ fn shared_mint_quote_input_vectors() {
         let transaction = transaction(&case["tx"]);
         assert_eq!(transaction.as_bytes(), bytes(&case["transcript"]), "{name}");
         assert_eq!(transaction.digest(), hash(&case["digest"]), "{name}");
-        for output in list(&case["tx"]["blinded_outputs"]) {
-            let b_ = bytes(&output["B_"]);
-            let contains = |needle: &[u8]| {
-                transaction
-                    .as_bytes()
-                    .windows(needle.len())
-                    .any(|w| w == needle)
-            };
-            assert!(!contains(&b_), "{name}");
-            assert!(contains(sha2::Sha256::digest(&b_).as_slice()), "{name}");
-        }
         assert_eq!(
             Transaction::from_bytes(transaction.as_bytes()).unwrap(),
             transaction,

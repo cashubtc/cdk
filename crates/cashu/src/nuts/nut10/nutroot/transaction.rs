@@ -99,7 +99,6 @@ impl Transaction {
             transcript.extend_from_slice(&record);
             inputs.push(record);
         }
-        // B_ enters as its hash (NUT-10); the request still carries B_ itself.
         for output in outputs {
             transcript.extend(container(
                 BLINDED_OUTPUT,
