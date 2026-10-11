@@ -6,6 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -30,6 +31,8 @@ use cdk_common::{
 };
 use cdk_fake_wallet::{create_fake_invoice, FakeWallet};
 use cdk_integration_tests::init_pure_tests::setup_tracing;
+use cdk_signatory::db_signatory::DbSignatory;
+use cdk_signatory::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet, SignatoryKeysets};
 use futures::Stream;
 use tokio::sync::Notify;
 use tokio::time::{sleep, timeout};
@@ -40,6 +43,8 @@ enum DispatchBehavior {
     GatedFailure(Arc<Notify>),
     /// Report the payment as still in flight.
     Pending,
+    /// Confirm the payment immediately.
+    Paid,
 }
 
 /// A bolt11 backend whose dispatch and status-check outcomes the test
@@ -121,6 +126,12 @@ impl MintPayment for ControllableBackend {
                 status: MeltQuoteState::Pending,
                 total_spent: Amount::ZERO.with_unit(CurrencyUnit::Sat),
             }),
+            DispatchBehavior::Paid => Ok(MakePaymentResponse {
+                payment_lookup_id,
+                payment_proof: Some("preimage".to_string()),
+                status: MeltQuoteState::Paid,
+                total_spent: self.spent_amount.clone(),
+            }),
         }
     }
 
@@ -175,6 +186,14 @@ async fn create_mint_with_store(
     backend: Arc<ControllableBackend>,
     localstore: Arc<cdk_sqlite::mint::MintSqliteDatabase>,
 ) -> Mint {
+    create_mint_with_store_and_signatory(backend, localstore, None).await
+}
+
+async fn create_mint_with_store_and_signatory(
+    backend: Arc<ControllableBackend>,
+    localstore: Arc<cdk_sqlite::mint::MintSqliteDatabase>,
+    signatory: Option<Arc<dyn Signatory + Send + Sync>>,
+) -> Mint {
     let mut mint_builder = MintBuilder::new(localstore.clone());
     mint_builder
         .add_payment_processor(
@@ -185,18 +204,69 @@ async fn create_mint_with_store(
         )
         .await
         .unwrap();
-    let mint = mint_builder
+    let mint_builder = mint_builder
         .with_name("melt lock test mint".to_string())
         .with_description("melt lock test mint".to_string())
-        .with_urls(vec!["https://melt-lock-test".to_string()])
-        .build_with_seed(localstore.clone(), &[42; 64])
-        .await
-        .unwrap();
+        .with_urls(vec!["https://melt-lock-test".to_string()]);
+    let mint = match signatory {
+        Some(signatory) => mint_builder.build_with_signatory(signatory).await.unwrap(),
+        None => mint_builder
+            .build_with_seed(localstore, &[42; 64])
+            .await
+            .unwrap(),
+    };
     mint.set_quote_ttl(QuoteTTL::new(10000, 10000))
         .await
         .unwrap();
     mint.start().await.unwrap();
     mint
+}
+
+struct GatedSignatory {
+    inner: Arc<dyn Signatory + Send + Sync>,
+    enabled: AtomicBool,
+    calls: AtomicUsize,
+    entered: [Notify; 2],
+    resume: [Notify; 2],
+}
+
+#[async_trait::async_trait]
+impl Signatory for GatedSignatory {
+    fn name(&self) -> String {
+        self.inner.name()
+    }
+
+    async fn blind_sign(
+        &self,
+        messages: Vec<cdk_common::BlindedMessage>,
+    ) -> Result<Vec<cdk_common::BlindSignature>, cdk::Error> {
+        if self.enabled.load(Ordering::SeqCst) {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            if call < self.entered.len() {
+                self.entered[call].notify_one();
+                self.resume[call].notified().await;
+            }
+        }
+        self.inner.blind_sign(messages).await
+    }
+
+    async fn verify_proofs(&self, proofs: Vec<cdk_common::Proof>) -> Result<(), cdk::Error> {
+        self.inner.verify_proofs(proofs).await
+    }
+
+    async fn keysets(&self) -> Result<SignatoryKeysets, cdk::Error> {
+        self.inner.keysets().await
+    }
+
+    async fn subscribe_keysets(
+        &self,
+    ) -> Result<tokio::sync::watch::Receiver<SignatoryKeysets>, cdk::Error> {
+        self.inner.subscribe_keysets().await
+    }
+
+    async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<SignatoryKeySet, cdk::Error> {
+        self.inner.rotate_keyset(args).await
+    }
 }
 
 /// Mints proofs directly against the test mint (the fake backend pays the
@@ -310,6 +380,131 @@ fn melt_quote_state(response: &MeltQuoteResponse<QuoteId>) -> MeltQuoteState {
         MeltQuoteResponse::Bolt11(response) => response.state,
         other => panic!("expected bolt11 melt quote response, got {other:?}"),
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn status_poll_preserves_completion_during_change_signing() {
+    setup_tracing();
+    let backend = Arc::new(ControllableBackend::new(
+        DispatchBehavior::Paid,
+        Amount::new(100, CurrencyUnit::Sat),
+    ));
+    backend.set_check_status(MeltQuoteState::Paid);
+    let localstore = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
+    let signatory = Arc::new(GatedSignatory {
+        inner: Arc::new(
+            DbSignatory::new(
+                localstore.clone(),
+                &[42; 64],
+                HashMap::new(),
+                HashMap::new(),
+            )
+            .await
+            .unwrap(),
+        ),
+        enabled: AtomicBool::new(false),
+        calls: AtomicUsize::new(0),
+        entered: std::array::from_fn(|_| Notify::new()),
+        resume: std::array::from_fn(|_| Notify::new()),
+    });
+    let mint = create_mint_with_store_and_signatory(
+        backend.clone(),
+        localstore.clone(),
+        Some(signatory.clone()),
+    )
+    .await;
+    let proofs = mint_proofs(&mint, Amount::from(1_000)).await;
+    let input_ys = proofs.ys().unwrap();
+    let replica =
+        create_mint_with_store_and_signatory(backend, localstore, Some(signatory.clone())).await;
+    let keyset_id = *mint.get_active_keysets().get(&CurrencyUnit::Sat).unwrap();
+    let change = PreMintSecrets::blank(keyset_id, Amount::from(1_000)).unwrap();
+    let invoice = create_fake_invoice(100_000, String::new());
+    let quote_id = create_melt_quote(&mint, &invoice).await;
+    signatory.enabled.store(true, Ordering::SeqCst);
+    let request = MeltRequest::new(quote_id.clone(), proofs, Some(change.blinded_messages()));
+    let pending_melt = mint.melt(&request).await.unwrap();
+    timeout(Duration::from_secs(10), signatory.entered[0].notified())
+        .await
+        .expect("finalizer should reach change signing");
+    let during_signing = mint
+        .localstore()
+        .get_melt_quote(&quote_id)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let mut poll = tokio::spawn({
+        let replica = replica.clone();
+        let quote_id = quote_id.clone();
+        async move { replica.check_melt_quote(&quote_id).await }
+    });
+    let response = timeout(Duration::from_secs(10), async {
+        tokio::select! {
+            response = &mut poll => Some(response.unwrap().unwrap()),
+            _ = signatory.entered[1].notified() => None,
+        }
+    })
+    .await
+    .expect("poll should finish or reach signing");
+
+    signatory.resume[0].notify_one();
+    let completion = timeout(Duration::from_secs(10), pending_melt)
+        .await
+        .expect("original finalizer should finish");
+    signatory.resume[1].notify_one();
+    let response = match response {
+        Some(response) => response,
+        None => timeout(Duration::from_secs(10), poll)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap(),
+    };
+    let finalized = replica.check_melt_quote(&quote_id).await.unwrap();
+    let stored = mint
+        .localstore()
+        .get_melt_quote(&quote_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let states = mint
+        .localstore()
+        .get_proofs_states(&input_ys)
+        .await
+        .unwrap();
+    let saga = mint
+        .localstore()
+        .get_melt_saga_by_quote_id(&quote_id)
+        .await
+        .unwrap();
+    let mut tx = mint.localstore().begin_transaction().await.unwrap();
+    let request_info = tx
+        .get_melt_request_and_blinded_messages(&quote_id)
+        .await
+        .unwrap();
+    tx.rollback().await.unwrap();
+    mint.stop().await.unwrap();
+    replica.stop().await.unwrap();
+
+    let completion = completion.expect("original melt should complete successfully");
+    assert_eq!(completion.state(), MeltQuoteState::Paid);
+    assert_eq!(response.state(), MeltQuoteState::Pending);
+    assert!(response.change().is_none());
+    assert!(during_signing.is_locked());
+    assert!(during_signing.melt_lock_expires_at > 0);
+    assert_eq!(signatory.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(finalized.state(), MeltQuoteState::Paid);
+    assert_eq!(completion.change(), finalized.change());
+    assert_eq!(
+        Amount::try_sum(finalized.change().unwrap().iter().map(|s| s.amount)).unwrap(),
+        Amount::from(900)
+    );
+    assert!(!stored.is_locked());
+    assert_eq!(stored.melt_lock_expires_at, 0);
+    assert!(states.iter().all(|state| *state == Some(State::Spent)));
+    assert!(saga.is_none());
+    assert!(request_info.is_none());
 }
 
 /// Recovery across mint instances respects active ownership and expired leases.

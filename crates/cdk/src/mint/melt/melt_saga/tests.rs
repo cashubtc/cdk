@@ -1402,6 +1402,15 @@ async fn test_status_poll_waits_for_internal_melt_finalization() {
     };
     confirmed_saga.finalize().await.unwrap();
 
+    let finalized = mint
+        .localstore
+        .get_melt_quote(&melt_quote.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!finalized.is_locked());
+    assert_eq!(finalized.melt_lock_expires_at, 0);
+
     for _ in 0..2 {
         let response = mint.check_melt_quote(&melt_quote.id).await.unwrap();
         assert_eq!(response.state(), MeltQuoteState::Paid);

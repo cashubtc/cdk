@@ -779,9 +779,7 @@ pub(crate) async fn finalize_melt_core(
         // Payment is already done - continue finalization but no change will be returned
     }
 
-    // Update quote state to Paid, releasing the execution lock held by this
-    // payment execution in the same statement.
-    quote.melt_lock = String::new();
+    // Keep ownership until finalization cleanup commits.
     if let Err(err) = tx
         .update_melt_quote_state(&mut quote, MeltQuoteState::Paid, payment_proof.clone())
         .await
@@ -1125,6 +1123,8 @@ pub async fn finalize_melt_quote(
             return Err(err.into());
         }
     }
+
+    tx.unlock_melt_quote(&quote.id, &owner).await?;
 
     // Commit TX2 (change signatures + operation record + melt request + saga cleanup)
     tx.commit().await?;
