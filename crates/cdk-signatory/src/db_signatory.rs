@@ -3,7 +3,7 @@
 //! It is named db_signatory because it uses a database to persist state. The
 //! database is a persistence layer only: it is read once on boot to hydrate the
 //! in-memory keysets and written only when rotating keys. Every other operation
-//! is served from and mutates in-memory state. See ADR-0003.
+//! is served from and mutates in-memory state.
 //!
 //! Boot is strict: `new` attempts the initial keyset load from the database
 //! once and bubbles up any error, so a failed load fails construction rather
@@ -578,7 +578,7 @@ mod test {
 
     #[tokio::test]
     async fn rotation_reloads_peer_keyset_under_lock() {
-        // Two signatories sharing one database, the shape ADR-0004 enables.
+        // Two signatories sharing one database.
         // Neither has the periodic refresh enabled, so the only way instance A
         // learns of instance B's rotation before a restart is the under-lock
         // reload inside its own rotate_keyset.
