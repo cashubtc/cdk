@@ -241,7 +241,7 @@ async fn main() -> Result<()> {
             subcommands::update_mint_quote_state(&mut quote_client, &sub_command_args).await?;
         }
         Commands::UnlockMeltQuote(sub_command_args) => {
-            let mut quote_client = QuoteServiceClient::with_interceptor(channel, interceptor);
+            let mut quote_client = QuoteServiceClient::new(channel);
             subcommands::unlock_melt_quote(&mut quote_client, &sub_command_args).await?;
         }
         Commands::RotateNextKeyset(sub_command_args) => {

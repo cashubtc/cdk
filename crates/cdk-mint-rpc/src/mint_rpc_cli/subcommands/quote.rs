@@ -154,7 +154,7 @@ pub struct UnlockMeltQuoteCommand {
 /// * `client` - The RPC client used to communicate with the mint
 /// * `sub_command_args` - The quote ID to unlock
 pub async fn unlock_melt_quote(
-    client: &mut InterceptedQuoteServiceClient,
+    client: &mut QuoteServiceClient<Channel>,
     sub_command_args: &UnlockMeltQuoteCommand,
 ) -> Result<()> {
     let response = client

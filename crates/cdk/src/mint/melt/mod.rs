@@ -824,7 +824,7 @@ impl Mint {
                 .ok_or(Error::UnknownQuote)?;
 
             self.handle_pending_melt_quote(&mut quote).await?;
-            let quote = Self::load_melt_quote_for_response(&self.localstore, quote_id)
+            let mut quote = Self::load_melt_quote_for_response(&self.localstore, quote_id)
                 .await?
                 .ok_or(Error::UnknownQuote)?;
 
