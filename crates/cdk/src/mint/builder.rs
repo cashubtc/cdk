@@ -245,6 +245,12 @@ impl MintBuilder {
     }
 
     /// Set mint info
+    /// Set the NUT-XX fee per quote input, in ppk of its minimal split
+    pub fn with_quote_input_fee_ppk(mut self, fee_ppk: u64) -> Self {
+        self.mint_info.nuts.nutxx.quote_input_fee_ppk = fee_ppk;
+        self
+    }
+
     pub fn with_mint_info(mut self, mint_info: MintInfo) -> Self {
         self.mint_info = mint_info;
         self
