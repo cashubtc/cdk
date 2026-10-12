@@ -291,6 +291,7 @@ async fn proofs_to_outputs_park_the_rest_in_a_change_quote() {
     assert_eq!(change["amount_paid"], 5);
     assert_eq!(change["amount_issued"], 0);
     assert_eq!(change["request"], "");
+    assert_eq!(change["expiry"], serde_json::Value::Null);
     assert_eq!(
         change["quote"],
         derived_id(&request.change_quote_outputs[0]).to_string()

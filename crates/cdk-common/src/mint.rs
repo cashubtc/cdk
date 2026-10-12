@@ -1535,7 +1535,7 @@ impl TryFrom<MintQuote> for MintQuoteResponse<QuoteId> {
                     quote: quote.id.clone(),
                     request: quote.request.clone(),
                     method: method.clone(),
-                    expiry: Some(quote.expiry),
+                    expiry: (quote.expiry != 0).then_some(quote.expiry),
                     amount: quote.amount.as_ref().map(|a| a.clone().into()),
                     amount_paid: quote.amount_paid().into(),
                     amount_issued: quote.amount_issued().into(),
