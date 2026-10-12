@@ -249,8 +249,12 @@ impl MeltSaga<Initial> {
 
         // Lock order: melt quote, then the mint quotes a transaction draws on, then proofs.
         if let Some(setup) = transaction {
-            if let Err(err) =
-                crate::mint::transaction::reserve_quote_inputs(&mut tx, &setup.record).await
+            if let Err(err) = crate::mint::transaction::reserve_quote_inputs(
+                &mut tx,
+                &setup.record.unit,
+                &setup.record.quote_inputs,
+            )
+            .await
             {
                 tx.rollback().await?;
                 return Err(err);
@@ -469,9 +473,18 @@ impl MeltSaga<Initial> {
         }
 
         if let Some(setup) = transaction {
-            let mut record = setup.record.clone();
-            record.operation_id = self.operation_id;
-            if let Err(err) = tx.add_transaction(&record).await {
+            let record = &setup.record;
+            if let Err(err) = crate::mint::transaction::claim_change_quote_ids(
+                &mut tx,
+                &record.change_outputs,
+                Some(&record.melt_quote_id),
+            )
+            .await
+            {
+                tx.rollback().await?;
+                return Err(err);
+            }
+            if let Err(err) = tx.add_transaction(record).await {
                 tx.rollback().await?;
                 return Err(err.into());
             }

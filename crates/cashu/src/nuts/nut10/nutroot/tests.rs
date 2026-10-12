@@ -822,6 +822,7 @@ fn shared_transcript_vectors() {
                     .unwrap()
                     .as_secp256k1()
                     .unwrap(),
+                id_preimage: hash(&v["id_preimage"]),
             })
             .collect();
         let transaction =

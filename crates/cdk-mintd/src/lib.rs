@@ -1650,6 +1650,13 @@ async fn configure_backend_for_methods(
         };
         mint_builder = mint_builder.with_supported_websockets(nut17_supported);
     }
+    // Change quotes (NUT-XX) exist in every unit without a backend of their own.
+    let change = cdk::nuts::nutxx::CHANGE_METHOD;
+    mint_builder = mint_builder.with_supported_websockets(SupportedMethods::new(
+        PaymentMethod::Custom(change.to_owned()),
+        unit.clone(),
+        vec![cdk::nuts::nut17::WsCommand::custom_mint_quote(change)],
+    ));
 
     if let Some(input_fee) = settings.info.input_fee_ppk {
         mint_builder.set_unit_fee(&unit, input_fee)?;
@@ -1697,6 +1704,10 @@ async fn configure_cache(
     let mut cached_endpoints = vec![
         // Always include swap endpoint
         CachedEndpoint::new(NUT19Method::Post, NUT19Path::Swap),
+        CachedEndpoint::new(
+            NUT19Method::Post,
+            NUT19Path::Custom("/v1/transaction".to_owned()),
+        ),
     ];
 
     // Add cache endpoints for each configured payment method

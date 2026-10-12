@@ -887,31 +887,25 @@ impl Issuance {
     }
 }
 
-/// NUT-XX transaction record, keyed by transaction digest.
+/// Settlement state of a NUT-XX transaction with a melt, recorded under its melt quote.
 ///
 /// `excess` is `amount_in - fee - sum(outputs) - sum(fixed change) - melt.amount`,
 /// fixed at acceptance; the remainder quote's amount on settlement is
 /// `excess - melt_fee_paid`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransactionRecord {
-    /// Transaction digest, lowercase hex
-    pub digest: String,
+    /// The melt quote this transaction pays
+    pub melt_quote_id: QuoteId,
     /// State
     pub state: cashu::nuts::TransactionState,
     /// Unit of every input and output
     pub unit: cashu::CurrencyUnit,
-    /// The melt quote this transaction pays, if any
-    pub melt_quote_id: Option<QuoteId>,
     /// Mint quote inputs and the amount issued against each
     pub quote_inputs: Vec<(QuoteId, cashu::Amount)>,
-    /// Change quote lock keys with their fixed amount, `None` on the remainder quote
-    pub change_outputs: Vec<(cashu::PublicKey, Option<cashu::Amount>)>,
+    /// Change quote ids and lock keys with their fixed amount, `None` on the remainder quote
+    pub change_outputs: Vec<(QuoteId, cashu::PublicKey, Option<cashu::Amount>)>,
     /// Inputs less fee, outputs, fixed change and melt amount; the fee reserve is inside it
     pub excess: cashu::Amount,
-    /// Change quotes created on settlement, one per change output, `None` if not created
-    pub change_quote_ids: Vec<Option<QuoteId>>,
-    /// Saga or operation id the transaction runs under
-    pub operation_id: Uuid,
     /// Unix time the transaction was accepted
     pub created_time: u64,
 }

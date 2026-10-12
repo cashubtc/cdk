@@ -6,14 +6,12 @@ use crate::melt::MeltQuoteResponse;
 use crate::mint_quote::MintQuoteResponse;
 use crate::nuts::{BlindSignature, TransactionState};
 
-/// `POST /v1/transaction` and `GET /v1/transaction/{digest}` response.
+/// `POST /v1/transaction` response.
 ///
 /// Quote responses are carried as JSON values so each keeps its own NUT-04/05
 /// wire shape rather than an enum tag.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransactionResponse {
-    /// Transaction digest, lowercase hex
-    pub digest: String,
     /// State
     pub state: TransactionState,
     /// One signature per blinded output in request order, empty unless `PAID`

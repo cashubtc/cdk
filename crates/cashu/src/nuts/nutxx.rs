@@ -50,6 +50,8 @@ pub struct TransactionMeltOutput {
 /// A change quote created by a transaction
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransactionChangeOutput {
+    /// 32-byte hex preimage of the change quote's derived id (NUT-04)
+    pub id_preimage: String,
     /// Lock key of the change quote, a 33-byte compressed secp256k1 key
     pub pubkey: String,
     /// Fixed amount; omitted on the remainder quote, which takes the balance
@@ -133,7 +135,7 @@ mod tests {
     #[test]
     fn request_arrays_default_to_empty() {
         let request: TransactionRequest = serde_json::from_str(
-            r#"{"change_quote_outputs":[{"pubkey":"02aa","amount":3},{"pubkey":"02bb"}]}"#,
+            r#"{"change_quote_outputs":[{"id_preimage":"aa","pubkey":"02aa","amount":3},{"id_preimage":"bb","pubkey":"02bb"}]}"#,
         )
         .unwrap();
         assert!(request.proof_inputs.is_empty() && request.melt_quote_outputs.is_empty());

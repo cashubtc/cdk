@@ -915,19 +915,10 @@ impl Mint {
         quote: &mut MeltQuote,
     ) -> Result<(), Error> {
         let quote_lock = self.melt_quote_lock(&quote.id).await;
-        let quote_guard = quote_lock.lock_owned().await;
-        self.handle_pending_melt_quote_locked(quote, quote_guard)
-            .await
-    }
+        let _quote_guard = quote_lock.lock_owned().await;
 
-    /// Reconcile a melt while holding its dispatch guard.
-    pub(crate) async fn handle_pending_melt_quote_locked(
-        &self,
-        quote: &mut MeltQuote,
-        _quote_guard: tokio::sync::OwnedMutexGuard<()>,
-    ) -> Result<(), Error> {
-        // The caller may have loaded the quote before dispatch/finalization
-        // completed. Refresh it after acquiring the guard.
+        // The caller may have loaded the quote before waiting for an active
+        // dispatch/finalization. Refresh it after acquiring the guard.
         *quote = self
             .localstore
             .get_melt_quote(&quote.id)
@@ -977,6 +968,49 @@ impl Mint {
                 self,
             )
             .await;
+        }
+
+        // A melt quote paying a NUT-XX transaction reads PENDING until its change quotes exist, so
+        // finish a finalization left after the quote turned PAID, as startup recovery does.
+        if quote.state == MeltQuoteState::Paid {
+            if let (
+                cdk_common::mint::SagaStateEnum::Melt(cdk_common::mint::MeltSagaState::Finalizing),
+                Some(data),
+            ) = (&saga.state, saga.finalization_data.clone())
+            {
+                let unsettled = self
+                    .localstore
+                    .get_transaction(&quote.id)
+                    .await?
+                    .is_some_and(|record| {
+                        record.state == cdk_common::nuts::TransactionState::Pending
+                    });
+                if unsettled {
+                    let payment_response = crate::cdk_payment::MakePaymentResponse {
+                        payment_lookup_id: data.payment_lookup_id,
+                        payment_proof: data.payment_proof,
+                        status: MeltQuoteState::Paid,
+                        total_spent: data.total_spent,
+                    };
+                    // A failure leaves the quote PENDING for the next check or startup to retry.
+                    if let Err(err) = super::saga_recovery::process_melt_saga_outcome(
+                        &saga,
+                        quote,
+                        &payment_response,
+                        &self.localstore,
+                        &self.pubsub_manager,
+                        self,
+                    )
+                    .await
+                    {
+                        tracing::warn!(
+                            melt_quote_id = %quote.id,
+                            "could not finish settling the transaction: {err}"
+                        );
+                    }
+                    return Ok(());
+                }
+            }
         }
 
         if quote.state != MeltQuoteState::Pending {

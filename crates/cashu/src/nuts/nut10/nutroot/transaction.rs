@@ -5,7 +5,6 @@ use sha2::{Digest, Sha256};
 use super::leaf::integer;
 use super::{parse_secret, tagged_hash, Error};
 use crate::nuts::{BlindedMessage, KeySetVersion, Proof, PublicKey};
-use crate::util::hex;
 use crate::Amount;
 
 // Container types: the high nibble is the section, 0x1n inputs, 0x2n outputs, 0xFn never in a
@@ -45,12 +44,14 @@ pub struct ChangeOutput {
     pub amount: Option<Amount>,
     /// Lock key of the change quote.
     pub pubkey: bitcoin::secp256k1::PublicKey,
+    /// Preimage of the change quote's id.
+    pub id_preimage: [u8; 32],
 }
 
 impl ChangeOutput {
-    /// The id the mint gives this change quote: derived from its lock key, so one key names one quote.
+    /// The change quote's NUT-04 derived id.
     pub fn quote_id(&self) -> String {
-        hex::encode(tagged_hash("Cashu_QuoteId", &self.pubkey.serialize()))
+        super::derived_quote_id(&self.id_preimage)
     }
 }
 
@@ -157,6 +158,7 @@ impl Transaction {
                 record(&mut body, 1, &integer(u64::from(amount)))?;
             }
             record(&mut body, 2, &output.pubkey.serialize())?;
+            record(&mut body, 3, output.quote_id().as_bytes())?;
             record(&mut transcript, CHANGE_QUOTE_OUTPUT, &body)?;
         }
         Ok(Self::from_parts(transcript, inputs))
@@ -174,6 +176,7 @@ impl Transaction {
         let mut quotes = HashSet::new();
         let mut output = false;
         let mut remainder = false;
+        let mut change_ids = HashSet::new();
         for (tag, value, full) in records {
             if tag < last || !matches!(tag >> 4, 1 | 2) {
                 return Err(Error::InvalidTransaction);
@@ -181,22 +184,28 @@ impl Transaction {
             last = tag;
             let fields = parse_records(value)?;
             if tag == CHANGE_QUOTE_OUTPUT {
-                // `01 amount, 02 lock key`, or `02 lock key` alone on the remainder quote.
-                let key = match fields.as_slice() {
-                    [(2, key, _)] if !remainder => {
+                // `01 amount, 02 lock key, 03 quote id`; the remainder quote has no `01`.
+                let (key, id) = match fields.as_slice() {
+                    [(2, key, _), (3, id, _)] if !remainder => {
                         remainder = true;
-                        key
+                        (key, id)
                     }
-                    [(1, amount, _), (2, key, _)]
+                    [(1, amount, _), (2, key, _), (3, id, _)]
                         if !amount.is_empty() && amount.len() <= 8 && amount[0] != 0 =>
                     {
-                        key
+                        (key, id)
                     }
                     _ => return Err(Error::InvalidTransaction),
                 };
                 let key = crate::nuts::PublicKey::from_slice(key)
                     .map_err(|_| Error::InvalidTransaction)?;
-                if !matches!(key, crate::nuts::PublicKey::Secp256k1(_)) {
+                // A derived id is 64 lowercase hex characters (NUT-04).
+                let derived =
+                    id.len() == 64 && id.iter().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+                if !matches!(key, crate::nuts::PublicKey::Secp256k1(_))
+                    || !derived
+                    || !change_ids.insert(*id)
+                {
                     return Err(Error::InvalidTransaction);
                 }
                 output = true;

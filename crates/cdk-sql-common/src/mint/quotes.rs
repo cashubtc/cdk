@@ -165,6 +165,10 @@ pub(super) async fn get_mint_quote_by_request_inner<T>(
 where
     T: DatabaseExecutor,
 {
+    // An empty request names no payment; change quotes all share it.
+    if request.is_empty() {
+        return Ok(None);
+    }
     let for_update_clause = if for_update { "FOR UPDATE" } else { "" };
     let query_str = format!(
         r#"
@@ -663,13 +667,13 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<mint::MeltQuote, Error> {
     .map_err(|e| Error::Internal(format!("Invalid onchain melt quote row: {e}")))
 }
 
-const TRANSACTION_COLUMNS: &str = "digest, state, unit, melt_quote_id, quote_inputs, change_outputs, excess, change_quote_ids, operation_id, created_time";
+const TRANSACTION_COLUMNS: &str =
+    "melt_quote_id, state, unit, quote_inputs, change_outputs, excess, created_time";
 
 fn sql_row_to_transaction(row: Vec<Column>) -> Result<mint::TransactionRecord, Error> {
     unpack_into!(
         let (
-            digest, state, unit, melt_quote_id, quote_inputs, change_outputs, excess,
-            change_quote_ids, operation_id, created_time
+            melt_quote_id, state, unit, quote_inputs, change_outputs, excess, created_time
         ) = row
     );
     let state = cdk_common::nuts::TransactionState::from_str(&column_as_string!(&state))
@@ -680,62 +684,48 @@ fn sql_row_to_transaction(row: Vec<Column>) -> Result<mint::TransactionRecord, E
         .into_iter()
         .map(|(id, amount)| Ok((QuoteId::from_str(&id)?, Amount::from(amount))))
         .collect::<Result<Vec<_>, Error>>()?;
-    let change_outputs: Vec<(String, Option<u64>)> =
+    let change_outputs: Vec<(String, String, Option<u64>)> =
         serde_json::from_str(&column_as_string!(&change_outputs))
             .map_err(|e| Error::Internal(format!("Invalid transaction change outputs: {e}")))?;
     let change_outputs = change_outputs
         .into_iter()
-        .map(|(key, amount)| Ok((PublicKey::from_hex(&key)?, amount.map(Amount::from))))
+        .map(|(id, key, amount)| {
+            Ok((
+                QuoteId::from_str(&id)?,
+                PublicKey::from_hex(&key)?,
+                amount.map(Amount::from),
+            ))
+        })
         .collect::<Result<Vec<_>, Error>>()?;
-    let change_quote_ids: Vec<Option<String>> =
-        serde_json::from_str(&column_as_string!(&change_quote_ids))
-            .map_err(|e| Error::Internal(format!("Invalid transaction change quote ids: {e}")))?;
-    let change_quote_ids = change_quote_ids
-        .into_iter()
-        .map(|id| id.map(|id| QuoteId::from_str(&id)).transpose())
-        .collect::<Result<Vec<_>, _>>()?;
     let excess: u64 = column_as_number!(excess);
-    let operation_id = uuid::Uuid::parse_str(&column_as_string!(&operation_id))
-        .map_err(|e| Error::Internal(format!("Invalid transaction operation id: {e}")))?;
     Ok(mint::TransactionRecord {
-        digest: column_as_string!(&digest),
+        melt_quote_id: QuoteId::from_str(&column_as_string!(&melt_quote_id))?,
         state,
         unit: column_as_string!(unit, CurrencyUnit::from_str),
-        melt_quote_id: column_as_nullable_string!(&melt_quote_id)
-            .map(|id| QuoteId::from_str(&id))
-            .transpose()?,
         quote_inputs,
         change_outputs,
         excess: Amount::from(excess),
-        change_quote_ids,
-        operation_id,
         created_time: column_as_number!(created_time),
     })
 }
 
-fn change_quote_ids_json(ids: &[Option<QuoteId>]) -> Result<String, Error> {
-    serde_json::to_string(
-        &ids.iter()
-            .map(|id| id.as_ref().map(|id| id.to_string()))
-            .collect::<Vec<_>>(),
-    )
-    .map_err(|e| Error::Internal(e.to_string()))
-}
-
 async fn get_transaction_inner<T>(
     executor: &T,
-    column: &str,
-    value: String,
+    melt_quote_id: &QuoteId,
     for_update: bool,
 ) -> Result<Option<mint::TransactionRecord>, Error>
 where
     T: DatabaseExecutor,
 {
-    let for_update_clause = if for_update { "FOR UPDATE" } else { "" };
+    let for_update_clause = if for_update {
+        "AND state = 'PENDING' FOR UPDATE"
+    } else {
+        ""
+    };
     query(&format!(
-        "SELECT {TRANSACTION_COLUMNS} FROM transactions WHERE {column} = :value {for_update_clause}"
+        "SELECT {TRANSACTION_COLUMNS} FROM melt_transaction WHERE melt_quote_id = :melt_quote_id {for_update_clause}"
     ))?
-    .bind("value", value)
+    .bind("melt_quote_id", melt_quote_id.to_string())
     .fetch_one(executor)
     .await?
     .map(sql_row_to_transaction)
@@ -1373,41 +1363,32 @@ where
             &record
                 .change_outputs
                 .iter()
-                .map(|(key, amount)| (key.to_hex(), amount.map(u64::from)))
+                .map(|(id, key, amount)| (id.to_string(), key.to_hex(), amount.map(u64::from)))
                 .collect::<Vec<_>>(),
         )
         .map_err(|e| Error::Internal(e.to_string()))?;
         let affected = query(
             r#"
-            INSERT INTO transactions
-            (digest, state, unit, melt_quote_id, quote_inputs, change_outputs, excess, change_quote_ids, operation_id, created_time)
+            INSERT INTO melt_transaction
+            (melt_quote_id, state, unit, quote_inputs, change_outputs, excess, created_time)
             VALUES
-            (:digest, :state, :unit, :melt_quote_id, :quote_inputs, :change_outputs, :excess, :change_quote_ids, :operation_id, :created_time)
-            ON CONFLICT (digest) DO UPDATE SET
+            (:melt_quote_id, :state, :unit, :quote_inputs, :change_outputs, :excess, :created_time)
+            ON CONFLICT (melt_quote_id) DO UPDATE SET
                 state = EXCLUDED.state,
                 unit = EXCLUDED.unit,
-                melt_quote_id = EXCLUDED.melt_quote_id,
                 quote_inputs = EXCLUDED.quote_inputs,
                 change_outputs = EXCLUDED.change_outputs,
                 excess = EXCLUDED.excess,
-                change_quote_ids = EXCLUDED.change_quote_ids,
-                operation_id = EXCLUDED.operation_id,
                 created_time = EXCLUDED.created_time
-            WHERE transactions.state = 'FAILED'
+            WHERE melt_transaction.state = 'FAILED'
             "#,
         )?
-        .bind("digest", record.digest.clone())
+        .bind("melt_quote_id", record.melt_quote_id.to_string())
         .bind("state", record.state.to_string())
         .bind("unit", record.unit.to_string())
-        .bind("melt_quote_id", record.melt_quote_id.as_ref().map(|q| q.to_string()))
         .bind("quote_inputs", quote_inputs)
         .bind("change_outputs", change_outputs)
         .bind("excess", record.excess.to_i64())
-        .bind(
-            "change_quote_ids",
-            change_quote_ids_json(&record.change_quote_ids)?,
-        )
-        .bind("operation_id", record.operation_id.to_string())
         .bind("created_time", record.created_time as i64)
         .execute(&self.inner)
         .await?;
@@ -1417,53 +1398,63 @@ where
         Ok(())
     }
 
-    async fn get_transaction(
-        &mut self,
-        digest: &str,
-    ) -> Result<Option<Acquired<mint::TransactionRecord>>, Self::Err> {
-        get_transaction_inner(&self.inner, "digest", digest.to_owned(), true)
-            .await
-            .map(|record| record.map(Into::into))
-    }
-
     async fn get_transaction_by_melt_quote(
         &mut self,
         quote_id: &QuoteId,
     ) -> Result<Option<Acquired<mint::TransactionRecord>>, Self::Err> {
-        // A failed attempt remains addressable by digest, but no longer owns the melt.
-        query(&format!(
-            "SELECT {TRANSACTION_COLUMNS} FROM transactions WHERE melt_quote_id = :quote_id AND state = 'PENDING' FOR UPDATE"
-        ))?
-        .bind("quote_id", quote_id.to_string())
-        .fetch_one(&self.inner)
-        .await?
-        .map(sql_row_to_transaction)
-        .transpose()
-        .map(|record| record.map(Into::into))
+        get_transaction_inner(&self.inner, quote_id, true)
+            .await
+            .map(|record| record.map(Into::into))
     }
 
     async fn update_transaction(
         &mut self,
         record: &mut Acquired<mint::TransactionRecord>,
         state: cdk_common::nuts::TransactionState,
-        change_quote_ids: Vec<Option<QuoteId>>,
     ) -> Result<(), Self::Err> {
         query(
-            r#"
-            UPDATE transactions SET state = :state, change_quote_ids = :change_quote_ids
-            WHERE digest = :digest
-            "#,
+            r#"UPDATE melt_transaction SET state = :state WHERE melt_quote_id = :melt_quote_id"#,
         )?
         .bind("state", state.to_string())
-        .bind(
-            "change_quote_ids",
-            change_quote_ids_json(&change_quote_ids)?,
-        )
-        .bind("digest", record.digest.clone())
+        .bind("melt_quote_id", record.melt_quote_id.to_string())
         .execute(&self.inner)
         .await?;
         record.state = state;
-        record.change_quote_ids = change_quote_ids;
+        Ok(())
+    }
+
+    async fn claim_mint_quote_ids(
+        &mut self,
+        ids: &[QuoteId],
+        melt_quote_id: Option<&QuoteId>,
+    ) -> Result<(), Self::Err> {
+        // The primary key serializes concurrent transactions naming the same id; an id that
+        // names a mint quote is claimed too.
+        for id in ids {
+            let affected = query(
+                r#"
+                INSERT INTO mint_quote_id_claim (quote_id, melt_quote_id)
+                SELECT :quote_id, :melt_quote_id
+                WHERE NOT EXISTS (SELECT 1 FROM mint_quote WHERE id = :quote_id)
+                ON CONFLICT (quote_id) DO NOTHING
+                "#,
+            )?
+            .bind("quote_id", id.to_string())
+            .bind("melt_quote_id", melt_quote_id.map(|q| q.to_string()))
+            .execute(&self.inner)
+            .await?;
+            if affected == 0 {
+                return Err(Error::Duplicate);
+            }
+        }
+        Ok(())
+    }
+
+    async fn release_mint_quote_ids(&mut self, melt_quote_id: &QuoteId) -> Result<(), Self::Err> {
+        query(r#"DELETE FROM mint_quote_id_claim WHERE melt_quote_id = :melt_quote_id"#)?
+            .bind("melt_quote_id", melt_quote_id.to_string())
+            .execute(&self.inner)
+            .await?;
         Ok(())
     }
 }
@@ -1670,13 +1661,13 @@ where
     }
     async fn get_transaction(
         &self,
-        digest: &str,
+        melt_quote_id: &QuoteId,
     ) -> Result<Option<mint::TransactionRecord>, Self::Err> {
         let conn = self
             .pool
             .get()
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
-        get_transaction_inner(&*conn, "digest", digest.to_owned(), false).await
+        get_transaction_inner(&*conn, melt_quote_id, false).await
     }
 }

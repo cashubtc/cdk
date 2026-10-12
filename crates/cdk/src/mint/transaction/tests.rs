@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use cdk_common::amount::SplitTarget;
 use cdk_common::melt::MeltQuoteRequest;
-use cdk_common::mint::MeltQuote;
+use cdk_common::mint::{MeltQuote, TransactionRecord};
 use cdk_common::nuts::nut10::nutroot::{self, Transaction, Witness as NutrootWitness};
 use cdk_common::nuts::{
     CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MintQuoteBolt11Request, MintQuoteState,
@@ -15,7 +15,7 @@ use cdk_common::nuts::{
 use cdk_common::{Amount, BlindedMessage, Proofs, ProofsMethods, QuoteId};
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
 
-use super::settlement_change;
+use super::{settled_melt_state, settlement_change};
 use crate::mint::{Mint, MintInput};
 use crate::test_helpers::mint::{
     create_test_blinded_messages, create_test_mint_with_version, mint_test_proofs,
@@ -122,6 +122,10 @@ fn sign(request: &mut TransactionRequest, quote_keys: &[SecretKey], melt: Option
                 .unwrap()
                 .as_secp256k1()
                 .unwrap(),
+            id_preimage: cdk_common::util::hex::decode(&output.id_preimage)
+                .unwrap()
+                .try_into()
+                .unwrap(),
         })
         .collect();
     let transaction = Transaction::with_change(
@@ -180,12 +184,49 @@ fn melt_output(quote: &MeltQuote) -> TransactionMeltOutput {
     }
 }
 
-/// A change quote output locked to `key`; a remainder quote when `amount` is `None`.
+/// A change quote output locked to `key` with a fresh id; a remainder quote when `amount` is `None`.
 fn change_output(key: &SecretKey, amount: Option<u64>) -> TransactionChangeOutput {
     TransactionChangeOutput {
+        id_preimage: SecretKey::generate().to_secret_hex(),
         pubkey: key.public_key().to_hex(),
         amount: amount.map(Into::into),
     }
+}
+
+/// The derived id a change quote output takes.
+fn derived_id(output: &TransactionChangeOutput) -> QuoteId {
+    let preimage: [u8; 32] = cdk_common::util::hex::decode(&output.id_preimage)
+        .unwrap()
+        .try_into()
+        .unwrap();
+    QuoteId::from_str(&nutroot::derived_quote_id(&preimage)).unwrap()
+}
+
+/// Poll a melt transaction, as a wallet polls its melt quote, until it leaves `PENDING`.
+async fn settled(
+    mint: &Mint,
+    melt: &MeltQuote,
+    request: &TransactionRequest,
+) -> cdk_common::transaction::TransactionResponse {
+    let ids: Vec<QuoteId> = request
+        .change_quote_outputs
+        .iter()
+        .map(derived_id)
+        .collect();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let response = mint
+                .melt_transaction_response(&melt.id, &ids)
+                .await
+                .unwrap();
+            if response.state != TransactionState::Pending {
+                break response;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap()
 }
 
 fn change_quote(
@@ -249,16 +290,26 @@ async fn proofs_to_outputs_park_the_rest_in_a_change_quote() {
     let change = change_quote(&response, 0);
     assert_eq!(change["amount_paid"], 5);
     assert_eq!(change["amount_issued"], 0);
+    assert_eq!(change["request"], "");
+    assert_eq!(
+        change["quote"],
+        derived_id(&request.change_quote_outputs[0]).to_string()
+    );
+    let id_preimage = &request.change_quote_outputs[0].id_preimage;
+    assert!(!serde_json::to_string(&response)
+        .unwrap()
+        .contains(id_preimage));
     let states = mint.localstore.get_proofs_states(&ys).await.unwrap();
     assert!(states.iter().all(|s| *s == Some(State::Spent)));
 
-    // A resend returns the record rather than treating the inputs as spent again.
-    let again = mint.process_transaction(request, false).await.unwrap();
-    assert_eq!(again, response);
-    assert_eq!(
-        mint.get_transaction(&response.digest).await.unwrap(),
-        response
-    );
+    // A resend is refused: its inputs are spent and its change quote id is claimed.
+    assert!(mint.process_transaction(request, false).await.is_err());
+    assert!(mint
+        .localstore
+        .get_mint_quote_by_request("")
+        .await
+        .unwrap()
+        .is_none());
     let signed = cdk_common::dhke::construct_proofs(
         response.signatures.clone(),
         premints.rs(),
@@ -321,7 +372,6 @@ async fn quote_inputs_draw_partially_and_never_past_mintable() {
         ..Default::default()
     };
     sign(&mut request, std::slice::from_ref(&key), None);
-    let first_request = request.clone();
     let response = mint.process_transaction(request, false).await.unwrap();
     assert_eq!(response.state, TransactionState::Paid);
     assert!(response.change_quotes.is_empty());
@@ -384,21 +434,7 @@ async fn quote_inputs_draw_partially_and_never_past_mintable() {
         ..Default::default()
     };
     sign(&mut request, &[key], None);
-    let last = mint
-        .process_transaction(request.clone(), false)
-        .await
-        .unwrap();
-    // A resend of the first draw returns its record, though the quote is now drained.
-    assert_eq!(
-        mint.process_transaction(first_request, false)
-            .await
-            .unwrap(),
-        response
-    );
-    assert_eq!(
-        mint.process_transaction(request, false).await.unwrap(),
-        last
-    );
+    mint.process_transaction(request, false).await.unwrap();
     let quote = mint
         .localstore
         .get_mint_quote(&quote_id)
@@ -438,6 +474,7 @@ async fn melt_from_a_quote_input_returns_the_unspent_reserve_as_change() {
     assert!(response.signatures.is_empty());
     assert_eq!(response.melt_quotes.len(), 1);
     assert_eq!(response.melt_quotes[0]["state"], "PAID");
+    assert_eq!(response.melt_quotes[0]["change"], serde_json::json!([]));
     // Inputs 10, melt 5, the fake backend charges 1 of the reserve: 4 back.
     assert_eq!(change_quote(&response, 0)["amount_paid"], 4);
     let quote = mint
@@ -475,7 +512,10 @@ async fn failed_melt_releases_proofs_and_quote_inputs() {
         ..Default::default()
     };
     sign(&mut request, std::slice::from_ref(&key), Some(&melt));
-    let response = mint.process_transaction(request, false).await.unwrap();
+    let response = mint
+        .process_transaction(request.clone(), false)
+        .await
+        .unwrap();
     assert_eq!(response.state, TransactionState::Failed);
     assert!(response.signatures.is_empty() && response.change_quotes == vec![None]);
 
@@ -500,17 +540,34 @@ async fn failed_melt_releases_proofs_and_quote_inputs() {
         .unwrap();
     assert_eq!(melt.state, MeltQuoteState::Unpaid);
 
-    // The released inputs spend again, and the failed record is replaced.
+    // The released inputs and change quote id spend again; a zero remainder creates no quote.
+    let change = request.change_quote_outputs.clone();
     let (blinded, _) = outputs(&mint, 8).await;
     let mut request = TransactionRequest {
         proof_inputs: proofs,
         mint_quote_inputs: vec![quote_input(&quote_id, 4)],
         blinded_outputs: blinded,
+        change_quote_outputs: change.clone(),
         ..Default::default()
     };
-    sign(&mut request, &[key], None);
+    sign(&mut request, std::slice::from_ref(&key), None);
     let response = mint.process_transaction(request, false).await.unwrap();
     assert_eq!(response.state, TransactionState::Paid);
+    assert_eq!(response.change_quotes, vec![None]);
+
+    // The uncreated remainder's id stays claimed.
+    let (quote_id, quote_key) = paid_locked_quote(&mint, 2).await;
+    let mut request = TransactionRequest {
+        mint_quote_inputs: vec![quote_input(&quote_id, 2)],
+        change_quote_outputs: change,
+        ..Default::default()
+    };
+    sign(&mut request, &[quote_key], None);
+    assert!(matches!(
+        mint.process_transaction(request, false).await,
+        Err(Error::DuplicateOutputs)
+    ));
+    drop(key);
     mint.stop().await.unwrap();
 }
 
@@ -531,23 +588,27 @@ async fn async_melt_transaction_is_pending_then_paid() {
         ..Default::default()
     };
     sign(&mut request, &[], Some(&melt));
-    let response = mint.process_transaction(request, false).await.unwrap();
+    let response = mint
+        .process_transaction(request.clone(), false)
+        .await
+        .unwrap();
     assert!(matches!(
         response.state,
         TransactionState::Pending | TransactionState::Paid
     ));
-    let mut settled = response;
-    for _ in 0..30 {
-        settled = mint.get_transaction(&settled.digest).await.unwrap();
-        if settled.state == TransactionState::Paid {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    let settled = settled(&mint, &melt, &request).await;
     assert_eq!(settled.state, TransactionState::Paid);
     assert_eq!(settled.signatures.len(), 1);
     // 16 in, 1 out, 5 melt, 1 of the reserve spent: 9 back.
     assert_eq!(change_quote(&settled, 0)["amount_paid"], 9);
+    // The melt quote records the transaction: its change is the outputs' signatures.
+    let signatures = serde_json::to_value(&settled.signatures).unwrap();
+    assert_eq!(settled.melt_quotes[0]["change"], signatures);
+    let checked = mint.check_melt_quote(&melt.id).await.unwrap();
+    let checked =
+        serde_json::to_value(cdk_common::transaction::melt_quote_json(checked).unwrap()).unwrap();
+    assert_eq!(checked["state"], "PAID");
+    assert_eq!(checked["change"], signatures);
     mint.stop().await.unwrap();
 }
 
@@ -629,9 +690,8 @@ async fn mint_quote_input_commits_the_amount_issued() {
 }
 
 #[tokio::test]
-async fn duplicate_quote_only_submission_is_idempotent() {
-    // Also cover a fee consuming all value: no duplicate change quote exists
-    // to prevent a second issuance, so the digest insertion must reject it.
+async fn change_quote_ids_are_claimed_at_acceptance() {
+    // Also cover a fee consuming all value, which leaves a zero remainder.
     for fee_ppk in [0, 2000] {
         let mint = v3_mint().await;
         let mut info = mint.mint_info().await.unwrap();
@@ -645,41 +705,35 @@ async fn duplicate_quote_only_submission_is_idempotent() {
             ..Default::default()
         };
         sign(&mut request, &[key], None);
-        // Both HTTP requests validate before either acquires the reservation locks.
-        let super::Preparation::Fresh(first) =
-            mint.prepare_transaction(request.clone()).await.unwrap()
-        else {
-            panic!()
-        };
-        let super::Preparation::Fresh(second) = mint.prepare_transaction(request).await.unwrap()
-        else {
-            panic!()
-        };
-        let first = mint.settle_without_melt(*first).await.unwrap();
-        let second = mint.settle_without_melt(*second).await.unwrap();
-        assert_eq!(first, second);
+        // Both requests validate before either claims its change quote id.
+        let first = mint.prepare_transaction(request.clone()).await.unwrap();
+        let second = mint.prepare_transaction(request).await.unwrap();
+        assert_eq!(
+            mint.settle_without_melt(first).await.unwrap().state,
+            TransactionState::Paid
+        );
+        assert!(matches!(
+            mint.settle_without_melt(second).await,
+            Err(Error::DuplicateOutputs)
+        ));
         let quote = mint.localstore.get_mint_quote(&id).await.unwrap().unwrap();
         mint.stop().await.unwrap();
-        assert_eq!(
-            Amount::from(quote.amount_issued()),
-            Amount::from(2),
-            "same digest must issue once"
-        );
+        assert_eq!(Amount::from(quote.amount_issued()), Amount::from(2));
     }
 }
 
 #[tokio::test]
-async fn retry_melt_with_new_digest_releases_quote_inputs() {
+async fn failed_melt_retries_with_its_quote_inputs_and_change_id() {
     let mint = v3_mint().await;
     let (id, key) = paid_locked_quote(&mint, 16).await;
     let melt = melt_quote(&mint, 2, false).await;
+    let change = change_output(&SecretKey::generate(), None);
     let mut results = Vec::new();
     for _ in 0..2 {
-        let change_key = SecretKey::generate();
         let mut request = TransactionRequest {
             mint_quote_inputs: vec![quote_input(&id, 8)],
             melt_quote_outputs: vec![melt_output(&melt)],
-            change_quote_outputs: vec![change_output(&change_key, None)],
+            change_quote_outputs: vec![change.clone()],
             ..Default::default()
         };
         sign(&mut request, std::slice::from_ref(&key), Some(&melt));
@@ -716,24 +770,15 @@ async fn prefer_async_returns_before_payment_completes() {
     // This test backend takes two seconds to make the outgoing payment.
     let response = tokio::time::timeout(
         Duration::from_millis(500),
-        mint.process_transaction(request, false),
+        mint.process_transaction(request.clone(), false),
     )
     .await;
     let response = response
         .expect("prefer_async must return before payment completes")
         .unwrap();
     assert_eq!(response.state, TransactionState::Pending);
-    let settled = tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            let response = mint.get_transaction(&response.digest).await.unwrap();
-            if response.state != TransactionState::Pending {
-                break response;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .unwrap();
+    assert_eq!(response.change_quotes, vec![None]);
+    let settled = settled(&mint, &melt, &request).await;
     assert_eq!(settled.state, TransactionState::Paid);
     mint.stop().await.unwrap();
 }
@@ -766,31 +811,6 @@ async fn invalid_denomination_rejected_before_payment() {
     assert_eq!(stored.state, MeltQuoteState::Unpaid);
     let quote = mint.localstore.get_mint_quote(&id).await.unwrap().unwrap();
     assert_eq!(Amount::from(quote.amount_issued()), Amount::ZERO);
-}
-
-#[tokio::test]
-async fn resend_after_output_keyset_deactivation() {
-    let mint = v3_mint().await;
-    let (id, key) = paid_locked_quote(&mint, 8).await;
-    let (blinded, _) = outputs(&mint, 8).await;
-    let mut request = TransactionRequest {
-        mint_quote_inputs: vec![quote_input(&id, 8)],
-        blinded_outputs: blinded,
-        ..Default::default()
-    };
-    sign(&mut request, &[key], None);
-    let first = mint
-        .process_transaction(request.clone(), false)
-        .await
-        .unwrap();
-    let mut keysets = mint.keysets.load().as_ref().clone();
-    for keyset in &mut keysets {
-        keyset.active = false;
-    }
-    mint.keysets.store(std::sync::Arc::new(keysets));
-    let retry = mint.process_transaction(request, false).await;
-    mint.stop().await.unwrap();
-    assert_eq!(retry.unwrap(), first);
 }
 
 #[tokio::test]
@@ -829,7 +849,10 @@ async fn keyset_rotation_during_payment_returns_outputs_as_change() {
         ..Default::default()
     };
     sign(&mut request, &[key], Some(&melt));
-    let response = mint.process_transaction(request, false).await.unwrap();
+    let response = mint
+        .process_transaction(request.clone(), false)
+        .await
+        .unwrap();
     assert_eq!(response.state, TransactionState::Pending);
     mint.rotate_keyset_by_version(
         CurrencyUnit::Sat,
@@ -840,22 +863,18 @@ async fn keyset_rotation_during_payment_returns_outputs_as_change() {
     )
     .await
     .unwrap();
-    let settled = tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            let response = mint.get_transaction(&response.digest).await.unwrap();
-            if response.state != TransactionState::Pending {
-                break response;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    })
-    .await
-    .unwrap();
+    let settled = settled(&mint, &melt, &request).await;
     assert_eq!(settled.state, TransactionState::Paid);
     assert!(
         settled.signatures.is_empty(),
         "inactive keyset signs nothing"
     );
+    // The melt quote lists the outputs' signatures, here none, in every view.
+    assert_eq!(settled.melt_quotes[0]["change"], serde_json::json!([]));
+    let checked =
+        cdk_common::transaction::melt_quote_json(mint.check_melt_quote(&melt.id).await.unwrap())
+            .unwrap();
+    assert_eq!(checked["change"], serde_json::json!([]));
     // 16 in, melt 2, 1 sat of the 2 sat reserve spent; the unsigned 1 sat output joins the change.
     assert_eq!(change_quote(&settled, 0)["amount_paid"], 13);
     mint.stop().await.unwrap();
@@ -888,17 +907,16 @@ async fn fixed_change_quotes_settle_beside_the_remainder() {
     ));
 
     sign(&mut request, &[], Some(&melt));
-    let mut response = mint.process_transaction(request, false).await.unwrap();
+    let response = mint
+        .process_transaction(request.clone(), false)
+        .await
+        .unwrap();
     // Both quotes are null until the payment settles.
     assert_eq!(response.change_quotes.len(), 2);
-    for _ in 0..30 {
-        if response.state == TransactionState::Paid {
-            break;
-        }
+    if response.state == TransactionState::Pending {
         assert!(response.change_quotes.iter().all(Option::is_none));
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        response = mint.get_transaction(&response.digest).await.unwrap();
     }
+    let response = settled(&mint, &melt, &request).await;
     assert_eq!(response.state, TransactionState::Paid);
     // 16 in, melt 5, 1 of the 5 reserve spent, 3 fixed: 7 remain.
     let fixed = change_quote(&response, 0);
@@ -908,11 +926,15 @@ async fn fixed_change_quotes_settle_beside_the_remainder() {
     assert_eq!(remainder["amount_paid"], 7);
     assert_eq!(remainder["pubkey"], remainder_key.public_key().to_hex());
 
-    // A lock key names one change quote: reusing one is refused before anything is spent.
+    // A change quote id names one quote: naming a claimed one is refused before anything is spent.
+    let claimed = request.change_quote_outputs[0].clone();
     let proofs = mint_test_proofs(&mint, 4.into()).await.unwrap();
     let mut request = TransactionRequest {
         proof_inputs: proofs.clone(),
-        change_quote_outputs: vec![change_output(&fixed_key, Some(4))],
+        change_quote_outputs: vec![TransactionChangeOutput {
+            amount: Some(4.into()),
+            ..claimed
+        }],
         ..Default::default()
     };
     sign(&mut request, &[], None);
@@ -921,16 +943,21 @@ async fn fixed_change_quotes_settle_beside_the_remainder() {
         Err(Error::DuplicateOutputs)
     ));
 
-    // A fixed quote alone needs an exact balance and is created at once, without a melt.
+    // A fixed quote alone needs an exact balance and is created at once, without a melt; its
+    // lock key may repeat under a fresh id.
     let mut request = TransactionRequest {
         proof_inputs: proofs,
-        change_quote_outputs: vec![change_output(&SecretKey::generate(), Some(4))],
+        change_quote_outputs: vec![change_output(&fixed_key, Some(4))],
         ..Default::default()
     };
     sign(&mut request, &[], None);
     let response = mint.process_transaction(request, false).await.unwrap();
     assert_eq!(response.state, TransactionState::Paid);
     assert_eq!(change_quote(&response, 0)["amount_paid"], 4);
+    assert_eq!(
+        change_quote(&response, 0)["pubkey"],
+        fixed_key.public_key().to_hex()
+    );
     mint.stop().await.unwrap();
 }
 
@@ -940,18 +967,29 @@ async fn rejects_zero_amounts_and_a_second_remainder_quote() {
     let proofs = mint_test_proofs(&mint, 4.into()).await.unwrap();
     let key = SecretKey::generate();
     let other = SecretKey::generate();
+    let fixed = change_output(&key, Some(1));
+    let repeated = TransactionChangeOutput {
+        amount: None,
+        ..fixed.clone()
+    };
     let request = TransactionRequest {
         proof_inputs: proofs.clone(),
-        change_quote_outputs: vec![change_output(&key, Some(1)), change_output(&key, None)],
+        change_quote_outputs: vec![fixed, repeated],
         ..Default::default()
     };
     assert!(matches!(
         mint.process_transaction(request, false).await,
         Err(Error::DuplicateOutputs)
     ));
+    let mut short_preimage = change_output(&key, None);
+    short_preimage.id_preimage.truncate(62);
+    let mut not_hex = change_output(&key, None);
+    not_hex.id_preimage.replace_range(..2, "zz");
     for outputs in [
         vec![change_output(&key, None), change_output(&other, None)],
         vec![change_output(&key, Some(0)), change_output(&other, None)],
+        vec![short_preimage],
+        vec![not_hex],
     ] {
         let request = TransactionRequest {
             proof_inputs: proofs.clone(),
@@ -969,5 +1007,347 @@ async fn rejects_zero_amounts_and_a_second_remainder_quote() {
         .await
         .unwrap();
     assert!(states.iter().all(Option::is_none), "nothing reserved");
+    mint.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn melt_quote_reads_pending_until_its_transaction_settles() {
+    let mint = v3_mint().await;
+    let mut quote = melt_quote(&mint, 2, true).await;
+    let mut tx = mint.localstore.begin_transaction().await.unwrap();
+    tx.add_transaction(&TransactionRecord {
+        melt_quote_id: quote.id.clone(),
+        state: TransactionState::Pending,
+        unit: CurrencyUnit::Sat,
+        quote_inputs: vec![],
+        change_outputs: vec![],
+        excess: Amount::ZERO,
+        created_time: 0,
+    })
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    quote.state = MeltQuoteState::Paid;
+    assert!(settled_melt_state(&mint.localstore, &mut quote)
+        .await
+        .unwrap());
+    assert_eq!(quote.state, MeltQuoteState::Pending);
+
+    let mut tx = mint.localstore.begin_transaction().await.unwrap();
+    let mut record = tx
+        .get_transaction_by_melt_quote(&quote.id)
+        .await
+        .unwrap()
+        .unwrap();
+    tx.update_transaction(&mut record, TransactionState::Paid)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    quote.state = MeltQuoteState::Paid;
+    assert!(settled_melt_state(&mint.localstore, &mut quote)
+        .await
+        .unwrap());
+    assert_eq!(quote.state, MeltQuoteState::Paid);
+    mint.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn change_mint_quote_subscription_waits_for_the_quote() {
+    use cdk_common::nut17::{Kind, Params};
+    use cdk_common::NotificationPayload;
+
+    let mint = v3_mint().await;
+    let proofs = mint_test_proofs(&mint, 8.into()).await.unwrap();
+    let change = change_output(&SecretKey::generate(), None);
+    let id = derived_id(&change);
+    // Accepted for an id the mint does not hold yet, with no initial state.
+    let mut subscription = mint
+        .pubsub_manager()
+        .subscribe(Params {
+            kind: Kind::Custom("change_mint_quote".to_owned()),
+            filters: vec![id.to_string()],
+            id: std::sync::Arc::new(cdk_common::subscription::SubId::from("change")),
+        })
+        .unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), subscription.recv())
+            .await
+            .is_err()
+    );
+
+    let mut request = TransactionRequest {
+        proof_inputs: proofs,
+        change_quote_outputs: vec![change],
+        ..Default::default()
+    };
+    sign(&mut request, &[], None);
+    mint.process_transaction(request, false).await.unwrap();
+    let event = tokio::time::timeout(Duration::from_secs(5), subscription.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    match event.inner() {
+        NotificationPayload::CustomMintQuoteResponse(method, response) => {
+            assert_eq!(method, "change");
+            assert_eq!(response.quote, id);
+            assert_eq!(response.amount_paid, Amount::from(8));
+        }
+        payload => panic!("unexpected payload: {payload:?}"),
+    }
+    mint.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn custom_method_melt_check_carries_change_once_settled() {
+    let mint = v3_mint().await;
+    let mut quote = MeltQuote::new(
+        None,
+        cdk_common::mint::MeltPaymentRequest::Custom {
+            method: "test_method".to_owned(),
+            request: "custom-payment".to_owned(),
+        },
+        CurrencyUnit::Sat,
+        Amount::new(21, CurrencyUnit::Sat),
+        Amount::new(2, CurrencyUnit::Sat),
+        0,
+        None,
+        None,
+        cdk_common::PaymentMethod::Custom("test_method".to_owned()),
+        None,
+        Some(1),
+    );
+    quote.state = MeltQuoteState::Paid;
+    quote.payment_proof = Some("payment-proof".to_owned());
+    let signature = cdk_common::BlindSignature {
+        amount: 2.into(),
+        keyset_id: "009a1f293253e41e".parse().unwrap(),
+        c: SecretKey::generate().public_key(),
+        dleq: None,
+    };
+    let record = TransactionRecord {
+        melt_quote_id: quote.id.clone(),
+        state: TransactionState::Pending,
+        unit: CurrencyUnit::Sat,
+        quote_inputs: vec![],
+        change_outputs: vec![],
+        excess: Amount::ZERO,
+        created_time: 0,
+    };
+    let mut tx = mint.localstore.begin_transaction().await.unwrap();
+    tx.add_melt_quote(quote.clone()).await.unwrap();
+    tx.add_transaction(&record).await.unwrap();
+    tx.commit().await.unwrap();
+
+    // Paid but unsettled: the check route reads PENDING.
+    let checked =
+        cdk_common::transaction::melt_quote_json(mint.check_melt_quote(&quote.id).await.unwrap())
+            .unwrap();
+    assert_eq!(checked["state"], "PENDING");
+
+    let mut tx = mint.localstore.begin_transaction().await.unwrap();
+    tx.add_blind_signatures(
+        &[SecretKey::generate().public_key()],
+        std::slice::from_ref(&signature),
+        Some(quote.id.clone()),
+    )
+    .await
+    .unwrap();
+    let mut stored = tx
+        .get_transaction_by_melt_quote(&quote.id)
+        .await
+        .unwrap()
+        .unwrap();
+    tx.update_transaction(&mut stored, TransactionState::Paid)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let checked =
+        cdk_common::transaction::melt_quote_json(mint.check_melt_quote(&quote.id).await.unwrap())
+            .unwrap();
+    assert_eq!(checked["state"], "PAID");
+    assert_eq!(
+        checked["change"],
+        serde_json::to_value(vec![signature]).unwrap()
+    );
+    mint.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn melt_transaction_change_quote_event_follows_settlement() {
+    use cdk_common::nut17::{Kind, Params};
+    use cdk_common::NotificationPayload;
+
+    let mint = v3_mint().await;
+    let proofs = mint_test_proofs(&mint, 16.into()).await.unwrap();
+    let melt = melt_quote(&mint, 5, true).await;
+    let change = change_output(&SecretKey::generate(), None);
+    let id = derived_id(&change);
+    let mut subscription = mint
+        .pubsub_manager()
+        .subscribe(Params {
+            kind: Kind::Custom("change_mint_quote".to_owned()),
+            filters: vec![id.to_string()],
+            id: std::sync::Arc::new(cdk_common::subscription::SubId::from("melt-change")),
+        })
+        .unwrap();
+    let mut melt_subscription = mint
+        .pubsub_manager()
+        .subscribe(Params {
+            kind: Kind::Bolt11MeltQuote,
+            filters: vec![melt.id.to_string()],
+            id: std::sync::Arc::new(cdk_common::subscription::SubId::from("melt")),
+        })
+        .unwrap();
+    let mut request = TransactionRequest {
+        proof_inputs: proofs,
+        melt_quote_outputs: vec![melt_output(&melt)],
+        change_quote_outputs: vec![change],
+        ..Default::default()
+    };
+    sign(&mut request, &[], Some(&melt));
+    let pending = tokio::spawn({
+        let mint = mint.clone();
+        async move { mint.process_transaction(request, false).await }
+    });
+    let event = tokio::time::timeout(Duration::from_secs(10), subscription.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    // The event is announced once the settlement has committed.
+    let record = mint
+        .localstore
+        .get_transaction(&melt.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.state, TransactionState::Paid);
+    match event.inner() {
+        NotificationPayload::CustomMintQuoteResponse(method, response) => {
+            assert_eq!(method, "change");
+            assert_eq!(response.quote, id);
+            // 16 in, 5 melt, 1 of the 5 reserve spent: 10 back.
+            assert_eq!(response.amount_paid, Amount::from(10));
+        }
+        payload => panic!("unexpected payload: {payload:?}"),
+    }
+    assert_eq!(
+        pending.await.unwrap().unwrap().state,
+        TransactionState::Paid
+    );
+    // The PAID melt quote notification lists the outputs' signatures, here none.
+    let paid = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = melt_subscription.recv().await.unwrap();
+            if let NotificationPayload::MeltQuoteBolt11Response(response) = event.inner() {
+                if response.state == MeltQuoteState::Paid {
+                    break response.clone();
+                }
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(paid.change, Some(vec![]));
+    mint.stop().await.unwrap();
+}
+
+/// Insert a mint quote under a change quote id.
+async fn add_quote_under(mint: &Mint, id: &QuoteId) {
+    let mut tx = mint.localstore.begin_transaction().await.unwrap();
+    tx.add_mint_quote(super::change_quote(
+        &CurrencyUnit::Sat,
+        id,
+        Amount::ONE,
+        SecretKey::generate().public_key(),
+    ))
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+}
+
+#[tokio::test]
+async fn change_quote_id_naming_a_mint_quote_is_refused_before_payment() {
+    let mint = v3_mint().await;
+    let proofs = mint_test_proofs(&mint, 16.into()).await.unwrap();
+    let melt = melt_quote(&mint, 5, true).await;
+    let change = change_output(&SecretKey::generate(), None);
+    add_quote_under(&mint, &derived_id(&change)).await;
+
+    let mut request = TransactionRequest {
+        proof_inputs: proofs.clone(),
+        melt_quote_outputs: vec![melt_output(&melt)],
+        change_quote_outputs: vec![change],
+        ..Default::default()
+    };
+    sign(&mut request, &[], Some(&melt));
+    assert!(matches!(
+        mint.process_transaction(request, false).await,
+        Err(Error::DuplicateOutputs)
+    ));
+    let stored = mint
+        .localstore
+        .get_melt_quote(&melt.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.state, MeltQuoteState::Unpaid);
+    let states = mint
+        .localstore
+        .get_proofs_states(&proofs.ys().unwrap())
+        .await
+        .unwrap();
+    assert!(states.iter().all(Option::is_none), "nothing reserved");
+    mint.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn unfinished_melt_settlement_reads_pending_on_check() {
+    let mint = v3_mint().await;
+    let proofs = mint_test_proofs(&mint, 16.into()).await.unwrap();
+    let melt = melt_quote(&mint, 5, true).await;
+    let change = change_output(&SecretKey::generate(), None);
+    let id = derived_id(&change);
+    let mut request = TransactionRequest {
+        proof_inputs: proofs,
+        melt_quote_outputs: vec![melt_output(&melt)],
+        change_quote_outputs: vec![change],
+        prefer_async: true,
+        ..Default::default()
+    };
+    sign(&mut request, &[], Some(&melt));
+    let response = mint.process_transaction(request, false).await.unwrap();
+    assert_eq!(response.state, TransactionState::Pending);
+    // A quote created under the change id while the payment is in flight makes the settlement
+    // step fail after the melt is paid.
+    add_quote_under(&mint, &id).await;
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let stored = mint.localstore.get_melt_quote(&melt.id).await.unwrap();
+            if stored.is_some_and(|quote| quote.state == MeltQuoteState::Paid) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let saga = mint
+        .localstore
+        .get_melt_saga_by_quote_id(&melt.id)
+        .await
+        .unwrap()
+        .expect("saga awaiting its settlement");
+    assert!(saga.finalization_data.is_some());
+
+    // The check retries the settlement, and a failed retry still reads PENDING.
+    for _ in 0..2 {
+        let checked = cdk_common::transaction::melt_quote_json(
+            mint.check_melt_quote(&melt.id).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(checked["state"], "PENDING");
+    }
     mint.stop().await.unwrap();
 }

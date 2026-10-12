@@ -1996,3 +1996,62 @@ pub async fn concurrent_mint_quote_batches_use_consistent_lock_order(db: DynMint
     assert_eq!(second_quotes[0].as_ref().unwrap().id, quote2.id);
     assert_eq!(second_quotes[1].as_ref().unwrap().id, quote1.id);
 }
+
+/// A mint quote id is claimed once; releasing a melt quote's ids frees them
+pub async fn mint_quote_ids_are_claimed_once<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    let id = QuoteId::new();
+    let melt = QuoteId::new();
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.claim_mint_quote_ids(std::slice::from_ref(&id), Some(&melt))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    assert!(matches!(
+        tx.claim_mint_quote_ids(std::slice::from_ref(&id), None)
+            .await,
+        Err(Error::Duplicate)
+    ));
+    tx.rollback().await.unwrap();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.release_mint_quote_ids(&melt).await.unwrap();
+    tx.claim_mint_quote_ids(&[id], None).await.unwrap();
+    tx.commit().await.unwrap();
+}
+
+/// Quotes may share the empty request, and a lookup by it finds none of them
+pub async fn empty_request_names_no_quote<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    for _ in 0..2 {
+        tx.add_mint_quote(MintQuote::new(
+            None,
+            String::new(),
+            cashu::CurrencyUnit::Sat,
+            None,
+            0,
+            PaymentIdentifier::CustomId(unique_string()),
+            None,
+            Amount::new(1, cashu::CurrencyUnit::Sat),
+            Amount::new(0, cashu::CurrencyUnit::Sat),
+            cashu::PaymentMethod::Custom("change".to_owned()),
+            0,
+            0,
+            vec![],
+            vec![],
+            None,
+        ))
+        .await
+        .unwrap();
+    }
+    assert!(tx.get_mint_quote_by_request("").await.unwrap().is_none());
+    tx.commit().await.unwrap();
+    assert!(db.get_mint_quote_by_request("").await.unwrap().is_none());
+}

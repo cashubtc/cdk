@@ -140,10 +140,12 @@ impl Mint {
         localstore: &DynMintDatabase,
         quote_id: &QuoteId,
     ) -> Result<Option<MeltQuoteResponse<QuoteId>>, Error> {
-        let quote = localstore
+        let mut quote = localstore
             .get_melt_quote(quote_id)
             .await?
             .ok_or(Error::UnknownQuote)?;
+        let pays_transaction =
+            crate::mint::transaction::settled_melt_state(localstore, &mut quote).await?;
 
         if matches!(
             quote.state,
@@ -153,11 +155,7 @@ impl Mint {
         }
 
         let change = localstore.get_blind_signatures_for_quote(quote_id).await?;
-        let change_opt = if change.is_empty() {
-            None
-        } else {
-            Some(change)
-        };
+        let change_opt = crate::mint::transaction::melt_change(pays_transaction, &quote, change);
 
         Ok(Some(quote.into_response(change_opt)))
     }
@@ -795,13 +793,16 @@ impl Mint {
                 .ok_or(Error::UnknownQuote)?;
 
             self.handle_pending_melt_quote(&mut quote).await?;
+            let pays_transaction =
+                crate::mint::transaction::settled_melt_state(&self.localstore, &mut quote).await?;
 
             let blind_signatures = self
                 .localstore
                 .get_blind_signatures_for_quote(quote_id)
                 .await?;
 
-            let change = (!blind_signatures.is_empty()).then_some(blind_signatures);
+            let change =
+                crate::mint::transaction::melt_change(pays_transaction, &quote, blind_signatures);
 
             let response = match quote.payment_method {
                 PaymentMethod::Known(KnownMethod::Bolt11) => {
@@ -838,7 +839,9 @@ impl Mint {
                     MeltQuoteResponse::Onchain(response)
                 }
                 _ => {
-                    let custom_response: MeltQuoteCustomResponse<QuoteId> = quote.clone().into();
+                    let mut custom_response: MeltQuoteCustomResponse<QuoteId> =
+                        quote.clone().into();
+                    custom_response.change = change.clone();
                     MeltQuoteResponse::Custom((quote.payment_method.clone(), custom_response))
                 }
             };

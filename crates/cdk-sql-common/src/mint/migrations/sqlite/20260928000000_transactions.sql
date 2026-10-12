@@ -1,20 +1,23 @@
--- NUT-XX transaction records, keyed by transaction digest
-CREATE TABLE IF NOT EXISTS transactions (
-    digest TEXT PRIMARY KEY,
+-- Settlement state of NUT-XX transactions with a melt, keyed by melt quote
+CREATE TABLE IF NOT EXISTS melt_transaction (
+    melt_quote_id TEXT PRIMARY KEY,
     state TEXT NOT NULL,
     unit TEXT NOT NULL,
-    melt_quote_id TEXT,
     quote_inputs TEXT NOT NULL,
     change_outputs TEXT NOT NULL,
     excess INTEGER NOT NULL,
-    change_quote_ids TEXT NOT NULL,
-    operation_id TEXT NOT NULL,
     created_time INTEGER NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_transactions_melt_quote_id ON transactions(melt_quote_id);
+-- Mint quote ids claimed by accepted NUT-XX transactions
+CREATE TABLE IF NOT EXISTS mint_quote_id_claim (
+    quote_id TEXT PRIMARY KEY,
+    melt_quote_id TEXT
+);
 
--- Every change quote of a transaction carries the digest as its request, so
--- request is no longer unique; the lookup by request only ever sees invoices.
+CREATE INDEX IF NOT EXISTS idx_mint_quote_id_claim_melt_quote_id ON mint_quote_id_claim(melt_quote_id);
+
+-- A payment request names one quote; change quotes share the empty request.
 DROP INDEX IF EXISTS idx_mint_quote_request_unique;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mint_quote_request_unique_nonempty ON mint_quote(request) WHERE request <> '';
 CREATE INDEX IF NOT EXISTS idx_mint_quote_request ON mint_quote(request);
