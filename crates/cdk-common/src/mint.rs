@@ -738,6 +738,43 @@ impl MintQuote {
         self.payments.iter().map(|a| &a.payment_id).collect()
     }
 
+    /// Payment identifier reserved for a manual payment override.
+    ///
+    /// When `source_payment_id` is present, the identifier links the override
+    /// to the backend payment it represents so only that payment is
+    /// deduplicated. Other backend payments remain independently accountable.
+    pub fn manual_payment_override_id(&self, source_payment_id: Option<&str>) -> String {
+        let override_id = format!("cdk-payment-override:{}", self.id);
+        match source_payment_id {
+            Some(source_payment_id) => format!("{override_id}:{source_payment_id}"),
+            None => override_id,
+        }
+    }
+
+    /// Returns whether `payment_id` is a manual override identifier for this quote.
+    pub fn is_manual_payment_override_id(&self, payment_id: &str) -> bool {
+        let override_id = self.manual_payment_override_id(None);
+        payment_id == override_id
+            || payment_id
+                .strip_prefix(&override_id)
+                .is_some_and(|suffix| suffix.starts_with(':'))
+    }
+
+    /// Returns whether a manual payment override has been recorded.
+    pub fn has_manual_payment_override(&self) -> bool {
+        self.payments
+            .iter()
+            .any(|payment| self.is_manual_payment_override_id(&payment.payment_id))
+    }
+
+    /// Returns whether a manual override represents `source_payment_id`.
+    pub fn has_manual_payment_override_for(&self, source_payment_id: &str) -> bool {
+        let override_id = self.manual_payment_override_id(Some(source_payment_id));
+        self.payments
+            .iter()
+            .any(|payment| payment.payment_id == override_id)
+    }
+
     /// Amount mintable
     /// Returns the amount that is still available for minting.
     ///

@@ -3,7 +3,6 @@
 use cdk::mint::MintQuote;
 use cdk::nuts::MintQuoteState;
 use cdk::types::QuoteTTL;
-use cdk_common::payment::WaitPaymentResponse;
 use tonic::{Request, Response, Status};
 
 use super::MintRPCServer;
@@ -52,13 +51,19 @@ impl MintRPCServer {
         Ok(quote_ttl)
     }
 
-    /// Records a fixed-amount BOLT11 payment override for an unpaid quote.
+    /// Records a manual payment override for a mint quote.
     ///
-    /// A quote whose payments already cover its amount is returned unchanged.
-    /// Quotes that can accept multiple payments and quotes with ambiguous
-    /// accounting are rejected because the RPC does not identify a specific
-    /// payment to record.
-    async fn set_mint_quote_paid(&self, quote_id: &str) -> Result<MintQuote, Status> {
+    /// Fixed-amount quotes default to the unpaid remainder and cannot be
+    /// credited beyond their requested amount. Amountless quotes require an
+    /// explicit amount. Quotes that can receive multiple payments require the
+    /// backend payment ID represented by the override so only that payment is
+    /// deduplicated.
+    async fn set_mint_quote_paid(
+        &self,
+        quote_id: &str,
+        requested_amount: Option<u64>,
+        requested_payment_id: Option<&str>,
+    ) -> Result<MintQuote, Status> {
         self.ensure_mint_quote_state_override_allowed()?;
 
         let quote_id = quote_id
@@ -77,62 +82,139 @@ impl MintRPCServer {
             .map_err(|_| Status::internal("Could not get quote in transaction".to_string()))?
             .ok_or(Status::invalid_argument("Could not find quote".to_string()))?;
 
-        if !mint_quote.payment_method.is_bolt11() {
-            return Err(Status::failed_precondition(
-                "Payment overrides are only supported for BOLT11 quotes",
-            ));
-        }
-
-        let amount = mint_quote.amount.clone().ok_or_else(|| {
-            Status::failed_precondition("Amountless quotes cannot be marked paid")
-        })?;
-
-        if amount.value() == 0 {
-            return Err(Status::failed_precondition(
-                "Zero-amount quotes cannot be marked paid",
-            ));
-        }
-
         let amount_paid = mint_quote.amount_paid();
         let amount_issued = mint_quote.amount_issued();
+        if requested_payment_id.is_some_and(str::is_empty) {
+            return Err(Status::failed_precondition(
+                "Payment override ID must not be empty",
+            ));
+        }
+        if mint_quote.amount.is_none() && requested_amount.is_none() {
+            return Err(Status::failed_precondition(
+                "Amountless quotes require a payment override amount",
+            ));
+        }
+        if mint_quote.amount.is_none() && requested_payment_id.is_none() {
+            return Err(Status::failed_precondition(
+                "Amountless quotes require a backend payment ID",
+            ));
+        }
+        if !mint_quote.payment_method.is_bolt11() && requested_payment_id.is_none() {
+            return Err(Status::failed_precondition(
+                "This payment method requires a backend payment ID",
+            ));
+        }
 
-        // A quote whose recorded payments already cover its amount is satisfied,
-        // including one the backend recorded as overpaid; report it unchanged.
-        if amount_paid.value() >= amount.value() && amount_issued.value() <= amount_paid.value() {
+        let override_id = mint_quote.manual_payment_override_id(requested_payment_id);
+
+        if let Some(payment) = mint_quote
+            .payments
+            .iter()
+            .find(|payment| payment.payment_id == override_id)
+        {
+            if requested_amount.is_some_and(|amount| amount != payment.amount.value()) {
+                return Err(Status::failed_precondition(
+                    "Quote already has a payment override with a different amount",
+                ));
+            }
+
             tx.commit()
                 .await
                 .map_err(|_| Status::internal("Could not commit db transaction".to_string()))?;
             return Ok(mint_quote.inner());
         }
 
-        if amount_paid.value() != 0 || amount_issued.value() != 0 || !mint_quote.payments.is_empty()
-        {
+        if let Some(payment_id) = requested_payment_id {
+            if let Some(payment) = mint_quote
+                .payments
+                .iter()
+                .find(|payment| payment.payment_id == payment_id)
+            {
+                if requested_amount.is_some_and(|amount| amount != payment.amount.value()) {
+                    return Err(Status::failed_precondition(
+                        "Recorded backend payment has a different amount",
+                    ));
+                }
+
+                tx.commit()
+                    .await
+                    .map_err(|_| Status::internal("Could not commit db transaction".to_string()))?;
+                return Ok(mint_quote.inner());
+            }
+        }
+
+        let payment_amount = match mint_quote.amount.as_ref() {
+            Some(quote_amount) => {
+                if quote_amount.value() == 0 {
+                    return Err(Status::failed_precondition(
+                        "Zero-amount quotes cannot be marked paid",
+                    ));
+                }
+
+                // A fixed-amount quote whose recorded payments already cover its
+                // amount is satisfied, including an overpaid quote.
+                if amount_paid.value() >= quote_amount.value() {
+                    tx.commit().await.map_err(|_| {
+                        Status::internal("Could not commit db transaction".to_string())
+                    })?;
+                    return Ok(mint_quote.inner());
+                }
+
+                let remaining = quote_amount.value() - amount_paid.value();
+                let amount = requested_amount.unwrap_or(remaining);
+                if amount == 0 {
+                    return Err(Status::failed_precondition(
+                        "Payment override amount must be greater than zero",
+                    ));
+                }
+                if amount > remaining {
+                    return Err(Status::failed_precondition(
+                        "Payment override would exceed the quote amount",
+                    ));
+                }
+
+                cdk::Amount::new(amount, mint_quote.unit.clone())
+            }
+            None => {
+                let amount = requested_amount.ok_or_else(|| {
+                    Status::failed_precondition(
+                        "Amountless quotes require a payment override amount",
+                    )
+                })?;
+                if amount == 0 {
+                    return Err(Status::failed_precondition(
+                        "Payment override amount must be greater than zero",
+                    ));
+                }
+
+                cdk::Amount::new(amount, mint_quote.unit.clone())
+            }
+        };
+
+        let resulting_amount_paid = amount_paid
+            .value()
+            .checked_add(payment_amount.value())
+            .ok_or_else(|| Status::internal("Payment amount overflow"))?;
+        if amount_issued.value() > resulting_amount_paid {
             return Err(Status::failed_precondition(
-                "Quote has existing payment or issuance accounting",
+                "Payment override would leave the quote over-issued",
             ));
         }
 
-        let response = WaitPaymentResponse {
-            payment_id: format!("mint-rpc-override:{}", mint_quote.id),
-            payment_amount: amount,
-            payment_identifier: mint_quote.request_lookup_id.clone(),
-        };
-
-        let should_notify = self
-            .mint
-            .pay_mint_quote(&mut tx, &mut mint_quote, response)
-            .await
+        mint_quote
+            .add_payment(payment_amount, override_id, None)
             .map_err(|_| Status::internal("Could not process payment".to_string()))?;
+        tx.update_mint_quote(&mut mint_quote)
+            .await
+            .map_err(|_| Status::internal("Could not persist payment".to_string()))?;
 
         tx.commit()
             .await
             .map_err(|_| Status::internal("Could not commit db transaction".to_string()))?;
 
-        if should_notify {
-            self.mint
-                .pubsub_manager()
-                .mint_quote_payment(&mint_quote, mint_quote.amount_paid());
-        }
+        self.mint
+            .pubsub_manager()
+            .mint_quote_payment(&mint_quote, mint_quote.amount_paid());
 
         Ok(mint_quote.inner())
     }
@@ -198,7 +280,13 @@ impl QuoteService for MintRPCServer {
             }
         }
 
-        let mint_quote = self.set_mint_quote_paid(&request.quote_id).await?;
+        let mint_quote = self
+            .set_mint_quote_paid(
+                &request.quote_id,
+                request.amount,
+                request.payment_id.as_deref(),
+            )
+            .await?;
 
         Ok(Response::new(crate::quote::UpdateMintQuoteStateResponse {
             quote_id: mint_quote.id.to_string(),
@@ -221,6 +309,7 @@ impl From<MintQuoteState> for crate::quote::MintQuoteState {
 mod tests {
     use std::fs::remove_file;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
     use bip39::Mnemonic;
@@ -230,13 +319,14 @@ mod tests {
     use cdk::Amount;
     use cdk_common::payment::{PaymentIdentifier, WaitPaymentResponse};
     use cdk_common::{MintQuoteBolt11Request, PaymentMethod, QuoteId};
+    use cdk_postgres::MintPgDatabase;
     use cdk_sqlite::mint::MintSqliteDatabase;
     use tokio::sync::Barrier;
 
     use super::super::test_utils::{
-        build_test_rpc_server_with_sqlite_database, create_test_rpc_server,
-        create_test_rpc_server_with_payment_delay, create_test_rpc_server_with_sqlite_database,
-        UNKNOWN_QUOTE_ID,
+        build_test_rpc_server_with_database, build_test_rpc_server_with_sqlite_database,
+        create_test_rpc_server, create_test_rpc_server_with_payment_delay,
+        create_test_rpc_server_with_sqlite_database, UNKNOWN_QUOTE_ID,
     };
     use super::super::{MintMutationGuard, MintMutationGuardError};
     use super::*;
@@ -278,6 +368,90 @@ mod tests {
             1,
             "{instance} retained a database handle"
         );
+    }
+
+    async fn postgres_test_database(test_name: &str) -> Option<Arc<MintPgDatabase>> {
+        let require_postgres = std::env::var("CDK_REQUIRE_POSTGRES_TESTS").is_ok();
+        let base_url = std::env::var("CDK_MINTD_DATABASE_URL")
+            .or_else(|_| std::env::var("PG_DB_URL"))
+            .ok();
+        if base_url.is_none() && !require_postgres {
+            eprintln!(
+                "skipping PostgreSQL {test_name} test: set CDK_MINTD_DATABASE_URL or PG_DB_URL"
+            );
+            return None;
+        }
+
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let schema = format!(
+            "mint_rpc_{}_{}_{}",
+            test_name,
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let base_url = base_url.unwrap_or_else(|| {
+            "host=localhost user=cdk_user password=cdk_password dbname=cdk_mint port=5432"
+                .to_owned()
+        });
+        Some(Arc::new(
+            MintPgDatabase::new(format!("{base_url} schema={schema}").as_str())
+                .await
+                .expect("PostgreSQL test database"),
+        ))
+    }
+
+    async fn assert_concurrent_payment_overrides_pay_once(server: &MintRPCServer) {
+        let quote_id = create_test_mint_quote(server, 100).await;
+        let first_server = server.clone();
+        let first_quote_id = quote_id.clone();
+        let first = tokio::spawn(async move {
+            QuoteService::update_mint_quote_state(
+                &first_server,
+                Request::new(crate::quote::UpdateMintQuoteStateRequest {
+                    quote_id: first_quote_id,
+                    state: crate::quote::MintQuoteState::Paid.into(),
+                    amount: None,
+                    payment_id: None,
+                }),
+            )
+            .await
+        });
+        let second_server = server.clone();
+        let second_quote_id = quote_id.clone();
+        let second = tokio::spawn(async move {
+            QuoteService::update_mint_quote_state(
+                &second_server,
+                Request::new(crate::quote::UpdateMintQuoteStateRequest {
+                    quote_id: second_quote_id,
+                    state: crate::quote::MintQuoteState::Paid.into(),
+                    amount: None,
+                    payment_id: None,
+                }),
+            )
+            .await
+        });
+
+        let (first, second) = tokio::join!(first, second);
+        assert_eq!(
+            first.unwrap().unwrap().into_inner().state(),
+            crate::quote::MintQuoteState::Paid
+        );
+        assert_eq!(
+            second.unwrap().unwrap().into_inner().state(),
+            crate::quote::MintQuoteState::Paid
+        );
+
+        let quote = server
+            .mint
+            .localstore()
+            .get_mint_quote(&quote_id.parse().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(quote.amount_paid().value(), 100);
+        assert_eq!(quote.amount_issued().value(), 0);
+        assert_eq!(quote.amount_mintable().value(), 100);
+        assert_eq!(quote.payments.len(), 1);
     }
 
     #[tokio::test]
@@ -467,6 +641,8 @@ mod tests {
             Request::new(crate::quote::UpdateMintQuoteStateRequest {
                 quote_id: quote_id.clone(),
                 state: crate::quote::MintQuoteState::Paid.into(),
+                amount: None,
+                payment_id: None,
             }),
         )
         .await
@@ -479,29 +655,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_quote_service_force_paid_rejects_additive_method_before_payment() {
+    async fn test_quote_service_force_paid_supports_fixed_bolt12_before_backend_payment() {
         let server = create_test_rpc_server_with_payment_delay(3600)
             .await
             .with_mint_quote_payment_override(true);
-        let quote_id = create_test_mint_quote_with_method(
-            &server,
-            Some(100),
-            PaymentMethod::Custom("test".to_string()),
-        )
-        .await;
+        let quote_id =
+            create_test_mint_quote_with_method(&server, Some(100), PaymentMethod::BOLT12).await;
 
         let status = QuoteService::update_mint_quote_state(
             &server,
             Request::new(crate::quote::UpdateMintQuoteStateRequest {
                 quote_id: quote_id.clone(),
                 state: crate::quote::MintQuoteState::Paid.into(),
+                amount: None,
+                payment_id: None,
             }),
         )
         .await
-        .expect_err("an additive payment method cannot be force-paid");
-
+        .expect_err("a multi-payment quote requires a payment ID");
         assert_eq!(status.code(), tonic::Code::FailedPrecondition);
-        record_test_payment(&server, &quote_id, 40, "later-backend-payment").await;
+
+        let response = QuoteService::update_mint_quote_state(
+            &server,
+            Request::new(crate::quote::UpdateMintQuoteStateRequest {
+                quote_id: quote_id.clone(),
+                state: crate::quote::MintQuoteState::Paid.into(),
+                amount: None,
+                payment_id: Some("bolt12-payment".to_string()),
+            }),
+        )
+        .await
+        .expect("a fixed-amount BOLT12 quote can be force-paid")
+        .into_inner();
+
+        assert_eq!(response.state(), crate::quote::MintQuoteState::Paid);
+        record_test_payment(&server, &quote_id, 100, "bolt12-payment").await;
+        record_test_payment(&server, &quote_id, 25, "distinct-bolt12-payment").await;
 
         let persisted = server
             .mint
@@ -510,9 +699,12 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(persisted.amount_paid().value(), 40);
-        assert_eq!(persisted.amount_mintable().value(), 40);
-        assert_eq!(persisted.payment_ids().len(), 1);
+        assert_eq!(persisted.amount_paid().value(), 125);
+        assert_eq!(persisted.amount_mintable().value(), 125);
+        assert_eq!(persisted.payment_ids().len(), 2);
+        assert!(persisted.has_manual_payment_override());
+        assert!(persisted.has_manual_payment_override_for("bolt12-payment"));
+        assert_eq!(persisted.payments[1].payment_id, "distinct-bolt12-payment");
     }
 
     #[tokio::test]
@@ -528,17 +720,20 @@ mod tests {
         .await;
         record_test_payment(&server, &quote_id, 40, "backend-partial-payment").await;
 
-        let status = QuoteService::update_mint_quote_state(
+        let response = QuoteService::update_mint_quote_state(
             &server,
             Request::new(crate::quote::UpdateMintQuoteStateRequest {
                 quote_id: quote_id.clone(),
                 state: crate::quote::MintQuoteState::Paid.into(),
+                amount: None,
+                payment_id: Some("manual-remainder-payment".to_string()),
             }),
         )
         .await
-        .expect_err("an override must not add value after a real payment");
+        .expect("the override should credit only the unpaid remainder")
+        .into_inner();
 
-        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+        assert_eq!(response.state(), crate::quote::MintQuoteState::Paid);
 
         let persisted = server
             .mint
@@ -547,17 +742,25 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(persisted.amount_paid().value(), 40);
-        assert_eq!(persisted.amount_mintable().value(), 40);
-        assert_eq!(persisted.payment_ids().len(), 1);
+        assert_eq!(persisted.amount_paid().value(), 100);
+        assert_eq!(persisted.amount_mintable().value(), 100);
+        assert_eq!(persisted.payment_ids().len(), 2);
+        assert_eq!(persisted.payments[0].amount.value(), 40);
+        assert_eq!(persisted.payments[1].amount.value(), 60);
+        assert!(persisted.has_manual_payment_override());
     }
 
     #[tokio::test]
-    async fn test_quote_service_force_paid_rejects_partial_bolt11_payment() {
+    async fn test_quote_service_force_paid_rejects_amount_above_fixed_quote_remainder() {
         let server = create_test_rpc_server_with_payment_delay(3600)
             .await
             .with_mint_quote_payment_override(true);
-        let quote_id = create_test_mint_quote(&server, 100).await;
+        let quote_id = create_test_mint_quote_with_method(
+            &server,
+            Some(100),
+            PaymentMethod::Custom("test".to_string()),
+        )
+        .await;
         record_test_payment(&server, &quote_id, 40, "backend-partial-payment").await;
 
         let status = QuoteService::update_mint_quote_state(
@@ -565,13 +768,14 @@ mod tests {
             Request::new(crate::quote::UpdateMintQuoteStateRequest {
                 quote_id: quote_id.clone(),
                 state: crate::quote::MintQuoteState::Paid.into(),
+                amount: Some(61),
+                payment_id: Some("manual-remainder-payment".to_string()),
             }),
         )
         .await
-        .expect_err("a partial payment must not be topped up by an override");
+        .expect_err("the override must not exceed the fixed quote amount");
 
         assert_eq!(status.code(), tonic::Code::FailedPrecondition);
-
         let persisted = server
             .mint
             .localstore()
@@ -580,29 +784,31 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(persisted.amount_paid().value(), 40);
-        assert_eq!(persisted.amount_mintable().value(), 40);
         assert_eq!(persisted.payment_ids().len(), 1);
     }
 
     #[tokio::test]
-    async fn test_quote_service_force_paid_rejects_amountless_quote() {
+    async fn test_quote_service_force_paid_tops_up_partial_bolt11_payment() {
         let server = create_test_rpc_server_with_payment_delay(3600)
             .await
             .with_mint_quote_payment_override(true);
-        let quote_id =
-            create_test_mint_quote_with_method(&server, None, PaymentMethod::BOLT11).await;
+        let quote_id = create_test_mint_quote(&server, 100).await;
+        record_test_payment(&server, &quote_id, 40, "backend-partial-payment").await;
 
-        let status = QuoteService::update_mint_quote_state(
+        let response = QuoteService::update_mint_quote_state(
             &server,
             Request::new(crate::quote::UpdateMintQuoteStateRequest {
                 quote_id: quote_id.clone(),
                 state: crate::quote::MintQuoteState::Paid.into(),
+                amount: None,
+                payment_id: None,
             }),
         )
         .await
-        .expect_err("an amountless quote cannot infer a payment amount");
+        .expect("the override should credit only the unpaid remainder")
+        .into_inner();
 
-        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+        assert_eq!(response.state(), crate::quote::MintQuoteState::Paid);
 
         let persisted = server
             .mint
@@ -611,8 +817,99 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(persisted.amount_paid().value(), 0);
-        assert!(persisted.payment_ids().is_empty());
+        assert_eq!(persisted.amount_paid().value(), 100);
+        assert_eq!(persisted.amount_mintable().value(), 100);
+        assert_eq!(persisted.payment_ids().len(), 2);
+        assert_eq!(persisted.payments[1].amount.value(), 60);
+    }
+
+    #[tokio::test]
+    async fn test_quote_service_force_paid_amountless_onchain_quote_requires_amount() {
+        let server = create_test_rpc_server_with_payment_delay(3600)
+            .await
+            .with_mint_quote_payment_override(true);
+        let quote_id =
+            create_test_mint_quote_with_method(&server, None, PaymentMethod::from("onchain")).await;
+
+        let status = QuoteService::update_mint_quote_state(
+            &server,
+            Request::new(crate::quote::UpdateMintQuoteStateRequest {
+                quote_id: quote_id.clone(),
+                state: crate::quote::MintQuoteState::Paid.into(),
+                amount: None,
+                payment_id: None,
+            }),
+        )
+        .await
+        .expect_err("an amountless quote cannot infer a payment amount");
+
+        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+
+        let response = QuoteService::update_mint_quote_state(
+            &server,
+            Request::new(crate::quote::UpdateMintQuoteStateRequest {
+                quote_id: quote_id.clone(),
+                state: crate::quote::MintQuoteState::Paid.into(),
+                amount: Some(75),
+                payment_id: Some("onchain-payment".to_string()),
+            }),
+        )
+        .await
+        .expect("an explicit amount can force-pay an on-chain quote")
+        .into_inner();
+
+        assert_eq!(response.state(), crate::quote::MintQuoteState::Paid);
+        record_test_payment(&server, &quote_id, 75, "onchain-payment").await;
+        record_test_payment(&server, &quote_id, 25, "later-onchain-payment").await;
+
+        let persisted = server
+            .mint
+            .localstore()
+            .get_mint_quote(&quote_id.parse().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(persisted.amount_paid().value(), 100);
+        assert_eq!(persisted.amount_mintable().value(), 100);
+        assert_eq!(persisted.payment_ids().len(), 2);
+        assert!(persisted.has_manual_payment_override());
+        assert!(persisted.has_manual_payment_override_for("onchain-payment"));
+        assert_eq!(persisted.payments[1].payment_id, "later-onchain-payment");
+    }
+
+    #[tokio::test]
+    async fn test_quote_service_amountless_backend_payment_then_override_is_idempotent() {
+        let server = create_test_rpc_server_with_payment_delay(3600)
+            .await
+            .with_mint_quote_payment_override(true);
+        let quote_id =
+            create_test_mint_quote_with_method(&server, None, PaymentMethod::from("onchain")).await;
+        record_test_payment(&server, &quote_id, 75, "onchain-payment").await;
+
+        let response = QuoteService::update_mint_quote_state(
+            &server,
+            Request::new(crate::quote::UpdateMintQuoteStateRequest {
+                quote_id: quote_id.clone(),
+                state: crate::quote::MintQuoteState::Paid.into(),
+                amount: Some(75),
+                payment_id: Some("onchain-payment".to_string()),
+            }),
+        )
+        .await
+        .expect("the existing backend payment should make the override a no-op")
+        .into_inner();
+
+        assert_eq!(response.state(), crate::quote::MintQuoteState::Paid);
+        let persisted = server
+            .mint
+            .localstore()
+            .get_mint_quote(&quote_id.parse().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(persisted.amount_paid().value(), 75);
+        assert_eq!(persisted.payment_ids().len(), 1);
+        assert!(!persisted.has_manual_payment_override());
     }
 
     #[tokio::test]
@@ -628,6 +925,8 @@ mod tests {
             Request::new(crate::quote::UpdateMintQuoteStateRequest {
                 quote_id: quote_id.clone(),
                 state: crate::quote::MintQuoteState::Paid.into(),
+                amount: None,
+                payment_id: None,
             }),
         )
         .await
@@ -657,6 +956,8 @@ mod tests {
             Request::new(crate::quote::UpdateMintQuoteStateRequest {
                 quote_id: quote_id.clone(),
                 state: crate::quote::MintQuoteState::Paid.into(),
+                amount: None,
+                payment_id: None,
             }),
         )
         .await
@@ -692,6 +993,8 @@ mod tests {
             Request::new(crate::quote::UpdateMintQuoteStateRequest {
                 quote_id: quote_id.clone(),
                 state: crate::quote::MintQuoteState::Paid.into(),
+                amount: None,
+                payment_id: None,
             }),
         )
         .await
@@ -727,6 +1030,8 @@ mod tests {
             Request::new(crate::quote::UpdateMintQuoteStateRequest {
                 quote_id: quote_id.clone(),
                 state: crate::quote::MintQuoteState::Paid.into(),
+                amount: None,
+                payment_id: None,
             }),
         )
         .await
@@ -761,6 +1066,8 @@ mod tests {
             Request::new(crate::quote::UpdateMintQuoteStateRequest {
                 quote_id: quote_id.clone(),
                 state: crate::quote::MintQuoteState::Paid.into(),
+                amount: None,
+                payment_id: None,
             }),
         )
         .await
@@ -796,6 +1103,8 @@ mod tests {
                 Request::new(crate::quote::UpdateMintQuoteStateRequest {
                     quote_id: quote_id.clone(),
                     state: crate::quote::MintQuoteState::Paid.into(),
+                    amount: None,
+                    payment_id: None,
                 }),
             )
             .await
@@ -820,6 +1129,8 @@ mod tests {
             Request::new(crate::quote::UpdateMintQuoteStateRequest {
                 quote_id: quote_id.clone(),
                 state: crate::quote::MintQuoteState::Paid.into(),
+                amount: None,
+                payment_id: None,
             }),
         )
         .await
@@ -840,7 +1151,7 @@ mod tests {
         assert_eq!(quote.payments.len(), 1);
         assert_eq!(
             quote.payments[0].payment_id,
-            format!("mint-rpc-override:{quote_id}")
+            format!("cdk-payment-override:{quote_id}")
         );
 
         restarted_server.mint.stop().await.unwrap();
@@ -862,62 +1173,11 @@ mod tests {
             .with_mutation_guard(Arc::new(BarrierMutationGuard {
                 barrier: barrier.clone(),
             }));
-        let quote_id = create_test_mint_quote(&server, 100).await;
-
         // File-backed SQLite has a multi-connection pool. The guard holds both RPCs
         // until both have entered the mutation path, after which BEGIN IMMEDIATE
         // serializes them at SQLite's database writer lock rather than a pool slot.
-        let first_server = server.clone();
-        let first_quote_id = quote_id.clone();
-        let first = tokio::spawn(async move {
-            let response = QuoteService::update_mint_quote_state(
-                &first_server,
-                Request::new(crate::quote::UpdateMintQuoteStateRequest {
-                    quote_id: first_quote_id,
-                    state: crate::quote::MintQuoteState::Paid.into(),
-                }),
-            )
-            .await;
-            drop(first_server);
-            response
-        });
-        let second_server = server.clone();
-        let second_quote_id = quote_id.clone();
-        let second = tokio::spawn(async move {
-            let response = QuoteService::update_mint_quote_state(
-                &second_server,
-                Request::new(crate::quote::UpdateMintQuoteStateRequest {
-                    quote_id: second_quote_id,
-                    state: crate::quote::MintQuoteState::Paid.into(),
-                }),
-            )
-            .await;
-            drop(second_server);
-            response
-        });
-
-        let (first, second) = tokio::join!(first, second);
-        assert_eq!(
-            first.unwrap().unwrap().into_inner().state(),
-            crate::quote::MintQuoteState::Paid
-        );
-        assert_eq!(
-            second.unwrap().unwrap().into_inner().state(),
-            crate::quote::MintQuoteState::Paid
-        );
+        assert_concurrent_payment_overrides_pay_once(&server).await;
         assert_eq!(Arc::strong_count(&server.mint), 1);
-
-        let quote = server
-            .mint
-            .localstore()
-            .get_mint_quote(&quote_id.parse().unwrap())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(quote.amount_paid().value(), 100);
-        assert_eq!(quote.amount_issued().value(), 0);
-        assert_eq!(quote.amount_mintable().value(), 100);
-        assert_eq!(quote.payments.len(), 1);
 
         drop(server);
         assert_mint_released_database(&db, "the concurrent override test mint").await;
@@ -962,6 +1222,8 @@ mod tests {
                 Request::new(crate::quote::UpdateMintQuoteStateRequest {
                     quote_id: operator_quote_id,
                     state: crate::quote::MintQuoteState::Paid.into(),
+                    amount: None,
+                    payment_id: None,
                 }),
             )
             .await;
@@ -1004,6 +1266,90 @@ mod tests {
         remove_file(path).unwrap();
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_quote_service_postgres_override_racing_backend_payment_credits_once() {
+        let Some(db) = postgres_test_database("override_backend_race").await else {
+            return;
+        };
+        let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
+        let barrier = Arc::new(Barrier::new(2));
+        let server = build_test_rpc_server_with_database(db, &seed, 3600)
+            .await
+            .with_mint_quote_payment_override(true)
+            .with_mutation_guard(Arc::new(BarrierMutationGuard {
+                barrier: barrier.clone(),
+            }));
+        let quote_id = create_test_mint_quote(&server, 100).await;
+        let quote = server
+            .mint
+            .localstore()
+            .get_mint_quote(&quote_id.parse().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        let backend_payment = WaitPaymentResponse {
+            payment_id: "postgres-backend-payment".to_string(),
+            payment_amount: Amount::new(100, CurrencyUnit::Sat),
+            payment_identifier: quote.request_lookup_id,
+        };
+
+        let operator_server = server.clone();
+        let operator_quote_id = quote_id.clone();
+        let operator = tokio::spawn(async move {
+            QuoteService::update_mint_quote_state(
+                &operator_server,
+                Request::new(crate::quote::UpdateMintQuoteStateRequest {
+                    quote_id: operator_quote_id,
+                    state: crate::quote::MintQuoteState::Paid.into(),
+                    amount: None,
+                    payment_id: None,
+                }),
+            )
+            .await
+        });
+        let backend_mint = server.mint.clone();
+        let backend = tokio::spawn(async move {
+            barrier.wait().await;
+            backend_mint
+                .pay_mint_quote_for_request_id(backend_payment)
+                .await
+        });
+
+        let (operator, backend) = tokio::join!(operator, backend);
+        assert_eq!(
+            operator.unwrap().unwrap().into_inner().state(),
+            crate::quote::MintQuoteState::Paid
+        );
+        backend.unwrap().unwrap();
+
+        let quote = server
+            .mint
+            .localstore()
+            .get_mint_quote(&quote_id.parse().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(quote.amount_paid().value(), 100);
+        assert_eq!(quote.amount_issued().value(), 0);
+        assert_eq!(quote.amount_mintable().value(), 100);
+        assert_eq!(quote.payments.len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_quote_service_postgres_concurrent_payment_overrides_pay_once() {
+        let Some(db) = postgres_test_database("concurrent_overrides").await else {
+            return;
+        };
+        let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
+        let barrier = Arc::new(Barrier::new(2));
+        let server = build_test_rpc_server_with_database(db, &seed, 3600)
+            .await
+            .with_mint_quote_payment_override(true)
+            .with_mutation_guard(Arc::new(BarrierMutationGuard { barrier }));
+
+        assert_concurrent_payment_overrides_pay_once(&server).await;
+    }
+
     #[tokio::test]
     async fn test_quote_service_update_mint_quote_state_reports_state_of_issued_quote() {
         let server = create_test_rpc_server_with_payment_delay(3600)
@@ -1016,6 +1362,8 @@ mod tests {
             Request::new(crate::quote::UpdateMintQuoteStateRequest {
                 quote_id: quote_id.clone(),
                 state: crate::quote::MintQuoteState::Paid.into(),
+                amount: None,
+                payment_id: None,
             }),
         )
         .await
@@ -1028,6 +1376,8 @@ mod tests {
             Request::new(crate::quote::UpdateMintQuoteStateRequest {
                 quote_id: quote_id.clone(),
                 state: crate::quote::MintQuoteState::Paid.into(),
+                amount: None,
+                payment_id: None,
             }),
         )
         .await
@@ -1062,6 +1412,8 @@ mod tests {
                 Request::new(crate::quote::UpdateMintQuoteStateRequest {
                     quote_id: UNKNOWN_QUOTE_ID.to_string(),
                     state: state.into(),
+                    amount: None,
+                    payment_id: None,
                 }),
             )
             .await
@@ -1087,6 +1439,8 @@ mod tests {
             Request::new(crate::quote::UpdateMintQuoteStateRequest {
                 quote_id: UNKNOWN_QUOTE_ID.to_string(),
                 state: crate::quote::MintQuoteState::Paid.into(),
+                amount: None,
+                payment_id: None,
             }),
         )
         .await
@@ -1106,6 +1460,8 @@ mod tests {
             Request::new(crate::quote::UpdateMintQuoteStateRequest {
                 quote_id: quote_id.clone(),
                 state: crate::quote::MintQuoteState::Paid.into(),
+                amount: None,
+                payment_id: None,
             }),
         )
         .await

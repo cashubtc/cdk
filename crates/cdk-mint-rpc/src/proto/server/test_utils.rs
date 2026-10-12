@@ -7,6 +7,7 @@ use bip39::Mnemonic;
 use cdk::mint::{MintBuilder, MintMeltLimits};
 use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use cdk::types::QuoteTTL;
+use cdk_common::database::{Error as DatabaseError, MintDatabase, MintKeysDatabase};
 use cdk_common::nut00::KnownMethod;
 use cdk_fake_wallet::FakeWallet;
 use cdk_sqlite::mint::MintSqliteDatabase;
@@ -51,6 +52,18 @@ pub(super) async fn build_test_rpc_server_with_sqlite_database(
     seed: &[u8],
     payment_delay: u64,
 ) -> MintRPCServer {
+    build_test_rpc_server_with_database(db, seed, payment_delay).await
+}
+
+/// Builds a test server over an explicitly supplied mint database.
+pub(super) async fn build_test_rpc_server_with_database<D>(
+    db: Arc<D>,
+    seed: &[u8],
+    payment_delay: u64,
+) -> MintRPCServer
+where
+    D: MintDatabase<DatabaseError> + MintKeysDatabase<Err = DatabaseError> + Send + Sync + 'static,
+{
     let mut mint_builder = MintBuilder::new(db.clone());
 
     let fee_reserve = cdk::types::FeeReserve {

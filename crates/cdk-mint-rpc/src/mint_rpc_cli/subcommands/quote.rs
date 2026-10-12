@@ -72,10 +72,11 @@ pub async fn get_quote_ttl(client: &mut InterceptedQuoteServiceClient) -> Result
     Ok(())
 }
 
-/// Command to force-mark a fixed-amount BOLT11 mint quote paid.
+/// Command to record a manual payment against a mint quote.
 ///
-/// Other payment methods and amountless quotes are rejected by the server with
-/// gRPC status `FAILED_PRECONDITION`.
+/// Fixed-amount quotes default to their unpaid remainder. Amountless and
+/// multi-payment quotes require a backend payment ID; amountless quotes also
+/// require an explicit amount.
 #[derive(Args, Debug)]
 pub struct UpdateMintQuoteStateCommand {
     /// The ID of the quote to update
@@ -83,6 +84,12 @@ pub struct UpdateMintQuoteStateCommand {
     /// The new state to set for the quote; the server only supports "PAID"
     #[arg(default_value = "PAID")]
     state: String,
+    /// Amount to credit in the quote's unit
+    #[arg(long)]
+    amount: Option<u64>,
+    /// Stable backend payment ID; required for amountless and multi-payment quotes
+    #[arg(long)]
+    payment_id: Option<String>,
 }
 
 /// Executes the update_mint_quote_state command against the mint server
@@ -108,6 +115,8 @@ pub async fn update_mint_quote_state(
         .update_mint_quote_state(Request::new(UpdateMintQuoteStateRequest {
             quote_id: sub_command_args.quote_id.clone(),
             state: state.into(),
+            amount: sub_command_args.amount,
+            payment_id: sub_command_args.payment_id.clone(),
         }))
         .await?;
 

@@ -378,6 +378,8 @@ mod tests {
             Request::new(crate::quote::UpdateMintQuoteStateRequest {
                 quote_id: UNKNOWN_QUOTE_ID.to_owned(),
                 state: crate::quote::MintQuoteState::Paid.into(),
+                amount: None,
+                payment_id: None,
             }),
         )
         .await

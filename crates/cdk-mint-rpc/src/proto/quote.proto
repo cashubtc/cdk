@@ -59,13 +59,19 @@ message UpdateMintQuoteStateRequest {
     // with gRPC status INVALID_ARGUMENT.
     string quote_id = 1;
     // State to move the quote to. Only MINT_QUOTE_STATE_PAID is supported;
-    // any other value fails with gRPC status INVALID_ARGUMENT. PAID is only
-    // supported for fixed-amount BOLT11 quotes. A quote whose recorded payments
-    // already cover its amount is returned unchanged. BOLT12, onchain, and
-    // custom-method quotes fail with gRPC status FAILED_PRECONDITION, even when
-    // no payment has been recorded, as do amountless quotes and quotes with
-    // partial payment or issuance accounting.
+    // any other value fails with gRPC status INVALID_ARGUMENT. For a
+    // fixed-amount quote, omitting amount credits only the unpaid remainder.
+    // An amountless quote requires amount and payment_id.
     MintQuoteState state = 2;
+    // Amount to credit in the quote's unit. Omit for a fixed-amount quote to
+    // credit its unpaid remainder. The value must be nonzero and must not make
+    // a fixed-amount quote exceed its requested amount.
+    optional uint64 amount = 3;
+    // Stable identifier of the backend payment represented by this override.
+    // Amountless quotes and payment methods that can receive multiple payments
+    // require this field. A later notification with the same identifier is
+    // deduplicated without suppressing genuinely distinct payments.
+    optional string payment_id = 4;
 }
 
 // The quote as it stands after the update. On failure a gRPC error status is

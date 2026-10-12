@@ -48,9 +48,10 @@ enabled = false
 # port = 8086
 # tls_dir = "/path/to/tls"
 # allow_insecure = false
-# Permits RPC callers to mark fixed-amount BOLT11 mint quotes paid without
-# payment-backend confirmation. Other payment methods and amountless quotes
-# return FAILED_PRECONDITION.
+# Permits RPC callers to record a manual mint-quote payment without
+# payment-backend confirmation. Fixed-amount quotes default to their unpaid
+# remainder. Amountless and multi-payment quotes require a backend payment ID;
+# amountless quotes also require an explicit amount.
 # allow_mint_quote_payment_override = false
 
 #[prometheus]
