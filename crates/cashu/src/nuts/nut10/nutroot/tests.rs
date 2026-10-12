@@ -964,3 +964,96 @@ fn quote_id_preimage_vectors() {
         );
     }
 }
+
+/// A template vector's `tx`: proof inputs and change quote outputs only.
+fn template_transaction(tx: &Value) -> Transaction {
+    use std::str::FromStr;
+    let proofs: Vec<_> = tx["proof_inputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| crate::Proof {
+            amount: v["amount"].as_u64().unwrap().into(),
+            keyset_id: crate::nuts::Id::from_str(v["keyset_id"].as_str().unwrap()).unwrap(),
+            secret: crate::secret::Secret::from_str(v["secret"].as_str().unwrap()).unwrap(),
+            c: crate::nuts::PublicKey::from_hex(v["C"].as_str().unwrap()).unwrap(),
+            witness: None,
+            dleq: None,
+            p2pk_e: None,
+            spend_info: None,
+        })
+        .collect();
+    let change: Vec<_> = tx["change_quote_outputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| ChangeOutput {
+            amount: v["amount"].as_u64().map(Into::into),
+            pubkey: *crate::nuts::PublicKey::from_hex(v["pubkey"].as_str().unwrap())
+                .unwrap()
+                .as_secp256k1()
+                .unwrap(),
+            id_preimage: hash(&v["id_preimage"]),
+        })
+        .collect();
+    Transaction::with_change(&proofs, &[], &[], &[], &change).unwrap()
+}
+
+#[test]
+fn shared_template_leaf_vectors() {
+    let shared: Value = serde_json::from_str(include_str!("nutroot_v3_vectors.json")).unwrap();
+    let case = &shared["template_lock"];
+    let transaction = template_transaction(&case["tx"]);
+    assert_eq!(transaction.outputs(), bytes(&case["output_section"]));
+    let leaf = Leaf::from_bytes(&bytes(&case["leaf"])).unwrap();
+    assert_eq!(leaf.condition(), &Condition::Template(hash(&case["hash"])));
+    assert_eq!(leaf.to_bytes(), bytes(&case["leaf"]));
+    let secret = case["secret"].as_str().unwrap();
+    let digest = transaction.input_digest(0).unwrap();
+    assert_eq!(digest, hash(&case["input_digest"]));
+    let witness: Witness = serde_json::from_str(case["witness"].as_str().unwrap()).unwrap();
+    assert!(!witness
+        .verify_in(secret, digest, Some(transaction.outputs()), 0)
+        .unwrap());
+    // Without the outputs, or with one byte of them changed, the leaf cannot be satisfied.
+    assert!(witness.verify(secret, digest, 0).is_err());
+    let rejected = bytes(&case["rejected_outputs"]["output_section"]);
+    assert!(witness
+        .verify_in(secret, digest, Some(&rejected), 0)
+        .is_err());
+    // A template leaf carries no time.
+    let mut timed = bytes(&case["leaf"]);
+    let hash_at = timed.len() - 35;
+    timed.splice(hash_at..hash_at, [0x06, 0x00, 0x01, 0x01]);
+    assert!(Leaf::from_bytes(&timed).is_err());
+    // An unallocated leaf type fails closed.
+    assert!(Leaf::from_bytes(&bytes(&shared["leaf_forms"]["leaf_unknown_type"])).is_err());
+}
+
+#[test]
+fn shared_template_escrow_vectors() {
+    let shared: Value = serde_json::from_str(include_str!("nutroot_v3_vectors.json")).unwrap();
+    let case = &shared["template_escrow"];
+    let transaction = template_transaction(&case["tx"]);
+    assert_eq!(transaction.outputs(), bytes(&case["out_seller"]));
+    assert_eq!(transaction.digest(), hash(&case["digest"]));
+    let digest = transaction.input_digest(0).unwrap();
+    assert_eq!(digest, hash(&case["input_digest"]));
+    for (leaf, out) in [
+        ("leaf_release", "hash_seller"),
+        ("leaf_refund", "hash_buyer"),
+    ] {
+        let leaf = Leaf::from_bytes(&bytes(&case[leaf])).unwrap();
+        assert_eq!(leaf.condition(), &Condition::Template(hash(&case[out])));
+    }
+    // The arbiter releases to the seller, through a two-hash path past the promoted coop leaf.
+    let witness: Witness = serde_json::from_str(case["witness"].as_str().unwrap()).unwrap();
+    let secret = case["secret"].as_str().unwrap();
+    assert!(!witness
+        .verify_in(secret, digest, Some(transaction.outputs()), 0)
+        .unwrap());
+    // The release witness never satisfies the buyer's outcome or a self-dealing one.
+    assert!(witness
+        .verify_in(secret, digest, Some(&bytes(&case["out_buyer"])), 0)
+        .is_err());
+}
