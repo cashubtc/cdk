@@ -247,8 +247,7 @@ pub(crate) async fn post_restore(
 /// Run a NUT-XX transaction
 ///
 /// Proofs and paid mint quotes in; blinded messages, one melt quote and
-/// change quotes out. Responses are cached (NUT-19) under the request less
-/// its witnesses, which determines the transaction.
+/// change quotes out. Responses are cached (NUT-19) under the request.
 #[instrument(skip_all)]
 pub(crate) async fn post_transaction(
     auth: AuthHeader,
@@ -265,15 +264,7 @@ pub(crate) async fn post_transaction(
         .await
         .map_err(into_response)?;
 
-    let mut key = payload.clone();
-    key.prefer_async = false;
-    key.proof_inputs
-        .iter_mut()
-        .for_each(|proof| proof.witness = None);
-    key.mint_quote_inputs
-        .iter_mut()
-        .for_each(|input| input.witness.clear());
-    let cache_key = state.cache.calculate_key(&("transaction", &key));
+    let cache_key = state.cache.calculate_key(&("transaction", &payload));
     if let Some(cache_key) = &cache_key {
         if let Some(cached) = state.cache.get::<TransactionResponse>(cache_key).await {
             return Ok(Json(cached));
