@@ -3,7 +3,6 @@
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
-use cdk_common::grpc::{VersionInterceptor, VERSION_HEADER};
 use cdk_mint_rpc::info::mint_info_service_client::MintInfoServiceClient;
 use cdk_mint_rpc::keyset::keyset_service_client::KeysetServiceClient;
 use cdk_mint_rpc::mint_rpc_cli::subcommands;
@@ -168,86 +167,79 @@ async fn main() -> Result<()> {
             .await?
     };
 
-    // Shared version header interceptor
-    let interceptor =
-        VersionInterceptor::new(VERSION_HEADER, cdk_common::MINT_RPC_PROTOCOL_VERSION);
-    let mut wallet_client =
-        WalletServiceClient::with_interceptor(channel.clone(), interceptor.clone());
+    let mut wallet_client = WalletServiceClient::new(channel.clone());
 
     match cli.command {
         Commands::GetInfo => {
-            let mut info_client = MintInfoServiceClient::with_interceptor(channel, interceptor);
+            let mut info_client = MintInfoServiceClient::new(channel);
             subcommands::get_info(&mut info_client).await?;
         }
         Commands::UpdateMotd(sub_command_args) => {
-            let mut info_client = MintInfoServiceClient::with_interceptor(channel, interceptor);
+            let mut info_client = MintInfoServiceClient::new(channel);
             subcommands::update_motd(&mut info_client, &sub_command_args).await?;
         }
         Commands::UpdateShortDescription(sub_command_args) => {
-            let mut info_client = MintInfoServiceClient::with_interceptor(channel, interceptor);
+            let mut info_client = MintInfoServiceClient::new(channel);
             subcommands::update_short_description(&mut info_client, &sub_command_args).await?;
         }
         Commands::UpdateLongDescription(sub_command_args) => {
-            let mut info_client = MintInfoServiceClient::with_interceptor(channel, interceptor);
+            let mut info_client = MintInfoServiceClient::new(channel);
             subcommands::update_long_description(&mut info_client, &sub_command_args).await?;
         }
         Commands::UpdateName(sub_command_args) => {
-            let mut info_client = MintInfoServiceClient::with_interceptor(channel, interceptor);
+            let mut info_client = MintInfoServiceClient::new(channel);
             subcommands::update_name(&mut info_client, &sub_command_args).await?;
         }
         Commands::UpdateIconUrl(sub_command_args) => {
-            let mut info_client = MintInfoServiceClient::with_interceptor(channel, interceptor);
+            let mut info_client = MintInfoServiceClient::new(channel);
             subcommands::update_icon_url(&mut info_client, &sub_command_args).await?;
         }
         Commands::UpdateTosUrl(sub_command_args) => {
-            let mut info_client = MintInfoServiceClient::with_interceptor(channel, interceptor);
+            let mut info_client = MintInfoServiceClient::new(channel);
             subcommands::update_tos_url(&mut info_client, &sub_command_args).await?;
         }
         Commands::AddUrl(sub_command_args) => {
-            let mut info_client = MintInfoServiceClient::with_interceptor(channel, interceptor);
+            let mut info_client = MintInfoServiceClient::new(channel);
             subcommands::add_url(&mut info_client, &sub_command_args).await?;
         }
         Commands::RemoveUrl(sub_command_args) => {
-            let mut info_client = MintInfoServiceClient::with_interceptor(channel, interceptor);
+            let mut info_client = MintInfoServiceClient::new(channel);
             subcommands::remove_url(&mut info_client, &sub_command_args).await?;
         }
         Commands::AddContact(sub_command_args) => {
-            let mut info_client = MintInfoServiceClient::with_interceptor(channel, interceptor);
+            let mut info_client = MintInfoServiceClient::new(channel);
             subcommands::add_contact(&mut info_client, &sub_command_args).await?;
         }
         Commands::RemoveContact(sub_command_args) => {
-            let mut info_client = MintInfoServiceClient::with_interceptor(channel, interceptor);
+            let mut info_client = MintInfoServiceClient::new(channel);
             subcommands::remove_contact(&mut info_client, &sub_command_args).await?;
         }
         Commands::UpdateMintMethod(sub_command_args) => {
-            let mut payment_method_client =
-                PaymentMethodServiceClient::with_interceptor(channel, interceptor);
+            let mut payment_method_client = PaymentMethodServiceClient::new(channel);
             subcommands::update_mint_method(&mut payment_method_client, &sub_command_args).await?;
         }
         Commands::UpdateMeltMethod(sub_command_args) => {
-            let mut payment_method_client =
-                PaymentMethodServiceClient::with_interceptor(channel, interceptor);
+            let mut payment_method_client = PaymentMethodServiceClient::new(channel);
             subcommands::update_melt_method(&mut payment_method_client, &sub_command_args).await?;
         }
         Commands::UpdateDisabled(sub_command_args) => {
-            let mut payment_method_client =
-                PaymentMethodServiceClient::with_interceptor(channel, interceptor);
+            let mut payment_method_client = PaymentMethodServiceClient::new(channel);
             subcommands::update_disabled(&mut payment_method_client, &sub_command_args).await?;
         }
         Commands::GetQuoteTtl => {
-            let mut quote_client = QuoteServiceClient::with_interceptor(channel, interceptor);
+            let mut quote_client = QuoteServiceClient::new(channel);
             subcommands::get_quote_ttl(&mut quote_client).await?;
         }
         Commands::UpdateQuoteTtl(sub_command_args) => {
-            let mut quote_client = QuoteServiceClient::with_interceptor(channel, interceptor);
+            let mut quote_client = QuoteServiceClient::new(channel);
             subcommands::update_quote_ttl(&mut quote_client, &sub_command_args).await?;
         }
         Commands::UpdateMintQuoteState(sub_command_args) => {
-            let mut quote_client = QuoteServiceClient::with_interceptor(channel, interceptor);
+            let mut quote_client = QuoteServiceClient::new(channel);
             subcommands::update_mint_quote_state(&mut quote_client, &sub_command_args).await?;
         }
         Commands::RotateNextKeyset(sub_command_args) => {
-            let mut keyset_client = KeysetServiceClient::with_interceptor(channel, interceptor);
+            let mut keyset_client = KeysetServiceClient::new(channel);
             subcommands::rotate_next_keyset(&mut keyset_client, &sub_command_args).await?;
         }
         Commands::GetWalletBalance => {

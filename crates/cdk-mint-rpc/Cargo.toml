@@ -25,7 +25,7 @@ cdk = { workspace = true, features = [
     "mint",
 ] }
 cdk-http-client = { workspace = true, features = ["bitreq"] }
-cdk-common = { workspace = true, features = ["grpc"] }
+cdk-common = { workspace = true }
 clap.workspace = true
 tonic = { workspace = true, features = ["transport", "tls-ring", "codegen", "router"] }
 tracing.workspace = true
