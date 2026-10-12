@@ -802,7 +802,7 @@ impl Mint {
         let states = if ys.is_empty() {
             vec![]
         } else {
-            Mint::spent_proof_states(&mut tx, &ys).await?
+            Mint::proof_states(&mut tx, &ys, State::Spent).await?
         };
         tx.commit().await?;
 

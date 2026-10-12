@@ -29,16 +29,17 @@ impl Mint {
         Ok(())
     }
 
-    pub(crate) async fn spent_proof_states(
+    pub(crate) async fn proof_states(
         tx: &mut DynMintTransaction,
         ys: &[cdk_common::PublicKey],
+        proof_state: State,
     ) -> Result<Vec<cdk_common::ProofState>, Error> {
         let records = tx.get_proof_spends(ys).await?;
         Ok(ys
             .iter()
             .zip(records)
             .map(|(y, record)| {
-                let mut state = (*y, State::Spent).into();
+                let mut state = (*y, proof_state).into();
                 if let Some(record) = record {
                     record.apply_to(&mut state);
                 }

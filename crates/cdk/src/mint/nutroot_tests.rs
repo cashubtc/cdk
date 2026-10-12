@@ -122,10 +122,11 @@ async fn nutroot_disclosure_opens_only_the_exercised_leaf_commitment() {
         let record = nutroot::SpendRecord::new(&proofs[0], &transaction, 0, 0).unwrap();
         let mut pending = (y, cdk_common::State::Pending).into();
         record.apply_to(&mut pending);
-        assert!(
-            pending.commitment.is_none()
-                && pending.witness.is_none()
-                && pending.input_digest.is_none()
+        assert!(pending.commitment.is_none());
+        assert_eq!(pending.input_digest.is_some(), disclosure);
+        assert_eq!(
+            pending.witness,
+            disclosure.then(|| Witness::NutrootWitness(raw.clone()))
         );
         let receipt = nutroot::SpendReceipt::new(
             "https://mint.test".parse().unwrap(),
@@ -181,10 +182,12 @@ async fn nutroot_disclosure_opens_only_the_exercised_leaf_commitment() {
                     if value.state == cdk_common::State::Spent {
                         break value.clone();
                     }
-                    assert!(
-                        value.commitment.is_none()
-                            && value.witness.is_none()
-                            && value.input_digest.is_none()
+                    let pending = value.state == cdk_common::State::Pending;
+                    assert!(value.commitment.is_none());
+                    assert_eq!(value.witness, state.witness.clone().filter(|_| pending));
+                    assert_eq!(
+                        value.input_digest,
+                        state.input_digest.clone().filter(|_| pending)
                     );
                 }
             }
