@@ -26,7 +26,6 @@ pub mod token;
 pub mod types;
 pub mod wallet;
 pub mod wallet_repository;
-mod wallet_trait;
 
 pub use database::*;
 pub use error::*;
