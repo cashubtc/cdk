@@ -797,6 +797,7 @@ impl Mint {
                             id: entry.quote_id.to_string(),
                             amount,
                             pubkey: quote.pubkey.ok_or(Error::SignatureMissingOrInvalid)?,
+                            issued: quote.amount_issued().into(),
                         })
                     })
                     .collect::<Result<Vec<_>, Error>>()?;
@@ -902,7 +903,8 @@ impl Mint {
                             Some(transaction.outputs()),
                             cdk_common::util::unix_time(),
                         )
-                        .map_err(crate::nuts::nut10::Error::from)?;
+                        // NUT-20: a quote without a valid signature is 20008, whatever the witness got wrong.
+                        .map_err(|_| Error::SignatureMissingOrInvalid)?;
                 } else if let Some(ref pubkey) = mint_quote.pubkey {
                     match &input {
                         MintInput::Single(request) => request
@@ -1002,6 +1004,7 @@ impl Mint {
             // locks. The database returns the quotes in request order, while locking
             // them by ID, so reversed batch requests cannot deadlock each other.
             let locked_quotes = tx.get_mint_quotes_by_ids(&quote_ids).await?;
+            crate::mint::transaction::refuse_pending_quotes(&mut tx, &quote_ids).await?;
             let mut issuance_events = Vec::with_capacity(quote_ids.len());
 
             // For batch minting, outputs are shared across all quotes and should be persisted once.
@@ -1029,6 +1032,13 @@ impl Mint {
                         return Err(Error::IssuedQuote);
                     }
                     MintQuoteState::Paid => (),
+                }
+                // A v3 witness signed the quote's state; a draw settled since makes it stale.
+                if nutroot_transaction.is_some()
+                    && quote_map.get(quote_id).map(|q| q.amount_issued())
+                        != Some(mint_quote.amount_issued())
+                {
+                    return Err(Error::SignatureMissingOrInvalid);
                 }
 
                 let amount_issued = if input.is_batch() {

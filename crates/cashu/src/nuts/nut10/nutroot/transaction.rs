@@ -26,7 +26,8 @@ pub struct Quote {
     pub id: String,
 }
 
-/// A mint quote input: the amount issued, the quote id and the key the quote is locked to.
+/// A mint quote input: the amount issued, the quote id, the key the quote is locked to, and the
+/// quote's `amount_issued` before this transaction, so a witness authorizes one draw (NUT-10).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MintQuoteInput {
     /// Amount this transaction issues against the quote.
@@ -35,6 +36,8 @@ pub struct MintQuoteInput {
     pub id: String,
     /// The quote's lock key (NUT-04 `pubkey`), committed so a signer can tell which key the input needs.
     pub pubkey: PublicKey,
+    /// The quote's settled `amount_issued` before this transaction.
+    pub issued: Amount,
 }
 
 /// Change quote output bound by a transaction.
@@ -127,6 +130,7 @@ impl Transaction {
                     integer(u64::from(quote.amount)),
                     quote.id.as_bytes().to_vec(),
                     quote.pubkey.to_bytes(),
+                    integer(u64::from(quote.issued)),
                 ],
             )?;
             transcript.extend_from_slice(&record);
@@ -212,9 +216,9 @@ impl Transaction {
                 continue;
             }
             let count = match tag {
-                PROOF_INPUT => 4,
+                PROOF_INPUT | MINT_QUOTE_INPUT => 4,
                 MELT_QUOTE_OUTPUT => 2,
-                MINT_QUOTE_INPUT | BLINDED_OUTPUT => 3,
+                BLINDED_OUTPUT => 3,
                 _ => return Err(Error::InvalidTransaction),
             };
             if fields.len() != count
@@ -261,6 +265,8 @@ impl Transaction {
                     std::str::from_utf8(fields[1].1).map_err(|_| Error::InvalidTransaction)?;
                     if tag == MINT_QUOTE_INPUT
                         && (!quotes.insert(fields[1].1)
+                            || fields[3].1.len() > 8
+                            || fields[3].1.first() == Some(&0)
                             || PublicKey::from_slice(fields[2].1)
                                 .map_err(|_| Error::InvalidTransaction)?
                                 .as_secp256k1()

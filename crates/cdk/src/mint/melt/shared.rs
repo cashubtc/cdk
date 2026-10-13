@@ -302,12 +302,11 @@ async fn rollback_melt_quote_inner(
         None
     };
 
-    // A failed transaction releases its quote inputs and change quote ids, and keeps its
-    // record as FAILED.
+    // A failed transaction releases its change quote ids and keeps its record as FAILED; its
+    // quote inputs were never issued, and leaving PENDING frees them for other draws.
     let mut transaction = tx.get_transaction_by_melt_quote(quote_id).await?;
     if let Some(record) = transaction.as_mut() {
         if record.state == cdk_common::nuts::TransactionState::Pending {
-            crate::mint::transaction::release_quote_inputs(&mut tx, record).await?;
             tx.release_mint_quote_ids(quote_id).await?;
             tx.update_transaction(record, cdk_common::nuts::TransactionState::Failed)
                 .await?;
@@ -814,7 +813,7 @@ pub(crate) async fn finalize_melt_core(
             return Err(err);
         }
 
-        let states = Mint::spent_proof_states(&mut tx, input_ys).await?;
+        let states = Mint::proof_states(&mut tx, input_ys, State::Spent).await?;
         // Clone the proofs out of the Acquired wrapper so that no database
         // row locks are held after this function returns.
         (proofs.to_vec(), states)
@@ -983,7 +982,7 @@ pub async fn finalize_melt_quote(
                     return Err(err);
                 }
             }
-            let states = Mint::spent_proof_states(&mut tx, &input_ys).await?;
+            let states = Mint::proof_states(&mut tx, &input_ys, State::Spent).await?;
             (proofs_with_state.to_vec(), spend_pending, states)
         };
         tx.commit().await?;

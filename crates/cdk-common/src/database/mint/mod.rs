@@ -377,15 +377,6 @@ pub trait QuotesTransaction {
         request_lookup_id: &PaymentIdentifier,
     ) -> Result<Option<Acquired<MintMintQuote>>, Self::Err>;
 
-    /// Reverse an issuance recorded against a mint quote (a failed NUT-XX transaction).
-    ///
-    /// Requires an [`Acquired`] quote; `amount` must not exceed what is issued.
-    async fn remove_mint_quote_issuance(
-        &mut self,
-        quote: &mut Acquired<MintMintQuote>,
-        amount: Amount,
-    ) -> Result<(), Self::Err>;
-
     /// Insert a NUT-XX transaction record, replacing a `FAILED` one for the same melt quote.
     /// Returns a duplicate error if a pending or paid record already exists.
     async fn add_transaction(&mut self, record: &mint::TransactionRecord) -> Result<(), Self::Err>;
@@ -395,6 +386,10 @@ pub trait QuotesTransaction {
         &mut self,
         quote_id: &QuoteId,
     ) -> Result<Option<Acquired<mint::TransactionRecord>>, Self::Err>;
+
+    /// Every pending NUT-XX transaction, so a draw on a quote one of them draws on is refused.
+    async fn get_pending_transactions(&mut self)
+        -> Result<Vec<mint::TransactionRecord>, Self::Err>;
 
     /// Set a NUT-XX transaction's state.
     async fn update_transaction(

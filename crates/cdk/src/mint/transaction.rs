@@ -35,6 +35,8 @@ use super::{Error, Mint, MintQuoteResponse};
 #[derive(Debug)]
 pub(crate) struct TransactionSetup {
     pub record: TransactionRecord,
+    /// Each quote input's `amount_issued` as its transcript binds it.
+    pub quote_issued: Vec<Amount>,
     /// Present when a v3 proof input needs its spend recorded.
     pub transcript: Option<nutroot::Transaction>,
     pub inputs_amount: Amount<CurrencyUnit>,
@@ -48,6 +50,7 @@ struct Prepared {
     unit: CurrencyUnit,
     transcript: nutroot::Transaction,
     quote_inputs: Vec<(QuoteId, Amount)>,
+    quote_issued: Vec<Amount>,
     change_outputs: Vec<ChangeOutput>,
     melt: Option<MeltQuote>,
     inputs_amount: Amount,
@@ -214,43 +217,75 @@ pub(crate) fn melt_change(
         .then_some(signatures)
 }
 
-/// Issue each quote input's amount, under the quote row locks.
+/// Refuse a draw on a quote that a pending transaction draws on (NUT-XX); call under the quote locks.
+pub(crate) async fn refuse_pending_quotes(
+    tx: &mut DynMintTransaction,
+    ids: &[QuoteId],
+) -> Result<(), Error> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    // ponytail: scans every pending transaction; a quote-input index if many melts are in flight at once.
+    let pending = tx.get_pending_transactions().await?;
+    if pending
+        .iter()
+        .flat_map(|record| &record.quote_inputs)
+        .any(|(id, _)| ids.contains(id))
+    {
+        return Err(Error::PendingQuote);
+    }
+    Ok(())
+}
+
+/// Check each quote input under the quote row locks, and issue it when `issue` is set.
+///
+/// A melt transaction issues only at settlement ([`issue_quote_inputs`]); until then a pending
+/// quote takes no other draw, so `amount_issued` is always the settled value a transcript binds.
 pub(crate) async fn reserve_quote_inputs(
     tx: &mut DynMintTransaction,
     unit: &CurrencyUnit,
     quote_inputs: &[(QuoteId, Amount)],
+    quote_issued: &[Amount],
+    issue: bool,
 ) -> Result<Vec<MintQuote>, Error> {
     if quote_inputs.is_empty() {
         return Ok(vec![]);
     }
     let ids: Vec<QuoteId> = quote_inputs.iter().map(|(id, _)| id.clone()).collect();
     let quotes = tx.get_mint_quotes_by_ids(&ids).await?;
+    refuse_pending_quotes(tx, &ids).await?;
     let mut issued = Vec::with_capacity(ids.len());
-    for ((_, amount), quote) in quote_inputs.iter().zip(quotes) {
+    for (((_, amount), bound), quote) in quote_inputs.iter().zip(quote_issued).zip(quotes) {
         let mut quote = quote.ok_or(Error::UnknownQuote)?;
         match quote.state() {
             MintQuoteState::Paid => {}
             MintQuoteState::Unpaid => return Err(Error::UnpaidQuote),
             MintQuoteState::Issued => return Err(Error::IssuedQuote),
         }
+        // The witness signed this state; a draw settled since makes it stale.
+        if Amount::from(quote.amount_issued()) != *bound {
+            return Err(Error::SignatureMissingOrInvalid);
+        }
         let amount = amount.with_unit(unit.clone());
         if amount > quote.amount_mintable() {
             return Err(invalid("quote input exceeds the quote's mintable amount"));
         }
-        quote.add_issuance(amount)?;
-        tx.update_mint_quote(&mut quote).await?;
+        if issue {
+            quote.add_issuance(amount)?;
+            tx.update_mint_quote(&mut quote).await?;
+        }
         issued.push(quote.inner());
     }
     Ok(issued)
 }
 
-/// Return each quote input's amount after a failed melt.
-pub(crate) async fn release_quote_inputs(
+/// Issue a settled melt transaction's quote inputs.
+async fn issue_quote_inputs(
     tx: &mut DynMintTransaction,
     record: &TransactionRecord,
-) -> Result<(), Error> {
+) -> Result<Vec<MintQuote>, Error> {
     if record.quote_inputs.is_empty() {
-        return Ok(());
+        return Ok(vec![]);
     }
     let ids: Vec<QuoteId> = record
         .quote_inputs
@@ -258,11 +293,14 @@ pub(crate) async fn release_quote_inputs(
         .map(|(id, _)| id.clone())
         .collect();
     let quotes = tx.get_mint_quotes_by_ids(&ids).await?;
+    let mut issued = Vec::with_capacity(ids.len());
     for ((_, amount), quote) in record.quote_inputs.iter().zip(quotes) {
         let mut quote = quote.ok_or(Error::UnknownQuote)?;
-        tx.remove_mint_quote_issuance(&mut quote, *amount).await?;
+        quote.add_issuance(amount.with_unit(record.unit.clone()))?;
+        tx.update_mint_quote(&mut quote).await?;
+        issued.push(quote.inner());
     }
-    Ok(())
+    Ok(issued)
 }
 
 /// Sign the reserved outputs, create the change quotes and mark the record paid.
@@ -326,6 +364,7 @@ pub(crate) async fn settle_with_melt(
         .checked_add(unsigned_amount)
         .ok_or(Error::AmountOverflow)?;
     let change = settlement_change(excess, quote.fee_reserve().into(), fee_paid);
+    issue_quote_inputs(&mut tx, &record).await?;
     let created =
         create_change_quotes(&mut tx, &record.unit, &record.change_outputs, change).await?;
     tx.update_transaction(&mut record, TransactionState::Paid)
@@ -535,6 +574,7 @@ impl Mint {
         // The transcript commits each quote input's lock key, so the keys are read before the
         // digest; the quotes are loaded again below with their state checks.
         let mut transcript_quotes = Vec::with_capacity(quote_inputs.len());
+        let mut quote_issued = Vec::with_capacity(quote_inputs.len());
         for (id, amount) in &quote_inputs {
             let quote = self
                 .localstore
@@ -547,7 +587,9 @@ impl Mint {
                 pubkey: quote
                     .pubkey
                     .ok_or_else(|| invalid("quote inputs must be locked"))?,
+                issued: quote.amount_issued().into(),
             });
+            quote_issued.push(quote.amount_issued().into());
         }
         let transcript = nutroot::Transaction::with_change(
             proofs,
@@ -726,6 +768,7 @@ impl Mint {
             unit,
             transcript,
             quote_inputs,
+            quote_issued,
             change_outputs,
             melt,
             inputs_amount,
@@ -760,8 +803,14 @@ impl Mint {
 
         let mut tx = self.localstore.begin_transaction().await?;
         let result: Result<(Vec<MintQuote>, Vec<Option<MintQuote>>), Error> = async {
-            let issued =
-                reserve_quote_inputs(&mut tx, &prepared.unit, &prepared.quote_inputs).await?;
+            let issued = reserve_quote_inputs(
+                &mut tx,
+                &prepared.unit,
+                &prepared.quote_inputs,
+                &prepared.quote_issued,
+                true,
+            )
+            .await?;
             if !proofs.is_empty() {
                 let mut stored = tx
                     .add_proofs(proofs.clone(), None, &operation)
@@ -803,7 +852,7 @@ impl Mint {
         let states = if ys.is_empty() {
             vec![]
         } else {
-            Mint::spent_proof_states(&mut tx, &ys).await?
+            Mint::proof_states(&mut tx, &ys, State::Spent).await?
         };
         tx.commit().await?;
 
@@ -857,6 +906,7 @@ impl Mint {
                 excess: prepared.excess,
                 created_time: unix_time(),
             },
+            quote_issued: prepared.quote_issued.clone(),
             transcript: prepared
                 .request
                 .proof_inputs

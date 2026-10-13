@@ -75,21 +75,21 @@ impl SpendRecord {
         })
     }
 
-    /// Apply the NUT-07/NUT-17 disclosure rules. Pending/unspent entries expose nothing.
+    /// Apply the NUT-07/NUT-17 disclosure rules: a disclosed opening from pending, the commitment once spent.
     pub fn apply_to(&self, state: &mut ProofState) {
         state.witness = None;
         state.input_digest = None;
         state.commitment = None;
+        if self.disclosure && matches!(state.state, State::Pending | State::Spent) {
+            state.input_digest = Some(hex::encode(self.input_digest));
+            state.witness = Some(crate::nuts::Witness::NutrootWitness(self.witness.clone()));
+        }
         if state.state == State::Spent {
             state.commitment = Some(hex::encode(spend_commitment(
                 &state.y,
                 self.input_digest,
                 &self.witness,
             )));
-            if self.disclosure {
-                state.input_digest = Some(hex::encode(self.input_digest));
-                state.witness = Some(crate::nuts::Witness::NutrootWitness(self.witness.clone()));
-            }
         }
     }
 }
