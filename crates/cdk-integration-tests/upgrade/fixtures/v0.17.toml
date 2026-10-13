@@ -1,0 +1,28 @@
+[info]
+url = "{url}"
+listen_host = "127.0.0.1"
+listen_port = {port}
+{secret}
+input_fee_ppk = 0
+use_keyset_v2 = false
+[info.quote_ttl]
+mint_ttl = 3600
+melt_ttl = 3600
+[mint_info]
+name = "upgrade fixture"
+description = "persistent upgrade fixture"
+motd = "before upgrade"
+{metadata}
+[database]
+engine = "sqlite"
+[ln]
+ln_backend = "fakewallet"
+min_mint = 1
+max_mint = 500000
+min_melt = 1
+max_melt = 500000
+[fake_wallet]
+fee_percent = 0.0
+reserve_fee_min = 1
+min_delay_time = 1
+max_delay_time = 2

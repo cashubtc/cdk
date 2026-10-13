@@ -400,6 +400,13 @@ just itest REDB/SQLITE/MEMORY
 
 NOTE: if this command fails on macos change the nix channel to unstable (in the `flake.nix` file modify `nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";` to `nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";`)
 
+To test upgrades from a released mint and wallet to the current checkout,
+run `just test-upgrade` in the stable development shell. This builds both
+versions, exercises persisted SQLite state before and after upgrading, and
+checks legacy configuration migration without regtest services. See the
+[upgrade test guide](crates/cdk-integration-tests/upgrade/README.md) for the
+release baseline, configuration matrix, workload options, and failure artifacts.
+
 ### Running Mutation Tests
 
 Mutation testing validates test suite quality by introducing small code changes (mutations) and verifying tests catch them.
