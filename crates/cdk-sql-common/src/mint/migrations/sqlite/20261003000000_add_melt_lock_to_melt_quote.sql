@@ -1,0 +1,1 @@
+ALTER TABLE melt_quote ADD COLUMN melt_lock TEXT NOT NULL DEFAULT '';

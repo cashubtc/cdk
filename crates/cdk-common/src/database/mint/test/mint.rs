@@ -1009,6 +1009,155 @@ where
     assert_eq!(retrieved_quote2.payment_method, quote2.payment_method);
 }
 
+/// Test melt execution lock storage and release semantics
+pub async fn melt_quote_execution_lock<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    use cashu::MeltQuoteState;
+
+    let new_melt_quote = || {
+        MeltQuote::new(
+            None,
+            MeltPaymentRequest::Bolt11 {
+                bolt11: "lnbc330n1p5d85skpp5344v3ktclujsjl3h09wgsfm7zytumr7h7zhrl857f5w8nv0a52zqdqqcqzzsxqyz5vqrzjqvueefmrckfdwyyu39m0lf24sqzcr9vcrmxrvgfn6empxz7phrjxvrttncqq0lcqqyqqqqlgqqqqqqgq2qsp5j3rrg8kvpemqxtf86j8tjm90wq77c7ende4e5qmrerq4xsg02vhq9qxpqysgqjltywgyk6uc5qcgwh8xnzmawl2tjlhz8d28tgp3yx8xwtz76x0jqkfh6mmq70hervjxs0keun7ur0spldgll29l0dnz3md50d65sfqqqwrwpsu".parse().unwrap()
+            },
+            cashu::CurrencyUnit::Sat,
+            Amount::new(100, cashu::CurrencyUnit::Sat),
+            Amount::new(10, cashu::CurrencyUnit::Sat),
+            0,
+            None,
+            None,
+            cashu::PaymentMethod::Known(KnownMethod::Bolt11),
+            None,
+            None,
+        )
+    };
+
+    async fn arm_lock<DB>(db: &DB, quote: &MeltQuote, token: &str)
+    where
+        DB: Database<Error> + KeysDatabase<Err = Error>,
+    {
+        let mut tx = Database::begin_transaction(db).await.unwrap();
+        let mut stored = tx.get_melt_quote(&quote.id).await.unwrap().unwrap();
+        stored.melt_lock = token.to_string();
+        stored.melt_lock_expires_at = tx.melt_lease_time().await.unwrap() + 60;
+        tx.update_melt_quote_state(&mut stored, MeltQuoteState::Pending, None)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    // A fresh quote is unlocked.
+    let quote = new_melt_quote();
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_melt_quote(quote.clone()).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let retrieved = db.get_melt_quote(&quote.id).await.unwrap().unwrap();
+    assert!(!retrieved.is_locked());
+    assert_eq!(retrieved.melt_lock, "");
+
+    // Arming persists the lock token.
+    arm_lock(&db, &quote, "token-a").await;
+    let retrieved = db.get_melt_quote(&quote.id).await.unwrap().unwrap();
+    assert!(retrieved.is_locked());
+    assert_eq!(retrieved.melt_lock, "token-a");
+
+    // A non-matching token cannot release the lock.
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    assert!(!tx.unlock_melt_quote(&quote.id, "token-b").await.unwrap());
+    tx.commit().await.unwrap();
+    let retrieved = db.get_melt_quote(&quote.id).await.unwrap().unwrap();
+    assert_eq!(retrieved.melt_lock, "token-a");
+
+    // The token holder releases the lock; a second release is a no-op.
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    assert!(tx.unlock_melt_quote(&quote.id, "token-a").await.unwrap());
+    assert!(!tx.unlock_melt_quote(&quote.id, "token-a").await.unwrap());
+    tx.commit().await.unwrap();
+    let retrieved = db.get_melt_quote(&quote.id).await.unwrap().unwrap();
+    assert!(!retrieved.is_locked());
+
+    // Force unlock releases a lock without knowing the token.
+    let quote = new_melt_quote();
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_melt_quote(quote.clone()).await.unwrap();
+    tx.commit().await.unwrap();
+    arm_lock(&db, &quote, "token-c").await;
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    assert!(tx.force_unlock_melt_quote(&quote.id).await.unwrap());
+    assert!(!tx.force_unlock_melt_quote(&quote.id).await.unwrap());
+    tx.commit().await.unwrap();
+    let retrieved = db.get_melt_quote(&quote.id).await.unwrap().unwrap();
+    assert!(!retrieved.is_locked());
+
+    // Only an unexpired owner can renew. Releasing or replacing it fences it.
+    let quote = new_melt_quote();
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_melt_quote(quote.clone()).await.unwrap();
+    tx.commit().await.unwrap();
+    arm_lock(&db, &quote, "old-owner").await;
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    assert!(tx
+        .renew_melt_quote_lease(&quote.id, "old-owner", 60)
+        .await
+        .unwrap());
+    assert!(!tx
+        .renew_melt_quote_lease(&quote.id, "other-owner", 60)
+        .await
+        .unwrap());
+    assert!(tx
+        .renew_melt_quote_lease(&quote.id, "old-owner", 0)
+        .await
+        .unwrap());
+    tx.commit().await.unwrap();
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    assert!(!tx
+        .renew_melt_quote_lease(&quote.id, "old-owner", 60)
+        .await
+        .unwrap());
+    tx.commit().await.unwrap();
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    assert!(tx
+        .claim_melt_quote_lease(&quote.id, "new-owner", 60)
+        .await
+        .unwrap()
+        .is_some());
+    assert!(tx
+        .claim_melt_quote_lease(&quote.id, "another-owner", 60)
+        .await
+        .unwrap()
+        .is_none());
+    tx.commit().await.unwrap();
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    assert!(!tx.unlock_melt_quote(&quote.id, "old-owner").await.unwrap());
+    assert!(!tx
+        .renew_melt_quote_lease(&quote.id, "old-owner", 60)
+        .await
+        .unwrap());
+    assert!(tx.unlock_melt_quote(&quote.id, "new-owner").await.unwrap());
+    tx.commit().await.unwrap();
+    let retrieved = db.get_melt_quote(&quote.id).await.unwrap().unwrap();
+    assert!(!retrieved.is_locked());
+    assert_eq!(retrieved.melt_lock_expires_at, 0);
+
+    // Concurrent recovery claimants must have exactly one winner.
+    let claim = |token: &'static str| async {
+        let mut tx = Database::begin_transaction(&db).await.unwrap();
+        let won = tx
+            .claim_melt_quote_lease(&quote.id, token, 60)
+            .await
+            .unwrap()
+            .is_some();
+        tx.commit().await.unwrap();
+        won
+    };
+    let (first, second) = tokio::join!(claim("first"), claim("second"));
+    assert_ne!(first, second);
+}
+
 /// Test getting mint quote by request
 pub async fn get_mint_quote_by_request<DB>(db: DB)
 where

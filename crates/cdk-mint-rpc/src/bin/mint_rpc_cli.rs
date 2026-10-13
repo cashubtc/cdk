@@ -108,6 +108,8 @@ enum Commands {
     /// Update mint quote state
     #[command(alias = "update-nut04-quote-state")]
     UpdateMintQuoteState(subcommands::UpdateMintQuoteStateCommand),
+    /// Release the melt execution lock on a melt quote
+    UnlockMeltQuote(subcommands::UnlockMeltQuoteCommand),
     /// Rotate next keyset
     RotateNextKeyset(subcommands::RotateNextKeysetCommand),
     /// Get the BDK on-chain wallet balance
@@ -237,6 +239,10 @@ async fn main() -> Result<()> {
         Commands::UpdateMintQuoteState(sub_command_args) => {
             let mut quote_client = QuoteServiceClient::new(channel);
             subcommands::update_mint_quote_state(&mut quote_client, &sub_command_args).await?;
+        }
+        Commands::UnlockMeltQuote(sub_command_args) => {
+            let mut quote_client = QuoteServiceClient::new(channel);
+            subcommands::unlock_melt_quote(&mut quote_client, &sub_command_args).await?;
         }
         Commands::RotateNextKeyset(sub_command_args) => {
             let mut keyset_client = KeysetServiceClient::new(channel);
