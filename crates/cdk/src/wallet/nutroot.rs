@@ -413,6 +413,7 @@ pub(crate) fn sign_quote(
                     .as_ref()
                     .ok_or(Error::SignatureMissingOrInvalid)?
                     .public_key(),
+                issued: quote.amount_issued,
             })
         })
         .collect::<Result<_, Error>>()?;

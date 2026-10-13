@@ -787,6 +787,7 @@ impl Mint {
                             id: entry.quote_id.to_string(),
                             amount: quote.amount.clone().map(Into::into).unwrap_or(Amount::ZERO),
                             pubkey: quote.pubkey.ok_or(Error::SignatureMissingOrInvalid)?,
+                            issued: quote.amount_issued().into(),
                         })
                     })
                     .collect::<Result<Vec<_>, Error>>()?;
