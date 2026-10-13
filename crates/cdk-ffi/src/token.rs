@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::str::FromStr;
 
 use crate::error::FfiError;
-use crate::types::TokenUrEncoder;
+use crate::types::{TokenFountainEncoder, TokenUrEncoder};
 use crate::{Amount, CurrencyUnit, KeySetInfo, MintUrl, Proofs};
 
 /// FFI-compatible Token
@@ -182,5 +182,22 @@ impl Token {
             .unwrap_or(cdk::nuts::nut16::DEFAULT_MAX_FRAGMENT_LENGTH);
         let encoder = cdk::nuts::nut16::TokenUrEncoder::new(&self.inner, max_fragment_length)?;
         Ok(std::sync::Arc::new(TokenUrEncoder::from_inner(encoder)))
+    }
+
+    /// Creates an experimental binary fountain encoder for animated QR display.
+    ///
+    /// `None` selects 128 payload bytes per frame. Each frame adds 24 bytes
+    /// of overhead. Render the returned bytes directly in QR byte mode.
+    pub fn fountain_encoder(
+        &self,
+        max_fragment_length: Option<u32>,
+    ) -> Result<std::sync::Arc<TokenFountainEncoder>, FfiError> {
+        let max_fragment_length = max_fragment_length
+            .map(|length| length as usize)
+            .unwrap_or(cdk::nuts::nut16::fountain::DEFAULT_MAX_FRAGMENT_LENGTH);
+        let encoder = self.inner.fountain_encoder(max_fragment_length)?;
+        Ok(std::sync::Arc::new(TokenFountainEncoder::from_inner(
+            encoder,
+        )))
     }
 }
