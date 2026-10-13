@@ -29,10 +29,10 @@ pub const BITCOIN_RPC_PASS: &str = "testpass";
 
 const BITCOIN_DIR: &str = "bitcoin";
 
-pub const LND_ADDR: &str = "0.0.0.0:18449";
+pub const LND_ADDR: &str = "127.0.0.1:18449";
 pub const LND_RPC_ADDR: &str = "localhost:10009";
 
-pub const LND_TWO_ADDR: &str = "0.0.0.0:18410";
+pub const LND_TWO_ADDR: &str = "127.0.0.1:18410";
 pub const LND_TWO_RPC_ADDR: &str = "localhost:10010";
 
 pub const CLN_ADDR: &str = "127.0.0.1:19846";

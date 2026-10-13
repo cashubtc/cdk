@@ -4,9 +4,10 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Result};
+use bitcoincore_rpc::{Auth, Client, RpcApi};
 
 fn prefixed_path_arg(prefix: &str, path: &Path) -> OsString {
     let mut argument = OsString::from(prefix);
@@ -18,7 +19,7 @@ fn prefixed_path_arg(prefix: &str, path: &Path) -> OsString {
 pub struct Bitcoind {
     rpc_user: String,
     rpc_password: String,
-    _addr: PathBuf,
+    addr: PathBuf,
     data_dir: PathBuf,
     child: Option<Child>,
     zmq_raw_block: String,
@@ -38,7 +39,7 @@ impl Bitcoind {
         Self {
             rpc_user,
             rpc_password,
-            _addr: addr,
+            addr,
             data_dir,
             child: None,
             zmq_raw_block,
@@ -56,6 +57,9 @@ impl Bitcoind {
         let mut cmd = Command::new("bitcoind");
 
         cmd.arg("-regtest");
+        // Bitcoin Core's test-only setting avoids syncing its disposable
+        // fixture wallet for every generated block.
+        cmd.arg("-unsafesqlitesync");
         cmd.arg(prefixed_path_arg("-datadir=", &self.data_dir));
         cmd.arg("-fallbackfee=0.00001");
         cmd.arg("-rpcallowip=0.0.0.0/0");
@@ -79,10 +83,28 @@ impl Bitcoind {
 
         self.child = Some(child);
 
-        // Let bitcoind start up
-        sleep(Duration::from_secs(5));
+        let client = Client::new(
+            &format!("http://{}", self.addr.display()),
+            Auth::UserPass(self.rpc_user.clone(), self.rpc_password.clone()),
+        )?;
+        let deadline = Instant::now() + Duration::from_secs(120);
 
-        Ok(())
+        loop {
+            match client.get_blockchain_info() {
+                Ok(_) => return Ok(()),
+                Err(error) => {
+                    if let Some(child) = self.child.as_mut() {
+                        if let Some(status) = child.try_wait()? {
+                            bail!("bitcoind exited before RPC became ready: {status}");
+                        }
+                    }
+                    if Instant::now() >= deadline {
+                        bail!("bitcoind RPC did not become ready within 120 seconds: {error}");
+                    }
+                    sleep(Duration::from_millis(200));
+                }
+            }
+        }
     }
 
     pub fn pid(&self) -> Result<u32> {

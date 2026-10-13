@@ -1,9 +1,10 @@
 //! LND
 
+use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Result};
 
@@ -84,10 +85,26 @@ impl Lnd {
 
         self.child = Some(child);
 
-        // Let clnd start up
-        sleep(Duration::from_secs(10));
-
-        Ok(())
+        let cert = self.data_dir.join("tls.cert");
+        let macaroon = self
+            .data_dir
+            .join("data/chain/bitcoin/regtest/admin.macaroon");
+        let deadline = Instant::now() + Duration::from_secs(120);
+        loop {
+            if cert.is_file() && macaroon.is_file() && TcpStream::connect(&self.rpc_listen).is_ok()
+            {
+                return Ok(());
+            }
+            if let Some(child) = self.child.as_mut() {
+                if let Some(status) = child.try_wait()? {
+                    bail!("lnd exited before its RPC endpoint became ready: {status}");
+                }
+            }
+            if Instant::now() >= deadline {
+                bail!("lnd RPC endpoint did not become ready within 120 seconds");
+            }
+            sleep(Duration::from_millis(200));
+        }
     }
 
     pub fn pid(&self) -> Result<u32> {

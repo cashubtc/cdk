@@ -1,9 +1,10 @@
 //! CLAnd
 
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Result};
 
@@ -67,10 +68,22 @@ impl Clnd {
 
         self.child = Some(child);
 
-        // Let clnd start up
-        sleep(Duration::from_secs(5));
-
-        Ok(())
+        let rpc_path = self.data_dir.join("regtest/lightning-rpc");
+        let deadline = Instant::now() + Duration::from_secs(120);
+        loop {
+            if UnixStream::connect(&rpc_path).is_ok() {
+                return Ok(());
+            }
+            if let Some(child) = self.child.as_mut() {
+                if let Some(status) = child.try_wait()? {
+                    bail!("lightningd exited before its RPC socket became ready: {status}");
+                }
+            }
+            if Instant::now() >= deadline {
+                bail!("lightningd RPC socket did not become ready within 120 seconds");
+            }
+            sleep(Duration::from_millis(200));
+        }
     }
 
     pub fn pid(&self) -> Result<u32> {

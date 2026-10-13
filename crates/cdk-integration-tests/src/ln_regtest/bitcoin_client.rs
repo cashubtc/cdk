@@ -3,10 +3,11 @@
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use bitcoincore_rpc::bitcoin::{Address, Amount};
-use bitcoincore_rpc::{Auth, Client, RpcApi};
+use bitcoincore_rpc::{jsonrpc, Auth, Client, RpcApi};
 
 /// Bitcoin client
 #[derive(Clone)]
@@ -33,7 +34,16 @@ impl BitcoinClient {
 
         println!("{}", addr.display());
 
-        let client = Client::new(&addr.display().to_string(), auth).unwrap();
+        // Wallet creation and block generation can exceed the transport's
+        // default timeout on a busy test machine.
+        let (user, pass) = auth.get_user_pass()?;
+        let mut transport = jsonrpc::simple_http::Builder::new()
+            .url(&addr.display().to_string())?
+            .timeout(Duration::from_secs(120));
+        if let Some(user) = user {
+            transport = transport.auth(user, pass);
+        }
+        let client = Client::from_jsonrpc(jsonrpc::Client::with_transport(transport.build()));
 
         Ok(Self {
             client: Arc::new(client),

@@ -515,7 +515,9 @@ fn apply_onchain_settings(settings: &mut cdk_mintd::config::Settings, bdk_mnemon
         batch_config: cdk_mintd::config::BatchConfig {
             poll_interval_secs: 1,
             standard_deadline_secs: Some(1),
-            economy_deadline_secs: Some(2),
+            // The economy deadline also bounds intent lifetime. Leave enough
+            // time for concurrent melts to persist on slower test disks.
+            economy_deadline_secs: Some(30),
             fee_options: vec![
                 "immediate".to_string(),
                 "standard".to_string(),
@@ -811,13 +813,15 @@ fn main() -> Result<()> {
             .expect("Error starting regtest");
         });
 
-        match timeout(Duration::from_secs(300), rx).await {
+        // Initial wallet scans and channel funding can take several minutes on
+        // slower disks when starting the full Lightning topology.
+        match timeout(Duration::from_secs(900), rx).await {
             Ok(k) => {
                 k?;
                 tracing::info!("Regtest set up");
             }
             Err(_) => {
-                tracing::error!("regtest setup timed out after 5 minutes");
+                tracing::error!("regtest setup timed out after 15 minutes");
                 anyhow::bail!("Could not set up regtest");
             }
         }
