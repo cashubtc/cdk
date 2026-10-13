@@ -463,7 +463,11 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             .await?;
 
         let total_amount = recv_proofs.total_amount()?;
-        let fee = self.state_data.proofs_amount - total_amount;
+        let fee = self
+            .state_data
+            .proofs_amount
+            .checked_sub(total_amount)
+            .ok_or(Error::AmountOverflow)?;
 
         let recv_proof_infos = recv_proofs
             .into_iter()

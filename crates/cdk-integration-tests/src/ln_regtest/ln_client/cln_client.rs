@@ -436,21 +436,27 @@ impl LightningClient for ClnClient {
 
         let balance = match cln_response {
             cln_rpc::Response::ListFunds(funds_response) => {
-                let mut on_chain_total = Amount::from_msat(0);
-                let mut on_chain_spendable = Amount::from_msat(0);
-                let mut ln = Amount::from_msat(0);
+                let mut on_chain_total: u64 = 0;
+                let mut on_chain_spendable: u64 = 0;
+                let mut ln: u64 = 0;
+
+                let add_msat = |total: u64, amount: Amount| {
+                    total
+                        .checked_add(amount.msat())
+                        .ok_or_else(|| anyhow!("millisatoshi balance overflowed"))
+                };
 
                 for output in funds_response.outputs {
                     match output.status {
                         ListfundsOutputsStatus::UNCONFIRMED => {
-                            on_chain_total = on_chain_total + output.amount_msat;
+                            on_chain_total = add_msat(on_chain_total, output.amount_msat)?;
                         }
                         ListfundsOutputsStatus::IMMATURE => {
-                            on_chain_total = on_chain_total + output.amount_msat;
+                            on_chain_total = add_msat(on_chain_total, output.amount_msat)?;
                         }
                         ListfundsOutputsStatus::CONFIRMED => {
-                            on_chain_total = on_chain_total + output.amount_msat;
-                            on_chain_spendable = on_chain_spendable + output.amount_msat;
+                            on_chain_total = add_msat(on_chain_total, output.amount_msat)?;
+                            on_chain_spendable = add_msat(on_chain_spendable, output.amount_msat)?;
                         }
                         ListfundsOutputsStatus::SPENT => (),
                     }
@@ -458,13 +464,13 @@ impl LightningClient for ClnClient {
                 }
 
                 for channel in funds_response.channels {
-                    ln = ln + channel.our_amount_msat;
+                    ln = add_msat(ln, channel.our_amount_msat)?;
                 }
 
                 Balance {
-                    on_chain_spendable: on_chain_spendable.msat(),
-                    on_chain_total: on_chain_total.msat(),
-                    ln: ln.msat(),
+                    on_chain_spendable,
+                    on_chain_total,
+                    ln,
                 }
             }
             _ => {

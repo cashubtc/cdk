@@ -122,7 +122,9 @@ pub async fn receive(
                 .await
                 {
                     Ok(amount) => {
-                        total_amount += amount;
+                        total_amount = total_amount
+                            .checked_add(amount)
+                            .ok_or_else(|| anyhow!("received amount overflowed"))?;
                     }
                     Err(err) => {
                         // Errors may embed mint-controlled data such as error

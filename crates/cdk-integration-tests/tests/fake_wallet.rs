@@ -456,7 +456,7 @@ async fn test_fake_melt_payment_err_paid() {
 
     // melt failed, but there is new code to reclaim unspent proofs
     assert_eq!(
-        old_balance - melt.amount(),
+        old_balance.checked_sub(melt.amount()).expect("balance"),
         wallet.total_balance().await.expect("new balance")
     );
 
@@ -1194,7 +1194,7 @@ async fn test_fake_mint_multiple_unit_swap() {
         let total_inputs = inputs.total_amount().unwrap();
         let fee_and_amounts = (0, ((0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>())).into();
 
-        let half = total_inputs / 2.into();
+        let half = total_inputs.checked_div(2.into()).expect("half");
         let usd_pre_mint = PreMintSecrets::random(
             usd_active_keyset_id,
             half,
@@ -1204,7 +1204,7 @@ async fn test_fake_mint_multiple_unit_swap() {
         .unwrap();
         let pre_mint = PreMintSecrets::random(
             active_keyset_id,
-            total_inputs - half,
+            total_inputs.checked_sub(half).expect("remainder"),
             &SplitTarget::None,
             &fee_and_amounts,
         )
@@ -1336,7 +1336,11 @@ async fn test_fake_mint_multiple_unit_melt() {
 
         let usd_pre_mint = PreMintSecrets::random(
             usd_active_keyset_id,
-            inputs.total_amount().unwrap() + 100.into(),
+            inputs
+                .total_amount()
+                .unwrap()
+                .checked_add(100.into())
+                .expect("total"),
             &SplitTarget::None,
             &fee_and_amounts,
         )
@@ -2023,7 +2027,7 @@ async fn test_chained_confirm_recovers_paid_melt() {
     assert_eq!(melt.fee_paid(), Amount::ZERO);
     assert_eq!(melt.amount(), Amount::from(7));
     assert_eq!(
-        old_balance - melt.amount(),
+        old_balance.checked_sub(melt.amount()).expect("balance"),
         wallet.total_balance().await.expect("new balance")
     );
 
@@ -2410,7 +2414,10 @@ async fn test_melt_with_swap_for_exact_amount() {
         "Balance: initial={}, final={}, paid={}",
         initial_balance,
         final_balance,
-        melted.amount() + melted.fee_paid()
+        melted
+            .amount()
+            .checked_add(melted.fee_paid())
+            .expect("total")
     );
 
     assert!(
@@ -2419,7 +2426,10 @@ async fn test_melt_with_swap_for_exact_amount() {
     );
     assert_eq!(
         final_balance,
-        initial_balance - melted.amount() - melted.fee_paid(),
+        initial_balance
+            .checked_sub(melted.amount())
+            .and_then(|b| b.checked_sub(melted.fee_paid()))
+            .expect("balance"),
         "Final balance should be initial - amount - fees"
     );
 }
@@ -2475,7 +2485,10 @@ async fn test_melt_exact_proofs_no_swap_needed() {
     let final_balance = wallet.total_balance().await.unwrap();
     assert_eq!(
         final_balance,
-        initial_balance - melted.amount() - melted.fee_paid()
+        initial_balance
+            .checked_sub(melted.amount())
+            .and_then(|b| b.checked_sub(melted.fee_paid()))
+            .expect("balance")
     );
 }
 
