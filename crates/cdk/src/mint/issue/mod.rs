@@ -902,7 +902,8 @@ impl Mint {
                                 .map_err(crate::nuts::nut10::Error::from)?,
                             cdk_common::util::unix_time(),
                         )
-                        .map_err(crate::nuts::nut10::Error::from)?;
+                        // NUT-20: a quote without a valid signature is 20008, whatever the witness got wrong.
+                        .map_err(|_| Error::SignatureMissingOrInvalid)?;
                 } else if let Some(ref pubkey) = mint_quote.pubkey {
                     match &input {
                         MintInput::Single(request) => request
