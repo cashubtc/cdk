@@ -16,6 +16,10 @@ pub enum WsError {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl WsError {
+    /// Classify a tungstenite failure so the caller can tell a retry-worthy
+    /// blip from a permanent one. `WriteBufferFull` counts as transient because
+    /// it is our own send buffer hitting `max_write_buffer_size`, which a
+    /// reconnect clears, unlike `Capacity`, which recurs on the next stream.
     pub(crate) fn from_tungstenite(error: tokio_tungstenite::tungstenite::Error) -> Self {
         use tokio_tungstenite::tungstenite::Error;
 
@@ -30,13 +34,13 @@ impl WsError {
             Some(408 | 429 | 500..=599) => Self::Transient(message),
             Some(_) => Self::Terminal(message),
             None => match error {
-                Error::ConnectionClosed | Error::AlreadyClosed | Error::Io(_) => {
-                    Self::Transient(message)
-                }
+                Error::ConnectionClosed
+                | Error::AlreadyClosed
+                | Error::Io(_)
+                | Error::WriteBufferFull(_) => Self::Transient(message),
                 Error::Tls(_)
                 | Error::Capacity(_)
                 | Error::Protocol(_)
-                | Error::WriteBufferFull(_)
                 | Error::Utf8
                 | Error::AttackAttempt
                 | Error::Url(_)
@@ -77,6 +81,25 @@ mod tests {
         assert!(matches!(
             WsError::from_tungstenite(error_for_status(StatusCode::SERVICE_UNAVAILABLE)),
             WsError::Transient(_)
+        ));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn classifies_transport_failures() {
+        use tokio_tungstenite::tungstenite::error::CapacityError;
+        use tokio_tungstenite::tungstenite::{Error, Message};
+
+        assert!(matches!(
+            WsError::from_tungstenite(Error::WriteBufferFull(Message::Text("x".into()))),
+            WsError::Transient(_)
+        ));
+        assert!(matches!(
+            WsError::from_tungstenite(Error::Capacity(CapacityError::MessageTooLong {
+                size: 2,
+                max_size: 1,
+            })),
+            WsError::Terminal(_)
         ));
     }
 }

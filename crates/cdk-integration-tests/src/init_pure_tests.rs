@@ -1,383 +1,24 @@
 use std::collections::{HashMap, HashSet};
-use std::fmt::{Debug, Formatter};
 use std::path::PathBuf;
-use std::str::FromStr;
 use std::sync::Arc;
 use std::{env, fs};
 
 use anyhow::{anyhow, bail, Result};
-use async_trait::async_trait;
 use bip39::Mnemonic;
 use cashu::nut00::KnownMethod;
-use cashu::quote_id::QuoteId;
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::{self, WalletDatabase};
 use cdk::mint::{MintBuilder, MintMeltLimits};
 use cdk::nuts::nut00::ProofsMethods;
-use cdk::nuts::{
-    BatchCheckMintQuoteRequest, BatchMintRequest, CheckStateRequest, CheckStateResponse,
-    CurrencyUnit, Id, KeySet, KeysetResponse, MeltRequest, MintInfo, MintRequest, MintResponse,
-    PaymentMethod, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
-};
+use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use cdk::types::{FeeReserve, QuoteTTL};
-use cdk::util::unix_time;
-use cdk::wallet::{AuthWallet, MintConnector, Wallet, WalletBuilder};
-use cdk::{Amount, Error, MeltQuoteCreateResponse, Mint, StreamExt};
-use cdk_common::{MeltQuoteRequest, MeltQuoteResponse, MintQuoteRequest, MintQuoteResponse};
+use cdk::wallet::{Wallet, WalletBuilder};
+use cdk::{Amount, Mint, StreamExt};
 use cdk_fake_wallet::FakeWallet;
-use tokio::sync::RwLock;
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
-pub struct DirectMintConnection {
-    pub mint: Mint,
-    auth_wallet: Arc<RwLock<Option<AuthWallet>>>,
-}
-
-impl DirectMintConnection {
-    pub fn new(mint: Mint) -> Self {
-        Self {
-            mint,
-            auth_wallet: Arc::new(RwLock::new(None)),
-        }
-    }
-}
-
-impl Debug for DirectMintConnection {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "DirectMintConnection",)
-    }
-}
-
-/// Implements the generic [MintConnector] (i.e. use the interface that expects to communicate
-/// to a generic mint, where we don't know that quote ID's are [Uuid]s) for [DirectMintConnection],
-/// where we know we're dealing with a mint that uses [Uuid]s for quotes.
-/// Convert the requests and responses between the [String] and [Uuid] variants as necessary.
-#[async_trait]
-impl MintConnector for DirectMintConnection {
-    async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, Error> {
-        panic!("Not implemented");
-    }
-
-    async fn fetch_lnurl_pay_request(
-        &self,
-        _url: &str,
-    ) -> Result<cdk::wallet::LnurlPayResponse, Error> {
-        unimplemented!("Lightning address not supported in DirectMintConnection")
-    }
-
-    async fn fetch_lnurl_invoice(
-        &self,
-        _url: &str,
-    ) -> Result<cdk::wallet::LnurlPayInvoiceResponse, Error> {
-        unimplemented!("Lightning address not supported in DirectMintConnection")
-    }
-
-    async fn get_mint_keys(&self) -> Result<Vec<KeySet>, Error> {
-        Ok(self.mint.pubkeys().keysets)
-    }
-
-    async fn get_mint_keyset(&self, keyset_id: Id) -> Result<KeySet, Error> {
-        self.mint.keyset(&keyset_id).ok_or(Error::UnknownKeySet)
-    }
-
-    async fn get_mint_keysets(&self) -> Result<KeysetResponse, Error> {
-        Ok(self.mint.keysets())
-    }
-
-    async fn post_mint_quote(
-        &self,
-        request: MintQuoteRequest,
-    ) -> Result<MintQuoteResponse<String>, Error> {
-        match request {
-            MintQuoteRequest::Bolt11(req) => {
-                let response = self.mint.get_mint_quote(req.into()).await?;
-                match response {
-                    cdk_common::MintQuoteResponse::Bolt11(r) => {
-                        Ok(MintQuoteResponse::Bolt11(r.to_string_id()))
-                    }
-                    _ => Err(Error::InvalidPaymentMethod),
-                }
-            }
-            MintQuoteRequest::Bolt12(req) => {
-                let response = self.mint.get_mint_quote(req.into()).await?;
-                match response {
-                    cdk_common::MintQuoteResponse::Bolt12(r) => {
-                        Ok(MintQuoteResponse::Bolt12(r.to_string_id()))
-                    }
-                    _ => Err(Error::InvalidPaymentMethod),
-                }
-            }
-            MintQuoteRequest::Custom { method, request } => {
-                let response = self
-                    .mint
-                    .get_mint_quote(cdk::mint::MintQuoteRequest::Custom { method, request })
-                    .await?;
-                match response {
-                    cdk_common::MintQuoteResponse::Custom { method, response } => {
-                        Ok(MintQuoteResponse::Custom {
-                            method,
-                            response: response.to_string_id(),
-                        })
-                    }
-                    _ => Err(Error::InvalidPaymentMethod),
-                }
-            }
-            MintQuoteRequest::Onchain(req) => {
-                let response = self.mint.get_mint_quote(req.into()).await?;
-                match response {
-                    cdk_common::MintQuoteResponse::Onchain(r) => {
-                        Ok(MintQuoteResponse::Onchain(r.to_string_id()))
-                    }
-                    _ => Err(Error::InvalidPaymentMethod),
-                }
-            }
-        }
-    }
-
-    async fn get_mint_quote_status(
-        &self,
-        method: PaymentMethod,
-        quote_id: &str,
-    ) -> Result<MintQuoteResponse<String>, Error> {
-        let response = self
-            .mint
-            .check_mint_quotes(&[QuoteId::from_str(quote_id)?])
-            .await?
-            .first()
-            .ok_or(Error::UnknownQuote)?
-            .clone();
-
-        match method {
-            PaymentMethod::Known(KnownMethod::Bolt11) => match response {
-                cdk_common::MintQuoteResponse::Bolt11(r) => {
-                    Ok(MintQuoteResponse::Bolt11(r.to_string_id()))
-                }
-                _ => Err(Error::InvalidPaymentMethod),
-            },
-            PaymentMethod::Known(KnownMethod::Bolt12) => match response {
-                cdk_common::MintQuoteResponse::Bolt12(r) => {
-                    Ok(MintQuoteResponse::Bolt12(r.to_string_id()))
-                }
-                _ => Err(Error::InvalidPaymentMethod),
-            },
-            PaymentMethod::Known(KnownMethod::Onchain) => match response {
-                cdk_common::MintQuoteResponse::Onchain(r) => {
-                    Ok(MintQuoteResponse::Onchain(r.to_string_id()))
-                }
-                _ => Err(Error::InvalidPaymentMethod),
-            },
-            PaymentMethod::Custom(_) => match response {
-                cdk_common::MintQuoteResponse::Custom { method, response } => {
-                    Ok(MintQuoteResponse::Custom {
-                        method,
-                        response: response.to_string_id(),
-                    })
-                }
-                _ => Err(Error::InvalidPaymentMethod),
-            },
-        }
-    }
-
-    async fn post_mint(
-        &self,
-        _method: &PaymentMethod,
-        request: MintRequest<String>,
-    ) -> Result<MintResponse, Error> {
-        let request_id: MintRequest<QuoteId> = request.try_into().unwrap();
-        self.mint
-            .process_mint_request(cdk::mint::MintInput::Single(request_id))
-            .await
-    }
-
-    async fn post_batch_check_mint_quote_status(
-        &self,
-        _method: &PaymentMethod,
-        request: BatchCheckMintQuoteRequest<String>,
-    ) -> Result<Vec<MintQuoteResponse<String>>, Error> {
-        let quote_ids: Vec<QuoteId> = request
-            .quotes
-            .iter()
-            .filter_map(|s| QuoteId::from_str(s).ok())
-            .collect();
-        self.mint
-            .check_mint_quotes(&quote_ids)
-            .await
-            .map(|responses| responses.into_iter().map(Into::into).collect())
-    }
-
-    async fn post_batch_mint(
-        &self,
-        _method: &PaymentMethod,
-        request: BatchMintRequest<String>,
-    ) -> Result<MintResponse, Error> {
-        let quotes: Vec<QuoteId> = request
-            .quotes
-            .iter()
-            .filter_map(|s| QuoteId::from_str(s).ok())
-            .collect();
-
-        let request_id = BatchMintRequest {
-            quotes,
-            quote_amounts: request.quote_amounts,
-            outputs: request.outputs,
-            signatures: request.signatures,
-        };
-
-        self.mint
-            .process_mint_request(cdk::mint::MintInput::Batch(request_id))
-            .await
-    }
-
-    async fn post_melt_quote(
-        &self,
-        request: MeltQuoteRequest,
-    ) -> Result<MeltQuoteCreateResponse<String>, Error> {
-        match request {
-            MeltQuoteRequest::Bolt11(req) => {
-                let response = self.mint.get_melt_quote(req.into()).await?;
-                match response {
-                    cdk_common::MeltQuoteCreateResponse::Bolt11(r) => {
-                        Ok(MeltQuoteCreateResponse::Bolt11(r.to_string_id()))
-                    }
-                    _ => Err(Error::InvalidPaymentMethod),
-                }
-            }
-            MeltQuoteRequest::Bolt12(req) => {
-                let response = self.mint.get_melt_quote(req.into()).await?;
-                match response {
-                    cdk_common::MeltQuoteCreateResponse::Bolt12(r) => {
-                        Ok(MeltQuoteCreateResponse::Bolt12(r.to_string_id()))
-                    }
-                    _ => Err(Error::InvalidPaymentMethod),
-                }
-            }
-            MeltQuoteRequest::Custom(req) => {
-                let response = self.mint.get_melt_quote(req.into()).await?;
-                match response {
-                    cdk_common::MeltQuoteCreateResponse::Custom((method, r)) => {
-                        Ok(MeltQuoteCreateResponse::Custom((method, r.to_string_id())))
-                    }
-                    _ => Err(Error::InvalidPaymentMethod),
-                }
-            }
-            MeltQuoteRequest::Onchain(req) => {
-                let response = self.mint.get_melt_quote(req.into()).await?;
-                match response {
-                    cdk_common::MeltQuoteCreateResponse::Onchain(r) => {
-                        Ok(MeltQuoteCreateResponse::Onchain(r.into()))
-                    }
-                    _ => Err(Error::InvalidPaymentMethod),
-                }
-            }
-        }
-    }
-
-    async fn get_melt_quote_status(
-        &self,
-        method: PaymentMethod,
-        quote_id: &str,
-    ) -> Result<MeltQuoteResponse<String>, Error> {
-        let response = self
-            .mint
-            .check_melt_quote(&QuoteId::from_str(quote_id)?)
-            .await?;
-
-        match method {
-            PaymentMethod::Known(KnownMethod::Bolt11) => match response {
-                cdk_common::MeltQuoteResponse::Bolt11(r) => {
-                    Ok(MeltQuoteResponse::Bolt11(r.to_string_id()))
-                }
-                _ => Err(Error::InvalidPaymentMethod),
-            },
-            PaymentMethod::Known(KnownMethod::Bolt12) => match response {
-                cdk_common::MeltQuoteResponse::Bolt12(r) => {
-                    Ok(MeltQuoteResponse::Bolt12(r.to_string_id()))
-                }
-                _ => Err(Error::InvalidPaymentMethod),
-            },
-            PaymentMethod::Custom(_) => match response {
-                cdk_common::MeltQuoteResponse::Custom((quote_method, r)) => {
-                    Ok(MeltQuoteResponse::Custom((quote_method, r.to_string_id())))
-                }
-                _ => Err(Error::InvalidPaymentMethod),
-            },
-            PaymentMethod::Known(KnownMethod::Onchain) => match response {
-                cdk_common::MeltQuoteResponse::Onchain(r) => {
-                    Ok(MeltQuoteResponse::Onchain(r.into()))
-                }
-                _ => Err(Error::InvalidPaymentMethod),
-            },
-        }
-    }
-
-    async fn post_melt(
-        &self,
-        method: &PaymentMethod,
-        request: MeltRequest<String>,
-    ) -> Result<MeltQuoteResponse<String>, Error> {
-        let request_uuid = request.try_into().unwrap();
-        let response = self.mint.melt(&request_uuid).await?.await?;
-
-        match method {
-            PaymentMethod::Known(KnownMethod::Bolt11) => match response {
-                cdk_common::MeltQuoteResponse::Bolt11(r) => {
-                    Ok(MeltQuoteResponse::Bolt11(r.to_string_id()))
-                }
-                _ => Err(Error::InvalidPaymentMethod),
-            },
-            PaymentMethod::Known(KnownMethod::Bolt12) => match response {
-                cdk_common::MeltQuoteResponse::Bolt12(r) => {
-                    Ok(MeltQuoteResponse::Bolt12(r.to_string_id()))
-                }
-                _ => Err(Error::InvalidPaymentMethod),
-            },
-            PaymentMethod::Custom(_) => match response {
-                cdk_common::MeltQuoteResponse::Custom((quote_method, r)) => {
-                    Ok(MeltQuoteResponse::Custom((quote_method, r.to_string_id())))
-                }
-                _ => Err(Error::InvalidPaymentMethod),
-            },
-            PaymentMethod::Known(KnownMethod::Onchain) => match response {
-                cdk_common::MeltQuoteResponse::Onchain(r) => {
-                    Ok(MeltQuoteResponse::Onchain(r.into()))
-                }
-                _ => Err(Error::InvalidPaymentMethod),
-            },
-        }
-    }
-
-    async fn post_swap(&self, swap_request: SwapRequest) -> Result<SwapResponse, Error> {
-        self.mint.process_swap_request(swap_request).await
-    }
-
-    async fn get_mint_info(&self) -> Result<MintInfo, Error> {
-        Ok(self.mint.mint_info().await?.clone().time(unix_time()))
-    }
-
-    async fn post_check_state(
-        &self,
-        request: CheckStateRequest,
-    ) -> Result<CheckStateResponse, Error> {
-        self.mint.check_state(&request).await
-    }
-
-    async fn post_restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
-        self.mint.restore(request).await
-    }
-
-    /// Get the auth wallet for the client
-    async fn get_auth_wallet(&self) -> Option<AuthWallet> {
-        self.auth_wallet.read().await.clone()
-    }
-
-    /// Set auth wallet on client
-    async fn set_auth_wallet(&self, wallet: Option<AuthWallet>) {
-        let mut auth_wallet = self.auth_wallet.write().await;
-
-        *auth_wallet = wallet;
-    }
-}
+pub use crate::direct_connection::DirectMintConnection;
 
 pub fn setup_tracing() {
     let default_filter = "debug";
@@ -403,91 +44,26 @@ pub async fn create_and_start_test_mint() -> Result<Mint> {
 }
 
 pub async fn create_mint_with_fee(fee_ppk: u64) -> Result<Mint> {
-    // Read environment variable to determine database type
-    let db_type = env::var("CDK_TEST_DB_TYPE").expect("Database type set");
-
-    let localstore = match db_type.to_lowercase().as_str() {
-        "memory" => Arc::new(cdk_sqlite::mint::memory::empty().await?),
-        _ => {
-            // Create a temporary directory for SQLite database
-            let temp_dir = create_temp_dir("cdk-test-sqlite-mint")?;
-            let path = temp_dir.join("mint.db").to_str().unwrap().to_string();
-            Arc::new(
-                cdk_sqlite::MintSqliteDatabase::new(path.as_str())
-                    .await
-                    .expect("Could not create sqlite db"),
-            )
-        }
-    };
-
-    let mut mint_builder = MintBuilder::new(localstore.clone());
-
-    let fee_reserve = FeeReserve {
-        min_fee_reserve: 1.into(),
-        percent_fee_reserve: 0.02,
-    };
-
-    let ln_fake_backend = FakeWallet::new(
-        fee_reserve.clone(),
-        HashMap::default(),
-        HashSet::default(),
-        2,
-        CurrencyUnit::Sat,
-    );
-
-    mint_builder
-        .add_payment_processor(
-            CurrencyUnit::Sat,
-            PaymentMethod::Known(KnownMethod::Bolt11),
-            MintMeltLimits::new(1, 10_000),
-            Arc::new(ln_fake_backend),
-        )
-        .await?;
-
-    let custom_fake_backend = FakeWallet::new(
-        fee_reserve.clone(),
-        HashMap::default(),
-        HashSet::default(),
-        2,
-        CurrencyUnit::Sat,
-    )
-    .with_custom_payment_methods(HashMap::from([("paypal".to_string(), "{}".to_string())]));
-
-    mint_builder
-        .add_payment_processor(
-            CurrencyUnit::Sat,
-            PaymentMethod::Custom("paypal".to_string()),
-            MintMeltLimits::new(1, 10_000),
-            Arc::new(custom_fake_backend),
-        )
-        .await?;
-
-    mint_builder.set_unit_fee(&CurrencyUnit::Sat, fee_ppk)?;
-
-    let mnemonic = Mnemonic::generate(12)?;
-
-    mint_builder = mint_builder
-        .with_name("pure test mint".to_string())
-        .with_description("pure test mint".to_string())
-        .with_urls(vec!["https://aaa".to_string()])
-        .with_limits(2000, 2000)
-        .with_batch_minting(Some(100), Some(vec!["bolt11".to_string()]));
-
-    let quote_ttl = QuoteTTL::new(10000, 10000);
-
-    let mint = mint_builder
-        .build_with_seed(localstore.clone(), &mnemonic.to_seed_normalized(""))
-        .await?;
-
-    mint.set_quote_ttl(quote_ttl).await?;
-
-    mint.start().await?;
-
-    Ok(mint)
+    build_and_start_mint(env_localstore().await?, None, Some(fee_ppk)).await
 }
 
 pub async fn create_mint_with_limits(limits: Option<(usize, usize)>) -> Result<Mint> {
-    // Read environment variable to determine database type
+    build_and_start_mint(env_localstore().await?, limits, None).await
+}
+
+/// Build and start an in-memory test mint without reading `CDK_TEST_DB_TYPE`,
+/// so callers do not need to set (and mutate) that process-global variable.
+pub async fn create_and_start_in_memory_test_mint() -> Result<Mint> {
+    build_and_start_mint(
+        Arc::new(cdk_sqlite::mint::memory::empty().await?),
+        None,
+        None,
+    )
+    .await
+}
+
+/// Select the mint store from `CDK_TEST_DB_TYPE` (`memory` or a temp SQLite file).
+async fn env_localstore() -> Result<Arc<cdk_sqlite::MintSqliteDatabase>> {
     let db_type = env::var("CDK_TEST_DB_TYPE").expect("Database type set");
 
     let localstore = match db_type.to_lowercase().as_str() {
@@ -504,6 +80,17 @@ pub async fn create_mint_with_limits(limits: Option<(usize, usize)>) -> Result<M
         }
     };
 
+    Ok(localstore)
+}
+
+/// Assemble and start a test mint (bolt11 + `paypal` fake backends, standard
+/// metadata) over the given store. `limits` overrides the input/output caps
+/// (default 2000/2000); `fee` sets a per-unit fee when provided.
+async fn build_and_start_mint(
+    localstore: Arc<cdk_sqlite::MintSqliteDatabase>,
+    limits: Option<(usize, usize)>,
+    fee: Option<u64>,
+) -> Result<Mint> {
     let mut mint_builder = MintBuilder::new(localstore.clone());
 
     let fee_reserve = FeeReserve {
@@ -546,19 +133,20 @@ pub async fn create_mint_with_limits(limits: Option<(usize, usize)>) -> Result<M
         )
         .await?;
 
+    if let Some(fee_ppk) = fee {
+        mint_builder.set_unit_fee(&CurrencyUnit::Sat, fee_ppk)?;
+    }
+
+    let (max_inputs, max_outputs) = limits.unwrap_or((2000, 2000));
+
     let mnemonic = Mnemonic::generate(12)?;
 
     mint_builder = mint_builder
         .with_name("pure test mint".to_string())
         .with_description("pure test mint".to_string())
         .with_urls(vec!["https://aaa".to_string()])
+        .with_limits(max_inputs, max_outputs)
         .with_batch_minting(Some(100), Some(vec!["bolt11".to_string()]));
-
-    if let Some((max_inputs, max_outputs)) = limits {
-        mint_builder = mint_builder.with_limits(max_inputs, max_outputs);
-    } else {
-        mint_builder = mint_builder.with_limits(2000, 2000);
-    }
 
     let quote_ttl = QuoteTTL::new(10000, 10000);
 
