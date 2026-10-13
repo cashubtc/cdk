@@ -102,10 +102,12 @@ where
                     .get::<axum::extract::OriginalUri>()
                     .map(|uri| &uri.0)
                     .unwrap_or(&parts.uri);
-                let target = uri
+                let sent = uri
                     .path_and_query()
                     .map(|value| value.as_str())
                     .unwrap_or("/");
+                // NUT-10: the target starts at the /v1/ segment, so a mint URL subpath is not signed.
+                let target = sent.find("/v1/").map_or(sent, |start| &sent[start..]);
                 token
                     .set_request_context(parts.method.as_str(), target, &body.0)
                     .map_err(|_| {
@@ -262,6 +264,19 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), expected);
         }
+        let prefixed = Router::new().nest("/cashu", router.clone());
+        let response = prefixed
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/cashu/v1/swap?x=1")
+                    .header(BLIND_AUTH_KEY, token.to_string())
+                    .body(Body::from("{ }"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
         let limited = router.layer(axum::extract::DefaultBodyLimit::max(2));
         let response = limited
             .oneshot(
