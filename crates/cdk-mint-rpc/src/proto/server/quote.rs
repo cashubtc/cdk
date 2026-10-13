@@ -1059,7 +1059,12 @@ mod tests {
         let server = create_test_rpc_server_with_payment_delay(3600)
             .await
             .with_mint_quote_payment_override(true);
-        let quote_id = create_test_mint_quote(&server, 100).await;
+        let quote_id = create_test_mint_quote_with_method(
+            &server,
+            Some(100),
+            PaymentMethod::Custom("test".to_owned()),
+        )
+        .await;
 
         QuoteService::update_mint_quote_state(
             &server,
@@ -1067,7 +1072,7 @@ mod tests {
                 quote_id: quote_id.clone(),
                 state: crate::quote::MintQuoteState::Paid.into(),
                 amount: None,
-                payment_id: None,
+                payment_id: Some("backend-payment".to_owned()),
             }),
         )
         .await
