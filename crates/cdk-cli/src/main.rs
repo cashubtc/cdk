@@ -85,7 +85,7 @@ enum Commands {
     DecodeToken(sub_commands::decode_token::DecodeTokenSubCommand),
     /// Balance
     Balance,
-    /// Pay bolt11 invoice
+    /// Melt payment (bolt11, bolt12, bip353, onchain, or custom)
     Melt(sub_commands::melt::MeltSubCommand),
     /// Claim pending mint quotes that have been paid
     MintPending,
