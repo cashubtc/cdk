@@ -1031,6 +1031,13 @@ impl Mint {
                     }
                     MintQuoteState::Paid => (),
                 }
+                // A v3 witness signed the quote's state; a draw settled since makes it stale.
+                if nutroot_transaction.is_some()
+                    && quote_map.get(quote_id).map(|q| q.amount_issued())
+                        != Some(mint_quote.amount_issued())
+                {
+                    return Err(Error::SignatureMissingOrInvalid);
+                }
 
                 let amount_issued = if input.is_batch() {
                     // For batch: each quote is issued for its expected amount
