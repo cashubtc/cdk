@@ -488,7 +488,9 @@ mod tests {
         db.add_saga(saga).await.unwrap();
 
         let mock_client = Arc::new(MockMintConnector::new());
-        mock_client.set_check_state_response(Ok(CheckStateResponse {
+        // persistent: the batched spent-send pre-flight and the
+        // sequential resume both ask the mint about this proof now
+        mock_client.set_check_state_response_persistent(Ok(CheckStateResponse {
             states: vec![ProofState {
                 y: proof_y,
                 state: State::Unspent,
@@ -499,6 +501,8 @@ mod tests {
         let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
         let report = wallet.recover_incomplete_sagas().await.unwrap();
 
+        // The sequential path still handles the unspent (still-revocable)
+        // send and reports it retained-and-healthy.
         assert_eq!(report.recovered, 1);
         assert_eq!(report.compensated, 0);
 
