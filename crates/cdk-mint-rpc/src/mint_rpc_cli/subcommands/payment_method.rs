@@ -184,8 +184,14 @@ pub struct UpdateDisabledCommand {
     /// Whether minting is disabled (true) or enabled (false) for every unit and method
     #[arg(long)]
     mint_disabled: Option<bool>,
-    /// Whether melting is disabled (true) or enabled (false) for every unit and method
-    /// Inflight quotes will not be honored if melt disables mid response
+    /// Whether creation of new melt quotes is disabled (true) or enabled (false)
+    /// for every unit and method.
+    ///
+    /// Previously issued, otherwise valid quotes remain executable. Already-dispatched
+    /// payments continue through normal recovery and status reconciliation.
+    ///
+    /// Quote requests that passed the disabled-state check before disabling may still
+    /// complete. Further guarantees for in-flight quote requests are still under development.
     #[arg(long)]
     melt_disabled: Option<bool>,
 }
