@@ -8,11 +8,11 @@
 
 ## Context and Problem Statement
 
-The four language bindings are workspace members of this repository, and their
+The five language bindings are workspace members of this repository, and their
 release builds compile here against the root `Cargo.lock`. Each language also has
-a publishing repository (`cashubtc/cdk-{dart,go,kotlin,swift}`) that the release
-workflows sync sources into, because Go module paths and Swift Package Manager
-both resolve by repository URL.
+a publishing repository (`cashubtc/cdk-{dart,go,kotlin,python,swift}`) that the
+release workflows sync sources into, because Go module paths and Swift Package
+Manager both resolve by repository URL.
 
 Those repositories were also receiving a copy of the language's wrapper crate.
 That copy cannot use a path dependency on `cdk-ffi`, since no monorepo sits
@@ -25,7 +25,7 @@ standalone. How should the copied crate reach the CDK source?
   `Cargo.lock`, and must not depend on a crates.io publish having landed first.
 * Which source tree a release is built from should be decided by the tag, before
   the build starts, not by a version or revision embedded in a manifest.
-* Whatever is shipped has to survive the packaging format of four different
+* Whatever is shipped has to survive the packaging format of five different
   ecosystems.
 
 ## Considered Options
@@ -98,7 +98,9 @@ prebuilt libraries. Nothing in them is buildable.
 
 Chosen option: "Ship no Rust crate at all", because it is the only option that
 removes the coupling rather than relocating it, and because the crate it deletes
-was already unused by three of the four ecosystems.
+was already unused by three of the five ecosystems. Dart and Python are the two
+that lose a build-from-source path, and both gain committed artifacts covering
+every platform they support in exchange.
 
 The pin lives in the checkout. `<lang>-build-native` checks out the release tag
 and runs `cargo build --locked --profile release-ffi -p cdk-ffi-<lang>` against
@@ -106,9 +108,10 @@ the workspace, resolving `cdk-ffi` through the ordinary path dependency.
 
 Every repository commits its compiled libraries. Dart keeps `prebuilt/<triple>/`,
 Kotlin keeps `cdk-android/src/main/jniLibs/`, Go keeps
-`bindings/cdkffi/native/`, and Swift gains `CashuDevKitFFI.xcframework.zip` at
-its root, resolved by a local `binaryTarget(path:)` rather than a URL and
-checksum.
+`bindings/cdkffi/native/`, Python keeps its per-platform wheels under `wheels/`
+alongside the generated `src/cdk/cdk_ffi.py`, and Swift gains
+`CashuDevKitFFI.xcframework.zip` at its root, resolved by a local
+`binaryTarget(path:)` rather than a URL and checksum.
 
 The alternative, distributing them purely as release assets, was tried and
 rejected. It reads better on repository size but it puts the artifacts outside
@@ -130,13 +133,14 @@ whatever a tag points at contains everything that tag delivers.
 ### Negative Consequences
 
 * Every binding repository grows by a full set of binaries per release: roughly
-  157 MB for Dart, 136 MB for Swift before compression, 32 MB for Kotlin. This is
-  the accepted cost of the self-containment above.
+  157 MB for Dart, 136 MB for Swift before compression, 32 MB for Kotlin, and one
+  wheel per supported platform for Python, each carrying its own copy of the
+  library. This is the accepted cost of the self-containment above.
 * `dart pub` clones git dependencies with `git clone --mirror`, so a Dart
   consumer downloads that history in full.
-* Dart's prebuilt matrix is load-bearing. A target or link mode with no committed
-  library now fails the build, because the Rust crate it used to fall back to is
-  no longer synced.
+* The prebuilt matrices are load-bearing for Dart and Python. A target with no
+  committed library now fails the build, or leaves a platform with no wheel,
+  because the Rust crate they used to fall back to is no longer synced.
 
 ## Links
 

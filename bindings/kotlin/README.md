@@ -133,7 +133,7 @@ Actions).
 
 | Name | Purpose |
 |---|---|
-| `FFI_DEPLOY_KEY` | Personal access token (PAT) with `repo` scope on the FFI target repos (`cdk-dart`, `cdk-kotlin`, `cdk-swift`). Used to clone, push, and create releases. Shared across all FFI publish workflows. |
+| `FFI_DEPLOY_KEY` | Personal access token (PAT) with `repo` scope on the FFI target repos. Used to clone, push, and create releases. Shared across all FFI publish workflows. |
 | `SONATYPE_USERNAME` | Maven Central Portal user-token username for publishing. |
 | `SONATYPE_PASSWORD` | Maven Central Portal user-token password. |
 | `SIGNING_KEY` | ASCII-armored GPG private key for signing Maven artifacts. |
@@ -142,7 +142,7 @@ Actions).
 #### How to create the PAT
 
 1. Go to **GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens**.
-2. Create a token scoped to the `cdk-dart`, `cdk-kotlin`, and `cdk-swift` repositories with **Contents** (read/write) and **Metadata** (read) permissions.
+2. Create a token scoped to the FFI target repositories with **Contents** (read/write) and **Metadata** (read) permissions.
 3. Add it as a repository secret named `FFI_DEPLOY_KEY` in the monorepo.
 
 #### Maven Central (Sonatype) setup
