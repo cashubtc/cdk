@@ -338,7 +338,7 @@ impl SigningPackage {
             spend.witness.verify_in(
                 &spend.secret,
                 validated.digest,
-                Some(transaction.outputs()),
+                transaction.change_keys(),
                 now,
             )?;
             let raw = serde_json::to_string(&spend.witness).map_err(|_| Error::InvalidWitness)?;

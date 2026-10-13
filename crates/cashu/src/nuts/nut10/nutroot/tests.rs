@@ -849,6 +849,11 @@ fn shared_transcript_vectors() {
             transaction,
             "{name}"
         );
+        assert_eq!(
+            transaction.change_keys().is_some(),
+            outputs.is_empty() && melt_quotes.is_empty(),
+            "{name}"
+        );
         let inputs: Vec<(usize, &Value)> = match case.get("inputs") {
             Some(inputs) => inputs.as_array().unwrap().iter().enumerate().collect(),
             None => vec![(0, case)],
@@ -967,10 +972,10 @@ fn quote_id_preimage_vectors() {
     }
 }
 
-/// A template vector's `tx`: proof inputs and change quote outputs only.
-fn template_transaction(tx: &Value) -> Transaction {
+/// A template vector's proof inputs.
+fn template_proofs(tx: &Value) -> Vec<crate::Proof> {
     use std::str::FromStr;
-    let proofs: Vec<_> = tx["proof_inputs"]
+    tx["proof_inputs"]
         .as_array()
         .unwrap()
         .iter()
@@ -984,7 +989,11 @@ fn template_transaction(tx: &Value) -> Transaction {
             p2pk_e: None,
             spend_info: None,
         })
-        .collect();
+        .collect()
+}
+
+/// A template vector's `tx`: proof inputs and change quote outputs only.
+fn template_transaction(tx: &Value) -> Transaction {
     let change: Vec<_> = tx["change_quote_outputs"]
         .as_array()
         .unwrap()
@@ -998,36 +1007,96 @@ fn template_transaction(tx: &Value) -> Transaction {
             id_preimage: hash(&v["id_preimage"]),
         })
         .collect();
-    Transaction::with_change(&proofs, &[], &[], &[], &change).unwrap()
+    Transaction::with_change(&template_proofs(tx), &[], &[], &[], &change).unwrap()
 }
 
 #[test]
 fn shared_template_leaf_vectors() {
+    use std::str::FromStr;
     let shared: Value = serde_json::from_str(include_str!("nutroot_v3_vectors.json")).unwrap();
     let case = &shared["template_lock"];
     let transaction = template_transaction(&case["tx"]);
-    assert_eq!(transaction.outputs(), bytes(&case["output_section"]));
-    let leaf = Leaf::from_bytes(&bytes(&case["leaf"])).unwrap();
-    assert_eq!(leaf.condition(), &Condition::Template(hash(&case["hash"])));
-    assert_eq!(leaf.to_bytes(), bytes(&case["leaf"]));
+    assert_eq!(transaction.as_bytes(), bytes(&case["transcript"]));
+    let dests: Vec<_> = case["dests"].as_array().unwrap().iter().map(key).collect();
+    let leaf_bytes = bytes(&case["leaf"]);
+    let leaf = Leaf::from_bytes(&leaf_bytes).unwrap();
+    assert_eq!(leaf.condition(), &Condition::Template(dests.clone()));
+    assert_eq!(leaf.to_bytes(), leaf_bytes);
     let secret = case["secret"].as_str().unwrap();
     let digest = transaction.input_digest(0).unwrap();
     assert_eq!(digest, hash(&case["input_digest"]));
     let witness: Witness = serde_json::from_str(case["witness"].as_str().unwrap()).unwrap();
     assert!(!witness
-        .verify_in(secret, digest, Some(transaction.outputs()), 0)
+        .verify_in(secret, digest, transaction.change_keys(), 0)
         .unwrap());
-    // Without the outputs, or with one byte of them changed, the leaf cannot be satisfied.
+    // Without the outputs the leaf cannot be satisfied.
     assert!(witness.verify(secret, digest, 0).is_err());
-    let rejected = bytes(&case["rejected_outputs"]["output_section"]);
+    // A change quote to a key outside dests, and a blinded message beside the change quotes,
+    // each fail the leaf although the signature is good for the digest.
+    let mut rejected = case["tx"].clone();
+    rejected["change_quote_outputs"] = case["rejected_outputs"]["change_quote_outputs"].clone();
+    let rejected = template_transaction(&rejected);
     assert!(witness
-        .verify_in(secret, digest, Some(&rejected), 0)
+        .verify_in(secret, digest, rejected.change_keys(), 0)
         .is_err());
-    // A template leaf carries no time.
-    let mut timed = bytes(&case["leaf"]);
-    let hash_at = timed.len() - 35;
-    timed.splice(hash_at..hash_at, [0x06, 0x00, 0x01, 0x01]);
-    assert!(Leaf::from_bytes(&timed).is_err());
+    let blinded = &shared["transcript"]["swap"]["tx"]["blinded_outputs"][0];
+    let blinded = crate::BlindedMessage {
+        amount: blinded["amount"].as_u64().unwrap().into(),
+        keyset_id: crate::nuts::Id::from_str(blinded["keyset_id"].as_str().unwrap()).unwrap(),
+        blinded_secret: crate::nuts::PublicKey::from_hex(blinded["B_"].as_str().unwrap()).unwrap(),
+        witness: None,
+    };
+    let change: Vec<_> = dests
+        .iter()
+        .zip(1u8..)
+        .map(|(pubkey, n)| ChangeOutput {
+            amount: Some(1.into()),
+            pubkey: *pubkey,
+            id_preimage: [n; 32],
+        })
+        .collect();
+    let mixed = Transaction::from_bytes(
+        Transaction::with_change(&template_proofs(&case["tx"]), &[], &[blinded], &[], &change)
+            .unwrap()
+            .as_bytes(),
+    )
+    .unwrap();
+    assert!(mixed.change_keys().is_none());
+    assert!(witness
+        .verify_in(secret, digest, mixed.change_keys(), 0)
+        .is_err());
+    // dests: at least one valid key, no repeats, on a template leaf only, and no time or hash.
+    let keys = leaf.keys().to_vec();
+    assert!(Leaf::new(1, keys.clone(), Condition::Template(vec![]), false).is_err());
+    assert!(Leaf::new(
+        1,
+        keys,
+        Condition::Template(vec![dests[0], dests[0]]),
+        false
+    )
+    .is_err());
+    let dests_at = leaf_bytes.len() - 69;
+    assert_eq!(leaf_bytes[dests_at], 0x0c);
+    let mut invalid = leaf_bytes.clone();
+    invalid[dests_at + 3] = 0x05;
+    assert!(Leaf::from_bytes(&invalid).is_err());
+    let mut repeated = leaf_bytes.clone();
+    repeated.splice(
+        dests_at + 36..,
+        leaf_bytes[dests_at + 3..dests_at + 36].to_vec(),
+    );
+    assert!(Leaf::from_bytes(&repeated).is_err());
+    let mut threshold = leaf_bytes.clone();
+    threshold[1] = 0x01;
+    assert!(Leaf::from_bytes(&threshold).is_err());
+    for field in [
+        vec![0x06, 0x00, 0x01, 0x01],
+        [vec![0x08, 0x00, 0x20], vec![1; 32]].concat(),
+    ] {
+        let mut extra = leaf_bytes.clone();
+        extra.splice(dests_at..dests_at, field);
+        assert!(Leaf::from_bytes(&extra).is_err());
+    }
     // An unallocated leaf type fails closed.
     assert!(Leaf::from_bytes(&bytes(&shared["leaf_forms"]["leaf_unknown_type"])).is_err());
 }
@@ -1037,25 +1106,27 @@ fn shared_template_escrow_vectors() {
     let shared: Value = serde_json::from_str(include_str!("nutroot_v3_vectors.json")).unwrap();
     let case = &shared["template_escrow"];
     let transaction = template_transaction(&case["tx"]);
-    assert_eq!(transaction.outputs(), bytes(&case["out_seller"]));
+    assert_eq!(transaction.as_bytes(), bytes(&case["transcript"]));
     assert_eq!(transaction.digest(), hash(&case["digest"]));
     let digest = transaction.input_digest(0).unwrap();
     assert_eq!(digest, hash(&case["input_digest"]));
-    for (leaf, out) in [
-        ("leaf_release", "hash_seller"),
-        ("leaf_refund", "hash_buyer"),
-    ] {
-        let leaf = Leaf::from_bytes(&bytes(&case[leaf])).unwrap();
-        assert_eq!(leaf.condition(), &Condition::Template(hash(&case[out])));
-    }
-    // The arbiter releases to the seller, through a two-hash path past the promoted coop leaf.
+    let arbiter = leaf(&case["leaf_arbiter"]);
+    assert_eq!(arbiter.keys(), &[key(&case["arbiter"])]);
+    assert_eq!(
+        arbiter.condition(),
+        &Condition::Template(vec![key(&case["buyer"]), key(&case["seller"])])
+    );
+    // The arbiter signs the seller's split, through a two-hash path past the promoted coop leaf.
     let witness: Witness = serde_json::from_str(case["witness"].as_str().unwrap()).unwrap();
     let secret = case["secret"].as_str().unwrap();
     assert!(!witness
-        .verify_in(secret, digest, Some(transaction.outputs()), 0)
+        .verify_in(secret, digest, transaction.change_keys(), 0)
         .unwrap());
-    // The release witness never satisfies the buyer's outcome or a self-dealing one.
+    // A remainder quote to the arbiter itself is outside dests.
+    let mut self_deal = case["tx"].clone();
+    self_deal["change_quote_outputs"] = case["self_deal"]["change_quote_outputs"].clone();
+    let self_deal = template_transaction(&self_deal);
     assert!(witness
-        .verify_in(secret, digest, Some(&bytes(&case["out_buyer"])), 0)
+        .verify_in(secret, digest, self_deal.change_keys(), 0)
         .is_err());
 }

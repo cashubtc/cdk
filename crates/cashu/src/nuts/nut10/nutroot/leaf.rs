@@ -15,8 +15,9 @@ pub enum Condition {
     Hashlock([u8; 32]),
     /// An inert commitment to external data; never spendable.
     Commit([u8; 32]),
-    /// Signatures are valid only in a transaction whose output section hashes to this digest.
-    Template([u8; 32]),
+    /// Signatures are valid only in a transaction whose every output is a change quote locked to
+    /// one of these keys.
+    Template(Vec<PublicKey>),
 }
 
 /// Validated version-zero declarative condition leaf.
@@ -62,6 +63,13 @@ impl Leaf {
         {
             return Err(Error::InvalidLeaf);
         }
+        // Destinations compare byte for byte with a change quote's lock key.
+        if let Condition::Template(dests) = &self.condition {
+            let mut seen = HashSet::new();
+            if dests.is_empty() || dests.iter().any(|key| !seen.insert(key)) {
+                return Err(Error::InvalidLeaf);
+            }
+        }
         if matches!(self.condition, Condition::After(time) if time > (1 << 53) - 1)
             || self.keys.len() > 15
             || self.to_bytes().len() > 513
@@ -78,7 +86,8 @@ impl Leaf {
         }
         let mut remaining = &bytes[2..];
         let mut last = 0;
-        let (mut n, mut keys, mut time, mut hash, mut disclosure) = (None, None, None, None, false);
+        let (mut n, mut keys, mut time, mut hash, mut disclosure, mut dests) =
+            (None, None, None, None, false, None);
         while !remaining.is_empty() {
             if remaining.len() < 3 {
                 return Err(Error::InvalidLeaf);
@@ -108,17 +117,25 @@ impl Leaf {
                 }
                 8 if len == 32 => hash = Some(value.try_into().map_err(|_| Error::InvalidLeaf)?),
                 10 if value == [1] => disclosure = true,
+                12 if len > 0 && len % 33 == 0 => {
+                    dests = Some(
+                        value
+                            .chunks_exact(33)
+                            .map(|key| PublicKey::from_slice(key).map_err(|_| Error::InvalidLeaf))
+                            .collect::<Result<Vec<_>, _>>()?,
+                    );
+                }
                 _ => return Err(Error::InvalidLeaf),
             }
         }
-        let condition = match (bytes[1], time, hash) {
-            (1, None, None) => Condition::Threshold,
-            (2, Some(time), None) => Condition::After(time),
-            (3, None, Some(hash)) => Condition::Hashlock(hash),
-            (4, None, Some(hash)) if n.is_none() && keys.is_none() && !disclosure => {
+        let condition = match (bytes[1], time, hash, dests) {
+            (1, None, None, None) => Condition::Threshold,
+            (2, Some(time), None, None) => Condition::After(time),
+            (3, None, Some(hash), None) => Condition::Hashlock(hash),
+            (4, None, Some(hash), None) if n.is_none() && keys.is_none() && !disclosure => {
                 Condition::Commit(hash)
             }
-            (5, None, Some(hash)) => Condition::Template(hash),
+            (5, None, None, Some(dests)) => Condition::Template(dests),
             _ => return Err(Error::InvalidLeaf),
         };
         let leaf = match condition {
@@ -150,15 +167,17 @@ impl Leaf {
             let keys: Vec<_> = self.keys.iter().flat_map(PublicKey::serialize).collect();
             record(&mut bytes, 4, &keys);
         }
-        match self.condition {
-            Condition::After(time) => record(&mut bytes, 6, &integer(time)),
-            Condition::Hashlock(hash) | Condition::Commit(hash) | Condition::Template(hash) => {
-                record(&mut bytes, 8, &hash)
-            }
-            Condition::Threshold => {}
+        match &self.condition {
+            Condition::After(time) => record(&mut bytes, 6, &integer(*time)),
+            Condition::Hashlock(hash) | Condition::Commit(hash) => record(&mut bytes, 8, hash),
+            Condition::Threshold | Condition::Template(_) => {}
         }
         if self.disclosure {
             record(&mut bytes, 10, &[1]);
+        }
+        if let Condition::Template(dests) = &self.condition {
+            let dests: Vec<_> = dests.iter().flat_map(PublicKey::serialize).collect();
+            record(&mut bytes, 12, &dests);
         }
         bytes
     }

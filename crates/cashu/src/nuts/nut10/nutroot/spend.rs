@@ -65,7 +65,7 @@ impl SpendRecord {
         let disclosure = witness.verify_in(
             &proof.secret.to_string(),
             input_digest,
-            Some(transaction.outputs()),
+            transaction.change_keys(),
             now,
         )?;
         Ok(Self {

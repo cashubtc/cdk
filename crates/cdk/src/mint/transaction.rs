@@ -690,7 +690,7 @@ impl Mint {
                     transcript
                         .input_digest(proofs.len() + index)
                         .map_err(cdk_common::nuts::nut10::Error::from)?,
-                    Some(transcript.outputs()),
+                    transcript.change_keys(),
                     now,
                 )
                 .map_err(cdk_common::nuts::nut10::Error::from)?;

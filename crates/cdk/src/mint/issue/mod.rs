@@ -900,7 +900,7 @@ impl Mint {
                             transaction
                                 .input_digest(quote_index)
                                 .map_err(crate::nuts::nut10::Error::from)?,
-                            Some(transaction.outputs()),
+                            transaction.change_keys(),
                             cdk_common::util::unix_time(),
                         )
                         // NUT-20: a quote without a valid signature is 20008, whatever the witness got wrong.

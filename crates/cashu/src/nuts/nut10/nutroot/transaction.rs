@@ -64,6 +64,7 @@ pub struct Transaction {
     transcript: Vec<u8>,
     inputs: Vec<Vec<u8>>,
     digest: [u8; 32],
+    change_keys: Option<Vec<bitcoin::secp256k1::PublicKey>>,
 }
 
 impl Transaction {
@@ -165,7 +166,9 @@ impl Transaction {
             record(&mut body, 3, output.quote_id().as_bytes())?;
             record(&mut transcript, CHANGE_QUOTE_OUTPUT, &body)?;
         }
-        Ok(Self::from_parts(transcript, inputs))
+        let change_keys = (outputs.is_empty() && melt_quotes.is_empty())
+            .then(|| change.iter().map(|output| output.pubkey).collect());
+        Ok(Self::from_parts(transcript, inputs, change_keys))
     }
 
     /// Parse a canonical transaction transcript for receipt verification.
@@ -181,6 +184,7 @@ impl Transaction {
         let mut output = false;
         let mut remainder = false;
         let mut change_ids = HashSet::new();
+        let mut change_keys = Some(vec![]);
         for (tag, value, full) in records {
             if tag < last || !matches!(tag >> 4, 1 | 2) {
                 return Err(Error::InvalidTransaction);
@@ -206,11 +210,14 @@ impl Transaction {
                 // A derived id is 64 lowercase hex characters (NUT-04).
                 let derived =
                     id.len() == 64 && id.iter().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
-                if !matches!(key, crate::nuts::PublicKey::Secp256k1(_))
-                    || !derived
-                    || !change_ids.insert(*id)
-                {
+                let crate::nuts::PublicKey::Secp256k1(key) = key else {
                     return Err(Error::InvalidTransaction);
+                };
+                if !derived || !change_ids.insert(*id) {
+                    return Err(Error::InvalidTransaction);
+                }
+                if let Some(keys) = change_keys.as_mut() {
+                    keys.push(key);
                 }
                 output = true;
                 continue;
@@ -281,20 +288,26 @@ impl Transaction {
                 inputs.push(full.to_vec());
             } else {
                 output = true;
+                change_keys = None;
             }
         }
         if inputs.is_empty() || !output {
             return Err(Error::InvalidTransaction);
         }
-        Ok(Self::from_parts(bytes.to_vec(), inputs))
+        Ok(Self::from_parts(bytes.to_vec(), inputs, change_keys))
     }
 
-    fn from_parts(transcript: Vec<u8>, inputs: Vec<Vec<u8>>) -> Self {
+    fn from_parts(
+        transcript: Vec<u8>,
+        inputs: Vec<Vec<u8>>,
+        change_keys: Option<Vec<bitcoin::secp256k1::PublicKey>>,
+    ) -> Self {
         let digest = Sha256::digest(&transcript).into();
         Self {
             transcript,
             inputs,
             digest,
+            change_keys,
         }
     }
 
@@ -321,10 +334,9 @@ impl Transaction {
     pub fn as_bytes(&self) -> &[u8] {
         &self.transcript
     }
-    /// The output section: every `0x2n` container, the bytes a template leaf hashes.
-    pub fn outputs(&self) -> &[u8] {
-        let inputs: usize = self.inputs.iter().map(Vec::len).sum();
-        &self.transcript[inputs..]
+    /// Lock keys of the change quote outputs, or `None` when any output is another type.
+    pub fn change_keys(&self) -> Option<&[bitcoin::secp256k1::PublicKey]> {
+        self.change_keys.as_deref()
     }
     /// Shared transaction digest, which is not itself a signing message.
     pub fn digest(&self) -> [u8; 32] {

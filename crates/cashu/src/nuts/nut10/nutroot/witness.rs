@@ -137,13 +137,14 @@ impl Witness {
         self.verify_in(secret, input_digest, None, now)
     }
 
-    /// [`Witness::verify`] with the transaction's output section, which a template leaf must
-    /// hash to.
+    /// [`Witness::verify`] with the transaction's change quote lock keys
+    /// ([`Transaction::change_keys`](super::Transaction::change_keys)), which a template leaf
+    /// must find in its destinations; `None` fails a template leaf.
     pub fn verify_in(
         &self,
         secret: &str,
         input_digest: [u8; 32],
-        outputs: Option<&[u8]>,
+        change_keys: Option<&[PublicKey]>,
         now: u64,
     ) -> Result<bool, Error> {
         let secret = parse_secret(secret)?;
@@ -187,10 +188,9 @@ impl Witness {
                     return Err(Error::InvalidWitness);
                 }
             }
-            Condition::Template(hash) => {
-                let outputs = outputs.ok_or(Error::InvalidWitness)?;
-                let actual: [u8; 32] = Sha256::digest(outputs).into();
-                if actual != *hash {
+            Condition::Template(dests) => {
+                let keys = change_keys.ok_or(Error::InvalidWitness)?;
+                if !keys.iter().all(|key| dests.contains(key)) {
                     return Err(Error::InvalidWitness);
                 }
             }
