@@ -1416,6 +1416,26 @@ impl Wallet {
     ) -> Result<FinalizedMelt, Error> {
         use cdk_common::wallet::{MeltSagaState, OperationData, WalletSagaState};
 
+        // Keep the durable saga authoritative. Socket events only wake recovery;
+        // a bounded fallback and safety check cover unsupported or silent mints.
+        let kind = match &payment_method {
+            PaymentMethod::Known(KnownMethod::Bolt11) => crate::nuts::nut17::Kind::Bolt11MeltQuote,
+            PaymentMethod::Known(KnownMethod::Bolt12) => crate::nuts::nut17::Kind::Bolt12MeltQuote,
+            PaymentMethod::Known(KnownMethod::Onchain) => {
+                crate::nuts::nut17::Kind::OnchainMeltQuote
+            }
+            PaymentMethod::Custom(method) => {
+                crate::nuts::nut17::Kind::Custom(format!("{method}_melt_quote"))
+            }
+        };
+        let params = crate::nuts::nut17::Params {
+            kind,
+            filters: vec![quote_id.to_owned()],
+            id: std::sync::Arc::new(Uuid::new_v4().to_string()),
+        };
+        let mut subscription = self.subscribe_with_options(params, false).await?;
+        let readiness = subscription.stream_readiness();
+        let mut fallback = Duration::from_secs(1);
         loop {
             let db_saga = self
                 .localstore
@@ -1471,7 +1491,19 @@ impl Wallet {
                     return Ok(finalized);
                 }
                 Some(_) => return Err(Error::PaymentFailed),
-                None => tokio::time::sleep(Duration::from_secs(1)).await,
+                None => {
+                    let delay = if readiness.is_streaming() {
+                        fallback = Duration::from_secs(1);
+                        Duration::from_secs(60)
+                    } else {
+                        let delay = fallback;
+                        fallback = fallback.saturating_mul(2).min(Duration::from_secs(30));
+                        delay
+                    };
+                    let _ = tokio::time::timeout(delay, subscription.recv()).await;
+                    // Coalesce updates produced during the same recovery pass.
+                    while subscription.try_recv().is_some() {}
+                }
             }
         }
     }
