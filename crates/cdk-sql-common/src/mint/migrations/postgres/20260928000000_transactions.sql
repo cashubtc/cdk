@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS mint_quote_id_claim (
     melt_quote_id TEXT
 );
 
+CREATE INDEX IF NOT EXISTS idx_melt_transaction_state ON melt_transaction(state);
+
 CREATE INDEX IF NOT EXISTS idx_mint_quote_id_claim_melt_quote_id ON mint_quote_id_claim(melt_quote_id);
 
 -- A payment request names one quote; change quotes share the empty request.

@@ -95,14 +95,26 @@ async fn outputs(mint: &Mint, amount: u64) -> (Vec<BlindedMessage>, PreMintSecre
 
 /// Build the transcript the mint will build and sign every input with its key.
 fn sign(request: &mut TransactionRequest, quote_keys: &[SecretKey], melt: Option<&MeltQuote>) {
+    sign_at(request, quote_keys, melt, &[]);
+}
+
+/// [`sign`] with each quote input bound at `issued` (0 where absent).
+fn sign_at(
+    request: &mut TransactionRequest,
+    quote_keys: &[SecretKey],
+    melt: Option<&MeltQuote>,
+    issued: &[u64],
+) {
     let mint_quotes: Vec<nutroot::MintQuoteInput> = request
         .mint_quote_inputs
         .iter()
         .zip(quote_keys)
-        .map(|(q, key)| nutroot::MintQuoteInput {
+        .enumerate()
+        .map(|(i, (q, key))| nutroot::MintQuoteInput {
             id: q.quote.clone(),
             amount: q.amount,
             pubkey: key.public_key(),
+            issued: issued.get(i).copied().unwrap_or(0).into(),
         })
         .collect();
     let melt_quotes: Vec<nutroot::Quote> = melt
@@ -335,6 +347,7 @@ async fn proofs_to_outputs_park_the_rest_in_a_change_quote() {
             id: change_id.to_string(),
             amount: 5.into(),
             pubkey: change_key.public_key(),
+            issued: Amount::ZERO,
         }],
         &redeem,
         &[],
@@ -395,7 +408,7 @@ async fn quote_inputs_draw_partially_and_never_past_mintable() {
         blinded_outputs: too_many,
         ..Default::default()
     };
-    sign(&mut request, std::slice::from_ref(&key), None);
+    sign_at(&mut request, std::slice::from_ref(&key), None, &[3]);
     assert!(matches!(
         mint.process_transaction(request, false).await,
         Err(Error::InvalidTransaction(_))
@@ -421,20 +434,26 @@ async fn quote_inputs_draw_partially_and_never_past_mintable() {
         blinded_outputs: short,
         ..Default::default()
     };
-    sign(&mut request, std::slice::from_ref(&key), None);
+    sign_at(&mut request, std::slice::from_ref(&key), None, &[3]);
     assert!(matches!(
         mint.process_transaction(request, false).await,
         Err(Error::TransactionUnbalanced(5, 4, 0))
     ));
 
-    // The remainder is still mintable.
+    // The remainder is still mintable, by a witness over the quote's current state: one signed
+    // at the state the first draw consumed is refused (NUT-10 `issued`).
     let (rest, _) = outputs(&mint, 5).await;
     let mut request = TransactionRequest {
         mint_quote_inputs: vec![quote_input(&quote_id, 5)],
         blinded_outputs: rest,
         ..Default::default()
     };
-    sign(&mut request, &[key], None);
+    sign(&mut request, std::slice::from_ref(&key), None);
+    assert!(matches!(
+        mint.process_transaction(request.clone(), false).await,
+        Err(Error::NUT10(_))
+    ));
+    sign_at(&mut request, &[key], None, &[3]);
     mint.process_transaction(request, false).await.unwrap();
     let quote = mint
         .localstore
@@ -667,6 +686,7 @@ async fn mint_quote_input_commits_the_amount_issued() {
             id: quote_id.to_string(),
             amount: 8.into(),
             pubkey: key.public_key(),
+            issued: Amount::ZERO,
         }],
         &blinded,
         &[],
@@ -691,6 +711,69 @@ async fn mint_quote_input_commits_the_amount_issued() {
 }
 
 #[tokio::test]
+async fn nut04_mint_refuses_a_witness_over_a_stale_issued() {
+    // A change quote of 8 (bolt11 NUT-04 mints only the full amount here), then a transaction
+    // draws 3 from it, so a NUT-04 mint of the rest must sign it at issued 3.
+    let mint = v3_mint().await;
+    let (funding, funding_key) = paid_locked_quote(&mint, 8).await;
+    let key = SecretKey::generate();
+    let change = change_output(&key, None);
+    let quote_id = derived_id(&change);
+    let mut fund = TransactionRequest {
+        mint_quote_inputs: vec![quote_input(&funding, 8)],
+        change_quote_outputs: vec![change],
+        ..Default::default()
+    };
+    sign(&mut fund, &[funding_key], None);
+    let prepared = mint.prepare_transaction(fund).await.unwrap();
+    mint.settle_without_melt(prepared).await.unwrap();
+    let mut draw = TransactionRequest {
+        mint_quote_inputs: vec![quote_input(&quote_id, 3)],
+        change_quote_outputs: vec![change_output(&SecretKey::generate(), Some(3))],
+        ..Default::default()
+    };
+    sign(&mut draw, std::slice::from_ref(&key), None);
+    let prepared = mint.prepare_transaction(draw).await.unwrap();
+    mint.settle_without_melt(prepared).await.unwrap();
+    let (blinded, _) = outputs(&mint, 5).await;
+    let request_at = |issued: u64| {
+        let transaction = Transaction::new(
+            &[],
+            &[nutroot::MintQuoteInput {
+                id: quote_id.to_string(),
+                amount: 5.into(),
+                pubkey: key.public_key(),
+                issued: issued.into(),
+            }],
+            &blinded,
+            &[],
+        )
+        .unwrap();
+        let signature = NutrootWitness::key_path(
+            key.as_secp256k1().unwrap(),
+            transaction.input_digest(0).unwrap(),
+        )
+        .signatures[0]
+            .clone();
+        MintInput::Single(MintRequest {
+            quote: quote_id.clone(),
+            outputs: blinded.clone(),
+            signature: Some(signature),
+        })
+    };
+    assert!(mint.process_mint_request(request_at(0)).await.is_err());
+    mint.process_mint_request(request_at(3)).await.unwrap();
+    let quote = mint
+        .localstore
+        .get_mint_quote(&quote_id)
+        .await
+        .unwrap()
+        .unwrap();
+    mint.stop().await.unwrap();
+    assert_eq!(Amount::from(quote.amount_issued()), Amount::from(8));
+}
+
+#[tokio::test]
 async fn change_quote_ids_are_claimed_at_acceptance() {
     // Also cover a fee consuming all value, which leaves a zero remainder.
     for fee_ppk in [0, 2000] {
@@ -699,16 +782,23 @@ async fn change_quote_ids_are_claimed_at_acceptance() {
         info.nuts.nutxx.quote_input_fee_ppk = fee_ppk;
         mint.set_mint_info(info).await.unwrap();
         let (id, key) = paid_locked_quote(&mint, 8).await;
+        let (other_id, other_key) = paid_locked_quote(&mint, 8).await;
         let change_key = SecretKey::generate();
         let mut request = TransactionRequest {
             mint_quote_inputs: vec![quote_input(&id, 2)],
             change_quote_outputs: vec![change_output(&change_key, None)],
             ..Default::default()
         };
+        // The same change quote id, drawn from another quote.
+        let mut other = TransactionRequest {
+            mint_quote_inputs: vec![quote_input(&other_id, 2)],
+            ..request.clone()
+        };
         sign(&mut request, &[key], None);
+        sign(&mut other, &[other_key], None);
         // Both requests validate before either claims its change quote id.
-        let first = mint.prepare_transaction(request.clone()).await.unwrap();
-        let second = mint.prepare_transaction(request).await.unwrap();
+        let first = mint.prepare_transaction(request).await.unwrap();
+        let second = mint.prepare_transaction(other).await.unwrap();
         assert_eq!(
             mint.settle_without_melt(first).await.unwrap().state,
             TransactionState::Paid
@@ -1049,6 +1139,79 @@ async fn melt_quote_reads_pending_until_its_transaction_settles() {
         .await
         .unwrap());
     assert_eq!(quote.state, MeltQuoteState::Paid);
+    mint.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_quote_drawn_by_a_pending_transaction_takes_no_other_draw() {
+    let mint = v3_mint().await;
+    let (quote_id, key) = paid_locked_quote(&mint, 8).await;
+    let melt = melt_quote(&mint, 2, true).await;
+    let mut tx = mint.localstore.begin_transaction().await.unwrap();
+    tx.add_transaction(&TransactionRecord {
+        melt_quote_id: melt.id.clone(),
+        state: TransactionState::Pending,
+        unit: CurrencyUnit::Sat,
+        quote_inputs: vec![(quote_id.clone(), Amount::from(4))],
+        change_outputs: vec![],
+        excess: Amount::ZERO,
+        created_time: 0,
+    })
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    // Another transaction, and a NUT-04 mint, both refused with 20005.
+    let (blinded, _) = outputs(&mint, 2).await;
+    let mut request = TransactionRequest {
+        mint_quote_inputs: vec![quote_input(&quote_id, 2)],
+        blinded_outputs: blinded,
+        ..Default::default()
+    };
+    sign(&mut request, std::slice::from_ref(&key), None);
+    assert!(matches!(
+        mint.process_transaction(request, false).await,
+        Err(Error::PendingQuote)
+    ));
+    let (full, _) = outputs(&mint, 8).await;
+    let transaction = Transaction::new(
+        &[],
+        &[nutroot::MintQuoteInput {
+            id: quote_id.to_string(),
+            amount: 8.into(),
+            pubkey: key.public_key(),
+            issued: Amount::ZERO,
+        }],
+        &full,
+        &[],
+    )
+    .unwrap();
+    let signature = NutrootWitness::key_path(
+        key.as_secp256k1().unwrap(),
+        transaction.input_digest(0).unwrap(),
+    )
+    .signatures[0]
+        .clone();
+    assert!(matches!(
+        mint.process_mint_request(MintInput::Single(MintRequest {
+            quote: quote_id.clone(),
+            outputs: full,
+            signature: Some(signature),
+        }))
+        .await,
+        Err(Error::PendingQuote)
+    ));
+    // Nothing is issued while the transaction is pending.
+    let quote = mint
+        .localstore
+        .get_mint_quote(&quote_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        quote.amount_issued(),
+        Amount::ZERO.with_unit(CurrencyUnit::Sat)
+    );
     mint.stop().await.unwrap();
 }
 

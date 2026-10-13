@@ -712,18 +712,6 @@ impl MintQuote {
         self.amount_issued.clone()
     }
 
-    /// Reverses an issuance in memory; the database layer persists the reversal.
-    pub fn remove_issuance(
-        &mut self,
-        amount: Amount<CurrencyUnit>,
-    ) -> Result<Amount<CurrencyUnit>, crate::Error> {
-        self.amount_issued = self
-            .amount_issued
-            .checked_sub(&amount)
-            .map_err(|_| crate::Error::AmountOverflow)?;
-        Ok(self.amount_issued.clone())
-    }
-
     /// Unix timestamp indicating when this quote was last updated.
     pub fn updated_at(&self) -> u64 {
         self.updated_at

@@ -253,6 +253,8 @@ impl MeltSaga<Initial> {
                 &mut tx,
                 &setup.record.unit,
                 &setup.record.quote_inputs,
+                &setup.quote_issued,
+                false,
             )
             .await
             {

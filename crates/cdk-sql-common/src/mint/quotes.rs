@@ -1311,45 +1311,6 @@ where
             .map(|quote| quote.map(|inner| inner.into()))
     }
 
-    async fn remove_mint_quote_issuance(
-        &mut self,
-        quote: &mut Acquired<MintQuote>,
-        amount: Amount,
-    ) -> Result<(), Self::Err> {
-        let unit = quote.unit.clone();
-        quote
-            .remove_issuance(amount.with_unit(unit))
-            .map_err(|e| Error::Internal(e.to_string()))?;
-        // Drop the newest issuance row of that amount; the quote row carries the total.
-        query(
-            r#"
-            DELETE FROM mint_quote_issued
-            WHERE id = (
-                SELECT id FROM mint_quote_issued
-                WHERE quote_id = :quote_id AND amount = :amount
-                ORDER BY id DESC LIMIT 1
-            )
-            "#,
-        )?
-        .bind("quote_id", quote.id.to_string())
-        .bind("amount", amount.to_i64())
-        .execute(&self.inner)
-        .await?;
-        query(
-            r#"
-            UPDATE mint_quote
-            SET amount_issued = :amount_issued, updated_at = :updated_at
-            WHERE id = :quote_id
-            "#,
-        )?
-        .bind("quote_id", quote.id.to_string())
-        .bind("amount_issued", quote.amount_issued().to_i64())
-        .bind("updated_at", unix_time() as i64)
-        .execute(&self.inner)
-        .await?;
-        Ok(())
-    }
-
     async fn add_transaction(&mut self, record: &mint::TransactionRecord) -> Result<(), Self::Err> {
         let quote_inputs = serde_json::to_string(
             &record
@@ -1405,6 +1366,19 @@ where
         get_transaction_inner(&self.inner, quote_id, true)
             .await
             .map(|record| record.map(Into::into))
+    }
+
+    async fn get_pending_transactions(
+        &mut self,
+    ) -> Result<Vec<mint::TransactionRecord>, Self::Err> {
+        query(&format!(
+            "SELECT {TRANSACTION_COLUMNS} FROM melt_transaction WHERE state = 'PENDING'"
+        ))?
+        .fetch_all(&self.inner)
+        .await?
+        .into_iter()
+        .map(sql_row_to_transaction)
+        .collect()
     }
 
     async fn update_transaction(

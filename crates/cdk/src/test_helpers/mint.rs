@@ -196,6 +196,7 @@ pub async fn mint_test_proofs(mint: &Mint, amount: Amount) -> Result<Proofs, Err
                 id: mint_quote.quote,
                 amount,
                 pubkey: quote_key.public_key(),
+                issued: Amount::ZERO,
             }],
             &request.outputs,
             &[],
