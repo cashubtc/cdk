@@ -3,10 +3,14 @@
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use bitcoincore_rpc::bitcoin::{Address, Amount};
-use bitcoincore_rpc::{Auth, Client, RpcApi};
+use bitcoincore_rpc::{jsonrpc, Auth, Client, RpcApi};
+
+// Mining the initial 200 blocks can exceed the default RPC timeout on busy CI runners.
+const BITCOIN_RPC_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Bitcoin client
 #[derive(Clone)]
@@ -33,7 +37,14 @@ impl BitcoinClient {
 
         println!("{}", addr.display());
 
-        let client = Client::new(&addr.display().to_string(), auth).unwrap();
+        let (user, pass) = auth.get_user_pass()?;
+        let mut transport = jsonrpc::simple_http::Builder::new()
+            .url(&addr.display().to_string())?
+            .timeout(BITCOIN_RPC_TIMEOUT);
+        if let Some(user) = user {
+            transport = transport.auth(user, pass);
+        }
+        let client = Client::from_jsonrpc(jsonrpc::Client::with_transport(transport.build()));
 
         Ok(Self {
             client: Arc::new(client),

@@ -389,7 +389,7 @@ pub async fn start_regtest_end(
     bitcoin_client.load_wallet()?;
 
     let new_add = bitcoin_client.get_new_address()?;
-    bitcoin_client.generate_blocks(&new_add, 200).unwrap();
+    bitcoin_client.generate_blocks(&new_add, 200)?;
 
     if skip_ln {
         // Send notification that regtest set up is complete
