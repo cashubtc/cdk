@@ -505,6 +505,9 @@ pub trait ProofsDatabase {
     /// Get total proofs redeemed by keyset id
     async fn get_total_redeemed(&self) -> Result<HashMap<Id, Amount>, Self::Err>;
 
+    /// Get the amount by keyset id that the mint is holding but has not burned
+    async fn get_total_reserved(&self) -> Result<HashMap<Id, Amount>, Self::Err>;
+
     /// Get proof ys by operation id
     async fn get_proof_ys_by_operation_id(
         &self,
@@ -672,6 +675,11 @@ pub trait CompletedOperationsDatabase {
 /// acquire all quote locks before taking row locks, and implementations must
 /// acquire a batch in stable order. Locks are held until the transaction
 /// commits or rolls back.
+///
+/// Per-keyset accounting rows are the implementation's business: it takes them
+/// once, at commit, after every other lock, so that a transaction holding one
+/// never goes on to wait for anything else. Callers must not take keyset-scoped
+/// locks of their own, which is why there is no `lock_keysets`.
 #[async_trait]
 pub trait Transaction<Error>:
     DbTransactionFinalizer<Err = Error>
@@ -703,6 +711,15 @@ pub trait Database<Error>:
 {
     /// Begins a transaction
     async fn begin_transaction(&self) -> Result<Box<dyn Transaction<Error> + Send + Sync>, Error>;
+
+    /// Repairs keysets whose recorded debits exceed what they issued.
+    ///
+    /// Defaulted to a no-op: a backend that keeps no per-keyset ledger has
+    /// nothing to reconcile. The invariant itself is held on the write path, so
+    /// a backend that skips this loses auditing and nothing else.
+    async fn reconcile_keyset_ledger(&self) -> Result<(), Error> {
+        Ok(())
+    }
 }
 
 /// Type alias for Mint Database

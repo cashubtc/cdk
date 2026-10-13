@@ -173,6 +173,10 @@ pub enum Error {
     /// Invalid keyset
     #[error("Unknown or invalid keyset")]
     InvalidKeysetId,
+    /// Spending these proofs would redeem more from a keyset than that keyset
+    /// ever issued, so the mint refuses the operation.
+    #[error("Keyset {0} would be redeemed beyond the amount it issued")]
+    KeysetOverRedeemed(crate::nuts::Id),
     #[cfg(feature = "mint")]
     /// Invalid state transition
     #[error("Invalid state transition")]
