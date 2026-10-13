@@ -1075,3 +1075,61 @@ async fn test_pay_invoice_twice() {
         (Amount::from(100) - melt.fee_paid() - melt.amount())
     );
 }
+
+/// Exercises the per-connection subscription limit against a running mintd, so
+/// the config plumbing from `[limits]` through to the WebSocket handler is
+/// covered end to end.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_websocket_subscription_limit_is_enforced() {
+    let limit = cdk_mintd::config::Limits::default().ws_max_subscriptions_per_connection;
+
+    let (ws_stream, _) = connect_async(format!(
+        "{}/v1/ws",
+        get_mint_url_from_env().replace("http", "ws")
+    ))
+    .await
+    .expect("Failed to connect");
+    let (mut write, mut reader) = ws_stream.split();
+
+    for id in 0..=limit {
+        write
+            .send(Message::Text(
+                serde_json::to_string(&json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "method": "subscribe",
+                    "params": {
+                        "kind": "bolt11_mint_quote",
+                        "filters": [uuid::Uuid::new_v4().to_string()],
+                        "subId": format!("limit-sub-{id}"),
+                    }
+                }))
+                .expect("subscribe request")
+                .into(),
+            ))
+            .await
+            .expect("send subscribe");
+
+        let response = timeout(Duration::from_secs(10), reader.next())
+            .await
+            .expect("response before timeout")
+            .expect("stream open")
+            .expect("websocket message");
+
+        let response: serde_json::Value =
+            serde_json::from_str(&response.into_text().expect("text response"))
+                .expect("json response");
+
+        if id < limit {
+            assert_eq!(
+                response["result"]["status"], "OK",
+                "subscription {id} below the limit should be accepted: {response}"
+            );
+        } else {
+            assert_eq!(
+                response["error"]["code"], -32000,
+                "subscription past the limit should be refused as busy: {response}"
+            );
+        }
+    }
+}
