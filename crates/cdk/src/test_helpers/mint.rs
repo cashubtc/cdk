@@ -137,6 +137,15 @@ pub async fn create_test_mint_with_version(version: Option<bool>) -> Result<Mint
 /// * `mint` - The test mint to use for creating proofs
 /// * `amount` - The total amount to create proofs for
 pub async fn mint_test_proofs(mint: &Mint, amount: Amount) -> Result<Proofs, Error> {
+    mint_test_proofs_signed_at(mint, amount, Amount::ZERO).await
+}
+
+/// [`mint_test_proofs`], with a v3 witness over the given `issued` instead of the quote's.
+pub async fn mint_test_proofs_signed_at(
+    mint: &Mint,
+    amount: Amount,
+    issued: Amount,
+) -> Result<Proofs, Error> {
     let quote_key = cdk_common::nuts::SecretKey::generate();
     let mint_quote: MintQuoteBolt11Response<_> = mint
         .get_mint_quote(
@@ -196,6 +205,7 @@ pub async fn mint_test_proofs(mint: &Mint, amount: Amount) -> Result<Proofs, Err
                 id: mint_quote.quote,
                 amount,
                 pubkey: quote_key.public_key(),
+                issued,
             }],
             &request.outputs,
             &[],
