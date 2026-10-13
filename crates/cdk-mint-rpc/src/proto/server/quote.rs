@@ -210,7 +210,8 @@ mod tests {
     use cdk_common::MintQuoteBolt11Request;
 
     use super::super::test_utils::{
-        create_test_rpc_server, create_test_rpc_server_with_payment_delay, UNKNOWN_QUOTE_ID,
+        create_test_rpc_server, create_test_rpc_server_with_keyset,
+        create_test_rpc_server_with_payment_delay, UNKNOWN_QUOTE_ID,
     };
     use super::*;
 
@@ -375,9 +376,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_quote_service_update_mint_quote_state_reports_state_of_issued_quote() {
-        let server = create_test_rpc_server_with_payment_delay(3600)
-            .await
-            .with_mint_quote_payment_override(true);
+        // Issues through an unlocked quote, which a v3 keyset refuses (NUT-04).
+        let server =
+            create_test_rpc_server_with_keyset(3600, Some(cdk::nuts::KeySetVersion::Version01))
+                .await
+                .with_mint_quote_payment_override(true);
         let quote_id = create_test_mint_quote(&server, 32).await;
 
         QuoteService::update_mint_quote_state(
