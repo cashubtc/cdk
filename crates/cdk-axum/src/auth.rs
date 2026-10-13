@@ -19,6 +19,10 @@ const BLIND_AUTH_KEY: &str = "Blind-auth";
 #[derive(Clone)]
 struct AuthorizedBody(axum::body::Bytes);
 
+/// The request target relative to the mint URL, as this layer sees it (NUT-10).
+#[derive(Clone)]
+struct AuthorizedTarget(String);
+
 /// Preserve the exact incoming HTTP bytes for version-02 blind authentication.
 /// Respect the same configured body limit as the JSON extractors.
 pub async fn bind_blind_auth_request(
@@ -39,6 +43,12 @@ pub async fn bind_blind_auth_request(
         }
     };
     parts.extensions.insert(AuthorizedBody(bytes.clone()));
+    // Inside any prefix the mint router is nested under, outside its own /v1 nest.
+    let target = parts
+        .uri
+        .path_and_query()
+        .map_or("/", |value| value.as_str());
+    parts.extensions.insert(AuthorizedTarget(target.to_owned()));
     next.run(axum::extract::Request::from_parts(
         parts,
         axum::body::Body::from(bytes),
@@ -97,19 +107,12 @@ where
                     StatusCode::BAD_REQUEST,
                     "Missing request authentication context".to_owned(),
                 ))?;
-                let uri = parts
-                    .extensions
-                    .get::<axum::extract::OriginalUri>()
-                    .map(|uri| &uri.0)
-                    .unwrap_or(&parts.uri);
-                let sent = uri
-                    .path_and_query()
-                    .map(|value| value.as_str())
-                    .unwrap_or("/");
-                // NUT-10: the target starts at the /v1/ segment, so a mint URL subpath is not signed.
-                let target = sent.find("/v1/").map_or(sent, |start| &sent[start..]);
+                let target = parts.extensions.get::<AuthorizedTarget>().ok_or((
+                    StatusCode::BAD_REQUEST,
+                    "Missing request authentication context".to_owned(),
+                ))?;
                 token
-                    .set_request_context(parts.method.as_str(), target, &body.0)
+                    .set_request_context(parts.method.as_str(), &target.0, &body.0)
                     .map_err(|_| {
                         (
                             StatusCode::BAD_REQUEST,
@@ -264,12 +267,13 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), expected);
         }
-        let prefixed = Router::new().nest("/cashu", router.clone());
+        // The mint's own prefix holds a /v1/ segment: only the nesting decides the cut.
+        let prefixed = Router::new().nest("/v1/cashu", router.clone());
         let response = prefixed
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/cashu/v1/swap?x=1")
+                    .uri("/v1/cashu/v1/swap?x=1")
                     .header(BLIND_AUTH_KEY, token.to_string())
                     .body(Body::from("{ }"))
                     .unwrap(),
