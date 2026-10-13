@@ -168,8 +168,14 @@ impl Mint {
         // Publish notification AFTER transaction commits so subscribers
         // see the committed state when they query.
         if should_notify {
-            if let Some(pubsub_manager) = pubsub_manager.as_ref() {
-                pubsub_manager.mint_quote_payment(&new_quote, new_quote.amount_paid());
+            match pubsub_manager.as_ref() {
+                Some(pubsub_manager) => {
+                    pubsub_manager.mint_quote_payment(&new_quote, new_quote.amount_paid())
+                }
+                None => tracing::warn!(
+                    quote_id = %new_quote.id,
+                    "mint quote payment committed without a pub/sub manager; no NUT-17 notification was published",
+                ),
             }
         }
 
