@@ -24,8 +24,19 @@ pub enum Error {
 }
 
 /// MintUrl Url
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+///
+/// Debug output omits URL credentials, query parameters, and fragments.
+/// Display and serialization retain the original formatted URL.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MintUrl(String);
+
+impl fmt::Debug for MintUrl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("MintUrl")
+            .field(&crate::redact::url_for_logs(&self.0))
+            .finish()
+    }
+}
 
 impl Serialize for MintUrl {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -131,6 +142,35 @@ mod tests {
 
     use super::*;
     use crate::Token;
+
+    #[test]
+    fn debug_redacts_credentials_without_changing_url() {
+        for value in [
+            "https://alice:password@mint.example/api?token=secret#fragment",
+            "https://alice:password@[::1]:8443/api?token=secret#fragment",
+            "https://mint.example",
+            "https://mint.example/api",
+        ] {
+            let url = MintUrl::from_str(value).expect("valid mint URL");
+            for debug in [format!("{url:?}"), format!("{url:#?}")] {
+                for sensitive in ["alice", "password", "secret", "fragment"] {
+                    assert!(!debug.contains(sensitive));
+                }
+                assert!(debug.contains(&crate::redact::url_for_logs(value)));
+            }
+            assert_eq!(url.to_string(), value);
+            assert_eq!(serde_json::to_value(&url).unwrap(), value);
+            let decoded: MintUrl = serde_json::from_value(serde_json::to_value(&url).unwrap())
+                .expect("URL round trip");
+            assert_eq!(decoded, url);
+        }
+    }
+
+    #[test]
+    fn debug_does_not_echo_malformed_url() {
+        let url = MintUrl("not a URL containing a password".to_owned());
+        assert_eq!(format!("{url:?}"), "MintUrl(\"[INVALID URL]\")");
+    }
 
     #[test]
     fn test_trim_trailing_slashes() {

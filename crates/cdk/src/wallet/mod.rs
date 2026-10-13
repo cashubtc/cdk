@@ -1,7 +1,7 @@
 #![doc = include_str!("./README.md")]
 
 use std::collections::HashMap;
-use std::fmt::Debug;
+use std::fmt;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -144,7 +144,7 @@ impl DerivationCounterNamespace {
 ///
 /// For pending mint quotes, call [`Wallet::mint_unissued_quotes`] which checks
 /// quote states with the mint and mints available tokens. This makes network calls.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Wallet {
     /// Mint Url
     pub mint_url: MintUrl,
@@ -171,6 +171,16 @@ pub struct Wallet {
     /// shares its per-host budgets, so this reconfigures the same limiter the
     /// transport paces through.
     rate_limiter: Option<RateLimiterManager>,
+}
+
+impl fmt::Debug for Wallet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Wallet")
+            .field("mint_url", &self.mint_url)
+            .field("unit", &self.unit)
+            .field("target_proof_count", &self.target_proof_count)
+            .finish_non_exhaustive()
+    }
 }
 
 const ALPHANUMERIC: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -1216,6 +1226,35 @@ mod tests {
     use super::*;
     use crate::nuts::{AuthToken, BlindSignature, BlindedMessage, PreMint, PreMintSecrets};
     use crate::secret::Secret;
+
+    #[tokio::test]
+    async fn wallet_debug_omits_seed_and_url_credentials() {
+        use crate::wallet::test_utils::{create_test_db, MockMintConnector};
+
+        let seed = [173u8; 64];
+        let wallet = WalletBuilder::new()
+            .mint_url(
+                "https://alice:password@mint.example/api?token=secret#fragment"
+                    .parse()
+                    .expect("valid mint URL"),
+            )
+            .unit(CurrencyUnit::Sat)
+            .localstore(create_test_db().await)
+            .seed(seed)
+            .shared_client(Arc::new(MockMintConnector::new()))
+            .build()
+            .expect("wallet should build");
+
+        for debug in [format!("{wallet:?}"), format!("{wallet:#?}")] {
+            assert!(debug.contains("https://mint.example/api"));
+            assert!(debug.contains("Sat"));
+            assert!(debug.contains("target_proof_count"));
+            for sensitive in ["seed", "173", "alice", "password", "secret", "fragment"] {
+                assert!(!debug.contains(sensitive));
+            }
+        }
+        assert_eq!(wallet.seed, seed);
+    }
 
     fn build_test_auth_keyset(seed_byte: u8) -> KeySet {
         let secp = Secp256k1::new();

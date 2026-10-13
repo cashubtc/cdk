@@ -346,7 +346,7 @@ mod tests {
 
         let debug = format!("{request:?}");
 
-        assert!(debug.contains("https://mint.example.com/api"));
+        assert!(debug.contains("https://mint.example.com/"));
         assert!(!debug.contains(secret));
     }
 

@@ -82,14 +82,14 @@ impl LightningAddress {
     }
 
     /// Fetch the LNURL-pay metadata from the service
-    #[instrument(skip(client))]
+    #[instrument(skip_all)]
     async fn fetch_pay_request_data(
         &self,
         client: &Arc<dyn MintConnector + Send + Sync>,
     ) -> Result<LnurlPayResponse, Error> {
         let url = self.to_url()?;
 
-        tracing::debug!("Fetching Lightning address pay data from: {}", url);
+        tracing::debug!("Fetching Lightning address pay data");
 
         // Make HTTP GET request to fetch the pay request data
         let lnurl_response = client.fetch_lnurl_pay_request(url.as_str()).await?;
@@ -103,7 +103,7 @@ impl LightningAddress {
     }
 
     /// Request an invoice from the Lightning address service with a specific amount
-    #[instrument(skip(client))]
+    #[instrument(skip_all)]
     pub(crate) async fn request_invoice(
         &self,
         client: &Arc<dyn MintConnector + Send + Sync>,
@@ -133,7 +133,7 @@ impl LightningAddress {
             .query_pairs_mut()
             .append_pair("amount", &amount_msat_u64.to_string());
 
-        tracing::debug!("Requesting invoice from callback: {}", callback_url);
+        tracing::debug!("Requesting invoice from Lightning address callback");
 
         // Fetch the invoice
         let invoice_response = client.fetch_lnurl_invoice(callback_url.as_str()).await?;

@@ -53,6 +53,7 @@ use crate::bip353::Bip353Address;
 use crate::error::Error;
 use crate::nuts::PaymentRequest;
 #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
+#[cfg(test)]
 use crate::wallet::util::escape_log_value;
 #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
 use crate::wallet::MintConnector;
@@ -217,37 +218,21 @@ pub async fn resolve_bip353_payment_instruction(
     network: bitcoin::Network,
 ) -> Result<ParsedPaymentInstruction, Error> {
     let address = Bip353Address::from_str(bip353_address).map_err(|e| {
-        tracing::error!(
-            "Failed to parse BIP353 address '{}': {}",
-            escape_log_value(bip353_address),
-            escape_log_value(&e)
-        );
+        tracing::error!("Failed to parse BIP353 address");
         Error::Bip353Parse(e.to_string())
     })?;
 
-    let address_string = address.to_string();
-    tracing::debug!(
-        "Resolving BIP353 address: {}",
-        escape_log_value(&address_string)
-    );
+    tracing::debug!("Resolving BIP353 address");
 
     let resolved_uri = address.resolve(client).await.map_err(|e| {
-        tracing::error!(
-            "Failed to resolve BIP353 address '{}': {}",
-            escape_log_value(&address_string),
-            escape_log_value(&e)
-        );
+        tracing::error!("Failed to resolve BIP353 address");
         Error::Bip353Resolve(e.to_string())
     })?;
 
     parse_payment_instruction(&resolved_uri, network)
         .await
         .map_err(|e| {
-            tracing::error!(
-                "Failed to parse resolved BIP353 payment instruction '{}': {}",
-                escape_log_value(&resolved_uri),
-                escape_log_value(&e)
-            );
+            tracing::error!("Failed to parse resolved BIP353 payment instruction");
             Error::Bip321Parse(format!("Invalid resolved bitcoin URI: {e}"))
         })
 }

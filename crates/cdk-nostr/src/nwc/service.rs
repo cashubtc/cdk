@@ -17,6 +17,8 @@
 //! - **No information leak / no panics**: every handler error is mapped to a
 //!   NIP-47 error response; the relay loop never aborts on a single bad request.
 
+use core::fmt;
+
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
@@ -55,6 +57,16 @@ const SUPPORTED_ENCRYPTION_SCHEMES: &str = "nip44_v2 nip04";
 /// protection. Bounded to keep memory usage flat on long-running services.
 const DEDUP_CAPACITY: usize = 10_000;
 
+fn relay_url_for_logs(relay: &RelayUrl) -> String {
+    let mut url = nostr::types::url::Url::from(relay.clone());
+    if url.set_password(None).is_err() || url.set_username("").is_err() {
+        return "[INVALID URL]".to_owned();
+    }
+    url.set_query(None);
+    url.set_fragment(None);
+    url.to_string()
+}
+
 /// Encryption scheme negotiated for a single request/response exchange.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Encryption {
@@ -65,7 +77,7 @@ enum Encryption {
 }
 
 /// Configuration for an [`NwcService`].
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct NwcServiceConfig {
     /// Keys of the wallet service (the "signer"). Its public key is the one
     /// advertised in the connection URI.
@@ -79,14 +91,45 @@ pub struct NwcServiceConfig {
     pub lud16: Option<String>,
 }
 
+impl fmt::Debug for NwcServiceConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NwcServiceConfig")
+            .field(
+                "relays",
+                &self
+                    .relays
+                    .iter()
+                    .map(relay_url_for_logs)
+                    .collect::<Vec<_>>(),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
 /// A NIP-47 wallet service bound to a single client connection.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct NwcService {
     service_keys: Keys,
     client_secret: SecretKey,
     client_pubkey: PublicKey,
     relays: Vec<RelayUrl>,
     lud16: Option<String>,
+}
+
+impl fmt::Debug for NwcService {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NwcService")
+            .field("client_pubkey", &self.client_pubkey)
+            .field(
+                "relays",
+                &self
+                    .relays
+                    .iter()
+                    .map(relay_url_for_logs)
+                    .collect::<Vec<_>>(),
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 impl NwcService {
@@ -433,6 +476,42 @@ impl Dedup {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn service_debug_redacts_credentials_without_changing_relays() {
+        let relay = RelayUrl::parse(
+            "wss://alice:relay-password@[::1]:8443/relay?token=query-secret#fragment-secret",
+        )
+        .expect("valid relay URL");
+        let config = NwcServiceConfig {
+            service_keys: Keys::generate(),
+            client_secret: Keys::generate().secret_key().clone(),
+            relays: vec![relay.clone()],
+            lud16: Some("private@example.com".to_owned()),
+        };
+        let service_secret = config.service_keys.secret_key().to_secret_hex();
+        let client_secret = config.client_secret.to_secret_hex();
+        let config_debug = format!("{config:?}");
+        let service = NwcService::new(config).expect("configured relay");
+        for debug in [config_debug, format!("{service:?}")] {
+            assert!(debug.contains("wss://[::1]:8443/relay"));
+            for secret in [
+                "service_keys",
+                "client_secret",
+                "lud16",
+                "alice",
+                "relay-password",
+                "query-secret",
+                "fragment-secret",
+                "private@example.com",
+                &service_secret,
+                &client_secret,
+            ] {
+                assert!(!debug.contains(secret));
+            }
+        }
+        assert_eq!(service.relays, vec![relay]);
+    }
 
     #[test]
     fn dedup_rejects_repeat_and_evicts_oldest() {

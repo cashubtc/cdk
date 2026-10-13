@@ -4,6 +4,7 @@ pub mod amount;
 pub mod dhke;
 pub mod mint_url;
 pub mod nuts;
+pub mod redact;
 pub mod secret;
 pub mod util;
 
