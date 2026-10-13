@@ -6,6 +6,7 @@
 //! There is an in memory implementation, when the keys are stored in memory, in the same process,
 //! but it is isolated from the rest of the application, and they communicate through a channel with
 //! the defined API.
+use bitcoin::bip32::DerivationPath;
 use cdk_common::common::IssuerVersion;
 use cdk_common::error::Error;
 use cdk_common::mint::MintKeySetInfo;
@@ -64,6 +65,13 @@ pub struct SignatoryKeySet {
     pub issuer_version: Option<IssuerVersion>,
     /// Version is the derivation_path_index
     pub version: u32,
+    /// Derivation path the keys were derived from.
+    ///
+    /// Carried across the signatory boundary because a build has to refuse a
+    /// rotation onto an occupied custom path before it writes anything, and keys
+    /// are a function of the xpriv and this path alone, so nothing else
+    /// identifies the collision.
+    pub derivation_path: DerivationPath,
 }
 
 impl SignatoryKeySet {
@@ -106,7 +114,7 @@ impl From<SignatoryKeySet> for MintKeySetInfo {
             unit: val.unit,
             active: val.active,
             input_fee_ppk: val.input_fee_ppk,
-            derivation_path: Default::default(),
+            derivation_path: val.derivation_path,
             derivation_path_index: Default::default(),
             amounts: val.amounts,
             final_expiry: val.final_expiry,
@@ -131,6 +139,7 @@ impl From<&(MintKeySetInfo, MintKeySet)> for SignatoryKeySet {
             version: info.derivation_path_index.unwrap_or(1),
             final_expiry: info.final_expiry,
             issuer_version: info.issuer_version.clone(),
+            derivation_path: info.derivation_path.clone(),
         }
     }
 }
@@ -176,7 +185,6 @@ mod tests {
     use std::collections::BTreeMap;
     use std::str::FromStr;
 
-    use bitcoin::bip32::DerivationPath;
     use bitcoin::secp256k1::Secp256k1;
     use cdk_common::nuts::nut01::Keys;
     use cdk_common::util::unix_time;
@@ -195,6 +203,7 @@ mod tests {
             final_expiry,
             issuer_version: None,
             version: 0,
+            derivation_path: DerivationPath::default(),
         }
     }
 
