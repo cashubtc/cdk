@@ -429,154 +429,18 @@ impl MintBuilder {
         }
 
         let settings = payment_processor.get_settings().await?;
+        let computed = processor_method_settings(&unit, &method, &limits, &settings);
 
-        match method {
-            // Handle bolt11 methods
-            PaymentMethod::Known(KnownMethod::Bolt11) => {
-                if let Some(ref bolt11_settings) = settings.bolt11 {
-                    // Add MPP support if available
-                    if bolt11_settings.mpp {
-                        let mpp_settings = MppMethodSettings {
-                            method: method.clone(),
-                            unit: unit.clone(),
-                        };
-
-                        let mut mpp = self.mint_info.nuts.nut15.clone();
-                        mpp.methods.push(mpp_settings);
-                        self.mint_info.nuts.nut15 = mpp;
-                    }
-
-                    // Add to NUT04 (mint)
-                    let mint_method_settings = MintMethodSettings {
-                        method: method.clone(),
-                        unit: unit.clone(),
-                        method_name: Some("Bolt11".to_string()),
-                        min_amount: Some(limits.mint_min),
-                        max_amount: Some(limits.mint_max),
-                        options: Some(MintMethodOptions::Bolt11 {
-                            description: bolt11_settings.invoice_description,
-                        }),
-                    };
-                    self.mint_info.nuts.nut04.methods.push(mint_method_settings);
-                    self.mint_info.nuts.nut04.disabled = false;
-
-                    // Add to NUT05 (melt)
-                    let melt_method_settings = MeltMethodSettings {
-                        method: method.clone(),
-                        unit: unit.clone(),
-                        method_name: Some("Bolt11".to_string()),
-                        min_amount: Some(limits.melt_min),
-                        max_amount: Some(limits.melt_max),
-                        options: Some(MeltMethodOptions::Bolt11 {
-                            amountless: bolt11_settings.amountless,
-                        }),
-                    };
-                    self.mint_info.nuts.nut05.methods.push(melt_method_settings);
-                    self.mint_info.nuts.nut05.disabled = false;
-                }
-            }
-            // Handle bolt12 methods
-            PaymentMethod::Known(KnownMethod::Bolt12) => {
-                if let Some(bolt12_settings) = &settings.bolt12 {
-                    // Add to NUT04 (mint)
-                    let mint_method_settings = MintMethodSettings {
-                        method: method.clone(),
-                        unit: unit.clone(),
-                        method_name: Some("Bolt12".to_string()),
-                        min_amount: Some(limits.mint_min),
-                        max_amount: Some(limits.mint_max),
-                        options: Some(MintMethodOptions::Bolt12 {
-                            description: bolt12_settings.invoice_description,
-                        }),
-                    };
-                    self.mint_info.nuts.nut04.methods.push(mint_method_settings);
-                    self.mint_info.nuts.nut04.disabled = false;
-
-                    // Add to NUT05 (melt) - bolt12 doesn't have specific options in MeltMethodOptions yet
-                    let melt_method_settings = MeltMethodSettings {
-                        method: method.clone(),
-                        unit: unit.clone(),
-                        method_name: Some("Bolt12".to_string()),
-                        min_amount: Some(limits.melt_min),
-                        max_amount: Some(limits.melt_max),
-                        options: None, // No bolt12-specific options in NUT05 yet
-                    };
-                    self.mint_info.nuts.nut05.methods.push(melt_method_settings);
-                    self.mint_info.nuts.nut05.disabled = false;
-                }
-            }
-            // Handle custom methods
-            PaymentMethod::Custom(_) => {
-                // Check if this custom method is supported by the payment processor
-                if settings.custom.contains_key(method.as_str()) {
-                    // Add to NUT04 (mint)
-                    let mint_method_settings = MintMethodSettings {
-                        method: method.clone(),
-                        unit: unit.clone(),
-                        method_name: None,
-                        min_amount: Some(limits.mint_min),
-                        max_amount: Some(limits.mint_max),
-                        options: Some(MintMethodOptions::Custom {}),
-                    };
-                    self.mint_info.nuts.nut04.methods.push(mint_method_settings);
-                    self.mint_info.nuts.nut04.disabled = false;
-
-                    // Add to NUT05 (melt)
-                    let melt_method_settings = MeltMethodSettings {
-                        method: method.clone(),
-                        unit: unit.clone(),
-                        method_name: None,
-                        min_amount: Some(limits.melt_min),
-                        max_amount: Some(limits.melt_max),
-                        options: None, // No custom-specific options in NUT05 yet
-                    };
-                    self.mint_info.nuts.nut05.methods.push(melt_method_settings);
-                    self.mint_info.nuts.nut05.disabled = false;
-                }
-            }
-            // Handle onchain methods
-            PaymentMethod::Known(KnownMethod::Onchain) => {
-                if let Some(onchain_settings) = settings.onchain {
-                    let mint_min = Amount::from(
-                        limits
-                            .mint_min
-                            .to_u64()
-                            .max(onchain_settings.min_receive_amount_sat),
-                    );
-                    let melt_min = Amount::from(
-                        limits
-                            .melt_min
-                            .to_u64()
-                            .max(onchain_settings.min_send_amount_sat),
-                    );
-
-                    // Add to NUT04 (mint)
-                    let mint_method_settings = MintMethodSettings {
-                        method: method.clone(),
-                        unit: unit.clone(),
-                        method_name: Some("Onchain".to_string()),
-                        min_amount: Some(mint_min),
-                        max_amount: Some(limits.mint_max),
-                        options: Some(MintMethodOptions::Onchain {
-                            confirmations: onchain_settings.confirmations,
-                        }),
-                    };
-                    self.mint_info.nuts.nut04.methods.push(mint_method_settings);
-                    self.mint_info.nuts.nut04.disabled = false;
-
-                    // Add to NUT05 (melt)
-                    let melt_method_settings = MeltMethodSettings {
-                        method: method.clone(),
-                        unit: unit.clone(),
-                        method_name: Some("Onchain".to_string()),
-                        min_amount: Some(melt_min),
-                        max_amount: Some(limits.melt_max),
-                        options: None,
-                    };
-                    self.mint_info.nuts.nut05.methods.push(melt_method_settings);
-                    self.mint_info.nuts.nut05.disabled = false;
-                }
-            }
+        if let Some(mpp_settings) = computed.mpp {
+            self.mint_info.nuts.nut15.methods.push(mpp_settings);
+        }
+        if let Some(mint_method_settings) = computed.mint {
+            self.mint_info.nuts.nut04.methods.push(mint_method_settings);
+            self.mint_info.nuts.nut04.disabled = false;
+        }
+        if let Some(melt_method_settings) = computed.melt {
+            self.mint_info.nuts.nut05.methods.push(melt_method_settings);
+            self.mint_info.nuts.nut05.disabled = false;
         }
 
         // Check that the unit has been pre-configured
@@ -794,6 +658,175 @@ impl MintMeltLimits {
             mint_max: max.into(),
             melt_min: min.into(),
             melt_max: max.into(),
+        }
+    }
+}
+
+/// NUT-04/NUT-05/NUT-15 settings derived from a processor's reported
+/// capabilities for one `(unit, method)` pair. A `None` field means the
+/// processor's settings don't support that side of the method.
+pub(crate) struct ProcessorMethodSettings {
+    /// NUT-04 (mint) entry to add, if the processor supports minting this way.
+    pub mint: Option<MintMethodSettings>,
+    /// NUT-05 (melt) entry to add, if the processor supports melting this way.
+    pub melt: Option<MeltMethodSettings>,
+    /// NUT-15 MPP entry to add, if the backend advertises MPP support.
+    pub mpp: Option<MppMethodSettings>,
+}
+
+/// Computes [`ProcessorMethodSettings`] for `unit`/`method`.
+///
+/// Shared by [`MintBuilder::add_payment_processor`] and
+/// `Mint::register_payment_processor` so the build-time and runtime
+/// registration paths can never drift apart.
+pub(crate) fn processor_method_settings(
+    unit: &CurrencyUnit,
+    method: &PaymentMethod,
+    limits: &MintMeltLimits,
+    settings: &cdk_common::payment::SettingsResponse,
+) -> ProcessorMethodSettings {
+    match method {
+        PaymentMethod::Known(KnownMethod::Bolt11) => {
+            let Some(bolt11_settings) = settings.bolt11.as_ref() else {
+                return ProcessorMethodSettings {
+                    mint: None,
+                    melt: None,
+                    mpp: None,
+                };
+            };
+
+            let mpp = bolt11_settings.mpp.then(|| MppMethodSettings {
+                method: method.clone(),
+                unit: unit.clone(),
+            });
+
+            ProcessorMethodSettings {
+                mint: Some(MintMethodSettings {
+                    method: method.clone(),
+                    unit: unit.clone(),
+                    method_name: Some("Bolt11".to_string()),
+                    min_amount: Some(limits.mint_min),
+                    max_amount: Some(limits.mint_max),
+                    options: Some(MintMethodOptions::Bolt11 {
+                        description: bolt11_settings.invoice_description,
+                    }),
+                }),
+                melt: Some(MeltMethodSettings {
+                    method: method.clone(),
+                    unit: unit.clone(),
+                    method_name: Some("Bolt11".to_string()),
+                    min_amount: Some(limits.melt_min),
+                    max_amount: Some(limits.melt_max),
+                    options: Some(MeltMethodOptions::Bolt11 {
+                        amountless: bolt11_settings.amountless,
+                    }),
+                }),
+                mpp,
+            }
+        }
+        PaymentMethod::Known(KnownMethod::Bolt12) => {
+            let Some(bolt12_settings) = settings.bolt12.as_ref() else {
+                return ProcessorMethodSettings {
+                    mint: None,
+                    melt: None,
+                    mpp: None,
+                };
+            };
+
+            ProcessorMethodSettings {
+                mint: Some(MintMethodSettings {
+                    method: method.clone(),
+                    unit: unit.clone(),
+                    method_name: Some("Bolt12".to_string()),
+                    min_amount: Some(limits.mint_min),
+                    max_amount: Some(limits.mint_max),
+                    options: Some(MintMethodOptions::Bolt12 {
+                        description: bolt12_settings.invoice_description,
+                    }),
+                }),
+                melt: Some(MeltMethodSettings {
+                    method: method.clone(),
+                    unit: unit.clone(),
+                    method_name: Some("Bolt12".to_string()),
+                    min_amount: Some(limits.melt_min),
+                    max_amount: Some(limits.melt_max),
+                    options: None, // No bolt12-specific options in NUT05 yet
+                }),
+                mpp: None,
+            }
+        }
+        PaymentMethod::Custom(_) => {
+            if !settings.custom.contains_key(method.as_str()) {
+                return ProcessorMethodSettings {
+                    mint: None,
+                    melt: None,
+                    mpp: None,
+                };
+            }
+
+            ProcessorMethodSettings {
+                mint: Some(MintMethodSettings {
+                    method: method.clone(),
+                    unit: unit.clone(),
+                    method_name: None,
+                    min_amount: Some(limits.mint_min),
+                    max_amount: Some(limits.mint_max),
+                    options: Some(MintMethodOptions::Custom {}),
+                }),
+                melt: Some(MeltMethodSettings {
+                    method: method.clone(),
+                    unit: unit.clone(),
+                    method_name: None,
+                    min_amount: Some(limits.melt_min),
+                    max_amount: Some(limits.melt_max),
+                    options: None, // No custom-specific options in NUT05 yet
+                }),
+                mpp: None,
+            }
+        }
+        PaymentMethod::Known(KnownMethod::Onchain) => {
+            let Some(onchain_settings) = settings.onchain.as_ref() else {
+                return ProcessorMethodSettings {
+                    mint: None,
+                    melt: None,
+                    mpp: None,
+                };
+            };
+
+            let mint_min = Amount::from(
+                limits
+                    .mint_min
+                    .to_u64()
+                    .max(onchain_settings.min_receive_amount_sat),
+            );
+            let melt_min = Amount::from(
+                limits
+                    .melt_min
+                    .to_u64()
+                    .max(onchain_settings.min_send_amount_sat),
+            );
+
+            ProcessorMethodSettings {
+                mint: Some(MintMethodSettings {
+                    method: method.clone(),
+                    unit: unit.clone(),
+                    method_name: Some("Onchain".to_string()),
+                    min_amount: Some(mint_min),
+                    max_amount: Some(limits.mint_max),
+                    options: Some(MintMethodOptions::Onchain {
+                        confirmations: onchain_settings.confirmations,
+                    }),
+                }),
+                melt: Some(MeltMethodSettings {
+                    method: method.clone(),
+                    unit: unit.clone(),
+                    method_name: Some("Onchain".to_string()),
+                    min_amount: Some(melt_min),
+                    max_amount: Some(limits.melt_max),
+                    options: None,
+                }),
+                mpp: None,
+            }
         }
     }
 }
