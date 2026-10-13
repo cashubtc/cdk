@@ -26,6 +26,14 @@ pub(super) async fn create_test_rpc_server() -> MintRPCServer {
 /// Tests that drive quote state themselves pass a delay long enough that
 /// the backend never reports a payment of its own.
 pub(super) async fn create_test_rpc_server_with_payment_delay(payment_delay: u64) -> MintRPCServer {
+    create_test_rpc_server_with_keyset(payment_delay, None).await
+}
+
+/// [`create_test_rpc_server_with_payment_delay`] on a given keyset version.
+pub(super) async fn create_test_rpc_server_with_keyset(
+    payment_delay: u64,
+    keyset_version: Option<cdk::nuts::KeySetVersion>,
+) -> MintRPCServer {
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
 
     let mut mint_builder = MintBuilder::new(db.clone());
@@ -58,6 +66,9 @@ pub(super) async fn create_test_rpc_server_with_payment_delay(payment_delay: u64
     mint_builder = mint_builder
         .with_name("test mint".to_string())
         .with_description("test mint".to_string());
+    if let Some(version) = keyset_version {
+        mint_builder = mint_builder.with_keyset_version(version);
+    }
 
     let mint = mint_builder
         .build_with_seed(db.clone(), &mnemonic.to_seed_normalized(""))
