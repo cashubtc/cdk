@@ -433,6 +433,13 @@ pub trait ProofsTransaction {
     /// Mint Proof Database Error
     type Err: Into<Error> + From<Error>;
 
+    /// Store recovery randomness on acquired spent proofs in the finalization transaction.
+    async fn set_unpoisonable_r(
+        &mut self,
+        proofs: &Acquired<ProofsWithState>,
+        r: [u8; 32],
+    ) -> Result<(), Self::Err>;
+
     /// Add  [`Proofs`]
     ///
     /// Adds proofs to the database. The database should error if the proof already exits, with a
@@ -485,6 +492,12 @@ pub trait ProofsTransaction {
 pub trait ProofsDatabase {
     /// Mint Proof Database Error
     type Err: Into<Error> + From<Error>;
+
+    /// Fetch recovery randomness for spent inputs only, keyed by Y.
+    async fn get_unpoisonable_r(
+        &self,
+        ys: &[PublicKey],
+    ) -> Result<HashMap<PublicKey, [u8; 32]>, Self::Err>;
 
     /// Get [`Proofs`] by ys
     async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err>;

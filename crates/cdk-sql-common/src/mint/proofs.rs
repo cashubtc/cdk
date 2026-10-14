@@ -117,6 +117,31 @@ where
 {
     type Err = Error;
 
+    async fn set_unpoisonable_r(
+        &mut self,
+        proofs: &Acquired<ProofsWithState>,
+        r: [u8; 32],
+    ) -> Result<(), Self::Err> {
+        if proofs.state != State::Spent {
+            return Err(Error::Internal(
+                "Recovery randomness requires spent proofs".to_owned(),
+            ));
+        }
+        for y in proofs.ys()? {
+            let changed = query("UPDATE proof SET unpoisonable_r = :r WHERE y = :y AND state = 'SPENT' AND unpoisonable_r IS NULL")?
+                .bind("r", r.to_vec())
+                .bind("y", y.to_bytes().to_vec())
+                .execute(&self.inner)
+                .await?;
+            if changed != 1 {
+                return Err(Error::Internal(
+                    "Recovery randomness update did not affect exactly one proof".to_owned(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Adds proofs to the database with initial state `Unspent`.
     ///
     /// This method first checks if any of the proofs already exist in the database.
@@ -426,6 +451,29 @@ where
     RM: DatabasePool + 'static,
 {
     type Err = Error;
+
+    async fn get_unpoisonable_r(
+        &self,
+        ys: &[PublicKey],
+    ) -> Result<HashMap<PublicKey, [u8; 32]>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query("SELECT y, unpoisonable_r FROM proof WHERE y IN (:ys) AND state = 'SPENT' AND unpoisonable_r IS NOT NULL")?
+            .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
+            .fetch_all(&*conn)
+            .await?
+            .into_iter()
+            .map(|row| {
+                let y = column_as_string!(&row[0], PublicKey::from_hex, PublicKey::from_slice);
+                let bytes = crate::column_as_binary!(&row[1]);
+                let r = bytes.try_into().map_err(|_| Error::InvalidDbResponse)?;
+                Ok((y, r))
+            })
+            .collect()
+    }
 
     async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err> {
         let conn = self

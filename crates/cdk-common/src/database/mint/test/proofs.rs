@@ -13,6 +13,66 @@ use crate::database::mint::{Database, DynMintDatabase, Error, KeysDatabase, Proo
 use crate::mint::Operation;
 use crate::state::check_state_transition;
 
+/// Recovery randomness is written only on spent, acquired inputs and rolls back with state.
+pub async fn unpoisonable_recovery_storage<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    let keyset_id = setup_keyset(&db).await;
+    let proofs = vec![Proof {
+        amount: Amount::ONE,
+        keyset_id,
+        secret: Secret::generate(),
+        c: SecretKey::generate().public_key(),
+        witness: None,
+        dleq: None,
+        p2pk_e: None,
+    }];
+    let ys = vec![proofs[0].y().unwrap()];
+    let operation = Operation::new_swap(Amount::ONE, Amount::ONE, Amount::ZERO);
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut acquired = tx.add_proofs(proofs, None, &operation).await.unwrap();
+    tx.update_proofs_state(&mut acquired, State::Pending)
+        .await
+        .unwrap();
+    assert!(tx.set_unpoisonable_r(&acquired, [42; 32]).await.is_err());
+    tx.commit().await.unwrap();
+    assert!(db.get_unpoisonable_r(&ys).await.unwrap().is_empty());
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut acquired = tx.get_proofs(&ys).await.unwrap();
+    tx.update_proofs_state(&mut acquired, State::Spent)
+        .await
+        .unwrap();
+    tx.set_unpoisonable_r(&acquired, [42; 32]).await.unwrap();
+    tx.rollback().await.unwrap();
+    assert_eq!(
+        db.get_proofs_states(&ys).await.unwrap(),
+        vec![Some(State::Pending)]
+    );
+    assert!(db.get_unpoisonable_r(&ys).await.unwrap().is_empty());
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut acquired = tx.get_proofs(&ys).await.unwrap();
+    tx.update_proofs_state(&mut acquired, State::Spent)
+        .await
+        .unwrap();
+    tx.set_unpoisonable_r(&acquired, [42; 32]).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(
+        db.get_unpoisonable_r(&ys).await.unwrap().get(&ys[0]),
+        Some(&[42; 32])
+    );
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let acquired = tx.get_proofs(&ys).await.unwrap();
+    assert!(tx.set_unpoisonable_r(&acquired, [43; 32]).await.is_err());
+    tx.rollback().await.unwrap();
+    assert_eq!(
+        db.get_unpoisonable_r(&ys).await.unwrap().get(&ys[0]),
+        Some(&[42; 32])
+    );
+}
+
 /// Test get proofs by keyset id
 pub async fn get_proofs_by_keyset_id<DB>(db: DB)
 where
