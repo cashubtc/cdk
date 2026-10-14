@@ -1,3 +1,4 @@
+use cdk_common::nuts::nut03::tweak_swap_outputs;
 use cdk_common::SpendingConditionVerification;
 use swap_saga::SwapSaga;
 use tracing::instrument;
@@ -44,9 +45,30 @@ impl Mint {
             // and HTLC (including SIGALL)
             swap_request.verify_spending_conditions()?;
 
-            // Signature authorization is implemented before the output-tweaking
-            // execution path. Do not execute this request as an ordinary swap.
+            // Prepare the execution points while R is private. The next slice will
+            // reserve these points in TX1 and persist R with the signatures in TX2.
+            // Until then do not enter the saga or disclose R to the client.
             if swap_request.is_unpoisonable() {
+                Self::check_outputs_unique(swap_request.outputs())?;
+
+                // Retrying cannot fix duplicate originals, but can fix a rare
+                // collision between distinct derived points. Even one collision
+                // is extraordinarily unlikely (see the collision discussion at
+                // https://gist.github.com/SatsAndSports/6c197ca9da984c1922483e74281d38db).
+                // The limit bounds retries if something is unexpectedly broken.
+                let mut prepared = false;
+                for _ in 0..16 {
+                    let mut r = [0u8; 32];
+                    getrandom::fill(&mut r).map_err(|_| Error::Internal)?;
+                    let tweaked_outputs = tweak_swap_outputs(&r, swap_request.outputs())?;
+                    if Self::check_outputs_unique(&tweaked_outputs).is_ok() {
+                        prepared = true;
+                        break;
+                    }
+                }
+                if !prepared {
+                    return Err(Error::Internal);
+                }
                 return Err(Error::Custom(
                     "Unpoisonable swap execution is not implemented".to_owned(),
                 ));

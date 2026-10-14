@@ -2,14 +2,21 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/03.md>
 
+use bitcoin::hashes::sha256::Hash as Sha256Hash;
+use bitcoin::hashes::Hash;
+use bitcoin::secp256k1::{Scalar, SecretKey};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[cfg(feature = "wallet")]
 use super::nut00::PreMintSecrets;
 use super::nut00::{BlindSignature, BlindedMessage, Proofs};
+use super::nut01::PublicKey;
 use super::ProofsMethods;
 use crate::Amount;
+use crate::SECP256K1;
+
+const UNPOISONABLE_TWEAK_DOMAIN: &[u8] = b"Cashu/Unpoisonable/secp256k1/v1\0";
 
 /// NUT03 Error
 #[derive(Debug, Error)]
@@ -20,6 +27,53 @@ pub enum Error {
     /// Amount Error
     #[error(transparent)]
     Amount(#[from] crate::amount::Error),
+}
+
+/// Derive a nonzero secp256k1 scalar from the mint's 32-byte random value and an original point.
+///
+/// Rejection sampling uses a big-endian counter, starting at zero, until the SHA-256
+/// digest represents an integer in `[1, n-1]`. Points use compressed SEC1 encoding.
+pub fn derive_unpoisonable_tweak(r: &[u8; 32], original: &PublicKey) -> Result<Scalar, Error> {
+    for counter in 0..=u32::MAX {
+        let mut preimage = Vec::with_capacity(UNPOISONABLE_TWEAK_DOMAIN.len() + 32 + 33 + 4);
+        preimage.extend_from_slice(UNPOISONABLE_TWEAK_DOMAIN);
+        preimage.extend_from_slice(r);
+        preimage.extend_from_slice(&original.to_bytes());
+        preimage.extend_from_slice(&counter.to_be_bytes());
+        let digest = Sha256Hash::hash(&preimage).to_byte_array();
+        if let Ok(secret) = SecretKey::from_slice(&digest) {
+            return Ok(Scalar::from(secret));
+        }
+    }
+    Err(crate::dhke::Error::Custom("Could not derive a nonzero tweak".to_owned()).into())
+}
+
+/// Derive a tweaked blinded point using the same `R` as the other outputs in a swap.
+pub fn tweak_blinded_point(r: &[u8; 32], original: &PublicKey) -> Result<PublicKey, Error> {
+    let tweak = derive_unpoisonable_tweak(r, original)?;
+    Ok(original
+        .mul_tweak(&SECP256K1, &tweak)
+        .map_err(crate::dhke::Error::from)?
+        .into())
+}
+
+/// Build the execution outputs for an unpoisonable swap, retaining their original order.
+///
+/// Callers must check that the original points are distinct before deriving outputs.
+/// A collision between tweaked points requires choosing a new `R`.
+pub fn tweak_swap_outputs(
+    r: &[u8; 32],
+    original: &[BlindedMessage],
+) -> Result<Vec<BlindedMessage>, Error> {
+    original
+        .iter()
+        .map(|output| {
+            let point = tweak_blinded_point(r, &output.blinded_secret)?;
+            let mut output = output.clone();
+            output.blinded_secret = point;
+            Ok(output)
+        })
+        .collect()
 }
 
 /// Preswap information
@@ -264,5 +318,60 @@ mod tests {
         .unwrap();
 
         assert_eq!(response.promises_amount().unwrap(), Amount::from(12));
+    }
+
+    #[test]
+    fn unpoisonable_tweak_vector_and_signing_linearity() {
+        let r = [0x42; 32];
+        let original = PublicKey::from_hex(
+            "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+        )
+        .unwrap();
+        let scalar = derive_unpoisonable_tweak(&r, &original).unwrap();
+        assert_eq!(
+            scalar.to_be_bytes(),
+            crate::util::hex::decode(
+                "b99dcc04615c5c74c8797e18e4e3c38d915f06677ba60c95fec1af2e105aeeea"
+            )
+            .unwrap()
+            .as_slice()
+        );
+
+        let mint_key = crate::nuts::nut01::SecretKey::generate();
+        let signed_tweaked =
+            crate::dhke::sign_message(&mint_key, &tweak_blinded_point(&r, &original).unwrap())
+                .unwrap();
+        let signed_original = crate::dhke::sign_message(&mint_key, &original).unwrap();
+        assert_eq!(
+            signed_tweaked,
+            PublicKey::from(signed_original.mul_tweak(&SECP256K1, &scalar).unwrap())
+        );
+        assert_ne!(
+            tweak_blinded_point(&[0x43; 32], &original).unwrap(),
+            tweak_blinded_point(&r, &original).unwrap()
+        );
+    }
+
+    #[test]
+    fn unpoisonable_outputs_preserve_order() {
+        let request: SwapRequest = serde_json::from_str(SWAP_REQUEST_JSON).unwrap();
+        let first = request.outputs()[0].clone();
+        let second = BlindedMessage::new(
+            Amount::from(4),
+            first.keyset_id,
+            crate::nuts::nut01::SecretKey::generate().public_key(),
+        );
+        let r = [0x42; 32];
+        let outputs = tweak_swap_outputs(&r, &[first.clone(), second.clone()]).unwrap();
+        assert_eq!(outputs[0].amount, first.amount);
+        assert_eq!(outputs[1].amount, second.amount);
+        assert_eq!(
+            outputs[0].blinded_secret,
+            tweak_blinded_point(&r, &first.blinded_secret).unwrap()
+        );
+        assert_eq!(
+            outputs[1].blinded_secret,
+            tweak_blinded_point(&r, &second.blinded_secret).unwrap()
+        );
     }
 }

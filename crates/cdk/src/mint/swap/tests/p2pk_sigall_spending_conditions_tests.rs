@@ -172,6 +172,17 @@ async fn test_unpoisonable_swap_rejected_without_spending_inputs() {
             if message == "Unpoisonable swap execution is not implemented"
     ));
 
+    let mut duplicates = SwapRequest::new(
+        locked_proofs.clone(),
+        vec![outputs[0].clone(), outputs[0].clone()],
+    )
+    .with_unpoisonable();
+    duplicates.sign_sig_all(signer.clone()).unwrap();
+    assert!(matches!(
+        mint.process_swap_request(duplicates).await,
+        Err(crate::Error::DuplicateOutputs)
+    ));
+
     let states = mint
         .check_state(&CheckStateRequest {
             ys: locked_proofs.ys().unwrap(),
