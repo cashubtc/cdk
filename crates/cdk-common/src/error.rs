@@ -680,6 +680,15 @@ mod tests {
         assert!(max_outputs.is_definitive_failure());
     }
 
+    #[test]
+    fn unknown_quote_is_quote_not_found() {
+        let response = ErrorResponse::from(Error::UnknownQuote);
+        assert_eq!(response.code, ErrorCode::QuoteNotFound);
+        assert_eq!(response.code.to_code(), 20010);
+        assert_eq!(ErrorCode::from_code(20010), ErrorCode::QuoteNotFound);
+        assert!(matches!(Error::from(response), Error::UnknownQuote));
+    }
+
     #[cfg(feature = "mint")]
     #[test]
     fn payment_backend_error_response_redacts_backend_detail() {
@@ -1124,7 +1133,7 @@ impl From<Error> for ErrorResponse {
 
             // Quote/payment errors
             Error::UnknownQuote => ErrorResponse {
-                code: ErrorCode::Unknown(50000),
+                code: ErrorCode::QuoteNotFound,
                 detail: err.to_string(),
             },
             Error::MeltingDisabled => ErrorResponse {
@@ -1288,6 +1297,7 @@ impl From<ErrorResponse> for Error {
             ErrorCode::QuoteExpired => Self::ExpiredQuote(0, 0),
             ErrorCode::WitnessMissingOrInvalid => Self::SignatureMissingOrInvalid,
             ErrorCode::PubkeyRequired => Self::PubkeyRequired,
+            ErrorCode::QuoteNotFound => Self::UnknownQuote,
             // 30xxx - Clear auth errors
             ErrorCode::ClearAuthRequired => Self::ClearAuthRequired,
             ErrorCode::ClearAuthFailed => Self::ClearAuthFailed,
@@ -1382,6 +1392,8 @@ pub enum ErrorCode {
     WitnessMissingOrInvalid,
     /// Pubkey required for mint quote (20009)
     PubkeyRequired,
+    /// Quote not found (20010)
+    QuoteNotFound,
 
     // 30xxx - Clear auth errors
     /// Endpoint requires clear auth (30001)
@@ -1444,6 +1456,7 @@ impl ErrorCode {
             20007 => Self::QuoteExpired,
             20008 => Self::WitnessMissingOrInvalid,
             20009 => Self::PubkeyRequired,
+            20010 => Self::QuoteNotFound,
             // 30xxx - Clear auth errors
             30001 => Self::ClearAuthRequired,
             30002 => Self::ClearAuthFailed,
@@ -1493,6 +1506,7 @@ impl ErrorCode {
             Self::QuoteExpired => 20007,
             Self::WitnessMissingOrInvalid => 20008,
             Self::PubkeyRequired => 20009,
+            Self::QuoteNotFound => 20010,
             // 30xxx - Clear auth errors
             Self::ClearAuthRequired => 30001,
             Self::ClearAuthFailed => 30002,

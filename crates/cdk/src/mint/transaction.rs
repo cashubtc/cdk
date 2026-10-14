@@ -26,7 +26,8 @@ use cdk_common::{
 use tracing::instrument;
 
 use super::melt::shared::{
-    begin_melt_cleanup_transaction, MeltChangeResult, MeltCleanupTransaction,
+    begin_melt_cleanup_transaction, get_keyset_fee_and_amounts, MeltChangeResult,
+    MeltCleanupTransaction,
 };
 use super::verification::Verification;
 use super::{Error, Mint, MintQuoteResponse};
@@ -305,8 +306,9 @@ async fn issue_quote_inputs(
 
 /// Sign the reserved outputs, create the change quotes and mark the record paid.
 ///
-/// Runs in the melt finalization's second transaction, in place of the blank
-/// change signing of a plain melt. The melt quote is already paid.
+/// Runs in the melt finalization's second transaction, in place of the change
+/// signing of a plain melt. Blank outputs take the change as in NUT-08; the
+/// remainder quote takes what they do not. The melt quote is already paid.
 pub(crate) async fn settle_with_melt(
     mint: &Mint,
     db: &DynMintDatabase,
@@ -314,6 +316,15 @@ pub(crate) async fn settle_with_melt(
     melt_request_info: &MeltRequestInfo,
     total_spent: Amount<CurrencyUnit>,
 ) -> Result<MeltChangeResult, Error> {
+    // The change is imprinted into blank outputs before signing, outside the cleanup transaction.
+    let Some(excess) = db.get_transaction(&quote.id).await?.map(|r| r.excess) else {
+        return Ok(MeltChangeResult::AlreadyCompleted);
+    };
+    let fee_paid: Amount = total_spent
+        .checked_sub(&quote.amount())
+        .map(Into::into)
+        .unwrap_or(Amount::ZERO);
+
     // Outputs whose keyset went inactive during the payment are not signed (NUT-02);
     // their value returns through the remainder quote instead.
     let mut outputs = melt_request_info.change_outputs.clone();
@@ -330,6 +341,33 @@ pub(crate) async fn settle_with_melt(
             "transaction outputs lost their active keyset during payment; returning their value as change",
         );
         outputs.clear();
+    }
+    let excess = excess
+        .checked_add(unsigned_amount)
+        .ok_or(Error::AmountOverflow)?;
+    let mut change = settlement_change(excess, quote.fee_reserve().into(), fee_paid);
+    if outputs.iter().any(|o| o.amount == Amount::ZERO) {
+        let mut denominations = get_keyset_fee_and_amounts(&mint.keysets, &outputs)
+            .amounts()
+            .to_vec();
+        denominations.sort_unstable_by(|a, b| b.cmp(a));
+        let mut left = u64::from(change);
+        // Each blank in request order takes the largest amount that fits; one left at zero is not
+        // signed (NUT-08), and the remainder quote takes what is left.
+        outputs.retain_mut(|output| {
+            if output.amount != Amount::ZERO {
+                return true;
+            }
+            match denominations.iter().find(|&&d| d > 0 && d <= left) {
+                Some(&amount) => {
+                    output.amount = Amount::from(amount);
+                    left -= amount;
+                    true
+                }
+                None => false,
+            }
+        });
+        change = Amount::from(left);
     }
     let signatures = if outputs.is_empty() {
         vec![]
@@ -355,15 +393,6 @@ pub(crate) async fn settle_with_melt(
             .await?;
     }
 
-    let fee_paid: Amount = total_spent
-        .checked_sub(&quote.amount())
-        .map(Into::into)
-        .unwrap_or(Amount::ZERO);
-    let excess = record
-        .excess
-        .checked_add(unsigned_amount)
-        .ok_or(Error::AmountOverflow)?;
-    let change = settlement_change(excess, quote.fee_reserve().into(), fee_paid);
     issue_quote_inputs(&mut tx, &record).await?;
     let created =
         create_change_quotes(&mut tx, &record.unit, &record.change_outputs, change).await?;
@@ -485,8 +514,11 @@ impl Mint {
             ));
         }
         let has_remainder = remainders == 1;
-        if outputs.iter().any(|o| o.amount == Amount::ZERO) {
-            return Err(invalid("blank outputs are not allowed: use a change quote"));
+        if request.melt_quote_outputs.is_empty() && outputs.iter().any(|o| o.amount == Amount::ZERO)
+        {
+            return Err(invalid(
+                "blank outputs are allowed only beside a melt quote",
+            ));
         }
         if request.melt_quote_outputs.len() > 1 {
             return Err(invalid("multi-melt is not supported"));
@@ -648,7 +680,8 @@ impl Mint {
             let keyset = self
                 .get_keyset_info(&output.keyset_id)
                 .ok_or(Error::UnknownKeySet)?;
-            if !keyset.amounts.contains(&u64::from(output.amount)) {
+            if output.amount != Amount::ZERO && !keyset.amounts.contains(&u64::from(output.amount))
+            {
                 return Err(invalid(
                     "output denomination is not supported by its keyset",
                 ));
