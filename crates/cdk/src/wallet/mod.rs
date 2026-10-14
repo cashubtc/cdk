@@ -86,7 +86,7 @@ pub use builder::WalletBuilder;
 pub use cdk_common::wallet as types;
 pub use cdk_common::wallet::{
     MeltPrepareOptions, NUT13Options, P2PKLockedProofSendMode, ReceiveOptions, SendMemo,
-    SendOptions,
+    SendOptions, WalletKeySetInfo,
 };
 pub use melt::{MeltConfirmOptions, MeltOutcome, PendingMelt, PreparedMelt};
 pub use mint_connector::transport::Transport as HttpTransport;
@@ -1951,20 +1951,20 @@ mod tests {
         db.add_mint_keysets(
             test_mint_url(),
             vec![
-                KeySetInfo {
+                WalletKeySetInfo::listed(KeySetInfo {
                     id: active.id,
                     unit: active.unit.clone(),
                     active: true,
                     input_fee_ppk: 100,
                     final_expiry: None,
-                },
-                KeySetInfo {
+                }),
+                WalletKeySetInfo::listed(KeySetInfo {
                     id: inactive_id,
                     unit: active.unit.clone(),
                     active: false,
                     input_fee_ppk: 1500,
                     final_expiry: None,
-                },
+                }),
             ],
         )
         .await

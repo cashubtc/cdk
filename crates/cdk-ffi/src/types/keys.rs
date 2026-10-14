@@ -51,6 +51,35 @@ impl TryFrom<KeySetInfo> for cdk::nuts::KeySetInfo {
     }
 }
 
+/// FFI-compatible WalletKeySetInfo: a keyset plus the wallet's own bookkeeping
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct WalletKeySetInfo {
+    /// The keyset as the mint describes it
+    pub keyset: KeySetInfo,
+    /// When the mint first stopped listing this keyset, if it has
+    pub unlisted_at: Option<u64>,
+}
+
+impl From<cdk::wallet::WalletKeySetInfo> for WalletKeySetInfo {
+    fn from(keyset: cdk::wallet::WalletKeySetInfo) -> Self {
+        Self {
+            keyset: keyset.keyset.into(),
+            unlisted_at: keyset.unlisted_at,
+        }
+    }
+}
+
+impl TryFrom<WalletKeySetInfo> for cdk::wallet::WalletKeySetInfo {
+    type Error = FfiError;
+
+    fn try_from(keyset: WalletKeySetInfo) -> Result<Self, Self::Error> {
+        Ok(Self {
+            keyset: keyset.keyset.try_into()?,
+            unlisted_at: keyset.unlisted_at,
+        })
+    }
+}
+
 impl KeySetInfo {
     /// Convert KeySetInfo to JSON string
     pub fn to_json(&self) -> Result<String, FfiError> {

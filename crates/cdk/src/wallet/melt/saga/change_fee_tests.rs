@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use cdk_common::wallet::{
-    MeltOperationData, MeltQuote, MeltSagaState, OperationData, TransactionStatus, WalletSaga,
-    WalletSagaState,
+    MeltOperationData, MeltQuote, MeltSagaState, OperationData, TransactionStatus,
+    WalletKeySetInfo, WalletSaga, WalletSagaState,
 };
 
 use crate::nuts::{
@@ -35,13 +35,13 @@ impl Fixture {
         db.add_mint(test_mint_url(), None).await.unwrap();
         db.add_mint_keysets(
             test_mint_url(),
-            vec![KeySetInfo {
+            vec![WalletKeySetInfo::listed(KeySetInfo {
                 id: keyset.id,
                 unit: keyset.unit.clone(),
                 active: true,
                 input_fee_ppk: 0,
                 final_expiry: None,
-            }],
+            })],
         )
         .await
         .unwrap();

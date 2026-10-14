@@ -4,7 +4,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use cdk_common::database::WalletDatabase;
-use cdk_common::wallet::{ProofInfo, Transaction, TransactionDirection, TransactionStatus};
+use cdk_common::wallet::{
+    ProofInfo, Transaction, TransactionDirection, TransactionStatus, WalletKeySetInfo,
+};
 
 use crate::nuts::{
     CheckStateResponse, CurrencyUnit, KeySet, KeySetInfo, ProofState, ProofsMethods, PublicKey,
@@ -20,14 +22,14 @@ const ACTIVE_AMOUNT: u64 = 8;
 const INACTIVE_AMOUNT: u64 = 4;
 const EXPIRED_AMOUNT: u64 = 16;
 
-fn info(keyset: &KeySet, active: bool) -> KeySetInfo {
-    KeySetInfo {
+fn info(keyset: &KeySet, active: bool) -> WalletKeySetInfo {
+    WalletKeySetInfo::listed(KeySetInfo {
         id: keyset.id,
         unit: keyset.unit.clone(),
         active,
         input_fee_ppk: keyset.input_fee_ppk,
         final_expiry: keyset.final_expiry,
-    }
+    })
 }
 
 struct Fixture {
