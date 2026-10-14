@@ -50,8 +50,10 @@ pub struct TransactionMeltOutput {
 /// A change quote created by a transaction
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransactionChangeOutput {
-    /// 32-byte hex preimage of the change quote's derived id (NUT-04)
-    pub id_preimage: String,
+    /// 32-byte hex preimage of the change quote's derived id (NUT-04); omitted for an id bound
+    /// to the inputs
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id_preimage: Option<String>,
     /// Lock key of the change quote, a 33-byte compressed secp256k1 key
     pub pubkey: String,
     /// Fixed amount; omitted on the remainder quote, which takes the balance
@@ -145,6 +147,13 @@ mod tests {
         );
         assert_eq!(request.change_quote_outputs[1].pubkey, "02bb");
         assert_eq!(request.change_quote_outputs[1].amount, None);
+        let input_bound: TransactionChangeOutput =
+            serde_json::from_str(r#"{"pubkey":"02cc"}"#).unwrap();
+        assert_eq!(input_bound.id_preimage, None);
+        assert_eq!(
+            serde_json::to_string(&input_bound).unwrap(),
+            r#"{"pubkey":"02cc"}"#
+        );
         assert!(!request.prefer_async);
         assert_eq!(
             serde_json::to_string(&TransactionState::Pending).unwrap(),

@@ -79,7 +79,7 @@ pub(crate) fn parse_quote_witness(raw: &str) -> Result<Witness, Error> {
     serde_json::from_str(raw).map_err(|_| Error::SignatureMissingOrInvalid)
 }
 
-/// A change quote output: its derived id, lock key and fixed amount, `None` on the remainder.
+/// A change quote output: its id, lock key and fixed amount, `None` on the remainder.
 type ChangeOutput = (QuoteId, PublicKey, Option<Amount>);
 
 /// Parse a change quote's `id_preimage`: exactly 32 bytes of hex.
@@ -459,11 +459,13 @@ impl Mint {
         {
             return Err(invalid("transaction requires at least one output"));
         }
-        let mut change_outputs = Vec::with_capacity(request.change_quote_outputs.len());
-        let mut transcript_change = Vec::with_capacity(request.change_quote_outputs.len());
-        let mut change_ids = HashSet::new();
+        let mut change_requests = Vec::with_capacity(request.change_quote_outputs.len());
         for output in &request.change_quote_outputs {
-            let id_preimage = parse_id_preimage(&output.id_preimage)?;
+            let id_preimage = output
+                .id_preimage
+                .as_deref()
+                .map(parse_id_preimage)
+                .transpose()?;
             let pubkey = PublicKey::from_hex(&output.pubkey)
                 .ok()
                 .filter(|key| key.as_secp256k1().is_ok())
@@ -471,19 +473,9 @@ impl Mint {
             if output.amount == Some(Amount::ZERO) {
                 return Err(invalid("change quote amount must be positive"));
             }
-            let change = nutroot::ChangeOutput {
-                amount: output.amount,
-                pubkey: *pubkey.as_secp256k1()?,
-                id_preimage,
-            };
-            let id = QuoteId::BASE64(change.quote_id());
-            if !change_ids.insert(id.clone()) {
-                return Err(Error::DuplicateOutputs);
-            }
-            change_outputs.push((id, pubkey, output.amount));
-            transcript_change.push(change);
+            change_requests.push((id_preimage, pubkey, output.amount));
         }
-        let remainders = change_outputs
+        let remainders = change_requests
             .iter()
             .filter(|(_, _, a)| a.is_none())
             .count();
@@ -590,6 +582,38 @@ impl Mint {
                 issued: quote.amount_issued().into(),
             });
             quote_issued.push(quote.amount_issued().into());
+        }
+        // Ids resolve once quote inputs load: an input-bound id hashes their issued amounts too.
+        let section = if change_requests
+            .iter()
+            .any(|(preimage, _, _)| preimage.is_none())
+        {
+            nutroot::input_section(proofs, &transcript_quotes)
+                .map_err(cdk_common::nuts::nut10::Error::from)?
+        } else {
+            vec![]
+        };
+        let mut change_outputs = Vec::with_capacity(change_requests.len());
+        let mut transcript_change = Vec::with_capacity(change_requests.len());
+        let mut change_ids = HashSet::new();
+        for (k, (id_preimage, pubkey, amount)) in change_requests.into_iter().enumerate() {
+            let id = match id_preimage {
+                Some(preimage) => nutroot::derived_quote_id(&preimage),
+                None => nutroot::input_bound_quote_id(
+                    &section,
+                    u32::try_from(k).map_err(|_| invalid("too many change quote outputs"))?,
+                ),
+            };
+            let quote_id = QuoteId::BASE64(id.clone());
+            if !change_ids.insert(quote_id.clone()) {
+                return Err(Error::DuplicateOutputs);
+            }
+            transcript_change.push(nutroot::ChangeOutput {
+                amount,
+                pubkey: *pubkey.as_secp256k1()?,
+                id,
+            });
+            change_outputs.push((quote_id, pubkey, amount));
         }
         let transcript = nutroot::Transaction::with_change(
             proofs,
