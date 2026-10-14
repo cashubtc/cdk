@@ -44,6 +44,14 @@ impl Mint {
             // and HTLC (including SIGALL)
             swap_request.verify_spending_conditions()?;
 
+            // Signature authorization is implemented before the output-tweaking
+            // execution path. Do not execute this request as an ordinary swap.
+            if swap_request.is_unpoisonable() {
+                return Err(Error::Custom(
+                    "Unpoisonable swap execution is not implemented".to_owned(),
+                ));
+            }
+
             // Step 1: Initialize the swap saga
             let init_saga =
                 SwapSaga::new(self, self.localstore.clone(), self.pubsub_manager.clone());

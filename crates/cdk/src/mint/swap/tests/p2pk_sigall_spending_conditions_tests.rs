@@ -3,8 +3,10 @@
 //! These tests verify that the mint correctly enforces SIG_ALL flag behavior
 
 use cdk_common::dhke::construct_proofs;
-use cdk_common::nuts::{Conditions, SigFlag, SpendingConditions};
-use cdk_common::Amount;
+use cdk_common::nuts::{
+    CheckStateRequest, Conditions, ProofsMethods, SigFlag, SpendingConditions, SwapRequest,
+};
+use cdk_common::{Amount, State};
 
 use crate::test_helpers::mint::create_test_blinded_messages;
 use crate::test_helpers::nut10::{create_test_keypair, unzip3, TestMintHelper};
@@ -128,6 +130,63 @@ async fn test_p2pk_sig_all_requires_transaction_signature() {
     let result = mint.process_swap_request(swap_request_with_sig).await;
     assert!(result.is_ok(), "Should succeed with valid signature");
     println!("✓ Spending WITH ALL signatures (SIG_ALL) succeeded");
+}
+
+#[tokio::test]
+async fn test_unpoisonable_swap_rejected_without_spending_inputs() {
+    let test_mint = TestMintHelper::new().await.unwrap();
+    let mint = test_mint.mint();
+    let (signer, pubkey) = create_test_keypair();
+    let amount = Amount::ONE;
+
+    let conditions = SpendingConditions::new_p2pk(
+        pubkey,
+        Some(Conditions::new(None, None, None, None, Some(SigFlag::SigAll), None).unwrap()),
+    );
+    let initial_proofs = test_mint.mint_proofs(amount).await.unwrap();
+    let (locked_output, blinding_factor, secret) =
+        test_mint.create_blinded_message(amount, &conditions);
+    let issued = mint
+        .process_swap_request(SwapRequest::new(initial_proofs, vec![locked_output]))
+        .await
+        .unwrap();
+    let locked_proofs = construct_proofs(
+        issued.signatures,
+        vec![blinding_factor],
+        vec![secret],
+        &test_mint.public_keys_of_the_active_sat_keyset,
+    )
+    .unwrap();
+
+    let (outputs, _) = create_test_blinded_messages(mint, amount).await.unwrap();
+    let mut request = SwapRequest::new(locked_proofs.clone(), outputs.clone()).with_unpoisonable();
+    request.sign_sig_all(signer.clone()).unwrap();
+    assert!(
+        cdk_common::SpendingConditionVerification::verify_spending_conditions(&request).is_ok()
+    );
+
+    let result = mint.process_swap_request(request).await;
+    assert!(matches!(
+        result,
+        Err(crate::Error::Custom(ref message))
+            if message == "Unpoisonable swap execution is not implemented"
+    ));
+
+    let states = mint
+        .check_state(&CheckStateRequest {
+            ys: locked_proofs.ys().unwrap(),
+        })
+        .await
+        .unwrap();
+    assert!(states
+        .states
+        .iter()
+        .all(|state| state.state == State::Unspent));
+
+    // The same inputs can still be spent with an ordinary SIG_ALL swap.
+    let mut ordinary = SwapRequest::new(locked_proofs, outputs);
+    ordinary.sign_sig_all(signer).unwrap();
+    assert!(mint.process_swap_request(ordinary).await.is_ok());
 }
 
 /// Test: P2PK multisig (2-of-3) with SIG_ALL

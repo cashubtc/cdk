@@ -5,6 +5,8 @@
 use std::fmt;
 use std::str::FromStr;
 
+use bitcoin::hashes::sha256::Hash as Sha256Hash;
+use bitcoin::hashes::Hash;
 use serde::{Deserialize, Serialize};
 
 use super::nut01::PublicKey;
@@ -269,6 +271,53 @@ pub(crate) fn get_pubkeys_and_required_sigs(
 
 use super::Proofs;
 
+/// BIP-340 tag for an unpoisonable NUT-11 v1 SIG_ALL swap.
+const SIG_ALL_UNPOISONABLE_TAG: &[u8] = b"Cashu_SigAllUnpoisonable_v1";
+
+/// Length-framed SIG_ALL message for an unpoisonable swap.
+///
+/// Commits to an empty swap-context frame, each input's secret and C, then each
+/// output's amount (minimal big-endian bytes) and B_.
+pub(crate) fn unpoisonable_sig_all_msg_to_sign(
+    inputs: &Proofs,
+    outputs: &[super::BlindedMessage],
+) -> Vec<u8> {
+    let mut msg = Vec::new();
+    append_len_prefixed(&mut msg, &[]);
+    for proof in inputs {
+        append_len_prefixed(&mut msg, proof.secret.to_string().as_bytes());
+        append_len_prefixed(&mut msg, &proof.c.to_bytes());
+    }
+    for output in outputs {
+        append_len_prefixed(&mut msg, &amount_to_minimal_bytes(output.amount));
+        append_len_prefixed(&mut msg, &output.blinded_secret.to_bytes());
+    }
+    msg
+}
+
+/// Tagged hash of the unpoisonable SIG_ALL message, signed without further hashing.
+pub(crate) fn unpoisonable_sig_all_message_hash(message: &[u8]) -> [u8; 32] {
+    let tag_hash = Sha256Hash::hash(SIG_ALL_UNPOISONABLE_TAG).to_byte_array();
+    let mut preimage = Vec::with_capacity(64 + message.len());
+    preimage.extend_from_slice(&tag_hash);
+    preimage.extend_from_slice(&tag_hash);
+    preimage.extend_from_slice(message);
+    Sha256Hash::hash(&preimage).to_byte_array()
+}
+
+fn append_len_prefixed(msg: &mut Vec<u8>, bytes: &[u8]) {
+    msg.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+    msg.extend_from_slice(bytes);
+}
+
+fn amount_to_minimal_bytes(amount: crate::Amount) -> Vec<u8> {
+    let bytes = u64::from(amount).to_be_bytes();
+    match bytes.iter().position(|byte| *byte != 0) {
+        Some(first_non_zero) => bytes[first_non_zero..].to_vec(),
+        None => Vec::new(),
+    }
+}
+
 /// Trait for requests that spend proofs (SwapRequest, MeltRequest)
 pub trait SpendingConditionVerification {
     /// Get the input proofs
@@ -280,6 +329,11 @@ pub trait SpendingConditionVerification {
     /// For swap: input secrets + output blinded messages
     /// For melt: input secrets + quote/payment request
     fn sig_all_msg_to_sign(&self) -> String;
+
+    /// Construct a separately tagged SIG_ALL message when unpoisonable processing is selected.
+    fn unpoisonable_sig_all_msg_to_sign(&self) -> Option<Vec<u8>> {
+        None
+    }
 
     /// Check if at least one proof in the set has SIG_ALL flag set
     ///
@@ -365,7 +419,12 @@ pub trait SpendingConditionVerification {
     /// It checks if any input has SIG_ALL and dispatches to the appropriate verification path.
     fn verify_spending_conditions(&self) -> Result<(), Error> {
         // Check if any input has SIG_ALL flag
-        if self.has_at_least_one_sig_all()? {
+        let has_sig_all = self.has_at_least_one_sig_all()?;
+        if self.unpoisonable_sig_all_msg_to_sign().is_some() && !has_sig_all {
+            return Err(Error::SpendConditionsNotMet);
+        }
+
+        if has_sig_all {
             // at least one input has SIG_ALL
             self.verify_full_sig_all_check()
         } else {
@@ -392,14 +451,18 @@ pub trait SpendingConditionVerification {
         let first_input = self.inputs().first().ok_or(Error::SpendConditionsNotMet)?;
         let first_secret =
             Secret::try_from(&first_input.secret).map_err(|_| Error::IncorrectSecretKind)?;
+        let digest = match self.unpoisonable_sig_all_msg_to_sign() {
+            Some(message) => unpoisonable_sig_all_message_hash(&message),
+            None => Sha256Hash::hash(self.sig_all_msg_to_sign().as_bytes()).to_byte_array(),
+        };
 
         // Dispatch based on secret kind
         match first_secret.kind() {
             Kind::P2PK => {
-                nut11::verify_sig_all_p2pk(first_input, self.sig_all_msg_to_sign())?;
+                nut11::verify_sig_all_p2pk(first_input, digest)?;
             }
             Kind::HTLC => {
-                nut14::verify_sig_all_htlc(first_input, self.sig_all_msg_to_sign())?;
+                nut14::verify_sig_all_htlc(first_input, digest)?;
             }
         }
 
