@@ -60,10 +60,6 @@ tokio = { workspace = true, features = [
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
 
-[dev-dependencies]
-rand.workspace = true
-bip39.workspace = true
-
 [build-dependencies]
 tonic-prost-build.workspace = true
 

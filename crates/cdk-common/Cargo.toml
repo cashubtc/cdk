@@ -62,9 +62,6 @@ wasm-bindgen-futures = "0.4"
 gloo-timers = { workspace = true }
 
 [dev-dependencies]
-rand.workspace = true
-bip39.workspace = true
-wasm-bindgen-test = "0.3"
 criterion.workspace = true
 
 [[bench]]
