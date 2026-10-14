@@ -125,19 +125,21 @@ fn sign_at(
             }]
         })
         .unwrap_or_default();
+    let section = nutroot::input_section(&request.proof_inputs, &mint_quotes).unwrap();
     let change: Vec<nutroot::ChangeOutput> = request
         .change_quote_outputs
         .iter()
-        .map(|output| nutroot::ChangeOutput {
+        .enumerate()
+        .map(|(k, output)| nutroot::ChangeOutput {
             amount: output.amount,
             pubkey: *cdk_common::PublicKey::from_hex(&output.pubkey)
                 .unwrap()
                 .as_secp256k1()
                 .unwrap(),
-            id_preimage: cdk_common::util::hex::decode(&output.id_preimage)
-                .unwrap()
-                .try_into()
-                .unwrap(),
+            id: match output.id_preimage {
+                Some(_) => derived_id(output).to_string(),
+                None => nutroot::input_bound_quote_id(&section, k as u32),
+            },
         })
         .collect();
     let transaction = Transaction::with_change(
@@ -199,7 +201,7 @@ fn melt_output(quote: &MeltQuote) -> TransactionMeltOutput {
 /// A change quote output locked to `key` with a fresh id; a remainder quote when `amount` is `None`.
 fn change_output(key: &SecretKey, amount: Option<u64>) -> TransactionChangeOutput {
     TransactionChangeOutput {
-        id_preimage: SecretKey::generate().to_secret_hex(),
+        id_preimage: Some(SecretKey::generate().to_secret_hex()),
         pubkey: key.public_key().to_hex(),
         amount: amount.map(Into::into),
     }
@@ -207,7 +209,7 @@ fn change_output(key: &SecretKey, amount: Option<u64>) -> TransactionChangeOutpu
 
 /// The derived id a change quote output takes.
 fn derived_id(output: &TransactionChangeOutput) -> QuoteId {
-    let preimage: [u8; 32] = cdk_common::util::hex::decode(&output.id_preimage)
+    let preimage: [u8; 32] = cdk_common::util::hex::decode(output.id_preimage.as_ref().unwrap())
         .unwrap()
         .try_into()
         .unwrap();
@@ -308,7 +310,10 @@ async fn proofs_to_outputs_park_the_rest_in_a_change_quote() {
         change["quote"],
         derived_id(&request.change_quote_outputs[0]).to_string()
     );
-    let id_preimage = &request.change_quote_outputs[0].id_preimage;
+    let id_preimage = request.change_quote_outputs[0]
+        .id_preimage
+        .as_ref()
+        .unwrap();
     assert!(!serde_json::to_string(&response)
         .unwrap()
         .contains(id_preimage));
@@ -372,6 +377,42 @@ async fn proofs_to_outputs_park_the_rest_in_a_change_quote() {
         mint.check_mint_quotes(&[change_id]).await.unwrap()[0].state(),
         Some(MintQuoteState::Issued)
     );
+    mint.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn change_quote_without_id_preimage_takes_an_input_bound_id() {
+    let mint = v3_mint().await;
+    let proofs = mint_test_proofs(&mint, 8.into()).await.unwrap();
+    let (blinded, _) = outputs(&mint, 2).await;
+    let remainder_key = SecretKey::generate();
+    let remainder = TransactionChangeOutput {
+        id_preimage: None,
+        ..change_output(&remainder_key, None)
+    };
+    let mut request = TransactionRequest {
+        proof_inputs: proofs,
+        blinded_outputs: blinded,
+        change_quote_outputs: vec![change_output(&SecretKey::generate(), Some(3)), remainder],
+        ..Default::default()
+    };
+    // k counts every change quote output, so the remainder is at 1.
+    let section = nutroot::input_section(&request.proof_inputs, &[]).unwrap();
+    let id = QuoteId::from_str(&nutroot::input_bound_quote_id(&section, 1)).unwrap();
+    assert_ne!(id.to_string(), nutroot::input_bound_quote_id(&section, 0));
+    sign(&mut request, &[], None);
+
+    let response = mint.process_transaction(request, false).await.unwrap();
+    assert_eq!(response.state, TransactionState::Paid);
+    assert_eq!(change_quote(&response, 0)["amount_paid"], 3);
+    let quote = change_quote(&response, 1);
+    assert_eq!(quote["quote"], id.to_string());
+    assert_eq!(quote["amount_paid"], 3);
+    let checked = mint
+        .check_mint_quotes(std::slice::from_ref(&id))
+        .await
+        .unwrap();
+    assert_eq!(checked[0].state(), Some(MintQuoteState::Paid));
     mint.stop().await.unwrap();
 }
 
@@ -1073,9 +1114,13 @@ async fn rejects_zero_amounts_and_a_second_remainder_quote() {
         Err(Error::DuplicateOutputs)
     ));
     let mut short_preimage = change_output(&key, None);
-    short_preimage.id_preimage.truncate(62);
+    short_preimage.id_preimage.as_mut().unwrap().truncate(62);
     let mut not_hex = change_output(&key, None);
-    not_hex.id_preimage.replace_range(..2, "zz");
+    not_hex
+        .id_preimage
+        .as_mut()
+        .unwrap()
+        .replace_range(..2, "zz");
     for outputs in [
         vec![change_output(&key, None), change_output(&other, None)],
         vec![change_output(&key, Some(0)), change_output(&other, None)],

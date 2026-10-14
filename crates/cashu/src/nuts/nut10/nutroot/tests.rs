@@ -773,6 +773,8 @@ fn receipt_indexes_preserve_duplicate_and_distinct_transcript_checks() {
 #[test]
 fn shared_transcript_vectors() {
     use std::str::FromStr;
+
+    use sha2::{Digest, Sha256};
     let shared: Value = serde_json::from_str(include_str!("nutroot_v3_vectors.json")).unwrap();
     let cases = shared["transcript"].as_object().unwrap();
     let proof = |v: &Value| crate::Proof {
@@ -815,15 +817,23 @@ fn shared_transcript_vectors() {
             .collect();
         let outputs: Vec<_> = list(&tx["blinded_outputs"]).iter().map(output).collect();
         let melt_quotes: Vec<_> = list(&tx["melt_quote_outputs"]).iter().map(quote).collect();
+        let section = input_section(&proofs, &mint_quotes).unwrap();
+        if let Some(expected) = case.get("input_section_hash") {
+            assert_eq!(<[u8; 32]>::from(Sha256::digest(&section)), hash(expected));
+        }
         let change: Vec<_> = list(&tx["change_quote_outputs"])
             .iter()
-            .map(|v| ChangeOutput {
+            .enumerate()
+            .map(|(k, v)| ChangeOutput {
                 amount: v["amount"].as_u64().map(Into::into),
                 pubkey: *crate::nuts::PublicKey::from_hex(v["pubkey"].as_str().unwrap())
                     .unwrap()
                     .as_secp256k1()
                     .unwrap(),
-                id_preimage: hash(&v["id_preimage"]),
+                id: match v.get("id_preimage") {
+                    Some(preimage) => derived_quote_id(&hash(preimage)),
+                    None => input_bound_quote_id(&section, k as u32),
+                },
             })
             .collect();
         let transaction =
@@ -835,13 +845,16 @@ fn shared_transcript_vectors() {
             _ => vec![],
         };
         assert_eq!(
-            change
-                .iter()
-                .map(ChangeOutput::quote_id)
-                .collect::<Vec<_>>(),
+            change.iter().map(|c| c.id.clone()).collect::<Vec<_>>(),
             expected_ids,
             "{name}"
         );
+        // Change containers are the transcript's last records.
+        let containers: Vec<u8> = match &case["change_containers"] {
+            Value::Array(all) => all.iter().flat_map(bytes).collect(),
+            _ => case.get("change_container").map(bytes).unwrap_or_default(),
+        };
+        assert!(transaction.as_bytes().ends_with(&containers), "{name}");
         assert_eq!(transaction.as_bytes(), bytes(&case["transcript"]), "{name}");
         assert_eq!(transaction.digest(), hash(&case["digest"]), "{name}");
         assert_eq!(
@@ -875,7 +888,7 @@ fn shared_transcript_vectors() {
         }
         checked += 1;
     }
-    assert_eq!(checked, 11);
+    assert_eq!(checked, 12);
 }
 
 #[test]
@@ -1004,7 +1017,7 @@ fn template_transaction(tx: &Value) -> Transaction {
                 .unwrap()
                 .as_secp256k1()
                 .unwrap(),
-            id_preimage: hash(&v["id_preimage"]),
+            id: derived_quote_id(&hash(&v["id_preimage"])),
         })
         .collect();
     Transaction::with_change(&template_proofs(tx), &[], &[], &[], &change).unwrap()
@@ -1052,7 +1065,7 @@ fn shared_template_leaf_vectors() {
         .map(|(pubkey, n)| ChangeOutput {
             amount: Some(1.into()),
             pubkey: *pubkey,
-            id_preimage: [n; 32],
+            id: derived_quote_id(&[n; 32]),
         })
         .collect();
     let mixed = Transaction::from_bytes(
