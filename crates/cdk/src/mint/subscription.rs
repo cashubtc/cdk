@@ -974,10 +974,9 @@ mod tests {
         );
         let mut tx = db.begin_transaction().await.unwrap();
         let mut acquired = tx.get_proofs(&[y]).await.unwrap();
-        tx.update_proofs_state(&mut acquired, cdk_common::State::Spent)
+        tx.update_proofs_state_with_r(&mut acquired, cdk_common::State::Spent, Some([42; 32]))
             .await
             .unwrap();
-        tx.set_unpoisonable_r(&acquired, [42; 32]).await.unwrap();
         tx.commit().await.unwrap();
         let events = spec
             .get_events_from_db(&[NotificationId::ProofState(y)])

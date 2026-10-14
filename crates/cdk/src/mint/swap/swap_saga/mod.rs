@@ -421,18 +421,17 @@ impl SwapSaga<'_, Signed> {
             }
         };
 
-        if let Err(err) = Mint::update_proofs_state(&mut tx, &mut proofs, State::Spent).await {
+        if let Err(err) = Mint::update_proofs_state_with_r(
+            &mut tx,
+            &mut proofs,
+            State::Spent,
+            self.unpoisonable_r.map(|r| r.0),
+        )
+        .await
+        {
             tx.rollback().await?;
             self.compensate_all().await?;
             return Err(err);
-        }
-
-        if let Some(r) = self.unpoisonable_r {
-            if let Err(err) = tx.set_unpoisonable_r(&proofs, r.0).await {
-                tx.rollback().await?;
-                self.compensate_all().await?;
-                return Err(err.into());
-            }
         }
 
         #[cfg(test)]

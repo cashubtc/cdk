@@ -433,13 +433,6 @@ pub trait ProofsTransaction {
     /// Mint Proof Database Error
     type Err: Into<Error> + From<Error>;
 
-    /// Store recovery randomness on acquired spent proofs in the finalization transaction.
-    async fn set_unpoisonable_r(
-        &mut self,
-        proofs: &Acquired<ProofsWithState>,
-        r: [u8; 32],
-    ) -> Result<(), Self::Err>;
-
     /// Add  [`Proofs`]
     ///
     /// Adds proofs to the database. The database should error if the proof already exits, with a
@@ -459,6 +452,18 @@ pub trait ProofsTransaction {
         &mut self,
         proofs: &mut Acquired<ProofsWithState>,
         new_state: State,
+    ) -> Result<(), Self::Err> {
+        self.update_proofs_state_with_r(proofs, new_state, None)
+            .await
+    }
+
+    /// Update state and optional recovery randomness in one batch.
+    /// Randomness is only allowed for a Pending-to-Spent transition.
+    async fn update_proofs_state_with_r(
+        &mut self,
+        proofs: &mut Acquired<ProofsWithState>,
+        new_state: State,
+        r: Option<[u8; 32]>,
     ) -> Result<(), Self::Err>;
 
     /// get proofs states

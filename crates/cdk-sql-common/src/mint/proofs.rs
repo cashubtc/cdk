@@ -117,31 +117,6 @@ where
 {
     type Err = Error;
 
-    async fn set_unpoisonable_r(
-        &mut self,
-        proofs: &Acquired<ProofsWithState>,
-        r: [u8; 32],
-    ) -> Result<(), Self::Err> {
-        if proofs.state != State::Spent {
-            return Err(Error::Internal(
-                "Recovery randomness requires spent proofs".to_owned(),
-            ));
-        }
-        for y in proofs.ys()? {
-            let changed = query("UPDATE proof SET unpoisonable_r = :r WHERE y = :y AND state = 'SPENT' AND unpoisonable_r IS NULL")?
-                .bind("r", r.to_vec())
-                .bind("y", y.to_bytes().to_vec())
-                .execute(&self.inner)
-                .await?;
-            if changed != 1 {
-                return Err(Error::Internal(
-                    "Recovery randomness update did not affect exactly one proof".to_owned(),
-                ));
-            }
-        }
-        Ok(())
-    }
-
     /// Adds proofs to the database with initial state `Unspent`.
     ///
     /// This method first checks if any of the proofs already exist in the database.
@@ -224,18 +199,37 @@ where
     ///
     /// The proofs must have been previously acquired via `add_proofs`
     /// or `get_proofs` to ensure they are locked within the current transaction.
-    async fn update_proofs_state(
+    async fn update_proofs_state_with_r(
         &mut self,
         proofs: &mut Acquired<ProofsWithState>,
         new_state: State,
+        r: Option<[u8; 32]>,
     ) -> Result<(), Self::Err> {
         let ys = proofs.ys()?;
 
-        query(r#"UPDATE proof SET state = :new_state WHERE y IN (:ys)"#)?
-            .bind("new_state", new_state.to_string())
-            .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
-            .execute(&self.inner)
-            .await?;
+        if let Some(r) = r {
+            if proofs.state != State::Pending || new_state != State::Spent {
+                return Err(Error::Internal(
+                    "Recovery randomness requires a Pending-to-Spent transition".to_owned(),
+                ));
+            }
+            let changed = query("UPDATE proof SET state = 'SPENT', unpoisonable_r = :r WHERE y IN (:ys) AND state = 'PENDING' AND unpoisonable_r IS NULL")?
+                .bind("r", r.to_vec())
+                .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
+                .execute(&self.inner)
+                .await?;
+            if changed != ys.len() {
+                return Err(Error::Internal(
+                    "Recovery update did not affect all acquired proofs".to_owned(),
+                ));
+            }
+        } else {
+            query(r#"UPDATE proof SET state = :new_state WHERE y IN (:ys)"#)?
+                .bind("new_state", new_state.to_string())
+                .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
+                .execute(&self.inner)
+                .await?;
+        }
 
         if new_state == State::Spent {
             query(

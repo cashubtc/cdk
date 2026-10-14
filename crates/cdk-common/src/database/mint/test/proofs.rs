@@ -13,13 +13,13 @@ use crate::database::mint::{Database, DynMintDatabase, Error, KeysDatabase, Proo
 use crate::mint::Operation;
 use crate::state::check_state_transition;
 
-/// Recovery randomness is written only on spent, acquired inputs and rolls back with state.
+/// Recovery randomness is batched with the Pending-to-Spent transition and rolls back with it.
 pub async fn unpoisonable_recovery_storage<DB>(db: DB)
 where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
     let keyset_id = setup_keyset(&db).await;
-    let proofs = vec![Proof {
+    let proof = Proof {
         amount: Amount::ONE,
         keyset_id,
         secret: Secret::generate(),
@@ -27,45 +27,70 @@ where
         witness: None,
         dleq: None,
         p2pk_e: None,
-    }];
-    let ys = vec![proofs[0].y().unwrap()];
+    };
+    let mut second = proof.clone();
+    second.secret = Secret::generate();
+    let proofs = vec![proof, second];
+    let ys: Vec<_> = proofs.iter().map(|p| p.y().unwrap()).collect();
     let operation = Operation::new_swap(Amount::ONE, Amount::ONE, Amount::ZERO);
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     let mut acquired = tx.add_proofs(proofs, None, &operation).await.unwrap();
     tx.update_proofs_state(&mut acquired, State::Pending)
         .await
         .unwrap();
-    assert!(tx.set_unpoisonable_r(&acquired, [42; 32]).await.is_err());
+    assert!(tx
+        .update_proofs_state_with_r(&mut acquired, State::Pending, Some([42; 32]))
+        .await
+        .is_err());
     tx.commit().await.unwrap();
     assert!(db.get_unpoisonable_r(&ys).await.unwrap().is_empty());
 
+    // An incomplete batch must fail; rolling back restores every input.
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     let mut acquired = tx.get_proofs(&ys).await.unwrap();
-    tx.update_proofs_state(&mut acquired, State::Spent)
+    tx.remove_proofs(&ys[..1], None).await.unwrap();
+    assert!(tx
+        .update_proofs_state_with_r(&mut acquired, State::Spent, Some([42; 32]))
         .await
-        .unwrap();
-    tx.set_unpoisonable_r(&acquired, [42; 32]).await.unwrap();
+        .is_err());
     tx.rollback().await.unwrap();
     assert_eq!(
         db.get_proofs_states(&ys).await.unwrap(),
-        vec![Some(State::Pending)]
+        vec![Some(State::Pending); ys.len()]
     );
     assert!(db.get_unpoisonable_r(&ys).await.unwrap().is_empty());
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     let mut acquired = tx.get_proofs(&ys).await.unwrap();
-    tx.update_proofs_state(&mut acquired, State::Spent)
+    tx.update_proofs_state_with_r(&mut acquired, State::Spent, Some([42; 32]))
         .await
         .unwrap();
-    tx.set_unpoisonable_r(&acquired, [42; 32]).await.unwrap();
-    tx.commit().await.unwrap();
+    tx.rollback().await.unwrap();
     assert_eq!(
-        db.get_unpoisonable_r(&ys).await.unwrap().get(&ys[0]),
-        Some(&[42; 32])
+        db.get_proofs_states(&ys).await.unwrap(),
+        vec![Some(State::Pending); ys.len()]
+    );
+    assert!(db.get_unpoisonable_r(&ys).await.unwrap().is_empty());
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut acquired = tx.get_proofs(&ys).await.unwrap();
+    tx.update_proofs_state_with_r(&mut acquired, State::Spent, Some([42; 32]))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let recovered = db.get_unpoisonable_r(&ys).await.unwrap();
+    assert_eq!(recovered.len(), ys.len());
+    assert!(ys.iter().all(|y| recovered.get(y) == Some(&[42; 32])));
+    assert_eq!(
+        db.get_total_redeemed().await.unwrap().get(&keyset_id),
+        Some(&Amount::from(2))
     );
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    let acquired = tx.get_proofs(&ys).await.unwrap();
-    assert!(tx.set_unpoisonable_r(&acquired, [43; 32]).await.is_err());
+    let mut acquired = tx.get_proofs(&ys).await.unwrap();
+    assert!(tx
+        .update_proofs_state_with_r(&mut acquired, State::Spent, Some([43; 32]))
+        .await
+        .is_err());
     tx.rollback().await.unwrap();
     assert_eq!(
         db.get_unpoisonable_r(&ys).await.unwrap().get(&ys[0]),
