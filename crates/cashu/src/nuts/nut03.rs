@@ -18,6 +18,30 @@ use crate::SECP256K1;
 
 const UNPOISONABLE_TWEAK_DOMAIN: &[u8] = b"Cashu/Unpoisonable/secp256k1/v1\0";
 
+/// Mint-generated recovery randomness, encoded as 64 hexadecimal characters on the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct UnpoisonableR(pub [u8; 32]);
+
+impl TryFrom<String> for UnpoisonableR {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        let bytes = crate::util::hex::decode(&value).map_err(|e| e.to_string())?;
+        Ok(Self(
+            bytes
+                .try_into()
+                .map_err(|_| "R must be 32 bytes".to_owned())?,
+        ))
+    }
+}
+
+impl From<UnpoisonableR> for String {
+    fn from(value: UnpoisonableR) -> Self {
+        crate::util::hex::encode(value.0)
+    }
+}
+
 /// NUT03 Error
 #[derive(Debug, Error)]
 pub enum Error {
@@ -199,6 +223,9 @@ impl super::nut10::SpendingConditionVerification for SwapRequest {
 pub struct SwapResponse {
     /// Promises
     pub signatures: Vec<BlindSignature>,
+    /// Recovery randomness for an executed unpoisonable swap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unpoisonable_r: Option<UnpoisonableR>,
 }
 
 impl SwapResponse {
@@ -206,6 +233,7 @@ impl SwapResponse {
     pub fn new(promises: Vec<BlindSignature>) -> Self {
         Self {
             signatures: promises,
+            unpoisonable_r: None,
         }
     }
 
@@ -222,6 +250,23 @@ impl SwapResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unpoisonable_r_wire_encoding_and_ordinary_response_compatibility() {
+        let r = UnpoisonableR([0xab; 32]);
+        let encoded = serde_json::to_string(&r).unwrap();
+        assert_eq!(encoded, format!("\"{}\"", "ab".repeat(32)));
+        assert_eq!(serde_json::from_str::<UnpoisonableR>(&encoded).unwrap(), r);
+        for invalid in ["\"00\"", "\"zz\"", "null", "[]"] {
+            assert!(serde_json::from_str::<UnpoisonableR>(invalid).is_err());
+        }
+        assert_eq!(
+            serde_json::to_string(&SwapResponse::new(vec![])).unwrap(),
+            "{\"signatures\":[]}"
+        );
+        let response: SwapResponse = serde_json::from_str("{\"signatures\":[]}").unwrap();
+        assert!(response.unpoisonable_r.is_none());
+    }
 
     const SWAP_REQUEST_JSON: &str = r#"{
         "inputs": [

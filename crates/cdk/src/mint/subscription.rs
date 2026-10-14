@@ -197,15 +197,30 @@ impl MintPubSubSpec {
         }
 
         if !public_keys.is_empty() {
+            let states = self
+                .db
+                .get_proofs_states(&public_keys)
+                .await
+                .map_err(|e| e.to_string())?;
+            let randomness = self
+                .db
+                .get_unpoisonable_r(&public_keys)
+                .await
+                .map_err(|e| e.to_string())?;
             to_return.extend(
-                self.db
-                    .get_proofs_states(public_keys.as_slice())
-                    .await
-                    .map_err(|e| e.to_string())?
+                states
                     .into_iter()
                     .enumerate()
                     .filter_map(|(idx, state)| state.map(|state| (public_keys[idx], state).into()))
-                    .map(|state: ProofState| state.into()),
+                    .map(|mut state: ProofState| {
+                        if state.state == cdk_common::State::Spent {
+                            state.unpoisonable_r = randomness
+                                .get(&state.y)
+                                .copied()
+                                .map(cdk_common::nuts::nut03::UnpoisonableR);
+                        }
+                        state.into()
+                    }),
             );
         }
 
@@ -925,5 +940,51 @@ mod tests {
         drop(manager);
         assert!(manager_weak.upgrade().is_none());
         assert!(db_weak.upgrade().is_none());
+    #[tokio::test]
+    async fn unpoisonable_subscription_snapshot_exposes_only_committed_r() {
+        use crate::test_helpers::mint::{create_test_mint, mint_test_proofs};
+        use cdk_common::nuts::nut03::UnpoisonableR;
+        let mint = create_test_mint().await.unwrap();
+        let proofs = mint_test_proofs(&mint, Amount::ONE).await.unwrap();
+        let y = proofs[0].y().unwrap();
+        let db = mint.localstore();
+        let spec = MintPubSubSpec {
+            db: db.clone(),
+            payment_processors: Arc::new(HashMap::new()),
+        };
+        let mut tx = db.begin_transaction().await.unwrap();
+        let mut acquired = tx
+            .add_proofs(
+                proofs,
+                None,
+                &cdk_common::mint::Operation::new_swap(Amount::ONE, Amount::ONE, Amount::ZERO),
+            )
+            .await
+            .unwrap();
+        tx.update_proofs_state(&mut acquired, cdk_common::State::Pending)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let events = spec
+            .get_events_from_db(&[NotificationId::ProofState(y)])
+            .await
+            .unwrap();
+        assert!(
+            matches!(events[0].clone().into_inner(), NotificationPayload::ProofState(s) if s.unpoisonable_r.is_none())
+        );
+        let mut tx = db.begin_transaction().await.unwrap();
+        let mut acquired = tx.get_proofs(&[y]).await.unwrap();
+        tx.update_proofs_state(&mut acquired, cdk_common::State::Spent)
+            .await
+            .unwrap();
+        tx.set_unpoisonable_r(&acquired, [42; 32]).await.unwrap();
+        tx.commit().await.unwrap();
+        let events = spec
+            .get_events_from_db(&[NotificationId::ProofState(y)])
+            .await
+            .unwrap();
+        assert!(
+            matches!(events[0].clone().into_inner(), NotificationPayload::ProofState(s) if s.unpoisonable_r == Some(UnpoisonableR([42; 32])))
+        );
     }
 }

@@ -629,6 +629,9 @@ pub struct ProofStateUpdate {
     pub state: ProofState,
     /// Optional witness data
     pub witness: Option<Witness>,
+    /// Hex-encoded recovery randomness for spent unpoisonable inputs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unpoisonable_r: Option<String>,
 }
 
 impl From<cdk::nuts::nut07::ProofState> for ProofStateUpdate {
@@ -637,6 +640,7 @@ impl From<cdk::nuts::nut07::ProofState> for ProofStateUpdate {
             y: proof_state.y.to_string(),
             state: proof_state.state.into(),
             witness: proof_state.witness.map(Into::into),
+            unpoisonable_r: proof_state.unpoisonable_r.map(String::from),
         }
     }
 }

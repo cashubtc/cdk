@@ -57,7 +57,15 @@ impl Mint {
                 .collect()
         };
 
-        // Construct response without additional queries
+        let randomness = if ys_needing_witness.is_empty() {
+            HashMap::new()
+        } else {
+            self.localstore
+                .get_unpoisonable_r(&ys_needing_witness)
+                .await?
+        };
+
+        // Only inputs observed as spent may disclose recovery data.
         let proof_states = check_state
             .ys
             .iter()
@@ -66,6 +74,10 @@ impl Mint {
                 y: *y,
                 state: state.unwrap_or(State::Unspent),
                 witness: witness_map.get(y).cloned().flatten(),
+                unpoisonable_r: randomness
+                    .get(y)
+                    .copied()
+                    .map(cdk_common::nuts::nut03::UnpoisonableR),
             })
             .collect();
 

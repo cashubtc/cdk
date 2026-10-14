@@ -133,7 +133,7 @@ async fn test_p2pk_sig_all_requires_transaction_signature() {
 }
 
 #[tokio::test]
-async fn test_unpoisonable_swap_rejected_without_spending_inputs() {
+async fn test_unpoisonable_swap_recovers_and_spends_after_original_is_signed() {
     let test_mint = TestMintHelper::new().await.unwrap();
     let mint = test_mint.mint();
     let (signer, pubkey) = create_test_keypair();
@@ -158,19 +158,12 @@ async fn test_unpoisonable_swap_rejected_without_spending_inputs() {
     )
     .unwrap();
 
-    let (outputs, _) = create_test_blinded_messages(mint, amount).await.unwrap();
+    let (outputs, pre_mint) = create_test_blinded_messages(mint, amount).await.unwrap();
     let mut request = SwapRequest::new(locked_proofs.clone(), outputs.clone()).with_unpoisonable();
     request.sign_sig_all(signer.clone()).unwrap();
     assert!(
         cdk_common::SpendingConditionVerification::verify_spending_conditions(&request).is_ok()
     );
-
-    let result = mint.process_swap_request(request).await;
-    assert!(matches!(
-        result,
-        Err(crate::Error::Custom(ref message))
-            if message == "Unpoisonable swap execution is not implemented"
-    ));
 
     let mut duplicates = SwapRequest::new(
         locked_proofs.clone(),
@@ -194,10 +187,134 @@ async fn test_unpoisonable_swap_rejected_without_spending_inputs() {
         .iter()
         .all(|state| state.state == State::Unspent));
 
-    // The same inputs can still be spent with an ordinary SIG_ALL swap.
-    let mut ordinary = SwapRequest::new(locked_proofs, outputs);
-    ordinary.sign_sig_all(signer).unwrap();
-    assert!(mint.process_swap_request(ordinary).await.is_ok());
+    // Sign the original point in a separate transaction before executing the request.
+    let other_inputs = test_mint.mint_proofs(amount).await.unwrap();
+    let original_signature = mint
+        .process_swap_request(SwapRequest::new(other_inputs, outputs.clone()))
+        .await
+        .unwrap();
+    assert!(original_signature.unpoisonable_r.is_none());
+    // Force the first candidate to collide with a previously signed execution point.
+    let collision_r = [7u8; 32];
+    let collision_outputs =
+        cdk_common::nuts::nut03::tweak_swap_outputs(&collision_r, &outputs).unwrap();
+    let collision_inputs = test_mint.mint_proofs(amount).await.unwrap();
+    mint.process_swap_request(SwapRequest::new(collision_inputs, collision_outputs))
+        .await
+        .unwrap();
+    let mut exhausted_attempts = 0;
+    assert!(matches!(
+        mint.process_swap_with_randomness(request.clone(), || {
+            exhausted_attempts += 1;
+            Ok(collision_r)
+        })
+        .await,
+        Err(crate::Error::Internal)
+    ));
+    assert_eq!(exhausted_attempts, 16);
+    assert!(mint
+        .localstore()
+        .get_unpoisonable_r(&locked_proofs.ys().unwrap())
+        .await
+        .unwrap()
+        .is_empty());
+
+    let mut attempts = 0;
+    let response = mint
+        .process_swap_with_randomness(request.clone(), || {
+            attempts += 1;
+            Ok(if attempts == 1 {
+                collision_r
+            } else {
+                [8u8; 32]
+            })
+        })
+        .await
+        .unwrap();
+    assert_eq!(attempts, 2);
+    assert_eq!(response.unpoisonable_r.unwrap().0, [8u8; 32]);
+    // A spent-input failure is not an output collision and must not be retried.
+    let mut attempts = 0;
+    assert!(mint
+        .process_swap_with_randomness(request, || {
+            attempts += 1;
+            Ok([9u8; 32])
+        })
+        .await
+        .is_err());
+    assert_eq!(attempts, 1);
+    let check = mint
+        .check_state(&CheckStateRequest {
+            ys: locked_proofs.ys().unwrap(),
+        })
+        .await
+        .unwrap();
+    assert!(check
+        .states
+        .iter()
+        .all(|s| s.state == State::Spent && s.unpoisonable_r == response.unpoisonable_r));
+    let r = check.states[0].unpoisonable_r.unwrap();
+    let tweaked = cdk_common::nuts::nut03::tweak_swap_outputs(&r.0, &outputs).unwrap();
+    let recovered = mint
+        .restore(cdk_common::nuts::RestoreRequest {
+            outputs: tweaked.clone(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(recovered.signatures, response.signatures);
+    let mut signatures = recovered.signatures;
+    for (i, signature) in signatures.iter_mut().enumerate() {
+        signature
+            .verify_dleq(
+                test_mint
+                    .public_keys_of_the_active_sat_keyset
+                    .amount_key(signature.amount)
+                    .unwrap(),
+                tweaked[i].blinded_secret,
+            )
+            .unwrap();
+        let t =
+            cdk_common::nuts::nut03::derive_unpoisonable_tweak(&r.0, &outputs[i].blinded_secret)
+                .unwrap();
+        // Fermat inversion in the scalar field, using the existing secp256k1 API.
+        let exponent = crate::util::hex::decode(
+            "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd036413f",
+        )
+        .unwrap();
+        let mut one = [0u8; 32];
+        one[31] = 1;
+        let mut inverse = bitcoin::secp256k1::SecretKey::from_slice(&one).unwrap();
+        for byte in exponent {
+            for bit in (0..8).rev() {
+                inverse = inverse
+                    .mul_tweak(&bitcoin::secp256k1::Scalar::from(inverse))
+                    .unwrap();
+                if byte & (1 << bit) != 0 {
+                    inverse = inverse.mul_tweak(&t).unwrap();
+                }
+            }
+        }
+        signature.c = signature
+            .c
+            .mul_tweak(&bitcoin::secp256k1::Secp256k1::new(), &inverse.into())
+            .unwrap()
+            .into();
+        assert_eq!(signature.c, original_signature.signatures[i].c);
+        // The verified DLEQ belongs to the tweaked pair, not this ordinary pair.
+        signature.dleq = None;
+    }
+    let proofs = construct_proofs(
+        signatures,
+        pre_mint.rs(),
+        pre_mint.secrets(),
+        &test_mint.public_keys_of_the_active_sat_keyset,
+    )
+    .unwrap();
+    let (fresh_outputs, _) = create_test_blinded_messages(mint, amount).await.unwrap();
+    assert!(mint
+        .process_swap_request(SwapRequest::new(proofs, fresh_outputs))
+        .await
+        .is_ok());
 }
 
 /// Test: P2PK multisig (2-of-3) with SIG_ALL

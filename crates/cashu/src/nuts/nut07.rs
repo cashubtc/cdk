@@ -86,6 +86,9 @@ pub struct ProofState {
     pub state: State,
     /// Witness data if it is supplied
     pub witness: Option<Witness>,
+    /// Recovery randomness, disclosed only for spent unpoisonable inputs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unpoisonable_r: Option<super::nut03::UnpoisonableR>,
 }
 
 impl From<(PublicKey, State)> for ProofState {
@@ -94,6 +97,7 @@ impl From<(PublicKey, State)> for ProofState {
             y: value.0,
             state: value.1,
             witness: None,
+            unpoisonable_r: None,
         }
     }
 }

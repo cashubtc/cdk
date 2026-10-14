@@ -415,12 +415,13 @@ mod tests {
         let mock_client = Arc::new(MockMintConnector::new());
         mock_client.set_check_state_response(Ok(CheckStateResponse {
             states: vec![ProofState {
+                unpoisonable_r: None,
                 y: proof_y,
                 state: State::Unspent, // Not spent yet
                 witness: None,
             }],
         }));
-        mock_client.set_post_swap_response(Ok(crate::nuts::SwapResponse { signatures: vec![] }));
+        mock_client.set_post_swap_response(Ok(crate::nuts::SwapResponse::new(vec![])));
 
         let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
         let result = wallet
@@ -480,6 +481,7 @@ mod tests {
         let mock_client = Arc::new(MockMintConnector::new());
         mock_client.set_check_state_response(Ok(CheckStateResponse {
             states: vec![ProofState {
+                unpoisonable_r: None,
                 y: proof_y,
                 state: State::Spent, // Spent at mint
                 witness: None,

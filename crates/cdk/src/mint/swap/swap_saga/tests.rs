@@ -22,6 +22,144 @@ fn create_verification(amount: Amount) -> Verification {
     }
 }
 
+#[tokio::test]
+async fn unpoisonable_r_visible_only_after_finalization() {
+    use cdk_common::nuts::nut03::{tweak_swap_outputs, UnpoisonableR};
+    use cdk_common::nuts::CheckStateRequest;
+
+    for failure in ["", "GENERAL", "AFTER_UNPOISONABLE_R"] {
+        let mint = create_test_mint().await.unwrap();
+        let (inputs, verification) = create_swap_inputs(&mint, Amount::from(3)).await;
+        let (originals, _) = create_test_blinded_messages(&mint, Amount::from(3))
+            .await
+            .unwrap();
+        let r = UnpoisonableR([42; 32]);
+        let outputs = tweak_swap_outputs(&r.0, &originals).unwrap();
+        let points: Vec<_> = outputs.iter().map(|o| o.blinded_secret).collect();
+        let original_points: Vec<_> = originals.iter().map(|o| o.blinded_secret).collect();
+        let ys = inputs.ys().unwrap();
+        let db = mint.localstore();
+        let saga = SwapSaga::new(&mint, db.clone(), mint.pubsub_manager())
+            .with_unpoisonable_r(Some(r))
+            .setup_swap(&inputs, &outputs, None, verification)
+            .await
+            .unwrap();
+
+        let states = mint
+            .check_state(&CheckStateRequest { ys: ys.clone() })
+            .await
+            .unwrap();
+        assert!(states
+            .states
+            .iter()
+            .all(|s| s.state == State::Pending && s.unpoisonable_r.is_none()));
+        assert!(db.get_unpoisonable_r(&ys).await.unwrap().is_empty());
+        if failure == "GENERAL" {
+            set_fail_for("GENERAL");
+            let result = saga.sign_outputs().await;
+            clear_fail_for("GENERAL");
+            assert!(result.is_err());
+            assert!(db.get_unpoisonable_r(&ys).await.unwrap().is_empty());
+            assert!(db
+                .get_proofs_states(&ys)
+                .await
+                .unwrap()
+                .iter()
+                .all(Option::is_none));
+            continue;
+        }
+        let saga = saga.sign_outputs().await.unwrap();
+        assert!(db.get_unpoisonable_r(&ys).await.unwrap().is_empty());
+        assert!(db
+            .get_blind_signatures(&points)
+            .await
+            .unwrap()
+            .iter()
+            .all(Option::is_none));
+
+        if !failure.is_empty() {
+            set_fail_for("AFTER_UNPOISONABLE_R");
+        }
+        let result = saga.finalize().await;
+        clear_fail_for("AFTER_UNPOISONABLE_R");
+        let states = mint
+            .check_state(&CheckStateRequest { ys: ys.clone() })
+            .await
+            .unwrap();
+        if !failure.is_empty() {
+            assert!(result.is_err());
+            assert!(states
+                .states
+                .iter()
+                .all(|s| s.state == State::Unspent && s.unpoisonable_r.is_none()));
+            assert!(db.get_unpoisonable_r(&ys).await.unwrap().is_empty());
+            assert!(db
+                .get_blind_signatures(&points)
+                .await
+                .unwrap()
+                .iter()
+                .all(Option::is_none));
+        } else {
+            assert_eq!(result.unwrap().unpoisonable_r, Some(r));
+            assert_eq!(states.states.len(), inputs.len());
+            assert!(states
+                .states
+                .iter()
+                .all(|s| s.state == State::Spent && s.unpoisonable_r == Some(r)));
+            assert!(db
+                .get_blind_signatures(&points)
+                .await
+                .unwrap()
+                .iter()
+                .all(Option::is_some));
+        }
+        assert!(db
+            .get_blind_signatures(&original_points)
+            .await
+            .unwrap()
+            .iter()
+            .all(Option::is_none));
+    }
+}
+
+#[tokio::test]
+async fn unpoisonable_incomplete_saga_recovery_discards_private_r() {
+    use cdk_common::nuts::nut03::{tweak_swap_outputs, UnpoisonableR};
+    let mint = create_test_mint().await.unwrap();
+    let (inputs, verification) = create_swap_inputs(&mint, Amount::ONE).await;
+    let (originals, _) = create_test_blinded_messages(&mint, Amount::ONE)
+        .await
+        .unwrap();
+    let r = UnpoisonableR([42; 32]);
+    let outputs = tweak_swap_outputs(&r.0, &originals).unwrap();
+    let points: Vec<_> = outputs.iter().map(|o| o.blinded_secret).collect();
+    let db = mint.localstore();
+    let saga = SwapSaga::new(&mint, db.clone(), mint.pubsub_manager())
+        .with_unpoisonable_r(Some(r))
+        .setup_swap(&inputs, &outputs, None, verification)
+        .await
+        .unwrap()
+        .sign_outputs()
+        .await
+        .unwrap();
+    drop(saga);
+    mint.recover_from_incomplete_sagas().await.unwrap();
+    let ys = inputs.ys().unwrap();
+    assert!(db
+        .get_proofs_states(&ys)
+        .await
+        .unwrap()
+        .iter()
+        .all(Option::is_none));
+    assert!(db.get_unpoisonable_r(&ys).await.unwrap().is_empty());
+    assert!(db
+        .get_blind_signatures(&points)
+        .await
+        .unwrap()
+        .iter()
+        .all(Option::is_none));
+}
+
 /// Helper to create test proofs for swapping using the mint's process
 async fn create_swap_inputs(mint: &Mint, amount: Amount) -> (Proofs, Verification) {
     let proofs = crate::test_helpers::mint::mint_test_proofs(mint, amount)

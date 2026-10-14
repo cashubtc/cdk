@@ -1,4 +1,4 @@
-use cdk_common::nuts::nut03::tweak_swap_outputs;
+use cdk_common::nuts::nut03::{tweak_swap_outputs, UnpoisonableR};
 use cdk_common::SpendingConditionVerification;
 use swap_saga::SwapSaga;
 use tracing::instrument;
@@ -18,6 +18,23 @@ impl Mint {
         &self,
         swap_request: SwapRequest,
     ) -> Result<SwapResponse, Error> {
+        self.process_swap_with_randomness(swap_request, || {
+            let mut bytes = [0u8; 32];
+            getrandom::fill(&mut bytes).map_err(|_| Error::Internal)?;
+            Ok(bytes)
+        })
+        .await
+    }
+
+    // Injectable randomness keeps collision retries testable without weakening the public API.
+    async fn process_swap_with_randomness<F>(
+        &self,
+        swap_request: SwapRequest,
+        mut random: F,
+    ) -> Result<SwapResponse, Error>
+    where
+        F: FnMut() -> Result<[u8; 32], Error>,
+    {
         #[cfg(feature = "prometheus")]
         let metrics = super::MintMetricGuard::new("process_swap_request");
 
@@ -45,56 +62,39 @@ impl Mint {
             // and HTLC (including SIGALL)
             swap_request.verify_spending_conditions()?;
 
-            // Prepare the execution points while R is private. The next slice will
-            // reserve these points in TX1 and persist R with the signatures in TX2.
-            // Until then do not enter the saga or disclose R to the client.
-            if swap_request.is_unpoisonable() {
-                Self::check_outputs_unique(swap_request.outputs())?;
-
-                // Retrying cannot fix duplicate originals, but can fix a rare
-                // collision between distinct derived points. Even one collision
-                // is extraordinarily unlikely (see the collision discussion at
-                // https://gist.github.com/SatsAndSports/6c197ca9da984c1922483e74281d38db).
-                // The limit bounds retries if something is unexpectedly broken.
-                let mut prepared = false;
-                for _ in 0..16 {
-                    let mut r = [0u8; 32];
-                    getrandom::fill(&mut r).map_err(|_| Error::Internal)?;
-                    let tweaked_outputs = tweak_swap_outputs(&r, swap_request.outputs())?;
-                    if Self::check_outputs_unique(&tweaked_outputs).is_ok() {
-                        prepared = true;
-                        break;
-                    }
-                }
-                if !prepared {
-                    return Err(Error::Internal);
-                }
-                return Err(Error::Custom(
-                    "Unpoisonable swap execution is not implemented".to_owned(),
-                ));
+            // Structural validation only: never look up original points in storage.
+            self.verify_outputs(swap_request.outputs())?;
+            // Even one collision is extraordinarily unlikely; bound retries defensively.
+            // https://gist.github.com/SatsAndSports/6c197ca9da984c1922483e74281d38db
+            for _ in 0..16 {
+                let r = if swap_request.is_unpoisonable() {
+                    Some(UnpoisonableR(random()?))
+                } else {
+                    None
+                };
+                let outputs = match r {
+                    Some(r) => tweak_swap_outputs(&r.0, swap_request.outputs())?,
+                    None => swap_request.outputs().clone(),
+                };
+                let init_saga =
+                    SwapSaga::new(self, self.localstore.clone(), self.pubsub_manager.clone())
+                        .with_unpoisonable_r(r);
+                let setup = init_saga
+                    .setup_swap(
+                        swap_request.inputs(),
+                        &outputs,
+                        None,
+                        input_verification.clone(),
+                    )
+                    .await;
+                let setup_saga = match setup {
+                    // setup_swap rolls back TX1 on an output reservation conflict.
+                    Err(Error::DuplicateOutputs) if r.is_some() => continue,
+                    other => other?,
+                };
+                return setup_saga.sign_outputs().await?.finalize().await;
             }
-
-            // Step 1: Initialize the swap saga
-            let init_saga =
-                SwapSaga::new(self, self.localstore.clone(), self.pubsub_manager.clone());
-
-            // Step 2: TX1 - Setup swap (verify balance + add inputs as pending + add output blinded messages)
-            let setup_saga = init_saga
-                .setup_swap(
-                    swap_request.inputs(),
-                    swap_request.outputs(),
-                    None,
-                    input_verification,
-                )
-                .await?;
-
-            // Step 3: Blind sign outputs (no DB transaction)
-            let signed_saga = setup_saga.sign_outputs().await?;
-
-            // Step 4: TX2 - Finalize swap (add signatures + mark inputs spent)
-            let response = signed_saga.finalize().await?;
-
-            Ok(response)
+            Err(Error::Internal)
         }
         .await;
 

@@ -91,6 +91,8 @@ mod tests;
 /// - No runtime state checks or `Option<T>` unwrapping needed
 /// - IDE autocomplete only shows valid operations for each state
 pub struct SwapSaga<'a, S> {
+    /// Private until TX2 commits; incomplete swaps are compensated after restart.
+    unpoisonable_r: Option<cdk_common::nuts::nut03::UnpoisonableR>,
     mint: &'a super::Mint,
     db: DynMintDatabase,
     pubsub: Arc<PubSubManager>,
@@ -106,6 +108,7 @@ impl<'a> SwapSaga<'a, Initial> {
         let operation_id = uuid::Uuid::now_v7();
 
         Self {
+            unpoisonable_r: None,
             mint,
             db,
             pubsub,
@@ -113,6 +116,15 @@ impl<'a> SwapSaga<'a, Initial> {
             operation_id,
             state_data: Initial { operation_id },
         }
+    }
+
+    /// Attach recovery randomness before reserving the tweaked outputs.
+    pub fn with_unpoisonable_r(
+        mut self,
+        r: Option<cdk_common::nuts::nut03::UnpoisonableR>,
+    ) -> Self {
+        self.unpoisonable_r = r;
+        self
     }
 
     /// Sets up the swap by atomically verifying balance and reserving inputs/outputs.
@@ -249,6 +261,7 @@ impl<'a> SwapSaga<'a, Initial> {
 
         // Transition to SetupComplete state
         Ok(SwapSaga {
+            unpoisonable_r: self.unpoisonable_r,
             mint: self.mint,
             db: self.db,
             pubsub: self.pubsub,
@@ -297,6 +310,7 @@ impl<'a> SwapSaga<'a, SetupComplete> {
                 // is not used by recovery logic - saga state remains "SetupComplete"
                 // until the swap is finalized or compensated
                 Ok(SwapSaga {
+                    unpoisonable_r: self.unpoisonable_r,
                     mint: self.mint,
                     db: self.db,
                     pubsub: self.pubsub,
@@ -413,6 +427,21 @@ impl SwapSaga<'_, Signed> {
             return Err(err);
         }
 
+        if let Some(r) = self.unpoisonable_r {
+            if let Err(err) = tx.set_unpoisonable_r(&proofs, r.0).await {
+                tx.rollback().await?;
+                self.compensate_all().await?;
+                return Err(err.into());
+            }
+        }
+
+        #[cfg(test)]
+        if crate::test_helpers::mint::should_fail_for("AFTER_UNPOISONABLE_R") {
+            tx.rollback().await?;
+            self.compensate_all().await?;
+            return Err(Error::Internal);
+        }
+
         if let Err(err) = tx
             .add_completed_operation(
                 &self.state_data.operation,
@@ -439,14 +468,16 @@ impl SwapSaga<'_, Signed> {
         tx.commit().await?;
         // Publish proof state changes
         for pk in &self.state_data.ys {
-            self.pubsub.proof_state((*pk, State::Spent));
+            let mut state = cdk_common::nuts::ProofState::from((*pk, State::Spent));
+            state.unpoisonable_r = self.unpoisonable_r;
+            self.pubsub.proof_state(state);
         }
         // Clear compensations - swap is complete
         self.compensations.clear();
 
-        Ok(cdk_common::nuts::SwapResponse::new(
-            self.state_data.signatures,
-        ))
+        let mut response = cdk_common::nuts::SwapResponse::new(self.state_data.signatures);
+        response.unpoisonable_r = self.unpoisonable_r;
+        Ok(response)
     }
 }
 

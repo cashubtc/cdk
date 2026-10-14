@@ -617,6 +617,7 @@ mod tests {
             .collect();
 
         mock_client.set_post_swap_response(Ok(SwapResponse {
+            unpoisonable_r: None,
             signatures: bad_signatures,
         }));
 
