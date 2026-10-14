@@ -13,7 +13,8 @@ use cdk_common::nuts::{MeltQuoteState, MintQuoteState};
 use cdk_common::secret::Secret;
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{
-    self, MintQuote, ProofInfo, Transaction, TransactionDirection, TransactionId, TransactionStatus,
+    self, MintQuote, ProofInfo, Transaction, TransactionDirection, TransactionId,
+    TransactionStatus, WalletKeySetInfo,
 };
 use cdk_common::{
     database, Amount, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, PaymentMethod, Proof,
@@ -263,7 +264,7 @@ where
     async fn get_mint_keysets(
         &self,
         mint_url: MintUrl,
-    ) -> Result<Option<Vec<KeySetInfo>>, database::Error> {
+    ) -> Result<Option<Vec<WalletKeySetInfo>>, database::Error> {
         let conn = self
             .pool
             .get()
@@ -277,7 +278,8 @@ where
                 unit,
                 active,
                 input_fee_ppk,
-                final_expiry
+                final_expiry,
+                unlisted_at
             FROM
                 keyset
             WHERE mint_url = :mint_url
@@ -300,7 +302,7 @@ where
     async fn get_keyset_by_id(
         &self,
         keyset_id: &Id,
-    ) -> Result<Option<KeySetInfo>, database::Error> {
+    ) -> Result<Option<WalletKeySetInfo>, database::Error> {
         let conn = self
             .pool
             .get()
@@ -313,7 +315,8 @@ where
                 unit,
                 active,
                 input_fee_ppk,
-                final_expiry
+                final_expiry,
+                unlisted_at
             FROM
                 keyset
             WHERE id = :id
@@ -1187,7 +1190,7 @@ where
     async fn add_mint_keysets(
         &self,
         mint_url: MintUrl,
-        keysets: Vec<KeySetInfo>,
+        keysets: Vec<WalletKeySetInfo>,
     ) -> Result<(), database::Error> {
         let conn = self
             .pool
@@ -1200,24 +1203,29 @@ where
             query(
                 r#"
         INSERT INTO keyset
-        (mint_url, id, unit, active, input_fee_ppk, final_expiry, keyset_u32)
+        (mint_url, id, unit, active, input_fee_ppk, final_expiry, unlisted_at, keyset_u32)
         VALUES
-        (:mint_url, :id, :unit, :active, :input_fee_ppk, :final_expiry, :keyset_u32)
+        (:mint_url, :id, :unit, :active, :input_fee_ppk, :final_expiry, :unlisted_at, :keyset_u32)
         ON CONFLICT(id) DO UPDATE SET
             active = excluded.active,
-            input_fee_ppk = excluded.input_fee_ppk
+            input_fee_ppk = excluded.input_fee_ppk,
+            unlisted_at = excluded.unlisted_at
         "#,
             )?
             .bind("mint_url", mint_url.to_string())
-            .bind("id", keyset.id.to_string())
-            .bind("unit", keyset.unit.to_string())
-            .bind("active", keyset.active)
-            .bind("input_fee_ppk", i64::try_from(keyset.input_fee_ppk)?)
+            .bind("id", keyset.keyset.id.to_string())
+            .bind("unit", keyset.keyset.unit.to_string())
+            .bind("active", keyset.keyset.active)
+            .bind("input_fee_ppk", i64::try_from(keyset.keyset.input_fee_ppk)?)
             .bind(
                 "final_expiry",
-                keyset.final_expiry.map(i64::try_from).transpose()?,
+                keyset.keyset.final_expiry.map(i64::try_from).transpose()?,
             )
-            .bind("keyset_u32", u32::from(keyset.id))
+            .bind(
+                "unlisted_at",
+                keyset.unlisted_at.map(i64::try_from).transpose()?,
+            )
+            .bind("keyset_u32", u32::from(keyset.keyset.id))
             .execute(&tx)
             .await?;
         }
@@ -2044,23 +2052,27 @@ fn sql_row_to_mint_info(row: Vec<Column>) -> Result<MintInfo, Error> {
 }
 
 #[instrument(skip_all)]
-fn sql_row_to_keyset(row: Vec<Column>) -> Result<KeySetInfo, Error> {
+fn sql_row_to_keyset(row: Vec<Column>) -> Result<WalletKeySetInfo, Error> {
     unpack_into!(
         let (
             id,
             unit,
             active,
             input_fee_ppk,
-            final_expiry
+            final_expiry,
+            unlisted_at
         ) = row
     );
 
-    Ok(KeySetInfo {
-        id: column_as_string!(id, Id::from_str, Id::from_bytes),
-        unit: column_as_string!(unit, CurrencyUnit::from_str),
-        active: matches!(active, Column::Integer(1)),
-        input_fee_ppk: column_as_nullable_number!(input_fee_ppk).unwrap_or(0),
-        final_expiry: column_as_nullable_number!(final_expiry),
+    Ok(WalletKeySetInfo {
+        keyset: KeySetInfo {
+            id: column_as_string!(id, Id::from_str, Id::from_bytes),
+            unit: column_as_string!(unit, CurrencyUnit::from_str),
+            active: matches!(active, Column::Integer(1)),
+            input_fee_ppk: column_as_nullable_number!(input_fee_ppk).unwrap_or(0),
+            final_expiry: column_as_nullable_number!(final_expiry),
+        },
+        unlisted_at: column_as_nullable_number!(unlisted_at),
     })
 }
 

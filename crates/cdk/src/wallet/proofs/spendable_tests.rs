@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use cdk_common::util::unix_time;
-use cdk_common::wallet::KeysetLoadPolicy;
+use cdk_common::wallet::{KeysetLoadPolicy, WalletKeySetInfo};
 use cdk_common::CurrencyUnit;
 
 use crate::nuts::{Id, KeySetInfo, ProofsMethods};
@@ -120,8 +120,10 @@ async fn inactive_keyset_proofs_stay_spendable() {
     assert_eq!(spendable.total_amount().unwrap(), Amount::from(16));
 }
 
+/// A keyset the mint still lists and has not expired holds spendable proofs,
+/// which is the early return rather than the partition.
 #[tokio::test]
-async fn nothing_is_held_back_without_an_expiry() {
+async fn nothing_is_held_back_from_a_listed_unexpired_keyset() {
     let active = test_keyset();
     let active_id = active.id;
 
@@ -221,13 +223,13 @@ async fn expired_keyset_is_read_from_the_database_when_the_cache_is_cold() {
     db.add_mint(mint_url.clone(), None).await.unwrap();
     db.add_mint_keysets(
         mint_url.clone(),
-        vec![KeySetInfo {
+        vec![WalletKeySetInfo::listed(KeySetInfo {
             id: expired_id,
             unit: CurrencyUnit::Sat,
             active: true,
             input_fee_ppk: 0,
             final_expiry: Some(unix_time() - 1),
-        }],
+        })],
     )
     .await
     .unwrap();
@@ -357,4 +359,130 @@ async fn melt_succeeds_when_the_keyset_has_not_expired() {
     prepare_melt_over_keyset(false)
         .await
         .expect("an unexpired keyset's proofs are still spendable");
+}
+
+/// A keyset the mint has stopped listing reads as expired until it lists it
+/// again, so its proofs must not reach selection either.
+#[tokio::test]
+async fn unlisted_keyset_proofs_are_held_back() {
+    let vanishing = test_keyset();
+    let vanishing_id = vanishing.id;
+
+    let mut survivor = make_inactive_keyset();
+    survivor.active = Some(true);
+    let survivor_id = survivor.id;
+
+    let db = create_test_db().await;
+    let mint_url = test_mint_url();
+    db.add_mint(mint_url.clone(), None).await.unwrap();
+    db.update_proofs(
+        vec![
+            test_proof_info(vanishing_id, 32, mint_url.clone()),
+            test_proof_info(survivor_id, 8, mint_url.clone()),
+        ],
+        vec![],
+    )
+    .await
+    .unwrap();
+
+    let mock = Arc::new(MockMintConnector::new());
+    mock.set_mint_keys_response(Ok(vec![vanishing, survivor.clone()]));
+    let wallet = create_test_wallet_with_mock(db, mock.clone()).await;
+    wallet.keysets(KeysetLoadPolicy::Refresh).await.unwrap();
+
+    mock.set_mint_keys_response(Ok(vec![survivor]));
+    wallet.keysets(KeysetLoadPolicy::Refresh).await.unwrap();
+
+    let spendable = wallet
+        .retain_spendable_proofs(wallet.get_unspent_proofs().await.unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(spendable.len(), 1);
+    assert_eq!(spendable[0].keyset_id, survivor_id);
+    assert_eq!(
+        wallet.total_balance().await.unwrap(),
+        Amount::from(40),
+        "the balance keeps the held-back proofs: the mint may list the keyset again"
+    );
+}
+
+/// The cheapest keyset wins output selection, so one the mint has forgotten
+/// has to lose it even when nothing else is cheaper.
+#[tokio::test]
+async fn unlisted_keyset_is_not_chosen_for_outputs() {
+    let mut vanishing = test_keyset();
+    vanishing.input_fee_ppk = 0;
+    let vanishing_id = vanishing.id;
+
+    let mut survivor = make_inactive_keyset();
+    survivor.active = Some(true);
+    let survivor_id = survivor.id;
+
+    let db = create_test_db().await;
+    let mint_url = test_mint_url();
+    db.add_mint(mint_url.clone(), None).await.unwrap();
+
+    let mock = Arc::new(MockMintConnector::new());
+    mock.set_mint_keys_response(Ok(vec![vanishing, survivor.clone()]));
+    let wallet = create_test_wallet_with_mock(db, mock.clone()).await;
+    wallet.keysets(KeysetLoadPolicy::Refresh).await.unwrap();
+
+    assert_eq!(
+        wallet.active_keyset().await.unwrap().id,
+        vanishing_id,
+        "the cheaper keyset must win while the mint still lists it, or this proves nothing"
+    );
+
+    mock.set_mint_keys_response(Ok(vec![survivor]));
+    wallet.keysets(KeysetLoadPolicy::Refresh).await.unwrap();
+
+    assert_eq!(wallet.active_keyset().await.unwrap().id, survivor_id);
+}
+
+/// The marker is held back, not spent down: a mint that restores a backup
+/// lists the keyset again and its proofs have to come back with it.
+#[tokio::test]
+async fn relisting_a_keyset_makes_its_proofs_spendable_again() {
+    let vanishing = test_keyset();
+    let vanishing_id = vanishing.id;
+
+    let mut survivor = make_inactive_keyset();
+    survivor.active = Some(true);
+
+    let db = create_test_db().await;
+    let mint_url = test_mint_url();
+    db.add_mint(mint_url.clone(), None).await.unwrap();
+    db.update_proofs(
+        vec![test_proof_info(vanishing_id, 32, mint_url.clone())],
+        vec![],
+    )
+    .await
+    .unwrap();
+
+    let mock = Arc::new(MockMintConnector::new());
+    mock.set_mint_keys_response(Ok(vec![vanishing.clone(), survivor.clone()]));
+    let wallet = create_test_wallet_with_mock(db, mock.clone()).await;
+    wallet.keysets(KeysetLoadPolicy::Refresh).await.unwrap();
+
+    mock.set_mint_keys_response(Ok(vec![survivor.clone()]));
+    wallet.keysets(KeysetLoadPolicy::Refresh).await.unwrap();
+
+    let proofs = wallet.get_unspent_proofs().await.unwrap();
+    assert!(wallet
+        .retain_spendable_proofs(proofs.clone())
+        .await
+        .unwrap()
+        .is_empty());
+
+    mock.set_mint_keys_response(Ok(vec![vanishing, survivor]));
+    wallet.keysets(KeysetLoadPolicy::Refresh).await.unwrap();
+
+    assert_eq!(
+        wallet
+            .retain_spendable_proofs(proofs.clone())
+            .await
+            .unwrap(),
+        proofs
+    );
 }

@@ -222,7 +222,7 @@ impl AuthWallet {
             .await?;
 
         match metadata.keysets.get(&keyset_id) {
-            Some(keyset) if keyset.unit == CurrencyUnit::Auth => (),
+            Some(keyset) if keyset.keyset.unit == CurrencyUnit::Auth => (),
             _ => return Err(Error::UnknownKeySet),
         }
 
@@ -250,8 +250,8 @@ impl AuthWallet {
             .keysets
             .values()
             .filter_map(|k| {
-                if k.unit == CurrencyUnit::Auth {
-                    Some((*(k.clone())).clone())
+                if k.keyset.unit == CurrencyUnit::Auth {
+                    Some(k.keyset.clone())
                 } else {
                     None
                 }

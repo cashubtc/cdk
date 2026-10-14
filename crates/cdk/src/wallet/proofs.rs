@@ -53,7 +53,7 @@ impl Wallet {
                 .keysets
                 .values()
                 .filter(|keyset| keyset.is_expired())
-                .map(|keyset| keyset.id)
+                .map(|keyset| keyset.keyset.id)
                 .collect());
         }
 
@@ -64,21 +64,25 @@ impl Wallet {
             .unwrap_or_default()
             .iter()
             .filter(|keyset| keyset.is_expired())
-            .map(|keyset| keyset.id)
+            .map(|keyset| keyset.keyset.id)
             .collect())
     }
 
     /// Keep only the proofs the mint can still accept as inputs.
     ///
-    /// Past a keyset's final expiry the mint answers anything built on it with
-    /// error 12003, inputs included, so a single such proof fails the whole
-    /// operation. Selection prefers inactive-keyset proofs, which makes an
-    /// expired keyset's proofs the first ones picked, so they have to be
-    /// dropped before selection rather than after.
+    /// Past a keyset's final expiry, and for a keyset the mint has stopped
+    /// listing, the mint answers anything built on it with an error (12003 and
+    /// 12001 respectively), inputs included, so a single such proof fails the
+    /// whole operation. Selection prefers inactive-keyset proofs, which makes
+    /// those the first ones picked, so they have to be dropped before
+    /// selection rather than after.
     ///
     /// They stay in the database and in the balance. An unspendable proof is
-    /// still a record of what the wallet holds, so hiding it would be the
-    /// wallet deciding the money is gone on the owner's behalf.
+    /// still a record of what the wallet holds, and a mint that restores a
+    /// backup lists the keyset again, so hiding it would be the wallet
+    /// deciding the money is gone on the owner's behalf.
+    ///
+    /// This is the one place that decides what is spendable.
     #[instrument(skip_all)]
     pub async fn retain_spendable_proofs(&self, proofs: Proofs) -> Result<Proofs, Error> {
         let unspendable = self.unspendable_keyset_ids().await?;

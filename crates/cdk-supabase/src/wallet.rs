@@ -23,7 +23,7 @@ use cdk_common::secret::Secret;
 use cdk_common::util::hex;
 use cdk_common::wallet::{
     self, MintQuote, Transaction, TransactionDirection, TransactionId, TransactionStatus,
-    WalletSaga,
+    WalletKeySetInfo, WalletSaga,
 };
 use reqwest::{Client, StatusCode};
 use scrypt::Params as ScryptParams;
@@ -243,7 +243,7 @@ impl SupabaseWalletDatabase {
     /// This must match the latest `schema_version` value set in the migration files.
     /// When adding new migrations, update this constant and set the same value
     /// in the new migration's `INSERT INTO schema_info` statement.
-    pub const REQUIRED_SCHEMA_VERSION: u32 = 10;
+    pub const REQUIRED_SCHEMA_VERSION: u32 = 11;
 
     /// Get the full database schema SQL
     ///
@@ -1008,7 +1008,7 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
     async fn get_mint_keysets(
         &self,
         mint_url: MintUrl,
-    ) -> Result<Option<Vec<KeySetInfo>>, DatabaseError> {
+    ) -> Result<Option<Vec<WalletKeySetInfo>>, DatabaseError> {
         let path = format!(
             "rest/v1/keyset?mint_url=eq.{}",
             url_encode(&mint_url.to_string())
@@ -1023,7 +1023,7 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         }
 
         if let Some(keysets) = Self::parse_response::<KeySetTable>(&text)? {
-            let result: Result<Vec<KeySetInfo>, _> =
+            let result: Result<Vec<WalletKeySetInfo>, _> =
                 keysets.into_iter().map(|ks| ks.try_into()).collect();
             Ok(Some(result?))
         } else {
@@ -1031,7 +1031,10 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         }
     }
 
-    async fn get_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<KeySetInfo>, DatabaseError> {
+    async fn get_keyset_by_id(
+        &self,
+        keyset_id: &Id,
+    ) -> Result<Option<WalletKeySetInfo>, DatabaseError> {
         let path = format!(
             "rest/v1/keyset?id=eq.{}",
             url_encode(&keyset_id.to_string())
@@ -1660,7 +1663,7 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
     async fn add_mint_keysets(
         &self,
         mint_url: MintUrl,
-        keysets: Vec<KeySetInfo>,
+        keysets: Vec<WalletKeySetInfo>,
     ) -> Result<(), DatabaseError> {
         if keysets.is_empty() {
             return Ok(());
@@ -2546,6 +2549,7 @@ struct KeySetTable {
     active: bool,
     input_fee_ppk: i64,
     final_expiry: Option<i64>,
+    unlisted_at: Option<i64>,
     keyset_u32: Option<i64>,
     /// Extra fields from other applications (captured during deserialization, ignored during serialization)
     #[serde(default, skip_serializing, flatten)]
@@ -2553,30 +2557,34 @@ struct KeySetTable {
 }
 
 impl KeySetTable {
-    fn from_info(mint_url: MintUrl, info: KeySetInfo) -> Result<Self, DatabaseError> {
+    fn from_info(mint_url: MintUrl, info: WalletKeySetInfo) -> Result<Self, DatabaseError> {
         Ok(Self {
             mint_url: mint_url.to_string(),
-            id: info.id.to_string(),
-            unit: info.unit.to_string(),
-            active: info.active,
-            input_fee_ppk: info.input_fee_ppk as i64,
-            final_expiry: info.final_expiry.map(|v| v as i64),
-            keyset_u32: Some(u32::from(info.id) as i64),
+            id: info.keyset.id.to_string(),
+            unit: info.keyset.unit.to_string(),
+            active: info.keyset.active,
+            input_fee_ppk: info.keyset.input_fee_ppk as i64,
+            final_expiry: info.keyset.final_expiry.map(|v| v as i64),
+            unlisted_at: info.unlisted_at.map(|v| v as i64),
+            keyset_u32: Some(u32::from(info.keyset.id) as i64),
             _extra: Default::default(),
         })
     }
 }
 
-impl TryInto<KeySetInfo> for KeySetTable {
+impl TryInto<WalletKeySetInfo> for KeySetTable {
     type Error = DatabaseError;
-    fn try_into(self) -> Result<KeySetInfo, Self::Error> {
-        Ok(KeySetInfo {
-            id: Id::from_str(&self.id).map_err(|_| DatabaseError::InvalidKeysetId)?,
-            unit: CurrencyUnit::from_str(&self.unit)
-                .map_err(|_| DatabaseError::Internal("Invalid unit".into()))?,
-            active: self.active,
-            input_fee_ppk: self.input_fee_ppk as u64,
-            final_expiry: self.final_expiry.map(|v| v as u64),
+    fn try_into(self) -> Result<WalletKeySetInfo, Self::Error> {
+        Ok(WalletKeySetInfo {
+            keyset: KeySetInfo {
+                id: Id::from_str(&self.id).map_err(|_| DatabaseError::InvalidKeysetId)?,
+                unit: CurrencyUnit::from_str(&self.unit)
+                    .map_err(|_| DatabaseError::Internal("Invalid unit".into()))?,
+                active: self.active,
+                input_fee_ppk: self.input_fee_ppk as u64,
+                final_expiry: self.final_expiry.map(|v| v as u64),
+            },
+            unlisted_at: self.unlisted_at.map(|v| v as u64),
         })
     }
 }
