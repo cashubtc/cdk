@@ -85,6 +85,23 @@ cdk-cli mint http://127.0.0.1:8085 100 "My first mint"
 # After payment, tokens are automatically minted
 ```
 
+To recover a known quote after restoring the original wallet seed:
+
+```bash
+cdk-cli mint https://mint.example.com --quote-id <quote-id> --method onchain --key-search-limit 10000
+```
+
+The CLI fetches the quote and searches seed-derived NUT-20 signing keys before
+minting its unissued balance. The default search covers counters 0 through 999;
+`--key-search-limit` sets the exclusive upper bound. Use `--method bolt11` (the
+default), `bolt12`, or the custom method name for other payment methods. A quote
+already stored locally uses its stored payment method.
+
+Recovery requires the quote ID and the original seed with a compatible key
+derivation. It cannot discover a lost quote ID or recover randomly generated
+signing keys. If no key matches, the quote remains stored so you can retry with a
+larger limit; an original database or key backup is needed for random keys.
+
 ### 3. Send Tokens
 ```bash
 # Send tokens (you'll be prompted for amount and mint selection interactively)
