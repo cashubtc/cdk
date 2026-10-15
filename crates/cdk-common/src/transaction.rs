@@ -18,9 +18,9 @@ pub struct TransactionResponse {
     pub signatures: Vec<BlindSignature>,
     /// NUT-05 response per melt quote output, in request order
     pub melt_quotes: Vec<serde_json::Value>,
-    /// NUT-04 response per change quote output in request order, `None` until
-    /// `PAID` or for a remainder quote with no change
-    pub change_quotes: Vec<Option<serde_json::Value>>,
+    /// NUT-04 response per mint quote output in request order, `None` until
+    /// `PAID` or for a remainder quote not created
+    pub mint_quotes: Vec<Option<serde_json::Value>>,
 }
 
 /// A melt quote response in its per-method wire shape.

@@ -475,18 +475,7 @@ impl MeltSaga<Initial> {
         }
 
         if let Some(setup) = transaction {
-            let record = &setup.record;
-            if let Err(err) = crate::mint::transaction::claim_change_quote_ids(
-                &mut tx,
-                &record.change_outputs,
-                Some(&record.melt_quote_id),
-            )
-            .await
-            {
-                tx.rollback().await?;
-                return Err(err);
-            }
-            if let Err(err) = tx.add_transaction(record).await {
+            if let Err(err) = tx.add_transaction(&setup.record).await {
                 tx.rollback().await?;
                 return Err(err.into());
             }

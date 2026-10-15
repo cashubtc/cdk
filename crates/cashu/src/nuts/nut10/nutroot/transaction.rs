@@ -13,7 +13,7 @@ const PROOF_INPUT: u8 = 0x11;
 const MINT_QUOTE_INPUT: u8 = 0x12;
 const BLINDED_OUTPUT: u8 = 0x21;
 const MELT_QUOTE_OUTPUT: u8 = 0x22;
-const CHANGE_QUOTE_OUTPUT: u8 = 0x23;
+const MINT_QUOTE_OUTPUT: u8 = 0x23;
 const AUTHORIZED_REQUEST: u8 = 0xf1;
 
 /// Quote identity and amount bound by a transaction.
@@ -40,14 +40,14 @@ pub struct MintQuoteInput {
     pub issued: Amount,
 }
 
-/// Change quote output bound by a transaction.
+/// Mint quote output bound by a transaction.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ChangeOutput {
-    /// Fixed amount, or `None` for the remainder quote that takes the balance.
+pub struct MintQuoteOutput {
+    /// Amount, `None` on the remainder quote.
     pub amount: Option<Amount>,
-    /// Lock key of the change quote.
+    /// Lock key of the txout quote.
     pub pubkey: bitcoin::secp256k1::PublicKey,
-    /// The change quote's id: [`super::derived_quote_id`] or [`super::input_bound_quote_id`].
+    /// The txout quote's id; the remainder quote's is [`super::remainder_quote_id`].
     pub id: String,
 }
 
@@ -68,21 +68,21 @@ impl Transaction {
         outputs: &[BlindedMessage],
         melt_quotes: &[Quote],
     ) -> Result<Self, Error> {
-        Self::with_change(proofs, mint_quotes, outputs, melt_quotes, &[])
+        Self::with_quote_outputs(proofs, mint_quotes, outputs, melt_quotes, &[])
     }
 
-    /// [`Transaction::new`] with change quote outputs, at most one of them the remainder.
-    pub fn with_change(
+    /// [`Transaction::new`] with mint quote outputs, at most one of them the remainder.
+    pub fn with_quote_outputs(
         proofs: &[Proof],
         mint_quotes: &[MintQuoteInput],
         outputs: &[BlindedMessage],
         melt_quotes: &[Quote],
-        change: &[ChangeOutput],
+        quote_outputs: &[MintQuoteOutput],
     ) -> Result<Self, Error> {
         if (proofs.is_empty() && mint_quotes.is_empty())
-            || (outputs.is_empty() && melt_quotes.is_empty() && change.is_empty())
-            || change.iter().filter(|c| c.amount.is_none()).count() > 1
-            || change.iter().any(|c| c.amount == Some(Amount::ZERO))
+            || (outputs.is_empty() && melt_quotes.is_empty() && quote_outputs.is_empty())
+            || quote_outputs.iter().filter(|c| c.amount.is_none()).count() > 1
+            || quote_outputs.iter().any(|c| c.amount == Some(Amount::ZERO))
         {
             return Err(Error::InvalidTransaction);
         }
@@ -107,7 +107,7 @@ impl Transaction {
                 ],
             )?);
         }
-        for output in change {
+        for output in quote_outputs {
             // The amount record is omitted entirely on the remainder quote.
             let mut body = vec![];
             if let Some(amount) = output.amount {
@@ -115,7 +115,7 @@ impl Transaction {
             }
             record(&mut body, 2, &output.pubkey.serialize())?;
             record(&mut body, 3, output.id.as_bytes())?;
-            record(&mut transcript, CHANGE_QUOTE_OUTPUT, &body)?;
+            record(&mut transcript, MINT_QUOTE_OUTPUT, &body)?;
         }
         Ok(Self::from_parts(transcript, inputs))
     }
@@ -132,14 +132,14 @@ impl Transaction {
         let mut quotes = HashSet::new();
         let mut output = false;
         let mut remainder = false;
-        let mut change_ids = HashSet::new();
+        let mut quote_output_ids = HashSet::new();
         for (tag, value, full) in records {
             if tag < last || !matches!(tag >> 4, 1 | 2) {
                 return Err(Error::InvalidTransaction);
             }
             last = tag;
             let fields = parse_records(value)?;
-            if tag == CHANGE_QUOTE_OUTPUT {
+            if tag == MINT_QUOTE_OUTPUT {
                 // `01 amount, 02 lock key, 03 quote id`; the remainder quote has no `01`.
                 let (key, id) = match fields.as_slice() {
                     [(2, key, _), (3, id, _)] if !remainder => {
@@ -160,7 +160,7 @@ impl Transaction {
                     id.len() == 64 && id.iter().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
                 if !matches!(key, crate::nuts::PublicKey::Secp256k1(_))
                     || !derived
-                    || !change_ids.insert(*id)
+                    || !quote_output_ids.insert(*id)
                 {
                     return Err(Error::InvalidTransaction);
                 }
@@ -288,11 +288,6 @@ impl Transaction {
         message[32..].copy_from_slice(&self.input_id(index)?);
         Ok(tagged_hash("Cashu_TransactionInput", &message))
     }
-}
-
-/// The transcript's input containers (`0x1n`), the bytes an input-bound quote id hashes.
-pub fn input_section(proofs: &[Proof], mint_quotes: &[MintQuoteInput]) -> Result<Vec<u8>, Error> {
-    Ok(input_records(proofs, mint_quotes)?.concat())
 }
 
 fn input_records(proofs: &[Proof], mint_quotes: &[MintQuoteInput]) -> Result<Vec<Vec<u8>>, Error> {

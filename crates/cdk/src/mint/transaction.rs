@@ -1,10 +1,10 @@
-//! NUT-XX transactions: proofs and paid mint quotes in; blinded messages, one
-//! melt quote and change quotes out.
+//! NUT-XX transactions: proofs and paid mint quotes in; blinded messages and one
+//! melt quote out, with a remainder quote beside the melt.
 //!
 //! A transaction without a melt settles in one database transaction. One with
-//! a melt runs the melt saga: quote inputs are issued, change quote ids claimed and
-//! the record stored in the saga's setup transaction, and the shared melt
-//! finalization and rollback paths settle or fail the record by its melt quote id.
+//! a melt runs the melt saga: quote inputs are reserved and the record stored in
+//! the saga's setup transaction, and the shared melt finalization and rollback
+//! paths settle or fail the record by its melt quote id.
 
 use std::collections::HashSet;
 use std::str::FromStr;
@@ -26,8 +26,7 @@ use cdk_common::{
 use tracing::instrument;
 
 use super::melt::shared::{
-    begin_melt_cleanup_transaction, get_keyset_fee_and_amounts, MeltChangeResult,
-    MeltCleanupTransaction,
+    begin_melt_cleanup_transaction, MeltChangeResult, MeltCleanupTransaction,
 };
 use super::verification::Verification;
 use super::{Error, Mint, MintQuoteResponse};
@@ -52,7 +51,7 @@ struct Prepared {
     transcript: nutroot::Transaction,
     quote_inputs: Vec<(QuoteId, Amount)>,
     quote_issued: Vec<Amount>,
-    change_outputs: Vec<ChangeOutput>,
+    quote_outputs: Vec<QuoteOutput>,
     melt: Option<MeltQuote>,
     inputs_amount: Amount,
     outputs_amount: Amount,
@@ -80,17 +79,8 @@ pub(crate) fn parse_quote_witness(raw: &str) -> Result<Witness, Error> {
     serde_json::from_str(raw).map_err(|_| Error::SignatureMissingOrInvalid)
 }
 
-/// A change quote output: its id, lock key and fixed amount, `None` on the remainder.
-type ChangeOutput = (QuoteId, PublicKey, Option<Amount>);
-
-/// Parse a change quote's `id_preimage`: exactly 32 bytes of hex.
-fn parse_id_preimage(raw: &str) -> Result<[u8; 32], Error> {
-    (raw.len() == 64)
-        .then(|| cdk_common::util::hex::decode(raw).ok())
-        .flatten()
-        .and_then(|bytes| bytes.try_into().ok())
-        .ok_or_else(|| invalid("change quote id_preimage must be 32 bytes of hex"))
-}
+/// A mint quote output: its id and lock key.
+type QuoteOutput = (QuoteId, PublicKey);
 
 /// Change on settlement: the excess less what the payment cost, the cost capped at the reserve.
 ///
@@ -112,7 +102,7 @@ pub(crate) fn settlement_change(excess: Amount, fee_reserve: Amount, fee_paid: A
     }
 }
 
-fn change_quote(unit: &CurrencyUnit, id: &QuoteId, amount: Amount, pubkey: PublicKey) -> MintQuote {
+fn txout_quote(unit: &CurrencyUnit, id: &QuoteId, amount: Amount, pubkey: PublicKey) -> MintQuote {
     let now = unix_time();
     MintQuote::new(
         Some(id.clone()),
@@ -120,11 +110,11 @@ fn change_quote(unit: &CurrencyUnit, id: &QuoteId, amount: Amount, pubkey: Publi
         unit.clone(),
         Some(amount.with_unit(unit.clone())),
         0,
-        PaymentIdentifier::CustomId(change_payment_id(id)),
+        PaymentIdentifier::CustomId(txout_payment_id(id)),
         Some(pubkey),
         Amount::ZERO.with_unit(unit.clone()),
         Amount::ZERO.with_unit(unit.clone()),
-        PaymentMethod::Custom(cdk_common::nuts::nutxx::CHANGE_METHOD.to_owned()),
+        PaymentMethod::Custom(cdk_common::nuts::nutxx::TXOUT_METHOD.to_owned()),
         now,
         now,
         vec![],
@@ -133,52 +123,36 @@ fn change_quote(unit: &CurrencyUnit, id: &QuoteId, amount: Amount, pubkey: Publi
     )
 }
 
-/// Lookup and payment id of a change quote.
-fn change_payment_id(id: &QuoteId) -> String {
-    format!("change:{id}")
+/// Lookup and payment id of a txout quote.
+fn txout_payment_id(id: &QuoteId) -> String {
+    format!("txout:{id}")
 }
 
-/// Claim a transaction's change quote ids at acceptance; a claimed id refuses the transaction.
-pub(crate) async fn claim_change_quote_ids(
-    tx: &mut DynMintTransaction,
-    outputs: &[ChangeOutput],
-    melt_quote_id: Option<&QuoteId>,
-) -> Result<(), Error> {
-    let ids: Vec<QuoteId> = outputs.iter().map(|(id, _, _)| id.clone()).collect();
-    tx.claim_mint_quote_ids(&ids, melt_quote_id)
-        .await
-        .map_err(|err| match err {
-            database::Error::Duplicate => Error::DuplicateOutputs,
-            err => Error::Database(err),
-        })
-}
-
-/// Create a paid change quote per output; the remainder quote only when `change` is positive.
-async fn create_change_quotes(
+/// Create the remainder quote for `unsigned`, the value of outputs the mint could not sign.
+async fn create_txout_quotes(
     tx: &mut DynMintTransaction,
     unit: &CurrencyUnit,
-    outputs: &[ChangeOutput],
-    change: Amount,
+    outputs: &[QuoteOutput],
+    unsigned: Amount,
 ) -> Result<Vec<Option<MintQuote>>, Error> {
     let mut created = Vec::with_capacity(outputs.len());
-    for (id, pubkey, fixed) in outputs {
-        let amount = fixed.unwrap_or(change);
-        if amount == Amount::ZERO {
+    for (id, pubkey) in outputs {
+        if unsigned == Amount::ZERO {
             created.push(None);
             continue;
         }
         let mut quote = tx
-            .add_mint_quote(change_quote(unit, id, amount, *pubkey))
+            .add_mint_quote(txout_quote(unit, id, unsigned, *pubkey))
             .await?;
-        quote.add_payment(amount.with_unit(unit.clone()), change_payment_id(id), None)?;
+        quote.add_payment(unsigned.with_unit(unit.clone()), txout_payment_id(id), None)?;
         tx.update_mint_quote(&mut quote).await?;
         created.push(Some(quote.inner()));
     }
     Ok(created)
 }
 
-/// Change quote responses in output order, `None` where no quote exists.
-fn change_quote_responses(
+/// Txout quote responses in output order, `None` where no quote exists.
+fn txout_quote_responses(
     quotes: Vec<Option<MintQuote>>,
 ) -> Result<Vec<Option<serde_json::Value>>, Error> {
     quotes
@@ -304,11 +278,11 @@ async fn issue_quote_inputs(
     Ok(issued)
 }
 
-/// Sign the reserved outputs, create the change quotes and mark the record paid.
+/// Sign the reserved outputs, create any remainder quote and mark the record paid.
 ///
 /// Runs in the melt finalization's second transaction, in place of the change
 /// signing of a plain melt. Blank outputs take the change as in NUT-08; the
-/// remainder quote takes what they do not. The melt quote is already paid.
+/// remainder quote holds the outputs if the mint cannot sign them. The melt quote is already paid.
 pub(crate) async fn settle_with_melt(
     mint: &Mint,
     db: &DynMintDatabase,
@@ -325,35 +299,19 @@ pub(crate) async fn settle_with_melt(
         .map(Into::into)
         .unwrap_or(Amount::ZERO);
 
-    // Outputs whose keyset went inactive during the payment are not signed (NUT-02);
-    // their value returns through the remainder quote instead.
     let mut outputs = melt_request_info.change_outputs.clone();
-    let mut unsigned_amount = Amount::ZERO;
-    let signable = outputs.first().is_none_or(|output| {
-        mint.get_keyset_info(&output.keyset_id)
-            .is_some_and(|keyset| keyset.active && !keyset.is_expired())
-    });
-    if !signable {
-        unsigned_amount = Amount::try_sum(outputs.iter().map(|o| o.amount))?;
-        tracing::warn!(
-            melt_quote_id = %quote.id,
-            unsigned_amount = %unsigned_amount,
-            "transaction outputs lost their active keyset during payment; returning their value as change",
-        );
-        outputs.clear();
-    }
-    let excess = excess
-        .checked_add(unsigned_amount)
-        .ok_or(Error::AmountOverflow)?;
-    let mut change = settlement_change(excess, quote.fee_reserve().into(), fee_paid);
+    let change = settlement_change(excess, quote.fee_reserve().into(), fee_paid);
     if outputs.iter().any(|o| o.amount == Amount::ZERO) {
-        let mut denominations = get_keyset_fee_and_amounts(&mint.keysets, &outputs)
-            .amounts()
-            .to_vec();
+        // The outputs' own keyset, active or not: an unsigned blank counts what it would hold.
+        let mut denominations = outputs
+            .first()
+            .and_then(|output| mint.get_keyset_info(&output.keyset_id))
+            .map(|keyset| keyset.amounts)
+            .unwrap_or_default();
         denominations.sort_unstable_by(|a, b| b.cmp(a));
         let mut left = u64::from(change);
         // Each blank in request order takes the largest amount that fits; one left at zero is not
-        // signed (NUT-08), and the remainder quote takes what is left.
+        // signed (NUT-08), and what is left stays with the mint.
         outputs.retain_mut(|output| {
             if output.amount != Amount::ZERO {
                 return true;
@@ -367,7 +325,22 @@ pub(crate) async fn settle_with_melt(
                 None => false,
             }
         });
-        change = Amount::from(left);
+    }
+    // Outputs whose keyset went inactive during the payment are not signed (NUT-02);
+    // the remainder quote holds their value.
+    let mut unsigned = Amount::ZERO;
+    let signable = outputs.first().is_none_or(|output| {
+        mint.get_keyset_info(&output.keyset_id)
+            .is_some_and(|keyset| keyset.active && !keyset.is_expired())
+    });
+    if !signable {
+        unsigned = Amount::try_sum(outputs.iter().map(|o| o.amount))?;
+        tracing::warn!(
+            melt_quote_id = %quote.id,
+            unsigned = %unsigned,
+            "transaction outputs lost their active keyset during payment; holding their value in the remainder quote",
+        );
+        outputs.clear();
     }
     let signatures = if outputs.is_empty() {
         vec![]
@@ -395,17 +368,18 @@ pub(crate) async fn settle_with_melt(
 
     issue_quote_inputs(&mut tx, &record).await?;
     let created =
-        create_change_quotes(&mut tx, &record.unit, &record.change_outputs, change).await?;
+        create_txout_quotes(&mut tx, &record.unit, &record.mint_quote_outputs, unsigned).await?;
     tx.update_transaction(&mut record, TransactionState::Paid)
         .await?;
     tracing::info!(
         melt_quote_id = %quote.id,
         change = %change,
+        unsigned = %unsigned,
         "transaction settled with melt",
     );
     Ok(MeltChangeResult::Ready {
         change_sigs: Some(signatures),
-        change_quotes: created.into_iter().flatten().collect(),
+        txout_quotes: created.into_iter().flatten().collect(),
         tx,
     })
 }
@@ -423,10 +397,10 @@ impl Mint {
             return self.settle_without_melt(prepared).await;
         };
         let respond_async = respond_async || prepared.request.prefer_async;
-        let change_ids: Vec<QuoteId> = prepared
-            .change_outputs
+        let quote_ids: Vec<QuoteId> = prepared
+            .quote_outputs
             .iter()
-            .map(|(id, _, _)| id.clone())
+            .map(|(id, _)| id.clone())
             .collect();
         let pending = self.melt_transaction(prepared, melt.clone()).await?;
         if !respond_async {
@@ -435,14 +409,14 @@ impl Mint {
                 tracing::info!(melt_quote_id = %melt.id, "transaction melt did not settle: {err}");
             }
         }
-        self.melt_transaction_response(&melt.id, &change_ids).await
+        self.melt_transaction_response(&melt.id, &quote_ids).await
     }
 
-    /// The response for a transaction with a melt, read from its melt quote and change quotes.
+    /// The response for a transaction with a melt, read from its melt quote and txout quotes.
     async fn melt_transaction_response(
         &self,
         melt_quote_id: &QuoteId,
-        change_ids: &[QuoteId],
+        quote_ids: &[QuoteId],
     ) -> Result<TransactionResponse, Error> {
         let mut quote = self
             .localstore
@@ -455,23 +429,27 @@ impl Mint {
             MeltQuoteState::Unpaid | MeltQuoteState::Failed => TransactionState::Failed,
             MeltQuoteState::Pending | MeltQuoteState::Unknown => TransactionState::Pending,
         };
-        let (signatures, change_quotes) = if state == TransactionState::Paid {
-            let quotes = self.localstore.get_mint_quotes_by_ids(change_ids).await?;
+        let (signatures, mint_quotes) = if state == TransactionState::Paid {
+            let quotes = if quote_ids.is_empty() {
+                vec![]
+            } else {
+                self.localstore.get_mint_quotes_by_ids(quote_ids).await?
+            };
             (
                 self.localstore
                     .get_blind_signatures_for_quote(melt_quote_id)
                     .await?,
-                change_quote_responses(quotes)?,
+                txout_quote_responses(quotes)?,
             )
         } else {
-            (vec![], vec![None; change_ids.len()])
+            (vec![], vec![None; quote_ids.len()])
         };
         let change = (state == TransactionState::Paid).then(|| signatures.clone());
         Ok(TransactionResponse {
             state,
             signatures,
             melt_quotes: vec![melt_quote_json(quote.into_response(change))?],
-            change_quotes,
+            mint_quotes,
         })
     }
 
@@ -482,38 +460,33 @@ impl Mint {
         if proofs.is_empty() && request.mint_quote_inputs.is_empty() {
             return Err(invalid("transaction requires at least one input"));
         }
-        if outputs.is_empty()
-            && request.melt_quote_outputs.is_empty()
-            && request.change_quote_outputs.is_empty()
-        {
+        if outputs.is_empty() && request.melt_quote_outputs.is_empty() {
             return Err(invalid("transaction requires at least one output"));
         }
-        let mut change_requests = Vec::with_capacity(request.change_quote_outputs.len());
-        for output in &request.change_quote_outputs {
-            let id_preimage = output
-                .id_preimage
-                .as_deref()
-                .map(parse_id_preimage)
-                .transpose()?;
-            let pubkey = PublicKey::from_hex(&output.pubkey)
-                .ok()
-                .filter(|key| key.as_secp256k1().is_ok())
-                .ok_or_else(|| invalid("change quote pubkey is not a compressed secp256k1 key"))?;
-            if output.amount == Some(Amount::ZERO) {
-                return Err(invalid("change quote amount must be positive"));
-            }
-            change_requests.push((id_preimage, pubkey, output.amount));
-        }
-        let remainders = change_requests
-            .iter()
-            .filter(|(_, _, a)| a.is_none())
-            .count();
-        if remainders > 1 {
+        // The only mint quote output is the remainder quote, backing a melt's outputs (NUT-XX).
+        if request.mint_quote_outputs.len() > 1 {
             return Err(invalid(
-                "at most one change quote output may omit its amount",
+                "at most one mint quote output, the remainder quote",
             ));
         }
-        let has_remainder = remainders == 1;
+        if !request.mint_quote_outputs.is_empty()
+            && (outputs.is_empty() || request.melt_quote_outputs.is_empty())
+        {
+            return Err(invalid(
+                "a remainder quote needs a melt and blinded outputs",
+            ));
+        }
+        let mut remainder_keys = Vec::with_capacity(request.mint_quote_outputs.len());
+        for output in &request.mint_quote_outputs {
+            remainder_keys.push(
+                PublicKey::from_hex(&output.pubkey)
+                    .ok()
+                    .filter(|key| key.as_secp256k1().is_ok())
+                    .ok_or_else(|| {
+                        invalid("mint quote output pubkey is not a compressed secp256k1 key")
+                    })?,
+            );
+        }
         if request.melt_quote_outputs.is_empty() && outputs.iter().any(|o| o.amount == Amount::ZERO)
         {
             return Err(invalid(
@@ -522,13 +495,6 @@ impl Mint {
         }
         if request.melt_quote_outputs.len() > 1 {
             return Err(invalid("multi-melt is not supported"));
-        }
-        // Outputs cannot be signed if their keyset rotates while the payment is in
-        // flight; the remainder quote is where their value goes then.
-        if !request.melt_quote_outputs.is_empty() && !outputs.is_empty() && !has_remainder {
-            return Err(invalid(
-                "a melt with blinded outputs requires a remainder quote",
-            ));
         }
         let quote_ids: HashSet<&str> = request
             .mint_quote_inputs
@@ -615,44 +581,33 @@ impl Mint {
             });
             quote_issued.push(quote.amount_issued().into());
         }
-        // Ids resolve once quote inputs load: an input-bound id hashes their issued amounts too.
-        let section = if change_requests
-            .iter()
-            .any(|(preimage, _, _)| preimage.is_none())
-        {
-            nutroot::input_section(proofs, &transcript_quotes)
-                .map_err(cdk_common::nuts::nut10::Error::from)?
-        } else {
-            vec![]
+        // The remainder quote is named by its melt (NUT-XX).
+        let quote_outputs: Vec<QuoteOutput> = match &melt {
+            Some(quote) => remainder_keys
+                .into_iter()
+                .map(|key| {
+                    let id = nutroot::remainder_quote_id(&quote.id.to_string());
+                    (QuoteId::BASE64(id), key)
+                })
+                .collect(),
+            None => vec![],
         };
-        let mut change_outputs = Vec::with_capacity(change_requests.len());
-        let mut transcript_change = Vec::with_capacity(change_requests.len());
-        let mut change_ids = HashSet::new();
-        for (k, (id_preimage, pubkey, amount)) in change_requests.into_iter().enumerate() {
-            let id = match id_preimage {
-                Some(preimage) => nutroot::derived_quote_id(&preimage),
-                None => nutroot::input_bound_quote_id(
-                    &section,
-                    u32::try_from(k).map_err(|_| invalid("too many change quote outputs"))?,
-                ),
-            };
-            let quote_id = QuoteId::BASE64(id.clone());
-            if !change_ids.insert(quote_id.clone()) {
-                return Err(Error::DuplicateOutputs);
-            }
-            transcript_change.push(nutroot::ChangeOutput {
-                amount,
-                pubkey: *pubkey.as_secp256k1()?,
-                id,
-            });
-            change_outputs.push((quote_id, pubkey, amount));
-        }
-        let transcript = nutroot::Transaction::with_change(
+        let transcript_quote_outputs = quote_outputs
+            .iter()
+            .map(|(id, key)| {
+                Ok(nutroot::MintQuoteOutput {
+                    amount: None,
+                    pubkey: *key.as_secp256k1()?,
+                    id: id.to_string(),
+                })
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        let transcript = nutroot::Transaction::with_quote_outputs(
             proofs,
             &transcript_quotes,
             outputs,
             &melt_quotes,
-            &transcript_change,
+            &transcript_quote_outputs,
         )
         .map_err(cdk_common::nuts::nut10::Error::from)?;
 
@@ -723,6 +678,12 @@ impl Mint {
             if amount.with_unit(quote.unit.clone()) > quote.amount_mintable() {
                 return Err(invalid("quote input exceeds the quote's mintable amount"));
             }
+            // A txout quote redeems once and in full (NUT-XX).
+            if quote.payment_method.is_txout()
+                && amount.with_unit(quote.unit.clone()) != quote.amount_mintable()
+            {
+                return Err(invalid("a txout quote is drawn only in full"));
+            }
             units.insert(quote.unit.clone());
             mint_quotes.push(quote);
         }
@@ -781,13 +742,7 @@ impl Mint {
         let inputs_amount = proofs_amount
             .checked_add(quotes_amount)
             .ok_or(Error::AmountOverflow)?;
-        // Fixed change quotes are outputs with a known amount; the remainder takes the rest.
-        let outputs_amount = Amount::try_sum(
-            outputs
-                .iter()
-                .map(|o| o.amount)
-                .chain(change_outputs.iter().filter_map(|(_, _, amount)| *amount)),
-        )?;
+        let outputs_amount = Amount::try_sum(outputs.iter().map(|o| o.amount))?;
         let melt_amount: Amount = melt
             .as_ref()
             .map(|q| q.amount().into())
@@ -802,7 +757,7 @@ impl Mint {
             .and_then(|a| a.checked_add(melt_reserve))
             .and_then(|a| a.checked_add(fee))
             .ok_or(Error::AmountOverflow)?;
-        if inputs_amount < required || (!has_remainder && inputs_amount != required) {
+        if inputs_amount != required {
             return Err(Error::TransactionUnbalanced(
                 inputs_amount.into(),
                 outputs_amount
@@ -825,7 +780,7 @@ impl Mint {
             transcript,
             quote_inputs,
             quote_issued,
-            change_outputs,
+            quote_outputs,
             melt,
             inputs_amount,
             outputs_amount,
@@ -853,12 +808,10 @@ impl Mint {
             None,
             None,
         );
-        // With no melt the remainder quote takes the whole excess.
-        let change = prepared.excess;
         let ys = proofs.ys()?;
 
         let mut tx = self.localstore.begin_transaction().await?;
-        let result: Result<(Vec<MintQuote>, Vec<Option<MintQuote>>), Error> = async {
+        let result: Result<Vec<MintQuote>, Error> = async {
             let issued = reserve_quote_inputs(
                 &mut tx,
                 &prepared.unit,
@@ -884,21 +837,16 @@ impl Mint {
                 }
                 Mint::update_proofs_state(&mut tx, &mut stored, State::Spent).await?;
             }
-            // Same lock order as the melt saga: mint quotes, proofs, then change quote ids.
-            claim_change_quote_ids(&mut tx, &prepared.change_outputs, None).await?;
             if !outputs.is_empty() {
                 let secrets: Vec<PublicKey> = outputs.iter().map(|o| o.blinded_secret).collect();
                 tx.add_blind_signatures(&secrets, &signatures, None).await?;
             }
-            let created =
-                create_change_quotes(&mut tx, &prepared.unit, &prepared.change_outputs, change)
-                    .await?;
             tx.add_completed_operation(&operation, &fee_breakdown.per_keyset)
                 .await?;
-            Ok((issued, created))
+            Ok(issued)
         }
         .await;
-        let (issued, created) = match result {
+        let issued = match result {
             Ok(value) => value,
             Err(err) => {
                 tx.rollback().await?;
@@ -919,22 +867,17 @@ impl Mint {
             self.pubsub_manager
                 .mint_quote_issue(quote, quote.amount_issued());
         }
-        for quote in created.iter().flatten() {
-            self.pubsub_manager
-                .mint_quote_payment(quote, quote.amount_paid());
-        }
         tracing::info!(
             proof_count = proofs.len(),
             quote_input_count = prepared.quote_inputs.len(),
             output_count = outputs.len(),
-            change = %change,
             "transaction settled",
         );
         Ok(TransactionResponse {
             state: TransactionState::Paid,
             signatures,
             melt_quotes: vec![],
-            change_quotes: change_quote_responses(created)?,
+            mint_quotes: vec![],
         })
     }
 
@@ -958,7 +901,7 @@ impl Mint {
                 state: TransactionState::Pending,
                 unit: prepared.unit.clone(),
                 quote_inputs: prepared.quote_inputs.clone(),
-                change_outputs: prepared.change_outputs.clone(),
+                mint_quote_outputs: prepared.quote_outputs.clone(),
                 excess: prepared.excess,
                 created_time: unix_time(),
             },
