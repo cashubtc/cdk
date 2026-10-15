@@ -1,7 +1,7 @@
 use std::env;
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use anyhow::{bail, Result};
@@ -29,14 +29,17 @@ pub const BITCOIN_RPC_PASS: &str = "testpass";
 
 const BITCOIN_DIR: &str = "bitcoin";
 
-pub const LND_ADDR: &str = "0.0.0.0:18449";
-pub const LND_RPC_ADDR: &str = "localhost:10009";
+pub const LND_ADDR: &str = "127.0.0.1:18449";
+pub static LND_RPC_ADDR: LazyLock<String> =
+    LazyLock::new(|| std::env::var("LND_RPC_ADDR").unwrap_or("127.0.0.1:10009".to_string()));
 
-pub const LND_TWO_ADDR: &str = "0.0.0.0:18410";
-pub const LND_TWO_RPC_ADDR: &str = "localhost:10010";
+pub const LND_TWO_ADDR: &str = "127.0.0.1:18410";
+pub static LND_TWO_RPC_ADDR: LazyLock<String> =
+    LazyLock::new(|| std::env::var("LND_TWO_RPC_ADDR").unwrap_or("127.0.0.1:10010".to_string()));
 
 pub const CLN_ADDR: &str = "127.0.0.1:19846";
-pub const CLN_TWO_ADDR: &str = "127.0.0.1:19847";
+pub static CLN_TWO_ADDR: LazyLock<String> =
+    LazyLock::new(|| std::env::var("CLN_TWO_ADDR").unwrap_or("127.0.0.1:19847".to_string()));
 
 /// Configuration for regtest environment
 pub struct RegtestConfig {
@@ -421,7 +424,7 @@ pub async fn start_regtest_end(
     let mut clnd_two = Clnd::new(
         get_bitcoin_dir(work_dir),
         cln_two_dir.clone(),
-        CLN_TWO_ADDR.into(),
+        CLN_TWO_ADDR.as_str().into(),
         BITCOIN_RPC_USER.to_string(),
         BITCOIN_RPC_PASS.to_string(),
     );
@@ -436,12 +439,12 @@ pub async fn start_regtest_end(
     let lnd_dir = get_lnd_dir(work_dir, "one");
     println!("{}", lnd_dir.display());
 
-    let mut lnd = init_lnd(work_dir, lnd_dir.clone(), LND_ADDR, LND_RPC_ADDR).await;
+    let mut lnd = init_lnd(work_dir, lnd_dir.clone(), LND_ADDR, &LND_RPC_ADDR).await;
     lnd.start_lnd().unwrap();
     tracing::info!("Started lnd node");
 
     let lnd_client = LndClient::new(
-        format!("https://{LND_RPC_ADDR}"),
+        format!("https://{}", *LND_RPC_ADDR),
         get_lnd_cert_file_path(&lnd_dir),
         get_lnd_macaroon_path(&lnd_dir),
     )
@@ -465,14 +468,14 @@ pub async fn start_regtest_end(
         &work_dir,
         lnd_two_dir.clone(),
         LND_TWO_ADDR,
-        LND_TWO_RPC_ADDR,
+        &LND_TWO_RPC_ADDR,
     )
     .await;
     lnd_two.start_lnd().unwrap();
     tracing::info!("Started second lnd node");
 
     let lnd_two_client = LndClient::new(
-        format!("https://{LND_TWO_RPC_ADDR}"),
+        format!("https://{}", *LND_TWO_RPC_ADDR),
         get_lnd_cert_file_path(&lnd_two_dir),
         get_lnd_macaroon_path(&lnd_two_dir),
     )

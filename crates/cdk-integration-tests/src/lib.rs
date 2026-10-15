@@ -83,9 +83,13 @@ pub async fn init_lnd_client(work_dir: &Path) -> LndClient {
     let lnd_dir = get_lnd_dir(work_dir, "one");
     let cert_file = lnd_dir.join("tls.cert");
     let macaroon_file = lnd_dir.join("data/chain/bitcoin/regtest/admin.macaroon");
-    LndClient::new(format!("https://{LND_RPC_ADDR}"), cert_file, macaroon_file)
-        .await
-        .unwrap()
+    LndClient::new(
+        format!("https://{}", *LND_RPC_ADDR),
+        cert_file,
+        macaroon_file,
+    )
+    .await
+    .unwrap()
 }
 
 /// Pays a Bolt11Invoice if it's on the regtest network, otherwise returns Ok
@@ -158,11 +162,11 @@ async fn _get_lnd_client() -> LndClient {
 
     println!("Looking for LND cert file: {cert_file:?}");
     println!("Looking for LND macaroon file: {macaroon_file:?}");
-    println!("Connecting to LND at: https://{LND_RPC_ADDR}");
+    println!("Connecting to LND at: https://{}", *LND_RPC_ADDR);
 
     // Connect to LND
     LndClient::new(
-        format!("https://{LND_RPC_ADDR}"),
+        format!("https://{}", *LND_RPC_ADDR),
         cert_file.clone(),
         macaroon_file.clone(),
     )
