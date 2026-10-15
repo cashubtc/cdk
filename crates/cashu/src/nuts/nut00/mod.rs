@@ -454,7 +454,13 @@ pub struct ProofV4 {
     #[serde(rename = "d")]
     pub dleq: Option<ProofDleq>,
     /// P2BK Ephemeral Public Key (NUT-28)
-    #[serde(rename = "pe", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "pe",
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_v4_pubkey_option",
+        deserialize_with = "deserialize_v4_pubkey_option"
+    )]
     pub p2pk_e: Option<PublicKey>,
 }
 
@@ -591,6 +597,31 @@ where
 {
     let bytes = Vec::<u8>::deserialize(deserializer)?;
     PublicKey::from_slice(&bytes).map_err(serde::de::Error::custom)
+}
+
+/// NUT-28 V4 tokens carry `pe` as a 33-byte CBOR bstr, like `c`, not as the
+/// hex string used by human-readable formats.
+fn serialize_v4_pubkey_option<S>(key: &Option<PublicKey>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match key {
+        Some(key) => serializer.serialize_bytes(&key.to_bytes()),
+        None => serializer.serialize_none(),
+    }
+}
+
+fn deserialize_v4_pubkey_option<'de, D>(deserializer: D) -> Result<Option<PublicKey>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let bytes = Option::<Vec<u8>>::deserialize(deserializer)?;
+    match bytes {
+        Some(bytes) => PublicKey::from_slice(&bytes)
+            .map(Some)
+            .map_err(serde::de::Error::custom),
+        None => Ok(None),
+    }
 }
 
 /// Currency Unit
