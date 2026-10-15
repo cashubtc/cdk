@@ -85,7 +85,7 @@ pub struct UpdateMintQuoteStateCommand {
     /// The new state to set for the quote; the server only supports "PAID"
     #[arg(default_value = "PAID")]
     state: String,
-    /// Amount to credit in the quote's unit
+    /// Amount to credit; for BOLT11 this must equal the full unpaid remainder
     #[arg(long)]
     amount: Option<u64>,
     /// Stable backend payment ID; required for amountless and multi-payment quotes

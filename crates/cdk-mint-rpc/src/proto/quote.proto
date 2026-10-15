@@ -65,7 +65,8 @@ message UpdateMintQuoteStateRequest {
     MintQuoteState state = 2;
     // Amount to credit in the quote's unit. Omit for a fixed-amount quote to
     // credit its unpaid remainder. The value must be nonzero and must not make
-    // a fixed-amount quote exceed its requested amount.
+    // a fixed-amount quote exceed its requested amount. For BOLT11, an explicit
+    // amount must equal the full unpaid remainder.
     optional uint64 amount = 3;
     // Stable identifier of the backend payment represented by this override.
     // Amountless quotes and payment methods that can receive multiple payments
