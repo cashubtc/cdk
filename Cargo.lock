@@ -1652,6 +1652,7 @@ dependencies = [
  "cdk-common",
  "cdk-fake-wallet",
  "cdk-http-client",
+ "cdk-postgres",
  "cdk-sqlite",
  "clap",
  "home",

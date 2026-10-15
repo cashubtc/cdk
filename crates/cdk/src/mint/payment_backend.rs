@@ -117,7 +117,8 @@ impl Mint {
         let mut recorded_payment_count = 0usize;
 
         for payment in payment_status {
-            if !new_quote.payment_ids().contains(&&payment.payment_id)
+            if !new_quote.has_manual_payment_override_for(&payment.payment_id)
+                && !new_quote.payment_ids().contains(&&payment.payment_id)
                 && payment.payment_amount.value() > 0
             {
                 tracing::debug!(

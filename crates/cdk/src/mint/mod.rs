@@ -1206,6 +1206,15 @@ impl Mint {
         );
 
         let quote_state = mint_quote.state();
+        if mint_quote.has_manual_payment_override_for(&wait_payment_response.payment_id) {
+            tracing::debug!(
+                quote_id = %mint_quote.id,
+                payment_id = %wait_payment_response.payment_id,
+                "Payment notification already represented by a manual quote payment override"
+            );
+            return Ok(false);
+        }
+
         if !mint_quote
             .payment_ids()
             .contains(&&wait_payment_response.payment_id)
