@@ -774,7 +774,6 @@ fn receipt_indexes_preserve_duplicate_and_distinct_transcript_checks() {
 fn shared_transcript_vectors() {
     use std::str::FromStr;
 
-    use sha2::{Digest, Sha256};
     let shared: Value = serde_json::from_str(include_str!("nutroot_v3_vectors.json")).unwrap();
     let cases = shared["transcript"].as_object().unwrap();
     let proof = |v: &Value| crate::Proof {
@@ -817,43 +816,44 @@ fn shared_transcript_vectors() {
             .collect();
         let outputs: Vec<_> = list(&tx["blinded_outputs"]).iter().map(output).collect();
         let melt_quotes: Vec<_> = list(&tx["melt_quote_outputs"]).iter().map(quote).collect();
-        let section = input_section(&proofs, &mint_quotes).unwrap();
-        if let Some(expected) = case.get("input_section_hash") {
-            assert_eq!(<[u8; 32]>::from(Sha256::digest(&section)), hash(expected));
-        }
-        let change: Vec<_> = list(&tx["change_quote_outputs"])
+        // The only mint quote output is the remainder quote, named by its melt.
+        let quote_outputs: Vec<_> = list(&tx["mint_quote_outputs"])
             .iter()
-            .enumerate()
-            .map(|(k, v)| ChangeOutput {
-                amount: v["amount"].as_u64().map(Into::into),
+            .map(|v| MintQuoteOutput {
+                amount: None,
                 pubkey: *crate::nuts::PublicKey::from_hex(v["pubkey"].as_str().unwrap())
                     .unwrap()
                     .as_secp256k1()
                     .unwrap(),
-                id: match v.get("id_preimage") {
-                    Some(preimage) => derived_quote_id(&hash(preimage)),
-                    None => input_bound_quote_id(&section, k as u32),
-                },
+                id: remainder_quote_id(&melt_quotes[0].id),
             })
             .collect();
-        let transaction =
-            Transaction::with_change(&proofs, &mint_quotes, &outputs, &melt_quotes, &change)
-                .unwrap_or_else(|e| panic!("{name}: {e}"));
-        let expected_ids: Vec<String> = match (&case["quote_id"], &case["quote_ids"]) {
-            (Value::String(id), _) => vec![id.clone()],
-            (_, Value::Array(ids)) => ids.iter().map(|v| v.as_str().unwrap().to_owned()).collect(),
-            _ => vec![],
-        };
+        let transaction = Transaction::with_quote_outputs(
+            &proofs,
+            &mint_quotes,
+            &outputs,
+            &melt_quotes,
+            &quote_outputs,
+        )
+        .unwrap_or_else(|e| panic!("{name}: {e}"));
+        let expected_ids: Vec<String> = case["quote_id"]
+            .as_str()
+            .filter(|_| !quote_outputs.is_empty())
+            .map(|id| vec![id.to_owned()])
+            .unwrap_or_default();
         assert_eq!(
-            change.iter().map(|c| c.id.clone()).collect::<Vec<_>>(),
+            quote_outputs
+                .iter()
+                .map(|c| c.id.clone())
+                .collect::<Vec<_>>(),
             expected_ids,
             "{name}"
         );
-        // Change containers are the transcript's last records.
-        let containers: Vec<u8> = match &case["change_containers"] {
-            Value::Array(all) => all.iter().flat_map(bytes).collect(),
-            _ => case.get("change_container").map(bytes).unwrap_or_default(),
-        };
+        // Mint quote output containers are the transcript's last records.
+        let containers = case
+            .get("mint_quote_output_container")
+            .map(bytes)
+            .unwrap_or_default();
         assert!(transaction.as_bytes().ends_with(&containers), "{name}");
         assert_eq!(transaction.as_bytes(), bytes(&case["transcript"]), "{name}");
         assert_eq!(transaction.digest(), hash(&case["digest"]), "{name}");
@@ -888,7 +888,7 @@ fn shared_transcript_vectors() {
         }
         checked += 1;
     }
-    assert_eq!(checked, 12);
+    assert_eq!(checked, 10);
 }
 
 #[test]
@@ -960,6 +960,16 @@ fn shared_mint_quote_input_vectors() {
     let mut stripped = transcript[..3].to_vec();
     stripped.extend_from_slice(&transcript[3..transcript.len() - 35]);
     assert!(Transaction::from_bytes(&stripped).is_err());
+}
+
+#[test]
+fn remainder_quote_id_vector() {
+    let shared: Value = serde_json::from_str(include_str!("nutroot_v3_vectors.json")).unwrap();
+    let lock = &shared["nut13_v3"]["remainder_lock"];
+    assert_eq!(
+        remainder_quote_id(lock["melt_quote_id"].as_str().unwrap()),
+        lock["quote_id"].as_str().unwrap()
+    );
 }
 
 #[test]

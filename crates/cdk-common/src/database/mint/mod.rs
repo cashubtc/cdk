@@ -397,18 +397,6 @@ pub trait QuotesTransaction {
         record: &mut Acquired<mint::TransactionRecord>,
         state: crate::nuts::TransactionState,
     ) -> Result<(), Self::Err>;
-
-    /// Claim mint quote ids for an accepted transaction, tagged with its melt quote if any.
-    ///
-    /// Returns a duplicate error if any id is already claimed or names a mint quote.
-    async fn claim_mint_quote_ids(
-        &mut self,
-        ids: &[QuoteId],
-        melt_quote_id: Option<&QuoteId>,
-    ) -> Result<(), Self::Err>;
-
-    /// Release the mint quote ids claimed by a failed transaction's melt quote.
-    async fn release_mint_quote_ids(&mut self, melt_quote_id: &QuoteId) -> Result<(), Self::Err>;
 }
 
 /// Mint Quote Database trait

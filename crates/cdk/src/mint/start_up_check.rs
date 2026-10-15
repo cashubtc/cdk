@@ -970,7 +970,7 @@ impl Mint {
             .await;
         }
 
-        // A melt quote paying a NUT-XX transaction reads PENDING until its change quotes exist, so
+        // A melt quote paying a NUT-XX transaction reads PENDING until the transaction settles, so
         // finish a finalization left after the quote turned PAID, as startup recovery does.
         if quote.state == MeltQuoteState::Paid {
             if let (
