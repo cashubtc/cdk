@@ -436,4 +436,49 @@ mod tests {
 
         assert_eq!(token, token_str)
     }
+
+    #[test]
+    fn sign_proofs_derives_htlc_example_proof_keys_from_slots_1_and_2() {
+        // NUT-28 HTLC example proof (cashubtc/nuts#402): the hash lock
+        // occupies slot 0 unblinded, the `pubkeys` key blinds at slot 1 and
+        // the `refund` key at slot 2. A regression that numbers HTLC keys
+        // from slot 0 fails to derive either key, so the proof is left
+        // unsigned.
+        let receiver_key = crate::nuts::SecretKey::from_hex(
+            "ad37e8abd800be3e8272b14045873f4353327eedeb702b72ddcc5c5adff5129c",
+        )
+        .unwrap();
+        let ephemeral_key = crate::nuts::SecretKey::from_hex(
+            "1cedb9df0c6872188b560ace9e35fd55c2532d53e19ae65b46159073886482ca",
+        )
+        .unwrap();
+
+        let secret = crate::secret::Secret::from_str(
+            "[\"HTLC\",{\"nonce\":\"8b1f18aa85a2787903cfdc776fde0b8555bdb126eea02b05cd84de06a4f4b551\",\"data\":\"ec4916dd28fc4c10d78e287ca5d9cc51ee1ae73cbfde08c6b37324cbfaac8bc5\",\"tags\":[[\"pubkeys\",\"0352fb6d93360b7c2538eedf3c861f32ea5883fceec9f3e573d9d84377420da838\"],[\"locktime\",\"1689418329\"],[\"refund\",\"03667361ca925065dcafea0a705ba49e75bdd7975751fcc933e05953463c79fff1\"]]}]",
+        )
+        .unwrap();
+        let mut proof = Proof::new(
+            Amount::from(64),
+            Id::from_str("009a1f293253e41e").unwrap(),
+            secret,
+            PublicKey::from_hex(
+                "0270aba098c920adafa1ce75acefb06d8cc541ef80270f70cc7b66375b789ed9be",
+            )
+            .unwrap(),
+        );
+        proof.p2pk_e = Some(ephemeral_key.public_key());
+        let mut proofs = vec![proof];
+
+        sign_proofs(&mut proofs, &[receiver_key]).unwrap();
+
+        // Both slots derived and signed; the receiver-only ephemeral-key
+        // metadata is stripped. Spendable via the receiver path once the
+        // NUT-14 preimage is added.
+        assert!(proofs[0].witness.is_some());
+        assert!(proofs[0].p2pk_e.is_none());
+        proofs[0].add_preimage(
+            "0000000000000000000000000000000000000000000000000000000000000001".to_string(),
+        );
+        assert!(proofs[0].verify_htlc().is_ok());
+    }
 }
