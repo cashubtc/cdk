@@ -302,11 +302,12 @@ async fn rollback_melt_quote_inner(
         None
     };
 
-    // A failed transaction keeps its record as FAILED; its quote inputs were never issued, and
-    // leaving PENDING frees them for other draws.
+    // A failed transaction releases its fixed txout quote ids and keeps its record as FAILED; its
+    // quote inputs were never issued, and leaving PENDING frees them for other draws.
     let mut transaction = tx.get_transaction_by_melt_quote(quote_id).await?;
     if let Some(record) = transaction.as_mut() {
         if record.state == cdk_common::nuts::TransactionState::Pending {
+            tx.release_mint_quote_ids(quote_id).await?;
             tx.update_transaction(record, cdk_common::nuts::TransactionState::Failed)
                 .await?;
         }

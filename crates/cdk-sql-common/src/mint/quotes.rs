@@ -684,12 +684,18 @@ fn sql_row_to_transaction(row: Vec<Column>) -> Result<mint::TransactionRecord, E
         .into_iter()
         .map(|(id, amount)| Ok((QuoteId::from_str(&id)?, Amount::from(amount))))
         .collect::<Result<Vec<_>, Error>>()?;
-    let mint_quote_outputs: Vec<(String, String)> =
+    let mint_quote_outputs: Vec<(String, String, Option<u64>)> =
         serde_json::from_str(&column_as_string!(&mint_quote_outputs))
             .map_err(|e| Error::Internal(format!("Invalid transaction mint quote outputs: {e}")))?;
     let mint_quote_outputs = mint_quote_outputs
         .into_iter()
-        .map(|(id, key)| Ok((QuoteId::from_str(&id)?, PublicKey::from_hex(&key)?)))
+        .map(|(id, key, amount)| {
+            Ok((
+                QuoteId::from_str(&id)?,
+                PublicKey::from_hex(&key)?,
+                amount.map(Amount::from),
+            ))
+        })
         .collect::<Result<Vec<_>, Error>>()?;
     let excess: u64 = column_as_number!(excess);
     Ok(mint::TransactionRecord {
@@ -1318,7 +1324,7 @@ where
             &record
                 .mint_quote_outputs
                 .iter()
-                .map(|(id, key)| (id.to_string(), key.to_hex()))
+                .map(|(id, key, amount)| (id.to_string(), key.to_hex(), amount.map(u64::from)))
                 .collect::<Vec<_>>(),
         )
         .map_err(|e| Error::Internal(e.to_string()))?;
@@ -1388,6 +1394,41 @@ where
         .execute(&self.inner)
         .await?;
         record.state = state;
+        Ok(())
+    }
+
+    async fn claim_mint_quote_ids(
+        &mut self,
+        ids: &[QuoteId],
+        melt_quote_id: Option<&QuoteId>,
+    ) -> Result<(), Self::Err> {
+        // The primary key serializes concurrent transactions naming the same id; an id that
+        // names a mint quote is claimed too.
+        for id in ids {
+            let affected = query(
+                r#"
+                INSERT INTO mint_quote_id_claim (quote_id, melt_quote_id)
+                SELECT :quote_id, :melt_quote_id
+                WHERE NOT EXISTS (SELECT 1 FROM mint_quote WHERE id = :quote_id)
+                ON CONFLICT (quote_id) DO NOTHING
+                "#,
+            )?
+            .bind("quote_id", id.to_string())
+            .bind("melt_quote_id", melt_quote_id.map(|q| q.to_string()))
+            .execute(&self.inner)
+            .await?;
+            if affected == 0 {
+                return Err(Error::Duplicate);
+            }
+        }
+        Ok(())
+    }
+
+    async fn release_mint_quote_ids(&mut self, melt_quote_id: &QuoteId) -> Result<(), Self::Err> {
+        query(r#"DELETE FROM mint_quote_id_claim WHERE melt_quote_id = :melt_quote_id"#)?
+            .bind("melt_quote_id", melt_quote_id.to_string())
+            .execute(&self.inner)
+            .await?;
         Ok(())
     }
 }

@@ -111,6 +111,7 @@ impl MintBuilder {
                 .nutxx(cdk_common::nuts::NutXXSettings {
                     supported: true,
                     quote_input_fee_ppk: 0,
+                    fixed_txout_quotes: true,
                 }),
             ..Default::default()
         };

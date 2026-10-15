@@ -15,8 +15,8 @@ pub enum Condition {
     Hashlock([u8; 32]),
     /// An inert commitment to external data; never spendable.
     Commit([u8; 32]),
-    /// Signatures are valid only in a transaction whose every output is a change quote locked to
-    /// one of these keys.
+    /// Signatures are valid only in a transaction whose every output is a fixed txout quote locked
+    /// to one of these keys.
     Template(Vec<PublicKey>),
 }
 
@@ -63,7 +63,7 @@ impl Leaf {
         {
             return Err(Error::InvalidLeaf);
         }
-        // Destinations compare byte for byte with a change quote's lock key.
+        // Destinations compare byte for byte with a txout quote's lock key.
         if let Condition::Template(dests) = &self.condition {
             let mut seen = HashSet::new();
             if dests.is_empty() || dests.iter().any(|key| !seen.insert(key)) {

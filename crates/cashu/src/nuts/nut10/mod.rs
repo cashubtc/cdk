@@ -466,7 +466,7 @@ pub trait SpendingConditionVerification {
                 witness.verify_in(
                     &proof.secret.to_string(),
                     transaction.input_digest(index)?,
-                    transaction.change_keys(),
+                    transaction.txout_keys(),
                     crate::util::unix_time(),
                 )?;
                 continue;

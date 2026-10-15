@@ -151,7 +151,7 @@ impl SpendReceipt {
             witness.verify_in(
                 &proof.secret.to_string(),
                 digest,
-                transaction.change_keys(),
+                transaction.txout_keys(),
                 now,
             )?;
             let state = states_by_y
