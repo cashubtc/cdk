@@ -1,3 +1,7 @@
+use std::str::FromStr;
+
+use bitcoin::hashes::Hash as _;
+
 use super::{blind_public_key, derive_signing_key_bip340, ecdh_kdf};
 use crate::nuts::nut01::{PublicKey, SecretKey};
 use crate::util::hex;
@@ -153,4 +157,158 @@ fn test_p2bk_test_vectors() {
     if fail {
         panic!("Some tests failed!");
     }
+}
+
+/// NUT-14 preimage pair from the NUT-14 examples, reused by the HTLC example
+/// proof as its hash lock.
+const NUT14_PREIMAGE_HEX: &str = "0000000000000000000000000000000000000000000000000000000000000001";
+
+/// Secret of the NUT-28 HTLC example proof (cashubtc/nuts#402).
+///
+/// The `locktime` tag sits between `pubkeys` and `refund` in the JSON as a
+/// check that slots are numbered by the canonical `[data, ...pubkeys,
+/// ...refund]` order, not by tag position: the hash lock occupies slot 0
+/// unblinded, the `pubkeys` key blinds at slot 1 and the `refund` key at
+/// slot 2.
+const HTLC_EXAMPLE_SECRET: &str = "[\"HTLC\",{\"nonce\":\"8b1f18aa85a2787903cfdc776fde0b8555bdb126eea02b05cd84de06a4f4b551\",\"data\":\"ec4916dd28fc4c10d78e287ca5d9cc51ee1ae73cbfde08c6b37324cbfaac8bc5\",\"tags\":[[\"pubkeys\",\"0352fb6d93360b7c2538eedf3c861f32ea5883fceec9f3e573d9d84377420da838\"],[\"locktime\",\"1689418329\"],[\"refund\",\"03667361ca925065dcafea0a705ba49e75bdd7975751fcc933e05953463c79fff1\"]]}]";
+
+/// Unblinded signature `C` of the NUT-28 HTLC example proof.
+const HTLC_EXAMPLE_C_HEX: &str =
+    "0270aba098c920adafa1ce75acefb06d8cc541ef80270f70cc7b66375b789ed9be";
+
+/// Slot 1 blinding scalar from the NUT-28 vector tables.
+const SLOT_1_BLINDING_SCALAR_HEX: &str =
+    "4a57e6acb9db19344af5632aa45000cd2c643550bc63c7d5732221171ab0f5b3";
+
+/// Slot 2 blinding scalar from the NUT-28 vector tables.
+const SLOT_2_BLINDING_SCALAR_HEX: &str =
+    "d4a8b84b21f2b0ad31654e96eddbc32bfdedae2d05dc179bdd6cc20236b1104d";
+
+/// Slot 1 blinded public key from the NUT-28 vector tables.
+const SLOT_1_BLINDED_PUBKEY_HEX: &str =
+    "0352fb6d93360b7c2538eedf3c861f32ea5883fceec9f3e573d9d84377420da838";
+
+/// Slot 2 blinded public key from the NUT-28 vector tables.
+const SLOT_2_BLINDED_PUBKEY_HEX: &str =
+    "03667361ca925065dcafea0a705ba49e75bdd7975751fcc933e05953463c79fff1";
+
+fn htlc_example_receiver_key() -> SecretKey {
+    SecretKey::from_hex("ad37e8abd800be3e8272b14045873f4353327eedeb702b72ddcc5c5adff5129c").unwrap()
+}
+
+fn htlc_example_ephemeral_pubkey() -> PublicKey {
+    PublicKey::from_hex("02a8cda4cf448bfce9a9e46e588c06ea1780fcb94e3bbdf3277f42995d403a8b0c")
+        .unwrap()
+}
+
+#[test]
+fn test_htlc_example_proof_slot_layout() {
+    use crate::nuts::nut10::{Conditions, Kind};
+    use crate::secret::Secret;
+
+    let secret: Secret = Secret::from_str(HTLC_EXAMPLE_SECRET).unwrap();
+    let nut10_secret: crate::nuts::nut10::Secret = secret.try_into().unwrap();
+
+    assert_eq!(nut10_secret.kind(), Kind::HTLC);
+
+    // The hash lock occupies slot 0 and is not a key: it is the matching
+    // NUT-14 preimage pair.
+    let preimage = hex::decode(NUT14_PREIMAGE_HEX).unwrap();
+    let hash_lock = bitcoin::hashes::sha256::Hash::hash(&preimage);
+    assert_eq!(
+        hex::encode(hash_lock.as_byte_array()),
+        nut10_secret.secret_data().data()
+    );
+
+    // The blinded keys are the slot 1 and slot 2 table entries, even though
+    // the `locktime` tag sits between them in the JSON.
+    let conditions: Conditions = nut10_secret
+        .secret_data()
+        .tags()
+        .cloned()
+        .unwrap_or_default()
+        .try_into()
+        .unwrap();
+    assert_eq!(
+        conditions.pubkeys,
+        Some(vec![PublicKey::from_hex(SLOT_1_BLINDED_PUBKEY_HEX).unwrap()])
+    );
+    assert_eq!(
+        conditions.refund_keys,
+        Some(vec![PublicKey::from_hex(SLOT_2_BLINDED_PUBKEY_HEX).unwrap()])
+    );
+    assert_eq!(conditions.locktime, Some(1689418329));
+}
+
+#[test]
+fn test_htlc_example_proof_receiver_derives_slot_1_and_2_keys() {
+    let receiver_key = htlc_example_receiver_key();
+    let ephemeral_pubkey = htlc_example_ephemeral_pubkey();
+    let blinded_slot_1 = PublicKey::from_hex(SLOT_1_BLINDED_PUBKEY_HEX).unwrap();
+    let blinded_slot_2 = PublicKey::from_hex(SLOT_2_BLINDED_PUBKEY_HEX).unwrap();
+
+    // Receiver-side ECDH reproduces the slot 1 and slot 2 blinding scalars.
+    let r1 = ecdh_kdf(&receiver_key, &ephemeral_pubkey, 1).unwrap();
+    let r2 = ecdh_kdf(&receiver_key, &ephemeral_pubkey, 2).unwrap();
+    assert_eq!(
+        r1.to_secret_bytes(),
+        SecretKey::from_hex(SLOT_1_BLINDING_SCALAR_HEX)
+            .unwrap()
+            .to_secret_bytes()
+    );
+    assert_eq!(
+        r2.to_secret_bytes(),
+        SecretKey::from_hex(SLOT_2_BLINDING_SCALAR_HEX)
+            .unwrap()
+            .to_secret_bytes()
+    );
+
+    // The derived signing keys match the blinded pubkeys in the proof tags.
+    let k1 = derive_signing_key_bip340(&receiver_key, &r1, &blinded_slot_1).unwrap();
+    let k2 = derive_signing_key_bip340(&receiver_key, &r2, &blinded_slot_2).unwrap();
+    assert_eq!(k1.public_key(), blinded_slot_1);
+    assert_eq!(k2.public_key(), blinded_slot_2);
+}
+
+#[test]
+fn test_htlc_example_proof_spendable_via_receiver_and_refund_paths() {
+    use crate::nuts::{nut00::Proof, Id};
+    use crate::secret::Secret;
+    use crate::Amount;
+
+    let receiver_key = htlc_example_receiver_key();
+    let ephemeral_pubkey = htlc_example_ephemeral_pubkey();
+    let blinded_slot_1 = PublicKey::from_hex(SLOT_1_BLINDED_PUBKEY_HEX).unwrap();
+    let blinded_slot_2 = PublicKey::from_hex(SLOT_2_BLINDED_PUBKEY_HEX).unwrap();
+
+    let r1 = ecdh_kdf(&receiver_key, &ephemeral_pubkey, 1).unwrap();
+    let k1 = derive_signing_key_bip340(&receiver_key, &r1, &blinded_slot_1).unwrap();
+    let r2 = ecdh_kdf(&receiver_key, &ephemeral_pubkey, 2).unwrap();
+    let k2 = derive_signing_key_bip340(&receiver_key, &r2, &blinded_slot_2).unwrap();
+
+    let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
+    let c = PublicKey::from_hex(HTLC_EXAMPLE_C_HEX).unwrap();
+
+    // Receiver path: slot 1 key plus the NUT-14 preimage.
+    let mut proof = Proof::new(
+        Amount::from(64),
+        keyset_id,
+        Secret::from_str(HTLC_EXAMPLE_SECRET).unwrap(),
+        c,
+    );
+    proof.p2pk_e = Some(ephemeral_pubkey);
+    proof.sign_p2pk(k1).unwrap();
+    proof.add_preimage(NUT14_PREIMAGE_HEX.to_string());
+    assert!(proof.verify_htlc().is_ok());
+
+    // Refund path: slot 2 key, locktime (1689418329) has passed.
+    let mut refund_proof = Proof::new(
+        Amount::from(64),
+        keyset_id,
+        Secret::from_str(HTLC_EXAMPLE_SECRET).unwrap(),
+        c,
+    );
+    refund_proof.p2pk_e = Some(ephemeral_pubkey);
+    refund_proof.sign_p2pk(k2).unwrap();
+    assert!(refund_proof.verify_htlc().is_ok());
 }
