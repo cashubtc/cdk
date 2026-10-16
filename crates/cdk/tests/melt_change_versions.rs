@@ -28,7 +28,7 @@ impl Drop for Proxy {
 fn control(url: &str, enabled: bool) {
     ureq::post(&format!("{url}/test/faults"))
         .send_json(json!({"enabled": enabled}))
-        .unwrap();
+        .expect("fault configuration request must succeed");
 }
 
 /// Run with the official 0.17.7 and 0.18.1 fakewallet mints via the matrix runner.
