@@ -9,6 +9,10 @@
 //! The receiver scans the frames and feeds them into a [`TokenUrDecoder`]
 //! until the token is reassembled.
 //!
+//! The binary fountain transport ([`FountainEncoder`], [`FountainDecoder`])
+//! sends the raw V4 token as Base45 frames in QR alphanumeric mode. Route
+//! scanned text with [`FountainDecoder::is_frame`] before trying UR.
+//!
 //! Fragments are `ur:bytes` URs whose payload is the serialized token
 //! (`cashuB…`) encoded as a CBOR byte string, matching the de-facto standard
 //! used by existing NUT-16 implementations (e.g. cashu.me).
@@ -42,6 +46,9 @@ use std::string::FromUtf8Error;
 
 use thiserror::Error;
 
+mod fountain;
+
+pub use self::fountain::{FountainDecoder, FountainEncoder, DEFAULT_FRAGMENT_SIZE};
 use crate::nuts::nut00::{Token, TokenV4};
 
 /// UR type used for Cashu tokens: `ur:bytes`
@@ -121,6 +128,24 @@ pub enum Error {
         /// Maximum accepted reconstructed message length
         max: usize,
     },
+    /// Message cannot be framed as fountain frames
+    #[error("fountain encoding: {0}")]
+    FountainEncoding(&'static str),
+    /// Scanned text is not a valid fountain frame encoding
+    #[error("invalid fountain frame text: {0}")]
+    InvalidFountainText(&'static str),
+    /// Frame fails fountain frame validation
+    #[error("invalid fountain frame: {0}")]
+    InvalidFountainFrame(&'static str),
+    /// Frame has the `NF` magic but an unsupported version or flags
+    #[error("unsupported fountain frame version or flags")]
+    UnsupportedFountainFrame,
+    /// Frame belongs to a different transfer than the one being decoded
+    #[error("fountain frame belongs to a different transfer; reset the decoder to switch")]
+    FountainTransferMismatch,
+    /// Reassembled message failed its checksum or padding check; the decoder was reset
+    #[error("fountain message failed verification; the transfer restarts")]
+    FountainVerificationFailed,
 }
 
 impl From<ur::ur::Error> for Error {

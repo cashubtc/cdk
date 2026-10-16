@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::str::FromStr;
 
 use crate::error::FfiError;
-use crate::types::TokenUrEncoder;
+use crate::types::{TokenFountainEncoder, TokenUrEncoder};
 use crate::{Amount, CurrencyUnit, KeySetInfo, MintUrl, Proofs};
 
 /// FFI-compatible Token
@@ -182,5 +182,23 @@ impl Token {
             .unwrap_or(cdk::nuts::nut16::DEFAULT_MAX_FRAGMENT_LENGTH);
         let encoder = cdk::nuts::nut16::TokenUrEncoder::new(&self.inner, max_fragment_length)?;
         Ok(std::sync::Arc::new(TokenUrEncoder::from_inner(encoder)))
+    }
+
+    /// Create a NUT-16 binary fountain encoder for displaying this token as
+    /// an animated QR code
+    ///
+    /// `fragment_size` is payload bytes per frame; `None` fits a version 10-M
+    /// QR symbol. To keep a `cashuB` string's exact bytes, use
+    /// `TokenFountainEncoder::from_token_string`.
+    pub fn fountain_encoder(
+        &self,
+        fragment_size: Option<u32>,
+    ) -> Result<std::sync::Arc<TokenFountainEncoder>, FfiError> {
+        let encoder = self
+            .inner
+            .fountain_encoder(crate::types::ur::fragment_size_or_default(fragment_size))?;
+        Ok(std::sync::Arc::new(TokenFountainEncoder::from_inner(
+            encoder,
+        )))
     }
 }

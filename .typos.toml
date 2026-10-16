@@ -2,7 +2,9 @@
 extend-exclude = [
     "target/",
     "bindings/dart/flutter_example",
-    "Cargo.lock.msrv"
+    "Cargo.lock.msrv",
+    # NUT-16 vectors hold Base45 frame text
+    "crates/cashu/src/nuts/nut16/vectors.json"
 ]
 
 [default]

@@ -151,6 +151,158 @@ impl TokenUrDecoder {
     }
 }
 
+/// Returns whether scanned QR text is a NUT-16 fountain frame
+///
+/// Route such text to `TokenFountainDecoder` only, even if it then fails;
+/// other text goes to the token or UR parser.
+#[uniffi::export]
+pub fn is_fountain_frame(text: String) -> bool {
+    cdk::nuts::nut16::FountainDecoder::is_frame(&text)
+}
+
+/// FFI-compatible NUT-16 binary fountain encoder for animated QR codes
+///
+/// Each `next_frame` is Base45 text for one alphanumeric-mode QR symbol.
+/// Loop the frames until the receiver completes.
+#[derive(uniffi::Object)]
+pub struct TokenFountainEncoder {
+    inner: Mutex<cdk::nuts::nut16::FountainEncoder>,
+}
+
+impl std::fmt::Debug for TokenFountainEncoder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&*self.lock(), f)
+    }
+}
+
+impl TokenFountainEncoder {
+    /// Create from an inner encoder
+    pub(crate) fn from_inner(inner: cdk::nuts::nut16::FountainEncoder) -> Self {
+        Self {
+            inner: Mutex::new(inner),
+        }
+    }
+
+    /// Lock the inner encoder, recovering from a poisoned mutex
+    fn lock(&self) -> MutexGuard<'_, cdk::nuts::nut16::FountainEncoder> {
+        self.inner.lock().unwrap_or_else(|p| p.into_inner())
+    }
+}
+
+#[uniffi::export]
+impl TokenFountainEncoder {
+    /// Create an encoder for a `cashuB` string, keeping its exact bytes
+    ///
+    /// `fragment_size` is payload bytes per frame; `None` fits a version 10-M
+    /// QR symbol.
+    #[uniffi::constructor]
+    pub fn from_token_string(
+        token: String,
+        fragment_size: Option<u32>,
+    ) -> Result<Arc<Self>, FfiError> {
+        let encoder = cdk::nuts::nut16::FountainEncoder::from_token_str(
+            &token,
+            fragment_size_or_default(fragment_size),
+        )?;
+        Ok(Arc::new(Self::from_inner(encoder)))
+    }
+
+    /// Returns the next frame as QR text
+    pub fn next_frame(&self) -> Result<String, FfiError> {
+        Ok(self.lock().next_frame()?)
+    }
+
+    /// Returns the number of source fragments
+    pub fn fragment_count(&self) -> u32 {
+        self.lock().fragment_count() as u32
+    }
+
+    /// Returns whether the token fits one frame, which may be shown as a static QR
+    pub fn is_single_fragment(&self) -> bool {
+        self.lock().is_single_fragment()
+    }
+}
+
+/// Fragment size from FFI input, defaulting to the version 10-M fit
+pub(crate) fn fragment_size_or_default(fragment_size: Option<u32>) -> usize {
+    fragment_size
+        .map(|s| s as usize)
+        .unwrap_or(cdk::nuts::nut16::DEFAULT_FRAGMENT_SIZE)
+}
+
+/// FFI-compatible NUT-16 binary fountain decoder for animated QR codes
+///
+/// Feed each scanned frame's exact text with `receive` until `complete`,
+/// then read the token with `token`. A failed reassembly resets the decoder.
+#[derive(uniffi::Object)]
+pub struct TokenFountainDecoder {
+    inner: Mutex<cdk::nuts::nut16::FountainDecoder>,
+}
+
+impl std::fmt::Debug for TokenFountainDecoder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&*self.lock(), f)
+    }
+}
+
+impl Default for TokenFountainDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TokenFountainDecoder {
+    /// Lock the inner decoder, recovering from a poisoned mutex
+    fn lock(&self) -> MutexGuard<'_, cdk::nuts::nut16::FountainDecoder> {
+        self.inner.lock().unwrap_or_else(|p| p.into_inner())
+    }
+}
+
+#[uniffi::export]
+impl TokenFountainDecoder {
+    /// Create a new decoder
+    #[uniffi::constructor]
+    pub fn new() -> Self {
+        Self {
+            inner: Mutex::new(cdk::nuts::nut16::FountainDecoder::default()),
+        }
+    }
+
+    /// Feed one scanned frame, as the exact QR text
+    ///
+    /// Returns whether the frame added information. Errors on an invalid
+    /// frame or one from a different transfer (call `reset` to switch).
+    pub fn receive(&self, text: String) -> Result<bool, FfiError> {
+        Ok(self.lock().receive(&text)?)
+    }
+
+    /// Returns whether the token has been fully reassembled
+    pub fn complete(&self) -> bool {
+        self.lock().complete()
+    }
+
+    /// Returns the reassembled token once `complete`, `None` before
+    pub fn token(&self) -> Result<Option<Arc<Token>>, FfiError> {
+        let token = self.lock().token()?;
+        Ok(token.map(|t| Arc::new(t.into())))
+    }
+
+    /// Returns the number of source fragments, `0` before the first frame
+    pub fn fragment_count(&self) -> u32 {
+        self.lock().fragment_count() as u32
+    }
+
+    /// Returns the number of fragments resolved so far
+    pub fn resolved_fragment_count(&self) -> u32 {
+        self.lock().resolved_fragment_count() as u32
+    }
+
+    /// Discards all frames, ready for a new transfer
+    pub fn reset(&self) {
+        self.lock().reset()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
@@ -223,5 +375,34 @@ mod tests {
         assert!(!decoder.complete());
         assert!(decoder.fragment_count() > 1);
         assert!(decoder.token().expect("token").is_none());
+    }
+
+    #[test]
+    fn test_fountain_roundtrip() {
+        let encoder = test_token().fountain_encoder(Some(32)).expect("encoder");
+        assert!(encoder.fragment_count() > 1);
+
+        let decoder = TokenFountainDecoder::new();
+        while !decoder.complete() {
+            let frame = encoder.next_frame().expect("frame");
+            assert!(is_fountain_frame(frame.clone()));
+            decoder.receive(frame).expect("receive");
+        }
+        let token = decoder.token().expect("token").expect("complete");
+        assert_eq!(token.encode(), test_token().encode());
+    }
+
+    #[test]
+    fn test_fountain_from_string_keeps_bytes() {
+        let encoder = TokenFountainEncoder::from_token_string(TOKEN_STR.to_string(), Some(1000))
+            .expect("encoder");
+        assert!(encoder.is_single_fragment());
+        let decoder = TokenFountainDecoder::new();
+        decoder
+            .receive(encoder.next_frame().expect("frame"))
+            .expect("receive");
+        let token = decoder.token().expect("token").expect("complete");
+        assert_eq!(token.encode(), test_token().encode());
+        assert!(!is_fountain_frame(TOKEN_STR.to_string()));
     }
 }
