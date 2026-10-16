@@ -3,7 +3,9 @@ extend-exclude = [
     "target/",
     "bindings/dart/flutter_example",
     "Cargo.lock.msrv",
-    "tests/rusqlite-compat/Cargo.lock.min"
+    "tests/rusqlite-compat/Cargo.lock.min",
+    # NUT-16 vectors hold Base45 frame text
+    "crates/cashu/src/nuts/nut16/vectors.json"
 ]
 
 [default]
