@@ -11,6 +11,8 @@ use crate::mint::MeltQuote;
 /// The operation ID is generated upfront but the full Operation (with amounts) is created during setup.
 pub struct Initial {
     pub operation_id: Uuid,
+    /// A NUT-XX transaction to reserve alongside the melt.
+    pub transaction: Option<crate::mint::transaction::TransactionSetup>,
 }
 
 /// Setup complete - has quote ready for payment.

@@ -13,18 +13,21 @@ const PROOF_INPUT: u8 = 0x11;
 const MINT_QUOTE_INPUT: u8 = 0x12;
 const BLINDED_OUTPUT: u8 = 0x21;
 const MELT_QUOTE_OUTPUT: u8 = 0x22;
+const MINT_QUOTE_OUTPUT: u8 = 0x23;
 const AUTHORIZED_REQUEST: u8 = 0xf1;
 
 /// Quote identity and amount bound by a transaction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Quote {
-    /// Mint quote face amount, or melt amount including selected fee reserve.
+    /// Amount a mint quote issues in this transaction, or melt amount including
+    /// the selected fee reserve.
     pub amount: Amount,
     /// Quote identifier exactly as supplied by the mint.
     pub id: String,
 }
 
-/// A mint quote input: the amount issued, the quote id and the key the quote is locked to.
+/// A mint quote input: the amount issued, the quote id, the key the quote is locked to, and the
+/// quote's `amount_issued` before this transaction, so a witness authorizes one draw (NUT-10).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MintQuoteInput {
     /// Amount this transaction issues against the quote.
@@ -33,6 +36,19 @@ pub struct MintQuoteInput {
     pub id: String,
     /// The quote's lock key (NUT-04 `pubkey`), committed so a signer can tell which key the input needs.
     pub pubkey: PublicKey,
+    /// The quote's settled `amount_issued` before this transaction.
+    pub issued: Amount,
+}
+
+/// Mint quote output bound by a transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MintQuoteOutput {
+    /// Amount, `None` on the rotation quote.
+    pub amount: Option<Amount>,
+    /// Lock key of the txout quote.
+    pub pubkey: bitcoin::secp256k1::PublicKey,
+    /// The txout quote's id; the rotation quote's is [`super::rotation_quote_id`].
+    pub id: String,
 }
 
 /// Canonical transaction transcript and its input records.
@@ -52,53 +68,26 @@ impl Transaction {
         outputs: &[BlindedMessage],
         melt_quotes: &[Quote],
     ) -> Result<Self, Error> {
+        Self::with_quote_outputs(proofs, mint_quotes, outputs, melt_quotes, &[])
+    }
+
+    /// [`Transaction::new`] with mint quote outputs, at most one of them the rotation quote.
+    pub fn with_quote_outputs(
+        proofs: &[Proof],
+        mint_quotes: &[MintQuoteInput],
+        outputs: &[BlindedMessage],
+        melt_quotes: &[Quote],
+        quote_outputs: &[MintQuoteOutput],
+    ) -> Result<Self, Error> {
         if (proofs.is_empty() && mint_quotes.is_empty())
-            || (outputs.is_empty() && melt_quotes.is_empty())
+            || (outputs.is_empty() && melt_quotes.is_empty() && quote_outputs.is_empty())
+            || quote_outputs.iter().filter(|c| c.amount.is_none()).count() > 1
+            || quote_outputs.iter().any(|c| c.amount == Some(Amount::ZERO))
         {
             return Err(Error::InvalidTransaction);
         }
-        let mut transcript = vec![];
-        let mut inputs = vec![];
-        let mut ys = HashSet::new();
-        for proof in proofs {
-            let y = match proof.keyset_id.get_version() {
-                KeySetVersion::Version02 => {
-                    let secret = parse_secret(&proof.secret.to_string())?;
-                    crate::nuts::nut01::BlsG1PublicKey::hash_to_curve(&secret.serialize())
-                        .to_bytes()
-                        .to_vec()
-                }
-                _ => proof.y().map_err(|_| Error::InvalidTransaction)?.to_bytes(),
-            };
-            if !ys.insert(y.clone()) {
-                return Err(Error::InvalidTransaction);
-            }
-            let fields = [
-                integer(u64::from(proof.amount)),
-                proof.keyset_id.to_bytes(),
-                y,
-                proof.c.to_bytes(),
-            ];
-            let record = container(PROOF_INPUT, &fields)?;
-            transcript.extend_from_slice(&record);
-            inputs.push(record);
-        }
-        let mut ids = HashSet::new();
-        for quote in mint_quotes {
-            if !ids.insert(&quote.id) || quote.pubkey.as_secp256k1().is_err() {
-                return Err(Error::InvalidTransaction);
-            }
-            let record = container(
-                MINT_QUOTE_INPUT,
-                &[
-                    integer(u64::from(quote.amount)),
-                    quote.id.as_bytes().to_vec(),
-                    quote.pubkey.to_bytes(),
-                ],
-            )?;
-            transcript.extend_from_slice(&record);
-            inputs.push(record);
-        }
+        let inputs = input_records(proofs, mint_quotes)?;
+        let mut transcript = inputs.concat();
         for output in outputs {
             transcript.extend(container(
                 BLINDED_OUTPUT,
@@ -118,6 +107,16 @@ impl Transaction {
                 ],
             )?);
         }
+        for output in quote_outputs {
+            // The amount record is omitted entirely on the rotation quote.
+            let mut body = vec![];
+            if let Some(amount) = output.amount {
+                record(&mut body, 1, &integer(u64::from(amount)))?;
+            }
+            record(&mut body, 2, &output.pubkey.serialize())?;
+            record(&mut body, 3, output.id.as_bytes())?;
+            record(&mut transcript, MINT_QUOTE_OUTPUT, &body)?;
+        }
         Ok(Self::from_parts(transcript, inputs))
     }
 
@@ -132,16 +131,46 @@ impl Transaction {
         let mut ys = HashSet::new();
         let mut quotes = HashSet::new();
         let mut output = false;
+        let mut rotation = false;
+        let mut quote_output_ids = HashSet::new();
         for (tag, value, full) in records {
             if tag < last || !matches!(tag >> 4, 1 | 2) {
                 return Err(Error::InvalidTransaction);
             }
             last = tag;
             let fields = parse_records(value)?;
+            if tag == MINT_QUOTE_OUTPUT {
+                // `01 amount, 02 lock key, 03 quote id`; the rotation quote has no `01`.
+                let (key, id) = match fields.as_slice() {
+                    [(2, key, _), (3, id, _)] if !rotation => {
+                        rotation = true;
+                        (key, id)
+                    }
+                    [(1, amount, _), (2, key, _), (3, id, _)]
+                        if !amount.is_empty() && amount.len() <= 8 && amount[0] != 0 =>
+                    {
+                        (key, id)
+                    }
+                    _ => return Err(Error::InvalidTransaction),
+                };
+                let key = crate::nuts::PublicKey::from_slice(key)
+                    .map_err(|_| Error::InvalidTransaction)?;
+                // A derived id is 64 lowercase hex characters (NUT-04).
+                let derived =
+                    id.len() == 64 && id.iter().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+                if !matches!(key, crate::nuts::PublicKey::Secp256k1(_))
+                    || !derived
+                    || !quote_output_ids.insert(*id)
+                {
+                    return Err(Error::InvalidTransaction);
+                }
+                output = true;
+                continue;
+            }
             let count = match tag {
-                PROOF_INPUT => 4,
+                PROOF_INPUT | MINT_QUOTE_INPUT => 4,
                 MELT_QUOTE_OUTPUT => 2,
-                MINT_QUOTE_INPUT | BLINDED_OUTPUT => 3,
+                BLINDED_OUTPUT => 3,
                 _ => return Err(Error::InvalidTransaction),
             };
             if fields.len() != count
@@ -188,6 +217,8 @@ impl Transaction {
                     std::str::from_utf8(fields[1].1).map_err(|_| Error::InvalidTransaction)?;
                     if tag == MINT_QUOTE_INPUT
                         && (!quotes.insert(fields[1].1)
+                            || fields[3].1.len() > 8
+                            || fields[3].1.first() == Some(&0)
                             || PublicKey::from_slice(fields[2].1)
                                 .map_err(|_| Error::InvalidTransaction)?
                                 .as_secp256k1()
@@ -257,6 +288,48 @@ impl Transaction {
         message[32..].copy_from_slice(&self.input_id(index)?);
         Ok(tagged_hash("Cashu_TransactionInput", &message))
     }
+}
+
+fn input_records(proofs: &[Proof], mint_quotes: &[MintQuoteInput]) -> Result<Vec<Vec<u8>>, Error> {
+    let mut inputs = vec![];
+    let mut ys = HashSet::new();
+    for proof in proofs {
+        let y = match proof.keyset_id.get_version() {
+            KeySetVersion::Version02 => {
+                let secret = parse_secret(&proof.secret.to_string())?;
+                crate::nuts::nut01::BlsG1PublicKey::hash_to_curve(&secret.serialize())
+                    .to_bytes()
+                    .to_vec()
+            }
+            _ => proof.y().map_err(|_| Error::InvalidTransaction)?.to_bytes(),
+        };
+        if !ys.insert(y.clone()) {
+            return Err(Error::InvalidTransaction);
+        }
+        let fields = [
+            integer(u64::from(proof.amount)),
+            proof.keyset_id.to_bytes(),
+            y,
+            proof.c.to_bytes(),
+        ];
+        inputs.push(container(PROOF_INPUT, &fields)?);
+    }
+    let mut ids = HashSet::new();
+    for quote in mint_quotes {
+        if !ids.insert(&quote.id) || quote.pubkey.as_secp256k1().is_err() {
+            return Err(Error::InvalidTransaction);
+        }
+        inputs.push(container(
+            MINT_QUOTE_INPUT,
+            &[
+                integer(u64::from(quote.amount)),
+                quote.id.as_bytes().to_vec(),
+                quote.pubkey.to_bytes(),
+                integer(u64::from(quote.issued)),
+            ],
+        )?);
+    }
+    Ok(inputs)
 }
 
 fn container(tag: u8, fields: &[Vec<u8>]) -> Result<Vec<u8>, Error> {

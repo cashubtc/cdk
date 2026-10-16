@@ -83,6 +83,14 @@ pub fn derived_quote_id(id_preimage: &[u8; 32]) -> String {
     crate::util::hex::encode(tagged_hash("Cashu_QuoteId", id_preimage))
 }
 
+/// NUT-XX rotation quote id, `hex(tagged_hash("Cashu_RotationQuoteId", melt_quote_id))`.
+pub fn rotation_quote_id(melt_quote_id: &str) -> String {
+    crate::util::hex::encode(tagged_hash(
+        "Cashu_RotationQuoteId",
+        melt_quote_id.as_bytes(),
+    ))
+}
+
 fn derive<T, F>(
     seed: &[u8],
     scope: &[u8],

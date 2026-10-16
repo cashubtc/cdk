@@ -1996,3 +1996,35 @@ pub async fn concurrent_mint_quote_batches_use_consistent_lock_order(db: DynMint
     assert_eq!(second_quotes[0].as_ref().unwrap().id, quote2.id);
     assert_eq!(second_quotes[1].as_ref().unwrap().id, quote1.id);
 }
+
+/// Quotes may share the empty request, and a lookup by it finds none of them
+pub async fn empty_request_names_no_quote<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    for _ in 0..2 {
+        tx.add_mint_quote(MintQuote::new(
+            None,
+            String::new(),
+            cashu::CurrencyUnit::Sat,
+            None,
+            0,
+            PaymentIdentifier::CustomId(unique_string()),
+            None,
+            Amount::new(1, cashu::CurrencyUnit::Sat),
+            Amount::new(0, cashu::CurrencyUnit::Sat),
+            cashu::PaymentMethod::Custom("txout".to_owned()),
+            0,
+            0,
+            vec![],
+            vec![],
+            None,
+        ))
+        .await
+        .unwrap();
+    }
+    assert!(tx.get_mint_quote_by_request("").await.unwrap().is_none());
+    tx.commit().await.unwrap();
+    assert!(db.get_mint_quote_by_request("").await.unwrap().is_none());
+}

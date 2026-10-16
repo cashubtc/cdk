@@ -58,6 +58,8 @@ pub struct Info {
     pub seed: Option<String>,
     pub mnemonic: Option<String>,
     pub input_fee_ppk: Option<u64>,
+    /// NUT-XX fee per quote input, in ppk of its minimal split
+    pub quote_input_fee_ppk: Option<u64>,
     /// Use keyset v2
     pub use_keyset_v2: Option<bool>,
     /// Explicit issuance version: "00", "01", or "02".
@@ -91,6 +93,7 @@ impl Default for Info {
             seed: None,
             mnemonic: None,
             input_fee_ppk: None,
+            quote_input_fee_ppk: None,
             use_keyset_v2: None,
             keyset_version: None,
             http_cache: cache::Config::default(),
@@ -119,6 +122,7 @@ impl std::fmt::Debug for Info {
             .field("listen_port", &self.listen_port)
             .field("mnemonic", &mnemonic_display)
             .field("input_fee_ppk", &self.input_fee_ppk)
+            .field("quote_input_fee_ppk", &self.quote_input_fee_ppk)
             .field("use_keyset_v2", &self.use_keyset_v2)
             .field("keyset_version", &self.keyset_version)
             .field("http_cache", &self.http_cache)

@@ -27,7 +27,9 @@ use super::{
     CurrencyUnit, MeltQuote, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
     MeltQuoteBolt12Response, MeltRequest, Mint, PaymentMethod,
 };
-use crate::mint::verification::{validate_custom_payment_method, MAX_REQUEST_FIELD_LEN};
+use crate::mint::verification::{
+    validate_custom_payment_method, Verification, MAX_REQUEST_FIELD_LEN,
+};
 use crate::nuts::MeltQuoteState;
 use crate::types::PaymentProcessorKey;
 use crate::util::unix_time;
@@ -138,10 +140,12 @@ impl Mint {
         localstore: &DynMintDatabase,
         quote_id: &QuoteId,
     ) -> Result<Option<MeltQuoteResponse<QuoteId>>, Error> {
-        let quote = localstore
+        let mut quote = localstore
             .get_melt_quote(quote_id)
             .await?
             .ok_or(Error::UnknownQuote)?;
+        let pays_transaction =
+            crate::mint::transaction::settled_melt_state(localstore, &mut quote).await?;
 
         if matches!(
             quote.state,
@@ -151,11 +155,7 @@ impl Mint {
         }
 
         let change = localstore.get_blind_signatures_for_quote(quote_id).await?;
-        let change_opt = if change.is_empty() {
-            None
-        } else {
-            Some(change)
-        };
+        let change_opt = crate::mint::transaction::melt_change(pays_transaction, &quote, change);
 
         Ok(Some(quote.into_response(change_opt)))
     }
@@ -793,13 +793,16 @@ impl Mint {
                 .ok_or(Error::UnknownQuote)?;
 
             self.handle_pending_melt_quote(&mut quote).await?;
+            let pays_transaction =
+                crate::mint::transaction::settled_melt_state(&self.localstore, &mut quote).await?;
 
             let blind_signatures = self
                 .localstore
                 .get_blind_signatures_for_quote(quote_id)
                 .await?;
 
-            let change = (!blind_signatures.is_empty()).then_some(blind_signatures);
+            let change =
+                crate::mint::transaction::melt_change(pays_transaction, &quote, blind_signatures);
 
             let response = match quote.payment_method {
                 PaymentMethod::Known(KnownMethod::Bolt11) => {
@@ -836,7 +839,9 @@ impl Mint {
                     MeltQuoteResponse::Onchain(response)
                 }
                 _ => {
-                    let custom_response: MeltQuoteCustomResponse<QuoteId> = quote.clone().into();
+                    let mut custom_response: MeltQuoteCustomResponse<QuoteId> =
+                        quote.clone().into();
+                    custom_response.change = change.clone();
                     MeltQuoteResponse::Custom((quote.payment_method.clone(), custom_response))
                 }
             };
@@ -896,12 +901,25 @@ impl Mint {
         let verification = self.verify_inputs(melt_request.inputs()).await?;
 
         // Fetch the quote to get payment_method for operation tracking
-        let quote_id = melt_request.quote().clone();
         let quote = self
             .localstore
-            .get_melt_quote(&quote_id)
+            .get_melt_quote(melt_request.quote())
             .await?
             .ok_or(Error::UnknownQuote)?;
+
+        self.melt_inner(melt_request, verification, quote, None)
+            .await
+    }
+
+    /// Run the melt saga; `transaction` reserves a NUT-XX transaction with it.
+    pub(crate) async fn melt_inner(
+        &self,
+        melt_request: &MeltRequest<QuoteId>,
+        verification: Verification,
+        quote: MeltQuote,
+        transaction: Option<crate::mint::transaction::TransactionSetup>,
+    ) -> Result<PendingMelt, Error> {
+        let quote_id = melt_request.quote().clone();
 
         // Keep status checks and payment events behind the live dispatch for
         // this quote. Without this process-local guard, a check could observe
@@ -910,11 +928,14 @@ impl Mint {
         let quote_lock = self.melt_quote_lock(&quote_id).await;
         let active_melt_guard = quote_lock.lock_owned().await;
 
-        let init_saga = MeltSaga::new(
+        let mut init_saga = MeltSaga::new(
             std::sync::Arc::new(self.clone()),
             self.localstore.clone(),
             std::sync::Arc::clone(&self.pubsub_manager),
         );
+        if let Some(setup) = transaction {
+            init_saga = init_saga.with_transaction(setup);
+        }
 
         // Step 1: Setup (TX1 - reserves inputs and outputs)
         let setup_saga = init_saga
