@@ -202,26 +202,15 @@ impl MintPubSubSpec {
                 .get_proofs_states(&public_keys)
                 .await
                 .map_err(|e| e.to_string())?;
-            let randomness = self
-                .db
-                .get_unpoisonable_r(&public_keys)
+            let mut states: Vec<ProofState> = states
+                .into_iter()
+                .enumerate()
+                .filter_map(|(idx, state)| state.map(|state| (public_keys[idx], state).into()))
+                .collect();
+            super::check_spendable::attach_unpoisonable_r(&self.db, &mut states)
                 .await
                 .map_err(|e| e.to_string())?;
-            to_return.extend(
-                states
-                    .into_iter()
-                    .enumerate()
-                    .filter_map(|(idx, state)| state.map(|state| (public_keys[idx], state).into()))
-                    .map(|mut state: ProofState| {
-                        if state.state == cdk_common::State::Spent {
-                            state.unpoisonable_r = randomness
-                                .get(&state.y)
-                                .copied()
-                                .map(cdk_common::nuts::nut03::UnpoisonableR);
-                        }
-                        state.into()
-                    }),
-            );
+            to_return.extend(states.into_iter().map(Into::into));
         }
 
         Ok(to_return)

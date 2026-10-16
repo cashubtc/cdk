@@ -1,9 +1,33 @@
 use std::collections::HashMap;
 
+use cdk_common::database::DynMintDatabase;
+use cdk_common::nuts::nut03::UnpoisonableR;
 use tracing::instrument;
 
 use super::{CheckStateRequest, CheckStateResponse, Mint, ProofState, State};
 use crate::Error;
+
+/// Attach recovery data only to proofs already observed as spent.
+pub(super) async fn attach_unpoisonable_r(
+    db: &DynMintDatabase,
+    states: &mut [ProofState],
+) -> Result<(), Error> {
+    let spent: Vec<_> = states
+        .iter()
+        .filter(|state| state.state == State::Spent)
+        .map(|state| state.y)
+        .collect();
+    if !spent.is_empty() {
+        let randomness = db.get_unpoisonable_r(&spent).await?;
+        for state in states
+            .iter_mut()
+            .filter(|state| state.state == State::Spent)
+        {
+            state.unpoisonable_r = randomness.get(&state.y).copied().map(UnpoisonableR);
+        }
+    }
+    Ok(())
+}
 
 impl Mint {
     /// Check state
@@ -57,16 +81,8 @@ impl Mint {
                 .collect()
         };
 
-        let randomness = if ys_needing_witness.is_empty() {
-            HashMap::new()
-        } else {
-            self.localstore
-                .get_unpoisonable_r(&ys_needing_witness)
-                .await?
-        };
-
         // Only inputs observed as spent may disclose recovery data.
-        let proof_states = check_state
+        let mut proof_states: Vec<_> = check_state
             .ys
             .iter()
             .zip(states.iter())
@@ -74,12 +90,10 @@ impl Mint {
                 y: *y,
                 state: state.unwrap_or(State::Unspent),
                 witness: witness_map.get(y).cloned().flatten(),
-                unpoisonable_r: randomness
-                    .get(y)
-                    .copied()
-                    .map(cdk_common::nuts::nut03::UnpoisonableR),
+                unpoisonable_r: None,
             })
             .collect();
+        attach_unpoisonable_r(&self.localstore, &mut proof_states).await?;
 
         Ok(CheckStateResponse {
             states: proof_states,

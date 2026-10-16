@@ -132,13 +132,12 @@ async fn test_p2pk_sig_all_requires_transaction_signature() {
     println!("✓ Spending WITH ALL signatures (SIG_ALL) succeeded");
 }
 
-#[tokio::test]
-async fn test_unpoisonable_swap_recovers_and_spends_after_original_is_signed() {
-    let test_mint = TestMintHelper::new().await.unwrap();
+async fn mint_sig_all_inputs(
+    test_mint: &TestMintHelper,
+    pubkey: cdk_common::PublicKey,
+    amount: Amount,
+) -> cdk_common::Proofs {
     let mint = test_mint.mint();
-    let (signer, pubkey) = create_test_keypair();
-    let amount = Amount::ONE;
-
     let conditions = SpendingConditions::new_p2pk(
         pubkey,
         Some(Conditions::new(None, None, None, None, Some(SigFlag::SigAll), None).unwrap()),
@@ -150,13 +149,22 @@ async fn test_unpoisonable_swap_recovers_and_spends_after_original_is_signed() {
         .process_swap_request(SwapRequest::new(initial_proofs, vec![locked_output]))
         .await
         .unwrap();
-    let locked_proofs = construct_proofs(
+    construct_proofs(
         issued.signatures,
         vec![blinding_factor],
         vec![secret],
         &test_mint.public_keys_of_the_active_sat_keyset,
     )
-    .unwrap();
+    .unwrap()
+}
+
+#[tokio::test]
+async fn test_unpoisonable_swap_recovers_and_spends_after_original_is_signed() {
+    let test_mint = TestMintHelper::new().await.unwrap();
+    let mint = test_mint.mint();
+    let (signer, pubkey) = create_test_keypair();
+    let amount = Amount::ONE;
+    let locked_proofs = mint_sig_all_inputs(&test_mint, pubkey, amount).await;
 
     let (outputs, pre_mint) = create_test_blinded_messages(mint, amount).await.unwrap();
     let mut request = SwapRequest::new(locked_proofs.clone(), outputs.clone()).with_unpoisonable();
@@ -320,24 +328,7 @@ async fn test_unpoisonable_swap_retries_point_at_infinity() {
     let (signer, pubkey) = create_test_keypair();
     let amount = Amount::ONE;
 
-    let conditions = SpendingConditions::new_p2pk(
-        pubkey,
-        Some(Conditions::new(None, None, None, None, Some(SigFlag::SigAll), None).unwrap()),
-    );
-    let initial_proofs = test_mint.mint_proofs(amount).await.unwrap();
-    let (locked_output, blinding_factor, secret) =
-        test_mint.create_blinded_message(amount, &conditions);
-    let issued = mint
-        .process_swap_request(SwapRequest::new(initial_proofs, vec![locked_output]))
-        .await
-        .unwrap();
-    let locked_proofs = construct_proofs(
-        issued.signatures,
-        vec![blinding_factor],
-        vec![secret],
-        &test_mint.public_keys_of_the_active_sat_keyset,
-    )
-    .unwrap();
+    let locked_proofs = mint_sig_all_inputs(&test_mint, pubkey, amount).await;
 
     let infinity_r = [0x42; 32];
     let tweak = cdk_common::nuts::nut03::derive_unpoisonable_tweak(&infinity_r).unwrap();
