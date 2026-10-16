@@ -199,6 +199,15 @@ where
     ///
     /// The proofs must have been previously acquired via `add_proofs`
     /// or `get_proofs` to ensure they are locked within the current transaction.
+    async fn update_proofs_state(
+        &mut self,
+        proofs: &mut Acquired<ProofsWithState>,
+        new_state: State,
+    ) -> Result<(), Self::Err> {
+        self.update_proofs_state_with_r(proofs, new_state, None)
+            .await
+    }
+
     async fn update_proofs_state_with_r(
         &mut self,
         proofs: &mut Acquired<ProofsWithState>,

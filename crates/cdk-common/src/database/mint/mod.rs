@@ -19,6 +19,9 @@ use crate::payment::PaymentIdentifier;
 
 mod auth;
 
+#[cfg(test)]
+mod compatibility_tests;
+
 #[cfg(feature = "test")]
 pub mod test;
 
@@ -452,19 +455,27 @@ pub trait ProofsTransaction {
         &mut self,
         proofs: &mut Acquired<ProofsWithState>,
         new_state: State,
-    ) -> Result<(), Self::Err> {
-        self.update_proofs_state_with_r(proofs, new_state, None)
-            .await
-    }
+    ) -> Result<(), Self::Err>;
 
     /// Update state and optional recovery randomness in one batch.
     /// Randomness is only allowed for a Pending-to-Spent transition.
+    /// Implementations supporting randomness must also implement
+    /// [`ProofsDatabase::get_unpoisonable_r`]. The default preserves ordinary
+    /// updates and rejects recovery randomness before changing any state.
     async fn update_proofs_state_with_r(
         &mut self,
         proofs: &mut Acquired<ProofsWithState>,
         new_state: State,
         r: Option<[u8; 32]>,
-    ) -> Result<(), Self::Err>;
+    ) -> Result<(), Self::Err> {
+        match r {
+            None => self.update_proofs_state(proofs, new_state).await,
+            Some(_) => Err(Error::Internal(
+                "Database does not support unpoisonable recovery persistence".to_owned(),
+            )
+            .into()),
+        }
+    }
 
     /// get proofs states
     async fn get_proofs(
@@ -499,10 +510,13 @@ pub trait ProofsDatabase {
     type Err: Into<Error> + From<Error>;
 
     /// Fetch recovery randomness for spent inputs only, keyed by Y.
+    /// Backends without unpoisonable support return no recovery data.
     async fn get_unpoisonable_r(
         &self,
-        ys: &[PublicKey],
-    ) -> Result<HashMap<PublicKey, [u8; 32]>, Self::Err>;
+        _ys: &[PublicKey],
+    ) -> Result<HashMap<PublicKey, [u8; 32]>, Self::Err> {
+        Ok(HashMap::new())
+    }
 
     /// Get [`Proofs`] by ys
     async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err>;

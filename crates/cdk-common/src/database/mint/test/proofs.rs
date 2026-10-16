@@ -16,7 +16,7 @@ use crate::state::check_state_transition;
 /// Recovery randomness is batched with the Pending-to-Spent transition and rolls back with it.
 pub async fn unpoisonable_recovery_storage<DB>(db: DB)
 where
-    DB: Database<Error> + KeysDatabase<Err = Error>,
+    DB: Database<Error> + KeysDatabase<Err = Error> + Sync,
 {
     let keyset_id = setup_keyset(&db).await;
     let proof = Proof {
