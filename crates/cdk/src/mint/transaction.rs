@@ -1,5 +1,5 @@
 //! NUT-XX transactions: proofs and paid mint quotes in; blinded messages and one
-//! melt quote out, with a remainder quote beside the melt.
+//! melt quote out, with a rotation quote beside the melt.
 //!
 //! A transaction without a melt settles in one database transaction. One with
 //! a melt runs the melt saga: quote inputs are reserved and the record stored in
@@ -128,7 +128,7 @@ fn txout_payment_id(id: &QuoteId) -> String {
     format!("txout:{id}")
 }
 
-/// Create the remainder quote for `unsigned`, the value of outputs the mint could not sign.
+/// Create the rotation quote for `unsigned`, the value of outputs the mint could not sign.
 async fn create_txout_quotes(
     tx: &mut DynMintTransaction,
     unit: &CurrencyUnit,
@@ -278,11 +278,11 @@ async fn issue_quote_inputs(
     Ok(issued)
 }
 
-/// Sign the reserved outputs, create any remainder quote and mark the record paid.
+/// Sign the reserved outputs, create any rotation quote and mark the record paid.
 ///
 /// Runs in the melt finalization's second transaction, in place of the change
 /// signing of a plain melt. Blank outputs take the change as in NUT-08; the
-/// remainder quote holds the outputs if the mint cannot sign them. The melt quote is already paid.
+/// rotation quote holds the outputs if the mint cannot sign them. The melt quote is already paid.
 pub(crate) async fn settle_with_melt(
     mint: &Mint,
     db: &DynMintDatabase,
@@ -327,7 +327,7 @@ pub(crate) async fn settle_with_melt(
         });
     }
     // Outputs whose keyset went inactive during the payment are not signed (NUT-02);
-    // the remainder quote holds their value.
+    // the rotation quote holds their value.
     let mut unsigned = Amount::ZERO;
     let signable = outputs.first().is_none_or(|output| {
         mint.get_keyset_info(&output.keyset_id)
@@ -338,7 +338,7 @@ pub(crate) async fn settle_with_melt(
         tracing::warn!(
             melt_quote_id = %quote.id,
             unsigned = %unsigned,
-            "transaction outputs lost their active keyset during payment; holding their value in the remainder quote",
+            "transaction outputs lost their active keyset during payment; holding their value in the rotation quote",
         );
         outputs.clear();
     }
@@ -463,22 +463,18 @@ impl Mint {
         if outputs.is_empty() && request.melt_quote_outputs.is_empty() {
             return Err(invalid("transaction requires at least one output"));
         }
-        // The only mint quote output is the remainder quote, backing a melt's outputs (NUT-XX).
+        // The only mint quote output is the rotation quote, backing a melt's outputs (NUT-XX).
         if request.mint_quote_outputs.len() > 1 {
-            return Err(invalid(
-                "at most one mint quote output, the remainder quote",
-            ));
+            return Err(invalid("at most one mint quote output, the rotation quote"));
         }
         if !request.mint_quote_outputs.is_empty()
             && (outputs.is_empty() || request.melt_quote_outputs.is_empty())
         {
-            return Err(invalid(
-                "a remainder quote needs a melt and blinded outputs",
-            ));
+            return Err(invalid("a rotation quote needs a melt and blinded outputs"));
         }
-        let mut remainder_keys = Vec::with_capacity(request.mint_quote_outputs.len());
+        let mut rotation_keys = Vec::with_capacity(request.mint_quote_outputs.len());
         for output in &request.mint_quote_outputs {
-            remainder_keys.push(
+            rotation_keys.push(
                 PublicKey::from_hex(&output.pubkey)
                     .ok()
                     .filter(|key| key.as_secp256k1().is_ok())
@@ -581,12 +577,12 @@ impl Mint {
             });
             quote_issued.push(quote.amount_issued().into());
         }
-        // The remainder quote is named by its melt (NUT-XX).
+        // The rotation quote is named by its melt (NUT-XX).
         let quote_outputs: Vec<QuoteOutput> = match &melt {
-            Some(quote) => remainder_keys
+            Some(quote) => rotation_keys
                 .into_iter()
                 .map(|key| {
-                    let id = nutroot::remainder_quote_id(&quote.id.to_string());
+                    let id = nutroot::rotation_quote_id(&quote.id.to_string());
                     (QuoteId::BASE64(id), key)
                 })
                 .collect(),

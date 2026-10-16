@@ -889,7 +889,7 @@ pub struct TransactionRecord {
     pub unit: cashu::CurrencyUnit,
     /// Mint quote inputs and the amount issued against each
     pub quote_inputs: Vec<(QuoteId, cashu::Amount)>,
-    /// The remainder quote's id and lock key, if requested
+    /// The rotation quote's id and lock key, if requested
     pub mint_quote_outputs: Vec<(QuoteId, cashu::PublicKey)>,
     /// Inputs less fee, outputs and melt amount; the fee reserve is inside it
     pub excess: cashu::Amount,

@@ -816,7 +816,7 @@ fn shared_transcript_vectors() {
             .collect();
         let outputs: Vec<_> = list(&tx["blinded_outputs"]).iter().map(output).collect();
         let melt_quotes: Vec<_> = list(&tx["melt_quote_outputs"]).iter().map(quote).collect();
-        // The only mint quote output is the remainder quote, named by its melt.
+        // The only mint quote output is the rotation quote, named by its melt.
         let quote_outputs: Vec<_> = list(&tx["mint_quote_outputs"])
             .iter()
             .map(|v| MintQuoteOutput {
@@ -825,7 +825,7 @@ fn shared_transcript_vectors() {
                     .unwrap()
                     .as_secp256k1()
                     .unwrap(),
-                id: remainder_quote_id(&melt_quotes[0].id),
+                id: rotation_quote_id(&melt_quotes[0].id),
             })
             .collect();
         let transaction = Transaction::with_quote_outputs(
@@ -958,11 +958,11 @@ fn shared_mint_quote_input_vectors() {
 }
 
 #[test]
-fn remainder_quote_id_vector() {
+fn rotation_quote_id_vector() {
     let shared: Value = serde_json::from_str(include_str!("nutroot_v3_vectors.json")).unwrap();
-    let lock = &shared["nut13_v3"]["remainder_lock"];
+    let lock = &shared["nut13_v3"]["rotation_lock"];
     assert_eq!(
-        remainder_quote_id(lock["melt_quote_id"].as_str().unwrap()),
+        rotation_quote_id(lock["melt_quote_id"].as_str().unwrap()),
         lock["quote_id"].as_str().unwrap()
     );
 }

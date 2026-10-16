@@ -1,7 +1,7 @@
 //! NUT-XX: Transactions
 //!
 //! One endpoint carrying any NUT-10 transaction: proofs and paid mint quotes in;
-//! blinded messages and one melt quote out, with a remainder quote beside the melt.
+//! blinded messages and one melt quote out, with a rotation quote beside the melt.
 
 use core::fmt;
 use std::str::FromStr;
@@ -47,13 +47,13 @@ pub struct TransactionMeltOutput {
     pub fee_index: Option<u32>,
 }
 
-/// A mint quote output: the remainder quote, beside a melt with blinded outputs
+/// A mint quote output: the rotation quote, beside a melt with blinded outputs
 ///
 /// Unknown fields such as `amount` are refused, not ignored.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TransactionMintQuoteOutput {
-    /// Lock key of the remainder quote, a 33-byte compressed secp256k1 key
+    /// Lock key of the rotation quote, a 33-byte compressed secp256k1 key
     pub pubkey: String,
 }
 
@@ -72,7 +72,7 @@ pub struct TransactionRequest {
     /// At most one melt quote
     #[serde(default)]
     pub melt_quote_outputs: Vec<TransactionMeltOutput>,
-    /// At most one, the remainder quote
+    /// At most one, the rotation quote
     #[serde(default)]
     pub mint_quote_outputs: Vec<TransactionMintQuoteOutput>,
     /// Return once the inputs are reserved rather than waiting for the melt
@@ -97,7 +97,7 @@ impl super::nut10::SpendingConditionVerification for TransactionRequest {
 pub enum TransactionState {
     /// A melt payment is in flight
     Pending,
-    /// Settled: outputs signed, quotes issued, any remainder quote created
+    /// Settled: outputs signed, quotes issued, any rotation quote created
     Paid,
     /// The payment failed and the inputs were released
     Failed,
