@@ -3,12 +3,13 @@
 pub mod hex;
 pub mod serde_helpers;
 
+use std::sync::LazyLock;
+
 use bitcoin::secp256k1::{rand, All, Secp256k1};
-use once_cell::sync::Lazy;
 use web_time::{SystemTime, UNIX_EPOCH};
 
 /// Secp256k1 global context
-pub static SECP256K1: Lazy<Secp256k1<All>> = Lazy::new(|| {
+pub static SECP256K1: LazyLock<Secp256k1<All>> = LazyLock::new(|| {
     let mut ctx = Secp256k1::new();
     let mut rng = rand::thread_rng();
     ctx.randomize(&mut rng);

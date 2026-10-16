@@ -167,7 +167,7 @@ where
                   "#,
             )?
             .bind("y", y)
-            .bind("amount", proof.amount.to_i64())
+            .bind("amount", i64::try_from(proof.amount.to_u64())?)
             .bind("keyset_id", proof.keyset_id.to_string())
             .bind("secret", proof.secret.to_string())
             .bind("c", proof.c.to_bytes().to_vec())
@@ -177,7 +177,7 @@ where
             )
             .bind("state", "UNSPENT".to_string())
             .bind("quote_id", quote_id.clone().map(|q| q.to_string()))
-            .bind("created_time", current_time as i64)
+            .bind("created_time", i64::try_from(current_time)?)
             .bind("operation_kind", operation.kind().to_string())
             .bind("operation_id", operation.id().to_string())
             .execute(&self.inner)
@@ -505,9 +505,9 @@ where
             .get()
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
-        let mut current_states = get_current_states(&*conn, ys, false).await?;
+        let current_states = get_current_states(&*conn, ys, false).await?;
 
-        Ok(ys.iter().map(|y| current_states.remove(y)).collect())
+        Ok(ys.iter().map(|y| current_states.get(y).copied()).collect())
     }
 
     async fn get_proofs_by_keyset_id(

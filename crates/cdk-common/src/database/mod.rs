@@ -198,6 +198,10 @@ pub enum Error {
     #[error("Missing placeholder value {0}")]
     MissingPlaceholder(String),
 
+    /// A value does not fit the signed column it is stored in
+    #[error("Numeric value does not fit the database column: {0}")]
+    ValueOutOfRange(#[from] std::num::TryFromIntError),
+
     /// Empty IN clause
     #[error("Empty IN clause for placeholder: {0}")]
     EmptyInClause(String),

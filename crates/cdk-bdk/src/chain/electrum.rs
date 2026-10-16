@@ -5,7 +5,7 @@ use bdk_electrum::electrum_client::{Client, ConfigBuilder, ElectrumApi};
 use bdk_electrum::BdkElectrumClient;
 use bdk_wallet::bitcoin::Transaction;
 use cdk_common::redact::url_for_logs;
-use tokio::time::{interval, Duration};
+use tokio::time::{interval, Duration, MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 
 use crate::chain::{BroadcastErrorKind, BroadcastFailure, BroadcastOutcome, ElectrumConfig};
@@ -40,6 +40,8 @@ pub(crate) async fn sync_electrum(
     let configured_interval = Duration::from_secs(cdk_bdk.sync_interval_secs);
     let initial_backoff = configured_interval.max(MIN_ELECTRUM_BACKOFF);
     let mut sync_interval = interval(configured_interval);
+    // Skip the backlog after a slow sync to avoid catch-up bursts.
+    sync_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut electrum_client: Option<Arc<ElectrumClient>> = None;
     let mut consecutive_failures: u32 = 0;
     let mut backoff = initial_backoff;

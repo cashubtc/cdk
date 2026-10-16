@@ -113,7 +113,8 @@ async fn main() -> anyhow::Result<()> {
                     let kv_store = Arc::new(MintSqliteDatabase::new(":memory:").await?);
                     Arc::new(
                         cdk_cln::Cln::new(cln_settings.rpc_path, fee_reserve, false, kv_store)
-                            .await?,
+                            .await?
+                            .with_bolt12(cln_settings.bolt12),
                     )
                 }
                 #[cfg(feature = "fake")]

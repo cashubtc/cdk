@@ -1,3 +1,4 @@
+use futures::future::BoxFuture;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::Error;
@@ -56,7 +57,12 @@ impl CdkBdk {
         }
     }
 
-    pub(crate) async fn sync_wallet(&self, cancel_token: CancellationToken) -> Result<(), Error> {
-        self.chain_source.sync_wallet(self, cancel_token).await
+    pub(crate) fn sync_wallet(
+        &self,
+        cancel_token: CancellationToken,
+    ) -> BoxFuture<'_, Result<(), Error>> {
+        // Erase the nested chain-sync future so the supervisor's Send check
+        // does not recurse through every backend's future type.
+        Box::pin(self.chain_source.sync_wallet(self, cancel_token))
     }
 }

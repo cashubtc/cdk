@@ -125,12 +125,7 @@ where
 
             #[cfg(feature = "prometheus")]
             {
-                let in_use = self
-                    .pool
-                    .max_size
-                    .saturating_sub(self.pool.semaphore.available_permits())
-                    .saturating_sub(1);
-                METRICS.set_db_connections_active(in_use as i64);
+                METRICS.decrement_db_connections_active();
 
                 let duration = self.start_time.elapsed().as_secs_f64();
 
@@ -214,15 +209,19 @@ where
         };
 
         #[cfg(feature = "prometheus")]
-        {
-            let in_use = self.max_size - self.semaphore.available_permits();
-            METRICS.set_db_connections_active(in_use as i64);
-        }
+        METRICS.increment_db_connections_active();
 
         // Briefly lock the idle queue to try to pop a non-stale connection.
         // This mutex is held for nanoseconds (just a Vec::pop).
         {
-            let mut resources = self.queue.lock().map_err(|_| Error::Poison)?;
+            let mut resources = match self.queue.lock() {
+                Ok(resources) => resources,
+                Err(_) => {
+                    #[cfg(feature = "prometheus")]
+                    METRICS.decrement_db_connections_active();
+                    return Err(Error::Poison);
+                }
+            };
             while let Some((stale, resource)) = resources.pop() {
                 if !stale.load(Ordering::SeqCst) {
                     return Ok(PooledResource {
@@ -250,13 +249,7 @@ where
             }),
             Err(e) => {
                 #[cfg(feature = "prometheus")]
-                {
-                    let in_use = self
-                        .max_size
-                        .saturating_sub(self.semaphore.available_permits())
-                        .saturating_sub(1);
-                    METRICS.set_db_connections_active(in_use as i64);
-                }
+                METRICS.decrement_db_connections_active();
 
                 // Permit is dropped here, releasing the slot back to the semaphore.
                 Err(e)
@@ -466,5 +459,22 @@ mod tests {
         assert!(matches!(result, Err(Error::Resource(_))));
         assert_eq!(db_connections_active(), 0.0);
         assert_eq!(pool.semaphore.available_permits(), pool.max_size);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn active_connections_gauge_aggregates_multiple_pools() {
+        let _lock = crate::metrics_test_lock::lock().await;
+        METRICS.set_db_connections_active(0);
+
+        let regular_pool = Pool::<TestPool>::new(test_config(1, false));
+        let second_pool = Pool::<TestPool>::new(test_config(1, false));
+        let regular = regular_pool.get().await.expect("regular resource");
+        let second = second_pool.get().await.expect("second resource");
+
+        assert_eq!(db_connections_active(), 2.0);
+
+        drop(regular);
+        drop(second);
+        assert_eq!(db_connections_active(), 0.0);
     }
 }

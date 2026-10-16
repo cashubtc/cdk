@@ -81,18 +81,22 @@ where
         )?
         .bind("operation_id", operation.id().to_string())
         .bind("operation_kind", operation.kind().to_string())
-        .bind("completed_at", operation.completed_at().unwrap_or(unix_time()) as i64)
-        .bind("total_issued", operation.total_issued().to_u64() as i64)
-        .bind("total_redeemed", operation.total_redeemed().to_u64() as i64)
-        .bind("fee_collected", operation.fee_collected().to_u64() as i64)
-        .bind("payment_amount", operation.payment_amount().map(|a| a.to_u64() as i64))
-        .bind("payment_fee", operation.payment_fee().map(|a| a.to_u64() as i64))
+        .bind("completed_at", i64::try_from(operation.completed_at().unwrap_or(unix_time()))?)
+        .bind("total_issued", i64::try_from(operation.total_issued().to_u64())?)
+        .bind("total_redeemed", i64::try_from(operation.total_redeemed().to_u64())?)
+        .bind("fee_collected", i64::try_from(operation.fee_collected().to_u64())?)
+        .bind("payment_amount", operation.payment_amount().map(|a| i64::try_from(a.to_u64())).transpose()?)
+        .bind("payment_fee", operation.payment_fee().map(|a| i64::try_from(a.to_u64())).transpose()?)
         .bind("payment_method", operation.payment_method().map(|m| m.to_string()))
         .execute(&self.inner)
         .await?;
 
-        // Update keyset_amounts with fee_collected from the breakdown
-        for (keyset_id, fee) in fee_by_keyset {
+        // Acquire fee row locks in keyset ID order so concurrent fee updates
+        // cannot deadlock by visiting shared keysets in opposite orders.
+        let mut fees = fee_by_keyset.iter().collect::<Vec<_>>();
+        fees.sort_unstable_by_key(|(keyset_id, _)| *keyset_id);
+
+        for (keyset_id, fee) in fees {
             if fee.to_u64() > 0 {
                 query(
                     r#"
@@ -103,7 +107,7 @@ where
                     "#,
                 )?
                 .bind("keyset_id", keyset_id.to_string())
-                .bind("fee", fee.to_u64() as i64)
+                .bind("fee", i64::try_from(fee.to_u64())?)
                 .execute(&self.inner)
                 .await?;
             }

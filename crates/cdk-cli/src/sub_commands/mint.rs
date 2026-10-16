@@ -31,6 +31,9 @@ pub struct MintSubCommand {
     /// Quote Id
     #[arg(short, long)]
     quote_id: Option<String>,
+    /// Number of seed-derived quote keys to search when recovering a quote
+    #[arg(long, default_value = "1000", requires = "quote_id")]
+    key_search_limit: u32,
     /// Payment method
     #[arg(long, default_value = "bolt11")]
     method: String,
@@ -152,13 +155,18 @@ pub async fn mint(
                 quote
             }
         },
-        Some(quote_id) => wallet
-            .localstore
-            .get_mint_quote(quote_id)
-            .await?
-            .ok_or(anyhow!("Unknown quote"))?,
+        Some(quote_id) => {
+            wallet
+                .fetch_mint_quote_with_key_search(
+                    quote_id,
+                    Some(payment_method.clone()),
+                    sub_command_args.key_search_limit,
+                )
+                .await?
+        }
     };
 
+    let payment_method = quote.payment_method.clone();
     tracing::debug!("Attempting mint for: {}", payment_method);
 
     // Spawn a background task that prints progress updates from the mint's
@@ -186,6 +194,7 @@ pub async fn mint(
     // inside the loop so that the progress task below is always stopped cleanly.
     let wait_duration = sub_command_args.wait_duration;
     let mut timed_out = false;
+    let mut mint_error = None;
 
     loop {
         let next = proof_streams.next();
@@ -204,7 +213,11 @@ pub async fn mint(
             }
             // The stream surfaced an error.
             Ok(Some(Err(err))) => {
-                tracing::error!("Proof streams ended with {:?}", err);
+                tracing::error!(
+                    "Proof streams ended with {}",
+                    escape_control(&format!("{err:?}"))
+                );
+                mint_error = Some(err);
                 break;
             }
             // The stream ended normally.
@@ -225,11 +238,18 @@ pub async fn mint(
         let _ = handle.await;
     }
 
+    if let Some(err) = mint_error {
+        return Err(err.into());
+    }
+
     if timed_out && amount_minted == Amount::ZERO {
         bail!("Timed out after {wait_duration}s waiting for the mint quote to be paid");
     }
 
-    println!("Received {amount_minted} from mint {mint_url}");
+    println!(
+        "Received {amount_minted} from mint {}",
+        escape_control(&mint_url.to_string())
+    );
 
     Ok(())
 }
@@ -260,7 +280,10 @@ async fn spawn_progress_task(
     let mut subscription = match wallet.subscribe(subscription_filter).await {
         Ok(sub) => sub,
         Err(err) => {
-            tracing::warn!("Failed to subscribe to mint quote updates: {}", err);
+            tracing::warn!(
+                "Failed to subscribe to mint quote updates: {}",
+                escape_control(&err.to_string())
+            );
             return None;
         }
     };

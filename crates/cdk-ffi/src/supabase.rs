@@ -1,3 +1,4 @@
+use std::fmt;
 use std::sync::Arc;
 
 use cdk_common::auth::oidc::OidcClient;
@@ -34,14 +35,10 @@ impl WalletSupabaseDatabase {
     /// set tokens, or use one of the other constructors for automatic refresh.
     #[uniffi::constructor]
     pub async fn new(url: String, api_key: String) -> Result<Arc<Self>, FfiError> {
-        let url = url::Url::parse(&url).map_err(|e| FfiError::Internal {
-            error_message: e.to_string(),
-        })?;
+        let url = url::Url::parse(&url).map_err(FfiError::internal)?;
         let db = SupabaseWalletDatabase::new(url, api_key)
             .await
-            .map_err(|e| FfiError::Internal {
-                error_message: e.to_string(),
-            })?;
+            .map_err(FfiError::internal)?;
         Ok(Arc::new(WalletSupabaseDatabase {
             inner: FfiWalletDatabaseWrapper::new(db),
         }))
@@ -55,14 +52,10 @@ impl WalletSupabaseDatabase {
     /// `/auth/v1/token` endpoint automatically.
     #[uniffi::constructor]
     pub async fn with_supabase_auth(url: String, api_key: String) -> Result<Arc<Self>, FfiError> {
-        let url = url::Url::parse(&url).map_err(|e| FfiError::Internal {
-            error_message: e.to_string(),
-        })?;
+        let url = url::Url::parse(&url).map_err(FfiError::internal)?;
         let db = SupabaseWalletDatabase::with_supabase_auth(url, api_key)
             .await
-            .map_err(|e| FfiError::Internal {
-                error_message: e.to_string(),
-            })?;
+            .map_err(FfiError::internal)?;
         Ok(Arc::new(WalletSupabaseDatabase {
             inner: FfiWalletDatabaseWrapper::new(db),
         }))
@@ -79,15 +72,11 @@ impl WalletSupabaseDatabase {
         openid_discovery: String,
         client_id: Option<String>,
     ) -> Result<Arc<Self>, FfiError> {
-        let url = url::Url::parse(&url).map_err(|e| FfiError::Internal {
-            error_message: e.to_string(),
-        })?;
+        let url = url::Url::parse(&url).map_err(FfiError::internal)?;
         let oidc_client = OidcClient::new(openid_discovery, client_id);
         let db = SupabaseWalletDatabase::with_oidc(url, api_key, oidc_client)
             .await
-            .map_err(|e| FfiError::Internal {
-                error_message: e.to_string(),
-            })?;
+            .map_err(FfiError::internal)?;
         Ok(Arc::new(WalletSupabaseDatabase {
             inner: FfiWalletDatabaseWrapper::new(db),
         }))
@@ -116,9 +105,7 @@ impl WalletSupabaseDatabase {
             .inner()
             .set_encryption_password(&password)
             .await
-            .map_err(|e| FfiError::Internal {
-                error_message: e.to_string(),
-            })
+            .map_err(FfiError::internal)
     }
 
     /// Check that the database schema is compatible with this SDK version
@@ -137,9 +124,7 @@ impl WalletSupabaseDatabase {
             .inner()
             .check_schema_compatibility()
             .await
-            .map_err(|e| FfiError::Internal {
-                error_message: e.to_string(),
-            })
+            .map_err(FfiError::internal)
     }
 
     /// Refresh the access token using the stored refresh token
@@ -156,9 +141,7 @@ impl WalletSupabaseDatabase {
             .inner()
             .refresh_access_token()
             .await
-            .map_err(|e| FfiError::Internal {
-                error_message: e.to_string(),
-            })
+            .map_err(FfiError::internal)
     }
 
     /// Call a Supabase RPC function
@@ -187,9 +170,7 @@ impl WalletSupabaseDatabase {
             .inner()
             .call_rpc(&function_name, &params_json)
             .await
-            .map_err(|e| FfiError::Internal {
-                error_message: e.to_string(),
-            })
+            .map_err(FfiError::internal)
     }
 
     /// Sign up a new user and automatically set tokens if returned
@@ -199,9 +180,7 @@ impl WalletSupabaseDatabase {
             .inner()
             .signup(&email, &password)
             .await
-            .map_err(|e| FfiError::Internal {
-                error_message: e.to_string(),
-            })?;
+            .map_err(FfiError::internal)?;
         Ok(response.into())
     }
 
@@ -212,9 +191,7 @@ impl WalletSupabaseDatabase {
             .inner()
             .signin(&email, &password)
             .await
-            .map_err(|e| FfiError::Internal {
-                error_message: e.to_string(),
-            })?;
+            .map_err(FfiError::internal)?;
         Ok(response.into())
     }
 }
@@ -223,7 +200,7 @@ impl WalletSupabaseDatabase {
 crate::impl_ffi_wallet_database!(WalletSupabaseDatabase);
 
 /// Response from Supabase Auth sign-up/sign-in
-#[derive(Debug, uniffi::Record)]
+#[derive(uniffi::Record)]
 pub struct AuthResponse {
     pub access_token: String,
     pub token_type: String,
@@ -231,6 +208,21 @@ pub struct AuthResponse {
     pub refresh_token: Option<String>,
     /// User details as a JSON string
     pub user_json: String,
+}
+
+impl fmt::Debug for AuthResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AuthResponse")
+            .field("access_token", &"[REDACTED]")
+            .field("token_type", &self.token_type)
+            .field("expires_in", &self.expires_in)
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("user_json", &self.user_json)
+            .finish()
+    }
 }
 
 impl From<cdk_supabase::SupabaseAuthResponse> for AuthResponse {
@@ -253,15 +245,11 @@ pub async fn supabase_signup(
     email: String,
     password: String,
 ) -> Result<AuthResponse, FfiError> {
-    let url = url::Url::parse(&url).map_err(|e| FfiError::Internal {
-        error_message: e.to_string(),
-    })?;
+    let url = url::Url::parse(&url).map_err(FfiError::internal)?;
 
     let response = cdk_supabase::SupabaseAuth::signup(&url, &api_key, &email, &password)
         .await
-        .map_err(|e| FfiError::Internal {
-            error_message: e.to_string(),
-        })?;
+        .map_err(FfiError::internal)?;
 
     Ok(response.into())
 }
@@ -274,15 +262,11 @@ pub async fn supabase_signin(
     email: String,
     password: String,
 ) -> Result<AuthResponse, FfiError> {
-    let url = url::Url::parse(&url).map_err(|e| FfiError::Internal {
-        error_message: e.to_string(),
-    })?;
+    let url = url::Url::parse(&url).map_err(FfiError::internal)?;
 
     let response = cdk_supabase::SupabaseAuth::signin(&url, &api_key, &email, &password)
         .await
-        .map_err(|e| FfiError::Internal {
-            error_message: e.to_string(),
-        })?;
+        .map_err(FfiError::internal)?;
 
     Ok(response.into())
 }
@@ -306,4 +290,28 @@ pub fn supabase_get_schema_sql() -> String {
 #[uniffi::export]
 pub fn supabase_required_schema_version() -> u32 {
     SupabaseWalletDatabase::REQUIRED_SCHEMA_VERSION
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AuthResponse;
+
+    #[test]
+    fn auth_response_debug_redacts_tokens() {
+        let access_token = "ffi-access-token-secret";
+        let refresh_token = "ffi-refresh-token-secret";
+        let response = AuthResponse {
+            access_token: access_token.to_string(),
+            token_type: "bearer".to_string(),
+            expires_in: Some(3_600),
+            refresh_token: Some(refresh_token.to_string()),
+            user_json: r#"{"id":"public-user-id"}"#.to_string(),
+        };
+
+        let debug = format!("{response:?}");
+
+        assert!(debug.contains("public-user-id"));
+        assert!(!debug.contains(access_token));
+        assert!(!debug.contains(refresh_token));
+    }
 }

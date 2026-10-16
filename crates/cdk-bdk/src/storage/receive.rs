@@ -13,24 +13,46 @@ impl BdkStorage {
     // ── Receive address index storage ────────────────────────────────
 
     /// Track a generated receive address by quote ID.
-    pub async fn track_receive_address(&self, address: &str, quote_id: &str) -> Result<(), Error> {
+    ///
+    /// Returns `true` when the address was reserved for `quote_id` (or was
+    /// already tracked for that same quote). Returns `false` when the
+    /// address is already tracked for a different quote; the caller must
+    /// derive a fresh address and retry.
+    pub async fn track_receive_address(
+        &self,
+        address: &str,
+        quote_id: &str,
+    ) -> Result<bool, Error> {
         let mut tx = self
             .kv_store
             .begin_transaction()
             .await
             .map_err(Error::from)?;
 
-        tx.kv_write(
-            BDK_NAMESPACE,
-            RECEIVE_ADDRESS_QUOTE_ID_NAMESPACE,
-            address,
-            quote_id.as_bytes(),
-        )
-        .await
-        .map_err(Error::from)?;
+        // Reserve the address atomically: an address must never be remapped
+        // to a different quote once tracked.
+        let reserved = tx
+            .kv_write_if_absent(
+                BDK_NAMESPACE,
+                RECEIVE_ADDRESS_QUOTE_ID_NAMESPACE,
+                address,
+                quote_id.as_bytes(),
+            )
+            .await
+            .map_err(Error::from)?;
+
+        if !reserved {
+            let existing = tx
+                .kv_read(BDK_NAMESPACE, RECEIVE_ADDRESS_QUOTE_ID_NAMESPACE, address)
+                .await
+                .map_err(Error::from)?;
+            let same_quote = existing.as_deref() == Some(quote_id.as_bytes());
+            tx.rollback().await.map_err(Error::from)?;
+            return Ok(same_quote);
+        }
 
         tx.commit().await.map_err(Error::from)?;
-        Ok(())
+        Ok(true)
     }
 
     /// Get the quote ID for a tracked receive address.

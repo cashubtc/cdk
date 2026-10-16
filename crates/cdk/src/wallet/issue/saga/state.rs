@@ -41,6 +41,8 @@ pub enum PreparedMintRequest {
         quote_ids: Vec<String>,
         /// Quote information for each quote
         quote_infos: Vec<MintQuote>,
+        /// Number of consecutive outputs assigned to each quote
+        output_counts: Vec<usize>,
         /// Batch mint request ready to send
         request: BatchMintRequest<String>,
     },
@@ -74,6 +76,7 @@ impl fmt::Debug for PreparedMintRequest {
             Self::Batch {
                 quote_ids,
                 quote_infos,
+                output_counts,
                 request,
             } => f
                 .debug_struct("PreparedMintRequest::Batch")
@@ -93,6 +96,7 @@ impl fmt::Debug for PreparedMintRequest {
                         .map(|output| output.amount)
                         .collect::<Vec<_>>(),
                 )
+                .field("output_counts", output_counts)
                 .field("has_signatures", &request.signatures.is_some())
                 .finish(),
         }

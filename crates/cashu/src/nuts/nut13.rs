@@ -146,6 +146,7 @@ impl PreMintSecrets {
                 secret: secret.clone(),
                 r,
                 amount,
+                derivation_index: Some(counter),
             };
 
             pre_mint_secrets.secrets.push(pre_mint);
@@ -182,6 +183,7 @@ impl PreMintSecrets {
                 secret: secret.clone(),
                 r,
                 amount,
+                derivation_index: Some(counter),
             };
 
             pre_mint_secrets.secrets.push(pre_mint);
@@ -213,6 +215,7 @@ impl PreMintSecrets {
                 secret: secret.clone(),
                 r,
                 amount: Amount::ZERO,
+                derivation_index: Some(i),
             };
 
             pre_mint_secrets.secrets.push(pre_mint);

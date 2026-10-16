@@ -24,6 +24,7 @@ use crate::util::unix_time;
 use crate::wallet::receive::saga::compensation::RemovePendingProofs;
 use crate::wallet::recovery::{RecoveryAction, RecoveryHelpers};
 use crate::wallet::saga::CompensatingAction;
+use crate::wallet::util::escape_log_value;
 use crate::{Error, Wallet};
 
 impl Wallet {
@@ -119,7 +120,7 @@ impl Wallet {
                         "Receive saga {} - couldn't reconstruct the historical fee ({}), \
                          recording the pending transaction with zero fee",
                         saga_id,
-                        error
+                        escape_log_value(&error)
                     );
                     Amount::ZERO
                 }
@@ -192,7 +193,7 @@ impl Wallet {
                 tracing::warn!(
                     "Receive saga {} - can't check proof states ({}), skipping",
                     saga_id,
-                    e
+                    escape_log_value(&e)
                 );
                 Ok(RecoveryAction::Skipped)
             }

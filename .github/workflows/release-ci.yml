@@ -1,0 +1,45 @@
+name: Verify release CI
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Exact source ref to release
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/github-script@v8
+        env:
+          RELEASE_REF: ${{ inputs.ref }}
+        with:
+          script: |
+            const { data: commit } = await github.rest.repos.getCommit({
+              ...context.repo, ref: process.env.RELEASE_REF
+            });
+            for (const workflow_id of ['ci.yml', 'nutshell_itest.yml']) {
+              const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+                ...context.repo, workflow_id, head_sha: commit.sha, per_page: 100
+              });
+              // A PR run covers only the reduced matrix. Require a completed
+              // full run on the exact release commit, including Nutshell.
+              // Match the v[0-9]*.[0-9]*.x glob used by the push triggers.
+              const fullRuns = runs.filter(run =>
+                run.event === 'workflow_dispatch' || run.event === 'release' ||
+                (run.event === 'push' && (run.head_branch === 'main' ||
+                  /^v[0-9][^/]*[.][0-9][^/]*[.]x$/.test(run.head_branch || '')))
+              ).sort((a, b) => b.id - a.id);
+              const latest = fullRuns[0];
+              if (!latest || latest.status !== 'completed' || latest.conclusion !== 'success') {
+                core.setFailed(`${workflow_id}: full CI must pass on ${commit.sha} before publishing. ` +
+                  (latest ? `Latest run: ${latest.html_url}` : 'Run CI and Nutshell integration manually on the release ref.'));
+              }
+            }

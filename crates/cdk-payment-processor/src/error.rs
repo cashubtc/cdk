@@ -29,7 +29,7 @@ pub enum Error {
     Invoice(#[from] lightning_invoice::ParseOrSemanticError),
     /// Hex decode error
     #[error(transparent)]
-    Hex(#[from] hex::FromHexError),
+    Hex(#[from] cdk_common::util::hex::Error),
     /// BOLT12 parse error
     #[error("BOLT12 parse error")]
     Bolt12Parse,

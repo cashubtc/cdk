@@ -120,7 +120,7 @@
 
         # Toolchains
         # latest stable
-        stable_toolchain = pkgs.rust-bin.stable."1.97.1".default.override {
+        stable_toolchain = pkgs.rust-bin.stable."1.99.0".default.override {
           targets = [
             "wasm32-unknown-unknown"
             "aarch64-apple-ios"
@@ -166,7 +166,7 @@
         # Stable toolchain with musl target for static builds (Linux only)
         static_toolchain =
           if muslTarget != null then
-            pkgs.rust-bin.stable."1.97.1".default.override
+            pkgs.rust-bin.stable."1.99.0".default.override
               {
                 targets = [ muslTarget ];
               }
@@ -218,23 +218,32 @@
         # Source for crane builds - uses lib.fileset for efficient filtering
         # This is much faster than nix-gitignore when large directories (like target/) exist
         # because it uses a whitelist approach rather than scanning everything first
+        srcFileset = lib.fileset.intersection (lib.fileset.fromSource (lib.sources.cleanSource ./.)) (
+          lib.fileset.unions [
+            ./Cargo.toml
+            ./Cargo.lock
+            ./Cargo.lock.msrv
+            ./clippy.toml
+            ./.typos.toml
+            ./rustfmt.toml
+            ./README.md
+            ./.cargo
+            ./crates
+            fuzzSrc
+            ./bindings
+          ]
+        );
+
         src = lib.fileset.toSource {
           root = ./.;
-          fileset = lib.fileset.intersection (lib.fileset.fromSource (lib.sources.cleanSource ./.)) (
-            lib.fileset.unions [
-              ./Cargo.toml
-              ./Cargo.lock
-              ./Cargo.lock.msrv
-              ./clippy.toml
-              ./.typos.toml
-              ./rustfmt.toml
-              ./README.md
-              ./.cargo
-              ./crates
-              fuzzSrc
-              ./bindings
-            ]
-          );
+          fileset = srcFileset;
+        };
+
+        # The integration-test harness binaries do not compile the test targets.
+        # Keep changes confined to those tests from invalidating their cache keys.
+        itestHarnessSrc = lib.fileset.toSource {
+          root = ./.;
+          fileset = lib.fileset.difference srcFileset ./crates/cdk-integration-tests/tests;
         };
 
         # Source for MSRV builds - uses Cargo.lock.msrv with MSRV-compatible deps
@@ -296,6 +305,9 @@
           # Environment variables
           PROTOC = "${pkgs.protobuf}/bin/protoc";
           PROTOC_INCLUDE = "${pkgs.protobuf}/include";
+          # reqwest's rustls platform verifier loads the native CA store while
+          # building a client. Nix build sandboxes do not provide /etc/ssl.
+          SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
         };
 
         # Common args for MSRV builds - uses srcMsrv with pinned deps
@@ -808,7 +820,7 @@
             "-p cdk-fake-wallet -p cdk-http-client --no-default-features --features cdk-http-client/bitreq"
             "-p cdk-payment-processor"
             "-p cdk-ldk-node"
-            "-p cdk-npubcash -p cdk-http-client --no-default-features --features cdk-http-client/bitreq"
+            "-p cdk-nostr -p cdk-http-client --no-default-features --features cdk-nostr/npubcash,cdk-http-client/bitreq"
           ];
 
           "mintd-main" = [
@@ -879,6 +891,7 @@
             jq
             just
             protobuf
+            buf
             nixpkgs-fmt
             typos
             tokei
@@ -910,32 +923,33 @@
         regtestBuildInputs =
           (with pkgsUnstable; [
             lnd
-            # Apple Clang treats certain warnings as errors via -Werror, breaking
-            # the clightning build on macOS. These are fixed upstream in commit
-            # c22538ec (milestone v26.04) but not yet released. The override is
-            # Darwin-only so Linux builds still use the binary cache unmodified.
-            # TODO: Remove this override once clightning >= 26.04 lands in nixpkgs.
-            (
-              if pkgs.stdenv.hostPlatform.isDarwin then
-                (clightning.overrideAttrs (old: {
-                  env = (old.env or { }) // {
-                    NIX_CFLAGS_COMPILE =
-                      (old.env.NIX_CFLAGS_COMPILE or "")
-                      + " -Wno-error=uninitialized-const-pointer"
-                      + " -Wno-error=gnu-folding-constant"
-                      + " -Wno-error=default-const-init-var-unsafe"
-                      + " -Wno-error=sometimes-uninitialized";
-                  };
-                }))
-              else
-                clightning
-            )
+            # TODO: Drop this override once nixpkgs ships CLN >= 26.06.7.
+            (clightning.overrideAttrs (finalAttrs: old: {
+              version = "26.06.7";
+              src = fetchurl {
+                url = "https://github.com/ElementsProject/lightning/releases/download/v${finalAttrs.version}/clightning-v${finalAttrs.version}.zip";
+                hash = "sha256-sxPSB+U/Hi2/n7rHnVr0jDUuh0plM5C924G1J5WhU9w=";
+              };
+              # The release archive omits the executable bit on this doc helper.
+              postPatch = (old.postPatch or "") + ''
+                chmod +x devtools/blockreplace.py
+                patchShebangs devtools/blockreplace.py
+              '';
+            }))
             bitcoind
           ])
           ++ (with pkgs; [
             mprocs
             nostr-rs-relay
-          ]);
+          ])
+          # Integration-test cleanup starts the regtest process tree in a
+          # dedicated session on Linux and uses procps to catch any child that
+          # daemonizes out of that group. Bash job control is the portable
+          # fallback on Darwin, where these Linux tools are unavailable.
+          ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+            pkgs.procps
+            pkgs.util-linux
+          ];
 
         commonShellHook = ''
           # Needed for github ci
@@ -999,6 +1013,25 @@
           PGPASSWORD="${postgresConf.pgPassword}"
           PGDATABASE="${postgresConf.pgDatabase}"
 
+          start_postgres_server() {
+            # Override old clusters too: a .pg_data created before this fix can
+            # still contain an absolute Unix-socket directory that is no longer
+            # valid after moving the workspace.
+            if ! ${pkgs.postgresql_16}/bin/pg_ctl \
+              -D "$PGDATA" \
+              -l "$PGDATA/logfile" \
+              -o "-c unix_socket_directories=" \
+              start; then
+              echo "PostgreSQL failed to start. Server log:" >&2
+              if [ -f "$PGDATA/logfile" ]; then
+                cat "$PGDATA/logfile" >&2
+              else
+                echo "No PostgreSQL logfile was created." >&2
+              fi
+              return 1
+            fi
+          }
+
           # Stop any existing instance first
           if [ -d "$PGDATA" ] && ${pkgs.postgresql_16}/bin/pg_ctl -D "$PGDATA" status > /dev/null 2>&1; then
             echo "Stopping existing PostgreSQL instance..."
@@ -1012,10 +1045,12 @@
             # Configure PostgreSQL
             echo "listen_addresses = 'localhost'" >> "$PGDATA/postgresql.conf"
             echo "port = $PGPORT" >> "$PGDATA/postgresql.conf"
-            echo "unix_socket_directories = '$PGDATA'" >> "$PGDATA/postgresql.conf"
+            # All clients use TCP. Disabling Unix sockets avoids PostgreSQL's
+            # short Unix-socket pathname limit in deeply nested CI workspaces.
+            printf "unix_socket_directories = '%s'\n" "" >> "$PGDATA/postgresql.conf"
 
             # Start temporarily to create user and database
-            ${pkgs.postgresql_16}/bin/pg_ctl -D "$PGDATA" -l "$PGDATA/logfile" start
+            start_postgres_server
             sleep 2
 
             # Create user and database
@@ -1028,7 +1063,7 @@
           fi
 
           echo "Starting PostgreSQL on port $PGPORT..."
-          ${pkgs.postgresql_16}/bin/pg_ctl -D "$PGDATA" -l "$PGDATA/logfile" start
+          start_postgres_server
           echo "PostgreSQL started. Connection URL: postgresql://$PGUSER:$PGPASSWORD@localhost:$PGPORT/$PGDATABASE"
         '';
 
@@ -1352,6 +1387,7 @@
             commonCraneArgs
             // {
               pname = "cdk-itest-${name}";
+              src = itestHarnessSrc;
               cargoArtifacts = workspaceDeps;
               inherit cargoExtraArgs;
               # Only install the specific binary, not the entire workspace
@@ -1534,6 +1570,46 @@
               exampleChecks
           ))
           // {
+            # PRs run the default unit suite once; alternate feature combinations
+            # remain in the full matrix. PostgreSQL has a separate service job.
+            pr-unit-tests = craneLib.mkCargoDerivation (
+              commonCraneArgs
+              // {
+                pname = "cdk-pr-unit-tests";
+                cargoArtifacts = workspaceDeps;
+                buildPhaseCargoCommand = ''
+                  cargo test --lib --workspace --exclude cdk-postgres --exclude cdk-integration-tests
+                  cargo test --bins -p cdk-cli
+                  cargo test --lib -p cdk-nostr --all-features
+                '';
+                doCheck = false;
+                installPhaseCommand = "mkdir -p $out";
+                doInstallCargoArtifacts = false;
+              }
+            );
+
+            # Keep optional features and minimal package builds covered on PRs.
+            # The full matrix already covers these configurations separately.
+            pr-feature-tests = craneLib.mkCargoDerivation (
+              commonCraneArgs
+              // {
+                pname = "cdk-pr-feature-tests";
+                cargoArtifacts = workspaceDeps;
+                buildPhaseCargoCommand = ''
+                  cargo test --lib -p cdk-sqlite --features sqlcipher
+                  cargo test --bins -p cdk-cli --features redb
+                  cargo check -p cdk-mintd --features redis
+                  cargo test --lib -p cdk-common --no-default-features --features wallet
+                  cargo test --lib -p cdk-common --no-default-features --features mint
+                  cargo test --lib -p cdk-sql-common --no-default-features --features wallet
+                  cargo test --lib -p cdk-sql-common --no-default-features --features mint
+                '';
+                doCheck = false;
+                installPhaseCommand = "mkdir -p $out";
+                doInstallCargoArtifacts = false;
+              }
+            );
+
             # Workspace-wide all-targets clippy check
             workspace-clippy-all-targets = workspaceClippyAllTargets;
 
@@ -1552,24 +1628,6 @@
             # devShells
             msrv = pkgs.mkShell (
               {
-                shellHook = "
-                  cargo update
-                  cargo update home --precise 0.5.11
-                  cargo update typed-index-collections --precise 3.3.0
-                  cargo update simple_asn1 --precise 0.6.3
-                  cargo update cookie_store --precise 0.22.0
-                  cargo update serde_with --precise 3.17.0
-                  cargo update time --precise 0.3.44
-                  cargo update unicode-segmentation --precise 1.12.0
-                  cargo update idna_adapter --precise 1.2.1
-                  cargo update icu_normalizer --precise 2.0.1
-                  cargo update icu_provider --precise 2.1.1
-                  cargo update icu_locale_core --precise 2.1.1
-                  cargo update tonic-prost@0.14.6 --precise 0.14.5
-                  cargo update tonic-prost-build@0.14.6 --precise 0.14.5
-                  cargo update tonic-build@0.14.6 --precise 0.14.5
-                  cargo update tonic@0.14.6 --precise 0.14.5
-               ";
                 buildInputs = baseBuildInputs ++ [ msrv_toolchain ];
                 inherit nativeBuildInputs;
               }
@@ -1726,7 +1784,7 @@
                 ndkHome = "${androidSdk}/libexec/android-sdk/ndk/27.0.12077973";
                 toolchainBin = "${ndkHome}/toolchains/llvm/prebuilt/linux-x86_64/bin";
                 androidRustFlags = "-C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wl,-z,common-page-size=16384";
-                buildToolchain = pkgs.rust-bin.stable."1.97.1".default.override {
+                buildToolchain = pkgs.rust-bin.stable."1.99.0".default.override {
                   targets = [
                     "aarch64-linux-android"
                     "armv7-linux-androideabi"

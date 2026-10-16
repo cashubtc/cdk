@@ -229,11 +229,11 @@ impl Mint {
     pub(super) async fn melt_quote_lock(&self, quote_id: &QuoteId) -> Arc<Mutex<()>> {
         let mut locks = self.melt_quote_locks.lock().await;
 
+        locks.retain(|_, lock| lock.strong_count() > 0);
         if let Some(lock) = locks.get(quote_id).and_then(Weak::upgrade) {
             return lock;
         }
 
-        locks.retain(|_, lock| lock.strong_count() > 0);
         let lock = Arc::new(Mutex::new(()));
         locks.insert(quote_id.clone(), Arc::downgrade(&lock));
         lock
@@ -749,7 +749,7 @@ impl Mint {
 
         let mint_info: MintInfo = serde_json::from_slice(&mint_info)?;
 
-        let mint_info = if let Some(auth_db) = self.auth_localstore.as_ref() {
+        let mut mint_info = if let Some(auth_db) = self.auth_localstore.as_ref() {
             let mut mint_info = mint_info;
             let auth_endpoints = auth_db.get_auth_for_endpoints().await?;
 
@@ -781,6 +781,11 @@ impl Mint {
         } else {
             mint_info
         };
+
+        // Derived from the running limits rather than stored config, so it cannot drift from what
+        // the endpoints actually enforce. One figure for both, so a wallet respecting it trips
+        // neither cap.
+        mint_info.max_array_length = Some(self.max_inputs.min(self.max_outputs) as u64);
 
         Ok(mint_info)
     }
@@ -1109,7 +1114,7 @@ impl Mint {
 
         let payment_response = mint.check_melt_payment_status(&quote).await?;
 
-        saga_recovery::process_melt_saga_outcome(
+        saga_recovery::process_melt_saga_failure_event(
             &saga,
             &mut quote,
             &payment_response,
@@ -1142,11 +1147,12 @@ impl Mint {
             .get_mint_quote_by_request_lookup_id(&wait_payment_response.payment_identifier)
             .await
         {
+            let previous_state = mint_quote.state();
             let notify =
                 Self::handle_mint_quote_payment(&mut tx, &mut mint_quote, wait_payment_response)
                     .await?;
             if notify {
-                Some((mint_quote.clone(), mint_quote.amount_paid()))
+                Some((mint_quote.clone(), mint_quote.amount_paid(), previous_state))
             } else {
                 None
             }
@@ -1162,7 +1168,19 @@ impl Mint {
 
         // Publish notification AFTER transaction commits so subscribers
         // see the committed state when they query.
-        if let Some((quote, amount_paid)) = should_notify {
+        if let Some((quote, amount_paid, previous_state)) = should_notify {
+            tracing::info!(
+                quote_id = %quote.id,
+                method = %quote.payment_method,
+                unit = %quote.unit,
+                request_lookup_id = %quote.request_lookup_id,
+                previous_state = %previous_state,
+                new_state = %quote.state(),
+                amount_paid = %amount_paid,
+                amount_issued = %quote.amount_issued(),
+                amount_mintable = %quote.amount_mintable(),
+                "mint quote payment notification committed",
+            );
             pubsub_manager.mint_quote_payment(&quote, amount_paid);
         }
 
@@ -1195,7 +1213,7 @@ impl Mint {
             if mint_quote.payment_method.is_bolt11()
                 && (quote_state == MintQuoteState::Issued || quote_state == MintQuoteState::Paid)
             {
-                tracing::info!("Received payment notification for already issued quote.");
+                tracing::debug!("Received payment notification for already issued quote.");
             } else {
                 let payment_amount_quote_unit: Amount<CurrencyUnit> = wait_payment_response
                     .payment_amount
@@ -1222,7 +1240,7 @@ impl Mint {
                         return Ok(true);
                     }
                     Err(Error::DuplicatePaymentId) => {
-                        tracing::info!(
+                        tracing::debug!(
                             "Payment ID {} already processed (caught race condition)",
                             wait_payment_response.payment_id
                         );
@@ -1232,7 +1250,7 @@ impl Mint {
                 }
             }
         } else {
-            tracing::info!("Received payment notification for already seen payment.");
+            tracing::debug!("Received payment notification for already seen payment.");
         }
 
         Ok(false)
@@ -1351,6 +1369,13 @@ impl Mint {
         let result = async {
             let output_len = request.outputs.len();
 
+            if output_len == 0 {
+                return Ok(RestoreResponse {
+                    outputs: Vec::new(),
+                    signatures: Vec::new(),
+                });
+            }
+
             // Check max outputs limit
             if output_len > self.max_outputs {
                 tracing::warn!(
@@ -1391,15 +1416,6 @@ impl Mint {
                 request.outputs.into_iter().zip(blinded_signatures)
             {
                 if let Some(blinded_signature) = blinded_signature {
-                    if let Some(keyset_info) = self.get_keyset_info(&blinded_signature.keyset_id) {
-                        if keyset_info.is_expired() {
-                            tracing::debug!(
-                                "Skipping restore for expired keyset {}",
-                                blinded_signature.keyset_id
-                            );
-                            continue;
-                        }
-                    }
                     outputs.push(blinded_message);
                     signatures.push(blinded_signature);
                 }
@@ -2236,6 +2252,91 @@ mod tests {
             .get_keyset_info(&keyset_info.id)
             .expect("keyset should be found");
         assert_eq!(stored.final_expiry, Some(expiry));
+    }
+
+    #[tokio::test]
+    async fn restore_with_empty_keyset_cache() {
+        let mock = Arc::new(MockSignatory::new(SignatoryKeysets {
+            pubkey: SecretKey::generate().public_key(),
+            keysets: Vec::new(),
+        }));
+        let mint = create_mint_with_signatory(mock).await;
+
+        let keyset_id = Id::from_str("001711afb1de20cb").unwrap();
+        let output = BlindedMessage::new(
+            Amount::from(1),
+            keyset_id,
+            SecretKey::generate().public_key(),
+        );
+        let signature = BlindSignature {
+            amount: Amount::from(1),
+            keyset_id,
+            c: SecretKey::generate().public_key(),
+            dleq: None,
+        };
+
+        let mut tx = mint.localstore.begin_transaction().await.unwrap();
+        tx.add_blind_signatures(
+            &[output.blinded_secret],
+            std::slice::from_ref(&signature),
+            None,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        mint.start()
+            .await
+            .expect("mint should start without keysets");
+        assert!(mint.keysets.load().is_empty());
+
+        let response = mint
+            .restore(RestoreRequest {
+                outputs: vec![output.clone()],
+            })
+            .await
+            .expect("restore should succeed without cached keysets");
+
+        mint.stop().await.expect("mint should stop");
+
+        assert!(
+            !response.signatures.is_empty(),
+            "Restore should return stored signatures without cached keysets"
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_empty_outputs() {
+        let mint = create_test_mint().await.unwrap();
+
+        let response = mint
+            .restore(RestoreRequest {
+                outputs: Vec::new(),
+            })
+            .await
+            .expect("empty restore should succeed");
+
+        assert!(response.outputs.is_empty());
+        assert!(response.signatures.is_empty());
+    }
+
+    #[tokio::test]
+    async fn melt_quote_lock_prunes_expired_entries() {
+        let mint = create_test_mint().await.unwrap();
+        let expired_quote_id = QuoteId::new();
+        let active_quote_id = QuoteId::new();
+
+        let expired_lock = mint.melt_quote_lock(&expired_quote_id).await;
+        let active_lock = mint.melt_quote_lock(&active_quote_id).await;
+        drop(expired_lock);
+
+        let active_lock_again = mint.melt_quote_lock(&active_quote_id).await;
+
+        assert!(Arc::ptr_eq(&active_lock, &active_lock_again));
+
+        let locks = mint.melt_quote_locks.lock().await;
+        assert!(!locks.contains_key(&expired_quote_id));
+        assert!(locks.contains_key(&active_quote_id));
     }
 
     #[tokio::test]

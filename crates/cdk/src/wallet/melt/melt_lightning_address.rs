@@ -46,7 +46,7 @@ impl Wallet {
     /// # Ok(())
     /// # }
     /// ```
-    #[instrument(skip(self, amount_msat), fields(lightning_address = %lightning_address))]
+    #[instrument(skip(self, amount_msat, lightning_address))]
     pub async fn melt_lightning_address_quote(
         &self,
         lightning_address: &str,
@@ -56,15 +56,11 @@ impl Wallet {
 
         // Parse the Lightning address
         let ln_address = LightningAddress::from_str(lightning_address).map_err(|e| {
-            tracing::error!(
-                "Failed to parse Lightning address '{}': {}",
-                lightning_address,
-                e
-            );
+            tracing::error!("Failed to parse Lightning address: {}", e);
             Error::LightningAddressParse(e.to_string())
         })?;
 
-        tracing::debug!("Resolving Lightning address: {}", ln_address);
+        tracing::debug!("Resolving Lightning address");
 
         // Request an invoice from the Lightning address service
         let invoice = ln_address
@@ -77,11 +73,6 @@ impl Wallet {
                 );
                 Error::LightningAddressRequest(e.to_string())
             })?;
-
-        tracing::debug!(
-            "Received invoice from Lightning address service: {}",
-            invoice
-        );
 
         // Create a melt quote for the invoice using the existing bolt11 functionality
         // The invoice from LNURL already contains the amount, so we don't need amountless options
@@ -98,7 +89,7 @@ mod tests {
     use super::*;
     use crate::mint_url::MintUrl;
     use crate::nuts::{CurrencyUnit, MeltQuoteBolt11Response, MeltQuoteState, PaymentMethod};
-    use crate::wallet::test_utils::MockMintConnector;
+    use crate::wallet::test_utils::{MockMintConnector, TraceWriter};
     use crate::wallet::WalletBuilder;
 
     const INVOICE_1000_SATS: &str = "lnbc10u1p3xtswzsp5a0pjcg5t042q3lk4mvjqv3x3ea8m9w2grswlxqk6dwlj6x4spphsdqqcqzzsxqyz5vqsp5f4w7aw8g0n7v9j4hrjz8fll2gk7wgpk9v7s0x3t8xmtt4f25mh9qxpqysgqfeh44plf5n2m4gq2a4v0y5ngd8lgfz2g06kknk2pu4v772ma3xjxfugm6mh8vk0j9j2qlenhtj5w0q0td5j0g2vm0r6zv0v2fsz0u4qqr28j6g";
@@ -119,6 +110,25 @@ mod tests {
             .shared_client(connector)
             .build()
             .expect("wallet builds")
+    }
+
+    #[tokio::test]
+    async fn lightning_recipient_is_omitted_from_traces() {
+        let recipient = "private-recipient-marker";
+        let wallet = test_wallet_with_connector(Arc::new(MockMintConnector::new())).await;
+        let capture = TraceWriter::default();
+        let subscriber = capture.subscriber();
+        let guard = tracing::subscriber::set_default(subscriber);
+
+        let result = wallet
+            .melt_lightning_address_quote(recipient, Amount::from(1_000))
+            .await;
+
+        drop(guard);
+        let trace = capture.output();
+        assert!(result.is_err());
+        assert!(trace.contains("melt_lightning_address_quote"));
+        assert!(!trace.contains(recipient));
     }
 
     #[tokio::test]

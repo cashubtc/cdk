@@ -1235,7 +1235,7 @@ mod tests {
 
     #[test]
     fn test_nprofile_encoding_decoding() {
-        use nostr_sdk::prelude::*;
+        use nostr::prelude::*;
 
         let keys = Keys::generate();
         let pubkey_bytes = keys.public_key().to_bytes().to_vec();
@@ -1258,7 +1258,7 @@ mod tests {
 
     #[test]
     fn test_nprofile_matches_nostr_crate() {
-        use nostr_sdk::prelude::*;
+        use nostr::prelude::*;
 
         let keys = Keys::generate();
         let nostr_pubkey = keys.public_key();
@@ -1306,7 +1306,7 @@ mod tests {
 
     #[test]
     fn test_nprofile_empty_relays_matches_nostr_crate() {
-        use nostr_sdk::prelude::*;
+        use nostr::prelude::*;
 
         let keys = Keys::generate();
         let nostr_pubkey = keys.public_key();
@@ -1340,7 +1340,7 @@ mod tests {
 
     #[test]
     fn nut_18_payment_request() {
-        use nostr_sdk::prelude::*;
+        use nostr::prelude::*;
         let nprofile = "nprofile1qy28wumn8ghj7un9d3shjtnyv9kh2uewd9hsz9mhwden5te0wfjkccte9curxven9eehqctrv5hszrthwden5te0dehhxtnvdakqqgydaqy7curk439ykptkysv7udhdhu68sucm295akqefdehkf0d495cwunl5";
 
         let nostr_decoded =

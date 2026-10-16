@@ -15,6 +15,13 @@ use crate::MintQuoteBolt12Response;
 
 pub mod ws;
 
+/// Maximum length in bytes of a NUT-17 subscription ID.
+pub const MAX_SUBSCRIPTION_ID_LEN: usize = 128;
+/// Maximum length in bytes of a NUT-17 custom subscription kind.
+pub const MAX_CUSTOM_KIND_LEN: usize = 64;
+/// Maximum length in bytes of a NUT-17 subscription filter.
+pub const MAX_FILTER_LEN: usize = 256;
+
 /// Subscription Parameter according to the standard
 #[derive(Debug, Clone, Serialize, Eq, PartialEq, Hash, Deserialize)]
 #[serde(bound = "I: DeserializeOwned + Serialize")]
@@ -456,7 +463,15 @@ impl<'de> Deserialize<'de> for Kind {
             "onchain_mint_quote" => Kind::OnchainMintQuote,
             "onchain_melt_quote" => Kind::OnchainMeltQuote,
             "proof_state" => Kind::ProofState,
-            custom => Kind::Custom(custom.to_string()),
+            custom => {
+                if custom.len() > MAX_CUSTOM_KIND_LEN {
+                    return Err(D::Error::custom(format!(
+                        "custom subscription kind exceeds {MAX_CUSTOM_KIND_LEN} bytes"
+                    )));
+                }
+
+                Kind::Custom(custom.to_string())
+            }
         })
     }
 }
@@ -486,6 +501,25 @@ mod tests {
     use crate::nuts::nut01::PublicKey;
     use crate::nuts::{MeltQuoteState, MintQuoteState};
     use crate::Amount;
+
+    #[test]
+    fn custom_kind_length_is_bounded_during_deserialization() {
+        let max_length_kind = "a".repeat(MAX_CUSTOM_KIND_LEN);
+        assert_eq!(
+            serde_json::from_value::<Kind>(serde_json::json!(max_length_kind.clone()))
+                .expect("maximum-length custom kind"),
+            Kind::Custom(max_length_kind)
+        );
+
+        let oversized_kind = "a".repeat(MAX_CUSTOM_KIND_LEN + 1);
+        assert!(serde_json::from_value::<Kind>(serde_json::json!(oversized_kind)).is_err());
+
+        assert_eq!(
+            serde_json::from_value::<Kind>(serde_json::json!("bolt11_mint_quote"))
+                .expect("known kind"),
+            Kind::Bolt11MintQuote
+        );
+    }
 
     #[test]
     fn notification_payload_onchain_mint_roundtrip() {

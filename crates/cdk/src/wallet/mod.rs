@@ -32,8 +32,12 @@ use crate::nuts::{
     nut10, CurrencyUnit, Id, Keys, MintInfo, MintQuoteState, PreMintSecrets, Proofs,
     RestoreRequest, SpendingConditions, State,
 };
+use crate::wallet::blind_signature::{
+    validate_mint_response_signatures, SignatureAmountValidation,
+};
 use crate::wallet::mint_metadata_cache::MintMetadataCache;
 use crate::wallet::p2pk::{P2PK_ACCOUNT, P2PK_PURPOSE};
+use crate::wallet::util::escape_log_value;
 use crate::{Amount, OidcClient};
 
 mod auth;
@@ -83,7 +87,8 @@ pub use bip321::{
 pub use builder::WalletBuilder;
 pub use cdk_common::wallet as types;
 pub use cdk_common::wallet::{
-    NUT13Options, P2PKLockedProofSendMode, ReceiveOptions, SendMemo, SendOptions,
+    MeltPrepareOptions, NUT13Options, P2PKLockedProofSendMode, ReceiveOptions, SendMemo,
+    SendOptions,
 };
 pub use melt::{MeltConfirmOptions, MeltOutcome, PendingMelt, PreparedMelt};
 pub use mint_connector::transport::Transport as HttpTransport;
@@ -98,9 +103,9 @@ pub use nostr_backup::{BackupOptions, BackupResult, RestoreOptions, RestoreResul
 pub use npubcash::derive_npubcash_secret_key_from_seed;
 #[cfg(feature = "nwc")]
 pub use nwc::{derive_nwc_secret_key_from_seed, WalletNwcHandler};
-pub use payment_request::CreateRequestParams;
 #[cfg(feature = "nostr")]
 pub use payment_request::NostrWaitInfo;
+pub use payment_request::{CreateRequestParams, PayRequestOptions, PreparedPaymentRequest};
 pub use recovery::RecoveryReport;
 pub use send::PreparedSend;
 #[cfg(all(feature = "npubcash", not(target_arch = "wasm32")))]
@@ -154,7 +159,7 @@ pub struct Wallet {
     auth_wallet: Arc<TokioRwLock<Option<AuthWallet>>>,
     auth_connector: Option<Arc<dyn AuthMintConnector + Send + Sync>>,
     #[cfg(feature = "npubcash")]
-    npubcash_client: Arc<TokioRwLock<Option<Arc<cdk_npubcash::NpubCashClient>>>>,
+    npubcash_client: Arc<TokioRwLock<Option<Arc<cdk_nostr::npubcash::NpubCashClient>>>>,
     seed: [u8; 64],
     client: Arc<dyn MintConnector + Send + Sync>,
     subscription: SubscriptionManager,
@@ -471,7 +476,11 @@ impl Wallet {
             .await?
             .fee();
 
-        let fee = (input_fee_ppk * count).div_ceil(1000);
+        let fee = input_fee_ppk
+            .checked_mul(count)
+            .and_then(|product| product.checked_add(999))
+            .map(|sum| sum / 1000)
+            .ok_or(Error::AmountOverflow)?;
 
         Ok(Amount::from(fee))
     }
@@ -653,7 +662,11 @@ impl Wallet {
 
         for amount in amounts_needed_refill {
             let values_sum = Amount::try_sum(values.clone().into_iter())?;
-            if values_sum + amount <= change_amount {
+            if values_sum
+                .checked_add(amount)
+                .ok_or(Error::AmountOverflow)?
+                <= change_amount
+            {
                 values.push(amount);
             }
         }
@@ -722,6 +735,19 @@ impl Wallet {
 
                 let response = self.client.post_restore(restore_request).await?;
 
+                if response.outputs.len() != response.signatures.len() {
+                    tracing::warn!(
+                        mint_url = %escape_log_value(&self.mint_url),
+                        operation = "restore",
+                        outputs = response.outputs.len(),
+                        signatures = response.signatures.len(),
+                        "Restore response outputs and signatures have different lengths"
+                    );
+                    return Err(Error::InvalidMintResponse(
+                        "restore outputs and signatures must have equal lengths".to_string(),
+                    ));
+                }
+
                 if response.signatures.is_empty() {
                     empty_batch += 1;
                     start_counter = start_counter.saturating_add(batch_size);
@@ -760,6 +786,13 @@ impl Wallet {
                 // the response outputs and premint secrets should be the same after filtering
                 // blinded messages the mint did not have signatures for
                 if response.outputs.len() != matched_secrets.len() {
+                    tracing::warn!(
+                        mint_url = %escape_log_value(&self.mint_url),
+                        operation = "restore",
+                        outputs = response.outputs.len(),
+                        matched_secrets = matched_secrets.len(),
+                        "Restore response outputs do not match requested secrets"
+                    );
                     return Err(Error::InvalidMintResponse(format!(
                         "restore response outputs ({}) does not match premint secrets ({})",
                         response.outputs.len(),
@@ -767,13 +800,30 @@ impl Wallet {
                     )));
                 }
 
+                let signatures = matched_secrets
+                    .iter()
+                    .map(|(_, _, sig)| sig.clone())
+                    .collect::<Vec<_>>();
+                validate_mint_response_signatures(
+                    self,
+                    &signatures,
+                    matched_secrets.iter().map(|(_, p, _)| &p.blinded_message),
+                    SignatureAmountValidation::AllowZeroAmountPlaceholder,
+                )
+                .await
+                .inspect_err(|err| {
+                    tracing::warn!(
+                        mint_url = %escape_log_value(&self.mint_url),
+                        operation = "restore",
+                        error = %escape_log_value(err),
+                        "Mint response signature validation failed"
+                    );
+                })?;
+
                 // Extract signatures, rs, and secrets in matching order
                 // Each tuple (idx, premint, signature) ensures correct pairing
                 let proofs = construct_proofs(
-                    matched_secrets
-                        .iter()
-                        .map(|(_, _, sig)| sig.clone())
-                        .collect(),
+                    signatures,
                     matched_secrets
                         .iter()
                         .map(|(_, p, _)| p.r.clone())
@@ -792,23 +842,38 @@ impl Wallet {
                 let (unspent_proofs, updated_restored) = proofs
                     .into_iter()
                     .zip(states)
-                    .filter_map(|(p, state)| {
+                    .enumerate()
+                    .filter_map(|(index, (p, state))| {
                         ProofInfo::new(p, self.mint_url.clone(), state.state, keyset.unit.clone())
                             .ok()
+                            .map(|proof_info| {
+                                proof_info.with_derivation_index(
+                                    start_counter + matched_secrets[index].0 as u32,
+                                )
+                            })
                     })
                     .try_fold(
                         (Vec::new(), restored_result),
                         |(mut proofs, mut restored_result), proof_info| {
                             match proof_info.state {
                                 State::Spent => {
-                                    restored_result.spent += proof_info.proof.amount;
+                                    restored_result.spent = restored_result
+                                        .spent
+                                        .checked_add(proof_info.proof.amount)
+                                        .ok_or(Error::AmountOverflow)?;
                                 }
-                                State::Unspent =>  {
-                                    restored_result.unspent += proof_info.proof.amount;
+                                State::Unspent => {
+                                    restored_result.unspent = restored_result
+                                        .unspent
+                                        .checked_add(proof_info.proof.amount)
+                                        .ok_or(Error::AmountOverflow)?;
                                     proofs.push(proof_info);
                                 }
                                 State::Pending => {
-                                    restored_result.pending += proof_info.proof.amount;
+                                    restored_result.pending = restored_result
+                                        .pending
+                                        .checked_add(proof_info.proof.amount)
+                                        .ok_or(Error::AmountOverflow)?;
                                     proofs.push(proof_info);
                                 }
                                 _ => {
@@ -1139,6 +1204,7 @@ impl Drop for Wallet {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::sync::Mutex;
 
     use async_trait::async_trait;
@@ -1259,18 +1325,21 @@ mod tests {
             secret: secret1.clone(),
             r: r1.clone(),
             amount: Amount::from(1),
+            derivation_index: None,
         };
         let premint2 = PreMint {
             blinded_message: BlindedMessage::new(Amount::from(2), keyset_id, blinded2),
             secret: secret2.clone(),
             r: r2.clone(),
             amount: Amount::from(2),
+            derivation_index: None,
         };
         let premint3 = PreMint {
             blinded_message: BlindedMessage::new(Amount::from(4), keyset_id, blinded3),
             secret: secret3.clone(),
             r: r3.clone(),
             amount: Amount::from(4),
+            derivation_index: None,
         };
 
         let premint_secrets = PreMintSecrets {
@@ -1357,18 +1426,21 @@ mod tests {
             secret: secret1.clone(),
             r: r1.clone(),
             amount: Amount::from(1),
+            derivation_index: None,
         };
         let premint2 = PreMint {
             blinded_message: BlindedMessage::new(Amount::from(2), keyset_id, blinded2),
             secret: secret2.clone(),
             r: r2.clone(),
             amount: Amount::from(2),
+            derivation_index: None,
         };
         let premint3 = PreMint {
             blinded_message: BlindedMessage::new(Amount::from(4), keyset_id, blinded3),
             secret: secret3.clone(),
             r: r3.clone(),
             amount: Amount::from(4),
+            derivation_index: None,
         };
 
         let premint_secrets = PreMintSecrets {
@@ -1455,18 +1527,21 @@ mod tests {
             secret: secret1.clone(),
             r: r1.clone(),
             amount: Amount::from(1),
+            derivation_index: None,
         };
         let premint2 = PreMint {
             blinded_message: BlindedMessage::new(Amount::from(2), keyset_id, blinded2),
             secret: secret2.clone(),
             r: r2.clone(),
             amount: Amount::from(2),
+            derivation_index: None,
         };
         let premint3 = PreMint {
             blinded_message: BlindedMessage::new(Amount::from(4), keyset_id, blinded3),
             secret: secret3.clone(),
             r: r3.clone(),
             amount: Amount::from(4),
+            derivation_index: None,
         };
 
         let premint_secrets = PreMintSecrets {
@@ -1610,5 +1685,184 @@ mod tests {
         assert!(wallet.auth_wallet.read().await.is_some());
         assert_eq!(*keysets_calls.lock().expect("lock"), 1);
         assert_eq!(*keyset_calls.lock().expect("lock"), 1);
+    }
+
+    #[tokio::test]
+    async fn determine_split_target_values_rejects_amount_overflow() {
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock, MockMintConnector,
+        };
+
+        let db = create_test_db().await;
+        let mock_client = Arc::new(MockMintConnector::new());
+        let mut wallet = create_test_wallet_with_mock(db, mock_client).await;
+        wallet.set_target_proof_count(1);
+        let fee_and_amounts = FeeAndAmounts::from((0, vec![u64::MAX - 1, u64::MAX]));
+
+        let result = wallet
+            .determine_split_target_values(Amount::from(u64::MAX), &fee_and_amounts)
+            .await;
+
+        assert!(
+            matches!(result, Err(Error::AmountOverflow)),
+            "expected amount overflow, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_rejects_invalid_returned_signatures() {
+        use crate::nuts::nut12::BlindSignatureDleq;
+        use crate::nuts::RestoreResponse;
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock_seed, test_keyset_id, test_mint_info,
+            MockMintConnector,
+        };
+
+        for case in ["keyset", "dleq", "length"] {
+            let seed = [7; 64];
+            let keyset_id = test_keyset_id();
+            let premint = PreMintSecrets::restore_batch(keyset_id, &seed, 0, 1).unwrap();
+            let mut signature = BlindSignature {
+                amount: Amount::from(1),
+                keyset_id,
+                c: SecretKey::generate().public_key(),
+                dleq: None,
+            };
+            match case {
+                "keyset" => signature.keyset_id = Id::from_str("0011223344556677").unwrap(),
+                "dleq" => {
+                    signature.dleq = Some(BlindSignatureDleq {
+                        e: SecretKey::generate(),
+                        s: SecretKey::generate(),
+                    });
+                }
+                _ => (),
+            }
+            let db = create_test_db().await;
+            let client = Arc::new(MockMintConnector::new());
+            client.reset_default_mint_state();
+            let mut mint_info = test_mint_info();
+            mint_info.time = None;
+            client.set_mint_info_response(Ok(mint_info));
+            client._set_restore_response(Ok(RestoreResponse {
+                outputs: premint.blinded_messages(),
+                signatures: if case == "length" {
+                    vec![]
+                } else {
+                    vec![signature]
+                },
+            }));
+            let wallet = create_test_wallet_with_mock_seed(db, client, seed).await;
+            let result = wallet
+                .restore_with_opts(NUT13Options::new(1, 1).unwrap())
+                .await;
+            match case {
+                "dleq" => assert!(
+                    matches!(result, Err(Error::CouldNotVerifyDleq)),
+                    "{result:?}"
+                ),
+                _ => assert!(
+                    matches!(&result, Err(Error::InvalidMintResponse(message)) if message.contains(case)),
+                    "{case}: {result:?}"
+                ),
+            }
+            assert!(wallet.get_unspent_proofs().await.unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn restore_rejects_unspent_amount_overflow() {
+        use crate::nuts::{CheckStateResponse, Keys, ProofState, RestoreResponse};
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock_seed, test_mint_info, MockMintConnector,
+        };
+
+        let seed = [7; 64];
+        let max_key = SecretKey::from_slice(&[1; 32]).expect("valid secret key");
+        let one_key = SecretKey::from_slice(&[2; 32]).expect("valid secret key");
+        let keys = Keys::new(BTreeMap::from([
+            (Amount::from(1), one_key.public_key()),
+            (Amount::from(u64::MAX), max_key.public_key()),
+        ]));
+        let keyset_id = Id::v1_from_keys(&keys);
+        let keyset = KeySet {
+            id: keyset_id,
+            unit: CurrencyUnit::Sat,
+            active: Some(true),
+            keys,
+            input_fee_ppk: 0,
+            final_expiry: None,
+        };
+        let premint_secrets = PreMintSecrets::restore_batch(keyset_id, &seed, 0, 2)
+            .expect("restore secrets should derive");
+        let outputs = premint_secrets.blinded_messages();
+        let signatures = vec![
+            BlindSignature {
+                amount: Amount::from(u64::MAX),
+                keyset_id,
+                c: crate::dhke::sign_message(&max_key, &outputs[0].blinded_secret)
+                    .expect("blind signature should be valid"),
+                dleq: None,
+            },
+            BlindSignature {
+                amount: Amount::from(1),
+                keyset_id,
+                c: crate::dhke::sign_message(&one_key, &outputs[1].blinded_secret)
+                    .expect("blind signature should be valid"),
+                dleq: None,
+            },
+        ];
+        let states = premint_secrets
+            .secrets
+            .iter()
+            .map(|premint| {
+                ProofState::from((
+                    crate::dhke::hash_to_curve(premint.secret.as_bytes())
+                        .expect("proof Y should derive"),
+                    State::Unspent,
+                ))
+            })
+            .collect();
+
+        let db = create_test_db().await;
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.set_active_keyset(keyset);
+        let mut mint_info = test_mint_info();
+        mint_info.time = None;
+        mock_client.set_mint_info_response(Ok(mint_info));
+        mock_client._set_restore_response(Ok(RestoreResponse {
+            outputs,
+            signatures,
+        }));
+        mock_client.set_check_state_response(Ok(CheckStateResponse { states }));
+        let wallet = create_test_wallet_with_mock_seed(db, mock_client, seed).await;
+
+        let result = wallet
+            .restore_with_opts(NUT13Options::new(2, 1).expect("valid restore options"))
+            .await;
+
+        assert!(
+            matches!(result, Err(Error::AmountOverflow)),
+            "expected amount overflow, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_keyset_count_fee_rejects_amount_overflow() {
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock, test_keyset, MockMintConnector,
+        };
+
+        let db = create_test_db().await;
+        let mock_client = Arc::new(MockMintConnector::new());
+        let mut keyset = test_keyset();
+        keyset.input_fee_ppk = u64::MAX / 2;
+        let keyset_id = keyset.id;
+        mock_client.set_active_keyset(keyset);
+        let wallet = create_test_wallet_with_mock(db, mock_client).await;
+
+        let result = wallet.get_keyset_count_fee(&keyset_id, 3).await;
+
+        assert!(matches!(result, Err(Error::AmountOverflow)));
     }
 }

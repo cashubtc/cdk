@@ -12,7 +12,8 @@ use std::sync::Arc;
 
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nut17::ws::{
-    RawWsMessageOrResponse, WsMethodRequest, WsRequest, WsUnsubscribeRequest,
+    RawNotificationInner, RawWsMessageOrResponse, WsMethodRequest, WsRequest, WsUnsubscribeRequest,
+    JSON_RPC_VERSION,
 };
 use cdk_common::nut17::{deserialize_payload_for_kind, Kind, NotificationId};
 use cdk_common::parking_lot::RwLock;
@@ -28,6 +29,7 @@ use uuid::Uuid;
 
 use crate::event::MintEvent;
 use crate::mint_url::MintUrl;
+use crate::wallet::util::escape_log_value;
 use crate::wallet::MintConnector;
 
 /// Notification Payload
@@ -602,71 +604,114 @@ async fn stream_client(
                         ));
                     }
                 };
-                let msg = match serde_json::from_str::<RawWsMessageOrResponse<String>>(&msg) {
-                    Ok(msg) => msg,
-                    Err(_) => continue,
-                };
+                match handle_server_message(&msg, &sub_id_to_kind, &mut pending_requests) {
+                    ServerMessageAction::Ignore => continue,
+                    ServerMessageAction::Deliver(payload) => reply_to.send(*payload),
+                    ServerMessageAction::Fail(err) => return Err(err),
+                }
+            }
+        }
+    }
+}
 
-                match msg {
-                    RawWsMessageOrResponse::Notification(ref payload) => {
-                        let Some(kind) = sub_id_to_kind.get(&payload.params.sub_id) else {
-                            tracing::warn!(
-                                "Received websocket notification for unknown subId {}",
-                                payload.params.sub_id
-                            );
-                            continue;
-                        };
+enum ServerMessageAction {
+    Deliver(Box<NotificationPayload>),
+    Ignore,
+    Fail(PubsubError),
+}
 
-                        if let Some(payload) = decode_notification_payload_for_stream(
-                            kind,
-                            &payload.params.sub_id,
-                            payload.params.payload.clone(),
-                        ) {
-                            reply_to.send(payload);
-                        }
-                    }
-                    RawWsMessageOrResponse::Response(response) => {
-                        let Some(request) = pending_requests.remove(&response.id) else {
-                            tracing::warn!(
-                                "Received websocket response for unknown request id {}",
-                                response.id
-                            );
-                            continue;
-                        };
+/// Decide what a frame from the server means for the websocket loop.
+///
+/// Only an error answering a request this client is still waiting on ends the
+/// stream. An error carrying a `null` or unknown id says nothing about the
+/// running subscriptions, and ending the stream over one would interrupt every
+/// subscription sharing the connection until the consumer's backoff elapses.
+fn handle_server_message(
+    raw: &str,
+    sub_id_to_kind: &HashMap<String, Kind>,
+    pending_requests: &mut HashMap<usize, PendingRequest>,
+) -> ServerMessageAction {
+    let msg = match serde_json::from_str::<RawWsMessageOrResponse<String>>(raw) {
+        Ok(msg) => msg,
+        Err(err) => {
+            tracing::debug!("Dropping an unparsable websocket frame: {}", err);
+            return ServerMessageAction::Ignore;
+        }
+    };
 
-                        if response.result.sub_id != request.sub_id() {
-                            tracing::warn!(
-                                "Received {} response for subId {}, expected {}",
-                                request.method(),
-                                response.result.sub_id,
-                                request.sub_id()
-                            );
-                            continue;
-                        }
+    if msg.jsonrpc() != JSON_RPC_VERSION {
+        tracing::warn!(
+            "Ending the stream, the mint sent JSON-RPC version {}",
+            escape_log_value(msg.jsonrpc())
+        );
+        return ServerMessageAction::Fail(PubsubError::InternalStr(
+            "unsupported JSON-RPC version".to_string(),
+        ));
+    }
 
-                        tracing::debug!(
-                            "Received {} response from server for subId {} with status {}",
-                            request.method(),
-                            response.result.sub_id,
-                            response.result.status
-                        );
-                    }
-                    RawWsMessageOrResponse::ErrorResponse(error) => {
-                        match pending_requests.remove(&error.id) {
-                            Some(request) => tracing::debug!(
-                                "Received an error from server for {} request and subId {}: {}",
-                                request.method(),
-                                request.sub_id(),
-                                error.error.message
-                            ),
-                            None => tracing::debug!(
-                                "Received an error from server for unknown request id {}: {}",
-                                error.id,
-                                error.error.message
-                            ),
-                        }
-                        return Err(PubsubError::InternalStr(error.error.message));
-                    }
+    match msg {
+        RawWsMessageOrResponse::Notification(notification) => {
+            let RawNotificationInner { sub_id, payload } = notification.params;
+
+            let Some(kind) = sub_id_to_kind.get(&sub_id) else {
+                tracing::warn!(
+                    "Received websocket notification for unknown subId {}",
+                    sub_id
+                );
+                return ServerMessageAction::Ignore;
+            };
+
+            match decode_notification_payload_for_stream(kind, &sub_id, payload) {
+                Some(payload) => ServerMessageAction::Deliver(Box::new(payload)),
+                None => ServerMessageAction::Ignore,
+            }
+        }
+        RawWsMessageOrResponse::Response(response) => {
+            let Some(request) = pending_requests.remove(&response.id) else {
+                tracing::warn!(
+                    "Received websocket response for unknown request id {}",
+                    response.id
+                );
+                return ServerMessageAction::Ignore;
+            };
+
+            if response.result.sub_id != request.sub_id() {
+                tracing::warn!(
+                    "Received {} response for subId {}, expected {}",
+                    request.method(),
+                    response.result.sub_id,
+                    request.sub_id()
+                );
+                return ServerMessageAction::Ignore;
+            }
+
+            tracing::debug!(
+                "Received {} response from server for subId {} with status {}",
+                request.method(),
+                response.result.sub_id,
+                response.result.status
+            );
+
+            ServerMessageAction::Ignore
+        }
+        RawWsMessageOrResponse::ErrorResponse(error) => {
+            match error.id.and_then(|id| pending_requests.remove(&id)) {
+                Some(request) => {
+                    tracing::debug!(
+                        "Received an error from server for {} request and subId {}: {}",
+                        request.method(),
+                        request.sub_id(),
+                        error.error.message
+                    );
+                    ServerMessageAction::Fail(PubsubError::InternalStr(error.error.message))
+                }
+                None => {
+                    tracing::debug!(
+                        "Ignoring a server error that answers no pending request, id {:?}: {}",
+                        error.id,
+                        error.error.message
+                    );
+                    ServerMessageAction::Ignore
                 }
             }
         }
@@ -753,6 +798,170 @@ mod tests {
         assert!(matches!(
             decode_notification_payload_for_stream(&Kind::ProofState, "sub-id", supported),
             Some(NotificationPayload::ProofState(_))
+        ));
+    }
+
+    fn proof_state_notification(sub_id: &str) -> String {
+        json!({
+            "jsonrpc": "2.0",
+            "method": "subscribe",
+            "params": {
+                "subId": sub_id,
+                "payload": {
+                    "Y": "02194603ffa062682c4f10e2dfe8f53e17d5d0329db51c8d3935cc74a4c0e0d4cb",
+                    "state": "UNSPENT",
+                    "witness": null
+                }
+            }
+        })
+        .to_string()
+    }
+
+    fn subscribe_response(id: usize, sub_id: &str) -> String {
+        json!({
+            "jsonrpc": "2.0",
+            "result": { "status": "OK", "subId": sub_id },
+            "id": id
+        })
+        .to_string()
+    }
+
+    fn with_version(frame: &str, version: &str) -> String {
+        let mut value: serde_json::Value = serde_json::from_str(frame).expect("a json frame");
+        value["jsonrpc"] = json!(version);
+        value.to_string()
+    }
+
+    fn error_frame(id: serde_json::Value) -> String {
+        json!({
+            "jsonrpc": "2.0",
+            "error": { "code": -32700, "message": "Parse error" },
+            "id": id
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn error_without_an_id_does_not_stop_the_stream() {
+        let sub_id_to_kind = HashMap::from([("sub-id".to_string(), Kind::ProofState)]);
+        let mut pending_requests = HashMap::from([(
+            1,
+            PendingRequest::Subscribe {
+                sub_id: "sub-id".to_string(),
+            },
+        )]);
+
+        assert!(matches!(
+            handle_server_message(
+                &error_frame(json!(null)),
+                &sub_id_to_kind,
+                &mut pending_requests
+            ),
+            ServerMessageAction::Ignore
+        ));
+        assert!(pending_requests.contains_key(&1));
+
+        match handle_server_message(
+            &proof_state_notification("sub-id"),
+            &sub_id_to_kind,
+            &mut pending_requests,
+        ) {
+            ServerMessageAction::Deliver(payload) => {
+                assert!(matches!(*payload, NotificationPayload::ProofState(_)));
+            }
+            _ => panic!("expected the notification to be delivered"),
+        }
+    }
+
+    #[test]
+    fn error_for_an_unknown_request_does_not_stop_the_stream() {
+        let sub_id_to_kind = HashMap::new();
+        let mut pending_requests = HashMap::new();
+
+        assert!(matches!(
+            handle_server_message(
+                &error_frame(json!(42)),
+                &sub_id_to_kind,
+                &mut pending_requests
+            ),
+            ServerMessageAction::Ignore
+        ));
+    }
+
+    #[test]
+    fn error_for_a_pending_request_stops_the_stream() {
+        let sub_id_to_kind = HashMap::new();
+        let mut pending_requests = HashMap::from([(
+            1,
+            PendingRequest::Subscribe {
+                sub_id: "sub-id".to_string(),
+            },
+        )]);
+
+        assert!(matches!(
+            handle_server_message(
+                &error_frame(json!(1)),
+                &sub_id_to_kind,
+                &mut pending_requests
+            ),
+            ServerMessageAction::Fail(PubsubError::InternalStr(_))
+        ));
+        assert!(pending_requests.is_empty());
+    }
+
+    #[test]
+    fn notification_for_an_unknown_sub_id_is_ignored() {
+        let sub_id_to_kind = HashMap::new();
+        let mut pending_requests = HashMap::new();
+
+        assert!(matches!(
+            handle_server_message(
+                &proof_state_notification("sub-id"),
+                &sub_id_to_kind,
+                &mut pending_requests
+            ),
+            ServerMessageAction::Ignore
+        ));
+    }
+
+    #[test]
+    fn unsupported_jsonrpc_version_stops_the_stream() {
+        let sub_id_to_kind = HashMap::from([("sub-id".to_string(), Kind::ProofState)]);
+
+        for frame in [
+            proof_state_notification("sub-id"),
+            subscribe_response(1, "sub-id"),
+            error_frame(json!(1)),
+        ] {
+            let mut pending_requests = HashMap::from([(
+                1,
+                PendingRequest::Subscribe {
+                    sub_id: "sub-id".to_string(),
+                },
+            )]);
+
+            assert!(
+                matches!(
+                    handle_server_message(
+                        &with_version(&frame, "1.0"),
+                        &sub_id_to_kind,
+                        &mut pending_requests
+                    ),
+                    ServerMessageAction::Fail(PubsubError::InternalStr(_))
+                ),
+                "{frame} should end the stream at version 1.0"
+            );
+        }
+    }
+
+    #[test]
+    fn unparsable_frame_is_ignored() {
+        let sub_id_to_kind = HashMap::new();
+        let mut pending_requests = HashMap::new();
+
+        assert!(matches!(
+            handle_server_message("not json", &sub_id_to_kind, &mut pending_requests),
+            ServerMessageAction::Ignore
         ));
     }
 

@@ -4,6 +4,10 @@ pluginManagement {
         mavenCentral()
         gradlePluginPortal()
     }
+    plugins {
+        kotlin("android") version "1.9.24"
+        id("com.android.library") version "8.5.1"
+    }
 }
 
 dependencyResolutionManagement {
@@ -19,4 +23,11 @@ plugins {
 
 rootProject.name = "cdk"
 include("cdk-jvm")
-include("cdk-android")
+
+val cdkJvmOnly = providers.gradleProperty("cdkJvmOnly")
+    .map(String::toBoolean)
+    .getOrElse(false)
+
+if (!cdkJvmOnly) {
+    include("cdk-android")
+}

@@ -432,8 +432,10 @@ mod tests {
         assert_eq!(part.matches('/').count(), 1);
 
         let mut decoder = TokenUrDecoder::default();
+        assert_eq!(decoder.resolved_fragment_count(), None);
         decoder.receive(&part).expect("valid receive");
         assert!(decoder.complete());
+        assert_eq!(decoder.resolved_fragment_count(), Some(1));
         assert_eq!(decoder.token().expect("valid token"), Some(token));
     }
 
@@ -469,9 +471,11 @@ mod tests {
         let token = test_token();
         let mut encoder = TokenUrEncoder::new(&token, 20).expect("valid encoder");
         assert!(encoder.fragment_count() > 1);
+        assert!(!encoder.is_single_fragment());
 
         let mut decoder = TokenUrDecoder::default();
         let mut parts = 0;
+        assert_eq!(decoder.resolved_fragment_count(), None);
         while !decoder.complete() {
             let part = encoder.next_part().expect("valid part");
             assert!(part.starts_with("ur:bytes/"));
@@ -480,6 +484,8 @@ mod tests {
             assert_eq!(part.matches('/').count(), 2);
             decoder.receive(&part).expect("valid receive");
             parts += 1;
+            // The initial frames each resolve one distinct source fragment.
+            assert_eq!(decoder.resolved_fragment_count(), Some(parts));
             assert!(parts <= 100, "decoder should complete");
         }
 
@@ -537,6 +543,21 @@ mod tests {
     }
 
     #[test]
+    fn test_accepts_part_at_size_limit() {
+        // The UR header, fountain metadata, and bytewords checksum bring this
+        // valid fragment to exactly the maximum QR frame size.
+        let part = multi_part(1, 10, 21_270, &[0; 2_127]);
+        assert_eq!(part.len(), MAX_UR_PART_LENGTH);
+
+        let mut decoder = TokenUrDecoder::default();
+        decoder
+            .receive(&part)
+            .expect("part at the limit is accepted");
+        assert!(!decoder.complete());
+        assert_eq!(decoder.resolved_fragment_count(), Some(1));
+    }
+
+    #[test]
     fn test_rejects_oversized_part_before_decoding() {
         let part = "x".repeat(MAX_UR_PART_LENGTH + 1);
         let mut decoder = TokenUrDecoder::default();
@@ -566,6 +587,19 @@ mod tests {
                 max: MAX_UR_FRAGMENT_COUNT,
             } if actual == MAX_UR_FRAGMENT_COUNT + 1
         ));
+    }
+
+    #[test]
+    fn test_accepts_one_mebibyte_message() {
+        // Keep the documented one-mebibyte boundary independent of the
+        // implementation constant so an accidentally lowered limit is caught.
+        let part = multi_part(1, 4_096, 1_048_576, &[0; 256]);
+        let mut decoder = TokenUrDecoder::default();
+        decoder
+            .receive(&part)
+            .expect("one-mebibyte message is accepted");
+        assert!(!decoder.complete());
+        assert_eq!(decoder.resolved_fragment_count(), Some(1));
     }
 
     #[test]

@@ -144,8 +144,12 @@ pub struct WsErrorResponse {
     pub jsonrpc: String,
     /// The result
     pub error: WsErrorBody,
-    /// The request ID
-    pub id: usize,
+    /// The request ID, `null` when the request was too malformed to carry one.
+    ///
+    /// JSON-RPC 2.0 requires the member to be present and null in that case, so
+    /// this serializes as `null` rather than being skipped.
+    #[serde(default)]
+    pub id: Option<usize>,
 }
 
 /// Message from the server to the client
@@ -182,6 +186,17 @@ pub enum RawWsMessageOrResponse<I> {
     Notification(Box<WsNotification<RawNotificationInner<I>>>),
 }
 
+impl<I> RawWsMessageOrResponse<I> {
+    /// The `jsonrpc` member, which every kind of incoming frame carries.
+    pub fn jsonrpc(&self) -> &str {
+        match self {
+            Self::Response(response) => &response.jsonrpc,
+            Self::ErrorResponse(error) => &error.jsonrpc,
+            Self::Notification(notification) => &notification.jsonrpc,
+        }
+    }
+}
+
 impl<I> From<(usize, Result<WsResponseResult<I>, WsErrorBody>)> for WsMessageOrResponse<I> {
     fn from((id, result): (usize, Result<WsResponseResult<I>, WsErrorBody>)) -> Self {
         match result {
@@ -193,8 +208,29 @@ impl<I> From<(usize, Result<WsResponseResult<I>, WsErrorBody>)> for WsMessageOrR
             Err(err) => WsMessageOrResponse::ErrorResponse(WsErrorResponse {
                 jsonrpc: JSON_RPC_VERSION.to_owned(),
                 error: err,
-                id,
+                id: Some(id),
             }),
+        }
+    }
+}
+
+/// Carries an error whose request could not be identified, which the tuple
+/// conversion above cannot express: it pairs an id with a `Result`, so it has no
+/// way to say "no id" without also allowing a success response without one.
+impl<I> From<WsErrorResponse> for WsMessageOrResponse<I> {
+    fn from(response: WsErrorResponse) -> Self {
+        WsMessageOrResponse::ErrorResponse(response)
+    }
+}
+
+impl WsErrorResponse {
+    /// Build an error response, for a request whose id may not have survived
+    /// parsing.
+    pub fn new(id: Option<usize>, error: WsErrorBody) -> Self {
+        WsErrorResponse {
+            jsonrpc: JSON_RPC_VERSION.to_owned(),
+            error,
+            id,
         }
     }
 }
@@ -231,6 +267,67 @@ mod tests {
             serde_json::to_value(decoded).expect("serialized NUT-17 response"),
             encoded
         );
+    }
+
+    #[test]
+    fn error_response_without_an_id_round_trips_as_null() {
+        let encoded = json!({
+            "jsonrpc": "2.0",
+            "error": { "code": -32700, "message": "Parse error" },
+            "id": null
+        });
+
+        let decoded: WsErrorResponse =
+            serde_json::from_value(encoded.clone()).expect("NUT-17 error response");
+        assert_eq!(decoded.id, None);
+        assert_eq!(decoded.error.code, -32700);
+        assert_eq!(
+            serde_json::to_value(decoded).expect("serialized error response"),
+            encoded
+        );
+    }
+
+    #[test]
+    fn error_response_keeps_a_numeric_id() {
+        let response: WsMessageOrResponse<String> = (
+            9usize,
+            Err(WsErrorBody {
+                code: -32602,
+                message: "Invalid params".to_string(),
+            }),
+        )
+            .into();
+
+        assert_eq!(
+            serde_json::to_value(response).expect("serialized error response")["id"],
+            json!(9)
+        );
+    }
+
+    #[test]
+    fn raw_ws_message_reads_the_version_of_every_variant() {
+        for encoded in [
+            json!({
+                "jsonrpc": "2.0",
+                "method": "subscribe",
+                "params": { "subId": "sub-id", "payload": {} }
+            }),
+            json!({
+                "jsonrpc": "2.0",
+                "result": { "status": "OK", "subId": "sub-id" },
+                "id": 1
+            }),
+            json!({
+                "jsonrpc": "2.0",
+                "error": { "code": -32700, "message": "Parse error" },
+                "id": null
+            }),
+        ] {
+            let decoded: RawWsMessageOrResponse<String> =
+                serde_json::from_value(encoded.clone()).expect("a raw websocket frame");
+
+            assert_eq!(decoded.jsonrpc(), "2.0", "{encoded} should carry a version");
+        }
     }
 
     #[test]

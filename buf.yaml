@@ -1,0 +1,8 @@
+version: v2
+modules:
+  - path: crates/cdk-mint-rpc/src/proto
+lint:
+  disable_builtin: true
+breaking:
+  use:
+    - FILE

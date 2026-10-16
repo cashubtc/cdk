@@ -64,6 +64,30 @@ final-check: lint clippy test
 
 quick-check: lint clippy test-units
 
+# Compile the mint management RPC schemas.
+proto-build:
+  buf build
+
+# Check mint management RPC compatibility against a local Git revision.
+proto-breaking base="upstream/main":
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  base_ref={{quote(base)}}
+  if command -v jj >/dev/null 2>&1 && jj root --ignore-working-copy >/dev/null 2>&1; then
+    git_dir=$(jj git root --ignore-working-copy)
+  else
+    git_dir=$(git rev-parse --git-common-dir)
+  fi
+
+  if ! baseline=$(git --git-dir="$git_dir" rev-parse --verify --quiet --end-of-options "${base_ref}^{commit}"); then
+    echo "Error: baseline '$base_ref' is unavailable locally." >&2
+    echo "Set up and fetch the remote, or choose an existing ref: just proto-breaking <ref>" >&2
+    exit 1
+  fi
+
+  buf breaking --against "${git_dir}#format=git,ref=${baseline},subdir=crates/cdk-mint-rpc/src/proto"
+
 # run `cargo build` on everything
 build *ARGS="--workspace --all-targets":
   #!/usr/bin/env bash
@@ -221,6 +245,11 @@ coverage:
   echo "Running unit tests coverage..."
   cargo llvm-cov --no-report --lib --workspace --exclude cdk-integration-tests
 
+  # Run cdk-nostr tests with all features; its npubcash/nwc modules are
+  # feature-gated, so the default-feature workspace run does not execute them.
+  echo "Running cdk-nostr feature-gated tests coverage..."
+  cargo llvm-cov --no-report --lib -p cdk-nostr --all-features
+
   # Run pure integration tests with coverage (memory backend)
   echo "Running pure integration tests coverage (memory)..."
   CDK_TEST_DB_TYPE=memory cargo llvm-cov --no-report -p cdk-integration-tests --test integration_tests_pure
@@ -232,6 +261,10 @@ coverage:
   # Run NWC e2e tests with coverage (requires nostr-rs-relay on PATH)
   echo "Running NWC e2e tests coverage (memory)..."
   CDK_TEST_DB_TYPE=memory cargo llvm-cov --no-report -p cdk-integration-tests --test nwc_e2e
+
+  # Run NIP-17 inbox e2e tests with coverage (requires nostr-rs-relay on PATH)
+  echo "Running NIP-17 inbox e2e tests coverage..."
+  cargo llvm-cov --no-report -p cdk-integration-tests --test nip17_inbox_e2e
 
   # Generate report
   echo "Generating coverage report..."
@@ -252,6 +285,9 @@ test-pure db="memory":
     run_test test_swap_flow -j 1
     run_test wallet_saga -j 1
     run_test nwc_e2e -j 1
+    if [ "{{db}}" = memory ]; then
+      run_test nip17_inbox_e2e -j 1
+    fi
   else
     # Run pure integration tests (cargo test will only build what's needed for the test)
     CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test integration_tests_pure -- --test-threads 1
@@ -264,6 +300,9 @@ test-pure db="memory":
 
     # Run NWC (NIP-47) e2e tests (requires nostr-rs-relay on PATH; skipped locally if absent)
     CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test nwc_e2e -- --test-threads 1
+    if [ "{{db}}" = memory ]; then
+      cargo test -p cdk-integration-tests --test nip17_inbox_e2e -- --test-threads 1
+    fi
   fi
 
 # Run Redis cache clippy and unit tests against both single-node and cluster Redis.
@@ -556,18 +595,45 @@ lint:
   typos
   echo "All checks passed!"
 
+# Refresh stable and MSRV lockfiles, excluding registry releases newer than seven days.
 update-msrv-lock:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    nix develop --ignore-environment .#msrv --command bash -c '
-        cp Cargo.lock Cargo.lock.msrv
-        echo "Copied Cargo.lock to Cargo.lock.msrv (MSRV 1.85.0)"
-    '
+    nix develop --ignore-environment .#nightly --command bash -c '
+        export CARGO_REGISTRY_GLOBAL_MIN_PUBLISH_AGE="7 days"
+        cargo_update() {
+            cargo -Z min-publish-age update "$@"
+        }
 
-    nix develop --ignore-environment .#stable --command bash -c '
-        cargo update
-        echo "Updated Cargo.lock (stable)"
+        cargo_update
+        echo "Updated Cargo.lock with a seven-day minimum publish age"
+
+        lock_dir=$(mktemp -d /data/rust/tmp/cdk-msrv-lock.XXXXXX)
+        cleanup() {
+            rm -f "$lock_dir/Cargo.lock"
+            rmdir "$lock_dir" 2>/dev/null || true
+        }
+        trap cleanup EXIT
+
+        cp Cargo.lock "$lock_dir/Cargo.lock"
+        export CARGO_RESOLVER_LOCKFILE_PATH="$lock_dir/Cargo.lock"
+        export CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS="fallback"
+
+        cargo_update
+        cargo_update home --precise 0.5.11
+        cargo_update typed-index-collections --precise 3.3.0
+        cargo_update simple_asn1 --precise 0.6.3
+        cargo_update cookie_store --precise 0.22.0
+        cargo_update serde_with --precise 3.17.0
+        cargo_update time --precise 0.3.44
+        cargo_update unicode-segmentation --precise 1.12.0
+        cargo_update idna_adapter --precise 1.2.1
+        cargo_update icu_normalizer --precise 2.0.1
+        cargo_update icu_provider --precise 2.1.1
+        cargo_update icu_locale_core --precise 2.1.1
+        cp "$lock_dir/Cargo.lock" Cargo.lock.msrv
+        echo "Updated Cargo.lock.msrv for MSRV 1.85.0"
     '
 
 itest db suite="all":
@@ -708,16 +774,50 @@ check-wasm *ARGS="--target wasm32-unknown-unknown":
     echo
   done
 
-release m="":
+# Publish release crates; --skip-ci overrides the green-CI requirement.
+release *ARGS:
   #!/usr/bin/env bash
   set -euo pipefail
+
+  skip_ci=false
+  publish_args=()
+  for arg in "$@"; do
+    case "$arg" in
+      --skip-ci) skip_ci=true ;;
+      *) publish_args+=("$arg") ;;
+    esac
+  done
 
   # Extract version from the cdk-ffi crate
   VERSION=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "cdk-ffi") | .version')
 
-  if ! git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" > /dev/null; then
-    echo "Tag v$VERSION does not exist on origin. Push the release tag before publishing crates."
+  if ! git ls-remote --exit-code --tags upstream "refs/tags/v$VERSION" > /dev/null; then
+    echo "Tag v$VERSION does not exist on upstream. Push the release tag before publishing crates."
     exit 1
+  fi
+
+  # Publish only a clean checkout of the release commit.
+  SOURCE_SHA=$(gh api "repos/cashubtc/cdk/commits/v$VERSION" --jq .sha)
+  # In a colocated JJ workspace, `jj new <release>` puts Git HEAD at the release.
+  WORKTREE_STATUS=$(git status --porcelain --untracked-files=all)
+  if [ "$(git rev-parse HEAD)" != "$SOURCE_SHA" ] || [ -n "$WORKTREE_STATUS" ]; then
+    echo "Check out the clean release commit $SOURCE_SHA before publishing."
+    echo "For a colocated JJ workspace, use: jj new $SOURCE_SHA"
+    exit 1
+  fi
+  if [ "$skip_ci" = true ]; then
+    echo "Skipping green-CI requirement for release commit $SOURCE_SHA (--skip-ci)."
+  else
+    for workflow in ci.yml nutshell_itest.yml; do
+      result=$(gh api --paginate --slurp \
+        "repos/cashubtc/cdk/actions/workflows/$workflow/runs?head_sha=$SOURCE_SHA&per_page=100" \
+        --jq '[.[].workflow_runs[] | select(.event == "workflow_dispatch" or .event == "release" or (.event == "push" and (.head_branch == "main" or ((.head_branch // "") | test("^v[0-9][^/]*[.][0-9][^/]*[.]x$")))))] | max_by(.id) | if . == null then "missing" else (.status + "/" + .conclusion) end')
+      if [ "$result" != completed/success ]; then
+        echo "$workflow must pass full CI on $SOURCE_SHA before publishing (latest: $result)."
+        echo "To override the green-CI requirement, use: just release --skip-ci"
+        exit 1
+      fi
+    done
   fi
 
   args=(
@@ -725,14 +825,13 @@ release m="":
     "-p cdk-prometheus"
     "-p cdk-http-client"
     "-p cdk-common"
-    "-p cdk-npubcash"
+    "-p cdk-nostr"
     "-p cdk-sql-common"
     "-p cdk-sqlite"
     "-p cdk-postgres"
     "-p cdk-redb"
     "-p cdk-signatory"
     "-p cdk-fake-wallet"
-    "-p cdk-nwc"
     "-p cdk"
     "-p cdk-supabase"
     "-p cdk-ffi"
@@ -750,11 +849,13 @@ release m="":
   for arg in "${args[@]}";
   do
     echo "Publishing '$arg'"
-    cargo publish $arg {{m}}
+    cargo publish $arg "${publish_args[@]}"
     echo
   done
 
-  # Trigger all FFI binding releases (Dart, Kotlin, Swift, Go)
+  # Trigger all FFI binding releases (Dart, Kotlin, Swift, Go). These build
+  # cdk-ffi from the tagged source, not from crates.io, so they do not depend
+  # on the publish loop above and can be re-run on their own.
   echo "📦 Triggering all FFI binding releases for version $VERSION..."
   just ffi-release-all $VERSION
 
@@ -765,7 +866,7 @@ check-docs:
     "-p cashu"
     "-p cdk-common"
     "-p cdk-http-client"
-    "-p cdk-npubcash"
+    "-p cdk-nostr"
     "-p cdk-sql-common"
     "-p cdk-sqlite"
     "-p cdk-postgres"
@@ -799,7 +900,7 @@ docs-strict:
     "-p cashu"
     "-p cdk-common"
     "-p cdk-http-client"
-    "-p cdk-npubcash"
+    "-p cdk-nostr"
     "-p cdk-sql-common"
     "-p cdk-sqlite"
     "-p cdk-postgres"
@@ -1068,8 +1169,8 @@ ffi-release-all VERSION:
 
   gh workflow run "FFI - Publish All Bindings" \
     --repo cashubtc/cdk \
+    --ref "v{{VERSION}}" \
     --field release_tag="v{{VERSION}}" \
-    --field cdk_version="{{VERSION}}" \
     --field cdk_ref="v{{VERSION}}"
 
   echo "✅ All FFI binding workflows triggered successfully!"
@@ -1085,8 +1186,8 @@ ffi-release-dart VERSION:
 
   gh workflow run "FFI - Dart Bindings" \
     --repo cashubtc/cdk \
-    --field release_tag="v{{VERSION}}" \
-    --field cdk_version="{{VERSION}}"
+    --ref "v{{VERSION}}" \
+    --field release_tag="v{{VERSION}}"
 
   echo "✅ Dart workflow triggered successfully!"
 
@@ -1101,8 +1202,8 @@ ffi-release-swift VERSION:
   # Trigger the workflow using GitHub CLI
   gh workflow run "FFI - Swift Bindings" \
     --repo cashubtc/cdk \
+    --ref "v{{VERSION}}" \
     --field release_tag="v{{VERSION}}" \
-    --field cdk_version="{{VERSION}}" \
     --field cdk_ref="v{{VERSION}}"
 
   echo "✅ Swift workflow triggered successfully!"
@@ -1119,8 +1220,8 @@ ffi-release-kotlin VERSION:
   # Trigger the workflow using GitHub CLI
   gh workflow run "FFI - Kotlin Bindings" \
     --repo cashubtc/cdk \
+    --ref "v{{VERSION}}" \
     --field release_tag="v{{VERSION}}" \
-    --field cdk_version="{{VERSION}}" \
     --field cdk_ref="v{{VERSION}}"
 
   echo "✅ Kotlin workflow triggered successfully!"
@@ -1170,8 +1271,8 @@ ffi-release-go VERSION:
 
   gh workflow run "FFI - Go Bindings" \
     --repo cashubtc/cdk \
+    --ref "v{{VERSION}}" \
     --field release_tag="v{{VERSION}}" \
-    --field cdk_version="{{VERSION}}" \
     --field cdk_ref="v{{VERSION}}"
 
   echo "✅ Go workflow triggered successfully!"
@@ -1202,15 +1303,18 @@ binding-kotlin:
   cd "{{justfile_directory()}}"
   result=$(nix build .#kotlin-bindings --print-out-paths --no-link)
   cp -r "$result"/* bindings/kotlin/
-  chmod -R u+w bindings/kotlin/cdk-jvm/src/main/kotlin bindings/kotlin/cdk-jvm/src/main/resources
+  chmod -R u+w bindings/kotlin
 
 # Run Kotlin binding tests
 test-kotlin:
   #!/usr/bin/env bash
   set -euo pipefail
   cd "{{justfile_directory()}}/bindings/kotlin"
-  ./gradlew :cdk-jvm:test
+  ./gradlew -PcdkJvmOnly=true :cdk-jvm:test
 
+# Generate Swift bindings and the local SPM package
+binding-swift *ARGS="--release":
+  just ffi-generate-swift {{ARGS}}
 
 # Run Swift binding tests
 test-swift:

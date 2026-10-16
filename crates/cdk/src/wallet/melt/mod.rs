@@ -43,8 +43,8 @@ use std::time::Duration;
 
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{
-    CrossMintTransferQuote, MeltQuote, MeltSagaState, OperationData, Transaction,
-    TransactionDirection, TransactionStatus, WalletSaga, WalletSagaState,
+    CrossMintTransferQuote, MeltPrepareOptions, MeltQuote, MeltSagaState, OperationData,
+    Transaction, TransactionDirection, TransactionStatus, WalletSaga, WalletSagaState,
 };
 use cdk_common::{Error, MeltQuoteState, PaymentMethod, ProofsMethods, State};
 use tracing::instrument;
@@ -1105,10 +1105,35 @@ impl Wallet {
         proofs: crate::nuts::Proofs,
         metadata: HashMap<String, String>,
     ) -> Result<PreparedMelt<'_>, Error> {
+        self.prepare_melt_proofs_with_options(
+            quote_id,
+            proofs,
+            MeltPrepareOptions {
+                metadata,
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    /// Prepare a melt operation with specific proofs and additional options.
+    ///
+    /// P2PK/HTLC-locked proofs are signed before being reserved, using
+    /// `options.p2pk_signing_keys` plus any signing keys known to the wallet,
+    /// mirroring how [`receive_proofs`](Wallet::receive_proofs) resolves keys.
+    /// HTLC preimages from `options.preimages` are attached to matching
+    /// proofs. SIG_ALL-locked proofs are rejected: their witness must commit
+    /// to the melt request's change outputs, which only exist at confirmation.
+    #[instrument(skip(self, proofs, options))]
+    pub async fn prepare_melt_proofs_with_options(
+        &self,
+        quote_id: &str,
+        proofs: crate::nuts::Proofs,
+        options: MeltPrepareOptions,
+    ) -> Result<PreparedMelt<'_>, Error> {
+        let metadata = options.metadata.clone();
         let saga = MeltSaga::new(self);
-        let prepared_saga = saga
-            .prepare_with_proofs(quote_id, proofs, metadata.clone())
-            .await?;
+        let prepared_saga = saga.prepare_with_proofs(quote_id, proofs, options).await?;
 
         Ok(PreparedMelt {
             saga: prepared_saga,
@@ -1127,6 +1152,29 @@ impl Wallet {
         encoded_token: &str,
         metadata: HashMap<String, String>,
     ) -> Result<PreparedMelt<'_>, Error> {
+        self.prepare_melt_token_with_options(
+            quote_id,
+            encoded_token,
+            MeltPrepareOptions {
+                metadata,
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    /// Prepare a melt operation from an encoded token with additional options.
+    ///
+    /// Same as [`prepare_melt_token`](Wallet::prepare_melt_token), with locked
+    /// inputs handled as described in
+    /// [`prepare_melt_proofs_with_options`](Wallet::prepare_melt_proofs_with_options).
+    #[instrument(skip(self, encoded_token, options))]
+    pub async fn prepare_melt_token_with_options(
+        &self,
+        quote_id: &str,
+        encoded_token: &str,
+        options: MeltPrepareOptions,
+    ) -> Result<PreparedMelt<'_>, Error> {
         let token = Token::from_str(encoded_token)?;
 
         let unit = token.unit().unwrap_or_default();
@@ -1135,7 +1183,8 @@ impl Wallet {
 
         let proofs = self.token_proofs(&token).await?;
 
-        self.prepare_melt_proofs(quote_id, proofs, metadata).await
+        self.prepare_melt_proofs_with_options(quote_id, proofs, options)
+            .await
     }
 
     /// Finalize pending melt operations.
@@ -1824,10 +1873,18 @@ impl Wallet {
                     Err(Error::Database(e))
                 }
             }
-        }
+        }?;
+
+        // The write may advance the version and preserve database-owned fields.
+        *quote = self
+            .localstore
+            .get_melt_quote(&quote.id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+        Ok(())
     }
 
-    /// Check melt quote status
+    /// Check melt quote status and return the persisted version and ownership.
     #[instrument(skip(self, quote_id))]
     pub async fn check_melt_quote_status(&self, quote_id: &str) -> Result<MeltQuote, Error> {
         let mut quote = self
@@ -1861,7 +1918,11 @@ impl Wallet {
                                 // Saga still pending (payment in progress or mint unreachable)
                                 // Return current quote state - no need to query mint again
                                 // since resume_melt_saga already checked
-                                return Ok(quote);
+                                return self
+                                    .localstore
+                                    .get_melt_quote(quote_id)
+                                    .await?
+                                    .ok_or(Error::UnknownQuote);
                             }
                         }
                     }
@@ -1875,6 +1936,11 @@ impl Wallet {
                         if let Err(e) = self.localstore.release_melt_quote(&operation_id).await {
                             tracing::warn!("Failed to release orphaned melt quote: {}", e);
                         }
+                        quote = self
+                            .localstore
+                            .get_melt_quote(quote_id)
+                            .await?
+                            .ok_or(Error::UnknownQuote)?;
                     }
                     Err(e) => {
                         tracing::warn!("Failed to check saga for melt quote {}: {}", quote_id, e);
@@ -1978,6 +2044,11 @@ impl Wallet {
                     .or_else(|| response.fee_options.first())
                     .map(|option| option.estimated_blocks);
                 self.localstore.add_melt_quote(quote.clone()).await?;
+                quote = self
+                    .localstore
+                    .get_melt_quote(quote_id)
+                    .await?
+                    .ok_or(Error::UnknownQuote)?;
             }
         };
 
@@ -2046,6 +2117,71 @@ mod tests {
         make_inactive_keyset, test_keyset, test_melt_quote, test_mint_info, test_proof,
         MockMintConnector,
     };
+
+    #[tokio::test]
+    async fn quote_status_returns_persisted_melt_quote() {
+        for onchain in [false, true] {
+            let db = create_test_db().await;
+            let client = Arc::new(MockMintConnector::new());
+            let wallet = create_test_wallet_with_mock(db.clone(), client.clone()).await;
+            let mut quote = test_melt_quote();
+            if onchain {
+                quote.payment_method = PaymentMethod::Known(KnownMethod::Onchain);
+            }
+            // SQLite preserves a known payment proof when an update omits it.
+            // Returning the input snapshot would incorrectly lose this field.
+            quote.payment_proof = Some("stored-payment-proof".to_string());
+            db.add_melt_quote(quote.clone()).await.unwrap();
+            let operation_id = uuid::Uuid::new_v4();
+            db.reserve_melt_quote(&quote.id, &operation_id)
+                .await
+                .unwrap();
+
+            for check in 1..=3 {
+                let response = match onchain {
+                    false => MeltQuoteResponse::Bolt11(bolt11_status(
+                        &quote.id,
+                        MeltQuoteState::Unpaid,
+                        None,
+                    )),
+                    true => {
+                        MeltQuoteResponse::Onchain(cdk_common::nut30::MeltQuoteOnchainResponse {
+                            quote: quote.id.clone(),
+                            amount: quote.amount,
+                            unit: quote.unit.clone(),
+                            method: quote.payment_method.clone(),
+                            state: MeltQuoteState::Unpaid,
+                            expiry: quote.expiry,
+                            request: quote.request.clone(),
+                            fee_options: vec![cdk_common::nut30::MeltQuoteOnchainFeeOption {
+                                fee_index: 2,
+                                fee_reserve: quote.fee_reserve,
+                                estimated_blocks: 6,
+                            }],
+                            selected_fee_index: Some(2),
+                            outpoint: None,
+                            change: None,
+                        })
+                    }
+                };
+                client
+                    .melt_quote_status_responses
+                    .lock()
+                    .unwrap()
+                    .push_back(Ok(response));
+                let returned = wallet.check_melt_quote_status(&quote.id).await.unwrap();
+                let stored = db.get_melt_quote(&quote.id).await.unwrap().unwrap();
+                assert_eq!(returned, stored);
+                assert_eq!(returned.version, check * if onchain { 2 } else { 1 });
+                assert_eq!(returned.used_by_operation, None);
+                assert_eq!(returned.payment_proof, quote.payment_proof);
+                if onchain {
+                    assert_eq!(returned.fee_index, Some(2));
+                    assert_eq!(returned.estimated_blocks, Some(6));
+                }
+            }
+        }
+    }
 
     type TestWalletDatabase =
         Arc<dyn cdk_common::database::WalletDatabase<cdk_common::database::Error> + Send + Sync>;
@@ -2211,6 +2347,78 @@ mod tests {
             unit: Some(CurrencyUnit::Sat),
             method: PaymentMethod::Known(KnownMethod::Bolt11),
         })
+    }
+
+    #[tokio::test]
+    async fn lightning_melt_quotes_validate_rounded_up_principals() {
+        let invoice = cdk_fake_wallet::create_fake_invoice(1_999, "rounding".to_owned());
+        let offer = lightning::offers::offer::OfferBuilder::new(invoice.recover_payee_pub_key())
+            .amount_msats(1_999)
+            .build()
+            .unwrap();
+
+        for (unit, expected) in [(CurrencyUnit::Sat, 2), (CurrencyUnit::Msat, 1_999)] {
+            let connector = Arc::new(MockMintConnector::new());
+            let wallet = crate::wallet::WalletBuilder::new()
+                .mint_url(test_mint_url())
+                .unit(unit.clone())
+                .localstore(create_test_db().await)
+                .seed([42; 64])
+                .shared_client(connector.clone())
+                .build()
+                .unwrap();
+
+            for method in [KnownMethod::Bolt11, KnownMethod::Bolt12] {
+                for options in [
+                    None,
+                    Some(MeltOptions::new_amountless(1_999)),
+                    Some(MeltOptions::new_mpp(1_999)),
+                ] {
+                    if method == KnownMethod::Bolt12
+                        && matches!(options, Some(MeltOptions::Mpp { .. }))
+                    {
+                        continue;
+                    }
+                    for reported in [expected - 1, expected, expected + 1] {
+                        let response = serde_json::json!({
+                            "quote": cdk_common::QuoteId::new().to_string(),
+                            "amount": reported,
+                            "fee_reserve": 1,
+                            "state": "UNPAID",
+                            "expiry": 2_000_000_000,
+                            "unit": unit,
+                            "method": PaymentMethod::Known(method),
+                        });
+                        let result = match method {
+                            KnownMethod::Bolt11 => {
+                                connector.push_post_melt_quote_response(Ok(
+                                    MeltQuoteCreateResponse::Bolt11(
+                                        serde_json::from_value(response).unwrap(),
+                                    ),
+                                ));
+                                wallet
+                                    .request_melt_bolt11_quote(invoice.to_string(), options)
+                                    .await
+                            }
+                            KnownMethod::Bolt12 => {
+                                connector.push_post_melt_quote_response(Ok(
+                                    MeltQuoteCreateResponse::Bolt12(
+                                        serde_json::from_value(response).unwrap(),
+                                    ),
+                                ));
+                                wallet.melt_bolt12_quote(offer.to_string(), options).await
+                            }
+                            _ => unreachable!(),
+                        };
+                        if reported == expected {
+                            assert_eq!(result.unwrap().amount, Amount::from(expected));
+                        } else {
+                            assert!(matches!(result, Err(Error::IncorrectQuoteAmount)));
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[tokio::test]
@@ -3254,7 +3462,8 @@ mod tests {
         let mint_url = test_mint_url();
         // Use the keyset the MockMintConnector serves so fee lookups resolve.
         let keyset_id = crate::wallet::test_utils::test_keyset_id();
-        let proof_info = crate::wallet::test_utils::test_proof_info(keyset_id, 1200, mint_url);
+        // 1,000 sats plus the 10-sat payment reserve and 1-sat input fee.
+        let proof_info = crate::wallet::test_utils::test_proof_info(keyset_id, 1011, mint_url);
         let proof_y = proof_info.y;
         let proof = proof_info.proof.clone();
         db.update_proofs(vec![proof_info], vec![]).await.unwrap();

@@ -631,6 +631,7 @@ pub async fn create_test_wallet_for_mint_with_seed(mint: Mint, seed: [u8; 64]) -
         .localstore(localstore)
         .seed(seed)
         .client(connector)
+        .use_http_subscription()
         .build()?;
 
     Ok(wallet)

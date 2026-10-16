@@ -3,7 +3,7 @@ use std::collections::HashMap;
 #[cfg(feature = "fakewallet")]
 use std::collections::HashSet;
 use std::path::Path;
-#[cfg(feature = "ldk-node")]
+#[cfg(any(feature = "grpc-processor", feature = "ldk-node"))]
 use std::path::PathBuf;
 use std::sync::Arc;
 #[cfg(feature = "bdk")]
@@ -88,7 +88,8 @@ impl PaymentBackendSetup for config::Cln {
             self.expose_private_channels,
             kv_store.expect("Cln needs kv store"),
         )
-        .await?;
+        .await?
+        .with_bolt12(self.bolt12);
 
         Ok(cln)
     }
@@ -133,7 +134,8 @@ impl PaymentBackendSetup for config::Lnd {
             fee_reserve,
             kv_store.expect("Lnd needs kv store"),
         )
-        .await?;
+        .await?
+        .with_allow_self_payment(self.allow_self_payment);
 
         Ok(lnd)
     }
@@ -269,27 +271,61 @@ impl PaymentBackendSetup for config::GrpcProcessor {
         _work_dir: &Path,
         _kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<cdk_payment_processor::PaymentProcessorClient> {
-        let tls_dir = self.tls_dir.clone();
-
-        if tls_dir.is_none() {
-            if !self.allow_insecure {
-                anyhow::bail!(
-                    "gRPC payment processor TLS is not configured. Set [grpc_processor].tls_dir \
-                     or [grpc_processor].allow_insecure = true to connect without TLS"
-                );
-            }
-
-            tracing::warn!(
-                "No gRPC payment processor TLS directory configured; connecting without TLS \
-                 because allow_insecure is true"
-            );
-        }
+        let tls_dir = grpc_processor_tls_dir(self)?;
 
         let payment_processor =
             cdk_payment_processor::PaymentProcessorClient::new(&self.address, self.port, tls_dir)
                 .await?;
 
         Ok(payment_processor)
+    }
+}
+
+#[cfg(feature = "grpc-processor")]
+fn grpc_processor_tls_dir(processor: &config::GrpcProcessor) -> anyhow::Result<Option<PathBuf>> {
+    match (&processor.tls_dir, processor.allow_insecure) {
+        (Some(tls_dir), _) => Ok(Some(tls_dir.clone())),
+        (None, false) => anyhow::bail!(
+            "gRPC payment processor TLS is not configured. Set [grpc_processor].tls_dir \
+             or [grpc_processor].allow_insecure = true to connect without TLS"
+        ),
+        (None, true) => {
+            tracing::warn!(
+                address = %processor.address,
+                port = processor.port,
+                "SECURITY WARNING: connecting to the gRPC payment processor without TLS because \
+                 allow_insecure is true; traffic is unencrypted and unauthenticated and can be \
+                 intercepted or modified"
+            );
+
+            Ok(None)
+        }
+    }
+}
+
+#[cfg(all(test, feature = "grpc-processor"))]
+mod grpc_processor_tests {
+    use super::grpc_processor_tls_dir;
+    use crate::config::GrpcProcessor;
+
+    #[test]
+    fn remote_plaintext_processor_requires_explicit_opt_in() {
+        let mut processor = GrpcProcessor {
+            address: "192.0.2.1".to_string(),
+            ..Default::default()
+        };
+
+        let error = grpc_processor_tls_dir(&processor)
+            .expect_err("plaintext should require explicit opt-in");
+        assert!(error
+            .to_string()
+            .contains("allow_insecure = true to connect without TLS"));
+
+        processor.allow_insecure = true;
+        assert_eq!(
+            grpc_processor_tls_dir(&processor).expect("remote plaintext should be allowed"),
+            None
+        );
     }
 }
 
@@ -568,6 +604,41 @@ impl PaymentBackendSetup for config::LdkNode {
 
 #[cfg(feature = "bdk")]
 impl crate::config::Bdk {
+    fn wallet_identity(&self) -> Result<(bip39::Mnemonic, bitcoin::Network), cdk_bdk::Error> {
+        let network_str = self.network.as_ref().ok_or_else(|| {
+            cdk_bdk::Error::InvalidConfig("BDK network must be set in [bdk].network".to_string())
+        })?;
+        let network = match network_str.to_lowercase().as_str() {
+            "mainnet" | "bitcoin" => bitcoin::Network::Bitcoin,
+            "testnet" => bitcoin::Network::Testnet,
+            "signet" => bitcoin::Network::Signet,
+            "regtest" => bitcoin::Network::Regtest,
+            _ => {
+                return Err(cdk_bdk::Error::InvalidConfig(format!(
+                    "Unknown BDK network: {network_str}"
+                )));
+            }
+        };
+        let mnemonic = self
+            .mnemonic
+            .as_ref()
+            .ok_or_else(|| cdk_bdk::Error::InvalidConfig("BDK mnemonic must be set".to_string()))?;
+        let mnemonic = bip39::Mnemonic::parse(mnemonic)
+            .map_err(|error| cdk_bdk::Error::InvalidConfig(error.to_string()))?;
+
+        Ok((mnemonic, network))
+    }
+
+    pub(crate) fn validate_wallet_identity(&self) -> Result<(), cdk_bdk::Error> {
+        self.wallet_identity().map(|_| ())
+    }
+
+    pub(crate) fn validate_existing_wallet(&self, work_dir: &Path) -> Result<(), cdk_bdk::Error> {
+        let (mnemonic, network) = self.wallet_identity()?;
+        cdk_bdk::validate_existing_wallet(mnemonic, network, work_dir)?;
+        Ok(())
+    }
+
     fn chain_source(&self) -> anyhow::Result<cdk_bdk::ChainSource> {
         use anyhow::bail;
 
@@ -744,10 +815,6 @@ impl OnchainBackendSetup for crate::config::Bdk {
         work_dir: &Path,
         kv_store: Option<Arc<dyn KVStore<Err = cdk::cdk_database::Error> + Send + Sync>>,
     ) -> anyhow::Result<cdk_bdk::CdkBdk> {
-        use anyhow::bail;
-        use bip39::Mnemonic;
-        use bitcoin::Network;
-
         self.validate().map_err(anyhow::Error::msg)?;
 
         let fee_reserve = FeeReserve {
@@ -755,25 +822,9 @@ impl OnchainBackendSetup for crate::config::Bdk {
             percent_fee_reserve: self.fee_percent,
         };
 
-        let network_str = self
-            .network
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("BDK network must be set in [bdk].network"))?;
-
-        let network = match network_str.to_lowercase().as_str() {
-            "mainnet" | "bitcoin" => Network::Bitcoin,
-            "testnet" => Network::Testnet,
-            "signet" => Network::Signet,
-            "regtest" => Network::Regtest,
-            _ => bail!("Unknown BDK network: {}", network_str),
-        };
+        let (mnemonic, network) = self.wallet_identity()?;
 
         let chain_source = self.chain_source()?;
-
-        let mnemonic = match &self.mnemonic {
-            Some(m) => Mnemonic::parse(m)?,
-            None => bail!("BDK mnemonic must be set"),
-        };
 
         let min_receive_amount_sat = settings
             .onchain

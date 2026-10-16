@@ -173,7 +173,7 @@ pub struct MintMethodSettings {
     pub method_name: Option<String>,
     pub min_amount: Option<Amount>,
     pub max_amount: Option<Amount>,
-    /// For bolt11, whether mint supports setting invoice description
+    /// For bolt11/bolt12, whether mint supports setting invoice/offer description
     pub description: Option<bool>,
 }
 
@@ -181,6 +181,7 @@ impl From<cdk::nuts::nut04::MintMethodSettings> for MintMethodSettings {
     fn from(s: cdk::nuts::nut04::MintMethodSettings) -> Self {
         let description = match s.options {
             Some(cdk::nuts::nut04::MintMethodOptions::Bolt11 { description }) => Some(description),
+            Some(cdk::nuts::nut04::MintMethodOptions::Bolt12 { description }) => Some(description),
             _ => None,
         };
         Self {
@@ -202,6 +203,9 @@ impl TryFrom<MintMethodSettings> for cdk::nuts::nut04::MintMethodSettings {
             PaymentMethod::Bolt11 => s
                 .description
                 .map(|description| cdk::nuts::nut04::MintMethodOptions::Bolt11 { description }),
+            PaymentMethod::Bolt12 => s
+                .description
+                .map(|description| cdk::nuts::nut04::MintMethodOptions::Bolt12 { description }),
             PaymentMethod::Custom { .. } => Some(cdk::nuts::nut04::MintMethodOptions::Custom {}),
             _ => None,
         };
@@ -637,6 +641,8 @@ pub struct MintInfo {
     pub time: Option<u64>,
     /// terms of url service of the mint
     pub tos_url: Option<String>,
+    /// max length the mint accepts for any array in a request
+    pub max_array_length: Option<u64>,
 }
 
 impl From<cdk::nuts::MintInfo> for MintInfo {
@@ -656,6 +662,7 @@ impl From<cdk::nuts::MintInfo> for MintInfo {
             motd: info.motd,
             time: info.time,
             tos_url: info.tos_url,
+            max_array_length: info.max_array_length,
         }
     }
 }
@@ -679,6 +686,7 @@ impl TryFrom<MintInfo> for cdk::nuts::MintInfo {
             motd: info.motd,
             time: info.time,
             tos_url: info.tos_url,
+            max_array_length: info.max_array_length,
         })
     }
 }
@@ -1107,6 +1115,7 @@ mod tests {
             motd: None,
             time: None,
             tos_url: None,
+            max_array_length: None,
         };
 
         let result = cdk::nuts::MintInfo::try_from(ffi_mint_info);

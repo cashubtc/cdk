@@ -1,6 +1,7 @@
 //! CDK mint payment backend interface
 
 use std::convert::Infallible;
+use std::fmt;
 use std::pin::Pin;
 
 use async_trait::async_trait;
@@ -307,7 +308,10 @@ pub struct CustomOutgoingPaymentOptions {
     pub method: String,
     /// Payment request string (method-specific format)
     pub request: String,
-    /// Optional amount the wallet would like to pay (from the melt quote request)
+    /// Optional payment amount.
+    ///
+    /// During quoting this is the amount requested by the wallet. During payment
+    /// execution this is the amount selected and persisted in the melt quote.
     pub amount: Option<Amount<CurrencyUnit>>,
     /// Maximum fee amount allowed for the payment
     pub max_fee_amount: Option<Amount<CurrencyUnit>>,
@@ -407,8 +411,9 @@ impl OutgoingPaymentOptions {
                 Box::new(CustomOutgoingPaymentOptions {
                     method: method.to_string(),
                     request: request.to_string(),
-                    // Payment is already quoted; correlation is via quote_id.
-                    amount: None,
+                    // Use the amount selected by the backend when the quote was
+                    // created. The original request amount may have differed.
+                    amount: Some(melt_quote.amount()),
                     max_fee_amount: Some(fee_reserve),
                     timeout_secs: None,
                     melt_options: melt_quote.options,
@@ -496,6 +501,13 @@ pub trait MintPayment {
     ) -> Result<Vec<WaitPaymentResponse>, Self::Err>;
 
     /// Check the status of an outgoing payment
+    ///
+    /// The reported status must be conservative about finality. The mint
+    /// treats `Unpaid` and `Failed` as authoritative terminal outcomes and
+    /// may compensate the melt, returning the reserved proofs to the user.
+    /// A backend that cannot guarantee a not-paid payment will never
+    /// settle — for example because an orchestrator may be between attempts
+    /// of the same payment — MUST report `Pending` or `Unknown` instead.
     async fn check_outgoing_payment(
         &self,
         payment_identifier: &PaymentIdentifier,
@@ -561,7 +573,7 @@ pub struct CreateIncomingPaymentResponse {
 }
 
 /// Payment response
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+#[derive(Clone, Hash, PartialEq, Eq)]
 pub struct MakePaymentResponse {
     /// Payment hash
     ///
@@ -573,11 +585,35 @@ pub struct MakePaymentResponse {
     pub payment_lookup_id: PaymentIdentifier,
     /// Payment proof
     pub payment_proof: Option<String>,
-    /// Status
+    /// Status.
+    ///
+    /// When this response is returned by [`MintPayment::make_payment`],
+    /// [`MeltQuoteState::Failed`] and [`MeltQuoteState::Unpaid`] are treated as
+    /// authoritative terminal outcomes. Backends must return
+    /// [`MeltQuoteState::Pending`], [`MeltQuoteState::Unknown`], or an error if
+    /// they are uncertain whether payment dispatch can still settle.
     pub status: MeltQuoteState,
     /// Total amount spent, including fees. Only authoritative when `status`
     /// is [`MeltQuoteState::Paid`]; otherwise backends return `0`.
+    /// Successful [`MintPayment::make_payment`] responses must use the requested
+    /// quote unit, rounding the combined principal and fees up when necessary.
+    /// [`MintPayment::check_outgoing_payment`] may return the backend's native
+    /// unit; the mint converts it conservatively for settlement.
     pub total_spent: Amount<CurrencyUnit>,
+}
+
+impl fmt::Debug for MakePaymentResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MakePaymentResponse")
+            .field("payment_lookup_id", &self.payment_lookup_id)
+            .field(
+                "payment_proof",
+                &self.payment_proof.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("status", &self.status)
+            .field("total_spent", &self.total_spent)
+            .finish()
+    }
 }
 
 impl MakePaymentResponse {
@@ -649,6 +685,8 @@ pub struct Bolt11Settings {
 pub struct Bolt12Settings {
     /// Amountless offer support
     pub amountless: bool,
+    /// Offer description supported
+    pub invoice_description: bool,
 }
 
 /// Onchain settings
@@ -866,6 +904,23 @@ mod tests {
 
     use super::*;
     use crate::QuoteId;
+
+    #[test]
+    fn make_payment_response_debug_redacts_payment_proof() {
+        let secret = "backend-payment-preimage-secret";
+        let response = MakePaymentResponse {
+            payment_lookup_id: PaymentIdentifier::CustomId("public-lookup-id".to_string()),
+            payment_proof: Some(secret.to_string()),
+            status: MeltQuoteState::Paid,
+            total_spent: Amount::new(10, CurrencyUnit::Sat),
+        };
+
+        let debug = format!("{response:?}");
+
+        assert!(debug.contains("public-lookup-id"));
+        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains(secret));
+    }
 
     #[test]
     fn test_payment_identifier_quote_id_roundtrip() {

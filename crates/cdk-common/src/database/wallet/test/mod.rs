@@ -106,7 +106,7 @@ fn test_mint_quote(mint_url: MintUrl) -> MintQuote {
         Some(Amount::from(1000)),
         CurrencyUnit::Sat,
         "lnbc1000...".to_string(),
-        9999999999,
+        2000000000,
         None,
     )
 }
@@ -121,7 +121,7 @@ fn test_melt_quote() -> MeltQuote {
         request: "lnbc1000...".to_string(),
         fee_reserve: Amount::from(10),
         state: cashu::MeltQuoteState::Unpaid,
-        expiry: 9999999999,
+        expiry: 2000000000,
         payment_proof: None,
         estimated_blocks: None,
         fee_index: None,
@@ -595,7 +595,8 @@ where
 {
     let mint_url = test_mint_url();
     let keyset_id = test_keyset_id();
-    let proof_info = test_proof_info(keyset_id, 100, mint_url.clone());
+    let mut proof_info = test_proof_info(keyset_id, 100, mint_url.clone());
+    proof_info.derivation_index = Some(42);
 
     // Add proof
     db.update_proofs(vec![proof_info.clone()], vec![])
@@ -617,6 +618,17 @@ where
     let ys = vec![proof_info.y];
     let proofs = db.get_proofs_by_ys(ys).await.unwrap();
     assert!(!proofs.is_empty());
+    assert_eq!(proofs[0].derivation_index, Some(42));
+
+    // Upserting legacy or reconstructed proof metadata must not erase the
+    // immutable derivation index.
+    let mut proof_without_index = proof_info.clone();
+    proof_without_index.derivation_index = None;
+    db.update_proofs(vec![proof_without_index], vec![])
+        .await
+        .unwrap();
+    let proofs = db.get_proofs_by_ys(vec![proof_info.y]).await.unwrap();
+    assert_eq!(proofs[0].derivation_index, Some(42));
 }
 
 /// Test getting proofs in transaction

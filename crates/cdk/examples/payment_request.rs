@@ -132,6 +132,7 @@ async fn main() -> anyhow::Result<()> {
         ]),
         mints: None,
         mint_preferred: None,
+        supported_methods: vec![],
     };
 
     let (payment_request, nostr_wait_info) = wallet.create_request(nostr_params).await?;
@@ -189,6 +190,7 @@ async fn main() -> anyhow::Result<()> {
         nostr_relays: None,
         mints: None,
         mint_preferred: None,
+        supported_methods: vec![],
     };
 
     let (http_request, _) = wallet.create_request(http_params).await?;
@@ -234,6 +236,7 @@ async fn main() -> anyhow::Result<()> {
         nostr_relays: Some(vec!["wss://relay.damus.io".to_string()]),
         mints: None,
         mint_preferred: None,
+        supported_methods: vec![],
     };
 
     let (p2pk_request, _) = wallet.create_request(p2pk_params).await?;
@@ -261,16 +264,29 @@ async fn main() -> anyhow::Result<()> {
     println!("// Decode the payment request");
     println!("let request = PaymentRequest::from_str(\"creqA...\")?;");
     println!();
-    println!("// Pay the request (sends tokens via the specified transport)");
-    println!("let result = wallet.pay_request(request).await?;");
+    println!("// Prepare the request and inspect its exact fees");
+    println!("let prepared = wallet.prepare_pay_request(request, None).await?;");
+    println!("println!(\"Method fee: {{}}\", prepared.method_fee());");
+    println!("println!(\"Input fee: {{}}\", prepared.input_fee());");
+    println!("println!(\"Total debit: {{}}\", prepared.total_amount());");
     println!();
-    println!("println!(\"Sent {{}} sats\", result.amount_sent);");
+    println!("// Explicitly approve and deliver the payment");
+    println!("match prepared.confirm().await {{");
+    println!("    Ok(()) => {{}}");
+    println!("    Err(Error::PaymentRequestDeliveryFailed {{ operation_id, source }}) => {{");
+    println!("        eprintln!(\"Delivery failed: {{source}}\");");
+    println!("        // Do not pay again: reclaim the pending token if it is unclaimed.");
+    println!("        wallet.revoke_send(operation_id).await?;");
+    println!("    }}");
+    println!("    Err(error) => return Err(error.into()),");
+    println!("}}");
     println!("```\n");
 
-    println!("The pay_request method will:");
+    println!("The prepare/confirm flow will:");
     println!("  1. Select proofs matching the requested amount and unit");
     println!("  2. Apply any spending conditions from the request");
-    println!("  3. Deliver the token via the request's transport (Nostr/HTTP)");
+    println!("  3. Expose method, input, and total fees before payment");
+    println!("  4. Deliver the token via the request's transport only after confirm");
 
     println!("\n✓ Example complete!");
 

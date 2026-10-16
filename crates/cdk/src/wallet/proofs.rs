@@ -12,7 +12,27 @@ use crate::nuts::{
 };
 use crate::{ensure_cdk, Amount, Error, Wallet};
 
+#[cfg(test)]
+mod inactive_fee_tests;
+
 impl Wallet {
+    pub(crate) async fn unspent_proof_derivation_indices(
+        &self,
+    ) -> Result<HashMap<Proof, u32>, Error> {
+        Ok(self
+            .localstore
+            .get_proofs(
+                Some(self.mint_url.clone()),
+                Some(self.unit.clone()),
+                Some(vec![State::Unspent]),
+                None,
+            )
+            .await?
+            .into_iter()
+            .filter_map(|proof| proof.derivation_index.map(|index| (proof.proof, index)))
+            .collect())
+    }
+
     /// Get unspent proofs for mint
     #[instrument(skip(self))]
     pub async fn get_unspent_proofs(&self) -> Result<Proofs, Error> {
@@ -253,6 +273,29 @@ impl Wallet {
         fees_and_keyset_amounts: &KeysetFeeAndAmounts,
         include_fees: bool,
     ) -> Result<Proofs, Error> {
+        Self::select_proofs_with_derivation_indices(
+            amount,
+            proofs,
+            active_keyset_ids,
+            fees_and_keyset_amounts,
+            include_fees,
+            &HashMap::new(),
+        )
+    }
+
+    /// Select proofs, preferring older deterministic proofs when choices are otherwise equivalent.
+    ///
+    /// Proofs without a derivation index are treated as oldest and spent first:
+    /// they cannot be re-derived from the seed, so the wallet holds on to
+    /// recoverable deterministic proofs instead.
+    pub(crate) fn select_proofs_with_derivation_indices(
+        amount: Amount,
+        proofs: Proofs,
+        active_keyset_ids: &Vec<Id>,
+        fees_and_keyset_amounts: &KeysetFeeAndAmounts,
+        include_fees: bool,
+        derivation_indices: &HashMap<Proof, u32>,
+    ) -> Result<Proofs, Error> {
         if amount == Amount::ZERO {
             return Ok(vec![]);
         }
@@ -260,7 +303,7 @@ impl Wallet {
 
         // Sort proofs in descending order
         let mut proofs = proofs;
-        proofs.sort_by(|a, b| a.cmp(b).reverse());
+        Self::sort_proofs_by_amount_and_age(&mut proofs, derivation_indices);
 
         // Track selected proofs and remaining amounts (include all inactive proofs first)
         let inactive_proofs: Proofs = proofs
@@ -273,8 +316,21 @@ impl Wallet {
             tracing::debug!("All inactive proofs are sufficient");
             // Still need to filter to minimum set, not return all of them
             let mut inactive_selected = selected_proofs.into_iter().collect::<Vec<_>>();
-            inactive_selected.sort_by(|a, b| a.cmp(b).reverse());
-            return Self::select_least_amount_over(inactive_selected, amount);
+            Self::sort_proofs_by_amount_and_age(&mut inactive_selected, derivation_indices);
+            let selected =
+                Self::select_least_amount_over(inactive_selected, amount, derivation_indices)?;
+            return if include_fees {
+                Self::include_fees(
+                    amount,
+                    proofs,
+                    selected,
+                    active_keyset_ids,
+                    fees_and_keyset_amounts,
+                    derivation_indices,
+                )
+            } else {
+                Ok(selected)
+            };
         }
         let mut remaining_amounts: Vec<Amount> = Vec::new();
 
@@ -333,6 +389,7 @@ impl Wallet {
                     result,
                     active_keyset_ids,
                     fees_and_keyset_amounts,
+                    derivation_indices,
                 );
             } else {
                 return Ok(result);
@@ -384,8 +441,9 @@ impl Wallet {
         let mut selected_proofs = selected_proofs.into_iter().collect::<Vec<_>>();
         let total_amount = selected_proofs.total_amount()?;
         if total_amount != amount && selected_proofs.len() > 1 {
-            selected_proofs.sort_by(|a, b| a.cmp(b).reverse());
-            selected_proofs = Self::select_least_amount_over(selected_proofs, amount)?;
+            Self::sort_proofs_by_amount_and_age(&mut selected_proofs, derivation_indices);
+            selected_proofs =
+                Self::select_least_amount_over(selected_proofs, amount, derivation_indices)?;
         }
 
         if include_fees {
@@ -395,13 +453,18 @@ impl Wallet {
                 selected_proofs,
                 active_keyset_ids,
                 fees_and_keyset_amounts,
+                derivation_indices,
             );
         }
 
         Ok(selected_proofs)
     }
 
-    fn select_least_amount_over(proofs: Proofs, amount: Amount) -> Result<Vec<Proof>, Error> {
+    fn select_least_amount_over(
+        proofs: Proofs,
+        amount: Amount,
+        derivation_indices: &HashMap<Proof, u32>,
+    ) -> Result<Vec<Proof>, Error> {
         let total_amount = proofs.total_amount()?;
         if total_amount < amount {
             return Err(Error::InsufficientFunds);
@@ -419,13 +482,20 @@ impl Wallet {
 
             if left_amount >= amount && right_amount >= amount {
                 match (
-                    Self::select_least_amount_over(left, amount),
-                    Self::select_least_amount_over(right, amount),
+                    Self::select_least_amount_over(left, amount, derivation_indices),
+                    Self::select_least_amount_over(right, amount, derivation_indices),
                 ) {
                     (Ok(left_proofs), Ok(right_proofs)) => {
                         let left_total_amount = left_proofs.total_amount()?;
                         let right_total_amount = right_proofs.total_amount()?;
-                        if left_total_amount < right_total_amount {
+                        if left_total_amount < right_total_amount
+                            || (left_total_amount == right_total_amount
+                                && Self::is_older_selection(
+                                    &left_proofs,
+                                    &right_proofs,
+                                    derivation_indices,
+                                ))
+                        {
                             return Ok(left_proofs);
                         } else {
                             return Ok(right_proofs);
@@ -436,9 +506,9 @@ impl Wallet {
                     (Err(_), Err(_)) => return Err(Error::InsufficientFunds),
                 }
             } else if left_amount >= amount {
-                return Self::select_least_amount_over(left, amount);
+                return Self::select_least_amount_over(left, amount, derivation_indices);
             } else if right_amount >= amount {
-                return Self::select_least_amount_over(right, amount);
+                return Self::select_least_amount_over(right, amount, derivation_indices);
             }
         }
 
@@ -451,33 +521,9 @@ impl Wallet {
         mut selected_proofs: Proofs,
         active_keyset_ids: &Vec<Id>,
         fees_and_keyset_amounts: &KeysetFeeAndAmounts,
+        derivation_indices: &HashMap<Proof, u32>,
     ) -> Result<Proofs, Error> {
         tracing::debug!("Including fees");
-        let fee_breakdown = calculate_fee(
-            &selected_proofs.count_by_keyset(),
-            &fees_and_keyset_amounts
-                .iter()
-                .map(|(key, values)| (*key, values.fee()))
-                .collect(),
-        )?;
-        let net_amount = selected_proofs.total_amount()? - fee_breakdown.total;
-        tracing::debug!(
-            "Net amount={}, fee={}, total amount={}",
-            net_amount,
-            fee_breakdown.total,
-            selected_proofs.total_amount()?
-        );
-        if net_amount >= amount {
-            tracing::debug!(
-                "Selected proofs: {:?}",
-                selected_proofs
-                    .iter()
-                    .map(|p| p.amount.into())
-                    .collect::<Vec<u64>>(),
-            );
-            return Ok(selected_proofs);
-        }
-
         let keyset_fees: HashMap<Id, u64> = fees_and_keyset_amounts
             .iter()
             .map(|(key, values)| (*key, values.fee()))
@@ -491,16 +537,11 @@ impl Wallet {
         loop {
             let fee = calculate_fee(&selected_proofs.count_by_keyset(), &keyset_fees)?.total;
             let total = selected_proofs.total_amount()?;
-            let net_amount = total - fee;
+            let net_amount = total.checked_sub(fee);
 
-            tracing::debug!(
-                "Net amount={}, fee={}, total amount={}",
-                net_amount,
-                fee,
-                total
-            );
+            tracing::debug!("Fee={}, total amount={}", fee, total);
 
-            if net_amount >= amount {
+            if net_amount.is_some_and(|net| net >= amount) {
                 tracing::debug!(
                     "Selected proofs: {:?}",
                     selected_proofs
@@ -515,15 +556,22 @@ impl Wallet {
                 return Err(Error::InsufficientFunds);
             }
 
-            let shortfall = amount - net_amount;
+            let shortfall = match net_amount {
+                Some(net) => amount.checked_sub(net),
+                None => fee
+                    .checked_sub(total)
+                    .and_then(|deficit| amount.checked_add(deficit)),
+            }
+            .ok_or(Error::InsufficientFunds)?;
             tracing::debug!("Net amount is less than required, shortfall={}", shortfall);
 
-            let additional = Wallet::select_proofs(
+            let additional = Wallet::select_proofs_with_derivation_indices(
                 shortfall,
                 remaining_proofs.clone(),
                 active_keyset_ids,
                 fees_and_keyset_amounts,
                 false,
+                derivation_indices,
             )?;
 
             if additional.is_empty() {
@@ -534,12 +582,54 @@ impl Wallet {
             selected_proofs.extend(additional);
         }
     }
+
+    fn sort_proofs_by_amount_and_age(
+        proofs: &mut Proofs,
+        derivation_indices: &HashMap<Proof, u32>,
+    ) {
+        if derivation_indices.is_empty() {
+            proofs.sort_by(|a, b| a.cmp(b).reverse());
+            return;
+        }
+
+        proofs.sort_by(|a, b| {
+            b.amount.cmp(&a.amount).then_with(|| {
+                // Proofs without a derivation index (received from other
+                // wallets or minted before indices were tracked) cannot be
+                // recovered from the seed, so they are treated as oldest and
+                // spent first. `None` sorts before any `Some` index.
+                derivation_indices
+                    .get(a)
+                    .copied()
+                    .cmp(&derivation_indices.get(b).copied())
+            })
+        });
+    }
+
+    fn is_older_selection(
+        left: &Proofs,
+        right: &Proofs,
+        derivation_indices: &HashMap<Proof, u32>,
+    ) -> bool {
+        let mut left_indices = left
+            .iter()
+            .map(|proof| derivation_indices.get(proof).copied())
+            .collect::<Vec<_>>();
+        let mut right_indices = right
+            .iter()
+            .map(|proof| derivation_indices.get(proof).copied())
+            .collect::<Vec<_>>();
+        left_indices.sort_unstable();
+        right_indices.sort_unstable();
+        left_indices < right_indices
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
 
+    use cdk_common::amount::KeysetFeeAndAmounts;
     use cdk_common::secret::Secret;
     use cdk_common::{Amount, Id, Proof, PublicKey};
 
@@ -559,6 +649,103 @@ mod tests {
             )
             .unwrap(),
         )
+    }
+
+    fn indexed_proof(amount: u64, index: u32) -> Proof {
+        Proof::new(
+            Amount::from(amount),
+            id(),
+            Secret::new(format!("proof-{index:08}")),
+            PublicKey::from_hex(
+                "03deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+            )
+            .unwrap(),
+        )
+    }
+
+    fn fee_and_amounts() -> KeysetFeeAndAmounts {
+        HashMap::from([(
+            id(),
+            (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into(),
+        )])
+    }
+
+    #[test]
+    fn test_select_proofs_spends_unindexed_proofs_first() {
+        // A proof without a derivation index cannot be recovered from the
+        // seed, so it is treated as older than any indexed proof.
+        let indexed = indexed_proof(8, 4);
+        let unindexed = proof(8);
+        let indices = HashMap::from([(indexed.clone(), 4)]);
+
+        let selected = Wallet::select_proofs_with_derivation_indices(
+            Amount::from(8),
+            vec![indexed, unindexed.clone()],
+            &vec![id()],
+            &fee_and_amounts(),
+            false,
+            &indices,
+        )
+        .unwrap();
+
+        assert_eq!(selected, vec![unindexed]);
+    }
+
+    #[test]
+    fn test_select_proofs_prefers_oldest_equal_amount() {
+        let old = indexed_proof(8, 4);
+        let middle = indexed_proof(8, 40);
+        let young = indexed_proof(8, 400);
+        let indices = HashMap::from([(old.clone(), 4), (middle.clone(), 40), (young.clone(), 400)]);
+
+        let selected = Wallet::select_proofs_with_derivation_indices(
+            Amount::from(8),
+            vec![young, middle, old.clone()],
+            &vec![id()],
+            &fee_and_amounts(),
+            false,
+            &indices,
+        )
+        .unwrap();
+
+        assert_eq!(selected, vec![old]);
+    }
+
+    #[test]
+    fn test_select_proofs_without_indices_preserves_legacy_order() {
+        let proofs = vec![proof(8), proof(8), proof(8)];
+        let mut expected = proofs.clone();
+        expected.sort_by(|a, b| a.cmp(b).reverse());
+
+        let selected = Wallet::select_proofs(
+            Amount::from(8),
+            proofs,
+            &vec![id()],
+            &fee_and_amounts(),
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(selected, vec![expected[0].clone()]);
+    }
+
+    #[test]
+    fn test_select_proofs_keeps_exact_amount_priority_over_age() {
+        let old = indexed_proof(16, 4);
+        let young = indexed_proof(8, 400);
+        let indices = HashMap::from([(old.clone(), 4), (young.clone(), 400)]);
+
+        let selected = Wallet::select_proofs_with_derivation_indices(
+            Amount::from(8),
+            vec![old, young.clone()],
+            &vec![id()],
+            &fee_and_amounts(),
+            false,
+            &indices,
+        )
+        .unwrap();
+
+        assert_eq!(selected, vec![young]);
     }
 
     #[test]
@@ -1607,10 +1794,77 @@ mod tests {
             true,
         );
 
-        assert!(
-            result.is_err(),
-            "1 sat proof with 1 sat fee is uneconomical"
+        assert!(matches!(result, Err(crate::Error::InsufficientFunds)));
+    }
+
+    #[test]
+    fn test_select_proofs_include_fees_covers_fee_deficit() {
+        let keyset_fee_and_amounts = keyset_fee_and_amounts_with_fee(2000);
+        let proofs = vec![proof(1), proof(2), proof(4)];
+
+        let selected = Wallet::select_proofs(
+            1.into(),
+            proofs.clone(),
+            &vec![id()],
+            &keyset_fee_and_amounts,
+            true,
+        )
+        .unwrap();
+
+        // The first two inputs still have a fee deficit; all three are needed.
+        assert_eq!(selected.len(), proofs.len());
+        assert!(proofs.iter().all(|proof| selected.contains(proof)));
+    }
+
+    #[test]
+    fn test_select_proofs_include_fees_preserves_deficit_in_shortfall() {
+        let keyset_fee_and_amounts = keyset_fee_and_amounts_with_fee(2000);
+        let larger_proof = proof(4);
+        let proofs = vec![proof(1), proof(1), larger_proof.clone()];
+
+        let selected =
+            Wallet::select_proofs(1.into(), proofs, &vec![id()], &keyset_fee_and_amounts, true)
+                .unwrap();
+
+        assert_eq!(selected.len(), 2);
+        assert!(selected.contains(&larger_proof));
+        assert_eq!(
+            selected
+                .iter()
+                .filter(|proof| proof.amount == 1.into())
+                .count(),
+            1
         );
+    }
+
+    #[test]
+    fn test_select_proofs_include_fees_insufficient_for_fee_deficit() {
+        let keyset_fee_and_amounts = keyset_fee_and_amounts_with_fee(2000);
+
+        for proofs in [vec![proof(1)], vec![proof(1), proof(2)]] {
+            let result =
+                Wallet::select_proofs(1.into(), proofs, &vec![id()], &keyset_fee_and_amounts, true);
+
+            assert!(matches!(result, Err(crate::Error::InsufficientFunds)));
+        }
+    }
+
+    #[test]
+    fn test_select_proofs_include_fees_equal_initial_value_with_remaining_proofs() {
+        let keyset_fee_and_amounts = keyset_fee_and_amounts_with_fee(1000);
+        let proofs = vec![proof(1), proof(2)];
+
+        let selected = Wallet::select_proofs(
+            1.into(),
+            proofs.clone(),
+            &vec![id()],
+            &keyset_fee_and_amounts,
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(selected.len(), proofs.len());
+        assert!(proofs.iter().all(|proof| selected.contains(proof)));
     }
 
     #[test]

@@ -2,17 +2,22 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "v[0-9]*.[0-9]*.x"]
   pull_request:
     branches:
       - main
       - "v[0-9]*.[0-9]*.x" # Match version branches like v0.13.x, v1.0.x, etc.
   release:
     types: [created]
+  # Select a branch or tag to validate the full suite before a local merge/release.
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 # Cancel previous runs on same PR
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -22,7 +27,11 @@ env:
   # jobs on that host, instead of once per job into each job's TMPDIR
   # (per-job extraction multiplied disk usage and filled self-hosted runner
   # disks when several itest jobs ran concurrently).
+  # /var/tmp is writable in the ephemeral runner containers. The physical
+  # hosts' /data mount is not exposed inside those containers.
   CDK_NEXTEST_EXTRACT_ROOT: /var/tmp/cdk-nextest-extract
+  # Reserve five minutes of the 30-minute integration-job limit for cleanup.
+  CDK_ITEST_SUITE_TIMEOUT_SECONDS: 1500
 
 jobs:
   pre-commit-checks:
@@ -45,6 +54,39 @@ jobs:
         run: nix develop --fallback -i -L .#stable --command bash -c "find . -name '*.nix' -not -path './.git/*' -not -path './.jj/*' -print0 | xargs -0 nixpkgs-fmt --check"
       - name: typos
         run: nix develop --fallback -i -L .#stable --command typos
+      # The release workflows build the bindings with --locked, so a lock that
+      # drifted from Cargo.toml would otherwise first surface on release day.
+      - name: Cargo.lock is up to date
+        run: nix develop --fallback -i -L .#stable --command cargo metadata --locked --format-version 1 > /dev/null
+
+  fuzz-check:
+    name: "Fuzz targets compile and smoke test"
+    runs-on: self-hosted
+    timeout-minutes: 30
+    needs: pre-commit-checks
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+      - uses: cachix/cachix-action@v17
+        with:
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
+      - name: Compile every fuzz target and run seeded smoke tests
+        run: |
+          nix develop --fallback -i -L .#nightly --command bash -c '
+            set -euo pipefail
+            cargo check --manifest-path fuzz/Cargo.toml --bins
+            cd fuzz
+            corpus_root="${{ runner.temp }}/cdk-fuzz-corpus"
+            mkdir -p "$corpus_root/proof" "$corpus_root/payment-request" "$corpus_root/artifacts"
+            cargo fuzz run fuzz_proof "$corpus_root/proof" seeds/fuzz_proof -- \
+              -max_total_time=5 -artifact_prefix="$corpus_root/artifacts/"
+            cargo fuzz run fuzz_payment_request_bech32 \
+              "$corpus_root/payment-request" seeds/fuzz_payment_request_bech32 -- \
+              -max_total_time=5 -artifact_prefix="$corpus_root/artifacts/"
+          '
 
   # Warm the shared Crane dependency derivation on each physical NixOS runner.
   # The ephemeral nspawn job containers use the host Nix daemon/store, but
@@ -68,7 +110,9 @@ jobs:
           useDaemon: false
         continue-on-error: true
       - name: Build shared Crane dependencies
-        run: nix build -L .#deps --no-link --print-out-paths | tee "$RUNNER_TEMP/cdk-cache-paths.txt"
+        run: |
+          set -o pipefail
+          nix build -L .#deps --no-link --print-out-paths | tee "$RUNNER_TEMP/cdk-cache-paths.txt"
       # Deps change only with Cargo.lock/toolchain, so this mostly dedupes.
       - name: Push to Attic cache
         # Never push from fork PRs (secrets are withheld there anyway; belt and braces).
@@ -98,7 +142,9 @@ jobs:
           useDaemon: false
         continue-on-error: true
       - name: Build MSRV Crane dependencies
-        run: nix build -L .#deps-msrv --no-link --print-out-paths | tee "$RUNNER_TEMP/cdk-cache-paths-msrv.txt"
+        run: |
+          set -o pipefail
+          nix build -L .#deps-msrv --no-link --print-out-paths | tee "$RUNNER_TEMP/cdk-cache-paths-msrv.txt"
       # MSRV deps change only with Cargo.lock.msrv/toolchain, so this mostly
       # dedupes; without it every new revision rebuilds them from scratch.
       - name: Push to Attic cache
@@ -144,9 +190,16 @@ jobs:
         id: groups
         run: |
           examples=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: builtins.substring 0 8 n == "example-") (builtins.attrNames attrs)' --json)
-          checks=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: n != "pre-commit-check" && n != "workspace-clippy-all-targets" && n != "doc-tests" && n != "strict-docs" && n != "ffi-tests" && builtins.substring 0 8 n != "example-" && builtins.substring 0 5 n != "msrv-" && builtins.substring 0 5 n != "wasm-") (builtins.attrNames attrs)' --json)
+          checks=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: n != "pr-unit-tests" && n != "pr-feature-tests" && n != "pre-commit-check" && n != "workspace-clippy-all-targets" && n != "doc-tests" && n != "strict-docs" && n != "ffi-tests" && builtins.substring 0 8 n != "example-" && builtins.substring 0 5 n != "msrv-" && builtins.substring 0 5 n != "wasm-") (builtins.attrNames attrs)' --json)
           msrv_checks=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: builtins.substring 0 5 n == "msrv-") (builtins.attrNames attrs)' --json)
           wasm_checks=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: builtins.substring 0 5 n == "wasm-") (builtins.attrNames attrs)' --json)
+          # PRs retain workspace unit tests and core feature boundaries. Other
+          # events run every feature group discovered above.
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            checks='["pr-unit-tests","pr-feature-tests","core-cashu","core-sdk-baseline","core-sdk-wallet","core-sdk-mint"]'
+            msrv_checks='["msrv-cdk-all-features"]'
+            wasm_checks='["wasm-cdk-wallet"]'
+          fi
           {
             echo "examples=$examples"
             echo "checks=$checks"
@@ -209,7 +262,9 @@ jobs:
           useDaemon: false
         continue-on-error: true
       - name: Run clippy and tests
-        run: nix build -L .#checks.x86_64-linux.${{ matrix.check }} --no-link --print-out-paths | tee "$RUNNER_TEMP/cdk-cache-paths.txt"
+        run: |
+          set -o pipefail
+          nix build -L .#checks.x86_64-linux.${{ matrix.check }} --no-link --print-out-paths | tee "$RUNNER_TEMP/cdk-cache-paths.txt"
       # Push per-revision check outputs so re-runs and rebased PRs substitute
       # them instead of recompiling; cachix's 5 GB quota evicts them within
       # days (this is why Check jobs bounce between ~0.2 min and ~20 min).
@@ -241,6 +296,7 @@ jobs:
         continue-on-error: true
       - name: Build nextest archive and harness binaries
         run: |
+          set -o pipefail
           nix build -L \
             .#itest-archive \
             .#start-fake-mint \
@@ -278,7 +334,7 @@ jobs:
           useDaemon: false
         continue-on-error: true
       - name: Run clippy and Postgres tests
-        run: nix develop --fallback -i -L .#regtest --command bash -c "start-postgres && cargo clippy -p cdk-postgres -- -D warnings && cargo test -p cdk-postgres && cargo test -p cdk-integration-tests --test signatory_rotation"
+        run: nix develop --fallback -i -L .#stable --command bash -c "start-postgres && cargo clippy -p cdk-postgres -- -D warnings && cargo test -p cdk-postgres -- --test-threads 8 && CDK_REQUIRE_POSTGRES_TESTS=1 cargo test -p cdk --lib second_replica && cargo test -p cdk-integration-tests --test signatory_rotation"
 
 # Tests for cdk-supabase that require a local Supabase stack (PostgREST + GoTrue + PostgreSQL)
   supabase-tests:
@@ -298,15 +354,28 @@ jobs:
       - name: Start Supabase local stack
         run: |
           docker compose -f misc/supabase/docker-compose.yml up -d
+          curl_bin="$(nix develop --fallback -i -L .#stable --command sh -c 'command -v curl')"
+          if [ ! -x "$curl_bin" ]; then
+            echo "The stable Nix development shell did not provide curl" >&2
+            exit 1
+          fi
+
           # Wait until PostgREST is reachable (it starts after Postgres is healthy)
+          ready=0
           for i in $(seq 1 30); do
-            if curl -sf http://localhost:54321/rest/v1/ -H "apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRFA0NiK7kyqd6gq8zofHRnNe0pZzjJAVHf3nQzRoFk" > /dev/null 2>&1; then
+            if "$curl_bin" -sf http://localhost:54321/rest/v1/ -H "apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRFA0NiK7kyqd6gq8zofHRnNe0pZzjJAVHf3nQzRoFk" > /dev/null 2>&1; then
               echo "Supabase REST API is ready"
+              ready=1
               break
             fi
             echo "Waiting for Supabase... ($i/30)"
             sleep 3
           done
+          if [ "$ready" -ne 1 ]; then
+            echo "Supabase REST API did not become ready" >&2
+            docker compose -f misc/supabase/docker-compose.yml logs >&2 || true
+            exit 1
+          fi
       - name: Apply CDK wallet schema
         env:
           SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRFA0NiK7kyqd6gq8zofHRnNe0pZzjJAVHf3nQzRoFk"
@@ -317,6 +386,11 @@ jobs:
           trap 'rm -f "$schema_file"' EXIT
 
           nix develop --fallback -i -L .#stable --command cargo run --quiet -p cdk-supabase --example print_schema > "$schema_file"
+          curl_bin="$(nix develop --fallback -i -L .#stable --command sh -c 'command -v curl')"
+          if [ ! -x "$curl_bin" ]; then
+            echo "The stable Nix development shell did not provide curl" >&2
+            exit 1
+          fi
 
           # Apply the schema. ON_ERROR_STOP makes psql fail (and the step fail)
           # if any statement errors, instead of silently leaving a partial schema.
@@ -335,7 +409,7 @@ jobs:
           # Authorization bearer) so PostgREST resolves the anon role directly.
           ready=0
           for i in $(seq 1 30); do
-            code=$(curl -s -o /dev/null -w "%{http_code}" \
+            code=$("$curl_bin" -s -o /dev/null -w "%{http_code}" \
               "http://localhost:54321/rest/v1/schema_info?limit=1" \
               -H "apikey: ${SUPABASE_ANON_KEY}")
             if [ "$code" = "200" ]; then
@@ -401,7 +475,10 @@ jobs:
         id: archive
         run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> $GITHUB_OUTPUT
       - name: Test
-        run: nix develop --fallback -i -L .#regtest --command bash -c "export TMPDIR=$(mktemp -d -p $PWD) && export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just itest-ln ${{ matrix.database }}"
+        run: |
+          export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}'
+          nix develop --fallback -i -L -k CDK_ITEST_ARCHIVE -k CDK_NEXTEST_EXTRACT_ROOT -k CDK_ITEST_SUITE_TIMEOUT_SECONDS .#regtest \
+            --command misc/with_ci_tmpdir.sh just itest-ln ${{ matrix.database }}
 
   regtest-onchain-itest:
     name: "Integration regtest Onchain tests"
@@ -425,7 +502,10 @@ jobs:
         id: archive
         run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> $GITHUB_OUTPUT
       - name: Test
-        run: nix develop --fallback -i -L .#regtest --command bash -c "export TMPDIR=$(mktemp -d -p $PWD) && export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just itest-onchain ${{ matrix.database }}"
+        run: |
+          export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}'
+          nix develop --fallback -i -L -k CDK_ITEST_ARCHIVE -k CDK_NEXTEST_EXTRACT_ROOT -k CDK_ITEST_SUITE_TIMEOUT_SECONDS .#regtest \
+            --command misc/with_ci_tmpdir.sh just itest-onchain ${{ matrix.database }}
 
   fake-mint-itest:
     name: "Integration fake mint tests"
@@ -449,7 +529,10 @@ jobs:
         id: archive
         run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> $GITHUB_OUTPUT
       - name: Test fake mint
-        run: nix develop --fallback -i -L .#regtest --command bash -c "export TMPDIR=$(mktemp -d -p $PWD) && export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just fake-mint-itest ${{ matrix.database }}"
+        run: |
+          export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}'
+          nix develop --fallback -i -L -k CDK_ITEST_ARCHIVE -k CDK_NEXTEST_EXTRACT_ROOT -k CDK_ITEST_SUITE_TIMEOUT_SECONDS .#regtest \
+            --command misc/with_ci_tmpdir.sh just fake-mint-itest ${{ matrix.database }}
 
   pure-itest:
     name: "Integration fake wallet tests"
@@ -473,14 +556,17 @@ jobs:
         id: archive
         run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> $GITHUB_OUTPUT
       - name: Test pure
-        run: nix develop --fallback -i -L .#regtest --command bash -c "export TMPDIR=$(mktemp -d -p $PWD) && export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just test-pure ${{ matrix.database }}"
+        run: |
+          export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}'
+          nix develop --fallback -i -L -k CDK_ITEST_ARCHIVE -k CDK_NEXTEST_EXTRACT_ROOT -k CDK_ITEST_SUITE_TIMEOUT_SECONDS .#regtest \
+            --command misc/with_ci_tmpdir.sh just test-pure ${{ matrix.database }}
       - name: Basic mint integration test
         if: matrix.database == 'memory'
         run: |
-          nix develop --fallback -i -L .#regtest --command bash -c "
+          export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}'
+          nix develop --fallback -i -L -k CDK_ITEST_ARCHIVE -k CDK_NEXTEST_EXTRACT_ROOT -k CDK_ITEST_SUITE_TIMEOUT_SECONDS .#regtest \
+            --command misc/with_ci_tmpdir.sh bash -c "
             set -euo pipefail
-            export TMPDIR=\$(mktemp -d -p \"\$PWD\")
-            export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}'
             source ./misc/itest_helpers.sh
             run_test mint
           "
@@ -507,7 +593,10 @@ jobs:
         id: archive
         run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> $GITHUB_OUTPUT
       - name: Test
-        run: nix develop --fallback -i -L .#regtest --command bash -c "export TMPDIR=$(mktemp -d -p $PWD) && export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just itest-payment-processor ${{matrix.ln}}"
+        run: |
+          export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}'
+          nix develop --fallback -i -L -k CDK_ITEST_ARCHIVE -k CDK_NEXTEST_EXTRACT_ROOT -k CDK_ITEST_SUITE_TIMEOUT_SECONDS .#regtest \
+            --command misc/with_ci_tmpdir.sh just itest-payment-processor ${{matrix.ln}}
 
   msrv-build:
     name: "MSRV: ${{ matrix.check }}"
@@ -580,11 +669,25 @@ jobs:
         run: |
           # Wait a bit more for import to complete
           sleep 5
+          curl_bin="$(nix develop --fallback -i -L .#stable --command sh -c 'command -v curl')"
+          if [ ! -x "$curl_bin" ]; then
+            echo "The stable Nix development shell did not provide curl" >&2
+            exit 1
+          fi
           # Check if the realm endpoint is accessible (better verification than log grep)
-          curl -f -s http://127.0.0.1:8080/realms/cdk-test-realm/.well-known/openid-configuration > /dev/null && echo "Keycloak realm successfully imported" || (docker logs $(docker ps -q --filter "ancestor=quay.io/keycloak/keycloak:25.0.6") && exit 1)
+          "$curl_bin" -fsS http://127.0.0.1:8080/realms/cdk-test-realm/.well-known/openid-configuration > /dev/null && echo "Keycloak realm successfully imported" || (docker logs $(docker ps -q --filter "ancestor=quay.io/keycloak/keycloak:25.0.6") && exit 1)
       - name: Test fake auth mint
-        run: nix develop --fallback -i -L .#integration --command bash -c "export TMPDIR=$(mktemp -d -p $PWD) && export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}' && just fake-auth-mint-itest ${{ matrix.database }} http://127.0.0.1:8080/realms/cdk-test-realm/.well-known/openid-configuration"
+        run: |
+          export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}'
+          nix develop --fallback -i -L -k CDK_ITEST_ARCHIVE -k CDK_NEXTEST_EXTRACT_ROOT -k CDK_ITEST_SUITE_TIMEOUT_SECONDS .#integration \
+            --command misc/with_ci_tmpdir.sh just fake-auth-mint-itest \
+            ${{ matrix.database }} \
+            http://127.0.0.1:8080/realms/cdk-test-realm/.well-known/openid-configuration
+      - name: Capture auth service logs on failure
+        if: failure()
+        run: docker compose -f misc/keycloak/docker-compose-recover.yml logs --no-color --timestamps keycloak postgres
       - name: Stop and clean up Docker Compose
+        if: always()
         run: |
           docker compose -f misc/keycloak/docker-compose-recover.yml down
 
@@ -627,6 +730,7 @@ jobs:
         run: nix develop --fallback -i -L .#ffi --command just ffi-test-live-python
 
   coverage:
+    if: github.event_name != 'pull_request'
     name: "Code Coverage"
     runs-on: self-hosted
     timeout-minutes: 45
@@ -675,6 +779,7 @@ jobs:
         run: nix develop --fallback -L .#bindings --command just test-dart
 
   kotlin-binding-tests:
+    if: github.event_name != 'pull_request'
     name: "Kotlin binding tests"
     runs-on: self-hosted
     timeout-minutes: 30
@@ -692,11 +797,12 @@ jobs:
         run: |
           result=$(nix build -L .#kotlin-bindings --print-out-paths --no-link)
           cp -r "$result"/* bindings/kotlin/
-          chmod -R u+w bindings/kotlin/cdk-jvm/src/main/kotlin bindings/kotlin/cdk-jvm/src/main/resources
+          chmod -R u+w bindings/kotlin
       - name: Run Kotlin tests
         run: nix develop --fallback -L .#bindings --command just test-kotlin
 
   go-binding-tests:
+    if: github.event_name != 'pull_request'
     name: "Go binding tests"
     runs-on: self-hosted
     timeout-minutes: 30
@@ -728,6 +834,7 @@ jobs:
         run: nix develop --fallback -L .#bindings --command just test-go
 
   swift-binding-tests:
+    if: github.event_name != 'pull_request'
     name: "Swift binding tests"
     runs-on: macos-latest
     timeout-minutes: 45
@@ -755,3 +862,25 @@ jobs:
             DEVELOPER_DIR="$(/usr/bin/xcode-select -p)" \
             DYLD_LIBRARY_PATH="$PWD/target/release" \
             /usr/bin/swift test
+
+  status:
+    name: CI status
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [pre-commit-checks, fuzz-check, warm-nix-cache, warm-msrv-nix-cache, quick-check, discover_ci_groups, examples, clippy-and-test, build-itest-binaries, postgres-tests, supabase-tests, redis-tests, regtest-ln-itest, regtest-onchain-itest, fake-mint-itest, pure-itest, payment-processor-itests, msrv-build, check-wasm, fake-mint-auth-itest, docs, ffi-tests, coverage, dart-binding-tests, kotlin-binding-tests, go-binding-tests, swift-binding-tests]
+    steps:
+      - name: Verify required jobs
+        uses: actions/github-script@v8
+        env:
+          JOB_RESULTS: ${{ toJSON(needs) }}
+        with:
+          script: |
+            const results = JSON.parse(process.env.JOB_RESULTS);
+            const fullOnly = new Set([
+              'coverage', 'kotlin-binding-tests', 'go-binding-tests', 'swift-binding-tests'
+            ]);
+            for (const [name, job] of Object.entries(results)) {
+              if (context.eventName === 'pull_request' && fullOnly.has(name) && job.result === 'skipped') continue;
+              if (job.result !== 'success') core.setFailed(`${name}: ${job.result}`);
+            }

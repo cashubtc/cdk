@@ -8,6 +8,7 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 
+use super::url_for_debug;
 use crate::error::HttpError;
 use crate::response::{RawResponse, Response};
 
@@ -87,6 +88,11 @@ impl HttpClient {
     pub fn patch(&self, url: &str) -> WasmRequestBuilder {
         WasmRequestBuilder::new("PATCH", url, self.no_redirects)
     }
+
+    /// PUT request builder for complex cases
+    pub fn put(&self, url: &str) -> WasmRequestBuilder {
+        WasmRequestBuilder::new("PUT", url, self.no_redirects)
+    }
 }
 
 /// WASM fetch-based RequestBuilder wrapper
@@ -122,7 +128,7 @@ impl fmt::Debug for WasmRequestBuilder {
 
         f.debug_struct("WasmRequestBuilder")
             .field("method", &self.method)
-            .field("url", &self.url)
+            .field("url", &url_for_debug(&self.url))
             .field("header_names", &header_names)
             .field("body", &self.body)
             .field("has_error", &self.error.is_some())
@@ -144,6 +150,11 @@ impl WasmRequestBuilder {
         }
     }
 
+    /// A refused redirect has to stay distinguishable from a network failure:
+    /// `RequestRedirect::Error` rejects the fetch promise, which is
+    /// indistinguishable from a connection error, so `Manual` is used and the
+    /// opaque-redirect response it yields is reported as
+    /// [`HttpError::Redirect`].
     async fn execute(self) -> Response<RawResponse> {
         if let Some(err) = self.error {
             return Err(err);
@@ -151,7 +162,7 @@ impl WasmRequestBuilder {
         let opts = web_sys::RequestInit::new();
         opts.set_method(&self.method);
         if self.no_redirects {
-            opts.set_redirect(web_sys::RequestRedirect::Error);
+            opts.set_redirect(web_sys::RequestRedirect::Manual);
         }
 
         if let Some(body) = &self.body {
@@ -183,6 +194,14 @@ impl WasmRequestBuilder {
         let resp: web_sys::Response = resp_value
             .dyn_into()
             .map_err(|_| HttpError::Other("Response is not a web_sys::Response".to_string()))?;
+
+        if resp.type_() == web_sys::ResponseType::Opaqueredirect {
+            return Err(HttpError::Redirect(format!(
+                "{} {}",
+                self.method,
+                url_for_debug(&self.url)
+            )));
+        }
 
         let status = resp.status();
 
@@ -370,14 +389,20 @@ mod tests {
     fn request_builder_debug_redacts_header_values_and_body() {
         let header_secret = "replayable-authorization-token";
         let body_secret = "refresh-token-in-request-body";
-        let request = WasmRequestBuilder::new("POST", "https://mint.example.com", false)
-            .header("Authorization", header_secret)
-            .json(&serde_json::json!({ "refresh_token": body_secret }));
+        let url_secret = "url-query-token";
+        let request = WasmRequestBuilder::new(
+            "POST",
+            &format!("https://user:{url_secret}@mint.example.com/api?token={url_secret}"),
+            false,
+        )
+        .header("Authorization", header_secret)
+        .json(&serde_json::json!({ "refresh_token": body_secret }));
 
         let debug = format!("{request:?}");
 
         assert!(debug.contains("Authorization"));
         assert!(!debug.contains(header_secret));
         assert!(!debug.contains(body_secret));
+        assert!(!debug.contains(url_secret));
     }
 }

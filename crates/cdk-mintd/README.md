@@ -92,11 +92,14 @@ mkdir -p ~/.cdk-mintd
 cp example.config.toml ~/.cdk-mintd/config.toml
 # Edit the document and provide any env: secrets it references.
 cdk-mintd config validate --file ~/.cdk-mintd/config.toml
-cdk-mintd config init --file ~/.cdk-mintd/config.toml
+cdk-mintd config init --new-mint --file ~/.cdk-mintd/config.toml
 cdk-mintd
 ```
 
-`config init` refuses to replace an existing record. On the first start, mintd
+`config init` requires `--new-mint` for a database that has never served a mint
+or `--existing-mint` when importing configuration during an upgrade. Each mode
+validates the selected database state and refuses to replace an existing
+configuration record. On the first start, mintd
 applies the imported mint metadata and quote TTL and marks that document
 applied. Later starts preserve canonical database values changed through the
 management RPC while loading the remaining daemon settings from the stored
@@ -116,14 +119,24 @@ cdk-mintd config migrate \
 # Validate locally; no database or RPC mutation
 cdk-mintd config validate --file /path/to/config.toml
 
-# Initialize the bootstrap-selected configuration database directly
-cdk-mintd config init --file /path/to/config.toml
+# Initialize a database that has never served a mint
+cdk-mintd config init --new-mint --file /path/to/config.toml
+
+# Import configuration into an existing mint database
+cdk-mintd config init --existing-mint --file /path/to/config.toml
+
+# Add BDK during the first v0.18 import
+cdk-mintd config init --existing-mint --allow-new-bdk-wallet \
+  --file /path/to/config.toml
 
 # Validate against the stored database and signer without writing
 cdk-mintd config apply --file /path/to/config.toml --validate-only
 
 # Atomically replace the document used by the next start
 cdk-mintd config apply --file /path/to/config.toml
+
+# Add BDK to an already initialized v0.18 mint
+cdk-mintd config apply --allow-new-bdk-wallet --file /path/to/config.toml
 
 # Discard a pending document or restore the previous applied document
 cdk-mintd config rollback
@@ -142,8 +155,10 @@ references. Literal secrets in the legacy TOML are copied into owner-only files
 under `cdk-mintd-secrets/` beside the output document and become absolute
 `file:` references. Use `--secrets-dir <path>` to choose another directory and
 `--force` to replace files created by an earlier migration attempt. If the old
-service used `--seed-file`, pass the same global option to `config migrate`; the
-generated document references that existing file directly.
+service actually used the global `--seed-file` BIP39 mnemonic option, pass the
+same option to `config migrate`; the generated document references that existing
+file directly. Do not pass it merely because an LDK storage directory contains
+the unrelated binary `keys_seed` file.
 
 The migrated document is normalized and includes effective defaults, so comments
 and the original TOML layout are not preserved. Review it and run `config
@@ -160,6 +175,148 @@ previous applied document and always requires another restart. This remains
 true when rolling back a pending replacement because a failed startup may have
 partially updated canonical database state. Only one previous applied document
 is retained.
+
+When BDK is selected for a new mint, `config init --new-mint` automatically
+permits its first wallet creation. Existing-mint initialization and apply
+instead require a persisted `<work-dir>/bdk_wallet/bdk_wallet.sqlite` whose
+descriptors and network match the configured mnemonic and network. The check is
+read-only and runs before the document is stored. Use
+`--allow-new-bdk-wallet` only when intentionally adding BDK or performing
+last-resort mnemonic recovery after confirming that the original wallet
+database is lost. The flag permits an absent wallet but does not bypass an
+invalid or mismatched one. Set `wallet_rescan_from_height` for Bitcoin RPC
+mnemonic recovery so the fresh wallet does not start scanning at the current
+chain tip. The creation permission is cleared after the first successful daemon
+startup, so later restarts fail if the BDK wallet disappears. For an already
+initialized v0.18 mint, use `config apply`, not `config init`, as described
+below.
+
+### Adding BDK to an Existing Mint
+
+Use this procedure for a v0.18 mint whose database-backed configuration is
+already initialized and whose Lightning backend is working. `config apply`
+replaces the complete authoritative document, so retain every existing field,
+especially `[payment_backend]` and the corresponding `[lnd]` or `[ldk_node]`
+section.
+
+First export the active unresolved document and record the current mint public
+key, complete keyset list, and Lightning node ID:
+
+```bash
+cdk-mintd --work-dir /var/lib/cdk-mintd \
+  config export --file /var/lib/cdk-mintd/config-with-bdk.toml
+```
+
+Stop the daemon and back up the primary database and complete working directory
+before changing the document. An embedded LDK deployment must include its
+entire configured storage directory. An LND deployment must be backed up using
+LND's own node and channel-backup procedure because its identity and channel
+state are external to `cdk-mintd`.
+
+Add an on-chain backend and BDK section to the exported document:
+
+```toml
+[onchain]
+onchain_backend = "bdk"
+
+[bdk]
+mnemonic = "file:/run/secrets/bdk-mnemonic"
+network = "mainnet"
+chain_source_type = "bitcoinrpc"
+bitcoind_rpc_host = "127.0.0.1"
+bitcoind_rpc_port = 8332
+bitcoind_rpc_user = "cdk-mintd"
+bitcoind_rpc_password = "file:/run/secrets/bitcoin-rpc-password"
+```
+
+Use the network served by the existing Lightning deployment. The BDK mnemonic
+should normally be a new secret distinct from the mint signer and any embedded
+LDK mnemonic. Protect and back it up before allowing the wallet to receive
+funds.
+
+Keep the existing Lightning selection unchanged. For LND, the relevant shape
+remains:
+
+```toml
+[payment_backend]
+backend = "lnd"
+unit = "sat"
+
+[lnd]
+address = "https://127.0.0.1:10009"
+cert_file = "/run/secrets/lnd-tls.cert"
+macaroon_file = "/run/secrets/lnd-admin.macaroon"
+```
+
+For embedded LDK, retain its complete section, storage path, and original
+identity source:
+
+```toml
+[payment_backend]
+backend = "ldk-node"
+unit = "sat"
+
+[ldk_node]
+bitcoin_network = "mainnet"
+storage_dir_path = "/var/lib/cdk-mintd/ldk-node"
+ldk_node_mnemonic = "file:/run/secrets/ldk-node-mnemonic"
+```
+
+Most nodes use a dedicated BIP39 mnemonic. Preserve its exact secret reference;
+changing it changes the node identity and wallet descriptors. Only omit
+`ldk_node_mnemonic` for a legacy node that was created from
+`<storage_dir_path>/keys_seed`, and preserve that file with the complete storage
+directory. LDK's binary `keys_seed` file is not the same as the legacy global
+`cdk-mintd --seed-file` option, which contains a BIP39 mnemonic. Never replace
+either LDK identity source with the mint mnemonic.
+
+For a genuinely new BDK wallet, confirm that the expected path does not already
+contain wallet data, then validate and stage the document with explicit
+creation intent:
+
+```bash
+test ! -e /var/lib/cdk-mintd/bdk_wallet/bdk_wallet.sqlite
+
+cdk-mintd --work-dir /var/lib/cdk-mintd \
+  config apply --validate-only --allow-new-bdk-wallet \
+  --file /var/lib/cdk-mintd/config-with-bdk.toml
+
+cdk-mintd --work-dir /var/lib/cdk-mintd \
+  config apply --allow-new-bdk-wallet \
+  --file /var/lib/cdk-mintd/config-with-bdk.toml
+```
+
+Do not use `--allow-new-bdk-wallet` when the mint previously used BDK. Restore
+the original `<work-dir>/bdk_wallet` directory and apply without the flag. If
+the database has been lost and mnemonic recovery is unavoidable, use the same
+BDK mnemonic and set `wallet_rescan_from_height` to a known wallet birthday for
+Bitcoin RPC before explicitly allowing creation. Reconcile all previous BDK
+quotes, transactions, and funds before serving users.
+
+Start the daemon and verify all of the following before considering the change
+complete:
+
+- the mint public key and every active and inactive keyset are unchanged;
+- the LND or LDK node ID is unchanged and Lightning mint/melt tests succeed;
+- `<work-dir>/bdk_wallet/bdk_wallet.sqlite` exists with the service user's
+  ownership;
+- the BDK address network, wallet balance, and synchronization status are
+  correct; and
+- small on-chain mint and melt tests succeed at the configured confirmation
+  threshold.
+
+The new-wallet permission remains pending if startup fails and is cleared only
+after all backends start and the daemon binds its listener. A retry validates
+any BDK wallet created by the failed attempt. To abandon the pending document,
+stop the daemon, inspect the failure, and run:
+
+```bash
+cdk-mintd --work-dir /var/lib/cdk-mintd config rollback
+```
+
+Restart to activate the restored document. Rollback does not delete a BDK
+wallet created during a partial startup; retain it until any addresses, quotes,
+or payments from the failed attempt have been assessed.
 
 `cdk-mintd` is not an RPC client. Immediate field-level mint management
 (`get-info`, `update-motd`, `rotate-next-keyset`, and related commands) is
@@ -187,8 +344,11 @@ database. `config apply
 
 `config init` opens the database selected by the same bootstrap settings as
 normal startup and rejects an import document whose primary database settings
-do not match it. All other TOML and environment values are operational settings
-and are loaded from the database during normal startup.
+do not match it. `--new-mint` rejects existing mint identity or keyset state;
+`--existing-mint` requires persisted identity and, for embedded signatories,
+keyset history. Remote signatory keysets remain in the signatory database. All
+other TOML and environment values are operational settings and are loaded from
+the database during normal startup.
 
 Primary database settings are immutable through `config apply`: moving the
 authoritative database requires a separate data-migration procedure.
@@ -281,7 +441,8 @@ and defaults to `unit = "sat"`. For multiple fake wallet units, use one
 `[[payment_backend]]` entry per unit.
 
 For Docker setups, put these operational values in the TOML import document and
-run `config init` once against the persistent database. Setting the former
+run `config init` once against the persistent database with the appropriate
+new- or existing-mint mode. Setting the former
 `CDK_MINTD_FAKE_WALLET_*` variables when starting mintd does not override the
 database-backed configuration.
 
@@ -330,6 +491,7 @@ esplora_url = "https://mutinynet.com/api"
 rgs_url = "https://rgs.mutinynet.com/snapshot/0"
 gossip_source_type = "rgs"
 storage_dir_path = "/var/lib/cdk-mintd/ldk-node"
+ldk_node_mnemonic = "env:CDK_MINTD_LDK_NODE_MNEMONIC"
 ```
 
 ### With CLN Lightning Backend
@@ -390,9 +552,44 @@ rpc_path = "/home/bitcoin/.lightning/bitcoin/lightning-rpc"
 supported_units = ["msat"]
 address = "127.0.0.1"
 port = 50051
+allow_insecure = true
 ```
 
 Each `[[payment_backend]]` block carries its own `min_mint`, `max_mint`, `min_melt`, `max_melt` if you want different limits per unit. The configured unit must match the backend's reported unit, except for the supported `sat`/`msat` conversion pair. If two configured backends expose the same `(unit, method)` pair, startup is rejected.
+
+### External payment processor security
+
+An external payment processor can move funds from its backing wallet. Use mTLS
+whenever it runs outside the mint's host. Configure mintd with a directory
+containing all three client-side files:
+
+```text
+/run/cdk/payment-processor-tls/
+├── ca.pem       # CA certificate used to verify the processor server
+├── client.pem   # mintd client certificate accepted by the processor
+└── client.key   # private key for client.pem
+```
+
+```toml
+[grpc_processor]
+supported_units = ["sat"]
+address = "10.0.0.20"
+port = 50051
+tls_dir = "/run/cdk/payment-processor-tls"
+allow_insecure = false
+```
+
+Setting `tls_dir` always enables mutual TLS; mintd refuses to connect when any
+of these files is missing. TLS without `client.pem` and `client.key` is not
+client authentication.
+
+Plaintext connections require the explicit opt-in `allow_insecure = true`.
+This includes non-loopback addresses, but it is unsafe on any untrusted network:
+without TLS, mintd cannot authenticate the processor and traffic is not encrypted
+or protected against modification. An attacker able to observe or alter the
+connection could interfere with payment operations. Use this mode only on a
+trusted, isolated network or through a separately authenticated and encrypted
+tunnel; prefer mTLS even for internal deployments.
 
 The single `[payment_backend]` form is equivalent to one `[[payment_backend]]`
 entry with `unit = "sat"` (the default). Multi-backend topology is imported
@@ -405,13 +602,15 @@ After setup and first run, your directory will look like:
 ```
 ~/.cdk-mintd/                    # Working directory (create manually)
 ├── config.toml                  # Optional import/export document; not read at startup
-├── cdk-mintd.db                # SQLite database (created automatically)
+├── cdk-mintd.sqlite            # Primary SQLite database (when selected)
+├── bdk_wallet/                 # BDK state (when using the BDK backend)
+│   └── bdk_wallet.sqlite
 ├── logs/                       # Log files (created automatically if enabled)
 │   ├── cdk-mintd.2024-01-01.log
 │   └── cdk-mintd.2024-01-02.log
 └── ldk-node/                   # LDK Node data (if using LDK backend)
-    ├── wallet/
-    └── graph/
+    ├── keys_seed                 # Legacy entropy source, when applicable
+    └── ...                       # Wallet, channel, and graph state
 ```
 
 **What you must create manually:**
@@ -433,6 +632,7 @@ CDK Mintd provides ready-to-use Docker images with multiple payment backend opti
 #### Standard mint with fakewallet backend (testing only):
 ```bash
 export CDK_MINTD_MNEMONIC="your stable BIP39 mnemonic"
+export CDK_MINTD_INIT_MODE=new
 docker compose up
 ```
 
@@ -440,6 +640,7 @@ docker compose up
 ```bash
 export CDK_MINTD_MNEMONIC="your stable mint BIP39 mnemonic"
 export CDK_MINTD_LDK_NODE_MNEMONIC="your distinct stable LDK Node BIP39 mnemonic"
+export CDK_MINTD_INIT_MODE=new
 docker compose -f docker-compose.ldk-node.yaml up
 ```
 
@@ -458,19 +659,22 @@ by `env:` secret references.
 ```yaml
 environment:
   - CDK_MINTD_DATABASE=sqlite
+  - CDK_MINTD_INIT_MODE=new
   - CDK_MINTD_WORK_DIR=/data
 volumes:
   - mint-data:/data
   - ./mint.toml:/config/mint.toml:ro
 ```
 
-Run `cdk-mintd config init --file /config/mint.toml` once with the same
-persistent volume before starting `cdk-mintd`. Later file changes are activated
-only by an explicit `config apply` followed by a restart.
+Run `cdk-mintd config init --new-mint --file /config/mint.toml` once with the
+same persistent volume before starting a new mint. Use `--existing-mint` when
+importing configuration into a database from an earlier version. Later file
+changes are activated only by an explicit `config apply` followed by a restart.
 
-The repository Compose files automate only that idempotent first initialization
-using the documents under `misc/docker-configs/`. They never apply later edits
-automatically.
+The repository Compose files perform that one-shot initialization only when
+`CDK_MINTD_INIT_MODE` is explicitly set to `new` or `existing`. With no mode,
+an uninitialized or unreadable configuration fails closed. They never apply
+later edits automatically.
 
 ### Monitoring
 
@@ -508,7 +712,7 @@ For detailed Docker documentation, see [README-ldk-node.md](../../README-ldk-nod
 cdk-mintd
 
 # Initialize once from a TOML import document
-cdk-mintd config init --file /path/to/config.toml
+cdk-mintd config init --new-mint --file /path/to/config.toml
 
 # Validate or explicitly stage a changed document directly
 cdk-mintd config validate --file /path/to/config.toml
@@ -531,11 +735,16 @@ cdk-mint-cli get-info --addr https://127.0.0.1:8086 --tls-dir /path/to/tls
 - `CDK_MINTD_DATABASE_URL`: PostgreSQL connection string
 - `CDK_MINTD_POSTGRES_URL`: Canonical PostgreSQL connection variable.
 
+Only one active `cdk-mintd` process may use a database. PostgreSQL is supported,
+but it does not currently coordinate payment dispatch across multiple active
+mint replicas.
+
 Other environment variables are read only when explicitly named by an
 `env:VARIABLE` secret reference in the persisted document. They do not act as
 automatic operational overrides. The legacy `--config` and `--seed-file` flags
-are rejected for every command, with guidance to use `config init` or
-`config apply`.
+are rejected as normal startup inputs. `--seed-file` is accepted only by
+`config migrate` to reproduce a deployment that actually used that legacy
+mnemonic override.
 
 For complete configuration options, see the [example configuration file](./example.config.toml).
 

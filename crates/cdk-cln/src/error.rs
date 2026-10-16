@@ -20,6 +20,12 @@ pub enum Error {
     /// Invalid quote id
     #[error("Invalid quote id")]
     InvalidQuoteId,
+    /// BOLT12 quote is already bound to a different payment hash
+    #[error("BOLT12 quote {quote_id} is already bound to a different payment hash")]
+    Bolt12QuoteBindingConflict {
+        /// Quote id whose binding was rejected
+        quote_id: String,
+    },
     /// Cln Error
     #[error(transparent)]
     Cln(#[from] cln_rpc::Error),

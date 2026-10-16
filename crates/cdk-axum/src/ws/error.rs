@@ -15,8 +15,6 @@ pub enum WsError {
     InvalidParams,
     /// Internal JSON-RPC error.
     InternalError,
-    /// Custom error
-    ServerError(i32, String),
 }
 
 impl From<WsError> for WsErrorBody {
@@ -27,7 +25,6 @@ impl From<WsError> for WsErrorBody {
             WsError::MethodNotFound => (-32601, "Method not found".to_string()),
             WsError::InvalidParams => (-32602, "Invalid params".to_string()),
             WsError::InternalError => (-32603, "Internal error".to_string()),
-            WsError::ServerError(code, message) => (code, message),
         };
         WsErrorBody { code: id, message }
     }

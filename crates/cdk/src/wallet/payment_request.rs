@@ -4,20 +4,32 @@
 //! Nostr or HTTP transports when available. If no transport is present in the request, an error
 //! is returned so callers can handle alternative delivery mechanisms explicitly.
 
+use std::fmt;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::Result;
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
-use cdk_common::{
-    Amount, HttpClient, PaymentRequest, PaymentRequestPayload, SupportedMethod, TransportType,
+use cdk_common::{Amount, PaymentRequest, PaymentRequestPayload, SupportedMethod, TransportType};
+#[cfg(feature = "nostr")]
+use futures::StreamExt;
+#[cfg(feature = "nostr")]
+use nostr::prelude::nip19::Nip19Profile;
+#[cfg(all(feature = "nostr", test))]
+use nostr::prelude::EventId;
+#[cfg(all(feature = "nostr", target_arch = "wasm32"))]
+use nostr::prelude::{Filter, Kind, UnwrappedGift};
+#[cfg(feature = "nostr")]
+use nostr::prelude::{
+    FinalizeEvent, FromBech32, Keys, PrivateDirectMessageBuilder, PublicKey, RelayUrl, ToBech32,
 };
+#[cfg(all(feature = "nostr", target_arch = "wasm32"))]
+use nostr_sdk::prelude::ClientNotification;
 #[cfg(feature = "nostr")]
-use nostr_sdk::nips::nip19::Nip19Profile;
-#[cfg(feature = "nostr")]
-use nostr_sdk::prelude::*;
-#[cfg(feature = "nostr")]
-use nostr_sdk::{Client as NostrClient, EventBuilder, FromBech32, Keys, ToBech32};
+use nostr_sdk::prelude::{
+    Client as NostrClient, RelayCapabilities, SendEventOutput, SignerAuthenticator,
+};
+use tracing::instrument;
 
 use crate::error::Error;
 use crate::mint_url::MintUrl;
@@ -31,19 +43,234 @@ use crate::wallet::ReceiveOptions;
 use crate::wallet::{SendOptions, WalletRepository};
 use crate::Wallet;
 
-impl Wallet {
-    /// Pay a NUT-18 PaymentRequest using a specific wallet.
+/// Optional limits that callers can check before confirming a prepared NUT-18
+/// payment request.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PayRequestOptions {
+    /// Maximum receiver-selected method fee (`mf`) that may be paid.
     ///
-    /// - If the request contains a Nostr or HttpPost transport, it will try those (preferring Nostr).
-    /// - If no usable transport is present, this returns an error.
-    /// - If the request has no amount, a `custom_amount` must be provided.
-    pub async fn pay_request(
+    /// `None` accepts any method fee.
+    pub max_method_fee: Option<Amount>,
+    /// Maximum total wallet debit, including method and mint input fees.
+    pub max_total_amount: Option<Amount>,
+}
+
+/// A prepared NUT-18 payment request with its exact fees frozen for review.
+///
+/// Call [`Self::confirm`] to send and deliver the payment, or [`Self::cancel`]
+/// to release the proofs reserved during preparation.
+#[must_use = "must be confirmed or canceled to release reserved proofs"]
+pub struct PreparedPaymentRequest {
+    wallet: Wallet,
+    payment_request: PaymentRequest,
+    transport: Transport,
+    operation_id: uuid::Uuid,
+    requested_amount: Amount,
+    method: Option<String>,
+    method_fee: Amount,
+    payment_amount: Amount,
+    swap_fee: Amount,
+    send_fee: Amount,
+    input_fee: Amount,
+    total_amount: Amount,
+    send_options: SendOptions,
+    proofs_to_swap: crate::nuts::Proofs,
+    proofs_to_send: crate::nuts::Proofs,
+}
+
+impl std::fmt::Debug for PreparedPaymentRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedPaymentRequest")
+            .field("operation_id", &self.operation_id)
+            .field("mint_url", &self.wallet.mint_url)
+            .field("requested_amount", &self.requested_amount)
+            .field("method", &self.method)
+            .field("method_fee", &self.method_fee)
+            .field("swap_fee", &self.swap_fee)
+            .field("send_fee", &self.send_fee)
+            .field("input_fee", &self.input_fee)
+            .field("total_amount", &self.total_amount)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PreparedPaymentRequest {
+    /// Operation ID of the reserved send.
+    pub fn operation_id(&self) -> uuid::Uuid {
+        self.operation_id
+    }
+
+    /// Mint selected for the payment.
+    pub fn mint_url(&self) -> &MintUrl {
+        &self.wallet.mint_url
+    }
+
+    /// Currency unit of the payment.
+    pub fn unit(&self) -> &CurrencyUnit {
+        &self.wallet.unit
+    }
+
+    /// Amount requested by the receiver, before the method fee.
+    pub fn requested_amount(&self) -> Amount {
+        self.requested_amount
+    }
+
+    /// Selected payment method, when the request restricts methods.
+    pub fn method(&self) -> Option<&str> {
+        self.method.as_deref()
+    }
+
+    /// Receiver-selected method fee (`mf`) that applies to this mint.
+    pub fn method_fee(&self) -> Amount {
+        self.method_fee
+    }
+
+    /// Requested amount plus the applicable method fee.
+    pub fn payment_amount(&self) -> Amount {
+        self.payment_amount
+    }
+
+    /// Mint input fee paid while swapping proofs into the required denominations.
+    pub fn swap_fee(&self) -> Amount {
+        self.swap_fee
+    }
+
+    /// Mint input fee added so the receiver obtains the full payment amount.
+    pub fn send_fee(&self) -> Amount {
+        self.send_fee
+    }
+
+    /// Total mint input fee for the payment.
+    pub fn input_fee(&self) -> Amount {
+        self.input_fee
+    }
+
+    /// Total amount deducted from the wallet.
+    pub fn total_amount(&self) -> Amount {
+        self.total_amount
+    }
+
+    /// Check this prepared payment against caller-provided fee limits.
+    pub fn check_limits(&self, options: PayRequestOptions) -> Result<(), Error> {
+        check_payment_request_limits(self.method_fee, self.total_amount, options)
+    }
+
+    /// Confirm and deliver the prepared payment.
+    ///
+    /// If token creation succeeds but transport delivery fails, this returns
+    /// [`Error::PaymentRequestDeliveryFailed`]. The token remains a pending
+    /// send: do not prepare the payment again. Use the error's operation ID
+    /// with [`Wallet::revoke_send`] to reclaim the token if it has not already
+    /// been claimed by the receiver.
+    #[instrument(skip_all)]
+    pub async fn confirm(self) -> Result<(), Error> {
+        let operation_id = self.operation_id;
+        let token = self
+            .wallet
+            .confirm_send(
+                operation_id,
+                self.payment_amount,
+                self.send_options,
+                self.proofs_to_swap,
+                self.proofs_to_send,
+                self.swap_fee,
+                self.send_fee,
+                None,
+            )
+            .await?;
+
+        let delivery_result = self
+            .wallet
+            .deliver_payment_request(&self.payment_request, &self.transport, &token)
+            .await;
+
+        payment_request_delivery_result(operation_id, delivery_result)
+    }
+
+    /// Cancel the prepared payment and release its reserved proofs.
+    #[instrument(skip_all)]
+    pub async fn cancel(self) -> Result<(), Error> {
+        self.wallet
+            .cancel_send(self.operation_id, self.proofs_to_swap, self.proofs_to_send)
+            .await
+    }
+}
+
+fn payment_request_delivery_result(
+    operation_id: uuid::Uuid,
+    delivery_result: Result<(), Error>,
+) -> Result<(), Error> {
+    delivery_result.map_err(|source| Error::PaymentRequestDeliveryFailed {
+        operation_id,
+        source: Box::new(source),
+    })
+}
+
+#[cfg(feature = "nostr")]
+fn ensure_nostr_delivery_succeeded(gift_wrap: &SendEventOutput) -> Result<(), Error> {
+    if gift_wrap.success.is_empty() {
+        let mut failed_relays = gift_wrap
+            .failed
+            .keys()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        failed_relays.sort();
+
+        return Err(Error::NostrPublishFailed {
+            event_id: gift_wrap.value.to_string(),
+            failed_relays,
+        });
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SelectedPaymentMethod {
+    method: Option<String>,
+    fee: Amount,
+}
+
+fn check_payment_request_limits(
+    method_fee: Amount,
+    total_amount: Amount,
+    options: PayRequestOptions,
+) -> Result<(), Error> {
+    if options
+        .max_method_fee
+        .is_some_and(|max_fee| method_fee > max_fee)
+        || options
+            .max_total_amount
+            .is_some_and(|max_amount| total_amount > max_amount)
+    {
+        return Err(Error::MaxFeeExceeded);
+    }
+
+    Ok(())
+}
+
+impl Wallet {
+    /// Prepare a NUT-18 payment request and freeze its selected mint fees.
+    ///
+    /// The returned payment must be explicitly completed with
+    /// [`PreparedPaymentRequest::confirm`] or released with
+    /// [`PreparedPaymentRequest::cancel`].
+    ///
+    /// A request whose only transport is HTTP POST fails here when the
+    /// wallet's mint connector cannot hand proofs to that target: no delivery
+    /// support ([`Error::PaymentRequestDeliveryUnsupported`]), an unusable URL,
+    /// or a transport that verifies no certificate
+    /// ([`Error::UnverifiedTlsEndpoint`]). All three are knowable before any
+    /// proofs are reserved, and finding out at confirm time would leave the
+    /// payer with a pending send to revoke.
+    #[instrument(skip_all)]
+    pub async fn prepare_pay_request(
         &self,
         payment_request: PaymentRequest,
         custom_amount: Option<Amount>,
-    ) -> Result<(), Error> {
+    ) -> Result<PreparedPaymentRequest, Error> {
         let unit = payment_request_unit(&payment_request)?;
-        let base_amount = match payment_request.amount {
+        let requested_amount = match payment_request.amount {
             Some(amount) => amount,
             None => match custom_amount {
                 Some(a) => a,
@@ -55,8 +282,26 @@ impl Wallet {
             return Err(Error::UnsupportedUnit);
         }
 
-        let amount =
-            payment_request_amount_for_wallet(base_amount, &payment_request, self, &unit).await?;
+        if payment_request_mint_list_is_strict(&payment_request)
+            && payment_request_uses_unlisted_mint(&payment_request, &self.mint_url)
+        {
+            return Err(Error::Custom(format!(
+                "Mint {} is not accepted by this payment request. Accepted mints: {:?}",
+                self.mint_url, payment_request.mints
+            )));
+        }
+
+        let selected_method = wallet_payment_request_method(self, &payment_request, &unit)
+            .await?
+            .ok_or(Error::UnsupportedPaymentMethod)?;
+        let method_fee = if payment_request_method_fee_applies(&payment_request, &self.mint_url) {
+            selected_method.fee
+        } else {
+            Amount::ZERO
+        };
+        let payment_amount = requested_amount
+            .checked_add(method_fee)
+            .ok_or(Error::AmountOverflow)?;
 
         // Extract optional NUT-10 spending conditions from the payment request.
         //
@@ -72,21 +317,19 @@ impl Wallet {
             None
         };
 
-        let transports = payment_request.transports.clone();
+        // Prefer Nostr to avoid revealing the payer's IP address, then fall back
+        // to HTTP POST when Nostr is unavailable in this build or request.
+        let transport = payment_request_transport(&payment_request.transports)
+            .cloned()
+            .ok_or_else(|| {
+                Error::Custom("No transport available in payment request".to_string())
+            })?;
 
-        // Prefer Nostr to avoid revealing IP, fall back to HTTP POST.
-        let transport = transports
-            .iter()
-            .find(|t| t._type == TransportType::Nostr)
-            .or_else(|| {
-                transports
-                    .iter()
-                    .find(|t| t._type == TransportType::HttpPost)
-            });
+        ensure_wallet_can_deliver(self, &transport)?;
 
         let prepared_send = self
             .prepare_send(
-                amount,
+                payment_amount,
                 SendOptions {
                     conditions,
                     include_fee: true,
@@ -95,107 +338,138 @@ impl Wallet {
             )
             .await?;
 
-        let token = prepared_send.confirm(None).await?;
+        let input_fee = match prepared_send
+            .swap_fee()
+            .checked_add(prepared_send.send_fee())
+        {
+            Some(input_fee) => input_fee,
+            None => {
+                prepared_send.cancel().await?;
+                return Err(Error::AmountOverflow);
+            }
+        };
+        let total_amount = match payment_amount.checked_add(input_fee) {
+            Some(total_amount) => total_amount,
+            None => {
+                prepared_send.cancel().await?;
+                return Err(Error::AmountOverflow);
+            }
+        };
 
+        Ok(PreparedPaymentRequest {
+            wallet: self.clone(),
+            payment_request,
+            transport,
+            operation_id: prepared_send.operation_id(),
+            requested_amount,
+            method: selected_method.method,
+            method_fee,
+            payment_amount,
+            swap_fee: prepared_send.swap_fee(),
+            send_fee: prepared_send.send_fee(),
+            input_fee,
+            total_amount,
+            send_options: prepared_send.options().clone(),
+            proofs_to_swap: prepared_send.proofs_to_swap().clone(),
+            proofs_to_send: prepared_send.proofs_to_send().clone(),
+        })
+    }
+
+    #[instrument(skip_all)]
+    async fn deliver_payment_request(
+        &self,
+        payment_request: &PaymentRequest,
+        transport: &Transport,
+        token: &crate::nuts::Token,
+    ) -> Result<(), Error> {
         // We need the keysets information to properly convert from token proof to proof
-        let proofs = self.token_proofs(&token).await?;
+        let proofs = self.token_proofs(token).await?;
 
-        if let Some(transport) = transport {
-            let payload = PaymentRequestPayload {
-                id: payment_request.payment_id.clone(),
-                memo: None,
-                mint: self.mint_url.clone(),
-                unit: self.unit.clone(),
-                proofs,
-            };
+        let payload = PaymentRequestPayload {
+            id: payment_request.payment_id.clone(),
+            memo: None,
+            mint: self.mint_url.clone(),
+            unit: self.unit.clone(),
+            proofs,
+        };
 
-            match transport._type {
-                TransportType::Nostr => {
-                    #[cfg(feature = "nostr")]
-                    {
-                        let keys = Keys::generate();
-                        let client = NostrClient::new(keys.clone());
-                        let nprofile = Nip19Profile::from_bech32(&transport.target)
-                            .map_err(|e| Error::Custom(format!("Invalid nprofile: {e}")))?;
+        match transport._type {
+            TransportType::Nostr => {
+                #[cfg(feature = "nostr")]
+                {
+                    let keys = Keys::generate();
+                    let client = NostrClient::builder()
+                        .authenticator(SignerAuthenticator::new(keys.clone()))
+                        .build();
+                    let nprofile = Nip19Profile::from_bech32(&transport.target)
+                        .map_err(|e| Error::Custom(format!("Invalid nprofile: {e}")))?;
 
-                        let rumor = EventBuilder::new(
-                            nostr_sdk::Kind::from_u16(14),
-                            serde_json::to_string(&payload)
-                                .map_err(|e| Error::Custom(format!("Serialize payload: {e}")))?,
-                        )
-                        .build(keys.public_key);
-                        let relays = nprofile.relays;
+                    let gift_wrap_event = PrivateDirectMessageBuilder::new(
+                        nprofile.public_key,
+                        serde_json::to_string(&payload)
+                            .map_err(|e| Error::Custom(format!("Serialize payload: {e}")))?,
+                    )
+                    .finalize(&keys)
+                    .map_err(|e| Error::Custom(format!("Build Nostr gift wrap: {e}")))?;
+                    let relays = nprofile.relays;
 
-                        for relay in relays.iter() {
-                            client
-                                .add_write_relay(relay)
-                                .await
-                                .map_err(|e| Error::Custom(format!("Add relay {relay}: {e}")))?;
-                        }
-
-                        client.connect().await;
-
-                        let gift_wrap = client
-                            .gift_wrap_to(relays, &nprofile.public_key, rumor, None)
+                    for relay in relays.iter() {
+                        client
+                            .add_relay(relay)
+                            .capabilities(RelayCapabilities::WRITE)
                             .await
-                            .map_err(|e| Error::Custom(format!("Publish Nostr event: {e}")))?;
+                            .map_err(|e| Error::Custom(format!("Add relay {relay}: {e}")))?;
+                    }
 
-                        tracing::info!(
-                            "Published event {} successfully to {}",
-                            gift_wrap.val,
+                    client.connect().await;
+
+                    let gift_wrap = client
+                        .send_event(&gift_wrap_event)
+                        .broadcast()
+                        .await
+                        .map_err(|e| Error::Custom(format!("Publish Nostr event: {e}")))?;
+
+                    if !gift_wrap.failed.is_empty() {
+                        tracing::warn!(
+                            "Could not publish to {}",
                             gift_wrap
-                                .success
-                                .iter()
-                                .map(|s| s.to_string())
+                                .failed
+                                .keys()
+                                .map(|relay| relay.to_string())
                                 .collect::<Vec<_>>()
                                 .join(", ")
                         );
-
-                        if !gift_wrap.failed.is_empty() {
-                            tracing::warn!(
-                                "Could not publish to {}",
-                                gift_wrap
-                                    .failed
-                                    .keys()
-                                    .map(|relay| relay.to_string())
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            );
-                        }
-
-                        Ok(())
                     }
-                    #[cfg(not(feature = "nostr"))]
-                    Err(Error::Custom(
-                        "Nostr is not enabled in this build".to_string(),
-                    ))
+
+                    ensure_nostr_delivery_succeeded(&gift_wrap)?;
+
+                    tracing::info!(
+                        "Published event {} successfully to {}",
+                        gift_wrap.value,
+                        gift_wrap
+                            .success
+                            .keys()
+                            .map(|s| s.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+
+                    Ok(())
                 }
-
-                TransportType::HttpPost => {
-                    let client = HttpClient::new();
-
-                    let res = client
-                        .post(&transport.target)
-                        .json(&payload)
-                        .send()
-                        .await
-                        .map_err(|e| Error::HttpError(None, e.to_string()))?;
-
-                    if res.is_success() {
-                        tracing::info!("Successfully posted payment");
-                        Ok(())
-                    } else {
-                        let status = res.status();
-                        let body = res.text().await.unwrap_or_default();
-                        Err(Error::HttpError(Some(status), body))
-                    }
-                }
+                #[cfg(not(feature = "nostr"))]
+                Err(Error::Custom(
+                    "Nostr is not enabled in this build".to_string(),
+                ))
             }
-        } else {
-            // If no transport is available, return an error instead of printing the token
-            Err(Error::Custom(
-                "No transport available in payment request".to_string(),
-            ))
+
+            TransportType::HttpPost => {
+                self.client
+                    .post_payment_request_payload(&transport.target, &payload)
+                    .await?;
+
+                tracing::info!("Successfully posted payment");
+                Ok(())
+            }
         }
     }
 }
@@ -206,6 +480,54 @@ mod tests {
 
     use super::*;
 
+    async fn test_repository() -> WalletRepository {
+        use cdk_common::database::{Error as DatabaseError, WalletDatabase};
+
+        let localstore: Arc<dyn WalletDatabase<DatabaseError> + Send + Sync> = Arc::new(
+            cdk_sqlite::wallet::memory::empty()
+                .await
+                .expect("in-memory database"),
+        );
+
+        crate::wallet::WalletRepositoryBuilder::new()
+            .localstore(localstore)
+            .seed([0u8; 64])
+            .build()
+            .await
+            .expect("repository")
+    }
+
+    /// A request advertising the same key twice would build a lock the payer
+    /// cannot satisfy, so it has to fail on the requester's side. Mirrors what
+    /// `create_request` does with the parsed conditions.
+    #[tokio::test]
+    async fn get_pr_spending_conditions_rejects_duplicate_pubkey() {
+        let pubkey = crate::nuts::SecretKey::generate().public_key().to_hex();
+        let params = CreateRequestParams {
+            pubkeys: Some(vec![pubkey.clone(), pubkey]),
+            ..Default::default()
+        };
+
+        let conditions = test_repository()
+            .await
+            .get_pr_spending_conditions(&params)
+            .expect("params should parse")
+            .expect("conditions should be present");
+
+        let err = Error::from(
+            Nut10SecretRequest::try_from(conditions)
+                .expect_err("duplicate pubkey should be rejected"),
+        );
+
+        assert!(
+            matches!(
+                err,
+                Error::NUT11(crate::nuts::nut11::Error::DuplicatePubkey)
+            ),
+            "Expected DuplicatePubkey, got: {err:?}"
+        );
+    }
+
     #[test]
     fn create_request_params_default_is_strict_by_default() {
         let params = CreateRequestParams::default();
@@ -215,6 +537,77 @@ mod tests {
         assert_eq!(params.transport, "none");
         assert!(params.amount.is_none());
         assert!(params.mint_preferred.is_none());
+        assert!(params.supported_methods.is_empty());
+    }
+
+    #[allow(clippy::use_debug)]
+    #[test]
+    fn create_request_params_debug_redacts_preimage() {
+        let preimage = "known-request-preimage";
+        let params = CreateRequestParams {
+            amount: Some(42),
+            preimage: Some(preimage.to_string()),
+            transport: "nostr".to_string(),
+            ..Default::default()
+        };
+
+        let debug = format!("{params:?}");
+
+        assert!(!debug.contains(preimage));
+        assert!(debug.contains("amount: Some(42)"));
+        assert!(debug.contains("unit: \"sat\""));
+        assert!(debug.contains("preimage: Some(\"[REDACTED]\")"));
+        assert!(debug.contains("transport: \"nostr\""));
+    }
+
+    #[test]
+    fn create_request_rejects_invalid_mint_urls() {
+        let result = parse_payment_request_mints(Some(&["not a URL".to_string()]));
+
+        assert!(result.is_err());
+    }
+
+    #[cfg(feature = "nostr")]
+    #[tokio::test]
+    async fn create_request_exposes_supported_method_fees() {
+        let params = CreateRequestParams {
+            amount: Some(100),
+            supported_methods: vec![SupportedMethod::with_fee("bolt11", 5)],
+            ..Default::default()
+        };
+
+        let (request, wait_info) = test_repository()
+            .await
+            .create_request(params)
+            .await
+            .expect("create request");
+
+        assert_eq!(
+            request.supported_methods,
+            vec![SupportedMethod::with_fee("bolt11", 5)]
+        );
+        assert!(wait_info.is_none());
+    }
+
+    #[cfg(not(feature = "nostr"))]
+    #[tokio::test]
+    async fn create_request_exposes_supported_method_fees() {
+        let params = CreateRequestParams {
+            amount: Some(100),
+            supported_methods: vec![SupportedMethod::with_fee("bolt11", 5)],
+            ..Default::default()
+        };
+
+        let request = test_repository()
+            .await
+            .create_request(params)
+            .await
+            .expect("create request");
+
+        assert_eq!(
+            request.supported_methods,
+            vec![SupportedMethod::with_fee("bolt11", 5)]
+        );
     }
 
     #[test]
@@ -295,7 +688,8 @@ mod tests {
     #[test]
     fn method_fee_defaults_to_zero_when_request_has_no_method_restriction() {
         let fee = payment_request_method_fee_from_melt_methods(&[], &[], false, &CurrencyUnit::Sat)
-            .expect("fee");
+            .expect("fee")
+            .map(|selection| selection.fee);
 
         assert_eq!(fee, Some(Amount::ZERO));
     }
@@ -323,7 +717,8 @@ mod tests {
             false,
             &CurrencyUnit::Sat,
         )
-        .expect("fee");
+        .expect("fee")
+        .map(|selection| selection.fee);
 
         assert_eq!(fee, Some(Amount::from(2)));
     }
@@ -342,7 +737,8 @@ mod tests {
             false,
             &CurrencyUnit::Sat,
         )
-        .expect("fee");
+        .expect("fee")
+        .map(|selection| selection.fee);
 
         assert_eq!(fee, None);
     }
@@ -361,7 +757,8 @@ mod tests {
             false,
             &CurrencyUnit::Sat,
         )
-        .expect("fee");
+        .expect("fee")
+        .map(|selection| selection.fee);
 
         assert_eq!(fee, None);
     }
@@ -380,9 +777,391 @@ mod tests {
             true,
             &CurrencyUnit::Sat,
         )
-        .expect("fee");
+        .expect("fee")
+        .map(|selection| selection.fee);
 
         assert_eq!(fee, None);
+    }
+
+    #[test]
+    fn method_fee_selection_includes_the_selected_method() {
+        let supported_methods = vec![
+            SupportedMethod::with_fee(PaymentMethod::BOLT11.to_string(), Amount::from(5)),
+            SupportedMethod::with_fee(PaymentMethod::BOLT12.to_string(), Amount::from(2)),
+        ];
+        let melt_methods = vec![
+            melt_method(PaymentMethod::BOLT11, CurrencyUnit::Sat),
+            melt_method(PaymentMethod::BOLT12, CurrencyUnit::Sat),
+        ];
+
+        let selected = payment_request_method_fee_from_melt_methods(
+            &supported_methods,
+            &melt_methods,
+            false,
+            &CurrencyUnit::Sat,
+        )
+        .expect("method selection")
+        .expect("supported method");
+
+        assert_eq!(selected.method.as_deref(), Some("bolt12"));
+        assert_eq!(selected.fee, Amount::from(2));
+    }
+
+    #[test]
+    fn default_limits_allow_reviewed_fees() {
+        let result = check_payment_request_limits(
+            Amount::from(1),
+            Amount::from(101),
+            PayRequestOptions::default(),
+        );
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn explicit_limits_accept_fees_at_the_boundary() {
+        let result = check_payment_request_limits(
+            Amount::from(500),
+            Amount::from(602),
+            PayRequestOptions {
+                max_method_fee: Some(Amount::from(500)),
+                max_total_amount: Some(Amount::from(602)),
+            },
+        );
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn total_amount_limit_includes_method_and_input_fees() {
+        let result = check_payment_request_limits(
+            Amount::from(500),
+            Amount::from(602),
+            PayRequestOptions {
+                max_method_fee: Some(Amount::from(500)),
+                max_total_amount: Some(Amount::from(601)),
+            },
+        );
+
+        assert!(matches!(result, Err(Error::MaxFeeExceeded)));
+    }
+
+    #[test]
+    fn delivery_failure_error_preserves_the_pending_send_operation_id() {
+        let operation_id = uuid::Uuid::new_v4();
+        let error = payment_request_delivery_result(
+            operation_id,
+            Err(Error::Custom("transport failed".to_string())),
+        )
+        .expect_err("delivery failure");
+
+        match error {
+            Error::PaymentRequestDeliveryFailed {
+                operation_id: failed_operation_id,
+                source,
+            } => {
+                assert_eq!(failed_operation_id, operation_id);
+                assert_eq!(source.to_string(), "`transport failed`");
+            }
+            error => panic!("unexpected error: {error}"),
+        }
+    }
+
+    #[cfg(feature = "nostr")]
+    #[test]
+    fn nostr_delivery_fails_when_all_relays_fail() {
+        let relay = RelayUrl::parse("wss://relay.example.com").expect("valid relay URL");
+        let gift_wrap = SendEventOutput {
+            value: EventId::from_byte_array([0; 32]),
+            success: Default::default(),
+            failed: [(relay, "relay rejected event".to_string())]
+                .into_iter()
+                .collect(),
+        };
+
+        let error = ensure_nostr_delivery_succeeded(&gift_wrap).expect_err("delivery failure");
+
+        match error {
+            Error::NostrPublishFailed {
+                event_id,
+                failed_relays,
+            } => {
+                assert_eq!(event_id, EventId::from_byte_array([0; 32]).to_string());
+                assert_eq!(failed_relays, vec!["wss://relay.example.com".to_string()]);
+            }
+            error => panic!("unexpected error: {error}"),
+        }
+    }
+
+    #[test]
+    fn method_fee_only_applies_to_nonpreferred_mints() {
+        let listed = MintUrl::from_str("https://listed.example.com").expect("valid URL");
+        let unlisted = MintUrl::from_str("https://unlisted.example.com").expect("valid URL");
+        let mut request = payment_request(Some(CurrencyUnit::Sat), Some(Amount::from(1)), vec![]);
+
+        assert!(payment_request_method_fee_applies(&request, &listed));
+
+        request.mints.push(listed.clone());
+        assert!(!payment_request_method_fee_applies(&request, &listed));
+        assert!(payment_request_method_fee_applies(&request, &unlisted));
+    }
+
+    #[test]
+    fn payment_request_prefers_nostr_transport_for_privacy() {
+        let http = Transport {
+            _type: TransportType::HttpPost,
+            target: "https://receiver.example.com".to_string(),
+            tags: vec![],
+        };
+        let nostr = Transport {
+            _type: TransportType::Nostr,
+            target: "nprofile1example".to_string(),
+            tags: vec![vec!["n".to_string(), "17".to_string()]],
+        };
+
+        #[cfg(feature = "nostr")]
+        {
+            assert_eq!(
+                payment_request_transport(&[http.clone(), nostr.clone()]),
+                Some(&nostr)
+            );
+            assert_eq!(
+                payment_request_transport(&[nostr.clone(), http.clone()]),
+                Some(&nostr)
+            );
+        }
+        #[cfg(not(feature = "nostr"))]
+        {
+            assert_eq!(
+                payment_request_transport(&[http.clone(), nostr.clone()]),
+                Some(&http)
+            );
+            assert_eq!(
+                payment_request_transport(&[nostr, http.clone()]),
+                Some(&http)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn prepared_payment_exposes_exact_fee_breakdown_and_cancel_releases_proofs() {
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock, test_keyset_id, test_mint_url,
+            test_proof_info, MockMintConnector, PaymentRequestDeliverability,
+        };
+
+        let db = create_test_db().await;
+        db.update_proofs(
+            vec![test_proof_info(test_keyset_id(), 1024, test_mint_url())],
+            vec![],
+        )
+        .await
+        .expect("store proof");
+        let mock = MockMintConnector::new();
+        mock.set_payment_request_deliverability(PaymentRequestDeliverability::Deliverable);
+        let wallet = create_test_wallet_with_mock(db, Arc::new(mock)).await;
+        let request = payment_request_with_http_transport(Amount::from(100), Amount::from(500));
+
+        let prepared = wallet
+            .prepare_pay_request(request, None)
+            .await
+            .expect("prepare payment request");
+
+        assert_eq!(prepared.requested_amount(), Amount::from(100));
+        assert_eq!(prepared.method(), Some("bolt11"));
+        assert_eq!(prepared.method_fee(), Amount::from(500));
+        assert_eq!(prepared.payment_amount(), Amount::from(600));
+        assert_eq!(
+            prepared.total_amount(),
+            prepared.payment_amount() + prepared.input_fee()
+        );
+        assert!(prepared.input_fee() > Amount::ZERO);
+        assert!(wallet.total_reserved_balance().await.expect("balance") > Amount::ZERO);
+
+        prepared.cancel().await.expect("cancel prepared payment");
+
+        assert_eq!(
+            wallet.total_reserved_balance().await.expect("balance"),
+            Amount::ZERO
+        );
+        assert_eq!(
+            wallet.total_balance().await.expect("balance"),
+            Amount::from(1024)
+        );
+    }
+
+    /// Delivery capability is knowable before the send starts, so an HTTP-only
+    /// request must be refused while the payer's proofs are still spendable.
+    /// Learning at confirm time would leave a pending send to revoke.
+    #[tokio::test]
+    async fn prepare_pay_request_rejects_http_only_request_without_connector_delivery() {
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock, test_keyset_id, test_mint_url,
+            test_proof_info, MockMintConnector,
+        };
+
+        let db = create_test_db().await;
+        db.update_proofs(
+            vec![test_proof_info(test_keyset_id(), 1024, test_mint_url())],
+            vec![],
+        )
+        .await
+        .expect("store proof");
+        let wallet = create_test_wallet_with_mock(db, Arc::new(MockMintConnector::new())).await;
+        let request = payment_request_with_http_transport(Amount::from(100), Amount::from(500));
+
+        let error = wallet
+            .prepare_pay_request(request, None)
+            .await
+            .expect_err("prepare should refuse an undeliverable transport");
+
+        assert!(
+            matches!(error, Error::PaymentRequestDeliveryUnsupported),
+            "unexpected error: {error:?}"
+        );
+        assert_eq!(
+            wallet.total_reserved_balance().await.expect("balance"),
+            Amount::ZERO
+        );
+        assert_eq!(
+            wallet.total_balance().await.expect("balance"),
+            Amount::from(1024)
+        );
+        assert!(wallet
+            .get_pending_sends()
+            .await
+            .expect("pending sends")
+            .is_empty());
+    }
+
+    /// A transport that verifies no certificate refuses an https receiver, and
+    /// it knows that before the swap. Discovering it during delivery would cost
+    /// the payer the input fee for a payment that can never go through.
+    #[tokio::test]
+    async fn prepare_pay_request_rejects_http_only_request_over_unverified_tls() {
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock, test_keyset_id, test_mint_url,
+            test_proof_info, MockMintConnector, PaymentRequestDeliverability,
+        };
+
+        let db = create_test_db().await;
+        db.update_proofs(
+            vec![test_proof_info(test_keyset_id(), 1024, test_mint_url())],
+            vec![],
+        )
+        .await
+        .expect("store proof");
+        let mock = MockMintConnector::new();
+        mock.set_payment_request_deliverability(PaymentRequestDeliverability::UnverifiedTls);
+        let wallet = create_test_wallet_with_mock(db, Arc::new(mock)).await;
+        let request = payment_request_with_http_transport(Amount::from(100), Amount::from(500));
+
+        let error = wallet
+            .prepare_pay_request(request, None)
+            .await
+            .expect_err("prepare should refuse an unverified receiver");
+
+        assert!(
+            matches!(error, Error::UnverifiedTlsEndpoint { ref host } if host == "receiver.example.com"),
+            "unexpected error: {error:?}"
+        );
+        assert_eq!(
+            wallet.total_reserved_balance().await.expect("balance"),
+            Amount::ZERO
+        );
+        assert_eq!(
+            wallet.total_balance().await.expect("balance"),
+            Amount::from(1024)
+        );
+        assert!(wallet
+            .get_pending_sends()
+            .await
+            .expect("pending sends")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn prepare_pay_request_accepts_http_transport_when_connector_delivers() {
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock, test_keyset_id, test_mint_url,
+            test_proof_info, MockMintConnector, PaymentRequestDeliverability,
+        };
+
+        let db = create_test_db().await;
+        db.update_proofs(
+            vec![test_proof_info(test_keyset_id(), 1024, test_mint_url())],
+            vec![],
+        )
+        .await
+        .expect("store proof");
+        let mock = MockMintConnector::new();
+        mock.set_payment_request_deliverability(PaymentRequestDeliverability::Deliverable);
+        let wallet = create_test_wallet_with_mock(db, Arc::new(mock)).await;
+        let request = payment_request_with_http_transport(Amount::from(100), Amount::from(500));
+
+        let prepared = wallet
+            .prepare_pay_request(request, None)
+            .await
+            .expect("prepare payment request");
+
+        assert_eq!(prepared.payment_amount(), Amount::from(600));
+
+        prepared.cancel().await.expect("cancel prepared payment");
+
+        assert_eq!(
+            wallet.total_reserved_balance().await.expect("balance"),
+            Amount::ZERO
+        );
+    }
+
+    /// The connector's transport carries proxy and Tor settings, so a connector
+    /// without delivery support must fail rather than reach the network
+    /// directly. The target is unroutable: a reintroduced direct-network
+    /// fallback would surface as `Error::HttpError` instead.
+    #[tokio::test]
+    async fn deliver_payment_request_http_requires_connector_support() {
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock, test_keyset, test_mint_url, test_proof,
+            MockMintConnector,
+        };
+
+        let keyset = test_keyset();
+        let keyset_id = keyset.id;
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        db.add_mint(mint_url.clone(), None)
+            .await
+            .expect("mint should be stored");
+
+        let mock = MockMintConnector::new();
+        mock.set_mint_keys_response(Ok(vec![keyset]));
+        let wallet = create_test_wallet_with_mock(db, Arc::new(mock)).await;
+
+        let token = crate::nuts::Token::new(
+            mint_url,
+            vec![test_proof(keyset_id, 1)],
+            None,
+            CurrencyUnit::Sat,
+        );
+        let transport = Transport {
+            _type: TransportType::HttpPost,
+            target: "http://127.0.0.1:1/pay".to_string(),
+            tags: vec![],
+        };
+
+        let error = wallet
+            .deliver_payment_request(
+                &payment_request(Some(CurrencyUnit::Sat), Some(Amount::from(1)), vec![]),
+                &transport,
+                &token,
+            )
+            .await
+            .expect_err("delivery should fail");
+
+        assert!(
+            matches!(error, Error::PaymentRequestDeliveryUnsupported),
+            "unexpected error: {error:?}"
+        );
     }
 
     fn payment_request(
@@ -401,6 +1180,222 @@ mod tests {
             description: None,
             transports: vec![],
             nut10: None,
+        }
+    }
+
+    fn payment_request_with_http_transport(amount: Amount, method_fee: Amount) -> PaymentRequest {
+        PaymentRequest {
+            payment_id: None,
+            amount: Some(amount),
+            unit: Some(CurrencyUnit::Sat),
+            single_use: None,
+            mints: vec![],
+            mint_preferred: None,
+            supported_methods: vec![SupportedMethod::with_fee(
+                PaymentMethod::BOLT11.to_string(),
+                method_fee,
+            )],
+            description: None,
+            transports: vec![Transport {
+                _type: TransportType::HttpPost,
+                target: "https://receiver.example.com".to_string(),
+                tags: vec![],
+            }],
+            nut10: None,
+        }
+    }
+
+    /// Delivery rides the selected wallet's connector, so the richest accepted
+    /// mint is not automatically payable. Ranking on balance alone would hand
+    /// back a wallet that can never reach the receiver while a funded sibling
+    /// can.
+    #[tokio::test]
+    async fn repository_prepare_pay_request_skips_a_mint_that_cannot_deliver() {
+        use cdk_common::database::{Error as DatabaseError, WalletDatabase};
+
+        use crate::wallet::test_utils::{
+            test_keyset_id, test_mint_url, test_proof_info, MockMintConnector,
+            PaymentRequestDeliverability,
+        };
+        use crate::wallet::WalletConfig;
+
+        let localstore: Arc<dyn WalletDatabase<DatabaseError> + Send + Sync> = Arc::new(
+            cdk_sqlite::wallet::memory::empty()
+                .await
+                .expect("in-memory database"),
+        );
+        let deliverable_mint =
+            MintUrl::from_str("https://deliverable-mint.example.com").expect("mint url");
+        localstore
+            .update_proofs(
+                vec![
+                    test_proof_info(test_keyset_id(), 2048, test_mint_url()),
+                    test_proof_info(test_keyset_id(), 1024, deliverable_mint.clone()),
+                ],
+                vec![],
+            )
+            .await
+            .expect("store proofs");
+
+        let repository = crate::wallet::WalletRepositoryBuilder::new()
+            .localstore(localstore)
+            .seed([0u8; 64])
+            .build()
+            .await
+            .expect("repository");
+
+        let undeliverable = MockMintConnector::new();
+        undeliverable.set_payment_request_deliverability(PaymentRequestDeliverability::Unsupported);
+        repository
+            .create_wallet(
+                test_mint_url(),
+                CurrencyUnit::Sat,
+                Some(WalletConfig::new().with_mint_connector(Arc::new(undeliverable))),
+            )
+            .await
+            .expect("richer wallet");
+
+        let deliverable = MockMintConnector::new();
+        deliverable.set_payment_request_deliverability(PaymentRequestDeliverability::Deliverable);
+        repository
+            .create_wallet(
+                deliverable_mint.clone(),
+                CurrencyUnit::Sat,
+                Some(WalletConfig::new().with_mint_connector(Arc::new(deliverable))),
+            )
+            .await
+            .expect("poorer wallet");
+
+        let request = payment_request_with_http_transport(Amount::from(100), Amount::from(500));
+
+        let prepared = repository
+            .prepare_pay_request(request, None, None)
+            .await
+            .expect("prepare should pick the mint that can deliver");
+
+        assert_eq!(prepared.mint_url(), &deliverable_mint);
+
+        prepared.cancel().await.expect("cancel prepared payment");
+    }
+
+    /// With every funded mint unable to reach the receiver, blaming the balance
+    /// would send the payer looking for more ecash they already have.
+    #[tokio::test]
+    async fn repository_prepare_pay_request_reports_why_no_mint_can_deliver() {
+        use cdk_common::database::{Error as DatabaseError, WalletDatabase};
+
+        use crate::wallet::test_utils::{
+            test_keyset_id, test_mint_url, test_proof_info, MockMintConnector,
+            PaymentRequestDeliverability,
+        };
+        use crate::wallet::WalletConfig;
+
+        let localstore: Arc<dyn WalletDatabase<DatabaseError> + Send + Sync> = Arc::new(
+            cdk_sqlite::wallet::memory::empty()
+                .await
+                .expect("in-memory database"),
+        );
+        localstore
+            .update_proofs(
+                vec![test_proof_info(test_keyset_id(), 2048, test_mint_url())],
+                vec![],
+            )
+            .await
+            .expect("store proofs");
+
+        let repository = crate::wallet::WalletRepositoryBuilder::new()
+            .localstore(localstore)
+            .seed([0u8; 64])
+            .build()
+            .await
+            .expect("repository");
+
+        let undeliverable = MockMintConnector::new();
+        undeliverable.set_payment_request_deliverability(PaymentRequestDeliverability::Unsupported);
+        repository
+            .create_wallet(
+                test_mint_url(),
+                CurrencyUnit::Sat,
+                Some(WalletConfig::new().with_mint_connector(Arc::new(undeliverable))),
+            )
+            .await
+            .expect("funded wallet");
+
+        let request = payment_request_with_http_transport(Amount::from(100), Amount::from(500));
+
+        let error = repository
+            .prepare_pay_request(request, None, None)
+            .await
+            .expect_err("no mint can deliver");
+
+        assert!(
+            matches!(error, Error::PaymentRequestDeliveryUnsupported),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn repository_prepare_pay_request_ignores_underfunded_delivery_refusals() {
+        use crate::wallet::test_utils::{
+            create_test_db, test_keyset_id, test_mint_url, test_proof_info, MockMintConnector,
+            PaymentRequestDeliverability,
+        };
+        use crate::wallet::WalletConfig;
+
+        for undeliverable_balance in [0, 32] {
+            let localstore = create_test_db().await;
+            let deliverable_mint =
+                MintUrl::from_str("https://deliverable-mint.example.com").expect("mint url");
+            let mut proofs = vec![test_proof_info(
+                test_keyset_id(),
+                64,
+                deliverable_mint.clone(),
+            )];
+            if undeliverable_balance > 0 {
+                proofs.push(test_proof_info(
+                    test_keyset_id(),
+                    undeliverable_balance,
+                    test_mint_url(),
+                ));
+            }
+            localstore
+                .update_proofs(proofs, vec![])
+                .await
+                .expect("store proofs");
+
+            let repository = crate::wallet::WalletRepositoryBuilder::new()
+                .localstore(localstore)
+                .seed([0u8; 64])
+                .build()
+                .await
+                .expect("repository");
+
+            for (mint_url, deliverability) in [
+                (test_mint_url(), PaymentRequestDeliverability::Unsupported),
+                (deliverable_mint, PaymentRequestDeliverability::Deliverable),
+            ] {
+                let mock = MockMintConnector::new();
+                mock.set_payment_request_deliverability(deliverability);
+                repository
+                    .create_wallet(
+                        mint_url,
+                        CurrencyUnit::Sat,
+                        Some(WalletConfig::new().with_mint_connector(Arc::new(mock))),
+                    )
+                    .await
+                    .expect("wallet");
+            }
+
+            let request = payment_request_with_http_transport(Amount::from(100), Amount::ZERO);
+            let error = repository
+                .prepare_pay_request(request, None, None)
+                .await
+                .expect_err("neither wallet can fund the payment");
+
+            assert!(
+                matches!(error, Error::InsufficientFunds),
+                "unexpected error with undeliverable balance {undeliverable_balance}: {error:?}"
+            );
         }
     }
 
@@ -467,9 +1462,10 @@ async fn payment_request_amount_for_wallet(
         )));
     }
 
-    let method_fee = wallet_payment_request_method_fee(wallet, payment_request, unit)
+    let method_fee = wallet_payment_request_method(wallet, payment_request, unit)
         .await?
-        .ok_or(Error::UnsupportedPaymentMethod)?;
+        .ok_or(Error::UnsupportedPaymentMethod)?
+        .fee;
 
     if payment_request_method_fee_applies(payment_request, &wallet.mint_url) {
         return amount.checked_add(method_fee).ok_or(Error::AmountOverflow);
@@ -485,13 +1481,55 @@ fn payment_request_method_fee_applies(
     payment_request.mints.is_empty() || !payment_request.mints.contains(mint_url)
 }
 
-async fn wallet_payment_request_method_fee(
+/// Whether this wallet's connector can hand proofs to the chosen transport.
+///
+/// Only HTTP POST rides the mint connector; Nostr delivery goes out over its
+/// own relays, so it never consults the connector.
+fn ensure_wallet_can_deliver(wallet: &Wallet, transport: &Transport) -> Result<(), Error> {
+    if transport._type == TransportType::HttpPost {
+        wallet
+            .client
+            .ensure_payment_request_deliverable(&transport.target)?;
+    }
+
+    Ok(())
+}
+
+fn payment_request_transport(transports: &[Transport]) -> Option<&Transport> {
+    #[cfg(feature = "nostr")]
+    if let Some(nostr) = transports
+        .iter()
+        .find(|transport| transport._type == TransportType::Nostr)
+    {
+        return Some(nostr);
+    }
+
+    transports
+        .iter()
+        .find(|transport| transport._type == TransportType::HttpPost)
+}
+
+fn parse_payment_request_mints(mints: Option<&[String]>) -> Result<Vec<MintUrl>, Error> {
+    mints
+        .unwrap_or_default()
+        .iter()
+        .map(|url| {
+            MintUrl::from_str(url)
+                .map_err(|err| Error::Custom(format!("Invalid mint URL `{url}`: {err}")))
+        })
+        .collect()
+}
+
+async fn wallet_payment_request_method(
     wallet: &Wallet,
     payment_request: &PaymentRequest,
     unit: &CurrencyUnit,
-) -> Result<Option<Amount>, Error> {
+) -> Result<Option<SelectedPaymentMethod>, Error> {
     if payment_request.supported_methods.is_empty() {
-        return Ok(Some(Amount::ZERO));
+        return Ok(Some(SelectedPaymentMethod {
+            method: None,
+            fee: Amount::ZERO,
+        }));
     }
 
     let mint_info = wallet.load_mint_info().await?;
@@ -509,9 +1547,12 @@ fn payment_request_method_fee_from_melt_methods(
     melt_methods: &[MeltMethodSettings],
     melting_disabled: bool,
     unit: &CurrencyUnit,
-) -> Result<Option<Amount>, Error> {
+) -> Result<Option<SelectedPaymentMethod>, Error> {
     if supported_methods.is_empty() {
-        return Ok(Some(Amount::ZERO));
+        return Ok(Some(SelectedPaymentMethod {
+            method: None,
+            fee: Amount::ZERO,
+        }));
     }
 
     if melting_disabled {
@@ -521,26 +1562,34 @@ fn payment_request_method_fee_from_melt_methods(
     let requested_methods = supported_methods
         .iter()
         .map(|method| {
-            PaymentMethod::from_str(&method.method)
-                .map(|payment_method| (payment_method, method.fee.unwrap_or(Amount::ZERO)))
+            PaymentMethod::from_str(&method.method).map(|payment_method| {
+                (
+                    payment_method,
+                    method.method.clone(),
+                    method.fee.unwrap_or(Amount::ZERO),
+                )
+            })
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    let mut lowest_fee: Option<Amount> = None;
-    for (method, fee) in requested_methods {
+    let mut selected_method: Option<SelectedPaymentMethod> = None;
+    for (method, method_name, fee) in requested_methods {
         let melt_supports_method = melt_methods
             .iter()
             .any(|settings| settings.unit == *unit && settings.method == method);
 
         if melt_supports_method {
-            lowest_fee = match lowest_fee {
-                Some(current) if current <= fee => Some(current),
-                _ => Some(fee),
+            selected_method = match selected_method {
+                Some(current) if current.fee <= fee => Some(current),
+                _ => Some(SelectedPaymentMethod {
+                    method: Some(method_name),
+                    fee,
+                }),
             };
         }
     }
 
-    Ok(lowest_fee)
+    Ok(selected_method)
 }
 
 /// Parameters for creating a PaymentRequest
@@ -548,7 +1597,7 @@ fn payment_request_method_fee_from_melt_methods(
 /// This mirrors the CLI inputs and is used by `create_request` to build a
 /// NUT-18 PaymentRequest. When `transport` is set to `nostr`, the function
 /// also returns a `NostrWaitInfo` that can be passed to `wait_for_nostr_payment`.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CreateRequestParams {
     /// Optional amount to request (in the smallest unit for the chosen currency unit)
     pub amount: Option<u64>,
@@ -570,10 +1619,32 @@ pub struct CreateRequestParams {
     pub http_url: Option<String>, // when transport == http
     /// List of Nostr relay URLs to include in the nprofile (used if `transport == nostr`)
     pub nostr_relays: Option<Vec<String>>, // when transport == nostr
-    /// Optional list of mint URLs the receiver trusts. If not provided, the wallet's current mints for the requested unit will be used.
+    /// Optional list of mint URLs the receiver accepts or prefers; `None` emits no mint list
     pub mints: Option<Vec<String>>,
     /// Whether the mint list is preferred rather than required
     pub mint_preferred: Option<bool>,
+    /// Payment methods the payer's mint must support, with optional per-method fees
+    pub supported_methods: Vec<SupportedMethod>,
+}
+
+impl fmt::Debug for CreateRequestParams {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CreateRequestParams")
+            .field("amount", &self.amount)
+            .field("unit", &self.unit)
+            .field("description", &self.description)
+            .field("pubkeys", &self.pubkeys)
+            .field("num_sigs", &self.num_sigs)
+            .field("hash", &self.hash)
+            .field("preimage", &self.preimage.as_ref().map(|_| "[REDACTED]"))
+            .field("transport", &self.transport)
+            .field("http_url", &self.http_url)
+            .field("nostr_relays", &self.nostr_relays)
+            .field("mints", &self.mints)
+            .field("mint_preferred", &self.mint_preferred)
+            .field("supported_methods", &self.supported_methods)
+            .finish()
+    }
 }
 
 impl Default for CreateRequestParams {
@@ -591,6 +1662,7 @@ impl Default for CreateRequestParams {
             nostr_relays: None,
             mints: None,
             mint_preferred: None,
+            supported_methods: vec![],
         }
     }
 }
@@ -608,7 +1680,7 @@ pub struct NostrWaitInfo {
     /// Nostr relays to read from while waiting for the payment
     pub relays: Vec<String>,
     /// The recipient public key to subscribe to for incoming events
-    pub pubkey: nostr_sdk::PublicKey,
+    pub pubkey: PublicKey,
     /// Mint URLs accepted or preferred by the original payment request
     pub mints: Vec<MintUrl>,
     /// Whether the original request's mint list is preferred instead of strict
@@ -616,14 +1688,21 @@ pub struct NostrWaitInfo {
 }
 
 impl WalletRepository {
-    /// Pay a NUT-18 PaymentRequest using the WalletRepository.
+    /// Select a wallet and prepare a NUT-18 payment request for review.
     ///
-    /// This method handles paying a payment request by selecting an appropriate mint:
+    /// This method selects an appropriate mint:
     /// - If `mint_url` is provided, it verifies the payment request accepts that mint
     ///   and uses it to pay.
     /// - If `mint_url` is None, it automatically selects the mint that:
     ///   1. Is accepted by the payment request (matches one of the request's mints, or request accepts any mint)
-    ///   2. Has the highest balance among matching mints
+    ///   2. Can deliver to the request's transport over its own connector
+    ///   3. Has the highest balance among matching mints
+    ///
+    /// Delivery capability is part of the ranking, not a check on the winner:
+    /// a richer mint whose connector cannot reach the receiver is skipped so a
+    /// poorer accepted one that can still pays. When that leaves no candidate
+    /// at all, the refusal is reported instead of `InsufficientFunds`, which
+    /// would blame the balance for a transport the wallet can never use.
     ///
     /// # Arguments
     ///
@@ -638,12 +1717,20 @@ impl WalletRepository {
     /// - The specified mint is not accepted by the payment request
     /// - No matching mint has sufficient balance
     /// - No transport is available in the payment request
-    pub async fn pay_request(
+    /// - The request only offers HTTP POST and the mint connector cannot hand
+    ///   proofs to that target: no delivery support, an unusable URL, or a
+    ///   transport that verifies no certificate
+    ///
+    /// The returned payment must be explicitly completed with
+    /// [`PreparedPaymentRequest::confirm`] or released with
+    /// [`PreparedPaymentRequest::cancel`].
+    #[instrument(skip_all)]
+    pub async fn prepare_pay_request(
         &self,
         payment_request: PaymentRequest,
         mint_url: Option<MintUrl>,
         custom_amount: Option<Amount>,
-    ) -> Result<(), Error> {
+    ) -> Result<PreparedPaymentRequest, Error> {
         let unit = payment_request_unit(&payment_request)?;
         let amount = match payment_request.amount {
             Some(amount) => amount,
@@ -656,6 +1743,12 @@ impl WalletRepository {
         // Get the list of mints accepted by the payment request (empty means any mint is accepted)
         let accepted_mints = &payment_request.mints;
         let mint_list_is_preferred = payment_request.mint_preferred == Some(true);
+
+        let transport = payment_request_transport(&payment_request.transports)
+            .cloned()
+            .ok_or_else(|| {
+                Error::Custom("No transport available in payment request".to_string())
+            })?;
 
         // Select the wallet to use for payment
         let selected_wallet = if let Some(specified_mint) = &mint_url {
@@ -678,6 +1771,7 @@ impl WalletRepository {
             let mut best_preferred_balance = Amount::ZERO;
             let mut best_fallback_wallet: Option<Arc<Wallet>> = None;
             let mut best_fallback_balance = Amount::ZERO;
+            let mut delivery_refusal: Option<Error> = None;
 
             for (wallet_key, balance) in balances.iter() {
                 // Only consider wallets with matching unit
@@ -723,8 +1817,18 @@ impl WalletRepository {
                     }
                 };
 
-                // Check balance meets requirements and is best so far
+                // Only funded, eligible wallets can make delivery the reason for refusal.
                 if *balance < required_amount {
+                    continue;
+                }
+
+                if let Err(err) = ensure_wallet_can_deliver(&wallet, &transport) {
+                    tracing::warn!(
+                        "Skipping mint {} because its connector cannot deliver to the request's transport: {}",
+                        wallet_key.mint_url,
+                        err
+                    );
+                    delivery_refusal = delivery_refusal.or(Some(err));
                     continue;
                 }
 
@@ -739,15 +1843,15 @@ impl WalletRepository {
                 }
             }
 
-            best_preferred_wallet
-                .or(best_fallback_wallet)
-                .map(|w| (*w).clone())
-                .ok_or(Error::InsufficientFunds)?
+            match best_preferred_wallet.or(best_fallback_wallet) {
+                Some(wallet) => (*wallet).clone(),
+                None => return Err(delivery_refusal.unwrap_or(Error::InsufficientFunds)),
+            }
         };
 
-        // Use the selected wallet to pay the request
+        // Freeze the selected wallet, applicable method fee, and exact input fees.
         selected_wallet
-            .pay_request(payment_request, custom_amount)
+            .prepare_pay_request(payment_request, custom_amount)
             .await
     }
 
@@ -757,7 +1861,7 @@ impl WalletRepository {
     /// - Centralizes translation of CLI/SDK inputs (P2PK multisig and HTLC variants) into
     ///   a single, canonical `SpendingConditions` shape so requests are consistent.
     /// - Prevents ambiguous construction by capping `num_sigs` to the number of provided keys
-    ///   and rejecting malformed hashes/inputs early.
+    ///   and rejecting malformed hashes/inputs early. Repeated keys are an error, not a cap.
     /// - Encourages safe defaults by selecting `SigFlag::SigInputs` and composing conditions
     ///   that can be verified by recipients and mints.
     ///
@@ -772,6 +1876,9 @@ impl WalletRepository {
     /// Errors:
     /// - Invalid SHA-256 `hash` strings or invalid HTLC/P2PK parameterizations surface as errors
     ///   from parsing and `SpendingConditions` constructors.
+    /// - Conditions are validated here, so a request advertising a key twice within one
+    ///   signing pathway fails at creation with `DuplicatePubkey` rather than on the
+    ///   payer's side.
     fn get_pr_spending_conditions(
         &self,
         params: &CreateRequestParams,
@@ -852,6 +1959,7 @@ impl WalletRepository {
             } else {
                 None
             };
+
         Ok(spending_conditions)
     }
 
@@ -883,15 +1991,8 @@ impl WalletRepository {
         &self,
         params: CreateRequestParams,
     ) -> Result<(PaymentRequest, Option<NostrWaitInfo>), Error> {
-        // Collect available mints for the selected unit
-        // Filter by the requested unit and extract unique mint URLs
-        let mints: Vec<MintUrl> = params
-            .mints
-            .clone()
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|url| MintUrl::from_str(&url).ok())
-            .collect();
+        // Parse the explicitly configured mint policy. No list means any mint.
+        let mints = parse_payment_request_mints(params.mints.as_deref())?;
 
         // Transports
         let transport_type = params.transport.to_lowercase();
@@ -916,8 +2017,7 @@ impl WalletRepository {
                         .collect::<Result<Vec<_>, _>>()
                         .map_err(|e| Error::Custom(format!("Couldn't parse relays: {e}")))?;
 
-                    let nprofile =
-                        nostr_sdk::nips::nip19::Nip19Profile::new(keys.public_key, relay_urls);
+                    let nprofile = Nip19Profile::new(keys.public_key(), relay_urls);
                     let nostr_transport = Transport {
                         _type: TransportType::Nostr,
                         target: nprofile.to_bech32().map_err(|e| {
@@ -946,17 +2046,24 @@ impl WalletRepository {
                         };
                         (vec![http_transport], None)
                     } else {
-                        // No URL provided, skip transport
-                        (vec![], None)
+                        return Err(Error::Custom(
+                            "HTTP transport requires an HTTP URL".to_string(),
+                        ));
                     }
                 }
                 "none" => (vec![], None),
-                _ => (vec![], None),
+                _ => {
+                    return Err(Error::Custom(format!(
+                        "Unsupported payment request transport `{}`",
+                        params.transport
+                    )))
+                }
             };
 
         let nut10 = self
             .get_pr_spending_conditions(&params)?
-            .map(Nut10SecretRequest::from);
+            .map(Nut10SecretRequest::try_from)
+            .transpose()?;
 
         let req = PaymentRequest {
             payment_id: None,
@@ -965,7 +2072,7 @@ impl WalletRepository {
             single_use: Some(true),
             mints,
             mint_preferred: params.mint_preferred,
-            supported_methods: vec![],
+            supported_methods: params.supported_methods,
             description: params.description,
             transports,
             nut10,
@@ -991,15 +2098,8 @@ impl WalletRepository {
         &self,
         params: CreateRequestParams,
     ) -> Result<PaymentRequest, Error> {
-        // Collect available mints for the selected unit
-        // Filter by the requested unit and extract unique mint URLs
-        let mints: Vec<MintUrl> = params
-            .mints
-            .clone()
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|url| MintUrl::from_str(&url).ok())
-            .collect();
+        // Parse the explicitly configured mint policy. No list means any mint.
+        let mints = parse_payment_request_mints(params.mints.as_deref())?;
 
         // Transports
         let transport_type = params.transport.to_lowercase();
@@ -1018,16 +2118,24 @@ impl WalletRepository {
                     };
                     vec![http_transport]
                 } else {
-                    // No URL provided, skip transport
-                    vec![]
+                    return Err(Error::Custom(
+                        "HTTP transport requires an HTTP URL".to_string(),
+                    ));
                 }
             }
-            _ => vec![],
+            "none" => vec![],
+            _ => {
+                return Err(Error::Custom(format!(
+                    "Unsupported payment request transport `{}`",
+                    params.transport
+                )))
+            }
         };
 
         let nut10 = self
             .get_pr_spending_conditions(&params)?
-            .map(Nut10SecretRequest::from);
+            .map(Nut10SecretRequest::try_from)
+            .transpose()?;
 
         let req = PaymentRequest {
             payment_id: None,
@@ -1036,7 +2144,7 @@ impl WalletRepository {
             single_use: Some(true),
             mints,
             mint_preferred: params.mint_preferred,
-            supported_methods: vec![],
+            supported_methods: params.supported_methods,
             description: params.description,
             transports,
             nut10,
@@ -1048,8 +2156,6 @@ impl WalletRepository {
     /// Wait for a Nostr payment for the previously constructed PaymentRequest and receive it into the wallet.
     #[cfg(all(feature = "nostr", not(target_arch = "wasm32")))]
     pub async fn wait_for_nostr_payment(&self, info: NostrWaitInfo) -> Result<Amount> {
-        use futures::StreamExt;
-
         use crate::wallet::streams::nostr::NostrPaymentEventStream;
 
         let NostrWaitInfo {
@@ -1117,8 +2223,6 @@ impl WalletRepository {
     /// wasm32 fallback: Streams are not available; we await the first matching notification and process it.
     #[cfg(all(feature = "nostr", target_arch = "wasm32"))]
     pub async fn wait_for_nostr_payment(&self, info: NostrWaitInfo) -> Result<Amount> {
-        use nostr_sdk::prelude::*;
-
         let NostrWaitInfo {
             keys,
             relays,
@@ -1127,11 +2231,14 @@ impl WalletRepository {
             mint_preferred,
         } = info;
 
-        let client = nostr_sdk::Client::new(keys);
+        let client = NostrClient::builder()
+            .authenticator(SignerAuthenticator::new(keys.clone()))
+            .build();
 
         for r in &relays {
             client
-                .add_read_relay(r.clone())
+                .add_relay(r.clone())
+                .capabilities(RelayCapabilities::READ)
                 .await
                 .map_err(|e| crate::error::Error::Custom(format!("Add relay {r}: {e}")))?;
         }
@@ -1139,17 +2246,17 @@ impl WalletRepository {
         client.connect().await;
 
         // Subscribe to events addressed to `pubkey`
-        let filter = Filter::new().pubkey(pubkey);
+        let filter = Filter::new().pubkey(pubkey).kind(Kind::GiftWrap);
+        let mut notifications = client.notifications();
         client
-            .subscribe(filter, None)
+            .subscribe(filter)
             .await
             .map_err(|e| crate::error::Error::Custom(format!("Subscribe: {e}")))?;
 
         // Await notifications until we successfully parse a payment payload and receive it
-        let mut notifications = client.notifications();
-        while let Ok(notification) = notifications.recv().await {
-            if let RelayPoolNotification::Event { event, .. } = notification {
-                match client.unwrap_gift_wrap(&event).await {
+        while let Some(notification) = notifications.next().await {
+            if let ClientNotification::Event { event, .. } = notification {
+                match UnwrappedGift::from_gift_wrap(&keys, &event) {
                     Ok(unwrapped) => {
                         let rumor = unwrapped.rumor;
                         match serde_json::from_str::<PaymentRequestPayload>(&rumor.content) {

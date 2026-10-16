@@ -112,7 +112,7 @@ enum Commands {
     /// Update Mint Url
     UpdateMintUrl(sub_commands::update_mint_url::UpdateMintUrlSubCommand),
     /// Get proofs from mint.
-    ListMintProofs,
+    ListMintProofs(sub_commands::list_mint_proofs::ListMintProofsSubCommand),
     /// Decode a payment request
     DecodeRequest(sub_commands::decode_request::DecodePaymentRequestSubCommand),
     /// Pay a payment request
@@ -334,8 +334,8 @@ async fn main() -> Result<()> {
             )
             .await
         }
-        Commands::ListMintProofs => {
-            sub_commands::list_mint_proofs::proofs(&wallet_repository).await
+        Commands::ListMintProofs(sub_command_args) => {
+            sub_commands::list_mint_proofs::proofs(&wallet_repository, sub_command_args).await
         }
         Commands::DecodeRequest(sub_command_args) => {
             sub_commands::decode_request::decode_payment_request(sub_command_args)
@@ -417,6 +417,23 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_mint_quote_recovery_options() {
+        let cli = Cli::try_parse_from([
+            "cdk-cli",
+            "mint",
+            "https://mint.example.com",
+            "--quote-id",
+            "lost-quote",
+            "--method",
+            "onchain",
+            "--key-search-limit",
+            "10000",
+        ])
+        .expect("quote recovery should not require an amount");
+        assert!(matches!(cli.command, Commands::Mint(_)));
+    }
 
     #[test]
     fn danger_accept_invalid_certs_defaults_to_false() {

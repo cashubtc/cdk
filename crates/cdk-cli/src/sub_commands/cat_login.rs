@@ -7,7 +7,12 @@ use cdk::wallet::WalletRepository;
 use clap::Args;
 use serde::{Deserialize, Serialize};
 
+use crate::terminal::escape_control;
 use crate::token_storage;
+
+pub(super) fn token_display_line(label: &str, token: &str) -> String {
+    format!("{label}: {}", escape_control(token))
+}
 
 #[derive(Args, Serialize, Deserialize)]
 pub struct CatLoginSubCommand {
@@ -53,8 +58,8 @@ pub async fn cat_login(
 
     println!("\nAuthentication successful! 🎉\n");
     println!("\nYour tokens:");
-    println!("access_token: {access_token}");
-    println!("refresh_token: {refresh_token}");
+    println!("{}", token_display_line("access_token", &access_token));
+    println!("{}", token_display_line("refresh_token", &refresh_token));
 
     Ok(())
 }
@@ -110,4 +115,23 @@ async fn get_access_token(
         .to_string();
 
     Ok((access_token, refresh_token))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn token_display_escapes_terminal_controls() {
+        let token = "token\u{1b}]52;c;clipboard\u{07}\r\u{85}\u{202e}";
+        let output = token_display_line("access_token", token);
+
+        assert_eq!(
+            output,
+            "access_token: token\\e]52;c;clipboard\\a\\r\\u{85}\\u{202e}"
+        );
+        assert!(!output
+            .chars()
+            .any(|ch| { ch.is_control() || cdk_common::terminal::is_bidi_control_character(ch) }));
+    }
 }

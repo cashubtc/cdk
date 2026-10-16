@@ -93,3 +93,37 @@ pub fn notification_to_ws_message(notification: NotificationInner<QuoteId>) -> W
         params: notification_uuid_to_notification_string(notification),
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use cashu::nut17::MAX_SUBSCRIPTION_ID_LEN;
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn websocket_requests_reject_oversized_subscription_ids() {
+        let oversized_id = "a".repeat(MAX_SUBSCRIPTION_ID_LEN + 1);
+        let subscribe = json!({
+            "jsonrpc": "2.0",
+            "method": "subscribe",
+            "params": {
+                "kind": "bolt11_mint_quote",
+                "filters": [],
+                "subId": oversized_id,
+            },
+            "id": 1,
+        });
+        assert!(serde_json::from_value::<WsRequest>(subscribe).is_err());
+
+        let unsubscribe = json!({
+            "jsonrpc": "2.0",
+            "method": "unsubscribe",
+            "params": {
+                "subId": "a".repeat(MAX_SUBSCRIPTION_ID_LEN + 1),
+            },
+            "id": 2,
+        });
+        assert!(serde_json::from_value::<WsRequest>(unsubscribe).is_err());
+    }
+}

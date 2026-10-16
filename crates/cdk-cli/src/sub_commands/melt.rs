@@ -192,8 +192,8 @@ pub async fn pay(
     let selected_mint = if let Some(mint_url) = &sub_command_args.mint_url {
         Some(MintUrl::from_str(mint_url)?)
     } else {
-        // Display all mints with their balances and let user select
-        let balances_map = wallet_repository.get_balances().await?;
+        // Display all mints with their balances for the selected unit and let user select
+        let balances_map = wallet_repository.get_balances_for_unit(unit).await?;
         if balances_map.is_empty() {
             bail!("No mints available in the wallet");
         }
@@ -264,15 +264,21 @@ pub async fn pay(
                 specific_mint
             } else {
                 // Auto-select the first mint with sufficient balance
-                let balances = wallet_repository.get_balances().await?;
-                let required_amount = bolt11
-                    .amount_milli_satoshis()
-                    .map(|a| Amount::from(a / MSAT_IN_SAT))
+                let balances = wallet_repository.get_balances_for_unit(unit).await?;
+                let required_amount = options
+                    .map(|options| options.amount_msat().into())
+                    .or_else(|| bolt11.amount_milli_satoshis())
+                    .map(|amount| {
+                        Amount::new(amount, CurrencyUnit::Msat)
+                            .convert_to_ceil(unit)
+                            .map(Into::into)
+                    })
+                    .transpose()?
                     .unwrap_or(Amount::ZERO);
 
                 balances
                     .into_iter()
-                    .find(|(_, balance)| *balance >= required_amount)
+                    .find(|(key, balance)| &key.unit == unit && *balance >= required_amount)
                     .map(|(key, _)| key.mint_url)
                     .ok_or_else(|| anyhow::anyhow!("No mint with sufficient balance"))?
             };
@@ -339,7 +345,7 @@ pub async fn pay(
                 specific_mint
             } else {
                 // User selected "Any" - just pick the first mint with any balance
-                let balances = wallet_repository.get_balances().await?;
+                let balances = wallet_repository.get_balances_for_unit(unit).await?;
 
                 balances
                     .into_iter()
@@ -400,7 +406,7 @@ pub async fn pay(
                 specific_mint
             } else {
                 // User selected "Any" - just pick the first mint with any balance
-                let balances = wallet_repository.get_balances().await?;
+                let balances = wallet_repository.get_balances_for_unit(unit).await?;
 
                 balances
                     .into_iter()
@@ -459,7 +465,7 @@ pub async fn pay(
             let mint_url = if let Some(specific_mint) = selected_mint {
                 specific_mint
             } else {
-                let balances = wallet_repository.get_balances().await?;
+                let balances = wallet_repository.get_balances_for_unit(unit).await?;
 
                 balances
                     .into_iter()
@@ -523,8 +529,8 @@ async fn pay_mpp(
     // Validate invoice format
     let _bolt11 = Bolt11Invoice::from_str(&bolt11_str)?;
 
-    // Show available mints and balances
-    let balances = wallet_repository.get_balances().await?;
+    // Show available mints and balances for the selected unit
+    let balances = wallet_repository.get_balances_for_unit(unit).await?;
     let balances_vec: Vec<(WalletKey, Amount)> = balances.into_iter().collect();
 
     // Collect mint selections and amounts from CLI when provided, otherwise prompt interactively.
@@ -573,8 +579,12 @@ async fn pay_mpp(
     }
 
     for (mint_url, amount) in &mint_amounts {
-        if !wallet_repository.has_mint(mint_url).await {
-            bail!("MPP split mint {} is not in the wallet", mint_url);
+        if !wallet_repository.has_wallet(mint_url, unit).await {
+            bail!(
+                "MPP split mint {} is not in the wallet for unit {}",
+                mint_url,
+                unit
+            );
         }
 
         let key = WalletKey::new(mint_url.clone(), unit.clone());

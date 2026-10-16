@@ -8,6 +8,22 @@
 
 LND (Lightning Network Daemon) backend implementation for the Cashu Development Kit (CDK).
 
+Full BOLT11 payments allow circular payments back to the same LND node by
+default, including payments between applications sharing a node. These require a
+viable route and liquidity, and peers must permit the selected circular route.
+Routing fees remain subject to the payment's fee limit. This does not enable
+partial self-payments through the separate MPP routing path.
+
+Backend initialization calls LND's `GetInfo` once and caches the node pubkey
+and invoice network. LND must be reachable and the macaroon must permit
+`info:read` (or `/lnrpc.Lightning/GetInfo` for an RPC-restricted macaroon).
+`admin.macaroon` already permits this. Restricted macaroons must be updated
+before upgrading; otherwise initialization returns an error.
+
+Invoices for another network are rejected when quoting and before dispatch.
+When `allow_self_payment` is false, self-payments are rejected locally before
+dispatch. Existing paid or pending outgoing payments are reconciled first.
+
 ## Installation
 
 Add this to your `Cargo.toml`:
@@ -31,6 +47,7 @@ cert_file = "/path/to/.lnd/tls.cert"
 macaroon_file = "/path/to/.lnd/data/chain/bitcoin/mainnet/admin.macaroon"
 fee_percent = 0.02       # Optional, defaults to 2%
 reserve_fee_min = 2      # Optional, defaults to 2 sats
+allow_self_payment = true # Optional, defaults to true
 ```
 
 ### Environment Variables
@@ -45,6 +62,7 @@ All configuration can be set via environment variables:
 | `CDK_MINTD_LND_MACAROON_FILE` | Path to LND macaroon file | Yes |
 | `CDK_MINTD_LND_FEE_PERCENT` | Fee percentage (default: `0.02`) | No |
 | `CDK_MINTD_LND_RESERVE_FEE_MIN` | Minimum fee in sats (default: `2`) | No |
+| `CDK_MINTD_LND_ALLOW_SELF_PAYMENT` | Allow circular payments back to this LND node (default: `true`) | No |
 
 ### Example
 

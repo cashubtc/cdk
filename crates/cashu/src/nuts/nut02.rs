@@ -186,6 +186,16 @@ impl Id {
         input_fee_ppk: u64,
         expiry: Option<u64>,
     ) -> Self {
+        Self::v2_from_data_inner(map, unit, input_fee_ppk, expiry, false)
+    }
+
+    fn v2_from_data_inner(
+        map: &Keys,
+        unit: &CurrencyUnit,
+        input_fee_ppk: u64,
+        expiry: Option<u64>,
+        include_zero_expiry: bool,
+    ) -> Self {
         let mut keys: Vec<(&Amount, &super::PublicKey)> = map.iter().collect();
         keys.sort_by_key(|(amt, _v)| *amt);
 
@@ -203,7 +213,7 @@ impl Id {
         }
 
         if let Some(expiry) = expiry {
-            if expiry > 0 {
+            if expiry > 0 || include_zero_expiry {
                 data.push_str(&format!("|final_expiry:{}", expiry));
             }
         }
@@ -504,7 +514,7 @@ pub struct KeySet {
 }
 
 impl KeySet {
-    /// Verify the keyset id matches keys
+    /// Verify the keyset ID canonically matches its keys and metadata.
     pub fn verify_id(&self) -> Result<(), Error> {
         let keys_id = match self.id.version {
             KeySetVersion::Version00 => Id::v1_from_keys(&self.keys),
@@ -516,13 +526,34 @@ impl KeySet {
             ),
         };
 
+        ensure_cdk!(keys_id == self.id, Error::IncorrectKeysetId);
+        Ok(())
+    }
+
+    /// Verify a historical keyset during migration from Nutshell.
+    ///
+    /// Accepts canonical IDs and the legacy Nutshell v2 calculation that hashes
+    /// an explicit zero expiry, including when migration normalized it to None.
+    /// This compatibility check is intended only for historical mint imports.
+    #[cfg(feature = "mint")]
+    pub fn verify_id_for_legacy_nutshell_migration(&self) -> Result<(), Error> {
+        if self.verify_id().is_ok() {
+            return Ok(());
+        }
+        let legacy_zero_expiry_id = match (self.id.version, self.final_expiry) {
+            (KeySetVersion::Version01, None | Some(0)) => Some(Id::v2_from_data_inner(
+                &self.keys,
+                &self.unit,
+                self.input_fee_ppk,
+                Some(0),
+                true,
+            )),
+            _ => None,
+        };
         ensure_cdk!(
-            u32::from(keys_id) == u32::from(self.id),
+            legacy_zero_expiry_id == Some(self.id),
             Error::IncorrectKeysetId
         );
-
-        ensure_cdk!(keys_id == self.id, Error::IncorrectKeysetId);
-
         Ok(())
     }
 }
@@ -584,8 +615,16 @@ fn default_input_fee_ppk() -> u64 {
 }
 
 #[cfg(feature = "mint")]
-/// MintKeyset
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Mint keyset.
+///
+/// This type intentionally does not implement [`Serialize`] because it contains
+/// mint signing keys.
+///
+/// ```compile_fail
+/// fn assert_serialize<T: serde::Serialize>() {}
+/// assert_serialize::<cashu::nuts::nut02::MintKeySet>();
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct MintKeySet {
     /// Keyset [`Id`]
     pub id: Id,
@@ -596,7 +635,6 @@ pub struct MintKeySet {
     /// Input Fee PPK
     #[serde(default)]
     pub input_fee_ppk: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
     /// Expiry [`Option<u64>`]
     pub final_expiry: Option<u64>,
 }
@@ -1298,6 +1336,90 @@ mod test {
             keyset_v2.verify_id().is_ok(),
             "valid v2 keyset should verify"
         );
+    }
+
+    #[test]
+    fn test_keyset_verify_id_rejects_legacy_zero_expiry() {
+        use super::KeySet;
+
+        let keys: Keys = serde_json::from_str(SHORT_KEYSET).expect("public keys");
+        let canonical = Id::v2_from_data(&keys, &CurrencyUnit::Sat, 100, None);
+        let legacy = Id::v2_from_data_inner(&keys, &CurrencyUnit::Sat, 100, Some(0), true);
+        assert_ne!(canonical, legacy);
+        assert_eq!(
+            canonical,
+            Id::v2_from_data(&keys, &CurrencyUnit::Sat, 100, Some(0))
+        );
+        let mut keyset = KeySet {
+            id: legacy,
+            unit: CurrencyUnit::Sat,
+            active: Some(false),
+            keys,
+            input_fee_ppk: 100,
+            final_expiry: None,
+        };
+        for expiry in [None, Some(0)] {
+            keyset.final_expiry = expiry;
+            assert!(matches!(keyset.verify_id(), Err(Error::IncorrectKeysetId)));
+            keyset.id = canonical;
+            keyset.verify_id().expect("canonical ID verifies");
+            keyset.id = legacy;
+        }
+    }
+
+    #[cfg(feature = "mint")]
+    #[test]
+    fn test_historical_migration_verifies_legacy_zero_expiry() {
+        use super::KeySet;
+
+        let keys: Keys = serde_json::from_str(SHORT_KEYSET).expect("public keys");
+        let unit = CurrencyUnit::Sat;
+        let canonical = Id::v2_from_data(&keys, &unit, 100, None);
+        let legacy = Id::v2_from_data_inner(&keys, &unit, 100, Some(0), true);
+        assert_eq!(canonical, Id::v2_from_data(&keys, &unit, 100, Some(0)));
+        assert_ne!(canonical, legacy);
+        let mut keyset = KeySet {
+            id: legacy,
+            unit,
+            active: Some(false),
+            keys,
+            input_fee_ppk: 100,
+            final_expiry: None,
+        };
+        for expiry in [None, Some(0)] {
+            keyset.final_expiry = expiry;
+            keyset
+                .verify_id_for_legacy_nutshell_migration()
+                .expect("legacy zero-expiry ID verifies");
+            keyset.id = canonical;
+            keyset
+                .verify_id_for_legacy_nutshell_migration()
+                .expect("canonical ID still verifies");
+            keyset.id = legacy;
+        }
+        for invalid in [
+            KeySet {
+                final_expiry: Some(1),
+                ..keyset.clone()
+            },
+            KeySet {
+                input_fee_ppk: 101,
+                ..keyset.clone()
+            },
+            KeySet {
+                unit: CurrencyUnit::Msat,
+                ..keyset.clone()
+            },
+            KeySet {
+                keys: serde_json::from_str(KEYSET).expect("different public keys"),
+                ..keyset
+            },
+        ] {
+            assert!(matches!(
+                invalid.verify_id_for_legacy_nutshell_migration(),
+                Err(Error::IncorrectKeysetId)
+            ));
+        }
     }
 
     #[test]

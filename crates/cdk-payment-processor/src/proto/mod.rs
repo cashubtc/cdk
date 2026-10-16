@@ -6,6 +6,7 @@ use cdk_common::payment::{
     PaymentIdentifier as CdkPaymentIdentifier, PaymentQuoteResponse as CdkPaymentQuoteResponse,
     WaitPaymentResponse,
 };
+use cdk_common::util::hex;
 use cdk_common::{CurrencyUnit, MeltOptions as CdkMeltOptions};
 
 mod client;

@@ -42,6 +42,62 @@ pub enum Error {
     /// Invalid payment request
     #[error("Invalid payment request")]
     InvalidPaymentRequest,
+    /// A payment-request token was created but transport delivery failed.
+    ///
+    /// The token remains a pending send. Callers can pass `operation_id` to
+    /// `Wallet::revoke_send` to reclaim it if the receiver has not claimed it.
+    #[cfg(feature = "wallet")]
+    #[error("Payment token created but delivery failed for operation {operation_id}: {source}")]
+    PaymentRequestDeliveryFailed {
+        /// Pending send operation that can be passed to `Wallet::revoke_send`.
+        operation_id: uuid::Uuid,
+        /// Transport error returned while delivering the created token.
+        #[source]
+        source: Box<Error>,
+    },
+    /// The wallet's mint connector cannot deliver payment requests.
+    ///
+    /// Delivery rides the wallet's configured transport so proxy and Tor
+    /// settings cover the recipient request; a connector without delivery
+    /// support fails here rather than falling back to a direct request.
+    /// Preparing a payment raises this before reserving any proofs, so there
+    /// is no pending send to revoke.
+    #[cfg(feature = "wallet")]
+    #[error("Mint connector does not support payment request delivery")]
+    PaymentRequestDeliveryUnsupported,
+    /// The receiver endpoint answered a payment request delivery with a redirect.
+    ///
+    /// Delivery does not follow redirects: a redirected POST can be replayed as
+    /// a GET, dropping the proofs while still answering success. The payer has
+    /// to obtain the receiver's final URL instead. The outcome is ambiguous
+    /// because the payload was already on the wire when the redirect came back.
+    #[cfg(feature = "wallet")]
+    #[error("Payment request endpoint redirected the delivery")]
+    PaymentRequestDeliveryRedirected {
+        /// Redirect status, when the transport surfaced the response itself.
+        status: Option<u16>,
+    },
+    /// A third-party endpoint was reached over an unverified TLS connection.
+    ///
+    /// `danger_accept_invalid_certs` disables verification for the whole
+    /// client, and it is configured for the mint, not for an LNURL service or
+    /// a receiver URL a payment request chose. A MITM there swaps the invoice
+    /// or redeems the proofs. Preparing a NUT-18 payment raises this before
+    /// reserving any proofs, so there is no pending send to revoke.
+    #[cfg(feature = "wallet")]
+    #[error("Refusing to reach {host} without TLS certificate verification")]
+    UnverifiedTlsEndpoint {
+        /// Receiver host that would have been trusted without verification.
+        host: String,
+    },
+    /// No Nostr relay accepted a published event.
+    #[error("No Nostr relay accepted event {event_id}")]
+    NostrPublishFailed {
+        /// Event that could not be published.
+        event_id: String,
+        /// Relays that failed to accept the event.
+        failed_relays: Vec<String>,
+    },
     /// Bolt11 invoice does not have amount
     #[error("Invoice Amount undefined")]
     InvoiceAmountUndefined,
@@ -603,6 +659,23 @@ mod tests {
         assert!(!Error::ConcurrentUpdate.is_definitive_failure());
         assert!(!Error::BlindedMessageAlreadySigned.is_definitive_failure());
         assert!(!Error::TokenAlreadySpent.is_definitive_failure());
+        #[cfg(feature = "wallet")]
+        assert!(!Error::PaymentRequestDeliveryFailed {
+            operation_id: uuid::Uuid::new_v4(),
+            source: Box::new(Error::Timeout),
+        }
+        .is_definitive_failure());
+        #[cfg(feature = "wallet")]
+        assert!(Error::PaymentRequestDeliveryUnsupported.is_definitive_failure());
+        #[cfg(feature = "wallet")]
+        assert!(Error::UnverifiedTlsEndpoint {
+            host: "receiver.example.com".to_string(),
+        }
+        .is_definitive_failure());
+        #[cfg(feature = "wallet")]
+        assert!(
+            !Error::PaymentRequestDeliveryRedirected { status: Some(302) }.is_definitive_failure()
+        );
 
         // Test HTTP server errors (5xx)
         assert!(
@@ -772,10 +845,19 @@ impl Error {
             | Self::Bip353Resolve(_)
             | Self::LightningAddressRequest(_) => false,
 
+            #[cfg(feature = "wallet")]
+            Self::PaymentRequestDeliveryFailed { .. }
+            | Self::PaymentRequestDeliveryRedirected { .. } => false,
+
+            #[cfg(feature = "wallet")]
+            Self::PaymentRequestDeliveryUnsupported
+            | Self::UnverifiedTlsEndpoint { .. } => true,
+
             // Network/IO/Parsing Errors (Usually ambiguous as they could happen reading response)
             Self::HttpError(None, _) // No status code means network error
             | Self::SerdeJsonError(_) // Could be malformed success response
             | Self::Database(_)
+            | Self::NostrPublishFailed { .. }
             | Self::Custom(_) => false,
 
             // Auth Errors (Generally definitive if rejected)

@@ -18,6 +18,7 @@ ur = { version = "0.5.2", default-features = false, features = ["std"] }
 
 [dependencies.cashu]
 path = "../crates/cashu"
+features = ["nostr"]
 
 [lib]
 name = "cdk_fuzz"
@@ -247,6 +248,76 @@ bench = false
 [[bin]]
 name = "fuzz_payment_request_structured"
 path = "fuzz_targets/fuzz_payment_request_structured.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_amount_split"
+path = "fuzz_targets/fuzz_amount_split.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_nut20_quote_signature"
+path = "fuzz_targets/fuzz_nut20_quote_signature.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_nut28_p2bk"
+path = "fuzz_targets/fuzz_nut28_p2bk.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_nut13_deterministic_secrets"
+path = "fuzz_targets/fuzz_nut13_deterministic_secrets.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_nut17_websocket"
+path = "fuzz_targets/fuzz_nut17_websocket.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_dhke_end_to_end"
+path = "fuzz_targets/fuzz_dhke_end_to_end.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_nut27_backup_event"
+path = "fuzz_targets/fuzz_nut27_backup_event.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_nut04_mint_settings"
+path = "fuzz_targets/fuzz_nut04_mint_settings.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_nut21_route_path"
+path = "fuzz_targets/fuzz_nut21_route_path.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_nut21_settings"
+path = "fuzz_targets/fuzz_nut21_settings.rs"
 test = false
 doc = false
 bench = false

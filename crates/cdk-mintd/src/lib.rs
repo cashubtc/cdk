@@ -216,6 +216,15 @@ struct BdkWalletInfoProvider {
 #[cfg(all(feature = "management-rpc", feature = "bdk"))]
 #[async_trait::async_trait]
 impl cdk_mint_rpc::WalletInfoProvider for BdkWalletInfoProvider {
+    async fn create_deposit_address(
+        &self,
+    ) -> std::result::Result<String, cdk_mint_rpc::WalletInfoError> {
+        self.bdk
+            .create_operator_deposit_address()
+            .await
+            .map_err(|err| cdk_mint_rpc::WalletInfoError::new(err.to_string()))
+    }
+
     async fn get_balance(
         &self,
     ) -> std::result::Result<cdk_mint_rpc::wallet::GetBalanceResponse, cdk_mint_rpc::WalletInfoError>
@@ -252,6 +261,26 @@ impl cdk_mint_rpc::WalletInfoProvider for BdkWalletInfoProvider {
                 .into_iter()
                 .map(|transaction| cdk_mint_rpc::wallet::WalletTransaction {
                     txid: transaction.txid,
+                    inputs: transaction
+                        .inputs
+                        .into_iter()
+                        .map(|input| cdk_mint_rpc::wallet::WalletTransactionInput {
+                            txid: input.txid,
+                            vout: input.vout,
+                            amount_sat: input.amount_sat,
+                            address: input.address,
+                        })
+                        .collect(),
+                    outputs: transaction
+                        .outputs
+                        .into_iter()
+                        .map(|output| cdk_mint_rpc::wallet::WalletTransactionOutput {
+                            vout: output.vout,
+                            address: output.address,
+                            amount_sat: output.amount_sat,
+                            quote_id: output.quote_id,
+                        })
+                        .collect(),
                     received_sat: transaction.received_sat,
                     sent_sat: transaction.sent_sat,
                     fee_sat: transaction.fee_sat,
@@ -354,6 +383,24 @@ async fn initial_setup(
     Ok((localstore, keystore, kv, configuration_store))
 }
 
+/// Operator intent for the mint database targeted by `config init`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MintInitializationMode {
+    /// Initialize a database that has never served a mint.
+    New,
+    /// Import configuration into a database containing an existing mint.
+    Existing,
+}
+
+/// Operator intent for BDK wallet persistence during configuration changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BdkWalletPolicy {
+    /// Require a matching, initialized BDK wallet database.
+    RequireExisting,
+    /// Permit creation of a BDK wallet only when its database is absent.
+    AllowNew,
+}
+
 /// Sets up and initializes a tracing subscriber with custom log filtering.
 /// Logs can be configured to output to stdout only, file only, or both.
 /// Returns a guard that must be kept alive and properly dropped on shutdown.
@@ -361,7 +408,27 @@ pub fn setup_tracing(
     work_dir: &Path,
     logging_config: &config::LoggingConfig,
 ) -> Result<Option<tracing_appender::non_blocking::WorkerGuard>> {
-    let default_filter = "debug";
+    use config::LoggingOutput;
+
+    let console_level = logging_config
+        .console_level
+        .as_deref()
+        .unwrap_or("info")
+        .parse::<tracing::Level>()
+        .unwrap_or(tracing::Level::INFO);
+    let file_level = logging_config
+        .file_level
+        .as_deref()
+        .unwrap_or("debug")
+        .parse::<tracing::Level>()
+        .unwrap_or(tracing::Level::DEBUG);
+    // Enable spans and events up to the most verbose active output. Writer
+    // filters below still enforce each output's individual level.
+    let default_filter = match logging_config.output {
+        LoggingOutput::Stderr => console_level,
+        LoggingOutput::File => file_level,
+        LoggingOutput::Both => console_level.max(file_level),
+    };
     let hyper_filter = "hyper=warn,rustls=warn,reqwest=warn";
     let h2_filter = "h2=warn";
     let tower_filter = "tower=warn";
@@ -374,17 +441,9 @@ pub fn setup_tracing(
         "{default_filter},{hyper_filter},{h2_filter},{tower_filter},{tower_http},{rustls},{tungstenite},{tokio_postgres}"
     ));
 
-    use config::LoggingOutput;
     match logging_config.output {
         LoggingOutput::Stderr => {
             // Console output only (stderr)
-            let console_level = logging_config
-                .console_level
-                .as_deref()
-                .unwrap_or("info")
-                .parse::<tracing::Level>()
-                .unwrap_or(tracing::Level::INFO);
-
             let stderr = std::io::stderr.with_max_level(console_level);
 
             tracing_subscriber::fmt()
@@ -398,13 +457,6 @@ pub fn setup_tracing(
         }
         LoggingOutput::File => {
             // File output only
-            let file_level = logging_config
-                .file_level
-                .as_deref()
-                .unwrap_or("debug")
-                .parse::<tracing::Level>()
-                .unwrap_or(tracing::Level::DEBUG);
-
             // Create logs directory in work_dir if it doesn't exist
             let logs_dir = work_dir.join("logs");
             std::fs::create_dir_all(&logs_dir)?;
@@ -430,19 +482,6 @@ pub fn setup_tracing(
         }
         LoggingOutput::Both => {
             // Both console and file output (stderr + file)
-            let console_level = logging_config
-                .console_level
-                .as_deref()
-                .unwrap_or("info")
-                .parse::<tracing::Level>()
-                .unwrap_or(tracing::Level::INFO);
-            let file_level = logging_config
-                .file_level
-                .as_deref()
-                .unwrap_or("debug")
-                .parse::<tracing::Level>()
-                .unwrap_or(tracing::Level::DEBUG);
-
             // Create logs directory in work_dir if it doesn't exist
             let logs_dir = work_dir.join("logs");
             std::fs::create_dir_all(&logs_dir)?;
@@ -560,6 +599,13 @@ fn validate_database_config(settings: &config::Settings) -> Result<()> {
         if pg_config.url.is_empty() {
             bail!("PostgreSQL URL is required. Set it in config file [database.postgres] section or via CDK_MINTD_POSTGRES_URL/CDK_MINTD_DATABASE_URL environment variable");
         }
+
+        #[cfg(feature = "postgres")]
+        cdk_postgres::PgConfig::new(&pg_config.url, pg_config.tls_mode.as_deref(), None, None)
+            .validate()
+            .map_err(|err| {
+                anyhow!("Invalid PostgreSQL configuration [database.postgres]: {err}")
+            })?;
     }
 
     Ok(())
@@ -583,8 +629,6 @@ fn validate_listen_config(settings: &config::Settings) -> Result<()> {
 }
 
 fn validate_signing_config(settings: &config::Settings) -> Result<()> {
-    const MIN_SEED_BYTES: usize = 32;
-
     if let Some(signatory) = settings.enabled_signatory() {
         let has_local_seed = settings
             .info
@@ -624,12 +668,7 @@ fn validate_signing_config(settings: &config::Settings) -> Result<()> {
         if seed.is_empty() {
             bail!("Seed in [info].seed must not be empty");
         }
-        if seed.len() < MIN_SEED_BYTES {
-            bail!(
-                "Seed in [info].seed is too short ({} bytes); require at least {MIN_SEED_BYTES} bytes",
-                seed.len()
-            );
-        }
+        // Preserve compatibility with existing CDK and Nutshell mint seeds of any length.
         return Ok(());
     }
 
@@ -775,6 +814,18 @@ fn validate_auth_config(settings: &config::Settings) -> Result<()> {
         if auth_pg_config.url.is_empty() {
             bail!("Auth database PostgreSQL URL is required. Set [auth_database.postgres].url to an env: or file: secret reference");
         }
+
+        #[cfg(feature = "postgres")]
+        cdk_postgres::PgConfig::new(
+            &auth_pg_config.url,
+            auth_pg_config.tls_mode.as_deref(),
+            None,
+            None,
+        )
+        .validate()
+        .map_err(|err| {
+            anyhow!("Invalid PostgreSQL configuration [auth_database.postgres]: {err}")
+        })?;
     }
 
     Ok(())
@@ -1390,8 +1441,6 @@ async fn configure_onchain_backend_with_wallet_info(
 
     #[cfg(all(feature = "management-rpc", feature = "bdk"))]
     let mut wallet_info_provider = no_wallet_info_provider();
-    #[cfg(not(all(feature = "management-rpc", feature = "bdk")))]
-    let wallet_info_provider = no_wallet_info_provider();
 
     if let Some(onchain_settings) = &settings.onchain {
         match onchain_settings.onchain_backend {
@@ -1486,7 +1535,14 @@ async fn configure_onchain_backend_with_wallet_info(
         }
     }
 
-    Ok((mint_builder, wallet_info_provider))
+    #[cfg(all(feature = "management-rpc", feature = "bdk"))]
+    {
+        Ok((mint_builder, wallet_info_provider))
+    }
+    #[cfg(not(all(feature = "management-rpc", feature = "bdk")))]
+    {
+        Ok((mint_builder, no_wallet_info_provider()))
+    }
 }
 
 #[cfg(test)]
@@ -2004,7 +2060,10 @@ impl PreparedMintd {
                 if rpc_settings.enabled {
                     let addr = rpc_settings.address.unwrap_or("127.0.0.1".to_string());
                     let port = rpc_settings.port.unwrap_or(8086);
-                    let mut mint_rpc = cdk_mint_rpc::MintRPCServer::new(&addr, port, mint.clone())?;
+                    let mut mint_rpc = cdk_mint_rpc::MintRPCServer::new(&addr, port, mint.clone())?
+                        .with_mint_quote_payment_override(
+                            rpc_settings.allow_mint_quote_payment_override,
+                        );
                     if let Some(activation) = activation.as_ref() {
                         mint_rpc =
                             mint_rpc.with_mutation_guard(Arc::new(ConfigurationMutationGuard {
@@ -2662,16 +2721,37 @@ pub async fn validate_configuration_document(document: &str) -> Result<()> {
 pub async fn initialize_configuration(
     work_dir: &Path,
     document: &str,
+    mode: MintInitializationMode,
+    bdk_wallet_policy: BdkWalletPolicy,
     db_password: Option<String>,
 ) -> Result<()> {
     let bootstrap = load_database_bootstrap_settings()?;
-    let (localstore, _keystore, _kv, configuration_store) =
+    let (localstore, keystore, _kv, configuration_store) =
         initial_setup(work_dir, &bootstrap, db_password).await?;
-    let mut mint_builder = MintBuilder::new(localstore);
+    let mut mint_builder = MintBuilder::new(localstore.clone());
     mint_builder.init_from_db_if_present().await?;
     let database_pubkey = mint_builder.current_mint_info().pubkey;
+    let mut keyset_transaction = keystore.begin_transaction().await?;
+    let keysets = keyset_transaction.get_keyset_infos().await?;
+    keyset_transaction.commit().await?;
+    let mut used_keysets = HashSet::new();
+    if mode == MintInitializationMode::Existing {
+        used_keysets.extend(localstore.get_total_issued().await?.into_keys());
+        used_keysets.extend(localstore.get_total_redeemed().await?.into_keys());
+    }
+
     configuration_service(configuration_store, &bootstrap)
-        .initialize(document, database_pubkey)
+        .initialize(
+            document,
+            mode,
+            database_pubkey,
+            config_service::MintKeysetHistory {
+                keysets: &keysets,
+                used_keysets: &used_keysets,
+            },
+            work_dir,
+            bdk_wallet_policy,
+        )
         .await?;
     Ok(())
 }
@@ -2681,13 +2761,14 @@ pub async fn apply_configuration(
     work_dir: &Path,
     document: &str,
     validate_only: bool,
+    bdk_wallet_policy: BdkWalletPolicy,
     db_password: Option<String>,
 ) -> Result<ApplyOutcome> {
     let bootstrap = load_database_bootstrap_settings()?;
     let (_localstore, _keystore, _kv, configuration_store) =
         initial_setup(work_dir, &bootstrap, db_password).await?;
     Ok(configuration_service(configuration_store, &bootstrap)
-        .apply(document, validate_only)
+        .apply(document, validate_only, work_dir, bdk_wallet_policy)
         .await?)
 }
 
@@ -2730,6 +2811,11 @@ pub async fn run_mintd_from_database(
         initial_setup(work_dir, &bootstrap, db_password.clone()).await?;
     let service = configuration_service(configuration_store, &bootstrap);
     let startup = service.startup().await?;
+    config_service::require_existing_bdk_wallet(
+        &startup.resolved.settings,
+        work_dir,
+        startup.bdk_wallet_policy,
+    )?;
     let validated_signing_source = Some(ValidatedSigningSource {
         expected_pubkey: startup.signing_identity.pubkey,
         remote_signatory: startup
@@ -2787,6 +2873,56 @@ mod tests {
 
     fn temp_seed_file(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("cdk_mintd_{name}_{}", std::process::id()))
+    }
+
+    #[cfg(all(feature = "sqlite", feature = "fakewallet"))]
+    fn sqlite_configuration_document(secret_path: &Path, name: &str) -> String {
+        format!(
+            r#"
+[info]
+mnemonic = "file:{}"
+
+[mint_info]
+name = "{name}"
+
+[payment_backend]
+backend = "fakewallet"
+
+[fake_wallet]
+
+[database]
+engine = "sqlite"
+"#,
+            secret_path.display()
+        )
+    }
+
+    #[cfg(all(feature = "sqlite", feature = "bdk"))]
+    fn sqlite_bdk_configuration_document(secret_path: &Path, name: &str) -> String {
+        format!(
+            r#"
+[info]
+mnemonic = "file:{}"
+
+[mint_info]
+name = "{name}"
+
+[payment_backend]
+backend = "none"
+
+[onchain]
+onchain_backend = "bdk"
+
+[bdk]
+network = "regtest"
+mnemonic = "file:{}"
+
+[database]
+engine = "sqlite"
+"#,
+            secret_path.display(),
+            secret_path.display()
+        )
     }
 
     #[cfg(feature = "sqlite")]
@@ -3008,6 +3144,120 @@ mod tests {
 
     #[cfg(all(feature = "sqlite", feature = "fakewallet"))]
     #[tokio::test]
+    async fn existing_mint_import_verifies_keysets_instead_of_legacy_pubkey() {
+        #[cfg(feature = "sqlcipher")]
+        let password = Some("test-password".to_string());
+        #[cfg(not(feature = "sqlcipher"))]
+        let password: Option<String> = None;
+
+        let work_dir = crate::test_utils::unique_temp_path("legacy_mint_identity_import");
+        fs::create_dir_all(&work_dir).expect("work directory");
+        let secret = work_dir.join("mnemonic");
+        fs::write(&secret, TEST_MNEMONIC).expect("original mnemonic");
+        let document = sqlite_configuration_document(&secret, "legacy")
+            .replace("[mint_info]", "[mint_info]\npubkey = \"02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619\"");
+        let bootstrap = load_database_bootstrap_settings().expect("bootstrap");
+        let (db, keystore, _, config_store) =
+            initial_setup(&work_dir, &bootstrap, password.clone())
+                .await
+                .expect("database");
+        let mut builder = MintBuilder::new(db.clone());
+        builder
+            .configure_unit(CurrencyUnit::Sat, Default::default())
+            .expect("unit");
+        let mnemonic = Mnemonic::from_str(TEST_MNEMONIC).expect("mnemonic");
+        let mint = builder
+            .build_with_seed(keystore.clone(), &mnemonic.to_seed_normalized(""))
+            .await
+            .expect("original mint");
+        let mut metadata = mint.mint_info().await.expect("metadata");
+        metadata.pubkey = Some(
+            cdk::nuts::PublicKey::from_hex(
+                "02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619",
+            )
+            .expect("legacy public key"),
+        );
+        let mut tx = db.begin_transaction().await.expect("transaction");
+        tx.kv_write(
+            "cdk_mint",
+            "config",
+            "mint_info",
+            &serde_json::to_vec(&metadata).expect("metadata"),
+        )
+        .await
+        .expect("legacy metadata");
+        tx.commit().await.expect("commit");
+        let mut tx = keystore.begin_transaction().await.expect("keysets");
+        let before = tx.get_keyset_infos().await.expect("historical keysets");
+        tx.commit().await.expect("commit");
+        drop(mint);
+        fs::write(
+            &secret,
+            "legal winner thank year wave sausage worth useful legal winner thank yellow",
+        )
+        .expect("different mnemonic");
+        let error = initialize_configuration(
+            &work_dir,
+            &document,
+            MintInitializationMode::Existing,
+            BdkWalletPolicy::RequireExisting,
+            password.clone(),
+        )
+        .await
+        .expect_err("wrong seed must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("cannot reproduce historical keyset"),
+            "{error}"
+        );
+        assert!(configuration_service(config_store.clone(), &bootstrap)
+            .document()
+            .await
+            .is_err());
+        fs::write(&secret, TEST_MNEMONIC).expect("restore original mnemonic");
+        initialize_configuration(
+            &work_dir,
+            &document,
+            MintInitializationMode::Existing,
+            BdkWalletPolicy::RequireExisting,
+            password,
+        )
+        .await
+        .expect("original seed with legacy metadata");
+        let mut tx = keystore.begin_transaction().await.expect("keysets");
+        assert_eq!(tx.get_keyset_infos().await.expect("keysets"), before);
+        tx.commit().await.expect("commit");
+        let startup = configuration_service(config_store, &bootstrap)
+            .startup()
+            .await
+            .expect("startup");
+        assert_eq!(startup.resolved.settings.mint_info.pubkey, metadata.pubkey);
+        let mut builder = MintBuilder::new(db.clone());
+        builder
+            .init_from_db_if_present()
+            .await
+            .expect("load metadata");
+        assert_eq!(builder.current_mint_info().pubkey, metadata.pubkey);
+        assert_eq!(
+            startup.signing_identity.pubkey,
+            cdk::nuts::PublicKey::from(
+                bitcoin::bip32::Xpriv::new_master(
+                    bitcoin::Network::Bitcoin,
+                    &mnemonic.to_seed_normalized("")
+                )
+                .expect("master key")
+                .to_keypair(&bitcoin::secp256k1::Secp256k1::new())
+                .public_key()
+            )
+        );
+        drop(db);
+        drop(keystore);
+        fs::remove_dir_all(work_dir).expect("remove test database");
+    }
+
+    #[cfg(all(feature = "sqlite", feature = "fakewallet"))]
+    #[tokio::test]
     async fn database_configuration_public_api_round_trip() {
         let work_dir = crate::test_utils::unique_temp_path("cdk_mintd_public_config_api");
         fs::create_dir_all(&work_dir).expect("create work dir");
@@ -3019,32 +3269,21 @@ mod tests {
         #[cfg(not(feature = "sqlcipher"))]
         let password: Option<String> = None;
 
-        let first = format!(
-            r#"
-[info]
-mnemonic = "file:{}"
-
-[mint_info]
-name = "first-public"
-
-[payment_backend]
-backend = "fakewallet"
-
-[fake_wallet]
-
-[database]
-engine = "sqlite"
-"#,
-            secret_path.display()
-        );
+        let first = sqlite_configuration_document(&secret_path, "first-public");
         let second = first.replace("first-public", "second-public");
 
         validate_configuration_document(&first)
             .await
             .expect("validate first document");
-        initialize_configuration(&work_dir, &first, password.clone())
-            .await
-            .expect("initialize configuration");
+        initialize_configuration(
+            &work_dir,
+            &first,
+            MintInitializationMode::New,
+            BdkWalletPolicy::RequireExisting,
+            password.clone(),
+        )
+        .await
+        .expect("initialize configuration");
         assert_eq!(
             stored_configuration_document(&work_dir, password.clone())
                 .await
@@ -3052,9 +3291,15 @@ engine = "sqlite"
             first
         );
 
-        let validate_only = apply_configuration(&work_dir, &second, true, password.clone())
-            .await
-            .expect("validate-only apply");
+        let validate_only = apply_configuration(
+            &work_dir,
+            &second,
+            true,
+            BdkWalletPolicy::RequireExisting,
+            password.clone(),
+        )
+        .await
+        .expect("validate-only apply");
         assert!(!validate_only.restart_required);
         assert_eq!(
             stored_configuration_document(&work_dir, password.clone())
@@ -3063,9 +3308,15 @@ engine = "sqlite"
             first
         );
 
-        let applied = apply_configuration(&work_dir, &second, false, password.clone())
-            .await
-            .expect("apply replacement");
+        let applied = apply_configuration(
+            &work_dir,
+            &second,
+            false,
+            BdkWalletPolicy::RequireExisting,
+            password.clone(),
+        )
+        .await
+        .expect("apply replacement");
         assert!(applied.restart_required);
         assert_eq!(
             stored_configuration_document(&work_dir, password)
@@ -3077,6 +3328,173 @@ engine = "sqlite"
         let bootstrap = load_database_bootstrap_settings().expect("bootstrap settings");
         assert_eq!(bootstrap.database.engine, DatabaseEngine::Sqlite);
         assert!(bootstrap.database.postgres.is_none());
+
+        let _ = fs::remove_dir_all(&work_dir);
+    }
+
+    #[cfg(all(feature = "sqlite", feature = "fakewallet"))]
+    #[tokio::test]
+    async fn existing_mint_initialization_rejects_empty_database_with_matching_mnemonic() {
+        let work_dir = crate::test_utils::unique_temp_path("cdk_mintd_empty_existing_init");
+        fs::create_dir_all(&work_dir).expect("create work dir");
+        let secret_path = work_dir.join("mnemonic.secret");
+        fs::write(&secret_path, TEST_MNEMONIC).expect("write mnemonic secret");
+        let document = sqlite_configuration_document(&secret_path, "empty-existing");
+
+        #[cfg(feature = "sqlcipher")]
+        let password = Some("test-password".to_string());
+        #[cfg(not(feature = "sqlcipher"))]
+        let password: Option<String> = None;
+
+        let error = initialize_configuration(
+            &work_dir,
+            &document,
+            MintInitializationMode::Existing,
+            BdkWalletPolicy::RequireExisting,
+            password,
+        )
+        .await
+        .expect_err("an empty database must not be accepted as an existing mint");
+        assert!(
+            error
+                .to_string()
+                .contains("does not contain a mint identity"),
+            "unexpected error: {error}"
+        );
+
+        let _ = fs::remove_dir_all(&work_dir);
+    }
+
+    #[cfg(all(feature = "sqlite", feature = "fakewallet"))]
+    #[tokio::test]
+    async fn initialization_mode_distinguishes_existing_mint_state() {
+        let work_dir = crate::test_utils::unique_temp_path("cdk_mintd_existing_init");
+        fs::create_dir_all(&work_dir).expect("create work dir");
+        let seed = "legacy";
+        let secret_path = work_dir.join("seed.secret");
+        fs::write(&secret_path, seed).expect("write original short seed");
+        let document =
+            sqlite_configuration_document(&secret_path, "existing").replace("mnemonic =", "seed =");
+
+        #[cfg(feature = "sqlcipher")]
+        let password = Some("test-password".to_string());
+        #[cfg(not(feature = "sqlcipher"))]
+        let password: Option<String> = None;
+
+        let bootstrap = load_database_bootstrap_settings().expect("bootstrap settings");
+        let (localstore, keystore, _kv, _configuration_store) =
+            initial_setup(&work_dir, &bootstrap, password.clone())
+                .await
+                .expect("initialize database");
+        let mut builder = MintBuilder::new(localstore);
+        builder
+            .configure_unit(CurrencyUnit::Sat, Default::default())
+            .expect("configure sat unit");
+        let mint = builder
+            .build_with_seed(keystore, seed.as_bytes())
+            .await
+            .expect("create existing mint state");
+        drop(mint);
+
+        let error = initialize_configuration(
+            &work_dir,
+            &document,
+            MintInitializationMode::New,
+            BdkWalletPolicy::RequireExisting,
+            password.clone(),
+        )
+        .await
+        .expect_err("existing state must not be accepted as a new mint");
+        assert!(
+            error
+                .to_string()
+                .contains("contains existing mint identity or keyset state"),
+            "unexpected error: {error}"
+        );
+
+        initialize_configuration(
+            &work_dir,
+            &document,
+            MintInitializationMode::Existing,
+            BdkWalletPolicy::RequireExisting,
+            password,
+        )
+        .await
+        .expect("matching existing mint state should initialize");
+
+        let _ = fs::remove_dir_all(&work_dir);
+    }
+
+    #[cfg(all(feature = "sqlite", feature = "bdk"))]
+    #[tokio::test]
+    async fn existing_mint_requires_explicit_new_bdk_wallet_intent() {
+        let work_dir = crate::test_utils::unique_temp_path("cdk_mintd_existing_bdk_init");
+        fs::create_dir_all(&work_dir).expect("create work dir");
+        let secret_path = work_dir.join("mnemonic.secret");
+        fs::write(&secret_path, TEST_MNEMONIC).expect("write mnemonic secret");
+        let document = sqlite_bdk_configuration_document(&secret_path, "existing-with-missing-bdk");
+
+        #[cfg(feature = "sqlcipher")]
+        let password = Some("test-password".to_string());
+        #[cfg(not(feature = "sqlcipher"))]
+        let password: Option<String> = None;
+
+        let bootstrap = load_database_bootstrap_settings().expect("bootstrap settings");
+        let (localstore, keystore, _kv, _configuration_store) =
+            initial_setup(&work_dir, &bootstrap, password.clone())
+                .await
+                .expect("initialize database");
+        let mut builder = MintBuilder::new(localstore);
+        builder
+            .configure_unit(CurrencyUnit::Sat, Default::default())
+            .expect("configure sat unit");
+        let mnemonic = Mnemonic::parse(TEST_MNEMONIC).expect("test mnemonic");
+        drop(
+            builder
+                .build_with_seed(keystore, &mnemonic.to_seed_normalized(""))
+                .await
+                .expect("create existing mint state"),
+        );
+
+        let error = initialize_configuration(
+            &work_dir,
+            &document,
+            MintInitializationMode::Existing,
+            BdkWalletPolicy::RequireExisting,
+            password.clone(),
+        )
+        .await
+        .expect_err("missing BDK wallet must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("Persisted BDK wallet database is missing"),
+            "unexpected error: {error}"
+        );
+
+        initialize_configuration(
+            &work_dir,
+            &document,
+            MintInitializationMode::Existing,
+            BdkWalletPolicy::AllowNew,
+            password.clone(),
+        )
+        .await
+        .expect("explicit new-wallet intent should permit initialization");
+
+        let error = apply_configuration(
+            &work_dir,
+            &document,
+            true,
+            BdkWalletPolicy::RequireExisting,
+            password,
+        )
+        .await
+        .expect_err("apply preflight must also reject a missing BDK wallet");
+        assert!(error
+            .to_string()
+            .contains("Persisted BDK wallet database is missing"));
+        assert!(!work_dir.join("bdk_wallet/bdk_wallet.sqlite").exists());
 
         let _ = fs::remove_dir_all(&work_dir);
     }
@@ -3668,11 +4086,32 @@ backend = "fakewallet"
             .iter()
             .any(|method| method.method == PaymentMethod::Known(KnownMethod::Onchain)));
 
-        let balance = provider
-            .expect("wallet info provider")
-            .get_balance()
+        let provider = provider.expect("wallet info provider");
+        let first_address = provider
+            .create_deposit_address()
             .await
-            .expect("get wallet balance");
+            .expect("create first operator deposit address");
+        let second_address = provider
+            .create_deposit_address()
+            .await
+            .expect("create second operator deposit address");
+        assert_ne!(first_address, second_address);
+
+        let addresses = provider
+            .list_addresses(0, 20)
+            .await
+            .expect("list wallet addresses");
+        assert_eq!(addresses.total, 2);
+        assert!(addresses
+            .addresses
+            .iter()
+            .any(|address| address.address == first_address));
+        assert!(addresses
+            .addresses
+            .iter()
+            .any(|address| address.address == second_address));
+
+        let balance = provider.get_balance().await.expect("get wallet balance");
         assert_eq!(balance.network, "regtest");
         assert_eq!(balance.total_sat, 0);
 
@@ -3918,14 +4357,28 @@ backend = "fakewallet"
             "CDK_MINTD_AUTH_ENABLED",
             "CDK_MINTD_AUTH_OPENID_DISCOVERY",
             "CDK_MINTD_AUTH_OPENID_CLIENT_ID",
+            "CDK_MINTD_AUTH_MINT_MAX_BAT",
+            "CDK_MINTD_AUTH_MINT",
+            "CDK_MINTD_AUTH_GET_MINT_QUOTE",
+            "CDK_MINTD_AUTH_CHECK_MINT_QUOTE",
+            "CDK_MINTD_AUTH_MELT",
+            "CDK_MINTD_AUTH_GET_MELT_QUOTE",
+            "CDK_MINTD_AUTH_CHECK_MELT_QUOTE",
+            "CDK_MINTD_AUTH_SWAP",
+            "CDK_MINTD_AUTH_RESTORE",
+            "CDK_MINTD_AUTH_CHECK_PROOF_STATE",
+            "CDK_MINTD_AUTH_WEBSOCKET",
             "CDK_MINTD_AUTH_POSTGRES_URL",
             "CDK_MINTD_AUTH_POSTGRES_TLS_MODE",
             "CDK_MINTD_AUTH_POSTGRES_MAX_CONNECTIONS",
             "CDK_MINTD_AUTH_POSTGRES_CONNECTION_TIMEOUT_SECONDS",
             "CDK_MINTD_CLN_RPC_PATH",
+            "CDK_MINTD_CLN_FEE_PERCENT",
             "CDK_MINTD_LND_ADDRESS",
             "CDK_MINTD_LND_CERT_FILE",
             "CDK_MINTD_LND_MACAROON_FILE",
+            "CDK_MINTD_LND_FEE_PERCENT",
+            "CDK_MINTD_LND_ALLOW_SELF_PAYMENT",
             "CDK_MINTD_FAKE_WALLET_SUPPORTED_UNITS",
             "CDK_MINTD_FAKE_WALLET_FEE_PERCENT",
             "CDK_MINTD_FAKE_WALLET_RESERVE_FEE_MIN",
@@ -4077,11 +4530,18 @@ backend = "fakewallet"
 
     #[cfg(feature = "fakewallet")]
     #[test]
-    fn test_load_settings_reports_short_seed() {
-        assert_load_settings_error(
-            r#"
+    fn test_load_settings_accepts_nonempty_seeds_of_any_length() {
+        let _env_lock = crate::test_utils::env_lock();
+        clear_mintd_env();
+
+        for seed_len in [1, 7, 16, 31, 32, 64, 65] {
+            let seed = "a".repeat(seed_len);
+            let settings = load_settings_from_toml(
+                "cdk_mintd_seed_length",
+                &format!(
+                    r#"
 [info]
-seed = "tooshort"
+seed = "{seed}"
 
 [database]
 engine = "sqlite"
@@ -4089,8 +4549,11 @@ engine = "sqlite"
 [payment_backend]
 backend = "fakewallet"
 "#,
-            "Seed in [info].seed is too short",
-        );
+                ),
+            )
+            .expect("Nonempty legacy mint seeds should pass validation");
+            assert_eq!(settings.info.seed.as_deref(), Some(seed.as_str()));
+        }
     }
 
     #[cfg(feature = "fakewallet")]
@@ -4706,6 +5169,79 @@ openid_client_id = "mintd"
         let _ = fs::remove_dir_all(&temp_dir);
         clear_mintd_env();
         result
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn env_only_auth_preserves_protected_endpoint_defaults() {
+        let settings = load_settings_with_env(
+            "cdk_mintd_env_auth_defaults",
+            &format!(
+                r#"
+[info]
+mnemonic = "{TEST_MNEMONIC}"
+
+[database]
+engine = "sqlite"
+
+[payment_backend]
+backend = "fakewallet"
+"#
+            ),
+            || {
+                std::env::set_var("CDK_MINTD_AUTH_ENABLED", "true");
+                std::env::set_var(
+                    "CDK_MINTD_AUTH_OPENID_DISCOVERY",
+                    "https://issuer.example.com/.well-known/openid-configuration",
+                );
+                std::env::set_var("CDK_MINTD_AUTH_OPENID_CLIENT_ID", "mintd");
+            },
+        )
+        .expect("environment-only auth configuration should load");
+
+        let auth = settings.auth.expect("auth should be enabled");
+        assert_eq!(auth.mint, config::AuthType::Blind);
+        assert_eq!(auth.swap, config::AuthType::Blind);
+        assert_eq!(auth.restore, config::AuthType::Blind);
+        assert_eq!(auth.websocket_auth, config::AuthType::Blind);
+    }
+
+    #[cfg(feature = "lnd")]
+    #[test]
+    fn invalid_lnd_fee_percent_from_env_is_rejected() {
+        for (name, fee_percent) in [
+            ("nan", "NaN"),
+            ("negative", "-1"),
+            ("not-a-number", "invalid"),
+        ] {
+            let error = load_settings_with_env(
+                &format!("cdk_mintd_lnd_fee_percent_{name}"),
+                &format!(
+                    r#"
+[info]
+mnemonic = "{TEST_MNEMONIC}"
+
+[database]
+engine = "sqlite"
+
+[payment_backend]
+backend = "lnd"
+"#
+                ),
+                || {
+                    std::env::set_var("CDK_MINTD_LND_ADDRESS", "https://127.0.0.1:10009");
+                    std::env::set_var("CDK_MINTD_LND_CERT_FILE", "/certs/tls.cert");
+                    std::env::set_var("CDK_MINTD_LND_MACAROON_FILE", "/data/admin.macaroon");
+                    std::env::set_var("CDK_MINTD_LND_FEE_PERCENT", fee_percent);
+                },
+            )
+            .expect_err("invalid LND fee percentage should fail startup validation");
+
+            assert!(
+                error.to_string().contains("CDK_MINTD_LND_FEE_PERCENT"),
+                "unexpected error for {fee_percent}: {error}"
+            );
+        }
     }
 
     #[cfg(feature = "fakewallet")]

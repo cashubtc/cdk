@@ -27,6 +27,20 @@ pub enum FfiError {
         /// Human-readable error message
         error_message: String,
     },
+
+    /// A payment token was created but transport delivery failed.
+    ///
+    /// The token remains pending. Pass `operation_id` to `Wallet.revoke_send`
+    /// to reclaim it if the receiver has not already claimed it.
+    #[error(
+        "Payment token created but delivery failed for operation {operation_id}: {error_message}"
+    )]
+    PaymentRequestDeliveryFailed {
+        /// Pending send operation that can be passed to `Wallet.revoke_send`.
+        operation_id: String,
+        /// Transport delivery failure.
+        error_message: String,
+    },
 }
 
 impl FfiError {
@@ -48,6 +62,19 @@ impl FfiError {
 
 impl From<CdkError> for FfiError {
     fn from(err: CdkError) -> Self {
+        let err = match err {
+            CdkError::PaymentRequestDeliveryFailed {
+                operation_id,
+                source,
+            } => {
+                return Self::PaymentRequestDeliveryFailed {
+                    operation_id: operation_id.to_string(),
+                    error_message: source.to_string(),
+                }
+            }
+            err => err,
+        };
+
         let response = ErrorResponse::from(err);
         Self::Cdk {
             code: response.code.to_code() as u32,

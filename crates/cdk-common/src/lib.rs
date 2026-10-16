@@ -7,6 +7,7 @@
 #![doc = include_str!("../README.md")]
 
 pub mod task;
+pub mod terminal;
 
 /// Authentication related types and utilities
 ///
@@ -14,9 +15,6 @@ pub mod task;
 /// JWK documents through `cdk-http-client`.
 #[cfg(feature = "http")]
 pub mod auth;
-
-/// Protocol version for gRPC Mint RPC communication
-pub const MINT_RPC_PROTOCOL_VERSION: &str = "1.0.0";
 
 /// Protocol version for gRPC Payment Processor communication
 pub const PAYMENT_PROCESSOR_PROTOCOL_VERSION: &str = "4.0.0";

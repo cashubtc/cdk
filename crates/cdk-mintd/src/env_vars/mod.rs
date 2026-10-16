@@ -61,6 +61,20 @@ pub use prometheus::*;
 
 use crate::config::{DatabaseEngine, OnchainBackend, PaymentBackend, PaymentBackendType, Settings};
 
+// Security-sensitive opt-ins must not retain a configured `true` when an
+// override is present but malformed, including non-Unicode environment values.
+fn bool_override(name: &str) -> Option<bool> {
+    env::var_os(name).map(
+        |value| match value.to_str().and_then(|value| value.parse().ok()) {
+            Some(value) => value,
+            None => {
+                tracing::warn!("Invalid boolean environment override {name}; using false");
+                false
+            }
+        },
+    )
+}
+
 impl Settings {
     pub fn from_env(&mut self) -> Result<Self> {
         if let Ok(database) = env::var(DATABASE_ENV_VAR) {
@@ -173,7 +187,7 @@ impl Settings {
 
         #[cfg(feature = "lnd")]
         {
-            let lnd = self.lnd.clone().unwrap_or_default().from_env();
+            let lnd = self.lnd.clone().unwrap_or_default().from_env()?;
             if lnd.address.is_empty() {
                 self.lnd = None;
             } else {

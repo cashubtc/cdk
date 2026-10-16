@@ -1,5 +1,7 @@
 //! CDK BDK onchain backend errors
 
+use std::path::PathBuf;
+
 use cdk_common::CurrencyUnit;
 use thiserror::Error;
 use uuid::Uuid;
@@ -62,6 +64,20 @@ pub enum Error {
     /// Database error
     #[error("Database error: {0}")]
     Database(#[from] bdk_wallet::rusqlite::Error),
+
+    /// An existing-mint migration did not find the persisted BDK wallet.
+    #[error("Persisted BDK wallet database is missing at {path}")]
+    ExistingWalletMissing {
+        /// Expected BDK wallet database path.
+        path: PathBuf,
+    },
+
+    /// A BDK SQLite file exists but does not contain an initialized wallet.
+    #[error("Persisted BDK wallet database at {path} does not contain an initialized wallet")]
+    ExistingWalletNotInitialized {
+        /// BDK wallet database path.
+        path: PathBuf,
+    },
 
     /// Wallet error
     #[error("Wallet error: {0}")]
@@ -198,6 +214,13 @@ pub enum Error {
     /// Receive address not found in storage
     #[error("Receive address not found: {0}")]
     ReceiveAddressNotFound(String),
+
+    /// No unreserved receive address was found within the retry limit.
+    #[error("Could not reserve a fresh receive address after {attempts} attempts")]
+    ReceiveAddressReservationExhausted {
+        /// Number of addresses derived before giving up.
+        attempts: usize,
+    },
 
     /// Database
     #[error("Database error")]

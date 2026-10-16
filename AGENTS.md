@@ -3,6 +3,18 @@
 Rust workspace (edition 2021) implementing the Cashu e-cash protocol.
 25 crates in `crates/`, stable Rust (see `rust-toolchain.toml`), MSRV 1.85.0.
 
+## Security fixes
+
+When a task involves a vulnerability or an uncoordinated security fix, do not
+describe the exploit in depth in anything public: PR titles or bodies, commit
+messages, review comments, or code comments. Keep the public summary high-level
+(state that a security issue was fixed) and leave out reproduction steps, proofs
+of concept, root-cause specifics, and attack paths.
+
+Until a fix has been released and disclosure has been coordinated, send the
+detailed write-up to the security contact listed under "Reporting a Vulnerability"
+in `SECURITY.md`.
+
 ## Local Development Environment (Regtest)
 
 CDK provides a complete regtest environment with Bitcoin, Lightning nodes, and pre-configured mints for end-to-end testing.
@@ -234,7 +246,7 @@ impl fmt::Display for MyType { ... }
 
 **Other**
 - `cdk-ffi` -- UniFFI bindings for cross-language use
-- `cdk-npubcash` -- npub.cash integration
+- `cdk-nostr` -- Nostr integration: keys, NIP-44 encryption, NIP-17 inbox listener, NIP-47 wallet service (feature `nwc`), npub.cash client (feature `npubcash`)
 - `cdk-prometheus` -- Prometheus metrics exporter
 - `cdk-integration-tests` -- full-stack integration tests
 
@@ -287,7 +299,7 @@ Conventional commits: `feat:`, `fix:`, `docs:`, `chore:`, `refactor:`, `test:`.
 
 ## Docs & References
 
-**If you are reviewing PRs or code changes, always refer to the specific review guidelines in `.github/agents/review.md` for project-specific feedback standards.**
+**If you are reviewing PRs or code changes, always read the [CDK Code Review Guidelines](docs/code-review.md) for project-specific feedback standards.**
 
 | Document | Path |
 |---|---|

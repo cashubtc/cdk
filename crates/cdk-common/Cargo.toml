@@ -32,8 +32,6 @@ bip353 = ["cdk-http-client?/bip353"]
 async-trait.workspace = true
 bitcoin.workspace = true
 cashu.workspace = true
-cbor-diag.workspace = true
-ciborium.workspace = true
 serde.workspace = true
 lightning-invoice.workspace = true
 lightning.workspace = true
@@ -45,7 +43,6 @@ uuid = { workspace = true, optional = true }
 futures.workspace = true
 anyhow.workspace = true
 serde_json.workspace = true
-serde_with.workspace = true
 web-time.workspace = true
 parking_lot = "0.12.5"
 paste.workspace = true

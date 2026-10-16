@@ -468,7 +468,7 @@ impl CdkBdk {
         }
 
         // 2. Sign
-        let signed = match wallet_with_db.wallet.sign(&mut psbt, Default::default()) {
+        let signed = match self.sign_psbt(&wallet_with_db.wallet, &mut psbt) {
             Ok(signed) => signed,
             Err(e) => {
                 let err = Error::Wallet(e.to_string());

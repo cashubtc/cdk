@@ -7,15 +7,14 @@ use async_trait::async_trait;
 use cdk_common::amount::{FeeAndAmounts, KeysetFeeAndAmounts, SplitTarget};
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::nut07::ProofState;
-use cdk_common::nuts::nut18::PaymentRequest;
 use cdk_common::nuts::{
     AuthProof, CurrencyUnit, Id, MeltOptions, MintInfo, PaymentMethod, Proofs, SpendingConditions,
 };
 use cdk_common::rate_limit::RateLimitConfig;
 use cdk_common::subscription::WalletParams;
 use cdk_common::wallet::{
-    CrossMintTransferQuote, MeltQuote, MintQuote, ReceiveOptions, Restored, SendOptions,
-    Transaction, TransactionDirection, TransactionId, Wallet as WalletTrait,
+    CrossMintTransferQuote, MeltPrepareOptions, MeltQuote, MintQuote, ReceiveOptions, Restored,
+    SendOptions, Transaction, TransactionDirection, TransactionId, Wallet as WalletTrait,
 };
 use cdk_common::{Amount, PublicKey, SecretKey};
 use tracing::instrument;
@@ -118,7 +117,7 @@ impl WalletTrait for super::Wallet {
         self.get_keyset_fees_and_amounts_by_id(keyset_id).await
     }
 
-    #[instrument(skip(self, method))]
+    #[instrument(skip(self, method, extra))]
     async fn mint_quote(
         &self,
         method: PaymentMethod,
@@ -269,6 +268,17 @@ impl WalletTrait for super::Wallet {
         self.fetch_mint_quote(quote_id, payment_method).await
     }
 
+    #[instrument(skip_all)]
+    async fn fetch_mint_quote_with_key_search(
+        &self,
+        quote_id: &str,
+        payment_method: Option<Self::PaymentMethod>,
+        key_search_limit: u32,
+    ) -> Result<Self::MintQuote, Self::Error> {
+        self.fetch_mint_quote_with_key_search(quote_id, payment_method, key_search_limit)
+            .await
+    }
+
     #[instrument(skip(self, metadata))]
     async fn prepare_melt(
         &self,
@@ -288,6 +298,17 @@ impl WalletTrait for super::Wallet {
         self.prepare_melt_proofs(quote_id, proofs, metadata).await
     }
 
+    #[instrument(skip(self, proofs, options))]
+    async fn prepare_melt_proofs_with_options(
+        &self,
+        quote_id: &str,
+        proofs: Proofs,
+        options: MeltPrepareOptions,
+    ) -> Result<super::melt::PreparedMelt<'_>, Self::Error> {
+        self.prepare_melt_proofs_with_options(quote_id, proofs, options)
+            .await
+    }
+
     #[instrument(skip(self, encoded_token, metadata))]
     async fn prepare_melt_token(
         &self,
@@ -296,6 +317,17 @@ impl WalletTrait for super::Wallet {
         metadata: HashMap<String, String>,
     ) -> Result<super::melt::PreparedMelt<'_>, Self::Error> {
         self.prepare_melt_token(quote_id, encoded_token, metadata)
+            .await
+    }
+
+    #[instrument(skip(self, encoded_token, options))]
+    async fn prepare_melt_token_with_options(
+        &self,
+        quote_id: &str,
+        encoded_token: &str,
+        options: MeltPrepareOptions,
+    ) -> Result<super::melt::PreparedMelt<'_>, Self::Error> {
+        self.prepare_melt_token_with_options(quote_id, encoded_token, options)
             .await
     }
 
@@ -362,15 +394,6 @@ impl WalletTrait for super::Wallet {
     async fn verify_token_dleq(&self, token_str: &str) -> Result<(), Self::Error> {
         let token = cdk_common::nuts::nut00::token::Token::from_str(token_str)?;
         self.verify_token_dleq(&token).await
-    }
-
-    #[instrument(skip(self, request))]
-    async fn pay_request(
-        &self,
-        request: PaymentRequest,
-        custom_amount: Option<Amount>,
-    ) -> Result<(), Self::Error> {
-        self.pay_request(request, custom_amount).await
     }
 
     #[instrument(skip(self, method))]
@@ -490,9 +513,11 @@ impl WalletTrait for super::Wallet {
 mod tests {
     use std::sync::Arc;
 
+    use cdk_common::nut00::KnownMethod;
     use cdk_common::rate_limit::RateLimitConfig;
 
     use super::*;
+    use crate::wallet::test_utils::{MockMintConnector, TraceWriter};
     use crate::wallet::WalletBuilder;
 
     async fn test_wallet() -> super::super::Wallet {
@@ -522,5 +547,40 @@ mod tests {
     async fn flushing_an_untouched_wallet_returns() {
         let wallet = test_wallet().await;
         WalletTrait::flush_rate_limits(&wallet).await;
+    }
+
+    #[tokio::test]
+    async fn custom_payment_extra_is_omitted_from_mint_quote_spans() {
+        let extra = "private-custom-payment-extra";
+        let description = "public-description-marker";
+        let store = Arc::new(cdk_sqlite::wallet::memory::empty().await.unwrap());
+        let connector = Arc::new(MockMintConnector::new());
+        connector.push_post_mint_quote_response(Err(Error::UnsupportedPaymentMethod));
+        let wallet = WalletBuilder::default()
+            .mint_url(MintUrl::from_str("https://mint.example.com").unwrap())
+            .unit(CurrencyUnit::Sat)
+            .localstore(store)
+            .seed([0u8; 64])
+            .shared_client(connector)
+            .build()
+            .unwrap();
+        let capture = TraceWriter::default();
+        let subscriber = capture.subscriber();
+        let guard = tracing::subscriber::set_default(subscriber);
+
+        let _ = WalletTrait::mint_quote(
+            &wallet,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            Some(Amount::from(7)),
+            Some(description.to_string()),
+            Some(extra.to_string()),
+        )
+        .await;
+
+        drop(guard);
+        let trace = capture.output();
+        assert!(trace.contains("mint_quote"));
+        assert!(trace.contains(description));
+        assert!(!trace.contains(extra));
     }
 }

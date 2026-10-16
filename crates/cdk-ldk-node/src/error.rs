@@ -33,6 +33,13 @@ pub enum Error {
     #[error("Invalid quote id")]
     InvalidQuoteId,
 
+    /// BOLT12 quote already has a dispatch claim or recorded payment id
+    #[error("BOLT12 quote {quote_id} is already claimed")]
+    Bolt12QuoteAlreadyClaimed {
+        /// Quote id whose dispatch claim was rejected
+        quote_id: String,
+    },
+
     /// Database error
     #[error("Database error: {0}")]
     Database(String),

@@ -10,6 +10,7 @@ use tracing::instrument;
 use crate::nuts::State;
 use crate::wallet::recovery::{RecoveryAction, RecoveryHelpers};
 use crate::wallet::saga::{CompensatingAction, RevertProofReservation};
+use crate::wallet::util::escape_log_value;
 use crate::{Error, Wallet};
 
 impl Wallet {
@@ -129,7 +130,7 @@ impl Wallet {
                 tracing::warn!(
                     "Send saga {} (RollingBack) - can't check proof states ({}), skipping",
                     saga_id,
-                    e
+                    escape_log_value(&e)
                 );
                 Ok(RecoveryAction::Skipped)
             }
@@ -181,7 +182,7 @@ impl Wallet {
                 tracing::warn!(
                     "Send saga {} - can't check proof states ({}), skipping",
                     saga_id,
-                    e
+                    escape_log_value(&e)
                 );
                 Ok(RecoveryAction::Skipped)
             }

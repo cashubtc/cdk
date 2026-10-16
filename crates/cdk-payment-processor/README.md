@@ -38,6 +38,19 @@ export CDK_PAYMENT_PROCESSOR_LISTEN_HOST="127.0.0.1"
 export CDK_PAYMENT_PROCESSOR_LISTEN_PORT="8090"
 ```
 
+When mintd connects with a TLS directory, the directory must contain
+`ca.pem`, `client.pem`, and `client.key`. The CA certificate verifies the
+payment processor, and the client certificate and private key authenticate
+mintd to an mTLS-enabled processor. Configured TLS does not fall back to an
+unauthenticated client connection when either client identity file is missing.
+
+Mintd can explicitly opt into a plaintext connection with
+`[grpc_processor].allow_insecure = true`, including for a non-loopback address.
+This is unsafe on an untrusted network because the connection has no transport
+authentication or encryption and can be intercepted or modified. Use plaintext
+only on a trusted, isolated network or through a separately authenticated and
+encrypted tunnel; prefer mTLS even for internal deployments.
+
 #### Backend-Specific Configuration
 
 ##### Core Lightning (CLN)

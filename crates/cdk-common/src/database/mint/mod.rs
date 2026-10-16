@@ -667,6 +667,12 @@ pub trait CompletedOperationsDatabase {
 }
 
 /// Base database writer
+///
+/// Quote advisory locks coordinate transactional quote updates. Callers must
+/// acquire all quote locks before taking row locks, and implementations must
+/// acquire a batch in stable order. Locks are held until the transaction
+/// commits or rolls back.
+#[async_trait]
 pub trait Transaction<Error>:
     DbTransactionFinalizer<Err = Error>
     + QuotesTransaction<Err = Error>
@@ -676,6 +682,13 @@ pub trait Transaction<Error>:
     + SagaTransaction<Err = Error>
     + CompletedOperationsTransaction<Err = Error>
 {
+    /// Lock a set of quote identifiers for this transaction.
+    ///
+    /// Returns `true` when the backend acquired a cross-process lock. Backends
+    /// without quote advisory locks return `false`.
+    async fn lock_quotes(&mut self, _quote_ids: &[QuoteId]) -> Result<bool, Error> {
+        Ok(false)
+    }
 }
 
 /// Mint Database trait

@@ -27,7 +27,7 @@ use super::{
     CurrencyUnit, MeltQuote, MeltQuoteBolt11Request, MeltQuoteBolt11Response,
     MeltQuoteBolt12Response, MeltRequest, Mint, PaymentMethod,
 };
-use crate::mint::verification::MAX_REQUEST_FIELD_LEN;
+use crate::mint::verification::{validate_custom_payment_method, MAX_REQUEST_FIELD_LEN};
 use crate::nuts::MeltQuoteState;
 use crate::types::PaymentProcessorKey;
 use crate::util::unix_time;
@@ -97,11 +97,65 @@ impl std::future::IntoFuture for PendingMelt {
     }
 }
 
+fn validate_custom_quote_fields(request: &str, extra: &serde_json::Value) -> Result<(), Error> {
+    if request.len() > MAX_REQUEST_FIELD_LEN {
+        return Err(Error::RequestFieldTooLarge {
+            field: "request".to_string(),
+            actual: request.len(),
+            max: MAX_REQUEST_FIELD_LEN,
+        });
+    }
+
+    if !extra.is_null() {
+        let extra_str = extra.to_string();
+        if extra_str.len() > MAX_REQUEST_FIELD_LEN {
+            return Err(Error::RequestFieldTooLarge {
+                field: "extra".to_string(),
+                actual: extra_str.len(),
+                max: MAX_REQUEST_FIELD_LEN,
+            });
+        }
+    }
+
+    Ok(())
+}
+
 impl Mint {
+    /// Load a quote, keeping its response pending until change and cleanup commit.
+    pub(super) async fn load_melt_quote_for_response(
+        localstore: &DynMintDatabase,
+        quote_id: &QuoteId,
+    ) -> Result<Option<MeltQuote>, Error> {
+        let mut tx = localstore.begin_transaction().await?;
+        // Match finalization's quote-before-request lock ordering and use the
+        // locked quote for the response instead of reading it twice.
+        let mut quote = tx
+            .get_melt_quote(quote_id)
+            .await?
+            .map(|quote| quote.inner());
+        if let Some(quote) = quote.as_mut() {
+            if quote.state == MeltQuoteState::Paid {
+                // Finalization deletes the request atomically with change
+                // persistence, including when no change is due. Check this
+                // marker before reading signatures after releasing the locks.
+                if tx
+                    .get_melt_request_and_blinded_messages(quote_id)
+                    .await?
+                    .is_some()
+                {
+                    quote.state = MeltQuoteState::Pending;
+                }
+            }
+        }
+        tx.rollback().await?;
+        Ok(quote)
+    }
+
     /// Loads a settled (non-pending, non-unknown) melt response from the database.
     ///
     /// Returns `Ok(None)` while the quote is still `Pending` or in an `Unknown`
-    /// state (backend could not determine status); the caller should keep
+    /// state (backend could not determine status), or while a paid quote still
+    /// has outstanding change finalization; the caller should keep
     /// waiting. Returns `Ok(Some(response))` once the quote has reached a
     /// final state (`Paid`, `Failed`, or post-attempt `Unpaid`), with any
     /// change blind signatures attached.
@@ -115,8 +169,7 @@ impl Mint {
         localstore: &DynMintDatabase,
         quote_id: &QuoteId,
     ) -> Result<Option<MeltQuoteResponse<QuoteId>>, Error> {
-        let quote = localstore
-            .get_melt_quote(quote_id)
+        let quote = Self::load_melt_quote_for_response(localstore, quote_id)
             .await?
             .ok_or(Error::UnknownQuote)?;
 
@@ -328,18 +381,21 @@ impl Mint {
                 payment_quote.estimated_blocks,
             );
 
-            tracing::debug!(
-                "New {} melt quote {} for {} {} with request id {:?}",
-                quote.payment_method,
-                quote.id,
-                quote_amount,
-                unit,
-                payment_quote.request_lookup_id
-            );
-
             let mut tx = self.localstore.begin_transaction().await?;
             tx.add_melt_quote(quote.clone()).await?;
             tx.commit().await?;
+
+            tracing::info!(
+                quote_id = %quote.id,
+                method = %quote.payment_method,
+                unit = %quote.unit,
+                amount = %quote.amount(),
+                fee_reserve = %quote.fee_reserve(),
+                request_lookup_id = ?quote.request_lookup_id,
+                expiry = quote.expiry,
+                state = %quote.state,
+                "melt quote created and persisted",
+            );
 
             Ok(quote.into())
         }
@@ -444,18 +500,21 @@ impl Mint {
                 payment_quote.estimated_blocks,
             );
 
-            tracing::debug!(
-                "New {} melt quote {} for {} {} with request id {:?}",
-                quote.payment_method,
-                quote.id,
-                quote_amount,
-                unit,
-                payment_quote.request_lookup_id
-            );
-
             let mut tx = self.localstore.begin_transaction().await?;
             tx.add_melt_quote(quote.clone()).await?;
             tx.commit().await?;
+
+            tracing::info!(
+                quote_id = %quote.id,
+                method = %quote.payment_method,
+                unit = %quote.unit,
+                amount = %quote.amount(),
+                fee_reserve = %quote.fee_reserve(),
+                request_lookup_id = ?quote.request_lookup_id,
+                expiry = quote.expiry,
+                state = %quote.state,
+                "melt quote created and persisted",
+            );
 
             Ok(quote.into())
         }
@@ -591,6 +650,18 @@ impl Mint {
             tx.add_melt_quote(quote.clone()).await?;
             tx.commit().await?;
 
+            tracing::info!(
+                quote_id = %quote.id,
+                method = %quote.payment_method,
+                unit = %quote.unit,
+                amount = %quote.amount(),
+                fee_reserve = %quote.fee_reserve(),
+                request_lookup_id = ?quote.request_lookup_id,
+                expiry = quote.expiry,
+                state = %quote.state,
+                "melt quote created and persisted",
+            );
+
             Ok(quote.into())
         }
         .await;
@@ -621,22 +692,15 @@ impl Mint {
                 extra,
             } = melt_request;
 
-            if !extra.is_null() {
-                let extra_str = extra.to_string();
-                if extra_str.len() > MAX_REQUEST_FIELD_LEN {
-                    return Err(Error::RequestFieldTooLarge {
-                        field: "extra".to_string(),
-                        actual: extra_str.len(),
-                        max: MAX_REQUEST_FIELD_LEN,
-                    });
-                }
-            }
+            let payment_method = PaymentMethod::from(method.as_str());
+            validate_custom_payment_method(&payment_method)?;
+            validate_custom_quote_fields(request, extra)?;
 
             let payment_backend = self
                 .payment_processors
                 .get(&PaymentProcessorKey::new(
                     unit.clone(),
-                    PaymentMethod::from(method.as_str()),
+                    payment_method.clone(),
                 ))
                 .ok_or_else(|| {
                     tracing::info!("Could not get payment backend for {}, {} ", unit, method);
@@ -685,7 +749,7 @@ impl Mint {
             // the payment processor handles method-specific validation
             self.check_melt_request_acceptable(
                 payment_quote.amount.clone(),
-                PaymentMethod::from(method.as_str()),
+                payment_method.clone(),
                 request.clone(),
                 None, // Custom methods don't use options
             )
@@ -709,23 +773,26 @@ impl Mint {
                 unix_time() + melt_ttl,
                 payment_quote.request_lookup_id.clone(),
                 None, // Custom methods don't use options
-                PaymentMethod::from(method.as_str()),
+                payment_method,
                 payment_quote.extra_json,
                 payment_quote.estimated_blocks,
-            );
-
-            tracing::debug!(
-                "New {} melt quote {} for {} {} with request id {:?}",
-                method,
-                quote.id,
-                quote_amount,
-                unit,
-                payment_quote.request_lookup_id
             );
 
             let mut tx = self.localstore.begin_transaction().await?;
             tx.add_melt_quote(quote.clone()).await?;
             tx.commit().await?;
+
+            tracing::info!(
+                quote_id = %quote.id,
+                method = %quote.payment_method,
+                unit = %quote.unit,
+                amount = %quote.amount(),
+                fee_reserve = %quote.fee_reserve(),
+                request_lookup_id = ?quote.request_lookup_id,
+                expiry = quote.expiry,
+                state = %quote.state,
+                "melt quote created and persisted",
+            );
 
             Ok(quote.into())
         }
@@ -756,6 +823,9 @@ impl Mint {
                 .ok_or(Error::UnknownQuote)?;
 
             self.handle_pending_melt_quote(&mut quote).await?;
+            let quote = Self::load_melt_quote_for_response(&self.localstore, quote_id)
+                .await?
+                .ok_or(Error::UnknownQuote)?;
 
             let blind_signatures = self
                 .localstore
@@ -940,11 +1010,12 @@ impl Mint {
                                     }
                                 };
 
+                                let sub_id = crate::subscription::SubId::from(format!(
+                                    "melt_sync_wait_{}",
+                                    quote_id_for_log
+                                ));
                                 let params = Params {
-                                    id: Arc::new(crate::subscription::SubId::from(format!(
-                                        "melt_sync_wait_{}",
-                                        quote_id_for_log
-                                    ))),
+                                    id: Arc::new(sub_id),
                                     kind,
                                     filters: vec![quote_id_for_log.to_string()],
                                 };
@@ -1038,7 +1109,7 @@ impl Mint {
 
             match &result {
                 Ok(_) => {
-                    tracing::info!(
+                    tracing::debug!(
                         "Background melt completed successfully for quote: {}",
                         quote_id_for_log
                     );

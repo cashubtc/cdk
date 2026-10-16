@@ -97,7 +97,9 @@ pub struct PaymentRequest {
     /// If non-empty, the payer must send ecash from a mint that supports at
     /// least one listed method. Each method can carry a fee that only applies
     /// to payments from non-preferred mints, or from any mint if no mint list is
-    /// set.
+    /// set. The advertised `mf` values are exposed as
+    /// [`SupportedMethod::fee`]; the fee that actually applies is selected by
+    /// the paying wallet based on its mint and supported methods.
     #[serde(rename = "sm")]
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub supported_methods: Vec<SupportedMethod>,
@@ -581,7 +583,7 @@ mod tests {
         let payment_request = PaymentRequestBuilder::default()
             .unit(CurrencyUnit::Sat)
             .amount(10)
-            .nut10(nut10.into())
+            .nut10(nut10.try_into().unwrap())
             .build();
 
         let payment_request_str = payment_request.to_string();
@@ -608,7 +610,7 @@ mod tests {
             .amount(10)
             .payment_id("test-p2pk-id")
             .description("P2PK locked payment")
-            .nut10(nut10.into())
+            .nut10(nut10.try_into().unwrap())
             .build();
 
         // Convert to string representation

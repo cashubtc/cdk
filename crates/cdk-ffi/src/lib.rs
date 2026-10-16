@@ -10,6 +10,8 @@ pub mod bip321;
 pub mod database;
 pub mod error;
 pub mod logging;
+#[cfg(feature = "nostr")]
+pub mod nostr;
 #[cfg(feature = "npubcash")]
 pub mod npubcash;
 #[cfg(feature = "nwc")]
@@ -29,6 +31,8 @@ mod wallet_trait;
 pub use database::*;
 pub use error::*;
 pub use logging::*;
+#[cfg(feature = "nostr")]
+pub use nostr::*;
 #[cfg(feature = "npubcash")]
 pub use npubcash::*;
 #[cfg(feature = "nwc")]
@@ -320,7 +324,7 @@ mod tests {
         assert!(encoded.contains(&secret_hex));
         assert!(encoded.contains("p2pk_signing_keys"));
         assert!(!debug.contains(&secret_hex));
-        assert!(debug.contains("[redacted]"));
+        assert!(debug.contains("[REDACTED]"));
 
         let decoded = crate::types::wallet::decode_send_options(encoded).unwrap();
 
@@ -377,7 +381,7 @@ mod tests {
         assert!(encoded.contains(&secret_hex));
         assert!(encoded.contains("p2pk_signing_keys"));
         assert!(!debug.contains(&secret_hex));
-        assert!(debug.contains("[redacted]"));
+        assert!(debug.contains("[REDACTED]"));
 
         let decoded = crate::types::wallet::decode_receive_options(encoded).unwrap();
 

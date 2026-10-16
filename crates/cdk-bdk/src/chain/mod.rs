@@ -148,6 +148,12 @@ impl BroadcastFailure {
 impl ChainSource {
     pub(crate) fn validate(&self) -> Result<(), Error> {
         match self {
+            #[cfg(feature = "esplora")]
+            Self::Esplora(config) if config.parallel_requests == 0 => {
+                return Err(Error::InvalidConfig(
+                    "Esplora parallel_requests must be greater than zero".to_string(),
+                ));
+            }
             #[cfg(feature = "electrum")]
             Self::Electrum(config) if config.batch_size == 0 => {
                 return Err(Error::InvalidConfig(
@@ -295,5 +301,20 @@ mod tests {
             .expect_err("zero Electrum batch size should fail");
 
         assert!(matches!(error, Error::InvalidConfig(_)));
+    }
+
+    #[cfg(feature = "esplora")]
+    #[test]
+    fn rejects_zero_esplora_parallel_requests() {
+        for parallel_requests in [0, 1, 4] {
+            let source = ChainSource::Esplora(EsploraConfig {
+                url: "http://127.0.0.1:1".to_owned(),
+                parallel_requests,
+            });
+            match parallel_requests {
+                0 => assert!(matches!(source.validate(), Err(Error::InvalidConfig(_)))),
+                _ => source.validate().expect("positive concurrency"),
+            }
+        }
     }
 }

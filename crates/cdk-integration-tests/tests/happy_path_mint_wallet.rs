@@ -413,6 +413,11 @@ async fn test_restore_large_proof_count() {
     )
     .expect("failed to create new wallet");
 
+    // This stress test runs against a controlled localhost mint. Disable pacing
+    // before the first request so the default client rate limit does not dominate
+    // the runtime of the 3,000-proof restore workload.
+    wallet.disable_rate_limiting();
+
     let mint_amount: u64 = 3000;
     let batch_size: u64 = 999; // Keep under 1000 outputs per request
 
@@ -459,6 +464,10 @@ async fn test_restore_large_proof_count() {
         None,
     )
     .expect("failed to create new wallet");
+
+    // This is a separate client and therefore has its own limiter. Disable it
+    // before restore so all restore batches run without artificial delays.
+    wallet_2.disable_rate_limiting();
 
     assert_eq!(wallet_2.total_balance().await.unwrap(), 0.into());
 
@@ -530,6 +539,10 @@ async fn test_restore_with_counter_gap() {
     )
     .expect("failed to create new wallet");
 
+    // This test runs against a controlled localhost mint. Disable pacing before
+    // the first request so its timing reflects restore/counter-gap behavior.
+    wallet.disable_rate_limiting();
+
     // Mint first batch of proofs (uses counters starting at 0)
     let mint_quote = wallet
         .mint_quote(PaymentMethod::BOLT11, Some(100.into()), None, None)
@@ -597,6 +610,10 @@ async fn test_restore_with_counter_gap() {
         None,
     )
     .expect("failed to create restored wallet");
+
+    // The restored wallet is a separate client with a separate limiter. Disable
+    // it before restore and the post-restore swaps exercised below.
+    wallet_restored.disable_rate_limiting();
 
     assert_eq!(wallet_restored.total_balance().await.unwrap(), 0.into());
 

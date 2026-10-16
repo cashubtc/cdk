@@ -12,13 +12,12 @@ use cdk_sql_common::pool::{DatabaseConfig, DatabasePool};
 use cdk_sql_common::stmt::{Column, Statement};
 use cdk_sql_common::{SQLMintDatabase, SQLWalletDatabase};
 use db::{pg_batch, pg_execute, pg_fetch_all, pg_fetch_one, pg_pluck};
-use native_tls::TlsConnector;
-use postgres_native_tls::MakeTlsConnector;
 use tokio::sync::{Mutex, Notify};
 use tokio::time::timeout;
-use tokio_postgres::{connect, Client, Error as PgError, NoTls};
+use tokio_postgres::{Client, Error as PgError, NoTls};
 
 mod db;
+mod tls;
 mod value;
 
 #[derive(Debug)]
@@ -33,12 +32,6 @@ pub enum SslMode {
     /// Native TLS
     NativeTls(postgres_native_tls::MakeTlsConnector),
 }
-const SSLMODE_VERIFY_FULL: &str = "sslmode=verify-full";
-const SSLMODE_VERIFY_CA: &str = "sslmode=verify-ca";
-const SSLMODE_PREFER: &str = "sslmode=prefer";
-const SSLMODE_ALLOW: &str = "sslmode=allow";
-const SSLMODE_REQUIRE: &str = "sslmode=require";
-
 impl Default for SslMode {
     fn default() -> Self {
         SslMode::NoTls(NoTls {})
@@ -61,7 +54,7 @@ impl fmt::Debug for SslMode {
 pub struct PgConfig {
     url: String,
     schema: Option<String>,
-    tls: SslMode,
+    tls_mode: Option<String>,
     max_connections: usize,
     connection_timeout: Duration,
 }
@@ -71,7 +64,7 @@ impl fmt::Debug for PgConfig {
         f.debug_struct("PgConfig")
             .field("url", &"[redacted]")
             .field("schema", &self.schema)
-            .field("tls", &self.tls)
+            .field("tls_mode", &self.tls_mode.as_ref().map(|_| "[configured]"))
             .field("max_connections", &self.max_connections)
             .field("connection_timeout", &self.connection_timeout)
             .finish()
@@ -94,69 +87,15 @@ const DEFAULT_MAX_CONNECTIONS: usize = 20;
 /// Default connection timeout in seconds
 const DEFAULT_CONNECTION_TIMEOUT_SECS: u64 = 10;
 
-/// Build a TLS connector with the given certificate/hostname validation settings.
-fn build_tls(accept_invalid_certs: bool, accept_invalid_hostnames: bool) -> SslMode {
-    let mut builder = TlsConnector::builder();
-    if accept_invalid_certs {
-        builder.danger_accept_invalid_certs(true);
-    }
-    if accept_invalid_hostnames {
-        builder.danger_accept_invalid_hostnames(true);
-    }
-
-    match builder.build() {
-        Ok(connector) => {
-            let make_tls_connector = MakeTlsConnector::new(connector);
-            SslMode::NativeTls(make_tls_connector)
-        }
-        Err(_) => SslMode::NoTls(NoTls {}),
-    }
-}
-
-/// Determine TLS mode from the `sslmode=` parameter in a connection URL.
-fn ssl_mode_from_url(url: &str) -> SslMode {
-    if url.contains(SSLMODE_VERIFY_FULL) {
-        // Strict TLS: valid certs and hostnames required
-        build_tls(false, false)
-    } else if url.contains(SSLMODE_VERIFY_CA) {
-        // Verify CA, but allow invalid hostnames
-        build_tls(false, true)
-    } else if url.contains(SSLMODE_PREFER)
-        || url.contains(SSLMODE_ALLOW)
-        || url.contains(SSLMODE_REQUIRE)
-    {
-        // Lenient TLS for preferred/allow/require: accept invalid certs and hostnames
-        build_tls(true, true)
-    } else {
-        SslMode::NoTls(NoTls {})
-    }
-}
-
-/// Resolve TLS mode from an explicit `tls_mode` string (from config/env), such
-/// as `"disable"`, `"prefer"`, `"require"`, `"verify-ca"`, or `"verify-full"`.
-///
-/// If the value is `None`, falls back to parsing `sslmode=` from the URL.
-fn ssl_mode_from_config(tls_mode: Option<&str>, url: &str) -> SslMode {
-    match tls_mode {
-        Some(mode) => match mode.to_lowercase().as_str() {
-            "verify-full" => build_tls(false, false),
-            "verify-ca" => build_tls(false, true),
-            "require" | "prefer" | "allow" => build_tls(true, true),
-            // "disable" or any unrecognised value → no TLS
-            _ => SslMode::NoTls(NoTls {}),
-        },
-        // No explicit tls_mode: fall back to URL-based detection
-        None => ssl_mode_from_url(url),
-    }
-}
-
 impl PgConfig {
     /// Create a new `PgConfig` with explicit TLS mode, pool size, and timeout.
     ///
     /// `tls_mode` accepts the same strings as the configuration file:
     /// `"disable"`, `"prefer"`, `"allow"`, `"require"`, `"verify-ca"`,
     /// `"verify-full"`.  When `None`, the TLS mode is inferred from
-    /// `sslmode=` in the connection URL (matching the old behaviour).
+    /// `sslmode=` in the connection URL. With neither setting, TLS is disabled.
+    /// Invalid modes and TLS connector errors are returned when validating or connecting.
+    /// `allow` uses the same opportunistic TLS policy as `prefer`.
     pub fn new(
         conn_str: &str,
         tls_mode: Option<&str>,
@@ -164,16 +103,33 @@ impl PgConfig {
         connection_timeout_secs: Option<u64>,
     ) -> Self {
         let (schema, conn_str) = Self::strip_schema(conn_str);
-        let tls = ssl_mode_from_config(tls_mode, &conn_str);
-        PgConfig {
+        Self {
             url: conn_str,
             schema,
-            tls,
+            tls_mode: tls_mode.map(str::to_owned),
             max_connections: max_connections.unwrap_or(DEFAULT_MAX_CONNECTIONS),
             connection_timeout: Duration::from_secs(
                 connection_timeout_secs.unwrap_or(DEFAULT_CONNECTION_TIMEOUT_SECS),
             ),
         }
+    }
+
+    /// Validate connection parameters and construct the configured TLS connector.
+    ///
+    /// Does not open a connection or verify the server's certificate. Uses the
+    /// same TLS policy and connector construction as connection establishment.
+    pub fn validate(&self) -> Result<(), Error> {
+        tls::configure(&self.url, self.tls_mode.as_deref()).map(|_| ())
+    }
+
+    /// Compare effective TLS policies, including certificate verification requirements.
+    ///
+    /// Resolves explicit modes, URL modes, and defaults using the connection policy.
+    /// Invalid settings return an error. Does not connect or construct TLS connectors.
+    pub fn has_same_tls_policy(&self, other: &Self) -> Result<bool, Error> {
+        let (_, policy) = tls::resolve(&self.url, self.tls_mode.as_deref())?;
+        let (_, other_policy) = tls::resolve(&other.url, other.tls_mode.as_deref())?;
+        Ok(policy == other_policy)
     }
 
     /// strip schema from the connection string
@@ -197,16 +153,7 @@ impl PgConfig {
 
 impl From<&str> for PgConfig {
     fn from(conn_str: &str) -> Self {
-        let (schema, conn_str) = Self::strip_schema(conn_str);
-        let tls = ssl_mode_from_url(&conn_str);
-
-        PgConfig {
-            url: conn_str,
-            schema,
-            tls,
-            max_connections: DEFAULT_MAX_CONNECTIONS,
-            connection_timeout: Duration::from_secs(DEFAULT_CONNECTION_TIMEOUT_SECS),
-        }
+        Self::new(conn_str, None, None, None)
     }
 }
 
@@ -257,9 +204,19 @@ impl PostgresConnection {
         }
 
         tokio::spawn(async move {
-            match config.tls {
+            let (connection_config, tls) =
+                match tls::configure(&config.url, config.tls_mode.as_deref()) {
+                    Ok(config) => config,
+                    Err(err) => {
+                        *error_clone.lock().await = Some(err);
+                        stale.store(true, std::sync::atomic::Ordering::Release);
+                        notify_clone.notify_waiters();
+                        return;
+                    }
+                };
+            match tls {
                 SslMode::NoTls(tls) => {
-                    let (client, connection) = match connect(&config.url, tls).await {
+                    let (client, connection) = match connection_config.connect(tls).await {
                         Ok((client, connection)) => (client, connection),
                         Err(err) => {
                             *error_clone.lock().await =
@@ -289,7 +246,7 @@ impl PostgresConnection {
                     notify_clone.notify_waiters();
                 }
                 SslMode::NativeTls(tls) => {
-                    let (client, connection) = match connect(&config.url, tls).await {
+                    let (client, connection) = match connection_config.connect(tls).await {
                         Ok((client, connection)) => (client, connection),
                         Err(err) => {
                             *error_clone.lock().await =
@@ -406,7 +363,7 @@ pub async fn new_wallet_pg_database(conn_str: &str) -> Result<WalletPgDatabase, 
 
 #[cfg(test)]
 mod test {
-    use cdk_common::{mint_db_test, wallet_db_test};
+    use cdk_common::{mint_db_test, wallet_db_test, QuoteId};
 
     use super::*;
 
@@ -426,6 +383,73 @@ mod test {
     }
 
     mint_db_test!(provide_mint_db);
+
+    #[tokio::test]
+    async fn mint_pool_accepts_single_connection_configuration() {
+        use cdk_common::database::MintDatabase;
+
+        let test_id = format!("test_single_connection_pool_{}", uuid::Uuid::new_v4());
+        let db_url = std::env::var("CDK_MINTD_DATABASE_URL")
+            .or_else(|_| std::env::var("PG_DB_URL"))
+            .unwrap_or(
+                "host=localhost user=cdk_user password=cdk_password dbname=cdk_mint port=5432"
+                    .to_owned(),
+            );
+        let config = PgConfig::new(
+            &format!("{db_url} schema={test_id}"),
+            None,
+            Some(1),
+            Some(10),
+        );
+
+        let db = MintPgDatabase::new(config)
+            .await
+            .expect("single-connection mint pool should remain supported");
+        let regular = MintDatabase::begin_transaction(&db)
+            .await
+            .expect("regular transaction");
+        regular.rollback().await.expect("regular rollback");
+    }
+
+    #[tokio::test]
+    async fn quote_lock_batch_excludes_concurrent_transaction() {
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        use cdk_common::database::MintDatabase;
+
+        let test_id = format!("test_quote_lock_batch_{}", uuid::Uuid::new_v4());
+        let db = Arc::new(provide_mint_db(test_id).await);
+        let first = QuoteId::new();
+        let second = QuoteId::new();
+
+        let mut holder = MintDatabase::begin_transaction(&*db).await.expect("tx");
+        holder
+            .lock_quotes(&[first.clone(), second.clone()])
+            .await
+            .expect("lock");
+
+        let waiter = tokio::spawn({
+            let db = db.clone();
+            async move {
+                let mut tx = MintDatabase::begin_transaction(&*db).await.expect("tx");
+                tx.lock_quotes(&[second, first]).await.expect("lock");
+                tx.commit().await.expect("commit");
+            }
+        });
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            !waiter.is_finished(),
+            "reversed quote batch did not wait for the holder"
+        );
+
+        holder.commit().await.expect("commit");
+        tokio::time::timeout(Duration::from_secs(5), waiter)
+            .await
+            .expect("reversed quote batch remained blocked")
+            .expect("waiter task");
+    }
 
     #[tokio::test]
     async fn kvstore_compare_and_swap() {

@@ -67,7 +67,7 @@ pub enum ConfigCommands {
     /// Convert a legacy TOML plus environment overrides into an import document.
     Migrate(MigrateConfigArgs),
     /// Initialize an unconfigured database from a TOML document.
-    Init(ConfigFileArgs),
+    Init(InitConfigArgs),
     /// Validate a TOML document without changing the database.
     Validate(ConfigFileArgs),
     /// Replace the configuration used by the next mintd start.
@@ -78,6 +78,31 @@ pub enum ConfigCommands {
     Show,
     /// Export the stored configuration document.
     Export(ExportConfigArgs),
+}
+
+/// Arguments for initializing database-backed configuration.
+#[derive(Debug, Args)]
+pub struct InitConfigArgs {
+    /// TOML document to import.
+    #[arg(long)]
+    pub file: PathBuf,
+    /// Initialize a database that has never served a mint.
+    #[arg(
+        long,
+        required_unless_present = "existing_mint",
+        conflicts_with = "existing_mint"
+    )]
+    pub new_mint: bool,
+    /// Import configuration into a database containing an existing mint.
+    #[arg(
+        long,
+        required_unless_present = "new_mint",
+        conflicts_with = "new_mint"
+    )]
+    pub existing_mint: bool,
+    /// Permit an existing mint to create a BDK wallet when no wallet database exists.
+    #[arg(long, requires = "existing_mint", conflicts_with = "new_mint")]
+    pub allow_new_bdk_wallet: bool,
 }
 
 /// Arguments for migrating a legacy configuration.
@@ -125,6 +150,9 @@ pub struct ApplyConfigArgs {
     /// Validate the document and persisted constraints without writing it.
     #[arg(long)]
     pub validate_only: bool,
+    /// Permit creation of a BDK wallet when no wallet database exists.
+    #[arg(long)]
+    pub allow_new_bdk_wallet: bool,
 }
 
 #[cfg(test)]
@@ -133,10 +161,32 @@ mod tests {
 
     #[test]
     fn parses_configuration_commands() {
-        for command in ["init", "validate"] {
-            CLIArgs::try_parse_from(["cdk-mintd", "config", command, "--file", "/tmp/mint.toml"])
-                .expect("configuration command should parse");
-        }
+        CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "config",
+            "init",
+            "--new-mint",
+            "--file",
+            "/tmp/mint.toml",
+        ])
+        .expect("new-mint initialization should parse");
+        CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "config",
+            "init",
+            "--existing-mint",
+            "--file",
+            "/tmp/mint.toml",
+        ])
+        .expect("existing-mint initialization should parse");
+        CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "config",
+            "validate",
+            "--file",
+            "/tmp/mint.toml",
+        ])
+        .expect("configuration validation should parse");
 
         let args =
             CLIArgs::try_parse_from(["cdk-mintd", "config", "export", "--file", "/tmp/mint.toml"])
@@ -210,6 +260,58 @@ mod tests {
         ])
         .expect("legacy seed-file migration should parse");
         assert_eq!(args.seed_file, Some(PathBuf::from("/tmp/seed.txt")));
+    }
+
+    #[test]
+    fn initialization_requires_exactly_one_mint_mode() {
+        assert!(CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "config",
+            "init",
+            "--file",
+            "/tmp/mint.toml",
+        ])
+        .is_err());
+        assert!(CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "config",
+            "init",
+            "--new-mint",
+            "--existing-mint",
+            "--file",
+            "/tmp/mint.toml",
+        ])
+        .is_err());
+        assert!(CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "config",
+            "init",
+            "--new-mint",
+            "--allow-new-bdk-wallet",
+            "--file",
+            "/tmp/mint.toml",
+        ])
+        .is_err());
+
+        let args = CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "config",
+            "init",
+            "--existing-mint",
+            "--allow-new-bdk-wallet",
+            "--file",
+            "/tmp/mint.toml",
+        ])
+        .expect("existing mint may explicitly allow a new BDK wallet");
+        assert!(matches!(
+            args.command,
+            Some(Commands::Config(ConfigArgs {
+                command: ConfigCommands::Init(InitConfigArgs {
+                    allow_new_bdk_wallet: true,
+                    ..
+                }),
+            }))
+        ));
     }
 
     #[test]

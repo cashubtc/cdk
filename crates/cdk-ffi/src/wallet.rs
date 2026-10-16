@@ -7,10 +7,12 @@ use bip39::Mnemonic;
 use cdk::wallet::{RateLimitConfig, Wallet as CdkWallet, WalletBuilder as CdkWalletBuilder};
 
 use crate::error::FfiError;
+#[cfg(feature = "npubcash")]
+use crate::npubcash::NpubCashUserResponse;
 use crate::token::Token;
 #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
 use crate::types::bip321::BitcoinNetwork;
-use crate::types::payment_request::PaymentRequest;
+use crate::types::payment_request::{PaymentRequest, PreparedPaymentRequest};
 use crate::types::*;
 
 /// FFI-compatible wallet.
@@ -347,6 +349,11 @@ impl Wallet {
     /// **Note:** The mint quote must be known to the wallet (stored locally) for this
     /// function to work. If the quote is not stored locally, use `fetch_mint_quote`
     /// instead.
+    ///
+    /// Returns the persisted database version and ownership after status/recovery writes.
+    ///
+    /// # Errors
+    /// Returns an error for a mismatched response quote ID or a failed database reload.
     pub async fn check_mint_quote_status(&self, quote_id: String) -> Result<MintQuote, FfiError> {
         let quote = self.inner.check_mint_quote_status(&quote_id).await?;
         Ok(quote.into())
@@ -360,11 +367,18 @@ impl Wallet {
     ///
     /// Works with all payment methods (Bolt11, Bolt12, and custom payment methods).
     ///
+    /// A quote not created by this wallet instance, such as one fetched after
+    /// restoring from seed, is stored without its NUT-20 signing key. Use
+    /// `fetch_mint_quote_with_key_search` to recover that key.
+    ///
     /// # Arguments
     /// * `quote_id` - The ID of the quote to fetch
     /// * `payment_method` - The payment method for the quote. Required if the quote
     ///   is not already stored locally. If the quote exists locally, the stored
     ///   payment method will be used and this parameter is ignored.
+    ///
+    /// # Errors
+    /// Returns an error for a mismatched response quote ID before storing the quote.
     pub async fn fetch_mint_quote(
         &self,
         quote_id: String,
@@ -372,6 +386,37 @@ impl Wallet {
     ) -> Result<MintQuote, FfiError> {
         let method = payment_method.map(Into::into);
         let quote = self.inner.fetch_mint_quote(&quote_id, method).await?;
+        Ok(quote.into())
+    }
+
+    /// Fetch a mint quote and try to recover its NUT-20 signing key from the seed.
+    ///
+    /// Use after restoring a wallet from seed to claim a quote whose ID is known
+    /// but whose signing key was lost. Searches the wallet's NUT-20 keys at
+    /// counters `0..key_search_limit` for the public key the mint reports and
+    /// stores the match, advancing the wallet's NUT-20 counter past it.
+    ///
+    /// Succeeds even if no key matched. Check `secret_key` on the returned quote:
+    /// if set, call `mint`; if not, retry with a larger limit. The limit must
+    /// exceed the index the original wallet used, which is below the number of
+    /// locked quotes it created. Zero disables the search. Existing keys and
+    /// NpubCash quotes are left unchanged, and random keys cannot be recovered.
+    ///
+    /// This performs network I/O and writes the quote and counter to the local store.
+    pub async fn fetch_mint_quote_with_key_search(
+        &self,
+        quote_id: String,
+        payment_method: Option<PaymentMethod>,
+        key_search_limit: u32,
+    ) -> Result<MintQuote, FfiError> {
+        let quote = self
+            .inner
+            .fetch_mint_quote_with_key_search(
+                &quote_id,
+                payment_method.map(Into::into),
+                key_search_limit,
+            )
+            .await?;
         Ok(quote.into())
     }
 
@@ -447,6 +492,39 @@ impl Wallet {
         Ok(PreparedMelt::new(Arc::clone(&self.inner), &prepared))
     }
 
+    /// Prepare a melt operation with specific proofs and additional options
+    ///
+    /// Same as `prepare_melt_proofs`, with P2PK/HTLC-locked proofs signed
+    /// using `options.p2pk_signing_keys` plus any signing keys known to the
+    /// wallet, and HTLC preimages from `options.preimages` attached, before
+    /// the proofs are reserved.
+    ///
+    /// # Arguments
+    ///
+    /// * `quote_id` - The melt quote ID (obtained from `melt_quote`)
+    /// * `proofs` - The proofs to melt (can be external proofs not in the wallet's database)
+    /// * `options` - Signing keys, preimages, and metadata for the prepare step
+    ///
+    /// # Returns
+    ///
+    /// A `PreparedMelt` that can be confirmed or cancelled
+    pub async fn prepare_melt_proofs_with_options(
+        &self,
+        quote_id: String,
+        proofs: Proofs,
+        options: MeltPrepareOptions,
+    ) -> Result<PreparedMelt, FfiError> {
+        let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
+            proofs.into_iter().map(|p| p.try_into()).collect();
+        let cdk_proofs = cdk_proofs?;
+
+        let prepared = self
+            .inner
+            .prepare_melt_proofs_with_options(&quote_id, cdk_proofs, options.try_into()?)
+            .await?;
+        Ok(PreparedMelt::new(Arc::clone(&self.inner), &prepared))
+    }
+
     /// Prepare a melt operation from an encoded token
     ///
     /// Decodes the token internally (handling keyset state for v2 keysets),
@@ -468,6 +546,33 @@ impl Wallet {
         let prepared = self
             .inner
             .prepare_melt_token(&quote_id, &encoded_token, std::collections::HashMap::new())
+            .await?;
+        Ok(PreparedMelt::new(Arc::clone(&self.inner), &prepared))
+    }
+
+    /// Prepare a melt operation from an encoded token with additional options
+    ///
+    /// Same as `prepare_melt_token`, with locked inputs handled as described
+    /// in `prepare_melt_proofs_with_options`.
+    ///
+    /// # Arguments
+    ///
+    /// * `quote_id` - The melt quote ID (obtained from `melt_quote`)
+    /// * `encoded_token` - The encoded token string (cashuA or cashuB format)
+    /// * `options` - Signing keys, preimages, and metadata for the prepare step
+    ///
+    /// # Returns
+    ///
+    /// A `PreparedMelt` that can be confirmed or cancelled
+    pub async fn prepare_melt_token_with_options(
+        &self,
+        quote_id: String,
+        encoded_token: String,
+        options: MeltPrepareOptions,
+    ) -> Result<PreparedMelt, FfiError> {
+        let prepared = self
+            .inner
+            .prepare_melt_token_with_options(&quote_id, &encoded_token, options.try_into()?)
             .await?;
         Ok(PreparedMelt::new(Arc::clone(&self.inner), &prepared))
     }
@@ -569,6 +674,7 @@ impl Wallet {
     }
 
     /// Check melt quote status and attempt to complete any in-progress saga.
+    /// Returns the persisted database version and ownership after status/recovery writes.
     pub async fn check_melt_quote_status(&self, quote_id: String) -> Result<MeltQuote, FfiError> {
         let quote = self.inner.check_melt_quote_status(&quote_id).await?;
         Ok(quote.into())
@@ -706,7 +812,7 @@ impl Wallet {
         &self,
         params: SubscribeParams,
     ) -> Result<std::sync::Arc<ActiveSubscription>, FfiError> {
-        let cdk_params: cdk::nuts::nut17::Params<Arc<String>> = params.clone().into();
+        let cdk_params: cdk::nuts::nut17::Params<Arc<String>> = params.into();
         let sub_id = cdk_params.id.to_string();
         let active_sub = self.inner.subscribe(cdk_params).await?;
         Ok(std::sync::Arc::new(ActiveSubscription::new(
@@ -844,27 +950,82 @@ impl Wallet {
         Ok(fee.into())
     }
 
-    /// Pay a NUT-18 payment request
+    /// Prepare a NUT-18 payment request so its method and input fees can be reviewed.
     ///
-    /// This method prepares and sends a payment for the given payment request.
-    /// It will use the Nostr or HTTP transport specified in the request.
-    ///
-    /// # Arguments
-    ///
-    /// * `payment_request` - The NUT-18 payment request to pay
-    /// * `custom_amount` - Optional amount to pay (required if request has no amount)
-    pub async fn pay_request(
+    /// Call `confirm` or `cancel` on the returned object to complete the flow.
+    pub async fn prepare_pay_request(
         &self,
         payment_request: std::sync::Arc<PaymentRequest>,
         custom_amount: Option<Amount>,
-    ) -> Result<(), FfiError> {
-        self.inner
-            .pay_request(
+    ) -> Result<std::sync::Arc<PreparedPaymentRequest>, FfiError> {
+        let prepared = self
+            .inner
+            .prepare_pay_request(
                 payment_request.inner().clone(),
                 custom_amount.map(Into::into),
             )
             .await?;
+        Ok(std::sync::Arc::new(PreparedPaymentRequest::new(prepared)))
+    }
+}
+
+/// NpubCash methods for Wallet
+#[cfg(feature = "npubcash")]
+#[uniffi::export(async_runtime = "tokio")]
+impl Wallet {
+    /// Enable NpubCash integration for this wallet
+    ///
+    /// Derives the NpubCash Nostr keys from the wallet seed, creates the
+    /// API client, sets this wallet's mint URL on the server, and enables
+    /// NUT-20 quote locking for newly created quotes. The integration is
+    /// only activated once locking has been enabled and confirmed.
+    ///
+    /// Returns an error if quote locking cannot be established — for
+    /// example when the configured mint does not support NUT-20.
+    pub async fn enable_npubcash(&self, npubcash_url: String) -> Result<(), FfiError> {
+        self.inner.enable_npubcash(npubcash_url).await?;
         Ok(())
+    }
+
+    /// Reconcile the wallet with NpubCash by resolving quotes missing locally
+    ///
+    /// Fetches all quote IDs from the NpubCash server, resolves full data for
+    /// quotes missing from the local store, and refreshes NUT-20 lock
+    /// provenance for quotes already known locally. Unlike
+    /// `claim_npubcash_quotes`, this does not mint anything; it only
+    /// reconciles the local quote store with the server.
+    ///
+    /// Returns the quotes that were missing locally and have now been added.
+    ///
+    /// Requires NpubCash to be enabled on this wallet first.
+    pub async fn sync_missing_npubcash_quotes(&self) -> Result<Vec<MintQuote>, FfiError> {
+        let quotes = self.inner.sync_missing_npubcash_quotes().await?;
+        Ok(quotes.into_iter().map(Into::into).collect())
+    }
+
+    /// Claim all pending NpubCash quotes
+    ///
+    /// Syncs quotes from the NpubCash server (including reconciliation of
+    /// quotes missing locally) and mints every paid NpubCash quote that has
+    /// not been issued yet. Only quotes attributable to the wallet's NpubCash
+    /// accounts are claimed; unrelated mint quotes created through normal
+    /// wallet flows are left untouched. Mints that advertise NUT-29 are
+    /// claimed with batch minting automatically; other mints fall back to
+    /// individual minting.
+    ///
+    /// Returns the total amount minted across all claimed quotes.
+    pub async fn claim_npubcash_quotes(&self) -> Result<Amount, FfiError> {
+        let minted = self.inner.claim_npubcash_quotes().await?;
+        Ok(minted.into())
+    }
+
+    /// Fetch this wallet's NpubCash account settings
+    ///
+    /// Returns the configured mint URL and whether quote locking is enabled.
+    /// Requires NpubCash to be enabled on this wallet first.
+    pub async fn get_npubcash_user_info(&self) -> Result<NpubCashUserResponse, FfiError> {
+        let response = self.inner.get_npubcash_user_info().await?;
+        Ok(response.into())
     }
 }
 
@@ -1250,5 +1411,15 @@ mod tests {
             Some(RateLimitConfig::default()),
         );
         assert!(<Wallet as WalletTrait>::is_rate_limited(&wallet));
+    }
+
+    #[cfg(feature = "npubcash")]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn npubcash_methods_require_an_enabled_client() {
+        let wallet = test_wallet();
+
+        assert!(wallet.sync_missing_npubcash_quotes().await.is_err());
+        assert!(wallet.claim_npubcash_quotes().await.is_err());
+        assert!(wallet.get_npubcash_user_info().await.is_err());
     }
 }

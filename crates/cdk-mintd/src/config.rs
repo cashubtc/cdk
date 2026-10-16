@@ -1,4 +1,3 @@
-#[cfg(any(feature = "bdk", feature = "ldk-node"))]
 use std::fmt;
 use std::path::PathBuf;
 
@@ -7,7 +6,6 @@ use cdk::nuts::{CurrencyUnit, PublicKey};
 use cdk::Amount;
 use cdk_axum::cache;
 use cdk_common::common::QuoteTTL;
-#[cfg(any(feature = "bdk", feature = "ldk-node"))]
 use cdk_common::redact::url_for_logs;
 use config::{Config, ConfigError, File, FileFormat};
 use serde::{Deserialize, Serialize};
@@ -635,6 +633,8 @@ pub struct Lnd {
     pub fee_percent: f32,
     #[serde(default = "default_reserve_fee_min")]
     pub reserve_fee_min: Amount,
+    /// Allow circular payments back to the configured LND node (enabled by default).
+    pub allow_self_payment: bool,
 }
 
 #[cfg(feature = "lnd")]
@@ -646,6 +646,7 @@ impl Default for Lnd {
             macaroon_file: PathBuf::new(),
             fee_percent: 0.02,
             reserve_fee_min: 2.into(),
+            allow_self_payment: true,
         }
     }
 }
@@ -972,7 +973,7 @@ pub struct AuthDatabase {
     pub postgres: Option<PostgresAuthConfig>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PostgresAuthConfig {
     pub url: String,
@@ -981,18 +982,32 @@ pub struct PostgresAuthConfig {
     pub connection_timeout_seconds: Option<u64>,
 }
 
+impl fmt::Debug for PostgresAuthConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PostgresAuthConfig")
+            .field("url", &url_for_logs(&self.url))
+            .field("tls_mode", &self.tls_mode)
+            .field("max_connections", &self.max_connections)
+            .field(
+                "connection_timeout_seconds",
+                &self.connection_timeout_seconds,
+            )
+            .finish()
+    }
+}
+
 impl Default for PostgresAuthConfig {
     fn default() -> Self {
         Self {
             url: String::new(),
-            tls_mode: Some("disable".to_string()),
+            tls_mode: None,
             max_connections: Some(20),
             connection_timeout_seconds: Some(10),
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PostgresConfig {
     pub url: String,
@@ -1001,11 +1016,25 @@ pub struct PostgresConfig {
     pub connection_timeout_seconds: Option<u64>,
 }
 
+impl fmt::Debug for PostgresConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PostgresConfig")
+            .field("url", &url_for_logs(&self.url))
+            .field("tls_mode", &self.tls_mode)
+            .field("max_connections", &self.max_connections)
+            .field(
+                "connection_timeout_seconds",
+                &self.connection_timeout_seconds,
+            )
+            .finish()
+    }
+}
+
 impl Default for PostgresConfig {
     fn default() -> Self {
         Self {
             url: String::new(),
-            tls_mode: Some("disable".to_string()),
+            tls_mode: None,
             max_connections: Some(20),
             connection_timeout_seconds: Some(10),
         }
@@ -1034,7 +1063,7 @@ impl std::str::FromStr for AuthType {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Auth {
     #[serde(default)]
@@ -1067,6 +1096,27 @@ pub struct Auth {
 
 fn default_blind() -> AuthType {
     AuthType::Blind
+}
+
+impl Default for Auth {
+    fn default() -> Self {
+        Self {
+            auth_enabled: false,
+            openid_discovery: String::new(),
+            openid_client_id: String::new(),
+            mint_max_bat: 0,
+            mint: default_blind(),
+            get_mint_quote: AuthType::default(),
+            check_mint_quote: AuthType::default(),
+            melt: AuthType::default(),
+            get_melt_quote: AuthType::default(),
+            check_melt_quote: AuthType::default(),
+            swap: default_blind(),
+            restore: default_blind(),
+            check_proof_state: AuthType::default(),
+            websocket_auth: default_blind(),
+        }
+    }
 }
 
 /// CDK settings, derived from `config.toml`
@@ -1175,6 +1225,12 @@ pub struct MintManagementRpc {
     pub tls_dir: Option<PathBuf>,
     #[serde(default)]
     pub allow_insecure: bool,
+    /// Allow management RPC callers to use mint quote state override endpoints.
+    ///
+    /// This includes marking quotes paid without backend confirmation and is
+    /// disabled by default.
+    #[serde(default)]
+    pub allow_mint_quote_payment_override: bool,
 }
 
 impl Settings {
@@ -1315,14 +1371,15 @@ impl Settings {
     where
         P: Into<PathBuf>,
     {
-        let mut default_config_file_name = home::home_dir()
-            .ok_or(ConfigError::NotFound("Config Path".to_string()))?
-            .join("cashu-rs-mint");
-
-        default_config_file_name.push("config.toml");
         let config: String = match config_file_name {
             Some(value) => value.into().to_string_lossy().to_string(),
-            None => default_config_file_name.to_string_lossy().to_string(),
+            None => {
+                let mut default_config_file_name = home::home_dir()
+                    .ok_or(ConfigError::NotFound("Config Path".to_string()))?
+                    .join("cashu-rs-mint");
+                default_config_file_name.push("config.toml");
+                default_config_file_name.to_string_lossy().to_string()
+            }
         };
         let builder = Config::builder();
         let config: Config = builder
@@ -1345,6 +1402,77 @@ impl Settings {
 mod tests {
 
     use super::*;
+
+    #[test]
+    fn postgres_tls_defaults_preserve_connection_url_policy() {
+        let input = r#"url = "postgres://localhost/db?sslmode=verify-full""#;
+        let postgres: PostgresConfig = toml::from_str(input).expect("PostgreSQL config");
+        let auth: PostgresAuthConfig = toml::from_str(input).expect("auth PostgreSQL config");
+        assert!(postgres.tls_mode.is_none());
+        assert!(auth.tls_mode.is_none());
+
+        let explicit = format!("{input}\ntls_mode = \"require\"");
+        let postgres: PostgresConfig =
+            toml::from_str(&explicit).expect("explicit PostgreSQL config");
+        let auth: PostgresAuthConfig =
+            toml::from_str(&explicit).expect("explicit auth PostgreSQL config");
+        assert_eq!(postgres.tls_mode.as_deref(), Some("require"));
+        assert_eq!(auth.tls_mode.as_deref(), Some("require"));
+    }
+
+    #[test]
+    fn postgres_config_debug_redacts_connection_credentials() {
+        let secret = "postgres-password-secret";
+        let url = format!("postgres://mint:{secret}@db.example.com/cdk?token={secret}");
+        let database = Database {
+            engine: DatabaseEngine::Postgres,
+            postgres: Some(PostgresConfig {
+                url: url.clone(),
+                ..Default::default()
+            }),
+        };
+        let auth_database = AuthDatabase {
+            postgres: Some(PostgresAuthConfig {
+                url,
+                ..Default::default()
+            }),
+        };
+
+        let database_debug = format!("{database:?}");
+        let auth_debug = format!("{auth_database:?}");
+
+        assert!(database_debug.contains("postgres://db.example.com/cdk"));
+        assert!(auth_debug.contains("postgres://db.example.com/cdk"));
+        assert!(!database_debug.contains(secret));
+        assert!(!auth_debug.contains(secret));
+    }
+
+    #[cfg(feature = "management-rpc")]
+    #[test]
+    fn mint_quote_payment_override_is_explicitly_opt_in() {
+        let default_settings =
+            Settings::try_from_toml("").expect("default settings should deserialize");
+        assert!(
+            !default_settings
+                .mint_management_rpc
+                .unwrap_or_default()
+                .allow_mint_quote_payment_override
+        );
+
+        let enabled_settings = Settings::try_from_toml(
+            r#"
+[mint_management_rpc]
+allow_mint_quote_payment_override = true
+"#,
+        )
+        .expect("management RPC payment override should deserialize");
+        assert!(
+            enabled_settings
+                .mint_management_rpc
+                .expect("management RPC settings should be present")
+                .allow_mint_quote_payment_override
+        );
+    }
 
     #[cfg(feature = "ldk-node")]
     #[test]
@@ -2298,6 +2426,8 @@ port = 9090
         use std::path::PathBuf;
         use std::{env, fs};
 
+        assert!(Lnd::default().allow_self_payment);
+
         // Create a temporary directory for config file
         let temp_dir = env::temp_dir().join("cdk_test_env_vars");
         fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
@@ -2324,6 +2454,7 @@ max_melt = 500000
         );
         env::set_var(crate::env_vars::ENV_LND_FEE_PERCENT, "0.01");
         env::set_var(crate::env_vars::ENV_LND_RESERVE_FEE_MIN, "4");
+        env::set_var(crate::env_vars::ENV_LND_ALLOW_SELF_PAYMENT, "false");
 
         // Load settings and apply environment variables (same as production code)
         let mut settings = Settings::try_new(Some(&config_path)).expect("Failed to load config");
@@ -2341,6 +2472,7 @@ max_melt = 500000
         assert_eq!(lnd_config.fee_percent, 0.01);
         let reserve_fee_u64: u64 = lnd_config.reserve_fee_min.into();
         assert_eq!(reserve_fee_u64, 4);
+        assert!(!lnd_config.allow_self_payment);
 
         // Cleanup env vars
         env::remove_var(crate::env_vars::ENV_PAYMENT_BACKEND);
@@ -2349,6 +2481,7 @@ max_melt = 500000
         env::remove_var(crate::env_vars::ENV_LND_MACAROON_FILE);
         env::remove_var(crate::env_vars::ENV_LND_FEE_PERCENT);
         env::remove_var(crate::env_vars::ENV_LND_RESERVE_FEE_MIN);
+        env::remove_var(crate::env_vars::ENV_LND_ALLOW_SELF_PAYMENT);
 
         // Cleanup test file
         let _ = fs::remove_dir_all(&temp_dir);

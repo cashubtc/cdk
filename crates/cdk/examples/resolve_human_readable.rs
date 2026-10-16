@@ -6,7 +6,7 @@
 //!
 //! This example demonstrates two wallet-level paths after resolution:
 //! - If the instruction contains a Cashu payment request and this wallet's mint is accepted,
-//!   pay it directly with `wallet.pay_request(...)`
+//!   prepare it, inspect the fees, and explicitly confirm it
 //! - Otherwise, if the instruction contains a BOLT12 offer, request a melt quote with
 //!   `wallet.melt_bip353_quote(...)`
 //!
@@ -21,7 +21,7 @@ use std::sync::Arc;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::CurrencyUnit;
 use cdk::wallet::{resolve_bip353_payment_instruction, Wallet};
-use cdk::Amount;
+use cdk::{Amount, Error};
 use cdk_sqlite::wallet::memory;
 use rand::random;
 
@@ -100,11 +100,25 @@ async fn main() -> anyhow::Result<()> {
                 );
 
                 if accepted_by_wallet {
-                    println!(
-                        "\nThis wallet's mint is accepted, proceeding with wallet.pay_request(...)"
-                    );
-                    wallet.pay_request(request.clone(), None).await?;
-                    println!("Cashu payment request paid successfully.");
+                    println!("\nThis wallet's mint is accepted, preparing the payment request...");
+                    let prepared = wallet.prepare_pay_request(request.clone(), None).await?;
+                    println!("  Method fee: {}", prepared.method_fee());
+                    println!("  Mint input fee: {}", prepared.input_fee());
+                    println!("  Total wallet debit: {}", prepared.total_amount());
+                    match prepared.confirm().await {
+                        Ok(()) => {
+                            println!("Cashu payment request paid successfully.");
+                        }
+                        Err(Error::PaymentRequestDeliveryFailed {
+                            operation_id,
+                            source,
+                        }) => {
+                            println!("Token created, but delivery failed: {source}");
+                            println!("Reclaiming pending send {operation_id}...");
+                            wallet.revoke_send(operation_id).await?;
+                        }
+                        Err(error) => return Err(error.into()),
+                    }
                 } else {
                     println!("\nThis wallet cannot pay the Cashu request.");
                     println!(

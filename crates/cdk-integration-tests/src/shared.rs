@@ -5,6 +5,7 @@
 //! integration test binaries to reduce code duplication.
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -16,6 +17,7 @@ use cdk_mintd::config::{Database, DatabaseEngine};
 use tokio::signal;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 use crate::cli::{init_logging, CommonArgs};
 
@@ -33,6 +35,31 @@ pub async fn wait_for_mint_ready_with_shutdown(
     port: u16,
     timeout_secs: u64,
     shutdown_notify: Arc<CancellationToken>,
+) -> Result<()> {
+    wait_for_mint_ready(port, timeout_secs, shutdown_notify, None).await
+}
+
+/// Wait for a mint with the expected description to be ready.
+pub async fn wait_for_mint_ready_with_description_and_shutdown(
+    port: u16,
+    timeout_secs: u64,
+    shutdown_notify: Arc<CancellationToken>,
+    expected_description: &str,
+) -> Result<()> {
+    wait_for_mint_ready(
+        port,
+        timeout_secs,
+        shutdown_notify,
+        Some(expected_description),
+    )
+    .await
+}
+
+async fn wait_for_mint_ready(
+    port: u16,
+    timeout_secs: u64,
+    shutdown_notify: Arc<CancellationToken>,
+    expected_description: Option<&str>,
 ) -> Result<()> {
     let url = format!("http://127.0.0.1:{port}/v1/info");
     let start_time = std::time::Instant::now();
@@ -56,8 +83,33 @@ pub async fn wait_for_mint_ready_with_shutdown(
                 match result {
                     Ok(response) => {
                         if response.is_success() {
-                            println!("Mint on port {port} is ready");
-                            return Ok(());
+                            match expected_description {
+                                Some(expected_description) => {
+                                    match response.json::<cdk::nuts::MintInfo>().await {
+                                        Ok(info)
+                                            if info.description.as_deref()
+                                                == Some(expected_description) =>
+                                        {
+                                            println!("Mint on port {port} is ready");
+                                            return Ok(());
+                                        }
+                                        Ok(_) => {
+                                            println!(
+                                                "Service on port {port} is not the expected mint"
+                                            );
+                                        }
+                                        Err(err) => {
+                                            println!(
+                                                "Could not decode mint info from port {port}: {err}"
+                                            );
+                                        }
+                                    }
+                                }
+                                None => {
+                                    println!("Mint on port {port} is ready");
+                                    return Ok(());
+                                }
+                            }
                         } else {
                             println!(
                                 "Mint on port {} returned status: {}",
@@ -101,16 +153,32 @@ pub fn write_env_file(temp_dir: &Path, env_vars: &[(&str, &str)]) -> Result<()> 
     let mut env_content = String::new();
 
     for (key, value) in env_vars {
-        env_content.push_str(&format!("{}={}\n", key, shell_quote_value(value)));
+        env_content.push_str(&format!("{}={}\n", key, shell_quote(value)));
     }
 
     let env_path = temp_dir.join(".env");
-    fs::write(env_path, env_content)?;
+    let temporary_path = temp_dir.join(format!(".env.{}.tmp", Uuid::new_v4()));
+    let write_result = (|| -> Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary_path)?;
+        file.write_all(env_content.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temporary_path, env_path)?;
+        Ok(())
+    })();
 
-    Ok(())
+    if write_result.is_err() {
+        let _ = fs::remove_file(temporary_path);
+    }
+
+    write_result
 }
 
-fn shell_quote_value(value: &str) -> String {
+/// Quote a string for safe use as one POSIX shell word.
+pub fn shell_quote(value: &str) -> String {
     let mut quoted = String::with_capacity(value.len() + 2);
     quoted.push('\'');
 
@@ -354,6 +422,8 @@ pub fn setup_logging(common: &CommonArgs) {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
     use std::process::Command;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -416,6 +486,29 @@ mod tests {
             !marker.exists(),
             "sourcing env file executed command substitution"
         );
+
+        fs::remove_dir_all(&dir).expect("test temp dir should be removed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_env_file_replaces_symlink_without_overwriting_target() {
+        let dir = test_temp_dir("symlink");
+        let target = dir.join("target");
+        fs::write(&target, "preserve me").expect("target should be written");
+        symlink(&target, dir.join(".env")).expect("env symlink should be created");
+
+        write_env_file(&dir, &[("CDK_TEST_MINT_URL", "http://127.0.0.1:8085")])
+            .expect("env file should replace the symlink");
+
+        assert_eq!(
+            fs::read_to_string(&target).expect("target should remain readable"),
+            "preserve me"
+        );
+        assert!(!fs::symlink_metadata(dir.join(".env"))
+            .expect("env file should exist")
+            .file_type()
+            .is_symlink());
 
         fs::remove_dir_all(&dir).expect("test temp dir should be removed");
     }
