@@ -18,6 +18,7 @@ pub async fn unpoisonable_recovery_storage<DB>(db: DB)
 where
     DB: Database<Error> + KeysDatabase<Err = Error> + Sync,
 {
+    assert!(db.supports_unpoisonable_swaps());
     let keyset_id = setup_keyset(&db).await;
     let proof = Proof {
         amount: Amount::ONE,

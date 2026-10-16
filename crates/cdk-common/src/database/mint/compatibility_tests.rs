@@ -55,6 +55,51 @@ impl ProofsTransaction for LegacyTransaction {
     }
 }
 
+// Older proof readers need no new methods for ordinary swaps or NUT-07.
+struct LegacyProofsDatabase;
+
+#[async_trait]
+impl ProofsDatabase for LegacyProofsDatabase {
+    type Err = Error;
+
+    async fn get_proofs_by_ys(&self, _ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Error> {
+        unimplemented!()
+    }
+
+    async fn get_proof_ys_by_quote_id(&self, _quote_id: &QuoteId) -> Result<Vec<PublicKey>, Error> {
+        unimplemented!()
+    }
+
+    async fn get_proofs_states(&self, _ys: &[PublicKey]) -> Result<Vec<Option<State>>, Error> {
+        unimplemented!()
+    }
+
+    async fn get_proofs_by_keyset_id(
+        &self,
+        _keyset_id: &Id,
+    ) -> Result<(Proofs, Vec<Option<State>>), Error> {
+        unimplemented!()
+    }
+
+    async fn get_total_redeemed(&self) -> Result<HashMap<Id, Amount>, Error> {
+        unimplemented!()
+    }
+
+    async fn get_proof_ys_by_operation_id(
+        &self,
+        _operation_id: &uuid::Uuid,
+    ) -> Result<Vec<PublicKey>, Error> {
+        unimplemented!()
+    }
+}
+
+#[tokio::test]
+async fn legacy_backend_does_not_advertise_unpoisonable_swaps() {
+    let db = LegacyProofsDatabase;
+    assert!(!db.supports_unpoisonable_swaps());
+    assert!(db.get_unpoisonable_r(&[]).await.unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn legacy_backend_delegates_ordinary_updates_and_rejects_r_without_mutation() {
     let mut tx = LegacyTransaction { updates: 0 };

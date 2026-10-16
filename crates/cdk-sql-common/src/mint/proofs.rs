@@ -455,6 +455,10 @@ where
 {
     type Err = Error;
 
+    fn supports_unpoisonable_swaps(&self) -> bool {
+        true
+    }
+
     async fn get_unpoisonable_r(
         &self,
         ys: &[PublicKey],

@@ -511,6 +511,13 @@ pub trait ProofsDatabase {
     /// Mint Proof Database Error
     type Err: Into<Error> + From<Error>;
 
+    /// Whether this backend supports atomic spent-state/recovery writes and
+    /// durable recovery reads for unpoisonable swaps.
+    /// Only return true when both methods below are implemented and usable.
+    fn supports_unpoisonable_swaps(&self) -> bool {
+        false
+    }
+
     /// Fetch committed recovery randomness for spent inputs only, keyed by Y.
     /// Backends that implement this method must also atomically persist it in
     /// [`ProofsTransaction::update_proofs_state_with_r`]. The default returns

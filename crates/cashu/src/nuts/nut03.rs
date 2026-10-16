@@ -18,6 +18,13 @@ use crate::SECP256K1;
 
 const UNPOISONABLE_TWEAK_TAG: &[u8] = b"Cashu_UnpoisonableTweak_secp256k1_v1";
 
+/// Optional NUT-03 swap capabilities advertised in NUT-06 mint information.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Settings {
+    /// Whether this mint supports unpoisonable V2 swaps and durable recovery.
+    pub unpoisonable: bool,
+}
+
 /// Mint-generated recovery randomness, encoded as 64 hexadecimal characters on the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
