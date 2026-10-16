@@ -10,6 +10,7 @@ use bitcoin::hashes::Hash;
 use serde::{Deserialize, Serialize};
 
 use super::nut01::PublicKey;
+use super::nut20::{amount_to_minimal_bytes, append_len_prefixed};
 use crate::{nut11, nut14};
 
 pub mod spending_conditions;
@@ -303,19 +304,6 @@ pub(crate) fn unpoisonable_sig_all_message_hash(message: &[u8]) -> [u8; 32] {
     preimage.extend_from_slice(&tag_hash);
     preimage.extend_from_slice(message);
     Sha256Hash::hash(&preimage).to_byte_array()
-}
-
-fn append_len_prefixed(msg: &mut Vec<u8>, bytes: &[u8]) {
-    msg.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
-    msg.extend_from_slice(bytes);
-}
-
-fn amount_to_minimal_bytes(amount: crate::Amount) -> Vec<u8> {
-    let bytes = u64::from(amount).to_be_bytes();
-    match bytes.iter().position(|byte| *byte != 0) {
-        Some(first_non_zero) => bytes[first_non_zero..].to_vec(),
-        None => Vec::new(),
-    }
 }
 
 /// Trait for requests that spend proofs (SwapRequest, MeltRequest)

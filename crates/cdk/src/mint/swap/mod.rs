@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use cdk_common::nuts::nut03::{self, tweak_swap_outputs, UnpoisonableR};
 use cdk_common::SpendingConditionVerification;
 use swap_saga::SwapSaga;
@@ -62,8 +64,10 @@ impl Mint {
             // and HTLC (including SIGALL)
             swap_request.verify_spending_conditions()?;
 
-            // Structural validation only: never look up original points in storage.
-            self.verify_outputs(swap_request.outputs())?;
+            if swap_request.is_unpoisonable() {
+                // Reject duplicate originals before retrying tweaked output reservations.
+                self.verify_outputs(swap_request.outputs())?;
+            }
             // Even one collision is extraordinarily unlikely; bound retries defensively.
             // https://gist.github.com/SatsAndSports/6c197ca9da984c1922483e74281d38db
             for _ in 0..16 {
@@ -74,11 +78,11 @@ impl Mint {
                 };
                 let outputs = match r {
                     Some(r) => match tweak_swap_outputs(&r.0, swap_request.outputs()) {
-                        Ok(outputs) => outputs,
+                        Ok(outputs) => Cow::Owned(outputs),
                         Err(nut03::Error::UnpoisonablePointAtInfinity) => continue,
                         Err(err) => return Err(err.into()),
                     },
-                    None => swap_request.outputs().clone(),
+                    None => Cow::Borrowed(swap_request.outputs().as_slice()),
                 };
                 let init_saga =
                     SwapSaga::new(self, self.localstore.clone(), self.pubsub_manager.clone())
