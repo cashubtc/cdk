@@ -252,10 +252,10 @@ use super::Proofs;
 /// BIP-340 tag for the NUT-11 v1 SIG_ALL message hash (P2PK and HTLC).
 const SIG_ALL_SIG_TAG: &[u8] = b"Cashu_SigAllSig_v1";
 
-/// NUT-11 v1 SIG_ALL message: length-framed bytes.
+/// NUT-11 v1 SIG_ALL message: typed records of length-framed fields.
 ///
-/// Commits to the quote id (empty for swaps), each input's secret and C, then
-/// each output's amount (minimal big-endian bytes) and B_.
+/// Each input is `0x11 || secret || C`, each output `0x21 || amount || SHA256(B_)`,
+/// and a melt ends with `0x22 || quote id`.
 pub(crate) fn sig_all_msg_to_sign_v1(
     quote_id: Option<&str>,
     inputs: &Proofs,
@@ -264,14 +264,22 @@ pub(crate) fn sig_all_msg_to_sign_v1(
     use super::nut20::{amount_to_minimal_bytes, append_len_prefixed};
 
     let mut msg = Vec::new();
-    append_len_prefixed(&mut msg, quote_id.unwrap_or("").as_bytes());
     for proof in inputs {
+        msg.push(0x11);
         append_len_prefixed(&mut msg, proof.secret.to_string().as_bytes());
         append_len_prefixed(&mut msg, &proof.c.to_bytes());
     }
     for output in outputs {
+        msg.push(0x21);
         append_len_prefixed(&mut msg, &amount_to_minimal_bytes(output.amount));
-        append_len_prefixed(&mut msg, &output.blinded_secret.to_bytes());
+        append_len_prefixed(
+            &mut msg,
+            &Sha256Hash::hash(&output.blinded_secret.to_bytes()).to_byte_array(),
+        );
+    }
+    if let Some(quote_id) = quote_id {
+        msg.push(0x22);
+        append_len_prefixed(&mut msg, quote_id.as_bytes());
     }
     msg
 }
