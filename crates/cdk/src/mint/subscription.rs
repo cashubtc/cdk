@@ -940,6 +940,8 @@ mod tests {
         drop(manager);
         assert!(manager_weak.upgrade().is_none());
         assert!(db_weak.upgrade().is_none());
+    }
+
     #[tokio::test]
     async fn unpoisonable_subscription_snapshot_exposes_only_committed_r() {
         use crate::test_helpers::mint::{create_test_mint, mint_test_proofs};
@@ -948,10 +950,7 @@ mod tests {
         let proofs = mint_test_proofs(&mint, Amount::ONE).await.unwrap();
         let y = proofs[0].y().unwrap();
         let db = mint.localstore();
-        let spec = MintPubSubSpec {
-            db: db.clone(),
-            payment_processors: Arc::new(HashMap::new()),
-        };
+        let spec = MintPubSubSpec::new_instance((db.clone(), Arc::new(HashMap::new())));
         let mut tx = db.begin_transaction().await.unwrap();
         let mut acquired = tx
             .add_proofs(

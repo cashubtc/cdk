@@ -695,6 +695,7 @@ mod tests {
                     signatures: Some(vec!["public-signature".to_string()]),
                 },
             )),
+            unpoisonable_r: None,
         };
 
         let update: ProofStateUpdate = proof_state.into();
