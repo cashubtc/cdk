@@ -769,6 +769,143 @@ fn receipt_indexes_preserve_duplicate_and_distinct_transcript_checks() {
     }
 }
 
+/// The transcript section of the vectors shared with cashu-ts and nutshell.
+#[test]
+fn shared_transcript_vectors() {
+    use std::str::FromStr;
+
+    use sha2::{Digest, Sha256};
+    let shared: Value = serde_json::from_str(include_str!("nutroot_v3_vectors.json")).unwrap();
+    let cases = shared["transcript"].as_object().unwrap();
+    let proof = |v: &Value| crate::Proof {
+        amount: v["amount"].as_u64().unwrap().into(),
+        keyset_id: crate::nuts::Id::from_str(v["keyset_id"].as_str().unwrap()).unwrap(),
+        secret: crate::secret::Secret::from_str(v["secret"].as_str().unwrap()).unwrap(),
+        c: crate::nuts::PublicKey::from_hex(v["C"].as_str().unwrap()).unwrap(),
+        witness: None,
+        dleq: None,
+        p2pk_e: None,
+        spend_info: None,
+    };
+    let quote = |v: &Value| Quote {
+        amount: v["amount"].as_u64().unwrap().into(),
+        id: v["quote_id"].as_str().unwrap().to_owned(),
+    };
+    let mint_quote = |v: &Value| MintQuoteInput {
+        amount: v["amount"].as_u64().unwrap().into(),
+        id: v["quote_id"].as_str().unwrap().to_owned(),
+        pubkey: crate::nuts::PublicKey::from_hex(v["lock_pubkey"].as_str().unwrap()).unwrap(),
+        issued: v["issued"].as_u64().unwrap().into(),
+    };
+    let output = |v: &Value| crate::BlindedMessage {
+        amount: v["amount"].as_u64().unwrap().into(),
+        keyset_id: crate::nuts::Id::from_str(v["keyset_id"].as_str().unwrap()).unwrap(),
+        blinded_secret: crate::nuts::PublicKey::from_hex(v["B_"].as_str().unwrap()).unwrap(),
+        witness: None,
+    };
+    let list = |v: &Value| v.as_array().cloned().unwrap_or_default();
+    let mut checked = 0;
+    for (name, case) in cases {
+        if name == "comment" {
+            continue;
+        }
+        let tx = &case["tx"];
+        let proofs: Vec<_> = list(&tx["proof_inputs"]).iter().map(proof).collect();
+        let mint_quotes: Vec<_> = list(&tx["mint_quote_inputs"])
+            .iter()
+            .map(mint_quote)
+            .collect();
+        let outputs: Vec<_> = list(&tx["blinded_outputs"]).iter().map(output).collect();
+        let melt_quotes: Vec<_> = list(&tx["melt_quote_outputs"]).iter().map(quote).collect();
+        let section = input_section(&proofs, &mint_quotes).unwrap();
+        if let Some(expected) = case.get("input_section_hash") {
+            assert_eq!(<[u8; 32]>::from(Sha256::digest(&section)), hash(expected));
+        }
+        // The rotation quote is named by its melt, a fixed one by its preimage or its inputs.
+        let quote_outputs: Vec<_> = list(&tx["mint_quote_outputs"])
+            .iter()
+            .enumerate()
+            .map(|(k, v)| MintQuoteOutput {
+                amount: v["amount"].as_u64().map(Into::into),
+                pubkey: *crate::nuts::PublicKey::from_hex(v["pubkey"].as_str().unwrap())
+                    .unwrap()
+                    .as_secp256k1()
+                    .unwrap(),
+                id: match (v.get("amount"), v.get("id_preimage")) {
+                    (None, _) => rotation_quote_id(&melt_quotes[0].id),
+                    (Some(_), Some(preimage)) => derived_quote_id(&hash(preimage)),
+                    (Some(_), None) => input_bound_quote_id(&section, k as u32),
+                },
+            })
+            .collect();
+        let transaction = Transaction::with_quote_outputs(
+            &proofs,
+            &mint_quotes,
+            &outputs,
+            &melt_quotes,
+            &quote_outputs,
+        )
+        .unwrap_or_else(|e| panic!("{name}: {e}"));
+        let expected_ids: Vec<String> = match (&case["quote_id"], &case["quote_ids"]) {
+            (Value::String(id), _) if !quote_outputs.is_empty() => vec![id.clone()],
+            (_, Value::Array(ids)) => ids.iter().map(|v| v.as_str().unwrap().to_owned()).collect(),
+            _ => vec![],
+        };
+        assert_eq!(
+            quote_outputs
+                .iter()
+                .map(|c| c.id.clone())
+                .collect::<Vec<_>>(),
+            expected_ids,
+            "{name}"
+        );
+        // Mint quote output containers are the transcript's last records.
+        let containers: Vec<u8> = match &case["mint_quote_output_containers"] {
+            Value::Array(all) => all.iter().flat_map(bytes).collect(),
+            _ => case
+                .get("mint_quote_output_container")
+                .map(bytes)
+                .unwrap_or_default(),
+        };
+        assert!(transaction.as_bytes().ends_with(&containers), "{name}");
+        assert_eq!(transaction.as_bytes(), bytes(&case["transcript"]), "{name}");
+        assert_eq!(transaction.digest(), hash(&case["digest"]), "{name}");
+        assert_eq!(
+            Transaction::from_bytes(transaction.as_bytes()).unwrap(),
+            transaction,
+            "{name}"
+        );
+        assert_eq!(
+            transaction.txout_keys().is_some(),
+            outputs.is_empty()
+                && melt_quotes.is_empty()
+                && quote_outputs.iter().all(|c| c.amount.is_some()),
+            "{name}"
+        );
+        let inputs: Vec<(usize, &Value)> = match case.get("inputs") {
+            Some(inputs) => inputs.as_array().unwrap().iter().enumerate().collect(),
+            None => vec![(0, case)],
+        };
+        for (index, input) in inputs {
+            assert_eq!(
+                transaction.input_id(index).unwrap(),
+                hash(&input["input_id"]),
+                "{name}"
+            );
+            // A pre-v3 input (mixed keysets) signs no input digest.
+            if input.get("input_digest").is_some() {
+                assert_eq!(
+                    transaction.input_digest(index).unwrap(),
+                    hash(&input["input_digest"]),
+                    "{name}"
+                );
+            }
+        }
+        checked += 1;
+    }
+    assert_eq!(checked, 12);
+}
+
 #[test]
 fn shared_mint_quote_input_vectors() {
     use std::str::FromStr;
@@ -782,6 +919,7 @@ fn shared_mint_quote_input_vectors() {
                 id: v["quote_id"].as_str().unwrap().to_owned(),
                 pubkey: crate::nuts::PublicKey::from_hex(v["lock_pubkey"].as_str().unwrap())
                     .unwrap(),
+                issued: v["issued"].as_u64().unwrap().into(),
             })
             .collect();
         let outputs: Vec<_> = list(&tx["blinded_outputs"])
@@ -840,6 +978,16 @@ fn shared_mint_quote_input_vectors() {
 }
 
 #[test]
+fn rotation_quote_id_vector() {
+    let shared: Value = serde_json::from_str(include_str!("nutroot_v3_vectors.json")).unwrap();
+    let lock = &shared["nut13_v3"]["rotation_lock"];
+    assert_eq!(
+        rotation_quote_id(lock["melt_quote_id"].as_str().unwrap()),
+        lock["quote_id"].as_str().unwrap()
+    );
+}
+
+#[test]
 fn quote_id_preimage_vectors() {
     let shared: Value = serde_json::from_str(include_str!("nutroot_v3_vectors.json")).unwrap();
     let nut13 = &shared["nut13_v3"];
@@ -860,4 +1008,180 @@ fn quote_id_preimage_vectors() {
             hash(&vector["privkey"])
         );
     }
+}
+
+/// A template vector's proof inputs.
+fn template_proofs(tx: &Value) -> Vec<crate::Proof> {
+    use std::str::FromStr;
+    tx["proof_inputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| crate::Proof {
+            amount: v["amount"].as_u64().unwrap().into(),
+            keyset_id: crate::nuts::Id::from_str(v["keyset_id"].as_str().unwrap()).unwrap(),
+            secret: crate::secret::Secret::from_str(v["secret"].as_str().unwrap()).unwrap(),
+            c: crate::nuts::PublicKey::from_hex(v["C"].as_str().unwrap()).unwrap(),
+            witness: None,
+            dleq: None,
+            p2pk_e: None,
+            spend_info: None,
+        })
+        .collect()
+}
+
+/// A template vector's `tx`: proof inputs and fixed txout quote outputs only.
+fn template_transaction(tx: &Value) -> Transaction {
+    let quote_outputs: Vec<_> = tx["mint_quote_outputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| MintQuoteOutput {
+            amount: v["amount"].as_u64().map(Into::into),
+            pubkey: *crate::nuts::PublicKey::from_hex(v["pubkey"].as_str().unwrap())
+                .unwrap()
+                .as_secp256k1()
+                .unwrap(),
+            id: derived_quote_id(&hash(&v["id_preimage"])),
+        })
+        .collect();
+    Transaction::with_quote_outputs(&template_proofs(tx), &[], &[], &[], &quote_outputs).unwrap()
+}
+
+#[test]
+fn shared_template_leaf_vectors() {
+    use std::str::FromStr;
+    let shared: Value = serde_json::from_str(include_str!("nutroot_v3_vectors.json")).unwrap();
+    let case = &shared["template_lock"];
+    let transaction = template_transaction(&case["tx"]);
+    assert_eq!(transaction.as_bytes(), bytes(&case["transcript"]));
+    let dests: Vec<_> = case["dests"].as_array().unwrap().iter().map(key).collect();
+    let leaf_bytes = bytes(&case["leaf"]);
+    let leaf = Leaf::from_bytes(&leaf_bytes).unwrap();
+    assert_eq!(leaf.condition(), &Condition::Template(dests.clone()));
+    assert_eq!(leaf.to_bytes(), leaf_bytes);
+    let secret = case["secret"].as_str().unwrap();
+    let digest = transaction.input_digest(0).unwrap();
+    assert_eq!(digest, hash(&case["input_digest"]));
+    let witness: Witness = serde_json::from_str(case["witness"].as_str().unwrap()).unwrap();
+    assert!(!witness
+        .verify_in(secret, digest, transaction.txout_keys(), 0)
+        .unwrap());
+    // Without the outputs the leaf cannot be satisfied.
+    assert!(witness.verify(secret, digest, 0).is_err());
+    // A txout quote to a key outside dests, and a blinded message beside the txout quotes,
+    // each fail the leaf although the signature is good for the digest.
+    let mut rejected = case["tx"].clone();
+    rejected["mint_quote_outputs"] = case["rejected_outputs"]["mint_quote_outputs"].clone();
+    let rejected = template_transaction(&rejected);
+    assert!(witness
+        .verify_in(secret, digest, rejected.txout_keys(), 0)
+        .is_err());
+    let blinded = &shared["transcript"]["swap"]["tx"]["blinded_outputs"][0];
+    let blinded = crate::BlindedMessage {
+        amount: blinded["amount"].as_u64().unwrap().into(),
+        keyset_id: crate::nuts::Id::from_str(blinded["keyset_id"].as_str().unwrap()).unwrap(),
+        blinded_secret: crate::nuts::PublicKey::from_hex(blinded["B_"].as_str().unwrap()).unwrap(),
+        witness: None,
+    };
+    let quote_outputs: Vec<_> = dests
+        .iter()
+        .zip(1u8..)
+        .map(|(pubkey, n)| MintQuoteOutput {
+            amount: Some(1.into()),
+            pubkey: *pubkey,
+            id: derived_quote_id(&[n; 32]),
+        })
+        .collect();
+    let mixed = Transaction::from_bytes(
+        Transaction::with_quote_outputs(
+            &template_proofs(&case["tx"]),
+            &[],
+            &[blinded],
+            &[],
+            &quote_outputs,
+        )
+        .unwrap()
+        .as_bytes(),
+    )
+    .unwrap();
+    assert!(mixed.txout_keys().is_none());
+    assert!(witness
+        .verify_in(secret, digest, mixed.txout_keys(), 0)
+        .is_err());
+    // A rotation quote is not a fixed txout quote, even to a key in dests.
+    let mut rotation = quote_outputs.clone();
+    rotation[0].amount = None;
+    let rotation =
+        Transaction::with_quote_outputs(&template_proofs(&case["tx"]), &[], &[], &[], &rotation)
+            .unwrap();
+    assert!(rotation.txout_keys().is_none());
+    assert!(Transaction::from_bytes(rotation.as_bytes())
+        .unwrap()
+        .txout_keys()
+        .is_none());
+    // dests: at least one valid key, no repeats, on a template leaf only, and no time or hash.
+    let keys = leaf.keys().to_vec();
+    assert!(Leaf::new(1, keys.clone(), Condition::Template(vec![]), false).is_err());
+    assert!(Leaf::new(
+        1,
+        keys,
+        Condition::Template(vec![dests[0], dests[0]]),
+        false
+    )
+    .is_err());
+    let dests_at = leaf_bytes.len() - 69;
+    assert_eq!(leaf_bytes[dests_at], 0x0c);
+    let mut invalid = leaf_bytes.clone();
+    invalid[dests_at + 3] = 0x05;
+    assert!(Leaf::from_bytes(&invalid).is_err());
+    let mut repeated = leaf_bytes.clone();
+    repeated.splice(
+        dests_at + 36..,
+        leaf_bytes[dests_at + 3..dests_at + 36].to_vec(),
+    );
+    assert!(Leaf::from_bytes(&repeated).is_err());
+    let mut threshold = leaf_bytes.clone();
+    threshold[1] = 0x01;
+    assert!(Leaf::from_bytes(&threshold).is_err());
+    for field in [
+        vec![0x06, 0x00, 0x01, 0x01],
+        [vec![0x08, 0x00, 0x20], vec![1; 32]].concat(),
+    ] {
+        let mut extra = leaf_bytes.clone();
+        extra.splice(dests_at..dests_at, field);
+        assert!(Leaf::from_bytes(&extra).is_err());
+    }
+    // An unallocated leaf type fails closed.
+    assert!(Leaf::from_bytes(&bytes(&shared["leaf_forms"]["leaf_unknown_type"])).is_err());
+}
+
+#[test]
+fn shared_template_escrow_vectors() {
+    let shared: Value = serde_json::from_str(include_str!("nutroot_v3_vectors.json")).unwrap();
+    let case = &shared["template_escrow"];
+    let transaction = template_transaction(&case["tx"]);
+    assert_eq!(transaction.as_bytes(), bytes(&case["transcript"]));
+    assert_eq!(transaction.digest(), hash(&case["digest"]));
+    let digest = transaction.input_digest(0).unwrap();
+    assert_eq!(digest, hash(&case["input_digest"]));
+    let arbiter = leaf(&case["leaf_arbiter"]);
+    assert_eq!(arbiter.keys(), &[key(&case["arbiter"])]);
+    assert_eq!(
+        arbiter.condition(),
+        &Condition::Template(vec![key(&case["buyer"]), key(&case["seller"])])
+    );
+    // The arbiter signs the seller's split, through a two-hash path past the promoted coop leaf.
+    let witness: Witness = serde_json::from_str(case["witness"].as_str().unwrap()).unwrap();
+    let secret = case["secret"].as_str().unwrap();
+    assert!(!witness
+        .verify_in(secret, digest, transaction.txout_keys(), 0)
+        .unwrap());
+    // A txout quote to the arbiter itself is outside dests.
+    let mut self_deal = case["tx"].clone();
+    self_deal["mint_quote_outputs"] = case["self_deal"]["mint_quote_outputs"].clone();
+    let self_deal = template_transaction(&self_deal);
+    assert!(witness
+        .verify_in(secret, digest, self_deal.txout_keys(), 0)
+        .is_err());
 }

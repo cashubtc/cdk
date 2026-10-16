@@ -376,6 +376,39 @@ pub trait QuotesTransaction {
         &mut self,
         request_lookup_id: &PaymentIdentifier,
     ) -> Result<Option<Acquired<MintMintQuote>>, Self::Err>;
+
+    /// Insert a NUT-XX transaction record, replacing a `FAILED` one for the same melt quote.
+    /// Returns a duplicate error if a pending or paid record already exists.
+    async fn add_transaction(&mut self, record: &mint::TransactionRecord) -> Result<(), Self::Err>;
+
+    /// Get the pending NUT-XX transaction paying a melt quote, if any, and lock it.
+    async fn get_transaction_by_melt_quote(
+        &mut self,
+        quote_id: &QuoteId,
+    ) -> Result<Option<Acquired<mint::TransactionRecord>>, Self::Err>;
+
+    /// Every pending NUT-XX transaction, so a draw on a quote one of them draws on is refused.
+    async fn get_pending_transactions(&mut self)
+        -> Result<Vec<mint::TransactionRecord>, Self::Err>;
+
+    /// Set a NUT-XX transaction's state.
+    async fn update_transaction(
+        &mut self,
+        record: &mut Acquired<mint::TransactionRecord>,
+        state: crate::nuts::TransactionState,
+    ) -> Result<(), Self::Err>;
+
+    /// Claim fixed txout quote ids for an accepted transaction, tagged with its melt quote if any.
+    ///
+    /// Returns a duplicate error if any id is already claimed or names a mint quote.
+    async fn claim_mint_quote_ids(
+        &mut self,
+        ids: &[QuoteId],
+        melt_quote_id: Option<&QuoteId>,
+    ) -> Result<(), Self::Err>;
+
+    /// Release the mint quote ids claimed by a failed transaction's melt quote.
+    async fn release_mint_quote_ids(&mut self, melt_quote_id: &QuoteId) -> Result<(), Self::Err>;
 }
 
 /// Mint Quote Database trait
@@ -425,6 +458,11 @@ pub trait QuotesDatabase {
     ) -> Result<Option<mint::MeltQuote>, Self::Err>;
     /// Get all [`mint::MeltQuote`]s
     async fn get_melt_quotes(&self) -> Result<Vec<mint::MeltQuote>, Self::Err>;
+    /// Get the NUT-XX transaction record of a melt quote
+    async fn get_transaction(
+        &self,
+        melt_quote_id: &QuoteId,
+    ) -> Result<Option<mint::TransactionRecord>, Self::Err>;
 }
 
 /// Mint Proof Transaction trait

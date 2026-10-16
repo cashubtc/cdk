@@ -107,7 +107,12 @@ impl MintBuilder {
                 .nut12(true)
                 .nut14(true)
                 .nut20(true)
-                .nut29(cdk_common::nut29::Settings::default()),
+                .nut29(cdk_common::nut29::Settings::default())
+                .nutxx(cdk_common::nuts::NutXXSettings {
+                    supported: true,
+                    quote_input_fee_ppk: 0,
+                    fixed_txout_quotes: true,
+                }),
             ..Default::default()
         };
 
@@ -241,6 +246,12 @@ impl MintBuilder {
     }
 
     /// Set mint info
+    /// Set the NUT-XX fee per quote input, in ppk of its minimal split
+    pub fn with_quote_input_fee_ppk(mut self, fee_ppk: u64) -> Self {
+        self.mint_info.nuts.nutxx.quote_input_fee_ppk = fee_ppk;
+        self
+    }
+
     pub fn with_mint_info(mut self, mint_info: MintInfo) -> Self {
         self.mint_info = mint_info;
         self

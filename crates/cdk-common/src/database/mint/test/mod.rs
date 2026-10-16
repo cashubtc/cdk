@@ -446,6 +446,8 @@ macro_rules! mint_db_test {
             get_mint_quote_by_request_in_transaction,
             get_mint_quote_by_request_lookup_id_in_transaction,
             get_blind_signatures_in_transaction,
+            mint_quote_ids_are_claimed_once,
+            empty_request_names_no_quote,
             reject_duplicate_payment_ids,
             remove_spent_proofs_should_fail,
             get_proofs_with_inconsistent_states_fails,

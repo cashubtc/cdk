@@ -83,6 +83,24 @@ pub fn derived_quote_id(id_preimage: &[u8; 32]) -> String {
     crate::util::hex::encode(tagged_hash("Cashu_QuoteId", id_preimage))
 }
 
+/// NUT-XX id of a fixed txout quote without `id_preimage`, bound to the transaction's inputs.
+///
+/// `hex(tagged_hash("Cashu_InputQuoteId", SHA256(input_section) || u32_BE(position)))`, where
+/// `position` is the output's index among all the request's mint quote outputs.
+pub fn input_bound_quote_id(input_section: &[u8], position: u32) -> String {
+    let mut message = sha256::Hash::hash(input_section).to_byte_array().to_vec();
+    message.extend_from_slice(&position.to_be_bytes());
+    crate::util::hex::encode(tagged_hash("Cashu_InputQuoteId", &message))
+}
+
+/// NUT-XX rotation quote id, `hex(tagged_hash("Cashu_RotationQuoteId", melt_quote_id))`.
+pub fn rotation_quote_id(melt_quote_id: &str) -> String {
+    crate::util::hex::encode(tagged_hash(
+        "Cashu_RotationQuoteId",
+        melt_quote_id.as_bytes(),
+    ))
+}
+
 fn derive<T, F>(
     seed: &[u8],
     scope: &[u8],

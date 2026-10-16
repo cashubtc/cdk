@@ -132,7 +132,21 @@ impl Witness {
 
     /// Verify against an input digest and the verifier's Unix clock.
     /// Returns whether the exercised path requires public disclosure.
+    /// A template leaf cannot be evaluated here; use [`Witness::verify_in`].
     pub fn verify(&self, secret: &str, input_digest: [u8; 32], now: u64) -> Result<bool, Error> {
+        self.verify_in(secret, input_digest, None, now)
+    }
+
+    /// [`Witness::verify`] with the transaction's fixed txout quote lock keys
+    /// ([`Transaction::txout_keys`](super::Transaction::txout_keys)), which a template leaf
+    /// must find in its destinations; `None` fails a template leaf.
+    pub fn verify_in(
+        &self,
+        secret: &str,
+        input_digest: [u8; 32],
+        txout_keys: Option<&[PublicKey]>,
+        now: u64,
+    ) -> Result<bool, Error> {
         let secret = parse_secret(secret)?;
         let message = Message::from_digest(input_digest);
         // Every valid leaf has at most 15 keys. Bound work before parsing signatures.
@@ -171,6 +185,12 @@ impl Witness {
                 }
                 let actual: [u8; 32] = Sha256::digest(preimage).into();
                 if actual != *hash {
+                    return Err(Error::InvalidWitness);
+                }
+            }
+            Condition::Template(dests) => {
+                let keys = txout_keys.ok_or(Error::InvalidWitness)?;
+                if !keys.iter().all(|key| dests.contains(key)) {
                     return Err(Error::InvalidWitness);
                 }
             }

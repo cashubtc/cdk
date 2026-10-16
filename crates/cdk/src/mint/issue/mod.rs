@@ -764,6 +764,8 @@ impl Mint {
                 }
             }
 
+            // A v3 quote input commits the amount this request issues against it
+            // (NUT-10): the outputs total for a single quote, the batch entry otherwise.
             let nutroot_transaction = if input.outputs().iter().any(|output| {
                 output.keyset_id.get_version() == crate::nuts::KeySetVersion::Version02
             }) {
@@ -783,10 +785,19 @@ impl Mint {
                     .iter()
                     .map(|entry| {
                         let quote = quote_map.get(&entry.quote_id).ok_or(Error::UnknownQuote)?;
+                        let amount = match (input.is_batch(), entry.expected_amount) {
+                            (false, _) => outputs_amount.clone().into(),
+                            (true, Some(expected)) => Amount::from(expected),
+                            (true, None) if quote.payment_method.is_bolt11() => {
+                                quote.amount.clone().map(Into::into).unwrap_or(Amount::ZERO)
+                            }
+                            (true, None) => quote.amount_mintable().into(),
+                        };
                         Ok(crate::nuts::nut10::nutroot::MintQuoteInput {
                             id: entry.quote_id.to_string(),
-                            amount: quote.amount.clone().map(Into::into).unwrap_or(Amount::ZERO),
+                            amount,
                             pubkey: quote.pubkey.ok_or(Error::SignatureMissingOrInvalid)?,
+                            issued: quote.amount_issued().into(),
                         })
                     })
                     .collect::<Result<Vec<_>, Error>>()?;
@@ -846,9 +857,12 @@ impl Mint {
                     mint_quote.amount_mintable()
                 };
 
-                // Validate the expected amount does not exceed what is actually mintable
+                // Validate the expected amount does not exceed what is actually mintable;
+                // a txout quote redeems in full (NUT-XX).
                 let mintable = mint_quote.amount_mintable();
-                if expected_amount > mintable {
+                if expected_amount > mintable
+                    || (mint_quote.payment_method.is_txout() && expected_amount != mintable)
+                {
                     tracing::error!(
                         "Quote {} expected amount {} exceeds mintable {}",
                         entry.quote_id,
@@ -883,26 +897,17 @@ impl Mint {
                         .signature
                         .as_ref()
                         .ok_or(Error::SignatureMissingOrInvalid)?;
-                    ensure_cdk!(raw.len() <= 4096, Error::SignatureMissingOrInvalid);
-                    let witness = if raw.len() == 128 {
-                        crate::nuts::nut10::nutroot::Witness {
-                            signatures: vec![raw.clone()],
-                            leaf: None,
-                            control: None,
-                            preimage: None,
-                        }
-                    } else {
-                        serde_json::from_str(raw).map_err(|_| Error::SignatureMissingOrInvalid)?
-                    };
-                    witness
-                        .verify(
+                    crate::mint::transaction::parse_quote_witness(raw)?
+                        .verify_in(
                             &pubkey.to_string(),
                             transaction
                                 .input_digest(quote_index)
                                 .map_err(crate::nuts::nut10::Error::from)?,
+                            transaction.txout_keys(),
                             cdk_common::util::unix_time(),
                         )
-                        .map_err(crate::nuts::nut10::Error::from)?;
+                        // NUT-20: a quote without a valid signature is 20008, whatever the witness got wrong.
+                        .map_err(|_| Error::SignatureMissingOrInvalid)?;
                 } else if let Some(ref pubkey) = mint_quote.pubkey {
                     match &input {
                         MintInput::Single(request) => request
@@ -970,7 +975,8 @@ impl Mint {
             if outputs_amount.value() < total_expected_value {
                 // If it is a single quote and not bolt11 we allow the outputs to be less than the total paid
                 // This is to handle the case where a quote is paid multiple times or more than the quote amount
-                let is_partial_allowed = !input.is_batch() && !batch_method.is_bolt11();
+                let is_partial_allowed =
+                    !input.is_batch() && !batch_method.is_bolt11() && !batch_method.is_txout();
 
                 if !is_partial_allowed {
                     return Err(Error::TransactionUnbalanced(
@@ -1002,6 +1008,7 @@ impl Mint {
             // locks. The database returns the quotes in request order, while locking
             // them by ID, so reversed batch requests cannot deadlock each other.
             let locked_quotes = tx.get_mint_quotes_by_ids(&quote_ids).await?;
+            crate::mint::transaction::refuse_pending_quotes(&mut tx, &quote_ids).await?;
             let mut issuance_events = Vec::with_capacity(quote_ids.len());
 
             // For batch minting, outputs are shared across all quotes and should be persisted once.
@@ -1029,6 +1036,13 @@ impl Mint {
                         return Err(Error::IssuedQuote);
                     }
                     MintQuoteState::Paid => (),
+                }
+                // A v3 witness signed the quote's state; a draw settled since makes it stale.
+                if nutroot_transaction.is_some()
+                    && quote_map.get(quote_id).map(|q| q.amount_issued())
+                        != Some(mint_quote.amount_issued())
+                {
+                    return Err(Error::SignatureMissingOrInvalid);
                 }
 
                 let amount_issued = if input.is_batch() {

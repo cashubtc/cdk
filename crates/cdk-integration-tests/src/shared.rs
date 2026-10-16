@@ -257,6 +257,7 @@ pub fn create_fake_wallet_settings(
             seed: None,
             mnemonic: mnemonic.clone(),
             input_fee_ppk: None,
+            quote_input_fee_ppk: None,
             use_keyset_v2: None,
             http_cache: cache::Config::default(),
             logging: cdk_mintd::config::LoggingConfig {
@@ -329,6 +330,7 @@ pub fn create_cln_settings(
             seed: None,
             mnemonic: Some(mnemonic),
             input_fee_ppk: None,
+            quote_input_fee_ppk: None,
             use_keyset_v2: None,
             http_cache: cache::Config::default(),
             logging: cdk_mintd::config::LoggingConfig {
@@ -383,6 +385,7 @@ pub fn create_lnd_settings(
             seed: None,
             mnemonic: Some(mnemonic),
             input_fee_ppk: None,
+            quote_input_fee_ppk: None,
             use_keyset_v2: None,
             http_cache: cache::Config::default(),
             logging: cdk_mintd::config::LoggingConfig {
