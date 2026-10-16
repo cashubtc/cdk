@@ -457,11 +457,13 @@ pub trait ProofsTransaction {
         new_state: State,
     ) -> Result<(), Self::Err>;
 
-    /// Update state and optional recovery randomness in one batch.
-    /// Randomness is only allowed for a Pending-to-Spent transition.
-    /// Implementations supporting randomness must also implement
-    /// [`ProofsDatabase::get_unpoisonable_r`]. The default preserves ordinary
-    /// updates and rejects recovery randomness before changing any state.
+    /// Update state and optional recovery randomness in one atomic batch.
+    /// Randomness is only allowed for a Pending-to-Spent transition. Backends
+    /// supporting it must persist the same `r` for every acquired input in this
+    /// transaction, reject incomplete updates, and implement
+    /// [`ProofsDatabase::get_unpoisonable_r`] for recovery after restart.
+    /// The default preserves ordinary updates and rejects recovery randomness
+    /// before changing any state.
     async fn update_proofs_state_with_r(
         &mut self,
         proofs: &mut Acquired<ProofsWithState>,
@@ -509,8 +511,10 @@ pub trait ProofsDatabase {
     /// Mint Proof Database Error
     type Err: Into<Error> + From<Error>;
 
-    /// Fetch recovery randomness for spent inputs only, keyed by Y.
-    /// Backends without unpoisonable support return no recovery data.
+    /// Fetch committed recovery randomness for spent inputs only, keyed by Y.
+    /// Backends that implement this method must also atomically persist it in
+    /// [`ProofsTransaction::update_proofs_state_with_r`]. The default returns
+    /// no recovery data for backends without unpoisonable support.
     async fn get_unpoisonable_r(
         &self,
         _ys: &[PublicKey],

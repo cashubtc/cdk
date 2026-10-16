@@ -160,6 +160,29 @@ All CDK shells come with a built-in PostgreSQL instance and helper scripts to ma
 - `pg-status`: Check if the database is running.
 - `pg-connect`: Open an interactive `psql` session to the local database.
 
+### Implementing a Mint Database Backend
+
+The proof interfaces are `ProofsTransaction` and `ProofsDatabase` in
+`crates/cdk-common/src/database/mint/mod.rs`. Existing backends can keep their
+`update_proofs_state` implementation: the default `update_proofs_state_with_r`
+delegates when `r` is `None`, and rejects `Some(r)` before updating any state.
+The default `get_unpoisonable_r` returns an empty map. Ordinary swaps do not
+require unpoisonable recovery storage.
+
+To support opt-in unpoisonable swaps, override **both** methods. For a
+Pending-to-Spent transition, `update_proofs_state_with_r` must persist the new
+state and the same 32-byte `r` for every acquired input in the caller's
+transaction, failing if the full batch cannot be updated. The transaction must
+roll back both changes together; never mark inputs spent without their recovery
+data. `get_unpoisonable_r` must return persisted values keyed by proof `Y` only
+for spent inputs, including after a backend restart. Keep ordinary
+`update_proofs_state` behavior and any redeemed-amount accounting intact.
+
+The shared database contract test `unpoisonable_recovery_storage` in
+`crates/cdk-common/src/database/mint/test/proofs.rs` covers batch failures,
+rollback, committed reads, and overwrite protection. SQLite and PostgreSQL
+implement both methods through `cdk-sql-common`.
+
 ### Direct Flake Commands
 
 You can build project components directly using flake targets without manually entering a shell:
