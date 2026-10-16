@@ -935,6 +935,44 @@ async fn invalid_denomination_rejected_before_payment() {
 }
 
 #[tokio::test]
+async fn outputs_on_a_keyset_expiring_before_the_melt_are_rejected() {
+    let mint = v3_mint().await;
+    let (id, key) = paid_locked_quote(&mint, 16).await;
+    let melt = melt_quote(&mint, 2, true).await;
+    mint.rotate_keyset_by_version(
+        CurrencyUnit::Sat,
+        vec![1, 2, 4, 8, 16, 32],
+        0,
+        cdk_common::nuts::KeySetVersion::Version02,
+        Some(melt.expiry - 1),
+    )
+    .await
+    .unwrap();
+    let (mut blinded, _) = outputs(&mint, 1).await;
+    blinded[0].amount = Amount::ZERO;
+    let mut request = TransactionRequest {
+        mint_quote_inputs: vec![quote_input(&id, 16)],
+        blinded_outputs: blinded,
+        melt_quote_outputs: vec![melt_output(&melt)],
+        ..Default::default()
+    };
+    sign(&mut request, &[key], Some(&melt));
+    let result = mint.process_transaction(request, false).await;
+    let stored = mint
+        .localstore
+        .get_melt_quote(&melt.id)
+        .await
+        .unwrap()
+        .unwrap();
+    mint.stop().await.unwrap();
+    assert!(
+        matches!(&result, Err(Error::InvalidTransaction(reason)) if reason.contains("expires before the melt quote")),
+        "{result:?}"
+    );
+    assert_eq!(stored.state, MeltQuoteState::Unpaid);
+}
+
+#[tokio::test]
 async fn rotation_quote_only_beside_a_melt_with_outputs() {
     let mint = v3_mint().await;
     let proofs = mint_test_proofs(&mint, 8.into()).await.unwrap();

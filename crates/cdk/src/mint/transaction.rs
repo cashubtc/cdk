@@ -715,6 +715,15 @@ impl Mint {
                 }
             }
         }
+        // Outputs beside a melt need a keyset that outlives the melt quote (NUT-XX).
+        if let (Some(quote), Some(output)) = (&melt, outputs.first()) {
+            let final_expiry = self
+                .get_keyset_info(&output.keyset_id)
+                .and_then(|keyset| keyset.final_expiry);
+            if final_expiry.is_some_and(|expiry| expiry < quote.expiry) {
+                return Err(invalid("outputs' keyset expires before the melt quote"));
+            }
+        }
 
         if let Some(quote) = &melt {
             match quote.state {
