@@ -9,6 +9,59 @@ use crate::test_helpers::nut10::{
     create_test_hash_and_preimage, create_test_keypair, unzip3, TestMintHelper,
 };
 
+#[tokio::test]
+async fn unpoisonable_htlc_receiver_and_refund_require_their_own_sig_all_domain() {
+    use cdk_common::dhke::construct_proofs;
+    use cdk_common::nuts::SwapRequest;
+
+    use crate::test_helpers::mint::create_test_blinded_messages;
+
+    for refund in [false, true] {
+        let test_mint = TestMintHelper::new().await.unwrap();
+        let mint = test_mint.mint();
+        let (receiver, receiver_pubkey) = create_test_keypair();
+        let (refund_key, refund_pubkey) = create_test_keypair();
+        let (hash, preimage) = create_test_hash_and_preimage();
+        let amount = Amount::ONE;
+        let conditions = SpendingConditions::new_htlc_hash(
+            &hash,
+            Some(Conditions {
+                locktime: refund.then(|| cdk_common::util::unix_time() - 1),
+                pubkeys: Some(vec![receiver_pubkey]),
+                refund_keys: refund.then_some(vec![refund_pubkey]),
+                sig_flag: SigFlag::SigAll,
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        let (locked_output, blinding_factor, secret) =
+            test_mint.create_blinded_message(amount, &conditions);
+        let initial = test_mint.mint_proofs(amount).await.unwrap();
+        let issued = mint
+            .process_swap_request(SwapRequest::new(initial, vec![locked_output]))
+            .await
+            .unwrap();
+        let proofs = construct_proofs(
+            issued.signatures,
+            vec![blinding_factor],
+            vec![secret],
+            &test_mint.public_keys_of_the_active_sat_keyset,
+        )
+        .unwrap();
+        let (outputs, _) = create_test_blinded_messages(mint, amount).await.unwrap();
+        let mut request = SwapRequest::new(proofs, outputs);
+        request.inputs_mut()[0].add_preimage(if refund { String::new() } else { preimage });
+        let signer = if refund { refund_key } else { receiver };
+        let mut unpoisonable = request.clone().with_unpoisonable();
+        request.sign_sig_all(signer.clone()).unwrap();
+        let ordinary_signature = request.with_unpoisonable();
+        assert!(mint.process_swap_request(ordinary_signature).await.is_err());
+
+        unpoisonable.sign_sig_all(signer).unwrap();
+        assert!(mint.process_swap_request(unpoisonable).await.is_ok());
+    }
+}
+
 /// Test: HTLC SIG_ALL requiring preimage and one signature
 ///
 /// Creates HTLC-locked proofs with SIG_ALL flag and verifies:

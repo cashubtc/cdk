@@ -363,6 +363,89 @@ async fn test_unpoisonable_swap_retries_point_at_infinity() {
     );
 }
 
+#[tokio::test]
+async fn unpoisonable_completed_swap_recovers_after_mint_restart() {
+    use std::sync::Arc;
+
+    use cdk_common::dhke::blind_message;
+    use cdk_common::nuts::{BlindedMessage, RestoreRequest};
+
+    use crate::test_helpers::mint::{create_test_mint_with_db, mint_test_proofs};
+
+    let path = std::env::temp_dir().join(format!(
+        "cdk-unpoisonable-restart-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let seed = [42u8; 64];
+    let db = Arc::new(
+        cdk_sqlite::mint::MintSqliteDatabase::new(&path)
+            .await
+            .unwrap(),
+    );
+    let mint = create_test_mint_with_db(db.clone(), &seed).await.unwrap();
+    let amount = Amount::ONE;
+    let keyset = mint.get_active_keysets()[&cdk_common::CurrencyUnit::Sat];
+    let keys = mint.keyset_pubkeys(&keyset).unwrap().keysets[0]
+        .keys
+        .clone();
+    let (signer, pubkey) = create_test_keypair();
+    let conditions = SpendingConditions::new_p2pk(
+        pubkey,
+        Some(Conditions {
+            sig_flag: SigFlag::SigAll,
+            ..Default::default()
+        }),
+    );
+    let secret: cdk_common::secret::Secret = conditions.try_into().unwrap();
+    let (blinded, blinding_factor) = blind_message(secret.as_bytes(), None).unwrap();
+    let initial = mint_test_proofs(&mint, amount).await.unwrap();
+    let issued = mint
+        .process_swap_request(SwapRequest::new(
+            initial,
+            vec![BlindedMessage::new(amount, keyset, blinded)],
+        ))
+        .await
+        .unwrap();
+    let locked = construct_proofs(
+        issued.signatures,
+        vec![blinding_factor],
+        vec![secret],
+        &keys,
+    )
+    .unwrap();
+    let ys = locked.ys().unwrap();
+    let (outputs, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let mut request = SwapRequest::new(locked, outputs.clone()).with_unpoisonable();
+    request.sign_sig_all(signer).unwrap();
+    let response = mint.process_swap_request(request).await.unwrap();
+    let r = response.unpoisonable_r.unwrap();
+    mint.stop().await.unwrap();
+    drop(mint);
+    drop(db);
+
+    let reopened = Arc::new(
+        cdk_sqlite::mint::MintSqliteDatabase::new(&path)
+            .await
+            .unwrap(),
+    );
+    let mint = create_test_mint_with_db(reopened, &seed).await.unwrap();
+    let states = mint.check_state(&CheckStateRequest { ys }).await.unwrap();
+    assert!(states
+        .states
+        .iter()
+        .all(|state| state.state == State::Spent && state.unpoisonable_r == Some(r)));
+    let r = states.states[0].unpoisonable_r.unwrap();
+    let tweaked = cdk_common::nuts::nut03::tweak_swap_outputs(&r.0, &outputs).unwrap();
+    let restored = mint
+        .restore(RestoreRequest { outputs: tweaked })
+        .await
+        .unwrap();
+    assert_eq!(restored.signatures, response.signatures);
+    mint.stop().await.unwrap();
+    drop(mint);
+    std::fs::remove_file(path).unwrap();
+}
+
 /// Test: P2PK multisig (2-of-3) with SIG_ALL
 ///
 /// Creates proofs requiring 2 signatures from a set of 3 public keys with SIG_ALL flag and verifies:

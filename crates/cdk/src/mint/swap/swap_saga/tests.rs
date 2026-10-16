@@ -25,7 +25,10 @@ fn create_verification(amount: Amount) -> Verification {
 #[tokio::test]
 async fn unpoisonable_r_visible_only_after_finalization() {
     use cdk_common::nuts::nut03::{tweak_swap_outputs, UnpoisonableR};
-    use cdk_common::nuts::CheckStateRequest;
+    use cdk_common::nuts::nut17::Kind;
+    use cdk_common::nuts::{CheckStateRequest, NotificationPayload};
+    use cdk_common::subscription::{Params, SubId};
+    use tokio::time::{timeout, Duration};
 
     for failure in ["", "GENERAL", "AFTER_UNPOISONABLE_R"] {
         let mint = create_test_mint().await.unwrap();
@@ -39,11 +42,35 @@ async fn unpoisonable_r_visible_only_after_finalization() {
         let original_points: Vec<_> = originals.iter().map(|o| o.blinded_secret).collect();
         let ys = inputs.ys().unwrap();
         let db = mint.localstore();
+        let mut subscriber = if failure.is_empty() {
+            Some(
+                mint.pubsub_manager()
+                    .subscribe(Params {
+                        kind: Kind::ProofState,
+                        filters: vec![ys[0].to_string()],
+                        id: Arc::new(SubId::from("unpoisonable-live")),
+                    })
+                    .unwrap(),
+            )
+        } else {
+            None
+        };
         let saga = SwapSaga::new(&mint, db.clone(), mint.pubsub_manager())
             .with_unpoisonable_r(Some(r))
             .setup_swap(&inputs, &outputs, None, verification)
             .await
             .unwrap();
+
+        if let Some(subscriber) = subscriber.as_mut() {
+            let event = timeout(Duration::from_secs(5), subscriber.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                matches!(event.into_inner(), NotificationPayload::ProofState(state)
+                if state.state == State::Pending && state.unpoisonable_r.is_none())
+            );
+        }
 
         let states = mint
             .check_state(&CheckStateRequest { ys: ys.clone() })
@@ -101,6 +128,14 @@ async fn unpoisonable_r_visible_only_after_finalization() {
                 .all(Option::is_none));
         } else {
             assert_eq!(result.unwrap().unpoisonable_r, Some(r));
+            let event = timeout(Duration::from_secs(5), subscriber.as_mut().unwrap().recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                matches!(event.into_inner(), NotificationPayload::ProofState(state)
+                if state.state == State::Spent && state.unpoisonable_r == Some(r))
+            );
             assert_eq!(states.states.len(), inputs.len());
             assert!(states
                 .states
