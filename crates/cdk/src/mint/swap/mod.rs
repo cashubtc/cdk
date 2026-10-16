@@ -1,4 +1,4 @@
-use cdk_common::nuts::nut03::{tweak_swap_outputs, UnpoisonableR};
+use cdk_common::nuts::nut03::{self, tweak_swap_outputs, UnpoisonableR};
 use cdk_common::SpendingConditionVerification;
 use swap_saga::SwapSaga;
 use tracing::instrument;
@@ -73,7 +73,11 @@ impl Mint {
                     None
                 };
                 let outputs = match r {
-                    Some(r) => tweak_swap_outputs(&r.0, swap_request.outputs())?,
+                    Some(r) => match tweak_swap_outputs(&r.0, swap_request.outputs()) {
+                        Ok(outputs) => outputs,
+                        Err(nut03::Error::UnpoisonablePointAtInfinity) => continue,
+                        Err(err) => return Err(err.into()),
+                    },
                     None => swap_request.outputs().clone(),
                 };
                 let init_saga =

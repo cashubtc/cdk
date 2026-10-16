@@ -262,59 +262,114 @@ async fn test_unpoisonable_swap_recovers_and_spends_after_original_is_signed() {
         .await
         .unwrap();
     assert_eq!(recovered.signatures, response.signatures);
-    let mut signatures = recovered.signatures;
-    for (i, signature) in signatures.iter_mut().enumerate() {
-        signature
-            .verify_dleq(
-                test_mint
-                    .public_keys_of_the_active_sat_keyset
-                    .amount_key(signature.amount)
-                    .unwrap(),
-                tweaked[i].blinded_secret,
-            )
+    let signatures = recovered.signatures;
+    let tweak = cdk_common::nuts::nut03::derive_unpoisonable_tweak(&r.0).unwrap();
+    let mut effective_rs = Vec::with_capacity(signatures.len());
+    for (i, signature) in signatures.iter().enumerate() {
+        let mint_pubkey = test_mint
+            .public_keys_of_the_active_sat_keyset
+            .amount_key(signature.amount)
             .unwrap();
-        let t =
-            cdk_common::nuts::nut03::derive_unpoisonable_tweak(&r.0, &outputs[i].blinded_secret)
-                .unwrap();
-        // Fermat inversion in the scalar field, using the existing secp256k1 API.
-        let exponent = crate::util::hex::decode(
-            "fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd036413f",
-        )
-        .unwrap();
-        let mut one = [0u8; 32];
-        one[31] = 1;
-        let mut inverse = bitcoin::secp256k1::SecretKey::from_slice(&one).unwrap();
-        for byte in exponent {
-            for bit in (0..8).rev() {
-                inverse = inverse
-                    .mul_tweak(&bitcoin::secp256k1::Scalar::from(inverse))
-                    .unwrap();
-                if byte & (1 << bit) != 0 {
-                    inverse = inverse.mul_tweak(&t).unwrap();
-                }
-            }
-        }
-        signature.c = signature
-            .c
-            .mul_tweak(&bitcoin::secp256k1::Secp256k1::new(), &inverse.into())
+        signature
+            .verify_dleq(mint_pubkey, tweaked[i].blinded_secret)
+            .unwrap();
+
+        let signed_tweak = mint_pubkey
+            .mul_tweak(&bitcoin::secp256k1::Secp256k1::new(), &tweak)
             .unwrap()
-            .into();
-        assert_eq!(signature.c, original_signature.signatures[i].c);
-        // The verified DLEQ belongs to the tweaked pair, not this ordinary pair.
-        signature.dleq = None;
+            .negate(&bitcoin::secp256k1::Secp256k1::new());
+        let untweaked = signature.c.combine(&signed_tweak).unwrap();
+        assert_eq!(untweaked, *original_signature.signatures[i].c);
+
+        let effective_r =
+            bitcoin::secp256k1::SecretKey::from_slice(pre_mint.rs()[i].as_secret_bytes())
+                .unwrap()
+                .add_tweak(&tweak)
+                .unwrap();
+        effective_rs
+            .push(cdk_common::nuts::SecretKey::from_slice(&effective_r.secret_bytes()).unwrap());
     }
     let proofs = construct_proofs(
         signatures,
-        pre_mint.rs(),
+        effective_rs,
         pre_mint.secrets(),
         &test_mint.public_keys_of_the_active_sat_keyset,
     )
     .unwrap();
+    for proof in &proofs {
+        proof
+            .verify_dleq(
+                test_mint
+                    .public_keys_of_the_active_sat_keyset
+                    .amount_key(proof.amount)
+                    .unwrap(),
+            )
+            .unwrap();
+    }
     let (fresh_outputs, _) = create_test_blinded_messages(mint, amount).await.unwrap();
     assert!(mint
         .process_swap_request(SwapRequest::new(proofs, fresh_outputs))
         .await
         .is_ok());
+}
+
+#[tokio::test]
+async fn test_unpoisonable_swap_retries_point_at_infinity() {
+    let test_mint = TestMintHelper::new().await.unwrap();
+    let mint = test_mint.mint();
+    let (signer, pubkey) = create_test_keypair();
+    let amount = Amount::ONE;
+
+    let conditions = SpendingConditions::new_p2pk(
+        pubkey,
+        Some(Conditions::new(None, None, None, None, Some(SigFlag::SigAll), None).unwrap()),
+    );
+    let initial_proofs = test_mint.mint_proofs(amount).await.unwrap();
+    let (locked_output, blinding_factor, secret) =
+        test_mint.create_blinded_message(amount, &conditions);
+    let issued = mint
+        .process_swap_request(SwapRequest::new(initial_proofs, vec![locked_output]))
+        .await
+        .unwrap();
+    let locked_proofs = construct_proofs(
+        issued.signatures,
+        vec![blinding_factor],
+        vec![secret],
+        &test_mint.public_keys_of_the_active_sat_keyset,
+    )
+    .unwrap();
+
+    let infinity_r = [0x42; 32];
+    let tweak = cdk_common::nuts::nut03::derive_unpoisonable_tweak(&infinity_r).unwrap();
+    let infinity_original = bitcoin::secp256k1::SecretKey::from_slice(&tweak.to_be_bytes())
+        .unwrap()
+        .public_key(&bitcoin::secp256k1::Secp256k1::new())
+        .negate(&bitcoin::secp256k1::Secp256k1::new())
+        .into();
+    let (mut outputs, _) = create_test_blinded_messages(mint, amount).await.unwrap();
+    outputs[0].blinded_secret = infinity_original;
+    let mut request = SwapRequest::new(locked_proofs, outputs).with_unpoisonable();
+    request.sign_sig_all(signer).unwrap();
+
+    let successful_r = [0x43; 32];
+    let mut attempts = 0;
+    let response = mint
+        .process_swap_with_randomness(request, || {
+            attempts += 1;
+            Ok(if attempts == 1 {
+                infinity_r
+            } else {
+                successful_r
+            })
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(attempts, 2);
+    assert_eq!(
+        response.unpoisonable_r,
+        Some(cdk_common::nuts::nut03::UnpoisonableR(successful_r))
+    );
 }
 
 /// Test: P2PK multisig (2-of-3) with SIG_ALL

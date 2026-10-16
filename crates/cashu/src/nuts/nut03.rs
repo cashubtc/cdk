@@ -16,7 +16,7 @@ use super::ProofsMethods;
 use crate::Amount;
 use crate::SECP256K1;
 
-const UNPOISONABLE_TWEAK_DOMAIN: &[u8] = b"Cashu/Unpoisonable/secp256k1/v1\0";
+const UNPOISONABLE_TWEAK_TAG: &[u8] = b"Cashu_UnpoisonableTweak_secp256k1_v1";
 
 /// Mint-generated recovery randomness, encoded as 64 hexadecimal characters on the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,18 +51,22 @@ pub enum Error {
     /// Amount Error
     #[error(transparent)]
     Amount(#[from] crate::amount::Error),
+    /// An additive unpoisonable tweak produced the point at infinity.
+    #[error("Unpoisonable tweak produced the point at infinity")]
+    UnpoisonablePointAtInfinity,
 }
 
-/// Derive a nonzero secp256k1 scalar from the mint's 32-byte random value and an original point.
+/// Derive the shared nonzero secp256k1 scalar from the mint's 32-byte random value.
 ///
-/// Rejection sampling uses a big-endian counter, starting at zero, until the SHA-256
-/// digest represents an integer in `[1, n-1]`. Points use compressed SEC1 encoding.
-pub fn derive_unpoisonable_tweak(r: &[u8; 32], original: &PublicKey) -> Result<Scalar, Error> {
+/// Rejection sampling uses tagged SHA-256 over `R || uint32_be(counter)`, starting at
+/// counter zero, until the digest represents an integer in `[1, n-1]`.
+pub fn derive_unpoisonable_tweak(r: &[u8; 32]) -> Result<Scalar, Error> {
+    let tag_hash = Sha256Hash::hash(UNPOISONABLE_TWEAK_TAG).to_byte_array();
     for counter in 0..=u32::MAX {
-        let mut preimage = Vec::with_capacity(UNPOISONABLE_TWEAK_DOMAIN.len() + 32 + 33 + 4);
-        preimage.extend_from_slice(UNPOISONABLE_TWEAK_DOMAIN);
+        let mut preimage = Vec::with_capacity(100);
+        preimage.extend_from_slice(&tag_hash);
+        preimage.extend_from_slice(&tag_hash);
         preimage.extend_from_slice(r);
-        preimage.extend_from_slice(&original.to_bytes());
         preimage.extend_from_slice(&counter.to_be_bytes());
         let digest = Sha256Hash::hash(&preimage).to_byte_array();
         if let Ok(secret) = SecretKey::from_slice(&digest) {
@@ -72,13 +76,17 @@ pub fn derive_unpoisonable_tweak(r: &[u8; 32], original: &PublicKey) -> Result<S
     Err(crate::dhke::Error::Custom("Could not derive a nonzero tweak".to_owned()).into())
 }
 
-/// Derive a tweaked blinded point using the same `R` as the other outputs in a swap.
-pub fn tweak_blinded_point(r: &[u8; 32], original: &PublicKey) -> Result<PublicKey, Error> {
-    let tweak = derive_unpoisonable_tweak(r, original)?;
+fn add_unpoisonable_tweak(original: &PublicKey, tweak: &Scalar) -> Result<PublicKey, Error> {
     Ok(original
-        .mul_tweak(&SECP256K1, &tweak)
-        .map_err(crate::dhke::Error::from)?
+        .add_exp_tweak(&SECP256K1, tweak)
+        .map_err(|_| Error::UnpoisonablePointAtInfinity)?
         .into())
+}
+
+/// Add the shared tweak derived from `R` to a blinded point.
+pub fn tweak_blinded_point(r: &[u8; 32], original: &PublicKey) -> Result<PublicKey, Error> {
+    let tweak = derive_unpoisonable_tweak(r)?;
+    add_unpoisonable_tweak(original, &tweak)
 }
 
 /// Build the execution outputs for an unpoisonable swap, retaining their original order.
@@ -89,10 +97,11 @@ pub fn tweak_swap_outputs(
     r: &[u8; 32],
     original: &[BlindedMessage],
 ) -> Result<Vec<BlindedMessage>, Error> {
+    let tweak = derive_unpoisonable_tweak(r)?;
     original
         .iter()
         .map(|output| {
-            let point = tweak_blinded_point(r, &output.blinded_secret)?;
+            let point = add_unpoisonable_tweak(&output.blinded_secret, &tweak)?;
             let mut output = output.clone();
             output.blinded_secret = point;
             Ok(output)
@@ -372,11 +381,11 @@ mod tests {
             "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
         )
         .unwrap();
-        let scalar = derive_unpoisonable_tweak(&r, &original).unwrap();
+        let scalar = derive_unpoisonable_tweak(&r).unwrap();
         assert_eq!(
             scalar.to_be_bytes(),
             crate::util::hex::decode(
-                "b99dcc04615c5c74c8797e18e4e3c38d915f06677ba60c95fec1af2e105aeeea"
+                "a8295baeabbf25970d1ff9e17f2a6148f41eac602eae3fb6299d1a4973d37b90"
             )
             .unwrap()
             .as_slice()
@@ -387,14 +396,34 @@ mod tests {
             crate::dhke::sign_message(&mint_key, &tweak_blinded_point(&r, &original).unwrap())
                 .unwrap();
         let signed_original = crate::dhke::sign_message(&mint_key, &original).unwrap();
+        let signed_tweak = mint_key
+            .public_key()
+            .mul_tweak(&SECP256K1, &scalar)
+            .unwrap();
         assert_eq!(
             signed_tweaked,
-            PublicKey::from(signed_original.mul_tweak(&SECP256K1, &scalar).unwrap())
+            PublicKey::from(signed_original.combine(&signed_tweak).unwrap())
         );
         assert_ne!(
             tweak_blinded_point(&[0x43; 32], &original).unwrap(),
             tweak_blinded_point(&r, &original).unwrap()
         );
+    }
+
+    #[test]
+    fn unpoisonable_additive_tweak_rejects_point_at_infinity() {
+        let r = [0x42; 32];
+        let scalar = derive_unpoisonable_tweak(&r).unwrap();
+        let tweak = SecretKey::from_slice(&scalar.to_be_bytes())
+            .unwrap()
+            .public_key(&SECP256K1)
+            .negate(&SECP256K1)
+            .into();
+
+        assert!(matches!(
+            tweak_blinded_point(&r, &tweak),
+            Err(Error::UnpoisonablePointAtInfinity)
+        ));
     }
 
     #[test]
