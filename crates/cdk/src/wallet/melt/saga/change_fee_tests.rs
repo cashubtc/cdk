@@ -226,5 +226,5 @@ async fn test_paid_change_bound_allows_no_change_when_reserve_is_all_consumed() 
         .get_saga(&f.saga.id)
         .await
         .unwrap()
-        .is_none());
+        .is_some());
 }

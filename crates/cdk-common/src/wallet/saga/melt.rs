@@ -17,6 +17,8 @@ pub enum MeltSagaState {
     MeltRequested,
     /// Lightning payment in progress, awaiting confirmation from network
     PaymentPending,
+    /// Payment settled; spent inputs must never be released while late change is collected.
+    ChangePending,
 }
 
 impl std::fmt::Display for MeltSagaState {
@@ -25,6 +27,7 @@ impl std::fmt::Display for MeltSagaState {
             MeltSagaState::ProofsReserved => write!(f, "proofs_reserved"),
             MeltSagaState::MeltRequested => write!(f, "melt_requested"),
             MeltSagaState::PaymentPending => write!(f, "payment_pending"),
+            MeltSagaState::ChangePending => write!(f, "change_pending"),
         }
     }
 }
@@ -36,6 +39,7 @@ impl std::str::FromStr for MeltSagaState {
             "proofs_reserved" => Ok(MeltSagaState::ProofsReserved),
             "melt_requested" => Ok(MeltSagaState::MeltRequested),
             "payment_pending" => Ok(MeltSagaState::PaymentPending),
+            "change_pending" => Ok(MeltSagaState::ChangePending),
             _ => Err(Error::InvalidOperationState),
         }
     }

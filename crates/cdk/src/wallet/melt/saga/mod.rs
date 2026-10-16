@@ -55,6 +55,7 @@ use crate::util::unix_time;
 use crate::wallet::blind_signature::{
     validate_mint_response_signatures, SignatureAmountValidation,
 };
+use crate::wallet::recovery::{OutputRecoveryMode, OutputRecoveryResult};
 use crate::wallet::saga::{add_compensation, new_compensations, Compensations};
 use crate::{ensure_cdk, Amount, Error, Wallet};
 
@@ -110,6 +111,46 @@ async fn finalize_melt_common<'a>(
         .await?
         .keys;
 
+    // A paid quote may precede its change signatures on older mints. Try NUT-09
+    // before recording the provisional fee, and keep the derivation data if
+    // neither response supplies change yet.
+    let mut maximum_change = None;
+    let restored_change = if change.is_none() && !premint_secrets.is_empty() {
+        let saga = wallet
+            .localstore
+            .get_saga(&operation_id)
+            .await?
+            .ok_or(Error::InvalidOperationState)?;
+        let OperationData::Melt(data) = saga.data else {
+            return Err(Error::InvalidOperationState);
+        };
+        maximum_change = data.change_amount;
+        match wallet
+            .restore_outputs_with_result(
+                &operation_id,
+                "Melt",
+                data.change_blinded_messages.as_deref(),
+                data.counter_start,
+                data.counter_end,
+                OutputRecoveryMode::Partial,
+            )
+            .await
+        {
+            Ok(OutputRecoveryResult::Restored(infos)) if !infos.is_empty() => Some(infos),
+            Ok(_) => None,
+            Err(error) => {
+                tracing::warn!(
+                    "Paid melt change is not available yet: {}",
+                    crate::wallet::util::escape_log_value(&error)
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let change_pending =
+        change.is_none() && !premint_secrets.is_empty() && restored_change.is_none();
     let change_proofs = match change {
         Some(change) => {
             let num_change_proof = change.len();
@@ -142,7 +183,9 @@ async fn finalize_melt_common<'a>(
                 &active_keys,
             )?)
         }
-        None => None,
+        None => restored_change
+            .as_ref()
+            .map(|infos| infos.iter().map(|info| info.proof.clone()).collect()),
     };
 
     let proofs_total = final_proofs.total_amount()?;
@@ -156,36 +199,54 @@ async fn finalize_melt_common<'a>(
         .and_then(|amount| amount.checked_sub(change_total))
         .ok_or(Error::AmountOverflow)?;
 
+    if let Some(maximum) = maximum_change {
+        let payment_fee = maximum.checked_sub(change_total).ok_or_else(|| {
+            Error::InvalidMintResponse(
+                "recovered melt change exceeds maximum expected change".to_owned(),
+            )
+        })?;
+        if payment_fee > quote_info.fee_reserve {
+            return Err(Error::InvalidMintResponse(
+                "recovered melt change implies a fee above the quoted reserve".to_owned(),
+            ));
+        }
+    }
+
     let mut updated_quote = quote_info.clone();
     updated_quote.state = state;
     updated_quote.payment_proof = payment_proof.clone();
     wallet.localstore.add_melt_quote(updated_quote).await?;
 
-    let change_proof_infos = match change_proofs.clone() {
-        Some(change_proofs) => change_proofs
-            .into_iter()
-            .zip(&premint_secrets.secrets)
-            .map(|(proof, premint)| {
-                let proof_info = ProofInfo::new(
-                    proof,
-                    wallet.mint_url.clone(),
-                    State::Unspent,
-                    quote_info.unit.clone(),
-                )?;
-                Ok::<_, Error>(match premint.derivation_index {
-                    Some(index) => proof_info.with_derivation_index(index),
-                    None => proof_info,
+    if change_pending {
+        wallet.retain_melt_change_recovery(&operation_id).await?;
+    }
+
+    let change_proof_infos = if let Some(infos) = restored_change {
+        infos
+    } else {
+        match change_proofs.clone() {
+            Some(change_proofs) => change_proofs
+                .into_iter()
+                .zip(&premint_secrets.secrets)
+                .map(|(proof, premint)| {
+                    let proof_info = ProofInfo::new(
+                        proof,
+                        wallet.mint_url.clone(),
+                        State::Unspent,
+                        quote_info.unit.clone(),
+                    )?;
+                    Ok::<_, Error>(match premint.derivation_index {
+                        Some(index) => proof_info.with_derivation_index(index),
+                        None => proof_info,
+                    })
                 })
-            })
-            .collect::<Result<Vec<ProofInfo>, _>>()?,
-        None => Vec::new(),
+                .collect::<Result<Vec<ProofInfo>, _>>()?,
+            None => Vec::new(),
+        }
     };
 
     // Add new (change) proofs to the database
-    wallet
-        .localstore
-        .update_proofs(change_proof_infos, vec![])
-        .await?;
+    wallet.save_melt_change_proofs(change_proof_infos).await?;
 
     // Mark input proofs as Spent instead of deleting them
     let spent_ys = final_proofs.ys()?;
@@ -214,20 +275,22 @@ async fn finalize_melt_common<'a>(
         })
         .await?;
 
-    if let Err(e) = wallet.localstore.release_melt_quote(&operation_id).await {
-        tracing::warn!(
-            "Failed to release melt quote for operation {}: {}",
-            operation_id,
-            e
-        );
-    }
+    if !change_pending {
+        if let Err(e) = wallet.localstore.release_melt_quote(&operation_id).await {
+            tracing::warn!(
+                "Failed to release melt quote for operation {}: {}",
+                operation_id,
+                e
+            );
+        }
 
-    if let Err(e) = wallet.localstore.delete_saga(&operation_id).await {
-        tracing::warn!(
-            "Failed to delete melt saga {}: {}. Will be cleaned up on recovery.",
-            operation_id,
-            e
-        );
+        if let Err(e) = wallet.localstore.delete_saga(&operation_id).await {
+            tracing::warn!(
+                "Failed to delete melt saga {}: {}. Will be cleaned up on recovery.",
+                operation_id,
+                e
+            );
+        }
     }
     Ok(MeltSaga {
         wallet,

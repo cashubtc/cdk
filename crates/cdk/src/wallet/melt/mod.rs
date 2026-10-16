@@ -1203,7 +1203,9 @@ impl Wallet {
                     && matches!(
                         &s.state,
                         WalletSagaState::Melt(
-                            MeltSagaState::MeltRequested | MeltSagaState::PaymentPending
+                            MeltSagaState::MeltRequested
+                                | MeltSagaState::PaymentPending
+                                | MeltSagaState::ChangePending
                         )
                     )
             })
@@ -1438,7 +1440,9 @@ impl Wallet {
             ensure_cdk!(
                 matches!(
                     state,
-                    MeltSagaState::MeltRequested | MeltSagaState::PaymentPending
+                    MeltSagaState::MeltRequested
+                        | MeltSagaState::PaymentPending
+                        | MeltSagaState::ChangePending
                 ),
                 Error::InvalidOperationState
             );
@@ -1465,6 +1469,27 @@ impl Wallet {
                 quote.payment_method == payment_method,
                 Error::Custom("Pending melt payment method does not match quote".to_string())
             );
+
+            if *state == MeltSagaState::ChangePending {
+                if let Some(tx) = self
+                    .localstore
+                    .get_transaction(cdk_common::wallet::TransactionId::from_saga_id(
+                        operation_id,
+                    ))
+                    .await?
+                {
+                    if tx.status == cdk_common::wallet::TransactionStatus::Completed {
+                        return Ok(FinalizedMelt::new(
+                            quote_id.to_owned(),
+                            MeltQuoteState::Paid,
+                            tx.payment_proof.or(quote.payment_proof),
+                            tx.amount,
+                            tx.fee,
+                            None,
+                        ));
+                    }
+                }
+            }
 
             match self.resume_melt_saga(&db_saga).await? {
                 Some(finalized) if finalized.state() == MeltQuoteState::Paid => {
@@ -3423,7 +3448,7 @@ mod tests {
             amount: Amount::from(1000),
             request: Some("lnbc1000...".to_string()),
             payment_preimage,
-            change: None,
+            change: (state == MeltQuoteState::Paid).then(Vec::new),
             unit: Some(CurrencyUnit::Sat),
             method: PaymentMethod::Known(KnownMethod::Bolt11),
         }

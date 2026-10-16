@@ -1,0 +1,32 @@
+name: Melt change recovery
+
+on:
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'crates/cdk/**'
+      - 'crates/cdk-common/**'
+      - 'crates/cdk-sql-common/**'
+      - 'misc/test-melt-change-versions.py'
+      - '.github/workflows/melt-change-recovery.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  versioned-mints:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libssl-dev pkg-config
+      - run: python3 misc/test-melt-change-versions.py
+        env:
+          GH_TOKEN: ${{ github.token }}

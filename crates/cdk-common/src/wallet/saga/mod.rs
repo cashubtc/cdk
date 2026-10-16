@@ -97,6 +97,7 @@ impl WalletSagaState {
                 MeltSagaState::ProofsReserved => "proofs_reserved",
                 MeltSagaState::MeltRequested => "melt_requested",
                 MeltSagaState::PaymentPending => "payment_pending",
+                MeltSagaState::ChangePending => "change_pending",
             },
         }
     }

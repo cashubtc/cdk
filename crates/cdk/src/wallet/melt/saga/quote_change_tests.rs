@@ -27,6 +27,10 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Self {
+        Self::with_reserve(1).await
+    }
+
+    async fn with_reserve(reserve: u64) -> Self {
         let db = create_test_db().await;
         let client = Arc::new(MockMintConnector::new());
         client.enable_mint_signing();
@@ -50,7 +54,7 @@ impl Fixture {
         let mut quote = test_melt_quote();
         quote.id = id.to_string();
         quote.amount = Amount::from(8);
-        quote.fee_reserve = Amount::from(1);
+        quote.fee_reserve = Amount::from(reserve);
         quote.used_by_operation = Some(id.to_string());
         db.add_melt_quote(quote.clone()).await.unwrap();
         let mut input = test_proof_info(keyset.id, 32, test_mint_url());
@@ -118,20 +122,34 @@ impl Fixture {
         }
     }
 
+    fn quote_metadata(&self) -> HashMap<String, String> {
+        match &self.saga.data {
+            OperationData::Melt(data) => data.metadata.clone(),
+            _ => unreachable!(),
+        }
+    }
+
+    fn paid_status(
+        &self,
+        signatures: Option<Vec<BlindSignature>>,
+    ) -> MeltQuoteBolt11Response<String> {
+        MeltQuoteBolt11Response {
+            quote: self.quote.id.clone(),
+            state: MeltQuoteState::Paid,
+            expiry: 9999999999,
+            fee_reserve: self.quote.fee_reserve,
+            amount: self.quote.amount,
+            request: None,
+            payment_preimage: Some("preimage".to_owned()),
+            change: signatures,
+            unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::BOLT11,
+        }
+    }
+
     fn status(&self, signatures: Option<Vec<BlindSignature>>) {
         self.client
-            .set_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
-                quote: self.quote.id.clone(),
-                state: MeltQuoteState::Paid,
-                expiry: 9999999999,
-                fee_reserve: self.quote.fee_reserve,
-                amount: self.quote.amount,
-                request: None,
-                payment_preimage: Some("preimage".to_owned()),
-                change: signatures,
-                unit: Some(CurrencyUnit::Sat),
-                method: PaymentMethod::BOLT11,
-            }));
+            .set_melt_quote_status_response(Ok(self.paid_status(signatures)));
     }
 
     async fn restore(
@@ -523,4 +541,199 @@ async fn test_paid_quote_change_omitted_uses_restore() {
     assert_eq!(result.fee_paid(), Amount::ZERO);
     assert_eq!(f.wallet.total_balance().await.unwrap(), Amount::from(24));
     assert!(f.client.restore_response.lock().unwrap().is_none());
+}
+
+#[tokio::test]
+async fn test_missing_change_survives_paid_confirmation_and_recovers_exactly_once() {
+    let f = Fixture::with_reserve(24).await;
+    let inputs = f
+        .wallet
+        .localstore
+        .get_reserved_proofs(&f.saga.id)
+        .await
+        .unwrap();
+    f.client._set_restore_response(Ok(f.response(&[])));
+    let result = super::finalize_melt_common(
+        &f.wallet,
+        crate::wallet::saga::new_compensations(),
+        f.saga.id,
+        &f.quote,
+        &inputs.iter().map(|info| info.proof.clone()).collect(),
+        &f.secrets,
+        MeltQuoteState::Paid,
+        Some("preimage".to_owned()),
+        None,
+        f.quote_metadata(),
+        Default::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.state_data.state, MeltQuoteState::Paid);
+    let retained = f
+        .wallet
+        .localstore
+        .get_saga(&f.saga.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        retained.state,
+        WalletSagaState::Melt(MeltSagaState::ChangePending)
+    );
+    let inputs = f
+        .wallet
+        .localstore
+        .get_reserved_proofs(&f.saga.id)
+        .await
+        .unwrap();
+    assert!(inputs.iter().all(|info| info.state == State::Spent));
+
+    let paid = f
+        .wallet
+        .wait_pending_melt(f.saga.id, &f.quote.id, PaymentMethod::BOLT11)
+        .await
+        .unwrap();
+    assert_eq!(paid.state(), MeltQuoteState::Paid);
+
+    // A stale failure after settlement must never make these inputs spendable.
+    f.client
+        .set_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
+            state: MeltQuoteState::Unpaid,
+            ..f.paid_status(None)
+        }));
+    assert!(f
+        .wallet
+        .resume_melt_saga(&retained)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(!f
+        .wallet
+        .claim_and_compensate_melt(
+            &f.saga.id,
+            &[MeltSagaState::MeltRequested, MeltSagaState::PaymentPending]
+        )
+        .await
+        .unwrap());
+    assert_eq!(f.wallet.total_balance().await.unwrap(), Amount::ZERO);
+
+    f.status(Some(f.response(&[16, 4, 2, 1]).signatures));
+    let report = f.wallet.recover_incomplete_sagas().await.unwrap();
+    assert_eq!(report.recovered, 1);
+    assert_eq!(f.wallet.total_balance().await.unwrap(), Amount::from(23));
+    let again = f.wallet.recover_incomplete_sagas().await.unwrap();
+    assert_eq!(again.recovered, 0);
+    assert_eq!(f.wallet.total_balance().await.unwrap(), Amount::from(23));
+    let txs = f
+        .wallet
+        .localstore
+        .list_transactions(None, None, None)
+        .await
+        .unwrap();
+    assert_eq!(txs.len(), 1);
+    assert_eq!(txs[0].fee, Amount::from(1));
+    assert_eq!(txs[0].status, TransactionStatus::Completed);
+}
+
+#[tokio::test]
+async fn test_missing_change_recovery_preserves_paid_receipt_until_later_restore() {
+    let f = Fixture::with_reserve(24).await;
+    f.status(None);
+    f.client._set_restore_response(Ok(f.response(&[])));
+    f.wallet.resume_melt_saga(&f.saga).await.unwrap().unwrap();
+    let retained = f
+        .wallet
+        .localstore
+        .get_saga(&f.saga.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        retained.state,
+        WalletSagaState::Melt(MeltSagaState::ChangePending)
+    );
+    f.status(None);
+    f.client._set_restore_response(Ok(f.response(&[])));
+    assert!(f
+        .wallet
+        .resume_melt_saga(&retained)
+        .await
+        .unwrap()
+        .is_none());
+    f.status(None);
+    f.client._set_restore_response(Ok(f.response(&[16, 8])));
+    let recovered = f.wallet.resume_melt_saga(&retained).await.unwrap().unwrap();
+    assert_eq!(recovered.fee_paid(), Amount::ZERO);
+    assert_eq!(f.wallet.total_balance().await.unwrap(), Amount::from(24));
+    assert!(f
+        .wallet
+        .localstore
+        .get_saga(&f.saga.id)
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn test_late_change_recovery_does_not_revive_already_spent_change() {
+    let f = Fixture::with_reserve(24).await;
+    f.status(None);
+    f.client._set_restore_response(Ok(f.response(&[])));
+    f.wallet.resume_melt_saga(&f.saga).await.unwrap().unwrap();
+    let signatures = f.response(&[16, 8]).signatures;
+    let infos = match f
+        .wallet
+        .recover_melt_change_signatures(
+            &f.saga.id,
+            &f.secrets.blinded_messages(),
+            0,
+            f.secrets.len() as u32,
+            signatures.clone(),
+        )
+        .await
+        .unwrap()
+    {
+        crate::wallet::recovery::OutputRecoveryResult::Restored(infos) => infos,
+        _ => panic!("expected change proofs"),
+    };
+    let ys = infos.iter().map(|info| info.y).collect();
+    // Simulate a crash after importing change, then spending it before receipt repair.
+    f.wallet
+        .localstore
+        .update_proofs(infos, vec![])
+        .await
+        .unwrap();
+    f.wallet
+        .localstore
+        .update_proofs_state(ys, State::Spent)
+        .await
+        .unwrap();
+    f.status(Some(signatures));
+    f.wallet.recover_incomplete_sagas().await.unwrap();
+    assert_eq!(f.wallet.total_balance().await.unwrap(), Amount::ZERO);
+    assert!(f
+        .wallet
+        .localstore
+        .get_saga(&f.saga.id)
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn test_explicit_empty_change_closes_a_paid_change_claim() {
+    let f = Fixture::with_reserve(24).await;
+    f.status(None);
+    f.client._set_restore_response(Ok(f.response(&[])));
+    f.wallet.resume_melt_saga(&f.saga).await.unwrap().unwrap();
+    f.status(Some(vec![]));
+    f.wallet.recover_incomplete_sagas().await.unwrap();
+    assert!(f
+        .wallet
+        .localstore
+        .get_saga(&f.saga.id)
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(f.wallet.total_balance().await.unwrap(), Amount::ZERO);
 }

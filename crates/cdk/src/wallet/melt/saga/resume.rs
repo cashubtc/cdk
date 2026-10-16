@@ -66,6 +66,15 @@ impl Wallet {
         };
 
         match state {
+            MeltSagaState::ChangePending => {
+                // Settlement is irreversible; stale failures cannot release spent inputs.
+                let status = match self.internal_check_melt_status(&data.quote_id).await {
+                    Ok(status) if status.state() == MeltQuoteState::Paid => status,
+                    _ => return Ok(None),
+                };
+                self.complete_melt_from_restore(&saga.id, data, &status)
+                    .await
+            }
             MeltSagaState::ProofsReserved => {
                 // No melt was executed - safe to compensate
                 // Return FinalizedMelt with Unpaid state so caller counts it as compensated
@@ -299,12 +308,21 @@ impl Wallet {
         let proof_ys: Vec<_> = melt_input_proofs.iter().map(|p| p.y).collect();
         let transaction_id = TransactionId::from_saga_id(*saga_id);
         let status_payment_proof = quote_status.payment_proof();
-        if let Some(existing_transaction) = self.localstore.get_transaction(transaction_id).await? {
+        let existing_transaction = self.localstore.get_transaction(transaction_id).await?;
+        let change_pending = self
+            .localstore
+            .get_saga(saga_id)
+            .await?
+            .is_some_and(|saga| saga.state == WalletSagaState::Melt(MeltSagaState::ChangePending));
+        if let Some(existing_transaction) = &existing_transaction {
             let is_recovered_melt = existing_transaction.direction
                 == TransactionDirection::Outgoing
                 && existing_transaction.quote_id.as_deref() == Some(data.quote_id.as_str());
 
-            if is_recovered_melt && existing_transaction.status == TransactionStatus::Completed {
+            if is_recovered_melt
+                && existing_transaction.status == TransactionStatus::Completed
+                && !change_pending
+            {
                 self.localstore
                     .update_proofs_state(proof_ys, State::Spent)
                     .await?;
@@ -413,6 +431,16 @@ impl Wallet {
                 .flatten()
                 .map(|info| info.proof.amount),
         )?;
+        let retain_change =
+            expects_change && quote_status.change().is_none() && change_amount == Amount::ZERO;
+        if retain_change
+            && change_pending
+            && existing_transaction
+                .as_ref()
+                .is_some_and(|tx| tx.status == TransactionStatus::Completed)
+        {
+            return Ok(None);
+        }
         // The saved maximum change excludes input fees. Missing signatures may
         // account for the quoted payment fee, but never a larger fee.
         if let Some(maximum_change) = data.change_amount {
@@ -427,10 +455,13 @@ impl Wallet {
                 ));
             }
         }
+        if retain_change {
+            self.retain_melt_change_recovery(saga_id).await?;
+        }
         let change_proofs = match change_proof_infos {
             Some(infos) => {
                 let proofs = infos.iter().map(|info| info.proof.clone()).collect();
-                self.localstore.update_proofs(infos, vec![]).await?;
+                self.save_melt_change_proofs(infos).await?;
                 Some(proofs)
             }
             None => None,
@@ -474,9 +505,13 @@ impl Wallet {
             fee: fee_paid,
             unit: self.unit.clone(),
             ys: proof_ys,
-            timestamp: unix_time(),
-            memo: None,
-            metadata: data.metadata.clone(),
+            timestamp: existing_transaction
+                .as_ref()
+                .map_or_else(unix_time, |tx| tx.timestamp),
+            memo: existing_transaction.as_ref().and_then(|tx| tx.memo.clone()),
+            metadata: existing_transaction
+                .as_ref()
+                .map_or_else(|| data.metadata.clone(), |tx| tx.metadata.clone()),
             quote_id: Some(data.quote_id.clone()),
             payment_request,
             payment_proof: payment_proof.clone(),
@@ -486,15 +521,17 @@ impl Wallet {
         })
         .await?;
 
-        if let Err(e) = self.localstore.release_melt_quote(saga_id).await {
-            tracing::warn!(
-                "Failed to release melt quote for saga {} after recovery finalization: {}",
-                saga_id,
-                escape_log_value(&e)
-            );
-        }
+        if !retain_change {
+            if let Err(e) = self.localstore.release_melt_quote(saga_id).await {
+                tracing::warn!(
+                    "Failed to release melt quote for saga {} after recovery finalization: {}",
+                    saga_id,
+                    escape_log_value(&e)
+                );
+            }
 
-        self.localstore.delete_saga(saga_id).await?;
+            self.localstore.delete_saga(saga_id).await?;
+        }
 
         Ok(Some(FinalizedMelt::new(
             data.quote_id.clone(),
@@ -504,6 +541,55 @@ impl Wallet {
             fee_paid,
             change_proofs,
         )))
+    }
+
+    /// Import change once, preserving proofs already reserved or spent after a prior write.
+    pub(super) async fn save_melt_change_proofs(
+        &self,
+        infos: Vec<cdk_common::wallet::ProofInfo>,
+    ) -> Result<(), Error> {
+        if infos.is_empty() {
+            return Ok(());
+        }
+        let existing = self
+            .localstore
+            .get_proofs_by_ys(infos.iter().map(|info| info.y).collect())
+            .await?;
+        let existing_ys: std::collections::HashSet<_> =
+            existing.into_iter().map(|info| info.y).collect();
+        let missing = infos
+            .into_iter()
+            .filter(|info| !existing_ys.contains(&info.y))
+            .collect();
+        self.localstore.update_proofs(missing, vec![]).await?;
+        Ok(())
+    }
+
+    /// Preserve the paid operation's derivation data until late change is collected.
+    pub(super) async fn retain_melt_change_recovery(
+        &self,
+        saga_id: &uuid::Uuid,
+    ) -> Result<(), Error> {
+        let mut saga = self
+            .localstore
+            .get_saga(saga_id)
+            .await?
+            .ok_or(Error::InvalidOperationState)?;
+        if !matches!(
+            saga.state,
+            WalletSagaState::Melt(
+                MeltSagaState::MeltRequested
+                    | MeltSagaState::PaymentPending
+                    | MeltSagaState::ChangePending
+            )
+        ) {
+            return Err(Error::InvalidOperationState);
+        }
+        saga.update_state(WalletSagaState::Melt(MeltSagaState::ChangePending));
+        if !self.localstore.update_saga(saga).await? {
+            return Err(Error::InvalidOperationState);
+        }
+        Ok(())
     }
 
     /// Compensate a melt saga by releasing proofs and the melt quote.
