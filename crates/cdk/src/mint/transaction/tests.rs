@@ -138,7 +138,7 @@ fn sign_at(
                 .as_secp256k1()
                 .unwrap(),
             id: match (output.amount, &output.id_preimage) {
-                (None, _) => remainder_id(melt.unwrap()).to_string(),
+                (None, _) => rotation_id(melt.unwrap()).to_string(),
                 (Some(_), Some(_)) => derived_id(output).to_string(),
                 (Some(_), None) => nutroot::input_bound_quote_id(&section, k as u32),
             },
@@ -200,8 +200,8 @@ fn melt_output(quote: &MeltQuote) -> TransactionMeltOutput {
     }
 }
 
-/// A remainder quote output locked to `key`.
-fn remainder_output(key: &SecretKey) -> TransactionMintQuoteOutput {
+/// A rotation quote output locked to `key`.
+fn rotation_output(key: &SecretKey) -> TransactionMintQuoteOutput {
     TransactionMintQuoteOutput {
         pubkey: key.public_key().to_hex(),
         amount: None,
@@ -227,9 +227,9 @@ fn derived_id(output: &TransactionMintQuoteOutput) -> QuoteId {
     QuoteId::from_str(&nutroot::derived_quote_id(&preimage)).unwrap()
 }
 
-/// The id a melt's remainder quote takes.
-fn remainder_id(melt: &MeltQuote) -> QuoteId {
-    QuoteId::from_str(&nutroot::remainder_quote_id(&melt.id.to_string())).unwrap()
+/// The id a melt's rotation quote takes.
+fn rotation_id(melt: &MeltQuote) -> QuoteId {
+    QuoteId::from_str(&nutroot::rotation_quote_id(&melt.id.to_string())).unwrap()
 }
 
 /// A paid txout quote of `amount` locked to a fresh key, as settlement creates one.
@@ -292,7 +292,7 @@ async fn settled(
         .mint_quote_outputs
         .iter()
         .map(|output| match output.amount {
-            None => remainder_id(melt),
+            None => rotation_id(melt),
             Some(_) => derived_id(output),
         })
         .collect();
@@ -576,7 +576,7 @@ async fn melt_from_a_quote_input_returns_the_unspent_reserve_in_blanks() {
         mint_quote_inputs: vec![quote_input(&quote_id, 10)],
         blinded_outputs: blanks,
         melt_quote_outputs: vec![melt_output(&melt)],
-        mint_quote_outputs: vec![remainder_output(&SecretKey::generate())],
+        mint_quote_outputs: vec![rotation_output(&SecretKey::generate())],
         ..Default::default()
     };
     // The wrong reserve is rejected before anything is reserved.
@@ -599,7 +599,7 @@ async fn melt_from_a_quote_input_returns_the_unspent_reserve_in_blanks() {
         response.melt_quotes[0]["change"],
         serde_json::to_value(&response.signatures).unwrap()
     );
-    // The outputs were signed, so the remainder quote was not created.
+    // The outputs were signed, so the rotation quote was not created.
     assert_eq!(response.mint_quotes, vec![None]);
     let quote = mint
         .localstore
@@ -631,7 +631,7 @@ async fn failed_melt_releases_proofs_and_quote_inputs() {
         mint_quote_inputs: vec![quote_input(&quote_id, 4)],
         blinded_outputs: blinded,
         melt_quote_outputs: vec![melt_output(&melt)],
-        mint_quote_outputs: vec![remainder_output(&SecretKey::generate())],
+        mint_quote_outputs: vec![rotation_output(&SecretKey::generate())],
         ..Default::default()
     };
     sign(&mut request, std::slice::from_ref(&key), Some(&melt));
@@ -674,9 +674,9 @@ async fn failed_melt_releases_proofs_and_quote_inputs() {
     sign(&mut request, std::slice::from_ref(&key), None);
     let response = mint.process_transaction(request, false).await.unwrap();
     assert_eq!(response.state, TransactionState::Paid);
-    // Fetching the uncreated remainder answers quote not found (20010).
+    // Fetching the uncreated rotation quote answers quote not found (20010).
     let err = mint
-        .check_mint_quotes(&[remainder_id(&melt)])
+        .check_mint_quotes(&[rotation_id(&melt)])
         .await
         .unwrap_err();
     assert!(matches!(err, Error::UnknownQuote));
@@ -702,7 +702,7 @@ async fn async_melt_transaction_is_pending_then_paid() {
         proof_inputs: proofs,
         blinded_outputs: blinded,
         melt_quote_outputs: vec![melt_output(&melt)],
-        mint_quote_outputs: vec![remainder_output(&SecretKey::generate())],
+        mint_quote_outputs: vec![rotation_output(&SecretKey::generate())],
         prefer_async: true,
         ..Default::default()
     };
@@ -916,7 +916,7 @@ async fn invalid_denomination_rejected_before_payment() {
         mint_quote_inputs: vec![quote_input(&id, 7)],
         blinded_outputs: blinded,
         melt_quote_outputs: vec![melt_output(&melt)],
-        mint_quote_outputs: vec![remainder_output(&SecretKey::generate())],
+        mint_quote_outputs: vec![rotation_output(&SecretKey::generate())],
         ..Default::default()
     };
     sign(&mut request, &[key], Some(&melt));
@@ -935,7 +935,7 @@ async fn invalid_denomination_rejected_before_payment() {
 }
 
 #[tokio::test]
-async fn remainder_quote_only_beside_a_melt_with_outputs() {
+async fn rotation_quote_only_beside_a_melt_with_outputs() {
     let mint = v3_mint().await;
     let proofs = mint_test_proofs(&mint, 8.into()).await.unwrap();
     let melt = melt_quote(&mint, 2, true).await;
@@ -943,21 +943,21 @@ async fn remainder_quote_only_beside_a_melt_with_outputs() {
     let key = SecretKey::generate();
     let not_a_key = TransactionMintQuoteOutput {
         pubkey: format!("05{}", "02".repeat(32)),
-        ..remainder_output(&key)
+        ..rotation_output(&key)
     };
     for (blinded_outputs, melt_quote_outputs, mint_quote_outputs) in [
         // No melt, or no outputs for it to back.
-        (blinded.clone(), vec![], vec![remainder_output(&key)]),
+        (blinded.clone(), vec![], vec![rotation_output(&key)]),
         (
             vec![],
             vec![melt_output(&melt)],
-            vec![remainder_output(&key)],
+            vec![rotation_output(&key)],
         ),
         // At most one, with a valid lock key.
         (
             blinded.clone(),
             vec![melt_output(&melt)],
-            vec![remainder_output(&key), remainder_output(&key)],
+            vec![rotation_output(&key), rotation_output(&key)],
         ),
         (blinded.clone(), vec![melt_output(&melt)], vec![not_a_key]),
     ] {
@@ -983,22 +983,22 @@ async fn remainder_quote_only_beside_a_melt_with_outputs() {
 }
 
 #[tokio::test]
-async fn keyset_rotation_during_payment_holds_outputs_in_the_remainder_quote() {
+async fn keyset_rotation_during_payment_holds_outputs_in_the_rotation_quote() {
     use cdk_common::nut17::{Kind, Params};
     use cdk_common::NotificationPayload;
 
     let mint = v3_mint().await;
     let (id, key) = paid_locked_quote(&mint, 16).await;
     let melt = melt_quote(&mint, 2, true).await;
-    let remainder_key = SecretKey::generate();
-    let remainder = remainder_id(&melt);
+    let rotation_key = SecretKey::generate();
+    let rotation = rotation_id(&melt);
     // Accepted for an id the mint does not hold yet, with no initial state.
     let mut subscription = mint
         .pubsub_manager()
         .subscribe(Params {
             kind: Kind::Custom("txout_mint_quote".to_owned()),
-            filters: vec![remainder.to_string()],
-            id: std::sync::Arc::new(cdk_common::subscription::SubId::from("remainder")),
+            filters: vec![rotation.to_string()],
+            id: std::sync::Arc::new(cdk_common::subscription::SubId::from("rotation")),
         })
         .unwrap();
     assert!(
@@ -1023,7 +1023,7 @@ async fn keyset_rotation_during_payment_holds_outputs_in_the_remainder_quote() {
         mint_quote_inputs: vec![quote_input(&id, 16)],
         blinded_outputs: blinded,
         melt_quote_outputs: vec![melt_output(&melt)],
-        mint_quote_outputs: vec![remainder_output(&remainder_key)],
+        mint_quote_outputs: vec![rotation_output(&rotation_key)],
         prefer_async: true,
         ..Default::default()
     };
@@ -1058,7 +1058,7 @@ async fn keyset_rotation_during_payment_holds_outputs_in_the_remainder_quote() {
     match event.inner() {
         NotificationPayload::CustomMintQuoteResponse(method, response) => {
             assert_eq!(method, "txout");
-            assert_eq!(response.quote, remainder);
+            assert_eq!(response.quote, rotation);
             assert_eq!(response.amount_paid, Amount::from(13));
         }
         payload => panic!("unexpected payload: {payload:?}"),
@@ -1089,9 +1089,9 @@ async fn keyset_rotation_during_payment_holds_outputs_in_the_remainder_quote() {
     .unwrap();
     assert_eq!(paid.change, Some(vec![]));
     let quote = txout_quote(&settled, 0);
-    assert_eq!(quote["quote"], remainder.to_string());
+    assert_eq!(quote["quote"], rotation.to_string());
     assert_eq!(quote["amount_paid"], 13);
-    assert_eq!(quote["pubkey"], remainder_key.public_key().to_hex());
+    assert_eq!(quote["pubkey"], rotation_key.public_key().to_hex());
     mint.stop().await.unwrap();
 }
 
@@ -1100,7 +1100,7 @@ async fn blank_outputs_take_the_change() {
     let mint = v3_mint().await;
     // 27 in, 1 fixed, melt 13, 1 sat of the 13 sat reserve spent: change 12, imprinted as 8 and 4
     // into the earliest blanks in request order, wherever the fixed output sits. What the blanks
-    // cannot hold stays with the mint, and the remainder quote is not created.
+    // cannot hold stays with the mint, and the rotation quote is not created.
     for (blank_count, fixed_at, signed) in [
         (3, 1, vec![8, 1, 4]),
         (3, 3, vec![8, 4, 1]),
@@ -1120,7 +1120,7 @@ async fn blank_outputs_take_the_change() {
             mint_quote_inputs: vec![quote_input(&id, 27)],
             blinded_outputs: blinded,
             melt_quote_outputs: vec![melt_output(&melt)],
-            mint_quote_outputs: vec![remainder_output(&SecretKey::generate())],
+            mint_quote_outputs: vec![rotation_output(&SecretKey::generate())],
             ..Default::default()
         };
         sign(&mut request, &[key], Some(&melt));
@@ -1392,14 +1392,14 @@ async fn unfinished_melt_settlement_reads_pending_on_check() {
         proof_inputs: proofs,
         blinded_outputs: blinded,
         melt_quote_outputs: vec![melt_output(&melt)],
-        mint_quote_outputs: vec![remainder_output(&SecretKey::generate())],
+        mint_quote_outputs: vec![rotation_output(&SecretKey::generate())],
         prefer_async: true,
         ..Default::default()
     };
     sign(&mut request, &[], Some(&melt));
     let response = mint.process_transaction(request, false).await.unwrap();
     assert_eq!(response.state, TransactionState::Pending);
-    // A rotation while the payment is in flight needs the remainder quote, and a quote already
+    // A rotation while the payment is in flight needs the rotation quote, and a quote already
     // under its id makes the settlement step fail after the melt is paid.
     mint.rotate_keyset_by_version(
         CurrencyUnit::Sat,
@@ -1410,7 +1410,7 @@ async fn unfinished_melt_settlement_reads_pending_on_check() {
     )
     .await
     .unwrap();
-    add_quote_under(&mint, &remainder_id(&melt)).await;
+    add_quote_under(&mint, &rotation_id(&melt)).await;
 
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
@@ -1541,7 +1541,7 @@ async fn fixed_txout_quotes_settle_beside_a_melt() {
         melt_quote_outputs: vec![melt_output(&melt)],
         mint_quote_outputs: vec![
             fixed_output(&fixed_key, 3),
-            remainder_output(&SecretKey::generate()),
+            rotation_output(&SecretKey::generate()),
         ],
         ..Default::default()
     };
@@ -1569,7 +1569,7 @@ async fn fixed_txout_quotes_settle_beside_a_melt() {
     let fixed = txout_quote(&response, 0);
     assert_eq!(fixed["amount_paid"], 3);
     assert_eq!(fixed["pubkey"], fixed_key.public_key().to_hex());
-    // The outputs were signed, so the remainder quote was not created.
+    // The outputs were signed, so the rotation quote was not created.
     assert!(response.mint_quotes[1].is_none());
 
     // A txout quote id names one quote: naming a claimed one is refused before anything is spent.
@@ -1624,7 +1624,7 @@ async fn rejects_bad_fixed_txout_quotes() {
         .as_mut()
         .unwrap()
         .replace_range(..2, "zz");
-    let named_remainder = TransactionMintQuoteOutput {
+    let named_rotation = TransactionMintQuoteOutput {
         amount: None,
         ..fixed_output(&key, 4)
     };
@@ -1632,7 +1632,7 @@ async fn rejects_bad_fixed_txout_quotes() {
         vec![fixed_output(&key, 0), fixed_output(&key, 4)],
         vec![short_preimage],
         vec![not_hex],
-        vec![named_remainder],
+        vec![named_rotation],
     ] {
         let request = TransactionRequest {
             proof_inputs: proofs.clone(),

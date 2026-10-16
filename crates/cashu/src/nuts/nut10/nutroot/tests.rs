@@ -821,7 +821,7 @@ fn shared_transcript_vectors() {
         if let Some(expected) = case.get("input_section_hash") {
             assert_eq!(<[u8; 32]>::from(Sha256::digest(&section)), hash(expected));
         }
-        // The remainder quote is named by its melt, a fixed one by its preimage or its inputs.
+        // The rotation quote is named by its melt, a fixed one by its preimage or its inputs.
         let quote_outputs: Vec<_> = list(&tx["mint_quote_outputs"])
             .iter()
             .enumerate()
@@ -832,7 +832,7 @@ fn shared_transcript_vectors() {
                     .as_secp256k1()
                     .unwrap(),
                 id: match (v.get("amount"), v.get("id_preimage")) {
-                    (None, _) => remainder_quote_id(&melt_quotes[0].id),
+                    (None, _) => rotation_quote_id(&melt_quotes[0].id),
                     (Some(_), Some(preimage)) => derived_quote_id(&hash(preimage)),
                     (Some(_), None) => input_bound_quote_id(&section, k as u32),
                 },
@@ -978,11 +978,11 @@ fn shared_mint_quote_input_vectors() {
 }
 
 #[test]
-fn remainder_quote_id_vector() {
+fn rotation_quote_id_vector() {
     let shared: Value = serde_json::from_str(include_str!("nutroot_v3_vectors.json")).unwrap();
-    let lock = &shared["nut13_v3"]["remainder_lock"];
+    let lock = &shared["nut13_v3"]["rotation_lock"];
     assert_eq!(
-        remainder_quote_id(lock["melt_quote_id"].as_str().unwrap()),
+        rotation_quote_id(lock["melt_quote_id"].as_str().unwrap()),
         lock["quote_id"].as_str().unwrap()
     );
 }
@@ -1109,14 +1109,14 @@ fn shared_template_leaf_vectors() {
     assert!(witness
         .verify_in(secret, digest, mixed.txout_keys(), 0)
         .is_err());
-    // A remainder quote is not a fixed txout quote, even to a key in dests.
-    let mut remainder = quote_outputs.clone();
-    remainder[0].amount = None;
-    let remainder =
-        Transaction::with_quote_outputs(&template_proofs(&case["tx"]), &[], &[], &[], &remainder)
+    // A rotation quote is not a fixed txout quote, even to a key in dests.
+    let mut rotation = quote_outputs.clone();
+    rotation[0].amount = None;
+    let rotation =
+        Transaction::with_quote_outputs(&template_proofs(&case["tx"]), &[], &[], &[], &rotation)
             .unwrap();
-    assert!(remainder.txout_keys().is_none());
-    assert!(Transaction::from_bytes(remainder.as_bytes())
+    assert!(rotation.txout_keys().is_none());
+    assert!(Transaction::from_bytes(rotation.as_bytes())
         .unwrap()
         .txout_keys()
         .is_none());

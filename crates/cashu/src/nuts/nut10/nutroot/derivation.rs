@@ -93,10 +93,10 @@ pub fn input_bound_quote_id(input_section: &[u8], position: u32) -> String {
     crate::util::hex::encode(tagged_hash("Cashu_InputQuoteId", &message))
 }
 
-/// NUT-XX remainder quote id, `hex(tagged_hash("Cashu_RemainderQuoteId", melt_quote_id))`.
-pub fn remainder_quote_id(melt_quote_id: &str) -> String {
+/// NUT-XX rotation quote id, `hex(tagged_hash("Cashu_RotationQuoteId", melt_quote_id))`.
+pub fn rotation_quote_id(melt_quote_id: &str) -> String {
     crate::util::hex::encode(tagged_hash(
-        "Cashu_RemainderQuoteId",
+        "Cashu_RotationQuoteId",
         melt_quote_id.as_bytes(),
     ))
 }

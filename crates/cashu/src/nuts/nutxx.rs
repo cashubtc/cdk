@@ -50,13 +50,13 @@ pub struct TransactionMeltOutput {
     pub fee_index: Option<u32>,
 }
 
-/// A mint quote output: a fixed txout quote, or without an amount the remainder quote
+/// A mint quote output: a fixed txout quote, or without an amount the rotation quote
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TransactionMintQuoteOutput {
     /// Lock key of the txout quote, a 33-byte compressed secp256k1 key
     pub pubkey: String,
-    /// Fixed amount; omitted on the remainder quote
+    /// Fixed amount; omitted on the rotation quote
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub amount: Option<Amount>,
     /// 32-byte hex preimage of a fixed txout quote's derived id (NUT-04); omitted for an id
@@ -80,7 +80,7 @@ pub struct TransactionRequest {
     /// At most one melt quote
     #[serde(default)]
     pub melt_quote_outputs: Vec<TransactionMeltOutput>,
-    /// Fixed txout quotes to create, and at most one remainder quote
+    /// Fixed txout quotes to create, and at most one rotation quote
     #[serde(default)]
     pub mint_quote_outputs: Vec<TransactionMintQuoteOutput>,
     /// Return once the inputs are reserved rather than waiting for the melt

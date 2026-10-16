@@ -43,12 +43,12 @@ pub struct MintQuoteInput {
 /// Mint quote output bound by a transaction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MintQuoteOutput {
-    /// Fixed amount, `None` on the remainder quote.
+    /// Fixed amount, `None` on the rotation quote.
     pub amount: Option<Amount>,
     /// Lock key of the txout quote.
     pub pubkey: bitcoin::secp256k1::PublicKey,
     /// The txout quote's id: [`super::derived_quote_id`] or [`super::input_bound_quote_id`] for a
-    /// fixed one, [`super::remainder_quote_id`] for the remainder quote.
+    /// fixed one, [`super::rotation_quote_id`] for the rotation quote.
     pub id: String,
 }
 
@@ -73,7 +73,7 @@ impl Transaction {
         Self::with_quote_outputs(proofs, mint_quotes, outputs, melt_quotes, &[])
     }
 
-    /// [`Transaction::new`] with mint quote outputs, at most one of them the remainder.
+    /// [`Transaction::new`] with mint quote outputs, at most one of them the rotation quote.
     pub fn with_quote_outputs(
         proofs: &[Proof],
         mint_quotes: &[MintQuoteInput],
@@ -110,7 +110,7 @@ impl Transaction {
             )?);
         }
         for output in quote_outputs {
-            // The amount record is omitted entirely on the remainder quote.
+            // The amount record is omitted entirely on the rotation quote.
             let mut body = vec![];
             if let Some(amount) = output.amount {
                 record(&mut body, 1, &integer(u64::from(amount)))?;
@@ -137,7 +137,7 @@ impl Transaction {
         let mut ys = HashSet::new();
         let mut quotes = HashSet::new();
         let mut output = false;
-        let mut remainder = false;
+        let mut rotation = false;
         let mut quote_output_ids = HashSet::new();
         let mut txout_keys = Some(vec![]);
         for (tag, value, full) in records {
@@ -147,10 +147,10 @@ impl Transaction {
             last = tag;
             let fields = parse_records(value)?;
             if tag == MINT_QUOTE_OUTPUT {
-                // `01 amount, 02 lock key, 03 quote id`; the remainder quote has no `01`.
+                // `01 amount, 02 lock key, 03 quote id`; the rotation quote has no `01`.
                 let (key, id) = match fields.as_slice() {
-                    [(2, key, _), (3, id, _)] if !remainder => {
-                        remainder = true;
+                    [(2, key, _), (3, id, _)] if !rotation => {
+                        rotation = true;
                         txout_keys = None;
                         (key, id)
                     }

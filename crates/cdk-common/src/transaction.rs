@@ -19,7 +19,7 @@ pub struct TransactionResponse {
     /// NUT-05 response per melt quote output, in request order
     pub melt_quotes: Vec<serde_json::Value>,
     /// NUT-04 response per mint quote output in request order, `None` until
-    /// `PAID` or for a remainder quote not created
+    /// `PAID` or for a rotation quote not created
     pub mint_quotes: Vec<Option<serde_json::Value>>,
 }
 

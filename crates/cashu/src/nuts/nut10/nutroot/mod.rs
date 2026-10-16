@@ -31,7 +31,7 @@ mod tests;
 
 pub use self::derivation::{
     derive_blinding_factor, derive_key, derive_quote_id_preimage, derive_quote_key,
-    derived_quote_id, input_bound_quote_id, remainder_quote_id, KeyPurpose,
+    derived_quote_id, input_bound_quote_id, rotation_quote_id, KeyPurpose,
 };
 pub use self::leaf::{Condition, Leaf};
 pub use self::locking::{nums_point, NutrootOption};

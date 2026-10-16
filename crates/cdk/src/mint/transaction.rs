@@ -79,7 +79,7 @@ pub(crate) fn parse_quote_witness(raw: &str) -> Result<Witness, Error> {
     serde_json::from_str(raw).map_err(|_| Error::SignatureMissingOrInvalid)
 }
 
-/// A mint quote output: its id, lock key and fixed amount, `None` on the remainder quote.
+/// A mint quote output: its id, lock key and fixed amount, `None` on the rotation quote.
 type QuoteOutput = (QuoteId, PublicKey, Option<Amount>);
 
 /// Parse a fixed txout quote's `id_preimage`: exactly 32 bytes of hex.
@@ -143,7 +143,7 @@ pub(crate) async fn claim_txout_quote_ids(
     outputs: &[QuoteOutput],
     melt_quote_id: Option<&QuoteId>,
 ) -> Result<(), Error> {
-    // The remainder quote's id is its melt's, unique without a claim.
+    // The rotation quote's id is its melt's, unique without a claim.
     let ids: Vec<QuoteId> = outputs
         .iter()
         .filter(|(_, _, amount)| amount.is_some())
@@ -157,7 +157,7 @@ pub(crate) async fn claim_txout_quote_ids(
         })
 }
 
-/// Create each fixed txout quote, and the remainder quote for `unsigned`, the value of outputs
+/// Create each fixed txout quote, and the rotation quote for `unsigned`, the value of outputs
 /// the mint could not sign.
 async fn create_txout_quotes(
     tx: &mut DynMintTransaction,
@@ -313,7 +313,7 @@ async fn issue_quote_inputs(
 ///
 /// Runs in the melt finalization's second transaction, in place of the change
 /// signing of a plain melt. Blank outputs take the change as in NUT-08; the
-/// remainder quote holds the outputs if the mint cannot sign them. The melt quote is already paid.
+/// rotation quote holds the outputs if the mint cannot sign them. The melt quote is already paid.
 pub(crate) async fn settle_with_melt(
     mint: &Mint,
     db: &DynMintDatabase,
@@ -358,7 +358,7 @@ pub(crate) async fn settle_with_melt(
         });
     }
     // Outputs whose keyset went inactive during the payment are not signed (NUT-02);
-    // the remainder quote holds their value.
+    // the rotation quote holds their value.
     let mut unsigned = Amount::ZERO;
     let signable = outputs.first().is_none_or(|output| {
         mint.get_keyset_info(&output.keyset_id)
@@ -369,7 +369,7 @@ pub(crate) async fn settle_with_melt(
         tracing::warn!(
             melt_quote_id = %quote.id,
             unsigned = %unsigned,
-            "transaction outputs lost their active keyset during payment; holding their value in the remainder quote",
+            "transaction outputs lost their active keyset during payment; holding their value in the rotation quote",
         );
         outputs.clear();
     }
@@ -515,24 +515,22 @@ impl Mint {
             }
             quote_requests.push((id_preimage, pubkey, output.amount));
         }
-        // The amount-less output is the remainder quote, backing a melt's outputs (NUT-XX).
-        let remainders = quote_requests
+        // The amount-less output is the rotation quote, backing a melt's outputs (NUT-XX).
+        let rotations = quote_requests
             .iter()
             .filter(|(_, _, amount)| amount.is_none())
             .count();
-        let has_fixed = remainders < quote_requests.len();
+        let has_fixed = rotations < quote_requests.len();
         if outputs.is_empty() && request.melt_quote_outputs.is_empty() && !has_fixed {
             return Err(invalid("transaction requires at least one output"));
         }
-        if remainders > 1 {
+        if rotations > 1 {
             return Err(invalid(
-                "at most one mint quote output may omit its amount, the remainder quote",
+                "at most one mint quote output may omit its amount, the rotation quote",
             ));
         }
-        if remainders == 1 && (outputs.is_empty() || request.melt_quote_outputs.is_empty()) {
-            return Err(invalid(
-                "a remainder quote needs a melt and blinded outputs",
-            ));
+        if rotations == 1 && (outputs.is_empty() || request.melt_quote_outputs.is_empty()) {
+            return Err(invalid("a rotation quote needs a melt and blinded outputs"));
         }
         if request.melt_quote_outputs.is_empty() && outputs.iter().any(|o| o.amount == Amount::ZERO)
         {
@@ -648,9 +646,9 @@ impl Mint {
         let mut transcript_quote_outputs = Vec::with_capacity(quote_requests.len());
         let mut ids = HashSet::new();
         for (k, (id_preimage, pubkey, amount)) in quote_requests.into_iter().enumerate() {
-            // The remainder quote is named by its melt, a fixed one by its preimage or its inputs.
+            // The rotation quote is named by its melt, a fixed one by its preimage or its inputs.
             let id = match (amount, id_preimage, &melt) {
-                (None, _, Some(melt)) => nutroot::remainder_quote_id(&melt.id.to_string()),
+                (None, _, Some(melt)) => nutroot::rotation_quote_id(&melt.id.to_string()),
                 (None, _, None) => return Err(Error::Internal),
                 (Some(_), Some(preimage), _) => nutroot::derived_quote_id(&preimage),
                 (Some(_), None, _) => nutroot::input_bound_quote_id(

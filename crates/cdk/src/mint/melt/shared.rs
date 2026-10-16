@@ -1010,7 +1010,7 @@ pub async fn finalize_melt_quote(
     };
 
     // Process change (if needed) - opens new transaction. A transaction signs
-    // its own outputs, holding them in a remainder quote if it cannot.
+    // its own outputs, holding them in a rotation quote if it cannot.
     let change_result = match transaction {
         Some(_) => {
             crate::mint::transaction::settle_with_melt(
