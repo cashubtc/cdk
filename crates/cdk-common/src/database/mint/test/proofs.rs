@@ -14,11 +14,11 @@ use crate::mint::Operation;
 use crate::state::check_state_transition;
 
 /// Recovery randomness is batched with the Pending-to-Spent transition and rolls back with it.
-pub async fn unpoisonable_recovery_storage<DB>(db: DB)
+pub async fn rerandomization_recovery_storage<DB>(db: DB)
 where
     DB: Database<Error> + KeysDatabase<Err = Error> + Sync,
 {
-    assert!(db.supports_unpoisonable_swaps());
+    assert!(db.supports_output_rerandomization());
     let keyset_id = setup_keyset(&db).await;
     let proof = Proof {
         amount: Amount::ONE,
@@ -44,7 +44,7 @@ where
         .await
         .is_err());
     tx.commit().await.unwrap();
-    assert!(db.get_unpoisonable_r(&ys).await.unwrap().is_empty());
+    assert!(db.get_rerandomization_r(&ys).await.unwrap().is_empty());
 
     // An incomplete batch must fail; rolling back restores every input.
     let mut tx = Database::begin_transaction(&db).await.unwrap();
@@ -59,7 +59,7 @@ where
         db.get_proofs_states(&ys).await.unwrap(),
         vec![Some(State::Pending); ys.len()]
     );
-    assert!(db.get_unpoisonable_r(&ys).await.unwrap().is_empty());
+    assert!(db.get_rerandomization_r(&ys).await.unwrap().is_empty());
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     let mut acquired = tx.get_proofs(&ys).await.unwrap();
@@ -71,7 +71,7 @@ where
         db.get_proofs_states(&ys).await.unwrap(),
         vec![Some(State::Pending); ys.len()]
     );
-    assert!(db.get_unpoisonable_r(&ys).await.unwrap().is_empty());
+    assert!(db.get_rerandomization_r(&ys).await.unwrap().is_empty());
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     let mut acquired = tx.get_proofs(&ys).await.unwrap();
@@ -79,7 +79,7 @@ where
         .await
         .unwrap();
     tx.commit().await.unwrap();
-    let recovered = db.get_unpoisonable_r(&ys).await.unwrap();
+    let recovered = db.get_rerandomization_r(&ys).await.unwrap();
     assert_eq!(recovered.len(), ys.len());
     assert!(ys.iter().all(|y| recovered.get(y) == Some(&[42; 32])));
     assert_eq!(
@@ -94,7 +94,7 @@ where
         .is_err());
     tx.rollback().await.unwrap();
     assert_eq!(
-        db.get_unpoisonable_r(&ys).await.unwrap().get(&ys[0]),
+        db.get_rerandomization_r(&ys).await.unwrap().get(&ys[0]),
         Some(&[42; 32])
     );
 }

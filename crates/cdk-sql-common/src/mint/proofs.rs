@@ -222,7 +222,7 @@ where
                     "Recovery randomness requires a Pending-to-Spent transition".to_owned(),
                 ));
             }
-            let changed = query("UPDATE proof SET state = 'SPENT', unpoisonable_r = :r WHERE y IN (:ys) AND state = 'PENDING' AND unpoisonable_r IS NULL")?
+            let changed = query("UPDATE proof SET state = 'SPENT', rerandomization_r = :r WHERE y IN (:ys) AND state = 'PENDING' AND rerandomization_r IS NULL")?
                 .bind("r", r.to_vec())
                 .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
                 .execute(&self.inner)
@@ -455,11 +455,11 @@ where
 {
     type Err = Error;
 
-    fn supports_unpoisonable_swaps(&self) -> bool {
+    fn supports_output_rerandomization(&self) -> bool {
         true
     }
 
-    async fn get_unpoisonable_r(
+    async fn get_rerandomization_r(
         &self,
         ys: &[PublicKey],
     ) -> Result<HashMap<PublicKey, [u8; 32]>, Self::Err> {
@@ -468,7 +468,7 @@ where
             .get()
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
-        query("SELECT y, unpoisonable_r FROM proof WHERE y IN (:ys) AND state = 'SPENT' AND unpoisonable_r IS NOT NULL")?
+        query("SELECT y, rerandomization_r FROM proof WHERE y IN (:ys) AND state = 'SPENT' AND rerandomization_r IS NOT NULL")?
             .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
             .fetch_all(&*conn)
             .await?

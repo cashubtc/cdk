@@ -461,7 +461,7 @@ pub trait ProofsTransaction {
     /// Randomness is only allowed for a Pending-to-Spent transition. Backends
     /// supporting it must persist the same `r` for every acquired input in this
     /// transaction, reject incomplete updates, and implement
-    /// [`ProofsDatabase::get_unpoisonable_r`] for recovery after restart.
+    /// [`ProofsDatabase::get_rerandomization_r`] for recovery after restart.
     /// The default preserves ordinary updates and rejects recovery randomness
     /// before changing any state.
     async fn update_proofs_state_with_r(
@@ -473,7 +473,7 @@ pub trait ProofsTransaction {
         match r {
             None => self.update_proofs_state(proofs, new_state).await,
             Some(_) => Err(Error::Internal(
-                "Database does not support unpoisonable recovery persistence".to_owned(),
+                "Database does not support output rerandomization recovery persistence".to_owned(),
             )
             .into()),
         }
@@ -512,17 +512,17 @@ pub trait ProofsDatabase {
     type Err: Into<Error> + From<Error>;
 
     /// Whether this backend supports atomic spent-state/recovery writes and
-    /// durable recovery reads for unpoisonable swaps.
+    /// durable recovery reads for mint-rerandomized swaps.
     /// Only return true when both methods below are implemented and usable.
-    fn supports_unpoisonable_swaps(&self) -> bool {
+    fn supports_output_rerandomization(&self) -> bool {
         false
     }
 
     /// Fetch committed recovery randomness for spent inputs only, keyed by Y.
     /// Backends that implement this method must also atomically persist it in
     /// [`ProofsTransaction::update_proofs_state_with_r`]. The default returns
-    /// no recovery data for backends without unpoisonable support.
-    async fn get_unpoisonable_r(
+    /// no recovery data for backends without rerandomization support.
+    async fn get_rerandomization_r(
         &self,
         _ys: &[PublicKey],
     ) -> Result<HashMap<PublicKey, [u8; 32]>, Self::Err> {

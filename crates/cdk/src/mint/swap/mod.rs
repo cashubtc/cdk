@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use cdk_common::nuts::nut03::{self, tweak_swap_outputs, UnpoisonableR};
+use cdk_common::nuts::nut03::{self, tweak_swap_outputs, RerandomizationR};
 use cdk_common::SpendingConditionVerification;
 use swap_saga::SwapSaga;
 use tracing::instrument;
@@ -64,29 +64,29 @@ impl Mint {
             // and HTLC (including SIGALL)
             swap_request.verify_spending_conditions()?;
 
-            if swap_request.is_unpoisonable() {
+            if swap_request.is_rerandomized() {
                 // Reject duplicate originals before retrying tweaked output reservations.
                 self.verify_outputs(swap_request.outputs())?;
             }
             // Even one collision is extraordinarily unlikely; bound retries defensively.
             // https://gist.github.com/SatsAndSports/6c197ca9da984c1922483e74281d38db
             for _ in 0..16 {
-                let r = if swap_request.is_unpoisonable() {
-                    Some(UnpoisonableR(random()?))
+                let r = if swap_request.is_rerandomized() {
+                    Some(RerandomizationR(random()?))
                 } else {
                     None
                 };
                 let outputs = match r {
                     Some(r) => match tweak_swap_outputs(&r.0, swap_request.outputs()) {
                         Ok(outputs) => Cow::Owned(outputs),
-                        Err(nut03::Error::UnpoisonablePointAtInfinity) => continue,
+                        Err(nut03::Error::RerandomizationPointAtInfinity) => continue,
                         Err(err) => return Err(err.into()),
                     },
                     None => Cow::Borrowed(swap_request.outputs().as_slice()),
                 };
                 let init_saga =
                     SwapSaga::new(self, self.localstore.clone(), self.pubsub_manager.clone())
-                        .with_unpoisonable_r(r);
+                        .with_rerandomization_r(r);
                 let setup = init_saga
                     .setup_swap(
                         swap_request.inputs(),

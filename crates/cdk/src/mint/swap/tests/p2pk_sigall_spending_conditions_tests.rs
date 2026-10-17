@@ -159,7 +159,7 @@ async fn mint_sig_all_inputs(
 }
 
 #[tokio::test]
-async fn test_unpoisonable_swap_recovers_and_spends_after_original_is_signed() {
+async fn test_rerandomized_swap_recovers_and_spends_after_original_is_signed() {
     let test_mint = TestMintHelper::new().await.unwrap();
     let mint = test_mint.mint();
     let (signer, pubkey) = create_test_keypair();
@@ -167,7 +167,8 @@ async fn test_unpoisonable_swap_recovers_and_spends_after_original_is_signed() {
     let locked_proofs = mint_sig_all_inputs(&test_mint, pubkey, amount).await;
 
     let (outputs, pre_mint) = create_test_blinded_messages(mint, amount).await.unwrap();
-    let mut request = SwapRequest::new(locked_proofs.clone(), outputs.clone()).with_unpoisonable();
+    let mut request =
+        SwapRequest::new(locked_proofs.clone(), outputs.clone()).with_rerandomization();
     request.sign_sig_all(signer.clone()).unwrap();
     assert!(
         cdk_common::SpendingConditionVerification::verify_spending_conditions(&request).is_ok()
@@ -177,7 +178,7 @@ async fn test_unpoisonable_swap_recovers_and_spends_after_original_is_signed() {
         locked_proofs.clone(),
         vec![outputs[0].clone(), outputs[0].clone()],
     )
-    .with_unpoisonable();
+    .with_rerandomization();
     duplicates.sign_sig_all(signer.clone()).unwrap();
     assert!(matches!(
         mint.process_swap_request(duplicates).await,
@@ -201,7 +202,7 @@ async fn test_unpoisonable_swap_recovers_and_spends_after_original_is_signed() {
         .process_swap_request(SwapRequest::new(other_inputs, outputs.clone()))
         .await
         .unwrap();
-    assert!(original_signature.unpoisonable_r.is_none());
+    assert!(original_signature.rerandomization_r.is_none());
     // Force the first candidate to collide with a previously signed execution point.
     let collision_r = [7u8; 32];
     let collision_outputs =
@@ -222,7 +223,7 @@ async fn test_unpoisonable_swap_recovers_and_spends_after_original_is_signed() {
     assert_eq!(exhausted_attempts, 16);
     assert!(mint
         .localstore()
-        .get_unpoisonable_r(&locked_proofs.ys().unwrap())
+        .get_rerandomization_r(&locked_proofs.ys().unwrap())
         .await
         .unwrap()
         .is_empty());
@@ -240,7 +241,7 @@ async fn test_unpoisonable_swap_recovers_and_spends_after_original_is_signed() {
         .await
         .unwrap();
     assert_eq!(attempts, 2);
-    assert_eq!(response.unpoisonable_r.unwrap().0, [8u8; 32]);
+    assert_eq!(response.rerandomization_r.unwrap().0, [8u8; 32]);
     // A spent-input failure is not an output collision and must not be retried.
     let mut attempts = 0;
     assert!(mint
@@ -260,8 +261,8 @@ async fn test_unpoisonable_swap_recovers_and_spends_after_original_is_signed() {
     assert!(check
         .states
         .iter()
-        .all(|s| s.state == State::Spent && s.unpoisonable_r == response.unpoisonable_r));
-    let r = check.states[0].unpoisonable_r.unwrap();
+        .all(|s| s.state == State::Spent && s.rerandomization_r == response.rerandomization_r));
+    let r = check.states[0].rerandomization_r.unwrap();
     let tweaked = cdk_common::nuts::nut03::tweak_swap_outputs(&r.0, &outputs).unwrap();
     let recovered = mint
         .restore(cdk_common::nuts::RestoreRequest {
@@ -271,7 +272,7 @@ async fn test_unpoisonable_swap_recovers_and_spends_after_original_is_signed() {
         .unwrap();
     assert_eq!(recovered.signatures, response.signatures);
     let signatures = recovered.signatures;
-    let tweak = cdk_common::nuts::nut03::derive_unpoisonable_tweak(&r.0).unwrap();
+    let tweak = cdk_common::nuts::nut03::derive_rerandomization_tweak(&r.0).unwrap();
     let mut effective_rs = Vec::with_capacity(signatures.len());
     for (i, signature) in signatures.iter().enumerate() {
         let mint_pubkey = test_mint
@@ -322,7 +323,7 @@ async fn test_unpoisonable_swap_recovers_and_spends_after_original_is_signed() {
 }
 
 #[tokio::test]
-async fn test_unpoisonable_swap_retries_point_at_infinity() {
+async fn test_rerandomized_swap_retries_point_at_infinity() {
     let test_mint = TestMintHelper::new().await.unwrap();
     let mint = test_mint.mint();
     let (signer, pubkey) = create_test_keypair();
@@ -331,7 +332,7 @@ async fn test_unpoisonable_swap_retries_point_at_infinity() {
     let locked_proofs = mint_sig_all_inputs(&test_mint, pubkey, amount).await;
 
     let infinity_r = [0x42; 32];
-    let tweak = cdk_common::nuts::nut03::derive_unpoisonable_tweak(&infinity_r).unwrap();
+    let tweak = cdk_common::nuts::nut03::derive_rerandomization_tweak(&infinity_r).unwrap();
     let infinity_original = bitcoin::secp256k1::SecretKey::from_slice(&tweak.to_be_bytes())
         .unwrap()
         .public_key(&bitcoin::secp256k1::Secp256k1::new())
@@ -339,7 +340,7 @@ async fn test_unpoisonable_swap_retries_point_at_infinity() {
         .into();
     let (mut outputs, _) = create_test_blinded_messages(mint, amount).await.unwrap();
     outputs[0].blinded_secret = infinity_original;
-    let mut request = SwapRequest::new(locked_proofs, outputs).with_unpoisonable();
+    let mut request = SwapRequest::new(locked_proofs, outputs).with_rerandomization();
     request.sign_sig_all(signer).unwrap();
 
     let successful_r = [0x43; 32];
@@ -358,13 +359,13 @@ async fn test_unpoisonable_swap_retries_point_at_infinity() {
 
     assert_eq!(attempts, 2);
     assert_eq!(
-        response.unpoisonable_r,
-        Some(cdk_common::nuts::nut03::UnpoisonableR(successful_r))
+        response.rerandomization_r,
+        Some(cdk_common::nuts::nut03::RerandomizationR(successful_r))
     );
 }
 
 #[tokio::test]
-async fn unpoisonable_completed_swap_recovers_after_mint_restart() {
+async fn rerandomized_completed_swap_recovers_after_mint_restart() {
     use std::sync::Arc;
 
     use cdk_common::dhke::blind_message;
@@ -373,7 +374,7 @@ async fn unpoisonable_completed_swap_recovers_after_mint_restart() {
     use crate::test_helpers::mint::{create_test_mint_with_db, mint_test_proofs};
 
     let path = std::env::temp_dir().join(format!(
-        "cdk-unpoisonable-restart-{}.sqlite",
+        "cdk-rerandomized-restart-{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let seed = [42u8; 64];
@@ -415,10 +416,10 @@ async fn unpoisonable_completed_swap_recovers_after_mint_restart() {
     .unwrap();
     let ys = locked.ys().unwrap();
     let (outputs, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
-    let mut request = SwapRequest::new(locked, outputs.clone()).with_unpoisonable();
+    let mut request = SwapRequest::new(locked, outputs.clone()).with_rerandomization();
     request.sign_sig_all(signer).unwrap();
     let response = mint.process_swap_request(request).await.unwrap();
-    let r = response.unpoisonable_r.unwrap();
+    let r = response.rerandomization_r.unwrap();
     mint.stop().await.unwrap();
     drop(mint);
     drop(db);
@@ -433,8 +434,8 @@ async fn unpoisonable_completed_swap_recovers_after_mint_restart() {
     assert!(states
         .states
         .iter()
-        .all(|state| state.state == State::Spent && state.unpoisonable_r == Some(r)));
-    let r = states.states[0].unpoisonable_r.unwrap();
+        .all(|state| state.state == State::Spent && state.rerandomization_r == Some(r)));
+    let r = states.states[0].rerandomization_r.unwrap();
     let tweaked = cdk_common::nuts::nut03::tweak_swap_outputs(&r.0, &outputs).unwrap();
     let restored = mint
         .restore(RestoreRequest { outputs: tweaked })

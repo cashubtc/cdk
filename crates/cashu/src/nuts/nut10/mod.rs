@@ -272,14 +272,14 @@ pub(crate) fn get_pubkeys_and_required_sigs(
 
 use super::Proofs;
 
-/// BIP-340 tag for an unpoisonable NUT-11 v1 SIG_ALL swap.
-const SIG_ALL_UNPOISONABLE_TAG: &[u8] = b"Cashu_SigAllUnpoisonable_v1";
+/// BIP-340 tag for a mint-rerandomized NUT-11 v1 SIG_ALL swap.
+const SIG_ALL_RERANDOMIZED_TAG: &[u8] = b"Cashu_SigAllRerandomized_v1";
 
-/// Length-framed SIG_ALL message for an unpoisonable swap.
+/// Length-framed SIG_ALL message for a mint-rerandomized swap.
 ///
 /// Commits to an empty swap-context frame, each input's secret and C, then each
 /// output's amount (minimal big-endian bytes) and B_.
-pub(crate) fn unpoisonable_sig_all_msg_to_sign(
+pub(crate) fn rerandomized_sig_all_msg_to_sign(
     inputs: &Proofs,
     outputs: &[super::BlindedMessage],
 ) -> Vec<u8> {
@@ -296,9 +296,9 @@ pub(crate) fn unpoisonable_sig_all_msg_to_sign(
     msg
 }
 
-/// Tagged hash of the unpoisonable SIG_ALL message, signed without further hashing.
-pub(crate) fn unpoisonable_sig_all_message_hash(message: &[u8]) -> [u8; 32] {
-    let tag_hash = Sha256Hash::hash(SIG_ALL_UNPOISONABLE_TAG).to_byte_array();
+/// Tagged hash of the rerandomized SIG_ALL message, signed without further hashing.
+pub(crate) fn rerandomized_sig_all_message_hash(message: &[u8]) -> [u8; 32] {
+    let tag_hash = Sha256Hash::hash(SIG_ALL_RERANDOMIZED_TAG).to_byte_array();
     let mut preimage = Vec::with_capacity(64 + message.len());
     preimage.extend_from_slice(&tag_hash);
     preimage.extend_from_slice(&tag_hash);
@@ -318,8 +318,8 @@ pub trait SpendingConditionVerification {
     /// For melt: input secrets + quote/payment request
     fn sig_all_msg_to_sign(&self) -> String;
 
-    /// Construct a separately tagged SIG_ALL message when unpoisonable processing is selected.
-    fn unpoisonable_sig_all_msg_to_sign(&self) -> Option<Vec<u8>> {
+    /// Construct a separately tagged SIG_ALL message when rerandomization is selected.
+    fn rerandomized_sig_all_msg_to_sign(&self) -> Option<Vec<u8>> {
         None
     }
 
@@ -408,7 +408,7 @@ pub trait SpendingConditionVerification {
     fn verify_spending_conditions(&self) -> Result<(), Error> {
         // Check if any input has SIG_ALL flag
         let has_sig_all = self.has_at_least_one_sig_all()?;
-        if self.unpoisonable_sig_all_msg_to_sign().is_some() && !has_sig_all {
+        if self.rerandomized_sig_all_msg_to_sign().is_some() && !has_sig_all {
             return Err(Error::SpendConditionsNotMet);
         }
 
@@ -439,8 +439,8 @@ pub trait SpendingConditionVerification {
         let first_input = self.inputs().first().ok_or(Error::SpendConditionsNotMet)?;
         let first_secret =
             Secret::try_from(&first_input.secret).map_err(|_| Error::IncorrectSecretKind)?;
-        let digest = match self.unpoisonable_sig_all_msg_to_sign() {
-            Some(message) => unpoisonable_sig_all_message_hash(&message),
+        let digest = match self.rerandomized_sig_all_msg_to_sign() {
+            Some(message) => rerandomized_sig_all_message_hash(&message),
             None => Sha256Hash::hash(self.sig_all_msg_to_sign().as_bytes()).to_byte_array(),
         };
 

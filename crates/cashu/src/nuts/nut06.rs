@@ -531,7 +531,7 @@ mod tests {
     use crate::{Amount, Method, PaymentMethod, RoutePath};
 
     #[test]
-    fn nut03_advertises_only_explicit_unpoisonable_support() {
+    fn nut03_advertises_only_explicit_rerandomization_support() {
         let mut nuts = Nuts::new();
         let original = serde_json::to_value(&nuts).unwrap();
         assert!(original.get("3").is_none());
@@ -540,9 +540,9 @@ mod tests {
             .nut03
             .is_none());
 
-        nuts.nut03 = Some(nut03::Settings { unpoisonable: true });
+        nuts.nut03 = Some(nut03::Settings { rerandomize: true });
         let serialized = serde_json::to_value(&nuts).unwrap();
-        assert_eq!(serialized["3"], serde_json::json!({"unpoisonable": true}));
+        assert_eq!(serialized["3"], serde_json::json!({"rerandomize": true}));
         assert_eq!(serde_json::from_value::<Nuts>(serialized).unwrap(), nuts);
     }
 

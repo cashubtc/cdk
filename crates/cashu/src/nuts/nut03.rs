@@ -16,21 +16,21 @@ use super::ProofsMethods;
 use crate::Amount;
 use crate::SECP256K1;
 
-const UNPOISONABLE_TWEAK_TAG: &[u8] = b"Cashu_UnpoisonableTweak_secp256k1_v1";
+const RERANDOMIZATION_TWEAK_TAG: &[u8] = b"Cashu_OutputRerandomization_secp256k1_v1";
 
 /// Optional NUT-03 swap capabilities advertised in NUT-06 mint information.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Settings {
-    /// Whether this mint supports unpoisonable V2 swaps and durable recovery.
-    pub unpoisonable: bool,
+    /// Whether this mint supports mint-rerandomized V2 swaps and durable recovery.
+    pub rerandomize: bool,
 }
 
 /// Mint-generated recovery randomness, encoded as 64 hexadecimal characters on the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
-pub struct UnpoisonableR(pub [u8; 32]);
+pub struct RerandomizationR(pub [u8; 32]);
 
-impl TryFrom<String> for UnpoisonableR {
+impl TryFrom<String> for RerandomizationR {
     type Error = String;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
@@ -43,8 +43,8 @@ impl TryFrom<String> for UnpoisonableR {
     }
 }
 
-impl From<UnpoisonableR> for String {
-    fn from(value: UnpoisonableR) -> Self {
+impl From<RerandomizationR> for String {
+    fn from(value: RerandomizationR) -> Self {
         crate::util::hex::encode(value.0)
     }
 }
@@ -58,17 +58,17 @@ pub enum Error {
     /// Amount Error
     #[error(transparent)]
     Amount(#[from] crate::amount::Error),
-    /// An additive unpoisonable tweak produced the point at infinity.
-    #[error("Unpoisonable tweak produced the point at infinity")]
-    UnpoisonablePointAtInfinity,
+    /// An additive output rerandomization produced the point at infinity.
+    #[error("Output rerandomization produced the point at infinity")]
+    RerandomizationPointAtInfinity,
 }
 
 /// Derive the shared nonzero secp256k1 scalar from the mint's 32-byte random value.
 ///
 /// Rejection sampling uses tagged SHA-256 over `R || uint32_be(counter)`, starting at
 /// counter zero, until the digest represents an integer in `[1, n-1]`.
-pub fn derive_unpoisonable_tweak(r: &[u8; 32]) -> Result<Scalar, Error> {
-    let tag_hash = Sha256Hash::hash(UNPOISONABLE_TWEAK_TAG).to_byte_array();
+pub fn derive_rerandomization_tweak(r: &[u8; 32]) -> Result<Scalar, Error> {
+    let tag_hash = Sha256Hash::hash(RERANDOMIZATION_TWEAK_TAG).to_byte_array();
     for counter in 0..=u32::MAX {
         let mut preimage = Vec::with_capacity(100);
         preimage.extend_from_slice(&tag_hash);
@@ -83,20 +83,20 @@ pub fn derive_unpoisonable_tweak(r: &[u8; 32]) -> Result<Scalar, Error> {
     Err(crate::dhke::Error::Custom("Could not derive a nonzero tweak".to_owned()).into())
 }
 
-fn add_unpoisonable_tweak(original: &PublicKey, tweak: &Scalar) -> Result<PublicKey, Error> {
+fn add_rerandomization_tweak(original: &PublicKey, tweak: &Scalar) -> Result<PublicKey, Error> {
     Ok(original
         .add_exp_tweak(&SECP256K1, tweak)
-        .map_err(|_| Error::UnpoisonablePointAtInfinity)?
+        .map_err(|_| Error::RerandomizationPointAtInfinity)?
         .into())
 }
 
 /// Add the shared tweak derived from `R` to a blinded point.
 pub fn tweak_blinded_point(r: &[u8; 32], original: &PublicKey) -> Result<PublicKey, Error> {
-    let tweak = derive_unpoisonable_tweak(r)?;
-    add_unpoisonable_tweak(original, &tweak)
+    let tweak = derive_rerandomization_tweak(r)?;
+    add_rerandomization_tweak(original, &tweak)
 }
 
-/// Build the execution outputs for an unpoisonable swap, retaining their original order.
+/// Build the execution outputs for a mint-rerandomized swap, retaining their original order.
 ///
 /// Callers must check that the original points are distinct before deriving outputs.
 /// A collision between tweaked points requires choosing a new `R`.
@@ -104,11 +104,11 @@ pub fn tweak_swap_outputs(
     r: &[u8; 32],
     original: &[BlindedMessage],
 ) -> Result<Vec<BlindedMessage>, Error> {
-    let tweak = derive_unpoisonable_tweak(r)?;
+    let tweak = derive_rerandomization_tweak(r)?;
     original
         .iter()
         .map(|output| {
-            let point = add_unpoisonable_tweak(&output.blinded_secret, &tweak)?;
+            let point = add_rerandomization_tweak(&output.blinded_secret, &tweak)?;
             let mut output = output.clone();
             output.blinded_secret = point;
             Ok(output)
@@ -139,9 +139,9 @@ pub struct SwapRequest {
     inputs: Proofs,
     /// Blinded Messages for Mint to sign
     outputs: Vec<BlindedMessage>,
-    /// Whether this swap requires unpoisonable output processing.
+    /// Whether the mint should rerandomize outputs during this swap.
     #[serde(default, skip_serializing_if = "is_false")]
-    unpoisonable: bool,
+    rerandomize: bool,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -154,19 +154,19 @@ impl SwapRequest {
         Self {
             inputs: inputs.without_dleqs(),
             outputs,
-            unpoisonable: false,
+            rerandomize: false,
         }
     }
 
-    /// Select unpoisonable output processing for this swap.
-    pub fn with_unpoisonable(mut self) -> Self {
-        self.unpoisonable = true;
+    /// Select mint-rerandomized outputs for this swap.
+    pub fn with_rerandomization(mut self) -> Self {
+        self.rerandomize = true;
         self
     }
 
-    /// Whether this swap requires unpoisonable output processing.
-    pub fn is_unpoisonable(&self) -> bool {
-        self.unpoisonable
+    /// Whether this swap requests mint-rerandomized outputs.
+    pub fn is_rerandomized(&self) -> bool {
+        self.rerandomize
     }
 
     /// Get inputs (proofs)
@@ -228,9 +228,9 @@ impl super::nut10::SpendingConditionVerification for SwapRequest {
 
         msg
     }
-    fn unpoisonable_sig_all_msg_to_sign(&self) -> Option<Vec<u8>> {
-        self.unpoisonable
-            .then(|| super::nut10::unpoisonable_sig_all_msg_to_sign(&self.inputs, &self.outputs))
+    fn rerandomized_sig_all_msg_to_sign(&self) -> Option<Vec<u8>> {
+        self.rerandomize
+            .then(|| super::nut10::rerandomized_sig_all_msg_to_sign(&self.inputs, &self.outputs))
     }
 }
 
@@ -239,9 +239,9 @@ impl super::nut10::SpendingConditionVerification for SwapRequest {
 pub struct SwapResponse {
     /// Promises
     pub signatures: Vec<BlindSignature>,
-    /// Recovery randomness for an executed unpoisonable swap.
+    /// Recovery randomness for a committed mint-rerandomized swap.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub unpoisonable_r: Option<UnpoisonableR>,
+    pub rerandomization_r: Option<RerandomizationR>,
 }
 
 impl SwapResponse {
@@ -249,7 +249,7 @@ impl SwapResponse {
     pub fn new(promises: Vec<BlindSignature>) -> Self {
         Self {
             signatures: promises,
-            unpoisonable_r: None,
+            rerandomization_r: None,
         }
     }
 
@@ -268,20 +268,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unpoisonable_r_wire_encoding_and_ordinary_response_compatibility() {
-        let r = UnpoisonableR([0xab; 32]);
+    fn rerandomization_r_wire_encoding_and_ordinary_response_compatibility() {
+        let r = RerandomizationR([0xab; 32]);
         let encoded = serde_json::to_string(&r).unwrap();
         assert_eq!(encoded, format!("\"{}\"", "ab".repeat(32)));
-        assert_eq!(serde_json::from_str::<UnpoisonableR>(&encoded).unwrap(), r);
+        assert_eq!(
+            serde_json::from_str::<RerandomizationR>(&encoded).unwrap(),
+            r
+        );
         for invalid in ["\"00\"", "\"zz\"", "null", "[]"] {
-            assert!(serde_json::from_str::<UnpoisonableR>(invalid).is_err());
+            assert!(serde_json::from_str::<RerandomizationR>(invalid).is_err());
         }
         assert_eq!(
             serde_json::to_string(&SwapResponse::new(vec![])).unwrap(),
             "{\"signatures\":[]}"
         );
         let response: SwapResponse = serde_json::from_str("{\"signatures\":[]}").unwrap();
-        assert!(response.unpoisonable_r.is_none());
+        assert!(response.rerandomization_r.is_none());
     }
 
     const SWAP_REQUEST_JSON: &str = r#"{
@@ -382,17 +385,17 @@ mod tests {
     }
 
     #[test]
-    fn unpoisonable_tweak_vector_and_signing_linearity() {
+    fn rerandomization_tweak_vector_and_signing_linearity() {
         let r = [0x42; 32];
         let original = PublicKey::from_hex(
             "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
         )
         .unwrap();
-        let scalar = derive_unpoisonable_tweak(&r).unwrap();
+        let scalar = derive_rerandomization_tweak(&r).unwrap();
         assert_eq!(
             scalar.to_be_bytes(),
             crate::util::hex::decode(
-                "a8295baeabbf25970d1ff9e17f2a6148f41eac602eae3fb6299d1a4973d37b90"
+                "ea8bfdd0711f5a0cdd1377930ed729ca779722a8a5f97156242fcef09965eeb5"
             )
             .unwrap()
             .as_slice()
@@ -418,9 +421,9 @@ mod tests {
     }
 
     #[test]
-    fn unpoisonable_additive_tweak_rejects_point_at_infinity() {
+    fn rerandomization_additive_tweak_rejects_point_at_infinity() {
         let r = [0x42; 32];
-        let scalar = derive_unpoisonable_tweak(&r).unwrap();
+        let scalar = derive_rerandomization_tweak(&r).unwrap();
         let tweak = SecretKey::from_slice(&scalar.to_be_bytes())
             .unwrap()
             .public_key(&SECP256K1)
@@ -429,12 +432,12 @@ mod tests {
 
         assert!(matches!(
             tweak_blinded_point(&r, &tweak),
-            Err(Error::UnpoisonablePointAtInfinity)
+            Err(Error::RerandomizationPointAtInfinity)
         ));
     }
 
     #[test]
-    fn unpoisonable_outputs_preserve_order() {
+    fn rerandomized_outputs_preserve_order() {
         let request: SwapRequest = serde_json::from_str(SWAP_REQUEST_JSON).unwrap();
         let first = request.outputs()[0].clone();
         let second = BlindedMessage::new(

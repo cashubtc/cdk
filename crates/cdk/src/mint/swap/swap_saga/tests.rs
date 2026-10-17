@@ -23,20 +23,20 @@ fn create_verification(amount: Amount) -> Verification {
 }
 
 #[tokio::test]
-async fn unpoisonable_r_visible_only_after_finalization() {
-    use cdk_common::nuts::nut03::{tweak_swap_outputs, UnpoisonableR};
+async fn rerandomization_r_visible_only_after_finalization() {
+    use cdk_common::nuts::nut03::{tweak_swap_outputs, RerandomizationR};
     use cdk_common::nuts::nut17::Kind;
     use cdk_common::nuts::{CheckStateRequest, NotificationPayload};
     use cdk_common::subscription::{Params, SubId};
     use tokio::time::{timeout, Duration};
 
-    for failure in ["", "GENERAL", "AFTER_UNPOISONABLE_R"] {
+    for failure in ["", "GENERAL", "AFTER_RERANDOMIZATION_R"] {
         let mint = create_test_mint().await.unwrap();
         let (inputs, verification) = create_swap_inputs(&mint, Amount::from(3)).await;
         let (originals, _) = create_test_blinded_messages(&mint, Amount::from(3))
             .await
             .unwrap();
-        let r = UnpoisonableR([42; 32]);
+        let r = RerandomizationR([42; 32]);
         let outputs = tweak_swap_outputs(&r.0, &originals).unwrap();
         let points: Vec<_> = outputs.iter().map(|o| o.blinded_secret).collect();
         let original_points: Vec<_> = originals.iter().map(|o| o.blinded_secret).collect();
@@ -48,7 +48,7 @@ async fn unpoisonable_r_visible_only_after_finalization() {
                     .subscribe(Params {
                         kind: Kind::ProofState,
                         filters: vec![ys[0].to_string()],
-                        id: Arc::new(SubId::from("unpoisonable-live")),
+                        id: Arc::new(SubId::from("rerandomized-live")),
                     })
                     .unwrap(),
             )
@@ -56,7 +56,7 @@ async fn unpoisonable_r_visible_only_after_finalization() {
             None
         };
         let saga = SwapSaga::new(&mint, db.clone(), mint.pubsub_manager())
-            .with_unpoisonable_r(Some(r))
+            .with_rerandomization_r(Some(r))
             .setup_swap(&inputs, &outputs, None, verification)
             .await
             .unwrap();
@@ -68,7 +68,7 @@ async fn unpoisonable_r_visible_only_after_finalization() {
                 .unwrap();
             assert!(
                 matches!(event.into_inner(), NotificationPayload::ProofState(state)
-                if state.state == State::Pending && state.unpoisonable_r.is_none())
+                if state.state == State::Pending && state.rerandomization_r.is_none())
             );
         }
 
@@ -79,14 +79,14 @@ async fn unpoisonable_r_visible_only_after_finalization() {
         assert!(states
             .states
             .iter()
-            .all(|s| s.state == State::Pending && s.unpoisonable_r.is_none()));
-        assert!(db.get_unpoisonable_r(&ys).await.unwrap().is_empty());
+            .all(|s| s.state == State::Pending && s.rerandomization_r.is_none()));
+        assert!(db.get_rerandomization_r(&ys).await.unwrap().is_empty());
         if failure == "GENERAL" {
             set_fail_for("GENERAL");
             let result = saga.sign_outputs().await;
             clear_fail_for("GENERAL");
             assert!(result.is_err());
-            assert!(db.get_unpoisonable_r(&ys).await.unwrap().is_empty());
+            assert!(db.get_rerandomization_r(&ys).await.unwrap().is_empty());
             assert!(db
                 .get_proofs_states(&ys)
                 .await
@@ -96,7 +96,7 @@ async fn unpoisonable_r_visible_only_after_finalization() {
             continue;
         }
         let saga = saga.sign_outputs().await.unwrap();
-        assert!(db.get_unpoisonable_r(&ys).await.unwrap().is_empty());
+        assert!(db.get_rerandomization_r(&ys).await.unwrap().is_empty());
         assert!(db
             .get_blind_signatures(&points)
             .await
@@ -105,10 +105,10 @@ async fn unpoisonable_r_visible_only_after_finalization() {
             .all(Option::is_none));
 
         if !failure.is_empty() {
-            set_fail_for("AFTER_UNPOISONABLE_R");
+            set_fail_for("AFTER_RERANDOMIZATION_R");
         }
         let result = saga.finalize().await;
-        clear_fail_for("AFTER_UNPOISONABLE_R");
+        clear_fail_for("AFTER_RERANDOMIZATION_R");
         let states = mint
             .check_state(&CheckStateRequest { ys: ys.clone() })
             .await
@@ -118,8 +118,8 @@ async fn unpoisonable_r_visible_only_after_finalization() {
             assert!(states
                 .states
                 .iter()
-                .all(|s| s.state == State::Unspent && s.unpoisonable_r.is_none()));
-            assert!(db.get_unpoisonable_r(&ys).await.unwrap().is_empty());
+                .all(|s| s.state == State::Unspent && s.rerandomization_r.is_none()));
+            assert!(db.get_rerandomization_r(&ys).await.unwrap().is_empty());
             assert!(db
                 .get_blind_signatures(&points)
                 .await
@@ -127,20 +127,20 @@ async fn unpoisonable_r_visible_only_after_finalization() {
                 .iter()
                 .all(Option::is_none));
         } else {
-            assert_eq!(result.unwrap().unpoisonable_r, Some(r));
+            assert_eq!(result.unwrap().rerandomization_r, Some(r));
             let event = timeout(Duration::from_secs(5), subscriber.as_mut().unwrap().recv())
                 .await
                 .unwrap()
                 .unwrap();
             assert!(
                 matches!(event.into_inner(), NotificationPayload::ProofState(state)
-                if state.state == State::Spent && state.unpoisonable_r == Some(r))
+                if state.state == State::Spent && state.rerandomization_r == Some(r))
             );
             assert_eq!(states.states.len(), inputs.len());
             assert!(states
                 .states
                 .iter()
-                .all(|s| s.state == State::Spent && s.unpoisonable_r == Some(r)));
+                .all(|s| s.state == State::Spent && s.rerandomization_r == Some(r)));
             assert!(db
                 .get_blind_signatures(&points)
                 .await
@@ -158,19 +158,19 @@ async fn unpoisonable_r_visible_only_after_finalization() {
 }
 
 #[tokio::test]
-async fn unpoisonable_incomplete_saga_recovery_discards_private_r() {
-    use cdk_common::nuts::nut03::{tweak_swap_outputs, UnpoisonableR};
+async fn rerandomized_incomplete_saga_recovery_discards_private_r() {
+    use cdk_common::nuts::nut03::{tweak_swap_outputs, RerandomizationR};
     let mint = create_test_mint().await.unwrap();
     let (inputs, verification) = create_swap_inputs(&mint, Amount::ONE).await;
     let (originals, _) = create_test_blinded_messages(&mint, Amount::ONE)
         .await
         .unwrap();
-    let r = UnpoisonableR([42; 32]);
+    let r = RerandomizationR([42; 32]);
     let outputs = tweak_swap_outputs(&r.0, &originals).unwrap();
     let points: Vec<_> = outputs.iter().map(|o| o.blinded_secret).collect();
     let db = mint.localstore();
     let saga = SwapSaga::new(&mint, db.clone(), mint.pubsub_manager())
-        .with_unpoisonable_r(Some(r))
+        .with_rerandomization_r(Some(r))
         .setup_swap(&inputs, &outputs, None, verification)
         .await
         .unwrap()
@@ -186,7 +186,7 @@ async fn unpoisonable_incomplete_saga_recovery_discards_private_r() {
         .unwrap()
         .iter()
         .all(Option::is_none));
-    assert!(db.get_unpoisonable_r(&ys).await.unwrap().is_empty());
+    assert!(db.get_rerandomization_r(&ys).await.unwrap().is_empty());
     assert!(db
         .get_blind_signatures(&points)
         .await

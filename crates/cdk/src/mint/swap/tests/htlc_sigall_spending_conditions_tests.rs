@@ -10,7 +10,7 @@ use crate::test_helpers::nut10::{
 };
 
 #[tokio::test]
-async fn unpoisonable_htlc_receiver_and_refund_require_their_own_sig_all_domain() {
+async fn rerandomized_htlc_receiver_and_refund_require_their_own_sig_all_domain() {
     use cdk_common::dhke::construct_proofs;
     use cdk_common::nuts::SwapRequest;
 
@@ -52,13 +52,13 @@ async fn unpoisonable_htlc_receiver_and_refund_require_their_own_sig_all_domain(
         let mut request = SwapRequest::new(proofs, outputs);
         request.inputs_mut()[0].add_preimage(if refund { String::new() } else { preimage });
         let signer = if refund { refund_key } else { receiver };
-        let mut unpoisonable = request.clone().with_unpoisonable();
+        let mut rerandomized = request.clone().with_rerandomization();
         request.sign_sig_all(signer.clone()).unwrap();
-        let ordinary_signature = request.with_unpoisonable();
+        let ordinary_signature = request.with_rerandomization();
         assert!(mint.process_swap_request(ordinary_signature).await.is_err());
 
-        unpoisonable.sign_sig_all(signer).unwrap();
-        assert!(mint.process_swap_request(unpoisonable).await.is_ok());
+        rerandomized.sign_sig_all(signer).unwrap();
+        assert!(mint.process_swap_request(rerandomized).await.is_ok());
     }
 }
 

@@ -94,10 +94,10 @@ impl ProofsDatabase for LegacyProofsDatabase {
 }
 
 #[tokio::test]
-async fn legacy_backend_does_not_advertise_unpoisonable_swaps() {
+async fn legacy_backend_does_not_advertise_output_rerandomization() {
     let db = LegacyProofsDatabase;
-    assert!(!db.supports_unpoisonable_swaps());
-    assert!(db.get_unpoisonable_r(&[]).await.unwrap().is_empty());
+    assert!(!db.supports_output_rerandomization());
+    assert!(db.get_rerandomization_r(&[]).await.unwrap().is_empty());
 }
 
 #[tokio::test]

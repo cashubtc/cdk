@@ -1,14 +1,14 @@
 use std::collections::HashMap;
 
 use cdk_common::database::DynMintDatabase;
-use cdk_common::nuts::nut03::UnpoisonableR;
+use cdk_common::nuts::nut03::RerandomizationR;
 use tracing::instrument;
 
 use super::{CheckStateRequest, CheckStateResponse, Mint, ProofState, State};
 use crate::Error;
 
 /// Attach recovery data only to proofs already observed as spent.
-pub(super) async fn attach_unpoisonable_r(
+pub(super) async fn attach_rerandomization_r(
     db: &DynMintDatabase,
     states: &mut [ProofState],
 ) -> Result<(), Error> {
@@ -18,12 +18,12 @@ pub(super) async fn attach_unpoisonable_r(
         .map(|state| state.y)
         .collect();
     if !spent.is_empty() {
-        let randomness = db.get_unpoisonable_r(&spent).await?;
+        let randomness = db.get_rerandomization_r(&spent).await?;
         for state in states
             .iter_mut()
             .filter(|state| state.state == State::Spent)
         {
-            state.unpoisonable_r = randomness.get(&state.y).copied().map(UnpoisonableR);
+            state.rerandomization_r = randomness.get(&state.y).copied().map(RerandomizationR);
         }
     }
     Ok(())
@@ -90,10 +90,10 @@ impl Mint {
                 y: *y,
                 state: state.unwrap_or(State::Unspent),
                 witness: witness_map.get(y).cloned().flatten(),
-                unpoisonable_r: None,
+                rerandomization_r: None,
             })
             .collect();
-        attach_unpoisonable_r(&self.localstore, &mut proof_states).await?;
+        attach_rerandomization_r(&self.localstore, &mut proof_states).await?;
 
         Ok(CheckStateResponse {
             states: proof_states,

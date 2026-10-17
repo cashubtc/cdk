@@ -207,7 +207,7 @@ impl MintPubSubSpec {
                 .enumerate()
                 .filter_map(|(idx, state)| state.map(|state| (public_keys[idx], state).into()))
                 .collect();
-            super::check_spendable::attach_unpoisonable_r(&self.db, &mut states)
+            super::check_spendable::attach_rerandomization_r(&self.db, &mut states)
                 .await
                 .map_err(|e| e.to_string())?;
             to_return.extend(states.into_iter().map(Into::into));
@@ -932,9 +932,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unpoisonable_subscription_snapshot_exposes_only_committed_r() {
+    async fn rerandomized_subscription_snapshot_exposes_only_committed_r() {
         use crate::test_helpers::mint::{create_test_mint, mint_test_proofs};
-        use cdk_common::nuts::nut03::UnpoisonableR;
+        use cdk_common::nuts::nut03::RerandomizationR;
         let mint = create_test_mint().await.unwrap();
         let proofs = mint_test_proofs(&mint, Amount::ONE).await.unwrap();
         let y = proofs[0].y().unwrap();
@@ -958,7 +958,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            matches!(events[0].clone().into_inner(), NotificationPayload::ProofState(s) if s.unpoisonable_r.is_none())
+            matches!(events[0].clone().into_inner(), NotificationPayload::ProofState(s) if s.rerandomization_r.is_none())
         );
         let mut tx = db.begin_transaction().await.unwrap();
         let mut acquired = tx.get_proofs(&[y]).await.unwrap();
@@ -971,7 +971,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            matches!(events[0].clone().into_inner(), NotificationPayload::ProofState(s) if s.unpoisonable_r == Some(UnpoisonableR([42; 32])))
+            matches!(events[0].clone().into_inner(), NotificationPayload::ProofState(s) if s.rerandomization_r == Some(RerandomizationR([42; 32])))
         );
     }
 }

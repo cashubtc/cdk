@@ -791,8 +791,8 @@ impl Mint {
         // Advertise only what the running database can persist and recover.
         mint_info.nuts.nut03 = self
             .localstore
-            .supports_unpoisonable_swaps()
-            .then_some(cdk_common::nuts::nut03::Settings { unpoisonable: true });
+            .supports_output_rerandomization()
+            .then_some(cdk_common::nuts::nut03::Settings { rerandomize: true });
 
         Ok(mint_info)
     }
@@ -1536,29 +1536,27 @@ mod tests {
     use crate::test_helpers::mint::{create_test_mint, mint_test_proofs};
 
     #[tokio::test]
-    async fn mint_info_advertises_unpoisonable_from_running_backend() {
+    async fn mint_info_advertises_rerandomization_from_running_backend() {
         let mint = create_test_mint().await.unwrap();
         let mut stored = mint.mint_info().await.unwrap();
         assert_eq!(
             stored.nuts.nut03,
-            Some(cdk_common::nuts::nut03::Settings { unpoisonable: true })
+            Some(cdk_common::nuts::nut03::Settings { rerandomize: true })
         );
 
         stored.nuts.nut03 = None;
         mint.set_mint_info(stored).await.unwrap();
         assert_eq!(
             mint.mint_info().await.unwrap().nuts.nut03,
-            Some(cdk_common::nuts::nut03::Settings { unpoisonable: true })
+            Some(cdk_common::nuts::nut03::Settings { rerandomize: true })
         );
 
         stored = mint.mint_info().await.unwrap();
-        stored.nuts.nut03 = Some(cdk_common::nuts::nut03::Settings {
-            unpoisonable: false,
-        });
+        stored.nuts.nut03 = Some(cdk_common::nuts::nut03::Settings { rerandomize: false });
         mint.set_mint_info(stored).await.unwrap();
         assert_eq!(
             mint.mint_info().await.unwrap().nuts.nut03,
-            Some(cdk_common::nuts::nut03::Settings { unpoisonable: true })
+            Some(cdk_common::nuts::nut03::Settings { rerandomize: true })
         );
     }
 

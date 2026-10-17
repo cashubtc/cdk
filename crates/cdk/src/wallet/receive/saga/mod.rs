@@ -625,7 +625,7 @@ mod tests {
     ) -> Result<Amount, Error> {
         mock.set_post_swap_response(Ok(SwapResponse {
             signatures,
-            unpoisonable_r: None,
+            rerandomization_r: None,
         }));
         wallet
             .receive_proofs(
@@ -682,7 +682,7 @@ mod tests {
         // Keep the request so recovery can obtain valid signatures later.
         mock.set_post_swap_response(Ok(SwapResponse {
             signatures: vec![valid_signature],
-            unpoisonable_r: None,
+            rerandomization_r: None,
         }));
         let report = wallet.recover_incomplete_sagas().await.unwrap();
         assert_eq!(report.recovered, 1);

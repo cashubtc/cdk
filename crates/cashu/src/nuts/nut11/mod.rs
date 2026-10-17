@@ -541,9 +541,9 @@ pub struct EnforceSigFlag {
 impl SwapRequest {
     /// Sign swap request with SIG_ALL
     pub fn sign_sig_all(&mut self, secret_key: SecretKey) -> Result<(), Error> {
-        let signature = match self.unpoisonable_sig_all_msg_to_sign() {
+        let signature = match self.rerandomized_sig_all_msg_to_sign() {
             Some(message) => {
-                secret_key.sign_digest(crate::nut10::unpoisonable_sig_all_message_hash(&message))
+                secret_key.sign_digest(crate::nut10::rerandomized_sig_all_message_hash(&message))
             }
             None => secret_key.sign(self.sig_all_msg_to_sign().as_bytes())?,
         };
@@ -638,7 +638,7 @@ mod tests {
         }
     }
 
-    fn make_sig_all_swap_for_test(signers: &[SecretKey], unpoisonable: bool) -> SwapRequest {
+    fn make_sig_all_swap_for_test(signers: &[SecretKey], rerandomize: bool) -> SwapRequest {
         let primary = signers[0].public_key();
         let conditions = Conditions {
             pubkeys: (signers.len() > 1)
@@ -666,49 +666,49 @@ mod tests {
         );
         let request = SwapRequest::new(vec![proof], vec![output]);
 
-        if unpoisonable {
-            request.with_unpoisonable()
+        if rerandomize {
+            request.with_rerandomization()
         } else {
             request
         }
     }
 
     #[test]
-    fn test_unpoisonable_sig_all_accepts_only_unpoisonable_digest() {
+    fn test_rerandomized_sig_all_accepts_only_rerandomized_digest() {
         let signer = SecretKey::generate();
         let mut request = make_sig_all_swap_for_test(std::slice::from_ref(&signer), true);
         request.sign_sig_all(signer).unwrap();
 
         assert!(request.verify_spending_conditions().is_ok());
-        let message = request.unpoisonable_sig_all_msg_to_sign().unwrap();
+        let message = request.rerandomized_sig_all_msg_to_sign().unwrap();
         assert!(message.starts_with(b"\x00\x00\x00\x00"));
     }
 
     #[test]
-    fn test_unpoisonable_sig_all_rejects_ordinary_signature() {
+    fn test_rerandomized_sig_all_rejects_ordinary_signature() {
         let signer = SecretKey::generate();
         let mut request = make_sig_all_swap_for_test(std::slice::from_ref(&signer), false);
         request.sign_sig_all(signer).unwrap();
-        let request = request.with_unpoisonable();
+        let request = request.with_rerandomization();
 
         assert!(request.verify_spending_conditions().is_err());
     }
 
     #[test]
-    fn test_ordinary_sig_all_rejects_unpoisonable_signature() {
+    fn test_ordinary_sig_all_rejects_rerandomized_signature() {
         let signer = SecretKey::generate();
         let mut request = make_sig_all_swap_for_test(std::slice::from_ref(&signer), true);
         request.sign_sig_all(signer).unwrap();
 
         let mut value = serde_json::to_value(request).unwrap();
-        value.as_object_mut().unwrap().remove("unpoisonable");
+        value.as_object_mut().unwrap().remove("rerandomize");
         let ordinary_request: SwapRequest = serde_json::from_value(value).unwrap();
 
         assert!(ordinary_request.verify_spending_conditions().is_err());
     }
 
     #[test]
-    fn test_unpoisonable_sig_all_does_not_mix_authorization_modes() {
+    fn test_rerandomized_sig_all_does_not_mix_authorization_modes() {
         let first_signer = SecretKey::generate();
         let second_signer = SecretKey::generate();
         let mut request =
@@ -730,7 +730,7 @@ mod tests {
     }
 
     #[test]
-    fn test_unpoisonable_swap_requires_sig_all() {
+    fn test_rerandomized_swap_requires_sig_all() {
         let signer = SecretKey::generate();
         let mut request = make_sig_all_swap_for_test(std::slice::from_ref(&signer), true);
         let secret = Nut10Secret::try_from(&request.inputs()[0].secret).unwrap();
