@@ -64,34 +64,37 @@ impl HttpClient {
     }
 
     /// GET request, returning deserialized JSON.
-    pub async fn fetch<R: DeserializeOwned>(&self, url: &str) -> Response<R> {
+    pub async fn fetch<R>(&self, url: &str) -> Response<R>
+    where
+        R: DeserializeOwned,
+    {
         self.get(url).send_json().await
     }
 
     /// POST with JSON body, returning deserialized JSON.
-    pub async fn post_json<B: Serialize, R: DeserializeOwned>(
-        &self,
-        url: &str,
-        body: &B,
-    ) -> Response<R> {
+    pub async fn post_json<B, R>(&self, url: &str, body: &B) -> Response<R>
+    where
+        B: Serialize,
+        R: DeserializeOwned,
+    {
         self.post(url).json(body).send_json().await
     }
 
     /// POST with form data, returning deserialized JSON.
-    pub async fn post_form<F: Serialize, R: DeserializeOwned>(
-        &self,
-        url: &str,
-        form: &F,
-    ) -> Response<R> {
+    pub async fn post_form<F, R>(&self, url: &str, form: &F) -> Response<R>
+    where
+        F: Serialize,
+        R: DeserializeOwned,
+    {
         self.post(url).form(form).send_json().await
     }
 
     /// PATCH with JSON body, returning deserialized JSON.
-    pub async fn patch_json<B: Serialize, R: DeserializeOwned>(
-        &self,
-        url: &str,
-        body: &B,
-    ) -> Response<R> {
+    pub async fn patch_json<B, R>(&self, url: &str, body: &B) -> Response<R>
+    where
+        B: Serialize,
+        R: DeserializeOwned,
+    {
         self.patch(url).json(body).send_json().await
     }
 
@@ -243,7 +246,10 @@ impl ReqwestRequestBuilder {
     }
 
     /// Send the request and deserialize the response as JSON.
-    pub async fn send_json<R: DeserializeOwned>(self) -> Response<R> {
+    pub async fn send_json<R>(self) -> Response<R>
+    where
+        R: DeserializeOwned,
+    {
         self.send().await?.json_or_status_error()
     }
 }

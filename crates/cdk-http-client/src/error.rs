@@ -69,7 +69,7 @@ impl From<bitreq::Error> for HttpError {
         use bitreq::Error;
 
         match err {
-            Error::BodyOverflow => HttpError::ResponseTooLarge {
+            Error::BodyOverflow => Self::ResponseTooLarge {
                 limit: crate::MAX_RESPONSE_BYTES,
             },
             Error::SerdeJsonError(_) => HttpError::Serialization(err.to_string()),
