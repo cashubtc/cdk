@@ -19,6 +19,12 @@ pub enum HttpError {
     /// Request timeout
     #[error("Request timeout")]
     Timeout,
+    /// Response body exceeds the native client's buffer limit.
+    #[error("HTTP response body exceeds {limit} bytes")]
+    ResponseTooLarge {
+        /// Maximum accepted body length in bytes.
+        limit: usize,
+    },
     /// Serialization error
     #[error("Serialization error: {0}")]
     Serialization(String),
@@ -63,6 +69,9 @@ impl From<bitreq::Error> for HttpError {
         use bitreq::Error;
 
         match err {
+            Error::BodyOverflow => HttpError::ResponseTooLarge {
+                limit: crate::MAX_RESPONSE_BYTES,
+            },
             Error::SerdeJsonError(_) => HttpError::Serialization(err.to_string()),
             Error::InvalidUtf8InBody(_) => HttpError::Serialization(err.to_string()),
             Error::InvalidUtf8InResponse => HttpError::Serialization(err.to_string()),

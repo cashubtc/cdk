@@ -103,93 +103,41 @@ impl HttpClient {
         HttpClientBuilder::default()
     }
 
-    /// Apply proxy and redirect settings to a request
-    fn configure_request(&self, request: bitreq::Request, url: &str) -> Response<bitreq::Request> {
-        let request = apply_proxy_if_needed(request, url, &self.proxy_config)?;
-        Ok(if self.no_redirects {
-            request.with_max_redirects(0)
-        } else {
-            request
-        })
-    }
-
-    /// GET request, returns JSON deserialized to R
+    /// GET request, returning deserialized JSON.
     pub async fn fetch<R: DeserializeOwned>(&self, url: &str) -> Response<R> {
-        let request = bitreq::get(url);
-        let request = self.configure_request(request, url)?;
-        let response = request
-            .send_async_with_client(&self.inner)
-            .await
-            .map_err(HttpError::from)?;
-        RawResponse::new(response.status_code as u16, response.into_bytes()).json_or_status_error()
+        self.get(url).send_json().await
     }
 
-    /// POST with JSON body, returns JSON deserialized to R
+    /// POST with JSON body, returning deserialized JSON.
     pub async fn post_json<B: Serialize, R: DeserializeOwned>(
         &self,
         url: &str,
         body: &B,
     ) -> Response<R> {
-        let request = bitreq::post(url).with_json(body).map_err(HttpError::from)?;
-        let request = self.configure_request(request, url)?;
-        let response: bitreq::Response = request
-            .send_async_with_client(&self.inner)
-            .await
-            .map_err(HttpError::from)?;
-
-        RawResponse::new(response.status_code as u16, response.into_bytes()).json_or_status_error()
+        self.post(url).json(body).send_json().await
     }
 
-    /// POST with form data, returns JSON deserialized to R
+    /// POST with form data, returning deserialized JSON.
     pub async fn post_form<F: Serialize, R: DeserializeOwned>(
         &self,
         url: &str,
         form: &F,
     ) -> Response<R> {
-        let form_str = serde_urlencoded::to_string(form)
-            .map_err(|e| HttpError::Serialization(e.to_string()))?;
-        let request = bitreq::post(url)
-            .with_body(form_str.into_bytes())
-            .with_header("Content-Type", "application/x-www-form-urlencoded");
-        let request = self.configure_request(request, url)?;
-        let response: bitreq::Response = request
-            .send_async_with_client(&self.inner)
-            .await
-            .map_err(HttpError::from)?;
-
-        RawResponse::new(response.status_code as u16, response.into_bytes()).json_or_status_error()
+        self.post(url).form(form).send_json().await
     }
 
-    /// PATCH with JSON body, returns JSON deserialized to R
+    /// PATCH with JSON body, returning deserialized JSON.
     pub async fn patch_json<B: Serialize, R: DeserializeOwned>(
         &self,
         url: &str,
         body: &B,
     ) -> Response<R> {
-        let request = bitreq::patch(url)
-            .with_json(body)
-            .map_err(HttpError::from)?;
-        let request = self.configure_request(request, url)?;
-        let response: bitreq::Response = request
-            .send_async_with_client(&self.inner)
-            .await
-            .map_err(HttpError::from)?;
-
-        RawResponse::new(response.status_code as u16, response.into_bytes()).json_or_status_error()
+        self.patch(url).json(body).send_json().await
     }
 
-    /// GET request returning raw response body
+    /// GET request returning the raw response body.
     pub async fn get_raw(&self, url: &str) -> Response<RawResponse> {
-        let request = bitreq::get(url);
-        let request = self.configure_request(request, url)?;
-        let response = request
-            .send_async_with_client(&self.inner)
-            .await
-            .map_err(HttpError::from)?;
-        Ok(RawResponse::new(
-            response.status_code as u16,
-            response.into_bytes(),
-        ))
+        self.get(url).send().await
     }
 
     /// POST request builder for complex cases
@@ -332,6 +280,7 @@ impl BitreqRequestBuilder {
             request
         };
         let response = request
+            .with_max_body_size(crate::MAX_RESPONSE_BYTES)
             .send_async_with_client(&self.client)
             .await
             .map_err(HttpError::from)?;
@@ -343,21 +292,7 @@ impl BitreqRequestBuilder {
 
     /// Send the request and deserialize the response as JSON.
     pub async fn send_json<R: DeserializeOwned>(self) -> Response<R> {
-        if let Some(err) = self.error {
-            return Err(err);
-        }
-        let request = apply_proxy_if_needed(self.inner, &self.url, &self.proxy_config)?;
-        let request = if self.no_redirects {
-            request.with_max_redirects(0)
-        } else {
-            request
-        };
-        let response = request
-            .send_async_with_client(&self.client)
-            .await
-            .map_err(HttpError::from)?;
-
-        RawResponse::new(response.status_code as u16, response.into_bytes()).json_or_status_error()
+        self.send().await?.json_or_status_error()
     }
 }
 

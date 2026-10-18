@@ -63,63 +63,41 @@ impl HttpClient {
         self.inner.request(method, url)
     }
 
-    async fn send_json_request<R: DeserializeOwned>(
-        &self,
-        request: reqwest::RequestBuilder,
-    ) -> Response<R> {
-        let response = request.send().await.map_err(map_reqwest_error)?;
-        let status = response.status().as_u16();
-        let body = response.bytes().await.map_err(map_reqwest_error)?.to_vec();
-
-        RawResponse::new(status, body).json_or_status_error()
-    }
-
-    /// GET request, returns JSON deserialized to R.
+    /// GET request, returning deserialized JSON.
     pub async fn fetch<R: DeserializeOwned>(&self, url: &str) -> Response<R> {
-        self.send_json_request(self.request(reqwest::Method::GET, url))
-            .await
+        self.get(url).send_json().await
     }
 
-    /// POST with JSON body, returns JSON deserialized to R.
+    /// POST with JSON body, returning deserialized JSON.
     pub async fn post_json<B: Serialize, R: DeserializeOwned>(
         &self,
         url: &str,
         body: &B,
     ) -> Response<R> {
-        self.send_json_request(self.request(reqwest::Method::POST, url).json(body))
-            .await
+        self.post(url).json(body).send_json().await
     }
 
-    /// POST with form data, returns JSON deserialized to R.
+    /// POST with form data, returning deserialized JSON.
     pub async fn post_form<F: Serialize, R: DeserializeOwned>(
         &self,
         url: &str,
         form: &F,
     ) -> Response<R> {
-        self.send_json_request(self.request(reqwest::Method::POST, url).form(form))
-            .await
+        self.post(url).form(form).send_json().await
     }
 
-    /// PATCH with JSON body, returns JSON deserialized to R.
+    /// PATCH with JSON body, returning deserialized JSON.
     pub async fn patch_json<B: Serialize, R: DeserializeOwned>(
         &self,
         url: &str,
         body: &B,
     ) -> Response<R> {
-        self.send_json_request(self.request(reqwest::Method::PATCH, url).json(body))
-            .await
+        self.patch(url).json(body).send_json().await
     }
 
-    /// GET request returning raw response body.
+    /// GET request returning the raw response body.
     pub async fn get_raw(&self, url: &str) -> Response<RawResponse> {
-        let response = self
-            .request(reqwest::Method::GET, url)
-            .send()
-            .await
-            .map_err(map_reqwest_error)?;
-        let status = response.status().as_u16();
-        let body = response.bytes().await.map_err(map_reqwest_error)?.to_vec();
-        Ok(RawResponse::new(status, body))
+        self.get(url).send().await
     }
 
     /// POST request builder for complex cases.
@@ -245,9 +223,22 @@ impl ReqwestRequestBuilder {
             return Err(HttpError::Other("request builder consumed".to_string()));
         };
 
-        let response = inner.send().await.map_err(map_reqwest_error)?;
+        let mut response = inner.send().await.map_err(map_reqwest_error)?;
         let status = response.status().as_u16();
-        let body = response.bytes().await.map_err(map_reqwest_error)?.to_vec();
+        let limit = crate::MAX_RESPONSE_BYTES;
+        if response
+            .content_length()
+            .is_some_and(|bytes| bytes > limit as u64)
+        {
+            return Err(HttpError::ResponseTooLarge { limit });
+        }
+        let mut body = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(map_reqwest_error)? {
+            if chunk.len() > limit - body.len() {
+                return Err(HttpError::ResponseTooLarge { limit });
+            }
+            body.extend_from_slice(&chunk);
+        }
         Ok(RawResponse::new(status, body))
     }
 
