@@ -177,6 +177,7 @@ impl DatabasePool for PgConnectionPool {
 #[derive(Debug)]
 pub struct PostgresConnection {
     timeout: Duration,
+    stale: Arc<AtomicBool>,
     error: Arc<Mutex<Option<cdk_common::database::Error>>>,
     result: Arc<OnceLock<Client>>,
     notify: Arc<Notify>,
@@ -191,6 +192,7 @@ impl PostgresConnection {
         let error_clone = failed.clone();
         let result_clone = result.clone();
         let notify_clone = notify.clone();
+        let connection_stale = stale.clone();
 
         async fn select_schema(conn: &Client, schema: &str) -> Result<(), Error> {
             conn.batch_execute(&format!(
@@ -279,6 +281,7 @@ impl PostgresConnection {
         });
 
         Self {
+            stale: connection_stale,
             error: failed,
             timeout,
             result,
@@ -316,6 +319,10 @@ impl PostgresConnection {
 
 #[async_trait::async_trait]
 impl DatabaseConnector for PostgresConnection {
+    fn mark_unusable(&mut self) {
+        self.stale.store(true, std::sync::atomic::Ordering::Release);
+    }
+
     type Transaction = GenericTransactionHandler<Self>;
 }
 
