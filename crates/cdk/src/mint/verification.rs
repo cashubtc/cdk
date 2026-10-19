@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use cdk_common::nuts::nut17::MAX_CUSTOM_KIND_LEN;
+use cdk_common::nuts::KeySetVersion;
 use cdk_common::{
     Amount, BlindedMessage, CurrencyUnit, Id, PaymentMethod, Proofs, ProofsMethods, PublicKey,
 };
@@ -10,6 +11,11 @@ use super::{Error, Mint};
 
 /// Maximum allowed length in bytes for proof secret or witness content
 const MAX_PROOF_CONTENT_LEN: usize = 1024;
+
+/// Maximum witness length on v3 keysets, which fits a maximal Nutroot script-path witness.
+///
+/// A 513-byte leaf in hex, 15 signatures, a three-hash path and a preimage come to about 3.4k.
+const MAX_NUTROOT_WITNESS_LEN: usize = 4096;
 
 /// Maximum allowed length in bytes for request fields (description, request, extra)
 pub(crate) const MAX_REQUEST_FIELD_LEN: usize = 1024;
@@ -248,15 +254,20 @@ impl Mint {
             if let Some(witness) = &proof.witness {
                 let witness_str = serde_json::to_string(witness)?;
                 let witness_len = witness_str.len();
-                if witness_len > MAX_PROOF_CONTENT_LEN {
+                let max = if proof.keyset_id.get_version() >= KeySetVersion::Version02 {
+                    MAX_NUTROOT_WITNESS_LEN
+                } else {
+                    MAX_PROOF_CONTENT_LEN
+                };
+                if witness_len > max {
                     tracing::warn!(
                         "Proof witness exceeds max content length: {} > {}",
                         witness_len,
-                        MAX_PROOF_CONTENT_LEN
+                        max
                     );
                     return Err(Error::ProofContentTooLarge {
                         actual: witness_len,
-                        max: MAX_PROOF_CONTENT_LEN,
+                        max,
                     });
                 }
             }
