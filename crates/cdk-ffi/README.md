@@ -73,3 +73,26 @@ For production use, see language-specific repositories:
 - [cdk-swift](https://github.com/cashubtc/cdk-swift) - iOS/macOS packages
 - [cdk-kotlin](https://github.com/cashubtc/cdk-kotlin) - Android/JVM packages
 - [cdk-go](https://github.com/cashubtc/cdk-go) - Golang packages
+
+## Creating receive requests (NUT-18)
+
+Call `WalletRepository.createRequest(params)` in Swift/Kotlin to construct a
+request using CDK. Encode `result.paymentRequest` with `toStringEncoded()`
+(NUT-18) or `toBech32String()` (NUT-26). `PaymentRequest.fromString(...)`
+decodes either format.
+
+To use an existing Nostr receiving identity, set `transport = "nostr"`,
+`nostrPubkey` to its public key (hex or npub), and `nostrRelays` to the app's
+relay URLs. Set `paymentId` to preserve the app's request ID, or omit it to
+leave the ID unset. CDK builds the nprofile without needing a private key.
+The app still handles receiving payments through its existing signer/inbox;
+`nostrWaitInfo` is absent for an explicit public destination.
+
+Omitting `nostrPubkey` with Nostr transport generates an ephemeral identity
+and returns `nostrWaitInfo`. The FFI object does not expose a receive loop.
+
+`CreateRequestParams` also supports amountless requests, units, descriptions,
+mint policies, HTTP or no transport, supported methods/fees, and P2PK/multisig
+or HTLC conditions. Core validation errors propagate through FFI. See the
+[migration notes](../../docs/migrations/v0.19.md) for Rust API changes and the
+[test guide](tests/README.md#payment-request-tests) for binding coverage.
