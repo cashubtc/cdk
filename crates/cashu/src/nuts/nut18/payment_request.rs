@@ -1034,4 +1034,46 @@ mod tests {
         assert_eq!(request.description.as_deref(), Some("coffee"));
         assert_eq!(request.transports, vec![transport]);
     }
+
+    #[test]
+    fn nutroot_request_keys_are_text_in_creqa() {
+        use bitcoin::base64::Engine;
+
+        // NUT-18 NUMS (leaves-only) request vector.
+        let encoded = "creqAo2FhCGF1Y3NhdGdudXRyb290o2FreEIwMjUwOTI5Yjc0YzFhMDQ5NTRiNzhiNGI2MDM1ZTk3YTVlMDc4YTVhMGYyOGVjOTZkNTQ3YmZlZTlhY2U4MDNhYzBhbIF4YjAwMDIwMjAwMDEwMTA0MDAyMTAyZTQ5M2RiZjFjMTBkODBmMzU4MWU0OTA0OTMwYjE0MDRjYzZjMTM5MDBlZTA3NTg0NzRmYTk0YWJlOGM0Y2QxMzA2MDAwNDY4YTNiZTgwYWKBeEIwMmU0OTNkYmYxYzEwZDgwZjM1ODFlNDkwNDkzMGIxNDA0Y2M2YzEzOTAwZWUwNzU4NDc0ZmE5NGFiZThjNGNkMTM=";
+        let request = PaymentRequest::from_str(encoded).unwrap();
+        let policy = request.nutroot.clone().unwrap();
+        assert_eq!(policy.key, crate::nuts::nut10::nutroot::nums_point());
+        assert_eq!(
+            policy.blind_keys.as_ref().unwrap()[0].to_string(),
+            "02e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13"
+        );
+
+        let reencoded = request.to_string();
+        assert_eq!(PaymentRequest::from_str(&reencoded).unwrap(), request);
+        let cbor = general_purpose::URL_SAFE
+            .decode(reencoded.strip_prefix(PAYMENT_REQUEST_PREFIX).unwrap())
+            .unwrap();
+        let value: ciborium::Value = ciborium::from_reader(&cbor[..]).unwrap();
+        let field = |map: &ciborium::Value, name: &str| {
+            map.as_map()
+                .unwrap()
+                .iter()
+                .find(|(key, _)| key.as_text() == Some(name))
+                .map(|(_, value)| value.clone())
+                .unwrap()
+        };
+        let nutroot = field(&value, "nutroot");
+        assert!(field(&nutroot, "k").is_text());
+        assert!(field(&nutroot, "b").as_array().unwrap()[0].is_text());
+
+        // Uncompressed keys are refused, as NUT-18 names 33-byte compressed points.
+        let uncompressed = serde_json::json!({
+            "k": "0479be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8"
+        });
+        assert!(
+            serde_json::from_value::<crate::nuts::nut10::nutroot::NutrootOption>(uncompressed)
+                .is_err()
+        );
+    }
 }

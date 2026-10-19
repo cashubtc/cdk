@@ -14,14 +14,71 @@ use crate::SECP256K1;
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct NutrootOption {
     /// Static receiver key, or the NUMS point for script-only outputs.
-    #[serde(rename = "k")]
+    #[serde(rename = "k", with = "hex_key")]
     pub key: PublicKey,
     /// Serialized leaves in slot order.
     #[serde(rename = "l", default, skip_serializing_if = "Option::is_none")]
     pub leaves: Option<Vec<String>>,
     /// Leaf keys whose owners request NUT-28 blinding.
-    #[serde(rename = "b", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "b",
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "hex_keys"
+    )]
     pub blind_keys: Option<Vec<PublicKey>>,
+}
+
+/// Keys as hex strings in every format: secp256k1's serde writes a byte tuple to CBOR (NUT-18 `creqA`).
+mod hex_key {
+    use std::str::FromStr;
+
+    use bitcoin::secp256k1::PublicKey;
+    use serde::{de, Deserialize, Deserializer, Serializer};
+
+    pub(super) fn serialize<S: Serializer>(
+        key: &PublicKey,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&key.to_string())
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<PublicKey, D::Error> {
+        parse(&String::deserialize(deserializer)?)
+    }
+
+    /// A 33-byte compressed point, as NUT-18 requires.
+    pub(super) fn parse<E: de::Error>(hex: &str) -> Result<PublicKey, E> {
+        if hex.len() != 66 {
+            return Err(E::custom("expected a 33-byte compressed key"));
+        }
+        PublicKey::from_str(hex).map_err(E::custom)
+    }
+}
+
+mod hex_keys {
+    use bitcoin::secp256k1::PublicKey;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub(super) fn serialize<S: Serializer>(
+        keys: &Option<Vec<PublicKey>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let hex: Option<Vec<String>> = keys
+            .as_ref()
+            .map(|keys| keys.iter().map(ToString::to_string).collect());
+        serde::Serialize::serialize(&hex, serializer)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<Vec<PublicKey>>, D::Error> {
+        Option::<Vec<String>>::deserialize(deserializer)?
+            .map(|keys| keys.iter().map(|key| super::hex_key::parse(key)).collect())
+            .transpose()
+    }
 }
 
 /// BIP341's NUMS point, used to request script-only locking.
