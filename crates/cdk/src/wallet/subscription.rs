@@ -471,6 +471,21 @@ fn new_subscription_id() -> String {
     Uuid::now_v7().to_string()
 }
 
+/// Bind a version-02 BAT to the WebSocket upgrade, a bodiless GET to the endpoint (NUT-22).
+fn bind_ws_auth(mut token: cdk_common::AuthToken, url: &url::Url) -> Option<cdk_common::AuthToken> {
+    let target = &url[url::Position::BeforePath..url::Position::AfterQuery];
+    match token.bind_request("GET", target, b"") {
+        Ok(()) => Some(token),
+        Err(err) => {
+            tracing::warn!(
+                "Failed to bind auth token to the WebSocket request: {:?}",
+                err
+            );
+            None
+        }
+    }
+}
+
 async fn stream_client(
     client: &SubscriptionClient,
     mut ctrl: mpsc::Receiver<StreamCtrl<MintSubTopics>>,
@@ -509,7 +524,7 @@ async fn stream_client(
             None => None,
         };
 
-        if let Some(auth_token) = token {
+        if let Some(auth_token) = token.and_then(|token| bind_ws_auth(token, &url)) {
             let header_key = match &auth_token {
                 cdk_common::AuthToken::ClearAuth(_) => "Clear-auth",
                 cdk_common::AuthToken::BlindAuth(_) => "Blind-auth",
@@ -974,5 +989,39 @@ mod tests {
             payload,
         )
         .is_err());
+    }
+
+    #[test]
+    fn websocket_bat_signs_the_upgrade_request() {
+        use std::str::FromStr;
+
+        use cdk_common::nuts::nut10::nutroot::SpendInfo;
+        use cdk_common::nuts::{BlindAuthToken, Id, Proof, SecretKey};
+
+        let key = SecretKey::from_slice(&[9; 32]).unwrap();
+        let id = Id::from_bytes(&[vec![2], vec![1; 32]].concat()).unwrap();
+        let c = cdk_common::nuts::nut01::BlsG1PublicKey::hash_to_curve(b"signature").into();
+        let mut proof = Proof::new(
+            1.into(),
+            id,
+            key.public_key().to_string().parse().unwrap(),
+            c,
+        );
+        proof.spend_info = Some(SpendInfo {
+            bearer_key: Some(key),
+            ..Default::default()
+        });
+        let token = cdk_common::AuthToken::BlindAuth(BlindAuthToken::from_proof(proof).unwrap());
+        let url = url::Url::parse("wss://mint.example.com/v1/ws").unwrap();
+        let Some(cdk_common::AuthToken::BlindAuth(bound)) = bind_ws_auth(token, &url) else {
+            panic!("expected a bound blind auth token");
+        };
+
+        // What the mint does with the header it receives.
+        for (target, valid) in [("/v1/ws", true), ("/v1/swap", false)] {
+            let mut received = BlindAuthToken::from_str(&bound.to_string()).unwrap();
+            received.set_request_context("GET", target, b"").unwrap();
+            assert_eq!(received.verify_request().is_ok(), valid, "{target}");
+        }
     }
 }
