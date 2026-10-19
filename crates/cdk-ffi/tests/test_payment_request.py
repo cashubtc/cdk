@@ -126,8 +126,11 @@ async def main():
         dict(transport="nostr", nostr_relays=["invalid"]),
         dict(transport="nostr", nostr_relays=[RELAY], nostr_pubkey="invalid"),
         dict(nostr_pubkey=PUBKEY), dict(mints=["not a URL"]),
+        dict(pubkeys=["invalid"]), dict(pubkeys=[]),
+        dict(pubkeys=[P2PK], num_sigs=0), dict(pubkeys=[P2PK], num_sigs=2),
         dict(pubkeys=[P2PK, P2PK], num_sigs=2),
         dict(hash="invalid"), dict(preimage="invalid"),
+        dict(hash="ab" * 32, preimage="00" * 32),
     ):
         try:
             await repo.create_request(params(**invalid))

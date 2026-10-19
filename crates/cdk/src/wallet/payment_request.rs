@@ -1917,8 +1917,7 @@ impl WalletRepository {
     /// Why:
     /// - Centralizes translation of CLI/SDK inputs (P2PK multisig and HTLC variants) into
     ///   a single, canonical `SpendingConditions` shape so requests are consistent.
-    /// - Prevents ambiguous construction by capping `num_sigs` to the number of provided keys
-    ///   and rejecting malformed hashes/inputs early. Repeated keys are an error, not a cap.
+    /// - Rejects invalid signature thresholds, repeated keys, and malformed inputs.
     /// - Encourages safe defaults by selecting `SigFlag::SigInputs` and composing conditions
     ///   that can be verified by recipients and mints.
     ///
@@ -1940,21 +1939,29 @@ impl WalletRepository {
         &self,
         params: &CreateRequestParams,
     ) -> Result<Option<SpendingConditions>, Error> {
+        if params.hash.is_some() && params.preimage.is_some() {
+            return Err(Error::Custom(
+                "Specify either hash or preimage, not both".to_string(),
+            ));
+        }
         // Spending conditions
         let spending_conditions: Option<SpendingConditions> =
             if let Some(pubkey_strings) = &params.pubkeys {
                 // parse pubkeys
                 let mut parsed_pubkeys = Vec::new();
                 for p in pubkey_strings {
-                    if let Ok(pk) = crate::nuts::nut01::PublicKey::from_str(p) {
-                        parsed_pubkeys.push(pk);
-                    }
+                    parsed_pubkeys.push(crate::nuts::nut01::PublicKey::from_str(p)?);
                 }
 
                 if parsed_pubkeys.is_empty() {
-                    None
+                    return Err(Error::Custom(
+                        "Spending public keys must not be empty".to_string(),
+                    ));
                 } else {
-                    let num_sigs = params.num_sigs.min(parsed_pubkeys.len() as u64);
+                    if params.num_sigs == 0 || params.num_sigs > parsed_pubkeys.len() as u64 {
+                        return Err(Error::Custom("Invalid signature threshold".to_string()));
+                    }
+                    let num_sigs = params.num_sigs;
 
                     if let Some(hash_str) = &params.hash {
                         let conditions = Conditions {
