@@ -1,12 +1,13 @@
 use anyhow::Result;
 use cdk_common::terminal::escape_control;
 use clap::Args;
+use tonic::transport::Channel;
 use tonic::Request;
 
+use crate::wallet::wallet_service_client::WalletServiceClient;
 use crate::wallet::{
     CreateDepositAddressRequest, GetBalanceRequest, ListAddressesRequest, ListTransactionsRequest,
 };
-use crate::InterceptedWalletServiceClient;
 
 /// Pagination arguments for wallet list commands.
 #[derive(Debug, Args)]
@@ -21,7 +22,7 @@ pub struct WalletPaginationCommand {
 
 /// Creates and prints an address for operator deposits.
 pub async fn create_wallet_deposit_address(
-    client: &mut InterceptedWalletServiceClient,
+    client: &mut WalletServiceClient<Channel>,
 ) -> Result<()> {
     let response = client
         .create_deposit_address(Request::new(CreateDepositAddressRequest {}))
@@ -34,7 +35,7 @@ pub async fn create_wallet_deposit_address(
 }
 
 /// Prints the BDK on-chain wallet balance.
-pub async fn get_wallet_balance(client: &mut InterceptedWalletServiceClient) -> Result<()> {
+pub async fn get_wallet_balance(client: &mut WalletServiceClient<Channel>) -> Result<()> {
     let balance = client
         .get_balance(Request::new(GetBalanceRequest {}))
         .await?
@@ -66,7 +67,7 @@ pub async fn get_wallet_balance(client: &mut InterceptedWalletServiceClient) -> 
 
 /// Prints a page of BDK on-chain wallet transactions.
 pub async fn list_wallet_transactions(
-    client: &mut InterceptedWalletServiceClient,
+    client: &mut WalletServiceClient<Channel>,
     command: &WalletPaginationCommand,
 ) -> Result<()> {
     let response = client
@@ -130,7 +131,7 @@ pub async fn list_wallet_transactions(
 
 /// Prints a page of addresses revealed by the BDK on-chain wallet.
 pub async fn list_wallet_addresses(
-    client: &mut InterceptedWalletServiceClient,
+    client: &mut WalletServiceClient<Channel>,
     command: &WalletPaginationCommand,
 ) -> Result<()> {
     let response = client

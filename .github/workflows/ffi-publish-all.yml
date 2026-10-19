@@ -10,9 +10,6 @@ on:
       release_tag:
         description: "Tag to create for release (e.g. v0.17.0)"
         required: true
-      cdk_version:
-        description: 'CDK dependency version (e.g. 0.17.0). Defaults to release_tag without the "v" prefix.'
-        required: false
       cdk_ref:
         description: "CDK git ref to publish from. Must match release_tag."
         required: false
@@ -41,7 +38,6 @@ jobs:
     uses: ./.github/workflows/dart-publish.yml
     with:
       release_tag: ${{ inputs.release_tag }}
-      cdk_version: ${{ inputs.cdk_version }}
       cdk_ref: ${{ inputs.cdk_ref }}
       prerelease: ${{ needs.detect-prerelease.outputs.prerelease == 'true' }}
     secrets: inherit
@@ -52,7 +48,6 @@ jobs:
     uses: ./.github/workflows/kotlin-publish.yml
     with:
       release_tag: ${{ inputs.release_tag }}
-      cdk_version: ${{ inputs.cdk_version }}
       cdk_ref: ${{ inputs.cdk_ref }}
       prerelease: ${{ needs.detect-prerelease.outputs.prerelease == 'true' }}
     secrets: inherit
@@ -63,7 +58,6 @@ jobs:
     uses: ./.github/workflows/swift-publish.yml
     with:
       release_tag: ${{ inputs.release_tag }}
-      cdk_version: ${{ inputs.cdk_version }}
       cdk_ref: ${{ inputs.cdk_ref }}
       prerelease: ${{ needs.detect-prerelease.outputs.prerelease == 'true' }}
     secrets: inherit
@@ -74,7 +68,6 @@ jobs:
     uses: ./.github/workflows/go-publish.yml
     with:
       release_tag: ${{ inputs.release_tag }}
-      cdk_version: ${{ inputs.cdk_version }}
       cdk_ref: ${{ inputs.cdk_ref }}
       prerelease: ${{ needs.detect-prerelease.outputs.prerelease == 'true' }}
     secrets: inherit

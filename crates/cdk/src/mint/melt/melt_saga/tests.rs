@@ -3108,6 +3108,132 @@ async fn test_quote_already_paid() {
 }
 
 #[tokio::test]
+async fn test_paid_melt_responses_wait_for_change_commit() {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use cdk_common::nuts::nut17::{Kind, NotificationPayload};
+    use cdk_common::subscription::{Params, SubId};
+
+    use crate::mint::melt::shared::finalize_melt_core;
+    use crate::mint::Mint;
+    use crate::test_helpers::mint::create_test_blinded_messages;
+
+    for with_change in [true, false] {
+        let mint = create_test_mint().await.unwrap();
+        let db = mint.localstore();
+        let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+        let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+        let (outputs, _) = create_test_blinded_messages(&mint, Amount::from(1_023))
+            .await
+            .unwrap();
+        let request = MeltRequest::new(quote.id.clone(), proofs.clone(), Some(outputs));
+        let verification = mint.verify_inputs(request.inputs()).await.unwrap();
+        let setup = MeltSaga::new(Arc::new(mint.clone()), db.clone(), mint.pubsub_manager())
+            .setup_melt(
+                &request,
+                verification,
+                PaymentMethod::Known(KnownMethod::Bolt11),
+            )
+            .await
+            .unwrap();
+        let lookup = PaymentIdentifier::CustomId("finalization-boundary".to_owned());
+        let spent = Amount::new(if with_change { 9_001 } else { 10_000 }, CurrencyUnit::Sat);
+        let payment_proof = Some("paid-preimage".to_owned());
+
+        // Stop at the real TX1 boundary: payment and spent inputs are durable,
+        // but change has not been signed or committed yet.
+        let mut tx = db.begin_transaction().await.unwrap();
+        let locked_quote = tx.get_melt_quote(&quote.id).await.unwrap().unwrap();
+        finalize_melt_core(
+            tx,
+            &mint.pubsub_manager(),
+            locked_quote,
+            &proofs.ys().unwrap(),
+            Amount::new(10_000, CurrencyUnit::Sat),
+            Amount::new(0, CurrencyUnit::Sat),
+            spent.clone(),
+            payment_proof.clone(),
+            &lookup,
+        )
+        .await
+        .unwrap();
+
+        assert!(Mint::load_settled_melt_response(&db, &quote.id)
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            mint.check_melt_quote(&quote.id).await.unwrap().state(),
+            MeltQuoteState::Pending
+        );
+        assert_eq!(
+            db.get_melt_quote(&quote.id).await.unwrap().unwrap().state,
+            MeltQuoteState::Paid
+        );
+
+        let mut sub = mint
+            .pubsub_manager()
+            .subscribe(Params {
+                kind: Kind::Bolt11MeltQuote,
+                filters: vec![quote.id.to_string()],
+                id: Arc::new(SubId::from("finalization-boundary")),
+            })
+            .unwrap();
+        let event = tokio::time::timeout(Duration::from_secs(5), sub.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let NotificationPayload::MeltQuoteBolt11Response(response) = event.into_inner() else {
+            panic!("expected melt quote snapshot");
+        };
+        assert_eq!(response.state, MeltQuoteState::Pending);
+        assert!(response.change.is_none());
+
+        finalize_melt_quote(
+            &mint,
+            &db,
+            &mint.pubsub_manager(),
+            &quote,
+            spent,
+            payment_proof,
+            &lookup,
+            Some(setup.operation_id),
+        )
+        .await
+        .unwrap();
+
+        let settled = Mint::load_settled_melt_response(&db, &quote.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let checked = mint.check_melt_quote(&quote.id).await.unwrap();
+        for response in [settled, checked] {
+            assert_eq!(response.state(), MeltQuoteState::Paid);
+            let amount = response
+                .change()
+                .map(|sigs| Amount::try_sum(sigs.iter().map(|sig| sig.amount)).unwrap());
+            assert_eq!(amount, with_change.then_some(Amount::from(999)));
+        }
+        let response = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let event = sub.recv().await.unwrap();
+                let NotificationPayload::MeltQuoteBolt11Response(response) = event.into_inner()
+                else {
+                    panic!("expected melt quote notification");
+                };
+                if response.state == MeltQuoteState::Paid {
+                    break response;
+                }
+            }
+        })
+        .await
+        .expect("finalization must publish the completed quote");
+        assert_eq!(response.change.is_some(), with_change);
+    }
+}
+
+#[tokio::test]
 async fn test_finalize_melt_quote_duplicate_success_is_idempotent() {
     let mint = create_test_mint().await.unwrap();
     let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();

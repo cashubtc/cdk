@@ -1557,6 +1557,13 @@ impl Mint {
 
             let output_len = request.outputs.len();
 
+            if output_len == 0 {
+                return Ok(RestoreResponse {
+                    outputs: Vec::new(),
+                    signatures: Vec::new(),
+                });
+            }
+
             // Check max outputs limit
             if output_len > self.max_outputs {
                 tracing::warn!(
@@ -1625,28 +1632,6 @@ impl Mint {
                 request.outputs.into_iter().zip(blinded_signatures)
             {
                 if let Some(blinded_signature) = blinded_signature {
-                    #[cfg(feature = "federation")]
-                    let keyset_info = match effective_federation_config.as_ref() {
-                        Some(config) => config
-                            .public_config()
-                            .keysets
-                            .iter()
-                            .find(|keyset| keyset.id == blinded_signature.keyset_id)
-                            .map(keysets::federated_keyset_to_mint_keyset_info),
-                        None => self.get_keyset_info(&blinded_signature.keyset_id),
-                    };
-                    #[cfg(not(feature = "federation"))]
-                    let keyset_info = self.get_keyset_info(&blinded_signature.keyset_id);
-
-                    if let Some(keyset_info) = keyset_info {
-                        if keyset_info.is_expired() {
-                            tracing::debug!(
-                                "Skipping restore for expired keyset {}",
-                                blinded_signature.keyset_id
-                            );
-                            continue;
-                        }
-                    }
                     outputs.push(blinded_message);
                     signatures.push(blinded_signature);
                 }
@@ -2774,6 +2759,72 @@ mod tests {
             .get_keyset_info(&keyset_info.id)
             .expect("keyset should be found");
         assert_eq!(stored.final_expiry, Some(expiry));
+    }
+
+    #[tokio::test]
+    async fn restore_with_empty_keyset_cache() {
+        let mock = Arc::new(MockSignatory::new(SignatoryKeysets {
+            pubkey: SecretKey::generate().public_key(),
+            keysets: Vec::new(),
+        }));
+        let mint = create_mint_with_signatory(mock).await;
+
+        let keyset_id = Id::from_str("001711afb1de20cb").unwrap();
+        let output = BlindedMessage::new(
+            Amount::from(1),
+            keyset_id,
+            SecretKey::generate().public_key(),
+        );
+        let signature = BlindSignature {
+            amount: Amount::from(1),
+            keyset_id,
+            c: SecretKey::generate().public_key(),
+            dleq: None,
+        };
+
+        let mut tx = mint.localstore.begin_transaction().await.unwrap();
+        tx.add_blind_signatures(
+            &[output.blinded_secret],
+            std::slice::from_ref(&signature),
+            None,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        mint.start()
+            .await
+            .expect("mint should start without keysets");
+        assert!(mint.keysets.load().is_empty());
+
+        let response = mint
+            .restore(RestoreRequest {
+                outputs: vec![output.clone()],
+            })
+            .await
+            .expect("restore should succeed without cached keysets");
+
+        mint.stop().await.expect("mint should stop");
+
+        assert!(
+            !response.signatures.is_empty(),
+            "Restore should return stored signatures without cached keysets"
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_empty_outputs() {
+        let mint = create_test_mint().await.unwrap();
+
+        let response = mint
+            .restore(RestoreRequest {
+                outputs: Vec::new(),
+            })
+            .await
+            .expect("empty restore should succeed");
+
+        assert!(response.outputs.is_empty());
+        assert!(response.signatures.is_empty());
     }
 
     #[tokio::test]

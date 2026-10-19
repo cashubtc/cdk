@@ -202,7 +202,8 @@ async fn aleph_bft_live_session_rejects_malformed_signed_network_message_without
         .expect("malformed AlephBFT network-message URL");
     let malformed_result: Result<FederationAlephBftNetworkMessageResponse, HttpError> = transport
         .http_post(malformed_url, None, &malformed_request)
-        .await;
+        .await
+        .and_then(RawResponse::json_or_status_error);
     let malformed_error = malformed_result.expect_err("malformed network message must fail");
     match malformed_error {
         HttpError::Status { status, message } => {
@@ -395,7 +396,8 @@ async fn aleph_bft_live_session_rejects_same_sequence_equivocated_network_messag
             .expect("equivocated AlephBFT network-message URL");
     let equivocated_result: Result<FederationAlephBftNetworkMessageResponse, HttpError> = transport
         .http_post(equivocated_url, None, &equivocated_request)
-        .await;
+        .await
+        .and_then(RawResponse::json_or_status_error);
     let equivocated_error =
         equivocated_result.expect_err("same-sequence equivocated network message must fail");
     match equivocated_error {
@@ -798,7 +800,8 @@ async fn aleph_bft_live_five_member_sessions_reject_same_sequence_equivocation_a
     .expect("equivocated AlephBFT network-message URL");
     let equivocated_result: Result<FederationAlephBftNetworkMessageResponse, HttpError> = transport
         .http_post(equivocated_url, None, &equivocated_request)
-        .await;
+        .await
+        .and_then(RawResponse::json_or_status_error);
     let equivocated_error = equivocated_result
         .expect_err("five-member same-sequence equivocated network message must fail");
     match equivocated_error {

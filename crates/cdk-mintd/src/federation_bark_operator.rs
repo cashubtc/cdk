@@ -44,7 +44,8 @@ pub(crate) async fn run_reconcile_command(
     let response: FederationBarkReconcileResponse = crate::federation_operator_transport(cli_args)
         .await?
         .http_post(url, None, &request)
-        .await?;
+        .await?
+        .json_or_status_error()?;
     if response.version != FEDERATION_REST_API_VERSION {
         bail!("member returned an unsupported Bark reconcile response version");
     }
@@ -92,7 +93,8 @@ pub(crate) async fn run_retry_command(
     let response: FederationBarkRetryResponse = crate::federation_operator_transport(cli_args)
         .await?
         .http_post(url, None, &request)
-        .await?;
+        .await?
+        .json_or_status_error()?;
     if response.version != FEDERATION_REST_API_VERSION || response.action_id != action_id {
         bail!("member returned a mismatched Bark retry response");
     }
@@ -140,7 +142,8 @@ pub(crate) async fn run_recovery_address_command(
         crate::federation_operator_transport(cli_args)
             .await?
             .http_post(url, None, &request)
-            .await?;
+            .await?
+            .json_or_status_error()?;
     if response.version != FEDERATION_REST_API_VERSION || response.reserve_id != args.reserve_id {
         bail!("member returned a mismatched Bark recovery address response");
     }

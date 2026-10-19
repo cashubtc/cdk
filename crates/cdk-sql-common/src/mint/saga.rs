@@ -158,8 +158,8 @@ where
             "federation_operation_id",
             saga.federation_operation_id.as_deref(),
         )
-        .bind("created_at", saga.created_at as i64)
-        .bind("updated_at", current_time as i64)
+        .bind("created_at", i64::try_from(saga.created_at)?)
+        .bind("updated_at", i64::try_from(current_time)?)
         .execute(&self.inner)
         .await?;
 
@@ -181,7 +181,7 @@ where
             "#,
         )?
         .bind("state", new_state.state())
-        .bind("updated_at", current_time as i64)
+        .bind("updated_at", i64::try_from(current_time)?)
         .bind("operation_id", saga.operation_id.to_string())
         .execute(&self.inner)
         .await?;
@@ -250,7 +250,7 @@ where
                     Error::Internal(format!("Failed to serialize melt finalization data: {e}"))
                 })?,
         )
-        .bind("updated_at", current_time as i64)
+        .bind("updated_at", i64::try_from(current_time)?)
         .bind("operation_id", saga.operation_id.to_string())
         .execute(&self.inner)
         .await?;

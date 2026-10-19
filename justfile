@@ -64,6 +64,30 @@ final-check: lint clippy test
 
 quick-check: lint clippy test-units
 
+# Compile the mint management RPC schemas.
+proto-build:
+  buf build
+
+# Check mint management RPC compatibility against a local Git revision.
+proto-breaking base="upstream/main":
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  base_ref={{quote(base)}}
+  if command -v jj >/dev/null 2>&1 && jj root --ignore-working-copy >/dev/null 2>&1; then
+    git_dir=$(jj git root --ignore-working-copy)
+  else
+    git_dir=$(git rev-parse --git-common-dir)
+  fi
+
+  if ! baseline=$(git --git-dir="$git_dir" rev-parse --verify --quiet --end-of-options "${base_ref}^{commit}"); then
+    echo "Error: baseline '$base_ref' is unavailable locally." >&2
+    echo "Set up and fetch the remote, or choose an existing ref: just proto-breaking <ref>" >&2
+    exit 1
+  fi
+
+  buf breaking --against "${git_dir}#format=git,ref=${baseline},subdir=crates/cdk-mint-rpc/src/proto"
+
 # run `cargo build` on everything
 build *ARGS="--workspace --all-targets":
   #!/usr/bin/env bash
@@ -1939,7 +1963,9 @@ release *ARGS:
     echo
   done
 
-  # Trigger all FFI binding releases (Dart, Kotlin, Swift, Go)
+  # Trigger all FFI binding releases (Dart, Kotlin, Swift, Go). These build
+  # cdk-ffi from the tagged source, not from crates.io, so they do not depend
+  # on the publish loop above and can be re-run on their own.
   echo "📦 Triggering all FFI binding releases for version $VERSION..."
   just ffi-release-all $VERSION
 
@@ -2255,7 +2281,6 @@ ffi-release-all VERSION:
     --repo cashubtc/cdk \
     --ref "v{{VERSION}}" \
     --field release_tag="v{{VERSION}}" \
-    --field cdk_version="{{VERSION}}" \
     --field cdk_ref="v{{VERSION}}"
 
   echo "✅ All FFI binding workflows triggered successfully!"
@@ -2272,8 +2297,7 @@ ffi-release-dart VERSION:
   gh workflow run "FFI - Dart Bindings" \
     --repo cashubtc/cdk \
     --ref "v{{VERSION}}" \
-    --field release_tag="v{{VERSION}}" \
-    --field cdk_version="{{VERSION}}"
+    --field release_tag="v{{VERSION}}"
 
   echo "✅ Dart workflow triggered successfully!"
 
@@ -2290,7 +2314,6 @@ ffi-release-swift VERSION:
     --repo cashubtc/cdk \
     --ref "v{{VERSION}}" \
     --field release_tag="v{{VERSION}}" \
-    --field cdk_version="{{VERSION}}" \
     --field cdk_ref="v{{VERSION}}"
 
   echo "✅ Swift workflow triggered successfully!"
@@ -2309,7 +2332,6 @@ ffi-release-kotlin VERSION:
     --repo cashubtc/cdk \
     --ref "v{{VERSION}}" \
     --field release_tag="v{{VERSION}}" \
-    --field cdk_version="{{VERSION}}" \
     --field cdk_ref="v{{VERSION}}"
 
   echo "✅ Kotlin workflow triggered successfully!"
@@ -2361,7 +2383,6 @@ ffi-release-go VERSION:
     --repo cashubtc/cdk \
     --ref "v{{VERSION}}" \
     --field release_tag="v{{VERSION}}" \
-    --field cdk_version="{{VERSION}}" \
     --field cdk_ref="v{{VERSION}}"
 
   echo "✅ Go workflow triggered successfully!"
@@ -2401,6 +2422,9 @@ test-kotlin:
   cd "{{justfile_directory()}}/bindings/kotlin"
   ./gradlew -PcdkJvmOnly=true :cdk-jvm:test
 
+# Generate Swift bindings and the local SPM package
+binding-swift *ARGS="--release":
+  just ffi-generate-swift {{ARGS}}
 
 # Run Swift binding tests
 test-swift:

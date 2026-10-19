@@ -931,6 +931,8 @@ pub struct Lnd {
     pub fee_percent: f32,
     #[serde(default = "default_reserve_fee_min")]
     pub reserve_fee_min: Amount,
+    /// Allow circular payments back to the configured LND node (enabled by default).
+    pub allow_self_payment: bool,
 }
 
 #[cfg(feature = "lnd")]
@@ -942,6 +944,7 @@ impl Default for Lnd {
             macaroon_file: PathBuf::new(),
             fee_percent: 0.02,
             reserve_fee_min: 2.into(),
+            allow_self_payment: true,
         }
     }
 }
@@ -3245,6 +3248,8 @@ port = 9090
         use std::path::PathBuf;
         use std::{env, fs};
 
+        assert!(Lnd::default().allow_self_payment);
+
         // Create a temporary directory for config file
         let temp_dir = env::temp_dir().join("cdk_test_env_vars");
         fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
@@ -3271,6 +3276,7 @@ max_melt = 500000
         );
         env::set_var(crate::env_vars::ENV_LND_FEE_PERCENT, "0.01");
         env::set_var(crate::env_vars::ENV_LND_RESERVE_FEE_MIN, "4");
+        env::set_var(crate::env_vars::ENV_LND_ALLOW_SELF_PAYMENT, "false");
 
         // Load settings and apply environment variables (same as production code)
         let mut settings = Settings::try_new(Some(&config_path)).expect("Failed to load config");
@@ -3288,6 +3294,7 @@ max_melt = 500000
         assert_eq!(lnd_config.fee_percent, 0.01);
         let reserve_fee_u64: u64 = lnd_config.reserve_fee_min.into();
         assert_eq!(reserve_fee_u64, 4);
+        assert!(!lnd_config.allow_self_payment);
 
         // Cleanup env vars
         env::remove_var(crate::env_vars::ENV_PAYMENT_BACKEND);
@@ -3296,6 +3303,7 @@ max_melt = 500000
         env::remove_var(crate::env_vars::ENV_LND_MACAROON_FILE);
         env::remove_var(crate::env_vars::ENV_LND_FEE_PERCENT);
         env::remove_var(crate::env_vars::ENV_LND_RESERVE_FEE_MIN);
+        env::remove_var(crate::env_vars::ENV_LND_ALLOW_SELF_PAYMENT);
 
         // Cleanup test file
         let _ = fs::remove_dir_all(&temp_dir);

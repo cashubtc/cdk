@@ -20,6 +20,7 @@ use bdk_wallet::bitcoin::{
 };
 use bdk_wallet::descriptor::{ExtendedDescriptor, IntoWalletDescriptor};
 use bdk_wallet::rusqlite::{params, Connection, OptionalExtension};
+use bdk_wallet::signer::SignersContainer;
 use bdk_wallet::{KeychainKind, PersistedWallet, SignOptions, Utxo, Wallet, WeightedUtxo};
 use tokio::sync::Mutex;
 
@@ -134,6 +135,7 @@ pub struct BdkWalletEngine {
     pub chain_source: ChainSource,
     network: Network,
     signing_mode: SigningMode,
+    signers: Option<Arc<[SignersContainer; 2]>>,
     pub(crate) sync_config: SyncConfig,
 }
 
@@ -183,10 +185,16 @@ impl BdkWalletEngine {
         fs::create_dir_all(database_dir.as_ref())?;
         let mut db = Connection::open(database_dir.as_ref().join("bdk_wallet.sqlite"))?;
         ensure_wallet_namespace(&mut db, LOCAL_SIGNING_NAMESPACE, false)?;
+        let secp = Secp256k1::new();
+        let (external, external_keys) = external
+            .into_wallet_descriptor(&secp, network.into())
+            .map_err(|err| Error::Wallet(err.to_string()))?;
+        let (internal, internal_keys) = internal
+            .into_wallet_descriptor(&secp, network.into())
+            .map_err(|err| Error::Wallet(err.to_string()))?;
         let wallet = Wallet::load()
             .descriptor(KeychainKind::External, Some(external.clone()))
             .descriptor(KeychainKind::Internal, Some(internal.clone()))
-            .extract_keys()
             .check_network(network)
             .load_wallet(&mut db)
             .map_err(|err| Error::Wallet(err.to_string()))?;
@@ -210,6 +218,19 @@ impl BdkWalletEngine {
                 })
                 .map_err(|err| Error::Wallet(err.to_string()))?;
         }
+        // Reconstruct signing keys from the caller's descriptors on each open.
+        let signers = Arc::new([
+            SignersContainer::build(
+                external_keys,
+                wallet.public_descriptor(KeychainKind::External),
+                wallet.secp_ctx(),
+            ),
+            SignersContainer::build(
+                internal_keys,
+                wallet.public_descriptor(KeychainKind::Internal),
+                wallet.secp_ctx(),
+            ),
+        ]);
         wallet.persist(&mut db)?;
 
         Ok(Self {
@@ -218,6 +239,7 @@ impl BdkWalletEngine {
             network,
             sync_config: SyncConfig::default(),
             signing_mode: SigningMode::Local,
+            signers: Some(signers),
         })
     }
 
@@ -239,6 +261,7 @@ impl BdkWalletEngine {
             network: config.network,
             sync_config: SyncConfig::default(),
             signing_mode: SigningMode::ExternalOnly,
+            signers: None,
         })
     }
 
@@ -264,6 +287,7 @@ impl BdkWalletEngine {
             network: config.network,
             sync_config: SyncConfig::default(),
             signing_mode: SigningMode::ExternalOnly,
+            signers: None,
         })
     }
 
@@ -594,9 +618,10 @@ impl BdkWalletEngine {
         }
 
         let mut wallet_with_db = self.wallet_with_db.lock().await;
+        let signers = self.signers.as_ref().ok_or(Error::LocalSigningDisabled)?;
         let signed = wallet_with_db
             .wallet
-            .sign(psbt, SignOptions::default())
+            .sign_with_signers(psbt, &[&signers[0], &signers[1]], SignOptions::default())
             .map_err(|err| Error::Wallet(err.to_string()))?;
         if !signed {
             return Err(Error::CouldNotSign);

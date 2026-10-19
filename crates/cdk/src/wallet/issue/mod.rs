@@ -6,6 +6,9 @@ use std::collections::HashMap;
 
 pub(crate) mod saga;
 
+#[cfg(test)]
+mod status_tests;
+
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nut04::MintMethodOptions;
 use cdk_common::{MintQuoteRequest, MintQuoteResponse, PaymentMethod};
@@ -352,16 +355,21 @@ impl Wallet {
     /// This method:
     /// 1. Fetches the current quote state from the mint
     /// 2. If there's an in-progress saga for this quote, attempts to complete it
-    /// 3. If the saga was compensated (rolled back), attempts a fresh mint
-    /// 4. Returns the updated quote
+    /// 3. Persists the current accounting without overwriting recovery changes
+    /// 4. Returns the persisted quote
     #[instrument(skip_all)]
     async fn inner_check_mint_quote_status(
         &self,
         mut mint_quote: MintQuote,
     ) -> Result<MintQuote, Error> {
         let quote_id = mint_quote.id.clone();
-        // First, check/update the state from the mint
-        self.check_state(&mut mint_quote).await?;
+        // Validate the response before recovery can change local state. Apply it
+        // below to the latest snapshot so recovery accounting is not overwritten.
+        let response = self
+            .client
+            .get_mint_quote_status(mint_quote.payment_method.clone(), &quote_id)
+            .await?;
+        validate_mint_quote_response_id(&quote_id, &response)?;
 
         // Check if there's an in-progress saga for this quote
         if let Some(ref operation_id_str) = mint_quote.used_by_operation {
@@ -377,22 +385,14 @@ impl Wallet {
 
                         let recovery_action = self.resume_issue_saga(&saga).await?;
 
-                        // If compensated, the saga was rolled back - attempt to mint again
+                        // Compensation makes the quote available for a later mint.
                         if recovery_action == RecoveryAction::Compensated {
                             tracing::info!(
-                                "Saga {} was compensated, attempting fresh mint for quote {}",
+                                "Saga {} was compensated for quote {}",
                                 operation_id,
                                 quote_id
                             );
-                        } else {
-                            // If the saga completed we need to get the updated state of the mint quote fn the db
-                            mint_quote = self
-                                .localstore
-                                .get_mint_quote(&quote_id)
-                                .await?
-                                .ok_or(Error::UnknownQuote)?;
                         }
-                        // If Recovered or Skipped, just continue with the updated quote
                     }
                     Ok(None) => {
                         // Orphaned reservation - release it
@@ -410,17 +410,29 @@ impl Wallet {
                         return Err(Error::Database(e));
                     }
                 }
+                // Recovery and reservation release may change accounting, version,
+                // or ownership. Never write the pre-recovery snapshot back.
+                mint_quote = self
+                    .localstore
+                    .get_mint_quote(&quote_id)
+                    .await?
+                    .ok_or(Error::UnknownQuote)?;
             }
         }
 
-        self.localstore.add_mint_quote(mint_quote.clone()).await?;
-        Ok(mint_quote)
+        apply_mint_quote_response(&mut mint_quote, &response);
+        self.localstore.add_mint_quote(mint_quote).await?;
+        self.localstore
+            .get_mint_quote(&quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)
     }
 
     /// Check the status of a single mint quote from the mint.
     ///
     /// Calls `GET /v1/mint/quote/{method}/{quote_id}` per NUT-04.
     /// Updates local store with current state from mint.
+    /// Returns the persisted quote, including its database version and ownership.
     /// Rejects a mismatched response quote ID before changing local state.
     /// If there was a crashed mid-mint (pending saga), attempts to complete it.
     /// Does NOT mint tokens directly - use mint() for that.
@@ -751,6 +763,10 @@ impl Wallet {
     ///
     /// Works with all payment methods (Bolt11, Bolt12, and custom payment methods).
     ///
+    /// A quote not created by this wallet instance, such as one fetched after
+    /// restoring from seed, is stored without its NUT-20 signing key. Use
+    /// [`Self::fetch_mint_quote_with_key_search`] to recover that key.
+    ///
     /// # Arguments
     /// * `quote_id` - The ID of the quote to fetch
     /// * `payment_method` - The payment method for the quote. Required if the quote
@@ -766,6 +782,49 @@ impl Wallet {
         &self,
         quote_id: &str,
         payment_method: Option<PaymentMethod>,
+    ) -> Result<MintQuote, Error> {
+        self.fetch_mint_quote_with_key_search(quote_id, payment_method, 0)
+            .await
+    }
+
+    /// Fetch a mint quote and try to recover its NUT-20 signing key from the seed.
+    ///
+    /// Use this after restoring a wallet from seed to claim a quote whose ID is
+    /// known but whose signing key was lost with the old database. Plain
+    /// [`Self::fetch_mint_quote`] never searches.
+    ///
+    /// The mint reports the public key the quote is locked to. This method derives
+    /// the wallet's NUT-20 keys at counters `0..key_search_limit` (capped at the
+    /// BIP32 non-hardened index boundary) and stores the first one that matches.
+    /// On a match, the wallet's NUT-20 counter is advanced past that index so new
+    /// quotes never reuse it.
+    ///
+    /// Returns `Ok` even if no key matched. Check `quote.secret_key.is_some()` on
+    /// the result: if set, call [`Self::mint`]; if not, retry with a larger limit.
+    /// The quote stays stored either way.
+    ///
+    /// The search is skipped when the quote already has a key, is not locked, is
+    /// an NpubCash quote (its key comes from the NpubCash identity), or
+    /// `key_search_limit` is zero. Keys that were generated randomly rather than
+    /// derived from the seed cannot be recovered.
+    ///
+    /// See `crates/cdk/examples/restore-mint-quote.rs` for a complete example.
+    ///
+    /// # Arguments
+    /// * `quote_id` - The ID of the quote to recover
+    /// * `payment_method` - As for [`Self::fetch_mint_quote`]
+    /// * `key_search_limit` - Exclusive upper bound on counters to try. It must
+    ///   exceed the index the original wallet used for this quote, which is below
+    ///   the number of locked quotes it created. Each key costs a BIP32 derivation.
+    ///
+    /// # Errors
+    /// Same as [`Self::fetch_mint_quote`], plus key derivation or database errors.
+    #[instrument(skip_all)]
+    pub async fn fetch_mint_quote_with_key_search(
+        &self,
+        quote_id: &str,
+        payment_method: Option<PaymentMethod>,
+        key_search_limit: u32,
     ) -> Result<MintQuote, Error> {
         // Check if we already have this quote stored locally
         let existing_quote = self.localstore.get_mint_quote(quote_id).await?;
@@ -784,7 +843,7 @@ impl Wallet {
             .await?;
         validate_mint_quote_response_id(quote_id, &response)?;
 
-        let quote = match existing_quote {
+        let mut quote = match existing_quote {
             Some(mut existing) => {
                 apply_mint_quote_response(&mut existing, &response);
                 existing
@@ -813,10 +872,57 @@ impl Wallet {
             }
         };
 
-        // Store the quote
-        self.localstore.add_mint_quote(quote.clone()).await?;
+        #[cfg(feature = "npubcash")]
+        let key_search_limit = match self.npubcash_quote_key(quote_id).await? {
+            Some(_) => 0,
+            None => key_search_limit,
+        };
 
-        Ok(quote)
+        if quote.secret_key.is_none() && key_search_limit > 0 {
+            let pubkey = match &response {
+                MintQuoteResponse::Bolt11(r) => r.pubkey,
+                MintQuoteResponse::Bolt12(r) => Some(r.pubkey),
+                MintQuoteResponse::Onchain(r) => Some(r.pubkey),
+                MintQuoteResponse::Custom { response: r, .. } => r.pubkey,
+            };
+            if let Some(pubkey) = pubkey {
+                let counters = 0..key_search_limit.min(1 << 31);
+                let keys =
+                    crate::nuts::nut20::derive_quote_locking_keys(&self.seed, counters.clone())?;
+                for (counter, key) in counters.zip(keys) {
+                    let key = key?;
+                    if key.public_key() == pubkey {
+                        let namespace = DerivationCounterNamespace::Nut20Quote.as_str();
+                        let current = self
+                            .localstore
+                            .increment_derivation_counter(namespace, 0)
+                            .await?;
+                        self.localstore
+                            .increment_derivation_counter(
+                                namespace,
+                                (counter + 1).saturating_sub(current),
+                            )
+                            .await?;
+                        quote.secret_key = Some(key);
+                        break;
+                    }
+                    // Keep long recovery scans cooperative, including on WASM.
+                    if counter % 100 == 99 {
+                        tokio::task::yield_now().await;
+                    }
+                }
+                if quote.secret_key.is_none() {
+                    tracing::warn!(key_search_limit, "Quote signing key not recovered; try a larger key search limit or restore the original key backup");
+                }
+            }
+        }
+
+        // Return the authoritative version assigned by the database.
+        self.localstore.add_mint_quote(quote).await?;
+        self.localstore
+            .get_mint_quote(quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)
     }
 
     /// Batch check status of multiple mint quotes from the mint.
@@ -880,6 +986,11 @@ impl Wallet {
         for (quote, response) in quotes.iter_mut().zip(responses.iter()) {
             apply_mint_quote_response(quote, response);
             self.localstore.add_mint_quote(quote.clone()).await?;
+            *quote = self
+                .localstore
+                .get_mint_quote(&quote.id)
+                .await?
+                .ok_or(Error::UnknownQuote)?;
         }
 
         Ok(quotes)
@@ -933,6 +1044,225 @@ mod tests {
     use cdk_common::nuts::CurrencyUnit;
 
     use super::*;
+
+    #[tokio::test]
+    async fn quote_status_returns_persisted_onchain_quote() {
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock, test_mint_quote, test_mint_url,
+            MockMintConnector,
+        };
+
+        let db = create_test_db().await;
+        let client = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db.clone(), client.clone()).await;
+        let mut quote = test_mint_quote(test_mint_url());
+        quote.payment_method = PaymentMethod::Known(KnownMethod::Onchain);
+        quote.amount = None;
+        db.add_mint_quote(quote.clone()).await.unwrap();
+        client.set_quote_status_response(
+            &quote.id,
+            MintQuoteResponse::Onchain(cdk_common::nuts::nut30::MintQuoteOnchainResponse {
+                quote: quote.id.clone(),
+                request: quote.request.clone(),
+                unit: quote.unit.clone(),
+                method: quote.payment_method.clone(),
+                expiry: Some(quote.expiry),
+                pubkey: SecretKey::generate().public_key(),
+                amount_paid: Amount::from(1_000),
+                amount_issued: Amount::ZERO,
+                updated_at: 1,
+            }),
+        );
+
+        // All entry points must return the current SQLite version, including
+        // repeated checks with an unchanged mint response.
+        for expected_version in 1..=4 {
+            let returned = match expected_version {
+                1 => wallet.check_mint_quote_status(&quote.id).await.unwrap(),
+                2 => wallet.check_mint_quote(&quote.id).await.unwrap(),
+                3 => wallet.check_all_mint_quotes().await.unwrap().remove(0),
+                _ => wallet.fetch_mint_quote(&quote.id, None).await.unwrap(),
+            };
+            let stored = db.get_mint_quote(&quote.id).await.unwrap().unwrap();
+            assert_eq!(stored.version, expected_version);
+            assert_eq!(returned, stored);
+            assert_eq!(returned.amount_paid, Amount::from(1_000));
+            assert_eq!(returned.amount_issued, Amount::ZERO);
+            assert_eq!(returned.state, MintQuoteState::Paid);
+            assert_eq!(returned.used_by_operation, None);
+        }
+    }
+
+    #[tokio::test]
+    async fn fetch_quote_recovers_onchain_key_and_advances_counter() {
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock_seed, MockMintConnector,
+        };
+
+        let seed = [42; 64];
+        let key = crate::nuts::nut20::derive_quote_locking_key(&seed, 3).unwrap();
+        let db = create_test_db().await;
+        let client = Arc::new(MockMintConnector::new());
+        client.enable_mint_signing();
+        let wallet = create_test_wallet_with_mock_seed(db.clone(), client.clone(), seed).await;
+        client.set_quote_status_response(
+            "lost-quote",
+            MintQuoteResponse::Onchain(cdk_common::nuts::nut30::MintQuoteOnchainResponse {
+                quote: "lost-quote".to_string(),
+                request: "onchain-address".to_string(),
+                unit: CurrencyUnit::Sat,
+                method: PaymentMethod::Known(KnownMethod::Onchain),
+                expiry: None,
+                pubkey: key.public_key(),
+                amount_paid: Amount::from(250_366),
+                amount_issued: Amount::ZERO,
+                updated_at: 1,
+            }),
+        );
+
+        // The upper bound is exclusive; a failed search can be retried on the
+        // now-local quote without losing its current payment state.
+        let quote = wallet
+            .fetch_mint_quote_with_key_search(
+                "lost-quote",
+                Some(PaymentMethod::Known(KnownMethod::Onchain)),
+                3,
+            )
+            .await
+            .unwrap();
+        assert!(quote.secret_key.is_none());
+        assert_eq!(
+            db.increment_derivation_counter("nut20_quote", 0)
+                .await
+                .unwrap(),
+            0
+        );
+        let quote = wallet
+            .fetch_mint_quote_with_key_search("lost-quote", None, 4)
+            .await
+            .unwrap();
+        assert_eq!(quote.secret_key, Some(key.clone()));
+        assert_eq!(quote.amount_paid, Amount::from(250_366));
+        assert_eq!(quote.amount_issued, Amount::ZERO);
+        assert_eq!(quote.state, MintQuoteState::Paid);
+        assert_eq!(quote.amount, None);
+        assert_eq!(db.get_mint_quote("lost-quote").await.unwrap(), Some(quote));
+        let next_key = wallet.next_mint_quote_signing_key().await.unwrap();
+        assert_eq!(
+            next_key,
+            crate::nuts::nut20::derive_quote_locking_key(&seed, 4).unwrap()
+        );
+
+        // Existing keys survive even with recovery disabled, and fetching does
+        // not consume another derivation index.
+        let quote = wallet
+            .fetch_mint_quote_with_key_search("lost-quote", None, 0)
+            .await
+            .unwrap();
+        assert_eq!(quote.secret_key, Some(key));
+        assert_eq!(
+            db.increment_derivation_counter("nut20_quote", 0)
+                .await
+                .unwrap(),
+            5
+        );
+
+        // Claiming uses the recovered key to sign the mint request.
+        use crate::nuts::nut00::ProofsMethods;
+        let proofs = wallet
+            .mint("lost-quote", SplitTarget::default(), None)
+            .await
+            .unwrap();
+        assert_eq!(proofs.total_amount().unwrap(), Amount::from(250_366));
+        let requests = client.post_mint_requests();
+        assert_eq!(requests.len(), 1);
+        requests[0]
+            .1
+            .verify_signature(
+                crate::nuts::nut20::derive_quote_locking_key(&seed, 3)
+                    .unwrap()
+                    .public_key(),
+            )
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn fetch_quote_key_search_handles_unlocked_unrelated_and_existing_keys() {
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock_seed, test_mint_quote, test_mint_url,
+            MockMintConnector,
+        };
+
+        let seed = [42; 64];
+        let db = create_test_db().await;
+        let client = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock_seed(db.clone(), client.clone(), seed).await;
+        let key = crate::nuts::nut20::derive_quote_locking_key(&seed, 0).unwrap();
+        let unrelated_key = crate::nuts::nut20::derive_quote_locking_key(&[43; 64], 0).unwrap();
+        // A higher existing counter must never be rewound by recovery.
+        db.increment_derivation_counter("nut20_quote", 10)
+            .await
+            .unwrap();
+        for (id, pubkey, expected_key, limit) in [
+            ("unlocked", None, None, 1),
+            ("unrelated", Some(unrelated_key.public_key()), None, 1),
+            ("disabled", Some(key.public_key()), None, 0),
+            ("recover", Some(key.public_key()), Some(key.clone()), 1),
+            (
+                "preserve",
+                Some(unrelated_key.public_key()),
+                Some(unrelated_key.clone()),
+                0,
+            ),
+        ] {
+            let mut quote = test_mint_quote(test_mint_url());
+            quote.id = id.to_string();
+            quote.secret_key = None;
+            if id == "preserve" {
+                quote.secret_key = Some(unrelated_key.clone());
+                db.add_mint_quote(quote.clone()).await.unwrap();
+            }
+            let mut response = paid_bolt11_quote_response(&quote);
+            if let MintQuoteResponse::Bolt11(r) = &mut response {
+                r.pubkey = pubkey;
+            }
+            client.set_quote_status_response(id, response);
+            let fetched = wallet
+                .fetch_mint_quote_with_key_search(id, Some(PaymentMethod::BOLT11), limit)
+                .await
+                .unwrap();
+            assert_eq!(fetched.secret_key, expected_key);
+            assert_eq!(db.get_mint_quote(id).await.unwrap(), Some(fetched));
+            assert_eq!(
+                db.increment_derivation_counter("nut20_quote", 0)
+                    .await
+                    .unwrap(),
+                10
+            );
+        }
+
+        // Plain fetches never search, for new or already stored quotes.
+        let mut quote = test_mint_quote(test_mint_url());
+        quote.id = "plain".to_string();
+        let mut response = paid_bolt11_quote_response(&quote);
+        if let MintQuoteResponse::Bolt11(r) = &mut response {
+            r.pubkey = Some(key.public_key());
+        }
+        client.set_quote_status_response("plain", response);
+        for id in ["plain", "disabled"] {
+            let fetched = wallet
+                .fetch_mint_quote(id, Some(PaymentMethod::BOLT11))
+                .await
+                .unwrap();
+            assert_eq!(fetched.secret_key, None);
+        }
+        assert_eq!(
+            db.increment_derivation_counter("nut20_quote", 0)
+                .await
+                .unwrap(),
+            10
+        );
+    }
 
     #[tokio::test]
     async fn mint_quote_signing_keys_follow_nut20_counter_across_wallet_instances() {
@@ -1261,6 +1591,7 @@ mod tests {
             assert_eq!(stored.amount_paid, refreshed.amount_paid);
             assert_eq!(stored.amount_issued, refreshed.amount_issued);
             assert_eq!(stored.updated_at, refreshed.updated_at);
+            assert_eq!(stored, refreshed);
         }
     }
 

@@ -163,7 +163,10 @@ where
     let url = member
         .federation_api_url
         .join_paths(&["federation", "v1", "local-status"])?;
-    let response = transport.http_post(url, None, &request).await?;
+    let response = transport
+        .http_post(url, None, &request)
+        .await?
+        .json_or_status_error()?;
     validate_local_status(public_config.federation_id, member, &response)?;
     Ok(response)
 }

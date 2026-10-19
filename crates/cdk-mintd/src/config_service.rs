@@ -1,5 +1,6 @@
 //! Validation and lifecycle rules for database-backed mintd configuration.
 
+use std::collections::HashSet;
 use std::fmt;
 use std::path::Path;
 use std::str::FromStr;
@@ -73,6 +74,14 @@ impl fmt::Debug for StartupConfiguration {
 struct SigningIdentityResolution {
     identity: SigningIdentity,
     remote_signatory: Option<Arc<cdk_signatory::SignatoryRpcClient>>,
+    remote_keysets: Option<cdk_signatory::signatory::SignatoryKeysets>,
+}
+
+/// Historical signing evidence read from the selected mint database.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct MintKeysetHistory<'a> {
+    pub(crate) keysets: &'a [cdk::mint::MintKeySetInfo],
+    pub(crate) used_keysets: &'a HashSet<cdk::nuts::Id>,
 }
 
 /// Result of a configuration apply operation.
@@ -145,9 +154,27 @@ pub enum ConfigurationServiceError {
 
     /// The configured signer differs from the database identity.
     #[error(
-        "configured signing identity does not match this mint database; signer migration is not supported by config apply"
+        "configured signing identity does not match this mint database; signer migration is not supported"
     )]
     SigningIdentityChange,
+
+    /// Historical keys do not match the configured signing source.
+    #[error("configured signer cannot reproduce historical keyset {keyset_id}; preserve the original signing source")]
+    HistoricalKeysetMismatch {
+        /// Historical keyset that could not be verified.
+        keyset_id: cdk::nuts::Id,
+    },
+
+    /// Issuance or redemption history references a keyset without metadata.
+    #[error("mint database is missing metadata for issued or redeemed keyset {keyset_id}; verify the historical keyset records")]
+    UsedKeysetMissingInfo {
+        /// Used keyset whose historical metadata is missing.
+        keyset_id: cdk::nuts::Id,
+    },
+
+    /// A remote mint has no independent keyset history for a metadata repair.
+    #[error("cannot verify remote signer: no historical keysets are recorded and the stored public key differs; verify the original signatory and database")]
+    RemoteSignerHistoryMissing,
 
     /// New-mint initialization targeted a database containing mint state.
     #[error(
@@ -232,20 +259,32 @@ impl ConfigurationService {
         document: &str,
         mode: MintInitializationMode,
         database_pubkey: Option<cdk::nuts::PublicKey>,
-        has_keysets: bool,
+        history: MintKeysetHistory<'_>,
         work_dir: &Path,
         bdk_wallet_policy: BdkWalletPolicy,
     ) -> Result<(), ConfigurationServiceError> {
-        let (resolved, signing_identity) = Self::validated_import(document).await?;
+        let MintKeysetHistory {
+            keysets,
+            used_keysets,
+        } = history;
+        let resolved = Self::validate_document(document)?;
+        let signing = resolve_signing_identity_async(&resolved.settings).await?;
+        let signing_identity = &signing.identity;
         self.require_primary_database(&resolved.settings.database)?;
         require_initialization_state(
             mode,
             database_pubkey,
-            has_keysets,
+            !keysets.is_empty(),
             resolved.settings.enabled_signatory().is_some(),
         )?;
-        if database_pubkey.is_some_and(|pubkey| pubkey != signing_identity.pubkey) {
-            return Err(ConfigurationServiceError::SigningIdentityChange);
+        if mode == MintInitializationMode::Existing {
+            verify_existing_signer(
+                &resolved.settings,
+                &signing,
+                keysets,
+                used_keysets,
+                database_pubkey,
+            )?;
         }
         if let Some(seed) = resolved.settings.info.seed.as_ref().filter(|seed| {
             resolved.settings.enabled_signatory().is_none() && seed.len() < MIN_NEW_MINT_SEED_BYTES
@@ -277,7 +316,7 @@ impl ConfigurationService {
         };
         self.repository
             .initialize(
-                ConfigEnvelope::new(resolved.document, signing_identity.fingerprint)
+                ConfigEnvelope::new(resolved.document, signing_identity.fingerprint.clone())
                     .with_new_bdk_wallet_allowed(
                         effective_bdk_wallet_policy == BdkWalletPolicy::AllowNew,
                     ),
@@ -322,7 +361,6 @@ impl ConfigurationService {
         let resolved = Self::validate_document(&envelope.toml)?;
         self.require_primary_database(&resolved.settings.database)?;
         let signing_resolution = resolve_signing_identity_async(&resolved.settings).await?;
-        validate_authored_mint_pubkey(&resolved.settings, &signing_resolution.identity)?;
         if envelope.signing_identity != signing_resolution.identity.fingerprint {
             return Err(ConfigurationServiceError::SigningIdentityChange);
         }
@@ -385,7 +423,6 @@ impl ConfigurationService {
     ) -> Result<(ResolvedConfiguration, SigningIdentity), ConfigurationServiceError> {
         let resolved = Self::validate_document(document)?;
         let signing_identity = discover_signing_identity_async(&resolved.settings).await?;
-        validate_authored_mint_pubkey(&resolved.settings, &signing_identity)?;
         Ok((resolved, signing_identity))
     }
 }
@@ -425,9 +462,18 @@ pub(crate) fn require_existing_bdk_wallet(
             Ok(_) => {}
         }
     }
-    bdk.validate_existing_wallet(work_dir)
-        .map_err(ConfigurationServiceError::BdkWalletPreflight)?;
-    Ok(BdkWalletPolicy::RequireExisting)
+    match bdk.validate_existing_wallet(work_dir) {
+        Ok(()) => Ok(BdkWalletPolicy::RequireExisting),
+        // Loading a fresh BDK wallet creates the SQLite schema before the
+        // initial chain-tip request. Retain the explicit creation permission
+        // when that request failed and left an uninitialized database.
+        Err(cdk_bdk::Error::ExistingWalletNotInitialized { .. })
+            if bdk_wallet_policy == BdkWalletPolicy::AllowNew && wallet_path.is_file() =>
+        {
+            Ok(BdkWalletPolicy::AllowNew)
+        }
+        Err(error) => Err(ConfigurationServiceError::BdkWalletPreflight(error)),
+    }
 }
 
 #[cfg(not(feature = "bdk"))]
@@ -505,21 +551,125 @@ async fn resolve_signing_identity_async(
             .await
             .map_err(|error| ConfigurationServiceError::SigningIdentity(error.to_string()))?,
         );
-        let pubkey = client
+        let keysets = client
             .keysets()
             .await
-            .map_err(|error| ConfigurationServiceError::SigningIdentity(error.to_string()))?
-            .pubkey;
+            .map_err(|error| ConfigurationServiceError::SigningIdentity(error.to_string()))?;
         Ok(SigningIdentityResolution {
-            identity: signing_identity_from_pubkey(pubkey),
+            identity: signing_identity_from_pubkey(keysets.pubkey),
             remote_signatory: Some(client),
+            remote_keysets: Some(keysets),
         })
     } else {
         Ok(SigningIdentityResolution {
             identity: discover_signing_identity(settings)?,
             remote_signatory: None,
+            remote_keysets: None,
         })
     }
+}
+
+/// Verifies historical signing keys without creating or reactivating keysets.
+fn verify_existing_signer(
+    settings: &Settings,
+    signing: &SigningIdentityResolution,
+    keysets: &[cdk::mint::MintKeySetInfo],
+    used_keysets: &HashSet<cdk::nuts::Id>,
+    database_pubkey: Option<cdk::nuts::PublicKey>,
+) -> Result<(), ConfigurationServiceError> {
+    match &signing.remote_keysets {
+        Some(remote_keysets) => {
+            verify_remote_keysets(remote_keysets, keysets, used_keysets, database_pubkey)?;
+        }
+        None => {
+            if keysets.is_empty() {
+                return Err(ConfigurationServiceError::ExistingMintMissingKeysets);
+            }
+            let seed = local_seed(settings)?;
+            verify_local_keysets(&seed, keysets, used_keysets)?;
+        }
+    }
+    Ok(())
+}
+
+fn local_seed(settings: &Settings) -> Result<Vec<u8>, ConfigurationServiceError> {
+    match settings.info.seed.as_deref() {
+        Some(seed) if !seed.is_empty() => Ok(seed.as_bytes().to_vec()),
+        _ => Ok(
+            Mnemonic::from_str(settings.info.mnemonic.as_deref().ok_or_else(|| {
+                ConfigurationServiceError::SigningIdentity(
+                    "no local signing source is configured".to_owned(),
+                )
+            })?)
+            .map_err(|error| ConfigurationServiceError::SigningIdentity(error.to_string()))?
+            .to_seed_normalized("")
+            .to_vec(),
+        ),
+    }
+}
+
+fn verify_local_keysets(
+    seed: &[u8],
+    keysets: &[cdk::mint::MintKeySetInfo],
+    used_keysets: &HashSet<cdk::nuts::Id>,
+) -> Result<(), ConfigurationServiceError> {
+    let secp = Secp256k1::new();
+    let xpriv = Xpriv::new_master(Network::Bitcoin, seed)
+        .map_err(|error| ConfigurationServiceError::SigningIdentity(error.to_string()))?;
+    for info in keysets {
+        let derived = cdk::nuts::MintKeySet::generate_from_xpriv(
+            &secp,
+            xpriv,
+            &info.amounts,
+            info.unit.clone(),
+            info.derivation_path.clone(),
+            info.input_fee_ppk,
+            info.final_expiry,
+            info.id.get_version(),
+        );
+        cdk::nuts::KeySet {
+            id: info.id,
+            unit: info.unit.clone(),
+            active: Some(info.active),
+            keys: derived.keys.into(),
+            input_fee_ppk: info.input_fee_ppk,
+            final_expiry: info.final_expiry,
+        }
+        .verify_id_for_legacy_nutshell_migration()
+        .map_err(|_| ConfigurationServiceError::HistoricalKeysetMismatch { keyset_id: info.id })?;
+    }
+    let mut used_keysets: Vec<_> = used_keysets.iter().collect();
+    used_keysets.sort_unstable();
+    for id in used_keysets {
+        if !keysets.iter().any(|info| info.id == *id) {
+            return Err(ConfigurationServiceError::UsedKeysetMissingInfo { keyset_id: *id });
+        }
+    }
+    Ok(())
+}
+
+fn verify_remote_keysets(
+    remote: &cdk_signatory::signatory::SignatoryKeysets,
+    keysets: &[cdk::mint::MintKeySetInfo],
+    used_keysets: &HashSet<cdk::nuts::Id>,
+    database_pubkey: Option<cdk::nuts::PublicKey>,
+) -> Result<(), ConfigurationServiceError> {
+    if keysets.is_empty() && used_keysets.is_empty() && database_pubkey != Some(remote.pubkey) {
+        return Err(ConfigurationServiceError::RemoteSignerHistoryMissing);
+    }
+    let mut used_keysets: Vec<_> = used_keysets.iter().collect();
+    used_keysets.sort_unstable();
+    for id in keysets.iter().map(|info| &info.id).chain(used_keysets) {
+        let keyset = remote
+            .keysets
+            .iter()
+            .find(|keyset| keyset.id == *id)
+            .ok_or(ConfigurationServiceError::HistoricalKeysetMismatch { keyset_id: *id })?;
+        cdk::nuts::KeySet::from(keyset)
+            .verify_id_for_legacy_nutshell_migration()
+            .map_err(|_| ConfigurationServiceError::HistoricalKeysetMismatch { keyset_id: *id })?;
+    }
+    Ok(())
 }
 
 fn root_pubkey(seed: &[u8]) -> Result<cdk::nuts::PublicKey, ConfigurationServiceError> {
@@ -536,20 +686,6 @@ fn signing_identity_from_pubkey(pubkey: cdk::nuts::PublicKey) -> SigningIdentity
         pubkey,
         fingerprint: sha256::Hash::hash(&input).to_string(),
     }
-}
-
-fn validate_authored_mint_pubkey(
-    settings: &Settings,
-    signing_identity: &SigningIdentity,
-) -> Result<(), ConfigurationServiceError> {
-    if settings
-        .mint_info
-        .pubkey
-        .is_some_and(|pubkey| pubkey != signing_identity.pubkey)
-    {
-        return Err(ConfigurationServiceError::SigningIdentityChange);
-    }
-    Ok(())
 }
 
 fn same_primary_database(configured: &Database, bootstrap: &Database) -> bool {
@@ -919,6 +1055,142 @@ mod tests {
     const TEST_MNEMONIC_TWO: &str =
         "legal winner thank year wave sausage worth useful legal winner thank yellow";
 
+    #[cfg(all(feature = "sqlite", feature = "bdk"))]
+    #[tokio::test]
+    async fn bdk_preflight_retries_uninitialized_wallet_only_with_creation_permission() {
+        let work_dir = crate::test_utils::unique_temp_path("bdk_failed_initialization");
+        let wallet_path = work_dir.join("bdk_wallet/bdk_wallet.sqlite");
+        let mut settings = Settings {
+            bdk: Some(crate::config::Bdk {
+                mnemonic: Some(TEST_MNEMONIC_ONE.to_string()),
+                network: Some("regtest".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let kv = Arc::new(memory::empty().await.expect("in-memory database"));
+        let create_backend = |chain_source| {
+            cdk_bdk::CdkBdk::new(
+                bip39::Mnemonic::parse(TEST_MNEMONIC_ONE).expect("mnemonic"),
+                bitcoin::Network::Regtest,
+                chain_source,
+                work_dir.to_string_lossy().into_owned(),
+                cdk::types::FeeReserve {
+                    min_fee_reserve: cdk::Amount::new(1, cdk_common::CurrencyUnit::Sat).into(),
+                    percent_fee_reserve: 0.02,
+                },
+                kv.clone(),
+                None,
+                1,
+                0,
+                546,
+                60,
+                None,
+                None,
+            )
+        };
+        // Reserve a local port without listening so RPC reliably fails.
+        let socket = tokio::net::TcpSocket::new_v4().expect("RPC socket");
+        socket
+            .bind("127.0.0.1:0".parse().expect("RPC address"))
+            .expect("reserve RPC port");
+        let port = socket.local_addr().expect("RPC address").port();
+        let rpc = cdk_bdk::ChainSource::BitcoinRpc(cdk_bdk::BitcoinRpcConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            user: "user".to_string(),
+            password: "password".to_string(),
+            wallet_rescan_from_height: None,
+            request_timeout_secs: cdk_bdk::DEFAULT_CHAIN_REQUEST_TIMEOUT_SECS,
+        });
+        for _ in 0..2 {
+            assert_eq!(
+                require_existing_bdk_wallet(&settings, &work_dir, BdkWalletPolicy::AllowNew)
+                    .expect("creation permission survives failed startup"),
+                BdkWalletPolicy::AllowNew
+            );
+            assert!(matches!(
+                create_backend(rpc.clone()),
+                Err(cdk_bdk::Error::ChainTipFetchFailed { .. })
+            ));
+            assert!(wallet_path.is_file());
+            assert!(matches!(
+                require_existing_bdk_wallet(&settings, &work_dir, BdkWalletPolicy::RequireExisting),
+                Err(ConfigurationServiceError::BdkWalletPreflight(
+                    cdk_bdk::Error::ExistingWalletNotInitialized { .. }
+                ))
+            ));
+        }
+
+        // Esplora initialization needs no live node, allowing us to verify that
+        // the leftover database can become a valid persisted wallet.
+        drop(
+            create_backend(cdk_bdk::ChainSource::Esplora(cdk_bdk::EsploraConfig {
+                url: "http://127.0.0.1:1".to_string(),
+                parallel_requests: 1,
+                request_timeout_secs: cdk_bdk::DEFAULT_CHAIN_REQUEST_TIMEOUT_SECS,
+                max_retries: cdk_bdk::DEFAULT_ESPLORA_MAX_RETRIES,
+            }))
+            .expect("initialize leftover database"),
+        );
+        for policy in [BdkWalletPolicy::AllowNew, BdkWalletPolicy::RequireExisting] {
+            assert_eq!(
+                require_existing_bdk_wallet(&settings, &work_dir, policy)
+                    .expect("initialized wallet passes preflight"),
+                BdkWalletPolicy::RequireExisting
+            );
+        }
+        settings.bdk.as_mut().expect("BDK settings").mnemonic = Some(TEST_MNEMONIC_TWO.to_string());
+        assert!(matches!(
+            require_existing_bdk_wallet(&settings, &work_dir, BdkWalletPolicy::AllowNew),
+            Err(ConfigurationServiceError::BdkWalletPreflight(
+                cdk_bdk::Error::Wallet(_)
+            ))
+        ));
+        let bdk = settings.bdk.as_mut().expect("BDK settings");
+        bdk.mnemonic = Some(TEST_MNEMONIC_ONE.to_string());
+        bdk.network = Some("signet".to_string());
+        assert!(matches!(
+            require_existing_bdk_wallet(&settings, &work_dir, BdkWalletPolicy::AllowNew),
+            Err(ConfigurationServiceError::BdkWalletPreflight(
+                cdk_bdk::Error::Wallet(_)
+            ))
+        ));
+        std::fs::remove_dir_all(&work_dir).expect("remove test wallet");
+    }
+
+    #[cfg(feature = "bdk")]
+    #[test]
+    fn bdk_creation_permission_rejects_invalid_wallet_paths_and_databases() {
+        let work_dir = crate::test_utils::unique_temp_path("bdk_invalid_wallet");
+        let wallet_path = work_dir.join("bdk_wallet/bdk_wallet.sqlite");
+        let settings = Settings {
+            bdk: Some(crate::config::Bdk {
+                mnemonic: Some(TEST_MNEMONIC_ONE.to_string()),
+                network: Some("regtest".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        std::fs::create_dir_all(&wallet_path).expect("create invalid wallet directory");
+        assert!(
+            require_existing_bdk_wallet(&settings, &work_dir, BdkWalletPolicy::AllowNew).is_err()
+        );
+        std::fs::remove_dir(&wallet_path).expect("remove invalid wallet directory");
+        std::fs::write(&wallet_path, b"not a SQLite database").expect("write invalid database");
+        assert!(
+            require_existing_bdk_wallet(&settings, &work_dir, BdkWalletPolicy::AllowNew).is_err()
+        );
+        std::fs::write(&wallet_path, []).expect("write empty database");
+        assert_eq!(
+            require_existing_bdk_wallet(&settings, &work_dir, BdkWalletPolicy::AllowNew)
+                .expect("empty database permits initialization"),
+            BdkWalletPolicy::AllowNew
+        );
+        assert_eq!(std::fs::metadata(&wallet_path).expect("metadata").len(), 0);
+        std::fs::remove_dir_all(&work_dir).expect("remove test wallet");
+    }
+
     #[cfg(feature = "fakewallet")]
     fn document(secret_reference: &str, name: &str) -> String {
         format!(
@@ -1247,7 +1519,10 @@ url = "postgresql://operator:plaintext-secret@localhost/cdk"
                     &document,
                     MintInitializationMode::New,
                     None,
-                    false,
+                    MintKeysetHistory {
+                        keysets: &[],
+                        used_keysets: &HashSet::new()
+                    },
                     Path::new("."),
                     BdkWalletPolicy::RequireExisting,
                 )
@@ -1312,7 +1587,10 @@ url = "postgresql://operator:plaintext-secret@localhost/cdk"
                     &document,
                     MintInitializationMode::New,
                     None,
-                    false,
+                    MintKeysetHistory {
+                        keysets: &[],
+                        used_keysets: &HashSet::new(),
+                    },
                     Path::new("."),
                     BdkWalletPolicy::RequireExisting,
                 )
@@ -1345,6 +1623,37 @@ url = "postgresql://operator:plaintext-secret@localhost/cdk"
     }
 
     #[cfg(all(feature = "sqlite", feature = "fakewallet"))]
+    fn historical_keysets_for_document(document: &str) -> Vec<cdk::mint::MintKeySetInfo> {
+        let settings = ConfigurationService::validate_document(document)
+            .expect("settings")
+            .settings;
+        let seed = local_seed(&settings).expect("seed");
+        let path = bitcoin::bip32::DerivationPath::from_str("m/0'/0'/1'").expect("path");
+        let keyset = cdk::nuts::MintKeySet::generate_from_xpriv(
+            &Secp256k1::new(),
+            Xpriv::new_master(Network::Bitcoin, &seed).expect("master key"),
+            &[1, 2, 4],
+            cdk::nuts::CurrencyUnit::Sat,
+            path.clone(),
+            0,
+            None,
+            cdk_common::nut02::KeySetVersion::Version00,
+        );
+        vec![cdk::mint::MintKeySetInfo {
+            id: keyset.id,
+            unit: cdk::nuts::CurrencyUnit::Sat,
+            active: true,
+            valid_from: 0,
+            derivation_path: path,
+            derivation_path_index: Some(1),
+            amounts: vec![1, 2, 4],
+            input_fee_ppk: 0,
+            final_expiry: None,
+            issuer_version: None,
+        }]
+    }
+
+    #[cfg(all(feature = "sqlite", feature = "fakewallet"))]
     #[tokio::test]
     async fn existing_short_seed_survives_initialization_apply_and_restart() {
         let secret_path = crate::test_utils::unique_temp_path("existing_short_seed");
@@ -1363,7 +1672,10 @@ url = "postgresql://operator:plaintext-secret@localhost/cdk"
                 &first,
                 MintInitializationMode::Existing,
                 Some(identity.pubkey),
-                true,
+                MintKeysetHistory {
+                    keysets: &historical_keysets_for_document(&first),
+                    used_keysets: &HashSet::new(),
+                },
                 Path::new("."),
                 BdkWalletPolicy::RequireExisting,
             )
@@ -1410,7 +1722,10 @@ url = "postgresql://operator:plaintext-secret@localhost/cdk"
                 &first,
                 MintInitializationMode::New,
                 None,
-                false,
+                MintKeysetHistory {
+                    keysets: &[],
+                    used_keysets: &HashSet::new(),
+                },
                 Path::new("."),
                 BdkWalletPolicy::RequireExisting,
             )
@@ -1422,7 +1737,10 @@ url = "postgresql://operator:plaintext-secret@localhost/cdk"
                     &first,
                     MintInitializationMode::New,
                     None,
-                    false,
+                    MintKeysetHistory {
+                        keysets: &[],
+                        used_keysets: &HashSet::new()
+                    },
                     Path::new("."),
                     BdkWalletPolicy::RequireExisting,
                 )
@@ -1665,7 +1983,10 @@ url = "file:{}"
                 &first,
                 MintInitializationMode::New,
                 None,
-                false,
+                MintKeysetHistory {
+                    keysets: &[],
+                    used_keysets: &HashSet::new(),
+                },
                 Path::new("."),
                 BdkWalletPolicy::RequireExisting,
             )
@@ -1804,7 +2125,7 @@ allow_insecure = true
 
     #[cfg(feature = "fakewallet")]
     #[tokio::test]
-    async fn authored_mint_pubkey_must_match_signer() {
+    async fn authored_mint_pubkey_is_independent_of_signer() {
         let secret_one = crate::test_utils::unique_temp_path("pubkey_config_secret_one");
         let secret_two = crate::test_utils::unique_temp_path("pubkey_config_secret_two");
         std::fs::write(&secret_one, TEST_MNEMONIC_ONE).expect("write signing secret");
@@ -1849,10 +2170,10 @@ engine = "sqlite"
             secret_one.display(),
             other.pubkey
         );
-        assert!(matches!(
-            ConfigurationService::validate_import(&mismatch).await,
-            Err(ConfigurationServiceError::SigningIdentityChange)
-        ));
+        let resolved = ConfigurationService::validate_import(&mismatch)
+            .await
+            .expect("metadata pubkey need not match the signer");
+        assert_eq!(resolved.settings.mint_info.pubkey, Some(other.pubkey));
 
         let matching = format!(
             r#"
@@ -1879,6 +2200,325 @@ engine = "sqlite"
             .expect("matching pubkey");
         let _ = std::fs::remove_file(secret_one);
         let _ = std::fs::remove_file(secret_two);
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[tokio::test]
+    async fn nutshell_bip32_keyset_verifies_with_raw_seed() {
+        use bitcoin::bip32::DerivationPath;
+        use cdk::nuts::{CurrencyUnit, Id};
+
+        // Independent BIP32 vector following Nutshell's derive_keys: UTF-8 seed,
+        // the stored path, then a hardened child for each denomination index.
+        // SHA256 of the concatenated compressed public keys gives this ID.
+        // https://github.com/cashubtc/nutshell/blob/main/cashu/core/crypto/keys.py
+        let seed = "TEST_PRIVATE_KEY";
+        let id = Id::from_str("0084c4112b198282").expect("Nutshell keyset ID");
+        let info = cdk::mint::MintKeySetInfo {
+            id,
+            unit: CurrencyUnit::Sat,
+            active: false,
+            valid_from: 0,
+            derivation_path: DerivationPath::from_str("m/0'/0'/0'").expect("Nutshell path"),
+            derivation_path_index: None,
+            amounts: vec![1, 2, 4],
+            input_fee_ppk: 0,
+            final_expiry: None,
+            issuer_version: None,
+        };
+        let secret = crate::test_utils::unique_temp_path("nutshell_seed");
+        std::fs::write(&secret, seed).expect("raw Nutshell seed");
+        let document = document(&format!("file:{}", secret.display()), "nutshell")
+            .replace("mnemonic =", "seed =");
+        let resolved = ConfigurationService::validate_import(&document)
+            .await
+            .expect("validate short raw seed");
+        let resolved_seed = local_seed(&resolved.settings).expect("resolve raw seed");
+        assert_eq!(resolved_seed, seed.as_bytes());
+        verify_local_keysets(
+            &resolved_seed,
+            std::slice::from_ref(&info),
+            &HashSet::from([id]),
+        )
+        .expect("Nutshell BIP32 keys match");
+        assert!(matches!(
+            verify_local_keysets(b"WRONG_PRIVATE_KEY", &[info], &HashSet::from([id])),
+            Err(ConfigurationServiceError::HistoricalKeysetMismatch { .. })
+        ));
+        std::fs::remove_file(secret).expect("remove seed fixture");
+    }
+
+    #[test]
+    fn historical_nutshell_zero_expiry_keyset_verifies_original_seed() {
+        use bitcoin::bip32::DerivationPath;
+        use cdk::nuts::{CurrencyUnit, Id};
+
+        // Captured from a real Nutshell 0.20.3 mint after keyset rotation and
+        // migration through PR #2016, which normalizes zero expiry to None.
+        let seed = b"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+        let id = Id::from_str("01c03c972f7daff964f08fe4efc7bf511013e6251f4bafb09f13b7b4eb0f507e77")
+            .expect("historical Nutshell ID");
+        let mut info = cdk::mint::MintKeySetInfo {
+            id,
+            unit: CurrencyUnit::Sat,
+            active: false,
+            valid_from: 0,
+            derivation_path: DerivationPath::from_str("m/0'/0'/1'").expect("Nutshell path"),
+            derivation_path_index: None,
+            amounts: (0..64).map(|i| 1_u64 << i).collect(),
+            input_fee_ppk: 0,
+            final_expiry: None,
+            issuer_version: Some(
+                cdk_common::common::IssuerVersion::from_str("nutshell/0.20.3")
+                    .expect("Nutshell version"),
+            ),
+        };
+        let used = HashSet::from([id]);
+        let derived = cdk::nuts::MintKeySet::generate_from_xpriv(
+            &Secp256k1::new(),
+            Xpriv::new_master(Network::Bitcoin, seed).expect("master key"),
+            &info.amounts,
+            info.unit.clone(),
+            info.derivation_path.clone(),
+            info.input_fee_ppk,
+            info.final_expiry,
+            info.id.get_version(),
+        );
+        for expiry in [None, Some(0)] {
+            info.final_expiry = expiry;
+            verify_local_keysets(seed, std::slice::from_ref(&info), &used)
+                .expect("original Nutshell seed matches legacy ID");
+            let remote = cdk_signatory::signatory::SignatoryKeysets {
+                pubkey: root_pubkey(seed).expect("public key"),
+                keysets: vec![cdk_signatory::signatory::SignatoryKeySet::from(&(
+                    info.clone(),
+                    derived.clone(),
+                ))],
+            };
+            verify_remote_keysets(&remote, std::slice::from_ref(&info), &HashSet::new(), None)
+                .expect("remote Nutshell keys match legacy ID from metadata");
+            verify_remote_keysets(&remote, &[], &used, None)
+                .expect("remote Nutshell keys match legacy ID from transaction history");
+            let mut invalid = remote.clone();
+            invalid.keysets[0].final_expiry = Some(1);
+            assert!(matches!(
+                verify_remote_keysets(&invalid, &[], &used, Some(remote.pubkey)),
+                Err(ConfigurationServiceError::HistoricalKeysetMismatch { keyset_id })
+                    if keyset_id == id
+            ));
+            assert!(matches!(
+                verify_local_keysets(&[14; 32], std::slice::from_ref(&info), &used),
+                Err(ConfigurationServiceError::HistoricalKeysetMismatch { keyset_id })
+                    if keyset_id == id
+            ));
+        }
+        info.final_expiry = Some(1);
+        assert!(matches!(
+            verify_local_keysets(seed, &[info], &used),
+            Err(ConfigurationServiceError::HistoricalKeysetMismatch { keyset_id })
+                if keyset_id == id
+        ));
+    }
+
+    #[test]
+    fn historical_keysets_verify_original_seed_and_inactive_custom_paths() {
+        use bitcoin::bip32::DerivationPath;
+        use cdk::nuts::{CurrencyUnit, MintKeySet};
+        use cdk_common::nut02::KeySetVersion;
+
+        let seed = [13; 32];
+        let xpriv = Xpriv::new_master(Network::Bitcoin, &seed).expect("master key");
+        let mut infos = Vec::new();
+        let mut remote_keys = Vec::new();
+        for (version, path, fee, expiry) in [
+            (KeySetVersion::Version00, "m/0'/0'/1'", 0, None),
+            (KeySetVersion::Version01, "m/7'/3'/9'", 100, Some(1)),
+        ] {
+            let derivation_path = DerivationPath::from_str(path).expect("custom path");
+            let keyset = MintKeySet::generate_from_xpriv(
+                &Secp256k1::new(),
+                xpriv,
+                &[1, 2, 4],
+                CurrencyUnit::Sat,
+                derivation_path.clone(),
+                fee,
+                expiry,
+                version,
+            );
+            infos.push(cdk::mint::MintKeySetInfo {
+                id: keyset.id,
+                unit: CurrencyUnit::Sat,
+                active: false,
+                valid_from: 0,
+                derivation_path,
+                derivation_path_index: None,
+                amounts: vec![1, 2, 4],
+                input_fee_ppk: fee,
+                final_expiry: expiry,
+                issuer_version: None,
+            });
+            remote_keys.push(cdk_signatory::signatory::SignatoryKeySet::from(&(
+                infos.last().expect("keyset info").clone(),
+                keyset,
+            )));
+        }
+        let used = infos.iter().map(|info| info.id).collect();
+        verify_local_keysets(&seed, &infos, &used).expect("all original keys match");
+        assert!(matches!(
+            verify_local_keysets(&[14; 32], &infos, &used),
+            Err(ConfigurationServiceError::HistoricalKeysetMismatch { .. })
+        ));
+        let error = verify_local_keysets(&seed, &infos[..1], &used)
+            .expect_err("used keyset metadata is missing");
+        assert!(matches!(
+            error,
+            ConfigurationServiceError::UsedKeysetMissingInfo { keyset_id }
+                if keyset_id == infos[1].id
+        ));
+        let message = error.to_string();
+        assert!(message.contains("missing metadata"));
+        assert!(message.contains(&infos[1].id.to_string()));
+        assert!(!message.contains("preserve the original signing source"));
+        let mut changed = infos.clone();
+        changed[1].derivation_path = DerivationPath::default();
+        assert!(matches!(verify_local_keysets(&seed, &changed, &used),
+            Err(ConfigurationServiceError::HistoricalKeysetMismatch { keyset_id }) if keyset_id == infos[1].id));
+
+        let verified_remote = cdk_signatory::signatory::SignatoryKeysets {
+            pubkey: root_pubkey(&seed).expect("public key"),
+            keysets: remote_keys,
+        };
+        verify_remote_keysets(&verified_remote, &infos, &used, None)
+            .expect("historical keys prove remote identity despite legacy metadata");
+        verify_remote_keysets(&verified_remote, &[], &used, None)
+            .expect("issued and redeemed IDs prove remote identity");
+        for (index, info) in infos.iter().enumerate() {
+            let mut wrong_keys = verified_remote.clone();
+            wrong_keys.keysets[index].keys = verified_remote.keysets[1 - index].keys.clone();
+            let mut missing = verified_remote.clone();
+            missing.keysets.remove(index);
+            let mut invalid_snapshots = vec![wrong_keys, missing];
+            if info.id.get_version() == KeySetVersion::Version01 {
+                let mut wrong_unit = verified_remote.clone();
+                wrong_unit.keysets[index].unit = CurrencyUnit::Msat;
+                let mut wrong_fee = verified_remote.clone();
+                wrong_fee.keysets[index].input_fee_ppk += 1;
+                let mut wrong_expiry = verified_remote.clone();
+                wrong_expiry.keysets[index].final_expiry = None;
+                invalid_snapshots.extend([wrong_unit, wrong_fee, wrong_expiry]);
+            }
+            for remote in invalid_snapshots {
+                let pubkey = remote.pubkey;
+                let signing = SigningIdentityResolution {
+                    identity: signing_identity_from_pubkey(pubkey),
+                    remote_signatory: None,
+                    remote_keysets: Some(remote),
+                };
+                // Check each source of historical IDs independently, including
+                // when the database already has the remote signer's pubkey.
+                for (history, used) in [
+                    (std::slice::from_ref(info), HashSet::new()),
+                    (&[][..], HashSet::from([info.id])),
+                ] {
+                    assert!(matches!(
+                        verify_existing_signer(
+                            &Settings::default(),
+                            &signing,
+                            history,
+                            &used,
+                            Some(pubkey),
+                        ),
+                        Err(ConfigurationServiceError::HistoricalKeysetMismatch { keyset_id })
+                            if keyset_id == info.id
+                    ));
+                }
+            }
+        }
+        let remote = cdk_signatory::signatory::SignatoryKeysets {
+            pubkey: root_pubkey(&seed).expect("public key"),
+            keysets: vec![],
+        };
+        assert!(matches!(
+            verify_remote_keysets(&remote, &[], &used, Some(remote.pubkey)),
+            Err(ConfigurationServiceError::HistoricalKeysetMismatch { .. })
+        ));
+        assert!(matches!(
+            verify_remote_keysets(&remote, &[], &HashSet::new(), None),
+            Err(ConfigurationServiceError::RemoteSignerHistoryMissing)
+        ));
+        verify_remote_keysets(&remote, &[], &HashSet::new(), Some(remote.pubkey))
+            .expect("unchanged remote identity without transaction history");
+    }
+
+    #[test]
+    fn missing_used_keysets_are_reported_in_id_order() {
+        let ids = [
+            "0000000000000001",
+            "0000000000000002",
+            "0000000000000003",
+            "0000000000000004",
+        ]
+        .map(|id| cdk::nuts::Id::from_str(id).expect("keyset ID"));
+        let seed = [13; 32];
+        let remote = cdk_signatory::signatory::SignatoryKeysets {
+            pubkey: root_pubkey(&seed).expect("public key"),
+            keysets: vec![],
+        };
+        let mut reversed = ids;
+        reversed.reverse();
+        for capacity in [0, 16, 64] {
+            for insertion_order in [ids, reversed] {
+                let mut used = HashSet::with_capacity(capacity);
+                used.extend(insertion_order);
+                assert!(matches!(
+                    verify_local_keysets(&seed, &[], &used),
+                    Err(ConfigurationServiceError::UsedKeysetMissingInfo { keyset_id })
+                        if keyset_id == ids[0]
+                ));
+                assert!(matches!(
+                    verify_remote_keysets(&remote, &[], &used, Some(remote.pubkey)),
+                    Err(ConfigurationServiceError::HistoricalKeysetMismatch { keyset_id })
+                        if keyset_id == ids[0]
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn existing_remote_signer_uses_resolved_keyset_snapshot() {
+        let pubkey = root_pubkey(&[13; 32]).expect("remote identity");
+        let settings = Settings {
+            signatory: Some(crate::config::Signatory {
+                enabled: true,
+                allow_insecure: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        // No local signing source or connected RPC client is needed to verify
+        // the snapshot already fetched when resolving the remote identity.
+        let signing = SigningIdentityResolution {
+            identity: signing_identity_from_pubkey(pubkey),
+            remote_signatory: None,
+            remote_keysets: Some(cdk_signatory::signatory::SignatoryKeysets {
+                pubkey,
+                keysets: vec![],
+            }),
+        };
+        verify_existing_signer(&settings, &signing, &[], &HashSet::new(), Some(pubkey))
+            .expect("resolved remote snapshot proves unchanged identity without history");
+        let missing_id = cdk::nuts::Id::from_str("009a1f293253e41e").expect("historical ID");
+        assert!(matches!(
+            verify_existing_signer(
+                &settings,
+                &signing,
+                &[],
+                &HashSet::from([missing_id]),
+                Some(pubkey),
+            ),
+            Err(ConfigurationServiceError::HistoricalKeysetMismatch { keyset_id })
+                if keyset_id == missing_id
+        ));
     }
 
     #[test]
@@ -2042,7 +2682,7 @@ tls_mode = "disable"
 
     #[cfg(all(feature = "sqlite", feature = "fakewallet"))]
     #[tokio::test]
-    async fn initialize_rejects_existing_mint_pubkey_mismatch_and_mark_applied_tracks_document() {
+    async fn initialize_accepts_legacy_metadata_and_mark_applied_tracks_document() {
         let secret_path = crate::test_utils::unique_temp_path("init_pubkey_config_secret");
         std::fs::write(&secret_path, TEST_MNEMONIC_ONE).expect("write signing secret");
         let service = service().await;
@@ -2066,31 +2706,20 @@ tls_mode = "disable"
         .expect("other identity");
         std::fs::write(&secret_path, TEST_MNEMONIC_ONE).expect("restore mnemonic");
 
-        assert!(matches!(
-            service
-                .initialize(
-                    &first,
-                    MintInitializationMode::Existing,
-                    Some(other.pubkey),
-                    true,
-                    Path::new("."),
-                    BdkWalletPolicy::RequireExisting,
-                )
-                .await,
-            Err(ConfigurationServiceError::SigningIdentityChange)
-        ));
-
         service
             .initialize(
                 &first,
                 MintInitializationMode::Existing,
-                Some(identity.pubkey),
-                true,
+                Some(other.pubkey),
+                MintKeysetHistory {
+                    keysets: &historical_keysets_for_document(&first),
+                    used_keysets: &HashSet::new(),
+                },
                 Path::new("."),
                 BdkWalletPolicy::RequireExisting,
             )
             .await
-            .expect("initialize with matching mint pubkey");
+            .expect("initialize with verified keys despite legacy mint pubkey");
         assert!(service
             .has_pending_configuration()
             .await

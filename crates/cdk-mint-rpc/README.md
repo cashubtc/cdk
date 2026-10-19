@@ -28,8 +28,8 @@ versioned package under `src/proto/` and is served on the same port.
 | `QuoteService` | `cdk_mint_quote_v1` | Quote time-to-live settings and mint quote state overrides |
 | `WalletService` | `cdk_mint_wallet_v1` | On-chain wallet balance, deposit addresses, and transactions |
 
-Every request must carry the `x-cdk-protocol-version` header set to
-`cdk_common::MINT_RPC_PROTOCOL_VERSION`. The CLI adds it for you.
+Each package name carries its API version (`_v1`). Incompatible changes go in a
+new package version, served alongside the old one.
 
 ## Installation
 

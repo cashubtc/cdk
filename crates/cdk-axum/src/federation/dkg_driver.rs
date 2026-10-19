@@ -518,7 +518,7 @@ fn classify_federation_dkg_delivery_failure(err: &anyhow::Error) -> FederationDk
             HttpError::Serialization(_) | HttpError::ResponseTooLarge { .. } => {
                 (FederationDkgDeliveryFailureKind::ResponseDecode, None)
             }
-            HttpError::Proxy(_) | HttpError::Build(_) => (
+            HttpError::Redirect(_) | HttpError::Proxy(_) | HttpError::Build(_) => (
                 FederationDkgDeliveryFailureKind::TransportConfiguration,
                 None,
             ),
@@ -2082,6 +2082,11 @@ mod tests {
         );
 
         let cases = [
+            (
+                HttpError::Redirect("private redirect target".to_string()),
+                FederationDkgDeliveryFailureKind::TransportConfiguration,
+                None,
+            ),
             (
                 HttpError::Connection("private connection detail".to_string()),
                 FederationDkgDeliveryFailureKind::Connection,

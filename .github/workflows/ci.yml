@@ -54,6 +54,10 @@ jobs:
         run: nix develop --fallback -i -L .#stable --command bash -c "find . -name '*.nix' -not -path './.git/*' -not -path './.jj/*' -print0 | xargs -0 nixpkgs-fmt --check"
       - name: typos
         run: nix develop --fallback -i -L .#stable --command typos
+      # The release workflows build the bindings with --locked, so a lock that
+      # drifted from Cargo.toml would otherwise first surface on release day.
+      - name: Cargo.lock is up to date
+        run: nix develop --fallback -i -L .#stable --command cargo metadata --locked --format-version 1 > /dev/null
 
   standalone-api:
     name: "Ordinary CDK API and feature isolation"
@@ -702,6 +706,9 @@ jobs:
             --command misc/with_ci_tmpdir.sh just fake-auth-mint-itest \
             ${{ matrix.database }} \
             http://127.0.0.1:8080/realms/cdk-test-realm/.well-known/openid-configuration
+      - name: Capture auth service logs on failure
+        if: failure()
+        run: docker compose -f misc/keycloak/docker-compose-recover.yml logs --no-color --timestamps keycloak postgres
       - name: Stop and clean up Docker Compose
         if: always()
         run: |

@@ -17,6 +17,7 @@ exclude_re = [
     'cashu/src/nuts/nut16.rs.*TokenUrDecoder::fragment_count ->',
     # Diagnostic formatting only.
     'cashu/src/nuts/nut16.rs.*<impl fmt::Debug for TokenUrEncoder>::fmt',
+    'cashu/src/nuts/nut16.rs.*<impl fmt::Debug for TokenUrDecoder>::fmt',
     # Single-part payloads cannot reach 1 MiB after the 4,296-byte frame limit.
     # Restrict this to the single-part comparison, preserving frame-size coverage.
     'cashu/src/nuts/nut16.rs:272:.*replace > with (==|>=) in TokenUrDecoder::receive',

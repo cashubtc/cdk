@@ -230,10 +230,41 @@ impl Mint {
         .await
     }
 
-    /// Loads a settled melt response from the database.
+    /// Load a quote, keeping its response pending until change and cleanup commit.
+    pub(super) async fn load_melt_quote_for_response(
+        localstore: &DynMintDatabase,
+        quote_id: &QuoteId,
+    ) -> Result<Option<MeltQuote>, Error> {
+        let mut tx = localstore.begin_transaction().await?;
+        // Match finalization's quote-before-request lock ordering and use the
+        // locked quote for the response instead of reading it twice.
+        let mut quote = tx
+            .get_melt_quote(quote_id)
+            .await?
+            .map(|quote| quote.inner());
+        if let Some(quote) = quote.as_mut() {
+            if quote.state == MeltQuoteState::Paid {
+                // Finalization deletes the request atomically with change
+                // persistence, including when no change is due. Check this
+                // marker before reading signatures after releasing the locks.
+                if tx
+                    .get_melt_request_and_blinded_messages(quote_id)
+                    .await?
+                    .is_some()
+                {
+                    quote.state = MeltQuoteState::Pending;
+                }
+            }
+        }
+        tx.rollback().await?;
+        Ok(quote)
+    }
+
+    /// Loads a settled (non-pending, non-unknown) melt response from the database.
     ///
     /// Returns `Ok(None)` while the quote is still `Pending` or in an `Unknown`
-    /// state (backend could not determine status); the caller should keep
+    /// state (backend could not determine status), or while a paid quote still
+    /// has outstanding change finalization; the caller should keep
     /// waiting. Returns `Ok(Some(response))` once the quote has reached a
     /// final state (`Paid`, `Failed`, or post-attempt `Unpaid`), with any
     /// change blind signatures attached.
@@ -247,8 +278,7 @@ impl Mint {
         localstore: &DynMintDatabase,
         quote_id: &QuoteId,
     ) -> Result<Option<MeltQuoteResponse<QuoteId>>, Error> {
-        let quote = localstore
-            .get_melt_quote(quote_id)
+        let quote = Self::load_melt_quote_for_response(localstore, quote_id)
             .await?
             .ok_or(Error::UnknownQuote)?;
 
@@ -944,6 +974,9 @@ impl Mint {
             if reconcile_backend {
                 self.handle_pending_melt_quote(&mut quote).await?;
             }
+            let quote = Self::load_melt_quote_for_response(&self.localstore, quote_id)
+                .await?
+                .ok_or(Error::UnknownQuote)?;
 
             let blind_signatures = self
                 .localstore

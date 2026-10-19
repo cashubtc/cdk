@@ -206,6 +206,7 @@ async fn start_lnd_mint(
         macaroon_file: lnd_macaroon_file,
         fee_percent: 0.0,
         reserve_fee_min: 0.into(),
+        allow_self_payment: true,
     };
 
     // Create settings struct for LND mint using shared function

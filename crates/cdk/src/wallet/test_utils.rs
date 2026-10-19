@@ -553,7 +553,7 @@ pub struct MockMintConnector {
     /// test stage a sequence of status responses (e.g. a subscription event
     /// followed by an authoritative HTTP recheck).
     pub melt_quote_status_responses:
-        Mutex<std::collections::VecDeque<Result<MeltQuoteBolt11Response<String>, Error>>>,
+        Mutex<std::collections::VecDeque<Result<MeltQuoteResponse<String>, Error>>>,
     /// Response for post_mint calls
     pub post_mint_response: Mutex<Option<Result<MintResponse, Error>>>,
     /// Queue of responses for successive post_mint_quote calls.
@@ -630,6 +630,24 @@ pub struct MockMintConnector {
     /// Response for DNS TXT resolution calls
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
     pub dns_txt_response: Mutex<Option<Result<Vec<String>, Error>>>,
+    /// What the mock answers when asked whether a receiver URL can be paid.
+    ///
+    /// Defaults to [`PaymentRequestDeliverability::Unsupported`] to mirror the
+    /// `MintConnector` default, so a test paying an HTTP-only payment request
+    /// has to opt in.
+    pub payment_request_deliverability: Mutex<PaymentRequestDeliverability>,
+}
+
+/// What a [`MockMintConnector`] reports for a NUT-18 receiver URL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaymentRequestDeliverability {
+    /// The connector cannot deliver payment requests at all.
+    Unsupported,
+    /// Proofs can be handed to the receiver.
+    Deliverable,
+    /// The transport would reach the receiver without verifying its
+    /// certificate.
+    UnverifiedTls,
 }
 
 impl Default for MockMintConnector {
@@ -698,6 +716,7 @@ impl MockMintConnector {
             set_auth_wallet_calls: Mutex::new(0),
             #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
             dns_txt_response: Mutex::new(None),
+            payment_request_deliverability: Mutex::new(PaymentRequestDeliverability::Unsupported),
         }
     }
 
@@ -872,7 +891,7 @@ impl MockMintConnector {
         self.melt_quote_status_responses
             .lock()
             .unwrap()
-            .push_back(response);
+            .push_back(response.map(MeltQuoteResponse::Bolt11));
     }
 
     pub fn set_post_mint_response(&self, response: Result<MintResponse, Error>) {
@@ -1080,11 +1099,32 @@ impl MockMintConnector {
     pub fn auth_wallet_set_count(&self) -> usize {
         *self.set_auth_wallet_calls.lock().unwrap()
     }
+
+    pub fn set_payment_request_deliverability(&self, deliverability: PaymentRequestDeliverability) {
+        *self.payment_request_deliverability.lock().unwrap() = deliverability;
+    }
 }
 
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl MintConnector for MockMintConnector {
+    fn ensure_payment_request_deliverable(&self, url: &str) -> Result<(), Error> {
+        match *self.payment_request_deliverability.lock().unwrap() {
+            PaymentRequestDeliverability::Unsupported => {
+                Err(Error::PaymentRequestDeliveryUnsupported)
+            }
+            PaymentRequestDeliverability::Deliverable => Ok(()),
+            PaymentRequestDeliverability::UnverifiedTls => {
+                let host = url::Url::parse(url)
+                    .ok()
+                    .and_then(|url| url.host_str().map(ToString::to_string))
+                    .unwrap_or_else(|| url.to_string());
+
+                Err(Error::UnverifiedTlsEndpoint { host })
+            }
+        }
+    }
+
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
     async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, Error> {
         self.dns_txt_response
@@ -1292,7 +1332,13 @@ impl MintConnector for MockMintConnector {
     ) -> Result<MeltQuoteResponse<String>, Error> {
         let queued = self.melt_quote_status_responses.lock().unwrap().pop_front();
         let mut response = match queued {
-            Some(response) => response,
+            Some(response) => {
+                let mut response = response?;
+                if let MeltQuoteResponse::Bolt11(quote) = &mut response {
+                    quote.quote = _quote_id.to_string();
+                }
+                return Ok(response);
+            }
             None => self
                 .melt_quote_status_response
                 .lock()

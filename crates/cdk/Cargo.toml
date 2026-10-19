@@ -190,12 +190,17 @@ name = "restore-wallet"
 required-features = ["wallet"]
 
 [[example]]
+name = "restore-mint-quote"
+required-features = ["wallet"]
+
+[[example]]
 name = "revoke_send"
 required-features = ["wallet"]
 
 [dev-dependencies]
 cdk-common = { workspace = true, features = ["test"] }
 axum.workspace = true
+rusqlite = { version = "0.31", default-features = false }
 rand.workspace = true
 cdk-sqlite = { workspace = true, features = ["federation-bark"] }
 cdk-postgres.workspace = true

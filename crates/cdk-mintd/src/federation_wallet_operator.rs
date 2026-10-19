@@ -96,7 +96,10 @@ where
         "transactions",
         "status",
     ])?;
-    Ok(transport.http_post(url, None, &request).await?)
+    Ok(transport
+        .http_post(url, None, &request)
+        .await?
+        .json_or_status_error()?)
 }
 
 async fn request_rebroadcast<T>(
@@ -123,7 +126,10 @@ where
         "transactions",
         "rebroadcast",
     ])?;
-    Ok(transport.http_post(url, None, &request).await?)
+    Ok(transport
+        .http_post(url, None, &request)
+        .await?
+        .json_or_status_error()?)
 }
 
 fn signed_transaction_request(

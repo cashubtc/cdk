@@ -199,7 +199,7 @@ if ! command -v cdk-payment-processor &>/dev/null; then
     cargo b --bin cdk-payment-processor
 fi
 
-run_bin_bg cdk-payment-processor
+run_bin_bg cdk-payment-processor --enable-logging --log-level info
 
 CDK_PAYMENT_PROCESSOR_PID=$!
 wait_for_payment_processor "$CDK_PAYMENT_PROCESSOR_LISTEN_HOST" "$CDK_PAYMENT_PROCESSOR_LISTEN_PORT" "$CDK_PAYMENT_PROCESSOR_PID"
@@ -279,7 +279,9 @@ test_status=$?
 
 if [ "$PAYMENT_BACKEND" = "CLN" ]; then
     echo "Running bolt12 tests for CLN backend"
-    run_test bolt12
+    # These tests share CLN nodes. Concurrent BOLT12 onion messages can exceed
+    # CLN's per-peer rate limit and time out while fetching invoices.
+    run_test bolt12 -- --test-threads 1
     bolt12_test_status=$?
     
     # Exit with non-zero status if either test failed

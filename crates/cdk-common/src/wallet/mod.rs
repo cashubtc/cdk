@@ -1213,6 +1213,20 @@ pub trait Wallet: Send + Sync {
         payment_method: Option<Self::PaymentMethod>,
     ) -> Result<Self::MintQuote, Self::Error>;
 
+    /// Fetch a mint quote and try to recover its NUT-20 signing key from the seed.
+    ///
+    /// Use after restoring from seed to claim a known quote ID. Searches the
+    /// wallet's NUT-20 keys at counters `0..key_search_limit` for the public key
+    /// the mint reports. Returns `Ok` even if no key matched: the returned quote's
+    /// `secret_key` is set only on success, so check it before minting and retry
+    /// with a larger limit if needed. Zero disables the search.
+    async fn fetch_mint_quote_with_key_search(
+        &self,
+        quote_id: &str,
+        payment_method: Option<Self::PaymentMethod>,
+        key_search_limit: u32,
+    ) -> Result<Self::MintQuote, Self::Error>;
+
     /// Prepare a melt operation
     async fn prepare_melt(
         &self,

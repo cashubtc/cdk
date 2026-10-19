@@ -1,12 +1,13 @@
 use anyhow::Result;
 use clap::Args;
+use tonic::transport::Channel;
 use tonic::Request;
 
+use crate::payment_method::payment_method_service_client::PaymentMethodServiceClient;
 use crate::payment_method::{
     Bolt11MeltMethodOptions, Bolt11MintMethodOptions, UpdateDisabledRequest,
     UpdateMeltMethodRequest, UpdateMintMethodRequest,
 };
-use crate::InterceptedPaymentMethodServiceClient;
 
 /// Command to update the settings of a mint (NUT-04) payment method
 ///
@@ -46,7 +47,7 @@ pub struct UpdateMintMethodCommand {
 /// * `client` - The RPC client used to communicate with the mint
 /// * `sub_command_args` - The NUT-04 configuration parameters to update
 pub async fn update_mint_method(
-    client: &mut InterceptedPaymentMethodServiceClient,
+    client: &mut PaymentMethodServiceClient<Channel>,
     sub_command_args: &UpdateMintMethodCommand,
 ) -> Result<()> {
     // Create options if description is set
@@ -130,7 +131,7 @@ pub struct UpdateMeltMethodCommand {
 /// * `client` - The RPC client used to communicate with the mint
 /// * `sub_command_args` - The NUT-05 configuration parameters to update
 pub async fn update_melt_method(
-    client: &mut InterceptedPaymentMethodServiceClient,
+    client: &mut PaymentMethodServiceClient<Channel>,
     sub_command_args: &UpdateMeltMethodCommand,
 ) -> Result<()> {
     // Create options if amountless is set
@@ -198,7 +199,7 @@ pub struct UpdateDisabledCommand {
 /// * `client` - The RPC client used to communicate with the mint
 /// * `sub_command_args` - The disabled flags to set
 pub async fn update_disabled(
-    client: &mut InterceptedPaymentMethodServiceClient,
+    client: &mut PaymentMethodServiceClient<Channel>,
     sub_command_args: &UpdateDisabledCommand,
 ) -> Result<()> {
     let response = client

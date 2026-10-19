@@ -20,7 +20,6 @@ jobs:
     outputs:
       release_tag: ${{ steps.prepare.outputs.release_tag }}
       cdk_ref: ${{ steps.prepare.outputs.cdk_ref }}
-      cdk_version: ${{ steps.prepare.outputs.cdk_version }}
       dart: ${{ steps.prepare.outputs.dart }}
       go: ${{ steps.prepare.outputs.go }}
       kotlin: ${{ steps.prepare.outputs.kotlin }}
@@ -65,7 +64,6 @@ jobs:
           {
             echo "release_tag=${RELEASE_TAG}"
             echo "cdk_ref=${SOURCE_SHA}"
-            echo "cdk_version=${CDK_VERSION}"
           } >> "$GITHUB_OUTPUT"
           echo "Nightly source: ${SOURCE_SHA}"
           echo "Nightly tag: ${RELEASE_TAG}"
@@ -106,7 +104,6 @@ jobs:
     uses: ./.github/workflows/dart-publish.yml
     with:
       release_tag: ${{ needs.prepare.outputs.release_tag }}
-      cdk_version: ${{ needs.prepare.outputs.cdk_version }}
       cdk_ref: ${{ needs.prepare.outputs.cdk_ref }}
       prerelease: true
       nightly: true
@@ -119,7 +116,6 @@ jobs:
     uses: ./.github/workflows/go-publish.yml
     with:
       release_tag: ${{ needs.prepare.outputs.release_tag }}
-      cdk_version: ${{ needs.prepare.outputs.cdk_version }}
       cdk_ref: ${{ needs.prepare.outputs.cdk_ref }}
       prerelease: true
       nightly: true
@@ -132,7 +128,6 @@ jobs:
     uses: ./.github/workflows/kotlin-publish.yml
     with:
       release_tag: ${{ needs.prepare.outputs.release_tag }}
-      cdk_version: ${{ needs.prepare.outputs.cdk_version }}
       cdk_ref: ${{ needs.prepare.outputs.cdk_ref }}
       prerelease: true
       nightly: true
@@ -145,7 +140,6 @@ jobs:
     uses: ./.github/workflows/swift-publish.yml
     with:
       release_tag: ${{ needs.prepare.outputs.release_tag }}
-      cdk_version: ${{ needs.prepare.outputs.cdk_version }}
       cdk_ref: ${{ needs.prepare.outputs.cdk_ref }}
       prerelease: true
       nightly: true

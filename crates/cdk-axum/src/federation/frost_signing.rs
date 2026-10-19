@@ -871,6 +871,7 @@ fn frost_transport_error_is_retryable(error: &anyhow::Error) -> bool {
             Some(cdk_http_client::HttpError::Status { status, .. }) => *status >= 500,
             Some(
                 cdk_http_client::HttpError::Serialization(_)
+                | cdk_http_client::HttpError::Redirect(_)
                 | cdk_http_client::HttpError::ResponseTooLarge { .. }
                 | cdk_http_client::HttpError::Build(_),
             )

@@ -33,7 +33,7 @@ use futures::{future::join_all, stream};
 use http_body_util::{BodyExt, Full, StreamBody};
 use hyper::{body::Frame, header, Method};
 use hyper_util::rt::TokioIo;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::io::AsyncWriteExt;
 use url::Url;
@@ -210,38 +210,19 @@ impl Transport for MockHttp {
         Ok(vec!["delegated-dns".to_string()])
     }
 
-    async fn http_get<R>(&self, _url: Url, _auth: Option<AuthToken>) -> Result<R, HttpError>
-    where
-        R: DeserializeOwned,
-    {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        serde_json::from_value(json!({ "delegated": true })).map_err(HttpError::from)
-    }
-
-    async fn http_get_raw(
+    async fn http_get(
         &self,
         _url: Url,
         _auth: Option<AuthToken>,
     ) -> Result<RawResponse, HttpError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        Ok(RawResponse::new(200, b"delegated".to_vec()))
+        Ok(RawResponse::new(
+            200,
+            serde_json::to_vec(&json!({ "delegated": true }))?,
+        ))
     }
 
-    async fn http_post<P, R>(
-        &self,
-        _url: Url,
-        _auth_token: Option<AuthToken>,
-        _payload: &P,
-    ) -> Result<R, HttpError>
-    where
-        P: Serialize + Send + Sync,
-        R: DeserializeOwned,
-    {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        serde_json::from_value(json!({ "delegated": true })).map_err(HttpError::from)
-    }
-
-    async fn http_post_form_raw<P>(
+    async fn http_post<P>(
         &self,
         _url: Url,
         _auth_token: Option<AuthToken>,
@@ -251,7 +232,26 @@ impl Transport for MockHttp {
         P: Serialize + Send + Sync,
     {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        Ok(RawResponse::new(200, b"delegated".to_vec()))
+        Ok(RawResponse::new(
+            200,
+            serde_json::to_vec(&json!({ "delegated": true }))?,
+        ))
+    }
+
+    async fn http_post_form<P>(
+        &self,
+        _url: Url,
+        _auth_token: Option<AuthToken>,
+        _payload: &P,
+    ) -> Result<RawResponse, HttpError>
+    where
+        P: Serialize + Send + Sync,
+    {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(RawResponse::new(
+            200,
+            serde_json::to_vec(&json!({ "delegated": true }))?,
+        ))
     }
 }
 
@@ -446,11 +446,11 @@ async fn runtime_node_routes_self_requests_through_companion_endpoint() -> TestR
     let server = IrohServer::start(node.clone(), synthetic_router());
     let transport = IrohTransport::with_node(node.clone(), MockHttp::default());
     let response = transport
-        .http_get_raw(iroh_url(node.endpoint_id(), "/future-route")?, None)
+        .http_get(iroh_url(node.endpoint_id(), "/future-route")?, None)
         .await?;
     assert_eq!(response.text().await?, "future-route");
     let remote = transport
-        .http_get_raw(iroh_url(node.endpoint_id(), "/peer")?, None)
+        .http_get(iroh_url(node.endpoint_id(), "/peer")?, None)
         .await?;
     assert_ne!(remote.text().await?, node.endpoint_id().to_string());
     server.shutdown().await?;
@@ -463,7 +463,7 @@ async fn transport_conformance_and_pooling() -> TestResult {
 
     let raw = fixture
         .transport
-        .http_get_raw(fixture.url("/raw?alpha=1&beta=two")?, None)
+        .http_get(fixture.url("/raw?alpha=1&beta=two")?, None)
         .await?;
     assert_eq!(raw.status(), 200);
     assert_eq!(raw.text().await?, "alpha=1&beta=two");
@@ -474,7 +474,8 @@ async fn transport_conformance_and_pooling() -> TestResult {
     let echoed: Echo = fixture
         .transport
         .http_post(fixture.url("/json")?, None, &payload)
-        .await?;
+        .await?
+        .json_or_status_error()?;
     assert_eq!(echoed, payload);
 
     let form = FormPayload {
@@ -483,7 +484,7 @@ async fn transport_conformance_and_pooling() -> TestResult {
     };
     let form_response = fixture
         .transport
-        .http_post_form_raw(fixture.url("/form")?, None, &form)
+        .http_post_form(fixture.url("/form")?, None, &form)
         .await?;
     assert_eq!(form_response.json::<FormPayload>().await?, form);
 
@@ -493,19 +494,21 @@ async fn transport_conformance_and_pooling() -> TestResult {
             fixture.url("/auth")?,
             Some(AuthToken::ClearAuth("transport-secret".to_string())),
         )
-        .await?;
+        .await?
+        .json_or_status_error()?;
     assert_eq!(auth, json!({ "authenticated": true }));
 
     let status = fixture
         .transport
-        .http_get_raw(fixture.url("/status-error")?, None)
+        .http_get(fixture.url("/status-error")?, None)
         .await?;
     assert_eq!(status.status(), StatusCode::IM_A_TEAPOT.as_u16());
     assert_eq!(status.text().await?, "teapot");
     let status_error = fixture
         .transport
-        .http_get::<Value>(fixture.url("/status-error")?, None)
+        .http_get(fixture.url("/status-error")?, None)
         .await
+        .and_then(RawResponse::json_or_status_error::<Value>)
         .expect_err("non-success JSON request must preserve status error");
     assert!(matches!(
         status_error,
@@ -514,7 +517,7 @@ async fn transport_conformance_and_pooling() -> TestResult {
 
     let peer = fixture
         .transport
-        .http_get_raw(fixture.url("/peer")?, None)
+        .http_get(fixture.url("/peer")?, None)
         .await?
         .text()
         .await?;
@@ -522,7 +525,7 @@ async fn transport_conformance_and_pooling() -> TestResult {
 
     let future = fixture
         .transport
-        .http_get_raw(fixture.url("/future-route")?, None)
+        .http_get(fixture.url("/future-route")?, None)
         .await?;
     assert_eq!(future.text().await?, "future-route");
 
@@ -570,7 +573,7 @@ async fn transport_conformance_and_pooling() -> TestResult {
     let concurrent = (0..24).map(|_| {
         fixture
             .transport
-            .http_get_raw(fixture.url("/future-route").expect("valid Iroh URL"), None)
+            .http_get(fixture.url("/future-route").expect("valid Iroh URL"), None)
     });
     for response in join_all(concurrent).await {
         assert_eq!(response?.status(), 200);
@@ -724,7 +727,7 @@ async fn stream_admission_rejects_excess_work_and_recovers_capacity() -> TestRes
 
     let rejected = tokio::time::timeout(
         Duration::from_secs(2),
-        transport.http_get_raw(iroh_url(server_node.endpoint_id(), "/future-route")?, None),
+        transport.http_get(iroh_url(server_node.endpoint_id(), "/future-route")?, None),
     )
     .await?
     .expect_err("second stream must be rejected while the WebSocket holds capacity");
@@ -737,7 +740,7 @@ async fn stream_admission_rejects_excess_work_and_recovers_capacity() -> TestRes
     drop(receiver);
     wait_for(|| server_node.metrics().active_streams == 0).await?;
     let recovered = transport
-        .http_get_raw(iroh_url(server_node.endpoint_id(), "/future-route")?, None)
+        .http_get(iroh_url(server_node.endpoint_id(), "/future-route")?, None)
         .await?;
     assert_eq!(recovered.status(), 200);
 
@@ -937,14 +940,14 @@ async fn connection_admission_rejects_and_recovers_global_capacity() -> TestResu
 
     assert_eq!(
         first
-            .http_get_raw(iroh_url(server_node.endpoint_id(), "/future-route")?, None)
+            .http_get(iroh_url(server_node.endpoint_id(), "/future-route")?, None)
             .await?
             .status(),
         200
     );
     wait_for(|| server_node.metrics().active_connections == 1).await?;
     let rejected = second
-        .http_get_raw(iroh_url(server_node.endpoint_id(), "/future-route")?, None)
+        .http_get(iroh_url(server_node.endpoint_id(), "/future-route")?, None)
         .await
         .expect_err("a second connection must be rejected at global capacity");
     assert!(matches!(
@@ -958,7 +961,7 @@ async fn connection_admission_rejects_and_recovers_global_capacity() -> TestResu
     tokio::time::sleep(Duration::from_millis(350)).await;
     assert_eq!(
         second
-            .http_get_raw(iroh_url(server_node.endpoint_id(), "/future-route")?, None)
+            .http_get(iroh_url(server_node.endpoint_id(), "/future-route")?, None)
             .await?
             .status(),
         200
@@ -1084,7 +1087,8 @@ async fn scheme_dispatch_delegates_exactly_and_never_falls_back() -> TestResult 
 
     let delegated: Value = transport
         .http_get(Url::parse("https://example.invalid/test")?, None)
-        .await?;
+        .await?
+        .json_or_status_error()?;
     assert_eq!(delegated, json!({ "delegated": true }));
     assert_eq!(mock.calls(), 1);
 
@@ -1100,7 +1104,7 @@ async fn scheme_dispatch_delegates_exactly_and_never_falls_back() -> TestResult 
     );
 
     let unsupported = transport
-        .http_get_raw(Url::parse("ftp://example.invalid/file")?, None)
+        .http_get(Url::parse("ftp://example.invalid/file")?, None)
         .await
         .expect_err("unsupported schemes must fail explicitly");
     assert!(unsupported.to_string().contains("unsupported URL scheme"));
@@ -1109,7 +1113,7 @@ async fn scheme_dispatch_delegates_exactly_and_never_falls_back() -> TestResult 
     let unknown = SecretKey::generate().public();
     let full_unknown = unknown.to_string();
     let connect_error = transport
-        .http_get_raw(iroh_url(unknown, "/never-fallback")?, None)
+        .http_get(iroh_url(unknown, "/never-fallback")?, None)
         .await
         .expect_err("unknown Iroh endpoint must fail without HTTPS fallback");
     assert!(matches!(

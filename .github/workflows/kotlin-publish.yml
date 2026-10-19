@@ -10,9 +10,6 @@ on:
       release_tag:
         description: "Tag to create for release (e.g. v0.17.0)"
         required: true
-      cdk_version:
-        description: 'CDK dependency version (e.g. 0.17.0). Defaults to release_tag without the "v" prefix.'
-        required: false
       cdk_ref:
         description: 'CDK git ref to publish from. Must match release_tag unless this is a nightly.'
         required: false
@@ -29,9 +26,6 @@ on:
       release_tag:
         type: string
         required: true
-      cdk_version:
-        type: string
-        required: false
       cdk_ref:
         type: string
         required: false
@@ -103,8 +97,6 @@ jobs:
     steps:
       - name: Resolve variables
         run: |
-          CDK_VER="${{ inputs.cdk_version }}"
-          echo "CDK_VER=${CDK_VER:-${TAG#v}}" >> "$GITHUB_ENV"
           echo "RELEASE_VER=${TAG#v}" >> "$GITHUB_ENV"
 
       - name: Checkout monorepo
@@ -129,82 +121,22 @@ jobs:
         run: |
           rsync -av --delete \
             --exclude='.github' \
+            --exclude='rust' \
             --exclude='target' \
             --exclude='.git' \
             bindings/kotlin/ cdk-kotlin/
-          cp rust-toolchain.toml cdk-kotlin/
 
-      - name: Update versions and resolve workspace references
+          # The binding repo carries artifacts only. Nothing there is built, so
+          # the Rust crate and its toolchain pin are removed rather than synced.
+          rm -rf cdk-kotlin/rust cdk-kotlin/rust-toolchain.toml
+
+      - name: Update versions
         run: |
-          echo "Setting CDK version to ${CDK_VER}, release version to ${RELEASE_VER}"
+          echo "Setting release version to ${RELEASE_VER}"
 
-          # Helper: extract a value from [workspace.package] in root Cargo.toml
-          ws_pkg() {
-            sed -n '/^\[workspace\.package\]/,/^\[/p' Cargo.toml \
-              | grep "^$1 " | head -1 | sed 's/.*= *"\(.*\)"/\1/'
-          }
-
-          # Helper: extract a workspace dependency version
-          ws_dep_ver() {
-            local line
-            line=$(sed -n '/^\[workspace\.dependencies\]/,/^\[/p' Cargo.toml \
-              | grep "^$1 " | head -1)
-            # Handle both: dep = "version" and dep = { ..., version = "x", ... }
-            if echo "$line" | grep -q 'version *= *"'; then
-              echo "$line" | sed 's/.*version *= *"\([^"]*\)".*/\1/'
-            else
-              echo "$line" | sed 's/.*= *"\([^"]*\)".*/\1/'
-            fi
-          }
-
-          # Read workspace values dynamically
-          WS_EDITION=$(ws_pkg edition)
-          WS_RUST_VERSION=$(ws_pkg rust-version)
-          WS_LICENSE=$(ws_pkg license)
-          WS_HOMEPAGE=$(ws_pkg homepage)
-          WS_REPOSITORY=$(ws_pkg repository)
-          WS_README=$(ws_pkg readme)
-          WS_UNIFFI_VER=$(ws_dep_ver uniffi)
-
-          echo "Workspace values: edition=${WS_EDITION} rust-version=${WS_RUST_VERSION} uniffi=${WS_UNIFFI_VER}"
-
-          # Update gradle.properties version
           sed -i "s/^VERSION_NAME=.*/VERSION_NAME=${RELEASE_VER}/" cdk-kotlin/gradle.properties
 
-          # Resolve workspace package fields in rust/Cargo.toml
-          sed -i \
-            -e "s/^edition\.workspace = true/edition = \"${WS_EDITION}\"/" \
-            -e "s/^rust-version\.workspace = true/rust-version = \"${WS_RUST_VERSION}\"/" \
-            -e "s/^license\.workspace = true/license = \"${WS_LICENSE}\"/" \
-            -e "s|^homepage\.workspace = true|homepage = \"${WS_HOMEPAGE}\"|" \
-            -e "s|^repository\.workspace = true|repository = \"${WS_REPOSITORY}\"|" \
-            -e "s/^version\.workspace = true/version = \"${CDK_VER}\"/" \
-            -e "s/^readme\.workspace = true/readme = \"${WS_README}\"/" \
-            cdk-kotlin/rust/Cargo.toml
-
-          if [[ "${{ inputs.nightly }}" == "true" ]]; then
-            CDK_FFI_SOURCE="git = \"https://github.com/${GITHUB_REPOSITORY}\", rev = \"${CDK_REF}\""
-          else
-            CDK_FFI_SOURCE="version = \"=${CDK_VER}\""
-          fi
-
-          # Resolve workspace dependency references. Nightlies use the exact
-          # source commit because that cdk-ffi version is not on crates.io.
-          sed -i \
-            -e "s|cdk-ffi = { workspace = true|cdk-ffi = { ${CDK_FFI_SOURCE}|" \
-            -e "s/uniffi = { workspace = true/uniffi = { version = \"${WS_UNIFFI_VER}\"/" \
-            cdk-kotlin/rust/Cargo.toml
-
-          # Remove workspace lints reference
-          sed -i '/^\[lints\]/,/^$/s/^workspace = true//' cdk-kotlin/rust/Cargo.toml
-
-          # Keep the symbol table until UniFFI has generated the Kotlin bindings.
-          # The build job strips the native library explicitly after generation.
-          printf '\n[profile.release]\nlto = true\nstrip = "debuginfo"\ncodegen-units = 1\n' >> cdk-kotlin/rust/Cargo.toml
-
           cat cdk-kotlin/gradle.properties
-          echo "---"
-          cat cdk-kotlin/rust/Cargo.toml
 
       - name: Push to cdk-kotlin release branch
         working-directory: cdk-kotlin
@@ -230,7 +162,7 @@ jobs:
 
   kotlin-build-native:
     name: "kotlin: Build ${{ matrix.target }}"
-    needs: [kotlin-sync-sources]
+    needs: [validate-release-ref]
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -252,26 +184,10 @@ jobs:
             artifact: libcdk_ffi_kotlin.so
 
     steps:
-      - name: Clone cdk-kotlin
-        shell: bash
-        env:
-          FFI_DEPLOY_KEY: ${{ secrets.FFI_DEPLOY_KEY }}
-        run: |
-          auth_header() {
-            printf 'AUTHORIZATION: basic '
-            printf 'x-access-token:%s' "${FFI_DEPLOY_KEY}" | base64 | tr -d '\n'
-          }
-
-          git -c "http.extraheader=$(auth_header)" \
-            clone --branch "${RELEASE_BRANCH}" \
-            https://github.com/${{ vars.CDK_KOTLIN_REPO }}.git cdk-kotlin
-
-      - name: Checkout CDK (for Nix flake)
+      - name: Checkout monorepo
         uses: actions/checkout@v5
         with:
-          path: cdk
           ref: ${{ env.CDK_CHECKOUT_REF }}
-          fetch-depth: 1
           persist-credentials: false
 
       - name: Install Nix
@@ -286,10 +202,10 @@ jobs:
         continue-on-error: true
 
       - name: Build (Nix)
-        working-directory: cdk-kotlin/rust
         run: |
-          nix develop --fallback -L ../../cdk#kotlin-build --command \
-            cargo build --release --target ${{ matrix.target }}
+          nix develop --fallback -L .#kotlin-build --command \
+            cargo build --locked --profile release-ffi -p cdk-ffi-kotlin \
+              --target ${{ matrix.target }}
 
       # uniffi 0.30 reads the component interface statically from the library
       # (it does not load it), so the arm64 Android .so works as the source on
@@ -298,15 +214,14 @@ jobs:
       # metadata from, which would silently produce empty bindings.
       - name: Generate Kotlin bindings
         if: matrix.target == 'aarch64-linux-android'
-        working-directory: cdk-kotlin/rust
         run: |
-          mkdir -p ../generated-bindings
-          nix develop --fallback -L ../../cdk#kotlin-build --command \
-            cargo run --release --bin uniffi-bindgen-kotlin -- generate \
-              --library "target/${{ matrix.target }}/release/${{ matrix.artifact }}" \
+          mkdir -p generated-bindings
+          nix develop --fallback -L .#kotlin-build --command \
+            cargo run --locked --release -p cdk-ffi-kotlin --bin uniffi-bindgen-kotlin -- generate \
+              --library "target/${{ matrix.target }}/release-ffi/${{ matrix.artifact }}" \
               --language kotlin \
-              --config uniffi.toml \
-              --out-dir ../generated-bindings \
+              --config bindings/kotlin/rust/uniffi.toml \
+              --out-dir generated-bindings \
               --no-format
 
       - name: Upload generated bindings
@@ -314,33 +229,31 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: kotlin-bindings-generated
-          path: cdk-kotlin/generated-bindings/
+          path: generated-bindings/
           if-no-files-found: error
 
       - name: Strip debug symbols
-        working-directory: cdk-kotlin/rust
         shell: bash
         run: |
-          FILE="target/${{ matrix.target }}/release/${{ matrix.artifact }}"
-          nix develop --fallback -L ../../cdk#kotlin-build --command \
+          FILE="target/${{ matrix.target }}/release-ffi/${{ matrix.artifact }}"
+          nix develop --fallback -L .#kotlin-build --command \
             bash -c '"$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" --strip-all '"$FILE"
 
       - name: Verify Android ELF 16 KB alignment
         # The 16 KB page size requirement applies to 64-bit ABIs only;
         # 32-bit Android always uses 4 KB pages
         if: matrix.target == 'aarch64-linux-android' || matrix.target == 'x86_64-linux-android'
-        working-directory: cdk-kotlin/rust
         shell: bash
         run: |
-          FILE="target/${{ matrix.target }}/release/${{ matrix.artifact }}"
-          nix develop --fallback -L ../../cdk#kotlin-build --command \
-            ../../cdk/.github/scripts/check-android-elf-alignment.sh "$FILE"
+          FILE="target/${{ matrix.target }}/release-ffi/${{ matrix.artifact }}"
+          nix develop --fallback -L .#kotlin-build --command \
+            .github/scripts/check-android-elf-alignment.sh "$FILE"
 
       - name: Prepare artifact
         shell: bash
         run: |
           mkdir -p dist
-          cp "cdk-kotlin/rust/target/${{ matrix.target }}/release/${{ matrix.artifact }}" \
+          cp "target/${{ matrix.target }}/release-ffi/${{ matrix.artifact }}" \
              "dist/${{ matrix.target }}-${{ matrix.artifact }}"
 
       - name: Upload artifact
@@ -352,7 +265,7 @@ jobs:
   kotlin-publish:
     name: "kotlin: Publish to cdk-kotlin"
     runs-on: ubuntu-latest
-    needs: [kotlin-build-native]
+    needs: [kotlin-sync-sources, kotlin-build-native]
     concurrency:
       # Prevent duplicate publishes of the same immutable version without
       # cancelling or queueing releases for different stable/RC versions.

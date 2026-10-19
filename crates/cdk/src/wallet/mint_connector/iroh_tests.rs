@@ -118,30 +118,18 @@ impl Transport for FixtureHttpsTransport {
         Ok(vec![format!("fixture={domain}")])
     }
 
-    async fn http_get<R>(&self, url: Url, auth: Option<AuthToken>) -> Result<R, HttpError>
-    where
-        R: DeserializeOwned,
-    {
+    async fn http_get(&self, url: Url, auth: Option<AuthToken>) -> Result<RawResponse, HttpError> {
         self.inner.http_get(self.rewrite(&url)?, auth).await
     }
 
-    async fn http_get_raw(
-        &self,
-        url: Url,
-        auth: Option<AuthToken>,
-    ) -> Result<RawResponse, HttpError> {
-        self.inner.http_get_raw(self.rewrite(&url)?, auth).await
-    }
-
-    async fn http_post<P, R>(
+    async fn http_post<P>(
         &self,
         url: Url,
         auth_token: Option<AuthToken>,
         payload: &P,
-    ) -> Result<R, HttpError>
+    ) -> Result<RawResponse, HttpError>
     where
         P: Serialize + Send + Sync,
-        R: DeserializeOwned,
     {
         self.inner
             .http_post(self.rewrite(&url)?, auth_token, payload)
@@ -164,7 +152,7 @@ impl Transport for FixtureHttpsTransport {
             .await
     }
 
-    async fn http_post_form_raw<P>(
+    async fn http_post_form<P>(
         &self,
         url: Url,
         auth_token: Option<AuthToken>,
@@ -174,7 +162,7 @@ impl Transport for FixtureHttpsTransport {
         P: Serialize + Send + Sync,
     {
         self.inner
-            .http_post_form_raw(self.rewrite(&url)?, auth_token, payload)
+            .http_post_form(self.rewrite(&url)?, auth_token, payload)
             .await
     }
 }

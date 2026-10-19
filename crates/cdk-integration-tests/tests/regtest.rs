@@ -25,14 +25,263 @@ use cdk::nuts::{
     NotificationPayload, PaymentMethod, PreMintSecrets,
 };
 use cdk::wallet::{HttpClient, MintConnector, Wallet, WalletSubscription};
+use cdk_common::payment::{
+    Bolt11IncomingPaymentOptions, Bolt11OutgoingPaymentOptions, IncomingPaymentOptions,
+    MintPayment, OutgoingPaymentOptions,
+};
+use cdk_integration_tests::init_regtest::{create_lnd_backend, get_temp_dir};
 use cdk_integration_tests::{
     attempt_manual_mint, get_mint_url_from_env, get_second_mint_url_from_env, get_test_client,
+    init_lnd_client,
 };
 use cdk_sqlite::wallet::{self, memory};
 use futures::join;
 use tokio::time::timeout;
 
 const LDK_URL: &str = "http://127.0.0.1:8089";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_lnd_self_payment() {
+    // Requires funded channels with a peer that permits circular forwarding.
+    let ln_client = init_lnd_client(&get_temp_dir()).await;
+    let backend = create_lnd_backend(&ln_client).await.unwrap();
+    let amount = Amount::new(100_000, CurrencyUnit::Msat);
+    let max_fee = Amount::new(10_000, CurrencyUnit::Msat);
+
+    // Use the backend directly so the mint cannot settle this invoice internally.
+    let invoice = backend
+        .create_incoming_payment_request(IncomingPaymentOptions::Bolt11(
+            Bolt11IncomingPaymentOptions {
+                amount: amount.clone(),
+                ..Default::default()
+            },
+        ))
+        .await
+        .unwrap();
+    let payment = timeout(
+        Duration::from_secs(60),
+        backend.make_payment(
+            &CurrencyUnit::Msat,
+            OutgoingPaymentOptions::Bolt11(Box::new(Bolt11OutgoingPaymentOptions {
+                bolt11: invoice.request.parse().unwrap(),
+                max_fee_amount: Some(max_fee.clone()),
+                timeout_secs: Some(60),
+                melt_options: None,
+                quote_id: uuid::Uuid::new_v4().into(),
+            })),
+        ),
+    )
+    .await
+    .expect("self-payment timed out")
+    .expect("self-payment failed");
+
+    assert_eq!(payment.status, MeltQuoteState::Paid);
+    assert_eq!(payment.payment_lookup_id, invoice.request_lookup_id);
+    assert!(payment.payment_proof.is_some());
+
+    let received = backend
+        .check_incoming_payment_status(&invoice.request_lookup_id)
+        .await
+        .unwrap();
+    assert_eq!(received.len(), 1);
+    assert_eq!(received[0].payment_amount, amount);
+
+    // Compare CDK's accounting with LND's recorded principal and routing fee.
+    let mut client = fedimint_tonic_lnd::connect(
+        ln_client.address,
+        ln_client.cert_file,
+        ln_client.macaroon_file,
+    )
+    .await
+    .unwrap();
+    let mut updates = client
+        .router()
+        .track_payment_v2(fedimint_tonic_lnd::routerrpc::TrackPaymentRequest {
+            payment_hash: cashu::util::hex::decode(invoice.request_lookup_id.to_string()).unwrap(),
+            no_inflight_updates: true,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let recorded = updates.message().await.unwrap().unwrap();
+    assert_eq!(recorded.value_msat as u64, amount.value());
+    assert!(recorded.fee_msat >= 0);
+    assert!(recorded.fee_msat as u64 <= max_fee.value());
+    assert_eq!(
+        payment.total_spent,
+        Amount::new(
+            (recorded.value_msat + recorded.fee_msat) as u64,
+            CurrencyUnit::Msat,
+        )
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_lnd_rejects_invalid_amounts_before_dispatch() {
+    let ln_client = init_lnd_client(&get_temp_dir()).await;
+    let backend = create_lnd_backend(&ln_client).await.unwrap();
+
+    for (invoice_amount, melt_options) in [
+        (0, None),
+        (0, Some(MeltOptions::new_amountless(0))),
+        (10_000, Some(MeltOptions::new_amountless(9_999))),
+        (0, Some(MeltOptions::new_mpp(1))),
+        (10_000, Some(MeltOptions::new_mpp(0))),
+        (10_000, Some(MeltOptions::new_mpp(10_001))),
+    ] {
+        let invoice = backend
+            .create_incoming_payment_request(IncomingPaymentOptions::Bolt11(
+                Bolt11IncomingPaymentOptions {
+                    amount: Amount::new(invoice_amount, CurrencyUnit::Msat),
+                    ..Default::default()
+                },
+            ))
+            .await
+            .unwrap();
+        let payment = timeout(
+            Duration::from_secs(10),
+            backend.make_payment(
+                &CurrencyUnit::Sat,
+                OutgoingPaymentOptions::Bolt11(Box::new(Bolt11OutgoingPaymentOptions {
+                    bolt11: invoice.request.parse().unwrap(),
+                    max_fee_amount: None,
+                    timeout_secs: Some(10),
+                    melt_options,
+                    quote_id: uuid::Uuid::new_v4().into(),
+                })),
+            ),
+        )
+        .await
+        .expect("invalid amount rejection timed out")
+        .expect("invalid amount should return an authoritative failure");
+
+        assert_eq!(payment.status, MeltQuoteState::Failed);
+        assert_eq!(payment.payment_lookup_id, invoice.request_lookup_id);
+        assert_eq!(payment.total_spent, Amount::new(0, CurrencyUnit::Sat));
+        assert!(payment.payment_proof.is_none());
+        assert_eq!(
+            backend
+                .check_outgoing_payment(&invoice.request_lookup_id)
+                .await
+                .unwrap()
+                .status,
+            MeltQuoteState::Unknown,
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_lnd_disallowed_self_payment() {
+    let ln_client = init_lnd_client(&get_temp_dir()).await;
+    let backend = create_lnd_backend(&ln_client)
+        .await
+        .unwrap()
+        .with_allow_self_payment(false);
+    let invoice = backend
+        .create_incoming_payment_request(IncomingPaymentOptions::Bolt11(
+            Bolt11IncomingPaymentOptions {
+                amount: Amount::new(10_000, CurrencyUnit::Msat),
+                ..Default::default()
+            },
+        ))
+        .await
+        .unwrap();
+    for melt_options in [
+        None,
+        Some(MeltOptions::new_amountless(10_000)),
+        Some(MeltOptions::new_mpp(1_000)),
+    ] {
+        let response = timeout(
+            Duration::from_secs(10),
+            backend.make_payment(
+                &CurrencyUnit::Sat,
+                OutgoingPaymentOptions::Bolt11(Box::new(Bolt11OutgoingPaymentOptions {
+                    bolt11: invoice.request.parse().unwrap(),
+                    max_fee_amount: None,
+                    timeout_secs: Some(10),
+                    melt_options,
+                    quote_id: uuid::Uuid::new_v4().into(),
+                })),
+            ),
+        )
+        .await
+        .expect("self-payment rejection timed out")
+        .unwrap();
+        assert_eq!(response.status, MeltQuoteState::Failed);
+        assert_eq!(response.payment_lookup_id, invoice.request_lookup_id);
+        assert_eq!(response.total_spent, Amount::new(0, CurrencyUnit::Sat));
+        assert!(response.payment_proof.is_none());
+        assert_eq!(
+            backend
+                .check_outgoing_payment(&invoice.request_lookup_id)
+                .await
+                .unwrap()
+                .status,
+            MeltQuoteState::Unknown
+        );
+    }
+    assert!(backend
+        .check_incoming_payment_status(&invoice.request_lookup_id)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_lnd_wrong_network_invoice() {
+    use cdk_common::bitcoin::hashes::{sha256, Hash};
+    use cdk_common::bitcoin::secp256k1::{Secp256k1, SecretKey};
+    use cdk_common::lightning_invoice::{Currency, InvoiceBuilder, PaymentSecret};
+
+    let ln_client = init_lnd_client(&get_temp_dir()).await;
+    let backend = create_lnd_backend(&ln_client).await.unwrap();
+    let key = SecretKey::from_slice(&[1; 32]).unwrap();
+    let invoice = InvoiceBuilder::new(Currency::Bitcoin)
+        .description("wrong network test".to_owned())
+        .payment_hash(sha256::Hash::hash(uuid::Uuid::new_v4().as_bytes()))
+        .payment_secret(PaymentSecret([43; 32]))
+        .duration_since_epoch(Duration::from_secs(cashu::util::unix_time()))
+        .expiry_time(Duration::from_secs(3600))
+        .min_final_cltv_expiry_delta(144)
+        .amount_milli_satoshis(10_000)
+        .build_signed(|hash| Secp256k1::new().sign_ecdsa_recoverable(hash, &key))
+        .unwrap();
+    for melt_options in [
+        None,
+        Some(MeltOptions::new_amountless(10_000)),
+        Some(MeltOptions::new_mpp(1_000)),
+    ] {
+        let options = OutgoingPaymentOptions::Bolt11(Box::new(Bolt11OutgoingPaymentOptions {
+            bolt11: invoice.clone(),
+            max_fee_amount: None,
+            timeout_secs: Some(10),
+            melt_options,
+            quote_id: uuid::Uuid::new_v4().into(),
+        }));
+        assert!(backend
+            .get_payment_quote(&CurrencyUnit::Sat, options.clone())
+            .await
+            .is_err());
+        let response = timeout(
+            Duration::from_secs(10),
+            backend.make_payment(&CurrencyUnit::Sat, options),
+        )
+        .await
+        .expect("wrong network rejection timed out")
+        .unwrap();
+        assert_eq!(response.status, MeltQuoteState::Failed);
+        assert_eq!(response.total_spent, Amount::new(0, CurrencyUnit::Sat));
+        assert!(response.payment_proof.is_none());
+        assert_eq!(
+            backend
+                .check_outgoing_payment(&response.payment_lookup_id)
+                .await
+                .unwrap()
+                .status,
+            MeltQuoteState::Unknown
+        );
+    }
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_internal_payment() {

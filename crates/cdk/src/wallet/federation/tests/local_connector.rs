@@ -571,16 +571,11 @@ impl LocalMemberHttpTransport {
         .map_err(|err| HttpError::Serialization(err.to_string()))
     }
 
-    fn encode_response<T, R>(response: T) -> Result<R, HttpError>
+    fn encode_response<T>(response: T) -> Result<RawResponse, HttpError>
     where
         T: serde::Serialize,
-        R: serde::de::DeserializeOwned,
     {
-        serde_json::from_value(
-            serde_json::to_value(response)
-                .map_err(|err| HttpError::Serialization(err.to_string()))?,
-        )
-        .map_err(|err| HttpError::Serialization(err.to_string()))
+        Ok(RawResponse::new(200, serde_json::to_vec(&response)?))
     }
 
     fn map_error(err: crate::Error) -> HttpError {
@@ -605,10 +600,11 @@ impl Transport for LocalMemberHttpTransport {
         Ok(Vec::new())
     }
 
-    async fn http_get<R>(&self, url: url::Url, _auth: Option<AuthToken>) -> Result<R, HttpError>
-    where
-        R: serde::de::DeserializeOwned,
-    {
+    async fn http_get(
+        &self,
+        url: url::Url,
+        _auth: Option<AuthToken>,
+    ) -> Result<RawResponse, HttpError> {
         let connector = self.connector()?;
         let path = url.path();
 
@@ -675,25 +671,14 @@ impl Transport for LocalMemberHttpTransport {
         )))
     }
 
-    async fn http_get_raw(
-        &self,
-        _url: url::Url,
-        _auth: Option<AuthToken>,
-    ) -> Result<RawResponse, HttpError> {
-        Err(HttpError::Other(
-            "raw GET is unsupported by the local member transport".to_string(),
-        ))
-    }
-
-    async fn http_post<P, R>(
+    async fn http_post<P>(
         &self,
         url: url::Url,
         _auth_token: Option<AuthToken>,
         payload: &P,
-    ) -> Result<R, HttpError>
+    ) -> Result<RawResponse, HttpError>
     where
         P: serde::Serialize + Send + Sync,
-        R: serde::de::DeserializeOwned,
     {
         let connector = self.connector()?;
         match url.path() {
@@ -761,7 +746,7 @@ impl Transport for LocalMemberHttpTransport {
         }
     }
 
-    async fn http_post_form_raw<P>(
+    async fn http_post_form<P>(
         &self,
         _url: url::Url,
         _auth_token: Option<AuthToken>,

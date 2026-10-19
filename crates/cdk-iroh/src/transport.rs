@@ -150,16 +150,17 @@ where
             .with_proxy(proxy, host_matcher, accept_invalid_certs)
     }
 
+    fn tls_verification_disabled(&self) -> bool {
+        self.inner.tls_verification_disabled()
+    }
+
     async fn resolve_dns_txt(&self, domain: &str) -> Result<Vec<String>, HttpError> {
         self.inner.resolve_dns_txt(domain).await
     }
 
-    async fn http_get<R>(&self, url: Url, auth: Option<AuthToken>) -> Result<R, HttpError>
-    where
-        R: DeserializeOwned,
-    {
+    async fn http_get(&self, url: Url, auth: Option<AuthToken>) -> Result<RawResponse, HttpError> {
         match url.scheme() {
-            "iroh" => decode_json(self.iroh_client().await?.get_raw(url, auth).await?),
+            "iroh" => Ok(self.iroh_client().await?.get_raw(url, auth).await?),
             "http" | "https" => self.inner.http_get(url, auth).await,
             scheme => Err(Error::UnsupportedScheme {
                 scheme: scheme.to_owned(),
@@ -168,40 +169,22 @@ where
         }
     }
 
-    async fn http_get_raw(
-        &self,
-        url: Url,
-        auth: Option<AuthToken>,
-    ) -> Result<RawResponse, HttpError> {
-        match url.scheme() {
-            "iroh" => Ok(self.iroh_client().await?.get_raw(url, auth).await?),
-            "http" | "https" => self.inner.http_get_raw(url, auth).await,
-            scheme => Err(Error::UnsupportedScheme {
-                scheme: scheme.to_owned(),
-            }
-            .into()),
-        }
-    }
-
-    async fn http_post<P, R>(
+    async fn http_post<P>(
         &self,
         url: Url,
         auth_token: Option<AuthToken>,
         payload: &P,
-    ) -> Result<R, HttpError>
+    ) -> Result<RawResponse, HttpError>
     where
         P: Serialize + Send + Sync,
-        R: DeserializeOwned,
     {
         match url.scheme() {
             "iroh" => {
                 let client = self.iroh_client().await?;
                 let max_response_bytes = client.node().config().limits.max_response_body_bytes;
-                decode_json(
-                    client
-                        .post_json_raw(url, auth_token, payload, max_response_bytes)
-                        .await?,
-                )
+                Ok(client
+                    .post_json_raw(url, auth_token, payload, max_response_bytes)
+                    .await?)
             }
             "http" | "https" => self.inner.http_post(url, auth_token, payload).await,
             scheme => Err(Error::UnsupportedScheme {
@@ -241,7 +224,7 @@ where
         }
     }
 
-    async fn http_post_form_raw<P>(
+    async fn http_post_form<P>(
         &self,
         url: Url,
         auth_token: Option<AuthToken>,
@@ -256,11 +239,7 @@ where
                 .await?
                 .post_form_raw(url, auth_token, payload)
                 .await?),
-            "http" | "https" => {
-                self.inner
-                    .http_post_form_raw(url, auth_token, payload)
-                    .await
-            }
+            "http" | "https" => self.inner.http_post_form(url, auth_token, payload).await,
             scheme => Err(Error::UnsupportedScheme {
                 scheme: scheme.to_owned(),
             }

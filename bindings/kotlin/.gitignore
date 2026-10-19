@@ -1,0 +1,7 @@
+# Synced to the cdk-kotlin binding repo. The Android libraries under
+# cdk-android/src/main/jniLibs/ are committed on the release branch, so the
+# nightly tag points at a commit that contains them even though nightlies skip
+# the Maven Central publish.
+build/
+.gradle/
+local.properties

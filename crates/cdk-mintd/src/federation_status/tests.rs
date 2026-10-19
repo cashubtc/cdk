@@ -27,7 +27,6 @@ use cdk_federation_bark::{
     FederationBarkVtxoStatusCount,
 };
 use cdk_http_client::{HttpError, RawResponse};
-use serde::de::DeserializeOwned;
 use serde::Serialize;
 use url::Url;
 
@@ -60,14 +59,7 @@ impl Transport for MockStatusTransport {
         Ok(Vec::new())
     }
 
-    async fn http_get<R>(&self, _url: Url, _auth: Option<AuthToken>) -> Result<R, HttpError>
-    where
-        R: DeserializeOwned,
-    {
-        Err(HttpError::Other("unexpected GET".to_string()))
-    }
-
-    async fn http_get_raw(
+    async fn http_get(
         &self,
         _url: Url,
         _auth: Option<AuthToken>,
@@ -75,15 +67,14 @@ impl Transport for MockStatusTransport {
         Err(HttpError::Other("unexpected raw GET".to_string()))
     }
 
-    async fn http_post<P, R>(
+    async fn http_post<P>(
         &self,
         url: Url,
         _auth_token: Option<AuthToken>,
         payload: &P,
-    ) -> Result<R, HttpError>
+    ) -> Result<RawResponse, HttpError>
     where
         P: Serialize + Send + Sync,
-        R: DeserializeOwned,
     {
         let request_json =
             serde_json::to_value(payload).map_err(|err| HttpError::Other(err.to_string()))?;
@@ -101,10 +92,10 @@ impl Transport for MockStatusTransport {
         };
         let response_json =
             serde_json::to_value(response).map_err(|err| HttpError::Other(err.to_string()))?;
-        serde_json::from_value(response_json).map_err(|err| HttpError::Other(err.to_string()))
+        Ok(RawResponse::new(200, serde_json::to_vec(&response_json)?))
     }
 
-    async fn http_post_form_raw<P>(
+    async fn http_post_form<P>(
         &self,
         _url: Url,
         _auth_token: Option<AuthToken>,

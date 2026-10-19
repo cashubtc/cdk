@@ -46,7 +46,8 @@ pub(crate) async fn run_checkpoint_audit_command(
         crate::federation_operator_transport(cli_args)
             .await?
             .http_post(url, None, &request)
-            .await?;
+            .await?
+            .json_or_status_error()?;
     if response.version != FEDERATION_REST_API_VERSION
         || response.federation_id != public_config.federation_id
         || response.member_id != member_id

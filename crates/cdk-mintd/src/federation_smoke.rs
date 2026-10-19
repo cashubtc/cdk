@@ -1200,8 +1200,10 @@ where
     let url = target_member
         .federation_api_url
         .join_paths(&["federation", "v1", "operations"])?;
-    let response: FederationSubmitOperationResponse =
-        transport.http_post(url, None, &signed_request).await?;
+    let response: FederationSubmitOperationResponse = transport
+        .http_post(url, None, &signed_request)
+        .await?
+        .json_or_status_error()?;
     if response.operation_id != operation_id {
         bail!(
             "federation member {} returned operation id {} for submitted operation {}",

@@ -65,7 +65,6 @@ use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription, FakeWallet};
 use cdk_http_client::{HttpError, RawResponse, Transport};
 use futures::Stream;
 use parity_scale_codec::{Decode, Encode};
-use serde::de::DeserializeOwned;
 use serde::Serialize;
 use tower::ServiceExt;
 #[cfg(feature = "prometheus")]
@@ -1746,16 +1745,7 @@ impl Transport for DelayTransport {
         Ok(Vec::new())
     }
 
-    async fn http_get<R>(&self, _url: url::Url, _auth: Option<AuthToken>) -> Result<R, HttpError>
-    where
-        R: DeserializeOwned,
-    {
-        self.signal_request_started();
-        time::sleep(self.delay).await;
-        Err(HttpError::Other("delayed GET completed".to_string()))
-    }
-
-    async fn http_get_raw(
+    async fn http_get(
         &self,
         _url: url::Url,
         _auth: Option<AuthToken>,
@@ -1765,22 +1755,21 @@ impl Transport for DelayTransport {
         Err(HttpError::Other("delayed raw GET completed".to_string()))
     }
 
-    async fn http_post<P, R>(
+    async fn http_post<P>(
         &self,
         _url: url::Url,
         _auth_token: Option<AuthToken>,
         _payload: &P,
-    ) -> Result<R, HttpError>
+    ) -> Result<RawResponse, HttpError>
     where
         P: Serialize + Send + Sync,
-        R: DeserializeOwned,
     {
         self.signal_request_started();
         time::sleep(self.delay).await;
         Err(HttpError::Other("delayed POST completed".to_string()))
     }
 
-    async fn http_post_form_raw<P>(
+    async fn http_post_form<P>(
         &self,
         _url: url::Url,
         _auth_token: Option<AuthToken>,
@@ -1812,17 +1801,7 @@ impl Transport for MockFederationTransport {
         Ok(Vec::new())
     }
 
-    async fn http_get<R>(&self, url: url::Url, _auth: Option<AuthToken>) -> Result<R, HttpError>
-    where
-        R: DeserializeOwned,
-    {
-        Err(HttpError::Other(format!(
-            "unexpected GET path {}",
-            url.path()
-        )))
-    }
-
-    async fn http_get_raw(
+    async fn http_get(
         &self,
         url: url::Url,
         _auth: Option<AuthToken>,
@@ -1833,15 +1812,14 @@ impl Transport for MockFederationTransport {
         )))
     }
 
-    async fn http_post<P, R>(
+    async fn http_post<P>(
         &self,
         url: url::Url,
         _auth_token: Option<AuthToken>,
         payload: &P,
-    ) -> Result<R, HttpError>
+    ) -> Result<RawResponse, HttpError>
     where
         P: Serialize + Send + Sync,
-        R: DeserializeOwned,
     {
         if url.path().ends_with("/federation/v1/aleph-bft/messages") {
             let request = serde_json::from_value::<
@@ -1998,7 +1976,7 @@ impl Transport for MockFederationTransport {
         }
     }
 
-    async fn http_post_form_raw<P>(
+    async fn http_post_form<P>(
         &self,
         url: url::Url,
         _auth_token: Option<AuthToken>,
@@ -2029,17 +2007,7 @@ impl Transport for RouterFederationTransport {
         Ok(Vec::new())
     }
 
-    async fn http_get<R>(&self, url: url::Url, _auth: Option<AuthToken>) -> Result<R, HttpError>
-    where
-        R: DeserializeOwned,
-    {
-        Err(HttpError::Other(format!(
-            "unexpected GET path {}",
-            url.path()
-        )))
-    }
-
-    async fn http_get_raw(
+    async fn http_get(
         &self,
         url: url::Url,
         _auth: Option<AuthToken>,
@@ -2050,15 +2018,14 @@ impl Transport for RouterFederationTransport {
         )))
     }
 
-    async fn http_post<P, R>(
+    async fn http_post<P>(
         &self,
         url: url::Url,
         _auth_token: Option<AuthToken>,
         payload: &P,
-    ) -> Result<R, HttpError>
+    ) -> Result<RawResponse, HttpError>
     where
         P: Serialize + Send + Sync,
-        R: DeserializeOwned,
     {
         let router = self
             .router
@@ -2084,10 +2051,10 @@ impl Transport for RouterFederationTransport {
                 message: String::from_utf8_lossy(&body).to_string(),
             });
         }
-        Ok(serde_json::from_slice(&body)?)
+        Ok(RawResponse::new(status.as_u16(), body.to_vec()))
     }
 
-    async fn http_post_form_raw<P>(
+    async fn http_post_form<P>(
         &self,
         url: url::Url,
         _auth_token: Option<AuthToken>,
@@ -2118,17 +2085,7 @@ impl Transport for RouterFederationTransportRegistry {
         Ok(Vec::new())
     }
 
-    async fn http_get<R>(&self, url: url::Url, _auth: Option<AuthToken>) -> Result<R, HttpError>
-    where
-        R: DeserializeOwned,
-    {
-        Err(HttpError::Other(format!(
-            "unexpected GET path {}",
-            url.path()
-        )))
-    }
-
-    async fn http_get_raw(
+    async fn http_get(
         &self,
         url: url::Url,
         _auth: Option<AuthToken>,
@@ -2139,15 +2096,14 @@ impl Transport for RouterFederationTransportRegistry {
         )))
     }
 
-    async fn http_post<P, R>(
+    async fn http_post<P>(
         &self,
         url: url::Url,
         _auth_token: Option<AuthToken>,
         payload: &P,
-    ) -> Result<R, HttpError>
+    ) -> Result<RawResponse, HttpError>
     where
         P: Serialize + Send + Sync,
-        R: DeserializeOwned,
     {
         let endpoint = url.origin().ascii_serialization();
         let path = url.path().to_string();
@@ -2305,10 +2261,10 @@ impl Transport for RouterFederationTransportRegistry {
             )));
         }
 
-        Ok(serde_json::from_slice(&response_body)?)
+        Ok(RawResponse::new(200, response_body))
     }
 
-    async fn http_post_form_raw<P>(
+    async fn http_post_form<P>(
         &self,
         url: url::Url,
         _auth_token: Option<AuthToken>,
@@ -2353,12 +2309,11 @@ async fn router_transport_post_once_bytes(
     Ok(body.to_vec())
 }
 
-fn json_response<T, R>(value: T) -> Result<R, HttpError>
+fn json_response<T>(value: T) -> Result<RawResponse, HttpError>
 where
     T: Serialize,
-    R: DeserializeOwned,
 {
-    Ok(serde_json::from_value(serde_json::to_value(value)?)?)
+    Ok(RawResponse::new(200, serde_json::to_vec(&value)?))
 }
 
 fn member_id(value: u16) -> MemberId {

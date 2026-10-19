@@ -10,3 +10,4 @@ than editing an old one.
 | [0002](0002-signatory-keyset-subscription.md) | Signatory keyset subscription and push injection | Accepted |
 | [0003](0003-signatory-database-persistence-only.md) | Signatory database as persistence only | Accepted |
 | [0004](0004-signatory-multi-instance-sharing.md) | Multiple signatory instances sharing one database | Accepted |
+| [0005](0005-binding-repos-carry-artifacts-only.md) | Binding repositories carry build artifacts, not sources | Accepted |

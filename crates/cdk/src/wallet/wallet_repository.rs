@@ -622,6 +622,22 @@ impl WalletRepository {
 
         Ok(balances)
     }
+
+    /// Get balances for wallets matching a specific currency unit
+    ///
+    /// Returns a map of (mint URL, currency unit) to balance for each wallet
+    /// where the unit matches the requested currency unit.
+    #[instrument(skip(self))]
+    pub async fn get_balances_for_unit(
+        &self,
+        unit: &CurrencyUnit,
+    ) -> Result<BTreeMap<WalletKey, cdk_common::Amount>, Error> {
+        let balances = self.get_balances().await?;
+        Ok(balances
+            .into_iter()
+            .filter(|(key, _)| key.unit == *unit)
+            .collect())
+    }
     /// Get total balance across all wallets, grouped by currency unit
     ///
     /// Returns a map of currency unit to total balance for that unit across all mints.

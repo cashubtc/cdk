@@ -46,6 +46,12 @@ pub enum Error {
     /// Amount overflow
     #[error("Amount overflow")]
     AmountOverflow,
+    /// Could not fetch node information during initialization
+    #[error("LND initialization GetInfo failed (requires info:read permission): {0}")]
+    GetInfo(#[source] Status),
+    /// Invoice is for a different Bitcoin network
+    #[error("Invoice network does not match the LND node network")]
+    InvoiceNetworkMismatch,
     /// Errors coming from the backend
     #[error("LND error: `{0}`")]
     LndError(Status),

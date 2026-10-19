@@ -165,7 +165,7 @@ where
     T: DeserializeOwned,
 {
     let response = transport
-        .http_get_raw(url.clone(), None)
+        .http_get(url.clone(), None)
         .await
         .map_err(FfiError::internal)?;
     if !response.is_success() {

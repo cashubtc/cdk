@@ -273,7 +273,8 @@ impl WalletTraitDef for Wallet {
         Wallet::mint_unissued_quotes(self).await
     }
 
-    /// Propagates quote ID validation errors before any local status update.
+    /// Forwards the persisted quote, including its database version and ownership.
+    /// Propagates quote ID validation and database reload errors.
     async fn check_mint_quote_status(
         &self,
         quote_id: &str,
@@ -292,6 +293,22 @@ impl WalletTraitDef for Wallet {
         let method = payment_method.map(Into::into);
         let quote =
             WalletTraitDef::fetch_mint_quote(self.inner().as_ref(), quote_id, method).await?;
+        Ok(quote.into())
+    }
+
+    async fn fetch_mint_quote_with_key_search(
+        &self,
+        quote_id: &str,
+        payment_method: Option<Self::PaymentMethod>,
+        key_search_limit: u32,
+    ) -> Result<Self::MintQuote, Self::Error> {
+        let quote = WalletTraitDef::fetch_mint_quote_with_key_search(
+            self.inner().as_ref(),
+            quote_id,
+            payment_method.map(Into::into),
+            key_search_limit,
+        )
+        .await?;
         Ok(quote.into())
     }
 

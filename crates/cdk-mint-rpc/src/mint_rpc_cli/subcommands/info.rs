@@ -1,13 +1,14 @@
 use anyhow::Result;
 use clap::Args;
+use tonic::transport::Channel;
 use tonic::Request;
 
+use crate::info::mint_info_service_client::MintInfoServiceClient;
 use crate::info::{
     AddContactRequest, AddUrlRequest, GetInfoRequest, RemoveContactRequest, RemoveUrlRequest,
     UpdateIconUrlRequest, UpdateLongDescriptionRequest, UpdateMotdRequest, UpdateNameRequest,
     UpdateShortDescriptionRequest, UpdateTosUrlRequest,
 };
-use crate::InterceptedMintInfoServiceClient;
 
 /// Executes the get_info command against the mint server
 ///
@@ -15,7 +16,7 @@ use crate::InterceptedMintInfoServiceClient;
 ///
 /// # Arguments
 /// * `client` - The RPC client used to communicate with the mint
-pub async fn get_info(client: &mut InterceptedMintInfoServiceClient) -> Result<()> {
+pub async fn get_info(client: &mut MintInfoServiceClient<Channel>) -> Result<()> {
     let response = client.get_info(Request::new(GetInfoRequest {})).await?;
     let info = response.into_inner();
 
@@ -68,7 +69,7 @@ pub struct UpdateNameCommand {
 /// * `client` - The RPC client used to communicate with the mint
 /// * `sub_command_args` - The new name to set for the mint
 pub async fn update_name(
-    client: &mut InterceptedMintInfoServiceClient,
+    client: &mut MintInfoServiceClient<Channel>,
     sub_command_args: &UpdateNameCommand,
 ) -> Result<()> {
     let _response = client
@@ -98,7 +99,7 @@ pub struct UpdateMotdCommand {
 /// * `client` - The RPC client used to communicate with the mint
 /// * `sub_command_args` - The new message of the day to set
 pub async fn update_motd(
-    client: &mut InterceptedMintInfoServiceClient,
+    client: &mut MintInfoServiceClient<Channel>,
     sub_command_args: &UpdateMotdCommand,
 ) -> Result<()> {
     let _response = client
@@ -129,7 +130,7 @@ pub struct UpdateShortDescriptionCommand {
 /// * `client` - The RPC client used to communicate with the mint
 /// * `sub_command_args` - The new short description to set
 pub async fn update_short_description(
-    client: &mut InterceptedMintInfoServiceClient,
+    client: &mut MintInfoServiceClient<Channel>,
     sub_command_args: &UpdateShortDescriptionCommand,
 ) -> Result<()> {
     let _response = client
@@ -159,7 +160,7 @@ pub struct UpdateLongDescriptionCommand {
 /// * `client` - The RPC client used to communicate with the mint
 /// * `sub_command_args` - The new long description to set
 pub async fn update_long_description(
-    client: &mut InterceptedMintInfoServiceClient,
+    client: &mut MintInfoServiceClient<Channel>,
     sub_command_args: &UpdateLongDescriptionCommand,
 ) -> Result<()> {
     let _response = client
@@ -189,7 +190,7 @@ pub struct UpdateIconUrlCommand {
 /// * `client` - The RPC client used to communicate with the mint
 /// * `sub_command_args` - The new icon URL to set
 pub async fn update_icon_url(
-    client: &mut InterceptedMintInfoServiceClient,
+    client: &mut MintInfoServiceClient<Channel>,
     sub_command_args: &UpdateIconUrlCommand,
 ) -> Result<()> {
     let _response = client
@@ -210,7 +211,7 @@ pub struct UpdateTosUrlCommand {
 
 /// Executes the update_tos_url command against the mint server
 pub async fn update_tos_url(
-    client: &mut InterceptedMintInfoServiceClient,
+    client: &mut MintInfoServiceClient<Channel>,
     sub_command_args: &UpdateTosUrlCommand,
 ) -> Result<()> {
     let _response = client
@@ -241,7 +242,7 @@ pub struct AddUrlCommand {
 /// * `client` - The RPC client used to communicate with the mint
 /// * `sub_command_args` - The URL to add to the mint
 pub async fn add_url(
-    client: &mut InterceptedMintInfoServiceClient,
+    client: &mut MintInfoServiceClient<Channel>,
     sub_command_args: &AddUrlCommand,
 ) -> Result<()> {
     let _response = client
@@ -271,7 +272,7 @@ pub struct RemoveUrlCommand {
 /// * `client` - The RPC client used to communicate with the mint
 /// * `sub_command_args` - The URL to remove from the mint
 pub async fn remove_url(
-    client: &mut InterceptedMintInfoServiceClient,
+    client: &mut MintInfoServiceClient<Channel>,
     sub_command_args: &RemoveUrlCommand,
 ) -> Result<()> {
     let _response = client
@@ -303,7 +304,7 @@ pub struct AddContactCommand {
 /// * `client` - The RPC client used to communicate with the mint
 /// * `sub_command_args` - The contact method and information to add
 pub async fn add_contact(
-    client: &mut InterceptedMintInfoServiceClient,
+    client: &mut MintInfoServiceClient<Channel>,
     sub_command_args: &AddContactCommand,
 ) -> Result<()> {
     let _response = client
@@ -336,7 +337,7 @@ pub struct RemoveContactCommand {
 /// * `client` - The RPC client used to communicate with the mint
 /// * `sub_command_args` - The contact method and information to remove
 pub async fn remove_contact(
-    client: &mut InterceptedMintInfoServiceClient,
+    client: &mut MintInfoServiceClient<Channel>,
     sub_command_args: &RemoveContactCommand,
 ) -> Result<()> {
     let _response = client

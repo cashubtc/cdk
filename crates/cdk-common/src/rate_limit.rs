@@ -30,7 +30,6 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use cdk_http_client::Transport;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
 use tokio::sync::{watch, OnceCell};
 use url::Url;
@@ -744,8 +743,9 @@ async fn sleep(duration: Duration) {
 /// unrelated host (an LNURL service, an OIDC provider) and does not pace that
 /// host by the mint's budget either.
 ///
-/// Only the HTTP request methods are throttled; `ws_connect`, `with_proxy`, and
-/// `resolve_dns_txt` pass straight through to the inner transport.
+/// Only the HTTP request methods are throttled; `ws_connect`, `with_proxy`,
+/// `resolve_dns_txt` and `tls_verification_disabled` pass straight through to
+/// the inner transport.
 #[derive(Debug, Clone)]
 pub struct RateLimitedTransport<T> {
     inner: T,
@@ -795,45 +795,24 @@ impl<T: Transport> Transport for RateLimitedTransport<T> {
             .with_proxy(proxy, host_matcher, accept_invalid_certs)
     }
 
+    /// Decorating a transport must not launder its certificate policy: the
+    /// wallet reads this to refuse handing NUT-18 proofs to an unverified
+    /// https receiver, and only the inner transport knows how it was built.
+    fn tls_verification_disabled(&self) -> bool {
+        self.inner.tls_verification_disabled()
+    }
+
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
     async fn resolve_dns_txt(&self, domain: &str) -> Result<Vec<String>, HttpError> {
         self.inner.resolve_dns_txt(domain).await
     }
 
-    async fn http_get<R>(&self, url: Url, auth: Option<AuthToken>) -> Result<R, HttpError>
-    where
-        R: DeserializeOwned,
-    {
+    async fn http_get(&self, url: Url, auth: Option<AuthToken>) -> Result<RawResponse, HttpError> {
         let bucket = self.limiter.bucket_for(&url);
         bucket.acquire(self.inner.http_get(url, auth)).await
     }
 
-    async fn http_get_raw(
-        &self,
-        url: Url,
-        auth: Option<AuthToken>,
-    ) -> Result<RawResponse, HttpError> {
-        let bucket = self.limiter.bucket_for(&url);
-        bucket.acquire(self.inner.http_get_raw(url, auth)).await
-    }
-
-    async fn http_post<P, R>(
-        &self,
-        url: Url,
-        auth_token: Option<AuthToken>,
-        payload: &P,
-    ) -> Result<R, HttpError>
-    where
-        P: Serialize + Send + Sync,
-        R: DeserializeOwned,
-    {
-        let bucket = self.limiter.bucket_for(&url);
-        bucket
-            .acquire(self.inner.http_post(url, auth_token, payload))
-            .await
-    }
-
-    async fn http_post_form_raw<P>(
+    async fn http_post<P>(
         &self,
         url: Url,
         auth_token: Option<AuthToken>,
@@ -844,7 +823,22 @@ impl<T: Transport> Transport for RateLimitedTransport<T> {
     {
         let bucket = self.limiter.bucket_for(&url);
         bucket
-            .acquire(self.inner.http_post_form_raw(url, auth_token, payload))
+            .acquire(self.inner.http_post(url, auth_token, payload))
+            .await
+    }
+
+    async fn http_post_form<P>(
+        &self,
+        url: Url,
+        auth_token: Option<AuthToken>,
+        payload: &P,
+    ) -> Result<RawResponse, HttpError>
+    where
+        P: Serialize + Send + Sync,
+    {
+        let bucket = self.limiter.bucket_for(&url);
+        bucket
+            .acquire(self.inner.http_post_form(url, auth_token, payload))
             .await
     }
 }
@@ -1366,6 +1360,7 @@ mod tests {
     struct CountingTransport {
         http_calls: Arc<std::sync::atomic::AtomicUsize>,
         proxied: Arc<std::sync::atomic::AtomicBool>,
+        unverified: Arc<std::sync::atomic::AtomicBool>,
     }
 
     impl CountingTransport {
@@ -1384,22 +1379,20 @@ mod tests {
             &mut self,
             _proxy: Url,
             _host_matcher: Option<&str>,
-            _accept_invalid_certs: bool,
+            accept_invalid_certs: bool,
         ) -> Result<(), HttpError> {
             self.proxied
                 .store(true, std::sync::atomic::Ordering::SeqCst);
+            self.unverified
+                .store(accept_invalid_certs, std::sync::atomic::Ordering::SeqCst);
             Ok(())
         }
 
-        async fn http_get<R>(&self, _url: Url, _auth: Option<AuthToken>) -> Result<R, HttpError>
-        where
-            R: DeserializeOwned,
-        {
-            self.bump();
-            Err(HttpError::Other("mock".to_string()))
+        fn tls_verification_disabled(&self) -> bool {
+            self.unverified.load(std::sync::atomic::Ordering::SeqCst)
         }
 
-        async fn http_get_raw(
+        async fn http_get(
             &self,
             _url: Url,
             _auth: Option<AuthToken>,
@@ -1408,21 +1401,20 @@ mod tests {
             Err(HttpError::Other("mock".to_string()))
         }
 
-        async fn http_post<P, R>(
+        async fn http_post<P>(
             &self,
             _url: Url,
             _auth: Option<AuthToken>,
             _payload: &P,
-        ) -> Result<R, HttpError>
+        ) -> Result<RawResponse, HttpError>
         where
             P: Serialize + Send + Sync,
-            R: DeserializeOwned,
         {
             self.bump();
             Err(HttpError::Other("mock".to_string()))
         }
 
-        async fn http_post_form_raw<P>(
+        async fn http_post_form<P>(
             &self,
             _url: Url,
             _auth: Option<AuthToken>,
@@ -1456,15 +1448,15 @@ mod tests {
         );
 
         let start = StdInstant::now();
-        let _ = transport.http_get_raw(url(), None).await;
-        let _ = transport.http_get_raw(url(), None).await;
+        let _ = transport.http_get(url(), None).await;
+        let _ = transport.http_get(url(), None).await;
         assert!(
             start.elapsed() < Duration::from_millis(100),
             "burst should not pace"
         );
 
         let start = StdInstant::now();
-        let _ = transport.http_get_raw(url(), None).await;
+        let _ = transport.http_get(url(), None).await;
         assert!(
             start.elapsed() >= Duration::from_millis(150),
             "third call should be paced"
@@ -1486,11 +1478,11 @@ mod tests {
         let lnurl = parse("https://pay.example.org/.well-known/lnurlp/alice");
 
         // Drain the mint's single burst slot.
-        let _ = transport.http_get_raw(mint.clone(), None).await;
+        let _ = transport.http_get(mint.clone(), None).await;
 
         // The unrelated host still has its own full burst.
         let start = StdInstant::now();
-        let _ = transport.http_get_raw(lnurl, None).await;
+        let _ = transport.http_get(lnurl, None).await;
         assert!(
             start.elapsed() < Duration::from_millis(100),
             "another host must not be paced by the mint's budget"
@@ -1498,7 +1490,7 @@ mod tests {
 
         // The mint's own budget is still drawn down.
         let start = StdInstant::now();
-        let _ = transport.http_get_raw(mint, None).await;
+        let _ = transport.http_get(mint, None).await;
         assert!(
             start.elapsed() >= Duration::from_millis(150),
             "the mint's own budget is still enforced"
@@ -1522,18 +1514,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn transport_reports_the_inner_certificate_policy() {
+        let mut transport = RateLimitedTransport::with_manager(
+            CountingTransport::default(),
+            RateLimiterManager::new(config(1, 300), None),
+        );
+
+        assert!(
+            !transport.tls_verification_disabled(),
+            "an unconfigured transport verifies certificates"
+        );
+
+        transport.with_proxy(url(), None, true).expect("proxy set");
+
+        assert!(
+            transport.tls_verification_disabled(),
+            "the wrapper must not hide the inner transport's policy"
+        );
+    }
+
+    #[tokio::test]
     async fn transports_sharing_a_manager_share_the_budget() {
         let manager = RateLimiterManager::new(config(1, 300), None);
         let a = RateLimitedTransport::with_manager(CountingTransport::default(), manager.clone());
         let b = RateLimitedTransport::with_manager(CountingTransport::default(), manager.clone());
 
         // Drain the single burst slot through transport A.
-        let _ = a.http_get_raw(url(), None).await;
+        let _ = a.http_get(url(), None).await;
 
         // Transport B, sharing the same manager and so the same per-host bucket,
         // must now wait.
         let start = StdInstant::now();
-        let _ = b.http_get_raw(url(), None).await;
+        let _ = b.http_get(url(), None).await;
         assert!(
             start.elapsed() >= Duration::from_millis(150),
             "shared bucket should force B to pace"

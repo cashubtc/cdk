@@ -17,6 +17,11 @@ use crate::{HttpError, RawResponse};
 /// Callers that construct a transport implicitly may add a [`Default`] bound,
 /// while configured transports can be supplied directly without implementing
 /// a meaningless default configuration.
+///
+/// Implementations must not follow redirects. Most HTTP clients replay a
+/// redirected POST as a bodyless GET, which would turn a receiver's 3xx into a
+/// successful NUT-18 delivery that never carried the proofs. Return the 3xx
+/// status, or [`HttpError::Redirect`] if the client refuses to hand it back.
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait Transport: Send + Sync + Debug + Clone {
@@ -41,6 +46,17 @@ pub trait Transport: Send + Sync + Debug + Clone {
         accept_invalid_certs: bool,
     ) -> Result<(), HttpError>;
 
+    /// Whether this transport accepts invalid TLS certificates.
+    ///
+    /// A transport that turns certificate verification off must report it here.
+    /// The wallet refuses to hand NUT-18 proofs to an https receiver over an
+    /// unverified connection, and the transport is the only thing that knows:
+    /// a client wrapping a pre-configured transport cannot see how it was
+    /// built.
+    fn tls_verification_disabled(&self) -> bool {
+        false
+    }
+
     /// DNS resolver to get TXT records from a domain name.
     ///
     /// Transports that support DNS resolution should override this method. The
@@ -52,34 +68,24 @@ pub trait Transport: Send + Sync + Debug + Clone {
         ))
     }
 
-    /// HTTP GET request.
-    async fn http_get<R>(&self, url: Url, auth: Option<AuthToken>) -> Result<R, HttpError>
-    where
-        R: DeserializeOwned;
-
     /// HTTP GET request returning a raw response.
-    async fn http_get_raw(
-        &self,
-        url: Url,
-        auth: Option<AuthToken>,
-    ) -> Result<RawResponse, HttpError>;
+    async fn http_get(&self, url: Url, auth: Option<AuthToken>) -> Result<RawResponse, HttpError>;
 
-    /// HTTP POST request.
-    async fn http_post<P, R>(
+    /// HTTP POST request with a JSON body returning a raw response.
+    ///
+    /// The caller decides what the status and body mean: mint calls decode with
+    /// [`RawResponse::json_or_status_error`], while NUT-18 delivery only checks
+    /// the status, since an empty or non-JSON success body is still a delivery.
+    async fn http_post<P>(
         &self,
         url: Url,
         auth_token: Option<AuthToken>,
         payload: &P,
-    ) -> Result<R, HttpError>
+    ) -> Result<RawResponse, HttpError>
     where
-        P: Serialize + Send + Sync,
-        R: DeserializeOwned;
+        P: Serialize + Send + Sync;
 
-    /// HTTP POST request with an explicit decoded response-body byte limit.
-    ///
-    /// Native transports override this to enforce the limit while reading.
-    /// The default keeps custom/test transports source-compatible and checks
-    /// their already-decoded result before returning it.
+    /// HTTP POST with a limit on the response body size.
     async fn http_post_bounded<P, R>(
         &self,
         url: Url,
@@ -91,26 +97,36 @@ pub trait Transport: Send + Sync + Debug + Clone {
         P: Serialize + Send + Sync,
         R: DeserializeOwned + Serialize,
     {
-        let response: R = self.http_post(url, auth_token, payload).await?;
-        let actual = serde_json::to_vec(&response)?.len();
+        let response = self.http_post(url, auth_token, payload).await?;
+        let actual = response.body.len();
         if actual > max_response_bytes {
             return Err(HttpError::ResponseTooLarge {
                 actual,
                 max: max_response_bytes,
             });
         }
-        Ok(response)
+        response.json_or_status_error()
     }
 
     /// HTTP POST request with a form body returning a raw response.
-    async fn http_post_form_raw<P>(
+    ///
+    /// This cannot be expressed in terms of [`Transport::http_post`]: the body
+    /// is form-encoded, and the endpoints that need it (OAuth token exchange)
+    /// reject JSON. Transports that cannot send a form-encoded body keep the
+    /// default and lose OIDC authentication only.
+    async fn http_post_form<P>(
         &self,
-        url: Url,
-        auth_token: Option<AuthToken>,
-        payload: &P,
+        _url: Url,
+        _auth_token: Option<AuthToken>,
+        _payload: &P,
     ) -> Result<RawResponse, HttpError>
     where
-        P: Serialize + Send + Sync;
+        P: Serialize + Send + Sync,
+    {
+        Err(HttpError::Other(
+            "form-encoded POST is not supported by this transport".to_owned(),
+        ))
+    }
 }
 
 /// Default async transport backed by the crate `HttpClient`.
@@ -118,6 +134,7 @@ pub trait Transport: Send + Sync + Debug + Clone {
 #[derive(Debug, Clone)]
 pub struct Async {
     inner: HttpClient,
+    tls_verification_disabled: bool,
 }
 
 #[cfg(any(target_arch = "wasm32", feature = "bitreq", feature = "reqwest"))]
@@ -128,6 +145,7 @@ impl Default for Async {
                 .no_redirects()
                 .build()
                 .expect("default no-redirect client"),
+            tls_verification_disabled: false,
         }
     }
 }
@@ -152,7 +170,12 @@ impl Transport for Async {
         };
 
         self.inner = builder.build()?;
+        self.tls_verification_disabled = accept_invalid_certs;
         Ok(())
+    }
+
+    fn tls_verification_disabled(&self) -> bool {
+        self.tls_verification_disabled
     }
 
     #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
@@ -160,18 +183,7 @@ impl Transport for Async {
         crate::dns::resolve_dns_txt(domain).await
     }
 
-    async fn http_get<R>(&self, url: Url, auth: Option<AuthToken>) -> Result<R, HttpError>
-    where
-        R: DeserializeOwned,
-    {
-        self.http_get_raw(url, auth).await?.json_or_status_error()
-    }
-
-    async fn http_get_raw(
-        &self,
-        url: Url,
-        auth: Option<AuthToken>,
-    ) -> Result<RawResponse, HttpError> {
+    async fn http_get(&self, url: Url, auth: Option<AuthToken>) -> Result<RawResponse, HttpError> {
         let url_str = url.to_string();
         let mut request = self.inner.get(&url_str);
 
@@ -182,15 +194,14 @@ impl Transport for Async {
         request.send().await
     }
 
-    async fn http_post<P, R>(
+    async fn http_post<P>(
         &self,
         url: Url,
         auth_token: Option<AuthToken>,
         payload: &P,
-    ) -> Result<R, HttpError>
+    ) -> Result<RawResponse, HttpError>
     where
         P: Serialize + Send + Sync,
-        R: DeserializeOwned,
     {
         let url_str = url.to_string();
         let mut request = self.inner.post(&url_str).json(payload);
@@ -199,7 +210,7 @@ impl Transport for Async {
             request = request.header(auth.header_key(), auth.to_string());
         }
 
-        request.send_json::<R>().await
+        request.send().await
     }
 
     async fn http_post_bounded<P, R>(
@@ -226,7 +237,7 @@ impl Transport for Async {
             .json_or_status_error()
     }
 
-    async fn http_post_form_raw<P>(
+    async fn http_post_form<P>(
         &self,
         url: Url,
         auth_token: Option<AuthToken>,
@@ -263,3 +274,49 @@ mod tor_transport;
 
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
 pub use self::tor_transport::TorAsync;
+
+#[cfg(all(
+    test,
+    any(target_arch = "wasm32", feature = "bitreq", feature = "reqwest")
+))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_transport_verifies_certificates() {
+        assert!(!Async::default().tls_verification_disabled());
+    }
+
+    #[cfg(feature = "reqwest")]
+    #[test]
+    fn proxy_transport_reports_whether_verification_is_disabled() {
+        let proxy = Url::parse("http://127.0.0.1:9050").expect("parse proxy url");
+
+        let mut unverified = Async::default();
+        unverified
+            .with_proxy(proxy.clone(), None, true)
+            .expect("configure proxy");
+        assert!(unverified.tls_verification_disabled());
+
+        let mut verified = Async::default();
+        verified
+            .with_proxy(proxy, None, false)
+            .expect("configure proxy");
+        assert!(!verified.tls_verification_disabled());
+    }
+
+    /// The flag is set only after the build succeeds, so a backend that
+    /// refuses invalid certificates does not end up claiming it accepts them.
+    #[cfg(all(feature = "bitreq", not(feature = "reqwest")))]
+    #[test]
+    fn bitreq_proxy_transport_refuses_disabled_verification() {
+        let proxy = Url::parse("http://127.0.0.1:9050").expect("parse proxy url");
+
+        let mut transport = Async::default();
+        transport
+            .with_proxy(proxy, None, true)
+            .expect_err("bitreq cannot accept invalid certificates");
+
+        assert!(!transport.tls_verification_disabled());
+    }
+}

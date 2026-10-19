@@ -53,7 +53,7 @@ axum = { version = "0.8.1", features = ["ws"] }
 bitcoin = { version = "0.32.2", features = ["base64", "serde", "rand", "rand-std"] }
 bls12_381 = { version = "0.8", default-features = false, features = ["alloc", "experimental", "pairings", "zeroize"] }
 bip39 = { version = "2.0", features = ["rand"] }
-jsonwebtoken = "9.2.0"
+jsonwebtoken = { version = "10.3", features = ["rust_crypto"] }
 cashu = { path = "./crates/cashu", default-features = false, version = "=0.18.0" }
 cdk = { path = "./crates/cdk", default-features = false, version = "=0.18.0" }
 cdk-common = { path = "./crates/cdk-common", default-features = false, version = "=0.18.0" }
@@ -101,7 +101,7 @@ gloo-timers = { version = "0.3", default-features = false, features = ["futures"
 k256 = { version = "0.13.0", default-features = false, features = ["arithmetic"] }
 musig2 = { version = "=0.4.1", default-features = false, features = ["k256"] }
 lightning-invoice = { version = "0.34.0", features = ["serde", "std"] }
-lightning = { version = "0.2.0", default-features = false, features = ["std"]}
+lightning = { version = "0.2.7", default-features = false, features = ["std"]}
 ldk-node = "0.7.0"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_bytes = "0.11"
@@ -195,6 +195,17 @@ lto = "thin"        # Thin LTO (cross-crate optimization + reproducibility, fast
 codegen-units = 1   # Single codegen unit (better optimization + reproducibility)
 panic = "abort"     # No unwinding overhead, smaller binary
 strip = "debuginfo" # Strip debug info, keep symbol names for backtraces
+
+# Shipped FFI binding libraries. No panic = "abort": UniFFI's scaffolding turns
+# a Rust panic into a foreign exception via catch_unwind, and aborting would
+# kill the host app instead. strip = "debuginfo" keeps the symbol table that
+# uniffi-bindgen reads the component interface from; the release workflows
+# strip fully after generating bindings.
+[profile.release-ffi]
+inherits = "release"
+lto = true
+codegen-units = 1
+strip = "debuginfo"
 
 [workspace.metadata.crane]
 name = "cdk-workspace"

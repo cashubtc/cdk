@@ -166,7 +166,7 @@ where
             self.transport
                 .http_post(federation_endpoint(member, endpoint)?, None, payload);
         match time::timeout(timeout, request).await {
-            Ok(result) => Ok(result?),
+            Ok(result) => Ok(result?.json_or_status_error()?),
             Err(_) => Err(FederationRestPeerClientError::RequestTimeout {
                 member_id: member.member_id,
                 operation: operation.to_string(),
