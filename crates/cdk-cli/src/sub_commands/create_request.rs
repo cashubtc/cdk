@@ -106,6 +106,7 @@ pub async fn create_request(
         mints: sub_command_args.mints.clone(),
         mint_preferred: sub_command_args.mint_preferred.then_some(true),
         supported_methods: sub_command_args.supported_methods.clone(),
+        ..Default::default()
     };
 
     let (req, nostr_wait) = wallet_repository.create_request(params).await?;
