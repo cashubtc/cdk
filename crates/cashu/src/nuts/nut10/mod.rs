@@ -275,10 +275,12 @@ use super::Proofs;
 /// BIP-340 tag for a mint-rerandomized NUT-11 v1 SIG_ALL swap.
 const SIG_ALL_RERANDOMIZED_TAG: &[u8] = b"Cashu_SigAllRerandomized_v1";
 
-/// Length-framed SIG_ALL message for a mint-rerandomized swap.
+/// SIG_ALL message for a mint-rerandomized swap.
 ///
 /// Commits to an empty swap-context frame, each input's secret and C, then each
-/// output's amount (minimal big-endian bytes) and B_.
+/// output's framed amount (minimal big-endian bytes) and unframed SHA-256 of its
+/// original 33-byte compressed B_. This intentionally breaks the earlier raw-B_
+/// prototype while retaining the separately tagged signing domain.
 pub(crate) fn rerandomized_sig_all_msg_to_sign(
     inputs: &Proofs,
     outputs: &[super::BlindedMessage],
@@ -291,7 +293,7 @@ pub(crate) fn rerandomized_sig_all_msg_to_sign(
     }
     for output in outputs {
         append_len_prefixed(&mut msg, &amount_to_minimal_bytes(output.amount));
-        append_len_prefixed(&mut msg, &output.blinded_secret.to_bytes());
+        msg.extend_from_slice(&Sha256Hash::hash(&output.blinded_secret.to_bytes()).to_byte_array());
     }
     msg
 }
@@ -503,6 +505,36 @@ mod tests {
     use super::*;
     use crate::nuts::{Id, Proof, SecretKey, SigFlag};
     use crate::{Amount, Proofs};
+
+    #[test]
+    fn rerandomized_sig_all_hashes_original_output_without_length_frame() {
+        let generator = PublicKey::from_str(
+            "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+        )
+        .unwrap();
+        let output = super::super::BlindedMessage::new(
+            Amount::ONE,
+            Id::from_str("009a1f293253e41e").unwrap(),
+            generator,
+        );
+        let message = rerandomized_sig_all_msg_to_sign(&vec![], &[output]);
+        assert_eq!(
+            message,
+            crate::util::hex::decode(concat!(
+                "000000000000000101",
+                "0f715baf5d4c2ed329785cef29e562f73488c8a2bb9dbc5700b361d54b9b0554"
+            ))
+            .unwrap()
+        );
+        assert_eq!(
+            rerandomized_sig_all_message_hash(&message),
+            crate::util::hex::decode(
+                "12ba73147194f4528cf2e06b4a557daff57a1f2153938106af49d51c399bbe2a"
+            )
+            .unwrap()
+            .as_slice()
+        );
+    }
 
     struct TestSpendRequest {
         inputs: Proofs,

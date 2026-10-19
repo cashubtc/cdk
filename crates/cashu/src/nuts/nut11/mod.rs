@@ -685,6 +685,25 @@ mod tests {
     }
 
     #[test]
+    fn test_rerandomized_swap_rejects_previous_raw_output_transcript() {
+        let signer = SecretKey::generate();
+        let mut request = make_sig_all_swap_for_test(std::slice::from_ref(&signer), true);
+        let mut old_message = request.rerandomized_sig_all_msg_to_sign().unwrap();
+        old_message.truncate(old_message.len() - 32);
+        old_message.extend_from_slice(&33u32.to_be_bytes());
+        old_message.extend_from_slice(&request.outputs()[0].blinded_secret.to_bytes());
+        let old_digest = crate::nut10::rerandomized_sig_all_message_hash(&old_message);
+        let old_signature = signer.sign_digest(old_digest).to_string();
+        request.inputs_mut()[0].witness = Some(Witness::P2PKWitness(P2PKWitness {
+            signatures: vec![old_signature],
+        }));
+
+        assert!(request.verify_spending_conditions().is_err());
+        request.sign_sig_all(signer).unwrap();
+        assert!(request.verify_spending_conditions().is_ok());
+    }
+
+    #[test]
     fn test_rerandomized_sig_all_rejects_ordinary_signature() {
         let signer = SecretKey::generate();
         let mut request = make_sig_all_swap_for_test(std::slice::from_ref(&signer), false);
