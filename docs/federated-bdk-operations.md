@@ -120,3 +120,15 @@ remain sticky because an older transaction may still reach Bitcoin; replacement
 must use the reviewed fee-bump policy and a fresh FROST signing session. There
 is intentionally no force-spend, force-release, share export, nonce export, or
 private-key export command.
+
+Automatic RBF compares the accepted transaction's fee with a fresh, bounded
+estimate for its confirmation target. Successful rebroadcasts do not trigger a
+replacement by attempt count, and an unavailable or invalid estimate does not
+trigger a fee bump using a fallback. Intent fee reserves and the consensus
+incremental relay fee continue to bound every replacement.
+
+An accepted replacement retains the original's rebroadcast eligibility until a
+descendant has accepted successful broadcast evidence. Signing, broadcast
+authorization, or a rejected replacement broadcast alone does not stop the
+original. Confirmation polling continues for every signed lineage transaction,
+so either version can settle the payment exactly once.

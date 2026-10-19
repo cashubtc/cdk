@@ -732,7 +732,19 @@ where
                     .proposal
                     .selected_inputs
                     .iter()
-                    .map(|input| (input.outpoint, input.previous_output.clone()))
+                    .map(|input| cdk_bitcoin_wallet::FederatedTransactionInput {
+                        outpoint: input.outpoint,
+                        previous_output: input.previous_output.clone(),
+                        keychain: match input.allocation.keychain {
+                            cdk::federation::FederationAddressKeychain::External => {
+                                cdk_bitcoin_wallet::FederatedWalletKeychain::External.into()
+                            }
+                            cdk::federation::FederationAddressKeychain::Internal => {
+                                cdk_bitcoin_wallet::FederatedWalletKeychain::Internal.into()
+                            }
+                        },
+                        derivation_index: input.allocation.derivation_index,
+                    })
                     .collect::<Vec<_>>(),
                 &signatures,
             )

@@ -1973,6 +1973,18 @@ documented pre-existing repository warning baseline; no new warning appeared
 in the changed milestone code, stable rustfmt formatted the changes despite
 unavailable nightly options, and `git diff --check` passes.
 
+RBF lifecycle correction (2026-10-19): finalization now reconstructs each input
+from its accepted prevout and descriptor allocation, independent of local BDK
+unspent status or funding-transaction availability. The broadcaster retains
+predecessors until a descendant has successful broadcast evidence. Replacement
+scheduling requires a higher current bounded fee estimate and does not use
+successful rebroadcast counts or an estimator fallback as a fee-bump trigger.
+Regression coverage exercises real two-of-three FROST signing, two descriptor
+branches, BDK finalization after original application, failed and successful
+replacement broadcasts, and either version winning confirmation. Wallet-engine
+coverage also exercises restart, fresh-wallet restoration, and invalid accepted
+input metadata.
+
 ### Milestone 21: lightweight and heterogeneous chain backends
 
 **Objective:** support simple Esplora deployments while making correlated trust

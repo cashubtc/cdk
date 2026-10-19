@@ -50,7 +50,7 @@ impl ApplicationAuthorization for TestAuthorizationAdapter {
     }
 }
 
-fn frost_roots(
+pub(super) fn frost_roots(
     federation_id: [u8; 32],
     members: u16,
     threshold: u16,

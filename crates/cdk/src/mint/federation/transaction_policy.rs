@@ -34,7 +34,6 @@ const FEE_ESTIMATION_TIMEOUT_MILLIS: u64 = 3_000;
 const FALLBACK_FEE_RATE_SAT_PER_VB: u64 = 2;
 const ALLOWED_FEE_TARGET_BLOCKS: [u32; 3] = [1, 6, 144];
 const MINIMUM_REPLACEMENT_FEE_DELTA_SAT_PER_KWU: u64 = 250;
-const REPLACEMENT_AFTER_BROADCAST_ATTEMPTS: u32 = 3;
 
 /// Proposer-local source class permitted by a consensus fee-policy version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,8 +81,6 @@ pub struct FederationOnchainTransactionPolicy {
     pub require_rbf: bool,
     /// Minimum incremental replacement fee in satoshis per 1,000 weight units.
     pub minimum_replacement_fee_delta_sat_per_kwu: u64,
-    /// Broadcast/reconciliation attempts before a member may propose replacement.
-    pub replacement_after_broadcast_attempts: u32,
     /// Explicit first-release CPFP policy.
     pub cpfp_policy: FederationCpfpPolicy,
 }
@@ -108,7 +105,6 @@ impl FederationOnchainTransactionPolicy {
             maximum_weight: FEDERATION_MAX_ONCHAIN_TRANSACTION_WEIGHT,
             require_rbf: true,
             minimum_replacement_fee_delta_sat_per_kwu: MINIMUM_REPLACEMENT_FEE_DELTA_SAT_PER_KWU,
-            replacement_after_broadcast_attempts: REPLACEMENT_AFTER_BROADCAST_ATTEMPTS,
             cpfp_policy: FederationCpfpPolicy::Deferred,
         })
     }

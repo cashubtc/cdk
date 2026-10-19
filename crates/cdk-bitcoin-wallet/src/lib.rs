@@ -21,7 +21,7 @@ pub use self::federation::{
     FederatedWalletSyncHealth, FederatedWalletSyncStatus,
 };
 pub use self::wallet_engine::{
-    BdkWalletEngine, ConfirmedWalletOutput, DescriptorConfig, SyncConfig,
+    BdkWalletEngine, ConfirmedWalletOutput, DescriptorConfig, FederatedTransactionInput, SyncConfig,
 };
 
 /// Backend-neutral name for one isolated threshold descriptor wallet.

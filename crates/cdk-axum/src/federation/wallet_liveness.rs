@@ -126,7 +126,7 @@ impl FederationWalletLivenessWorker {
         self.inner.status.read().await.clone()
     }
 
-    async fn run_round<T>(
+    pub(super) async fn run_round<T>(
         &self,
         state: &MintState,
         client: &FederationRestPeerClient<T>,
@@ -281,7 +281,7 @@ impl FederationWalletLivenessWorker {
         for accepted in transaction_state.accepted_transactions().values() {
             let original_id = accepted.proposal.proposal_id()?;
             if transaction_state.lineage_head(accepted.proposal.batch_id) != Some(original_id)
-                || !replacement_is_due(accepted)?
+                || !replacement_can_be_considered(accepted)
             {
                 continue;
             }
@@ -314,9 +314,9 @@ impl FederationWalletLivenessWorker {
                 )
                 .await
             {
-                Ok(()) => {
+                Ok(proposed) => {
                     self.clear_retry(work).await;
-                    advanced = advanced.saturating_add(1);
+                    advanced = advanced.saturating_add(usize::from(proposed));
                 }
                 Err(error) => {
                     self.defer(work).await;
@@ -688,7 +688,7 @@ impl FederationWalletLivenessWorker {
         transaction_state: &cdk::federation::FederationTransactionState,
         original: &FederationAcceptedTransaction,
         policy: cdk::mint::FederationOnchainTransactionPolicy,
-    ) -> Result<(), cdk::Error> {
+    ) -> Result<bool, cdk::Error> {
         let original_id = original.proposal.proposal_id()?;
         let wallet = wallet_for_scope(state, original.proposal.scope).ok_or_else(|| {
             cdk::Error::Custom("replacement scope has no local watch-only wallet".to_string())
@@ -735,19 +735,25 @@ impl FederationWalletLivenessWorker {
             super::latency::FederationLatencyPhase::BdkFeeEstimation,
         );
         let estimated_sat_per_vb =
-            bounded_fee_rate(policy, wallet.fetch_fee_rate_sat_per_vb(target_blocks)).await;
+            current_fee_rate(policy, wallet.fetch_fee_rate_sat_per_vb(target_blocks)).await;
         fee_timer.finish(super::latency::FederationLatencyOutcome::Success);
+        let Some(estimated_sat_per_vb) = estimated_sat_per_vb else {
+            return Ok(false);
+        };
         let maximum_fee = batch.intents.iter().try_fold(0_u64, |sum, intent| {
             sum.checked_add(intent.maximum_fee_sat)
                 .ok_or_else(|| cdk::Error::Custom("replacement fee cap overflow".to_string()))
         })?;
-        let fee_sat = replacement_fee_sat(
+        let Some(fee_sat) = replacement_fee_sat(
             policy,
             estimated_sat_per_vb,
             original.proposal.fee_sat,
             original.proposal.estimated_signed_weight(),
             maximum_fee,
-        )?;
+        )?
+        else {
+            return Ok(false);
+        };
         let extra_fee = fee_sat
             .checked_sub(original.proposal.fee_sat)
             .ok_or_else(|| cdk::Error::Custom("replacement fee did not increase".to_string()))?;
@@ -807,7 +813,7 @@ impl FederationWalletLivenessWorker {
             .submit_federation_envelope(envelope)
             .await?
             .ensure_accepted()?;
-        Ok(())
+        Ok(true)
     }
 
     async fn retry_is_due(&self, work: LivenessWorkId) -> bool {
@@ -940,25 +946,16 @@ fn fee_contributions(
     Ok(contributions)
 }
 
-fn replacement_is_due(accepted: &FederationAcceptedTransaction) -> Result<bool, cdk::Error> {
-    if !matches!(
+fn replacement_can_be_considered(accepted: &FederationAcceptedTransaction) -> bool {
+    matches!(
         accepted.state,
         FederationAcceptedTransactionState::BroadcastPending
             | FederationAcceptedTransactionState::Broadcast
-    ) || accepted.signed.is_none()
-    {
-        return Ok(false);
-    }
-    let policy = cdk::mint::FederationOnchainTransactionPolicy::for_version(
-        accepted.proposal.scope.policy_version,
-    )?;
-    let Some(broadcast) = accepted.broadcast.as_ref() else {
-        return Ok(false);
-    };
-    Ok(broadcast.observations.iter().any(|record| {
-        record.observation.result == cdk::federation::FederationTransactionBroadcastResult::Rejected
-            || record.observation.attempt >= policy.replacement_after_broadcast_attempts
-    }))
+    ) && accepted.signed.is_some()
+        && accepted
+            .broadcast
+            .as_ref()
+            .is_some_and(|broadcast| !broadcast.observations.is_empty())
 }
 
 fn replacement_fee_sat(
@@ -967,12 +964,15 @@ fn replacement_fee_sat(
     original_fee_sat: u64,
     weight: u64,
     maximum_intent_fee_sat: u64,
-) -> Result<u64, cdk::Error> {
+) -> Result<Option<u64>, cdk::Error> {
     let estimated_fee = estimated_sat_per_vb
         .checked_mul(weight)
         .and_then(|scaled| scaled.checked_add(3))
         .map(|scaled| scaled / 4)
         .ok_or_else(|| cdk::Error::Custom("replacement fee estimate overflow".to_string()))?;
+    if estimated_fee <= original_fee_sat {
+        return Ok(None);
+    }
     let minimum_fee = original_fee_sat
         .checked_add(policy.minimum_replacement_fee_delta(weight)?)
         .ok_or_else(|| cdk::Error::Custom("replacement fee overflow".to_string()))?;
@@ -983,7 +983,7 @@ fn replacement_fee_sat(
             "accepted fee reserves cannot fund a valid replacement".to_string(),
         ));
     }
-    Ok(replacement_fee)
+    Ok(Some(replacement_fee))
 }
 
 async fn bounded_fee_rate<E, F>(
@@ -993,14 +993,27 @@ async fn bounded_fee_rate<E, F>(
 where
     F: std::future::Future<Output = Result<f64, E>>,
 {
-    let estimate = tokio::time::timeout(
+    current_fee_rate(policy, estimate)
+        .await
+        .unwrap_or_else(|| bounded_fee_rate_value(policy, None))
+}
+
+async fn current_fee_rate<E, F>(
+    policy: cdk::mint::FederationOnchainTransactionPolicy,
+    estimate: F,
+) -> Option<u64>
+where
+    F: std::future::Future<Output = Result<f64, E>>,
+{
+    tokio::time::timeout(
         Duration::from_millis(policy.fee_estimation_timeout_millis),
         estimate,
     )
     .await
     .ok()
-    .and_then(Result::ok);
-    bounded_fee_rate_value(policy, estimate)
+    .and_then(Result::ok)
+    .filter(|value| value.is_finite() && *value > 0.0)
+    .map(|value| bounded_fee_rate_value(policy, Some(value)))
 }
 
 fn bounded_fee_rate_value(
@@ -1203,10 +1216,54 @@ mod tests {
         let policy = cdk::mint::FederationOnchainTransactionPolicy::for_version(1)
             .expect("replacement policy");
         assert_eq!(
-            replacement_fee_sat(policy, 2, 500, 500, 1_000).expect("funded replacement"),
-            625
+            replacement_fee_sat(policy, 5, 500, 500, 1_000).expect("funded replacement"),
+            Some(625)
         );
-        assert!(replacement_fee_sat(policy, 2, 500, 500, 624).is_err());
+        assert!(replacement_fee_sat(policy, 5, 500, 500, 624).is_err());
+    }
+
+    #[test]
+    fn replacement_requires_a_higher_current_fee_estimate() {
+        let policy =
+            cdk::mint::FederationOnchainTransactionPolicy::for_version(1).expect("fee policy");
+        for estimate in [1, 2, 3, 4] {
+            assert_eq!(
+                replacement_fee_sat(policy, estimate, 500, 500, 1_000)
+                    .expect("unchanged or lower fee estimate"),
+                None,
+            );
+        }
+        assert_eq!(
+            replacement_fee_sat(policy, 5, 600, 500, 1_000).expect("minimum relay increment"),
+            Some(725),
+        );
+        assert!(replacement_fee_sat(policy, 5, 600, 500, 724).is_err());
+        assert!(replacement_fee_sat(policy, u64::MAX, 500, 500, 1_000).is_err());
+    }
+
+    #[tokio::test]
+    async fn replacement_fee_estimation_never_uses_a_fallback() {
+        let mut policy =
+            cdk::mint::FederationOnchainTransactionPolicy::for_version(1).expect("fee policy");
+        for invalid in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(
+                current_fee_rate(policy, std::future::ready(Ok::<_, ()>(invalid))).await,
+                None
+            );
+        }
+        assert_eq!(
+            current_fee_rate(policy, std::future::ready(Err::<f64, _>(()))).await,
+            None
+        );
+        policy.fee_estimation_timeout_millis = 1;
+        assert_eq!(
+            current_fee_rate::<(), _>(policy, std::future::pending()).await,
+            None
+        );
+        assert_eq!(
+            current_fee_rate(policy, std::future::ready(Ok::<_, ()>(5.1))).await,
+            Some(6)
+        );
     }
 
     #[test]

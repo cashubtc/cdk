@@ -200,11 +200,7 @@ impl FederationTransactionBroadcaster {
                 submitted = submitted.saturating_add(1);
                 continue;
             }
-            if !matches!(
-                accepted.state,
-                FederationAcceptedTransactionState::BroadcastPending
-                    | FederationAcceptedTransactionState::Broadcast
-            ) {
+            if !rebroadcast_is_eligible(accepted, &transaction_state) {
                 continue;
             }
             if wallet.ensure_ready(0).await.is_err()
@@ -333,6 +329,41 @@ fn redacted_detail(message: &str) -> String {
     } else {
         "backend detail redacted".to_string()
     }
+}
+
+fn rebroadcast_is_eligible(
+    accepted: &FederationAcceptedTransaction,
+    transactions: &cdk::federation::FederationTransactionState,
+) -> bool {
+    let mut current = accepted;
+    let mut follows_replacement = false;
+    // A replacement proposal does not establish that its bytes reached Bitcoin.
+    // Retain the predecessor until a descendant has accepted broadcast evidence.
+    for _ in 0..=transactions.accepted_transactions().len() {
+        match current.state {
+            FederationAcceptedTransactionState::BroadcastPending
+            | FederationAcceptedTransactionState::Broadcast => return true,
+            FederationAcceptedTransactionState::Accepted
+            | FederationAcceptedTransactionState::Signed => return follows_replacement,
+            FederationAcceptedTransactionState::Replaced { by } => {
+                let Some(replacement) = transactions.accepted_transaction(by) else {
+                    return false;
+                };
+                if replacement
+                    .broadcast
+                    .as_ref()
+                    .is_some_and(|broadcast| broadcast.first_success.is_some())
+                {
+                    return false;
+                }
+                current = replacement;
+                follows_replacement = true;
+            }
+            FederationAcceptedTransactionState::Confirmed
+            | FederationAcceptedTransactionState::Abandoned => return false,
+        }
+    }
+    false
 }
 
 fn classify_broadcast_attempt(

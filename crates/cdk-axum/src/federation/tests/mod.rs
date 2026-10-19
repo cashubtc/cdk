@@ -97,6 +97,8 @@ mod dkg_setup_routes;
 mod dkg_transcript_signature;
 mod frost_signing;
 mod private_operation_route;
+#[cfg(feature = "federation-bdk")]
+mod rbf;
 
 #[cfg(feature = "prometheus")]
 fn prometheus_metric_value(metric: &str, labels: &[(&str, &str)]) -> f64 {

@@ -19,6 +19,7 @@ use bdk_wallet::bitcoin::{
     TxIn, TxOut, Witness,
 };
 use bdk_wallet::descriptor::{ExtendedDescriptor, IntoWalletDescriptor};
+use bdk_wallet::miniscript::psbt::PsbtInputExt;
 use bdk_wallet::rusqlite::{params, Connection, OptionalExtension};
 use bdk_wallet::signer::SignersContainer;
 use bdk_wallet::{KeychainKind, PersistedWallet, SignOptions, Utxo, Wallet, WeightedUtxo};
@@ -50,6 +51,19 @@ pub struct ConfirmedWalletOutput {
     pub amount_sat: u64,
     /// Block height anchoring the transaction.
     pub block_height: u32,
+}
+
+/// Accepted prevout and descriptor allocation needed to finalize a transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FederatedTransactionInput {
+    /// Outpoint in the accepted transaction's input order.
+    pub outpoint: OutPoint,
+    /// Consensus-accepted output being spent.
+    pub previous_output: TxOut,
+    /// Descriptor branch assigned to this output.
+    pub keychain: KeychainKind,
+    /// Non-hardened descriptor child assigned to this output.
+    pub derivation_index: u32,
 }
 
 impl DescriptorConfig {
@@ -709,10 +723,13 @@ impl BdkWalletEngine {
     }
 
     /// Reconstruct the exact accepted watch-only PSBT and finalize FROST signatures.
+    ///
+    /// Prevouts and descriptor allocations come from accepted federation state,
+    /// independently of the local wallet's transaction graph or spendability.
     pub async fn finalize_federated_transaction(
         &self,
         unsigned_transaction: &Transaction,
-        selected_inputs: &[(OutPoint, TxOut)],
+        selected_inputs: &[FederatedTransactionInput],
         signatures: &[[u8; 64]],
     ) -> Result<Transaction, Error> {
         if selected_inputs.is_empty()
@@ -727,34 +744,30 @@ impl BdkWalletEngine {
             .map_err(|error| Error::ExternalSignature(error.to_string()))?;
         {
             let wallet_with_db = self.wallet_with_db.lock().await;
-            for (index, (outpoint, previous_output)) in selected_inputs.iter().enumerate() {
-                if unsigned_transaction.input[index].previous_output != *outpoint {
+            for (index, selected) in selected_inputs.iter().enumerate() {
+                if unsigned_transaction.input[index].previous_output != selected.outpoint {
                     return Err(Error::ExternalSignature(format!(
                         "accepted input {index} is out of transaction order"
                     )));
                 }
-                let local = wallet_with_db
+                let descriptor = wallet_with_db
                     .wallet
-                    .list_unspent()
-                    .find(|output| output.outpoint == *outpoint)
-                    .ok_or_else(|| {
-                        Error::ExternalSignature(format!(
-                            "accepted input {index} is absent from the local BDK wallet"
-                        ))
-                    })?;
-                let input = wallet_with_db
-                    .wallet
-                    .get_psbt_input(
-                        local,
-                        Some(PsbtSighashType::from(TapSighashType::Default)),
-                        true,
-                    )
+                    .public_descriptor(selected.keychain)
+                    .at_derivation_index(selected.derivation_index)
                     .map_err(|error| Error::ExternalSignature(error.to_string()))?;
-                if input.witness_utxo.as_ref() != Some(previous_output) {
+                if descriptor.script_pubkey() != selected.previous_output.script_pubkey {
                     return Err(Error::ExternalSignature(format!(
-                        "accepted input {index} differs from the local BDK prevout"
+                        "accepted input {index} differs from its descriptor allocation"
                     )));
                 }
+                let mut input = PsbtInput {
+                    witness_utxo: Some(selected.previous_output.clone()),
+                    sighash_type: Some(PsbtSighashType::from(TapSighashType::Default)),
+                    ..Default::default()
+                };
+                input
+                    .update_with_descriptor_unchecked(&descriptor)
+                    .map_err(|error| Error::ExternalSignature(error.to_string()))?;
                 psbt.inputs[index] = input;
             }
         }
@@ -1334,6 +1347,109 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rbf_finalization_uses_accepted_prevouts_after_apply_restart_and_restore() {
+        let directory = tempfile::tempdir().expect("wallet directory");
+        let (config, xpriv) = descriptor_config(4, Network::Regtest);
+        let engine =
+            BdkWalletEngine::open_watch_only(config.clone(), chain_source(), directory.path())
+                .expect("wallet");
+        let (original, _) = funded_psbt(&engine, 50_000).await;
+        let selected = vec![FederatedTransactionInput {
+            outpoint: original.unsigned_tx.input[0].previous_output,
+            previous_output: original.spend_utxo(0).expect("prevout").clone(),
+            keychain: KeychainKind::External,
+            derivation_index: 0,
+        }];
+        let sign = |psbt: &Psbt| {
+            let mut signed = psbt.clone();
+            sign_input(&mut signed, 0, &xpriv, "m/0/0", TapSighashType::Default);
+            signed.inputs[0]
+                .tap_key_sig
+                .expect("signature")
+                .signature
+                .serialize()
+        };
+        let signed = engine
+            .finalize_federated_transaction(&original.unsigned_tx, &selected, &[sign(&original)])
+            .await
+            .expect("finalize original");
+        engine
+            .apply_accepted_transaction(signed, 2)
+            .await
+            .expect("apply original");
+        assert!(engine
+            .wallet_with_db
+            .lock()
+            .await
+            .wallet
+            .list_unspent()
+            .all(|output| output.outpoint != selected[0].outpoint));
+        drop(engine);
+        let engine =
+            BdkWalletEngine::open_watch_only(config.clone(), chain_source(), directory.path())
+                .expect("restart wallet");
+        let mut replacement = original;
+        let change_index = replacement
+            .unsigned_tx
+            .output
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, output)| output.value)
+            .map(|(index, _)| index)
+            .expect("change output");
+        replacement.unsigned_tx.output[change_index].value -= Amount::from_sat(500);
+        let signature = sign(&replacement);
+        let transaction = engine
+            .finalize_federated_transaction(&replacement.unsigned_tx, &selected, &[signature])
+            .await
+            .expect("finalize replacement after original and restart");
+        assert_eq!(
+            transaction.compute_txid(),
+            replacement.unsigned_tx.compute_txid()
+        );
+        engine
+            .apply_accepted_transaction(transaction.clone(), 3)
+            .await
+            .expect("apply replacement");
+
+        // A restored member can finalize from accepted data without the funding
+        // transaction, a revealed script, or a member-local unspent output.
+        let restored_directory = tempfile::tempdir().expect("restored directory");
+        let restored =
+            BdkWalletEngine::open_watch_only(config, chain_source(), restored_directory.path())
+                .expect("restored wallet");
+        assert_eq!(
+            restored
+                .finalize_federated_transaction(&replacement.unsigned_tx, &selected, &[signature])
+                .await
+                .expect("finalize from consensus data"),
+            transaction
+        );
+
+        for invalid in 0..5 {
+            let mut mutated = selected.clone();
+            match invalid {
+                0 => mutated[0].previous_output.value += Amount::from_sat(1),
+                1 => mutated[0].keychain = KeychainKind::Internal,
+                2 => mutated[0].derivation_index = 1,
+                3 => mutated[0].derivation_index = 1 << 31,
+                _ => mutated[0].outpoint.vout += 1,
+            }
+            assert!(
+                restored
+                    .finalize_federated_transaction(
+                        &replacement.unsigned_tx,
+                        &mutated,
+                        &[signature],
+                    )
+                    .await
+                    .is_err(),
+                "mutated accepted input {invalid}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn external_taproot_signature_is_verified_finalized_and_applied() {
         let tempdir = tempfile::tempdir().expect("tempdir");
         let (config, xpriv) = descriptor_config(4, Network::Regtest);
@@ -1395,10 +1511,12 @@ mod tests {
             Err(Error::ExternalSignature(_))
         ));
 
-        let selected_inputs = vec![(
-            unsigned.unsigned_tx.input[0].previous_output,
-            unsigned.spend_utxo(0).expect("accepted prevout").clone(),
-        )];
+        let selected_inputs = vec![FederatedTransactionInput {
+            outpoint: unsigned.unsigned_tx.input[0].previous_output,
+            previous_output: unsigned.spend_utxo(0).expect("accepted prevout").clone(),
+            keychain: KeychainKind::External,
+            derivation_index: 0,
+        }];
         let mut threshold_signed = unsigned.clone();
         sign_input(
             &mut threshold_signed,
@@ -1505,11 +1623,11 @@ mod tests {
             .input
             .iter()
             .enumerate()
-            .map(|(index, input)| {
-                (
-                    input.previous_output,
-                    psbt.spend_utxo(index).expect("accepted prevout").clone(),
-                )
+            .map(|(index, input)| FederatedTransactionInput {
+                outpoint: input.previous_output,
+                previous_output: psbt.spend_utxo(index).expect("accepted prevout").clone(),
+                keychain: KeychainKind::External,
+                derivation_index: input.previous_output.vout,
             })
             .collect::<Vec<_>>();
         let mut signed = psbt.clone();

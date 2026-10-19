@@ -92,6 +92,7 @@ bip39 = { workspace = true }
 tower = { workspace = true, features = ["util"] }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
 musig2.workspace = true
+tempfile = "3"
 reqwest.workspace = true
 
 [lints]
