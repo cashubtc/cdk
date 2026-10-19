@@ -10,6 +10,18 @@ use cdk_common::error::ErrorResponse;
 /// to FFI consumers.
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum FfiError {
+    /// Listening was cancelled before redemption started.
+    #[error("Payment request reception cancelled")]
+    PaymentRequestReceiveCancelled,
+    /// Another caller is already waiting on this handle.
+    #[error("Payment request reception already in progress")]
+    PaymentRequestReceiveInProgress,
+    /// Redemption has already started; consult wallet transactions and recovery.
+    #[error("Payment request receive handle already consumed")]
+    PaymentRequestReceiveConsumed,
+    /// The transport closed without an accepted payment.
+    #[error("Payment request transport closed before payment was received")]
+    PaymentRequestReceiveClosed,
     /// CDK error with protocol-compliant error code
     /// The code corresponds to the Cashu protocol error codes (e.g., 11001, 20001, etc.)
     #[error("[{code}] {error_message}")]
@@ -63,6 +75,14 @@ impl FfiError {
 impl From<CdkError> for FfiError {
     fn from(err: CdkError) -> Self {
         let err = match err {
+            CdkError::PaymentRequestReceiveCancelled => {
+                return Self::PaymentRequestReceiveCancelled
+            }
+            CdkError::PaymentRequestReceiveInProgress => {
+                return Self::PaymentRequestReceiveInProgress
+            }
+            CdkError::PaymentRequestReceiveConsumed => return Self::PaymentRequestReceiveConsumed,
+            CdkError::PaymentRequestReceiveClosed => return Self::PaymentRequestReceiveClosed,
             CdkError::PaymentRequestDeliveryFailed {
                 operation_id,
                 source,
