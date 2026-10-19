@@ -644,6 +644,28 @@ fn upstream_spend_commitment_vector() {
 }
 
 #[test]
+fn nut07_commitment_vectors() {
+    use sha2::{Digest, Sha256};
+    let shared: Value = serde_json::from_str(include_str!("nutroot_v3_vectors.json")).unwrap();
+    for (name, disclosed) in [("keypath_private", false), ("disclosed_script_path", true)] {
+        let vector = &shared["nut07_commitments"][name];
+        let y: crate::nuts::PublicKey = serde_json::from_value(vector["Y"].clone()).unwrap();
+        let witness = vector["witness"].as_str().unwrap();
+        assert_eq!(
+            hex::encode(Sha256::digest(witness.as_bytes())),
+            vector["witness_hash"].as_str().unwrap()
+        );
+        assert_eq!(
+            hex::encode(spend_commitment(&y, hash(&vector["input_digest"]), witness)),
+            vector["commitment"].as_str().unwrap()
+        );
+        let opened: Value = serde_json::from_str(witness).unwrap();
+        let leaf_disclosed = opened.get("leaf").is_some_and(|l| leaf(l).disclosure());
+        assert_eq!(leaf_disclosed, disclosed);
+    }
+}
+
+#[test]
 fn upstream_authorized_request_vectors() {
     let vectors: Vec<Value> = serde_json::from_str(include_str!("auth_vectors.json")).unwrap();
     for (vector, body) in vectors
