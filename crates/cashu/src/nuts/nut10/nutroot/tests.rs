@@ -861,3 +861,130 @@ fn quote_id_preimage_vectors() {
         );
     }
 }
+
+#[test]
+fn shared_proof_transcript_vectors() {
+    let shared: Value = serde_json::from_str(include_str!("nutroot_v3_vectors.json")).unwrap();
+    let list = |v: &Value| v.as_array().cloned().unwrap_or_default();
+    for name in [
+        "swap",
+        "melt",
+        "melt_with_change",
+        "multi_input",
+        "mixed_keysets",
+    ] {
+        let case = &shared["transcript"][name];
+        let tx = &case["tx"];
+        let proofs: Vec<crate::Proof> = list(&tx["proof_inputs"])
+            .iter()
+            .map(|v| {
+                let proof = serde_json::json!({
+                    "amount": v["amount"], "id": v["keyset_id"], "secret": v["secret"], "C": v["C"]
+                });
+                serde_json::from_value(proof).unwrap()
+            })
+            .collect();
+        let outputs: Vec<crate::BlindedMessage> = list(&tx["blinded_outputs"])
+            .iter()
+            .map(|v| {
+                let output =
+                    serde_json::json!({ "amount": v["amount"], "id": v["keyset_id"], "B_": v["B_"] });
+                serde_json::from_value(output).unwrap()
+            })
+            .collect();
+        let melts: Vec<Quote> = list(&tx["melt_quote_outputs"])
+            .iter()
+            .map(|v| Quote {
+                amount: v["amount"].as_u64().unwrap().into(),
+                id: v["quote_id"].as_str().unwrap().to_owned(),
+            })
+            .collect();
+        let transaction = Transaction::new(&proofs, &[], &outputs, &melts).unwrap();
+        assert_eq!(transaction.as_bytes(), bytes(&case["transcript"]), "{name}");
+        assert_eq!(transaction.digest(), hash(&case["digest"]), "{name}");
+        assert_eq!(
+            Transaction::from_bytes(transaction.as_bytes()).unwrap(),
+            transaction,
+            "{name}"
+        );
+        let inputs: Vec<(usize, &Value)> = match case.get("inputs") {
+            Some(inputs) => inputs.as_array().unwrap().iter().enumerate().collect(),
+            None => vec![(0, case)],
+        };
+        for (index, input) in inputs {
+            assert_eq!(
+                transaction.input_id(index).unwrap(),
+                hash(&input["input_id"]),
+                "{name}"
+            );
+            // A pre-v3 input has an id but signs nothing.
+            let Some(expected) = input.get("input_digest") else {
+                continue;
+            };
+            let digest = transaction.input_digest(index).unwrap();
+            assert_eq!(digest, hash(expected), "{name}");
+            if let Some(signature) = input["signature"].as_str() {
+                let witness = Witness {
+                    signatures: vec![signature.to_owned()],
+                    leaf: None,
+                    control: None,
+                    preimage: None,
+                };
+                witness
+                    .verify(&proofs[index].secret.to_string(), digest, 0)
+                    .unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+fn commit_leaf_and_unknown_sibling_vectors() {
+    let shared: Value = serde_json::from_str(include_str!("nutroot_v3_vectors.json")).unwrap();
+    let vector = &shared["commit_leaf"];
+    let offset = bitcoin::secp256k1::SecretKey::from_slice(&bytes(&vector["u"])).unwrap();
+    let internal = nums_key(&offset).unwrap();
+    assert_eq!(internal, key(&vector["K"]));
+    let threshold = leaf(&vector["leaf_threshold"]);
+    let commit = leaf(&vector["leaf_commit"]);
+    assert_eq!(
+        commit.condition(),
+        &Condition::Commit(hash(&vector["hash"]))
+    );
+    assert_eq!(threshold.hash(), hash(&vector["leaf_hash_threshold"]));
+    assert_eq!(commit.hash(), hash(&vector["leaf_hash_commit"]));
+    let tree = Tree::new(vec![threshold, commit]).unwrap();
+    assert_eq!(tree.root(), hash(&vector["merkle_root"]));
+    assert_eq!(
+        tree.path(0).unwrap(),
+        vec![hash(&vector["leaf_hash_commit"])]
+    );
+    assert_eq!(
+        tweak(&internal, Some(tree.root())).to_be_bytes(),
+        hash(&vector["tweak"])
+    );
+    assert_eq!(
+        tweaked_key(internal, Some(tree.root())).unwrap(),
+        key(&vector["secret"])
+    );
+
+    // An unknown leaf type still hashes as a sibling, though it never parses as a spend path.
+    let vector = &vectors()[6];
+    let unknown = bytes(&vector["leaf_0_unknown_type"]);
+    assert!(Leaf::from_bytes(&unknown).is_err());
+    let unknown_hash = tagged_hash("Cashu_NutrootLeaf", &unknown);
+    assert_eq!(unknown_hash, hash(&vector["leaf_hash_0"]));
+    let after = leaf(&vector["leaf_1_after"]);
+    assert_eq!(after.hash(), hash(&vector["leaf_hash_1"]));
+    let root = branch(unknown_hash, after.hash());
+    assert_eq!(root, hash(&vector["merkle_root"]));
+    let internal = key(&vector["internal_key"]);
+    assert_eq!(
+        tweak(&internal, Some(root)).to_be_bytes(),
+        hash(&vector["tweak"])
+    );
+    assert_eq!(
+        tweaked_key(internal, Some(root)).unwrap(),
+        key(&vector["secret"])
+    );
+}
