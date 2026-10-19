@@ -205,3 +205,28 @@ async fn nutroot_payment_outputs_keep_policy_and_separate_seed_change() {
         .sum();
     assert_eq!(change_amount, 4);
 }
+
+#[test]
+fn x_only_twin_derives_a_key_blinded_from_the_even_lift() {
+    use bitcoin::secp256k1::{Parity, PublicKey, SecretKey};
+    use cdk_common::nuts::nut10::nutroot::{receiver_key, sender_key};
+
+    let secp = &cdk_common::SECP256K1;
+    let receiver = (1u8..)
+        .map(|i| SecretKey::from_slice(&[i; 32]).unwrap())
+        .find(|key| key.x_only_public_key(secp).1 == Parity::Odd)
+        .unwrap();
+    // The sender holds only the x-only key (eg a Nostr npub) and lifts it to even Y.
+    let lifted =
+        PublicKey::from_x_only_public_key(receiver.x_only_public_key(secp).0, Parity::Even);
+    let ephemeral = SecretKey::from_slice(&[9; 32]).unwrap();
+    let blinded = sender_key(&lifted, &ephemeral, 1).unwrap();
+    let ephemeral = PublicKey::from_secret_key(secp, &ephemeral);
+    let derives = |keys: &[SecretKey]| {
+        keys.iter().any(|key| {
+            PublicKey::from_secret_key(secp, &receiver_key(key, &ephemeral, 1).unwrap()) == blinded
+        })
+    };
+    assert!(!derives(&[receiver]));
+    assert!(derives(&super::with_x_only_twins(vec![receiver])));
+}
