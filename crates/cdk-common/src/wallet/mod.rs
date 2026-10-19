@@ -28,8 +28,8 @@ pub mod saga;
 
 pub use saga::{
     IssueSagaState, MeltOperationData, MeltSagaState, MintOperationData, OperationData,
-    ReceiveOperationData, ReceiveSagaState, SendOperationData, SendSagaState, SwapOperationData,
-    SwapSagaState, WalletSaga, WalletSagaState,
+    ReceiveOperationData, ReceiveSagaState, SendOperationData, SendOutputPlan, SendSagaState,
+    SwapOperationData, SwapSagaState, WalletSaga, WalletSagaState,
 };
 
 /// Wallet Key
