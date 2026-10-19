@@ -65,6 +65,9 @@ where
 {
     /// Creates a new transaction
     pub async fn new(inner: W) -> Result<Self, Error> {
+        // Own the connection before awaiting BEGIN: cancellation can leave the
+        // database operation running and it may still succeed. Drop must retain
+        // the connection until rollback completes before returning it to the pool.
         let mut transaction = Self { inner: Some(inner) };
         let conn = transaction
             .inner
