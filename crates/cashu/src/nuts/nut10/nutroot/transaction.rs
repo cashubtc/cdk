@@ -244,6 +244,21 @@ impl Transaction {
         self.input_digest(index)
     }
 
+    /// Whether `secret` is the point an input names: a v3 proof's secret, or a mint quote's lock key.
+    pub(super) fn input_names_secret(&self, index: usize, secret: &str) -> Result<bool, Error> {
+        let container = self.inputs.get(index).ok_or(Error::InvalidTransaction)?;
+        let fields = parse_records(container.get(3..).ok_or(Error::InvalidTransaction)?)?;
+        let field = fields.get(2).ok_or(Error::InvalidTransaction)?.1;
+        Ok(match container[0] {
+            PROOF_INPUT => {
+                crate::dhke::hash_to_curve_for_version(secret.as_bytes(), KeySetVersion::Version02)
+                    .is_ok_and(|y| y.to_bytes() == field)
+            }
+            MINT_QUOTE_INPUT => parse_secret(secret).is_ok_and(|key| key.serialize() == field),
+            _ => false,
+        })
+    }
+
     /// Canonical TLV transcript.
     pub fn as_bytes(&self) -> &[u8] {
         &self.transcript

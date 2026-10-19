@@ -31,7 +31,7 @@ mod tests;
 pub use self::derivation::{derive_blinding_factor, derive_key, derive_quote_key, KeyPurpose};
 pub use self::leaf::{Condition, Leaf, CORE_LEAF_TYPES};
 pub use self::locking::{nums_point, NutrootOption};
-pub use self::signing::{SigningInput, SigningKind, SigningPackage, SigningSpend};
+pub use self::signing::{SigningPackage, SigningSpend};
 pub use self::spend::SpendRecord;
 pub use self::spend_info::{nums_key, receiver_key, sender_key, SpendInfo};
 pub use self::transaction::{authorized_request_digest, MintQuoteInput, Quote, Transaction};

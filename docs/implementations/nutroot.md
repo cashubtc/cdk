@@ -63,7 +63,7 @@ key derivation. They are not compatible with these Nutroot rules. The
   and input digest; private leaves, key paths, and pending inputs reveal no opening.
 - NUT-18/NUT-26 Nutroot policies, fresh per-output blinding, wallet send/receive
   enforcement, and FFI policy types. Both request encodings preserve leaf bytes.
-- `nutspA` signing packages with transaction reconstruction, partial-signature
+- `nutspA` signing packages carrying the transaction transcript, partial-signature
   verification, receiver-slot fallback, merging, and atomic witness application.
 - `nutrcA` receipts with canonical transcript parsing and independent mint-state
   verification. Wallets journal signed attempts before sending them and retain
@@ -89,7 +89,7 @@ signing. Merely being able to spend one leaf does not verify the payment policy.
 
 Use `SigningPackage::new`, `sign`, `merge`, and `apply` for multi-party script
 spends. `Wallet::sign_nutroot_package` signs a caller-approved package using its
-keyring; inspect the package's inputs, outputs, and trusted melt quote amount
+keyring; decode the package's transcript and check it against trusted quote state
 before approving it. The package carries no trusted digest or private transfer
 keys. Signatures from another transaction cannot be merged into it.
 

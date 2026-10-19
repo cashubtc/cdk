@@ -7,55 +7,15 @@ use bitcoin::secp256k1::{PublicKey, SecretKey};
 use serde::{Deserialize, Serialize};
 
 use super::{receiver_key, Error, Leaf, Quote, Transaction, Witness};
-use crate::nuts::{BlindedMessage, Id, KeySetVersion, Proof};
-use crate::secret::Secret;
-use crate::Amount;
-
-/// A transaction input without private transfer information or unrelated witnesses.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SigningInput {
-    /// Committed amount.
-    pub amount: Amount,
-    /// Full keyset identifier.
-    #[serde(rename = "id")]
-    pub keyset_id: Id,
-    /// Proof secret.
-    pub secret: Secret,
-    /// Mint signature.
-    #[serde(rename = "C")]
-    pub c: crate::nuts::PublicKey,
-}
-
-impl From<&Proof> for SigningInput {
-    fn from(proof: &Proof) -> Self {
-        Self {
-            amount: proof.amount,
-            keyset_id: proof.keyset_id,
-            secret: proof.secret.clone(),
-            c: proof.c,
-        }
-    }
-}
-
-impl SigningInput {
-    fn proof(&self) -> Proof {
-        Proof {
-            amount: self.amount,
-            keyset_id: self.keyset_id,
-            secret: self.secret.clone(),
-            c: self.c,
-            witness: None,
-            dleq: None,
-            p2pk_e: None,
-            spend_info: None,
-        }
-    }
-}
+use crate::nuts::{BlindedMessage, Proof};
+use crate::util::hex;
 
 /// One script opening awaiting signatures.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SigningSpend {
-    /// Secret of the input to sign.
+    /// Index of the input's container in the package transcript.
+    pub input: usize,
+    /// The point the input spends: a v3 proof's secret, or a mint quote's lock key.
     pub secret: String,
     /// Script opening and collected signatures.
     #[serde(flatten)]
@@ -68,32 +28,12 @@ pub struct SigningSpend {
     pub slots: Option<Vec<u8>>,
 }
 
-/// Transaction type carried by a signing package.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SigningKind {
-    /// Swap proof inputs for blinded outputs.
-    Swap,
-    /// Spend proof inputs against a melt quote and optional change outputs.
-    Melt,
-}
-
 /// A script-path signing exchange. Always inspect the transaction before signing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SigningPackage {
     version: String,
-    #[serde(rename = "type")]
-    kind: SigningKind,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    quote: Option<String>,
-    #[serde(
-        rename = "quoteAmount",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
-    quote_amount: Option<Amount>,
-    inputs: Vec<SigningInput>,
-    outputs: Vec<BlindedMessage>,
+    /// The transaction's TLV transcript, hex.
+    transcript: String,
     spends: Vec<SigningSpend>,
 }
 
@@ -106,83 +46,29 @@ struct ValidatedSpend {
 }
 
 impl SigningPackage {
-    /// Build a package. A quote selects melt semantics; its amount includes the
-    /// selected fee reserve and must be checked against trusted quote state.
-    pub fn new(
-        inputs: &[Proof],
-        outputs: &[BlindedMessage],
-        quote: Option<Quote>,
-        spends: Vec<SigningSpend>,
-    ) -> Result<Self, Error> {
-        let (kind, quote, quote_amount) = match quote {
-            Some(quote) => (SigningKind::Melt, Some(quote.id), Some(quote.amount)),
-            None => (SigningKind::Swap, None, None),
-        };
+    /// Build a package for a transaction whose quote amounts come from trusted quote state.
+    pub fn new(transaction: &Transaction, spends: Vec<SigningSpend>) -> Result<Self, Error> {
         let package = Self {
             version: "nutspA".to_owned(),
-            kind,
-            quote,
-            quote_amount,
-            inputs: inputs.iter().map(SigningInput::from).collect(),
-            outputs: outputs
-                .iter()
-                .map(|o| BlindedMessage::new(o.amount, o.keyset_id, o.blinded_secret))
-                .collect(),
+            transcript: hex::encode(transaction.as_bytes()),
             spends,
         };
         package.validate()?;
         Ok(package)
     }
 
-    /// Inputs in committed request order.
-    pub fn inputs(&self) -> &[SigningInput] {
-        &self.inputs
-    }
-    /// Outputs in committed request order.
-    pub fn outputs(&self) -> &[BlindedMessage] {
-        &self.outputs
-    }
     /// Script openings and collected signatures.
     pub fn spends(&self) -> &[SigningSpend] {
         &self.spends
     }
-    /// Transaction type.
-    pub fn kind(&self) -> SigningKind {
-        self.kind
-    }
-    /// Melt quote identity and amount including selected fee reserve.
-    pub fn quote(&self) -> Option<Quote> {
-        self.quote
-            .as_ref()
-            .zip(self.quote_amount)
-            .map(|(id, amount)| Quote {
-                id: id.clone(),
-                amount,
-            })
-    }
-    /// Rebuild the transaction, never trusting a supplied digest.
+
+    /// Decode the transaction for review; its digest is always recomputed from the transcript.
     pub fn transaction(&self) -> Result<Transaction, Error> {
-        if self.version != "nutspA" || self.outputs.iter().any(|o| o.witness.is_some()) {
+        if self.version != "nutspA" {
             return Err(Error::InvalidTransaction);
         }
-        let quotes = match (self.kind, &self.quote, self.quote_amount) {
-            (SigningKind::Swap, None, None) => vec![],
-            (SigningKind::Melt, Some(id), Some(amount)) => vec![Quote {
-                id: id.clone(),
-                amount,
-            }],
-            _ => return Err(Error::InvalidTransaction),
-        };
-        Transaction::new(
-            &self
-                .inputs
-                .iter()
-                .map(SigningInput::proof)
-                .collect::<Vec<_>>(),
-            &[],
-            &self.outputs,
-            &quotes,
-        )
+        let bytes = hex::decode(&self.transcript).map_err(|_| Error::InvalidTransaction)?;
+        Transaction::from_bytes(&bytes)
     }
 
     /// Validate all openings and every collected signature, allowing incomplete thresholds.
@@ -192,16 +78,16 @@ impl SigningPackage {
 
     fn validated_spends(&self) -> Result<(Transaction, Vec<ValidatedSpend>), Error> {
         let transaction = self.transaction()?;
-        if self.spends.is_empty() || self.spends.len() > self.inputs.len() {
+        if self.spends.is_empty() {
             return Err(Error::InvalidWitness);
         }
         let mut seen = HashSet::new();
         let mut validated = Vec::with_capacity(self.spends.len());
         for spend in &self.spends {
-            if !seen.insert(&spend.secret) {
+            let index = spend.input;
+            if !seen.insert(index) || !transaction.input_names_secret(index, &spend.secret)? {
                 return Err(Error::InvalidWitness);
             }
-            let index = self.input_index(&spend.secret)?;
             let leaf = spend.witness.committed_leaf(&spend.secret)?;
             if spend
                 .slots
@@ -220,19 +106,6 @@ impl SigningPackage {
             });
         }
         Ok((transaction, validated))
-    }
-
-    fn input_index(&self, secret: &str) -> Result<usize, Error> {
-        let mut matches = self
-            .inputs
-            .iter()
-            .enumerate()
-            .filter(|(_, input)| input.secret.to_string() == secret);
-        let (index, input) = matches.next().ok_or(Error::InvalidWitness)?;
-        if matches.next().is_some() || input.keyset_id.get_version() != KeySetVersion::Version02 {
-            return Err(Error::InvalidWitness);
-        }
-        Ok(index)
     }
 
     /// Append signatures from matching keys. Incorrect slot hints never select
@@ -318,7 +191,7 @@ impl SigningPackage {
         Ok(())
     }
 
-    /// Apply complete witnesses to the original transaction's inputs. No input
+    /// Apply complete witnesses to the original transaction's proof inputs. No input
     /// is changed unless every supplied script opening satisfies its policy.
     pub fn apply(
         &self,

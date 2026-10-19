@@ -478,10 +478,9 @@ fn signing_packages_merge_only_matching_transactions_and_distinct_signers() {
     });
     let witness = Witness::script_path(&tree, 0, internal).unwrap();
     let mut package = SigningPackage::new(
-        &proofs,
-        &outputs,
-        None,
+        &Transaction::new(&proofs, &[], &outputs, &[]).unwrap(),
         vec![SigningSpend {
+            input: 0,
             secret,
             witness,
             ephemeral_key: Some(ephemeral_public),
@@ -491,6 +490,18 @@ fn signing_packages_merge_only_matching_transactions_and_distinct_signers() {
     .unwrap();
     let encoded = package.encode().unwrap();
     assert_eq!(encoded.parse::<SigningPackage>().unwrap(), package);
+    // A spend opens only the input it names.
+    let mut pair = proofs.clone();
+    pair.push(serde_json::from_value(vectors[17].clone()).unwrap());
+    let pair = Transaction::new(&pair, &[], &outputs, &[]).unwrap();
+    let mut misnamed = package.spends().to_vec();
+    assert!(SigningPackage::new(&pair, misnamed.clone()).is_ok());
+    misnamed[0].input = 1;
+    assert!(SigningPackage::new(&pair, misnamed.clone()).is_err());
+    misnamed[0].input = 0;
+    misnamed.push(misnamed[0].clone());
+    assert!(SigningPackage::new(&pair, misnamed).is_err());
+    assert!(SigningPackage::new(&pair, vec![]).is_err());
     assert!(!serde_json::to_string(&package)
         .unwrap()
         .contains("spend_info"));
@@ -517,7 +528,10 @@ fn signing_packages_merge_only_matching_transactions_and_distinct_signers() {
     let mut wrong_outputs = outputs.clone();
     wrong_outputs[0].amount = 99.into();
     assert!(package.apply(&mut proofs, &wrong_outputs, None, 0).is_err());
-    let altered = SigningPackage::new(&proofs, &wrong_outputs, None, second.spends().to_vec());
+    let altered = SigningPackage::new(
+        &Transaction::new(&proofs, &[], &wrong_outputs, &[]).unwrap(),
+        second.spends().to_vec(),
+    );
     assert!(altered.is_err());
 }
 
@@ -757,4 +771,34 @@ fn commit_leaf_and_unknown_sibling_vectors() {
         tweaked_key(internal, Some(root)).unwrap(),
         key(&vector["secret"])
     );
+}
+
+#[test]
+fn shared_signing_package_vectors() {
+    let shared: Value = serde_json::from_str(include_str!("nutroot_v3_vectors.json")).unwrap();
+    let vector = &shared["signing_package"];
+    let unsigned: SigningPackage = vector["package_string"].as_str().unwrap().parse().unwrap();
+    let signed: SigningPackage = vector["signed_string"].as_str().unwrap().parse().unwrap();
+    assert_eq!(
+        unsigned.transaction().unwrap().input_digest(0).unwrap(),
+        hash(&vector["input_digest"])
+    );
+    assert_eq!(serde_json::to_value(&unsigned).unwrap(), vector["package"]);
+    assert!(unsigned.spends()[0].witness.signatures.is_empty());
+    assert_eq!(signed.spends()[0].witness.signatures.len(), 1);
+    let mut merged = unsigned.clone();
+    merged.merge(&signed).unwrap();
+    assert_eq!(merged, signed);
+    assert_eq!(
+        signed.encode().unwrap().parse::<SigningPackage>().unwrap(),
+        signed
+    );
+
+    // A spend must name an input of the transcript.
+    let mut value = serde_json::to_value(&unsigned).unwrap();
+    value["spends"][0]["input"] = 1.into();
+    let misnamed: SigningPackage = serde_json::from_value(value).unwrap();
+    assert!(misnamed.validate().is_err());
+    // Inputs travel only as transcript containers.
+    assert!(!serde_json::to_string(&unsigned).unwrap().contains("\"C\""));
 }
