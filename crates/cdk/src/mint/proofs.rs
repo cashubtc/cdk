@@ -1,10 +1,29 @@
 use cdk_common::database::mint::Acquired;
 use cdk_common::database::DynMintTransaction;
 use cdk_common::mint::ProofsWithState;
+use cdk_common::nuts::nut14::HTLCWitness;
+use cdk_common::nuts::SpendingConditions;
 use cdk_common::state::{self, check_state_transition};
-use cdk_common::{Error, State};
+use cdk_common::{Error, State, Witness};
 
 use crate::Mint;
+
+/// The witness a `PENDING` pre-v3 proof shows (NUT-07): an HTLC with a `pubkeys` tag shows its preimage alone.
+pub(crate) fn pending_legacy_witness(proof: &cdk_common::Proof) -> Option<Witness> {
+    let Some(Witness::HTLCWitness(witness)) = &proof.witness else {
+        return None;
+    };
+    let Ok(SpendingConditions::HTLCConditions { conditions, .. }) =
+        SpendingConditions::try_from(&proof.secret)
+    else {
+        return None;
+    };
+    conditions?.pubkeys.filter(|keys| !keys.is_empty())?;
+    Some(Witness::HTLCWitness(HTLCWitness {
+        preimage: witness.preimage.clone(),
+        signatures: None,
+    }))
+}
 
 impl Mint {
     pub(crate) async fn record_nutroot_spends(
@@ -46,6 +65,24 @@ impl Mint {
                 state
             })
             .collect())
+    }
+
+    /// Pending states for `proofs`, in order, each with the witness NUT-07 lets it show.
+    pub(crate) async fn pending_proof_states(
+        tx: &mut DynMintTransaction,
+        proofs: &[cdk_common::Proof],
+    ) -> Result<Vec<cdk_common::ProofState>, Error> {
+        let ys = proofs
+            .iter()
+            .map(|proof| proof.y())
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut states = Self::proof_states(tx, &ys, State::Pending).await?;
+        for (state, proof) in states.iter_mut().zip(proofs) {
+            if state.witness.is_none() {
+                state.witness = pending_legacy_witness(proof);
+            }
+        }
+        Ok(states)
     }
 
     /// Updates the state of proofs with validation and error handling.
@@ -305,5 +342,57 @@ mod tests {
         );
 
         tx.commit().await.unwrap();
+    }
+
+    fn htlc_proof(pubkeys: Option<Vec<cdk_common::PublicKey>>) -> cdk_common::Proof {
+        use std::str::FromStr;
+
+        use bitcoin::hashes::sha256::Hash as Sha256Hash;
+        use bitcoin::hashes::Hash;
+        use cdk_common::nuts::nut14::HTLCWitness;
+        use cdk_common::nuts::{Conditions, SpendingConditions};
+
+        let preimage = [42u8; 32];
+        let conditions = SpendingConditions::HTLCConditions {
+            data: Sha256Hash::hash(&preimage),
+            conditions: Some(Conditions {
+                pubkeys,
+                ..Default::default()
+            }),
+        };
+        cdk_common::Proof {
+            amount: Amount::from(1),
+            keyset_id: cdk_common::Id::from_str("00deadbeef123456").unwrap(),
+            secret: conditions.try_into().unwrap(),
+            c: cdk_common::SecretKey::generate().public_key(),
+            witness: Some(cdk_common::Witness::HTLCWitness(HTLCWitness {
+                preimage: cdk_common::util::hex::encode(preimage),
+                signatures: Some(vec!["00".repeat(64)]),
+            })),
+            dleq: None,
+            p2pk_e: None,
+            spend_info: None,
+        }
+    }
+
+    /// NUT-07: a pending HTLC with a pubkeys tag shows its preimage and nothing else.
+    #[test]
+    fn pending_htlc_with_pubkeys_shows_only_its_preimage() {
+        let key = cdk_common::SecretKey::generate().public_key();
+        let shown = super::pending_legacy_witness(&htlc_proof(Some(vec![key])));
+        assert_eq!(
+            shown,
+            Some(cdk_common::Witness::HTLCWitness(
+                cdk_common::nuts::nut14::HTLCWitness {
+                    preimage: cdk_common::util::hex::encode([42u8; 32]),
+                    signatures: None,
+                }
+            ))
+        );
+        assert_eq!(super::pending_legacy_witness(&htlc_proof(None)), None);
+        assert_eq!(
+            super::pending_legacy_witness(&htlc_proof(Some(vec![]))),
+            None
+        );
     }
 }

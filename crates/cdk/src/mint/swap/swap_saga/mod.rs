@@ -249,7 +249,7 @@ impl<'a> SwapSaga<'a, Initial> {
             return Err(err.into());
         }
 
-        let states = Mint::proof_states(&mut tx, &ys, State::Pending).await?;
+        let states = Mint::pending_proof_states(&mut tx, input_proofs).await?;
         tx.commit().await?;
         // Publish proof state changes
         for state in states {
