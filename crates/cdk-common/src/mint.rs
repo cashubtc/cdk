@@ -877,8 +877,8 @@ impl Issuance {
 
 /// Settlement state of a NUT-XX transaction with a melt, recorded under its melt quote.
 ///
-/// `excess` is `amount_in - fee - sum(outputs) - melt.amount`, fixed at acceptance;
-/// the change on settlement is `excess - melt_fee_paid`.
+/// `excess` is `amount_in - fee - sum(outputs) - sum(fixed txout quotes) - melt.amount`,
+/// fixed at acceptance; the change on settlement is `excess - melt_fee_paid`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransactionRecord {
     /// The melt quote this transaction pays
@@ -889,7 +889,9 @@ pub struct TransactionRecord {
     pub unit: cashu::CurrencyUnit,
     /// Mint quote inputs and the amount issued against each
     pub quote_inputs: Vec<(QuoteId, cashu::Amount)>,
-    /// Inputs less fee, outputs and melt amount; the fee reserve is inside it
+    /// Fixed txout quote ids and lock keys with their amount
+    pub mint_quote_outputs: Vec<(QuoteId, cashu::PublicKey, cashu::Amount)>,
+    /// Inputs less fee, outputs, fixed txout quotes and melt amount; the fee reserve is inside it
     pub excess: cashu::Amount,
     /// Unix time the transaction was accepted
     pub created_time: u64,

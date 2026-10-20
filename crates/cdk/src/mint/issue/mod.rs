@@ -857,9 +857,12 @@ impl Mint {
                     mint_quote.amount_mintable()
                 };
 
-                // Validate the expected amount does not exceed what is actually mintable
+                // Validate the expected amount does not exceed what is actually mintable;
+                // a txout quote redeems in full (NUT-XX).
                 let mintable = mint_quote.amount_mintable();
-                if expected_amount > mintable {
+                if expected_amount > mintable
+                    || (mint_quote.payment_method.is_txout() && expected_amount != mintable)
+                {
                     tracing::error!(
                         "Quote {} expected amount {} exceeds mintable {}",
                         entry.quote_id,
@@ -895,11 +898,12 @@ impl Mint {
                         .as_ref()
                         .ok_or(Error::SignatureMissingOrInvalid)?;
                     crate::mint::transaction::parse_quote_witness(raw)?
-                        .verify(
+                        .verify_in(
                             &pubkey.to_string(),
                             transaction
                                 .input_digest(quote_index)
                                 .map_err(crate::nuts::nut10::Error::from)?,
+                            transaction.txout_keys(),
                             cdk_common::util::unix_time(),
                         )
                         // NUT-20: a quote without a valid signature is 20008, whatever the witness got wrong.
@@ -971,7 +975,8 @@ impl Mint {
             if outputs_amount.value() < total_expected_value {
                 // If it is a single quote and not bolt11 we allow the outputs to be less than the total paid
                 // This is to handle the case where a quote is paid multiple times or more than the quote amount
-                let is_partial_allowed = !input.is_batch() && !batch_method.is_bolt11();
+                let is_partial_allowed =
+                    !input.is_batch() && !batch_method.is_bolt11() && !batch_method.is_txout();
 
                 if !is_partial_allowed {
                     return Err(Error::TransactionUnbalanced(

@@ -1,7 +1,7 @@
 //! NUT-XX: Transactions
 //!
 //! One endpoint carrying any NUT-10 transaction: proofs and paid mint quotes in;
-//! blinded messages and one melt quote out.
+//! blinded messages, one melt quote and txout quotes out.
 
 use core::fmt;
 use std::str::FromStr;
@@ -11,6 +11,9 @@ use serde::{Deserialize, Serialize};
 use super::nut00::{BlindedMessage, Proofs};
 use crate::Amount;
 
+/// Method of the txout quotes a transaction creates.
+pub const TXOUT_METHOD: &str = "txout";
+
 /// NUT-XX settings for mint info
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub struct Settings {
@@ -19,6 +22,9 @@ pub struct Settings {
     /// Fee per thousand a quote input's minimal split would carry as proofs
     #[serde(default)]
     pub quote_input_fee_ppk: u64,
+    /// Accepts mint quote outputs, creating fixed txout quotes
+    #[serde(default)]
+    pub fixed_txout_quotes: bool,
 }
 
 /// A paid mint quote spent as a transaction input
@@ -44,6 +50,20 @@ pub struct TransactionMeltOutput {
     pub fee_index: Option<u32>,
 }
 
+/// A mint quote output: a fixed txout quote
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TransactionMintQuoteOutput {
+    /// Lock key of the txout quote, a 33-byte compressed secp256k1 key
+    pub pubkey: String,
+    /// Fixed amount
+    pub amount: Amount,
+    /// 32-byte hex preimage of the quote's derived id (NUT-04); omitted for an id bound to the
+    /// inputs
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id_preimage: Option<String>,
+}
+
 /// `POST /v1/transaction` request
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct TransactionRequest {
@@ -59,6 +79,9 @@ pub struct TransactionRequest {
     /// At most one melt quote
     #[serde(default)]
     pub melt_quote_outputs: Vec<TransactionMeltOutput>,
+    /// Fixed txout quotes to create
+    #[serde(default)]
+    pub mint_quote_outputs: Vec<TransactionMintQuoteOutput>,
     /// Return once the inputs are reserved rather than waiting for the melt
     #[serde(default)]
     pub prefer_async: bool,
@@ -81,7 +104,7 @@ impl super::nut10::SpendingConditionVerification for TransactionRequest {
 pub enum TransactionState {
     /// A melt payment is in flight
     Pending,
-    /// Settled: outputs signed, quotes issued
+    /// Settled: outputs signed, quotes issued, txout quotes created
     Paid,
     /// The payment failed and the inputs were released
     Failed,
@@ -116,8 +139,24 @@ mod tests {
 
     #[test]
     fn request_arrays_default_to_empty() {
-        let request: TransactionRequest = serde_json::from_str("{}").unwrap();
+        let request: TransactionRequest = serde_json::from_str(
+            r#"{"mint_quote_outputs":[{"pubkey":"02aa","amount":3,"id_preimage":"aa"},{"pubkey":"02bb","amount":5}]}"#,
+        )
+        .unwrap();
         assert!(request.proof_inputs.is_empty() && request.melt_quote_outputs.is_empty());
+        assert_eq!(request.mint_quote_outputs[0].amount, Amount::from(3));
+        assert_eq!(request.mint_quote_outputs[1].id_preimage, None);
+        assert_eq!(
+            serde_json::to_string(&request.mint_quote_outputs[1]).unwrap(),
+            r#"{"pubkey":"02bb","amount":5}"#
+        );
+        assert!(
+            serde_json::from_str::<TransactionMintQuoteOutput>(r#"{"pubkey":"02bb"}"#).is_err()
+        );
+        assert!(serde_json::from_str::<TransactionMintQuoteOutput>(
+            r#"{"pubkey":"02bb","amount":3,"fee":3}"#
+        )
+        .is_err());
         assert!(!request.prefer_async);
         assert_eq!(
             serde_json::to_string(&TransactionState::Pending).unwrap(),

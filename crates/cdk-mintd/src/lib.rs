@@ -1653,6 +1653,13 @@ async fn configure_backend_for_methods(
         };
         mint_builder = mint_builder.with_supported_websockets(nut17_supported);
     }
+    // Txout quotes (NUT-XX) exist in every unit without a backend of their own.
+    let txout = cdk::nuts::nutxx::TXOUT_METHOD;
+    mint_builder = mint_builder.with_supported_websockets(SupportedMethods::new(
+        PaymentMethod::Custom(txout.to_owned()),
+        unit.clone(),
+        vec![cdk::nuts::nut17::WsCommand::custom_mint_quote(txout)],
+    ));
 
     if let Some(input_fee) = settings.info.input_fee_ppk {
         mint_builder.set_unit_fee(&unit, input_fee)?;

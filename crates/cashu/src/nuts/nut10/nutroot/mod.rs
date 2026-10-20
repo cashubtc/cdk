@@ -28,13 +28,18 @@ mod witness;
 #[cfg(test)]
 mod tests;
 
-pub use self::derivation::{derive_blinding_factor, derive_key, derive_quote_key, KeyPurpose};
+pub use self::derivation::{
+    derive_blinding_factor, derive_key, derive_quote_id_preimage, derive_quote_key,
+    derived_quote_id, input_bound_quote_id, KeyPurpose,
+};
 pub use self::leaf::{Condition, Leaf, CORE_LEAF_TYPES};
 pub use self::locking::{nums_point, NutrootOption};
 pub use self::signing::{SigningInput, SigningKind, SigningPackage, SigningSpend};
 pub use self::spend::SpendRecord;
 pub use self::spend_info::{nums_key, receiver_key, sender_key, SpendInfo};
-pub use self::transaction::{authorized_request_digest, MintQuoteInput, Quote, Transaction};
+pub use self::transaction::{
+    authorized_request_digest, input_section, MintQuoteInput, MintQuoteOutput, Quote, Transaction,
+};
 pub use self::tree::Tree;
 pub use self::witness::{ControlBlock, Witness};
 

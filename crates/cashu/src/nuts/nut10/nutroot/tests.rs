@@ -794,3 +794,252 @@ fn commit_leaf_and_unknown_sibling_vectors() {
         key(&vector["secret"])
     );
 }
+
+#[test]
+fn shared_fixed_txout_vectors() {
+    use sha2::{Digest, Sha256};
+    let shared: Value = serde_json::from_str(include_str!("nutroot_v3_vectors.json")).unwrap();
+    for name in ["proof_to_two_fixed_txouts", "proof_to_input_bound_txout"] {
+        let case = &shared["transcript"][name];
+        let tx = &case["tx"];
+        let proofs = template_proofs(tx);
+        let mint_quotes: Vec<_> = tx["mint_quote_inputs"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .map(|v| MintQuoteInput {
+                amount: v["amount"].as_u64().unwrap().into(),
+                id: v["quote_id"].as_str().unwrap().to_owned(),
+                pubkey: crate::nuts::PublicKey::from_hex(v["lock_pubkey"].as_str().unwrap())
+                    .unwrap(),
+                issued: v["issued"].as_u64().unwrap().into(),
+            })
+            .collect();
+        let section = input_section(&proofs, &mint_quotes).unwrap();
+        if let Some(expected) = case.get("input_section_hash") {
+            assert_eq!(<[u8; 32]>::from(Sha256::digest(&section)), hash(expected));
+        }
+        // A fixed txout quote is named by its preimage or, without one, its inputs.
+        let quote_outputs: Vec<_> = tx["mint_quote_outputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .map(|(k, v)| MintQuoteOutput {
+                amount: v["amount"].as_u64().unwrap().into(),
+                pubkey: *crate::nuts::PublicKey::from_hex(v["pubkey"].as_str().unwrap())
+                    .unwrap()
+                    .as_secp256k1()
+                    .unwrap(),
+                id: match v.get("id_preimage") {
+                    Some(preimage) => derived_quote_id(&hash(preimage)),
+                    None => input_bound_quote_id(&section, k as u32),
+                },
+            })
+            .collect();
+        let transaction =
+            Transaction::with_quote_outputs(&proofs, &mint_quotes, &[], &[], &quote_outputs)
+                .unwrap();
+        let ids: Vec<_> = quote_outputs.iter().map(|c| c.id.clone()).collect();
+        assert_eq!(serde_json::json!(ids), case["quote_ids"], "{name}");
+        let containers: Vec<u8> = case["mint_quote_output_containers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(bytes)
+            .collect();
+        assert!(transaction.as_bytes().ends_with(&containers), "{name}");
+        assert_eq!(transaction.as_bytes(), bytes(&case["transcript"]), "{name}");
+        assert_eq!(transaction.digest(), hash(&case["digest"]), "{name}");
+        assert_eq!(
+            transaction.input_id(0).unwrap(),
+            hash(&case["input_id"]),
+            "{name}"
+        );
+        assert_eq!(
+            transaction.input_digest(0).unwrap(),
+            hash(&case["input_digest"]),
+            "{name}"
+        );
+        let parsed = Transaction::from_bytes(transaction.as_bytes()).unwrap();
+        assert_eq!(parsed, transaction, "{name}");
+        assert!(parsed.txout_keys().is_some(), "{name}");
+    }
+}
+
+#[test]
+fn quote_id_preimage_vectors() {
+    let shared: Value = serde_json::from_str(include_str!("nutroot_v3_vectors.json")).unwrap();
+    let nut13 = &shared["nut13_v3"];
+    let seed = bytes(&nut13["seed_hex"]);
+    let mint = key(&nut13["mint_identity"]);
+    for vector in nut13["quote_locks"].as_array().unwrap() {
+        let counter = vector["counter"].as_u64().unwrap();
+        let preimage = derive_quote_id_preimage(&seed, mint, counter).unwrap();
+        assert_eq!(preimage, hash(&vector["id_preimage"]));
+        assert_eq!(
+            derived_quote_id(&preimage),
+            vector["quote_id"].as_str().unwrap()
+        );
+    }
+}
+
+/// A template vector's proof inputs.
+fn template_proofs(tx: &Value) -> Vec<crate::Proof> {
+    use std::str::FromStr;
+    tx["proof_inputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| crate::Proof {
+            amount: v["amount"].as_u64().unwrap().into(),
+            keyset_id: crate::nuts::Id::from_str(v["keyset_id"].as_str().unwrap()).unwrap(),
+            secret: crate::secret::Secret::from_str(v["secret"].as_str().unwrap()).unwrap(),
+            c: crate::nuts::PublicKey::from_hex(v["C"].as_str().unwrap()).unwrap(),
+            witness: None,
+            dleq: None,
+            p2pk_e: None,
+            spend_info: None,
+        })
+        .collect()
+}
+
+/// A template vector's `tx`: proof inputs and fixed txout quote outputs only.
+fn template_transaction(tx: &Value) -> Transaction {
+    let quote_outputs: Vec<_> = tx["mint_quote_outputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| MintQuoteOutput {
+            amount: v["amount"].as_u64().unwrap().into(),
+            pubkey: *crate::nuts::PublicKey::from_hex(v["pubkey"].as_str().unwrap())
+                .unwrap()
+                .as_secp256k1()
+                .unwrap(),
+            id: derived_quote_id(&hash(&v["id_preimage"])),
+        })
+        .collect();
+    Transaction::with_quote_outputs(&template_proofs(tx), &[], &[], &[], &quote_outputs).unwrap()
+}
+
+#[test]
+fn shared_template_leaf_vectors() {
+    use std::str::FromStr;
+    let shared: Value = serde_json::from_str(include_str!("nutroot_v3_vectors.json")).unwrap();
+    let case = &shared["template_lock"];
+    let transaction = template_transaction(&case["tx"]);
+    assert_eq!(transaction.as_bytes(), bytes(&case["transcript"]));
+    let dests: Vec<_> = case["dests"].as_array().unwrap().iter().map(key).collect();
+    let leaf_bytes = bytes(&case["leaf"]);
+    let leaf = Leaf::from_bytes(&leaf_bytes).unwrap();
+    assert_eq!(leaf.condition(), &Condition::Template(dests.clone()));
+    assert_eq!(leaf.to_bytes(), leaf_bytes);
+    let secret = case["secret"].as_str().unwrap();
+    let digest = transaction.input_digest(0).unwrap();
+    assert_eq!(digest, hash(&case["input_digest"]));
+    let witness: Witness = serde_json::from_str(case["witness"].as_str().unwrap()).unwrap();
+    witness
+        .verify_in(secret, digest, transaction.txout_keys(), 0)
+        .unwrap();
+    // Without the outputs the leaf cannot be satisfied.
+    assert!(witness.verify(secret, digest, 0).is_err());
+    // A txout quote to a key outside dests, and a blinded message beside the txout quotes,
+    // each fail the leaf although the signature is good for the digest.
+    let mut rejected = case["tx"].clone();
+    rejected["mint_quote_outputs"] = case["rejected_outputs"]["mint_quote_outputs"].clone();
+    let rejected = template_transaction(&rejected);
+    assert!(witness
+        .verify_in(secret, digest, rejected.txout_keys(), 0)
+        .is_err());
+    let blinded = &shared["transcript"]["swap"]["tx"]["blinded_outputs"][0];
+    let blinded = crate::BlindedMessage {
+        amount: blinded["amount"].as_u64().unwrap().into(),
+        keyset_id: crate::nuts::Id::from_str(blinded["keyset_id"].as_str().unwrap()).unwrap(),
+        blinded_secret: crate::nuts::PublicKey::from_hex(blinded["B_"].as_str().unwrap()).unwrap(),
+        witness: None,
+    };
+    let quote_outputs: Vec<_> = dests
+        .iter()
+        .zip(1u8..)
+        .map(|(pubkey, n)| MintQuoteOutput {
+            amount: 1.into(),
+            pubkey: *pubkey,
+            id: derived_quote_id(&[n; 32]),
+        })
+        .collect();
+    let mixed = Transaction::from_bytes(
+        Transaction::with_quote_outputs(
+            &template_proofs(&case["tx"]),
+            &[],
+            &[blinded],
+            &[],
+            &quote_outputs,
+        )
+        .unwrap()
+        .as_bytes(),
+    )
+    .unwrap();
+    assert!(mixed.txout_keys().is_none());
+    assert!(witness
+        .verify_in(secret, digest, mixed.txout_keys(), 0)
+        .is_err());
+    // dests: at least one valid key, no repeats, on a template leaf only, and no time or hash.
+    let keys = leaf.keys().to_vec();
+    assert!(Leaf::new(1, keys.clone(), Condition::Template(vec![])).is_err());
+    assert!(Leaf::new(1, keys, Condition::Template(vec![dests[0], dests[0]])).is_err());
+    let dests_at = leaf_bytes.len() - 69;
+    assert_eq!(leaf_bytes[dests_at], 0x0c);
+    let mut invalid = leaf_bytes.clone();
+    invalid[dests_at + 3] = 0x05;
+    assert!(Leaf::from_bytes(&invalid).is_err());
+    let mut repeated = leaf_bytes.clone();
+    repeated.splice(
+        dests_at + 36..,
+        leaf_bytes[dests_at + 3..dests_at + 36].to_vec(),
+    );
+    assert!(Leaf::from_bytes(&repeated).is_err());
+    let mut threshold = leaf_bytes.clone();
+    threshold[1] = 0x01;
+    assert!(Leaf::from_bytes(&threshold).is_err());
+    for field in [
+        vec![0x06, 0x00, 0x01, 0x01],
+        [vec![0x08, 0x00, 0x20], vec![1; 32]].concat(),
+    ] {
+        let mut extra = leaf_bytes.clone();
+        extra.splice(dests_at..dests_at, field);
+        assert!(Leaf::from_bytes(&extra).is_err());
+    }
+    // An unallocated leaf type fails closed.
+    assert!(Leaf::from_bytes(&bytes(&shared["leaf_forms"]["leaf_unknown_type"])).is_err());
+}
+
+#[test]
+fn shared_template_escrow_vectors() {
+    let shared: Value = serde_json::from_str(include_str!("nutroot_v3_vectors.json")).unwrap();
+    let case = &shared["template_escrow"];
+    let transaction = template_transaction(&case["tx"]);
+    assert_eq!(transaction.as_bytes(), bytes(&case["transcript"]));
+    assert_eq!(transaction.digest(), hash(&case["digest"]));
+    let digest = transaction.input_digest(0).unwrap();
+    assert_eq!(digest, hash(&case["input_digest"]));
+    let arbiter = leaf(&case["leaf_arbiter"]);
+    assert_eq!(arbiter.keys(), &[key(&case["arbiter"])]);
+    assert_eq!(
+        arbiter.condition(),
+        &Condition::Template(vec![key(&case["buyer"]), key(&case["seller"])])
+    );
+    // The arbiter signs the seller's split, through a two-hash path past the promoted coop leaf.
+    let witness: Witness = serde_json::from_str(case["witness"].as_str().unwrap()).unwrap();
+    let secret = case["secret"].as_str().unwrap();
+    witness
+        .verify_in(secret, digest, transaction.txout_keys(), 0)
+        .unwrap();
+    // A txout quote to the arbiter itself is outside dests.
+    let mut self_deal = case["tx"].clone();
+    self_deal["mint_quote_outputs"] = case["self_deal"]["mint_quote_outputs"].clone();
+    let self_deal = template_transaction(&self_deal);
+    assert!(witness
+        .verify_in(secret, digest, self_deal.txout_keys(), 0)
+        .is_err());
+}

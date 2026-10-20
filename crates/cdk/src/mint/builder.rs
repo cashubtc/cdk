@@ -103,10 +103,13 @@ impl MintBuilder {
                 .nut08(true)
                 .nut09(true)
                 .nut10(true)
+                // The template leaf (NUT-YY, `0005`) needs the fixed txout quotes set below.
                 .nut10_leaves(
                     cdk_common::nuts::nut10::nutroot::CORE_LEAF_TYPES
-                        .map(String::from)
-                        .to_vec(),
+                        .iter()
+                        .chain(&["0005"])
+                        .map(|leaf| leaf.to_string())
+                        .collect(),
                 )
                 .nut11(true)
                 .nut12(true)
@@ -116,6 +119,7 @@ impl MintBuilder {
                 .nutxx(cdk_common::nuts::NutXXSettings {
                     supported: true,
                     quote_input_fee_ppk: 0,
+                    fixed_txout_quotes: true,
                 }),
             ..Default::default()
         };
@@ -990,8 +994,8 @@ mod tests {
         );
         assert_eq!(
             mint_info.nuts.nut10.leaves,
-            ["0001", "0002", "0003", "0004"],
-            "a v3 mint lists the core leaf types (NUT-10)"
+            ["0001", "0002", "0003", "0004", "0005"],
+            "a v3 mint lists the core leaf types and the template leaf (NUT-10)"
         );
         assert!(
             mint_info.nuts.nut11.supported,

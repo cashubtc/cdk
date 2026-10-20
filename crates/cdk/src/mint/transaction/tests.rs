@@ -9,8 +9,9 @@ use cdk_common::mint::{MeltQuote, TransactionRecord};
 use cdk_common::nuts::nut10::nutroot::{self, Transaction, Witness as NutrootWitness};
 use cdk_common::nuts::{
     CurrencyUnit, MeltQuoteBolt11Request, MeltQuoteState, MintQuoteBolt11Request, MintQuoteState,
-    MintRequest, PreMintSecrets, SecretKey, State, TransactionMeltOutput, TransactionQuoteInput,
-    TransactionRequest, TransactionState, Witness,
+    MintRequest, PreMintSecrets, SecretKey, State, TransactionMeltOutput,
+    TransactionMintQuoteOutput, TransactionQuoteInput, TransactionRequest, TransactionState,
+    Witness,
 };
 use cdk_common::{Amount, BlindedMessage, Proofs, ProofsMethods, QuoteId};
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
@@ -125,11 +126,29 @@ fn sign_at(
             }]
         })
         .unwrap_or_default();
-    let transaction = Transaction::new(
+    let section = nutroot::input_section(&request.proof_inputs, &mint_quotes).unwrap();
+    let quote_outputs: Vec<nutroot::MintQuoteOutput> = request
+        .mint_quote_outputs
+        .iter()
+        .enumerate()
+        .map(|(k, output)| nutroot::MintQuoteOutput {
+            amount: output.amount,
+            pubkey: *cdk_common::PublicKey::from_hex(&output.pubkey)
+                .unwrap()
+                .as_secp256k1()
+                .unwrap(),
+            id: match &output.id_preimage {
+                Some(_) => derived_id(output).to_string(),
+                None => nutroot::input_bound_quote_id(&section, k as u32),
+            },
+        })
+        .collect();
+    let transaction = Transaction::with_quote_outputs(
         &request.proof_inputs,
         &mint_quotes,
         &request.blinded_outputs,
         &melt_quotes,
+        &quote_outputs,
     )
     .unwrap();
     for (index, proof) in request.proof_inputs.iter_mut().enumerate() {
@@ -180,11 +199,91 @@ fn melt_output(quote: &MeltQuote) -> TransactionMeltOutput {
     }
 }
 
+/// A fixed txout quote output of `amount` locked to `key`, with a fresh id.
+fn fixed_output(key: &SecretKey, amount: u64) -> TransactionMintQuoteOutput {
+    TransactionMintQuoteOutput {
+        pubkey: key.public_key().to_hex(),
+        amount: amount.into(),
+        id_preimage: Some(SecretKey::generate().to_secret_hex()),
+    }
+}
+
+/// The derived id a fixed txout quote output takes.
+fn derived_id(output: &TransactionMintQuoteOutput) -> QuoteId {
+    let preimage: [u8; 32] = cdk_common::util::hex::decode(output.id_preimage.as_ref().unwrap())
+        .unwrap()
+        .try_into()
+        .unwrap();
+    QuoteId::from_str(&nutroot::derived_quote_id(&preimage)).unwrap()
+}
+
+/// A paid txout quote of `amount` locked to a fresh key, as settlement creates one.
+async fn seed_txout_quote(mint: &Mint, amount: u64) -> (QuoteId, SecretKey) {
+    let key = SecretKey::generate();
+    let id = QuoteId::new();
+    let mut tx = mint.localstore.begin_transaction().await.unwrap();
+    super::create_txout_quotes(
+        &mut tx,
+        &CurrencyUnit::Sat,
+        &[(id.clone(), key.public_key(), amount.into())],
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    (id, key)
+}
+
+/// A NUT-04 mint of `outputs` against a v3 quote, its witness bound at `issued`.
+fn nut04_request(
+    id: &QuoteId,
+    key: &SecretKey,
+    outputs: &[BlindedMessage],
+    issued: u64,
+) -> MintInput {
+    let amount = Amount::try_sum(outputs.iter().map(|o| o.amount)).unwrap();
+    let transaction = Transaction::new(
+        &[],
+        &[nutroot::MintQuoteInput {
+            id: id.to_string(),
+            amount,
+            pubkey: key.public_key(),
+            issued: issued.into(),
+        }],
+        outputs,
+        &[],
+    )
+    .unwrap();
+    let signature = NutrootWitness::key_path(
+        key.as_secp256k1().unwrap(),
+        transaction.input_digest(0).unwrap(),
+    )
+    .signatures[0]
+        .clone();
+    MintInput::Single(MintRequest {
+        quote: id.clone(),
+        outputs: outputs.to_vec(),
+        signature: Some(signature),
+    })
+}
+
 /// Poll a melt transaction, as a wallet polls its melt quote, until it leaves `PENDING`.
 async fn settled(mint: &Mint, melt: &MeltQuote) -> cdk_common::transaction::TransactionResponse {
+    settled_with_txouts(mint, melt, &TransactionRequest::default()).await
+}
+
+/// [`settled`] for a request with fixed txout quotes named by their preimages.
+async fn settled_with_txouts(
+    mint: &Mint,
+    melt: &MeltQuote,
+    request: &TransactionRequest,
+) -> cdk_common::transaction::TransactionResponse {
+    let ids: Vec<QuoteId> = request.mint_quote_outputs.iter().map(derived_id).collect();
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            let response = mint.melt_transaction_response(&melt.id).await.unwrap();
+            let response = mint
+                .melt_transaction_response(&melt.id, &ids)
+                .await
+                .unwrap();
             if response.state != TransactionState::Pending {
                 break response;
             }
@@ -193,6 +292,15 @@ async fn settled(mint: &Mint, melt: &MeltQuote) -> cdk_common::transaction::Tran
     })
     .await
     .unwrap()
+}
+
+fn txout_quote(
+    response: &cdk_common::transaction::TransactionResponse,
+    index: usize,
+) -> &serde_json::Value {
+    let quote = response.mint_quotes[index].as_ref().expect("txout quote");
+    assert_eq!(quote["method"], "txout");
+    quote
 }
 
 fn signed_amounts(response: &cdk_common::transaction::TransactionResponse) -> Vec<u64> {
@@ -222,25 +330,6 @@ fn change_is_the_excess_less_the_fee_capped_at_the_reserve() {
         settlement_change(0.into(), 1.into(), 1.into()),
         Amount::ZERO
     );
-}
-
-#[tokio::test]
-async fn quote_inputs_count_against_max_inputs_before_any_lookup() {
-    let mint = v3_mint().await;
-    let (blinded, _) = outputs(&mint, 1).await;
-    // Unknown quotes: the cap answers first, so none is loaded.
-    let request = TransactionRequest {
-        mint_quote_inputs: (0..=mint.max_inputs())
-            .map(|_| quote_input(&QuoteId::new(), 1))
-            .collect(),
-        blinded_outputs: blinded,
-        ..Default::default()
-    };
-    assert!(matches!(
-        mint.process_transaction(request, false).await,
-        Err(Error::MaxInputsExceeded { .. })
-    ));
-    mint.stop().await.unwrap();
 }
 
 #[tokio::test]
@@ -288,6 +377,79 @@ async fn proofs_to_outputs_balance_exactly() {
     )
     .unwrap();
     assert_eq!(signed.total_amount().unwrap(), Amount::from(8));
+    mint.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn txout_quote_redeems_once_and_in_full() {
+    let mint = v3_mint().await;
+    let (id, key) = seed_txout_quote(&mint, 8).await;
+    let quote = &mint
+        .check_mint_quotes(std::slice::from_ref(&id))
+        .await
+        .unwrap()[0];
+    assert_eq!(quote.state(), Some(MintQuoteState::Paid));
+    let quote = cdk_common::transaction::mint_quote_json(quote.clone()).unwrap();
+    assert_eq!(quote["method"], "txout");
+    assert_eq!(quote["request"], "");
+    assert_eq!(quote["expiry"], serde_json::Value::Null);
+    assert!(mint
+        .localstore
+        .get_mint_quote_by_request("")
+        .await
+        .unwrap()
+        .is_none());
+
+    // A partial draw is refused, as a quote input or at its mint route.
+    let (part, _) = outputs(&mint, 3).await;
+    let mut request = TransactionRequest {
+        mint_quote_inputs: vec![quote_input(&id, 3)],
+        blinded_outputs: part.clone(),
+        ..Default::default()
+    };
+    sign(&mut request, std::slice::from_ref(&key), None);
+    assert!(matches!(
+        mint.process_transaction(request, false).await,
+        Err(Error::InvalidTransaction(_))
+    ));
+    assert!(mint
+        .process_mint_request(nut04_request(&id, &key, &part, 0))
+        .await
+        .is_err());
+
+    // In full at its mint route, once.
+    let (full, _) = outputs(&mint, 8).await;
+    mint.process_mint_request(nut04_request(&id, &key, &full, 0))
+        .await
+        .unwrap();
+    assert_eq!(
+        mint.check_mint_quotes(std::slice::from_ref(&id))
+            .await
+            .unwrap()[0]
+            .state(),
+        Some(MintQuoteState::Issued)
+    );
+    let (again, _) = outputs(&mint, 8).await;
+    assert!(mint
+        .process_mint_request(nut04_request(&id, &key, &again, 0))
+        .await
+        .is_err());
+
+    // In full as a quote input.
+    let (id, key) = seed_txout_quote(&mint, 4).await;
+    let (blinded, _) = outputs(&mint, 4).await;
+    let mut request = TransactionRequest {
+        mint_quote_inputs: vec![quote_input(&id, 4)],
+        blinded_outputs: blinded,
+        ..Default::default()
+    };
+    sign(&mut request, &[key], None);
+    let response = mint.process_transaction(request, false).await.unwrap();
+    assert_eq!(response.state, TransactionState::Paid);
+    assert_eq!(
+        mint.check_mint_quotes(&[id]).await.unwrap()[0].state(),
+        Some(MintQuoteState::Issued)
+    );
     mint.stop().await.unwrap();
 }
 
@@ -613,15 +775,54 @@ async fn mint_quote_input_commits_the_amount_issued() {
 }
 
 #[tokio::test]
-async fn failed_melt_retries_with_its_quote_inputs() {
+async fn nut04_mint_refuses_a_witness_over_a_stale_issued() {
+    // A txout quote of 8 with 3 already issued, as if drawn before: a NUT-04 mint of the rest
+    // must sign it at issued 3.
+    let mint = v3_mint().await;
+    let (quote_id, key) = seed_txout_quote(&mint, 8).await;
+    let mut tx = mint.localstore.begin_transaction().await.unwrap();
+    let mut quote = tx
+        .get_mint_quotes_by_ids(std::slice::from_ref(&quote_id))
+        .await
+        .unwrap()
+        .remove(0)
+        .unwrap();
+    quote
+        .add_issuance(Amount::from(3).with_unit(CurrencyUnit::Sat))
+        .unwrap();
+    tx.update_mint_quote(&mut quote).await.unwrap();
+    tx.commit().await.unwrap();
+    let (blinded, _) = outputs(&mint, 5).await;
+    assert!(mint
+        .process_mint_request(nut04_request(&quote_id, &key, &blinded, 0))
+        .await
+        .is_err());
+    mint.process_mint_request(nut04_request(&quote_id, &key, &blinded, 3))
+        .await
+        .unwrap();
+    let quote = mint
+        .localstore
+        .get_mint_quote(&quote_id)
+        .await
+        .unwrap()
+        .unwrap();
+    mint.stop().await.unwrap();
+    assert_eq!(Amount::from(quote.amount_issued()), Amount::from(8));
+}
+
+#[tokio::test]
+async fn failed_melt_retries_with_its_quote_inputs_and_fixed_txout_id() {
     let mint = v3_mint().await;
     let (id, key) = paid_locked_quote(&mint, 16).await;
     let melt = melt_quote(&mint, 2, false).await;
+    // A failed melt releases the fixed txout quote id it claimed.
+    let fixed = fixed_output(&SecretKey::generate(), 4);
     let mut results = Vec::new();
     for _ in 0..2 {
         let mut request = TransactionRequest {
-            mint_quote_inputs: vec![quote_input(&id, 4)],
+            mint_quote_inputs: vec![quote_input(&id, 8)],
             melt_quote_outputs: vec![melt_output(&melt)],
+            mint_quote_outputs: vec![fixed.clone()],
             ..Default::default()
         };
         sign(&mut request, std::slice::from_ref(&key), Some(&melt));
@@ -735,6 +936,83 @@ async fn outputs_on_a_keyset_expiring_before_the_melt_are_rejected() {
 }
 
 #[tokio::test]
+async fn unfinished_melt_settlement_reads_pending_on_check() {
+    let mint = v3_mint().await;
+    let proofs = mint_test_proofs(&mint, 16.into()).await.unwrap();
+    let melt = melt_quote(&mint, 5, true).await;
+    let (blinded, _) = outputs(&mint, 6).await;
+    let mut request = TransactionRequest {
+        proof_inputs: proofs,
+        blinded_outputs: blinded,
+        melt_quote_outputs: vec![melt_output(&melt)],
+        prefer_async: true,
+        ..Default::default()
+    };
+    sign(&mut request, &[], Some(&melt));
+    let response = mint.process_transaction(request, false).await.unwrap();
+    assert_eq!(response.state, TransactionState::Pending);
+    // A rotation while the payment is in flight inactivates the outputs' keyset, which the
+    // signatory then refuses, so the settlement step fails after the melt is paid.
+    mint.rotate_keyset_by_version(
+        CurrencyUnit::Sat,
+        vec![1, 2, 4, 8, 16, 32],
+        0,
+        cdk_common::nuts::KeySetVersion::Version02,
+        None,
+    )
+    .await
+    .unwrap();
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let stored = mint.localstore.get_melt_quote(&melt.id).await.unwrap();
+            if stored.is_some_and(|quote| quote.state == MeltQuoteState::Paid) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let saga = mint
+        .localstore
+        .get_melt_saga_by_quote_id(&melt.id)
+        .await
+        .unwrap()
+        .expect("saga awaiting its settlement");
+    assert!(saga.finalization_data.is_some());
+
+    // The check retries the settlement, and a failed retry still reads PENDING.
+    for _ in 0..2 {
+        let checked = cdk_common::transaction::melt_quote_json(
+            mint.check_melt_quote(&melt.id).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(checked["state"], "PENDING");
+    }
+    mint.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn quote_inputs_count_against_max_inputs_before_any_lookup() {
+    let mint = v3_mint().await;
+    let (blinded, _) = outputs(&mint, 1).await;
+    // Unknown quotes: the cap answers first, so none is loaded.
+    let request = TransactionRequest {
+        mint_quote_inputs: (0..=mint.max_inputs())
+            .map(|_| quote_input(&QuoteId::new(), 1))
+            .collect(),
+        blinded_outputs: blinded,
+        ..Default::default()
+    };
+    assert!(matches!(
+        mint.process_transaction(request, false).await,
+        Err(Error::MaxInputsExceeded { .. })
+    ));
+    mint.stop().await.unwrap();
+}
+
+#[tokio::test]
 async fn blank_outputs_take_the_change() {
     let mint = v3_mint().await;
     // 27 in, 1 fixed, melt 13, 1 sat of the 13 sat reserve spent: change 12, imprinted as 8 and 4
@@ -825,6 +1103,7 @@ async fn melt_quote_reads_pending_until_its_transaction_settles() {
         state: TransactionState::Pending,
         unit: CurrencyUnit::Sat,
         quote_inputs: vec![],
+        mint_quote_outputs: vec![],
         excess: Amount::ZERO,
         created_time: 0,
     })
@@ -866,6 +1145,7 @@ async fn a_quote_drawn_by_a_pending_transaction_takes_no_other_draw() {
         state: TransactionState::Pending,
         unit: CurrencyUnit::Sat,
         quote_inputs: vec![(quote_id.clone(), Amount::from(4))],
+        mint_quote_outputs: vec![],
         excess: Amount::ZERO,
         created_time: 0,
     })
@@ -959,6 +1239,7 @@ async fn custom_method_melt_check_carries_change_once_settled() {
         state: TransactionState::Pending,
         unit: CurrencyUnit::Sat,
         quote_inputs: vec![],
+        mint_quote_outputs: vec![],
         excess: Amount::ZERO,
         created_time: 0,
     };
@@ -1002,60 +1283,343 @@ async fn custom_method_melt_check_carries_change_once_settled() {
     mint.stop().await.unwrap();
 }
 
+/// Insert a mint quote under a txout quote id.
+async fn add_quote_under(mint: &Mint, id: &QuoteId) {
+    let mut tx = mint.localstore.begin_transaction().await.unwrap();
+    tx.add_mint_quote(super::txout_quote(
+        &CurrencyUnit::Sat,
+        id,
+        Amount::ONE,
+        SecretKey::generate().public_key(),
+    ))
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+}
+
 #[tokio::test]
-async fn unfinished_melt_settlement_reads_pending_on_check() {
+async fn fixed_txout_quotes_are_created_without_a_melt() {
+    let mint = v3_mint().await;
+    assert!(
+        mint.mint_info()
+            .await
+            .unwrap()
+            .nuts
+            .nutxx
+            .fixed_txout_quotes
+    );
+    let proofs = mint_test_proofs(&mint, 8.into()).await.unwrap();
+    let key = SecretKey::generate();
+    let mut request = TransactionRequest {
+        proof_inputs: proofs,
+        mint_quote_outputs: vec![fixed_output(&key, 3), fixed_output(&key, 5)],
+        ..Default::default()
+    };
+    sign(&mut request, &[], None);
+    let response = mint
+        .process_transaction(request.clone(), false)
+        .await
+        .unwrap();
+    assert_eq!(response.state, TransactionState::Paid);
+    assert!(response.signatures.is_empty());
+    // A lock key may repeat under fresh ids.
+    for (index, amount) in [(0, 3), (1, 5)] {
+        let quote = txout_quote(&response, index);
+        assert_eq!(quote["amount_paid"], amount);
+        assert_eq!(quote["pubkey"], key.public_key().to_hex());
+        assert_eq!(
+            quote["quote"],
+            derived_id(&request.mint_quote_outputs[index]).to_string()
+        );
+    }
+    let id_preimage = request.mint_quote_outputs[0].id_preimage.as_ref().unwrap();
+    assert!(!serde_json::to_string(&response)
+        .unwrap()
+        .contains(id_preimage));
+
+    // A fixed txout quote redeems in full like any txout quote.
+    let id = derived_id(&request.mint_quote_outputs[0]);
+    let (redeem, _) = outputs(&mint, 3).await;
+    mint.process_mint_request(nut04_request(&id, &key, &redeem, 0))
+        .await
+        .unwrap();
+    assert_eq!(
+        mint.check_mint_quotes(&[id]).await.unwrap()[0].state(),
+        Some(MintQuoteState::Issued)
+    );
+    mint.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn fixed_txout_quote_without_id_preimage_takes_an_input_bound_id() {
+    let mint = v3_mint().await;
+    let proofs = mint_test_proofs(&mint, 8.into()).await.unwrap();
+    let bound = TransactionMintQuoteOutput {
+        id_preimage: None,
+        ..fixed_output(&SecretKey::generate(), 5)
+    };
+    let mut request = TransactionRequest {
+        proof_inputs: proofs,
+        mint_quote_outputs: vec![fixed_output(&SecretKey::generate(), 3), bound],
+        ..Default::default()
+    };
+    // k counts every mint quote output, so the bound one is at 1.
+    let section = nutroot::input_section(&request.proof_inputs, &[]).unwrap();
+    let id = QuoteId::from_str(&nutroot::input_bound_quote_id(&section, 1)).unwrap();
+    assert_ne!(id.to_string(), nutroot::input_bound_quote_id(&section, 0));
+    sign(&mut request, &[], None);
+
+    let response = mint.process_transaction(request, false).await.unwrap();
+    assert_eq!(response.state, TransactionState::Paid);
+    let quote = txout_quote(&response, 1);
+    assert_eq!(quote["quote"], id.to_string());
+    assert_eq!(quote["amount_paid"], 5);
+    let checked = mint
+        .check_mint_quotes(std::slice::from_ref(&id))
+        .await
+        .unwrap();
+    assert_eq!(checked[0].state(), Some(MintQuoteState::Paid));
+    mint.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn fixed_txout_quotes_settle_beside_a_melt() {
     let mint = v3_mint().await;
     let proofs = mint_test_proofs(&mint, 16.into()).await.unwrap();
     let melt = melt_quote(&mint, 5, true).await;
-    let (blinded, _) = outputs(&mint, 6).await;
+    assert_eq!(Amount::from(melt.fee_reserve()), Amount::from(5));
+    let fixed_key = SecretKey::generate();
+    let (blinded, _) = outputs(&mint, 3).await;
     let mut request = TransactionRequest {
-        proof_inputs: proofs,
+        proof_inputs: proofs.clone(),
         blinded_outputs: blinded,
         melt_quote_outputs: vec![melt_output(&melt)],
-        prefer_async: true,
+        mint_quote_outputs: vec![fixed_output(&fixed_key, 3)],
+        ..Default::default()
+    };
+    // The fixed amount counts against the balance: 16 in, 3 out, 5 melt, 5 reserve, 7 fixed is short.
+    let mut short = request.clone();
+    short.mint_quote_outputs[0].amount = 7.into();
+    sign(&mut short, &[], Some(&melt));
+    assert!(matches!(
+        mint.process_transaction(short, false).await,
+        Err(Error::TransactionUnbalanced(16, 20, 0))
+    ));
+
+    sign(&mut request, &[], Some(&melt));
+    let response = mint
+        .process_transaction(request.clone(), false)
+        .await
+        .unwrap();
+    // The quote is null until the payment settles.
+    assert_eq!(response.mint_quotes.len(), 1);
+    if response.state == TransactionState::Pending {
+        assert!(response.mint_quotes.iter().all(Option::is_none));
+    }
+    let response = settled_with_txouts(&mint, &melt, &request).await;
+    assert_eq!(response.state, TransactionState::Paid);
+    let fixed = txout_quote(&response, 0);
+    assert_eq!(fixed["amount_paid"], 3);
+    assert_eq!(fixed["pubkey"], fixed_key.public_key().to_hex());
+
+    // A txout quote id names one quote: naming a claimed one is refused before anything is spent.
+    let claimed = request.mint_quote_outputs[0].clone();
+    let proofs = mint_test_proofs(&mint, 4.into()).await.unwrap();
+    let mut request = TransactionRequest {
+        proof_inputs: proofs.clone(),
+        mint_quote_outputs: vec![TransactionMintQuoteOutput {
+            amount: 4.into(),
+            ..claimed
+        }],
+        ..Default::default()
+    };
+    sign(&mut request, &[], None);
+    assert!(matches!(
+        mint.process_transaction(request, false).await,
+        Err(Error::DuplicateOutputs)
+    ));
+    let states = mint
+        .localstore
+        .get_proofs_states(&proofs.ys().unwrap())
+        .await
+        .unwrap();
+    assert!(states.iter().all(Option::is_none), "nothing reserved");
+    mint.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn txout_quotes_count_against_max_outputs() {
+    let mint = v3_mint().await;
+    let proofs = mint_test_proofs(&mint, 4.into()).await.unwrap();
+    let key = SecretKey::generate();
+    let request = TransactionRequest {
+        proof_inputs: proofs,
+        mint_quote_outputs: (0..=mint.max_outputs)
+            .map(|_| fixed_output(&key, 1))
+            .collect(),
+        ..Default::default()
+    };
+    assert!(matches!(
+        mint.process_transaction(request, false).await,
+        Err(Error::MaxOutputsExceeded { .. })
+    ));
+    mint.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn rejects_bad_fixed_txout_quotes() {
+    let mint = v3_mint().await;
+    let proofs = mint_test_proofs(&mint, 4.into()).await.unwrap();
+    let key = SecretKey::generate();
+    let fixed = fixed_output(&key, 1);
+    let repeated = TransactionMintQuoteOutput {
+        amount: 3.into(),
+        ..fixed.clone()
+    };
+    let request = TransactionRequest {
+        proof_inputs: proofs.clone(),
+        mint_quote_outputs: vec![fixed, repeated],
+        ..Default::default()
+    };
+    assert!(matches!(
+        mint.process_transaction(request, false).await,
+        Err(Error::DuplicateOutputs)
+    ));
+    let mut short_preimage = fixed_output(&key, 4);
+    short_preimage.id_preimage.as_mut().unwrap().truncate(62);
+    let mut not_hex = fixed_output(&key, 4);
+    not_hex
+        .id_preimage
+        .as_mut()
+        .unwrap()
+        .replace_range(..2, "zz");
+    for outputs in [
+        vec![fixed_output(&key, 0), fixed_output(&key, 4)],
+        vec![short_preimage],
+        vec![not_hex],
+    ] {
+        let request = TransactionRequest {
+            proof_inputs: proofs.clone(),
+            mint_quote_outputs: outputs,
+            ..Default::default()
+        };
+        assert!(matches!(
+            mint.process_transaction(request, false).await,
+            Err(Error::InvalidTransaction(_))
+        ));
+    }
+    let states = mint
+        .localstore
+        .get_proofs_states(&proofs.ys().unwrap())
+        .await
+        .unwrap();
+    assert!(states.iter().all(Option::is_none), "nothing reserved");
+    mint.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_txout_quote_input_cannot_pay_into_a_fixed_txout_quote() {
+    let mint = v3_mint().await;
+    let (id, key) = seed_txout_quote(&mint, 8).await;
+    let mut request = TransactionRequest {
+        mint_quote_inputs: vec![quote_input(&id, 8)],
+        mint_quote_outputs: vec![fixed_output(&SecretKey::generate(), 8)],
+        ..Default::default()
+    };
+    sign(&mut request, std::slice::from_ref(&key), None);
+    assert!(matches!(
+        mint.process_transaction(request, false).await,
+        Err(Error::InvalidTransaction(_))
+    ));
+    // Into proofs it redeems as usual.
+    let (blinded, _) = outputs(&mint, 8).await;
+    let mut request = TransactionRequest {
+        mint_quote_inputs: vec![quote_input(&id, 8)],
+        blinded_outputs: blinded,
+        ..Default::default()
+    };
+    sign(&mut request, &[key], None);
+    assert_eq!(
+        mint.process_transaction(request, false)
+            .await
+            .unwrap()
+            .state,
+        TransactionState::Paid
+    );
+    mint.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn fixed_txout_quote_ids_are_claimed_at_acceptance() {
+    let mint = v3_mint().await;
+    let (id, key) = paid_locked_quote(&mint, 8).await;
+    let (other_id, other_key) = paid_locked_quote(&mint, 8).await;
+    let mut request = TransactionRequest {
+        mint_quote_inputs: vec![quote_input(&id, 2)],
+        mint_quote_outputs: vec![fixed_output(&SecretKey::generate(), 2)],
+        ..Default::default()
+    };
+    // The same fixed txout quote id, drawn from another quote.
+    let mut other = TransactionRequest {
+        mint_quote_inputs: vec![quote_input(&other_id, 2)],
+        ..request.clone()
+    };
+    sign(&mut request, &[key], None);
+    sign(&mut other, &[other_key], None);
+    // Both requests validate before either claims its id.
+    let first = mint.prepare_transaction(request).await.unwrap();
+    let second = mint.prepare_transaction(other).await.unwrap();
+    assert_eq!(
+        mint.settle_without_melt(first).await.unwrap().state,
+        TransactionState::Paid
+    );
+    assert!(matches!(
+        mint.settle_without_melt(second).await,
+        Err(Error::DuplicateOutputs)
+    ));
+    let quote = mint.localstore.get_mint_quote(&id).await.unwrap().unwrap();
+    let other = mint
+        .localstore
+        .get_mint_quote(&other_id)
+        .await
+        .unwrap()
+        .unwrap();
+    mint.stop().await.unwrap();
+    assert_eq!(Amount::from(quote.amount_issued()), Amount::from(2));
+    assert_eq!(Amount::from(other.amount_issued()), Amount::ZERO);
+}
+
+#[tokio::test]
+async fn fixed_txout_quote_id_naming_a_mint_quote_is_refused_before_payment() {
+    let mint = v3_mint().await;
+    let proofs = mint_test_proofs(&mint, 16.into()).await.unwrap();
+    let melt = melt_quote(&mint, 5, true).await;
+    let fixed = fixed_output(&SecretKey::generate(), 6);
+    add_quote_under(&mint, &derived_id(&fixed)).await;
+
+    let mut request = TransactionRequest {
+        proof_inputs: proofs.clone(),
+        melt_quote_outputs: vec![melt_output(&melt)],
+        mint_quote_outputs: vec![fixed],
         ..Default::default()
     };
     sign(&mut request, &[], Some(&melt));
-    let response = mint.process_transaction(request, false).await.unwrap();
-    assert_eq!(response.state, TransactionState::Pending);
-    // A rotation while the payment is in flight inactivates the outputs' keyset, which the
-    // signatory then refuses, so the settlement step fails after the melt is paid.
-    mint.rotate_keyset_by_version(
-        CurrencyUnit::Sat,
-        vec![1, 2, 4, 8, 16, 32],
-        0,
-        cdk_common::nuts::KeySetVersion::Version02,
-        None,
-    )
-    .await
-    .unwrap();
-
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            let stored = mint.localstore.get_melt_quote(&melt.id).await.unwrap();
-            if stored.is_some_and(|quote| quote.state == MeltQuoteState::Paid) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .unwrap();
-    let saga = mint
+    assert!(matches!(
+        mint.process_transaction(request, false).await,
+        Err(Error::DuplicateOutputs)
+    ));
+    let stored = mint
         .localstore
-        .get_melt_saga_by_quote_id(&melt.id)
+        .get_melt_quote(&melt.id)
         .await
         .unwrap()
-        .expect("saga awaiting its settlement");
-    assert!(saga.finalization_data.is_some());
-
-    // The check retries the settlement, and a failed retry still reads PENDING.
-    for _ in 0..2 {
-        let checked = cdk_common::transaction::melt_quote_json(
-            mint.check_melt_quote(&melt.id).await.unwrap(),
-        )
         .unwrap();
-        assert_eq!(checked["state"], "PENDING");
-    }
+    assert_eq!(stored.state, MeltQuoteState::Unpaid);
+    let states = mint
+        .localstore
+        .get_proofs_states(&proofs.ys().unwrap())
+        .await
+        .unwrap();
+    assert!(states.iter().all(Option::is_none), "nothing reserved");
     mint.stop().await.unwrap();
 }

@@ -302,11 +302,12 @@ async fn rollback_melt_quote_inner(
         None
     };
 
-    // A failed transaction keeps its record as FAILED; its quote inputs were never issued, and
-    // leaving PENDING frees them for other draws.
+    // A failed transaction releases its fixed txout quote ids and keeps its record as FAILED; its
+    // quote inputs were never issued, and leaving PENDING frees them for other draws.
     let mut transaction = tx.get_transaction_by_melt_quote(quote_id).await?;
     if let Some(record) = transaction.as_mut() {
         if record.state == cdk_common::nuts::TransactionState::Pending {
+            tx.release_mint_quote_ids(quote_id).await?;
             tx.update_transaction(record, cdk_common::nuts::TransactionState::Failed)
                 .await?;
         }
@@ -419,6 +420,8 @@ pub(crate) async fn begin_melt_cleanup_transaction(
 pub(crate) enum MeltChangeResult {
     Ready {
         change_sigs: Option<Vec<BlindSignature>>,
+        /// Txout quotes a NUT-XX transaction created, announced once `tx` commits.
+        txout_quotes: Vec<mint_types::MintQuote>,
         tx: Box<dyn database::MintTransaction<database::Error> + Send + Sync>,
     },
     AlreadyCompleted,
@@ -431,6 +434,7 @@ async fn begin_melt_change_without_signatures(
     Ok(match begin_melt_cleanup_transaction(db, quote_id).await? {
         MeltCleanupTransaction::Ready(tx) => MeltChangeResult::Ready {
             change_sigs: None,
+            txout_quotes: vec![],
             tx,
         },
         MeltCleanupTransaction::AlreadyCompleted => MeltChangeResult::AlreadyCompleted,
@@ -579,6 +583,7 @@ pub(super) async fn process_melt_change(
 
     Ok(MeltChangeResult::Ready {
         change_sigs: Some(change_sigs),
+        txout_quotes: vec![],
         tx,
     })
 }
@@ -1031,8 +1036,12 @@ pub async fn finalize_melt_quote(
         }
     };
 
-    let (change_sigs, mut tx) = match change_result {
-        MeltChangeResult::Ready { change_sigs, tx } => (change_sigs, tx),
+    let (change_sigs, txout_quotes, mut tx) = match change_result {
+        MeltChangeResult::Ready {
+            change_sigs,
+            txout_quotes,
+            tx,
+        } => (change_sigs, txout_quotes, tx),
         MeltChangeResult::AlreadyCompleted => {
             let stored_quote = db
                 .get_melt_quote(&quote.id)
@@ -1122,6 +1131,9 @@ pub async fn finalize_melt_quote(
 
     // Commit TX2 (change signatures + operation record + melt request + saga cleanup)
     tx.commit().await?;
+    for txout_quote in &txout_quotes {
+        pubsub.mint_quote_payment(txout_quote, txout_quote.amount_paid());
+    }
 
     // Publish quote status change
     pubsub.melt_quote_status(

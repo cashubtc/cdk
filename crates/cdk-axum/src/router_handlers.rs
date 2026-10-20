@@ -246,8 +246,8 @@ pub(crate) async fn post_restore(
 
 /// Run a NUT-XX transaction
 ///
-/// Proofs and paid mint quotes in; blinded messages and one melt quote out.
-/// Responses are cached (NUT-19) under the request.
+/// Proofs and paid mint quotes in; blinded messages, one melt quote and
+/// txout quotes out. Responses are cached (NUT-19) under the request.
 #[instrument(skip_all)]
 pub(crate) async fn post_transaction(
     auth: AuthHeader,
