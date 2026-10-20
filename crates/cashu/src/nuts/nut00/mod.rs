@@ -309,7 +309,7 @@ pub enum Witness {
     /// P2PK Witness
     #[serde(with = "serde_p2pk_witness")]
     P2PKWitness(P2PKWitness),
-    /// Exact Nutroot witness JSON, retained for spend commitments.
+    /// Exact Nutroot witness JSON, published verbatim from `PENDING` on (NUT-07).
     NutrootWitness(String),
 }
 

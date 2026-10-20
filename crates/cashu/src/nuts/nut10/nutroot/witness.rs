@@ -131,8 +131,7 @@ impl Witness {
     }
 
     /// Verify against an input digest and the verifier's Unix clock.
-    /// Returns whether the exercised path requires public disclosure.
-    pub fn verify(&self, secret: &str, input_digest: [u8; 32], now: u64) -> Result<bool, Error> {
+    pub fn verify(&self, secret: &str, input_digest: [u8; 32], now: u64) -> Result<(), Error> {
         let secret = parse_secret(secret)?;
         let message = Message::from_digest(input_digest);
         // Every valid leaf has at most 15 keys. Bound work before parsing signatures.
@@ -154,7 +153,7 @@ impl Witness {
                 return Err(Error::InvalidWitness);
             }
             verify_signature(&signatures[0], &message, &secret)?;
-            return Ok(false);
+            return Ok(());
         };
         let leaf = self.committed_leaf(&secret.to_string())?;
         if signatures.len() > leaf.keys().len() {
@@ -191,7 +190,7 @@ impl Witness {
         if satisfied < usize::from(leaf.threshold()) {
             return Err(Error::InvalidWitness);
         }
-        Ok(leaf.disclosure())
+        Ok(())
     }
 }
 

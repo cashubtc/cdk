@@ -419,7 +419,6 @@ mod tests {
         mock_client.set_check_state_response(Ok(CheckStateResponse {
             states: vec![ProofState {
                 input_digest: None,
-                commitment: None,
                 y: proof_y,
                 state: State::Unspent, // Not spent yet
                 witness: None,
@@ -487,7 +486,6 @@ mod tests {
         mock_client.set_check_state_response(Ok(CheckStateResponse {
             states: vec![ProofState {
                 input_digest: None,
-                commitment: None,
                 y: proof_y,
                 state: State::Spent, // Spent at mint
                 witness: None,

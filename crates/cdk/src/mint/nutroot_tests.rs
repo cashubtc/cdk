@@ -45,17 +45,19 @@ async fn nutroot_mint_and_swap_require_transaction_authorization() {
         .collect();
     let response = mint.process_swap_request(request).await.unwrap();
     let stored = mint.localstore.get_proofs_by_ys(&ys).await.unwrap();
-    for (proof, witness) in stored.iter().zip(expected_witnesses) {
-        assert_eq!(proof.as_ref().unwrap().witness, witness);
+    for (proof, witness) in stored.iter().zip(&expected_witnesses) {
+        assert_eq!(&proof.as_ref().unwrap().witness, witness);
     }
+    // NUT-07: a spent v3 proof publishes its exact witness and input digest.
     let states = mint
         .check_state(&cdk_common::nuts::CheckStateRequest { ys })
         .await
         .unwrap();
-    assert!(states
-        .states
-        .iter()
-        .all(|state| state.state == cdk_common::nuts::State::Spent && state.witness.is_none()));
+    for (state, witness) in states.states.iter().zip(&expected_witnesses) {
+        assert_eq!(state.state, cdk_common::nuts::State::Spent);
+        assert_eq!(&state.witness, witness);
+        assert!(state.input_digest.is_some());
+    }
     assert!(!response.signatures.is_empty());
     assert_eq!(mint.get_active_keysets().len(), 1);
     assert_eq!(
@@ -103,11 +105,11 @@ async fn nutroot_witness_length_allows_maximal_script_paths() {
 }
 
 #[tokio::test]
-async fn nutroot_disclosure_opens_only_the_exercised_leaf_commitment() {
+async fn nutroot_witness_is_published_from_pending() {
     use cdk_common::amount::SplitTarget;
     use cdk_common::nuts::nut10::nutroot::{self, Condition, Leaf, NutrootOption};
     use cdk_common::nuts::{PreMintSecrets, SecretKey};
-    for disclosure in [false, true] {
+    {
         let mint = create_test_mint_with_version(None).await.unwrap();
         let id = mint.get_active_keysets()[&CurrencyUnit::Sat];
         let key = SecretKey::generate();
@@ -115,7 +117,6 @@ async fn nutroot_disclosure_opens_only_the_exercised_leaf_commitment() {
             1,
             vec![*key.public_key().as_secp256k1().unwrap()],
             Condition::Threshold,
-            disclosure,
         )
         .unwrap();
         let lock = NutrootOption {
@@ -160,19 +161,11 @@ async fn nutroot_disclosure_opens_only_the_exercised_leaf_commitment() {
         let record = nutroot::SpendRecord::new(&proofs[0], &transaction, 0, 0).unwrap();
         let mut pending = (y, cdk_common::State::Pending).into();
         record.apply_to(&mut pending);
-        assert!(
-            pending.commitment.is_none()
-                && pending.witness.is_none()
-                && pending.input_digest.is_none()
+        assert_eq!(
+            pending.input_digest,
+            Some(cdk_common::util::hex::encode(digest))
         );
-        let receipt = nutroot::SpendReceipt::new(
-            "https://mint.test".parse().unwrap(),
-            CurrencyUnit::Sat,
-            &proofs,
-            &transaction,
-            0,
-        )
-        .unwrap();
+        assert_eq!(pending.witness, Some(Witness::NutrootWitness(raw.clone())));
         let params = cdk_common::nut17::Params {
             kind: cdk_common::nut17::Kind::ProofState,
             filters: vec![y.to_string()],
@@ -188,30 +181,11 @@ async fn nutroot_disclosure_opens_only_the_exercised_leaf_commitment() {
             .unwrap()
             .states
             .remove(0);
-        assert_eq!(
-            state.commitment,
-            Some(cdk_common::util::hex::encode(nutroot::spend_commitment(
-                &y, digest, &raw
-            )))
-        );
-        assert_eq!(state.input_digest.is_some(), disclosure);
-        assert_eq!(
-            state.witness,
-            disclosure.then(|| Witness::NutrootWitness(raw))
-        );
+        assert_eq!(state.input_digest, pending.input_digest);
+        assert_eq!(state.witness, Some(Witness::NutrootWitness(raw)));
         let roundtrip: cdk_common::ProofState =
             serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
         assert_eq!(roundtrip, state);
-        let keysets = vec![cdk_common::nuts::KeySetInfo {
-            id,
-            unit: CurrencyUnit::Sat,
-            active: true,
-            input_fee_ppk: 0,
-            final_expiry: None,
-        }];
-        receipt
-            .verify(&keysets, &[state.clone()], cdk_common::util::unix_time())
-            .unwrap();
         let observed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
                 let event = live.recv().await.unwrap();
@@ -219,11 +193,8 @@ async fn nutroot_disclosure_opens_only_the_exercised_leaf_commitment() {
                     if value.state == cdk_common::State::Spent {
                         break value.clone();
                     }
-                    assert!(
-                        value.commitment.is_none()
-                            && value.witness.is_none()
-                            && value.input_digest.is_none()
-                    );
+                    assert_eq!(value.witness, state.witness);
+                    assert_eq!(value.input_digest, state.input_digest);
                 }
             }
         })
