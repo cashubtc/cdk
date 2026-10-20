@@ -232,25 +232,25 @@ impl Wallet {
     }
 
     /// Resume restoring this mint and unit from each keyset's stored next
-    /// derivation index minus `how_far_back`, clamped to zero.
+    /// derivation index minus `lookback`, clamped to zero.
     /// `None` defaults to zero lookback. Progress is saved after each
     /// recovered batch; returned amounts include already stored proofs
     /// encountered in the scanned range.
-    #[uniffi::method(default(how_far_back = None))]
-    pub async fn resume_restore(&self, how_far_back: Option<u32>) -> Result<Restored, FfiError> {
-        let restored = self.inner.resume_restore(how_far_back).await?;
+    #[uniffi::method(default(lookback = None))]
+    pub async fn resume_restore(&self, lookback: Option<u32>) -> Result<Restored, FfiError> {
+        let restored = self.inner.resume_restore(lookback).await?;
         Ok(restored.into())
     }
 
     /// Resume restoring with a lookback and custom NUT-13 options.
     pub async fn resume_restore_with_opts(
         &self,
-        how_far_back: Option<u32>,
+        lookback: Option<u32>,
         opts: NUT13Options,
     ) -> Result<Restored, FfiError> {
         let restored = self
             .inner
-            .resume_restore_with_opts(how_far_back, opts.try_into()?)
+            .resume_restore_with_opts(lookback, opts.try_into()?)
             .await?;
         Ok(restored.into())
     }

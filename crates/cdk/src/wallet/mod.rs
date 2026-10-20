@@ -698,7 +698,7 @@ impl Wallet {
     /// Resume restoring proofs for this wallet's mint and unit.
     ///
     /// Starts each keyset at its stored next derivation index minus
-    /// `how_far_back`, clamped to zero. `None` defaults to zero lookback.
+    /// `lookback`, clamped to zero. `None` defaults to zero lookback.
     /// A keyset without a stored counter starts at zero.
     ///
     /// Uses the NUT-13 default batch size and gap limit. Progress is saved
@@ -707,8 +707,8 @@ impl Wallet {
     /// advance the stored counter. Returned amounts cover the scanned range,
     /// including any proofs already present in the wallet.
     #[instrument(skip(self))]
-    pub async fn resume_restore(&self, how_far_back: Option<u32>) -> Result<Restored, Error> {
-        self.resume_restore_with_opts(how_far_back, NUT13Options::default())
+    pub async fn resume_restore(&self, lookback: Option<u32>) -> Result<Restored, Error> {
+        self.resume_restore_with_opts(lookback, NUT13Options::default())
             .await
     }
 
@@ -719,16 +719,16 @@ impl Wallet {
     #[instrument(skip(self))]
     pub async fn resume_restore_with_opts(
         &self,
-        how_far_back: Option<u32>,
+        lookback: Option<u32>,
         opts: NUT13Options,
     ) -> Result<Restored, Error> {
-        self.restore_from_counter(Some(how_far_back.unwrap_or_default()), opts)
+        self.restore_from_counter(Some(lookback.unwrap_or_default()), opts)
             .await
     }
 
     async fn restore_from_counter(
         &self,
-        how_far_back: Option<u32>,
+        lookback: Option<u32>,
         opts: NUT13Options,
     ) -> Result<Restored, Error> {
         let opts = NUT13Options::new(opts.batch_size, opts.max_gap)?;
@@ -756,7 +756,7 @@ impl Wallet {
                 .increment_keyset_counter(&keyset.id, 0)
                 .await?;
             let mut empty_batch: u32 = 0;
-            let mut start_counter = match how_far_back {
+            let mut start_counter = match lookback {
                 Some(lookback) => keyset_counter.saturating_sub(lookback),
                 None => 0,
             };
@@ -1859,13 +1859,10 @@ mod tests {
             }
             let seed = [7; 64];
             let wallet = create_test_wallet_with_mock_seed(db.clone(), client.clone(), seed).await;
-            let restored = cdk_common::wallet::Wallet::resume_restore_with_opts(
-                &wallet,
-                lookback,
-                opts.clone(),
-            )
-            .await
-            .unwrap();
+            let restored = wallet
+                .resume_restore_with_opts(lookback, opts.clone())
+                .await
+                .unwrap();
             assert_eq!(restored.unspent, Amount::ZERO);
             {
                 let requests = client.restore_requests.lock().unwrap();
@@ -1931,9 +1928,7 @@ mod tests {
         }
         let seed = [7; 64];
         let wallet = create_test_wallet_with_mock_seed(db.clone(), client.clone(), seed).await;
-        cdk_common::wallet::Wallet::resume_restore(&wallet, None)
-            .await
-            .unwrap();
+        wallet.resume_restore(None).await.unwrap();
         let requests = client.restore_requests.lock().unwrap();
         assert_eq!(requests.len(), 2 * opts.max_gap as usize);
         for (keyset_id, start) in [(first.id, 50), (second.id, 200)] {
