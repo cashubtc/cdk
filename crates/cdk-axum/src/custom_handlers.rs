@@ -108,33 +108,14 @@ async fn validate_melt_quote_method(
     Ok(())
 }
 
-// Validate batch bounds before any per-quote database work, including on cache hits.
+/// Runs the mint's batch bounds here rather than only inside the call that
+/// follows, so an oversized batch is rejected before any per-quote database
+/// work and before the NUT-19 cache lookup.
 async fn validate_batch_quote_ids(
     state: &MintState,
     quote_ids: &[QuoteId],
 ) -> Result<(), cdk::Error> {
-    if quote_ids.is_empty() {
-        return Err(cdk::Error::UnknownQuote);
-    }
-
-    if let Some(max) = state.mint.mint_info().await?.nuts.nut29.max_batch_size {
-        let max = usize::try_from(max).unwrap_or(usize::MAX);
-        if quote_ids.len() > max {
-            return Err(cdk::Error::BatchSizeExceeded {
-                actual: quote_ids.len(),
-                max,
-            });
-        }
-    }
-
-    let mut unique_ids = std::collections::HashSet::new();
-    for quote_id in quote_ids {
-        if !unique_ids.insert(quote_id) {
-            return Err(cdk::Error::DuplicateQuoteIds);
-        }
-    }
-
-    Ok(())
+    state.mint.validate_batch_quote_ids(quote_ids).await
 }
 
 async fn validate_mint_quote_methods(
