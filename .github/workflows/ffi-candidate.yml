@@ -1,0 +1,133 @@
+name: "FFI - Build reproducible candidate"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: ffi-candidate-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  release-ci:
+    uses: ./.github/workflows/release-ci.yml
+    with:
+      ref: ${{ github.sha }}
+
+  generated:
+    name: Generated bindings
+    needs: release-ci
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - name: Test release contracts
+        run: nix develop --no-update-lock-file .#bindings-release-tools --command python3 -m unittest discover -s scripts/bindings/tests -v
+      - name: Generate from this exact source commit
+        run: scripts/bindings/release build --group generated --output "$RUNNER_TEMP/generated"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: candidate-generated
+          path: ${{ runner.temp }}/generated/*
+          if-no-files-found: error
+
+  native:
+    name: ${{ matrix.group }}
+    needs: generated
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: linux-x86_64
+            runner: ubuntu-24.04
+          - group: linux-aarch64
+            runner: ubuntu-24.04-arm
+          - group: android
+            runner: ubuntu-24.04
+          - group: windows
+            runner: ubuntu-24.04
+          - group: darwin
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: actions/download-artifact@v8
+        with:
+          name: candidate-generated
+          path: ${{ runner.temp }}/imports
+      - name: Build native payloads and packages with pinned Nix tools
+        env:
+          GROUP: ${{ matrix.group }}
+          DEVELOPER_DIR: ${{ matrix.group == 'darwin' && '/Applications/Xcode_16.4.app/Contents/Developer' || '' }}
+        run: scripts/bindings/release build --group "$GROUP" --candidate "$RUNNER_TEMP/imports" --output "$RUNNER_TEMP/output"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: candidate-${{ matrix.group }}
+          path: ${{ runner.temp }}/output/*
+          if-no-files-found: error
+
+  assemble:
+    name: Assemble complete distributions
+    needs: [generated, native]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: candidate-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/candidate
+      - name: Assemble and seal exact inventories
+        run: |
+          scripts/bindings/release build --group packages --candidate "$RUNNER_TEMP/candidate" --output "$RUNNER_TEMP/packages"
+          cp "$RUNNER_TEMP/packages/"* "$RUNNER_TEMP/candidate/"
+          scripts/bindings/release candidate --directory "$RUNNER_TEMP/candidate"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: complete-candidate
+          path: ${{ runner.temp }}/candidate/*
+          if-no-files-found: error
+
+  upload:
+    name: Public candidate (not a stable publication)
+    needs: assemble
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: actions/download-artifact@v8
+        with:
+          name: complete-candidate
+          path: ${{ runner.temp }}/candidate
+      - name: Publish immutable candidate assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Variables in this script are expanded by the inner Nix-provided shell.
+          # shellcheck disable=SC2016
+          nix develop --no-update-lock-file .#bindings-release-tools --command bash -euo pipefail -c '
+            candidate="$RUNNER_TEMP/candidate"
+            version=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))[\"source\"][\"version\"])" "$candidate/candidate.json")
+            checksum=$(sha256sum "$candidate/candidate.json" | cut -d " " -f 1)
+            tag="candidate-v${version}-${GITHUB_SHA:0:12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --prerelease --latest=false --title "$tag" \
+              --notes "Unsigned bindings candidate. Independent reproduction and consumer qualification are required before stable publication. Manifest SHA-256: $checksum" \
+              "$candidate/"*
+            printf "Candidate: %s\nManifest SHA-256: %s\n" "$tag" "$checksum" >> "$GITHUB_STEP_SUMMARY"
+          '
