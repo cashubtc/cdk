@@ -152,10 +152,6 @@ impl Mint {
         let nut04 = &mint_info.nuts.nut04;
         ensure_cdk!(!nut04.disabled, Error::MintingDisabled);
 
-        let disabled = nut04.disabled;
-
-        ensure_cdk!(!disabled, Error::MintingDisabled);
-
         let settings = nut04
             .get_settings(&unit, &payment_method)
             .ok_or(Error::UnsupportedUnit)?;
