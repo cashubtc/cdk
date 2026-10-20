@@ -779,6 +779,49 @@ fn shared_signing_package_vectors() {
     let vector = &shared["signing_package"];
     let unsigned: SigningPackage = vector["package_string"].as_str().unwrap().parse().unwrap();
     let signed: SigningPackage = vector["signed_string"].as_str().unwrap().parse().unwrap();
+    // A signer reviews what it signs: the mint vector's quote input under the lock, and its output.
+    let tx = &shared["transcript"]["mint"]["tx"];
+    let (quote, output) = (&tx["mint_quote_inputs"][0], &tx["blinded_outputs"][0]);
+    let b_ = hex::decode(output["B_"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        unsigned.transaction().unwrap().elements().unwrap(),
+        vec![
+            TransactionElement::MintQuoteInput(MintQuoteInput {
+                amount: quote["amount"].as_u64().unwrap().into(),
+                id: quote["quote_id"].as_str().unwrap().to_owned(),
+                pubkey: crate::nuts::PublicKey::from_hex(vector["lock_key"].as_str().unwrap())
+                    .unwrap(),
+                issued: quote["issued"].as_u64().unwrap().into(),
+            }),
+            TransactionElement::BlindedOutput {
+                amount: output["amount"].as_u64().unwrap().into(),
+                keyset_id: output["keyset_id"].as_str().unwrap().parse().unwrap(),
+                b_hash: sha2::Sha256::digest(&b_).into(),
+            },
+        ]
+    );
+    let melt = &shared["transcript"]["melt"];
+    let elements = Transaction::from_bytes(&bytes(&melt["transcript"]))
+        .unwrap()
+        .elements()
+        .unwrap();
+    let proof = &melt["tx"]["proof_inputs"][0];
+    assert!(
+        matches!(&elements[0], TransactionElement::ProofInput { amount, keyset_id, y }
+        if *amount == proof["amount"].as_u64().unwrap().into()
+            && keyset_id.to_string() == proof["keyset_id"].as_str().unwrap()
+            && matches!(y, crate::nuts::PublicKey::BlsG1(_)))
+    );
+    assert_eq!(
+        elements[1],
+        TransactionElement::MeltQuoteOutput(Quote {
+            amount: melt["tx"]["melt_quote_outputs"][0]["amount"]
+                .as_u64()
+                .unwrap()
+                .into(),
+            id: "quote-melt-0001".to_owned(),
+        })
+    );
     assert_eq!(
         unsigned.transaction().unwrap().input_digest(0).unwrap(),
         hash(&vector["input_digest"])

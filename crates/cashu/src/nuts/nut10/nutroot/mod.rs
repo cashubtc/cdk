@@ -34,7 +34,9 @@ pub use self::locking::{nums_point, NutrootOption};
 pub use self::signing::{SigningPackage, SigningSpend};
 pub use self::spend::SpendRecord;
 pub use self::spend_info::{nums_key, receiver_key, sender_key, SpendInfo};
-pub use self::transaction::{authorized_request_digest, MintQuoteInput, Quote, Transaction};
+pub use self::transaction::{
+    authorized_request_digest, MintQuoteInput, Quote, Transaction, TransactionElement,
+};
 pub use self::tree::Tree;
 pub use self::witness::{ControlBlock, Witness};
 
