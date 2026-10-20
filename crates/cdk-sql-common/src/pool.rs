@@ -12,7 +12,7 @@ use std::time::Duration;
 use cdk_prometheus::metrics::METRICS;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use crate::database::DatabaseConnector;
+use crate::database::{DatabaseConnector, TransactionResource};
 
 /// Pool error
 #[derive(Debug, thiserror::Error)]
@@ -99,6 +99,7 @@ where
     RM: DatabasePool,
 {
     resource: Option<(Arc<AtomicBool>, RM::Connection)>,
+    reusable: bool,
     pool: Arc<Pool<RM>>,
     _permit: OwnedSemaphorePermit,
     #[cfg(feature = "prometheus")]
@@ -120,8 +121,14 @@ where
 {
     fn drop(&mut self) {
         if let Some(resource) = self.resource.take() {
-            let mut active_resource = self.pool.queue.lock().expect("active_resource");
-            active_resource.push(resource);
+            if self.reusable && !resource.0.load(Ordering::SeqCst) {
+                match self.pool.queue.lock() {
+                    Ok(mut queue) => queue.push(resource),
+                    Err(_) => RM::drop(resource.1),
+                }
+            } else {
+                RM::drop(resource.1);
+            }
 
             #[cfg(feature = "prometheus")]
             {
@@ -146,6 +153,15 @@ where
 
     fn deref(&self) -> &Self::Target {
         &self.resource.as_ref().expect("resource already dropped").1
+    }
+}
+
+impl<RM> TransactionResource for PooledResource<RM>
+where
+    RM: DatabasePool,
+{
+    fn set_reusable(&mut self, reusable: bool) {
+        self.reusable = reusable;
     }
 }
 
@@ -226,6 +242,7 @@ where
                 if !stale.load(Ordering::SeqCst) {
                     return Ok(PooledResource {
                         resource: Some((stale, resource)),
+                        reusable: true,
                         pool: self.clone(),
                         _permit: permit,
                         #[cfg(feature = "prometheus")]
@@ -242,6 +259,7 @@ where
         match RM::new_resource(&self.config, stale.clone(), timeout) {
             Ok(new_resource) => Ok(PooledResource {
                 resource: Some((stale, new_resource)),
+                reusable: true,
                 pool: self.clone(),
                 _permit: permit,
                 #[cfg(feature = "prometheus")]
