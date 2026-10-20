@@ -51,5 +51,5 @@ advance the stored counter, so resuming may repeat the trailing empty portion
 of a scan. Returned amounts include all proofs found in the scanned range,
 including proofs already stored locally.
 
-Use `resume_restore_with_opts(how_far_back, opts)` to override the NUT-13 batch
+Use `resume_restore_with_opts(lookback, opts)` to override the NUT-13 batch
 size and gap limit, just as with `restore_with_opts(opts)`.

@@ -380,17 +380,17 @@ impl WalletTrait for super::Wallet {
     }
 
     #[instrument(skip(self))]
-    async fn resume_restore(&self, how_far_back: Option<u32>) -> Result<Restored, Self::Error> {
-        self.resume_restore(how_far_back).await
+    async fn resume_restore(&self, lookback: Option<u32>) -> Result<Restored, Self::Error> {
+        self.resume_restore(lookback).await
     }
 
     #[instrument(skip(self))]
     async fn resume_restore_with_opts(
         &self,
-        how_far_back: Option<u32>,
+        lookback: Option<u32>,
         opts: cdk_common::wallet::NUT13Options,
     ) -> Result<Restored, Self::Error> {
-        self.resume_restore_with_opts(how_far_back, opts).await
+        self.resume_restore_with_opts(lookback, opts).await
     }
 
     #[instrument(skip(self, token_str))]

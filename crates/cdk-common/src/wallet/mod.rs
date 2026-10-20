@@ -1313,13 +1313,13 @@ pub trait Wallet: Send + Sync {
     async fn restore_with_opts(&self, opts: NUT13Options) -> Result<Restored, Self::Error>;
 
     /// Resume restoring from each keyset's stored next derivation index,
-    /// looking back by `how_far_back` indices (defaults to zero), clamped to zero.
-    async fn resume_restore(&self, how_far_back: Option<u32>) -> Result<Restored, Self::Error>;
+    /// looking back by `lookback` indices (defaults to zero), clamped to zero.
+    async fn resume_restore(&self, lookback: Option<u32>) -> Result<Restored, Self::Error>;
 
     /// Resume restoring with a lookback and custom [`NUT13Options`].
     async fn resume_restore_with_opts(
         &self,
-        how_far_back: Option<u32>,
+        lookback: Option<u32>,
         opts: NUT13Options,
     ) -> Result<Restored, Self::Error>;
 

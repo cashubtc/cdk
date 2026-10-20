@@ -421,20 +421,19 @@ impl WalletTraitDef for Wallet {
 
     async fn resume_restore(
         &self,
-        how_far_back: Option<u32>,
+        lookback: Option<u32>,
     ) -> Result<cdk_common::wallet::Restored, Self::Error> {
-        let restored = WalletTraitDef::resume_restore(self.inner().as_ref(), how_far_back).await?;
+        let restored = WalletTraitDef::resume_restore(self.inner().as_ref(), lookback).await?;
         Ok(restored)
     }
 
     async fn resume_restore_with_opts(
         &self,
-        how_far_back: Option<u32>,
+        lookback: Option<u32>,
         opts: cdk_common::wallet::NUT13Options,
     ) -> Result<cdk_common::wallet::Restored, Self::Error> {
         let restored =
-            WalletTraitDef::resume_restore_with_opts(self.inner().as_ref(), how_far_back, opts)
-                .await?;
+            WalletTraitDef::resume_restore_with_opts(self.inner().as_ref(), lookback, opts).await?;
         Ok(restored)
     }
 
