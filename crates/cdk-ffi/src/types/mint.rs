@@ -501,6 +501,8 @@ pub struct Nuts {
     pub nut09_supported: bool,
     /// NUT10 Settings - Spending conditions
     pub nut10_supported: bool,
+    /// NUT10 Settings - Nutroot leaf types understood, `leaf_version || leaf_type` hex
+    pub nut10_leaves: Vec<String>,
     /// NUT11 Settings - Pay to Public Key Hash
     pub nut11_supported: bool,
     /// NUT12 Settings - DLEQ proofs
@@ -541,6 +543,7 @@ impl From<cdk::nuts::Nuts> for Nuts {
             nut08_supported: nuts.nut08.supported,
             nut09_supported: nuts.nut09.supported,
             nut10_supported: nuts.nut10.supported,
+            nut10_leaves: nuts.nut10.leaves.clone(),
             nut11_supported: nuts.nut11.supported,
             nut12_supported: nuts.nut12.supported,
             nut14_supported: nuts.nut14.supported,
@@ -570,8 +573,9 @@ impl TryFrom<Nuts> for cdk::nuts::Nuts {
             nut09: cdk::nuts::nut06::SupportedSettings {
                 supported: n.nut09_supported,
             },
-            nut10: cdk::nuts::nut06::SupportedSettings {
+            nut10: cdk::nuts::nut06::Nut10Settings {
                 supported: n.nut10_supported,
+                leaves: n.nut10_leaves,
             },
             nut11: cdk::nuts::nut06::SupportedSettings {
                 supported: n.nut11_supported,
@@ -745,7 +749,10 @@ mod tests {
             nut07: cdk::nuts::nut06::SupportedSettings { supported: true },
             nut08: cdk::nuts::nut06::SupportedSettings { supported: true },
             nut09: cdk::nuts::nut06::SupportedSettings { supported: false },
-            nut10: cdk::nuts::nut06::SupportedSettings { supported: true },
+            nut10: cdk::nuts::nut06::Nut10Settings {
+                supported: true,
+                leaves: vec![],
+            },
             nut11: cdk::nuts::nut06::SupportedSettings { supported: true },
             nut12: cdk::nuts::nut06::SupportedSettings { supported: true },
             nut14: cdk::nuts::nut06::SupportedSettings { supported: false },
@@ -901,7 +908,10 @@ mod tests {
             nut07: cdk::nuts::nut06::SupportedSettings { supported: true },
             nut08: cdk::nuts::nut06::SupportedSettings { supported: false },
             nut09: cdk::nuts::nut06::SupportedSettings { supported: false },
-            nut10: cdk::nuts::nut06::SupportedSettings { supported: false },
+            nut10: cdk::nuts::nut06::Nut10Settings {
+                supported: false,
+                leaves: vec![],
+            },
             nut11: cdk::nuts::nut06::SupportedSettings { supported: false },
             nut12: cdk::nuts::nut06::SupportedSettings { supported: false },
             nut14: cdk::nuts::nut06::SupportedSettings { supported: false },
@@ -937,6 +947,7 @@ mod tests {
             nut08_supported: false,
             nut09_supported: false,
             nut10_supported: false,
+            nut10_leaves: vec![],
             nut11_supported: false,
             nut12_supported: false,
             nut14_supported: false,
@@ -1094,6 +1105,7 @@ mod tests {
                 nut08_supported: false,
                 nut09_supported: false,
                 nut10_supported: false,
+                nut10_leaves: vec![],
                 nut11_supported: false,
                 nut12_supported: true,
                 nut14_supported: false,

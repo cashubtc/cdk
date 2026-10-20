@@ -103,6 +103,11 @@ impl MintBuilder {
                 .nut08(true)
                 .nut09(true)
                 .nut10(true)
+                .nut10_leaves(
+                    cdk_common::nuts::nut10::nutroot::CORE_LEAF_TYPES
+                        .map(String::from)
+                        .to_vec(),
+                )
                 .nut11(true)
                 .nut12(true)
                 .nut14(true)
@@ -972,6 +977,11 @@ mod tests {
         assert!(
             mint_info.nuts.nut10.supported,
             "NUT-10 should be supported by default"
+        );
+        assert_eq!(
+            mint_info.nuts.nut10.leaves,
+            ["0001", "0002", "0003", "0004"],
+            "a v3 mint lists the core leaf types (NUT-10)"
         );
         assert!(
             mint_info.nuts.nut11.supported,

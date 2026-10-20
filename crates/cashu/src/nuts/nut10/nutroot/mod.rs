@@ -29,7 +29,7 @@ mod witness;
 mod tests;
 
 pub use self::derivation::{derive_blinding_factor, derive_key, derive_quote_key, KeyPurpose};
-pub use self::leaf::{Condition, Leaf};
+pub use self::leaf::{Condition, Leaf, CORE_LEAF_TYPES};
 pub use self::locking::{nums_point, NutrootOption};
 pub use self::signing::{SigningInput, SigningKind, SigningPackage, SigningSpend};
 pub use self::spend::SpendRecord;

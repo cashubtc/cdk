@@ -305,7 +305,7 @@ pub struct Nuts {
     /// NUT10 Settings
     #[serde(rename = "10")]
     #[serde(default)]
-    pub nut10: SupportedSettings,
+    pub nut10: Nut10Settings,
     /// NUT11 Settings
     #[serde(rename = "11")]
     #[serde(default)]
@@ -399,7 +399,21 @@ impl Nuts {
     /// Nut10 settings
     pub fn nut10(self, supported: bool) -> Self {
         Self {
-            nut10: SupportedSettings { supported },
+            nut10: Nut10Settings {
+                supported,
+                ..self.nut10
+            },
+            ..self
+        }
+    }
+
+    /// Nutroot leaf types the mint understands (NUT-10), `leaf_version || leaf_type` hex
+    pub fn nut10_leaves(self, leaves: Vec<String>) -> Self {
+        Self {
+            nut10: Nut10Settings {
+                leaves,
+                ..self.nut10
+            },
             ..self
         }
     }
@@ -494,6 +508,16 @@ impl Nuts {
             .into_iter()
             .collect()
     }
+}
+
+/// NUT-10 settings: pre-v3 JSON secret support and the nutroot leaf types understood
+#[derive(Debug, Clone, PartialEq, Eq, Default, Hash, Serialize, Deserialize)]
+pub struct Nut10Settings {
+    /// JSON secrets supported on pre-v3 keysets
+    pub supported: bool,
+    /// Nutroot leaf types understood, `leaf_version || leaf_type` lowercase hex
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub leaves: Vec<String>,
 }
 
 /// Check state Settings
@@ -894,5 +918,26 @@ mod tests {
         let supported_units = info.supported_units();
         assert!(supported_units.contains(&&CurrencyUnit::Eur));
         assert!(supported_units.contains(&&CurrencyUnit::Usd));
+    }
+
+    #[test]
+    fn nut10_settings_list_leaves_and_omit_an_empty_list() {
+        let nuts = Nuts::new()
+            .nut10(true)
+            .nut10_leaves(vec!["0001".to_string(), "0004".to_string()]);
+        let json = serde_json::to_value(&nuts).unwrap();
+        assert_eq!(
+            json["10"],
+            serde_json::json!({"supported": true, "leaves": ["0001", "0004"]})
+        );
+        let parsed: Nuts = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed.nut10, nuts.nut10);
+
+        let legacy: Nuts = serde_json::from_str(r#"{"10": {"supported": true}}"#).unwrap();
+        assert!(legacy.nut10.leaves.is_empty());
+        assert_eq!(
+            serde_json::to_value(&legacy).unwrap()["10"],
+            serde_json::json!({"supported": true})
+        );
     }
 }

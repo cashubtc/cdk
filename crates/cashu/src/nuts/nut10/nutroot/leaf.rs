@@ -4,6 +4,9 @@ use bitcoin::secp256k1::PublicKey;
 
 use super::{tagged_hash, Error};
 
+/// NUT-10 core leaf types as `leaf_version || leaf_type` hex, as a mint lists them in NUT-06.
+pub const CORE_LEAF_TYPES: [&str; 4] = ["0001", "0002", "0003", "0004"];
+
 /// Additional condition on a threshold of signatures.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Condition {
