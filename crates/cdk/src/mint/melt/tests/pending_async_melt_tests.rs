@@ -281,7 +281,7 @@ async fn acknowledged_pending_dispatch_rolls_back_after_terminal_poll() {
     let melt_request = create_test_melt_request(&proofs, &quote);
 
     let pending = mint.melt(&melt_request).await.unwrap();
-    let checked = mint.check_melt_quote(&quote.id).await.unwrap();
+    let checked = mint.check_melt_quote(&quote.id, None).await.unwrap();
     assert_eq!(checked.state(), MeltQuoteState::Unpaid);
     drop(pending);
 
@@ -344,7 +344,7 @@ async fn paid_response_with_wrong_unit_preserves_paid_handoff() {
 
     // Recovery may convert the preserved backend amount, but must never refund
     // proofs for a payment whose synchronous response was already paid.
-    let checked = mint.check_melt_quote(&quote.id).await.unwrap();
+    let checked = mint.check_melt_quote(&quote.id, None).await.unwrap();
     assert_eq!(checked.state(), MeltQuoteState::Paid);
     let states = mint
         .localstore()
@@ -370,7 +370,7 @@ async fn status_check_rounds_msat_spend_up_before_signing_change() {
     let request = cdk_common::nuts::MeltRequest::new(quote.id.clone(), proofs, Some(outputs));
 
     let pending = mint.melt(&request).await.unwrap();
-    let checked = mint.check_melt_quote(&quote.id).await.unwrap();
+    let checked = mint.check_melt_quote(&quote.id, None).await.unwrap();
     assert_eq!(checked.state(), MeltQuoteState::Paid);
     let response = pending.await.unwrap();
     let change = response.change().expect("payment should leave change");
@@ -390,7 +390,7 @@ async fn pending_melt_completes_via_explicit_status_check_without_notification()
     let melt_request = create_test_melt_request(&proofs, &quote);
 
     let pending = mint.melt(&melt_request).await.unwrap();
-    let checked = mint.check_melt_quote(&quote.id).await.unwrap();
+    let checked = mint.check_melt_quote(&quote.id, None).await.unwrap();
     assert_eq!(checked.state(), MeltQuoteState::Paid);
 
     let response = pending.await.unwrap();
@@ -420,7 +420,7 @@ async fn unknown_status_poll_keeps_pending_melt_reserved() {
     let melt_request = create_test_melt_request(&proofs, &quote);
 
     let pending = mint.melt(&melt_request).await.unwrap();
-    let checked = mint.check_melt_quote(&quote.id).await.unwrap();
+    let checked = mint.check_melt_quote(&quote.id, None).await.unwrap();
     assert_eq!(checked.state(), MeltQuoteState::Pending);
     drop(pending);
 
@@ -715,7 +715,7 @@ async fn pending_melt_without_quote_lookup_id_resolves_via_explicit_status_check
     let melt_request = create_test_melt_request(&proofs, &quote);
 
     let pending = mint.melt(&melt_request).await.unwrap();
-    let checked = mint.check_melt_quote(&quote.id).await.unwrap();
+    let checked = mint.check_melt_quote(&quote.id, None).await.unwrap();
     assert_eq!(checked.state(), MeltQuoteState::Paid);
 
     let response = pending.await.unwrap();

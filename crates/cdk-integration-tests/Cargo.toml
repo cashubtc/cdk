@@ -63,6 +63,7 @@ uuid = { workspace = true, features = ["js"] }
 [dev-dependencies]
 bip39 = { workspace = true, features = ["rand"] }
 anyhow.workspace = true
+axum.workspace = true
 cdk-axum = { workspace = true }
 cdk-fake-wallet = { workspace = true }
 cdk-signatory = { workspace = true }

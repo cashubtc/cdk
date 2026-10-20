@@ -93,68 +93,6 @@ fn melt_quote_create_response_to_json(response: MeltQuoteCreateResponse<QuoteId>
     }
 }
 
-async fn validate_melt_quote_method(
-    state: &MintState,
-    method: &str,
-    quote_id: &QuoteId,
-) -> Result<(), cdk::Error> {
-    let quote_method = state.mint.get_melt_quote_method(quote_id).await?;
-    let expected_method = PaymentMethod::from(method);
-
-    if quote_method != expected_method {
-        return Err(cdk::Error::InvalidPaymentMethod);
-    }
-
-    Ok(())
-}
-
-// Validate batch bounds before any per-quote database work, including on cache hits.
-async fn validate_batch_quote_ids(
-    state: &MintState,
-    quote_ids: &[QuoteId],
-) -> Result<(), cdk::Error> {
-    if quote_ids.is_empty() {
-        return Err(cdk::Error::UnknownQuote);
-    }
-
-    if let Some(max) = state.mint.mint_info().await?.nuts.nut29.max_batch_size {
-        let max = usize::try_from(max).unwrap_or(usize::MAX);
-        if quote_ids.len() > max {
-            return Err(cdk::Error::BatchSizeExceeded {
-                actual: quote_ids.len(),
-                max,
-            });
-        }
-    }
-
-    let mut unique_ids = std::collections::HashSet::new();
-    for quote_id in quote_ids {
-        if !unique_ids.insert(quote_id) {
-            return Err(cdk::Error::DuplicateQuoteIds);
-        }
-    }
-
-    Ok(())
-}
-
-async fn validate_mint_quote_methods(
-    state: &MintState,
-    method: &str,
-    quote_ids: &[QuoteId],
-) -> Result<(), cdk::Error> {
-    let expected_method = PaymentMethod::from(method);
-
-    for quote_id in quote_ids {
-        let quote_method = state.mint.get_mint_quote_method(quote_id).await?;
-
-        if quote_method != expected_method {
-            return Err(cdk::Error::InvalidPaymentMethod);
-        }
-    }
-
-    Ok(())
-}
-
 async fn validate_mint_request_route(
     auth: AuthHeader,
     state: &MintState,
@@ -169,7 +107,10 @@ async fn validate_mint_request_route(
         )
         .await?;
 
-    validate_mint_quote_methods(state, method, quote_ids).await
+    state
+        .mint
+        .ensure_mint_quote_methods(method, quote_ids)
+        .await
 }
 
 async fn process_mint_input(
@@ -193,7 +134,7 @@ async fn validate_melt_request_route(
         )
         .await?;
 
-    validate_melt_quote_method(state, method, quote_id).await
+    state.mint.ensure_melt_quote_method(method, quote_id).await
 }
 
 /// Generic handler for custom payment method mint quotes
@@ -322,7 +263,7 @@ pub async fn get_check_mint_custom_quote(
 
     let quote_response = state
         .mint
-        .check_mint_quotes(&[quote_id])
+        .check_mint_quotes(&[quote_id], Some(&PaymentMethod::from(method.as_str())))
         .await
         .map_err(into_response)?
         .first()
@@ -346,26 +287,19 @@ pub async fn get_check_mint_custom_quote(
                 MintQuoteOnchainResponse::try_from(quote_response).map_err(into_response)?;
             Ok(Json(response).into_response())
         }
-        _ => {
-            // Extract and verify it's a Custom payment method
-            match quote_response {
-                cdk::mint::MintQuoteResponse::Custom {
-                    method: quote_method,
-                    response,
-                    ..
-                } => {
-                    if quote_method.to_string() != method {
-                        return Err(into_response(cdk::Error::InvalidPaymentMethod));
-                    }
-                    Ok(Json(response).into_response())
-                }
-                _ => Err(into_response(cdk::Error::InvalidPaymentMethod)),
+        _ => match quote_response {
+            cdk::mint::MintQuoteResponse::Custom { response, .. } => {
+                Ok(Json(response).into_response())
             }
-        }
+            _ => Err(into_response(cdk::Error::InvalidPaymentMethod)),
+        },
     }
 }
 
 /// Batch check mint quote status (NUT-29)
+///
+/// Runs the mint's batch bounds before the status call that follows, so an
+/// oversized batch is rejected before any per-quote database work.
 #[instrument(skip_all, fields(method = ?method))]
 pub async fn post_batch_check_mint_quote(
     auth: AuthHeader,
@@ -382,17 +316,15 @@ pub async fn post_batch_check_mint_quote(
         .await
         .map_err(into_response)?;
 
-    validate_batch_quote_ids(&state, &payload.quotes)
-        .await
-        .map_err(into_response)?;
-
-    validate_mint_quote_methods(&state, &method, &payload.quotes)
+    state
+        .mint
+        .validate_batch_quote_ids(&payload.quotes)
         .await
         .map_err(into_response)?;
 
     let responses = state
         .mint
-        .check_mint_quotes(&payload.quotes)
+        .check_mint_quotes(&payload.quotes, Some(&PaymentMethod::from(method.as_str())))
         .await
         .map_err(into_response)?;
 
@@ -538,13 +470,9 @@ pub async fn get_check_melt_custom_quote(
         .await
         .map_err(into_response)?;
 
-    validate_melt_quote_method(&state, &method, &quote_id)
-        .await
-        .map_err(into_response)?;
-
     let quote = state
         .mint
-        .check_melt_quote(&quote_id)
+        .check_melt_quote(&quote_id, Some(&PaymentMethod::from(method.as_str())))
         .await
         .map_err(into_response)?;
 
@@ -714,6 +642,10 @@ fn parse_melt_payload(
 }
 
 /// Cached version of post_batch_mint for NUT-19 caching support
+///
+/// The batch bounds and the quote scoping run before the cache key is
+/// computed, so neither a cached response nor any per-quote database work can
+/// be reached by a batch this route should refuse.
 #[instrument(skip_all, fields(method = ?method))]
 pub async fn cache_post_batch_mint(
     auth: AuthHeader,
@@ -736,11 +668,15 @@ pub async fn cache_post_batch_mint(
         .await
         .map_err(into_response)?;
 
-    validate_batch_quote_ids(&mint_state, &payload.quotes)
+    mint_state
+        .mint
+        .validate_batch_quote_ids(&payload.quotes)
         .await
         .map_err(into_response)?;
 
-    validate_mint_quote_methods(&mint_state, &method, &payload.quotes)
+    mint_state
+        .mint
+        .ensure_mint_quote_methods(method.as_str(), &payload.quotes)
         .await
         .map_err(into_response)?;
 
@@ -952,7 +888,7 @@ mod tests {
         for _ in 0..100 {
             let check = state
                 .mint
-                .check_mint_quotes(std::slice::from_ref(&quote.quote))
+                .check_mint_quotes(std::slice::from_ref(&quote.quote), None)
                 .await
                 .unwrap();
             if let MintQuoteResponse::Bolt11(q) = &check[0] {

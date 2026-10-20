@@ -266,6 +266,10 @@ coverage:
   echo "Running NIP-17 inbox e2e tests coverage..."
   cargo llvm-cov --no-report -p cdk-integration-tests --test nip17_inbox_e2e
 
+  echo "Running MintConnector parity suites coverage..."
+  cargo llvm-cov --no-report -p cdk-integration-tests --test mint_connector_direct
+  cargo llvm-cov --no-report -p cdk-integration-tests --test mint_connector_http
+
   # Generate report
   echo "Generating coverage report..."
   cargo llvm-cov report --lcov --output-path lcov.info
@@ -287,6 +291,8 @@ test-pure db="memory":
     run_test nwc_e2e -j 1
     if [ "{{db}}" = memory ]; then
       run_test nip17_inbox_e2e -j 1
+      run_test mint_connector_direct -j 1
+      run_test mint_connector_http -j 1
     fi
   else
     # Run pure integration tests (cargo test will only build what's needed for the test)
@@ -302,6 +308,8 @@ test-pure db="memory":
     CDK_TEST_DB_TYPE={{db}} cargo test -p cdk-integration-tests --test nwc_e2e -- --test-threads 1
     if [ "{{db}}" = memory ]; then
       cargo test -p cdk-integration-tests --test nip17_inbox_e2e -- --test-threads 1
+      cargo test -p cdk-integration-tests --test mint_connector_direct -- --test-threads 1
+      cargo test -p cdk-integration-tests --test mint_connector_http -- --test-threads 1
     fi
   fi
 
