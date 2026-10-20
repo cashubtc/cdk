@@ -557,6 +557,9 @@ fn load_settings_from_sources(
 }
 
 pub(crate) fn validate_settings(settings: &config::Settings) -> Result<()> {
+    if let Some(entries) = &settings.mint_info.unit_metadata {
+        cdk::nuts::unit_metadata::validate(entries)?;
+    }
     validate_payment_backends(settings)?;
     settings
         .validate_backend_pairing()
@@ -1204,6 +1207,10 @@ fn configure_basic_info(settings: &config::Settings, mint_builder: MintBuilder) 
         if !tos_url.is_empty() {
             builder = builder.with_tos_url(tos_url.to_string());
         }
+    }
+
+    if let Some(entries) = &settings.mint_info.unit_metadata {
+        builder = builder.with_unit_metadata(entries.clone());
     }
 
     builder = builder.with_keyset_v2(settings.info.use_keyset_v2);

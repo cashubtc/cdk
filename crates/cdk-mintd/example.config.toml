@@ -86,6 +86,14 @@ tti = 60
 # tos_url = "https://example.com/terms-of-service"
 
 
+# Requires --features experimental-unit-metadata. Use a unit supported by this mint.
+# Precision cannot change after publication, even if this entry is removed.
+# [[mint_info.unit_metadata]]
+# unit = "ora"
+# precision = 2
+# name = "Ora"
+
+
 [database]
 # Database engine (sqlite/postgres) defaults to sqlite
 # Only one active mint process may use a database. PostgreSQL is supported but

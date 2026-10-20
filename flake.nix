@@ -831,6 +831,7 @@
             "-p cdk-mint-rpc"
             "-p cdk-prometheus"
             "-p cdk-ffi"
+            "-p cashu -p cdk -p cdk-ffi -p cdk-mint-rpc -p cdk-mintd --features experimental-unit-metadata"
           ];
 
           "mintd-backends-sqlite" = [
@@ -1597,6 +1598,7 @@
                 cargoArtifacts = workspaceDeps;
                 buildPhaseCargoCommand = ''
                   cargo test --lib -p cdk-sqlite --features sqlcipher
+                  cargo test --lib -p cashu -p cdk -p cdk-ffi -p cdk-mint-rpc -p cdk-mintd --features experimental-unit-metadata unit_metadata
                   cargo test --bins -p cdk-cli --features redb
                   cargo check -p cdk-mintd --features redis
                   cargo test --lib -p cdk-common --no-default-features --features wallet

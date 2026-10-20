@@ -40,6 +40,7 @@ log = "0.4"
 
 
 [features]
+experimental-unit-metadata = ["cdk/experimental-unit-metadata"]
 default = ["npubcash", "nwc", "bip353"]
 bip353 = ["cdk/bip353"]
 # Enable Postgres-backed wallet database support in FFI

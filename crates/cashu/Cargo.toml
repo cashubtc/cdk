@@ -11,6 +11,8 @@ license.workspace = true
 readme = "README.md"
 
 [features]
+# Draft cashubtc/nuts#434; the NUT number is not assigned yet.
+experimental-unit-metadata = []
 default = ["mint", "wallet"]
 mint = []
 wallet = []

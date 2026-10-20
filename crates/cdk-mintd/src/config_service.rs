@@ -271,6 +271,9 @@ impl ConfigurationService {
         let signing = resolve_signing_identity_async(&resolved.settings).await?;
         let signing_identity = &signing.identity;
         self.require_primary_database(&resolved.settings.database)?;
+        self.repository
+            .validate_unit_metadata(resolved.settings.mint_info.unit_metadata.as_deref())
+            .await?;
         require_initialization_state(
             mode,
             database_pubkey,
@@ -335,6 +338,9 @@ impl ConfigurationService {
     ) -> Result<ApplyOutcome, ConfigurationServiceError> {
         let (resolved, signing_identity) = Self::validated_import(document).await?;
         self.require_primary_database(&resolved.settings.database)?;
+        self.repository
+            .validate_unit_metadata(resolved.settings.mint_info.unit_metadata.as_deref())
+            .await?;
         let current = self.repository.active().await?;
         if current.signing_identity != signing_identity.fingerprint {
             return Err(ConfigurationServiceError::SigningIdentityChange);
@@ -403,6 +409,13 @@ impl ConfigurationService {
 
     /// Stages the last configuration known to have reached applied state.
     pub(crate) async fn rollback(&self) -> Result<RollbackOutcome, ConfigurationServiceError> {
+        let active = self.repository.active().await?;
+        if let Some(previous) = active.previous_applied_toml.as_deref() {
+            let settings = Settings::try_from_toml(previous)?;
+            self.repository
+                .validate_unit_metadata(settings.mint_info.unit_metadata.as_deref())
+                .await?;
+        }
         Ok(RollbackOutcome {
             restart_required: self.repository.rollback().await?,
         })

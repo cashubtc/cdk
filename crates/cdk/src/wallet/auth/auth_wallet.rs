@@ -633,24 +633,22 @@ mod tests {
         }
 
         async fn get_mint_blind_auth_keysets(&self) -> Result<KeysetResponse, Error> {
-            Ok(KeysetResponse {
-                keysets: vec![
-                    KeySetInfo {
-                        id: self.keyset_active.id,
-                        unit: CurrencyUnit::Auth,
-                        active: true,
-                        input_fee_ppk: 0,
-                        final_expiry: None,
-                    },
-                    KeySetInfo {
-                        id: self.keyset_inactive.id,
-                        unit: CurrencyUnit::Auth,
-                        active: false,
-                        input_fee_ppk: 0,
-                        final_expiry: None,
-                    },
-                ],
-            })
+            Ok(KeysetResponse::new(vec![
+                KeySetInfo {
+                    id: self.keyset_active.id,
+                    unit: CurrencyUnit::Auth,
+                    active: true,
+                    input_fee_ppk: 0,
+                    final_expiry: None,
+                },
+                KeySetInfo {
+                    id: self.keyset_inactive.id,
+                    unit: CurrencyUnit::Auth,
+                    active: false,
+                    input_fee_ppk: 0,
+                    final_expiry: None,
+                },
+            ]))
         }
 
         async fn post_mint_blind_auth(

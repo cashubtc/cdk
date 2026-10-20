@@ -962,8 +962,8 @@ impl MintConnector for MockMintConnector {
     async fn get_mint_keysets(&self) -> Result<KeysetResponse, Error> {
         let keysets = self.keysets.lock().unwrap();
 
-        Ok(KeysetResponse {
-            keysets: keysets
+        Ok(KeysetResponse::new(
+            keysets
                 .iter()
                 .map(|ks| KeySetInfo {
                     id: ks.id,
@@ -973,7 +973,7 @@ impl MintConnector for MockMintConnector {
                     final_expiry: ks.final_expiry,
                 })
                 .collect(),
-        })
+        ))
     }
 
     async fn post_mint_quote(

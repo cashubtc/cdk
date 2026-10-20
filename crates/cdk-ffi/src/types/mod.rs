@@ -15,6 +15,7 @@ pub mod proof;
 pub mod quote;
 pub mod subscription;
 pub mod transaction;
+pub mod unit_metadata;
 pub mod ur;
 pub mod wallet;
 
@@ -30,5 +31,6 @@ pub use proof::*;
 pub use quote::*;
 pub use subscription::*;
 pub use transaction::*;
+pub use unit_metadata::*;
 pub use ur::*;
 pub use wallet::*;

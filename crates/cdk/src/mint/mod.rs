@@ -40,6 +40,7 @@ mod saga_recovery;
 mod start_up_check;
 mod subscription;
 mod swap;
+mod unit_metadata;
 mod verification;
 
 pub use builder::{KeysetRotation, MintBuilder, MintMeltLimits, UnitConfig};
@@ -324,6 +325,7 @@ impl Mint {
 
         // Persist missing pubkey early to avoid losing it on next boot and ensure stable identity across restarts
         let mut computed_info = mint_info;
+        unit_metadata::validate_units(&computed_info, &keysets.keysets)?;
         if computed_info.pubkey.is_none() {
             computed_info.pubkey = Some(keysets.pubkey);
         }
@@ -357,9 +359,10 @@ impl Mint {
                     }
                 }
 
-                if mutated {
+                if mutated || stored.nuts.unit_metadata.is_some() {
                     let updated = serde_json::to_vec(&stored)?;
                     let mut tx = localstore.begin_transaction().await?;
+                    unit_metadata::persist_history(&mut tx, &stored).await?;
                     tx.kv_write(
                         CDK_MINT_PRIMARY_NAMESPACE,
                         CDK_MINT_CONFIG_SECONDARY_NAMESPACE,
@@ -373,6 +376,7 @@ impl Mint {
             None => {
                 let bytes = serde_json::to_vec(&computed_info)?;
                 let mut tx = localstore.begin_transaction().await?;
+                unit_metadata::persist_history(&mut tx, &computed_info).await?;
                 tx.kv_write(
                     CDK_MINT_PRIMARY_NAMESPACE,
                     CDK_MINT_CONFIG_SECONDARY_NAMESPACE,
@@ -795,7 +799,9 @@ impl Mint {
     pub async fn set_mint_info(&self, mint_info: MintInfo) -> Result<(), Error> {
         tracing::info!("Updating mint info");
         let mint_info_bytes = serde_json::to_vec(&mint_info)?;
+        unit_metadata::validate_units(&mint_info, &self.keysets.load())?;
         let mut tx = self.localstore.begin_transaction().await?;
+        unit_metadata::persist_history(&mut tx, &mint_info).await?;
         tx.kv_write(
             CDK_MINT_PRIMARY_NAMESPACE,
             CDK_MINT_CONFIG_SECONDARY_NAMESPACE,
@@ -817,7 +823,9 @@ impl Mint {
         tracing::info!("Updating mint info and quote TTL");
         let mint_info_bytes = serde_json::to_vec(&mint_info)?;
         let quote_ttl_bytes = serde_json::to_vec(&quote_ttl)?;
+        unit_metadata::validate_units(&mint_info, &self.keysets.load())?;
         let mut tx = self.localstore.begin_transaction().await?;
+        unit_metadata::persist_history(&mut tx, &mint_info).await?;
         tx.kv_write(
             CDK_MINT_PRIMARY_NAMESPACE,
             CDK_MINT_CONFIG_SECONDARY_NAMESPACE,

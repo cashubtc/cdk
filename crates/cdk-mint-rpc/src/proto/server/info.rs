@@ -24,7 +24,10 @@ impl MintRPCServer {
         self.mint
             .set_mint_info(info.clone())
             .await
-            .map_err(|err| Status::internal(err.to_string()))?;
+            .map_err(|error| match error {
+                cdk::Error::UnitMetadata(_) => Status::invalid_argument(error.to_string()),
+                _ => Status::internal(error.to_string()),
+            })?;
 
         Ok(info)
     }
@@ -53,6 +56,36 @@ fn info_contacts(contact: Option<Vec<cdk::nuts::ContactInfo>>) -> Vec<crate::inf
 
 #[tonic::async_trait]
 impl MintInfoService for MintRPCServer {
+    async fn update_unit_metadata(
+        &self,
+        request: Request<crate::info::UpdateUnitMetadataRequest>,
+    ) -> Result<Response<crate::info::UpdateUnitMetadataResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
+        let entries = request
+            .into_inner()
+            .unit_metadata
+            .map(|settings| {
+                settings
+                    .units
+                    .into_iter()
+                    .map(|entry| {
+                        Ok(cdk::nuts::UnitMetadata {
+                            unit: entry.unit,
+                            precision: u8::try_from(entry.precision).map_err(|_| {
+                                Status::invalid_argument("precision must be between 0 and 18")
+                            })?,
+                            name: entry.name,
+                            symbol: entry.symbol,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, Status>>()
+            })
+            .transpose()?;
+        self.update_mint_info_with(|info| info.nuts.unit_metadata = entries)
+            .await?;
+        Ok(Response::new(crate::info::UpdateUnitMetadataResponse {}))
+    }
+
     /// Returns the mint's public metadata
     async fn get_info(
         &self,
@@ -65,6 +98,19 @@ impl MintInfoService for MintRPCServer {
             .map_err(|err| Status::internal(err.to_string()))?;
 
         Ok(Response::new(crate::info::GetInfoResponse {
+            unit_metadata: info.nuts.unit_metadata.map(|entries| {
+                crate::info::UnitMetadataSettings {
+                    units: entries
+                        .into_iter()
+                        .map(|entry| crate::info::UnitMetadata {
+                            unit: entry.unit,
+                            precision: u32::from(entry.precision),
+                            name: entry.name,
+                            symbol: entry.symbol,
+                        })
+                        .collect(),
+                }
+            }),
             name: info.name,
             version: info.version.map(|v| v.to_string()),
             description: info.description,
@@ -268,6 +314,65 @@ mod tests {
 
     use super::super::test_utils::create_test_rpc_server;
     use super::*;
+
+    #[cfg(feature = "experimental-unit-metadata")]
+    #[tokio::test]
+    async fn unit_metadata_rpc_validates_and_preserves_presence() {
+        let server = create_test_rpc_server().await;
+        let settings = crate::info::UnitMetadataSettings {
+            units: vec![crate::info::UnitMetadata {
+                unit: "sat".to_owned(),
+                precision: 0,
+                name: None,
+                symbol: None,
+            }],
+        };
+        MintInfoService::update_unit_metadata(
+            &server,
+            Request::new(crate::info::UpdateUnitMetadataRequest {
+                unit_metadata: Some(settings.clone()),
+            }),
+        )
+        .await
+        .unwrap();
+        let info = MintInfoService::get_info(&server, Request::new(crate::info::GetInfoRequest {}))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(info.unit_metadata, Some(settings.clone()));
+        let mut invalid = settings;
+        for precision in [19, 256] {
+            invalid.units[0].precision = precision;
+            let error = MintInfoService::update_unit_metadata(
+                &server,
+                Request::new(crate::info::UpdateUnitMetadataRequest {
+                    unit_metadata: Some(invalid.clone()),
+                }),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.code(), tonic::Code::InvalidArgument);
+        }
+        for settings in [
+            Some(crate::info::UnitMetadataSettings { units: vec![] }),
+            None,
+        ] {
+            MintInfoService::update_unit_metadata(
+                &server,
+                Request::new(crate::info::UpdateUnitMetadataRequest {
+                    unit_metadata: settings.clone(),
+                }),
+            )
+            .await
+            .unwrap();
+            let info =
+                MintInfoService::get_info(&server, Request::new(crate::info::GetInfoRequest {}))
+                    .await
+                    .unwrap()
+                    .into_inner();
+            assert_eq!(info.unit_metadata, settings);
+        }
+    }
 
     #[tokio::test]
     async fn test_mint_info_service_get_info_round_trip() {

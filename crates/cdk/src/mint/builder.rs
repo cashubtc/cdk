@@ -218,6 +218,14 @@ impl MintBuilder {
         self
     }
 
+    /// Publish experimental currency unit display metadata.
+    ///
+    /// Validation and precision immutability are enforced when building the mint.
+    pub fn with_unit_metadata(mut self, entries: Vec<crate::nuts::UnitMetadata>) -> Self {
+        self.mint_info.nuts.unit_metadata = Some(entries);
+        self
+    }
+
     /// Set name
     pub fn with_name(mut self, name: String) -> Self {
         self.mint_info.name = Some(name);

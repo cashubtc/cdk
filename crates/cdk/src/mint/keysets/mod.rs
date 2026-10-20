@@ -41,9 +41,8 @@ impl Mint {
     /// Return a list of all supported keysets
     #[instrument(skip_all)]
     pub fn keysets(&self) -> KeysetResponse {
-        KeysetResponse {
-            keysets: self
-                .keysets
+        KeysetResponse::new(
+            self.keysets
                 .load()
                 .iter()
                 .filter(|k| k.unit != CurrencyUnit::Auth)
@@ -55,7 +54,7 @@ impl Mint {
                     final_expiry: k.final_expiry,
                 })
                 .collect(),
-        }
+        )
     }
 
     /// Get keysets

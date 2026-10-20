@@ -11,6 +11,7 @@ license.workspace = true
 readme = "README.md"
 
 [features]
+experimental-unit-metadata = ["cashu/experimental-unit-metadata"]
 default = ["mint", "wallet"]
 test = []
 bench = []

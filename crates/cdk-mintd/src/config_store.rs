@@ -163,6 +163,9 @@ pub enum ConfigStoreError {
     /// The underlying key-value database failed.
     #[error(transparent)]
     Database(#[from] cdk_database::Error),
+    /// A staged precision conflicts with previously published metadata.
+    #[error(transparent)]
+    UnitMetadata(#[from] cdk::nuts::unit_metadata::Error),
 }
 
 /// Repository for the single active configuration envelope.
@@ -178,6 +181,42 @@ impl fmt::Debug for ConfigRepository {
 }
 
 impl ConfigRepository {
+    /// Check staged metadata against precision that has already been published.
+    pub(crate) async fn validate_unit_metadata(
+        &self,
+        entries: Option<&[cdk::nuts::UnitMetadata]>,
+    ) -> Result<(), ConfigStoreError> {
+        use bitcoin::hashes::{sha256, Hash};
+
+        for entry in entries.unwrap_or_default() {
+            let key = sha256::Hash::hash(entry.unit.as_bytes()).to_string();
+            if let Some(previous) = self
+                .store
+                .kv_read("cdk_mint", "unit_precision", &key)
+                .await?
+            {
+                match previous.as_slice() {
+                    [precision] if *precision == entry.precision => {}
+                    [precision] if *precision <= 18 => {
+                        return Err(cdk::nuts::unit_metadata::Error::PrecisionChanged {
+                            unit: entry.unit.clone(),
+                            previous: *precision,
+                            proposed: entry.precision,
+                        }
+                        .into());
+                    }
+                    _ => {
+                        return Err(cdk::nuts::unit_metadata::Error::InvalidStoredPrecision {
+                            unit: entry.unit.clone(),
+                        }
+                        .into())
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn new(
         store: Arc<dyn KVStoreCompareAndSwap<Err = cdk_database::Error> + Send + Sync>,
     ) -> Self {
@@ -373,6 +412,49 @@ mod tests {
     async fn repository() -> ConfigRepository {
         let database = Arc::new(memory::empty().await.expect("in-memory database"));
         ConfigRepository::new(database)
+    }
+
+    #[cfg(feature = "experimental-unit-metadata")]
+    #[tokio::test]
+    async fn unit_metadata_staging_checks_history_without_claiming_precision() {
+        use bitcoin::hashes::{sha256, Hash};
+
+        let repository = repository().await;
+        let mut entry = cdk::nuts::UnitMetadata {
+            unit: "ora".to_owned(),
+            precision: 2,
+            name: None,
+            symbol: None,
+        };
+        repository
+            .validate_unit_metadata(Some(&[entry.clone()]))
+            .await
+            .unwrap();
+        entry.precision = 3;
+        repository
+            .validate_unit_metadata(Some(&[entry.clone()]))
+            .await
+            .unwrap();
+        let key = sha256::Hash::hash(b"ora").to_string();
+        assert!(repository
+            .store
+            .kv_compare_and_swap("cdk_mint", "unit_precision", &key, None, &[2])
+            .await
+            .unwrap());
+        assert!(matches!(
+            repository
+                .validate_unit_metadata(Some(&[entry.clone()]))
+                .await,
+            Err(ConfigStoreError::UnitMetadata(
+                cdk::nuts::unit_metadata::Error::PrecisionChanged { .. }
+            ))
+        ));
+        entry.precision = 2;
+        repository
+            .validate_unit_metadata(Some(&[entry]))
+            .await
+            .unwrap();
+        repository.validate_unit_metadata(None).await.unwrap();
     }
 
     async fn write_raw(repository: &ConfigRepository, bytes: &[u8]) {

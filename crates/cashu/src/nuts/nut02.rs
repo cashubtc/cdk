@@ -485,12 +485,82 @@ impl From<ShortKeysetId> for String {
 
 /// Mint Keysets [NUT-02]
 /// Ids of mints keyset ids
-#[serde_as]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct KeysetResponse {
     /// set of public key ids that the mint generates
-    #[serde_as(as = "VecSkipError<_>")]
     pub keysets: Vec<KeySetInfo>,
+    /// Original unit spelling for display-only metadata matching.
+    ///
+    /// Missing entries must not be reconstructed from normalized units.
+    #[serde(skip)]
+    pub unit_names: std::collections::HashMap<Id, String>,
+}
+
+impl KeysetResponse {
+    /// Construct a response from locally authored keysets.
+    pub fn new(keysets: Vec<KeySetInfo>) -> Self {
+        let unit_names = keysets
+            .iter()
+            .map(|keyset| (keyset.id, keyset.unit.to_string()))
+            .collect();
+        Self {
+            keysets,
+            unit_names,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for KeysetResponse {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct WireKeyset {
+            id: Id,
+            unit: String,
+            active: bool,
+            #[serde(
+                deserialize_with = "deserialize_input_fee_ppk",
+                default = "default_input_fee_ppk"
+            )]
+            input_fee_ppk: u64,
+            final_expiry: Option<u64>,
+        }
+        #[serde_as]
+        #[derive(Deserialize)]
+        struct Response {
+            #[serde_as(as = "VecSkipError<_>")]
+            keysets: Vec<WireKeyset>,
+        }
+        let response = Response::deserialize(deserializer)?;
+        let mut keysets = Vec::new();
+        let mut unit_names = std::collections::HashMap::new();
+        let mut ambiguous = std::collections::HashSet::new();
+        for entry in response.keysets {
+            let unit = CurrencyUnit::from_str(&entry.unit).map_err(serde::de::Error::custom)?;
+            if unit_names
+                .insert(entry.id, entry.unit.clone())
+                .is_some_and(|previous| previous != entry.unit)
+            {
+                ambiguous.insert(entry.id);
+            }
+            keysets.push(KeySetInfo {
+                id: entry.id,
+                unit,
+                active: entry.active,
+                input_fee_ppk: entry.input_fee_ppk,
+                final_expiry: entry.final_expiry,
+            });
+        }
+        for id in ambiguous {
+            unit_names.remove(&id);
+        }
+        Ok(Self {
+            keysets,
+            unit_names,
+        })
+    }
 }
 
 /// Keyset
@@ -780,6 +850,25 @@ impl From<&MintKeys> for Id {
 
 #[cfg(test)]
 mod test {
+    #[test]
+    fn unit_metadata_keeps_exact_names_without_accepting_invalid_keysets() {
+        let response: super::KeysetResponse = serde_json::from_str(
+            r#"{"keysets":[
+            {"id":"009a1f293253e41e","unit":" ORA ","active":true},
+            {"id":"009a1f293253e41f","unit":"ora","active":true,"active":false},
+            {"id":"broken","unit":"ora","active":true}
+        ]}"#,
+        )
+        .unwrap();
+        assert_eq!(response.keysets.len(), 1);
+        let keyset = &response.keysets[0];
+        assert_eq!(keyset.unit.to_string(), "ora");
+        assert_eq!(response.unit_names[&keyset.id], " ORA ");
+        assert!(!serde_json::to_string(&response)
+            .unwrap()
+            .contains("unit_names"));
+    }
+
     use std::str::FromStr;
 
     use bitcoin::secp256k1::rand::{self, RngCore};

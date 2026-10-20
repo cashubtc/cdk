@@ -9,9 +9,9 @@ mod wallet;
 pub use self::info::{
     add_contact, add_url, get_info, remove_contact, remove_url, update_icon_url,
     update_long_description, update_motd, update_name, update_short_description, update_tos_url,
-    AddContactCommand, AddUrlCommand, RemoveContactCommand, RemoveUrlCommand, UpdateIconUrlCommand,
-    UpdateLongDescriptionCommand, UpdateMotdCommand, UpdateNameCommand,
-    UpdateShortDescriptionCommand, UpdateTosUrlCommand,
+    update_unit_metadata, AddContactCommand, AddUrlCommand, RemoveContactCommand, RemoveUrlCommand,
+    UpdateIconUrlCommand, UpdateLongDescriptionCommand, UpdateMotdCommand, UpdateNameCommand,
+    UpdateShortDescriptionCommand, UpdateTosUrlCommand, UpdateUnitMetadataCommand,
 };
 pub use self::keyset::{rotate_next_keyset, RotateNextKeysetCommand};
 pub use self::payment_method::{

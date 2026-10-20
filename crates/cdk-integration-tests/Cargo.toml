@@ -10,6 +10,7 @@ repository = "https://github.com/cashubtc/cdk.git"
 
 
 [features]
+experimental-unit-metadata = ["cdk/experimental-unit-metadata"]
 http_subscription = ["cdk/http_subscription"]
 bdk = ["cdk-mintd/bdk"]
 

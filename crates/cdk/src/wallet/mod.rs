@@ -74,6 +74,7 @@ pub mod subscription;
 mod swap;
 pub mod test_utils;
 mod transactions;
+mod unit_metadata;
 pub mod util;
 pub mod wallet_repository;
 mod wallet_trait;
@@ -495,6 +496,8 @@ impl Wallet {
     /// its URL
     #[instrument(skip(self))]
     pub async fn update_mint_url(&mut self, new_mint_url: MintUrl) -> Result<(), Error> {
+        unit_metadata::copy_history(self.localstore.as_ref(), &self.mint_url, &new_mint_url)
+            .await?;
         self.localstore
             .update_mint_url(self.mint_url.clone(), new_mint_url.clone())
             .await?;
@@ -1284,15 +1287,13 @@ mod tests {
 
         async fn get_mint_blind_auth_keysets(&self) -> Result<KeysetResponse, Error> {
             *self.keysets_calls.lock().expect("lock") += 1;
-            Ok(KeysetResponse {
-                keysets: vec![KeySetInfo {
-                    id: self.keyset.id,
-                    unit: CurrencyUnit::Auth,
-                    active: true,
-                    input_fee_ppk: self.keyset.input_fee_ppk,
-                    final_expiry: self.keyset.final_expiry,
-                }],
-            })
+            Ok(KeysetResponse::new(vec![KeySetInfo {
+                id: self.keyset.id,
+                unit: CurrencyUnit::Auth,
+                active: true,
+                input_fee_ppk: self.keyset.input_fee_ppk,
+                final_expiry: self.keyset.final_expiry,
+            }]))
         }
 
         async fn post_mint_blind_auth(

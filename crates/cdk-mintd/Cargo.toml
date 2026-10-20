@@ -11,6 +11,7 @@ rust-version.workspace = true
 readme = "README.md"
 
 [features]
+experimental-unit-metadata = ["cdk/experimental-unit-metadata"]
 default = ["management-rpc", "cln", "lnd", "fakewallet", "grpc-processor", "sqlite", "info-page", "bdk"]
 # Database features - at least one must be enabled
 sqlite = ["dep:cdk-sqlite"]

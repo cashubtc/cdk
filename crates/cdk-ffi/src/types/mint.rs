@@ -489,6 +489,9 @@ impl TryFrom<ProtectedEndpoint> for cdk::nuts::ProtectedEndpoint {
 /// FFI-compatible Nuts settings (extended to include NUT-04 and NUT-05 settings)
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct Nuts {
+    /// Experimental mint-scoped currency metadata.
+    #[serde(default)]
+    pub unit_metadata: Option<Vec<super::UnitMetadata>>,
     /// NUT04 Settings
     pub nut04: Nut04Settings,
     /// NUT05 Settings
@@ -535,6 +538,9 @@ impl From<cdk::nuts::Nuts> for Nuts {
             .collect();
 
         Self {
+            unit_metadata: nuts
+                .unit_metadata
+                .map(|entries| entries.into_iter().map(Into::into).collect()),
             nut04: nuts.nut04.clone().into(),
             nut05: nuts.nut05.clone().into(),
             nut07_supported: nuts.nut07.supported,
@@ -559,6 +565,9 @@ impl TryFrom<Nuts> for cdk::nuts::Nuts {
 
     fn try_from(n: Nuts) -> Result<Self, Self::Error> {
         Ok(Self {
+            unit_metadata: n
+                .unit_metadata
+                .map(|entries| entries.into_iter().map(Into::into).collect()),
             nut04: n.nut04.try_into()?,
             nut05: n.nut05.try_into()?,
             nut07: cdk::nuts::nut06::SupportedSettings {
@@ -718,6 +727,7 @@ mod tests {
     /// Helper function to create a sample cdk::nuts::Nuts for testing
     fn create_sample_cdk_nuts() -> cdk::nuts::Nuts {
         cdk::nuts::Nuts {
+            unit_metadata: None,
             nut04: cdk::nuts::nut04::Settings {
                 methods: vec![cdk::nuts::nut04::MintMethodSettings {
                     method: cdk::nuts::PaymentMethod::Known(KnownMethod::Bolt11),
@@ -896,6 +906,7 @@ mod tests {
     #[test]
     fn test_nuts_without_auth() {
         let cdk_nuts = cdk::nuts::Nuts {
+            unit_metadata: None,
             nut04: Default::default(),
             nut05: Default::default(),
             nut07: cdk::nuts::nut06::SupportedSettings { supported: true },
@@ -925,6 +936,7 @@ mod tests {
     #[test]
     fn test_ffi_nuts_to_cdk_with_defaults() {
         let ffi_nuts = Nuts {
+            unit_metadata: None,
             nut04: Nut04Settings {
                 methods: vec![],
                 disabled: true,
@@ -1082,6 +1094,7 @@ mod tests {
             description_long: None,
             contact: None,
             nuts: Nuts {
+                unit_metadata: None,
                 nut04: Nut04Settings {
                     methods: vec![],
                     disabled: false,
