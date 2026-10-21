@@ -502,6 +502,9 @@ fn signing_packages_merge_only_matching_transactions_and_distinct_signers() {
     misnamed.push(misnamed[0].clone());
     assert!(SigningPackage::new(&pair, misnamed).is_err());
     assert!(SigningPackage::new(&pair, vec![]).is_err());
+    let mut with_preimage = package.spends().to_vec();
+    with_preimage[0].witness.preimage = Some("00".repeat(32));
+    assert!(SigningPackage::new(&pair, with_preimage).is_err());
     assert!(!serde_json::to_string(&package)
         .unwrap()
         .contains("spend_info"));
@@ -516,18 +519,24 @@ fn signing_packages_merge_only_matching_transactions_and_distinct_signers() {
     assert_eq!(package, before);
     let mut second = package.clone();
     assert_eq!(package.sign(&keys[..1]).unwrap(), 1);
-    assert!(package.apply(&mut proofs, &outputs, None, 0).is_err());
+    assert!(package
+        .apply(&mut proofs, &outputs, None, &Default::default(), 0)
+        .is_err());
     assert!(proofs[0].witness.is_none());
     assert_eq!(package.sign(&keys[..1]).unwrap(), 0);
     assert_eq!(second.sign(&keys[1..]).unwrap(), 1);
     package.merge(&second).unwrap();
     package.merge(&second).unwrap();
-    package.apply(&mut proofs, &outputs, None, 0).unwrap();
+    package
+        .apply(&mut proofs, &outputs, None, &Default::default(), 0)
+        .unwrap();
     let transaction = Transaction::new(&proofs, &[], &outputs, &[]).unwrap();
     SpendRecord::new(&proofs[0], &transaction, 0, 0).unwrap();
     let mut wrong_outputs = outputs.clone();
     wrong_outputs[0].amount = 99.into();
-    assert!(package.apply(&mut proofs, &wrong_outputs, None, 0).is_err());
+    assert!(package
+        .apply(&mut proofs, &wrong_outputs, None, &Default::default(), 0)
+        .is_err());
     let altered = SigningPackage::new(
         &Transaction::new(&proofs, &[], &wrong_outputs, &[]).unwrap(),
         second.spends().to_vec(),
@@ -832,6 +841,15 @@ fn shared_signing_package_vectors() {
     let mut merged = unsigned.clone();
     merged.merge(&signed).unwrap();
     assert_eq!(merged, signed);
+    // The quote input's witness, as its mint request `signature` carries it.
+    let transaction = signed.transaction().unwrap();
+    let witness = signed.witness(&transaction, 0, None, 0).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&witness).unwrap(),
+        vector["witness"]
+    );
+    assert!(unsigned.witness(&transaction, 0, None, 0).is_err());
+    assert!(signed.witness(&transaction, 1, None, 0).is_err());
     assert_eq!(
         signed.encode().unwrap().parse::<SigningPackage>().unwrap(),
         signed
@@ -844,4 +862,57 @@ fn shared_signing_package_vectors() {
     assert!(misnamed.validate().is_err());
     // Inputs travel only as transcript containers.
     assert!(!serde_json::to_string(&unsigned).unwrap().contains("\"C\""));
+}
+
+#[test]
+fn signing_package_hashlock_takes_its_preimage_at_apply() {
+    use bitcoin::hashes::{sha256, Hash};
+    use bitcoin::secp256k1::SecretKey;
+    let vectors = vectors();
+    let mut proofs: Vec<crate::Proof> =
+        serde_json::from_value(vectors[14]["inputs"].clone()).unwrap();
+    let outputs: Vec<crate::BlindedMessage> =
+        serde_json::from_value(vectors[14]["outputs"].clone()).unwrap();
+    let key = SecretKey::from_slice(&[1; 32]).unwrap();
+    let ephemeral = SecretKey::from_slice(&[3; 32]).unwrap();
+    let signer = sender_key(
+        &PublicKey::from_secret_key(&crate::SECP256K1, &key),
+        &ephemeral,
+        1,
+    )
+    .unwrap();
+    let preimage = [5u8; 32];
+    let hash = sha256::Hash::hash(&preimage).to_byte_array();
+    let tree = Tree::new(vec![
+        Leaf::new(1, vec![signer], Condition::Hashlock(hash)).unwrap()
+    ])
+    .unwrap();
+    let internal = nums_point();
+    let secret = tweaked_key(internal, Some(tree.root()))
+        .unwrap()
+        .to_string();
+    proofs[0].secret = secret.parse().unwrap();
+    let mut package = SigningPackage::new(
+        &Transaction::new(&proofs, &[], &outputs, &[]).unwrap(),
+        vec![SigningSpend {
+            input: 0,
+            secret: secret.clone(),
+            witness: Witness::script_path(&tree, 0, internal).unwrap(),
+            ephemeral_key: Some(PublicKey::from_secret_key(&crate::SECP256K1, &ephemeral)),
+            slots: None,
+        }],
+    )
+    .unwrap();
+    assert_eq!(package.sign(&[key]).unwrap(), 1);
+    assert!(package
+        .apply(&mut proofs, &outputs, None, &Default::default(), 0)
+        .is_err());
+    let preimages = [(secret, hex::encode(preimage))].into();
+    package
+        .apply(&mut proofs, &outputs, None, &preimages, 0)
+        .unwrap();
+    let Some(crate::nuts::Witness::NutrootWitness(raw)) = &proofs[0].witness else {
+        panic!("expected a nutroot witness");
+    };
+    assert!(raw.contains(&hex::encode(preimage)));
 }

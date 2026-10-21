@@ -88,7 +88,8 @@ blinding, NUMS offsets, ephemeral-key presence, and the complete leaf set before
 signing. Merely being able to spend one leaf does not verify the payment policy.
 
 Use `SigningPackage::new`, `sign`, `merge`, and `apply` for multi-party script
-spends. `Wallet::sign_nutroot_package` signs a caller-approved package using its
+spends; `witness` returns one spend's complete witness, eg for a mint quote
+input's `signature`. `Wallet::sign_nutroot_package` signs a caller-approved package using its
 keyring; decode the package's transcript and check it against trusted quote state
 before approving it. The package carries no trusted digest or private transfer
 keys. Signatures from another transaction cannot be merged into it.

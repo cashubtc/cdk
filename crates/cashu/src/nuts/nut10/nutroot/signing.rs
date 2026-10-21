@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
 use bitcoin::base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -85,7 +85,11 @@ impl SigningPackage {
         let mut validated = Vec::with_capacity(self.spends.len());
         for spend in &self.spends {
             let index = spend.input;
-            if !seen.insert(index) || !transaction.input_names_secret(index, &spend.secret)? {
+            // The builder keeps hashlock preimages until `apply` (XX.md).
+            if spend.witness.preimage.is_some()
+                || !seen.insert(index)
+                || !transaction.input_names_secret(index, &spend.secret)?
+            {
                 return Err(Error::InvalidWitness);
             }
             let leaf = spend.witness.committed_leaf(&spend.secret)?;
@@ -193,11 +197,14 @@ impl SigningPackage {
 
     /// Apply complete witnesses to the original transaction's proof inputs. No input
     /// is changed unless every supplied script opening satisfies its policy.
+    ///
+    /// `preimages` maps a hashlock spend's `secret` to its preimage hex.
     pub fn apply(
         &self,
         inputs: &mut [Proof],
         outputs: &[BlindedMessage],
         quote: Option<Quote>,
+        preimages: &HashMap<String, String>,
         now: u64,
     ) -> Result<(), Error> {
         let (expected, validated) = self.validated_spends()?;
@@ -208,10 +215,9 @@ impl SigningPackage {
         }
         let mut witnesses = vec![];
         for (spend, validated) in self.spends.iter().zip(validated) {
-            let index = validated.index;
-            spend.witness.verify(&spend.secret, validated.digest, now)?;
-            let raw = serde_json::to_string(&spend.witness).map_err(|_| Error::InvalidWitness)?;
-            witnesses.push((index, crate::nuts::Witness::NutrootWitness(raw)));
+            let preimage = preimages.get(&spend.secret).map(String::as_str);
+            let raw = complete_witness(spend, validated.digest, preimage, now)?;
+            witnesses.push((validated.index, crate::nuts::Witness::NutrootWitness(raw)));
         }
         for (index, witness) in witnesses {
             inputs[index].witness = Some(witness);
@@ -219,11 +225,46 @@ impl SigningPackage {
         Ok(())
     }
 
+    /// The complete witness JSON for the spend naming `input`, eg a quote input's mint request `signature`.
+    ///
+    /// Fails unless `transaction` is the package's and the opening satisfies its policy.
+    pub fn witness(
+        &self,
+        transaction: &Transaction,
+        input: usize,
+        preimage: Option<&str>,
+        now: u64,
+    ) -> Result<String, Error> {
+        let (expected, validated) = self.validated_spends()?;
+        if *transaction != expected {
+            return Err(Error::InvalidTransaction);
+        }
+        let (spend, validated) = self
+            .spends
+            .iter()
+            .zip(validated)
+            .find(|(spend, _)| spend.input == input)
+            .ok_or(Error::InvalidWitness)?;
+        complete_witness(spend, validated.digest, preimage, now)
+    }
+
     /// Encode a validated signing package as `nutspA` followed by base64url JSON.
     pub fn encode(&self) -> Result<String, Error> {
         self.validate()?;
         encode_transport("nutspA", self)
     }
+}
+
+fn complete_witness(
+    spend: &SigningSpend,
+    digest: [u8; 32],
+    preimage: Option<&str>,
+    now: u64,
+) -> Result<String, Error> {
+    let mut witness = spend.witness.clone();
+    witness.preimage = preimage.map(str::to_owned);
+    witness.verify(&spend.secret, digest, now)?;
+    serde_json::to_string(&witness).map_err(|_| Error::InvalidWitness)
 }
 
 impl FromStr for SigningPackage {
