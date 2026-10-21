@@ -625,6 +625,17 @@ fn shared_mint_quote_input_vectors() {
             witness.verify(&key.to_string(), digest, 0).unwrap();
         }
     }
+    // The partial mint's signature covers its amount and `issued` (tests/00-tests.md).
+    let partial = &shared["transcript"]["partial_mint"];
+    for (field, value) in [("amount", 8), ("issued", 0)] {
+        let mut tx = partial["tx"].clone();
+        tx["mint_quote_inputs"][0][field] = value.into();
+        assert_ne!(
+            transaction(&tx).input_digest(0).unwrap(),
+            hash(&partial["input_digest"]),
+            "{field}"
+        );
+    }
     // A quote input without its lock key is not a transcript this mint accepts.
     let transcript = bytes(&shared["transcript"]["mint"]["transcript"]);
     let mut stripped = transcript[..3].to_vec();
