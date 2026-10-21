@@ -165,6 +165,10 @@ pub(super) async fn get_mint_quote_by_request_inner<T>(
 where
     T: DatabaseExecutor,
 {
+    // An empty request names no payment; txout quotes all share it.
+    if request.is_empty() {
+        return Ok(None);
+    }
     let for_update_clause = if for_update { "FOR UPDATE" } else { "" };
     let query_str = format!(
         r#"
@@ -661,6 +665,71 @@ fn sql_row_to_melt_quote(row: Vec<Column>) -> Result<mint::MeltQuote, Error> {
         selected_fee_index,
     )
     .map_err(|e| Error::Internal(format!("Invalid onchain melt quote row: {e}")))
+}
+
+const TRANSACTION_COLUMNS: &str =
+    "melt_quote_id, state, unit, quote_inputs, mint_quote_outputs, excess, created_time";
+
+fn sql_row_to_transaction(row: Vec<Column>) -> Result<mint::TransactionRecord, Error> {
+    unpack_into!(
+        let (
+            melt_quote_id, state, unit, quote_inputs, mint_quote_outputs, excess, created_time
+        ) = row
+    );
+    let state = cdk_common::nuts::TransactionState::from_str(&column_as_string!(&state))
+        .map_err(Error::Internal)?;
+    let quote_inputs: Vec<(String, u64)> = serde_json::from_str(&column_as_string!(&quote_inputs))
+        .map_err(|e| Error::Internal(format!("Invalid transaction quote inputs: {e}")))?;
+    let quote_inputs = quote_inputs
+        .into_iter()
+        .map(|(id, amount)| Ok((QuoteId::from_str(&id)?, Amount::from(amount))))
+        .collect::<Result<Vec<_>, Error>>()?;
+    let mint_quote_outputs: Vec<(String, String, u64)> =
+        serde_json::from_str(&column_as_string!(&mint_quote_outputs))
+            .map_err(|e| Error::Internal(format!("Invalid transaction mint quote outputs: {e}")))?;
+    let mint_quote_outputs = mint_quote_outputs
+        .into_iter()
+        .map(|(id, key, amount)| {
+            Ok((
+                QuoteId::from_str(&id)?,
+                PublicKey::from_hex(&key)?,
+                Amount::from(amount),
+            ))
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    let excess: u64 = column_as_number!(excess);
+    Ok(mint::TransactionRecord {
+        melt_quote_id: QuoteId::from_str(&column_as_string!(&melt_quote_id))?,
+        state,
+        unit: column_as_string!(unit, CurrencyUnit::from_str),
+        quote_inputs,
+        mint_quote_outputs,
+        excess: Amount::from(excess),
+        created_time: column_as_number!(created_time),
+    })
+}
+
+async fn get_transaction_inner<T>(
+    executor: &T,
+    melt_quote_id: &QuoteId,
+    for_update: bool,
+) -> Result<Option<mint::TransactionRecord>, Error>
+where
+    T: DatabaseExecutor,
+{
+    let for_update_clause = if for_update {
+        "AND state = 'PENDING' FOR UPDATE"
+    } else {
+        ""
+    };
+    query(&format!(
+        "SELECT {TRANSACTION_COLUMNS} FROM melt_transaction WHERE melt_quote_id = :melt_quote_id {for_update_clause}"
+    ))?
+    .bind("melt_quote_id", melt_quote_id.to_string())
+    .fetch_one(executor)
+    .await?
+    .map(sql_row_to_transaction)
+    .transpose()
 }
 
 #[async_trait]
@@ -1241,6 +1310,127 @@ where
             .await
             .map(|quote| quote.map(|inner| inner.into()))
     }
+
+    async fn add_transaction(&mut self, record: &mint::TransactionRecord) -> Result<(), Self::Err> {
+        let quote_inputs = serde_json::to_string(
+            &record
+                .quote_inputs
+                .iter()
+                .map(|(id, amount)| (id.to_string(), u64::from(*amount)))
+                .collect::<Vec<_>>(),
+        )
+        .map_err(|e| Error::Internal(e.to_string()))?;
+        let mint_quote_outputs = serde_json::to_string(
+            &record
+                .mint_quote_outputs
+                .iter()
+                .map(|(id, key, amount)| (id.to_string(), key.to_hex(), u64::from(*amount)))
+                .collect::<Vec<_>>(),
+        )
+        .map_err(|e| Error::Internal(e.to_string()))?;
+        let affected = query(
+            r#"
+            INSERT INTO melt_transaction
+            (melt_quote_id, state, unit, quote_inputs, mint_quote_outputs, excess, created_time)
+            VALUES
+            (:melt_quote_id, :state, :unit, :quote_inputs, :mint_quote_outputs, :excess, :created_time)
+            ON CONFLICT (melt_quote_id) DO UPDATE SET
+                state = EXCLUDED.state,
+                unit = EXCLUDED.unit,
+                quote_inputs = EXCLUDED.quote_inputs,
+                mint_quote_outputs = EXCLUDED.mint_quote_outputs,
+                excess = EXCLUDED.excess,
+                created_time = EXCLUDED.created_time
+            WHERE melt_transaction.state = 'FAILED'
+            "#,
+        )?
+        .bind("melt_quote_id", record.melt_quote_id.to_string())
+        .bind("state", record.state.to_string())
+        .bind("unit", record.unit.to_string())
+        .bind("quote_inputs", quote_inputs)
+        .bind("mint_quote_outputs", mint_quote_outputs)
+        .bind("excess", record.excess.to_i64())
+        .bind("created_time", record.created_time as i64)
+        .execute(&self.inner)
+        .await?;
+        if affected == 0 {
+            return Err(Error::Duplicate);
+        }
+        Ok(())
+    }
+
+    async fn get_transaction_by_melt_quote(
+        &mut self,
+        quote_id: &QuoteId,
+    ) -> Result<Option<Acquired<mint::TransactionRecord>>, Self::Err> {
+        get_transaction_inner(&self.inner, quote_id, true)
+            .await
+            .map(|record| record.map(Into::into))
+    }
+
+    async fn get_pending_transactions(
+        &mut self,
+    ) -> Result<Vec<mint::TransactionRecord>, Self::Err> {
+        query(&format!(
+            "SELECT {TRANSACTION_COLUMNS} FROM melt_transaction WHERE state = 'PENDING'"
+        ))?
+        .fetch_all(&self.inner)
+        .await?
+        .into_iter()
+        .map(sql_row_to_transaction)
+        .collect()
+    }
+
+    async fn update_transaction(
+        &mut self,
+        record: &mut Acquired<mint::TransactionRecord>,
+        state: cdk_common::nuts::TransactionState,
+    ) -> Result<(), Self::Err> {
+        query(
+            r#"UPDATE melt_transaction SET state = :state WHERE melt_quote_id = :melt_quote_id"#,
+        )?
+        .bind("state", state.to_string())
+        .bind("melt_quote_id", record.melt_quote_id.to_string())
+        .execute(&self.inner)
+        .await?;
+        record.state = state;
+        Ok(())
+    }
+
+    async fn claim_mint_quote_ids(
+        &mut self,
+        ids: &[QuoteId],
+        melt_quote_id: Option<&QuoteId>,
+    ) -> Result<(), Self::Err> {
+        // The primary key serializes concurrent transactions naming the same id; an id that
+        // names a mint quote is claimed too.
+        for id in ids {
+            let affected = query(
+                r#"
+                INSERT INTO mint_quote_id_claim (quote_id, melt_quote_id)
+                SELECT :quote_id, :melt_quote_id
+                WHERE NOT EXISTS (SELECT 1 FROM mint_quote WHERE id = :quote_id)
+                ON CONFLICT (quote_id) DO NOTHING
+                "#,
+            )?
+            .bind("quote_id", id.to_string())
+            .bind("melt_quote_id", melt_quote_id.map(|q| q.to_string()))
+            .execute(&self.inner)
+            .await?;
+            if affected == 0 {
+                return Err(Error::Duplicate);
+            }
+        }
+        Ok(())
+    }
+
+    async fn release_mint_quote_ids(&mut self, melt_quote_id: &QuoteId) -> Result<(), Self::Err> {
+        query(r#"DELETE FROM mint_quote_id_claim WHERE melt_quote_id = :melt_quote_id"#)?
+            .bind("melt_quote_id", melt_quote_id.to_string())
+            .execute(&self.inner)
+            .await?;
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -1442,5 +1632,16 @@ where
         .into_iter()
         .map(sql_row_to_melt_quote)
         .collect::<Result<Vec<_>, _>>()?)
+    }
+    async fn get_transaction(
+        &self,
+        melt_quote_id: &QuoteId,
+    ) -> Result<Option<mint::TransactionRecord>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        get_transaction_inner(&*conn, melt_quote_id, false).await
     }
 }

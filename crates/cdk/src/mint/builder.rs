@@ -103,16 +103,24 @@ impl MintBuilder {
                 .nut08(true)
                 .nut09(true)
                 .nut10(true)
+                // The template leaf (NUT-YY, `0005`) needs the fixed txout quotes set below.
                 .nut10_leaves(
                     cdk_common::nuts::nut10::nutroot::CORE_LEAF_TYPES
-                        .map(String::from)
-                        .to_vec(),
+                        .iter()
+                        .chain(&["0005"])
+                        .map(|leaf| leaf.to_string())
+                        .collect(),
                 )
                 .nut11(true)
                 .nut12(true)
                 .nut14(true)
                 .nut20(true)
-                .nut29(cdk_common::nut29::Settings::default()),
+                .nut29(cdk_common::nut29::Settings::default())
+                .nutxx(cdk_common::nuts::NutXXSettings {
+                    supported: true,
+                    quote_input_fee_ppk: 0,
+                    fixed_txout_quotes: true,
+                }),
             ..Default::default()
         };
 
@@ -242,6 +250,12 @@ impl MintBuilder {
 
         self.mint_info.nuts = nuts;
 
+        self
+    }
+
+    /// Set the NUT-XX fee per quote input, in ppk of its minimal split
+    pub fn with_quote_input_fee_ppk(mut self, fee_ppk: u64) -> Self {
+        self.mint_info.nuts.nutxx.quote_input_fee_ppk = fee_ppk;
         self
     }
 
@@ -980,8 +994,8 @@ mod tests {
         );
         assert_eq!(
             mint_info.nuts.nut10.leaves,
-            ["0001", "0002", "0003", "0004"],
-            "a v3 mint lists the core leaf types (NUT-10)"
+            ["0001", "0002", "0003", "0004", "0005"],
+            "a v3 mint lists the core leaf types and the template leaf (NUT-10)"
         );
         assert!(
             mint_info.nuts.nut11.supported,

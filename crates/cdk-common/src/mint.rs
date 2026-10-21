@@ -37,6 +37,8 @@ pub enum OperationKind {
     Melt,
     /// Batch mint
     BatchMint,
+    /// NUT-XX transaction settled without a melt
+    Transaction,
 }
 
 /// A collection of proofs that share a common state.
@@ -107,6 +109,7 @@ impl fmt::Display for OperationKind {
             OperationKind::Mint => write!(f, "mint"),
             OperationKind::Melt => write!(f, "melt"),
             OperationKind::BatchMint => write!(f, "batch_mint"),
+            OperationKind::Transaction => write!(f, "transaction"),
         }
     }
 }
@@ -120,6 +123,7 @@ impl FromStr for OperationKind {
             "mint" => Ok(OperationKind::Mint),
             "melt" => Ok(OperationKind::Melt),
             "batch_mint" => Ok(OperationKind::BatchMint),
+            "transaction" => Ok(OperationKind::Transaction),
             _ => Err(Error::Custom(format!("Invalid operation kind: {value}"))),
         }
     }
@@ -220,7 +224,7 @@ impl SagaStateEnum {
         match operation_kind {
             OperationKind::Swap => Ok(SagaStateEnum::Swap(SwapSagaState::from_str(s)?)),
             OperationKind::Melt => Ok(SagaStateEnum::Melt(MeltSagaState::from_str(s)?)),
-            OperationKind::Mint | OperationKind::BatchMint => {
+            OperationKind::Mint | OperationKind::BatchMint | OperationKind::Transaction => {
                 Err(Error::Custom("Mint saga not implemented yet".to_string()))
             }
         }
@@ -871,6 +875,28 @@ impl Issuance {
     }
 }
 
+/// Settlement state of a NUT-XX transaction with a melt, recorded under its melt quote.
+///
+/// `excess` is `amount_in - fee - sum(outputs) - sum(fixed txout quotes) - melt.amount`,
+/// fixed at acceptance; the change on settlement is `excess - melt_fee_paid`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransactionRecord {
+    /// The melt quote this transaction pays
+    pub melt_quote_id: QuoteId,
+    /// State
+    pub state: cashu::nuts::TransactionState,
+    /// Unit of every input and output
+    pub unit: cashu::CurrencyUnit,
+    /// Mint quote inputs and the amount issued against each
+    pub quote_inputs: Vec<(QuoteId, cashu::Amount)>,
+    /// Fixed txout quote ids and lock keys with their amount
+    pub mint_quote_outputs: Vec<(QuoteId, cashu::PublicKey, cashu::Amount)>,
+    /// Inputs less fee, outputs, fixed txout quotes and melt amount; the fee reserve is inside it
+    pub excess: cashu::Amount,
+    /// Unix time the transaction was accepted
+    pub created_time: u64,
+}
+
 /// Melt Quote Info
 #[derive(Clone, Hash, PartialEq, Eq)]
 pub struct MeltQuote {
@@ -1496,7 +1522,7 @@ impl TryFrom<MintQuote> for MintQuoteResponse<QuoteId> {
                     quote: quote.id.clone(),
                     request: quote.request.clone(),
                     method: method.clone(),
-                    expiry: Some(quote.expiry),
+                    expiry: (quote.expiry != 0).then_some(quote.expiry),
                     amount: quote.amount.as_ref().map(|a| a.clone().into()),
                     amount_paid: quote.amount_paid().into(),
                     amount_issued: quote.amount_issued().into(),

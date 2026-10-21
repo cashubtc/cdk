@@ -1210,6 +1210,9 @@ fn configure_basic_info(settings: &config::Settings, mint_builder: MintBuilder) 
     if let Some(version) = settings.info.keyset_version {
         builder = builder.with_keyset_version(version);
     }
+    if let Some(fee) = settings.info.quote_input_fee_ppk {
+        builder = builder.with_quote_input_fee_ppk(fee);
+    }
 
     builder
 }
@@ -1650,6 +1653,13 @@ async fn configure_backend_for_methods(
         };
         mint_builder = mint_builder.with_supported_websockets(nut17_supported);
     }
+    // Txout quotes (NUT-XX) exist in every unit without a backend of their own.
+    let txout = cdk::nuts::nutxx::TXOUT_METHOD;
+    mint_builder = mint_builder.with_supported_websockets(SupportedMethods::new(
+        PaymentMethod::Custom(txout.to_owned()),
+        unit.clone(),
+        vec![cdk::nuts::nut17::WsCommand::custom_mint_quote(txout)],
+    ));
 
     if let Some(input_fee) = settings.info.input_fee_ppk {
         mint_builder.set_unit_fee(&unit, input_fee)?;
@@ -1697,6 +1707,10 @@ async fn configure_cache(
     let mut cached_endpoints = vec![
         // Always include swap endpoint
         CachedEndpoint::new(NUT19Method::Post, NUT19Path::Swap),
+        CachedEndpoint::new(
+            NUT19Method::Post,
+            NUT19Path::Custom("/v1/transaction".to_owned()),
+        ),
     ];
 
     // Add cache endpoints for each configured payment method
@@ -1831,6 +1845,13 @@ async fn setup_authentication(
         {
             let swap_protected_endpoint = ProtectedEndpoint::new(Method::Post, RoutePath::Swap);
             add_endpoint(swap_protected_endpoint, &auth_settings.swap);
+        }
+
+        // Transaction endpoint (NUT-XX)
+        {
+            let transaction_protected_endpoint =
+                ProtectedEndpoint::new(Method::Post, RoutePath::Transaction);
+            add_endpoint(transaction_protected_endpoint, &auth_settings.transaction);
         }
 
         // Restore endpoint
@@ -2927,6 +2948,18 @@ engine = "sqlite"
             secret_path.display(),
             secret_path.display()
         )
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn basic_info_sets_the_quote_input_fee() {
+        use cdk_sqlite::mint::memory;
+
+        let database = Arc::new(memory::empty().await.expect("in-memory database"));
+        let mut settings = config::Settings::default();
+        settings.info.quote_input_fee_ppk = Some(250);
+        let info = configure_basic_info(&settings, MintBuilder::new(database)).current_mint_info();
+        assert_eq!(info.nuts.nutxx.quote_input_fee_ppk, 250);
     }
 
     #[cfg(feature = "sqlite")]
