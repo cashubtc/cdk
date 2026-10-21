@@ -318,6 +318,52 @@
           cargoVendorDir = cargoVendorDirMsrv;
         };
 
+        # Independent downstream resolution avoids LDK Node 0.7's rusqlite pin.
+        # Keep these endpoints in sync with crates/cdk-sqlite/Cargo.toml.
+        rusqliteCompatChecks = lib.mapAttrs
+          (endpoint: config:
+            let
+              lock = builtins.fromTOML (builtins.readFile config.cargoLock);
+              sqlitePackages = builtins.filter (p: p.name == "rusqlite") lock.package;
+              args = commonCraneArgs // {
+                pname = "cdk-rusqlite-compat-${endpoint}";
+                version = "0.0.0";
+                src = lib.fileset.toSource {
+                  root = ./.;
+                  fileset = lib.fileset.unions [
+                    srcFileset
+                    ./tests/rusqlite-compat/Cargo.toml
+                    ./tests/rusqlite-compat/src
+                    ./tests/rusqlite-compat/tests
+                  ];
+                };
+                cargoVendorDir = craneLibMsrv.vendorMultipleCargoDeps {
+                  cargoLockList = [ config.cargoLock ];
+                };
+                cargoExtraArgs = "--locked --manifest-path tests/rusqlite-compat/Cargo.toml";
+                # The nested workspace must use the target directory Crane caches.
+                CARGO_TARGET_DIR = "target";
+                postPatch = ''
+                  cp ${config.cargoLock} tests/rusqlite-compat/Cargo.lock
+                '';
+              };
+            in
+            assert map (p: p.version) sqlitePackages == [ config.version ];
+            craneLibMsrv.cargoTest (args // {
+              cargoArtifacts = craneLibMsrv.buildDepsOnly args;
+              doInstallCargoArtifacts = false;
+            }))
+          {
+            min = {
+              version = "0.31.0";
+              cargoLock = ./tests/rusqlite-compat/Cargo.lock.min;
+            };
+            max = {
+              version = "0.39.0";
+              cargoLock = ./tests/rusqlite-compat/Cargo.lock;
+            };
+          };
+
         # Musl-targeting C compiler for crates that compile bundled C code
         # (libsqlite3-sys, secp256k1-sys, aws-lc-sys, etc.)
         muslCC = if muslTarget != null then pkgs.pkgsStatic.stdenv.cc else null;
@@ -1517,6 +1563,8 @@
             exampleChecks
         ));
         checks =
+          lib.mapAttrs' (endpoint: check: lib.nameValuePair "rusqlite-compat-${endpoint}" check) rusqliteCompatChecks
+          //
           # Generate clippy + test checks from clippyAndTestChecks attrset
           (builtins.mapAttrs (name: args: mkClippyAndTest name args) clippyAndTestChecks)
           # Generate MSRV build checks (prefixed with msrv-)

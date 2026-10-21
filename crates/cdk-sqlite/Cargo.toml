@@ -22,7 +22,8 @@ async-trait.workspace = true
 cdk-common.workspace = true
 cdk-prometheus = { workspace = true, optional = true }
 cdk-sql-common = { workspace = true }
-rusqlite = { version = "0.31", features = ["bundled"]}
+# Match LDK Node's range; rusqlite 0.40.0 and 0.40.1 do not build on MSRV.
+rusqlite = { version = ">=0.31.0, <0.40.0", features = ["bundled"]}
 tokio = { workspace = true, features = ["rt-multi-thread"]}
 tracing.workspace = true
 serde_json.workspace = true

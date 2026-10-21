@@ -2,7 +2,8 @@
 extend-exclude = [
     "target/",
     "bindings/dart/flutter_example",
-    "Cargo.lock.msrv"
+    "Cargo.lock.msrv",
+    "tests/rusqlite-compat/Cargo.lock.min"
 ]
 
 [default]

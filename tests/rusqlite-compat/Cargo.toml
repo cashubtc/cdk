@@ -1,0 +1,19 @@
+[package]
+name = "cdk-rusqlite-compat"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.85"
+publish = false
+
+# Resolve independently of the root workspace's LDK Node dependency.
+[workspace]
+
+[dependencies]
+cdk-sqlite = { path = "../../crates/cdk-sqlite" }
+cdk-common = { path = "../../crates/cdk-common", features = ["test"] }
+rusqlite = { version = ">=0.31.0, <0.40.0", features = ["bundled"] }
+paste = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tempfile = "3"
+# Match Cargo.lock.msrv: 0.6.4 requires a time release newer than our MSRV.
+simple_asn1 = "=0.6.3"
