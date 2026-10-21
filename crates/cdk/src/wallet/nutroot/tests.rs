@@ -207,6 +207,64 @@ async fn nutroot_payment_outputs_keep_policy_and_separate_seed_change() {
 }
 
 #[test]
+fn sign_quote_commits_the_draw_and_the_quote_state() {
+    use std::str::FromStr;
+
+    // The shared partial mint: an 8-sat quote with 3 issued, drawing 4.
+    let vectors: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../cashu/src/nuts/nut10/nutroot/nutroot_v3_vectors.json"
+    ))
+    .unwrap();
+    let vector = &vectors["transcript"]["partial_mint"];
+    let lock = &vectors["nut13_v3"]["quote_locks"][0];
+    let key = SecretKey::from_hex(lock["privkey"].as_str().unwrap()).unwrap();
+    let outputs: Vec<BlindedMessage> = vector["tx"]["blinded_outputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| BlindedMessage {
+            amount: v["amount"].as_u64().unwrap().into(),
+            keyset_id: Id::from_str(v["keyset_id"].as_str().unwrap()).unwrap(),
+            blinded_secret: cdk_common::nuts::PublicKey::from_hex(v["B_"].as_str().unwrap())
+                .unwrap(),
+            witness: None,
+        })
+        .collect();
+    let mut quote = cdk_common::wallet::MintQuote::new(
+        "quote-mint-0004".to_string(),
+        cdk_common::mint_url::MintUrl::from_str("https://mint.example").unwrap(),
+        cdk_common::PaymentMethod::from_str("bolt11").unwrap(),
+        Some(8.into()),
+        cdk_common::nuts::CurrencyUnit::Sat,
+        String::new(),
+        0,
+        Some(key.clone()),
+    );
+    quote.amount_issued = 3.into();
+
+    let signature = super::sign_quote(&outputs, &[quote], None, "quote-mint-0004", &key).unwrap();
+    let digest: [u8; 32] = cdk_common::util::hex::decode(vector["input_digest"].as_str().unwrap())
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let verified = bitcoin::secp256k1::schnorr::Signature::from_str(&signature)
+        .map(|sig| {
+            cdk_common::SECP256K1
+                .verify_schnorr(
+                    &sig,
+                    &bitcoin::secp256k1::Message::from_digest(digest),
+                    &key.as_secp256k1()
+                        .unwrap()
+                        .x_only_public_key(&cdk_common::SECP256K1)
+                        .0,
+                )
+                .is_ok()
+        })
+        .unwrap();
+    assert!(verified);
+}
+
+#[test]
 fn x_only_twin_derives_a_key_blinded_from_the_even_lift() {
     use bitcoin::secp256k1::{Parity, PublicKey, SecretKey};
     use cdk_common::nuts::nut10::nutroot::{receiver_key, sender_key};

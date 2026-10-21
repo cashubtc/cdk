@@ -804,6 +804,7 @@ fn shared_mint_quote_input_vectors() {
                 id: v["quote_id"].as_str().unwrap().to_owned(),
                 pubkey: crate::nuts::PublicKey::from_hex(v["lock_pubkey"].as_str().unwrap())
                     .unwrap(),
+                issued: v["issued"].as_u64().unwrap().into(),
             })
             .collect();
         let outputs: Vec<_> = list(&tx["blinded_outputs"])

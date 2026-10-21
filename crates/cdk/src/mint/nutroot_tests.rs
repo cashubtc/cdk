@@ -4,6 +4,7 @@ use cdk_common::nuts::{CurrencyUnit, SwapRequest, Witness};
 
 use crate::test_helpers::mint::{
     create_test_blinded_messages, create_test_mint_with_version, mint_test_proofs,
+    mint_test_proofs_signed_at,
 };
 
 #[tokio::test]
@@ -245,4 +246,18 @@ async fn nutroot_disclosure_opens_only_the_exercised_leaf_commitment() {
         );
         mint.stop().await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn nutroot_mint_witness_over_another_issued_is_20008() {
+    let mint = create_test_mint_with_version(None).await.unwrap();
+    let err = mint_test_proofs_signed_at(&mint, 8.into(), 1.into())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, crate::Error::SignatureMissingOrInvalid));
+    assert_eq!(
+        cdk_common::error::ErrorResponse::from(err).code.to_code(),
+        20008
+    );
+    mint.stop().await.unwrap();
 }

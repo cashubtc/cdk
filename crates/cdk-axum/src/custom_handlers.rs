@@ -994,6 +994,7 @@ mod tests {
                 id: quote.to_string(),
                 amount: 2.into(),
                 pubkey: key.public_key(),
+                issued: Amount::ZERO,
             }],
             outputs,
             &[],
