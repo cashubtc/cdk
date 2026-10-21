@@ -66,6 +66,43 @@ async fn nutroot_mint_and_swap_require_transaction_authorization() {
 }
 
 #[tokio::test]
+async fn nutroot_witness_length_allows_maximal_script_paths() {
+    let mint = create_test_mint_with_version(None).await.unwrap();
+    for (padding, accepted) in [(2000, true), (5000, false)] {
+        let proofs = mint_test_proofs(&mint, 8.into()).await.unwrap();
+        let (outputs, _) = create_test_blinded_messages(&mint, 8.into()).await.unwrap();
+        let mut request = SwapRequest::new(proofs, outputs);
+        let transaction = Transaction::new(request.inputs(), &[], request.outputs(), &[]).unwrap();
+        for (index, proof) in request.inputs_mut().iter_mut().enumerate() {
+            let key = proof
+                .spend_info
+                .as_ref()
+                .unwrap()
+                .key_path_key(&proof.secret.to_string(), None)
+                .unwrap();
+            let witness = serde_json::to_string(&NutrootWitness::key_path(
+                &key,
+                transaction.input_digest(index).unwrap(),
+            ))
+            .unwrap();
+            // Trailing whitespace stays valid JSON, so the length is all that changes.
+            proof.witness = Some(Witness::NutrootWitness(witness + &" ".repeat(padding)));
+            proof.spend_info = None;
+        }
+        let result = mint.process_swap_request(request).await;
+        if accepted {
+            assert!(result.is_ok(), "{padding}: {:?}", result.err());
+        } else {
+            assert!(matches!(
+                result,
+                Err(crate::Error::ProofContentTooLarge { max: 4096, .. })
+            ));
+        }
+    }
+    mint.stop().await.unwrap();
+}
+
+#[tokio::test]
 async fn nutroot_disclosure_opens_only_the_exercised_leaf_commitment() {
     use cdk_common::amount::SplitTarget;
     use cdk_common::nuts::nut10::nutroot::{self, Condition, Leaf, NutrootOption};

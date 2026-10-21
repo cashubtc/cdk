@@ -258,7 +258,16 @@ impl RecoveryHelpers for Wallet {
 
         // Reconstruct the swap request
         let mut swap_request = SwapRequest::new(inputs, blinded_messages.to_vec());
-        self.sign_nutroot_swap(&mut swap_request, &[], &[]).await?;
+        // The original request may have used keys or an input order this replay cannot reproduce.
+        if let Err(e) = self.sign_nutroot_swap(&mut swap_request, &[], &[]).await {
+            tracing::warn!(
+                "{} saga {} - cannot re-sign v3 inputs ({}), falling back to other recovery",
+                saga_type,
+                saga_id,
+                escape_log_value(&e)
+            );
+            return Ok(None);
+        }
 
         tracing::info!(
             "{} saga {} - attempting replay of post_swap request",

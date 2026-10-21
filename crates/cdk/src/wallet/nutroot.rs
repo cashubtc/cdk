@@ -1,6 +1,6 @@
 //! Nutroot transaction signing and transfer-key handling.
 use bitcoin::hashes::{sha256, Hash};
-use bitcoin::secp256k1::{PublicKey as SecpPublicKey, SecretKey as SecpSecretKey};
+use bitcoin::secp256k1::{Parity, PublicKey as SecpPublicKey, SecretKey as SecpSecretKey};
 use cdk_common::nuts::nut10::nutroot::{self, Condition, KeyPurpose, Transaction};
 use cdk_common::nuts::{KeySetVersion, Proofs, ProofsMethods, SecretKey, SwapRequest, Witness};
 
@@ -9,6 +9,18 @@ use crate::Error;
 
 fn error(error: nutroot::Error) -> Error {
     cdk_common::nuts::nut10::Error::from(error).into()
+}
+
+/// Add `-p` for each key whose point has odd Y.
+///
+/// A sender holding only the x-only key lifts it to even Y (NUT-28), so it blinds `-p`'s point.
+fn with_x_only_twins(keys: Vec<SecpSecretKey>) -> Vec<SecpSecretKey> {
+    let twins: Vec<_> = keys
+        .iter()
+        .filter(|key| key.x_only_public_key(&cdk_common::SECP256K1).1 == Parity::Odd)
+        .map(|key| key.negate())
+        .collect();
+    keys.into_iter().chain(twins).collect()
 }
 
 impl Wallet {
@@ -89,7 +101,7 @@ impl Wallet {
     #[tracing::instrument(skip_all)]
     pub async fn sign_nutroot_package(&self, encoded: &str) -> Result<String, Error> {
         let mut package: nutroot::SigningPackage = encoded.parse().map_err(error)?;
-        let keys = self.nutroot_signing_keys().await?;
+        let keys = with_x_only_twins(self.nutroot_signing_keys().await?);
         package.sign(&keys).map_err(error)?;
         package.encode().map_err(error)
     }
@@ -179,6 +191,7 @@ impl Wallet {
             .map(|key| key.as_secp256k1().copied())
             .collect::<Result<Vec<_>, _>>()?;
         known_keys.extend(self.nutroot_signing_keys().await?);
+        let known_keys = with_x_only_twins(known_keys);
         let stored = self.localstore.get_proofs_by_ys(inputs.ys()?).await?;
         let now = cdk_common::util::unix_time();
         let mut updates = vec![];
