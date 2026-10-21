@@ -1043,3 +1043,31 @@ fn shared_template_escrow_vectors() {
         .verify_in(secret, digest, self_deal.txout_keys(), 0)
         .is_err());
 }
+
+#[test]
+fn script_only_locks_use_only_listed_leaves() {
+    let key = PublicKey::from_secret_key(
+        &crate::SECP256K1,
+        &bitcoin::secp256k1::SecretKey::from_slice(&[1; 32]).unwrap(),
+    );
+    let template = Leaf::new(1, vec![key], Condition::Template(vec![key])).unwrap();
+    let option = NutrootOption {
+        key: nums_point(),
+        leaves: Some(vec![hex::encode(template.to_bytes())]),
+        blind_keys: None,
+    };
+    let core: Vec<_> = super::CORE_LEAF_TYPES.map(String::from).to_vec();
+    assert!(option.check_listed_leaves(&core).is_err());
+    assert!(option.check_listed_leaves(&[]).is_err());
+    let mut listed = core.clone();
+    listed.push("0005".to_string());
+    option.check_listed_leaves(&listed).unwrap();
+    // An empty list reads as the core leaves.
+    let core_leaf = Leaf::new(1, vec![key], Condition::Threshold).unwrap();
+    NutrootOption {
+        leaves: Some(vec![hex::encode(core_leaf.to_bytes())]),
+        ..option
+    }
+    .check_listed_leaves(&[])
+    .unwrap();
+}
