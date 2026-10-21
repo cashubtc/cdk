@@ -423,6 +423,7 @@ impl MeltSaga<Initial> {
             return Err(err.into());
         }
 
+        let states = Mint::pending_proof_states(&mut tx, melt_request.inputs()).await?;
         tx.commit().await?;
 
         tracing::info!(
@@ -437,8 +438,8 @@ impl MeltSaga<Initial> {
         );
 
         // Publish proof state changes
-        for pk in input_ys.iter() {
-            self.pubsub.proof_state((*pk, State::Pending));
+        for state in states {
+            self.pubsub.proof_state(state);
         }
 
         // Publish melt quote status change AFTER transaction commits

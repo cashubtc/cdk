@@ -193,7 +193,8 @@ where
     let proof = Proof {
         amount: Amount::from(100),
         keyset_id,
-        secret: Secret::from_str("bls proof secret").unwrap(),
+        // A v3 secret is a compressed secp256k1 point (NUT-00).
+        secret: Secret::from_str(&SecretKey::generate().public_key().to_hex()).unwrap(),
         c: BlsG1PublicKey::hash_to_curve(b"bls proof signature").into(),
         witness: None,
         dleq: None,

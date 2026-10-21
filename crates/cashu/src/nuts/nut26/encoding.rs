@@ -2752,7 +2752,7 @@ fn nutroot_policy_roundtrips_without_changing_leaf_bytes() {
     use crate::nuts::nut10::nutroot::{nums_point, Condition, Leaf, NutrootOption};
     let key = bitcoin::secp256k1::SecretKey::from_slice(&[7; 32]).unwrap();
     let public = bitcoin::secp256k1::PublicKey::from_secret_key(&crate::SECP256K1, &key);
-    let leaf = Leaf::new(1, vec![public], Condition::Threshold, true).unwrap();
+    let leaf = Leaf::new(1, vec![public], Condition::Threshold).unwrap();
     let policy = NutrootOption {
         key: nums_point(),
         leaves: Some(vec![crate::util::hex::encode(leaf.to_bytes())]),

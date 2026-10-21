@@ -4,6 +4,9 @@ use bitcoin::secp256k1::PublicKey;
 
 use super::{tagged_hash, Error};
 
+/// NUT-10 core leaf types as `leaf_version || leaf_type` hex, as a mint lists them in NUT-06.
+pub const CORE_LEAF_TYPES: [&str; 4] = ["0001", "0002", "0003", "0004"];
+
 /// Additional condition on a threshold of signatures.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Condition {
@@ -23,22 +26,15 @@ pub struct Leaf {
     threshold: u8,
     keys: Vec<PublicKey>,
     condition: Condition,
-    disclosure: bool,
 }
 
 impl Leaf {
     /// Construct a canonical leaf. Commit leaves require zero keys and threshold.
-    pub fn new(
-        threshold: u8,
-        keys: Vec<PublicKey>,
-        condition: Condition,
-        disclosure: bool,
-    ) -> Result<Self, Error> {
+    pub fn new(threshold: u8, keys: Vec<PublicKey>, condition: Condition) -> Result<Self, Error> {
         let leaf = Self {
             threshold,
             keys,
             condition,
-            disclosure,
         };
         leaf.validate()?;
         Ok(leaf)
@@ -46,7 +42,7 @@ impl Leaf {
 
     fn validate(&self) -> Result<(), Error> {
         if matches!(self.condition, Condition::Commit(_)) {
-            if self.threshold != 0 || !self.keys.is_empty() || self.disclosure {
+            if self.threshold != 0 || !self.keys.is_empty() {
                 return Err(Error::InvalidLeaf);
             }
         } else if self.threshold == 0 || usize::from(self.threshold) > self.keys.len() {
@@ -76,7 +72,7 @@ impl Leaf {
         }
         let mut remaining = &bytes[2..];
         let mut last = 0;
-        let (mut n, mut keys, mut time, mut hash, mut disclosure) = (None, None, None, None, false);
+        let (mut n, mut keys, mut time, mut hash) = (None, None, None, None);
         while !remaining.is_empty() {
             if remaining.len() < 3 {
                 return Err(Error::InvalidLeaf);
@@ -105,7 +101,6 @@ impl Leaf {
                     time = Some(u64::from_be_bytes(number));
                 }
                 8 if len == 32 => hash = Some(value.try_into().map_err(|_| Error::InvalidLeaf)?),
-                10 if value == [1] => disclosure = true,
                 _ => return Err(Error::InvalidLeaf),
             }
         }
@@ -113,18 +108,15 @@ impl Leaf {
             (1, None, None) => Condition::Threshold,
             (2, Some(time), None) => Condition::After(time),
             (3, None, Some(hash)) => Condition::Hashlock(hash),
-            (4, None, Some(hash)) if n.is_none() && keys.is_none() && !disclosure => {
-                Condition::Commit(hash)
-            }
+            (4, None, Some(hash)) if n.is_none() && keys.is_none() => Condition::Commit(hash),
             _ => return Err(Error::InvalidLeaf),
         };
         let leaf = match condition {
-            Condition::Commit(_) => Self::new(0, vec![], condition, false)?,
+            Condition::Commit(_) => Self::new(0, vec![], condition)?,
             _ => Self::new(
                 n.ok_or(Error::InvalidLeaf)?,
                 keys.ok_or(Error::InvalidLeaf)?,
                 condition,
-                disclosure,
             )?,
         };
         Ok(leaf)
@@ -151,9 +143,6 @@ impl Leaf {
             Condition::Hashlock(hash) | Condition::Commit(hash) => record(&mut bytes, 8, &hash),
             Condition::Threshold => {}
         }
-        if self.disclosure {
-            record(&mut bytes, 10, &[1]);
-        }
         bytes
     }
 
@@ -172,10 +161,6 @@ impl Leaf {
     /// Additional condition or inert commitment.
     pub fn condition(&self) -> &Condition {
         &self.condition
-    }
-    /// Whether an exercised witness must be published.
-    pub fn disclosure(&self) -> bool {
-        self.disclosure
     }
 }
 

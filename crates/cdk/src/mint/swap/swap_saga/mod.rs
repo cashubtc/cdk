@@ -249,10 +249,11 @@ impl<'a> SwapSaga<'a, Initial> {
             return Err(err.into());
         }
 
+        let states = Mint::pending_proof_states(&mut tx, input_proofs).await?;
         tx.commit().await?;
         // Publish proof state changes
-        for pk in &ys {
-            self.pubsub.proof_state((*pk, State::Pending));
+        for state in states {
+            self.pubsub.proof_state(state);
         }
         // Register compensation (uses LIFO via push_front)
         self.compensations.push_front(Box::new(RemoveSwapSetup {
@@ -450,7 +451,7 @@ impl SwapSaga<'_, Signed> {
             // Don't rollback - swap succeeded, orphaned saga is harmless
         }
 
-        let states = Mint::spent_proof_states(&mut tx, &self.state_data.ys).await?;
+        let states = Mint::proof_states(&mut tx, &self.state_data.ys, State::Spent).await?;
         tx.commit().await?;
         for state in states {
             self.pubsub.proof_state(state);

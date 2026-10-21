@@ -87,12 +87,9 @@ pub struct ProofState {
     pub state: State,
     /// Witness data if it is supplied
     pub witness: Option<Witness>,
-    /// Published per-input v3 digest, only for a spent disclosure leaf.
+    /// Input digest a v3 witness signs, published with it from `PENDING` on.
     #[serde(default)]
     pub input_digest: Option<String>,
-    /// Commitment to a spent v3 input's accepted witness and input digest.
-    #[serde(default)]
-    pub commitment: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -102,7 +99,6 @@ struct ProofStateWire {
     state: State,
     witness: Option<String>,
     input_digest: Option<String>,
-    commitment: Option<String>,
 }
 
 impl TryFrom<ProofStateWire> for ProofState {
@@ -121,7 +117,6 @@ impl TryFrom<ProofStateWire> for ProofState {
                 .map(|raw| Witness::from_json_for_version(&serde_json::to_string(&raw)?, version))
                 .transpose()?,
             input_digest: value.input_digest,
-            commitment: value.commitment,
         })
     }
 }
@@ -133,7 +128,6 @@ impl From<(PublicKey, State)> for ProofState {
             state: value.1,
             witness: None,
             input_digest: None,
-            commitment: None,
         }
     }
 }

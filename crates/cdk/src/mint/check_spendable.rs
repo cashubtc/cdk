@@ -33,18 +33,19 @@ impl Mint {
             return Err(Error::UnknownPaymentState);
         }
 
-        // Collect ys that need witness fetching (only spent proofs expose witnesses)
+        // Pre-v3 proofs show their witness once spent, and a pending HTLC with
+        // a pubkeys tag its preimage alone (NUT-07); v3 ones use the spend record.
+        let state_of: HashMap<_, _> = check_state.ys.iter().zip(states.iter()).collect();
         let ys_needing_witness: Vec<_> = check_state
             .ys
             .iter()
             .zip(states.iter())
             .filter_map(|(y, state)| match state {
-                Some(State::Spent) => Some(*y),
+                Some(State::Spent | State::Pending) => Some(*y),
                 _ => None,
             })
             .collect();
 
-        // Build a lookup map for witnesses (only query if there are ys to fetch)
         let witness_map: HashMap<_, _> = if ys_needing_witness.is_empty() {
             HashMap::new()
         } else {
@@ -53,19 +54,25 @@ impl Mint {
                 .await?
                 .into_iter()
                 .flatten()
-                // Nutroot witnesses are private unless a disclosed leaf and its
-                // persisted input digest can open a spend commitment. Never use
-                // the legacy unconditional witness response for version 02.
                 .filter(|proof| {
                     proof.keyset_id.get_version() != cdk_common::nuts::KeySetVersion::Version02
                 })
-                .filter_map(|p| p.y().ok().map(|y| (y, p.witness)))
+                .filter_map(|proof| {
+                    let y = proof.y().ok()?;
+                    let witness = match state_of.get(&y) {
+                        Some(Some(State::Pending)) => {
+                            crate::mint::proofs::pending_legacy_witness(&proof)
+                        }
+                        _ => proof.witness,
+                    };
+                    Some((y, witness))
+                })
                 .collect()
         };
 
         let spends = self.localstore.get_proof_spends(&check_state.ys).await?;
 
-        // Construct response with the same disclosure policy as WebSocket events.
+        // Same publication rule as WebSocket events.
         let proof_states = check_state
             .ys
             .iter()
@@ -76,7 +83,6 @@ impl Mint {
                     y: *y,
                     state: state.unwrap_or(State::Unspent),
                     witness: witness_map.get(y).cloned().flatten(),
-                    commitment: None,
                     input_digest: None,
                 };
                 if let Some(record) = record {

@@ -1,10 +1,10 @@
 //! Nutroot primitives for version `02` keysets.
 //!
 //! Implements the draft in NUTs PR #443, revision
-//! `9fdc29b104fd703402e98aab130303a685ef9b41`.
+//! `d27121e7cbee634429eae1af92d6af36e568cdfc`.
 //!
 //! CDK uses these primitives for version-02 transaction authorization, payment
-//! policies, signing packages, receipts, and request-bound blind authentication.
+//! policies, signing packages, and request-bound blind authentication.
 //!
 //! [`Transaction`] binds quote amounts supplied by its caller; mints must load
 //! those amounts from their own quote state. [`SpendInfo::verify`] checks the
@@ -17,7 +17,6 @@ use thiserror::Error;
 mod derivation;
 mod leaf;
 mod locking;
-mod receipt;
 pub(crate) mod serde_spend_info;
 mod signing;
 mod spend;
@@ -29,15 +28,11 @@ mod witness;
 #[cfg(test)]
 mod tests;
 
-pub use self::derivation::{
-    derive_blinding_factor, derive_key, derive_quote_id_preimage, derive_quote_key,
-    derived_quote_id, KeyPurpose,
-};
-pub use self::leaf::{Condition, Leaf};
+pub use self::derivation::{derive_blinding_factor, derive_key, derive_quote_key, KeyPurpose};
+pub use self::leaf::{Condition, Leaf, CORE_LEAF_TYPES};
 pub use self::locking::{nums_point, NutrootOption};
-pub use self::receipt::{ReceiptOpening, SpendReceipt};
 pub use self::signing::{SigningInput, SigningKind, SigningPackage, SigningSpend};
-pub use self::spend::{spend_commitment, SpendRecord};
+pub use self::spend::SpendRecord;
 pub use self::spend_info::{nums_key, receiver_key, sender_key, SpendInfo};
 pub use self::transaction::{authorized_request_digest, MintQuoteInput, Quote, Transaction};
 pub use self::tree::Tree;

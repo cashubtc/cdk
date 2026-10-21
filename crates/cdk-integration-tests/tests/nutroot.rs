@@ -21,7 +21,7 @@ async fn nutroot_payment_receive_and_receipt_export() {
 
     for script_path in [false, true] {
         let policy = if script_path {
-            let leaf = Leaf::new(1, vec![public], Condition::Threshold, true).unwrap();
+            let leaf = Leaf::new(1, vec![public], Condition::Threshold).unwrap();
             NutrootOption {
                 key: nums_point(),
                 leaves: Some(vec![cashu::util::hex::encode(leaf.to_bytes())]),
@@ -74,94 +74,5 @@ async fn nutroot_payment_receive_and_receipt_export() {
     }
     assert_eq!(payer.total_balance().await.unwrap(), Amount::from(16));
     assert_eq!(receiver.total_balance().await.unwrap(), Amount::from(16));
-    let receipt_ids = receiver.nutroot_receipt_ids().await.unwrap();
-    assert_eq!(receipt_ids.len(), 2);
-    for id in receipt_ids {
-        let receipt = receiver.export_nutroot_receipt(&id).await.unwrap();
-        payer.verify_nutroot_receipt(&receipt).await.unwrap();
-    }
-    mint.stop().await.unwrap();
-}
-
-#[tokio::test]
-async fn nutroot_receipt_survives_mixed_legacy_redemption_without_legacy_dleq() {
-    use cashu::{KeySetInfo, Token};
-    use cdk_common::wallet::KeysetLoadPolicy;
-    let mint = create_and_start_test_mint().await.unwrap();
-    let amounts = vec![1, 2, 4, 8, 16, 32];
-    mint.rotate_keyset_by_version(
-        CurrencyUnit::Sat,
-        amounts.clone(),
-        0,
-        KeySetVersion::Version01,
-        None,
-    )
-    .await
-    .unwrap();
-    let wallet = create_test_wallet_for_mint(mint.clone()).await.unwrap();
-    fund_wallet(wallet.clone(), 8, None).await.unwrap();
-    mint.rotate_keyset_by_version(
-        CurrencyUnit::Sat,
-        amounts,
-        0,
-        KeySetVersion::Version02,
-        None,
-    )
-    .await
-    .unwrap();
-    wallet.keysets(KeysetLoadPolicy::Refresh).await.unwrap();
-    fund_wallet(wallet.clone(), 8, None).await.unwrap();
-    let token = wallet
-        .prepare_send(
-            12.into(),
-            SendOptions {
-                nutroot: Some(NutrootOption {
-                    key: *SecretKey::generate().public_key().as_secp256k1().unwrap(),
-                    leaves: None,
-                    blind_keys: None,
-                }),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap()
-        .confirm(None)
-        .await
-        .unwrap();
-    assert_eq!(token.value().unwrap(), Amount::from(12));
-    let ids = wallet.nutroot_receipt_ids().await.unwrap();
-    assert_eq!(ids.len(), 1);
-    let encoded = wallet.export_nutroot_receipt(&ids[0]).await.unwrap();
-    let mut receipt: cashu::nuts::nut10::nutroot::SpendReceipt = encoded.parse().unwrap();
-    let spent: Token = receipt.token.parse().unwrap();
-    let keysets: Vec<_> = wallet
-        .keysets(Default::default())
-        .await
-        .unwrap()
-        .into_iter()
-        .map(|keys| KeySetInfo {
-            id: keys.id,
-            unit: keys.unit,
-            active: keys.active.unwrap_or(false),
-            input_fee_ppk: keys.input_fee_ppk,
-            final_expiry: keys.final_expiry,
-        })
-        .collect();
-    let mut proofs = spent.proofs(&keysets).unwrap();
-    assert!(proofs
-        .iter()
-        .any(|proof| proof.keyset_id.get_version() == KeySetVersion::Version01));
-    assert!(proofs
-        .iter()
-        .any(|proof| proof.keyset_id.get_version() == KeySetVersion::Version02));
-    for proof in &mut proofs {
-        proof.dleq = None;
-    }
-    receipt.token =
-        Token::new(spent.mint_url().unwrap(), proofs, None, CurrencyUnit::Sat).to_string();
-    wallet
-        .verify_nutroot_receipt(&receipt.encode().unwrap())
-        .await
-        .unwrap();
     mint.stop().await.unwrap();
 }

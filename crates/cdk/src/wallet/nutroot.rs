@@ -24,78 +24,6 @@ fn with_x_only_twins(keys: Vec<SecpSecretKey>) -> Vec<SecpSecretKey> {
 }
 
 impl Wallet {
-    fn nutroot_receipt_namespace(&self) -> String {
-        sha256::Hash::hash(format!("{}\0{}", self.mint_url, self.unit).as_bytes()).to_string()
-    }
-
-    /// List journal identifiers for signed Nutroot transactions. An entry is
-    /// evidence of an attempted spend until verified against the mint.
-    #[tracing::instrument(skip_all)]
-    pub async fn nutroot_receipt_ids(&self) -> Result<Vec<String>, Error> {
-        Ok(self
-            .localstore
-            .kv_list("nutroot_receipts", &self.nutroot_receipt_namespace())
-            .await?)
-    }
-
-    /// Export a journaled receipt only after checking signatures and the mint's
-    /// spent commitments. Receipts reveal the entire transaction to recipients.
-    #[tracing::instrument(skip_all)]
-    pub async fn export_nutroot_receipt(&self, id: &str) -> Result<String, Error> {
-        let bytes = self
-            .localstore
-            .kv_read("nutroot_receipts", &self.nutroot_receipt_namespace(), id)
-            .await?
-            .ok_or_else(|| error(nutroot::Error::InvalidTransaction))?;
-        let receipt: nutroot::SpendReceipt = serde_json::from_slice(&bytes)?;
-        let encoded = receipt.encode().map_err(error)?;
-        self.verify_nutroot_receipt(&encoded).await?;
-        Ok(encoded)
-    }
-
-    /// Verify a receipt against this wallet's mint, including mint signatures,
-    /// the complete transcript, witnesses, and independently fetched spend state.
-    #[tracing::instrument(skip_all)]
-    pub async fn verify_nutroot_receipt(&self, encoded: &str) -> Result<(), Error> {
-        let receipt: nutroot::SpendReceipt = encoded.parse().map_err(error)?;
-        let token: cdk_common::nuts::Token = receipt.token.parse()?;
-        if token.mint_url()? != self.mint_url || token.unit().as_ref() != Some(&self.unit) {
-            return Err(error(nutroot::Error::InvalidTransaction));
-        }
-        let proofs = self.token_proofs(&token).await?;
-        // Receipts open v3 spends; mixed legacy inputs may have no DLEQ.
-        // Their records remain bound by the mint-accepted transaction digest.
-        let v3_proofs = proofs
-            .iter()
-            .filter(|proof| proof.keyset_id.get_version() == KeySetVersion::Version02)
-            .cloned()
-            .collect();
-        self.verify_token_signatures(&cdk_common::nuts::Token::new(
-            self.mint_url.clone(),
-            v3_proofs,
-            None,
-            self.unit.clone(),
-        ))
-        .await?;
-        let keysets: Vec<_> = proofs
-            .iter()
-            .map(|proof| cdk_common::nuts::KeySetInfo {
-                id: proof.keyset_id,
-                unit: self.unit.clone(),
-                active: false,
-                input_fee_ppk: 0,
-                final_expiry: None,
-            })
-            .collect();
-        let states = self
-            .client
-            .post_check_state(cdk_common::nuts::CheckStateRequest { ys: proofs.ys()? })
-            .await?;
-        receipt
-            .verify(&keysets, &states.states, cdk_common::util::unix_time())
-            .map_err(error)
-    }
-
     /// Sign a caller-approved Nutroot package with matching wallet keyring keys.
     /// Inspect its transaction and quote amount before calling this method.
     #[tracing::instrument(skip_all)]
@@ -250,31 +178,6 @@ impl Wallet {
             }
             // Transfer keys and unexercised tree leaves are wallet data, not mint inputs.
             proof.spend_info = None;
-        }
-        if inputs
-            .iter()
-            .any(|proof| proof.keyset_id.get_version() == KeySetVersion::Version02)
-        {
-            let receipt = nutroot::SpendReceipt::new(
-                self.mint_url.clone(),
-                self.unit.clone(),
-                inputs,
-                transaction,
-                now,
-            )
-            .map_err(error)?;
-            // Retain each exact signed attempt, even across proof deletion and
-            // retries whose randomized signatures produce different openings.
-            let bytes = serde_json::to_vec(&receipt)?;
-            let id = sha256::Hash::hash(&bytes).to_string();
-            self.localstore
-                .kv_write(
-                    "nutroot_receipts",
-                    &self.nutroot_receipt_namespace(),
-                    &id,
-                    &bytes,
-                )
-                .await?;
         }
         if !updates.is_empty() {
             self.localstore.update_proofs(updates, vec![]).await?;

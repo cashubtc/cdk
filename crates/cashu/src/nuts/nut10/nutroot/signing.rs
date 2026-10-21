@@ -1,10 +1,11 @@
 use std::collections::HashSet;
 use std::str::FromStr;
 
+use bitcoin::base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use bitcoin::base64::Engine;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 use serde::{Deserialize, Serialize};
 
-use super::receipt::{decode_transport, encode_transport};
 use super::{receiver_key, Error, Leaf, Quote, Transaction, Witness};
 use crate::nuts::{BlindedMessage, Id, KeySetVersion, Proof};
 use crate::secret::Secret;
@@ -359,4 +360,25 @@ impl FromStr for SigningPackage {
         package.validate()?;
         Ok(package)
     }
+}
+
+fn encode_transport<T: Serialize>(prefix: &str, value: &T) -> Result<String, Error> {
+    let bytes = serde_json::to_vec(value).map_err(|_| Error::InvalidTransaction)?;
+    if bytes.len() > 16 * 1024 * 1024 {
+        return Err(Error::InvalidTransaction);
+    }
+    Ok(format!("{prefix}{}", URL_SAFE_NO_PAD.encode(bytes)))
+}
+
+fn decode_transport<T: serde::de::DeserializeOwned>(prefix: &str, value: &str) -> Result<T, Error> {
+    if value.len() > 24 * 1024 * 1024 {
+        return Err(Error::InvalidTransaction);
+    }
+    let data = value
+        .strip_prefix(prefix)
+        .ok_or(Error::InvalidTransaction)?;
+    let bytes = URL_SAFE_NO_PAD
+        .decode(data)
+        .map_err(|_| Error::InvalidTransaction)?;
+    serde_json::from_slice(&bytes).map_err(|_| Error::InvalidTransaction)
 }

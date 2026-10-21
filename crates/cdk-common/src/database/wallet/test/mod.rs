@@ -1685,13 +1685,9 @@ where
     let mut info = test_proof_info(test_keyset_id(), 1, test_mint_url());
     let key = SecretKey::generate();
     let public = *key.public_key().as_secp256k1().unwrap();
-    let tree = Tree::new(vec![Leaf::new(
-        1,
-        vec![public],
-        Condition::Threshold,
-        false,
-    )
-    .unwrap()])
+    let tree = Tree::new(vec![
+        Leaf::new(1, vec![public], Condition::Threshold).unwrap()
+    ])
     .unwrap();
     info.proof.keyset_id = Id::from_bytes(&[vec![2], vec![8; 32]].concat()).unwrap();
     info.proof.secret = Secret::new(

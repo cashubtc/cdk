@@ -155,12 +155,7 @@ impl NutrootOption {
                                 }
                             })
                             .collect::<Result<Vec<_>, Error>>()?;
-                        Leaf::new(
-                            leaf.threshold(),
-                            keys,
-                            leaf.condition().clone(),
-                            leaf.disclosure(),
-                        )
+                        Leaf::new(leaf.threshold(), keys, leaf.condition().clone())
                     })
                     .collect::<Result<Vec<_>, Error>>()
             })
@@ -224,7 +219,6 @@ impl NutrootOption {
                     .position(|actual| {
                         requested.threshold() == actual.threshold()
                             && requested.condition() == actual.condition()
-                            && requested.disclosure() == actual.disclosure()
                             && requested.keys().len() == actual.keys().len()
                             && requested.keys().iter().zip(actual.keys()).all(
                                 |(key, substituted)| {
@@ -283,7 +277,7 @@ impl NutrootOption {
         };
         let threshold =
             u8::try_from(policy.num_sigs().unwrap_or(1)).map_err(|_| Error::InvalidLeaf)?;
-        let mut leaves = vec![Leaf::new(threshold, keys, condition, false)?];
+        let mut leaves = vec![Leaf::new(threshold, keys, condition)?];
         match (policy.locktime(), policy.refund_keys()) {
             (Some(time), Some(keys)) if !keys.is_empty() => {
                 let threshold =
@@ -293,7 +287,7 @@ impl NutrootOption {
                     .iter()
                     .map(|key| key.as_secp256k1().copied().map_err(|_| Error::InvalidLeaf))
                     .collect::<Result<Vec<_>, _>>()?;
-                leaves.push(Leaf::new(threshold, keys, Condition::After(time), false)?);
+                leaves.push(Leaf::new(threshold, keys, Condition::After(time))?);
             }
             (None, None) => {}
             _ => return Err(Error::InvalidLeaf),
