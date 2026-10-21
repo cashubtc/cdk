@@ -63,17 +63,21 @@ impl SupportedMethod {
 pub struct PaymentRequest {
     /// Payment id to include in the payment payload.
     #[serde(rename = "i")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub payment_id: Option<String>,
     /// Requested amount net of input fees.
     ///
     /// If this is set, [`Self::unit`] must also be set.
     #[serde(rename = "a")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub amount: Option<Amount>,
     /// Unit of the requested amount.
     #[serde(rename = "u")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub unit: Option<CurrencyUnit>,
     /// Whether this request is intended for a single payment.
     #[serde(rename = "s")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub single_use: Option<bool>,
     /// Mint URLs the receiver accepts or prefers.
     ///
@@ -105,6 +109,7 @@ pub struct PaymentRequest {
     pub supported_methods: Vec<SupportedMethod>,
     /// Human-readable description for the payer to display.
     #[serde(rename = "d")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// Transports for delivering the payment payload, sorted by preference.
     ///
@@ -371,7 +376,9 @@ mod tests {
 
         let request_str = request.to_string();
 
-        assert_eq!(request_str, PAYMENT_REQUEST);
+        // Same request as PAYMENT_REQUEST, without its null `s` and `d`.
+        assert_eq!(request_str, "creqApWFpaGI3YTkwMTc2YWEKYXVjc2F0YW2BeCJodHRwczovL25vZmVlcy50ZXN0bnV0LmNhc2h1LnNwYWNlYXSBo2F0ZW5vc3RyYWF4qW5wcm9maWxlMXFxc2dtNnFmYTNjOGR0ejJmdnpodmZxZWFjbXdtMGU1MHBlM2s1dGZtdnBqam1uMHZqN20ydGdwejNtaHh1ZTY5dWhoeWV0dnY5dWp1ZXJwZDQ2aHh0bmZkdXEzd2Ftbnd2YXo3dG1qdjRreHo3Znc4cWVueHZld3dkY3h6Y205OXVxczZhbW53dmF6N3Rtd2RhZWp1bXIwZHM0bGpoN25hZ4GCYW5iMTc=");
+        assert_eq!(PaymentRequest::from_str(PAYMENT_REQUEST).unwrap(), request);
 
         let req = PaymentRequest::from_str(&request_str).expect("valid payment request");
 
@@ -860,6 +867,7 @@ mod tests {
         // Test decoding the expected encoded string
         let decoded_from_spec = PaymentRequest::from_str(expected_encoded).unwrap();
         assert_eq!(decoded_from_spec.payment_id.as_ref().unwrap(), "7f4a2b39");
+        assert_eq!(encoded, expected_encoded);
     }
 
     #[test]
