@@ -60,6 +60,10 @@ pub struct SendSubCommand {
     /// single frame, one static QR is shown instead.
     #[arg(long)]
     animate: bool,
+    /// Animate as UR fragments instead of binary fountain frames, for
+    /// wallets without fountain support
+    #[arg(long, requires = "animate")]
+    ur: bool,
 }
 
 pub async fn send(
@@ -275,7 +279,7 @@ pub async fn send(
     }
 
     if sub_command_args.animate {
-        display_animated_qr(&token).await?;
+        display_animated_qr(&token, sub_command_args.ur).await?;
     }
 
     Ok(())
@@ -283,25 +287,48 @@ pub async fn send(
 
 /// Display a token as an animated QR code (NUT-16)
 ///
-/// Each UR fragment is rendered as one terminal QR frame. Multi-part tokens
-/// loop frames every 250 ms until Ctrl+C; a token that fits a single frame
-/// is rendered once as a static QR.
-async fn display_animated_qr(token: &cdk::nuts::Token) -> Result<()> {
+/// Each binary fountain frame (or UR fragment, with `ur`) is rendered as one
+/// terminal QR frame. Multi-part tokens loop frames every 250 ms until Ctrl+C;
+/// a token that fits a single frame is rendered once as a static QR.
+async fn display_animated_qr(token: &cdk::nuts::Token, ur: bool) -> Result<()> {
     const TERMINAL_MAX_FRAGMENT_LENGTH: usize = 100;
 
     use std::io;
     use std::time::Duration;
 
+    use qrcode::bits::Bits;
     use qrcode::render::unicode;
-    use qrcode::QrCode;
+    use qrcode::{EcLevel, QrCode, Version};
 
     // Terminal cells cannot render narrower than one column per QR module.
-    // Smaller UR fragments therefore produce smaller, easier-to-scan frames.
-    let mut encoder = token.ur_encoder(TERMINAL_MAX_FRAGMENT_LENGTH)?;
+    // Smaller fragments therefore produce smaller, easier-to-scan frames.
+    let (fragment_count, mut next_frame): (usize, Box<dyn FnMut() -> Result<String>>) = match ur {
+        true => {
+            let mut encoder = token.ur_encoder(TERMINAL_MAX_FRAGMENT_LENGTH)?;
+            (
+                encoder.fragment_count(),
+                Box::new(move || Ok(encoder.next_part()?.to_ascii_uppercase())),
+            )
+        }
+        false => {
+            let mut encoder = token.fountain_encoder(TERMINAL_MAX_FRAGMENT_LENGTH)?;
+            (
+                encoder.fragment_count(),
+                Box::new(move || Ok(encoder.next_frame()?)),
+            )
+        }
+    };
 
-    let render_frame = |part: &str| -> Result<String> {
-        let qr_payload = part.to_ascii_uppercase();
-        let code = QrCode::new(qr_payload.as_bytes())?;
+    // NUT-16 wants one alphanumeric segment; QrCode::new would split out numeric runs.
+    let render_frame = |frame: &str| -> Result<String> {
+        let code = (1..=40)
+            .find_map(|version| {
+                let mut bits = Bits::new(Version::Normal(version));
+                bits.push_alphanumeric_data(frame.as_bytes()).ok()?;
+                bits.push_terminator(EcLevel::M).ok()?;
+                QrCode::with_bits(bits, EcLevel::M).ok()
+            })
+            .ok_or_else(|| anyhow!("QR frame is too long or not alphanumeric"))?;
         Ok(code
             .render::<unicode::Dense1x2>()
             .dark_color(unicode::Dense1x2::Light)
@@ -309,14 +336,14 @@ async fn display_animated_qr(token: &cdk::nuts::Token) -> Result<()> {
             .build())
     };
 
-    if encoder.is_single_fragment() {
-        println!("{}", render_frame(&encoder.next_part()?)?);
+    if fragment_count == 1 {
+        println!("{}", render_frame(&next_frame()?)?);
         return Ok(());
     }
 
     println!(
         "Displaying {} QR frames in a loop. Press q or Ctrl+C to stop.",
-        encoder.fragment_count()
+        fragment_count
     );
 
     // Raw mode reads single keypresses without Enter; note it also turns
@@ -326,8 +353,7 @@ async fn display_animated_qr(token: &cdk::nuts::Token) -> Result<()> {
     let result = tokio::select! {
         result = async {
             loop {
-                let part = encoder.next_part()?;
-                let frame = render_frame(&part)?;
+                let frame = render_frame(&next_frame()?)?;
                 let mut stdout = io::stdout();
                 draw_animated_qr_frame(&mut stdout, &frame)?;
                 tokio::time::sleep(Duration::from_millis(250)).await;
