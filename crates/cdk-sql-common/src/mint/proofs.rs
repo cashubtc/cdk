@@ -72,6 +72,24 @@ where
     .collect::<Result<HashMap<_, _>, _>>()
 }
 
+/// Parse a stored witness: v3 exactly, pre-v3 leniently as before Nutroot.
+fn stored_witness(
+    value: Option<String>,
+    keyset_id: Id,
+) -> Result<Option<cdk_common::Witness>, Error> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if keyset_id.get_version() == cdk_common::nuts::KeySetVersion::Version02 {
+        return Ok(Some(cdk_common::Witness::from_json_for_version(
+            &value,
+            keyset_id.get_version(),
+        )?));
+    }
+    // An unparsable pre-v3 witness reads as absent rather than failing the whole query.
+    Ok(serde_json::from_str(&value).ok())
+}
+
 pub(super) fn sql_row_to_proof(row: Vec<Column>) -> Result<Proof, Error> {
     unpack_into!(
         let (
@@ -90,11 +108,7 @@ pub(super) fn sql_row_to_proof(row: Vec<Column>) -> Result<Proof, Error> {
         keyset_id,
         secret: column_as_string!(secret, Secret::from_str),
         c: column_as_string!(c, PublicKey::from_hex, PublicKey::from_slice),
-        witness: column_as_nullable_string!(witness)
-            .map(|value| {
-                cdk_common::Witness::from_json_for_version(&value, keyset_id.get_version())
-            })
-            .transpose()?,
+        witness: stored_witness(column_as_nullable_string!(witness), keyset_id)?,
         dleq: None,
         p2pk_e: None,
         spend_info: None,
@@ -120,11 +134,7 @@ pub(super) fn sql_row_to_proof_with_state(row: Vec<Column>) -> Result<(Proof, St
             keyset_id,
             secret: column_as_string!(secret, Secret::from_str),
             c: column_as_string!(c, PublicKey::from_hex, PublicKey::from_slice),
-            witness: column_as_nullable_string!(witness)
-                .map(|value| {
-                    cdk_common::Witness::from_json_for_version(&value, keyset_id.get_version())
-                })
-                .transpose()?,
+            witness: stored_witness(column_as_nullable_string!(witness), keyset_id)?,
             dleq: None,
             p2pk_e: None,
             spend_info: None,
@@ -672,5 +682,26 @@ where
             ))
         })
         .collect::<Result<Vec<_>, _>>()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stored_witness_is_lenient_only_before_v3() {
+        let legacy = Id::from_str("009a1f293253e41e").unwrap();
+        let v3 = Id::from_bytes(&[vec![2], vec![42; 32]].concat()).unwrap();
+        let junk = Some("not a witness".to_owned());
+        assert!(stored_witness(junk.clone(), legacy).unwrap().is_none());
+        assert!(stored_witness(junk, v3).is_err());
+        let raw = Some(serde_json::to_string("{\"signatures\":[]}").unwrap());
+        assert_eq!(
+            stored_witness(raw, v3).unwrap(),
+            Some(cdk_common::Witness::NutrootWitness(
+                "{\"signatures\":[]}".to_owned()
+            ))
+        );
     }
 }
