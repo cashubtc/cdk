@@ -39,7 +39,7 @@ use tracing::instrument;
 use self::state::{Finalized, Initial, Prepared};
 use crate::amount::SplitTarget;
 use crate::nuts::nut00::ProofsMethods;
-use crate::nuts::{nut10, Proofs, SpendingConditions, State};
+use crate::nuts::{nut10, Proof, Proofs, SpendingConditions, State};
 use crate::wallet::blind_signature::{construct_mint_response_proofs, SignatureAmountValidation};
 use crate::wallet::saga::{
     add_compensation, clear_compensations, execute_compensations, new_compensations, Compensations,
@@ -297,13 +297,7 @@ impl<'a> SwapSaga<'a, Prepared> {
         match self.state_data.amount {
             Some(amount) => {
                 let (proofs_with_condition, proofs_without_condition): (Proofs, Proofs) =
-                    post_swap_proofs.into_iter().partition(|p| {
-                        let nut10_secret: Result<nut10::Secret, _> = p.secret.clone().try_into();
-                        nut10_secret.is_ok()
-                            || p.spend_info.as_ref().is_some_and(|info| {
-                                info.tree.is_some() || info.ephemeral_key.is_some()
-                            })
-                    });
+                    post_swap_proofs.into_iter().partition(is_locked_output);
 
                 let (mut proofs_to_send, proofs_to_keep) = match (
                     &self.state_data.spending_conditions,
@@ -423,6 +417,16 @@ impl<S: std::fmt::Debug> std::fmt::Debug for SwapSaga<'_, S> {
             .field("state_data", &self.state_data)
             .finish_non_exhaustive()
     }
+}
+
+/// A swap output locked to a recipient, which the sender holds `Reserved` for sending.
+pub(crate) fn is_locked_output(proof: &Proof) -> bool {
+    let nut10_secret: Result<nut10::Secret, _> = proof.secret.clone().try_into();
+    nut10_secret.is_ok()
+        || proof
+            .spend_info
+            .as_ref()
+            .is_some_and(|info| info.tree.is_some() || info.ephemeral_key.is_some())
 }
 
 #[cfg(test)]
