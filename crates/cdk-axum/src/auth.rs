@@ -19,6 +19,10 @@ const BLIND_AUTH_KEY: &str = "Blind-auth";
 #[derive(Clone)]
 struct AuthorizedBody(axum::body::Bytes);
 
+/// The request target relative to the mint URL, as this layer sees it (NUT-22).
+#[derive(Clone)]
+struct AuthorizedTarget(String);
+
 /// Preserve the exact incoming HTTP bytes for version-02 blind authentication.
 /// Respect the same configured body limit as the JSON extractors.
 pub async fn bind_blind_auth_request(
@@ -39,6 +43,12 @@ pub async fn bind_blind_auth_request(
         }
     };
     parts.extensions.insert(AuthorizedBody(bytes.clone()));
+    // Inside any prefix the mint router is nested under, outside its own /v1 nest.
+    let target = parts
+        .uri
+        .path_and_query()
+        .map_or("/", |value| value.as_str());
+    parts.extensions.insert(AuthorizedTarget(target.to_owned()));
     next.run(axum::extract::Request::from_parts(
         parts,
         axum::body::Body::from(bytes),
@@ -97,17 +107,12 @@ where
                     StatusCode::BAD_REQUEST,
                     "Missing request authentication context".to_owned(),
                 ))?;
-                let uri = parts
-                    .extensions
-                    .get::<axum::extract::OriginalUri>()
-                    .map(|uri| &uri.0)
-                    .unwrap_or(&parts.uri);
-                let target = uri
-                    .path_and_query()
-                    .map(|value| value.as_str())
-                    .unwrap_or("/");
+                let target = parts.extensions.get::<AuthorizedTarget>().ok_or((
+                    StatusCode::BAD_REQUEST,
+                    "Missing request authentication context".to_owned(),
+                ))?;
                 token
-                    .set_request_context(parts.method.as_str(), target, &body.0)
+                    .set_request_context(parts.method.as_str(), &target.0, &body.0)
                     .map_err(|_| {
                         (
                             StatusCode::BAD_REQUEST,
@@ -228,7 +233,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn nutroot_auth_uses_original_uri_and_exact_body_before_json() {
+    async fn nutroot_auth_uses_mint_relative_target_and_exact_body_before_json() {
         let key = cdk::nuts::SecretKey::from_slice(&[9; 32]).unwrap();
         let id = cdk::nuts::Id::from_bytes(&[vec![2], vec![1; 32]].concat()).unwrap();
         let c = cdk::nuts::nut01::BlsG1PublicKey::hash_to_curve(b"signature").into();
@@ -262,6 +267,20 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), expected);
         }
+        // The mint's own prefix holds a /v1/ segment: only the nesting decides the cut.
+        let prefixed = Router::new().nest("/v1/cashu", router.clone());
+        let response = prefixed
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/cashu/v1/swap?x=1")
+                    .header(BLIND_AUTH_KEY, token.to_string())
+                    .body(Body::from("{ }"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
         let limited = router.layer(axum::extract::DefaultBodyLimit::max(2));
         let response = limited
             .oneshot(

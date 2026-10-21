@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use tracing::instrument;
 
 use super::{CheckStateRequest, CheckStateResponse, Mint, ProofState, State};
@@ -26,69 +24,17 @@ impl Mint {
             });
         }
 
-        let states = self.localstore.get_proofs_states(&check_state.ys).await?;
-
-        if check_state.ys.len() != states.len() {
-            tracing::error!("Database did not return states for all proofs");
-            return Err(Error::UnknownPaymentState);
-        }
-
-        // Pre-v3 proofs show their witness once spent, and a pending HTLC with
-        // a pubkeys tag its preimage alone (NUT-07); v3 ones use the spend record.
-        let state_of: HashMap<_, _> = check_state.ys.iter().zip(states.iter()).collect();
-        let ys_needing_witness: Vec<_> = check_state
-            .ys
-            .iter()
-            .zip(states.iter())
-            .filter_map(|(y, state)| match state {
-                Some(State::Spent | State::Pending) => Some(*y),
-                _ => None,
-            })
-            .collect();
-
-        let witness_map: HashMap<_, _> = if ys_needing_witness.is_empty() {
-            HashMap::new()
-        } else {
-            self.localstore
-                .get_proofs_by_ys(&ys_needing_witness)
-                .await?
-                .into_iter()
-                .flatten()
-                .filter(|proof| {
-                    proof.keyset_id.get_version() != cdk_common::nuts::KeySetVersion::Version02
-                })
-                .filter_map(|proof| {
-                    let y = proof.y().ok()?;
-                    let witness = match state_of.get(&y) {
-                        Some(Some(State::Pending)) => {
-                            crate::mint::proofs::pending_legacy_witness(&proof)
-                        }
-                        _ => proof.witness,
-                    };
-                    Some((y, witness))
-                })
-                .collect()
-        };
-
-        let spends = self.localstore.get_proof_spends(&check_state.ys).await?;
-
-        // Same publication rule as WebSocket events.
-        let proof_states = check_state
-            .ys
-            .iter()
-            .zip(states.iter())
-            .zip(spends)
-            .map(|((y, state), record)| {
-                let mut result = ProofState {
+        let proof_states = crate::mint::proofs::published_states(&self.localstore, &check_state.ys)
+            .await?
+            .into_iter()
+            .zip(&check_state.ys)
+            .map(|(state, y)| {
+                state.unwrap_or(ProofState {
                     y: *y,
-                    state: state.unwrap_or(State::Unspent),
-                    witness: witness_map.get(y).cloned().flatten(),
+                    state: State::Unspent,
+                    witness: None,
                     input_digest: None,
-                };
-                if let Some(record) = record {
-                    record.apply_to(&mut result);
-                }
-                result
+                })
             })
             .collect();
 
@@ -100,10 +46,16 @@ impl Mint {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
     use cdk_common::mint::Operation;
-    use cdk_common::nuts::{CheckStateRequest, ProofsMethods};
+    use cdk_common::nut17::NotificationId;
+    use cdk_common::nuts::{CheckStateRequest, NotificationPayload, ProofsMethods};
+    use cdk_common::pub_sub::Spec;
     use cdk_common::{Amount, State};
 
+    use crate::mint::subscription::MintPubSubSpec;
     use crate::test_helpers::mint::{create_test_mint, mint_test_proofs};
     use crate::Mint;
 
@@ -156,7 +108,25 @@ mod tests {
             }
         }
 
-        let response = mint.check_state(&CheckStateRequest { ys }).await.unwrap();
+        let response = mint
+            .check_state(&CheckStateRequest { ys: ys.clone() })
+            .await
+            .unwrap();
+
+        // A NUT-17 subscriber is told the same current state.
+        let spec = MintPubSubSpec::new_instance((db, Arc::new(HashMap::new())));
+        let topics: Vec<_> = ys.into_iter().map(NotificationId::ProofState).collect();
+        let events: Vec<_> = spec
+            .get_events_from_db(&topics)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|event| match event.into_inner() {
+                NotificationPayload::ProofState(state) => state,
+                payload => panic!("unexpected payload: {payload:?}"),
+            })
+            .collect();
+        assert_eq!(events, response.states);
 
         assert!(response
             .states
@@ -175,7 +145,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_check_state_does_not_return_witness_for_pending_proofs() {
+    async fn test_check_state_does_not_return_witness_for_pending_pre_v3_proofs() {
         assert!(!check_state_witness_for_proof_state(State::Pending).await);
     }
 

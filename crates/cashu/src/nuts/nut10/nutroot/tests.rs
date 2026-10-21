@@ -1,4 +1,4 @@
-//! Vectors from cashubtc/nuts PR #443 at d27121e7, tests/10-tests.md, and PR #464.
+//! Vectors from cashubtc/nuts PR #443 at 2df08274, tests/10-tests.md, and PR #464.
 use serde_json::Value;
 
 use super::*;
@@ -61,7 +61,7 @@ fn spend_info_reconstruction_vectors() {
     let vectors = vectors();
     let receiver =
         bitcoin::secp256k1::SecretKey::from_slice(&[vec![0; 31], vec![3]].concat()).unwrap();
-    for vector in &vectors[27..=31] {
+    for vector in &vectors[26..=30] {
         let info: SpendInfo = serde_json::from_value(vector["spend_info"].clone()).unwrap();
         let secret = vector["secret"].as_str().unwrap();
         info.verify(secret, Some(&receiver)).unwrap();
@@ -328,7 +328,7 @@ fn transaction_and_input_digest_vectors() {
 fn token_spend_info_vectors_and_witness_stripping() {
     use std::str::FromStr;
     let vectors = vectors();
-    for vector in &vectors[27..=31] {
+    for vector in &vectors[26..=30] {
         let mut token = crate::nuts::TokenV4::from_str(vector["token"].as_str().unwrap()).unwrap();
         let expected: SpendInfo = serde_json::from_value(vector["spend_info"].clone()).unwrap();
         assert_eq!(
@@ -624,6 +624,17 @@ fn shared_mint_quote_input_vectors() {
             };
             witness.verify(&key.to_string(), digest, 0).unwrap();
         }
+    }
+    // The partial mint's signature covers its amount and `issued` (tests/00-tests.md).
+    let partial = &shared["transcript"]["partial_mint"];
+    for (field, value) in [("amount", 8), ("issued", 0)] {
+        let mut tx = partial["tx"].clone();
+        tx["mint_quote_inputs"][0][field] = value.into();
+        assert_ne!(
+            transaction(&tx).input_digest(0).unwrap(),
+            hash(&partial["input_digest"]),
+            "{field}"
+        );
     }
     // A quote input without its lock key is not a transcript this mint accepts.
     let transcript = bytes(&shared["transcript"]["mint"]["transcript"]);

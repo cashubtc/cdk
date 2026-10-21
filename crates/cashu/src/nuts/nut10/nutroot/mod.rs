@@ -1,7 +1,7 @@
 //! Nutroot primitives for version `02` keysets.
 //!
 //! Implements the draft in NUTs PR #443, revision
-//! `d27121e7cbee634429eae1af92d6af36e568cdfc`.
+//! `2df082740c0594fe3319fc6c2fd138eacf48a5fe`.
 //!
 //! CDK uses these primitives for version-02 transaction authorization, payment
 //! policies, signing packages, and request-bound blind authentication.

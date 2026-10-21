@@ -58,21 +58,18 @@ key derivation. They are not compatible with these Nutroot rules. The
 - Saving output secrets and transfer metadata before requests, with recovery
   through persisted saga data and ordered seed recovery for older records.
 
-- Durable NUT-07/NUT-17 spend commitments, stored atomically with input
-  reservation. Only spent disclosure leaves expose the exact accepted witness
-  and input digest; private leaves, key paths, and pending inputs reveal no opening.
+- Spend records stored atomically with input reservation. NUT-07 check-state and
+  NUT-17 events show a v3 input's exact witness and input digest from `PENDING` on.
 - NUT-18/NUT-26 Nutroot policies, fresh per-output blinding, wallet send/receive
   enforcement, and FFI policy types. Both request encodings preserve leaf bytes.
 - `nutspA` signing packages with transaction reconstruction, partial-signature
   verification, receiver-slot fallback, merging, and atomic witness application.
-- `nutrcA` receipts with canonical transcript parsing and independent mint-state
-  verification. Wallets journal signed attempts before sending them and retain
-  the journal after the spent proofs are removed.
 - NUT-22 request-bound BATs through wallet storage, HTTP transports, and Axum.
-  JSON is serialized once before signing; Axum binds the original request URI
-  and exact body under the configured body limit. Non-HTTP mint adapters must
-  set trusted request context with `BlindAuthToken::set_request_context` before
-  verifying a version-02 BAT. Context and private signing keys are never serialized.
+  JSON is serialized once before signing. Wallets sign, and Axum binds, the
+  request target relative to the mint URL and the exact body, under the
+  configured body limit. Non-HTTP mint adapters must set trusted request context
+  with `BlindAuthToken::set_request_context` before verifying a version-02 BAT.
+  Context and private signing keys are never serialized.
 
 ## Wallet interfaces
 
@@ -93,20 +90,15 @@ keyring; inspect the package's inputs, outputs, and trusted melt quote amount
 before approving it. The package carries no trusted digest or private transfer
 keys. Signatures from another transaction cannot be merged into it.
 
-`Wallet::nutroot_receipt_ids` lists signed attempts. `export_nutroot_receipt`
-exports an entry only after checking mint signatures and the mint's spent
-commitments. `verify_nutroot_receipt` performs the same checks for an imported
-receipt. Receipts expose the transaction and exercised witness, so disclosure
-is the payer's choice. These operations are also exposed through FFI.
-
 ## Validation scope
 
-Tests cover the pinned crypto vectors, transaction and receipt tampering,
-partial multisignature merging, payment-policy construction, stored exact witness
-bytes, spend-state disclosure, live and snapshot subscriptions, issuance-version
-migration, request-bound BAT verification/replay, and raw HTTP authorization.
+Tests cover the pinned crypto vectors, transaction tampering, partial
+multisignature merging, payment-policy construction, stored exact witness bytes,
+published spend state in check-state and live and snapshot subscriptions,
+issuance-version migration, request-bound BAT verification/replay, and raw HTTP
+authorization.
 The `nutroot` integration test exercises payments between two CDK wallets,
-policy rejection, receipt export, and mixed legacy/version-02 redemption.
+policy rejection, and mixed legacy/version-02 redemption.
 
 Run the integration tests without external services:
 

@@ -7,7 +7,7 @@ use cdk_integration_tests::init_pure_tests::{
 };
 
 #[tokio::test]
-async fn nutroot_payment_receive_and_receipt_export() {
+async fn nutroot_payment_and_receive() {
     let mint = create_and_start_test_mint().await.unwrap();
     assert_eq!(
         mint.get_active_keysets()[&CurrencyUnit::Sat].get_version(),
