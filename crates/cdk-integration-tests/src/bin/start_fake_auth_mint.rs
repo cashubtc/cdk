@@ -89,6 +89,7 @@ async fn start_fake_auth_mint(
         get_melt_quote: AuthType::Blind,
         check_melt_quote: AuthType::Blind,
         swap: AuthType::Blind,
+        transaction: AuthType::Blind,
         restore: AuthType::Blind,
         check_proof_state: AuthType::Blind,
         websocket_auth: AuthType::Blind,
