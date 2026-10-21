@@ -93,7 +93,7 @@ impl MintPubSubSpec {
         Ok(Some(quote.into_response(change)))
     }
 
-    async fn get_events_from_db(
+    pub(crate) async fn get_events_from_db(
         &self,
         request: &[NotificationId<QuoteId>],
     ) -> Result<Vec<MintEvent<QuoteId>>, String> {
@@ -199,25 +199,10 @@ impl MintPubSubSpec {
         }
 
         if !public_keys.is_empty() {
-            let states = self
-                .db
-                .get_proofs_states(&public_keys)
+            let states = crate::mint::proofs::published_states(&self.db, &public_keys)
                 .await
                 .map_err(|e| e.to_string())?;
-            let records = self
-                .db
-                .get_proof_spends(&public_keys)
-                .await
-                .map_err(|e| e.to_string())?;
-            for ((y, state), record) in public_keys.iter().zip(states).zip(records) {
-                if let Some(state) = state {
-                    let mut state: ProofState = (*y, state).into();
-                    if let Some(record) = record {
-                        record.apply_to(&mut state);
-                    }
-                    to_return.push(state.into());
-                }
-            }
+            to_return.extend(states.into_iter().flatten().map(Into::into));
         }
 
         Ok(to_return)

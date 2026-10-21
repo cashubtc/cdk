@@ -807,7 +807,7 @@ pub(crate) async fn finalize_melt_core(
         return Err(err);
     }
 
-    let states = Mint::proof_states(&mut tx, input_ys, State::Spent).await?;
+    let states = Mint::proof_states(&mut tx, &proofs, State::Spent).await?;
     tx.commit().await?;
     for state in states {
         pubsub.proof_state(state);
@@ -965,7 +965,7 @@ pub async fn finalize_melt_quote(
             }
         }
         let proofs = proofs_with_state.to_vec();
-        let states = Mint::proof_states(&mut tx, &input_ys, State::Spent).await?;
+        let states = Mint::proof_states(&mut tx, &proofs, State::Spent).await?;
         tx.commit().await?;
         if spend_pending {
             for state in states {

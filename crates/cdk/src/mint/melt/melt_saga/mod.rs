@@ -423,7 +423,7 @@ impl MeltSaga<Initial> {
             return Err(err.into());
         }
 
-        let states = Mint::pending_proof_states(&mut tx, melt_request.inputs()).await?;
+        let states = Mint::proof_states(&mut tx, melt_request.inputs(), State::Pending).await?;
         tx.commit().await?;
 
         tracing::info!(
