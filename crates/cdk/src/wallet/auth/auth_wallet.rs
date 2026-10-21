@@ -345,7 +345,7 @@ impl AuthWallet {
                 self.localstore
                     .update_proofs(vec![], vec![proof.proof.y()?])
                     .await?;
-                BlindAuthToken::from_proof(proof.proof)?
+                BlindAuthToken::from_proof(proof.proof)?.relative_to(&self.mint_url)
             }
             None => return Ok(None),
         };

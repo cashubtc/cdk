@@ -19,7 +19,7 @@ const BLIND_AUTH_KEY: &str = "Blind-auth";
 #[derive(Clone)]
 struct AuthorizedBody(axum::body::Bytes);
 
-/// The request target relative to the mint URL, as this layer sees it (NUT-10).
+/// The request target relative to the mint URL, as this layer sees it (NUT-22).
 #[derive(Clone)]
 struct AuthorizedTarget(String);
 
@@ -233,7 +233,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn nutroot_auth_uses_original_uri_and_exact_body_before_json() {
+    async fn nutroot_auth_uses_mint_relative_target_and_exact_body_before_json() {
         let key = cdk::nuts::SecretKey::from_slice(&[9; 32]).unwrap();
         let id = cdk::nuts::Id::from_bytes(&[vec![2], vec![1; 32]].concat()).unwrap();
         let c = cdk::nuts::nut01::BlsG1PublicKey::hash_to_curve(b"signature").into();

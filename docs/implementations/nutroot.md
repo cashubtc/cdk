@@ -65,10 +65,11 @@ key derivation. They are not compatible with these Nutroot rules. The
 - `nutspA` signing packages with transaction reconstruction, partial-signature
   verification, receiver-slot fallback, merging, and atomic witness application.
 - NUT-22 request-bound BATs through wallet storage, HTTP transports, and Axum.
-  JSON is serialized once before signing; Axum binds the original request URI
-  and exact body under the configured body limit. Non-HTTP mint adapters must
-  set trusted request context with `BlindAuthToken::set_request_context` before
-  verifying a version-02 BAT. Context and private signing keys are never serialized.
+  JSON is serialized once before signing. Wallets sign, and Axum binds, the
+  request target relative to the mint URL and the exact body, under the
+  configured body limit. Non-HTTP mint adapters must set trusted request context
+  with `BlindAuthToken::set_request_context` before verifying a version-02 BAT.
+  Context and private signing keys are never serialized.
 
 ## Wallet interfaces
 
