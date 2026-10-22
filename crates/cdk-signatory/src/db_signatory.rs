@@ -38,7 +38,7 @@ use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet, Signatory
 struct KeysetSnapshot {
     /// All keysets keyed by id, with their derived keys.
     by_id: HashMap<Id, (MintKeySetInfo, MintKeySet)>,
-    /// Active keyset id per unit.
+    /// Newest active keyset id per unit.
     active_by_unit: HashMap<CurrencyUnit, Id>,
     /// Storage keyset epoch this snapshot was built from; `None` before the
     /// first load. The refresh compares it against the storage token to decide
@@ -257,13 +257,8 @@ impl DbSignatory {
     ) {
         let current = self.keysets.load();
         let mut by_id = HashMap::with_capacity(db_infos.len());
-        let mut active_by_unit = HashMap::new();
-        for mut info in db_infos {
+        for info in db_infos {
             let id = info.id;
-            info.active = db_active_keysets.get(&info.unit) == Some(&info.id);
-            if info.active {
-                active_by_unit.insert(info.unit.clone(), id);
-            }
             let keyset = match current.by_id.get(&id) {
                 Some((_, keyset)) => keyset.clone(),
                 None => self.generate_keyset(&info),
@@ -273,7 +268,7 @@ impl DbSignatory {
 
         let snapshot = Arc::new(KeysetSnapshot {
             by_id,
-            active_by_unit,
+            active_by_unit: db_active_keysets,
             epoch: Some(epoch),
         });
 
@@ -408,8 +403,6 @@ impl Signatory for DbSignatory {
         Ok(self.keyset_updates.subscribe())
     }
 
-    /// Add current keyset to inactive keysets
-    /// Generate new keyset
     #[tracing::instrument(skip(self))]
     async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<SignatoryKeySet, Error> {
         // Serialize local rotations. The standalone signatory gRPC server
@@ -496,6 +489,31 @@ impl Signatory for DbSignatory {
         self.load_keys_from_db().await?;
 
         Ok(signatory_keyset)
+    }
+
+    #[tracing::instrument(skip(self))]
+    async fn inactivate_keyset(&self, id: Id) -> Result<(), Error> {
+        let _rotation = self.rotation_lock.lock().await;
+
+        let mut tx = self.localstore.begin_transaction().await?;
+        self.reload_from_tx(&mut *tx).await?;
+        {
+            let keysets = self.keysets.load();
+            if !keysets.by_id.contains_key(&id) {
+                return Err(Error::UnknownKeySet);
+            }
+            // A unit always keeps its newest keyset active.
+            if keysets.active_by_unit.values().any(|newest| *newest == id) {
+                return Err(Error::Custom(
+                    "Cannot inactivate the newest active keyset of a unit".to_string(),
+                ));
+            }
+        }
+        tx.inactivate_keyset(&id).await?;
+        tx.commit().await?;
+
+        self.load_keys_from_db().await?;
+        Ok(())
     }
 }
 

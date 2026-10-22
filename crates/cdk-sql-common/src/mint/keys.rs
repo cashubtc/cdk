@@ -79,7 +79,8 @@ const KEYSET_INFO_COLUMNS: &str = r#"
     issuer_version
 "#;
 
-/// Read the active keyset pointer for each unit, over any executor.
+/// Read the newest active keyset (highest derivation index) for each unit, over
+/// any executor. Older active keysets are rotating out.
 ///
 /// Shared by the autocommit [`MintKeysDatabase`] read and the transaction-scoped
 /// [`MintKeyDatabaseTransaction`] read so the SQL lives in one place.
@@ -87,18 +88,22 @@ async fn read_active_keysets<C>(conn: &C) -> Result<HashMap<CurrencyUnit, Id>, E
 where
     C: DatabaseExecutor,
 {
-    query(r#"SELECT id, unit FROM keyset WHERE active = :active"#)?
-        .bind("active", true)
-        .fetch_all(conn)
-        .await?
-        .into_iter()
-        .map(|row| {
-            Ok((
-                column_as_string!(&row[1], CurrencyUnit::from_str),
-                column_as_string!(&row[0], Id::from_str, Id::from_bytes),
-            ))
-        })
-        .collect::<Result<HashMap<_, _>, Error>>()
+    // Ascending order, so the newest keyset per unit is the one the map keeps.
+    query(
+        r#"SELECT id, unit FROM keyset WHERE active = :active
+           ORDER BY COALESCE(derivation_path_index, 0) ASC"#,
+    )?
+    .bind("active", true)
+    .fetch_all(conn)
+    .await?
+    .into_iter()
+    .map(|row| {
+        Ok((
+            column_as_string!(&row[1], CurrencyUnit::from_str),
+            column_as_string!(&row[0], Id::from_str, Id::from_bytes),
+        ))
+    })
+    .collect::<Result<HashMap<_, _>, Error>>()
 }
 
 /// Read every keyset info, over any executor. See [`read_active_keysets`].
@@ -185,13 +190,19 @@ where
     }
 
     async fn set_active_keyset(&mut self, unit: CurrencyUnit, id: Id) -> Result<(), Error> {
-        query(r#"UPDATE keyset SET active=FALSE WHERE unit = :unit"#)?
+        query(r#"UPDATE keyset SET active=TRUE WHERE unit = :unit AND id = :id"#)?
             .bind("unit", unit.to_string())
+            .bind("id", id.to_string())
             .execute(&self.inner)
             .await?;
 
-        query(r#"UPDATE keyset SET active=TRUE WHERE unit = :unit AND id = :id"#)?
-            .bind("unit", unit.to_string())
+        self.bump_keyset_epoch().await?;
+
+        Ok(())
+    }
+
+    async fn inactivate_keyset(&mut self, id: &Id) -> Result<(), Error> {
+        query(r#"UPDATE keyset SET active=FALSE WHERE id = :id"#)?
             .bind("id", id.to_string())
             .execute(&self.inner)
             .await?;

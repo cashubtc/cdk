@@ -235,6 +235,13 @@ impl MeltSaga<Initial> {
                 }
             };
 
+        if let Some(outputs) = melt_request.outputs() {
+            if let Err(err) = self.mint.verify_melt_change_keysets(outputs, quote.expiry) {
+                tx.rollback().await?;
+                return Err(err);
+            }
+        }
+
         // Calculate fee to create Operation with actual amounts
         let fee_breakdown = self.mint.get_proofs_fee(melt_request.inputs()).await?;
 
@@ -437,6 +444,18 @@ impl MeltSaga<Initial> {
                 quote_id: quote.id.clone(),
                 operation_id: self.operation_id,
             }));
+
+        // Re-checked after commit: the drain either saw these outputs or has already
+        // marked the keyset rotating or inactive.
+        if let Some(outputs) = melt_request.outputs() {
+            if let Some(err) = outputs
+                .iter()
+                .find_map(|o| self.mint.verify_change_keyset_open(&o.keyset_id).err())
+            {
+                self.compensate_all().await?;
+                return Err(err);
+            }
+        }
 
         // Transition to SetupComplete state
         // Extract inner MeltQuote from Acquired wrapper - the lock was only meaningful

@@ -2,7 +2,7 @@
 //! run the Signatory in another thread, isolated form the main CDK, communicating through messages
 use std::sync::Arc;
 
-use cdk_common::{BlindSignature, BlindedMessage, Error, Proof};
+use cdk_common::{BlindSignature, BlindedMessage, Error, Id, Proof};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
@@ -24,6 +24,7 @@ enum Request {
             oneshot::Sender<Result<SignatoryKeySet, Error>>,
         ),
     ),
+    InactivateKeyset((Id, oneshot::Sender<Result<(), Error>>)),
 }
 
 /// Creates a service-like to wrap an implementation of the Signatory
@@ -97,6 +98,14 @@ impl Service {
                         tracing::error!("Error sending keyset-rotation response: receiver dropped");
                     }
                 }
+                Request::InactivateKeyset((id, response)) => {
+                    let output = handler.inactivate_keyset(id).await;
+                    if response.send(output).is_err() {
+                        tracing::error!(
+                            "Error sending keyset-inactivation response: receiver dropped"
+                        );
+                    }
+                }
             }
         }
     }
@@ -160,6 +169,17 @@ impl Signatory for Service {
         let (tx, rx) = oneshot::channel();
         self.pipeline
             .send(Request::RotateKeyset((args, tx)))
+            .await
+            .map_err(|e| Error::SendError(e.to_string()))?;
+
+        rx.await.map_err(|e| Error::RecvError(e.to_string()))?
+    }
+
+    #[tracing::instrument(skip(self))]
+    async fn inactivate_keyset(&self, id: Id) -> Result<(), Error> {
+        let (tx, rx) = oneshot::channel();
+        self.pipeline
+            .send(Request::InactivateKeyset((id, tx)))
             .await
             .map_err(|e| Error::SendError(e.to_string()))?;
 

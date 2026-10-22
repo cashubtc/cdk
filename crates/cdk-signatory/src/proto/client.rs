@@ -5,7 +5,7 @@ use std::time::Duration;
 use cdk_common::error::Error;
 use cdk_common::grpc::{VersionInterceptor, VERSION_SIGNATORY_HEADER};
 use cdk_common::stream::{BackoffPolicy, SupervisedStream};
-use cdk_common::{BlindSignature, BlindedMessage, Proof};
+use cdk_common::{BlindSignature, BlindedMessage, Id, Proof};
 use tokio::sync::watch;
 use tonic::codegen::InterceptedService;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
@@ -285,6 +285,20 @@ impl Signatory for SignatoryRpcClient {
             .rotate_keyset(tonic::Request::new(req))
             .await
             .map(|response| handle_error!(response, keyset).try_into())
+            .map_err(|e| Error::Custom(e.to_string()))?
+    }
+
+    #[tracing::instrument(skip(self))]
+    async fn inactivate_keyset(&self, id: Id) -> Result<(), Error> {
+        let req = super::InactivateKeysetRequest { id: id.to_bytes() };
+        self.client
+            .clone()
+            .inactivate_keyset(tonic::Request::new(req))
+            .await
+            .map(|response| {
+                handle_error!(response, success, scalar);
+                Ok(())
+            })
             .map_err(|e| Error::Custom(e.to_string()))?
     }
 }

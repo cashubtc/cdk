@@ -1449,4 +1449,26 @@ where
         .map(sql_row_to_melt_quote)
         .collect::<Result<Vec<_>, _>>()?)
     }
+
+    async fn has_pending_melt_outputs(&self, keyset_id: &Id) -> Result<bool, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        // A melt_request row lives from melt setup until finalization or compensation.
+        Ok(query(
+            r#"
+            SELECT 1
+            FROM blind_signature bs
+            JOIN melt_request mr ON mr.quote_id = bs.quote_id
+            WHERE bs.keyset_id = :keyset_id AND bs.c IS NULL
+            LIMIT 1
+            "#,
+        )?
+        .bind("keyset_id", keyset_id.to_string())
+        .pluck(&*conn)
+        .await?
+        .is_some())
+    }
 }

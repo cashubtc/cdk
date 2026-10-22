@@ -616,12 +616,10 @@ impl MintBuilder {
                 .or_insert((0, vec![1]));
         }
 
+        let newest_active = super::keysets::newest_active_keysets(&active_keysets.keysets);
         for (unit, (fee, amounts)) in &self.supported_units {
-            // Check if we have an active keyset for this unit
-            let keyset = active_keysets
-                .keysets
-                .iter()
-                .find(|k| k.active && k.unit == *unit);
+            // Compare against the newest active keyset; older active ones are rotating out
+            let keyset = newest_active.get(unit).copied();
 
             let mut rotate = false;
 
