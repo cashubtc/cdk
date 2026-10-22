@@ -22,7 +22,6 @@ use tracing::instrument;
 use zeroize::Zeroize;
 
 use crate::amount::SplitTarget;
-use crate::dhke::construct_proofs;
 use crate::error::Error;
 use crate::fees::calculate_fee;
 use crate::mint_url::MintUrl;
@@ -33,7 +32,8 @@ use crate::nuts::{
     RestoreRequest, SpendingConditions, State,
 };
 use crate::wallet::blind_signature::{
-    validate_mint_response_signatures, SignatureAmountValidation,
+    construct_proofs_with_signing_keys, validate_mint_response_signatures,
+    SignatureAmountValidation,
 };
 use crate::wallet::mint_metadata_cache::MintMetadataCache;
 use crate::wallet::p2pk::{P2PK_ACCOUNT, P2PK_PURPOSE};
@@ -710,7 +710,6 @@ impl Wallet {
         let mut restored_result = Restored::default();
 
         for keyset in keysets {
-            let keys = self.keyset(keyset.id).await?.keys;
             let mut empty_batch: u32 = 0;
             let mut start_counter: u32 = 0;
             // Track the highest counter value that had a signature
@@ -822,7 +821,8 @@ impl Wallet {
 
                 // Extract signatures, rs, and secrets in matching order
                 // Each tuple (idx, premint, signature) ensures correct pairing
-                let proofs = construct_proofs(
+                let proofs = construct_proofs_with_signing_keys(
+                    self,
                     signatures,
                     matched_secrets
                         .iter()
@@ -832,8 +832,9 @@ impl Wallet {
                         .iter()
                         .map(|(_, p, _)| p.secret.clone())
                         .collect(),
-                    &keys,
-                )?;
+                    Default::default(),
+                )
+                .await?;
 
                 tracing::debug!("Restored {} proofs", proofs.len());
 

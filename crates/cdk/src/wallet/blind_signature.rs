@@ -1,5 +1,12 @@
-use crate::nuts::{nut12, BlindSignature, BlindedMessage};
-use crate::wallet::Wallet;
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
+
+use cdk_common::dhke::construct_proofs;
+
+use crate::nuts::SecretKey;
+use crate::nuts::{nut12, BlindSignature, BlindedMessage, Proofs};
+use crate::secret::Secret;
+use crate::wallet::{KeysetLoadPolicy, Wallet};
 use crate::{Amount, Error};
 
 /// How strictly returned signature amounts must match requested output amounts.
@@ -55,14 +62,27 @@ pub(crate) async fn validate_mint_response_signatures<'a>(
             )));
         }
 
-        if sig.keyset_id != blinded_message.keyset_id {
-            return Err(Error::InvalidMintResponse(format!(
+        // A zero-amount blank may come back signed on another keyset of this unit (NUT-08).
+        let mismatch = || {
+            Error::InvalidMintResponse(format!(
                 "mint signature keyset ({}) does not match requested keyset ({})",
                 sig.keyset_id, blinded_message.keyset_id
-            )));
+            ))
+        };
+        let other_keyset = sig.keyset_id != blinded_message.keyset_id;
+        let placeholder = amount_validation
+            == SignatureAmountValidation::AllowZeroAmountPlaceholder
+            && blinded_message.amount == Amount::ZERO;
+        if other_keyset && !placeholder {
+            return Err(mismatch());
         }
 
-        let keys = wallet.keyset(sig.keyset_id).await?.keys;
+        // `keyset` only finds keysets of this unit, so a foreign one is still a mismatch.
+        let keys = match wallet.keyset(sig.keyset_id).await {
+            Ok(keyset) => keyset.keys,
+            Err(Error::UnknownKeySet) if other_keyset => return Err(mismatch()),
+            Err(err) => return Err(err),
+        };
         let key = keys.amount_key(sig.amount).ok_or(Error::AmountKey)?;
         match sig.verify_dleq(key, blinded_message.blinded_secret) {
             Ok(_) | Err(nut12::Error::MissingDleqProof) => (),
@@ -71,4 +91,38 @@ pub(crate) async fn validate_mint_response_signatures<'a>(
     }
 
     Ok(())
+}
+
+/// Unblind each validated signature with the keys of the keyset it names.
+pub(crate) async fn construct_proofs_with_signing_keys(
+    wallet: &Wallet,
+    signatures: Vec<BlindSignature>,
+    rs: Vec<SecretKey>,
+    secrets: Vec<Secret>,
+    policy: KeysetLoadPolicy,
+) -> Result<Proofs, Error> {
+    if signatures.len() != rs.len() || signatures.len() != secrets.len() {
+        return Err(Error::InvalidMintResponse(format!(
+            "mint signatures ({}) does not match secrets sent ({})",
+            signatures.len(),
+            secrets.len()
+        )));
+    }
+    let mut keys = HashMap::new();
+    for sig in &signatures {
+        if let Entry::Vacant(entry) = keys.entry(sig.keyset_id) {
+            entry.insert(wallet.keyset_with_policy(sig.keyset_id, policy).await?.keys);
+        }
+    }
+    let mut proofs = Proofs::with_capacity(signatures.len());
+    for ((sig, r), secret) in signatures.into_iter().zip(rs).zip(secrets) {
+        let sig_keys = &keys[&sig.keyset_id];
+        proofs.extend(construct_proofs(
+            vec![sig],
+            vec![r],
+            vec![secret],
+            sig_keys,
+        )?);
+    }
+    Ok(proofs)
 }
