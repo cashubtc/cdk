@@ -128,6 +128,34 @@ impl MintInput {
     }
 }
 
+/// NUT-29 batch bounds for a list of quote ids.
+///
+/// Ordered empty, over-size, duplicate to match the order the HTTP routes have
+/// always rejected in, so consolidating the check does not change which error a
+/// request that violates two bounds at once gets back.
+fn check_batch_ids(quote_ids: &[QuoteId], max_batch_size: Option<u64>) -> Result<(), Error> {
+    if quote_ids.is_empty() {
+        return Err(Error::UnknownQuote);
+    }
+
+    if let Some(max_batch_size) = max_batch_size {
+        let max = usize::try_from(max_batch_size).unwrap_or(usize::MAX);
+        if quote_ids.len() > max {
+            return Err(Error::BatchSizeExceeded {
+                actual: quote_ids.len(),
+                max,
+            });
+        }
+    }
+
+    let unique_ids: std::collections::HashSet<_> = quote_ids.iter().collect();
+    if unique_ids.len() != quote_ids.len() {
+        return Err(Error::DuplicateQuoteIds);
+    }
+
+    Ok(())
+}
+
 impl Mint {
     /// Validates that a mint request meets all requirements
     ///
@@ -611,6 +639,12 @@ impl Mint {
     /// # Returns
     /// * `Vec<MintQuoteResponse<QuoteId>>` - Current states of all quotes in order
     /// * `Error` if any quote doesn't exist
+    ///
+    /// Bounds only emptiness and duplicates, deliberately not the NUT-29 size
+    /// limit: it queries the store once per id, so a caller must bound the list
+    /// with [`Mint::validate_batch_quote_ids`] first. Reading `mint_info()` here
+    /// instead would make the HTTP batch route pay that read twice and would
+    /// reorder which error an over-size, duplicated batch gets back.
     #[instrument(skip(self))]
     pub async fn check_mint_quotes(
         &self,
@@ -655,6 +689,16 @@ impl Mint {
         result
     }
 
+    /// Enforces the NUT-29 batch bounds on a list of quote ids.
+    ///
+    /// Lives on the mint rather than in a route so every transport gets the
+    /// configured limit, and so it can run before any per-quote database work:
+    /// the callers that follow it query the store once per id.
+    pub async fn validate_batch_quote_ids(&self, quote_ids: &[QuoteId]) -> Result<(), Error> {
+        let max_batch_size = self.mint_info().await?.nuts.nut29.max_batch_size;
+        check_batch_ids(quote_ids, max_batch_size)
+    }
+
     /// Processes a mint request to issue new tokens
     ///
     /// Supports both single (NUT-04) and batch (NUT-29) mint requests.
@@ -689,15 +733,7 @@ impl Mint {
                     return Err(Error::UnsupportedPaymentMethod);
                 }
 
-                if let Some(max_batch_size) = settings.max_batch_size {
-                    let max = usize::try_from(max_batch_size).unwrap_or(usize::MAX);
-                    if batch.quotes.len() > max {
-                        return Err(Error::BatchSizeExceeded {
-                            actual: batch.quotes.len(),
-                            max,
-                        });
-                    }
-                }
+                check_batch_ids(&batch.quotes, settings.max_batch_size)?;
 
                 Some(settings)
             } else {
@@ -1077,6 +1113,7 @@ mod batch_mint_tests {
     use lightning::offers::offer::Offer;
     use tokio::time::sleep;
 
+    use super::check_batch_ids;
     use crate::mint::payment_backend::MINT_QUOTE_PAYMENT_CHECK_INTERVAL_SECS;
     use crate::mint::verification::MAX_CUSTOM_PAYMENT_METHOD_LEN;
     use crate::mint::{Mint, MintBuilder, MintMeltLimits, MintQuoteRequest};
@@ -1948,6 +1985,49 @@ mod batch_mint_tests {
 
         assert_eq!(quote1_status, MintQuoteState::Issued);
         assert_eq!(quote2_status, MintQuoteState::Paid);
+    }
+
+    /// Over-size must win over a duplicate, so consolidating the check does not
+    /// change what a request violating both bounds at once gets back.
+    #[test]
+    fn check_batch_ids_rejects_in_the_order_the_http_routes_always_have() {
+        let one = QuoteId::new();
+        let two = QuoteId::new();
+
+        assert!(matches!(
+            check_batch_ids(&[], Some(2)),
+            Err(Error::UnknownQuote)
+        ));
+        assert!(matches!(
+            check_batch_ids(&[one.clone(), two.clone()], Some(1)),
+            Err(Error::BatchSizeExceeded { actual: 2, max: 1 })
+        ));
+        assert!(matches!(
+            check_batch_ids(&[one.clone(), one.clone()], Some(2)),
+            Err(Error::DuplicateQuoteIds)
+        ));
+        assert!(matches!(
+            check_batch_ids(&[one.clone(), one.clone()], Some(1)),
+            Err(Error::BatchSizeExceeded { actual: 2, max: 1 })
+        ));
+        assert!(check_batch_ids(&[one.clone(), two], Some(2)).is_ok());
+        assert!(check_batch_ids(&[one], None).is_ok());
+    }
+
+    #[tokio::test]
+    async fn validate_batch_quote_ids_reads_the_configured_limit() {
+        let mint = create_test_mint().await;
+        configure_nut29(&mint, Some(1), None).await;
+
+        assert!(matches!(
+            mint.validate_batch_quote_ids(&[QuoteId::new(), QuoteId::new()])
+                .await,
+            Err(Error::BatchSizeExceeded { actual: 2, max: 1 })
+        ));
+        assert!(mint
+            .validate_batch_quote_ids(&[QuoteId::new()])
+            .await
+            .is_ok());
     }
 
     #[tokio::test]
