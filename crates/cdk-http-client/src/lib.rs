@@ -54,6 +54,13 @@
 //! }
 //! ```
 
+/// Maximum buffered response body for the native bitreq and reqwest backends.
+///
+/// Both raw and JSON requests reject larger bodies before deserialization,
+/// including HTTP error responses. This is not a bound on decoded JSON memory,
+/// browser fetch buffering, custom transports or the separate Tor transport.
+pub const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+
 mod backends;
 mod client;
 #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]

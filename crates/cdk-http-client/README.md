@@ -47,6 +47,19 @@ cdk = { version = "0.17.0", features = ["wallet"] }
 cdk-http-client = { version = "0.17.0", features = ["reqwest"] }
 ```
 
+## Native response limits
+
+The native bitreq and reqwest backends accept at most 4 MiB per response body
+(`MAX_RESPONSE_BYTES`), for raw and JSON requests and for success and error
+statuses. Reqwest rejects an oversized Content-Length before waiting for the
+body; both backends enforce the limit while reading the body. Convenience methods use
+the same request-builder read path. Exceeding the limit returns
+`HttpError::ResponseTooLarge`, which is not eligible for automatic NUT-19 replay.
+
+This bounds buffered body bytes. Parsed JSON memory, request duration, browser
+fetch buffering, custom transports and the separate Tor transport have their own
+limits; this policy does not cover them.
+
 ## Usage
 
 ```rust
