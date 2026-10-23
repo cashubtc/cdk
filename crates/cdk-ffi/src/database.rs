@@ -2215,6 +2215,40 @@ mod tests {
         assert_eq!(decoded, expected);
     }
 
+    /// An FFI wallet reads its keysets back through two conversions, and a
+    /// `final_expiry` lost on either leg leaves every reloaded keyset looking
+    /// like it never expires.
+    #[tokio::test]
+    async fn keyset_conversion_paths_preserve_final_expiry() {
+        let native = cdk_sqlite::wallet::memory::empty().await.unwrap();
+        let foreign = FfiWalletDatabaseWrapper::new(native);
+        let bridge = WalletDatabaseBridge::new(foreign.clone());
+
+        let mint_url: cdk::mint_url::MintUrl = "https://mint.example.com".parse().unwrap();
+        let expected = cdk::nuts::KeySetInfo {
+            id: "00916bbf7ef91a36".parse().unwrap(),
+            unit: cdk::nuts::CurrencyUnit::Sat,
+            active: true,
+            input_fee_ppk: 0,
+            final_expiry: Some(1_900_000_000),
+        };
+
+        bridge.add_mint(mint_url.clone(), None).await.unwrap();
+        bridge
+            .add_mint_keysets(mint_url.clone(), vec![expected.clone()])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            bridge.get_mint_keysets(mint_url).await.unwrap(),
+            Some(vec![expected.clone()])
+        );
+        assert_eq!(
+            bridge.get_keyset_by_id(&expected.id).await.unwrap(),
+            Some(expected)
+        );
+    }
+
     #[test]
     fn proof_conversion_preserves_absent_metadata() {
         let mut expected = proof_info();

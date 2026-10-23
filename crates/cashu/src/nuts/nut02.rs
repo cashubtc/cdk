@@ -24,7 +24,7 @@ use super::nut01::Keys;
 #[cfg(feature = "mint")]
 use super::nut01::{MintKeyPair, MintKeys};
 use crate::nuts::nut00::CurrencyUnit;
-use crate::util::hex;
+use crate::util::{hex, unix_time};
 use crate::{ensure_cdk, Amount};
 
 /// NUT02 Error
@@ -513,7 +513,25 @@ pub struct KeySet {
     pub final_expiry: Option<u64>,
 }
 
+/// Whether a mint's final expiry has passed at `current_time`.
+///
+/// A literal zero means no expiry rather than the epoch, since no mint sets one
+/// in 1970.
+#[inline]
+pub(crate) fn is_expired(final_expiry: Option<u64>, current_time: u64) -> bool {
+    final_expiry.is_some_and(|expiry| expiry != 0 && expiry < current_time)
+}
+
 impl KeySet {
+    /// Whether the mint's final expiry for this keyset has passed.
+    ///
+    /// Past that point the mint rejects the keyset in both outputs and inputs
+    /// with error 12003. A literal zero means no expiry rather than the epoch,
+    /// since no mint sets one in 1970.
+    pub fn is_expired(&self) -> bool {
+        is_expired(self.final_expiry, unix_time())
+    }
+
     /// Verify the keyset ID canonically matches its keys and metadata.
     pub fn verify_id(&self) -> Result<(), Error> {
         let keys_id = match self.id.version {
@@ -577,6 +595,17 @@ pub struct KeySetInfo {
     /// Expiry of the keyset
     #[serde(skip_serializing_if = "Option::is_none")]
     pub final_expiry: Option<u64>,
+}
+
+impl KeySetInfo {
+    /// Whether the mint's final expiry for this keyset has passed.
+    ///
+    /// Past that point the mint rejects the keyset in both outputs and inputs
+    /// with error 12003, so its proofs can no longer be spent. A literal zero
+    /// means no expiry rather than the epoch, since no mint sets one in 1970.
+    pub fn is_expired(&self) -> bool {
+        is_expired(self.final_expiry, unix_time())
+    }
 }
 
 /// List of [KeySetInfo]
@@ -784,11 +813,63 @@ mod test {
 
     use bitcoin::secp256k1::rand::{self, RngCore};
 
-    use super::{KeySetInfo, KeySetVersion, Keys, KeysetResponse, ShortKeysetId};
+    use super::{is_expired, KeySetInfo, KeySetVersion, Keys, KeysetResponse, ShortKeysetId};
     use crate::nuts::nut02::{Error, Id};
     use crate::nuts::KeysResponse;
-    use crate::util::hex;
+    use crate::util::{hex, unix_time};
     use crate::CurrencyUnit;
+
+    fn keyset_info_with_expiry(final_expiry: Option<u64>) -> KeySetInfo {
+        KeySetInfo {
+            id: Id::from_str("0094d5a774c40a32").unwrap(),
+            unit: CurrencyUnit::Sat,
+            active: true,
+            input_fee_ppk: 0,
+            final_expiry,
+        }
+    }
+
+    #[test]
+    fn no_expiry_never_expires() {
+        assert!(!keyset_info_with_expiry(None).is_expired());
+    }
+
+    #[test]
+    fn future_expiry_has_not_passed() {
+        assert!(!keyset_info_with_expiry(Some(unix_time() + 1_000_000)).is_expired());
+    }
+
+    /// Strictly less than, matching the mint's own check.
+    #[test]
+    fn expiry_exactly_now_has_not_passed() {
+        assert!(!keyset_info_with_expiry(Some(unix_time())).is_expired());
+    }
+
+    #[test]
+    fn past_expiry_has_passed() {
+        assert!(keyset_info_with_expiry(Some(unix_time() - 1)).is_expired());
+    }
+
+    /// A mint that emits a literal zero means no expiry, not 1970.
+    #[test]
+    fn zero_expiry_means_no_expiry() {
+        assert!(!keyset_info_with_expiry(Some(0)).is_expired());
+    }
+
+    #[test]
+    fn zero_expiry_never_passes_whatever_the_time() {
+        assert!(!is_expired(Some(0), u64::MAX));
+    }
+
+    #[test]
+    fn past_expiry_has_passed_at_the_given_time() {
+        assert!(is_expired(Some(100), 101));
+    }
+
+    #[test]
+    fn expiry_equal_to_the_given_time_has_not_passed() {
+        assert!(!is_expired(Some(100), 100));
+    }
 
     const SHORT_KEYSET_ID: &str = "00456a94ab4e1c46";
     const SHORT_KEYSET: &str = r#"

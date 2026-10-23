@@ -15,6 +15,9 @@ pub struct KeySetInfo {
     pub active: bool,
     /// Input fee per thousand (ppk)
     pub input_fee_ppk: u64,
+    /// Unix timestamp after which the mint rejects this keyset's proofs, where
+    /// zero means no expiry
+    pub final_expiry: Option<u64>,
 }
 
 impl From<cdk::nuts::KeySetInfo> for KeySetInfo {
@@ -24,6 +27,7 @@ impl From<cdk::nuts::KeySetInfo> for KeySetInfo {
             unit: keyset.unit.into(),
             active: keyset.active,
             input_fee_ppk: keyset.input_fee_ppk,
+            final_expiry: keyset.final_expiry,
         }
     }
 }
@@ -39,7 +43,7 @@ impl TryFrom<KeySetInfo> for cdk::nuts::KeySetInfo {
                 .map_err(|e| FfiError::internal(format!("Invalid keyset ID: {}", e)))?,
             unit: keyset.unit.into(),
             active: keyset.active,
-            final_expiry: None,
+            final_expiry: keyset.final_expiry,
             input_fee_ppk: keyset.input_fee_ppk,
         })
     }
@@ -161,7 +165,8 @@ pub struct KeySet {
     pub input_fee_ppk: u64,
     /// The keys (map of amount to public key hex)
     pub keys: HashMap<u64, String>,
-    /// Optional expiry timestamp
+    /// Unix timestamp after which the mint rejects this keyset's proofs, where
+    /// zero means no expiry
     pub final_expiry: Option<u64>,
 }
 

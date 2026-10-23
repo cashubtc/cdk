@@ -243,6 +243,13 @@ impl Wallet {
     /// This verifies and persists received proofs in the local store. Mobile
     /// hosts should avoid starting it during app background transitions unless
     /// background network and storage activity is intended.
+    ///
+    /// A proof from an expired keyset fails the whole call with the mint's
+    /// keyset-expired code 12003: trimming a pool the caller chose would spend
+    /// something other than what was asked for. Drop those proofs first by
+    /// looking up each one's keyset in `keysets()`: a keyset has expired when
+    /// its `final_expiry` is set, non-zero and already past. A zero there means
+    /// no expiry, not 1970.
     pub async fn receive_proofs(
         &self,
         proofs: Proofs,
@@ -468,6 +475,13 @@ impl Wallet {
     /// similar to how `receive_proofs` handles external proofs. The proofs will be
     /// added to the database and used for the melt operation.
     ///
+    /// A proof from an expired keyset fails the whole call with the mint's
+    /// keyset-expired code 12003: trimming a pool the caller chose would spend
+    /// something other than what was asked for. Drop those proofs first by
+    /// looking up each one's keyset in `keysets()`: a keyset has expired when
+    /// its `final_expiry` is set, non-zero and already past. A zero there means
+    /// no expiry, not 1970.
+    ///
     /// # Arguments
     ///
     /// * `quote_id` - The melt quote ID (obtained from `melt_quote`)
@@ -498,6 +512,13 @@ impl Wallet {
     /// using `options.p2pk_signing_keys` plus any signing keys known to the
     /// wallet, and HTLC preimages from `options.preimages` attached, before
     /// the proofs are reserved.
+    ///
+    /// A proof from an expired keyset fails the whole call with the mint's
+    /// keyset-expired code 12003: trimming a pool the caller chose would spend
+    /// something other than what was asked for. Drop those proofs first by
+    /// looking up each one's keyset in `keysets()`: a keyset has expired when
+    /// its `final_expiry` is set, non-zero and already past. A zero there means
+    /// no expiry, not 1970.
     ///
     /// # Arguments
     ///
@@ -627,9 +648,10 @@ impl Wallet {
     /// Create quotes for transferring the maximum amount allowed by the source
     /// balance and both mints' advertised BOLT11 limits.
     ///
-    /// The returned input fee assumes all currently unspent source proofs are
-    /// used. Prepare the returned melt quote with those proofs and confirm it
-    /// with `skip_swap` to preserve that accounting.
+    /// The returned input fee assumes every spendable unspent source proof is
+    /// used. Prepare the returned melt quote with `prepare_melt_proofs` over
+    /// that same set, dropping any proof whose keyset in `keysets()` has
+    /// expired, and confirm it with `skip_swap` to preserve that accounting.
     ///
     /// This search may create multiple quote pairs at the remote mints. Only the
     /// returned pair is persisted locally; unused remote quotes cannot be
@@ -687,6 +709,13 @@ impl Wallet {
     }
 
     /// Swap proofs
+    ///
+    /// A proof from an expired keyset fails the whole call with the mint's
+    /// keyset-expired code 12003: trimming a pool the caller chose would spend
+    /// something other than what was asked for. Drop those proofs first by
+    /// looking up each one's keyset in `keysets()`: a keyset has expired when
+    /// its `final_expiry` is set, non-zero and already past. A zero there means
+    /// no expiry, not 1970.
     pub async fn swap(
         &self,
         amount: Option<Amount>,

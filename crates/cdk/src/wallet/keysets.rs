@@ -69,10 +69,43 @@ impl Wallet {
         }
     }
 
-    /// Get the active keyset with the lowest fees.
+    /// Get all keysets for this wallet's unit, refreshing once from the mint
+    /// when none of them can still carry new outputs.
     ///
-    /// Filters the output of [`keysets()`](Self::keysets) for active keysets
-    /// and returns the one with the minimum `input_fee_ppk`.
+    /// A cached active keyset that has reached its final expiry leaves nothing
+    /// to build outputs from, and by then the mint has usually rotated to a
+    /// replacement. Only [`KeysetLoadPolicy::CacheThenNetwork`] refreshes:
+    /// `CacheOnly` must stay offline, and `Refresh` already asked the mint.
+    ///
+    /// A mint with no replacement yet would otherwise be polled on every
+    /// operation, so the refresh is capped at one request per minimum refetch
+    /// interval. The load above counts as that request when it found the cache
+    /// stale and went to the mint itself.
+    pub(crate) async fn keysets_for_outputs(
+        &self,
+        policy: KeysetLoadPolicy,
+    ) -> Result<Vec<KeySet>, Error> {
+        let keysets = self.keysets(policy).await?;
+
+        if policy != KeysetLoadPolicy::CacheThenNetwork || keysets.iter().any(usable_for_outputs) {
+            return Ok(keysets);
+        }
+
+        if self.metadata_cache.asked_mint_recently() {
+            tracing::debug!(
+                "No unexpired active keyset, but the mint was just asked; not refreshing"
+            );
+            return Ok(keysets);
+        }
+
+        tracing::info!("No unexpired active keyset cached, refreshing from the mint");
+        self.keysets(KeysetLoadPolicy::Refresh).await
+    }
+
+    /// Get the cheapest keyset the mint will still sign with.
+    ///
+    /// Filters the output of [`keysets()`](Self::keysets) for active, unexpired
+    /// keysets and returns the one with the minimum `input_fee_ppk`.
     #[instrument(skip(self))]
     pub async fn active_keyset(&self) -> Result<KeySet, Error> {
         self.active_keyset_with_policy(Default::default()).await
@@ -81,18 +114,39 @@ impl Wallet {
     /// Get the active keyset using a specific [`KeysetLoadPolicy`].
     ///
     /// Same as [`active_keyset()`](Self::active_keyset) but lets callers
-    /// control whether the network may be contacted.
+    /// control whether the network may be contacted. When the cached keysets
+    /// hold no candidate and the policy allows it, the mint is asked once for
+    /// a rotation before giving up.
     #[instrument(skip(self))]
     pub async fn active_keyset_with_policy(
         &self,
         policy: KeysetLoadPolicy,
     ) -> Result<KeySet, Error> {
-        self.keysets(policy)
+        self.keysets_for_outputs(policy)
             .await?
             .into_iter()
-            .filter(|k| k.active.unwrap_or(false))
+            .filter(usable_for_outputs)
             .min_by_key(|k| k.input_fee_ppk)
             .ok_or(Error::NoActiveKeyset)
+    }
+
+    /// The id [`active_keyset_with_policy()`](Self::active_keyset_with_policy)
+    /// would pick under `policy`, without the refresh fallback.
+    ///
+    /// Used to compare the keyset before and after a refresh, so a load
+    /// failure is just "no candidate" rather than an error to propagate.
+    async fn cheapest_usable_keyset_id(&self, policy: KeysetLoadPolicy) -> Option<Id> {
+        match self.keysets(policy).await {
+            Ok(keysets) => keysets
+                .into_iter()
+                .filter(usable_for_outputs)
+                .min_by_key(|k| k.input_fee_ppk)
+                .map(|k| k.id),
+            Err(e) => {
+                tracing::debug!("Could not load keysets with {:?}: {}", policy, e);
+                None
+            }
+        }
     }
 
     /// Run an operation and retry once if the mint rejects it with
@@ -113,26 +167,12 @@ impl Wallet {
                 );
 
                 let old_active = self
-                    .keysets(KeysetLoadPolicy::CacheOnly)
-                    .await
-                    .ok()
-                    .and_then(|ks| {
-                        ks.into_iter()
-                            .filter(|k| k.active.unwrap_or(false))
-                            .min_by_key(|k| k.input_fee_ppk)
-                            .map(|k| k.id)
-                    });
+                    .cheapest_usable_keyset_id(KeysetLoadPolicy::CacheOnly)
+                    .await;
 
-                let new_active =
-                    self.keysets(KeysetLoadPolicy::Refresh)
-                        .await
-                        .ok()
-                        .and_then(|ks| {
-                            ks.into_iter()
-                                .filter(|k| k.active.unwrap_or(false))
-                                .min_by_key(|k| k.input_fee_ppk)
-                                .map(|k| k.id)
-                        });
+                let new_active = self
+                    .cheapest_usable_keyset_id(KeysetLoadPolicy::Refresh)
+                    .await;
 
                 if new_active.is_some() && new_active != old_active {
                     tracing::info!(
@@ -259,10 +299,18 @@ impl Wallet {
     }
 }
 
+/// Whether the mint would still sign new outputs under this keyset.
+pub(crate) fn usable_for_outputs(keyset: &KeySet) -> bool {
+    keyset.active.unwrap_or(false) && !keyset.is_expired()
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::time::Duration;
+
+    use cdk_common::util::unix_time;
 
     use super::*;
     use crate::nuts::{CurrencyUnit, Token};
@@ -477,6 +525,116 @@ mod tests {
         assert_eq!(call_count.load(Ordering::SeqCst), 1);
     }
 
+    /// A cached active keyset that has reached its final expiry must not leave
+    /// the wallet stuck: the mint has rotated to a replacement, and
+    /// `CacheThenNetwork` should go and find it even with the TTL disabled.
+    #[tokio::test]
+    async fn active_keyset_refreshes_when_cached_active_keyset_expired() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        db.add_mint(mint_url.clone(), None).await.unwrap();
+
+        let mut expired = test_keyset();
+        expired.final_expiry = Some(unix_time() - 60);
+
+        let mock = Arc::new(MockMintConnector::new());
+        mock.set_mint_keys_response(Ok(vec![expired.clone()]));
+        let wallet = create_test_wallet_with_mock(db, mock.clone()).await;
+
+        wallet.keysets(KeysetLoadPolicy::Refresh).await.unwrap();
+        assert!(
+            matches!(wallet.active_keyset().await, Err(Error::NoActiveKeyset)),
+            "the mint has no replacement yet, so the refresh finds nothing either"
+        );
+
+        wallet.set_metadata_cache_ttl(None);
+        wallet
+            .metadata_cache
+            .set_min_refetch_interval(Duration::ZERO);
+
+        let mut rotated = make_inactive_keyset();
+        rotated.active = Some(true);
+        let rotated_id = rotated.id;
+        expired.active = Some(false);
+        mock.set_mint_keys_response(Ok(vec![expired, rotated]));
+
+        let active = wallet
+            .active_keyset()
+            .await
+            .expect("the rotated keyset should be picked up");
+        assert_eq!(active.id, rotated_id);
+    }
+
+    /// `CacheOnly` must stay offline, so an expired cached keyset still fails
+    /// locally even once the mint has rotated.
+    #[tokio::test]
+    async fn active_keyset_cache_only_does_not_refresh_when_expired() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        db.add_mint(mint_url.clone(), None).await.unwrap();
+
+        let mut expired = test_keyset();
+        expired.final_expiry = Some(unix_time() - 60);
+
+        let mock = Arc::new(MockMintConnector::new());
+        mock.set_mint_keys_response(Ok(vec![expired.clone()]));
+        let wallet = create_test_wallet_with_mock(db, mock.clone()).await;
+
+        wallet.keysets(KeysetLoadPolicy::Refresh).await.unwrap();
+        wallet.set_metadata_cache_ttl(None);
+
+        let mut rotated = make_inactive_keyset();
+        rotated.active = Some(true);
+        expired.active = Some(false);
+        mock.set_mint_keys_response(Ok(vec![expired, rotated]));
+
+        let result = wallet
+            .active_keyset_with_policy(KeysetLoadPolicy::CacheOnly)
+            .await;
+        assert!(matches!(result, Err(Error::NoActiveKeyset)));
+    }
+
+    /// A mint that has no replacement keyset yet must not be polled on every
+    /// call: once it has just been asked, the expiry fallback waits for the
+    /// minimum refetch interval before asking again.
+    #[tokio::test]
+    async fn active_keyset_does_not_poll_mint_while_refetch_is_throttled() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        db.add_mint(mint_url.clone(), None).await.unwrap();
+
+        let mut expired = test_keyset();
+        expired.final_expiry = Some(unix_time() - 60);
+
+        let mock = Arc::new(MockMintConnector::new());
+        mock.set_mint_keys_response(Ok(vec![expired.clone()]));
+        let wallet = create_test_wallet_with_mock(db, mock.clone()).await;
+
+        wallet.keysets(KeysetLoadPolicy::Refresh).await.unwrap();
+        wallet.set_metadata_cache_ttl(None);
+
+        let mut rotated = make_inactive_keyset();
+        rotated.active = Some(true);
+        let rotated_id = rotated.id;
+        expired.active = Some(false);
+        mock.set_mint_keys_response(Ok(vec![expired, rotated]));
+
+        assert!(
+            matches!(wallet.active_keyset().await, Err(Error::NoActiveKeyset)),
+            "the mint was just asked, so the rotation should not be fetched yet"
+        );
+
+        wallet
+            .metadata_cache
+            .set_min_refetch_interval(Duration::ZERO);
+
+        let active = wallet
+            .active_keyset()
+            .await
+            .expect("once the interval has passed the rotation is picked up");
+        assert_eq!(active.id, rotated_id);
+    }
+
     /// When the in-memory cache's TTL has expired, `CacheThenNetwork` should
     /// fetch fresh data from the mint — not return stale data from the database.
     #[tokio::test]
@@ -494,7 +652,7 @@ mod tests {
         assert_eq!(initial_fee, 101);
 
         // Expire the cache immediately
-        wallet.set_metadata_cache_ttl(Some(std::time::Duration::ZERO));
+        wallet.set_metadata_cache_ttl(Some(Duration::ZERO));
 
         // Update the mock to return a keyset with a different fee
         let mut updated_keyset = test_keyset();
