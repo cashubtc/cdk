@@ -364,11 +364,22 @@ pub struct CreateRequestParams {
     /// Payment methods the payer's mint must support, with optional per-method fees
     #[serde(default)]
     pub supported_methods: Vec<SupportedMethod>,
+    /// Caller-selected request ID. None omits the ID.
+    #[serde(default)]
+    #[uniffi(default = None)]
+    pub payment_id: Option<String>,
+    /// Public Nostr receiving key (hex or npub). None generates ephemeral keys.
+    /// Used with nostr_relays; no private key is required or returned for this destination.
+    #[serde(default)]
+    #[uniffi(default = None)]
+    pub nostr_pubkey: Option<String>,
 }
 
 impl fmt::Debug for CreateRequestParams {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CreateRequestParams")
+            .field("payment_id", &self.payment_id)
+            .field("nostr_pubkey", &self.nostr_pubkey)
             .field("amount", &self.amount)
             .field("unit", &self.unit)
             .field("description", &self.description)
@@ -395,6 +406,8 @@ impl Default for CreateRequestParams {
 impl From<CreateRequestParams> for cdk::wallet::payment_request::CreateRequestParams {
     fn from(params: CreateRequestParams) -> Self {
         Self {
+            payment_id: params.payment_id,
+            nostr_pubkey: params.nostr_pubkey,
             amount: params.amount,
             unit: params.unit,
             description: params.description,
@@ -419,6 +432,8 @@ impl From<CreateRequestParams> for cdk::wallet::payment_request::CreateRequestPa
 impl From<cdk::wallet::payment_request::CreateRequestParams> for CreateRequestParams {
     fn from(params: cdk::wallet::payment_request::CreateRequestParams) -> Self {
         Self {
+            payment_id: params.payment_id,
+            nostr_pubkey: params.nostr_pubkey,
             amount: params.amount,
             unit: params.unit,
             description: params.description,
@@ -460,7 +475,7 @@ pub fn decode_create_request_params(json: String) -> Result<CreateRequestParams,
 
 /// Information needed to wait for an incoming Nostr payment
 ///
-/// Returned by `create_request` when the transport is `nostr`. Pass this to
+/// Returned by `create_request` for an ephemeral Nostr identity. Pass this to
 /// `wait_for_nostr_payment` to connect, subscribe, and receive the incoming
 /// payment on the specified relays.
 #[derive(uniffi::Object)]
@@ -502,13 +517,25 @@ impl NostrWaitInfo {
 /// Result of creating a payment request
 ///
 /// Contains the payment request and optionally the Nostr wait info
-/// if the transport was set to "nostr".
+/// for an ephemeral Nostr identity. An explicit public destination returns no wait info.
 #[derive(uniffi::Record)]
 pub struct CreateRequestResult {
     /// The payment request to share with the payer
     pub payment_request: Arc<PaymentRequest>,
-    /// Nostr wait info (present when transport is "nostr")
+    /// Nostr wait info (only for an ephemeral Nostr identity)
     pub nostr_wait_info: Option<Arc<NostrWaitInfo>>,
+}
+
+impl CreateRequestResult {
+    pub(crate) fn from_inner(
+        payment_request: cdk::nuts::PaymentRequest,
+        nostr_wait_info: Option<cdk::wallet::payment_request::NostrWaitInfo>,
+    ) -> Self {
+        Self {
+            payment_request: Arc::new(PaymentRequest::from_inner(payment_request)),
+            nostr_wait_info: nostr_wait_info.map(|inner| Arc::new(NostrWaitInfo { inner })),
+        }
+    }
 }
 
 /// Payment Request Payload
