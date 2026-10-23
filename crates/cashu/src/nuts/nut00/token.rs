@@ -1172,13 +1172,15 @@ mod tests {
         assert_eq!(token.token_secrets().len(), 2);
     }
 
+    const NUT28_EXAMPLE_V4_TOKEN: &str = "cashuBo2FtdWh0dHA6Ly9sb2NhbGhvc3Q6MzMzOGF1Y3NhdGF0gaJhaUgAmh8pMlPkHmFwgqVhYRhAYXN4q1siUDJQSyIseyJub25jZSI6ImQ0YTE3YTg4ZjVkMGMwOTAwMWY3YjQ1M2M0MmMxZjlkNWE4NzM2M2IxZjY2MzdhNWE4M2ZjMzFhNmEzYjcyNjYiLCJkYXRhIjoiMDNiN2MwM2ViMDVhMGE1MzljZmM0MzhlODFiY2YzOGI2NWI3YmI4Njg1ZTg3OTBmOWI4NTNiZmUzZDc3YWQ1MzE1IiwidGFncyI6W119XWFjWCEDgYVd3MQ0qakLNWTynveOcnH4VE0AVnY7QYsA6IUlwP9hZKNhZVggI_IZCxi_0EPTpSYQPhX0qTjWRqa_k7AX4rt8heFUCzJhc1ggYXiXhFbELu6O77UIMPwxRr4nsFYZ8E40kNxZYAXwzHhhclgg0mpVqjnKUJV_2vVANrAQU7DeQgSLlqb7KhZ-A_ANCg9icGVYIQKozaTPRIv86ankbliMBuoXgPy5Tju98yd_QpldQDqLDKVhYRhAYXN5AWNbIkhUTEMiLHsibm9uY2UiOiI4YjFmMThhYTg1YTI3ODc5MDNjZmRjNzc2ZmRlMGI4NTU1YmRiMTI2ZWVhMDJiMDVjZDg0ZGUwNmE0ZjRiNTUxIiwiZGF0YSI6ImVjNDkxNmRkMjhmYzRjMTBkNzhlMjg3Y2E1ZDljYzUxZWUxYWU3M2NiZmRlMDhjNmIzNzMyNGNiZmFhYzhiYzUiLCJ0YWdzIjpbWyJwdWJrZXlzIiwiMDM1MmZiNmQ5MzM2MGI3YzI1MzhlZWRmM2M4NjFmMzJlYTU4ODNmY2VlYzlmM2U1NzNkOWQ4NDM3NzQyMGRhODM4Il0sWyJsb2NrdGltZSIsIjE2ODk0MTgzMjkiXSxbInJlZnVuZCIsIjAzNjY3MzYxY2E5MjUwNjVkY2FmZWEwYTcwNWJhNDllNzViZGQ3OTc1NzUxZmNjOTMzZTA1OTUzNDYzYzc5ZmZmMSJdXX1dYWNYIQJwq6CYySCtr6HOdazvsG2MxUHvgCcPcMx7ZjdbeJ7ZvmFko2FlWCCexbbyCVqNx9BSoA4LsFCsleYz5wJXVjDP1Dy1hZLSoWFzWCC9btB5uVQVGJjK2sOMO40zccINZ-jF8GrzzuQVKsMXtGFyWCDoNJz4jlqfAl8Acr-KLbSNOUutn3vj2AI_nukN4cGSTWJwZVghAqjNpM9Ei_zpqeRuWIwG6heA_LlOO73zJ39CmV1AOosM";
+
     #[test]
     fn test_nut28_example_v4_token_round_trip() {
         // NUT-28 example V4 token (cashubtc/nuts#402): the P2PK and HTLC
         // example proofs encoded as a V4 token, pinning the `pe` field
         // (ephemeral pubkey E as a 33-byte CBOR bstr) and the dleq wire
         // format (32-byte bstrs).
-        let token_str = "cashuBo2FtdWh0dHA6Ly9sb2NhbGhvc3Q6MzMzOGF1Y3NhdGF0gaJhaUgAmh8pMlPkHmFwgqVhYRhAYXN4q1siUDJQSyIseyJub25jZSI6ImQ0YTE3YTg4ZjVkMGMwOTAwMWY3YjQ1M2M0MmMxZjlkNWE4NzM2M2IxZjY2MzdhNWE4M2ZjMzFhNmEzYjcyNjYiLCJkYXRhIjoiMDNiN2MwM2ViMDVhMGE1MzljZmM0MzhlODFiY2YzOGI2NWI3YmI4Njg1ZTg3OTBmOWI4NTNiZmUzZDc3YWQ1MzE1IiwidGFncyI6W119XWFjWCEDgYVd3MQ0qakLNWTynveOcnH4VE0AVnY7QYsA6IUlwP9hZKNhZVggI_IZCxi_0EPTpSYQPhX0qTjWRqa_k7AX4rt8heFUCzJhc1ggYXiXhFbELu6O77UIMPwxRr4nsFYZ8E40kNxZYAXwzHhhclgg0mpVqjnKUJV_2vVANrAQU7DeQgSLlqb7KhZ-A_ANCg9icGVYIQKozaTPRIv86ankbliMBuoXgPy5Tju98yd_QpldQDqLDKVhYRhAYXN5AWNbIkhUTEMiLHsibm9uY2UiOiI4YjFmMThhYTg1YTI3ODc5MDNjZmRjNzc2ZmRlMGI4NTU1YmRiMTI2ZWVhMDJiMDVjZDg0ZGUwNmE0ZjRiNTUxIiwiZGF0YSI6ImVjNDkxNmRkMjhmYzRjMTBkNzhlMjg3Y2E1ZDljYzUxZWUxYWU3M2NiZmRlMDhjNmIzNzMyNGNiZmFhYzhiYzUiLCJ0YWdzIjpbWyJwdWJrZXlzIiwiMDM1MmZiNmQ5MzM2MGI3YzI1MzhlZWRmM2M4NjFmMzJlYTU4ODNmY2VlYzlmM2U1NzNkOWQ4NDM3NzQyMGRhODM4Il0sWyJsb2NrdGltZSIsIjE2ODk0MTgzMjkiXSxbInJlZnVuZCIsIjAzNjY3MzYxY2E5MjUwNjVkY2FmZWEwYTcwNWJhNDllNzViZGQ3OTc1NzUxZmNjOTMzZTA1OTUzNDYzYzc5ZmZmMSJdXX1dYWNYIQJwq6CYySCtr6HOdazvsG2MxUHvgCcPcMx7ZjdbeJ7ZvmFko2FlWCCexbbyCVqNx9BSoA4LsFCsleYz5wJXVjDP1Dy1hZLSoWFzWCC9btB5uVQVGJjK2sOMO40zccINZ-jF8GrzzuQVKsMXtGFyWCDoNJz4jlqfAl8Acr-KLbSNOUutn3vj2AI_nukN4cGSTWJwZVghAqjNpM9Ei_zpqeRuWIwG6heA_LlOO73zJ39CmV1AOosM";
+        let token_str = NUT28_EXAMPLE_V4_TOKEN;
 
         let token = TokenV4::from_str(token_str).unwrap();
 
@@ -1286,5 +1288,83 @@ mod tests {
 
         // Re-encodes byte-for-byte, pinning the `pe` and dleq wire format.
         assert_eq!(token.to_string(), token_str);
+    }
+
+    // Rewrite only the wire metadata, leaving the published example proofs intact.
+    fn nut28_token_with_pe(pe: Option<ciborium::Value>) -> String {
+        use ciborium::Value;
+
+        let bytes = general_purpose::URL_SAFE_NO_PAD
+            .decode(&NUT28_EXAMPLE_V4_TOKEN[6..])
+            .unwrap();
+        let mut token: Value = ciborium::from_reader(bytes.as_slice()).unwrap();
+        let entries = token
+            .as_map_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|(key, _)| key.as_text() == Some("t"))
+            .unwrap()
+            .1
+            .as_array_mut()
+            .unwrap();
+        for entry in entries {
+            let proofs = entry
+                .as_map_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|(key, _)| key.as_text() == Some("p"))
+                .unwrap()
+                .1
+                .as_array_mut()
+                .unwrap();
+            for proof in proofs {
+                let fields = proof.as_map_mut().unwrap();
+                fields.retain(|(key, _)| key.as_text() != Some("pe"));
+                if let Some(pe) = &pe {
+                    fields.push((Value::Text("pe".to_string()), pe.clone()));
+                }
+            }
+        }
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&token, &mut bytes).unwrap();
+        format!("cashuB{}", general_purpose::URL_SAFE_NO_PAD.encode(bytes))
+    }
+
+    #[test]
+    fn test_nut28_legacy_pe_normalizes_to_bytes() {
+        let key = "02a8cda4cf448bfce9a9e46e588c06ea1780fcb94e3bbdf3277f42995d403a8b0c";
+        let legacy = nut28_token_with_pe(Some(ciborium::Value::Text(key.to_string())));
+        let token = TokenV4::from_str(&legacy).unwrap();
+        let canonical = TokenV4::from_str(NUT28_EXAMPLE_V4_TOKEN).unwrap();
+
+        assert_eq!(token, canonical);
+        assert_eq!(token.to_string(), NUT28_EXAMPLE_V4_TOKEN);
+    }
+
+    #[test]
+    fn test_nut28_missing_or_null_pe() {
+        for pe in [None, Some(ciborium::Value::Null)] {
+            let token = TokenV4::from_str(&nut28_token_with_pe(pe)).unwrap();
+            assert!(token.token[0]
+                .proofs
+                .iter()
+                .all(|proof| proof.p2pk_e.is_none()));
+            assert_eq!(TokenV4::from_str(&token.to_string()).unwrap(), token);
+        }
+    }
+
+    #[test]
+    fn test_nut28_invalid_pe_is_rejected() {
+        use ciborium::Value;
+
+        for pe in [
+            Value::Text("not hex".to_string()),
+            Value::Text("00".repeat(33)),
+            Value::Bytes(vec![0; 33]),
+            Value::Bytes(vec![2; 32]),
+            Value::Bool(true),
+        ] {
+            assert!(TokenV4::from_str(&nut28_token_with_pe(Some(pe))).is_err());
+        }
     }
 }
