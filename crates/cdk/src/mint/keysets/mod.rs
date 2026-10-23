@@ -183,6 +183,20 @@ impl Mint {
         Ok(())
     }
 
+    /// Rotate the keyset's unit and inactivate the keyset regardless of pending melts,
+    /// as a drain that checked before a melt's setup committed would.
+    #[cfg(test)]
+    pub(crate) async fn force_retire_keyset(&self, id: &Id) -> Result<(), Error> {
+        let info = self.get_keyset_info(id).ok_or(Error::UnknownKeySet)?;
+        self.rotate_keyset(info.unit, info.amounts, info.input_fee_ppk, true, None)
+            .await?;
+        self.signatory.inactivate_keyset(*id).await?;
+        let _store = self.keyset_store_lock.lock().await;
+        let new_keyset = self.signatory.keysets().await?;
+        self.keysets.store(new_keyset.keysets.into());
+        Ok(())
+    }
+
     /// Inactivate rotating keysets that no pending melt has change outputs on.
     ///
     /// Returns the inactivated ids.

@@ -445,6 +445,13 @@ impl MeltSaga<Initial> {
                 operation_id: self.operation_id,
             }));
 
+        #[cfg(test)]
+        if crate::test_helpers::mint::should_fail_for("RETIRE_AFTER_SETUP_COMMIT") {
+            if let Some(output) = melt_request.outputs().as_ref().and_then(|o| o.first()) {
+                self.mint.force_retire_keyset(&output.keyset_id).await?;
+            }
+        }
+
         // Re-checked after commit: the drain either saw these outputs or has already
         // marked the keyset rotating or inactive.
         if let Some(outputs) = melt_request.outputs() {
