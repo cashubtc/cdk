@@ -10,10 +10,13 @@ use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{
     CheckStateRequest, Proof, ProofState, Proofs, PublicKey, SpendingConditions, State,
 };
+use crate::wallet::util::escape_log_value;
 use crate::{ensure_cdk, Amount, Error, Wallet};
 
 #[cfg(test)]
 mod inactive_fee_tests;
+#[cfg(test)]
+mod spendable_tests;
 
 impl Wallet {
     pub(crate) async fn unspent_proof_derivation_indices(
@@ -37,6 +40,66 @@ impl Wallet {
     #[instrument(skip(self))]
     pub async fn get_unspent_proofs(&self) -> Result<Proofs, Error> {
         self.get_proofs_with(Some(vec![State::Unspent]), None).await
+    }
+
+    /// Keysets whose proofs the mint will no longer accept as inputs.
+    ///
+    /// Reads the in-memory snapshot when it is populated and the stored
+    /// keysets otherwise. A wallet that has never seen a keyset list knows of
+    /// none, which is why an empty store is not an error here.
+    async fn unspendable_keyset_ids(&self) -> Result<HashSet<Id>, Error> {
+        if let Some(metadata) = self.metadata_cache.get_cached() {
+            return Ok(metadata
+                .keysets
+                .values()
+                .filter(|keyset| keyset.is_expired())
+                .map(|keyset| keyset.id)
+                .collect());
+        }
+
+        Ok(self
+            .localstore
+            .get_mint_keysets(self.mint_url.clone())
+            .await?
+            .unwrap_or_default()
+            .iter()
+            .filter(|keyset| keyset.is_expired())
+            .map(|keyset| keyset.id)
+            .collect())
+    }
+
+    /// Keep only the proofs the mint can still accept as inputs.
+    ///
+    /// Past a keyset's final expiry the mint answers anything built on it with
+    /// error 12003, inputs included, so a single such proof fails the whole
+    /// operation. Selection prefers inactive-keyset proofs, which makes an
+    /// expired keyset's proofs the first ones picked, so they have to be
+    /// dropped before selection rather than after.
+    ///
+    /// They stay in the database and in the balance. An unspendable proof is
+    /// still a record of what the wallet holds, so hiding it would be the
+    /// wallet deciding the money is gone on the owner's behalf.
+    #[instrument(skip_all)]
+    pub async fn retain_spendable_proofs(&self, proofs: Proofs) -> Result<Proofs, Error> {
+        let unspendable = self.unspendable_keyset_ids().await?;
+
+        if unspendable.is_empty() {
+            return Ok(proofs);
+        }
+
+        let (spendable, dropped): (Proofs, Proofs) = proofs
+            .into_iter()
+            .partition(|proof| !unspendable.contains(&proof.keyset_id));
+
+        if !dropped.is_empty() {
+            tracing::warn!(
+                "Holding back {} proofs: {} will not accept their keysets",
+                dropped.len(),
+                escape_log_value(&self.mint_url)
+            );
+        }
+
+        Ok(spendable)
     }
 
     /// Get pending [`Proofs`]

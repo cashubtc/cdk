@@ -69,10 +69,10 @@ impl Wallet {
         }
     }
 
-    /// Get the active keyset with the lowest fees.
+    /// Get the cheapest keyset the mint will still sign with.
     ///
-    /// Filters the output of [`keysets()`](Self::keysets) for active keysets
-    /// and returns the one with the minimum `input_fee_ppk`.
+    /// Filters the output of [`keysets()`](Self::keysets) for active, unexpired
+    /// keysets and returns the one with the minimum `input_fee_ppk`.
     #[instrument(skip(self))]
     pub async fn active_keyset(&self) -> Result<KeySet, Error> {
         self.active_keyset_with_policy(Default::default()).await
@@ -90,7 +90,7 @@ impl Wallet {
         self.keysets(policy)
             .await?
             .into_iter()
-            .filter(|k| k.active.unwrap_or(false))
+            .filter(|k| k.active.unwrap_or(false) && !k.is_expired())
             .min_by_key(|k| k.input_fee_ppk)
             .ok_or(Error::NoActiveKeyset)
     }

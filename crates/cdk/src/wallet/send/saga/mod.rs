@@ -410,7 +410,7 @@ impl<'a> SendSaga<'a, Initial> {
 
         let active_keyset = all_keysets
             .into_iter()
-            .filter(|k| k.active.unwrap_or(false))
+            .filter(|k| k.active.unwrap_or(false) && !k.is_expired())
             .min_by_key(|k| k.input_fee_ppk)
             .ok_or(Error::NoActiveKeyset)?;
 
@@ -426,6 +426,10 @@ impl<'a> SendSaga<'a, Initial> {
                 Some(vec![State::Unspent]),
                 opts.conditions.clone().map(|c| vec![c]),
             )
+            .await?;
+        available_proofs = self
+            .wallet
+            .retain_spendable_proofs(available_proofs)
             .await?;
 
         // When passthrough is not opted in, exclude P2PK-locked proofs for which the wallet
@@ -463,6 +467,10 @@ impl<'a> SendSaga<'a, Initial> {
                     .into_iter()
                     .map(|p| p.proof)
                     .collect();
+                available_proofs = self
+                    .wallet
+                    .retain_spendable_proofs(available_proofs)
+                    .await?;
 
                 if opts.p2pk_locked_proof_send_mode == P2PKLockedProofSendMode::Swap {
                     available_proofs = filter_signable_proofs(
