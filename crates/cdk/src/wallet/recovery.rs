@@ -385,6 +385,8 @@ impl Wallet {
     ///
     /// Handles interrupted swap, send, receive, and melt operations to prevent
     /// proofs from being stuck in reserved states. Requires network connection.
+    /// Run before starting other wallet operations, with no other wallet instance
+    /// actively using the same store; recovery may release their reservations.
     #[instrument(skip(self))]
     pub async fn recover_incomplete_sagas(&self) -> Result<RecoveryReport, Error> {
         self.cleanup_orphaned_quote_reservations().await?;

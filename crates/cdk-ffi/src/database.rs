@@ -3,11 +3,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use uniffi::deps::async_compat::CompatExt;
-
 use cdk_common::bitcoin::bip32::DerivationPath;
 use cdk_common::database::WalletDatabase as CdkWalletDatabase;
 use cdk_common::wallet::WalletSaga;
+use uniffi::deps::async_compat::CompatExt;
 
 use crate::error::FfiError;
 #[cfg(feature = "postgres")]

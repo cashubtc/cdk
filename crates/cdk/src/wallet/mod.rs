@@ -155,6 +155,9 @@ pub struct Wallet {
     pub metadata_cache: Arc<MintMetadataCache>,
     /// The targeted amount of proofs to have at each size
     pub target_proof_count: usize,
+    // Keep automatic proof selection and reservation together across clones.
+    // The database still atomically rejects competing reservations from other wallets.
+    proof_selection_lock: Arc<tokio::sync::Mutex<()>>,
     auth_wallet: Arc<TokioRwLock<Option<AuthWallet>>>,
     auth_connector: Option<Arc<dyn AuthMintConnector + Send + Sync>>,
     #[cfg(feature = "npubcash")]
