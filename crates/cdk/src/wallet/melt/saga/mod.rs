@@ -382,7 +382,10 @@ impl<'a> MeltSaga<'a, Initial> {
         // loaded before taking this lock, so no network request holds it.
         let selection_guard = self.wallet.proof_selection_lock.lock().await;
 
-        let available_proofs = self.wallet.get_unspent_proofs().await?;
+        let available_proofs = self
+            .wallet
+            .retain_spendable_proofs(self.wallet.get_unspent_proofs().await?)
+            .await?;
         let derivation_indices = self.wallet.unspent_proof_derivation_indices().await?;
 
         let exact_input_proofs = Wallet::select_proofs_with_derivation_indices(

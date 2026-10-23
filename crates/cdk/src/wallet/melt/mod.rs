@@ -890,7 +890,9 @@ impl Wallet {
 
         ensure_cdk!(self.unit == target_wallet.unit, Error::UnsupportedUnit);
 
-        let proofs = self.get_unspent_proofs().await?;
+        let proofs = self
+            .retain_spendable_proofs(self.get_unspent_proofs().await?)
+            .await?;
         let balance = proofs.total_amount()?;
         ensure_cdk!(balance > Amount::ZERO, Error::InsufficientFunds);
 

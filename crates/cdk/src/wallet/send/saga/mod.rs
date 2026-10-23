@@ -462,6 +462,10 @@ impl<'a> SendSaga<'a, Initial> {
                 opts.conditions.clone().map(|c| vec![c]),
             )
             .await?;
+        available_proofs = self
+            .wallet
+            .retain_spendable_proofs(available_proofs)
+            .await?;
 
         // When passthrough is not opted in, exclude P2PK-locked proofs for which the wallet
         // holds no signing key (neither explicit nor in the keyring). Without a key, such proofs
@@ -488,6 +492,10 @@ impl<'a> SendSaga<'a, Initial> {
                 available_proofs = self
                     .wallet
                     .get_proofs_with(Some(vec![State::Unspent]), Some(vec![]))
+                    .await?;
+                available_proofs = self
+                    .wallet
+                    .retain_spendable_proofs(available_proofs)
                     .await?;
 
                 if opts.p2pk_locked_proof_send_mode == P2PKLockedProofSendMode::Swap {

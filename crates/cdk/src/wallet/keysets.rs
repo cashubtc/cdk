@@ -90,7 +90,7 @@ impl Wallet {
         }
     }
 
-    /// Get the active keyset with the lowest fees.
+    /// Get the cheapest keyset the mint will still sign with.
     ///
     /// Filters the output of [`keysets()`](Self::keysets) for active keysets
     /// that have not expired and returns the one with the minimum

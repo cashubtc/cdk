@@ -604,7 +604,10 @@ impl Wallet {
         fee_and_amounts: &FeeAndAmounts,
     ) -> Result<Vec<Amount>, Error> {
         let unspent_proofs = self
-            .get_proofs_with(Some(vec![State::Unspent]), None)
+            .retain_spendable_proofs(
+                self.get_proofs_with(Some(vec![State::Unspent]), None)
+                    .await?,
+            )
             .await?;
 
         let amounts_count: HashMap<u64, u64> =
