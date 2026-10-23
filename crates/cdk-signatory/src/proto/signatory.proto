@@ -17,7 +17,7 @@ service Signatory {
 enum Constants {
   CONSTANTS_UNSPECIFIED = 0;
   // this constant should be sent on the header of the grpc code for verification
-  CONSTANTS_SCHEMA_VERSION = 2;
+  CONSTANTS_SCHEMA_VERSION = 3;
 }
 
 message BlindSignResponse {
@@ -65,6 +65,9 @@ message KeySet {
   optional uint64 final_expiry = 6;
   uint32 version = 7;
   optional string issuer_version = 8;
+  // the derivation path the keys were derived from, so a mint can refuse a
+  // rotation that would re-derive them before it writes anything
+  string derivation_path = 9;
 }
 
 message Keys {
