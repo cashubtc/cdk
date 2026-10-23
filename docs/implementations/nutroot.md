@@ -62,7 +62,7 @@ key derivation. They are not compatible with these Nutroot rules. The
   NUT-17 events show a v3 input's exact witness and input digest from `PENDING` on.
 - NUT-18/NUT-26 Nutroot policies, fresh per-output blinding, wallet send/receive
   enforcement, and FFI policy types. Both request encodings preserve leaf bytes.
-- `nutspA` signing packages with transaction reconstruction, partial-signature
+- `nutspA` signing packages carrying the transaction transcript, partial-signature
   verification, receiver-slot fallback, merging, and atomic witness application.
 - NUT-22 request-bound BATs through wallet storage, HTTP transports, and Axum.
   JSON is serialized once before signing. Wallets sign, and Axum binds, the
@@ -85,8 +85,9 @@ blinding, NUMS offsets, ephemeral-key presence, and the complete leaf set before
 signing. Merely being able to spend one leaf does not verify the payment policy.
 
 Use `SigningPackage::new`, `sign`, `merge`, and `apply` for multi-party script
-spends. `Wallet::sign_nutroot_package` signs a caller-approved package using its
-keyring; inspect the package's inputs, outputs, and trusted melt quote amount
+spends; `witness` returns one spend's complete witness, eg for a mint quote
+input's `signature`. `Wallet::sign_nutroot_package` signs a caller-approved package using its
+keyring; decode the package's transcript and check it against trusted quote state
 before approving it. The package carries no trusted digest or private transfer
 keys. Signatures from another transaction cannot be merged into it.
 

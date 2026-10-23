@@ -25,7 +25,7 @@ pub struct Quote {
 }
 
 /// A mint quote input: the amount issued, the quote id, the key the quote is locked to, and the
-/// quote's `amount_issued` before this transaction, so a witness authorizes one draw (NUT-10).
+/// quote's `amount_issued` before this transaction, so a witness authorizes one issuance (NUT-00).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MintQuoteInput {
     /// Amount this transaction issues against the quote.
@@ -36,6 +36,33 @@ pub struct MintQuoteInput {
     pub pubkey: PublicKey,
     /// The quote's settled `amount_issued` before this transaction.
     pub issued: Amount,
+}
+
+/// One element of a transaction, decoded from its transcript for review before signing (NUT-00).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransactionElement {
+    /// A proof input; the transcript names it by `Y`, never by its secret.
+    ProofInput {
+        /// Proof amount.
+        amount: Amount,
+        /// Keyset the proof was signed under.
+        keyset_id: crate::nuts::Id,
+        /// The proof's hash-to-curve point.
+        y: PublicKey,
+    },
+    /// A mint quote input.
+    MintQuoteInput(MintQuoteInput),
+    /// A blinded message output, committed by `SHA256(B_)`.
+    BlindedOutput {
+        /// Output amount.
+        amount: Amount,
+        /// Keyset the output asks to be signed under.
+        keyset_id: crate::nuts::Id,
+        /// `SHA256` of the blinded message's compressed point.
+        b_hash: [u8; 32],
+    },
+    /// A melt quote output: the melt amount including the selected fee reserve.
+    MeltQuoteOutput(Quote),
 }
 
 /// Canonical transaction transcript and its input records.
@@ -244,6 +271,21 @@ impl Transaction {
         self.input_digest(index)
     }
 
+    /// Whether `secret` is the point an input names: a v3 proof's secret, or a mint quote's lock key.
+    pub(super) fn input_names_secret(&self, index: usize, secret: &str) -> Result<bool, Error> {
+        let container = self.inputs.get(index).ok_or(Error::InvalidTransaction)?;
+        let fields = parse_records(container.get(3..).ok_or(Error::InvalidTransaction)?)?;
+        let field = fields.get(2).ok_or(Error::InvalidTransaction)?.1;
+        Ok(match container[0] {
+            PROOF_INPUT => {
+                crate::dhke::hash_to_curve_for_version(secret.as_bytes(), KeySetVersion::Version02)
+                    .is_ok_and(|y| y.to_bytes() == field)
+            }
+            MINT_QUOTE_INPUT => parse_secret(secret).is_ok_and(|key| key.serialize() == field),
+            _ => false,
+        })
+    }
+
     /// Canonical TLV transcript.
     pub fn as_bytes(&self) -> &[u8] {
         &self.transcript
@@ -262,6 +304,63 @@ impl Transaction {
         message[..32].copy_from_slice(&self.digest());
         message[32..].copy_from_slice(&self.input_id(index)?);
         Ok(tagged_hash("Cashu_TransactionInput", &message))
+    }
+
+    /// The transaction's inputs and outputs in transcript order, so a signer can review what it signs.
+    pub fn elements(&self) -> Result<Vec<TransactionElement>, Error> {
+        let amount = |bytes: &[u8]| -> Result<Amount, Error> {
+            if bytes.len() > 8 {
+                return Err(Error::InvalidTransaction);
+            }
+            let mut be = [0u8; 8];
+            be[8 - bytes.len()..].copy_from_slice(bytes);
+            Ok(Amount::from(u64::from_be_bytes(be)))
+        };
+        let id = |bytes: &[u8]| {
+            crate::nuts::Id::from_bytes(bytes).map_err(|_| Error::InvalidTransaction)
+        };
+        let text = |bytes: &[u8]| {
+            std::str::from_utf8(bytes)
+                .map(str::to_owned)
+                .map_err(|_| Error::InvalidTransaction)
+        };
+        parse_records(&self.transcript)?
+            .into_iter()
+            .map(|(tag, value, _)| {
+                let fields: Vec<_> = parse_records(value)?
+                    .into_iter()
+                    .map(|(_, field, _)| field)
+                    .collect();
+                let field = |i: usize| fields.get(i).copied().ok_or(Error::InvalidTransaction);
+                Ok(match tag {
+                    PROOF_INPUT => TransactionElement::ProofInput {
+                        amount: amount(field(0)?)?,
+                        keyset_id: id(field(1)?)?,
+                        y: PublicKey::from_slice(field(2)?)
+                            .map_err(|_| Error::InvalidTransaction)?,
+                    },
+                    MINT_QUOTE_INPUT => TransactionElement::MintQuoteInput(MintQuoteInput {
+                        amount: amount(field(0)?)?,
+                        id: text(field(1)?)?,
+                        pubkey: PublicKey::from_slice(field(2)?)
+                            .map_err(|_| Error::InvalidTransaction)?,
+                        issued: amount(field(3)?)?,
+                    }),
+                    BLINDED_OUTPUT => TransactionElement::BlindedOutput {
+                        amount: amount(field(0)?)?,
+                        keyset_id: id(field(1)?)?,
+                        b_hash: field(2)?
+                            .try_into()
+                            .map_err(|_| Error::InvalidTransaction)?,
+                    },
+                    MELT_QUOTE_OUTPUT => TransactionElement::MeltQuoteOutput(Quote {
+                        amount: amount(field(0)?)?,
+                        id: text(field(1)?)?,
+                    }),
+                    _ => return Err(Error::InvalidTransaction),
+                })
+            })
+            .collect()
     }
 }
 
