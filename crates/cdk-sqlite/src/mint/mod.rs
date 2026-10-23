@@ -44,6 +44,215 @@ mod test {
     }
 
     #[tokio::test]
+    async fn reconciliation_raises_issued_to_cover_what_a_keyset_owes() {
+        use cdk_common::database::{MintDatabase, MintProofsDatabase, MintSignaturesDatabase};
+        use cdk_common::Amount;
+
+        let path = std::env::temp_dir().join(format!(
+            "cdk-reconcile-{}.db",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock before the unix epoch")
+                .as_nanos()
+        ));
+        let config: Config = path.to_str().expect("non utf8 temp dir").into();
+        let keyset_id = Id::from_str("00916bbf7ef91a36").unwrap();
+
+        let db = MintSqliteDatabase::new(config.clone()).await.unwrap();
+
+        let fee_collected = || async {
+            let pool = Pool::<SqliteConnectionManager>::new(config.clone());
+            let conn = pool.get().await.unwrap();
+            query(r#"SELECT fee_collected FROM keyset_amounts WHERE keyset_id = :keyset_id"#)
+                .unwrap()
+                .bind("keyset_id", keyset_id.to_string())
+                .pluck(&*conn)
+                .await
+                .unwrap()
+        };
+
+        {
+            let pool = Pool::<SqliteConnectionManager>::new(config.clone());
+            let conn = pool.get().await.unwrap();
+            query(
+                r#"
+                INSERT INTO keyset_amounts
+                    (keyset_id, total_issued, total_redeemed, total_reserved, fee_collected)
+                VALUES (:keyset_id, 10, 70, 30, 7)
+                "#,
+            )
+            .unwrap()
+            .bind("keyset_id", keyset_id.to_string())
+            .execute(&*conn)
+            .await
+            .unwrap();
+        }
+
+        // Opening the database must not repair on its own; only an explicit
+        // reconcile may move the counters.
+        assert_eq!(
+            db.get_total_issued()
+                .await
+                .unwrap()
+                .get(&keyset_id)
+                .copied(),
+            Some(Amount::from(10)),
+            "opening the database must leave accounting alone"
+        );
+
+        db.reconcile_keyset_ledger().await.unwrap();
+
+        assert_eq!(
+            db.get_total_issued()
+                .await
+                .unwrap()
+                .get(&keyset_id)
+                .copied(),
+            Some(Amount::from(100)),
+            "issued is raised to what the keyset already owes"
+        );
+        assert_eq!(
+            db.get_total_redeemed()
+                .await
+                .unwrap()
+                .get(&keyset_id)
+                .copied(),
+            Some(Amount::from(70)),
+            "the debits are left alone"
+        );
+        assert_eq!(
+            db.get_total_reserved()
+                .await
+                .unwrap()
+                .get(&keyset_id)
+                .copied(),
+            Some(Amount::from(30))
+        );
+        assert!(
+            matches!(
+                fee_collected().await,
+                Some(cdk_sql_common::value::Value::Integer(7))
+            ),
+            "reconciliation must not touch collected fees"
+        );
+
+        // A second pass has nothing left to clamp and must change nothing.
+        db.reconcile_keyset_ledger().await.unwrap();
+        assert_eq!(
+            db.get_total_issued()
+                .await
+                .unwrap()
+                .get(&keyset_id)
+                .copied(),
+            Some(Amount::from(100)),
+            "reconciliation is idempotent"
+        );
+
+        drop(db);
+        let _ = remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn burning_proofs_survives_a_reservation_that_drifted_low() {
+        use cdk_common::database::{MintDatabase, MintProofsDatabase};
+        use cdk_common::mint::Operation;
+        use cdk_common::{Amount, Proof};
+
+        let path = std::env::temp_dir().join(format!(
+            "cdk-drift-{}.db",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock before the unix epoch")
+                .as_nanos()
+        ));
+        let config: Config = path.to_str().expect("non utf8 temp dir").into();
+        let keyset_id = Id::from_str("00916bbf7ef91a36").unwrap();
+
+        let db = MintSqliteDatabase::new(config.clone()).await.unwrap();
+
+        let raw = |sql: &'static str| {
+            let config = config.clone();
+            async move {
+                let pool = Pool::<SqliteConnectionManager>::new(config);
+                let conn = pool.get().await.unwrap();
+                query(sql)
+                    .unwrap()
+                    .bind("keyset_id", keyset_id.to_string())
+                    .execute(&*conn)
+                    .await
+                    .unwrap();
+            }
+        };
+
+        raw(r#"
+            INSERT INTO keyset_amounts
+                (keyset_id, total_issued, total_redeemed, total_reserved)
+            VALUES (:keyset_id, 100, 0, 0)
+            "#)
+        .await;
+
+        let proofs = vec![Proof {
+            amount: Amount::from(100),
+            keyset_id,
+            secret: Secret::generate(),
+            c: SecretKey::generate().public_key(),
+            witness: None,
+            dleq: None,
+            p2pk_e: None,
+        }];
+        let ys: Vec<_> = proofs.iter().map(|p| p.y().unwrap()).collect();
+
+        let mut tx = MintDatabase::begin_transaction(&db).await.unwrap();
+        tx.add_proofs(
+            proofs,
+            None,
+            &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        // Stand in for a keyset imported from another implementation, or one
+        // restored from a partial backup: the mint holds the proofs but its
+        // counters do not say so.
+        raw(r#"
+            UPDATE keyset_amounts
+            SET total_issued = 0, total_reserved = 0
+            WHERE keyset_id = :keyset_id
+            "#)
+        .await;
+
+        let mut tx = MintDatabase::begin_transaction(&db).await.unwrap();
+        let mut records = tx.get_proofs(&ys).await.unwrap();
+        tx.update_proofs_state(&mut records, State::Spent)
+            .await
+            .expect("burning proofs the mint holds must never be refused");
+        tx.commit().await.unwrap();
+
+        assert_eq!(
+            db.get_total_redeemed()
+                .await
+                .unwrap()
+                .get(&keyset_id)
+                .copied(),
+            Some(Amount::from(100)),
+            "the burn is recorded even though it raises what the keyset owes"
+        );
+        assert_eq!(
+            db.get_total_reserved()
+                .await
+                .unwrap()
+                .get(&keyset_id)
+                .copied(),
+            Some(Amount::ZERO),
+            "a reservation that had drifted low clamps instead of going negative"
+        );
+
+        drop(db);
+        let _ = remove_file(&path);
+    }
+
+    #[tokio::test]
     async fn bug_opening_relative_path() {
         let config: Config = "test.db".into();
 
