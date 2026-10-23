@@ -163,7 +163,8 @@ exclude_re = [
 
     # get_pubkeys_and_required_sigs does not currently surface reachable NUT14
     # errors through verify_htlc; malformed preimages are checked later.
-    "crates/cashu/src/nuts/nut14/mod.rs:139:.*delete match arm super::nut10::Error::NUT14",
+    # Line-independent so the entry survives refactors that shift line numbers.
+    "crates/cashu/src/nuts/nut14/mod.rs:.*delete match arm super::nut10::Error::NUT14",
 
     # Keys/MintKeys trivial delegation - Deref/DerefMut/keys() just return &self.0
     "crates/cashu/src/nuts/nut01/mod.rs:.*impl Deref for Keys.*deref",
@@ -176,4 +177,17 @@ exclude_re = [
 
     # MeltMethodSettingsVisitor::expecting - just a diagnostic string for deserialization errors
     "crates/cashu/src/nuts/nut05.rs:.*MeltMethodSettingsVisitor.*expecting",
+
+    # Debug impls for the NUT-16 UR encoder/decoder are diagnostics-only
+    # (progress/state reporting); the exact debug text is not a public contract.
+    "crates/cashu/src/nuts/nut16.rs:.*impl fmt::Debug for TokenUrEncoder.*fmt",
+    "crates/cashu/src/nuts/nut16.rs:.*impl fmt::Debug for TokenUrDecoder.*fmt",
+
+    # Single-part UR payloads are structurally bounded by MAX_UR_PART_LENGTH
+    # (bytewords uses two characters per payload byte, so payloads are always
+    # below ~2.2 KB), far below MAX_UR_MESSAGE_LENGTH (1 MiB). The > vs == / >=
+    # boundary is unreachable through TokenUrDecoder::receive; the check is
+    # defense in depth only.
+    "crates/cashu/src/nuts/nut16.rs:.*replace > with (==|>=) in validate_single_part_len",
+    "crates/cashu/src/nuts/nut16.rs:.*replace validate_single_part_len -> Result<\\(\\), Error> with Ok\\(\\(\\)\\)",
 ]

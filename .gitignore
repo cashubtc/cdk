@@ -26,6 +26,7 @@ tor-data
 
 # Mutation testing artifacts
 mutants.out/
+mutants.out.old/
 mutants-*.log
 .mutants.lock
 

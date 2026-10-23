@@ -27,11 +27,15 @@
 //! let mut encoder = token.ur_encoder(DEFAULT_MAX_FRAGMENT_LENGTH)?;
 //! let mut decoder = TokenUrDecoder::default();
 //!
-//! // Receiver: feed scanned frames until the token is reassembled
-//! while !decoder.complete() {
+//! // This example delivers each source fragment once, without dropped frames.
+//! for _ in 0..encoder.fragment_count() {
+//!     if decoder.complete() {
+//!         break;
+//!     }
 //!     decoder.receive(&encoder.next_part()?)?;
 //! }
 //!
+//! assert!(decoder.complete());
 //! assert_eq!(decoder.token()?, Some(token));
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
@@ -269,12 +273,7 @@ impl TokenUrDecoder {
                 self.decoder.receive(part)?;
             }
             ur::ur::Kind::SinglePart => {
-                if payload.len() > MAX_UR_MESSAGE_LENGTH {
-                    return Err(Error::MessageTooLarge {
-                        actual: payload.len(),
-                        max: MAX_UR_MESSAGE_LENGTH,
-                    });
-                }
+                validate_single_part_len(&payload)?;
                 self.single_part = Some(payload);
             }
         }
@@ -365,6 +364,23 @@ fn parse_ur_type(part: &str) -> Result<&str, Error> {
     Ok(ur_type)
 }
 
+/// Validates the payload length of a received single-part UR
+///
+/// This is defense in depth: single-part payloads are already structurally
+/// bounded by [`MAX_UR_PART_LENGTH`] (bytewords uses two characters per
+/// payload byte, so a payload is always below ~2.2 KB), far below
+/// [`MAX_UR_MESSAGE_LENGTH`].
+fn validate_single_part_len(payload: &[u8]) -> Result<(), Error> {
+    if payload.len() > MAX_UR_MESSAGE_LENGTH {
+        return Err(Error::MessageTooLarge {
+            actual: payload.len(),
+            max: MAX_UR_MESSAGE_LENGTH,
+        });
+    }
+
+    Ok(())
+}
+
 /// Validates the resource dimensions declared by a CBOR-encoded fountain part
 fn validate_multi_part_metadata(payload: &[u8]) -> Result<(), Error> {
     type FountainPart = (u32, u32, u32, u32, serde_bytes::ByteBuf);
@@ -433,8 +449,11 @@ mod tests {
 
         let mut decoder = TokenUrDecoder::default();
         assert_eq!(decoder.resolved_fragment_count(), None);
+        assert_eq!(decoder.fragment_count(), 0);
         decoder.receive(&part).expect("valid receive");
         assert!(decoder.complete());
+        // A single-part UR declares no fragment count
+        assert_eq!(decoder.fragment_count(), 0);
         assert_eq!(decoder.resolved_fragment_count(), Some(1));
         assert_eq!(decoder.token().expect("valid token"), Some(token));
     }
@@ -458,11 +477,15 @@ mod tests {
         let mut encoder = token.ur_encoder(100).expect("encoder");
 
         let mut decoder = TokenUrDecoder::default();
-        while !decoder.complete() {
+        for _ in 0..encoder.fragment_count() {
+            if decoder.complete() {
+                break;
+            }
             let part = encoder.next_part().expect("part");
             decoder.receive(&part).expect("receive");
         }
 
+        assert!(decoder.complete(), "decoder should complete");
         assert_eq!(decoder.token().expect("token"), Some(token));
     }
 
@@ -476,19 +499,26 @@ mod tests {
         let mut decoder = TokenUrDecoder::default();
         let mut parts = 0;
         assert_eq!(decoder.resolved_fragment_count(), None);
-        while !decoder.complete() {
+        for _ in 0..encoder.fragment_count() {
+            if decoder.complete() {
+                break;
+            }
             let part = encoder.next_part().expect("valid part");
             assert!(part.starts_with("ur:bytes/"));
             // Multi-part form carries `<seq>-<len>` fragment indices
             // (`ur:bytes/<seq>-<len>/<payload>`)
             assert_eq!(part.matches('/').count(), 2);
-            decoder.receive(&part).expect("valid receive");
+            // Each `next_part` call advances the emitted-fragment index
             parts += 1;
+            assert_eq!(encoder.current_index(), parts);
+            decoder.receive(&part).expect("valid receive");
             // The initial frames each resolve one distinct source fragment.
             assert_eq!(decoder.resolved_fragment_count(), Some(parts));
-            assert!(parts <= 100, "decoder should complete");
+            // The decoder learns the total fragment count from the first fragment
+            assert_eq!(decoder.fragment_count(), encoder.fragment_count());
         }
 
+        assert!(decoder.complete(), "decoder should complete");
         assert!(parts >= encoder.fragment_count());
         assert_eq!(decoder.token().expect("valid token"), Some(token));
     }
