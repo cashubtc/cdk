@@ -1896,6 +1896,9 @@
 
           in
           {
+            merge-tools = pkgs.mkShell {
+              packages = [ pkgs.bash pkgs.git pkgs.jujutsu pkgs.openssh pkgs.python3 pkgs.just ];
+            };
             inherit
               msrv
               stable
