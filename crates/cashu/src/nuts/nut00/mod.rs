@@ -615,9 +615,20 @@ fn deserialize_v4_pubkey_option<'de, D>(deserializer: D) -> Result<Option<Public
 where
     D: serde::Deserializer<'de>,
 {
-    let bytes = Option::<Vec<u8>>::deserialize(deserializer)?;
-    match bytes {
-        Some(bytes) => PublicKey::from_slice(&bytes)
+    // Older CDK releases emitted hex text. Accept it on input while the
+    // serializer always emits the NUT-28 byte-string representation.
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum BytesOrHex {
+        Hex(String),
+        Bytes(#[serde(with = "serde_bytes")] Vec<u8>),
+    }
+
+    match Option::<BytesOrHex>::deserialize(deserializer)? {
+        Some(BytesOrHex::Bytes(bytes)) => PublicKey::from_slice(&bytes)
+            .map(Some)
+            .map_err(serde::de::Error::custom),
+        Some(BytesOrHex::Hex(hex)) => PublicKey::from_hex(hex)
             .map(Some)
             .map_err(serde::de::Error::custom),
         None => Ok(None),

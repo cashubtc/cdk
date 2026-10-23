@@ -471,11 +471,16 @@ mod tests {
 
         sign_proofs(&mut proofs, &[receiver_key]).unwrap();
 
-        // Both slots derived and signed; the receiver-only ephemeral-key
-        // metadata is stripped. Spendable via the receiver path once the
-        // NUT-14 preimage is added.
+        // The receiver-only ephemeral-key metadata is stripped.
         assert!(proofs[0].witness.is_some());
         assert!(proofs[0].p2pk_e.is_none());
+
+        // Without a preimage, the expired locktime requires the slot 2
+        // refund signature produced by sign_proofs.
+        assert!(proofs[0].verify_htlc().is_ok());
+
+        // With the valid preimage, verification requires the slot 1
+        // receiver signature instead.
         proofs[0].add_preimage(
             "0000000000000000000000000000000000000000000000000000000000000001".to_string(),
         );
