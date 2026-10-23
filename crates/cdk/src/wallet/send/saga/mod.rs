@@ -419,6 +419,14 @@ impl<'a> SendSaga<'a, Initial> {
             .get(&active_keyset_id)
             .cloned()
             .ok_or(Error::UnknownKeySet)?;
+        let fee_rates = keyset_fees
+            .iter()
+            .map(|(id, fees)| (*id, fees.fee()))
+            .collect();
+
+        // Load metadata before locking; selection through reservation only needs
+        // this snapshot and local storage, never a mint request.
+        let _selection_guard = self.wallet.proof_selection_lock.lock().await;
 
         let mut available_proofs = self
             .wallet
@@ -477,14 +485,12 @@ impl<'a> SendSaga<'a, Initial> {
 
         let send_amounts = if opts.include_fee {
             let send_split = amount.split_with_fee(&fee_and_amounts)?;
-            let send_fee = self
-                .wallet
-                .get_proofs_fee_by_count(
-                    vec![(active_keyset_id, send_split.len() as u64)]
-                        .into_iter()
-                        .collect(),
-                )
-                .await?;
+            let send_fee = calculate_fee(
+                &[(active_keyset_id, send_split.len() as u64)]
+                    .into_iter()
+                    .collect(),
+                &fee_rates,
+            )?;
             (send_split, send_fee.total)
         } else {
             (amount.split(&fee_and_amounts)?, Amount::ZERO)
@@ -509,7 +515,7 @@ impl<'a> SendSaga<'a, Initial> {
         )?;
 
         let send_fee = if opts.include_fee {
-            self.wallet.get_proofs_fee(&selected_proofs).await?.total
+            calculate_fee(&selected_proofs.count_by_keyset(), &fee_rates)?.total
         } else {
             Amount::ZERO
         };
@@ -538,7 +544,14 @@ impl<'a> SendSaga<'a, Initial> {
 
         if selected_total == amount + send_fee {
             return self
-                .internal_prepare(amount, opts, selected_proofs, force_swap, keyset_policy)
+                .internal_prepare(
+                    amount,
+                    opts,
+                    selected_proofs,
+                    force_swap,
+                    active_keyset_id,
+                    &keyset_fees,
+                )
                 .await;
         } else if opts.send_kind == SendKind::OfflineExact {
             return Err(Error::InsufficientFunds);
@@ -555,8 +568,15 @@ impl<'a> SendSaga<'a, Initial> {
             }
         }
 
-        self.internal_prepare(amount, opts, selected_proofs, force_swap, keyset_policy)
-            .await
+        self.internal_prepare(
+            amount,
+            opts,
+            selected_proofs,
+            force_swap,
+            active_keyset_id,
+            &keyset_fees,
+        )
+        .await
     }
 
     async fn internal_prepare(
@@ -565,34 +585,28 @@ impl<'a> SendSaga<'a, Initial> {
         opts: SendOptions,
         proofs: Proofs,
         force_swap: bool,
-        keyset_policy: KeysetLoadPolicy,
+        active_keyset_id: Id,
+        keyset_fees_and_amounts: &KeysetFeeAndAmounts,
     ) -> Result<SendSaga<'a, Prepared>, Error> {
-        let active_keyset_id = self
-            .wallet
-            .active_keyset_with_policy(keyset_policy)
-            .await?
-            .id;
-        let fee_and_amounts = self
-            .wallet
-            .get_keyset_fees_and_amounts_with_policy(keyset_policy)
-            .await?
+        let fee_and_amounts = keyset_fees_and_amounts
             .get(&active_keyset_id)
-            .cloned()
             .ok_or(Error::UnknownKeySet)?;
+        let keyset_fees: HashMap<Id, u64> = keyset_fees_and_amounts
+            .iter()
+            .map(|(key, values)| (*key, values.fee()))
+            .collect();
 
         let (send_amounts, send_fee) = if opts.include_fee {
-            let send_split = amount.split_with_fee(&fee_and_amounts)?;
-            let send_fee = self
-                .wallet
-                .get_proofs_fee_by_count(
-                    vec![(active_keyset_id, send_split.len() as u64)]
-                        .into_iter()
-                        .collect(),
-                )
-                .await?;
+            let send_split = amount.split_with_fee(fee_and_amounts)?;
+            let send_fee = calculate_fee(
+                &[(active_keyset_id, send_split.len() as u64)]
+                    .into_iter()
+                    .collect(),
+                &keyset_fees,
+            )?;
             (send_split, send_fee)
         } else {
-            let send_split = amount.split(&fee_and_amounts)?;
+            let send_split = amount.split(fee_and_amounts)?;
             let send_fee = crate::fees::ProofsFeeBreakdown {
                 total: Amount::ZERO,
                 per_keyset: std::collections::HashMap::new(),
@@ -607,15 +621,6 @@ impl<'a> SendSaga<'a, Initial> {
 
         let is_exact_or_offline =
             exact_proofs || opts.send_kind.is_offline() || opts.send_kind.has_tolerance();
-
-        let keyset_fees_and_amounts = self
-            .wallet
-            .get_keyset_fees_and_amounts_with_policy(keyset_policy)
-            .await?;
-        let keyset_fees: HashMap<Id, u64> = keyset_fees_and_amounts
-            .iter()
-            .map(|(key, values)| (*key, values.fee()))
-            .collect();
 
         let split_result = split_proofs_for_send_respecting_p2pk_locks(
             proofs,
@@ -1297,7 +1302,8 @@ mod tests {
                 SendOptions::default(),
                 vec![unused_proof, send_8_proof, send_2_proof],
                 false,
-                KeysetLoadPolicy::default(),
+                wallet.active_keyset().await.unwrap().id,
+                &wallet.get_keyset_fees_and_amounts().await.unwrap(),
             )
             .await
             .unwrap();
