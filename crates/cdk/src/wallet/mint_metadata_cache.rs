@@ -97,6 +97,25 @@ pub struct MintMetadata {
     auth_status: FreshnessStatus,
 }
 
+impl MintMetadata {
+    /// Calculate input fees from keyset information, even without cached keys.
+    pub(crate) fn proofs_fee(
+        &self,
+        proofs_per_keyset: &HashMap<Id, u64>,
+    ) -> Result<crate::fees::ProofsFeeBreakdown, Error> {
+        let fee_rates = proofs_per_keyset
+            .keys()
+            .map(|id| {
+                self.keysets
+                    .get(id)
+                    .map(|info| (*id, info.input_fee_ppk))
+                    .ok_or(Error::UnknownKeySet)
+            })
+            .collect::<Result<HashMap<_, _>, _>>()?;
+        crate::fees::calculate_fee(proofs_per_keyset, &fee_rates)
+    }
+}
+
 /// On-demand mint metadata cache with database persistence
 ///
 /// Manages a single mint's cryptographic keys and metadata. Fetches data from

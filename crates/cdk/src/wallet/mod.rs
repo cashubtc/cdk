@@ -24,7 +24,6 @@ use zeroize::Zeroize;
 use crate::amount::SplitTarget;
 use crate::dhke::construct_proofs;
 use crate::error::Error;
-use crate::fees::calculate_fee;
 use crate::mint_url::MintUrl;
 use crate::nuts::nut00::token::Token;
 use crate::nuts::nut17::Kind;
@@ -155,6 +154,9 @@ pub struct Wallet {
     pub metadata_cache: Arc<MintMetadataCache>,
     /// The targeted amount of proofs to have at each size
     pub target_proof_count: usize,
+    // Keep automatic proof selection and reservation together across clones.
+    // The database still atomically rejects competing reservations from other wallets.
+    proof_selection_lock: Arc<tokio::sync::Mutex<()>>,
     auth_wallet: Arc<TokioRwLock<Option<AuthWallet>>>,
     auth_connector: Option<Arc<dyn AuthMintConnector + Send + Sync>>,
     #[cfg(feature = "npubcash")]
@@ -436,23 +438,11 @@ impl Wallet {
         &self,
         proofs_per_keyset: HashMap<Id, u64>,
     ) -> Result<crate::fees::ProofsFeeBreakdown, Error> {
-        let mut fee_per_keyset = HashMap::new();
         let metadata = self
             .metadata_cache
             .load(&self.localstore, &self.client)
             .await?;
-
-        for keyset_id in proofs_per_keyset.keys() {
-            let mint_keyset_info = metadata
-                .keysets
-                .get(keyset_id)
-                .ok_or(Error::UnknownKeySet)?;
-            fee_per_keyset.insert(*keyset_id, mint_keyset_info.input_fee_ppk);
-        }
-
-        let fee_breakdown = calculate_fee(&proofs_per_keyset, &fee_per_keyset)?;
-
-        Ok(fee_breakdown)
+        metadata.proofs_fee(&proofs_per_keyset)
     }
 
     /// Get fee for count of proofs in a keyset
@@ -1910,6 +1900,75 @@ mod tests {
             matches!(result, Err(Error::AmountOverflow)),
             "expected amount overflow, got {result:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn prefetched_proofs_fee_supports_keyset_info_without_keys() {
+        use crate::nuts::KeySetInfo;
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock, test_keyset, test_mint_url,
+            MockMintConnector,
+        };
+
+        let db = create_test_db().await;
+        db.add_mint(test_mint_url(), None).await.unwrap();
+        let active = test_keyset();
+        let inactive_id: Id = "001711afb1de20cb".parse().unwrap();
+        db.add_mint_keysets(
+            test_mint_url(),
+            vec![
+                KeySetInfo {
+                    id: active.id,
+                    unit: active.unit.clone(),
+                    active: true,
+                    input_fee_ppk: 100,
+                    final_expiry: None,
+                },
+                KeySetInfo {
+                    id: inactive_id,
+                    unit: active.unit.clone(),
+                    active: false,
+                    input_fee_ppk: 1500,
+                    final_expiry: None,
+                },
+            ],
+        )
+        .await
+        .unwrap();
+        db.add_keys(active.clone()).await.unwrap();
+        let wallet = create_test_wallet_with_mock(db, Arc::new(MockMintConnector::new())).await;
+        let keysets = wallet.keysets(KeysetLoadPolicy::CacheOnly).await.unwrap();
+        assert_eq!(keysets.len(), 1);
+        assert_eq!(keysets[0].id, active.id);
+
+        let metadata = wallet
+            .metadata_cache
+            .load_cached(&wallet.localstore)
+            .await
+            .unwrap();
+        assert!(!metadata.keys.contains_key(&inactive_id));
+        let counts = HashMap::from([(active.id, 2), (inactive_id, 3)]);
+        let prefetched = metadata.proofs_fee(&counts).unwrap();
+        assert_eq!(prefetched.total, Amount::from(5));
+        assert_eq!(
+            prefetched,
+            wallet.get_proofs_fee_by_count(counts).await.unwrap()
+        );
+
+        let unknown_id: Id = "00ffffffffffffff".parse().unwrap();
+        let unknown = HashMap::from([(unknown_id, 1)]);
+        assert!(matches!(
+            metadata.proofs_fee(&unknown),
+            Err(Error::UnknownKeySet)
+        ));
+        assert!(matches!(
+            wallet.get_proofs_fee_by_count(unknown).await,
+            Err(Error::UnknownKeySet)
+        ));
+        assert!(matches!(
+            metadata.proofs_fee(&HashMap::from([(inactive_id, u64::MAX)])),
+            Err(Error::AmountOverflow)
+        ));
     }
 
     #[tokio::test]
