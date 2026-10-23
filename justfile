@@ -7,6 +7,10 @@ alias t := test
 default:
   @just --list
 
+# Prepare and sign a local JJ merge; message and local checks are optional.
+merge +args:
+  bash misc/merge.sh "$@"
+
 # Enter a Nix development shell without copying ignored files from JJ workspaces.
 develop shell="stable":
   #!/usr/bin/env bash
