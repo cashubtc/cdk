@@ -1193,6 +1193,9 @@ fn default_max_outputs() -> usize {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct MintInfo {
+    /// Experimental currency display metadata, published under draft NUT-XX.
+    #[serde(default)]
+    pub unit_metadata: Option<Vec<cdk::nuts::UnitMetadata>>,
     /// name of the mint and should be recognizable
     pub name: String,
     /// hex pubkey of the mint

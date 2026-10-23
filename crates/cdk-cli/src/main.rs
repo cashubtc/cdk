@@ -85,6 +85,16 @@ enum Commands {
     DecodeToken(sub_commands::decode_token::DecodeTokenSubCommand),
     /// Balance
     Balance,
+    /// Accept the currently reported display precision after reviewing the change.
+    #[cfg(feature = "experimental-unit-metadata")]
+    AcknowledgeUnitPrecision {
+        /// Mint publishing the changed precision.
+        mint_url: cdk::mint_url::MintUrl,
+        /// Currency unit whose precision changed.
+        unit: CurrencyUnit,
+        /// New precision shown by the balance command.
+        precision: u8,
+    },
     /// Pay bolt11 invoice
     Melt(sub_commands::melt::MeltSubCommand),
     /// Claim pending mint quotes that have been paid
@@ -276,6 +286,19 @@ async fn main() -> Result<()> {
         }
         Commands::Balance => {
             sub_commands::balance::balance(&wallet_repository, currency_unit.as_ref()).await
+        }
+        #[cfg(feature = "experimental-unit-metadata")]
+        Commands::AcknowledgeUnitPrecision {
+            mint_url,
+            unit,
+            precision,
+        } => {
+            wallet_repository
+                .get_wallet(mint_url, unit)
+                .await?
+                .acknowledge_unit_precision(*precision)
+                .await?;
+            Ok(())
         }
         Commands::Melt(sub_command_args) => {
             sub_commands::melt::pay(&wallet_repository, sub_command_args, &default_unit).await

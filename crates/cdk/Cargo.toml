@@ -11,6 +11,7 @@ license.workspace = true
 
 
 [features]
+experimental-unit-metadata = ["cdk-common/experimental-unit-metadata"]
 default = ["mint", "wallet", "nostr", "bip353"]
 wallet = [
     "dep:cdk-http-client",

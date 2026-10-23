@@ -27,9 +27,8 @@ impl Mint {
     /// Return a list of auth keysets
     #[instrument(skip_all)]
     pub fn auth_keysets(&self) -> KeysetResponse {
-        KeysetResponse {
-            keysets: self
-                .keysets
+        KeysetResponse::new(
+            self.keysets
                 .load()
                 .iter()
                 .filter_map(|key| {
@@ -46,6 +45,6 @@ impl Mint {
                     }
                 })
                 .collect(),
-        }
+        )
     }
 }

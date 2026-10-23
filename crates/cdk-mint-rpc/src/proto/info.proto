@@ -6,6 +6,8 @@ package cdk_mint_info_v1;
 service MintInfoService {
     // Returns the mint's public metadata.
     rpc GetInfo(GetInfoRequest) returns (GetInfoResponse) {}
+    // Replaces experimental currency metadata. Absent settings disable publication.
+    rpc UpdateUnitMetadata(UpdateUnitMetadataRequest) returns (UpdateUnitMetadataResponse) {}
     // Sets the mint's name. An empty name clears it.
     rpc UpdateName(UpdateNameRequest) returns (UpdateNameResponse) {}
     // Sets the mint's message of the day. An empty message clears it.
@@ -59,7 +61,26 @@ message GetInfoResponse {
     repeated string urls = 8;
     // URL of the mint's terms of service.
     optional string tos_url = 9;
+    UnitMetadataSettings unit_metadata = 10;
 }
+
+// The wrapper preserves absent versus present-empty metadata in protobuf.
+message UnitMetadataSettings {
+    repeated UnitMetadata units = 1;
+}
+
+message UnitMetadata {
+    string unit = 1;
+    uint32 precision = 2;
+    optional string name = 3;
+    optional string symbol = 4;
+}
+
+message UpdateUnitMetadataRequest {
+    UnitMetadataSettings unit_metadata = 1;
+}
+
+message UpdateUnitMetadataResponse {}
 
 message UpdateNameRequest {
     // New name. Empty clears the name.

@@ -21,6 +21,9 @@ use crate::Amount;
 /// CDK Error
 #[derive(Debug, Error)]
 pub enum Error {
+    /// Invalid currency unit display metadata.
+    #[error(transparent)]
+    UnitMetadata(#[from] cashu::nuts::unit_metadata::Error),
     /// Mint does not have a key for amount
     #[error("No Key for Amount")]
     AmountKey,

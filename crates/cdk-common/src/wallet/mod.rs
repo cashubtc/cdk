@@ -1005,6 +1005,8 @@ pub trait Wallet: Send + Sync {
     type CurrencyUnit: Clone + Send + Sync;
     /// Mint info type
     type MintInfo: Clone + Send + Sync;
+    /// Resolved display metadata for this mint and unit.
+    type UnitDisplayInfo: Clone + Send + Sync;
     /// Keyset info type
     type KeySetInfo: Clone + Send + Sync;
     /// Mint quote type
@@ -1054,6 +1056,12 @@ pub trait Wallet: Send + Sync {
 
     /// Load mint info (from cache if fresh, otherwise fetches)
     async fn load_mint_info(&self) -> Result<Self::MintInfo, Self::Error>;
+
+    /// Resolve display precision and detect changes before applying them.
+    async fn unit_display_info(&self) -> Result<Self::UnitDisplayInfo, Self::Error>;
+
+    /// Acknowledge the current pending precision after notifying the user.
+    async fn acknowledge_unit_precision(&self, precision: u8) -> Result<(), Self::Error>;
 
     /// Get all keysets for this wallet's unit.
     ///

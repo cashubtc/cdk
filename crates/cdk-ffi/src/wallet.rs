@@ -202,6 +202,16 @@ impl Wallet {
         Ok(info.into())
     }
 
+    /// Resolve this wallet's display metadata, including pending precision changes.
+    pub async fn unit_display_info(&self) -> Result<crate::types::UnitDisplayInfo, FfiError> {
+        Ok(self.inner.unit_display_info().await?.into())
+    }
+
+    /// Acknowledge the pending precision after notifying the user.
+    pub async fn acknowledge_unit_precision(&self, precision: u8) -> Result<(), FfiError> {
+        Ok(self.inner.acknowledge_unit_precision(precision).await?)
+    }
+
     /// Receive tokens.
     ///
     /// This verifies and persists received proofs in the local store. Mobile

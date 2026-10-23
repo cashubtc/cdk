@@ -73,6 +73,8 @@ struct Cli {
 enum Commands {
     /// Get info
     GetInfo,
+    /// Replace experimental currency unit display metadata.
+    UpdateUnitMetadata(subcommands::UpdateUnitMetadataCommand),
     /// Update motd
     UpdateMotd(subcommands::UpdateMotdCommand),
     /// Update short description
@@ -170,6 +172,10 @@ async fn main() -> Result<()> {
     let mut wallet_client = WalletServiceClient::new(channel.clone());
 
     match cli.command {
+        Commands::UpdateUnitMetadata(args) => {
+            let mut info_client = MintInfoServiceClient::new(channel);
+            subcommands::update_unit_metadata(&mut info_client, &args).await?;
+        }
         Commands::GetInfo => {
             let mut info_client = MintInfoServiceClient::new(channel);
             subcommands::get_info(&mut info_client).await?;

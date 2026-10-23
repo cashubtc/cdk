@@ -282,6 +282,15 @@ impl MintInfo {
 /// Supported nuts and settings
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Nuts {
+    /// Experimental currency unit metadata (draft NUT-XX).
+    #[serde(
+        default,
+        rename = "XX",
+        deserialize_with = "super::unit_metadata::deserialize_settings",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(not(feature = "experimental-unit-metadata"), serde(skip_serializing))]
+    pub unit_metadata: Option<Vec<super::UnitMetadata>>,
     /// NUT04 Settings
     #[serde(default)]
     #[serde(rename = "4")]

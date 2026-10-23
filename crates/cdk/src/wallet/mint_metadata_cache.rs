@@ -78,6 +78,8 @@ impl Default for FreshnessStatus {
 /// Cloning is cheap due to `Arc` wrapping of large data structures.
 #[derive(Clone, Debug, Default)]
 pub struct MintMetadata {
+    /// Original keyset unit identifiers used only for display metadata lookup.
+    pub unit_names: HashMap<Id, String>,
     /// Mint server information (name, description, supported features, etc.)
     pub mint_info: MintInfo,
 
@@ -340,6 +342,18 @@ impl MintMetadataCache {
             new_metadata.mint_info = mint_info;
         }
 
+        new_metadata.unit_names = match storage
+            .kv_read(
+                "unit_metadata",
+                &super::unit_metadata::mint_namespace(&self.mint_url),
+                "unit_names",
+            )
+            .await
+        {
+            Ok(Some(bytes)) => serde_json::from_slice(&bytes).unwrap_or_default(),
+            _ => HashMap::new(),
+        };
+
         // Load keysets and their keys
         if let Some(keysets) = storage.get_mint_keysets(self.mint_url.clone()).await? {
             new_metadata.active_keysets.clear();
@@ -589,12 +603,48 @@ impl MintMetadataCache {
             versions.insert(storage_id, metadata.status.version);
         }
 
-        // Save mint info
-        storage
-            .add_mint(mint_url.clone(), Some(metadata.mint_info.clone()))
+        let display_persisted = if cfg!(feature = "experimental-unit-metadata") {
+            async {
+                if let Some(previous) = storage.get_mint(mint_url.clone()).await? {
+                    super::unit_metadata::observe(storage.as_ref(), &mint_url, &previous).await?;
+                }
+                super::unit_metadata::observe(storage.as_ref(), &mint_url, &metadata.mint_info)
+                    .await?;
+                storage
+                    .kv_write(
+                        "unit_metadata",
+                        &super::unit_metadata::mint_namespace(&mint_url),
+                        "unit_names",
+                        &serde_json::to_vec(&metadata.unit_names)?,
+                    )
+                    .await?;
+                Ok::<_, Error>(())
+            }
             .await
-            .inspect_err(|e| tracing::warn!("Failed to save mint info for {}: {}", mint_url, e))
-            .ok();
+            .inspect_err(|error| {
+                tracing::warn!(
+                    "Failed to persist display metadata: {}",
+                    escape_log_value(error)
+                );
+            })
+            .is_ok()
+        } else {
+            true
+        };
+
+        // Preserve the previous info until its precision observations are durable.
+        if display_persisted {
+            storage
+                .add_mint(mint_url.clone(), Some(metadata.mint_info.clone()))
+                .await
+                .inspect_err(|e| tracing::warn!("Failed to save mint info for {}: {}", mint_url, e))
+                .ok();
+        } else {
+            let mut versions = db_sync_versions.write();
+            if versions.get(&storage_id) == Some(&metadata.status.version) {
+                versions.remove(&storage_id);
+            }
+        }
 
         // Save all keysets
         let keysets: Vec<_> = metadata.keysets.values().map(|ks| (**ks).clone()).collect();
@@ -686,20 +736,19 @@ impl MintMetadataCache {
                 );
             })?;
 
-            // Get list of keysets
-            keysets_to_fetch.extend(
-                client
-                    .get_mint_keysets()
-                    .await
-                    .inspect_err(|err| {
-                        tracing::error!(
-                            "Failed to fetch keysets for {}: {}",
-                            escape_log_value(&self.mint_url),
-                            escape_log_value(err)
-                        );
-                    })?
-                    .keysets,
-            );
+            let response = client.get_mint_keysets().await.inspect_err(|err| {
+                tracing::error!(
+                    "Failed to fetch keysets for {}: {}",
+                    escape_log_value(&self.mint_url),
+                    escape_log_value(err),
+                );
+            })?;
+            // Keep names for cached retired keysets, but clear ambiguous current entries.
+            for keyset in &response.keysets {
+                new_metadata.unit_names.remove(&keyset.id);
+            }
+            new_metadata.unit_names.extend(response.unit_names);
+            keysets_to_fetch.extend(response.keysets);
         }
 
         // Fetch auth keysets if auth client provided

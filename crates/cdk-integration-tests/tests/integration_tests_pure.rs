@@ -70,6 +70,17 @@ async fn test_swap_to_send() {
     let mint_bob = create_and_start_test_mint()
         .await
         .expect("Failed to create test mint");
+    #[cfg(feature = "experimental-unit-metadata")]
+    {
+        let mut info = mint_bob.mint_info().await.unwrap();
+        info.nuts.unit_metadata = Some(vec![cashu::nuts::UnitMetadata {
+            unit: "sat".to_owned(),
+            precision: 0,
+            name: Some("Mint-provided label".to_owned()),
+            symbol: None,
+        }]);
+        mint_bob.set_mint_info(info).await.unwrap();
+    }
     let wallet_alice = create_test_wallet_for_mint(mint_bob.clone())
         .await
         .expect("Failed to create test wallet");
@@ -83,6 +94,22 @@ async fn test_swap_to_send() {
         .await
         .expect("Failed to get balance");
     assert_eq!(Amount::from(64), balance_alice);
+    #[cfg(feature = "experimental-unit-metadata")]
+    {
+        let display = wallet_alice.unit_display_info().await.unwrap();
+        assert_eq!(display.format_amount(u64::from(balance_alice)), "64 sat");
+        assert!(display.name.is_none());
+        let stored = wallet_alice
+            .localstore
+            .get_mint(wallet_alice.mint_url.clone())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            stored.nuts.unit_metadata,
+            mint_bob.mint_info().await.unwrap().nuts.unit_metadata
+        );
+    }
 
     // Alice wants to send 40 sats, which internally swaps
     let prepared_send = wallet_alice

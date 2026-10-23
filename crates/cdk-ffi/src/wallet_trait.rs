@@ -24,6 +24,7 @@ impl WalletTraitDef for Wallet {
     type MintUrl = MintUrl;
     type CurrencyUnit = CurrencyUnit;
     type MintInfo = MintInfo;
+    type UnitDisplayInfo = UnitDisplayInfo;
     type KeySetInfo = KeySet;
     type MintQuote = MintQuote;
     type MeltQuote = MeltQuote;
@@ -63,6 +64,14 @@ impl WalletTraitDef for Wallet {
 
     async fn load_mint_info(&self) -> Result<Self::MintInfo, Self::Error> {
         Wallet::load_mint_info(self).await
+    }
+
+    async fn unit_display_info(&self) -> Result<Self::UnitDisplayInfo, Self::Error> {
+        Wallet::unit_display_info(self).await
+    }
+
+    async fn acknowledge_unit_precision(&self, precision: u8) -> Result<(), Self::Error> {
+        Wallet::acknowledge_unit_precision(self, precision).await
     }
 
     async fn keysets(

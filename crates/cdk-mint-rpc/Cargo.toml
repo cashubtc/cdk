@@ -49,3 +49,6 @@ tonic-prost-build.workspace = true
 
 [lints]
 workspace = true
+
+[features]
+experimental-unit-metadata = ["cdk/experimental-unit-metadata"]

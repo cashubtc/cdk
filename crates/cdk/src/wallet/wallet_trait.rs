@@ -31,6 +31,7 @@ impl WalletTrait for super::Wallet {
     type MintUrl = MintUrl;
     type CurrencyUnit = CurrencyUnit;
     type MintInfo = MintInfo;
+    type UnitDisplayInfo = crate::nuts::UnitDisplayInfo;
     type KeySetInfo = cdk_common::KeySet;
     type MintQuote = MintQuote;
     type MeltQuote = MeltQuote;
@@ -75,6 +76,14 @@ impl WalletTrait for super::Wallet {
     #[instrument(skip(self))]
     async fn load_mint_info(&self) -> Result<MintInfo, Self::Error> {
         self.load_mint_info().await
+    }
+
+    async fn unit_display_info(&self) -> Result<Self::UnitDisplayInfo, Self::Error> {
+        super::Wallet::unit_display_info(self).await
+    }
+
+    async fn acknowledge_unit_precision(&self, precision: u8) -> Result<(), Self::Error> {
+        super::Wallet::acknowledge_unit_precision(self, precision).await
     }
 
     #[instrument(skip(self))]

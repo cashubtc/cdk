@@ -6,8 +6,9 @@ use tonic::Request;
 use crate::info::mint_info_service_client::MintInfoServiceClient;
 use crate::info::{
     AddContactRequest, AddUrlRequest, GetInfoRequest, RemoveContactRequest, RemoveUrlRequest,
-    UpdateIconUrlRequest, UpdateLongDescriptionRequest, UpdateMotdRequest, UpdateNameRequest,
-    UpdateShortDescriptionRequest, UpdateTosUrlRequest,
+    UnitMetadata, UnitMetadataSettings, UpdateIconUrlRequest, UpdateLongDescriptionRequest,
+    UpdateMotdRequest, UpdateNameRequest, UpdateShortDescriptionRequest, UpdateTosUrlRequest,
+    UpdateUnitMetadataRequest,
 };
 
 /// Executes the get_info command against the mint server
@@ -46,6 +47,18 @@ pub async fn get_info(client: &mut MintInfoServiceClient<Channel>) -> Result<()>
 
     for contact in info.contact {
         println!("method: {}, info: {}", contact.method, contact.info);
+    }
+
+    if let Some(settings) = info.unit_metadata {
+        for entry in settings.units {
+            println!(
+                "unit: {}, precision: {}, name: {}, symbol: {}",
+                cdk_common::terminal::escape_control(&entry.unit),
+                entry.precision,
+                cdk_common::terminal::escape_control(entry.name.as_deref().unwrap_or_default()),
+                cdk_common::terminal::escape_control(entry.symbol.as_deref().unwrap_or_default()),
+            );
+        }
     }
 
     Ok(())
@@ -347,5 +360,36 @@ pub async fn remove_contact(
         }))
         .await?;
 
+    Ok(())
+}
+
+/// Replace the mint's experimental currency display metadata.
+#[derive(Debug, Args)]
+pub struct UpdateUnitMetadataCommand {
+    /// JSON array of unit metadata, or null to stop publishing metadata.
+    metadata: String,
+}
+
+/// Publish metadata through the mint's validated settings update.
+pub async fn update_unit_metadata(
+    client: &mut MintInfoServiceClient<Channel>,
+    args: &UpdateUnitMetadataCommand,
+) -> Result<()> {
+    let entries: Option<Vec<cdk::nuts::UnitMetadata>> = serde_json::from_str(&args.metadata)?;
+    client
+        .update_unit_metadata(UpdateUnitMetadataRequest {
+            unit_metadata: entries.map(|entries| UnitMetadataSettings {
+                units: entries
+                    .into_iter()
+                    .map(|entry| UnitMetadata {
+                        unit: entry.unit,
+                        precision: u32::from(entry.precision),
+                        name: entry.name,
+                        symbol: entry.symbol,
+                    })
+                    .collect(),
+            }),
+        })
+        .await?;
     Ok(())
 }
