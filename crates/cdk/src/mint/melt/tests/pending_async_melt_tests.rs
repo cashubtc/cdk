@@ -7,13 +7,16 @@ use std::time::Duration;
 use async_trait::async_trait;
 use cdk_common::mint::MeltQuote;
 use cdk_common::nut00::KnownMethod;
+use cdk_common::nuts::nut17::Kind;
 use cdk_common::nuts::{CurrencyUnit, MeltQuoteState, Proofs};
 use cdk_common::payment::{
     self, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions, MakePaymentResponse,
     MintPayment, OutgoingPaymentOptions, PaymentIdentifier, PaymentQuoteResponse, SettingsResponse,
     WaitPaymentResponse,
 };
-use cdk_common::{Amount, MeltQuoteBolt11Request, PaymentMethod, ProofsMethods};
+use cdk_common::pub_sub::{Error as PubSubError, PubsubLimits};
+use cdk_common::subscription::{Params, SubId};
+use cdk_common::{Amount, MeltQuoteBolt11Request, PaymentMethod, ProofsMethods, QuoteId};
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription, FakeWallet};
 use futures::Stream;
 
@@ -189,12 +192,13 @@ async fn create_pending_test_mint(
     backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync>,
 ) -> Result<Mint, Error> {
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await?);
-    build_pending_test_mint(db, backend).await
+    build_pending_test_mint(db, backend, PubsubLimits::default()).await
 }
 
 async fn build_pending_test_mint<DB>(
     db: Arc<DB>,
     backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync>,
+    pubsub: PubsubLimits,
 ) -> Result<Mint, Error>
 where
     DB: cdk_common::database::MintDatabase<cdk_common::database::Error>
@@ -219,6 +223,7 @@ where
         .with_name("test mint".to_string())
         .with_description("test mint for async melt tests".to_string())
         .with_urls(vec!["https://test-mint".to_string()])
+        .with_pubsub_limits(pubsub)
         .build_with_seed(db.clone(), &mnemonic.to_seed_normalized(""))
         .await?;
 
@@ -1073,4 +1078,88 @@ async fn startup_defers_stalled_payment_checks_and_recovers_later() {
             .is_none());
         mint.stop().await.unwrap();
     }
+}
+
+/// The mint-wide topic budget is shared with anonymous subscribers, so an
+/// exhausted budget must cost this internal wait only its notification fast
+/// path: the loop polls the database either way.
+#[tokio::test]
+async fn pending_melt_wait_falls_back_to_polling_when_subscription_is_refused() {
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
+    let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> =
+        Arc::new(NoEventPendingBackend::new(usize::MAX, None));
+    let mint = build_pending_test_mint(
+        db,
+        backend,
+        PubsubLimits {
+            max_topics: 1,
+            ..PubsubLimits::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    let budget_hold = mint
+        .pubsub_manager()
+        .subscribe(Params {
+            id: Arc::new(SubId::from("budget-hold")),
+            kind: Kind::Bolt11MeltQuote,
+            filters: vec![QuoteId::new().to_string()],
+        })
+        .expect("the first subscription fits the budget");
+    assert!(
+        matches!(
+            mint.pubsub_manager().subscribe(Params {
+                id: Arc::new(SubId::from("budget-probe")),
+                kind: Kind::Bolt11MeltQuote,
+                filters: vec![QuoteId::new().to_string()],
+            }),
+            Err(PubSubError::TooManyTopics)
+        ),
+        "test premise: the melt wait cannot get a subscription"
+    );
+
+    let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+    let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+    let melt_request = create_test_melt_request(&proofs, &quote);
+
+    let pending = mint.melt(&melt_request).await.unwrap();
+
+    let event_mint = Arc::new(mint.clone());
+    let event_localstore = mint.localstore();
+    let event_pubsub = mint.pubsub_manager();
+    let event_quote_id = quote.id.clone();
+    let total_spent = quote.amount();
+    let lookup_id = PaymentIdentifier::CustomId(quote.id.to_string());
+    let event_task = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        Mint::handle_successful_melt_payment_event(
+            &event_mint,
+            &event_localstore,
+            &event_pubsub,
+            &event_quote_id,
+            MakePaymentResponse {
+                payment_lookup_id: lookup_id,
+                payment_proof: Some("polling_fallback_preimage".to_string()),
+                status: MeltQuoteState::Paid,
+                total_spent,
+            },
+        )
+        .await
+    });
+
+    let response = pending.await.unwrap();
+    event_task.await.unwrap().unwrap();
+    drop(budget_hold);
+
+    assert_eq!(response.state(), MeltQuoteState::Paid);
+    assert_eq!(
+        mint.localstore()
+            .get_melt_quote(&quote.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        MeltQuoteState::Paid
+    );
 }
