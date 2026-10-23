@@ -437,10 +437,27 @@ impl Wallet {
             }
         }
 
-        // Check if the selected proofs total amount is equal to the amount else filter out unnecessary proofs
+        // Complete sparse-denomination selections in one pass, stopping as soon
+        // as the selected value is sufficient.
+        let mut selected_amount = selected_proofs.total_amount()?;
+        let used_fallback = selected_amount < amount;
+        if used_fallback {
+            for proof in &proofs {
+                if selected_proofs.insert(proof.clone()) {
+                    selected_amount = selected_amount
+                        .checked_add(proof.amount)
+                        .ok_or(Error::AmountOverflow)?;
+                    if selected_amount >= amount {
+                        break;
+                    }
+                }
+            }
+            ensure_cdk!(selected_amount >= amount, Error::InsufficientFunds);
+        }
+
+        // Keep the fallback linear; only minimize the original heuristic selection.
         let mut selected_proofs = selected_proofs.into_iter().collect::<Vec<_>>();
-        let total_amount = selected_proofs.total_amount()?;
-        if total_amount != amount && selected_proofs.len() > 1 {
+        if !used_fallback && selected_amount != amount {
             Self::sort_proofs_by_amount_and_age(&mut selected_proofs, derivation_indices);
             selected_proofs =
                 Self::select_least_amount_over(selected_proofs, amount, derivation_indices)?;
@@ -668,6 +685,105 @@ mod tests {
             id(),
             (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into(),
         )])
+    }
+
+    #[test]
+    fn test_select_proofs_non_power_of_two_denominations() {
+        use std::collections::HashSet;
+
+        use cdk_common::nuts::nut00::ProofsMethods;
+
+        use crate::fees::calculate_fee;
+
+        for (denominations, amounts, requested) in [
+            (vec![1, 3, 5], vec![3, 3, 1], 5),
+            (
+                vec![1, 960, 1024],
+                [vec![960, 960], vec![1; 193]].concat(),
+                1024,
+            ),
+        ] {
+            let proofs: Vec<_> = amounts.into_iter().map(proof).collect();
+            for fee in [0, 100] {
+                let fees = HashMap::from([(id(), (fee, denominations.clone()).into())]);
+                for include_fees in [false, true] {
+                    let selected = Wallet::select_proofs(
+                        requested.into(),
+                        proofs.clone(),
+                        &vec![id()],
+                        &fees,
+                        include_fees,
+                    )
+                    .unwrap();
+                    let cost = if include_fees {
+                        calculate_fee(&selected.count_by_keyset(), &HashMap::from([(id(), fee)]))
+                            .unwrap()
+                            .total
+                    } else {
+                        Amount::ZERO
+                    };
+                    assert!(selected.total_amount().unwrap() >= Amount::from(requested) + cost);
+                    assert!(selected.iter().all(|p| proofs.contains(p)));
+                    assert_eq!(
+                        selected.iter().collect::<HashSet<_>>().len(),
+                        selected.len()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_select_proofs_rejects_duplicate_balance() {
+        let coin = proof(3);
+        let result = Wallet::select_proofs(
+            5.into(),
+            vec![coin.clone(), coin, proof(1)],
+            &vec![id()],
+            &HashMap::from([(id(), (0, vec![1, 3, 5]).into())]),
+            false,
+        );
+        assert!(matches!(result, Err(crate::Error::InsufficientFunds)));
+    }
+
+    #[test]
+    fn test_select_proofs_large_sparse_balance() {
+        use cdk_common::nuts::nut00::ProofsMethods;
+
+        use crate::fees::calculate_fee;
+
+        let proofs: Vec<_> = (0..20_000).map(|index| indexed_proof(1, index)).collect();
+        let indices: HashMap<_, _> = proofs
+            .iter()
+            .enumerate()
+            .map(|(index, proof)| (proof.clone(), index as u32))
+            .collect();
+
+        for fee in [0, 100] {
+            for include_fees in [false, true] {
+                let selected = Wallet::select_proofs_with_derivation_indices(
+                    4.into(),
+                    proofs.clone(),
+                    &vec![id()],
+                    &HashMap::from([(id(), (fee, vec![1, 3]).into())]),
+                    include_fees,
+                    &indices,
+                )
+                .unwrap();
+                let cost = if include_fees {
+                    calculate_fee(&selected.count_by_keyset(), &HashMap::from([(id(), fee)]))
+                        .unwrap()
+                        .total
+                } else {
+                    Amount::ZERO
+                };
+                assert_eq!(selected.total_amount().unwrap(), Amount::from(4) + cost);
+                assert_eq!(
+                    selected.iter().collect::<std::collections::HashSet<_>>(),
+                    proofs[..selected.len()].iter().collect()
+                );
+            }
+        }
     }
 
     #[test]
