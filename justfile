@@ -1000,6 +1000,18 @@ ffi-generate LANGUAGE *ARGS="--release":
 
   echo "✅ $LANG bindings generated in target/bindings/$LANG/"
 
+# Build, verify, collect, and publish reproducible binding candidates (Nix only).
+ffi-candidate *ARGS:
+  ./scripts/bindings/release "$@"
+
+# Start the GitHub candidate build for a pushed recipe branch or tag.
+ffi-candidate-dispatch ref repo="cashubtc/cdk":
+  nix develop --no-update-lock-file path:.#bindings-release-tools --command gh workflow run ffi-candidate.yml --repo "$2" --ref "$1"
+
+# Test release identity, archive, verification, and publication contracts.
+ffi-release-tools-test:
+  nix develop --no-update-lock-file path:.#bindings-release-tools --command python3 -m unittest discover -s scripts/bindings/tests -v
+
 # Generate Python bindings (shorthand)
 ffi-generate-python *ARGS="--release":
   just ffi-generate python {{ARGS}}
