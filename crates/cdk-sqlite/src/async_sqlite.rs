@@ -192,10 +192,6 @@ impl DatabaseTransaction<AsyncSqlite> for SQLiteTransactionHandler {
 }
 
 impl DatabaseConnector for AsyncSqlite {
-    fn mark_unusable(&mut self) {
-        self.stale.store(true, Ordering::SeqCst);
-    }
-
     type Transaction = SQLiteTransactionHandler;
 }
 

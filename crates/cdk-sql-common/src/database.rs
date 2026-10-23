@@ -3,9 +3,12 @@
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use cdk_common::database::Error;
 
+use crate::pool::{DatabasePool, PooledResource};
 use crate::stmt::{query, Column, Statement};
 
 /// Database Executor
@@ -56,19 +59,23 @@ where
     W: Debug + Deref<Target = DB> + DerefMut<Target = DB> + Send + Sync + 'static,
 {
     inner: Option<W>,
+    stale: Arc<AtomicBool>,
 }
 
-impl<DB, W> ConnectionWithTransaction<DB, W>
+impl<DB, RM> ConnectionWithTransaction<DB, PooledResource<RM>>
 where
-    DB: DatabaseConnector,
-    W: Debug + Deref<Target = DB> + DerefMut<Target = DB> + Send + Sync + 'static,
+    DB: DatabaseConnector + 'static,
+    RM: DatabasePool<Connection = DB> + 'static,
 {
-    /// Creates a new transaction
-    pub async fn new(inner: W) -> Result<Self, Error> {
+    /// Creates a transaction using the pooled connection's existing stale flag.
+    pub async fn new(inner: PooledResource<RM>) -> Result<Self, Error> {
         // Own the connection before awaiting BEGIN: cancellation can leave the
         // database operation running and it may still succeed. Drop must retain
         // the connection until rollback completes before returning it to the pool.
-        let mut transaction = Self { inner: Some(inner) };
+        let mut transaction = Self {
+            stale: inner.stale(),
+            inner: Some(inner),
+        };
         let conn = transaction
             .inner
             .as_mut()
@@ -76,7 +83,13 @@ where
         DB::Transaction::begin(conn.deref_mut()).await?;
         Ok(transaction)
     }
+}
 
+impl<DB, W> ConnectionWithTransaction<DB, W>
+where
+    DB: DatabaseConnector,
+    W: Debug + Deref<Target = DB> + DerefMut<Target = DB> + Send + Sync + 'static,
+{
     /// Commits the transaction consuming it and releasing the connection back to the pool (or
     /// disconnecting)
     pub async fn commit(mut self) -> Result<(), Error> {
@@ -115,7 +128,10 @@ where
         if let Some(conn) = self.inner.take() {
             // Construct before spawning so even an unpolled cleanup future
             // owns the guard that fences failed or cancelled rollback.
-            let cleanup = RollbackGuard { inner: Some(conn) };
+            let cleanup = RollbackGuard {
+                inner: Some(conn),
+                stale: self.stale.clone(),
+            };
             if let Ok(runtime) = tokio::runtime::Handle::try_current() {
                 runtime.spawn(cleanup.rollback());
             }
@@ -129,6 +145,7 @@ where
     W: Debug + Deref<Target = DB> + DerefMut<Target = DB> + Send + Sync + 'static,
 {
     inner: Option<W>,
+    stale: Arc<AtomicBool>,
 }
 
 impl<DB, W> RollbackGuard<DB, W>
@@ -151,8 +168,8 @@ where
     W: Debug + Deref<Target = DB> + DerefMut<Target = DB> + Send + Sync + 'static,
 {
     fn drop(&mut self) {
-        if let Some(conn) = self.inner.as_mut() {
-            conn.mark_unusable();
+        if self.inner.is_some() {
+            self.stale.store(true, Ordering::SeqCst);
         }
     }
 }
@@ -244,10 +261,6 @@ where
 /// Database connector
 #[async_trait::async_trait]
 pub trait DatabaseConnector: Debug + DatabaseExecutor + Send + Sync {
-    /// Prevent reuse after failed or cancelled transaction cleanup. Pooled
-    /// drivers must invalidate their resource here.
-    fn mark_unusable(&mut self) {}
-
     /// Database static trait for the database
     type Transaction: DatabaseTransaction<Self>
     where

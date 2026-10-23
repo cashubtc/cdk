@@ -109,6 +109,19 @@ where
     start_time: std::time::Instant,
 }
 
+impl<RM> PooledResource<RM>
+where
+    RM: DatabasePool,
+{
+    pub(crate) fn stale(&self) -> Arc<AtomicBool> {
+        self.resource
+            .as_ref()
+            .expect("resource already dropped")
+            .0
+            .clone()
+    }
+}
+
 impl<RM> Debug for PooledResource<RM>
 where
     RM: DatabasePool,
