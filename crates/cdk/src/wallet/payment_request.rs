@@ -973,7 +973,10 @@ mod tests {
         assert_eq!(prepared.payment_amount(), Amount::from(600));
         assert_eq!(
             prepared.total_amount(),
-            prepared.payment_amount() + prepared.input_fee()
+            prepared
+                .payment_amount()
+                .checked_add(prepared.input_fee())
+                .expect("total")
         );
         assert!(prepared.input_fee() > Amount::ZERO);
         assert!(wallet.total_reserved_balance().await.expect("balance") > Amount::ZERO);
