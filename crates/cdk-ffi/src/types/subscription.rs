@@ -114,7 +114,11 @@ pub fn encode_subscribe_params(params: SubscribeParams) -> Result<String, FfiErr
 /// storage activity is not desired.
 #[derive(uniffi::Object)]
 pub struct ActiveSubscription {
-    inner: std::sync::Arc<tokio::sync::Mutex<cdk::wallet::subscription::ActiveSubscription>>,
+    inner: tokio::sync::Mutex<Option<cdk::wallet::subscription::ActiveSubscription>>,
+    readiness: cdk_common::pub_sub::remote_consumer::StreamReadiness<
+        cdk::wallet::subscription::MintSubTopics,
+    >,
+    stopped: tokio::sync::watch::Sender<bool>,
     pub sub_id: String,
 }
 
@@ -124,7 +128,9 @@ impl ActiveSubscription {
         sub_id: String,
     ) -> Self {
         Self {
-            inner: std::sync::Arc::new(tokio::sync::Mutex::new(inner)),
+            readiness: inner.stream_readiness(),
+            inner: tokio::sync::Mutex::new(Some(inner)),
+            stopped: tokio::sync::watch::channel(false).0,
             sub_id,
         }
     }
@@ -143,12 +149,32 @@ impl ActiveSubscription {
     /// cancel the subscription during app background transitions unless
     /// background network activity is intended.
     pub async fn recv(&self) -> Result<NotificationPayload, FfiError> {
-        let mut guard = self.inner.lock().await;
-        guard
-            .recv()
-            .await
-            .ok_or_else(|| FfiError::internal("Subscription closed"))
-            .map(Into::into)
+        let mut stopped = self.stopped.subscribe();
+        if *stopped.borrow() {
+            return Err(FfiError::internal("Subscription closed"));
+        }
+        tokio::select! {
+            _ = stopped.changed() => Err(FfiError::internal("Subscription closed")),
+            result = async {
+                self.inner.lock().await.as_mut()
+                    .ok_or_else(|| FfiError::internal("Subscription closed"))?
+                    .recv().await.ok_or_else(|| FfiError::internal("Subscription closed"))
+                    .map(Into::into)
+            } => result,
+        }
+    }
+
+    /// Whether the mint acknowledged all filters on the current WebSocket.
+    /// False while connecting/reconnecting, using HTTP, or after stop().
+    pub fn is_streaming(&self) -> bool {
+        !*self.stopped.borrow() && self.readiness.is_streaming()
+    }
+
+    /// Cancel an outstanding recv and unsubscribe promptly. Idempotent.
+    /// Call on backgrounding or when the host no longer needs this watch.
+    pub async fn stop(&self) {
+        self.stopped.send_replace(true);
+        self.inner.lock().await.take();
     }
 
     /// Try to receive a notification without blocking.
@@ -157,7 +183,11 @@ impl ActiveSubscription {
     /// background transitions when background network activity is not desired.
     pub async fn try_recv(&self) -> Result<Option<NotificationPayload>, FfiError> {
         let mut guard = self.inner.lock().await;
-        Ok(guard.try_recv().map(Into::into))
+        Ok(guard
+            .as_mut()
+            .ok_or_else(|| FfiError::internal("Subscription closed"))?
+            .try_recv()
+            .map(Into::into))
     }
 }
 

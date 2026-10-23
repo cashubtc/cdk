@@ -1,7 +1,7 @@
 //! Pub-sub consumer
 //!
 //! Consumers are designed to connect to a producer, through a transport, and subscribe to events.
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
@@ -50,12 +50,43 @@ where
     stream_ctrl: RwLock<Option<mpsc::Sender<StreamCtrl<T::Spec>>>>,
     still_running: AtomicBool,
     prefer_polling: bool,
+    http_fallback: bool,
+    acknowledged: Arc<RwLock<HashSet<<T::Spec as Spec>::SubscriptionId>>>,
     /// Cached events
     ///
     /// The cached events are useful to share events. The cache is automatically evicted it is
     /// disconnected from the remote source, meaning the cache is only active while there is an
     /// active subscription to the remote source, and it remembers the latest event.
     cached_events: Arc<RwLock<CacheEvent<T::Spec>>>,
+}
+
+/// A nonblocking view of the acknowledgement state for one subscription.
+#[allow(missing_debug_implementations)]
+#[derive(Clone)]
+pub struct StreamReadiness<S>
+where
+    S: Spec,
+{
+    topics: Vec<S::Topic>,
+    remote: UniqueSubscriptions<S>,
+    acknowledged: Arc<RwLock<HashSet<S::SubscriptionId>>>,
+}
+
+impl<S> StreamReadiness<S>
+where
+    S: Spec,
+{
+    /// True only when all topics are acknowledged on the current connection.
+    pub fn is_streaming(&self) -> bool {
+        let remote = self.remote.read();
+        let ready = self.acknowledged.read();
+        !self.topics.is_empty()
+            && self.topics.iter().all(|topic| {
+                remote
+                    .get(topic)
+                    .is_some_and(|sub| ready.contains(&sub.name))
+            })
+    }
 }
 
 /// Remote consumer
@@ -73,6 +104,21 @@ impl<T> RemoteActiveConsumer<T>
 where
     T: Transport + 'static,
 {
+    /// Readiness can be observed while another task waits in recv().
+    pub fn stream_readiness(&self) -> StreamReadiness<T::Spec> {
+        StreamReadiness {
+            topics: self
+                .consumer
+                .subscriptions
+                .read()
+                .get(self.name())
+                .cloned()
+                .unwrap_or_default(),
+            remote: self.consumer.remote_subscriptions.clone(),
+            acknowledged: self.consumer.acknowledged.clone(),
+        }
+    }
+
     /// Receives the next event
     pub async fn recv(&mut self) -> Option<<T::Spec as Spec>::Event> {
         if let Some(event) = self.previous_messages.pop_front() {
@@ -116,12 +162,18 @@ where
     inner: Arc<Pubsub<S>>,
     remote_subscriptions: UniqueSubscriptions<S>,
     cached_events: Arc<RwLock<CacheEvent<S>>>,
+    acknowledged: Arc<RwLock<HashSet<S::SubscriptionId>>>,
 }
 
 impl<S> InternalRelay<S>
 where
     S: Spec + 'static,
 {
+    /// Record a successful remote subscribe acknowledgement for this stream.
+    pub fn subscription_ready(&self, id: S::SubscriptionId) {
+        self.acknowledged.write().insert(id);
+    }
+
     /// Relay a remote event locally
     pub fn send<X>(&self, event: X)
     where
@@ -154,8 +206,22 @@ where
         prefer_polling: bool,
         context: <T::Spec as Spec>::Context,
     ) -> Arc<Self> {
+        Self::with_http_fallback(transport, prefer_polling, true, context)
+    }
+
+    /// Create a consumer whose HTTP fallback can be disabled by a host that
+    /// owns its own durable retry schedule. Streaming still reconnects with
+    /// exponential backoff. Disabling fallback also overrides prefer_polling.
+    pub fn with_http_fallback(
+        transport: T,
+        prefer_polling: bool,
+        http_fallback: bool,
+        context: <T::Spec as Spec>::Context,
+    ) -> Arc<Self> {
         let this = Arc::new(Self {
             transport,
+            http_fallback,
+            acknowledged: Default::default(),
             prefer_polling,
             inner_pubsub: Arc::new(Pubsub::new(T::Spec::new_instance(context))),
             subscriptions: Default::default(),
@@ -172,7 +238,9 @@ where
 
     async fn stream(instance: Arc<Self>) {
         let mut stream_supported = true;
-        let mut poll_supported = true;
+        let mut poll_supported = instance.http_fallback;
+        let mut poll_backoff = POLL_SLEEP;
+        let mut next_poll_at = Instant::now();
 
         let mut backoff = STREAM_CONNECTION_BACKOFF;
         let mut retry_at = None;
@@ -187,14 +255,17 @@ where
             }
 
             if instance.remote_subscriptions.read().is_empty() {
+                if Arc::strong_count(&instance) == 1 {
+                    break;
+                }
                 sleep(Duration::from_millis(100)).await;
                 continue;
             }
 
             if stream_supported
-                && !instance.prefer_polling
+                && (!instance.prefer_polling || !instance.http_fallback)
                 && retry_at
-                    .map(|retry_at| retry_at < Instant::now())
+                    .map(|retry_at| retry_at <= Instant::now())
                     .unwrap_or(true)
             {
                 let (sender, receiver) = mpsc::channel(INTERNAL_POLL_SIZE);
@@ -221,11 +292,18 @@ where
                             inner: instance.inner_pubsub.clone(),
                             remote_subscriptions: instance.remote_subscriptions.clone(),
                             cached_events: instance.cached_events.clone(),
+                            acknowledged: instance.acknowledged.clone(),
                         },
                     )
                     .await
                 {
-                    if matches!(&err, Error::NotSupported | Error::Terminal(_)) {
+                    instance.acknowledged.write().clear();
+                    // A socket-only host can keep its own polling fallback running.
+                    // Continue probing with backoff so a repaired/upgraded endpoint
+                    // can restore push without recreating the wallet.
+                    if instance.http_fallback
+                        && matches!(&err, Error::NotSupported | Error::Terminal(_))
+                    {
                         stream_supported = false;
                     } else {
                         retry_at = Some(Instant::now() + backoff);
@@ -236,11 +314,12 @@ where
                     backoff = STREAM_CONNECTION_BACKOFF;
                 }
 
+                instance.acknowledged.write().clear();
                 // remove sender to stream, as there is no stream
                 let _ = instance.stream_ctrl.write().take();
             }
 
-            if poll_supported {
+            if poll_supported && Instant::now() >= next_poll_at {
                 let current_subscriptions = {
                     instance
                         .remote_subscriptions
@@ -258,6 +337,7 @@ where
                             inner: instance.inner_pubsub.clone(),
                             remote_subscriptions: instance.remote_subscriptions.clone(),
                             cached_events: instance.cached_events.clone(),
+                            acknowledged: instance.acknowledged.clone(),
                         },
                     )
                     .await
@@ -266,10 +346,25 @@ where
                         poll_supported = false;
                     }
                     tracing::error!("Polling failed with error {:?}", err);
+                    poll_backoff = poll_backoff.saturating_mul(2).min(Duration::from_secs(300));
+                } else {
+                    poll_backoff = POLL_SLEEP;
                 }
 
-                sleep(POLL_SLEEP).await;
+                next_poll_at = Instant::now() + poll_backoff;
             }
+            // Retry sockets independently of HTTP backoff. Stream-only hosts
+            // never enter poll(), even while their socket is reconnecting.
+            let mut wake_at = if poll_supported {
+                next_poll_at
+            } else {
+                Instant::now() + STREAM_CONNECTION_MAX_BACKOFF
+            };
+            if stream_supported && (!instance.prefer_polling || !instance.http_fallback) {
+                wake_at =
+                    wake_at.min(retry_at.unwrap_or(Instant::now() + STREAM_CONNECTION_BACKOFF));
+            }
+            sleep(wake_at.saturating_duration_since(Instant::now())).await;
         }
     }
 
@@ -302,6 +397,7 @@ where
                 let mut cached_events = self.cached_events.write();
 
                 cached_events.remove(&topic);
+                self.acknowledged.write().remove(&remote_subscription.name);
 
                 self.message_to_stream(StreamCtrl::Unsubscribe(remote_subscription.name.clone()))?;
             } else {
@@ -542,6 +638,8 @@ mod tests {
         name_ctr: AtomicUsize,
         attempts: Arc<AtomicUsize>,
         terminal: bool,
+        polls: Arc<AtomicUsize>,
+        fail_poll: bool,
     }
 
     impl TestTransport {
@@ -577,6 +675,8 @@ mod tests {
                     name_ctr: AtomicUsize::new(1),
                     attempts: attempts.clone(),
                     terminal,
+                    polls: Arc::new(AtomicUsize::new(0)),
+                    fail_poll: false,
                 },
                 attempts,
             )
@@ -678,7 +778,12 @@ mod tests {
             _topics: Vec<SubscribeMessage<Self::Spec>>,
             _reply_to: InternalRelay<Self::Spec>,
         ) -> Result<(), Error> {
-            Ok(())
+            self.polls.fetch_add(1, Ordering::Relaxed);
+            if self.fail_poll {
+                Err(Error::InternalStr("offline".to_owned()))
+            } else {
+                Ok(())
+            }
         }
     }
 
@@ -955,6 +1060,84 @@ mod tests {
 
         tokio::time::advance(Duration::from_secs(2)).await;
         wait_for_attempts(&attempts, 3).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stream_only_reconnects_without_hidden_http_polls() {
+        let (transport, attempts) = FailingStreamTransport::new(false);
+        let polls = transport.polls.clone();
+        let consumer = Consumer::with_http_fallback(transport, true, false, ());
+        let sub = consumer
+            .subscribe(SubscriptionReq::Foo("t".to_owned(), 1))
+            .unwrap();
+        wait_for_attempts(&attempts, 1).await;
+        assert!(!sub.stream_readiness().is_streaming());
+        tokio::time::advance(Duration::from_secs(2)).await;
+        wait_for_attempts(&attempts, 2).await;
+        tokio::time::advance(Duration::from_secs(4)).await;
+        wait_for_attempts(&attempts, 3).await;
+        assert_eq!(polls.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stream_only_reprobes_unsupported_endpoints_with_backoff() {
+        let (transport, attempts) = FailingStreamTransport::new(true);
+        let polls = transport.polls.clone();
+        let consumer = Consumer::with_http_fallback(transport, false, false, ());
+        let _sub = consumer
+            .subscribe(SubscriptionReq::Foo("t".to_owned(), 1))
+            .unwrap();
+        wait_for_attempts(&attempts, 1).await;
+        tokio::time::advance(Duration::from_secs(2)).await;
+        wait_for_attempts(&attempts, 2).await;
+        assert_eq!(polls.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failed_http_polls_back_off_independently() {
+        let (mut transport, _) = FailingStreamTransport::new(true);
+        transport.fail_poll = true;
+        let polls = transport.polls.clone();
+        let consumer = Consumer::new(transport, true, ());
+        let _sub = consumer
+            .subscribe(SubscriptionReq::Foo("t".to_owned(), 1))
+            .unwrap();
+        wait_for_attempts(&polls, 1).await;
+        tokio::time::advance(Duration::from_secs(3)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(polls.load(Ordering::Relaxed), 1);
+        tokio::time::advance(Duration::from_secs(1)).await;
+        wait_for_attempts(&polls, 2).await;
+        tokio::time::advance(Duration::from_secs(7)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(polls.load(Ordering::Relaxed), 2);
+        tokio::time::advance(Duration::from_secs(1)).await;
+        wait_for_attempts(&polls, 3).await;
+    }
+
+    #[tokio::test]
+    async fn readiness_requires_each_topic_acknowledgement_and_clears_on_disconnect() {
+        let (transport, _, _) = TestTransport::new(true, true);
+        let consumer = Consumer::with_http_fallback(transport, false, false, ());
+        let sub = consumer
+            .subscribe(SubscriptionReq::Foo("t".to_owned(), 1))
+            .unwrap();
+        let ready = sub.stream_readiness();
+        assert!(!ready.is_streaming());
+        let name = consumer
+            .remote_subscriptions
+            .read()
+            .values()
+            .next()
+            .unwrap()
+            .name
+            .clone();
+        consumer.acknowledged.write().insert(name);
+        assert!(ready.is_streaming());
+        consumer.acknowledged.write().clear();
+        assert!(!ready.is_streaming());
+        drop(sub);
+        assert!(!ready.is_streaming());
     }
 
     #[tokio::test]

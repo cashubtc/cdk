@@ -396,6 +396,21 @@ impl Wallet {
         self.client.oidc_client(openid_discovery, client_id)
     }
 
+    /// Subscribe to events, optionally leaving HTTP fallback to the caller.
+    /// When disabled, CDK performs no status polls for this subscription.
+    pub async fn subscribe_with_options<T>(
+        &self,
+        query: T,
+        http_fallback: bool,
+    ) -> Result<ActiveSubscription, Error>
+    where
+        T: Into<WalletParams>,
+    {
+        self.subscription
+            .subscribe_with_options(self.mint_url.clone(), query.into(), http_fallback)
+            .map_err(|e| Error::SubscriptionError(e.to_string()))
+    }
+
     /// Subscribe to mint quote state changes for the given quote IDs and payment method
     #[instrument(skip(self, method))]
     pub async fn subscribe_mint_quote_state(
