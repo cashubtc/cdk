@@ -128,7 +128,8 @@ impl From<&(MintKeySetInfo, MintKeySet)> for SignatoryKeySet {
             input_fee_ppk: info.input_fee_ppk,
             amounts: info.amounts.clone(),
             keys: key.keys.clone().into(),
-            version: info.derivation_path_index.unwrap_or(1),
+            // Legacy keysets without an index sort below every indexed keyset
+            version: info.derivation_path_index.unwrap_or(0),
             final_expiry: info.final_expiry,
             issuer_version: info.issuer_version.clone(),
         }
@@ -166,9 +167,13 @@ pub trait Signatory {
         &self,
     ) -> Result<tokio::sync::watch::Receiver<SignatoryKeysets>, Error>;
 
-    /// Add current keyset to inactive keysets
-    /// Generate new keyset
+    /// Generate a new active keyset for the unit.
+    ///
+    /// Earlier keysets of the unit stay active until [`Self::inactivate_keyset`].
     async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<SignatoryKeySet, Error>;
+
+    /// Inactivate a keyset that a newer active keyset of its unit supersedes.
+    async fn inactivate_keyset(&self, id: Id) -> Result<(), Error>;
 }
 
 #[cfg(test)]

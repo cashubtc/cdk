@@ -91,7 +91,7 @@ impl From<crate::signatory::SignatoryKeySet> for KeySet {
                     .collect(),
             }),
             final_expiry: keyset.final_expiry,
-            version: Default::default(),
+            version: keyset.version,
             issuer_version: keyset.issuer_version.map(|v| v.to_string()),
         }
     }

@@ -53,6 +53,8 @@ const CDK_MINT_PRIMARY_NAMESPACE: &str = "cdk_mint";
 const CDK_MINT_CONFIG_SECONDARY_NAMESPACE: &str = "config";
 const CDK_MINT_CONFIG_KV_KEY: &str = "mint_info";
 const CDK_MINT_QUOTE_TTL_KV_KEY: &str = "quote_ttl";
+/// How often rotating keysets are checked for pending melts before inactivation.
+const KEYSET_RETIRE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Cashu Mint
 #[derive(Clone)]
@@ -112,6 +114,8 @@ struct TaskState {
     supervisor_handle: Option<JoinHandle<Result<(), Error>>>,
     /// Handle to the keyset drain task
     keyset_drain_handle: Option<JoinHandle<()>>,
+    /// Handle to the task inactivating rotated keysets once their melts settle
+    keyset_retire_handle: Option<JoinHandle<()>>,
     /// Keyset subscription retained from construction, drained once by the first
     /// `start()`. `None` after it has been taken; a restart re-subscribes.
     keyset_updates: Option<watch::Receiver<SignatoryKeysets>>,
@@ -442,6 +446,11 @@ impl Mint {
             // Don't fail startup
         }
 
+        // Inactivate keysets rotated out (eg by a builder rotation) that have no melts pending
+        if let Err(e) = self.retire_drained_keysets().await {
+            tracing::error!("Failed to retire rotated keysets: {}", e);
+        }
+
         let mut task_state = self.task_state.lock().await;
 
         // Prevent starting if already running
@@ -569,10 +578,34 @@ impl Mint {
             None
         };
 
+        let keyset_retire_handle = {
+            let mint = self.clone();
+            let shutdown = shutdown_notify.clone();
+            tokio::spawn(async move {
+                let shutdown_wait = shutdown.notified();
+                tokio::pin!(shutdown_wait);
+                let mut tick = tokio::time::interval_at(
+                    tokio::time::Instant::now() + KEYSET_RETIRE_INTERVAL,
+                    KEYSET_RETIRE_INTERVAL,
+                );
+                loop {
+                    tokio::select! {
+                        _ = &mut shutdown_wait => break,
+                        _ = tick.tick() => {
+                            if let Err(err) = mint.retire_drained_keysets().await {
+                                tracing::warn!("Could not retire rotated keysets: {}", err);
+                            }
+                        }
+                    }
+                }
+            })
+        };
+
         // Store the handles
         task_state.shutdown_notify = Some(shutdown_notify);
         task_state.supervisor_handle = Some(supervisor_handle);
         task_state.keyset_drain_handle = keyset_drain_handle;
+        task_state.keyset_retire_handle = Some(keyset_retire_handle);
 
         // Give the background task a tiny bit of time to start waiting
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -597,6 +630,7 @@ impl Mint {
         let shutdown_notify = task_state.shutdown_notify.take();
         let supervisor_handle = task_state.supervisor_handle.take();
         let keyset_drain_handle = task_state.keyset_drain_handle.take();
+        let keyset_retire_handle = task_state.keyset_retire_handle.take();
 
         // If nothing to stop, return early
         let (shutdown_notify, supervisor_handle) = match (shutdown_notify, supervisor_handle) {
@@ -632,6 +666,12 @@ impl Mint {
         if let Some(handle) = keyset_drain_handle {
             if let Err(join_error) = handle.await {
                 tracing::error!("Keyset drain task panicked: {:?}", join_error);
+            }
+        }
+
+        if let Some(handle) = keyset_retire_handle {
+            if let Err(join_error) = handle.await {
+                tracing::error!("Keyset retire task panicked: {:?}", join_error);
             }
         }
 
@@ -1286,18 +1326,11 @@ impl Mint {
         Ok(fee_breakdown)
     }
 
-    /// Get active keysets
+    /// Get the newest active keyset per unit
     pub fn get_active_keysets(&self) -> HashMap<CurrencyUnit, Id> {
-        self.keysets
-            .load()
-            .iter()
-            .filter_map(|keyset| {
-                if keyset.active {
-                    Some((keyset.unit.clone(), keyset.id))
-                } else {
-                    None
-                }
-            })
+        keysets::newest_active_keysets(&self.keysets.load())
+            .into_iter()
+            .map(|(unit, keyset)| (unit, keyset.id))
             .collect()
     }
 
@@ -1589,6 +1622,10 @@ mod tests {
         async fn rotate_keyset(&self, _args: RotateKeyArguments) -> Result<SignatoryKeySet, Error> {
             Err(Error::Custom("unsupported in mock".to_string()))
         }
+
+        async fn inactivate_keyset(&self, _id: Id) -> Result<(), Error> {
+            Err(Error::Custom("unsupported in mock".to_string()))
+        }
     }
 
     /// Produce a sequence of valid, distinct keyset snapshots by rotating a real
@@ -1629,10 +1666,8 @@ mod tests {
 
     /// The id of the active Sat keyset in a snapshot.
     fn active_sat_id(snapshot: &SignatoryKeysets) -> Id {
-        snapshot
-            .keysets
-            .iter()
-            .find(|k| k.active && k.unit == CurrencyUnit::Sat)
+        keysets::newest_active_keysets(&snapshot.keysets)
+            .get(&CurrencyUnit::Sat)
             .expect("snapshot should have an active Sat keyset")
             .id
     }
@@ -2001,6 +2036,10 @@ mod tests {
 
         async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<SignatoryKeySet, Error> {
             self.inner.rotate_keyset(args).await
+        }
+
+        async fn inactivate_keyset(&self, id: Id) -> Result<(), Error> {
+            self.inner.inactivate_keyset(id).await
         }
     }
 

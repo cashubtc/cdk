@@ -126,8 +126,11 @@ pub struct LockedMeltQuotes {
 /// KeysDatabaseWriter
 #[async_trait]
 pub trait KeysDatabaseTransaction<'a, Error>: DbTransactionFinalizer<Err = Error> {
-    /// Add Active Keyset
+    /// Mark a keyset active. Other active keysets of the unit stay active.
     async fn set_active_keyset(&mut self, unit: CurrencyUnit, id: Id) -> Result<(), Error>;
+
+    /// Mark a keyset inactive.
+    async fn inactivate_keyset(&mut self, id: &Id) -> Result<(), Error>;
 
     /// Add [`MintKeySetInfo`]
     async fn add_keyset_info(&mut self, keyset: MintKeySetInfo) -> Result<(), Error>;
@@ -155,7 +158,8 @@ pub trait KeysDatabaseTransaction<'a, Error>: DbTransactionFinalizer<Err = Error
         unit: &CurrencyUnit,
     ) -> Result<Vec<MintKeySetInfo>, Error>;
 
-    /// Read all active keyset pointers inside the transaction.
+    /// Read the newest active keyset (highest derivation index) per unit inside
+    /// the transaction.
     ///
     /// Keyset reads go through a transaction, which holds the global keyset lock,
     /// so no other keyset transaction can commit between reads. The signatory
@@ -425,6 +429,8 @@ pub trait QuotesDatabase {
     ) -> Result<Option<mint::MeltQuote>, Self::Err>;
     /// Get all [`mint::MeltQuote`]s
     async fn get_melt_quotes(&self) -> Result<Vec<mint::MeltQuote>, Self::Err>;
+    /// Whether an in-progress melt has unsigned change outputs on the keyset.
+    async fn has_pending_melt_outputs(&self, keyset_id: &Id) -> Result<bool, Self::Err>;
 }
 
 /// Mint Proof Transaction trait

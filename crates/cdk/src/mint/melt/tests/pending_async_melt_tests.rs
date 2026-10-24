@@ -1074,3 +1074,131 @@ async fn startup_defers_stalled_payment_checks_and_recovers_later() {
         mint.stop().await.unwrap();
     }
 }
+
+/// A melt pending on a rotated keyset keeps that keyset active: new melts on it
+/// get 12004 and it is inactivated once the melt settles.
+#[tokio::test]
+async fn pending_melt_holds_rotated_keyset_until_settled() {
+    let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> =
+        Arc::new(NoEventPendingBackend::new(2, Some(MeltQuoteState::Paid)));
+    let mint = create_pending_test_mint(backend).await.unwrap();
+    let old_keyset = *mint.get_active_keysets().get(&CurrencyUnit::Sat).unwrap();
+    let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+    let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+    let (outputs, _) =
+        crate::test_helpers::mint::create_test_blinded_messages(&mint, Amount::from(1_023))
+            .await
+            .unwrap();
+    let request = cdk_common::nuts::MeltRequest::new(quote.id.clone(), proofs, Some(outputs));
+    let pending = mint.melt(&request).await.unwrap();
+
+    let amounts = mint.get_keyset_info(&old_keyset).unwrap().amounts;
+    mint.rotate_keyset(CurrencyUnit::Sat, amounts, 0, true, None)
+        .await
+        .unwrap();
+    assert!(mint.is_keyset_rotating(&old_keyset));
+
+    let more_proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+    let quote2 = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+    let blanks = cdk_common::nuts::PreMintSecrets::blank(old_keyset, Amount::from(1_023)).unwrap();
+    let request2 = cdk_common::nuts::MeltRequest::new(
+        quote2.id.clone(),
+        more_proofs,
+        Some(blanks.blinded_messages()),
+    );
+    assert!(matches!(
+        mint.melt(&request2).await,
+        Err(Error::KeysetRotating)
+    ));
+    assert!(mint.retire_drained_keysets().await.unwrap().is_empty());
+
+    drop(pending);
+    let checked = mint.check_melt_quote(&quote.id).await.unwrap();
+    assert_eq!(checked.state(), MeltQuoteState::Paid);
+    let change = checked.change().expect("payment should leave change");
+    assert!(change.iter().all(|sig| sig.keyset_id == old_keyset));
+
+    assert_eq!(
+        mint.retire_drained_keysets().await.unwrap(),
+        vec![old_keyset]
+    );
+    assert!(!mint.get_keyset_info(&old_keyset).unwrap().active);
+}
+
+/// A drain that retires the keyset between the melt's pre-check and its setup
+/// commit is caught by the post-commit re-check, and the setup is compensated.
+#[tokio::test]
+async fn melt_refused_when_keyset_retired_during_setup() {
+    let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> =
+        Arc::new(NoEventPendingBackend::new(1, Some(MeltQuoteState::Paid)));
+    let mint = create_pending_test_mint(backend).await.unwrap();
+    let old_keyset = *mint.get_active_keysets().get(&CurrencyUnit::Sat).unwrap();
+    let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+    let input_ys = proofs.ys().unwrap();
+    let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+    let (outputs, _) =
+        crate::test_helpers::mint::create_test_blinded_messages(&mint, Amount::from(1_023))
+            .await
+            .unwrap();
+    let request = cdk_common::nuts::MeltRequest::new(quote.id.clone(), proofs, Some(outputs));
+
+    crate::test_helpers::mint::set_fail_for("RETIRE_AFTER_SETUP_COMMIT");
+    let result = mint.melt(&request).await;
+    crate::test_helpers::mint::clear_fail_for("RETIRE_AFTER_SETUP_COMMIT");
+
+    assert!(matches!(result, Err(Error::InactiveKeyset)));
+    assert!(!mint.get_keyset_info(&old_keyset).unwrap().active);
+    let stored_quote = mint
+        .localstore()
+        .get_melt_quote(&quote.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored_quote.state, MeltQuoteState::Unpaid);
+    let proof_states = mint
+        .localstore()
+        .get_proofs_states(&input_ys)
+        .await
+        .unwrap();
+    assert!(proof_states.iter().all(Option::is_none));
+    assert!(mint
+        .localstore()
+        .get_melt_saga_by_quote_id(&quote.id)
+        .await
+        .unwrap()
+        .is_none());
+}
+
+/// Change outputs on a keyset whose final expiry precedes the quote expiry get 12004.
+#[tokio::test]
+async fn melt_change_refused_on_keyset_expiring_before_quote() {
+    let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> =
+        Arc::new(NoEventPendingBackend::new(1, Some(MeltQuoteState::Paid)));
+    let mint = create_pending_test_mint(backend).await.unwrap();
+    let old_keyset = *mint.get_active_keysets().get(&CurrencyUnit::Sat).unwrap();
+    let amounts = mint.get_keyset_info(&old_keyset).unwrap().amounts;
+    let expiring = mint
+        .rotate_keyset(
+            CurrencyUnit::Sat,
+            amounts,
+            0,
+            true,
+            Some(cdk_common::util::unix_time() + 600),
+        )
+        .await
+        .unwrap();
+    assert!(!mint.get_keyset_info(&old_keyset).unwrap().active);
+
+    let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+    let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+    let blanks = cdk_common::nuts::PreMintSecrets::blank(expiring.id, Amount::from(1_023)).unwrap();
+    let request = cdk_common::nuts::MeltRequest::new(
+        quote.id.clone(),
+        proofs,
+        Some(blanks.blinded_messages()),
+    );
+    assert!(matches!(
+        mint.melt(&request).await,
+        Err(Error::KeysetRotating)
+    ));
+}

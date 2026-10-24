@@ -303,9 +303,20 @@ where
         .unwrap();
     tx.commit().await.unwrap();
 
-    // Verify second keyset is now active
+    // Verify second keyset is now the newest active one; the first stays active
     let active_id = active_keyset_id(&db, &CurrencyUnit::Sat).await;
     assert_eq!(active_id, Some(keyset_id2));
+    assert!(find_keyset_info(&db, &keyset_id1).await.unwrap().active);
+
+    // Inactivating the first leaves the second as the active keyset
+    let mut tx = KeysDatabase::begin_transaction(&db).await.unwrap();
+    tx.inactivate_keyset(&keyset_id1).await.unwrap();
+    tx.commit().await.unwrap();
+    assert!(!find_keyset_info(&db, &keyset_id1).await.unwrap().active);
+    assert_eq!(
+        active_keyset_id(&db, &CurrencyUnit::Sat).await,
+        Some(keyset_id2)
+    );
 }
 
 /// Test getting non-existent keyset info
