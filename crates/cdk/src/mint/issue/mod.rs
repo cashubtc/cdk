@@ -1086,6 +1086,7 @@ mod batch_mint_tests {
         unit: CurrencyUnit,
         confirmations: u32,
         check_count: Arc<AtomicUsize>,
+        payments: Vec<WaitPaymentResponse>,
     }
 
     #[async_trait]
@@ -1146,7 +1147,7 @@ mod batch_mint_tests {
             _payment_identifier: &PaymentIdentifier,
         ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
             self.check_count.fetch_add(1, Ordering::Relaxed);
-            Ok(Vec::new())
+            Ok(self.payments.clone())
         }
 
         async fn check_outgoing_payment(
@@ -1201,6 +1202,14 @@ mod batch_mint_tests {
         onchain_min: u64,
         onchain_max: u64,
     ) -> (Mint, Arc<AtomicUsize>) {
+        create_test_mint_with_onchain_payments(onchain_min, onchain_max, Vec::new()).await
+    }
+
+    async fn create_test_mint_with_onchain_payments(
+        onchain_min: u64,
+        onchain_max: u64,
+        payments: Vec<WaitPaymentResponse>,
+    ) -> (Mint, Arc<AtomicUsize>) {
         let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
 
         let mut mint_builder = MintBuilder::new(db.clone());
@@ -1243,6 +1252,7 @@ mod batch_mint_tests {
             unit: CurrencyUnit::Sat,
             confirmations: 1,
             check_count: onchain_check_count.clone(),
+            payments,
         };
 
         mint_builder
@@ -1342,6 +1352,78 @@ mod batch_mint_tests {
             )
             .await
             .unwrap());
+    }
+
+    #[tokio::test]
+    async fn polling_deduplicates_manual_override_for_exact_backend_payment() {
+        let quote_id = QuoteId::new();
+        let payment_identifier = PaymentIdentifier::QuoteId(quote_id.clone());
+        let matching_payment_id = "matching-onchain-payment";
+        let distinct_payment_id = "distinct-onchain-payment";
+        let payments = vec![
+            WaitPaymentResponse {
+                payment_identifier: payment_identifier.clone(),
+                payment_amount: Amount::new(20, CurrencyUnit::Sat),
+                payment_id: matching_payment_id.to_owned(),
+            },
+            WaitPaymentResponse {
+                payment_identifier: payment_identifier.clone(),
+                payment_amount: Amount::new(5, CurrencyUnit::Sat),
+                payment_id: distinct_payment_id.to_owned(),
+            },
+        ];
+        let (mint, _) = create_test_mint_with_onchain_payments(1, 10_000, payments).await;
+        let now = cdk_common::util::unix_time();
+        let quote = MintQuote::new(
+            Some(quote_id.clone()),
+            "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_owned(),
+            CurrencyUnit::Sat,
+            None,
+            0,
+            payment_identifier,
+            None,
+            Amount::new(0, CurrencyUnit::Sat),
+            Amount::new(0, CurrencyUnit::Sat),
+            PaymentMethod::Known(KnownMethod::Onchain),
+            now,
+            now,
+            Vec::new(),
+            Vec::new(),
+            None,
+        );
+
+        let mut tx = mint.localstore().begin_transaction().await.unwrap();
+        let mut quote = tx.add_mint_quote(quote).await.unwrap();
+        let override_id = quote.manual_payment_override_id(Some(matching_payment_id));
+        quote
+            .add_payment(Amount::new(20, CurrencyUnit::Sat), override_id, None)
+            .unwrap();
+        tx.update_mint_quote(&mut quote).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let mut reloaded = mint
+            .localstore()
+            .get_mint_quote(&quote_id)
+            .await
+            .unwrap()
+            .expect("persisted quote");
+        mint.check_mint_quote_paid(&mut reloaded).await.unwrap();
+
+        let persisted = mint
+            .localstore()
+            .get_mint_quote(&quote_id)
+            .await
+            .unwrap()
+            .expect("persisted quote after polling");
+        assert_eq!(persisted.amount_paid().value(), 25);
+        assert_eq!(persisted.amount_issued().value(), 0);
+        assert_eq!(persisted.amount_mintable().value(), 25);
+        assert_eq!(persisted.payments.len(), 2);
+        assert!(persisted.has_manual_payment_override_for(matching_payment_id));
+        assert!(persisted
+            .payment_ids()
+            .iter()
+            .any(|payment_id| payment_id.as_str() == distinct_payment_id));
     }
 
     async fn configure_nut29(
