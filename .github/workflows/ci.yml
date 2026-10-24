@@ -473,7 +473,7 @@ jobs:
           useDaemon: false
         continue-on-error: true
       - name: Run clippy and tests for Redis cache
-        run: nix develop --fallback -i -L .#regtest --command just test-redis
+        run: nix develop --fallback -i -L .#stable --command just test-redis
 
   regtest-ln-itest:
     name: "Integration regtest LN tests"
