@@ -53,7 +53,7 @@ impl DatabasePool for SqliteConnectionManager {
 
     fn new_resource(
         config: &Self::Config,
-        _stale: Arc<AtomicBool>,
+        stale: Arc<AtomicBool>,
         _timeout: Duration,
     ) -> Result<Self::Connection, pool::Error<Self::Error>> {
         let conn = if let Some(path) = config.path.as_ref() {
@@ -88,7 +88,7 @@ impl DatabasePool for SqliteConnectionManager {
 
         conn.busy_timeout(Duration::from_secs(10))?;
 
-        Ok(async_sqlite::AsyncSqlite::new(conn))
+        Ok(async_sqlite::AsyncSqlite::with_stale(conn, stale))
     }
 }
 
