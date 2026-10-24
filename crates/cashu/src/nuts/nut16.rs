@@ -42,6 +42,9 @@ use std::string::FromUtf8Error;
 
 use thiserror::Error;
 
+pub mod fountain;
+
+pub use self::fountain::{TokenFountainDecoder, TokenFountainEncoder};
 use crate::nuts::nut00::{Token, TokenV4};
 
 /// UR type used for Cashu tokens: `ur:bytes`
