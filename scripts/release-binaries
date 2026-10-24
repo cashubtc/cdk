@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+exec nix develop --accept-flake-config --no-update-lock-file "path:$root#binary-release" \
+  --command python3 "$root/scripts/release_binaries.py" "$@"

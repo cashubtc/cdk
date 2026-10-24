@@ -119,8 +119,8 @@
             null;
 
         # Toolchains
-        # latest stable
-        stable_toolchain = pkgs.rust-bin.stable."1.99.0".default.override {
+        rustVersion = (builtins.fromTOML (builtins.readFile ./rust-toolchain.toml)).toolchain.channel;
+        stable_toolchain = pkgs.rust-bin.stable.${rustVersion}.default.override {
           targets = [
             "wasm32-unknown-unknown"
             "aarch64-apple-ios"
@@ -166,7 +166,7 @@
         # Stable toolchain with musl target for static builds (Linux only)
         static_toolchain =
           if muslTarget != null then
-            pkgs.rust-bin.stable."1.99.0".default.override
+            pkgs.rust-bin.stable.${rustVersion}.default.override
               {
                 targets = [ muslTarget ];
               }
@@ -1832,7 +1832,7 @@
                 ndkHome = "${androidSdk}/libexec/android-sdk/ndk/27.0.12077973";
                 toolchainBin = "${ndkHome}/toolchains/llvm/prebuilt/linux-x86_64/bin";
                 androidRustFlags = "-C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wl,-z,common-page-size=16384";
-                buildToolchain = pkgs.rust-bin.stable."1.99.0".default.override {
+                buildToolchain = pkgs.rust-bin.stable.${rustVersion}.default.override {
                   targets = [
                     "aarch64-linux-android"
                     "armv7-linux-androideabi"
@@ -1909,6 +1909,20 @@
               kotlin-build
               kotlin-publish
               ;
+            binary-release = pkgs.mkShell {
+              packages = [
+                pkgs.python3
+                pkgs.git
+                pkgs.jujutsu
+                pkgs.gh
+                pkgs.gnutar
+                pkgs.nix
+                pkgs.actionlint
+                pkgs.shellcheck
+                pkgs.ruff
+                pkgs.nixpkgs-fmt
+              ];
+            };
             default = stable;
           };
       }
