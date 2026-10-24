@@ -88,6 +88,12 @@ impl DatabaseTransaction<AsyncSqlite> for SQLiteTransactionHandler {
 
     /// Consumes the transaction rolling back all changes
     async fn rollback(conn: &mut AsyncSqlite) -> Result<(), Error> {
+        // Nothing to roll back, e.g. when BEGIN never ran. Treating this as an
+        // error would discard the connection, which for in-memory databases
+        // discards the database itself.
+        if conn.inner.get_mut().is_autocommit() {
+            return Ok(());
+        }
         query("ROLLBACK")?.execute(conn).await?;
         Ok(())
     }
