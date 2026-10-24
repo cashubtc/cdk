@@ -536,6 +536,7 @@ mod tests {
             amount_paid: Amount::from(100_000),
             amount_issued: Amount::from(0),
             updated_at: 0,
+            payjoin: None,
         };
         let payload: NotificationPayload<String> =
             NotificationPayload::MintQuoteOnchainResponse(resp.clone());
@@ -648,6 +649,7 @@ mod tests {
             selected_fee_index: Some(0),
             outpoint: Some("3b7f3b85:2".to_string()),
             change: None,
+            payjoin: None,
         };
         let payload: NotificationPayload<String> =
             NotificationPayload::MeltQuoteOnchainResponse(resp.clone());
