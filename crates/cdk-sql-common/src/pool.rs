@@ -105,6 +105,19 @@ where
     start_time: std::time::Instant,
 }
 
+impl<RM> PooledResource<RM>
+where
+    RM: DatabasePool,
+{
+    pub(crate) fn stale(&self) -> Arc<AtomicBool> {
+        self.resource
+            .as_ref()
+            .expect("resource already dropped")
+            .0
+            .clone()
+    }
+}
+
 impl<RM> Debug for PooledResource<RM>
 where
     RM: DatabasePool,
@@ -119,9 +132,13 @@ where
     RM: DatabasePool,
 {
     fn drop(&mut self) {
-        if let Some(resource) = self.resource.take() {
-            let mut active_resource = self.pool.queue.lock().expect("active_resource");
-            active_resource.push(resource);
+        if let Some((stale, resource)) = self.resource.take() {
+            if stale.load(Ordering::SeqCst) {
+                RM::drop(resource);
+            } else {
+                let mut active_resource = self.pool.queue.lock().expect("active_resource");
+                active_resource.push((stale, resource));
+            }
 
             #[cfg(feature = "prometheus")]
             {
