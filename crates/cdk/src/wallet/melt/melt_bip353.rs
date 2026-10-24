@@ -169,4 +169,144 @@ mod tests {
 
         assert!(matches!(error, Error::Bip321Parse(_)));
     }
+    const OFFER: &str = "lno1zcss9mk8y3wkklfvevcrszlmu23kfrxh49px20665dqwmn4p72pksese";
+
+    #[tokio::test]
+    async fn bolt12_quote_does_not_contact_unavailable_lnurl() {
+        use bitcoin::bech32::{self, Bech32, Hrp};
+        use cdk_common::MeltQuoteCreateResponse;
+
+        use crate::nuts::{MeltQuoteBolt12Response, MeltQuoteState};
+
+        let lnurl = bech32::encode::<Bech32>(
+            Hrp::parse("lnurl").unwrap(),
+            b"http://127.0.0.1:1/unavailable",
+        )
+        .unwrap();
+        let connector = Arc::new(MockMintConnector::new());
+        connector.set_dns_txt_response(Ok(vec![format!("bitcoin:?lno={OFFER}&lnurl={lnurl}")]));
+        connector.push_post_melt_quote_response(Ok(MeltQuoteCreateResponse::Bolt12(
+            MeltQuoteBolt12Response {
+                quote: "fixture".to_owned(),
+                amount: 100.into(),
+                fee_reserve: 1.into(),
+                state: MeltQuoteState::Unpaid,
+                expiry: 2_000_000_000,
+                payment_preimage: None,
+                request: None,
+                unit: None,
+                method: cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt12),
+                change: None,
+            },
+        )));
+        // Neither the concrete parser nor the wallet may require LNURL resolution.
+        let wallet = test_wallet_with_connector(connector.clone()).await;
+        let quote = wallet
+            .melt_bip353_quote(
+                "alice@example.com",
+                Amount::from(100_000_u64),
+                bitcoin::Network::Bitcoin,
+            )
+            .await
+            .expect("BOLT12 quote must not depend on the LNURL service");
+        assert_eq!(quote.request, OFFER);
+        assert_eq!(quote.amount, Amount::from(100_u64));
+        assert_eq!(connector.post_melt_quote_requests().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn human_readable_preserves_mint_error_after_resolution() {
+        let connector = Arc::new(MockMintConnector::new());
+        connector.set_dns_txt_response(Ok(vec![format!("bitcoin:?lno={OFFER}&lnurl=ignored")]));
+        connector
+            .push_post_melt_quote_response(Err(Error::Custom("fixture mint failure".to_owned())));
+        let wallet = test_wallet_with_connector(connector.clone()).await;
+        let error = wallet
+            .melt_human_readable_quote(
+                "alice@example.com",
+                Amount::from(100_000_u64),
+                bitcoin::Network::Bitcoin,
+            )
+            .await
+            .expect_err("mint error should propagate without LN-address fallback");
+        assert!(matches!(error, Error::Custom(ref message) if message == "fixture mint failure"));
+        assert_eq!(connector.post_melt_quote_requests().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn conflicting_bitcoin_txt_records_are_rejected_before_mint() {
+        let connector = Arc::new(MockMintConnector::new());
+        connector.set_dns_txt_response(Ok(vec![
+            "unrelated metadata".to_owned(),
+            format!("bitcoin:?lno={OFFER}"),
+            "BITCOIN:?lno=conflicting".to_owned(),
+        ]));
+        let wallet = test_wallet_with_connector(connector.clone()).await;
+        let error = wallet
+            .melt_bip353_quote(
+                "alice@example.com",
+                Amount::from(100_000_u64),
+                bitcoin::Network::Bitcoin,
+            )
+            .await
+            .expect_err("multiple bitcoin TXT records must fail");
+        assert!(
+            matches!(error, Error::Bip353Resolve(ref message) if message.contains("Multiple Bitcoin URIs"))
+        );
+        assert!(connector.post_melt_quote_requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn human_readable_keeps_existing_resolution_preference() {
+        use cdk_common::nut00::KnownMethod;
+        use cdk_common::PaymentMethod;
+
+        for supports_bolt12 in [false, true] {
+            let connector = Arc::new(MockMintConnector::new());
+            if supports_bolt12 {
+                connector.set_dns_txt_response(Err(Error::Custom("DNS unavailable".to_owned())));
+            } else {
+                connector
+                    .mint_info
+                    .lock()
+                    .unwrap()
+                    .nuts
+                    .nut05
+                    .methods
+                    .retain(|method| method.method != PaymentMethod::Known(KnownMethod::Bolt12));
+                // No DNS response: resolving BIP353 would panic.
+            }
+            connector.set_lnurl_pay_request_response(Err(Error::Custom(
+                "LN-address selected".to_owned(),
+            )));
+            let wallet = test_wallet_with_connector(connector.clone()).await;
+            let error = wallet
+                .melt_human_readable_quote(
+                    "alice@example.com",
+                    Amount::from(100_000_u64),
+                    bitcoin::Network::Bitcoin,
+                )
+                .await
+                .expect_err("the existing LN-address branch should be selected");
+            assert!(error.to_string().contains("LN-address selected"), "{error}");
+            assert!(connector.post_melt_quote_requests().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn human_readable_does_not_fallback_after_parsing_error() {
+        let connector = Arc::new(MockMintConnector::new());
+        connector.set_dns_txt_response(Ok(vec![format!("bitcoin:?lno={OFFER}&req-unknown=1")]));
+        let wallet = test_wallet_with_connector(connector.clone()).await;
+        let error = wallet
+            .melt_human_readable_quote(
+                "alice@example.com",
+                Amount::from(100_000_u64),
+                bitcoin::Network::Bitcoin,
+            )
+            .await
+            .expect_err("unknown required parameters must not trigger LN-address fallback");
+        assert!(matches!(error, Error::Bip321Parse(_)));
+        assert!(connector.post_melt_quote_requests().is_empty());
+    }
 }
