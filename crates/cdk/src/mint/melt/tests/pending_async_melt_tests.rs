@@ -454,7 +454,7 @@ async fn unknown_status_poll_keeps_pending_melt_reserved() {
 }
 
 #[tokio::test]
-async fn payment_error_that_looks_local_records_pending_acknowledgement() {
+async fn payment_error_that_looks_local_preserves_uncertain_dispatch() {
     let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> = Arc::new(
         NoEventPendingBackend::new(usize::MAX, None).with_amount_mismatch_dispatch_error(),
     );
@@ -818,6 +818,7 @@ async fn internal_settlement_without_lookup_id_finalizes_on_demand() {
         cdk_common::MintQuoteState::Paid
     );
 
+    crate::test_helpers::mint::expire_melt_leases(&mint).await;
     // On-demand check finalizes instead of requiring a restart.
     let mut quote = mint
         .localstore()
@@ -846,7 +847,7 @@ async fn internal_settlement_without_lookup_id_finalizes_on_demand() {
 /// the quote-scoped identifier (e.g. CLN's bolt12 binding is written before
 /// any dispatch, so its absence proves the payment never happened).
 #[tokio::test]
-async fn payment_attempt_without_lookup_id_compensates_at_startup() {
+async fn payment_attempt_without_lookup_id_releases_proofs_at_startup() {
     let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> = Arc::new(
         NoEventPendingBackend::new(1, Some(MeltQuoteState::Unpaid)).with_stripped_quote_lookup_id(),
     );
@@ -915,6 +916,8 @@ async fn payment_attempt_without_lookup_id_compensates_at_startup() {
     assert!(states
         .iter()
         .all(|s| *s == Some(cdk_common::State::Pending)));
+
+    crate::test_helpers::mint::expire_melt_leases(&mint).await;
 
     mint.recover_from_incomplete_melt_sagas()
         .await
@@ -1006,6 +1009,7 @@ async fn startup_defers_stalled_payment_checks_and_recovers_later() {
             .unwrap();
         mint.stop().await.unwrap();
         backend.stall_status_checks.store(true, Ordering::SeqCst);
+        crate::test_helpers::mint::expire_melt_leases(&mint).await;
 
         tokio::time::timeout(Duration::from_secs(20), mint.start())
             .await
@@ -1037,6 +1041,7 @@ async fn startup_defers_stalled_payment_checks_and_recovers_later() {
         );
 
         backend.stall_status_checks.store(false, Ordering::SeqCst);
+        crate::test_helpers::mint::expire_melt_leases(&mint).await;
         mint.recover_from_incomplete_melt_sagas().await.unwrap();
 
         let states = mint

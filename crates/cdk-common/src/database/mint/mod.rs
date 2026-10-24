@@ -365,6 +365,45 @@ pub trait QuotesTransaction {
         payment_proof: Option<String>,
     ) -> Result<MeltQuoteState, Self::Err>;
 
+    /// Releases the melt execution lock on a melt quote, but only when
+    /// `lock_token` matches the token currently held by the quote.
+    ///
+    /// Called on every executor exit without changing quote or proof state.
+    /// Returns `true` when ownership was released.
+    async fn unlock_melt_quote(
+        &mut self,
+        quote_id: &QuoteId,
+        lock_token: &str,
+    ) -> Result<bool, Self::Err>;
+
+    /// Releases the melt execution lock on a melt quote regardless of the
+    /// held token.
+    ///
+    /// This is an operator override for recovering quotes whose executor is
+    /// gone. Returns `true` when a lock was released.
+    async fn force_unlock_melt_quote(&mut self, quote_id: &QuoteId) -> Result<bool, Self::Err>;
+
+    /// Returns the database clock as a Unix timestamp for melt lease checks.
+    async fn melt_lease_time(&mut self) -> Result<u64, Self::Err>;
+
+    /// Claims expired or released ownership without authorizing another send.
+    /// Returns the updated quote, or None while a valid owner exists.
+    async fn claim_melt_quote_lease(
+        &mut self,
+        quote_id: &QuoteId,
+        lock_token: &str,
+        lease_seconds: u64,
+    ) -> Result<Option<mint::MeltQuote>, Self::Err>;
+
+    /// Renews an unexpired lease belonging to `lock_token`.
+    /// Returns false when ownership was released, replaced, or expired.
+    async fn renew_melt_quote_lease(
+        &mut self,
+        quote_id: &QuoteId,
+        lock_token: &str,
+        lease_seconds: u64,
+    ) -> Result<bool, Self::Err>;
+
     /// Get all [`MintMintQuote`]s and lock it for update in this transaction
     async fn get_mint_quote_by_request(
         &mut self,
