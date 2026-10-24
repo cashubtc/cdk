@@ -264,6 +264,13 @@ impl Mint {
     ///
     /// This function accepts a `MeltQuoteRequest` enum and delegates to the
     /// appropriate handler based on the request type.
+    ///
+    /// Disabling melting stops creation of new melt quotes. Previously issued,
+    /// otherwise valid quotes remain executable, and already-dispatched payments
+    /// continue through normal recovery and status reconciliation.
+    ///
+    /// Quote requests that passed the disabled-state check before disabling may still
+    /// complete. Further guarantees for in-flight quote requests are still under development.
     #[instrument(skip_all)]
     pub async fn get_melt_quote(
         &self,
@@ -908,6 +915,10 @@ impl Mint {
     /// Melt
     ///
     /// Uses MeltSaga typestate pattern for atomic transaction handling with automatic rollback on failure.
+    ///
+    /// Disabling melting stops creation of new melt quotes; it does not prevent execution
+    /// of previously issued, otherwise valid quotes. Already-dispatched payments continue
+    /// through normal recovery and status reconciliation.
     #[instrument(skip_all)]
     pub async fn melt(&self, melt_request: &MeltRequest<QuoteId>) -> Result<PendingMelt, Error> {
         // Check max outputs limit (if change outputs are provided)
