@@ -1,0 +1,103 @@
+name: "Docker - Nightly mintd images"
+
+permissions:
+  contents: read
+
+on:
+  schedule:
+    - cron: "37 3 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Publish even if this commit already has a nightly image'
+        type: boolean
+        default: false
+
+concurrency:
+  group: docker-nightly
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: cashubtc/mintd
+
+jobs:
+  prepare:
+    name: "Prepare nightly tag"
+    runs-on: ubuntu-latest
+    outputs:
+      nightly_tag: ${{ steps.prepare.outputs.nightly_tag }}
+      cdk_ref: ${{ steps.prepare.outputs.cdk_ref }}
+      publish: ${{ steps.prepare.outputs.publish }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Resolve nightly tag and check for existing images
+        id: prepare
+        shell: bash
+        env:
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+
+          SOURCE_SHA=$(git rev-parse HEAD)
+          SOURCE_SHORT=${SOURCE_SHA:0:7}
+          SOURCE_DATE=$(date -u +%Y%m%d)
+          WORKSPACE_VERSION=$(
+            sed -n '/^\[workspace\.package\]/,/^\[/p' Cargo.toml \
+              | sed -n 's/^version = "\([^"]*\)"/\1/p' \
+              | head -1
+          )
+          CDK_VERSION=${WORKSPACE_VERSION%%[-+]*}
+
+          if [[ ! "${CDK_VERSION}" =~ ^[0-9]+[.][0-9]+[.][0-9]+$ ]]; then
+            echo "::error::Could not derive a stable SemVer core from workspace version ${WORKSPACE_VERSION}"
+            exit 1
+          fi
+
+          NIGHTLY_TAG="v${CDK_VERSION}-nightly.${SOURCE_DATE}.g${SOURCE_SHORT}"
+
+          {
+            echo "nightly_tag=${NIGHTLY_TAG}"
+            echo "cdk_ref=${SOURCE_SHA}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Nightly source: ${SOURCE_SHA}"
+          echo "Nightly tag: ${NIGHTLY_TAG}"
+
+          if [[ "${FORCE}" == "true" ]]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "Forced publish requested"
+            exit 0
+          fi
+
+          # A nightly for this exact commit already exists when any tag on
+          # Docker Hub embeds its short SHA, e.g. 0.18.0-nightly.20260803.g1a2b3c4
+          response=$(curl -sfL \
+            "https://hub.docker.com/v2/repositories/${IMAGE_NAME}/tags/?name=g${SOURCE_SHORT}&page_size=100")
+
+          existing=$(jq -r \
+            '[.results[].name | select(contains("-nightly."))] | .[0] // ""' \
+            <<< "${response}")
+
+          if [[ -n "${existing}" ]]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "${SOURCE_SHA} is already published as ${existing}; skipping"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "${SOURCE_SHA} needs publishing"
+          fi
+
+  publish:
+    name: "Build and publish nightly images"
+    needs: prepare
+    if: needs.prepare.outputs.publish == 'true'
+    uses: ./.github/workflows/docker-publish.yml
+    with:
+      tag: ${{ needs.prepare.outputs.nightly_tag }}
+      ref: ${{ needs.prepare.outputs.cdk_ref }}
+      nightly: true
+    secrets: inherit
