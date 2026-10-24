@@ -11,13 +11,14 @@
 //!    If the mint cached the response (NUT-19), we get signatures immediately.
 //! 2. **Fallback**: If replay fails, check if inputs are spent and use `/restore`.
 
-use cdk_common::wallet::{OperationData, SwapOperationData, SwapSagaState, WalletSaga};
+use cdk_common::wallet::{OperationData, ProofInfo, SwapOperationData, SwapSagaState, WalletSaga};
 use tracing::instrument;
 
 use crate::dhke::hash_to_curve_for_version;
 use crate::nuts::{PreMintSecrets, State};
 use crate::wallet::recovery::{RecoveryAction, RecoveryHelpers};
 use crate::wallet::saga::{CompensatingAction, RevertProofReservation};
+use crate::wallet::swap::saga::is_locked_output;
 use crate::wallet::util::escape_log_value;
 use crate::{Error, Wallet};
 
@@ -109,7 +110,9 @@ impl Wallet {
                 .await?
             {
                 let input_ys: Vec<_> = reserved_proofs.iter().map(|p| p.y).collect();
-                self.localstore.update_proofs(new_proofs, input_ys).await?;
+                self.localstore
+                    .update_proofs(reserve_locked_outputs(new_proofs), input_ys)
+                    .await?;
                 self.localstore.delete_saga(saga_id).await?;
                 return Ok(RecoveryAction::Recovered);
             }
@@ -242,7 +245,9 @@ impl Wallet {
 
         match new_proofs {
             Some(proofs) => {
-                self.localstore.update_proofs(proofs, input_ys).await?;
+                self.localstore
+                    .update_proofs(reserve_locked_outputs(proofs), input_ys)
+                    .await?;
             }
             None => {
                 tracing::warn!(
@@ -276,6 +281,16 @@ impl Wallet {
     }
 }
 
+/// Recovered outputs locked to a recipient stay `Reserved`, as the live swap saga stores them.
+fn reserve_locked_outputs(mut proofs: Vec<ProofInfo>) -> Vec<ProofInfo> {
+    for info in &mut proofs {
+        if is_locked_output(&info.proof) {
+            info.state = State::Reserved;
+        }
+    }
+    proofs
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -289,6 +304,23 @@ mod tests {
 
     use crate::nuts::{PreMintSecrets, SecretKey as NutSecretKey};
     use crate::wallet::test_utils::*;
+
+    #[test]
+    fn recovered_locked_outputs_stay_reserved() {
+        let mint_url = test_mint_url();
+        let plain = test_proof_info(test_keyset_id(), 1, mint_url.clone());
+        let mut locked = test_proof(test_keyset_id(), 2);
+        locked.secret =
+            crate::nuts::SpendingConditions::new_p2pk(NutSecretKey::generate().public_key(), None)
+                .try_into()
+                .unwrap();
+        let locked = ProofInfo::new(locked, mint_url, State::Unspent, CurrencyUnit::Sat).unwrap();
+        let states: Vec<_> = super::reserve_locked_outputs(vec![plain, locked])
+            .into_iter()
+            .map(|info| info.state)
+            .collect();
+        assert_eq!(states, vec![State::Unspent, State::Reserved]);
+    }
 
     #[tokio::test]
     async fn test_recover_swap_proofs_reserved() {

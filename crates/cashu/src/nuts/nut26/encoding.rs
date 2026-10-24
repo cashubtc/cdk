@@ -2776,3 +2776,21 @@ fn nutroot_policy_roundtrips_without_changing_leaf_bytes() {
     bytes.extend(duplicate);
     assert!(PaymentRequest::decode_nutroot(&bytes).is_err());
 }
+
+#[test]
+fn nutroot_request_vector() {
+    // NUT-26 Nutroot Locking vector, the NUT-18 receiver-keyed request.
+    let encoded = "CREQB1QGQQSQQQQQQQQQQQPQPSQQGQPVQ8CQGQYYP0JVY2QXF93SCSFY6YLP0CN4FZNDF3EPZCXMUEKZRQRUGNHNSRD7GZQQCSQQSZQQQSZPQQYYPWFY7M78QSMQ8NTQ0YJPYNPV2QFNRVZWGQACR4S360499TARZV6YCXQQZX3GA7SQPSQGGZUJFAHUWPPKQ0XKQ7FYZFXZC5QNXXCYUSPMS8TPR5L222H6XYE5FSC2L8YN";
+    let request = PaymentRequest::from_bech32_string(encoded).unwrap();
+    let expected: crate::nuts::nut10::nutroot::NutrootOption =
+        serde_json::from_value(serde_json::json!({
+            "k": "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+            "l": ["00020200010104002102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1306000468a3be80"],
+            "b": ["02e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13"],
+        }))
+        .unwrap();
+    assert_eq!(request.amount, Some(8.into()));
+    assert_eq!(request.unit, Some(crate::nuts::CurrencyUnit::Sat));
+    assert_eq!(request.nutroot, Some(expected));
+    assert_eq!(request.to_bech32_string().unwrap(), encoded);
+}

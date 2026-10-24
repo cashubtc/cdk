@@ -113,6 +113,68 @@ fn script_paths_require_distinct_keys_and_bind_compressed_secret() {
 }
 
 #[test]
+fn thresholds_skip_unmatched_and_repeated_signatures() {
+    use bitcoin::secp256k1::SecretKey;
+    let [one, two, three, outsider] =
+        [1, 2, 3, 4].map(|b| SecretKey::from_slice(&[b; 32]).unwrap());
+    let keys = [one, two, three].map(|k| PublicKey::from_secret_key(&crate::SECP256K1, &k));
+    let tree = Tree::new(vec![
+        Leaf::new(2, keys.to_vec(), Condition::Threshold).unwrap()
+    ])
+    .unwrap();
+    let secret = tweaked_key(keys[0], Some(tree.root())).unwrap().to_string();
+    let digest = [42; 32];
+    // Within the entry bound, NUT-10 counts distinct satisfied keys only.
+    for extra in [outsider, one] {
+        let mut witness = Witness::script_path(&tree, 0, keys[0]).unwrap();
+        for key in [one, two, extra] {
+            witness
+                .signatures
+                .extend(Witness::key_path(&key, digest).signatures);
+        }
+        witness.verify(&secret, digest, 0).unwrap();
+    }
+    // Two valid entries by one key are one satisfied key.
+    let mut witness = Witness::script_path(&tree, 0, keys[0]).unwrap();
+    for key in [one, one, outsider] {
+        witness
+            .signatures
+            .extend(Witness::key_path(&key, digest).signatures);
+    }
+    assert!(witness.verify(&secret, digest, 0).is_err());
+}
+
+#[test]
+fn nut28_v3_slot_map_vectors() {
+    use bitcoin::secp256k1::SecretKey;
+    let shared: Value = serde_json::from_str(include_str!("nutroot_v3_vectors.json")).unwrap();
+    let (refund, forms) = (&shared["receiver_keyed_refund"], &shared["leaf_forms"]);
+    let secret = |v: &Value| SecretKey::from_slice(&bytes(v)).unwrap();
+    let ephemeral = secret(&refund["ephemeral_priv"]);
+    let e = key(&refund["ephemeral_pub"]);
+    let carol = secret(&refund["carol_priv"]);
+    let r = Scalar::from(secret(&vectors()[3]["slot0_r"]));
+    assert_eq!(
+        receiver_key(&carol, &e, 0).unwrap(),
+        carol.add_tweak(&r).unwrap()
+    );
+    assert_eq!(
+        sender_key(&key(&refund["carol_pub"]), &ephemeral, 0).unwrap(),
+        key(&vectors()[3]["internal_key"])
+    );
+    let slot1 = sender_key(&key(&forms["blind_slot1_key"]), &ephemeral, 1).unwrap();
+    assert_eq!(slot1, key(&forms["blind_slot1_result"]));
+    let alice = secret(&refund["alice_refund_priv"]);
+    assert_eq!(
+        PublicKey::from_secret_key(&crate::SECP256K1, &receiver_key(&alice, &e, 1).unwrap()),
+        slot1
+    );
+    let time = refund["refund_time"].as_u64().unwrap();
+    let leaf = Leaf::new(1, vec![slot1], Condition::After(time)).unwrap();
+    assert_eq!(leaf.to_bytes(), bytes(&forms["blind_slot1_leaf"]));
+}
+
+#[test]
 fn hashlock_and_commit_satisfaction() {
     use bitcoin::secp256k1::SecretKey;
     use sha2::{Digest, Sha256};
@@ -334,6 +396,11 @@ fn token_spend_info_vectors_and_witness_stripping() {
         assert_eq!(
             token.token[0].proofs[0].spend_info.as_ref(),
             Some(&expected)
+        );
+        // Same CBOR bytes; base64 padding is optional (NUT-00).
+        assert_eq!(
+            token.to_string().trim_end_matches('='),
+            vector["token"].as_str().unwrap()
         );
         token.token[0].proofs[0].witness = Some(crate::nuts::Witness::NutrootWitness(
             "{\"signatures\":[]}".to_owned(),
@@ -570,12 +637,17 @@ fn upstream_authorized_request_vectors() {
         .iter()
         .zip([&b"illustrative request body"[..], &b""[..]])
     {
-        let digest = authorized_request_digest(
+        let (method, target) = (
             vector["method"].as_str().unwrap(),
             vector["target"].as_str().unwrap(),
-            body,
-        )
-        .unwrap();
+        );
+        let transcript = transaction::authorized_request_transcript(method, target, body).unwrap();
+        assert_eq!(transcript, bytes(&vector["transcript"]));
+        assert_eq!(
+            <[u8; 32]>::from(sha2::Sha256::digest(&transcript)),
+            hash(&vector["request_digest"])
+        );
+        let digest = authorized_request_digest(method, target, body).unwrap();
         assert_eq!(digest, hash(&vector["digest"]));
         let witness: Witness = serde_json::from_value(vector["witness"].clone()).unwrap();
         witness

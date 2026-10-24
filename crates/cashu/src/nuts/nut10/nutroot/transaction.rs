@@ -405,6 +405,19 @@ pub fn authorized_request_digest(
     target: &str,
     body: &[u8],
 ) -> Result<[u8; 32], Error> {
+    let bytes = authorized_request_transcript(method, target, body)?;
+    Ok(tagged_hash(
+        "Cashu_AuthorizedRequest",
+        &Sha256::digest(&bytes),
+    ))
+}
+
+/// NUT-22 authorized-request transcript, before hashing.
+pub(crate) fn authorized_request_transcript(
+    method: &str,
+    target: &str,
+    body: &[u8],
+) -> Result<Vec<u8>, Error> {
     if method.is_empty()
         || !method.bytes().all(|b| b.is_ascii_uppercase())
         || !target.starts_with('/')
@@ -412,16 +425,12 @@ pub fn authorized_request_digest(
     {
         return Err(Error::InvalidTransaction);
     }
-    let bytes = container(
+    container(
         AUTHORIZED_REQUEST,
         &[
             method.as_bytes().to_vec(),
             target.as_bytes().to_vec(),
             Sha256::digest(body).to_vec(),
         ],
-    )?;
-    Ok(tagged_hash(
-        "Cashu_AuthorizedRequest",
-        &Sha256::digest(&bytes),
-    ))
+    )
 }

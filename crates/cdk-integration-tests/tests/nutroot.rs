@@ -1,7 +1,11 @@
 //! Nutroot wallet-to-mint flows without external services.
+use cashu::amount::SplitTarget;
 use cashu::nuts::nut10::nutroot::{nums_point, Condition, Leaf, NutrootOption};
-use cashu::{Amount, CurrencyUnit, KeySetVersion, SecretKey};
+use cashu::{Amount, CurrencyUnit, KeySetVersion, PaymentMethod, SecretKey};
+use cdk::nuts::nut00::ProofsMethods;
 use cdk::wallet::{ReceiveOptions, SendOptions};
+use cdk::StreamExt;
+use cdk_fake_wallet::create_fake_invoice;
 use cdk_integration_tests::init_pure_tests::{
     create_and_start_test_mint, create_test_wallet_for_mint, fund_wallet,
 };
@@ -74,5 +78,57 @@ async fn nutroot_payment_and_receive() {
     }
     assert_eq!(payer.total_balance().await.unwrap(), Amount::from(16));
     assert_eq!(receiver.total_balance().await.unwrap(), Amount::from(16));
+    mint.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn nutroot_batch_mint_and_melt_with_change() {
+    let mint = create_and_start_test_mint().await.unwrap();
+    assert_eq!(
+        mint.get_active_keysets()[&CurrencyUnit::Sat].get_version(),
+        KeySetVersion::Version02
+    );
+    let wallet = create_test_wallet_for_mint(mint.clone()).await.unwrap();
+    let mut quotes = vec![];
+    for amount in [16, 8] {
+        let quote = wallet
+            .mint_quote(PaymentMethod::BOLT11, Some(amount.into()), None, None)
+            .await
+            .unwrap();
+        wallet.payment_stream(&quote).next().await.unwrap().unwrap();
+        quotes.push(quote);
+    }
+    let proofs = wallet
+        .batch_mint(
+            &[&quotes[0].id, &quotes[1].id],
+            SplitTarget::default(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(proofs.total_amount().unwrap(), Amount::from(24));
+    for (quote, amount) in quotes.iter().zip([16, 8]) {
+        let status = wallet.check_mint_quote_status(&quote.id).await.unwrap();
+        assert_eq!(status.amount_issued, Amount::from(amount));
+    }
+
+    let invoice = create_fake_invoice(5000, String::new());
+    let quote = wallet
+        .melt_quote(PaymentMethod::BOLT11, invoice.to_string(), None, None)
+        .await
+        .unwrap();
+    let melted = wallet
+        .prepare_melt_proofs(&quote.id, proofs, std::collections::HashMap::new())
+        .await
+        .unwrap()
+        .confirm()
+        .await
+        .unwrap();
+    assert!(melted.change().is_some_and(|change| !change.is_empty()));
+    assert_eq!(
+        wallet.total_balance().await.unwrap(),
+        Amount::from(24 - 5) - melted.fee_paid()
+    );
     mint.stop().await.unwrap();
 }

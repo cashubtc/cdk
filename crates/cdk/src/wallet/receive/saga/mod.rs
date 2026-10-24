@@ -151,9 +151,10 @@ impl<'a> ReceiveSaga<'a, Initial> {
                     receiver_keys.push(*key.as_secp256k1()?);
                 }
             }
+            // Pre-v3 payers follow `nut10`, which the NUT-10 path below handles (NUT-18).
             for proof in &proofs {
                 if proof.keyset_id.get_version() != KeySetVersion::Version02 {
-                    return Err(crate::nuts::nut10::Error::SpendConditionsNotMet.into());
+                    continue;
                 }
                 let info = proof
                     .spend_info
@@ -730,6 +731,33 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_receive_nutroot_policy_accepts_pre_v3_proofs() {
+        let (wallet, mock, input, signature) = receive_fixture().await;
+        mock.set_post_swap_response(Ok(SwapResponse {
+            signatures: vec![signature],
+        }));
+        let key = *SecretKey::generate().public_key().as_secp256k1().unwrap();
+        let received = wallet
+            .receive_proofs(
+                vec![input],
+                ReceiveOptions {
+                    nutroot: Some(crate::nuts::nut10::nutroot::NutrootOption {
+                        key,
+                        leaves: None,
+                        blind_keys: None,
+                    }),
+                    amount_split_target: SplitTarget::Values(vec![Amount::from(2)]),
+                    ..Default::default()
+                },
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(received, Amount::from(2));
     }
 
     #[tokio::test]
