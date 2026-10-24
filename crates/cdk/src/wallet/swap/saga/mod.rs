@@ -48,7 +48,7 @@ use crate::wallet::saga::{
     add_compensation, clear_compensations, execute_compensations, new_compensations, Compensations,
     RevertProofReservation as RevertSwapProofReservation,
 };
-use crate::wallet::swap::ProofReservation;
+use crate::wallet::swap::{ProofReservation, SwapSendPlan};
 use crate::{Amount, Error, Wallet};
 
 pub(crate) mod resume;
@@ -75,8 +75,19 @@ impl<'a> SwapSaga<'a, Initial> {
             state_data: Initial {
                 operation_id,
                 keyset_policy: Default::default(),
+                send_split_target: SplitTarget::default(),
+                output_keyset_id: None,
+                send_owner: None,
             },
         }
+    }
+
+    /// Retain the parent operation's send denominations through output creation.
+    pub fn with_send_plan(mut self, plan: SwapSendPlan) -> Self {
+        self.state_data.send_split_target = SplitTarget::Values(plan.output.amounts);
+        self.state_data.output_keyset_id = Some(plan.output.keyset_id);
+        self.state_data.send_owner = Some(plan.owner);
+        self
     }
 
     /// Prepare the swap operation.
@@ -109,11 +120,21 @@ impl<'a> SwapSaga<'a, Initial> {
         );
 
         let keyset_policy = self.state_data.keyset_policy;
-        let active_keyset_id = self
-            .wallet
-            .active_keyset_with_policy(keyset_policy)
-            .await?
-            .id;
+        let active_keyset_id = match self.state_data.output_keyset_id {
+            Some(id) => {
+                let keyset = self.wallet.keyset_with_policy(id, keyset_policy).await?;
+                if keyset.active != Some(true) {
+                    return Err(Error::InactiveKeyset);
+                }
+                id
+            }
+            None => {
+                self.wallet
+                    .active_keyset_with_policy(keyset_policy)
+                    .await?
+                    .id
+            }
+        };
         let fee_and_amounts = self
             .wallet
             .get_keyset_fees_and_amounts_by_id_with_policy(active_keyset_id, keyset_policy)
@@ -131,6 +152,7 @@ impl<'a> SwapSaga<'a, Initial> {
                 &fee_and_amounts,
                 amount,
                 amount_split_target.clone(),
+                &self.state_data.send_split_target,
                 input_proofs.clone(),
                 spending_conditions.clone(),
                 include_fees,
@@ -193,6 +215,8 @@ impl<'a> SwapSaga<'a, Initial> {
                 operation_id: self.state_data.operation_id,
                 amount,
                 amount_split_target,
+                send_split_target: self.state_data.send_split_target,
+                send_owner: self.state_data.send_owner,
                 input_ys,
                 spending_conditions,
                 pre_swap,
@@ -239,6 +263,7 @@ impl<'a> SwapSaga<'a, Prepared> {
                 if err.is_definitive_failure() {
                     tracing::error!("Failed to post swap request (definitive): {}", err);
                     execute_compensations(&mut self.compensations).await?;
+                    self.wallet.localstore.delete_saga(&operation_id).await?;
                 } else {
                     tracing::warn!("Failed to post swap request (ambiguous): {}.", err,);
                 }
@@ -281,34 +306,33 @@ impl<'a> SwapSaga<'a, Prepared> {
                         nut10_secret.is_ok()
                     });
 
-                let (mut proofs_to_send, proofs_to_keep) =
-                    match &self.state_data.spending_conditions {
-                        Some(_) => (proofs_with_condition, proofs_without_condition),
-                        None => {
-                            let mut all_proofs = proofs_without_condition;
-                            all_proofs.reverse();
+                let (mut proofs_to_send, proofs_to_keep) = match &self
+                    .state_data
+                    .spending_conditions
+                {
+                    Some(_) => (proofs_with_condition, proofs_without_condition),
+                    None => {
+                        let mut all_proofs = proofs_without_condition;
+                        all_proofs.reverse();
 
-                            let mut proofs_to_send = Proofs::new();
-                            let mut proofs_to_keep = Proofs::new();
-                            let mut amount_split = amount.split_targeted(
-                                &self.state_data.amount_split_target,
-                                &fee_and_amounts,
-                            )?;
+                        let mut proofs_to_send = Proofs::new();
+                        let mut proofs_to_keep = Proofs::new();
+                        let mut amount_split = amount
+                            .split_targeted(&self.state_data.send_split_target, &fee_and_amounts)?;
 
-                            for proof in all_proofs {
-                                if let Some(idx) =
-                                    amount_split.iter().position(|&a| a == proof.amount)
-                                {
-                                    proofs_to_send.push(proof);
-                                    amount_split.remove(idx);
-                                } else {
-                                    proofs_to_keep.push(proof);
-                                }
+                        for proof in all_proofs {
+                            if let Some(idx) = amount_split.iter().position(|&a| a == proof.amount)
+                            {
+                                proofs_to_send.push(proof);
+                                amount_split.remove(idx);
+                            } else {
+                                proofs_to_keep.push(proof);
                             }
-
-                            (proofs_to_send, proofs_to_keep)
                         }
-                    };
+
+                        (proofs_to_send, proofs_to_keep)
+                    }
+                };
 
                 if let Some(ephemeral_keys) = &self.state_data.pre_swap.p2bk_secret_keys {
                     for (i, proof) in proofs_to_send.iter_mut().enumerate() {
@@ -324,8 +348,11 @@ impl<'a> SwapSaga<'a, Prepared> {
                 let send_proofs_info = proofs_to_send
                     .clone()
                     .into_iter()
-                    .map(|proof| {
-                        ProofInfo::new(proof, mint_url.clone(), State::Reserved, unit.clone())
+                    .map(|proof| -> Result<_, Error> {
+                        let mut info =
+                            ProofInfo::new(proof, mint_url.clone(), State::Reserved, unit.clone())?;
+                        info.used_by_operation = self.state_data.send_owner;
+                        Ok(info)
                     })
                     .collect::<Result<Vec<ProofInfo>, _>>()?;
                 added_proofs = send_proofs_info;
