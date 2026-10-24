@@ -23,6 +23,7 @@ mod test {
     use cdk_common::database::{self, MintAuthDatabase};
     use cdk_common::secret::Secret;
     use cdk_common::{mint_db_test, AuthProof, Id, SecretKey, State};
+    use cdk_sql_common::database::ConnectionWithTransaction;
     use cdk_sql_common::pool::Pool;
     use cdk_sql_common::stmt::query;
 
@@ -62,6 +63,48 @@ mod test {
         let result = pool.get_timeout(Duration::from_millis(10)).await;
 
         assert!(matches!(result, Err(cdk_sql_common::pool::Error::Timeout)));
+    }
+
+    #[tokio::test]
+    async fn cloned_config_creates_independent_in_memory_databases() {
+        let config: Config = ":memory:".into();
+        let _first = MintSqliteDatabase::new(config.clone())
+            .await
+            .expect("first database");
+        let _second = MintSqliteDatabase::new(config)
+            .await
+            .expect("independent second database");
+    }
+
+    #[test]
+    fn discarded_in_memory_connection_is_not_replaced() {
+        let config: Config = ":memory:".into();
+        let pool = Pool::<SqliteConnectionManager>::new(config);
+        let runtime = || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime")
+        };
+
+        // Dropping the runtime drops the unpolled rollback task, which discards
+        // the connection and with it the in-memory database.
+        let first = runtime();
+        first.block_on(async {
+            let conn = pool.get().await.expect("valid connection");
+            let tx = ConnectionWithTransaction::new(conn)
+                .await
+                .expect("transaction");
+            drop(tx);
+        });
+        drop(first);
+
+        runtime().block_on(async {
+            assert!(matches!(
+                pool.get().await,
+                Err(cdk_sql_common::pool::Error::Resource(_))
+            ));
+        });
     }
 
     async fn spend_auth_proof(
