@@ -35,6 +35,67 @@ mod test {
 
     mint_db_test!(provide_db);
 
+    #[cfg(not(feature = "sqlcipher"))]
+    #[tokio::test]
+    async fn rerandomization_migration_preserves_existing_proofs_and_reopens() {
+        use cdk_common::database::{MintProofsDatabase, MintSignaturesDatabase};
+        let path = std::env::temp_dir().join(format!(
+            "cdk-rerandomization-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let db = MintSqliteDatabase::new(&path).await.unwrap();
+        drop(db);
+        let key = SecretKey::generate().public_key();
+        let proof = cdk_common::Proof {
+            amount: cdk_common::Amount::ONE,
+            keyset_id: Id::from_str("00916bbf7ef91a36").unwrap(),
+            secret: Secret::generate(),
+            c: key,
+            witness: None,
+            dleq: None,
+            p2pk_e: None,
+        };
+        let y = proof.y().unwrap();
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            // Recreate the immediately preceding schema with an existing spent proof.
+            conn.execute_batch("ALTER TABLE proof DROP COLUMN rerandomization_r; DELETE FROM migrations WHERE name = '20261014000000_add_rerandomization_r.sql';").unwrap();
+            conn.execute("INSERT INTO proof (y, amount, keyset_id, secret, c, state) VALUES (?1, 1, ?2, ?3, ?4, 'SPENT')", rusqlite::params![y.to_bytes().to_vec(), proof.keyset_id.to_string(), proof.secret.to_string(), key.to_bytes().to_vec()]).unwrap();
+        }
+        let db = MintSqliteDatabase::new(&path).await.unwrap();
+        assert_eq!(db.get_proofs_by_ys(&[y]).await.unwrap(), vec![Some(proof)]);
+        assert!(db.get_rerandomization_r(&[y]).await.unwrap().is_empty());
+        assert!(db.get_blind_signatures(&[key]).await.unwrap()[0].is_none());
+        drop(db);
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            assert!(conn
+                .execute("UPDATE proof SET rerandomization_r = ?1", [vec![42u8; 31]])
+                .is_err());
+            conn.execute("UPDATE proof SET rerandomization_r = ?1", [vec![42u8; 32]])
+                .unwrap();
+            assert!(conn
+                .execute("UPDATE proof SET state = 'PENDING'", [])
+                .is_err());
+            // Old named-column readers tolerate the additional column.
+            let state: String = conn
+                .query_row(
+                    "SELECT state FROM proof WHERE y = ?1",
+                    [y.to_bytes().to_vec()],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(state, "SPENT");
+        }
+        let db = MintSqliteDatabase::new(&path).await.unwrap();
+        assert_eq!(
+            db.get_rerandomization_r(&[y]).await.unwrap().get(&y),
+            Some(&[42; 32])
+        );
+        drop(db);
+        remove_file(path).unwrap();
+    }
+
     #[tokio::test]
     async fn kvstore_compare_and_swap() {
         cdk_common::database::mint::test::kvstore_compare_and_swap(

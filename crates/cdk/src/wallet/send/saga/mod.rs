@@ -1554,7 +1554,7 @@ mod tests {
         db.update_proofs(vec![proof_info], vec![]).await.unwrap();
 
         let mock_client = Arc::new(MockMintConnector::new());
-        mock_client.set_post_swap_response(Ok(cdk_common::SwapResponse { signatures: vec![] }));
+        mock_client.set_post_swap_response(Ok(cdk_common::SwapResponse::new(vec![])));
         let wallet = create_test_wallet_with_mock(db, mock_client).await;
 
         // Do NOT prime the cache — online send should fetch from the mock

@@ -91,6 +91,8 @@ mod tests;
 /// - No runtime state checks or `Option<T>` unwrapping needed
 /// - IDE autocomplete only shows valid operations for each state
 pub struct SwapSaga<'a, S> {
+    /// Private until TX2 commits; incomplete swaps are compensated after restart.
+    rerandomization_r: Option<cdk_common::nuts::nut03::RerandomizationR>,
     mint: &'a super::Mint,
     db: DynMintDatabase,
     pubsub: Arc<PubSubManager>,
@@ -106,6 +108,7 @@ impl<'a> SwapSaga<'a, Initial> {
         let operation_id = uuid::Uuid::now_v7();
 
         Self {
+            rerandomization_r: None,
             mint,
             db,
             pubsub,
@@ -113,6 +116,15 @@ impl<'a> SwapSaga<'a, Initial> {
             operation_id,
             state_data: Initial { operation_id },
         }
+    }
+
+    /// Attach recovery randomness before reserving the tweaked outputs.
+    pub fn with_rerandomization_r(
+        mut self,
+        r: Option<cdk_common::nuts::nut03::RerandomizationR>,
+    ) -> Self {
+        self.rerandomization_r = r;
+        self
     }
 
     /// Sets up the swap by atomically verifying balance and reserving inputs/outputs.
@@ -249,6 +261,7 @@ impl<'a> SwapSaga<'a, Initial> {
 
         // Transition to SetupComplete state
         Ok(SwapSaga {
+            rerandomization_r: self.rerandomization_r,
             mint: self.mint,
             db: self.db,
             pubsub: self.pubsub,
@@ -297,6 +310,7 @@ impl<'a> SwapSaga<'a, SetupComplete> {
                 // is not used by recovery logic - saga state remains "SetupComplete"
                 // until the swap is finalized or compensated
                 Ok(SwapSaga {
+                    rerandomization_r: self.rerandomization_r,
                     mint: self.mint,
                     db: self.db,
                     pubsub: self.pubsub,
@@ -407,10 +421,24 @@ impl SwapSaga<'_, Signed> {
             }
         };
 
-        if let Err(err) = Mint::update_proofs_state(&mut tx, &mut proofs, State::Spent).await {
+        if let Err(err) = Mint::update_proofs_state_with_r(
+            &mut tx,
+            &mut proofs,
+            State::Spent,
+            self.rerandomization_r.map(|r| r.0),
+        )
+        .await
+        {
             tx.rollback().await?;
             self.compensate_all().await?;
             return Err(err);
+        }
+
+        #[cfg(test)]
+        if crate::test_helpers::mint::should_fail_for("AFTER_RERANDOMIZATION_R") {
+            tx.rollback().await?;
+            self.compensate_all().await?;
+            return Err(Error::Internal);
         }
 
         if let Err(err) = tx
@@ -439,14 +467,16 @@ impl SwapSaga<'_, Signed> {
         tx.commit().await?;
         // Publish proof state changes
         for pk in &self.state_data.ys {
-            self.pubsub.proof_state((*pk, State::Spent));
+            let mut state = cdk_common::nuts::ProofState::from((*pk, State::Spent));
+            state.rerandomization_r = self.rerandomization_r;
+            self.pubsub.proof_state(state);
         }
         // Clear compensations - swap is complete
         self.compensations.clear();
 
-        Ok(cdk_common::nuts::SwapResponse::new(
-            self.state_data.signatures,
-        ))
+        let mut response = cdk_common::nuts::SwapResponse::new(self.state_data.signatures);
+        response.rerandomization_r = self.rerandomization_r;
+        Ok(response)
     }
 }
 
