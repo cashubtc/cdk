@@ -1,0 +1,67 @@
+name: Mint and wallet upgrade compatibility
+
+on:
+  pull_request:
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/upgrade-tests.yml'
+  push:
+    branches: [main, 'v[0-9]*.[0-9]*.x']
+  workflow_dispatch:
+    inputs:
+      baseline:
+        description: Released baseline tag
+        default: v0.17.7
+        type: string
+      rounds:
+        description: Workload rounds per phase
+        default: 25
+        type: number
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upgrade-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  upgrade:
+    runs-on: self-hosted
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Check upgrade driver formatting
+        run: |
+          nix develop --fallback -i -L .#stable --command \
+            cargo fmt -p cdk-upgrade-tests -- --check
+          nix develop --fallback -i -L .#stable --command \
+            rustfmt --edition 2021 --check \
+              crates/cdk-integration-tests/upgrade/driver.rs \
+              crates/cdk-integration-tests/upgrade/payment_control.rs
+      - name: Upgrade released mint and wallets
+        env:
+          UPGRADE_BASELINE: ${{ inputs.baseline || 'v0.17.7' }}
+          UPGRADE_ROUNDS: ${{ inputs.rounds || 5 }}
+          UPGRADE_SCRATCH: ${{ runner.temp }}/cdk-upgrades
+        run: |
+          mkdir -p "$UPGRADE_SCRATCH"
+          nix develop --fallback -i -L .#stable --command \
+            cargo run --locked -p cdk-upgrade-tests -- \
+              --from "$UPGRADE_BASELINE" --rounds "$UPGRADE_ROUNDS" \
+              --scratch-root "$UPGRADE_SCRATCH"
+      - name: Preserve failing upgrade state
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: upgrade-failure
+          path: |
+            ${{ runner.temp }}/cdk-upgrades/cdk-upgrade-*/report.json
+            ${{ runner.temp }}/cdk-upgrades/cdk-upgrade-*/*-mint-first/
+            ${{ runner.temp }}/cdk-upgrades/cdk-upgrade-*/*-wallet-first/
+          include-hidden-files: true
+          retention-days: 7
