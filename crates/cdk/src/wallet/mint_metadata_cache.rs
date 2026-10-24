@@ -24,7 +24,8 @@
 //! let fresh = manager.load_from_mint(&storage, &client).await?;
 //! ```
 
-use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Duration;
@@ -674,6 +675,8 @@ impl MintMetadataCache {
         // Start with current cache to preserve data from other sources
         let mut new_metadata = (*self.metadata.load().clone()).clone();
         let mut keysets_to_fetch = Vec::new();
+        let mut fetched_regular: Option<HashSet<Id>> = None;
+        let mut fetched_auth: Option<HashSet<Id>> = None;
 
         // Fetch regular mint data
         if let Some(client) = client.as_ref() {
@@ -687,24 +690,28 @@ impl MintMetadataCache {
             })?;
 
             // Get list of keysets
-            keysets_to_fetch.extend(
-                client
-                    .get_mint_keysets()
-                    .await
-                    .inspect_err(|err| {
-                        tracing::error!(
-                            "Failed to fetch keysets for {}: {}",
-                            escape_log_value(&self.mint_url),
-                            escape_log_value(err)
-                        );
-                    })?
-                    .keysets,
-            );
+            let keysets = client
+                .get_mint_keysets()
+                .await
+                .inspect_err(|err| {
+                    tracing::error!(
+                        "Failed to fetch keysets for {}: {}",
+                        escape_log_value(&self.mint_url),
+                        escape_log_value(err)
+                    );
+                })?
+                .keysets;
+
+            fetched_regular = Some(keysets.iter().map(|keyset| keyset.id).collect());
+            keysets_to_fetch.extend(keysets);
         }
 
         // Fetch auth keysets if auth client provided
         if let Some(auth_client) = auth_client.as_ref() {
-            keysets_to_fetch.extend(auth_client.get_mint_blind_auth_keysets().await?.keysets);
+            let keysets = auth_client.get_mint_blind_auth_keysets().await?.keysets;
+
+            fetched_auth = Some(keysets.iter().map(|keyset| keyset.id).collect());
+            keysets_to_fetch.extend(keysets);
         }
 
         tracing::debug!(
@@ -727,9 +734,7 @@ impl MintMetadataCache {
             }
 
             // Only fetch keys if we don't already have them cached
-            if let std::collections::hash_map::Entry::Vacant(e) =
-                new_metadata.keys.entry(keyset_info.id)
-            {
+            if let Entry::Vacant(e) = new_metadata.keys.entry(keyset_info.id) {
                 let keyset = if keyset_info.unit == CurrencyUnit::Auth {
                     auth_client
                         .as_ref()
@@ -750,6 +755,12 @@ impl MintMetadataCache {
                 e.insert(Arc::new(keyset.keys));
             }
         }
+
+        self.deactivate_missing_keysets(
+            &mut new_metadata,
+            fetched_regular.as_ref(),
+            fetched_auth.as_ref(),
+        );
 
         // Update freshness status based on what was fetched
         if client.is_some() {
@@ -777,8 +788,134 @@ impl MintMetadataCache {
         Ok(metadata_arc)
     }
 
+    /// Mark cached keysets the mint no longer lists as inactive.
+    ///
+    /// A keyset that disappears from `GET /v1/keysets` (mint reset, restored
+    /// backup, lost database) must not be picked for new outputs: the mint
+    /// answers anything built on it with error 12001, so leaving it active in
+    /// the cache makes every output-creating operation fail. The entry and its
+    /// keys stay cached, so proofs already issued under it remain decodable
+    /// and restorable.
+    ///
+    /// Auth keysets and all other units come from different endpoints and
+    /// different callers, so only the family actually fetched is swept. An
+    /// empty response is ignored, because a mint serving a momentarily empty
+    /// list would otherwise leave the wallet with nothing active.
+    fn deactivate_missing_keysets(
+        &self,
+        metadata: &mut MintMetadata,
+        fetched_regular: Option<&HashSet<Id>>,
+        fetched_auth: Option<&HashSet<Id>>,
+    ) {
+        for (id, keyset) in metadata.keysets.iter_mut() {
+            let fetched = match keyset.unit {
+                CurrencyUnit::Auth => fetched_auth,
+                _ => fetched_regular,
+            };
+
+            let Some(fetched) = fetched.filter(|ids| !ids.is_empty()) else {
+                continue;
+            };
+
+            if !keyset.active || fetched.contains(id) {
+                continue;
+            }
+
+            tracing::warn!(
+                "Keyset {} is no longer listed by {}, marking it inactive",
+                id,
+                escape_log_value(&self.mint_url)
+            );
+            Arc::make_mut(keyset).active = false;
+        }
+    }
+
     /// Get the mint URL this cache manages
     pub fn mint_url(&self) -> &MintUrl {
         &self.mint_url
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use super::*;
+
+    fn test_cache() -> MintMetadataCache {
+        MintMetadataCache::new(MintUrl::from_str("https://test-mint.example.com").unwrap())
+    }
+
+    fn active_keyset_info(id: Id, unit: CurrencyUnit) -> Arc<KeySetInfo> {
+        Arc::new(KeySetInfo {
+            id,
+            unit,
+            active: true,
+            input_fee_ppk: 0,
+            final_expiry: None,
+        })
+    }
+
+    fn sat_id() -> Id {
+        Id::from_str("0094d5a774c40a32").unwrap()
+    }
+
+    fn auth_id() -> Id {
+        Id::from_str("009a1f293253e41e").unwrap()
+    }
+
+    #[test]
+    fn deactivate_missing_keysets_only_sweeps_the_fetched_family() {
+        let cache = test_cache();
+        let mut metadata = MintMetadata::default();
+        metadata
+            .keysets
+            .insert(sat_id(), active_keyset_info(sat_id(), CurrencyUnit::Sat));
+        metadata
+            .keysets
+            .insert(auth_id(), active_keyset_info(auth_id(), CurrencyUnit::Auth));
+
+        let other = HashSet::from([Id::from_str("00ad268c4d1f5826").unwrap()]);
+        cache.deactivate_missing_keysets(&mut metadata, Some(&other), None);
+
+        assert!(!metadata.keysets[&sat_id()].active);
+        assert!(
+            metadata.keysets[&auth_id()].active,
+            "a regular keyset fetch must not deactivate auth keysets"
+        );
+
+        cache.deactivate_missing_keysets(&mut metadata, None, Some(&other));
+
+        assert!(!metadata.keysets[&auth_id()].active);
+    }
+
+    #[test]
+    fn deactivate_missing_keysets_keeps_listed_keysets_active() {
+        let cache = test_cache();
+        let mut metadata = MintMetadata::default();
+        metadata
+            .keysets
+            .insert(sat_id(), active_keyset_info(sat_id(), CurrencyUnit::Sat));
+
+        let fetched = HashSet::from([sat_id()]);
+        cache.deactivate_missing_keysets(&mut metadata, Some(&fetched), None);
+
+        assert!(metadata.keysets[&sat_id()].active);
+    }
+
+    #[test]
+    fn deactivate_missing_keysets_ignores_empty_response() {
+        let cache = test_cache();
+        let mut metadata = MintMetadata::default();
+        metadata
+            .keysets
+            .insert(sat_id(), active_keyset_info(sat_id(), CurrencyUnit::Sat));
+
+        cache.deactivate_missing_keysets(&mut metadata, Some(&HashSet::new()), None);
+
+        assert!(
+            metadata.keysets[&sat_id()].active,
+            "an empty keyset list must not strand the wallet with nothing active"
+        );
     }
 }

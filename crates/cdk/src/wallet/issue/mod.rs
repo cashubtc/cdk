@@ -729,7 +729,7 @@ impl Wallet {
         amount_split_target: SplitTarget,
         spending_conditions: Option<SpendingConditions>,
     ) -> Result<Proofs, Error> {
-        self.retry_on_inactive_keyset(|| async {
+        self.retry_on_stale_keyset(|| async {
             let saga = MintSaga::new(self);
             let saga = saga
                 .prepare(
