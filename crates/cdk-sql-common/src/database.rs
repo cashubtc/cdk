@@ -3,9 +3,12 @@
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use cdk_common::database::Error;
 
+use crate::pool::{DatabasePool, PooledResource};
 use crate::stmt::{query, Column, Statement};
 
 /// Database Executor
@@ -56,6 +59,30 @@ where
     W: Debug + Deref<Target = DB> + DerefMut<Target = DB> + Send + Sync + 'static,
 {
     inner: Option<W>,
+    stale: Arc<AtomicBool>,
+}
+
+impl<DB, RM> ConnectionWithTransaction<DB, PooledResource<RM>>
+where
+    DB: DatabaseConnector + 'static,
+    RM: DatabasePool<Connection = DB> + 'static,
+{
+    /// Creates a transaction using the pooled connection's existing stale flag.
+    pub async fn new(inner: PooledResource<RM>) -> Result<Self, Error> {
+        // Own the connection before awaiting BEGIN: cancellation can leave the
+        // database operation running and it may still succeed. Drop must retain
+        // the connection until rollback completes before returning it to the pool.
+        let mut transaction = Self {
+            stale: inner.stale(),
+            inner: Some(inner),
+        };
+        let conn = transaction
+            .inner
+            .as_mut()
+            .ok_or(Error::Internal("Missing connection".to_owned()))?;
+        DB::Transaction::begin(conn.deref_mut()).await?;
+        Ok(transaction)
+    }
 }
 
 impl<DB, W> ConnectionWithTransaction<DB, W>
@@ -63,21 +90,16 @@ where
     DB: DatabaseConnector,
     W: Debug + Deref<Target = DB> + DerefMut<Target = DB> + Send + Sync + 'static,
 {
-    /// Creates a new transaction
-    pub async fn new(mut inner: W) -> Result<Self, Error> {
-        DB::Transaction::begin(inner.deref_mut()).await?;
-        Ok(Self { inner: Some(inner) })
-    }
-
     /// Commits the transaction consuming it and releasing the connection back to the pool (or
     /// disconnecting)
     pub async fn commit(mut self) -> Result<(), Error> {
-        let mut conn = self
+        let conn = self
             .inner
-            .take()
+            .as_mut()
             .ok_or(Error::Internal("Missing connection".to_owned()))?;
 
-        DB::Transaction::commit(&mut conn).await?;
+        DB::Transaction::commit(conn.deref_mut()).await?;
+        self.inner.take();
 
         Ok(())
     }
@@ -85,12 +107,13 @@ where
     /// Rollback the transaction consuming it and releasing the connection back to the pool (or
     /// disconnecting)
     pub async fn rollback(mut self) -> Result<(), Error> {
-        let mut conn = self
+        let conn = self
             .inner
-            .take()
+            .as_mut()
             .ok_or(Error::Internal("Missing connection".to_owned()))?;
 
-        DB::Transaction::rollback(&mut conn).await?;
+        DB::Transaction::rollback(conn.deref_mut()).await?;
+        self.inner.take();
 
         Ok(())
     }
@@ -102,10 +125,51 @@ where
     W: Debug + Deref<Target = DB> + DerefMut<Target = DB> + Send + Sync + 'static,
 {
     fn drop(&mut self) {
-        if let Some(mut conn) = self.inner.take() {
-            tokio::spawn(async move {
-                let _ = DB::Transaction::rollback(conn.deref_mut()).await;
-            });
+        if let Some(conn) = self.inner.take() {
+            // Construct before spawning so even an unpolled cleanup future
+            // owns the guard that fences failed or cancelled rollback.
+            let cleanup = RollbackGuard {
+                inner: Some(conn),
+                stale: self.stale.clone(),
+            };
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                runtime.spawn(cleanup.rollback());
+            }
+        }
+    }
+}
+
+struct RollbackGuard<DB, W>
+where
+    DB: DatabaseConnector + 'static,
+    W: Debug + Deref<Target = DB> + DerefMut<Target = DB> + Send + Sync + 'static,
+{
+    inner: Option<W>,
+    stale: Arc<AtomicBool>,
+}
+
+impl<DB, W> RollbackGuard<DB, W>
+where
+    DB: DatabaseConnector,
+    W: Debug + Deref<Target = DB> + DerefMut<Target = DB> + Send + Sync + 'static,
+{
+    async fn rollback(mut self) {
+        if let Some(conn) = self.inner.as_mut() {
+            if DB::Transaction::rollback(conn.deref_mut()).await.is_ok() {
+                self.inner.take();
+            }
+        }
+    }
+}
+
+impl<DB, W> Drop for RollbackGuard<DB, W>
+where
+    DB: DatabaseConnector,
+    W: Debug + Deref<Target = DB> + DerefMut<Target = DB> + Send + Sync + 'static,
+{
+    fn drop(&mut self) {
+        if self.inner.is_some() {
+            self.stale.store(true, Ordering::SeqCst);
         }
     }
 }
