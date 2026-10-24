@@ -28,6 +28,10 @@ where
     #[error("Timed out waiting for a resource")]
     Timeout,
 
+    /// Resource construction task failed
+    #[error("Resource construction task failed: {0}")]
+    Task(tokio::task::JoinError),
+
     /// Internal database error
     #[error(transparent)]
     Resource(#[from] E),
@@ -45,10 +49,10 @@ pub trait DatabaseConfig: Clone + Debug + Send + Sync {
 /// Trait to manage resources
 pub trait DatabasePool: Debug {
     /// The resource to be pooled
-    type Connection: DatabaseConnector;
+    type Connection: DatabaseConnector + 'static;
 
     /// The configuration that is needed in order to create the resource
-    type Config: DatabaseConfig;
+    type Config: DatabaseConfig + 'static;
 
     /// The error the resource may return when creating a new instance
     type Error: Debug + std::error::Error + Send + Sync + 'static;
@@ -139,19 +143,16 @@ where
                 let mut active_resource = self.pool.queue.lock().expect("active_resource");
                 active_resource.push((stale, resource));
             }
-
-            #[cfg(feature = "prometheus")]
-            {
-                METRICS.decrement_db_connections_active();
-
-                let duration = self.start_time.elapsed().as_secs_f64();
-
-                METRICS.record_db_operation(duration, "drop");
-            }
-
-            // The semaphore permit is dropped automatically after this,
-            // which wakes any async task waiting in `get()`.
         }
+
+        #[cfg(feature = "prometheus")]
+        {
+            METRICS.decrement_db_connections_active();
+            let duration = self.start_time.elapsed().as_secs_f64();
+            METRICS.record_db_operation(duration, "drop");
+        }
+        // The permit is released only after returning the resource or abandoning
+        // a failed constructor. A cancelled constructor still owns this loan.
     }
 }
 
@@ -177,7 +178,7 @@ where
 
 impl<RM> Pool<RM>
 where
-    RM: DatabasePool,
+    RM: DatabasePool + 'static,
 {
     /// Creates a new pool
     pub fn new(config: RM::Config) -> Arc<Self> {
@@ -228,50 +229,41 @@ where
         #[cfg(feature = "prometheus")]
         METRICS.increment_db_connections_active();
 
+        let mut loan = PooledResource {
+            resource: None,
+            pool: self.clone(),
+            _permit: permit,
+            #[cfg(feature = "prometheus")]
+            start_time: std::time::Instant::now(),
+        };
+
         // Briefly lock the idle queue to try to pop a non-stale connection.
         // This mutex is held for nanoseconds (just a Vec::pop).
         {
             let mut resources = match self.queue.lock() {
                 Ok(resources) => resources,
-                Err(_) => {
-                    #[cfg(feature = "prometheus")]
-                    METRICS.decrement_db_connections_active();
-                    return Err(Error::Poison);
-                }
+                Err(_) => return Err(Error::Poison),
             };
             while let Some((stale, resource)) = resources.pop() {
                 if !stale.load(Ordering::SeqCst) {
-                    return Ok(PooledResource {
-                        resource: Some((stale, resource)),
-                        pool: self.clone(),
-                        _permit: permit,
-                        #[cfg(feature = "prometheus")]
-                        start_time: std::time::Instant::now(),
-                    });
+                    loan.resource = Some((stale, resource));
+                    return Ok(loan);
                 }
                 // Stale connection — drop it and keep looking.
             }
         }
 
-        // No idle connection available — create a new one.
-        // The semaphore already guarantees we won't exceed max_size.
-        let stale: Arc<AtomicBool> = Arc::new(false.into());
-        match RM::new_resource(&self.config, stale.clone(), timeout) {
-            Ok(new_resource) => Ok(PooledResource {
-                resource: Some((stale, new_resource)),
-                pool: self.clone(),
-                _permit: permit,
-                #[cfg(feature = "prometheus")]
-                start_time: std::time::Instant::now(),
-            }),
-            Err(e) => {
-                #[cfg(feature = "prometheus")]
-                METRICS.decrement_db_connections_active();
-
-                // Permit is dropped here, releasing the slot back to the semaphore.
-                Err(e)
-            }
-        }
+        // Opening a connection and configuring its journal can block too. The
+        // worker owns the permit, including after cancellation of this await.
+        let config = self.config.clone();
+        tokio::task::spawn_blocking(move || {
+            let stale = Arc::new(AtomicBool::new(false));
+            let connection = RM::new_resource(&config, stale.clone(), timeout)?;
+            loan.resource = Some((stale, connection));
+            Ok(loan)
+        })
+        .await
+        .map_err(Error::Task)?
     }
 }
 
