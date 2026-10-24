@@ -163,7 +163,21 @@ exclude_re = [
 
     # get_pubkeys_and_required_sigs does not currently surface reachable NUT14
     # errors through verify_htlc; malformed preimages are checked later.
-    "crates/cashu/src/nuts/nut14/mod.rs:139:.*delete match arm super::nut10::Error::NUT14",
+    "crates/cashu/src/nuts/nut14/mod.rs:.*delete match arm super::nut10::Error::NUT14.* in Proof::verify_htlc",
+
+    # Direct delegation to the UR library; no independent CDK behavior.
+    "crates/cashu/src/nuts/nut16.rs:.*TokenUrEncoder::current_index ->",
+    "crates/cashu/src/nuts/nut16.rs:.*TokenUrDecoder::fragment_count ->",
+
+    # Diagnostic formatting only.
+    "crates/cashu/src/nuts/nut16.rs:.*<impl fmt::Debug for TokenUrEncoder>::fmt",
+    "crates/cashu/src/nuts/nut16.rs:.*<impl fmt::Debug for TokenUrDecoder>::fmt",
+
+    # The single-part payload guard cannot reach its one-MiB boundary: receive
+    # first limits the encoded part to 4,296 bytes, and minimal bytewords decode
+    # two characters per byte. The == and >= substitutions are equivalent here.
+    # Keep the line anchor to avoid excluding the reachable encoded-part guard.
+    "crates/cashu/src/nuts/nut16.rs:272:.*replace > with (==|>=) in TokenUrDecoder::receive",
 
     # Keys/MintKeys trivial delegation - Deref/DerefMut/keys() just return &self.0
     "crates/cashu/src/nuts/nut01/mod.rs:.*impl Deref for Keys.*deref",
