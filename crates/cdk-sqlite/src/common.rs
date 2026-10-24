@@ -66,7 +66,7 @@ impl DatabasePool for SqliteConnectionManager {
 
     fn new_resource(
         config: &Self::Config,
-        _stale: Arc<AtomicBool>,
+        stale: Arc<AtomicBool>,
         _timeout: Duration,
     ) -> Result<Self::Connection, pool::Error<Self::Error>> {
         let in_memory = config.path.is_none();
@@ -116,7 +116,7 @@ impl DatabasePool for SqliteConnectionManager {
             config.in_memory_opened.store(true, Ordering::SeqCst);
         }
 
-        Ok(async_sqlite::AsyncSqlite::new(conn))
+        Ok(async_sqlite::AsyncSqlite::new(conn, stale))
     }
 }
 
