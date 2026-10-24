@@ -1,4 +1,8 @@
 //! Simple SQLite
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread;
+
 use cdk_common::database::Error;
 use cdk_sql_common::database::{DatabaseConnector, DatabaseExecutor, DatabaseTransaction};
 use cdk_sql_common::run_db_operation_sync;
@@ -12,12 +16,33 @@ use crate::common::{from_sqlite, to_sqlite};
 #[derive(Debug)]
 pub struct AsyncSqlite {
     inner: Mutex<Connection>,
+    stale: Arc<AtomicBool>,
+    in_memory: bool,
 }
 
 impl AsyncSqlite {
-    pub fn new(inner: Connection) -> Self {
+    /// Wraps a connection. `stale` is the pool's flag for this connection, and
+    /// `in_memory` says whether the database lives only inside it.
+    pub fn new(inner: Connection, stale: Arc<AtomicBool>, in_memory: bool) -> Self {
         Self {
             inner: inner.into(),
+            stale,
+            in_memory,
+        }
+    }
+}
+
+impl Drop for AsyncSqlite {
+    /// A stale connection is discarded instead of being returned to the pool. An
+    /// in-memory database lives only in that connection, so discarding it loses
+    /// every write with no error to trace it back to; fail loudly instead. Skipped
+    /// while already unwinding, where a second panic would abort and hide the first.
+    fn drop(&mut self) {
+        if self.in_memory && self.stale.load(Ordering::SeqCst) && !thread::panicking() {
+            panic!(
+                "in-memory SQLite connection discarded as stale: the database and \
+                 every write to it are gone"
+            );
         }
     }
 }
@@ -211,5 +236,34 @@ impl DatabaseExecutor for AsyncSqlite {
         let conn = self.inner.lock().await;
 
         run_db_operation_sync(&sql, || conn.execute_batch(&sql), to_sqlite_error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+
+    use rusqlite::Connection;
+
+    use super::AsyncSqlite;
+
+    #[test]
+    #[should_panic(expected = "discarded as stale")]
+    fn stale_in_memory_connection_panics_on_drop() {
+        let conn = Connection::open_in_memory().expect("in-memory connection");
+        let _ = AsyncSqlite::new(conn, Arc::new(AtomicBool::new(true)), true);
+    }
+
+    #[test]
+    fn healthy_in_memory_connection_drops_quietly() {
+        let conn = Connection::open_in_memory().expect("in-memory connection");
+        let _ = AsyncSqlite::new(conn, Arc::new(AtomicBool::new(false)), true);
+    }
+
+    #[test]
+    fn stale_file_backed_connection_drops_quietly() {
+        let conn = Connection::open_in_memory().expect("in-memory connection");
+        let _ = AsyncSqlite::new(conn, Arc::new(AtomicBool::new(true)), false);
     }
 }
