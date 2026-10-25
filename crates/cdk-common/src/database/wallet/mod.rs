@@ -99,10 +99,54 @@ where
         removed_ys: Vec<PublicKey>,
     ) -> Result<(), Err>;
 
+    /// Atomically persist a validated general-restoration batch.
+    ///
+    /// For every supplied receive saga ID/version, require a matching
+    /// `SwapRequested` receive, clear its atomic-settlement provenance, and
+    /// increment its version. Return false without writes on any conflict.
+    /// Insert missing non-Spent proofs without resetting existing states;
+    /// a mint Pending result may restrict an existing Unspent proof to Pending.
+    /// never reinsert `persisted_ys` consumed since the caller's snapshot.
+    /// Remove proofs reported Spent. Saga invalidation and all proof changes
+    /// must commit together, including on cancellation or error. Advance
+    /// keyset counters past every supplied derivation index in that transaction.
+    /// Before any writes, validate all `saga_versions` (including ProofsPending
+    /// receives) and lock/compare `keyset_counter` for `keyset_id`. The caller
+    /// reads that counter before the saga snapshot. A conflict returns false
+    /// without writes, including when an intervening operation has settled.
+    async fn restore_proofs(
+        &self,
+        proofs: Vec<ProofInfo>,
+        persisted_ys: Vec<PublicKey>,
+        receive_sagas: HashMap<uuid::Uuid, u32>,
+        saga_versions: HashMap<uuid::Uuid, u32>,
+        keyset_id: Id,
+        keyset_counter: u32,
+    ) -> Result<bool, Err>;
+
+    /// Atomically finish a receive after its complete outputs have been validated.
+    ///
+    /// Only apply when the receive saga is still `SwapRequested` with `version`
+    /// and its incoming transaction is pending or completed. Insert missing outputs without
+    /// overwriting existing proofs, remove the input proofs owned by this saga, mark the transaction
+    /// completed, and delete the saga in the same transaction.
+    /// `persisted_ys` identifies previously persisted outputs: do not reinsert
+    /// these proofs if another operation has consumed them since they were read.
+    /// Return `false` without writes if the saga or incoming transaction no longer matches.
+    /// No partial settlement may become visible, including on error.
+    async fn finalize_receive(
+        &self,
+        saga_id: &uuid::Uuid,
+        version: u32,
+        outputs: Vec<ProofInfo>,
+        persisted_ys: Vec<PublicKey>,
+    ) -> Result<bool, Err>;
+
     /// Update proofs state in storage
     async fn update_proofs_state(&self, ys: Vec<PublicKey>, state: State) -> Result<(), Err>;
 
-    /// Add transaction to storage
+    /// Add transaction to storage. An upsert must not change the status of an
+    /// existing terminal transaction.
     async fn add_transaction(&self, transaction: Transaction) -> Result<(), Err>;
 
     /// Update mint url

@@ -1743,6 +1743,383 @@ where
     assert_eq!(unspent[0].y, proof_info_2.y);
 }
 
+/// Receive finalization is conditional, atomic, and preserves existing proof states.
+pub async fn finalize_receive_is_atomic<DB>(db: DB)
+where
+    DB: Database<Error>,
+{
+    use crate::wallet::{ReceiveOperationData, ReceiveSagaState};
+
+    let saga = WalletSaga::new(
+        uuid::Uuid::new_v4(),
+        WalletSagaState::Receive(ReceiveSagaState::SwapRequested),
+        Amount::from(100),
+        test_mint_url(),
+        CurrencyUnit::Sat,
+        OperationData::Receive(ReceiveOperationData {
+            atomic_settlement: false,
+            token: None,
+            counter_start: None,
+            counter_end: None,
+            amount: Some(100.into()),
+            blinded_messages: None,
+        }),
+    );
+    let mut transaction = test_transaction(test_mint_url(), TransactionDirection::Incoming);
+    transaction.saga_id = Some(saga.id);
+    transaction.status = TransactionStatus::Pending;
+    db.add_transaction(transaction.clone()).await.unwrap();
+    db.add_saga(saga.clone()).await.unwrap();
+    let input = test_proof_info(test_keyset_id(), 100, test_mint_url());
+    db.update_proofs(vec![input.clone()], vec![]).await.unwrap();
+    db.reserve_proofs(vec![input.y], &saga.id).await.unwrap();
+    let first = test_proof_info(test_keyset_id(), 64, test_mint_url());
+    let mut existing = test_proof_info(test_keyset_id(), 36, test_mint_url());
+    existing.state = State::Spent;
+    db.update_proofs(vec![existing.clone()], vec![])
+        .await
+        .unwrap();
+    let mut restored = existing.clone();
+    restored.state = State::Unspent;
+    let outputs = vec![first.clone(), restored];
+    assert!(!db
+        .finalize_receive(&saga.id, saga.version + 1, outputs.clone(), vec![])
+        .await
+        .unwrap());
+    assert!(!db
+        .finalize_receive(&saga.id, saga.version, vec![first.clone()], vec![])
+        .await
+        .unwrap());
+    assert!(db.get_saga(&saga.id).await.unwrap().is_some());
+    assert_eq!(db.get_reserved_proofs(&saga.id).await.unwrap().len(), 1);
+    assert!(db.get_proofs_by_ys(vec![first.y]).await.unwrap().is_empty());
+    assert_eq!(
+        db.get_transaction(transaction.id())
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        TransactionStatus::Pending
+    );
+    let (first_completion, second_completion) = tokio::join!(
+        db.finalize_receive(&saga.id, saga.version, outputs.clone(), vec![]),
+        db.finalize_receive(&saga.id, saga.version, outputs.clone(), vec![]),
+    );
+    assert_ne!(first_completion.unwrap(), second_completion.unwrap());
+    assert!(db.get_saga(&saga.id).await.unwrap().is_none());
+    assert!(db.get_proofs_by_ys(vec![input.y]).await.unwrap().is_empty());
+    assert_eq!(
+        db.get_proofs_by_ys(vec![first.y]).await.unwrap(),
+        vec![first]
+    );
+    assert_eq!(
+        db.get_proofs_by_ys(vec![existing.y]).await.unwrap(),
+        vec![existing.clone()]
+    );
+    assert_eq!(
+        db.get_transaction(transaction.id())
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        TransactionStatus::Completed
+    );
+    assert!(!db
+        .finalize_receive(&saga.id, saga.version, outputs, vec![])
+        .await
+        .unwrap());
+    assert_eq!(
+        db.get_proofs_by_ys(vec![existing.y]).await.unwrap(),
+        vec![existing]
+    );
+
+    let mut stale = transaction.clone();
+    stale.status = TransactionStatus::Pending;
+    stale.amount = Amount::from(1);
+    db.add_transaction(stale).await.unwrap();
+    let stored = db.get_transaction(transaction.id()).await.unwrap().unwrap();
+    assert_eq!(stored.status, TransactionStatus::Completed);
+    assert_eq!(stored.amount, Amount::from(100));
+
+    let mut legacy_saga = saga.clone();
+    legacy_saga.id = uuid::Uuid::new_v4();
+    transaction.saga_id = Some(legacy_saga.id);
+    transaction.status = TransactionStatus::Completed;
+    db.add_transaction(transaction).await.unwrap();
+    db.add_saga(legacy_saga.clone()).await.unwrap();
+    let consumed = test_proof_info(test_keyset_id(), 36, test_mint_url());
+    let fresh = test_proof_info(test_keyset_id(), 64, test_mint_url());
+    assert!(db
+        .finalize_receive(
+            &legacy_saga.id,
+            legacy_saga.version,
+            vec![consumed.clone(), fresh.clone()],
+            vec![consumed.y]
+        )
+        .await
+        .unwrap());
+    assert!(db
+        .get_proofs_by_ys(vec![consumed.y])
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        db.get_proofs_by_ys(vec![fresh.y]).await.unwrap(),
+        vec![fresh]
+    );
+}
+
+/// General restoration atomically invalidates receive replay authority.
+pub async fn restore_proofs_invalidates_receive<DB>(db: DB)
+where
+    DB: Database<Error>,
+{
+    use crate::wallet::{ReceiveOperationData, ReceiveSagaState};
+    let saga = WalletSaga::new(
+        uuid::Uuid::from_u128(1),
+        WalletSagaState::Receive(ReceiveSagaState::SwapRequested),
+        100.into(),
+        test_mint_url(),
+        CurrencyUnit::Sat,
+        OperationData::Receive(ReceiveOperationData {
+            atomic_settlement: true,
+            token: None,
+            counter_start: Some(0),
+            counter_end: Some(2),
+            amount: Some(100.into()),
+            blinded_messages: None,
+        }),
+    );
+    db.add_saga(saga.clone()).await.unwrap();
+    let mut transaction = test_transaction(test_mint_url(), TransactionDirection::Incoming);
+    transaction.saga_id = Some(saga.id);
+    transaction.status = TransactionStatus::Pending;
+    db.add_transaction(transaction.clone()).await.unwrap();
+    let first = test_proof_info(test_keyset_id(), 64, test_mint_url()).with_derivation_index(5);
+    let mut spent = test_proof_info(test_keyset_id(), 36, test_mint_url()).with_derivation_index(6);
+    spent.state = State::Spent;
+    db.update_proofs(vec![spent.clone()], vec![]).await.unwrap();
+    let mut restored_spent = spent.clone();
+    restored_spent.state = State::Unspent;
+    let outputs = vec![first.clone(), restored_spent];
+    let mut preparing = saga.clone();
+    preparing.id = uuid::Uuid::from_u128(3);
+    preparing.state = WalletSagaState::Receive(ReceiveSagaState::ProofsPending);
+    db.add_saga(preparing.clone()).await.unwrap();
+    let old_version = preparing.version;
+    preparing.update_state(WalletSagaState::Receive(ReceiveSagaState::SwapRequested));
+    assert!(db.update_saga(preparing.clone()).await.unwrap());
+    assert!(!db
+        .restore_proofs(
+            outputs.clone(),
+            vec![],
+            std::collections::HashMap::from([(saga.id, saga.version)]),
+            std::collections::HashMap::from([(saga.id, saga.version), (preparing.id, old_version)]),
+            test_keyset_id(),
+            0
+        )
+        .await
+        .unwrap());
+    assert_eq!(db.get_saga(&saga.id).await.unwrap(), Some(saga.clone()));
+    assert_eq!(
+        db.get_saga(&preparing.id).await.unwrap(),
+        Some(preparing.clone())
+    );
+    assert!(db.get_proofs_by_ys(vec![first.y]).await.unwrap().is_empty());
+    db.delete_saga(&preparing.id).await.unwrap();
+    assert!(!db
+        .restore_proofs(
+            outputs.clone(),
+            vec![],
+            std::collections::HashMap::from([(saga.id, saga.version)]),
+            std::collections::HashMap::from([(preparing.id, preparing.version)]),
+            test_keyset_id(),
+            0
+        )
+        .await
+        .unwrap());
+    assert!(!db
+        .restore_proofs(
+            outputs.clone(),
+            vec![],
+            std::collections::HashMap::new(),
+            std::collections::HashMap::from([(saga.id, saga.version + 1)]),
+            test_keyset_id(),
+            0
+        )
+        .await
+        .unwrap());
+    assert!(!db
+        .restore_proofs(
+            outputs.clone(),
+            vec![],
+            std::collections::HashMap::from([(saga.id, saga.version)]),
+            std::collections::HashMap::from([(saga.id, saga.version)]),
+            test_keyset_id(),
+            1
+        )
+        .await
+        .unwrap());
+    assert_eq!(db.get_saga(&saga.id).await.unwrap(), Some(saga.clone()));
+    assert!(db.get_proofs_by_ys(vec![first.y]).await.unwrap().is_empty());
+    let mut invalid = std::collections::HashMap::from([(saga.id, saga.version)]);
+    invalid.insert(uuid::Uuid::from_u128(2), 0);
+    assert!(!db
+        .restore_proofs(
+            outputs.clone(),
+            vec![],
+            invalid,
+            std::collections::HashMap::new(),
+            test_keyset_id(),
+            0
+        )
+        .await
+        .unwrap());
+    assert_eq!(db.get_saga(&saga.id).await.unwrap(), Some(saga.clone()));
+    assert!(db.get_proofs_by_ys(vec![first.y]).await.unwrap().is_empty());
+    assert_eq!(
+        db.increment_keyset_counter(&test_keyset_id(), 0)
+            .await
+            .unwrap(),
+        0
+    );
+    assert!(db
+        .restore_proofs(
+            outputs.clone(),
+            vec![],
+            std::collections::HashMap::from([(saga.id, saga.version)]),
+            std::collections::HashMap::from([(saga.id, saga.version)]),
+            test_keyset_id(),
+            0
+        )
+        .await
+        .unwrap());
+    let stored = db.get_saga(&saga.id).await.unwrap().unwrap();
+    assert_eq!(
+        db.increment_keyset_counter(&test_keyset_id(), 0)
+            .await
+            .unwrap(),
+        7
+    );
+    assert_eq!(
+        db.increment_keyset_counter(&test_keyset_id(), 4)
+            .await
+            .unwrap(),
+        11
+    );
+    assert_eq!(stored.version, saga.version + 1);
+    assert!(matches!(stored.data, OperationData::Receive(data) if !data.atomic_settlement));
+    assert_eq!(
+        db.get_proofs_by_ys(vec![spent.y]).await.unwrap(),
+        vec![spent.clone()]
+    );
+    assert!(!db
+        .finalize_receive(&saga.id, saga.version, outputs.clone(), vec![])
+        .await
+        .unwrap());
+    let mut pending = first.clone();
+    pending.state = State::Pending;
+    let mut still_spent = spent.clone();
+    still_spent.state = State::Pending;
+    assert!(db
+        .restore_proofs(
+            vec![pending.clone(), still_spent],
+            vec![],
+            std::collections::HashMap::new(),
+            std::collections::HashMap::new(),
+            test_keyset_id(),
+            11
+        )
+        .await
+        .unwrap());
+    assert_eq!(
+        db.get_proofs_by_ys(vec![first.y]).await.unwrap(),
+        vec![pending]
+    );
+    assert_eq!(
+        db.increment_keyset_counter(&test_keyset_id(), 0)
+            .await
+            .unwrap(),
+        11
+    );
+    assert_eq!(
+        db.get_proofs_by_ys(vec![spent.y]).await.unwrap(),
+        vec![spent.clone()]
+    );
+    db.update_proofs(vec![], vec![first.y]).await.unwrap();
+    assert!(db
+        .restore_proofs(
+            outputs.clone(),
+            vec![first.y],
+            std::collections::HashMap::new(),
+            std::collections::HashMap::new(),
+            test_keyset_id(),
+            11
+        )
+        .await
+        .unwrap());
+    assert!(db.get_proofs_by_ys(vec![first.y]).await.unwrap().is_empty());
+    let mut consumed = first;
+    consumed.state = State::Spent;
+    assert!(db
+        .restore_proofs(
+            vec![consumed],
+            vec![],
+            std::collections::HashMap::new(),
+            std::collections::HashMap::new(),
+            test_keyset_id(),
+            11
+        )
+        .await
+        .unwrap());
+    assert_eq!(
+        db.get_transaction(transaction.id())
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        TransactionStatus::Pending
+    );
+    db.delete_saga(&saga.id).await.unwrap();
+    assert!(!db
+        .restore_proofs(
+            outputs.clone(),
+            vec![],
+            std::collections::HashMap::from([(saga.id, stored.version)]),
+            std::collections::HashMap::new(),
+            test_keyset_id(),
+            11
+        )
+        .await
+        .unwrap());
+    let mut concurrent_saga = saga.clone();
+    concurrent_saga.id = uuid::Uuid::new_v4();
+    db.add_saga(concurrent_saga.clone()).await.unwrap();
+    transaction.saga_id = Some(concurrent_saga.id);
+    db.add_transaction(transaction).await.unwrap();
+    let (restore, settle) = tokio::join!(
+        db.restore_proofs(
+            outputs.clone(),
+            vec![],
+            std::collections::HashMap::from([(concurrent_saga.id, concurrent_saga.version)]),
+            std::collections::HashMap::from([(concurrent_saga.id, concurrent_saga.version)]),
+            test_keyset_id(),
+            11
+        ),
+        db.finalize_receive(
+            &concurrent_saga.id,
+            concurrent_saga.version,
+            outputs,
+            vec![]
+        ),
+    );
+    assert_ne!(restore.unwrap(), settle.unwrap());
+    assert_eq!(
+        db.get_proofs_by_ys(vec![spent.y]).await.unwrap(),
+        vec![spent]
+    );
+}
+
 /// Unit test that is expected to be passed for a correct wallet database implementation
 #[macro_export]
 macro_rules! wallet_db_test {
@@ -1799,7 +2176,9 @@ macro_rules! wallet_db_test {
             release_proofs_preserves_spent,
             get_reserved_proofs,
             reserve_proofs_already_reserved,
-            reserve_proofs_is_atomic
+            reserve_proofs_is_atomic,
+            finalize_receive_is_atomic,
+            restore_proofs_invalidates_receive
         );
     };
     ($make_db_fn:ident, $($name:ident),+ $(,)?) => {

@@ -29,8 +29,8 @@ use crate::mint_url::MintUrl;
 use crate::nuts::nut00::token::Token;
 use crate::nuts::nut17::Kind;
 use crate::nuts::{
-    nut10, CurrencyUnit, Id, Keys, MintInfo, MintQuoteState, PreMintSecrets, Proofs,
-    RestoreRequest, SpendingConditions, State,
+    nut10, CheckStateRequest, CurrencyUnit, Id, Keys, MintInfo, MintQuoteState, PreMintSecrets,
+    Proofs, RestoreRequest, SpendingConditions, State,
 };
 use crate::wallet::blind_signature::{
     validate_mint_response_signatures, SignatureAmountValidation,
@@ -713,13 +713,42 @@ impl Wallet {
             let keys = self.keyset(keyset.id).await?.keys;
             let mut empty_batch: u32 = 0;
             let mut start_counter: u32 = 0;
-            // Track the highest counter value that had a signature
-            let mut highest_counter: Option<u32> = None;
 
             while empty_batch < max_gap {
                 let batch_end = start_counter.saturating_add(batch_size);
                 let premint_secrets =
                     PreMintSecrets::restore_batch(keyset.id, &self.seed, start_counter, batch_end)?;
+                let keyset_counter = self
+                    .localstore
+                    .increment_keyset_counter(&keyset.id, 0)
+                    .await?;
+                let receive_sagas: Vec<_> = self
+                    .localstore
+                    .get_incomplete_sagas()
+                    .await?
+                    .into_iter()
+                    .filter(|saga| {
+                        saga.mint_url == self.mint_url
+                            && saga.unit == self.unit
+                            && matches!(saga.state, cdk_common::wallet::WalletSagaState::Receive(_))
+                    })
+                    .collect();
+                let saga_versions = receive_sagas
+                    .iter()
+                    .map(|saga| (saga.id, saga.version))
+                    .collect();
+                let batch_ys = premint_secrets
+                    .secrets
+                    .iter()
+                    .map(|p| crate::dhke::hash_to_curve(&p.secret.to_bytes()))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let persisted_ys = self
+                    .localstore
+                    .get_proofs_by_ys(batch_ys)
+                    .await?
+                    .into_iter()
+                    .map(|p| p.y)
+                    .collect();
 
                 tracing::debug!(
                     "Attempting to restore counter {}-{} for mint {} keyset {}",
@@ -776,13 +805,6 @@ impl Wallet {
                     })
                     .collect();
 
-                // Update highest counter based on matched indices
-                if let Some(&(max_idx, _, _)) = matched_secrets.last() {
-                    let counter_value = start_counter + max_idx as u32;
-                    highest_counter =
-                        Some(highest_counter.map_or(counter_value, |c| c.max(counter_value)));
-                }
-
                 // the response outputs and premint secrets should be the same after filtering
                 // blinded messages the mint did not have signatures for
                 if response.outputs.len() != matched_secrets.len() {
@@ -837,14 +859,41 @@ impl Wallet {
 
                 tracing::debug!("Restored {} proofs", proofs.len());
 
-                let states = self.check_proofs_spent(proofs.clone()).await?;
+                let ys = proofs.ys()?;
+                let response_states = self
+                    .client
+                    .post_check_state(CheckStateRequest { ys: ys.clone() })
+                    .await?;
+                let mut states = HashMap::new();
+                for state in response_states.states {
+                    if !ys.contains(&state.y)
+                        || !matches!(state.state, State::Unspent | State::Pending | State::Spent)
+                        || states.insert(state.y, state.state).is_some()
+                    {
+                        return Err(Error::InvalidMintResponse(
+                            "invalid restore proof states".to_owned(),
+                        ));
+                    }
+                }
+                if states.len() != ys.len() {
+                    return Err(Error::InvalidMintResponse(
+                        "incomplete restore proof states".to_owned(),
+                    ));
+                }
+                let receive_sagas = receive_sagas.into_iter().filter(|saga| {
+                    saga.mint_url == self.mint_url && saga.unit == self.unit
+                        && saga.state == cdk_common::wallet::WalletSagaState::Receive(cdk_common::wallet::ReceiveSagaState::SwapRequested)
+                        && matches!(&saga.data, cdk_common::wallet::OperationData::Receive(data)
+                            if data.blinded_messages.as_ref().is_some_and(|outputs| outputs.iter().any(|output|
+                                response.outputs.iter().any(|restored| restored.blinded_secret == output.blinded_secret))))
+                }).map(|saga| (saga.id, saga.version)).collect();
 
                 let (unspent_proofs, updated_restored) = proofs
                     .into_iter()
-                    .zip(states)
+                    .zip(ys.iter().map(|y| states[y]))
                     .enumerate()
                     .filter_map(|(index, (p, state))| {
-                        ProofInfo::new(p, self.mint_url.clone(), state.state, keyset.unit.clone())
+                        ProofInfo::new(p, self.mint_url.clone(), state, keyset.unit.clone())
                             .ok()
                             .map(|proof_info| {
                                 proof_info.with_derivation_index(
@@ -861,6 +910,7 @@ impl Wallet {
                                         .spent
                                         .checked_add(proof_info.proof.amount)
                                         .ok_or(Error::AmountOverflow)?;
+                                    proofs.push(proof_info);
                                 }
                                 State::Unspent => {
                                     restored_result.unspent = restored_result
@@ -886,23 +936,23 @@ impl Wallet {
 
                 restored_result = updated_restored;
 
-                self.localstore
-                    .update_proofs(unspent_proofs, vec![])
-                    .await?;
+                if !self
+                    .localstore
+                    .restore_proofs(
+                        unspent_proofs,
+                        persisted_ys,
+                        receive_sagas,
+                        saga_versions,
+                        keyset.id,
+                        keyset_counter,
+                    )
+                    .await?
+                {
+                    return Err(Error::ConcurrentUpdate);
+                }
 
                 empty_batch = 0;
                 start_counter = start_counter.saturating_add(batch_size);
-            }
-
-            if let Some(highest) = highest_counter {
-                self.localstore
-                    .increment_keyset_counter(&keyset.id, highest + 1)
-                    .await?;
-                tracing::debug!(
-                    "Set keyset {} counter to {} after restore",
-                    keyset.id,
-                    highest + 1
-                );
             }
         }
         Ok(restored_result)

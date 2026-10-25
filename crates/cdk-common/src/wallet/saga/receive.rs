@@ -40,6 +40,12 @@ impl std::str::FromStr for ReceiveSagaState {
 /// Operation-specific data for Receive operations
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReceiveOperationData {
+    /// Outputs settle atomically with the transaction and saga cleanup.
+    /// Independent restoration clears this flag in its proof transaction and
+    /// advances the saga version before those outputs can be used.
+    /// Legacy records without this field require conservative recovery.
+    #[serde(default)]
+    pub atomic_settlement: bool,
     /// Token to receive
     pub token: Option<String>,
     /// Derivation counter start
@@ -59,6 +65,7 @@ pub struct ReceiveOperationData {
 impl fmt::Debug for ReceiveOperationData {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ReceiveOperationData")
+            .field("atomic_settlement", &self.atomic_settlement)
             .field("token", &self.token.as_ref().map(|_| "[redacted]"))
             .field("counter_start", &self.counter_start)
             .field("counter_end", &self.counter_end)
@@ -84,10 +91,28 @@ mod tests {
 
     const TOKEN_MARKER: &str = "cashuB_super_secret_bearer_token_marker";
 
+    #[test]
+    fn receive_atomic_settlement_provenance_is_backward_compatible() {
+        let legacy: ReceiveOperationData = serde_json::from_value(serde_json::json!({
+            "token": null, "counter_start": 0, "counter_end": 2,
+            "amount": null, "blinded_messages": null
+        }))
+        .unwrap();
+        assert!(!legacy.atomic_settlement);
+        let mut current = legacy;
+        current.atomic_settlement = true;
+        let encoded = serde_json::to_string(&current).unwrap();
+        assert_eq!(
+            serde_json::from_str::<ReceiveOperationData>(&encoded).unwrap(),
+            current
+        );
+    }
+
     #[allow(clippy::use_debug)]
     #[test]
     fn receive_operation_data_and_wallet_saga_debug_redact_token() {
         let data = ReceiveOperationData {
+            atomic_settlement: false,
             token: Some(TOKEN_MARKER.to_string()),
             counter_start: Some(4),
             counter_end: Some(5),

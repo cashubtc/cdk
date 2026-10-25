@@ -31,6 +31,105 @@ use crate::{
     column_as_nullable_string, column_as_number, column_as_string, unpack_into,
 };
 
+async fn write_proofs<T>(
+    conn: &T,
+    added: Vec<ProofInfo>,
+    removed_ys: Vec<PublicKey>,
+    overwrite: bool,
+) -> Result<(), Error>
+where
+    T: DatabaseExecutor,
+{
+    for proof in added {
+        query(
+                r#"
+    INSERT INTO proof
+    (y, mint_url, state, spending_condition, unit, amount, keyset_id, secret, c, witness, dleq_e, dleq_s, dleq_r, used_by_operation, created_by_operation, derivation_index, p2pk_e)
+    VALUES
+    (:y, :mint_url, :state, :spending_condition, :unit, :amount, :keyset_id, :secret, :c, :witness, :dleq_e, :dleq_s, :dleq_r, :used_by_operation, :created_by_operation, :derivation_index, :p2pk_e)
+    ON CONFLICT(y) DO UPDATE SET
+        mint_url = excluded.mint_url,
+        state = excluded.state,
+        spending_condition = excluded.spending_condition,
+        unit = excluded.unit,
+        amount = excluded.amount,
+        keyset_id = excluded.keyset_id,
+        secret = excluded.secret,
+        c = excluded.c,
+        witness = excluded.witness,
+        dleq_e = excluded.dleq_e,
+        dleq_s = excluded.dleq_s,
+        dleq_r = excluded.dleq_r,
+        used_by_operation = excluded.used_by_operation,
+        created_by_operation = excluded.created_by_operation,
+        derivation_index = COALESCE(excluded.derivation_index, proof.derivation_index),
+        p2pk_e = excluded.p2pk_e
+    WHERE :overwrite
+    ;
+            "#,
+            )?
+        .bind("overwrite", overwrite)
+            .bind("y", proof.y.to_bytes().to_vec())
+            .bind("mint_url", proof.mint_url.to_string())
+            .bind("state", proof.state.to_string())
+            .bind(
+                "spending_condition",
+                proof
+                    .spending_condition
+                    .map(|s| serde_json::to_string(&s).ok()),
+            )
+            .bind("unit", proof.unit.to_string())
+            .bind("amount", i64::try_from(u64::from(proof.proof.amount))?)
+            .bind("keyset_id", proof.proof.keyset_id.to_string())
+            .bind("secret", proof.proof.secret.to_string())
+            .bind("c", proof.proof.c.to_bytes().to_vec())
+            .bind(
+                "witness",
+                proof
+                    .proof
+                    .witness
+                    .and_then(|w| serde_json::to_string(&w).ok()),
+            )
+            .bind(
+                "dleq_e",
+                proof.proof.dleq.as_ref().map(|dleq| dleq.e.to_secret_bytes().to_vec()),
+            )
+            .bind(
+                "dleq_s",
+                proof.proof.dleq.as_ref().map(|dleq| dleq.s.to_secret_bytes().to_vec()),
+            )
+            .bind(
+                "dleq_r",
+                proof.proof.dleq.as_ref().map(|dleq| dleq.r.to_secret_bytes().to_vec()),
+            )
+            .bind("used_by_operation", proof.used_by_operation.map(|id| id.to_string()))
+            .bind("created_by_operation", proof.created_by_operation.map(|id| id.to_string()))
+            .bind("derivation_index", proof.derivation_index.map(i64::from))
+            .bind(
+                "p2pk_e",
+                proof
+                    .proof
+                    .p2pk_e
+                    .as_ref()
+                    .map(|pk| pk.to_bytes().to_vec()),
+            )
+            .execute(conn)
+            .await?;
+    }
+
+    if !removed_ys.is_empty() {
+        query(r#"DELETE FROM proof WHERE y IN (:ys)"#)?
+            .bind_vec(
+                "ys",
+                removed_ys.iter().map(|y| y.to_bytes().to_vec()).collect(),
+            )?
+            .execute(conn)
+            .await?;
+    }
+
+    Ok(())
+}
+
 #[rustfmt::skip]
 mod migrations {
     include!(concat!(env!("OUT_DIR"), "/migrations_wallet.rs"));
@@ -769,94 +868,184 @@ where
             .map_err(|e| Error::Database(Box::new(e)))?;
         let tx = ConnectionWithTransaction::new(conn).await?;
 
-        for proof in added {
-            query(
-                r#"
-    INSERT INTO proof
-    (y, mint_url, state, spending_condition, unit, amount, keyset_id, secret, c, witness, dleq_e, dleq_s, dleq_r, used_by_operation, created_by_operation, derivation_index, p2pk_e)
-    VALUES
-    (:y, :mint_url, :state, :spending_condition, :unit, :amount, :keyset_id, :secret, :c, :witness, :dleq_e, :dleq_s, :dleq_r, :used_by_operation, :created_by_operation, :derivation_index, :p2pk_e)
-    ON CONFLICT(y) DO UPDATE SET
-        mint_url = excluded.mint_url,
-        state = excluded.state,
-        spending_condition = excluded.spending_condition,
-        unit = excluded.unit,
-        amount = excluded.amount,
-        keyset_id = excluded.keyset_id,
-        secret = excluded.secret,
-        c = excluded.c,
-        witness = excluded.witness,
-        dleq_e = excluded.dleq_e,
-        dleq_s = excluded.dleq_s,
-        dleq_r = excluded.dleq_r,
-        used_by_operation = excluded.used_by_operation,
-        created_by_operation = excluded.created_by_operation,
-        derivation_index = COALESCE(excluded.derivation_index, proof.derivation_index),
-        p2pk_e = excluded.p2pk_e
-    ;
-            "#,
-            )?
-            .bind("y", proof.y.to_bytes().to_vec())
-            .bind("mint_url", proof.mint_url.to_string())
-            .bind("state", proof.state.to_string())
-            .bind(
-                "spending_condition",
-                proof
-                    .spending_condition
-                    .map(|s| serde_json::to_string(&s).ok()),
-            )
-            .bind("unit", proof.unit.to_string())
-            .bind("amount", i64::try_from(u64::from(proof.proof.amount))?)
-            .bind("keyset_id", proof.proof.keyset_id.to_string())
-            .bind("secret", proof.proof.secret.to_string())
-            .bind("c", proof.proof.c.to_bytes().to_vec())
-            .bind(
-                "witness",
-                proof
-                    .proof
-                    .witness
-                    .and_then(|w| serde_json::to_string(&w).ok()),
-            )
-            .bind(
-                "dleq_e",
-                proof.proof.dleq.as_ref().map(|dleq| dleq.e.to_secret_bytes().to_vec()),
-            )
-            .bind(
-                "dleq_s",
-                proof.proof.dleq.as_ref().map(|dleq| dleq.s.to_secret_bytes().to_vec()),
-            )
-            .bind(
-                "dleq_r",
-                proof.proof.dleq.as_ref().map(|dleq| dleq.r.to_secret_bytes().to_vec()),
-            )
-            .bind("used_by_operation", proof.used_by_operation.map(|id| id.to_string()))
-            .bind("created_by_operation", proof.created_by_operation.map(|id| id.to_string()))
-            .bind("derivation_index", proof.derivation_index.map(i64::from))
-            .bind(
-                "p2pk_e",
-                proof
-                    .proof
-                    .p2pk_e
-                    .as_ref()
-                    .map(|pk| pk.to_bytes().to_vec()),
-            )
-            .execute(&tx)
-            .await?;
-        }
-
-        if !removed_ys.is_empty() {
-            query(r#"DELETE FROM proof WHERE y IN (:ys)"#)?
-                .bind_vec(
-                    "ys",
-                    removed_ys.iter().map(|y| y.to_bytes().to_vec()).collect(),
-                )?
-                .execute(&tx)
-                .await?;
-        }
+        write_proofs(&tx, added, removed_ys, true).await?;
 
         tx.commit().await?;
 
         Ok(())
+    }
+
+    async fn restore_proofs(
+        &self,
+        proofs: Vec<ProofInfo>,
+        persisted_ys: Vec<PublicKey>,
+        receive_sagas: HashMap<Uuid, u32>,
+        saga_versions: HashMap<Uuid, u32>,
+        keyset_id: Id,
+        keyset_counter: u32,
+    ) -> Result<bool, database::Error> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        let tx = ConnectionWithTransaction::new(conn).await?;
+        let mut saga_versions: Vec<_> = saga_versions.into_iter().collect();
+        saga_versions.sort_by_key(|(id, _)| *id);
+        for (id, version) in saga_versions {
+            if query("UPDATE wallet_sagas SET version = version WHERE id = :id AND version = :version AND kind = :kind")?
+                .bind("id", id.to_string()).bind("version", i64::from(version))
+                .bind("kind", wallet::OperationKind::Receive.to_string()).execute(&tx).await? != 1
+            {
+                tx.rollback().await?;
+                return Ok(false);
+            }
+        }
+        let mut receive_sagas: Vec<_> = receive_sagas.into_iter().collect();
+        receive_sagas.sort_by_key(|(id, _)| *id);
+        for (id, version) in receive_sagas {
+            let next = version
+                .checked_add(1)
+                .ok_or_else(|| Error::Internal("Saga version overflow".to_owned()))?;
+            let matched = query("UPDATE wallet_sagas SET version = :next WHERE id = :id AND version = :version AND kind = :kind AND state = :state")?
+                .bind("id", id.to_string()).bind("version", i64::from(version)).bind("next", i64::from(next))
+                .bind("kind", wallet::OperationKind::Receive.to_string())
+                .bind("state", serde_json::to_string(&wallet::WalletSagaState::Receive(wallet::ReceiveSagaState::SwapRequested))?)
+                .execute(&tx).await?;
+            if matched != 1 {
+                tx.rollback().await?;
+                return Ok(false);
+            }
+            let row = query("SELECT data FROM wallet_sagas WHERE id = :id")?
+                .bind("id", id.to_string())
+                .fetch_one(&tx)
+                .await?
+                .ok_or_else(|| Error::Internal("Missing receive saga".to_owned()))?;
+            let mut data: wallet::OperationData =
+                serde_json::from_str(&column_as_string!(&row[0]))?;
+            match &mut data {
+                wallet::OperationData::Receive(data) => data.atomic_settlement = false,
+                _ => return Err(Error::Internal("Invalid receive saga data".to_owned())),
+            }
+            query("UPDATE wallet_sagas SET data = :data WHERE id = :id")?
+                .bind("id", id.to_string())
+                .bind("data", serde_json::to_string(&data)?)
+                .execute(&tx)
+                .await?;
+        }
+        query("INSERT INTO keyset_counter (keyset_id, counter) VALUES (:keyset, 0) ON CONFLICT(keyset_id) DO NOTHING")?
+            .bind("keyset", keyset_id.to_string()).execute(&tx).await?;
+        if query("UPDATE keyset_counter SET counter = counter WHERE keyset_id = :keyset AND counter = :counter")?
+            .bind("keyset", keyset_id.to_string()).bind("counter", keyset_counter).execute(&tx).await? != 1
+        {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+        let mut counters = std::collections::BTreeMap::<String, u32>::new();
+        for proof in &proofs {
+            if let Some(index) = proof.derivation_index {
+                let next = index
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Internal("Derivation counter overflow".to_owned()))?;
+                counters
+                    .entry(proof.proof.keyset_id.to_string())
+                    .and_modify(|counter| *counter = (*counter).max(next))
+                    .or_insert(next);
+            }
+        }
+        for (keyset, counter) in counters {
+            query("INSERT INTO keyset_counter (keyset_id, counter) VALUES (:keyset, :counter) ON CONFLICT(keyset_id) DO UPDATE SET counter = CASE WHEN keyset_counter.counter < excluded.counter THEN excluded.counter ELSE keyset_counter.counter END")?
+                .bind("keyset", keyset).bind("counter", counter).execute(&tx).await?;
+        }
+        let (spent, restored): (Vec<_>, Vec<_>) =
+            proofs.into_iter().partition(|p| p.state == State::Spent);
+        for proof in restored.iter().filter(|p| p.state == State::Pending) {
+            query("UPDATE proof SET state = :pending WHERE y = :y AND state = :unspent")?
+                .bind("pending", State::Pending.to_string())
+                .bind("unspent", State::Unspent.to_string())
+                .bind("y", proof.y.to_bytes().to_vec())
+                .execute(&tx)
+                .await?;
+        }
+        write_proofs(
+            &tx,
+            restored
+                .into_iter()
+                .filter(|p| !persisted_ys.contains(&p.y))
+                .collect(),
+            spent.into_iter().map(|p| p.y).collect(),
+            false,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
+    async fn finalize_receive(
+        &self,
+        saga_id: &Uuid,
+        version: u32,
+        outputs: Vec<ProofInfo>,
+        persisted_ys: Vec<PublicKey>,
+    ) -> Result<bool, database::Error> {
+        let amount = Amount::try_sum(outputs.iter().map(|p| p.proof.amount))
+            .map_err(|e| Error::Internal(e.to_string()))?;
+        if outputs.is_empty() {
+            return Err(Error::Internal("Receive outputs are empty".to_owned()));
+        }
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        let tx = ConnectionWithTransaction::new(conn).await?;
+        // Acquire the saga row before touching proofs or transaction status.
+        let matched = query("UPDATE wallet_sagas SET version = version WHERE id = :id AND version = :version AND kind = :kind AND state = :state")?
+            .bind("id", saga_id.to_string())
+            .bind("version", i64::from(version))
+            .bind("kind", wallet::OperationKind::Receive.to_string())
+            .bind("state", serde_json::to_string(&wallet::WalletSagaState::Receive(wallet::ReceiveSagaState::SwapRequested))?)
+            .execute(&tx).await?;
+        if matched != 1 {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+        let updated = query("UPDATE transactions SET status = :completed WHERE id = :id AND saga_id = :saga_id AND direction = :direction AND status = :pending AND amount = :amount")?
+            .bind("id", TransactionId::from_saga_id(*saga_id).as_slice().to_vec())
+            .bind("completed", TransactionStatus::Completed.to_string())
+            .bind("saga_id", saga_id.to_string())
+            .bind("direction", TransactionDirection::Incoming.to_string())
+            .bind("pending", TransactionStatus::Pending.to_string())
+            .bind("amount", i64::try_from(u64::from(amount))?)
+            .execute(&tx).await?;
+        if updated != 1 {
+            let completed = query("SELECT id FROM transactions WHERE id = :id AND saga_id = :saga_id AND direction = :direction AND status = :completed AND amount = :amount")?
+                .bind("id", TransactionId::from_saga_id(*saga_id).as_slice().to_vec())
+                .bind("saga_id", saga_id.to_string())
+                .bind("direction", TransactionDirection::Incoming.to_string())
+                .bind("completed", TransactionStatus::Completed.to_string())
+                .bind("amount", i64::try_from(u64::from(amount))?)
+                .fetch_one(&tx).await?.is_some();
+            if !completed {
+                tx.rollback().await?;
+                return Ok(false);
+            }
+        }
+        let outputs = outputs
+            .into_iter()
+            .filter(|p| !persisted_ys.contains(&p.y))
+            .collect();
+        write_proofs(&tx, outputs, vec![], false).await?;
+        query("DELETE FROM proof WHERE used_by_operation = :id")?
+            .bind("id", saga_id.to_string())
+            .execute(&tx)
+            .await?;
+        query("DELETE FROM wallet_sagas WHERE id = :id")?
+            .bind("id", saga_id.to_string())
+            .execute(&tx)
+            .await?;
+        tx.commit().await?;
+        Ok(true)
     }
 
     #[instrument(skip(self))]
@@ -931,6 +1120,7 @@ where
        payment_method = excluded.payment_method,
        saga_id = excluded.saga_id,
        status = excluded.status
+   WHERE transactions.status = 'pending' OR excluded.status = transactions.status
    ;
            "#,
            )?

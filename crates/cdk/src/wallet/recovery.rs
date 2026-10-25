@@ -61,9 +61,9 @@ pub struct RecoveryReport {
     pub recovered: usize,
     /// Operations rolled back (resources released)
     pub compensated: usize,
-    /// Operations still pending (will retry on next call)
+    /// Operations deferred or already handled by another recovery attempt
     pub skipped: usize,
-    /// Operations that could not be recovered
+    /// Recovery attempts that returned an error; the operation may remain pending.
     pub failed: usize,
 }
 
@@ -382,6 +382,7 @@ impl Wallet {
     }
 
     /// Recover from incomplete operations after a crash. Call on startup.
+    /// Run recovery before starting new wallet operations.
     ///
     /// Handles interrupted swap, send, receive, and melt operations to prevent
     /// proofs from being stuck in reserved states. Requires network connection.
@@ -957,6 +958,9 @@ mod tests {
             let db = create_test_db().await;
             let client = Arc::new(MockMintConnector::new());
             client.enable_mint_signing();
+            if receive {
+                *client.recovered_output_state.lock().unwrap() = Some(State::Unspent);
+            }
             let keyset_id = client.keysets.lock().unwrap()[0].id;
             let wallet = create_test_wallet_with_mock(db.clone(), client.clone()).await;
             let amount = Amount::from(13);
@@ -1027,6 +1031,7 @@ mod tests {
                 "Receive" => (
                     WalletSagaState::Receive(ReceiveSagaState::SwapRequested),
                     OperationData::Receive(ReceiveOperationData {
+                        atomic_settlement: false,
                         token: None,
                         counter_start: Some(0),
                         counter_end: Some(output_count as u32),
@@ -1126,11 +1131,40 @@ mod tests {
                 }
             }
 
+            let persisted = if receive {
+                client._set_restore_response(Ok(RestoreResponse {
+                    outputs: outputs.clone(),
+                    signatures: signatures.clone(),
+                }));
+                let mut restored = super::RecoveryHelpers::restore_outputs(
+                    &wallet,
+                    &saga_id,
+                    "Receive",
+                    Some(&outputs),
+                    Some(0),
+                    Some(output_count as u32),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                let mut proof = restored.remove(0);
+                proof.state = State::Reserved;
+                proof.used_by_operation = Some(uuid::Uuid::new_v4());
+                db.update_proofs(vec![proof.clone()], vec![input.y])
+                    .await
+                    .unwrap();
+                // This legacy continuation queries missing output identities,
+                // not the input identities staged for earlier attempts.
+                client.check_state_response.lock().unwrap().take();
+                Some(proof)
+            } else {
+                stage_spent_inputs();
+                None
+            };
             client._set_restore_response(Ok(RestoreResponse {
                 outputs: outputs.into_iter().rev().collect(),
                 signatures: signatures.into_iter().rev().collect(),
             }));
-            stage_spent_inputs();
             let report = wallet.recover_incomplete_sagas().await.unwrap();
             assert_eq!(report.recovered, 1);
             assert_eq!(report.failed, 0);
@@ -1141,6 +1175,12 @@ mod tests {
                 Amount::try_sum(proofs.iter().map(|p| p.proof.amount)).unwrap(),
                 amount
             );
+            if let Some(persisted) = persisted {
+                assert_eq!(
+                    db.get_proofs_by_ys(vec![persisted.y]).await.unwrap(),
+                    vec![persisted]
+                );
+            }
             if issue || receive {
                 let transactions = db.list_transactions(None, None, None).await.unwrap();
                 assert_eq!(transactions[0].status, TransactionStatus::Completed);
@@ -1166,6 +1206,7 @@ mod tests {
             mint_url.clone(),
             cdk_common::nuts::CurrencyUnit::Sat,
             OperationData::Receive(ReceiveOperationData {
+                atomic_settlement: false,
                 token: Some("cashu...".to_string()),
                 counter_start: None,
                 counter_end: None,
@@ -1751,6 +1792,7 @@ mod tests {
             mint_url.clone(),
             cdk_common::nuts::CurrencyUnit::Sat,
             OperationData::Receive(ReceiveOperationData {
+                atomic_settlement: false,
                 token: Some("cashu...".to_string()),
                 counter_start: None,
                 counter_end: None,
@@ -1768,6 +1810,7 @@ mod tests {
             other_mint_url.clone(),
             cdk_common::nuts::CurrencyUnit::Sat,
             OperationData::Receive(ReceiveOperationData {
+                atomic_settlement: false,
                 token: Some("cashu...".to_string()),
                 counter_start: None,
                 counter_end: None,
@@ -1785,6 +1828,7 @@ mod tests {
             mint_url.clone(),
             cdk_common::nuts::CurrencyUnit::Usd,
             OperationData::Receive(ReceiveOperationData {
+                atomic_settlement: false,
                 token: Some("cashu...".to_string()),
                 counter_start: None,
                 counter_end: None,

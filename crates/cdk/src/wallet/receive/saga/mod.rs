@@ -9,8 +9,8 @@
 //! [saga created] ──► ProofsPending ──► SwapRequested ──► [completed]
 //!                         │                  │
 //!                         │                  ├─ replay succeeds ───► [completed]
-//!                         │                  ├─ proofs spent ──────► [completed] (via /restore)
-//!                         │                  ├─ proofs not spent ──► [compensated]
+//!                         │                  ├─ outputs restored ──► [completed]
+//!                         │                  ├─ outcome uncertain ─► [skipped]
 //!                         │                  └─ mint unreachable ──► [skipped]
 //!                         │
 //!                         └─ recovery ─────────────────────────────► [compensated]
@@ -316,6 +316,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             self.wallet.mint_url.clone(),
             self.wallet.unit.clone(),
             OperationData::Receive(ReceiveOperationData {
+                atomic_settlement: true,
                 token: self.state_data.token.clone(),
                 counter_start: None,
                 counter_end: None,
@@ -385,7 +386,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
 
         // Update saga state - if this fails due to version conflict, another instance
         // is processing this saga, which should not happen during normal operation.
-        if !self.wallet.localstore.update_saga(saga).await? {
+        if !self.wallet.localstore.update_saga(saga.clone()).await? {
             return Err(Error::ConcurrentUpdate);
         }
 
@@ -463,7 +464,6 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             .await?;
 
         let total_amount = recv_proofs.total_amount()?;
-        let fee = self.state_data.proofs_amount - total_amount;
 
         let recv_proof_infos = recv_proofs
             .into_iter()
@@ -482,44 +482,16 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             })
             .collect::<Result<Vec<ProofInfo>, _>>()?;
 
-        self.wallet
+        if !self
+            .wallet
             .localstore
-            .update_proofs(
-                recv_proof_infos,
-                proofs_info.into_iter().map(|p| p.y).collect(),
-            )
-            .await?;
-
-        self.wallet
-            .upsert_transaction(Transaction {
-                mint_url: self.wallet.mint_url.clone(),
-                direction: TransactionDirection::Incoming,
-                amount: total_amount,
-                fee,
-                unit: self.wallet.unit.clone(),
-                ys: proofs_ys,
-                timestamp: unix_time(),
-                memo: self.state_data.memo.clone(),
-                metadata: self.state_data.options.metadata.clone(),
-                quote_id: None,
-                payment_request: None,
-                payment_proof: None,
-                payment_method: None,
-                saga_id: Some(operation_id),
-                status: TransactionStatus::Completed,
-            })
-            .await?;
+            .finalize_receive(&operation_id, saga.version, recv_proof_infos, vec![])
+            .await?
+        {
+            return Err(Error::ConcurrentUpdate);
+        }
 
         clear_compensations(&mut self.compensations).await;
-
-        if let Err(e) = self.wallet.localstore.delete_saga(&operation_id).await {
-            tracing::warn!(
-                "Failed to delete receive saga {}: {}. Will be cleaned up on recovery.",
-                operation_id,
-                e
-            );
-            // Don't fail the receive if saga deletion fails - orphaned saga is harmless.
-        }
 
         Ok(ReceiveSaga {
             wallet: self.wallet,
@@ -680,6 +652,7 @@ mod tests {
         mock.set_post_swap_response(Ok(SwapResponse {
             signatures: vec![valid_signature],
         }));
+        *mock.recovered_output_state.lock().unwrap() = Some(State::Unspent);
         let report = wallet.recover_incomplete_sagas().await.unwrap();
         assert_eq!(report.recovered, 1);
         assert_eq!(wallet.total_balance().await.unwrap(), Amount::from(2));

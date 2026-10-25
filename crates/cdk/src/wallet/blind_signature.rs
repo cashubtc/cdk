@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::nuts::{nut12, BlindSignature, BlindedMessage};
 use crate::wallet::Wallet;
 use crate::{Amount, Error};
@@ -40,7 +42,13 @@ pub(crate) async fn validate_mint_response_signatures<'a>(
         )));
     }
 
+    let mut seen = HashSet::new();
     for (sig, blinded_message) in signatures.iter().zip(blinded_messages) {
+        if !seen.insert((sig.keyset_id, sig.amount, sig.c)) {
+            return Err(Error::InvalidMintResponse(
+                "mint response contains duplicate signatures".to_owned(),
+            ));
+        }
         let amount_matches = match amount_validation {
             SignatureAmountValidation::Exact => sig.amount == blinded_message.amount,
             SignatureAmountValidation::AllowZeroAmountPlaceholder => {

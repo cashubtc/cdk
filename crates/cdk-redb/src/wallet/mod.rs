@@ -558,6 +558,256 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
         Ok(())
     }
 
+    async fn restore_proofs(
+        &self,
+        proofs: Vec<ProofInfo>,
+        persisted_ys: Vec<PublicKey>,
+        receive_sagas: std::collections::HashMap<uuid::Uuid, u32>,
+        saga_versions: std::collections::HashMap<uuid::Uuid, u32>,
+        keyset_id: Id,
+        keyset_counter: u32,
+    ) -> Result<bool, database::Error> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+        {
+            let mut sagas = write_txn.open_table(SAGAS_TABLE).map_err(Error::from)?;
+            for (id, version) in saga_versions {
+                let stored = sagas
+                    .get(id.to_string().as_str())
+                    .map_err(Error::from)?
+                    .map(|v| {
+                        serde_json::from_str::<wallet::WalletSaga>(v.value()).map_err(Error::from)
+                    })
+                    .transpose()?;
+                if !stored.is_some_and(|saga| {
+                    saga.version == version
+                        && matches!(saga.state, wallet::WalletSagaState::Receive(_))
+                }) {
+                    return Ok(false);
+                }
+            }
+            let counter = write_txn
+                .open_table(KEYSET_COUNTER)
+                .map_err(Error::from)?
+                .get(keyset_id.to_string().as_str())
+                .map_err(Error::from)?
+                .map(|v| v.value())
+                .unwrap_or(0);
+            if counter != keyset_counter {
+                return Ok(false);
+            }
+            for (id, version) in receive_sagas {
+                let stored = sagas
+                    .get(id.to_string().as_str())
+                    .map_err(Error::from)?
+                    .map(|v| {
+                        serde_json::from_str::<wallet::WalletSaga>(v.value()).map_err(Error::from)
+                    })
+                    .transpose()?;
+                let mut saga = match stored {
+                    Some(saga)
+                        if saga.version == version
+                            && saga.state
+                                == wallet::WalletSagaState::Receive(
+                                    wallet::ReceiveSagaState::SwapRequested,
+                                ) =>
+                    {
+                        saga
+                    }
+                    _ => return Ok(false),
+                };
+                match &mut saga.data {
+                    wallet::OperationData::Receive(data) => data.atomic_settlement = false,
+                    _ => {
+                        return Err(database::Error::Internal(
+                            "Invalid receive saga data".to_owned(),
+                        ))
+                    }
+                }
+                saga.version = version
+                    .checked_add(1)
+                    .ok_or_else(|| database::Error::Internal("Saga version overflow".to_owned()))?;
+                sagas
+                    .insert(
+                        id.to_string().as_str(),
+                        serde_json::to_string(&saga).map_err(Error::from)?.as_str(),
+                    )
+                    .map_err(Error::from)?;
+            }
+            let mut counters = std::collections::BTreeMap::<String, u32>::new();
+            for proof in &proofs {
+                if let Some(index) = proof.derivation_index {
+                    let next = index.checked_add(1).ok_or_else(|| {
+                        database::Error::Internal("Derivation counter overflow".to_owned())
+                    })?;
+                    counters
+                        .entry(proof.proof.keyset_id.to_string())
+                        .and_modify(|counter| *counter = (*counter).max(next))
+                        .or_insert(next);
+                }
+            }
+            {
+                let mut table = write_txn.open_table(KEYSET_COUNTER).map_err(Error::from)?;
+                for (keyset, next) in counters {
+                    let current = table
+                        .get(keyset.as_str())
+                        .map_err(Error::from)?
+                        .map(|v| v.value())
+                        .unwrap_or(0);
+                    table
+                        .insert(keyset.as_str(), current.max(next))
+                        .map_err(Error::from)?;
+                }
+            }
+            let mut table = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
+            for proof in proofs {
+                if proof.state == State::Pending {
+                    let existing = table
+                        .get(proof.y.to_bytes().as_slice())
+                        .map_err(Error::from)?
+                        .map(|v| serde_json::from_str::<ProofInfo>(v.value()).map_err(Error::from))
+                        .transpose()?;
+                    if let Some(mut existing) = existing.filter(|p| p.state == State::Unspent) {
+                        existing.state = State::Pending;
+                        table
+                            .insert(
+                                existing.y.to_bytes().as_slice(),
+                                serde_json::to_string(&existing)
+                                    .map_err(Error::from)?
+                                    .as_str(),
+                            )
+                            .map_err(Error::from)?;
+                    }
+                }
+                if proof.state == State::Spent {
+                    table
+                        .remove(proof.y.to_bytes().as_slice())
+                        .map_err(Error::from)?;
+                } else if !persisted_ys.contains(&proof.y)
+                    && table
+                        .get(proof.y.to_bytes().as_slice())
+                        .map_err(Error::from)?
+                        .is_none()
+                {
+                    table
+                        .insert(
+                            proof.y.to_bytes().as_slice(),
+                            serde_json::to_string(&proof).map_err(Error::from)?.as_str(),
+                        )
+                        .map_err(Error::from)?;
+                }
+            }
+        }
+        write_txn.commit().map_err(Error::from)?;
+        Ok(true)
+    }
+
+    async fn finalize_receive(
+        &self,
+        saga_id: &uuid::Uuid,
+        version: u32,
+        outputs: Vec<ProofInfo>,
+        persisted_ys: Vec<PublicKey>,
+    ) -> Result<bool, database::Error> {
+        let amount = Amount::try_sum(outputs.iter().map(|p| p.proof.amount))
+            .map_err(|e| database::Error::Internal(e.to_string()))?;
+        if outputs.is_empty() {
+            return Err(database::Error::Internal(
+                "Receive outputs are empty".to_owned(),
+            ));
+        }
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+        {
+            let mut sagas = write_txn.open_table(SAGAS_TABLE).map_err(Error::from)?;
+            let stored = sagas
+                .get(saga_id.to_string().as_str())
+                .map_err(Error::from)?
+                .map(|v| serde_json::from_str::<wallet::WalletSaga>(v.value()).map_err(Error::from))
+                .transpose()?;
+            if !stored.is_some_and(|s| {
+                s.version == version
+                    && s.state
+                        == wallet::WalletSagaState::Receive(wallet::ReceiveSagaState::SwapRequested)
+            }) {
+                return Ok(false);
+            }
+            let mut transactions = write_txn
+                .open_table(TRANSACTIONS_TABLE)
+                .map_err(Error::from)?;
+            let transaction_id = TransactionId::from_saga_id(*saga_id);
+            let stored = transactions
+                .get(transaction_id.as_slice())
+                .map_err(Error::from)?
+                .map(|value| {
+                    serde_json::from_str::<Transaction>(value.value()).map_err(Error::from)
+                })
+                .transpose()?;
+            let mut transaction = match stored {
+                Some(t)
+                    if t.saga_id == Some(*saga_id)
+                        && matches!(
+                            t.status,
+                            wallet::TransactionStatus::Pending
+                                | wallet::TransactionStatus::Completed
+                        )
+                        && t.direction == TransactionDirection::Incoming
+                        && t.amount == amount =>
+                {
+                    t
+                }
+                _ => return Ok(false),
+            };
+            let mut proofs = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
+            let inputs = proofs
+                .iter()
+                .map_err(Error::from)?
+                .map(|row| {
+                    let (_, value) = row.map_err(Error::from)?;
+                    serde_json::from_str::<ProofInfo>(value.value()).map_err(Error::from)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            for output in outputs {
+                let exists = proofs
+                    .get(output.y.to_bytes().as_slice())
+                    .map_err(Error::from)?
+                    .is_some();
+                if !persisted_ys.contains(&output.y) && !exists {
+                    proofs
+                        .insert(
+                            output.y.to_bytes().as_slice(),
+                            serde_json::to_string(&output)
+                                .map_err(Error::from)?
+                                .as_str(),
+                        )
+                        .map_err(Error::from)?;
+                }
+            }
+            for input in inputs
+                .into_iter()
+                .filter(|p| p.used_by_operation == Some(*saga_id))
+            {
+                proofs
+                    .remove(input.y.to_bytes().as_slice())
+                    .map_err(Error::from)?;
+            }
+            if transaction.status == wallet::TransactionStatus::Pending {
+                transaction.status = wallet::TransactionStatus::Completed;
+                transactions
+                    .insert(
+                        transaction.id().as_slice(),
+                        serde_json::to_string(&transaction)
+                            .map_err(Error::from)?
+                            .as_str(),
+                    )
+                    .map_err(Error::from)?;
+            }
+            sagas
+                .remove(saga_id.to_string().as_str())
+                .map_err(Error::from)?;
+        }
+        write_txn.commit().map_err(Error::from)?;
+        Ok(true)
+    }
+
     async fn update_proofs_state(
         &self,
         ys: Vec<PublicKey>,
@@ -611,6 +861,18 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
             let mut table = write_txn
                 .open_table(TRANSACTIONS_TABLE)
                 .map_err(Error::from)?;
+            let existing = table
+                .get(id.as_slice())
+                .map_err(Error::from)?
+                .map(|stored| {
+                    serde_json::from_str::<Transaction>(stored.value()).map_err(Error::from)
+                })
+                .transpose()?;
+            if existing.is_some_and(|t| {
+                t.status != wallet::TransactionStatus::Pending && t.status != transaction.status
+            }) {
+                return Ok(());
+            }
             table
                 .insert(
                     id.as_slice(),

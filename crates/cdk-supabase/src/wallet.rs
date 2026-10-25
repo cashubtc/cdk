@@ -243,7 +243,7 @@ impl SupabaseWalletDatabase {
     /// This must match the latest `schema_version` value set in the migration files.
     /// When adding new migrations, update this constant and set the same value
     /// in the new migration's `INSERT INTO schema_info` statement.
-    pub const REQUIRED_SCHEMA_VERSION: u32 = 10;
+    pub const REQUIRED_SCHEMA_VERSION: u32 = 11;
 
     /// Get the full database schema SQL
     ///
@@ -1405,6 +1405,98 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
             "update_proofs_atomic RPC failed: HTTP {}. Ensure migrations have been run.",
             status
         )))
+    }
+
+    async fn restore_proofs(
+        &self,
+        proofs: Vec<ProofInfo>,
+        persisted_ys: Vec<PublicKey>,
+        receive_sagas: HashMap<uuid::Uuid, u32>,
+        saga_versions: HashMap<uuid::Uuid, u32>,
+        keyset_id: Id,
+        keyset_counter: u32,
+    ) -> Result<bool, DatabaseError> {
+        let mut proofs_json = Vec::with_capacity(proofs.len());
+        for proof in proofs {
+            let mut table: ProofTable = proof.try_into()?;
+            table.secret = hex::encode(self.encrypt(table.secret.as_bytes()).await?);
+            let c = hex::decode(&table.c).map_err(|e| DatabaseError::Internal(e.to_string()))?;
+            table.c = hex::encode(self.encrypt(&c).await?);
+            proofs_json.push(serde_json::to_value(table).map_err(DatabaseError::from)?);
+        }
+        let response = self.client.post(self.join_url("rest/v1/rpc/restore_proofs")?)
+            .header("apikey", &self.api_key)
+            .header("Authorization", format!("Bearer {}", self.get_auth_bearer().await))
+            .json(&serde_json::json!({
+                "p_proofs": proofs_json,
+                "p_persisted_ys": persisted_ys.iter().map(|y| hex::encode(y.to_bytes())).collect::<Vec<_>>(),
+                "p_receive_sagas": receive_sagas,
+                "p_saga_versions": saga_versions,
+                "p_keyset_id": keyset_id.to_string(),
+                "p_keyset_counter": keyset_counter,
+            })).send().await.map_err(Error::Reqwest)?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "restore_proofs RPC failed: HTTP {status}. Ensure migrations have been run."
+            )));
+        }
+        response
+            .json()
+            .await
+            .map_err(|e| DatabaseError::Internal(e.to_string()))
+    }
+
+    async fn finalize_receive(
+        &self,
+        saga_id: &uuid::Uuid,
+        version: u32,
+        outputs: Vec<ProofInfo>,
+        persisted_ys: Vec<PublicKey>,
+    ) -> Result<bool, DatabaseError> {
+        if outputs.is_empty() {
+            return Err(DatabaseError::Internal(
+                "Receive outputs are empty".to_owned(),
+            ));
+        }
+        let amount = cdk_common::Amount::try_sum(outputs.iter().map(|p| p.proof.amount))
+            .map_err(|e| DatabaseError::Internal(e.to_string()))?;
+        i64::try_from(u64::from(amount))?;
+        let mut proofs_json = Vec::with_capacity(outputs.len());
+        for output in outputs {
+            let mut table: ProofTable = output.try_into()?;
+            table.secret = hex::encode(self.encrypt(table.secret.as_bytes()).await?);
+            let c = hex::decode(&table.c).map_err(|e| DatabaseError::Internal(e.to_string()))?;
+            table.c = hex::encode(self.encrypt(&c).await?);
+            proofs_json.push(serde_json::to_value(table).map_err(DatabaseError::from)?);
+        }
+        let response = self
+            .client
+            .post(self.join_url("rest/v1/rpc/finalize_receive")?)
+            .header("apikey", &self.api_key)
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.get_auth_bearer().await),
+            )
+            .json(&serde_json::json!({
+                "p_saga_id": saga_id.to_string(),
+                "p_version": version,
+                "p_outputs": proofs_json,
+                "p_persisted_ys": persisted_ys.iter().map(|y| hex::encode(y.to_bytes())).collect::<Vec<_>>(),
+            }))
+            .send()
+            .await
+            .map_err(Error::Reqwest)?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(DatabaseError::Internal(format!(
+                "finalize_receive RPC failed: HTTP {status}. Ensure migrations have been run."
+            )));
+        }
+        response
+            .json()
+            .await
+            .map_err(|e| DatabaseError::Internal(e.to_string()))
     }
 
     async fn update_proofs_state(
@@ -3337,9 +3429,98 @@ mod tests {
         assert_wallet_database::<SupabaseWalletDatabase>();
     }
 
+    #[tokio::test]
+    async fn receive_and_restore_use_atomic_rpc_without_fallback() {
+        use cdk_common::{Amount, Proof, SecretKey};
+
+        let mut server = mockito::Server::new_async().await;
+        let db = SupabaseWalletDatabase::new(
+            Url::parse(&server.url()).expect("valid mock URL"),
+            "anon-key".to_owned(),
+        )
+        .await
+        .expect("test database should initialize");
+        *db.encryption_key.write().await = Some([7; 32].into());
+        let id = uuid::Uuid::new_v4();
+        let proof = Proof::new(
+            Amount::from(8),
+            Id::from_str("00916bbf7ef91a36").expect("valid test keyset ID"),
+            Secret::new("receive-test"),
+            SecretKey::from_slice(&[1; 32])
+                .expect("valid test key")
+                .public_key(),
+        );
+        let output = ProofInfo::new(
+            proof,
+            MintUrl::from_str("https://mint.example").expect("valid test mint URL"),
+            State::Unspent,
+            CurrencyUnit::Sat,
+        )
+        .expect("valid test proof");
+        for restore in [false, true] {
+            for (status, body, result) in [
+                (200, "true", Some(true)),
+                (200, "false", Some(false)),
+                (404, "unavailable", None),
+                (503, "unavailable", None),
+            ] {
+                let mock = server
+                    .mock(
+                        "POST",
+                        if restore {
+                            "/rest/v1/rpc/restore_proofs"
+                        } else {
+                            "/rest/v1/rpc/finalize_receive"
+                        },
+                    )
+                    .match_header("apikey", "anon-key")
+                    .match_header("authorization", "Bearer anon-key")
+                    .match_body(Matcher::PartialJson(if restore {
+                        json!({
+                            "p_receive_sagas": HashMap::from([(id, 3)]), "p_persisted_ys": [],
+                            "p_saga_versions": HashMap::from([(id, 3)]),
+                            "p_keyset_id": output.proof.keyset_id.to_string(), "p_keyset_counter": 0,
+                        })
+                    } else {
+                        json!({
+                            "p_saga_id": id.to_string(), "p_version": 3, "p_persisted_ys": [],
+                        })
+                    }))
+                    .with_status(status)
+                    .with_header("content-type", "application/json")
+                    .with_body(body)
+                    .expect(1)
+                    .create_async()
+                    .await;
+                let actual = if restore {
+                    db.restore_proofs(
+                        vec![output.clone()],
+                        vec![],
+                        HashMap::from([(id, 3)]),
+                        HashMap::from([(id, 3)]),
+                        output.proof.keyset_id,
+                        0,
+                    )
+                    .await
+                } else {
+                    db.finalize_receive(&id, 3, vec![output.clone()], vec![])
+                        .await
+                };
+                match result {
+                    Some(expected) => {
+                        assert_eq!(actual.expect("atomic RPC should succeed"), expected)
+                    }
+                    None => assert!(actual.is_err()),
+                }
+                mock.assert_async().await;
+                mock.remove_async().await;
+            }
+        }
+    }
+
     #[test]
     fn schema_sql_tracks_required_schema_version() {
-        let schema_sql = SupabaseWalletDatabase::get_schema_sql();
+        let schema_sql = SupabaseWalletDatabase::get_schema_sql().replace("\r\n", "\n");
         let versions = extract_schema_versions(&schema_sql);
 
         assert!(

@@ -503,8 +503,14 @@ pub struct MockMintConnector {
     pub mint_info: Mutex<MintInfo>,
     /// Response for post_check_state calls
     pub check_state_response: Mutex<Option<Result<CheckStateResponse, Error>>>,
+    /// State to return for unstaged checks of recovered output identities.
+    pub recovered_output_state: Mutex<Option<State>>,
     /// Response for post_restore calls
     pub restore_response: Mutex<Option<Result<RestoreResponse, Error>>>,
+    /// Responses for successive general-restoration batches.
+    pub restore_responses: Mutex<std::collections::VecDeque<Result<RestoreResponse, Error>>>,
+    /// Signal entry and pause a restore response for deterministic recovery races.
+    pub restore_gate: Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Semaphore>)>>,
     /// Response for get_melt_quote_status calls
     pub melt_quote_status_response: Mutex<Option<Result<MeltQuoteBolt11Response<String>, Error>>>,
     /// Queue of responses for successive get_melt_quote_status calls.
@@ -601,7 +607,10 @@ impl MockMintConnector {
             keysets: Mutex::new(vec![keyset]),
             mint_info: Mutex::new(mint_info),
             check_state_response: Mutex::new(None),
+            recovered_output_state: Mutex::new(None),
             restore_response: Mutex::new(None),
+            restore_responses: Mutex::new(std::collections::VecDeque::new()),
+            restore_gate: Mutex::new(None),
             melt_quote_status_response: Mutex::new(None),
             melt_quote_status_responses: Mutex::new(std::collections::VecDeque::new()),
             post_mint_response: Mutex::new(None),
@@ -1081,21 +1090,37 @@ impl MintConnector for MockMintConnector {
 
     async fn post_check_state(
         &self,
-        _request: CheckStateRequest,
+        request: CheckStateRequest,
     ) -> Result<CheckStateResponse, Error> {
-        self.check_state_response
-            .lock()
-            .unwrap()
-            .take()
-            .expect("MockMintConnector: post_check_state called without configured response")
+        let staged = self.check_state_response.lock().unwrap().take();
+        match staged {
+            Some(response) => response,
+            None => {
+                let state = self.recovered_output_state.lock().unwrap().expect(
+                    "MockMintConnector: post_check_state called without configured response",
+                );
+                Ok(CheckStateResponse {
+                    states: request.ys.into_iter().map(|y| (y, state).into()).collect(),
+                })
+            }
+        }
     }
 
     async fn post_restore(&self, _request: RestoreRequest) -> Result<RestoreResponse, Error> {
-        self.restore_response
-            .lock()
-            .unwrap()
-            .take()
-            .expect("MockMintConnector: post_restore called without configured response")
+        let queued = self.restore_responses.lock().unwrap().pop_front();
+        let response = queued.unwrap_or_else(|| {
+            self.restore_response
+                .lock()
+                .unwrap()
+                .take()
+                .expect("MockMintConnector: post_restore called without configured response")
+        });
+        let gate = self.restore_gate.lock().unwrap().clone();
+        if let Some((entered, release)) = gate {
+            entered.notify_one();
+            release.acquire().await.unwrap().forget();
+        }
+        response
     }
 
     async fn get_auth_wallet(&self) -> Option<crate::wallet::AuthWallet> {

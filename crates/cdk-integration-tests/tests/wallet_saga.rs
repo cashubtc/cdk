@@ -16,6 +16,38 @@ use cdk::Amount;
 use cdk_fake_wallet::create_fake_invoice;
 use cdk_integration_tests::init_pure_tests::*;
 
+#[tokio::test]
+async fn test_receive_recovery_requires_received_value() -> Result<()> {
+    use cdk::wallet::ReceiveOptions;
+    use cdk_common::wallet::TransactionStatus;
+
+    let mint = create_and_start_test_mint().await?;
+    let payer = create_test_wallet_for_mint(mint.clone()).await?;
+    let receiver = create_test_wallet_for_mint(mint.clone()).await?;
+    let other = create_test_wallet_for_mint(mint).await?;
+    fund_wallet(payer.clone(), 100, None).await?;
+    let token = payer
+        .prepare_send(Amount::from(64), SendOptions::default())
+        .await?
+        .confirm(None)
+        .await?
+        .to_string();
+    other.receive(&token, ReceiveOptions::default()).await?;
+    assert!(matches!(
+        receiver.receive(&token, ReceiveOptions::default()).await,
+        Err(cdk::Error::TokenAlreadySpent)
+    ));
+    for _ in 0..3 {
+        let report = receiver.recover_incomplete_sagas().await?;
+        assert_eq!(report.recovered, 0);
+        assert_eq!(receiver.total_balance().await?, Amount::ZERO);
+        let transactions = receiver.list_transactions(None).await?;
+        assert_eq!(transactions.len(), 1);
+        assert_ne!(transactions[0].status, TransactionStatus::Completed);
+    }
+    Ok(())
+}
+
 // =============================================================================
 // Saga-Specific Tests
 // =============================================================================

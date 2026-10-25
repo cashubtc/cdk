@@ -155,6 +155,36 @@ pub trait WalletDatabase: Send + Sync {
         removed_ys: Vec<PublicKey>,
     ) -> Result<(), FfiError>;
 
+    /// Atomically persist general-restoration proofs and invalidate the supplied
+    /// receive saga ID/version pairs. Never reset existing proof states; Pending
+    /// may restrict Unspent. Never
+    /// reinsert consumed persisted_ys; remove Spent proofs. Conflicts return
+    /// false without any writes. Advance invalidated saga versions.
+    /// Advance keyset counters past supplied derivation indices atomically too.
+    async fn restore_proofs(
+        &self,
+        proofs: Vec<ProofInfo>,
+        persisted_ys: Vec<PublicKey>,
+        receive_sagas: HashMap<String, u32>,
+        saga_versions: HashMap<String, u32>,
+        keyset_id: Id,
+        keyset_counter: u32,
+    ) -> Result<bool, FfiError>;
+
+    /// Atomically persist validated receive outputs, complete its transaction,
+    /// and remove the matching saga. Preserve existing proof states.
+    /// Only apply to the matching SwapRequested saga version and pending or completed incoming
+    /// transaction with the same total amount; otherwise return false without writes.
+    /// Never reinsert proofs identified by persisted_ys if consumed since they
+    /// were read. All proof, transaction, and saga changes must be atomic.
+    async fn finalize_receive(
+        &self,
+        saga_id: String,
+        version: u32,
+        outputs: Vec<ProofInfo>,
+        persisted_ys: Vec<PublicKey>,
+    ) -> Result<bool, FfiError>;
+
     /// Update proofs state in storage
     async fn update_proofs_state(
         &self,
@@ -162,7 +192,7 @@ pub trait WalletDatabase: Send + Sync {
         state: ProofState,
     ) -> Result<(), FfiError>;
 
-    /// Add transaction to storage
+    /// Add transaction to storage, preserving the status of an existing terminal transaction.
     async fn add_transaction(&self, transaction: Transaction) -> Result<(), FfiError>;
 
     /// Remove transaction from storage
@@ -874,6 +904,52 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
         }
     }
 
+    async fn restore_proofs(
+        &self,
+        proofs: Vec<cdk::types::ProofInfo>,
+        persisted_ys: Vec<cdk::nuts::PublicKey>,
+        receive_sagas: HashMap<uuid::Uuid, u32>,
+        saga_versions: HashMap<uuid::Uuid, u32>,
+        keyset_id: cdk::nuts::Id,
+        keyset_counter: u32,
+    ) -> Result<bool, cdk::cdk_database::Error> {
+        self.ffi_db
+            .restore_proofs(
+                proofs.into_iter().map(Into::into).collect(),
+                persisted_ys.into_iter().map(Into::into).collect(),
+                receive_sagas
+                    .into_iter()
+                    .map(|(id, version)| (id.to_string(), version))
+                    .collect(),
+                saga_versions
+                    .into_iter()
+                    .map(|(id, version)| (id.to_string(), version))
+                    .collect(),
+                keyset_id.into(),
+                keyset_counter,
+            )
+            .await
+            .map_err(into_database_error)
+    }
+
+    async fn finalize_receive(
+        &self,
+        saga_id: &uuid::Uuid,
+        version: u32,
+        outputs: Vec<cdk::types::ProofInfo>,
+        persisted_ys: Vec<cdk::nuts::PublicKey>,
+    ) -> Result<bool, cdk::cdk_database::Error> {
+        self.ffi_db
+            .finalize_receive(
+                saga_id.to_string(),
+                version,
+                outputs.into_iter().map(Into::into).collect(),
+                persisted_ys.into_iter().map(Into::into).collect(),
+            )
+            .await
+            .map_err(into_database_error)
+    }
+
     async fn update_saga(&self, saga: WalletSaga) -> Result<bool, cdk::cdk_database::Error> {
         let json = serde_json::to_string(&saga).map_err(into_database_error)?;
         self.ffi_db
@@ -1562,6 +1638,74 @@ where
         }
     }
 
+    async fn restore_proofs(
+        &self,
+        proofs: Vec<ProofInfo>,
+        persisted_ys: Vec<PublicKey>,
+        receive_sagas: HashMap<String, u32>,
+        saga_versions: HashMap<String, u32>,
+        keyset_id: Id,
+        keyset_counter: u32,
+    ) -> Result<bool, FfiError> {
+        let proofs = proofs
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect::<Result<Vec<_>, FfiError>>()?;
+        let persisted_ys = persisted_ys
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect::<Result<Vec<_>, FfiError>>()?;
+        let receive_sagas = receive_sagas
+            .into_iter()
+            .map(|(id, version)| {
+                uuid::Uuid::parse_str(&id)
+                    .map(|id| (id, version))
+                    .map_err(FfiError::internal)
+            })
+            .collect::<Result<HashMap<_, _>, _>>()?;
+        let saga_versions = saga_versions
+            .into_iter()
+            .map(|(id, version)| {
+                uuid::Uuid::parse_str(&id)
+                    .map(|id| (id, version))
+                    .map_err(FfiError::internal)
+            })
+            .collect::<Result<HashMap<_, _>, _>>()?;
+        self.inner
+            .restore_proofs(
+                proofs,
+                persisted_ys,
+                receive_sagas,
+                saga_versions,
+                keyset_id.try_into()?,
+                keyset_counter,
+            )
+            .await
+            .map_err(FfiError::internal)
+    }
+
+    async fn finalize_receive(
+        &self,
+        saga_id: String,
+        version: u32,
+        outputs: Vec<ProofInfo>,
+        persisted_ys: Vec<PublicKey>,
+    ) -> Result<bool, FfiError> {
+        let id = uuid::Uuid::parse_str(&saga_id).map_err(FfiError::internal)?;
+        let outputs = outputs
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect::<Result<Vec<_>, FfiError>>()?;
+        let persisted_ys = persisted_ys
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect::<Result<Vec<_>, FfiError>>()?;
+        self.inner
+            .finalize_receive(&id, version, outputs, persisted_ys)
+            .await
+            .map_err(FfiError::internal)
+    }
+
     async fn update_saga(&self, saga_json: String) -> Result<bool, FfiError> {
         let saga: WalletSaga = serde_json::from_str(&saga_json).map_err(FfiError::internal)?;
         self.inner
@@ -1967,6 +2111,39 @@ macro_rules! impl_ffi_wallet_database {
                 self.inner.get_saga(id).await
             }
 
+            async fn restore_proofs(
+                &self,
+                proofs: Vec<ProofInfo>,
+                persisted_ys: Vec<PublicKey>,
+                receive_sagas: std::collections::HashMap<String, u32>,
+                saga_versions: std::collections::HashMap<String, u32>,
+                keyset_id: Id,
+                keyset_counter: u32,
+            ) -> Result<bool, FfiError> {
+                self.inner
+                    .restore_proofs(
+                        proofs,
+                        persisted_ys,
+                        receive_sagas,
+                        saga_versions,
+                        keyset_id,
+                        keyset_counter,
+                    )
+                    .await
+            }
+
+            async fn finalize_receive(
+                &self,
+                saga_id: String,
+                version: u32,
+                outputs: Vec<ProofInfo>,
+                persisted_ys: Vec<PublicKey>,
+            ) -> Result<bool, FfiError> {
+                self.inner
+                    .finalize_receive(saga_id, version, outputs, persisted_ys)
+                    .await
+            }
+
             async fn update_saga(&self, saga_json: String) -> Result<bool, FfiError> {
                 self.inner.update_saga(saga_json).await
             }
@@ -2179,6 +2356,88 @@ mod tests {
         info.used_by_operation = Some(uuid::Uuid::new_v4());
         info.created_by_operation = Some(uuid::Uuid::new_v4());
         info
+    }
+
+    #[tokio::test]
+    async fn restoration_snapshot_guards_round_trip_through_bridge() {
+        use cdk_common::wallet::{
+            OperationData, ReceiveOperationData, ReceiveSagaState, WalletSaga, WalletSagaState,
+        };
+        let native = cdk_sqlite::wallet::memory::empty().await.unwrap();
+        let foreign = FfiWalletDatabaseWrapper::new(native);
+        let bridge = WalletDatabaseBridge::new(foreign);
+        let mut output = proof_info();
+        output.state = State::Unspent;
+        output.used_by_operation = None;
+        let keyset_id = output.proof.keyset_id;
+        let saga = WalletSaga::new(
+            uuid::Uuid::new_v4(),
+            WalletSagaState::Receive(ReceiveSagaState::SwapRequested),
+            output.proof.amount,
+            output.mint_url.clone(),
+            output.unit.clone(),
+            OperationData::Receive(ReceiveOperationData {
+                atomic_settlement: true,
+                token: None,
+                counter_start: Some(0),
+                counter_end: Some(18),
+                amount: Some(output.proof.amount),
+                blinded_messages: None,
+            }),
+        );
+        bridge.add_saga(saga.clone()).await.unwrap();
+        let versions = HashMap::from([(saga.id, saga.version)]);
+        for (snapshot, counter) in [
+            (HashMap::from([(saga.id, saga.version + 1)]), 0),
+            (versions.clone(), 1),
+        ] {
+            assert!(!bridge
+                .restore_proofs(
+                    vec![output.clone()],
+                    vec![],
+                    versions.clone(),
+                    snapshot,
+                    keyset_id,
+                    counter
+                )
+                .await
+                .unwrap());
+            assert_eq!(bridge.get_saga(&saga.id).await.unwrap(), Some(saga.clone()));
+            assert!(bridge
+                .get_proofs(None, None, None, None)
+                .await
+                .unwrap()
+                .is_empty());
+        }
+        assert!(bridge
+            .restore_proofs(
+                vec![output.clone()],
+                vec![],
+                versions.clone(),
+                versions.clone(),
+                keyset_id,
+                0
+            )
+            .await
+            .unwrap());
+        assert_eq!(
+            bridge.get_proofs(None, None, None, None).await.unwrap(),
+            vec![output]
+        );
+        let stored = bridge.get_saga(&saga.id).await.unwrap().unwrap();
+        assert_eq!(stored.version, saga.version + 1);
+        assert!(matches!(stored.data, OperationData::Receive(data) if !data.atomic_settlement));
+        assert_eq!(
+            bridge
+                .increment_keyset_counter(&keyset_id, 0)
+                .await
+                .unwrap(),
+            18
+        );
+        assert!(!bridge
+            .restore_proofs(vec![], vec![], versions.clone(), versions, keyset_id, 18)
+            .await
+            .unwrap());
     }
 
     #[tokio::test]
