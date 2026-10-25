@@ -1206,15 +1206,6 @@ impl Mint {
         );
 
         let quote_state = mint_quote.state();
-        if mint_quote.has_manual_payment_override_for(&wait_payment_response.payment_id) {
-            tracing::debug!(
-                quote_id = %mint_quote.id,
-                payment_id = %wait_payment_response.payment_id,
-                "Payment notification already represented by a manual quote payment override"
-            );
-            return Ok(false);
-        }
-
         if !mint_quote
             .payment_ids()
             .contains(&&wait_payment_response.payment_id)
@@ -1231,6 +1222,19 @@ impl Mint {
                 if payment_amount_quote_unit.value() == 0 {
                     tracing::error!("Zero amount payments should not be recorded.");
                     return Err(Error::AmountUndefined);
+                }
+
+                let payment_amount_quote_unit = mint_quote.uncredited_backend_payment(
+                    &wait_payment_response.payment_id,
+                    payment_amount_quote_unit,
+                );
+                if payment_amount_quote_unit.value() == 0 {
+                    tracing::debug!(
+                        quote_id = %mint_quote.id,
+                        payment_id = %wait_payment_response.payment_id,
+                        "Payment notification already credited by a manual quote payment override"
+                    );
+                    return Ok(false);
                 }
 
                 tracing::debug!(

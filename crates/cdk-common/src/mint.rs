@@ -751,28 +751,39 @@ impl MintQuote {
         }
     }
 
-    /// Returns whether `payment_id` is a manual override identifier for this quote.
-    pub fn is_manual_payment_override_id(&self, payment_id: &str) -> bool {
-        let override_id = self.manual_payment_override_id(None);
-        payment_id == override_id
-            || payment_id
-                .strip_prefix(&override_id)
-                .is_some_and(|suffix| suffix.starts_with(':'))
-    }
-
-    /// Returns whether a manual payment override has been recorded.
-    pub fn has_manual_payment_override(&self) -> bool {
-        self.payments
+    /// Part of a backend payment not already credited by a manual override for it.
+    ///
+    /// The backend amount is authoritative. Without an override representing
+    /// `payment_id`, the whole payment is returned. When the override credited
+    /// less than the backend received, the difference is returned; otherwise
+    /// nothing is, since recorded payments cannot be retracted.
+    pub fn uncredited_backend_payment(
+        &self,
+        payment_id: &str,
+        amount: Amount<CurrencyUnit>,
+    ) -> Amount<CurrencyUnit> {
+        let override_id = self.manual_payment_override_id(Some(payment_id));
+        let Some(override_payment) = self
+            .payments
             .iter()
-            .any(|payment| self.is_manual_payment_override_id(&payment.payment_id))
-    }
+            .find(|payment| payment.payment_id == override_id)
+        else {
+            return amount;
+        };
 
-    /// Returns whether a manual override represents `source_payment_id`.
-    pub fn has_manual_payment_override_for(&self, source_payment_id: &str) -> bool {
-        let override_id = self.manual_payment_override_id(Some(source_payment_id));
-        self.payments
-            .iter()
-            .any(|payment| payment.payment_id == override_id)
+        if override_payment.amount.value() != amount.value() {
+            tracing::warn!(
+                quote_id = %self.id,
+                payment_id,
+                backend_amount = %amount,
+                override_amount = %override_payment.amount,
+                "Backend payment amount differs from its manual quote payment override"
+            );
+        }
+
+        amount
+            .checked_sub(&override_payment.amount)
+            .unwrap_or_else(|_| Amount::new(0, self.unit.clone()))
     }
 
     /// Amount mintable

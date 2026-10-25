@@ -10,7 +10,6 @@ use cdk::types::QuoteTTL;
 use cdk_common::database::{Error as DatabaseError, MintDatabase, MintKeysDatabase};
 use cdk_common::nut00::KnownMethod;
 use cdk_fake_wallet::FakeWallet;
-use cdk_sqlite::mint::MintSqliteDatabase;
 use tokio::sync::Notify;
 
 use super::{MintMutationGuard, MintMutationGuardError, MintRPCServer};
@@ -32,30 +31,13 @@ pub(super) async fn create_test_rpc_server_with_payment_delay(payment_delay: u64
     let mnemonic = Mnemonic::generate(12).unwrap();
     let seed = mnemonic.to_seed_normalized("");
 
-    create_test_rpc_server_with_sqlite_database(db, &seed, payment_delay).await
-}
-
-/// Builds a test server over an explicitly supplied SQLite database and seed.
-pub(super) async fn create_test_rpc_server_with_sqlite_database(
-    db: Arc<MintSqliteDatabase>,
-    seed: &[u8],
-    payment_delay: u64,
-) -> MintRPCServer {
-    let server = build_test_rpc_server_with_sqlite_database(db, seed, payment_delay).await;
+    let server = build_test_rpc_server_with_database(db, &seed, payment_delay).await;
     server.mint.start().await.unwrap();
     server
 }
 
-/// Builds a test server without starting the mint's background services.
-pub(super) async fn build_test_rpc_server_with_sqlite_database(
-    db: Arc<MintSqliteDatabase>,
-    seed: &[u8],
-    payment_delay: u64,
-) -> MintRPCServer {
-    build_test_rpc_server_with_database(db, seed, payment_delay).await
-}
-
-/// Builds a test server over an explicitly supplied mint database.
+/// Builds a test server over an explicitly supplied mint database, without
+/// starting the mint's background services.
 pub(super) async fn build_test_rpc_server_with_database<D>(
     db: Arc<D>,
     seed: &[u8],
