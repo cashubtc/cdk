@@ -1418,7 +1418,11 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
     #[instrument(skip(self))]
     async fn get_incomplete_sagas(&self) -> Result<Vec<wallet::WalletSaga>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Error::from)?;
-        let table = read_txn.open_table(SAGAS_TABLE).map_err(Error::from)?;
+        let table = match read_txn.open_table(SAGAS_TABLE) {
+            Ok(table) => table,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(err) => return Err(Error::from(err).into()),
+        };
 
         let mut sagas: Vec<wallet::WalletSaga> = table
             .iter()
@@ -1911,6 +1915,27 @@ mod test {
     }
 
     wallet_db_test!(provide_db);
+
+    #[tokio::test]
+    async fn get_incomplete_sagas_is_empty_before_first_saga() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("wallet.redb");
+        let db = WalletRedbDatabase::new(&path).expect("database");
+
+        assert!(db
+            .get_incomplete_sagas()
+            .await
+            .expect("fresh database has no sagas")
+            .is_empty());
+        drop(db);
+
+        let db = WalletRedbDatabase::new(&path).expect("reopened database");
+        assert!(db
+            .get_incomplete_sagas()
+            .await
+            .expect("reopened database has no sagas")
+            .is_empty());
+    }
 
     #[tokio::test]
     async fn increment_keyset_counter_returns_error_on_overflow() {
