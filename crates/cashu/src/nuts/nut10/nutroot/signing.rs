@@ -216,7 +216,13 @@ impl SigningPackage {
         let mut witnesses = vec![];
         for (spend, validated) in self.spends.iter().zip(validated) {
             let preimage = preimages.get(&spend.secret).map(String::as_str);
-            let raw = complete_witness(spend, validated.digest, preimage, now)?;
+            let raw = complete_witness(
+                spend,
+                validated.digest,
+                preimage,
+                transaction.txout_keys(),
+                now,
+            )?;
             witnesses.push((validated.index, crate::nuts::Witness::NutrootWitness(raw)));
         }
         for (index, witness) in witnesses {
@@ -245,7 +251,13 @@ impl SigningPackage {
             .zip(validated)
             .find(|(spend, _)| spend.input == input)
             .ok_or(Error::InvalidWitness)?;
-        complete_witness(spend, validated.digest, preimage, now)
+        complete_witness(
+            spend,
+            validated.digest,
+            preimage,
+            transaction.txout_keys(),
+            now,
+        )
     }
 
     /// Encode a validated signing package as `nutspA` followed by base64url JSON.
@@ -259,11 +271,12 @@ fn complete_witness(
     spend: &SigningSpend,
     digest: [u8; 32],
     preimage: Option<&str>,
+    txout_keys: Option<&[PublicKey]>,
     now: u64,
 ) -> Result<String, Error> {
     let mut witness = spend.witness.clone();
     witness.preimage = preimage.map(str::to_owned);
-    witness.verify(&spend.secret, digest, now)?;
+    witness.verify_in(&spend.secret, digest, txout_keys, now)?;
     serde_json::to_string(&witness).map_err(|_| Error::InvalidWitness)
 }
 

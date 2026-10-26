@@ -147,6 +147,10 @@ async fn validate_mint_quote_methods(
     for quote_id in quote_ids {
         let quote_method = state.mint.get_mint_quote_method(quote_id).await?;
 
+        // A txout quote redeems only at its own route or as a quote input (NUT-XX).
+        if quote_method.is_txout() != expected_method.is_txout() {
+            return Err(cdk::Error::UnknownQuote);
+        }
         if quote_method != expected_method {
             return Err(cdk::Error::InvalidPaymentMethod);
         }
@@ -347,6 +351,12 @@ pub async fn get_check_mint_custom_quote(
             Ok(Json(response).into_response())
         }
         _ => {
+            // Another method's quote is not a txout quote: not found here (NUT-XX).
+            let mismatch = if method == cdk::nuts::nutxx::TXOUT_METHOD {
+                cdk::Error::UnknownQuote
+            } else {
+                cdk::Error::InvalidPaymentMethod
+            };
             // Extract and verify it's a Custom payment method
             match quote_response {
                 cdk::mint::MintQuoteResponse::Custom {
@@ -355,11 +365,11 @@ pub async fn get_check_mint_custom_quote(
                     ..
                 } => {
                     if quote_method.to_string() != method {
-                        return Err(into_response(cdk::Error::InvalidPaymentMethod));
+                        return Err(into_response(mismatch));
                     }
                     Ok(Json(response).into_response())
                 }
-                _ => Err(into_response(cdk::Error::InvalidPaymentMethod)),
+                _ => Err(into_response(mismatch)),
             }
         }
     }
@@ -1255,6 +1265,44 @@ mod tests {
             result.is_err(),
             "post_batch_check_mint_quote must reject cross-method quote checks"
         );
+    }
+
+    #[tokio::test]
+    async fn txout_routes_answer_quote_not_found_for_another_method() {
+        let state = create_test_state().await;
+        let quote = create_paid_bolt11_quote(&state).await;
+        let minted = cache_post_mint_custom(
+            AuthHeader::None,
+            State(state.clone()),
+            Path("txout".to_string()),
+            Json(MintRequest {
+                quote: quote.clone(),
+                outputs: outputs_for_amount(&state, 2),
+                signature: None,
+            }),
+        )
+        .await
+        .unwrap_err();
+        let checked = get_check_mint_custom_quote(
+            AuthHeader::None,
+            State(state),
+            Path(("txout".to_string(), quote)),
+        )
+        .await
+        .unwrap_err();
+
+        let expected = axum::body::to_bytes(
+            into_response(cdk::Error::UnknownQuote).into_body(),
+            usize::MAX,
+        )
+        .await
+        .unwrap();
+        for response in [minted, checked] {
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            assert_eq!(body, expected);
+        }
     }
 
     #[tokio::test]

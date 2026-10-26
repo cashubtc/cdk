@@ -34,6 +34,10 @@ impl Mint {
         {
             return Ok(());
         }
+        // A txout quote is paid at creation and has no backend behind it (NUT-XX).
+        if quote.payment_method.is_txout() {
+            return Ok(());
+        }
 
         // Claim this check before contacting the backend. The conditional update prevents
         // concurrent HTTP or WebSocket status requests, including requests handled by different
