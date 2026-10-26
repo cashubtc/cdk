@@ -766,19 +766,13 @@ impl Mint {
 
             // A v3 quote input commits the amount this request issues against it
             // (NUT-10): the outputs total for a single quote, the batch entry otherwise.
-            let nutroot_transaction = if input.outputs().iter().any(|output| {
+            let is_v3 = |output: &BlindedMessage| {
                 output.keyset_id.get_version() == crate::nuts::KeySetVersion::Version02
-            }) {
-                let keyset = input
-                    .outputs()
-                    .first()
-                    .ok_or(Error::SignatureMissingOrInvalid)?
-                    .keyset_id;
+            };
+            let nutroot_transaction = if input.outputs().iter().any(is_v3) {
+                // Several v3 keysets are fine; a pre-v3 output is not (NUT-04).
                 ensure_cdk!(
-                    input
-                        .outputs()
-                        .iter()
-                        .all(|output| output.keyset_id == keyset),
+                    input.outputs().iter().all(is_v3),
                     Error::SignatureMissingOrInvalid
                 );
                 let quotes = quote_entries
