@@ -183,7 +183,7 @@ impl Mint {
     pub async fn check_mint_quote_paid(&self, quote: &mut MintQuote) -> Result<(), Error> {
         Self::check_mint_quote_payments(
             self.localstore.clone(),
-            self.payment_processors.clone(),
+            self.payment_processors.load_full(),
             Some(self.pubsub_manager.clone()),
             quote,
         )

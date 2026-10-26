@@ -68,7 +68,9 @@ impl Mint {
 
         let payment_backend = self
             .payment_processors
+            .load()
             .get(&payment_processor_key)
+            .cloned()
             .ok_or_else(|| {
                 tracing::warn!(
                     "No backend for payment processor key: {:?}",
