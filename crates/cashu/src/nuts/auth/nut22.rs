@@ -227,6 +227,8 @@ pub struct BlindAuthToken {
     signing_key: Option<bitcoin::secp256k1::SecretKey>,
     #[serde(skip)]
     request_digest: Option<[u8; 32]>,
+    #[serde(skip)]
+    mint_path: String,
     /// [AuthProof]
     pub auth_proof: AuthProof,
 }
@@ -257,14 +259,29 @@ impl BlindAuthToken {
             auth_proof: proof.try_into()?,
             signing_key,
             request_digest: None,
+            mint_path: String::new(),
         })
     }
 
+    /// Sign request targets relative to `mint_url`, so a mint URL subpath is not signed (NUT-22).
+    pub fn relative_to(mut self, mint_url: &crate::MintUrl) -> Self {
+        self.mint_path = url::Url::parse(&mint_url.to_string())
+            .map(|url| url.path().trim_end_matches('/').to_owned())
+            .unwrap_or_default();
+        self
+    }
+
     /// Sign the exact outgoing HTTP request. A received token has no private key.
+    ///
+    /// `target` is the origin-form path the transport sends; it must sit under the mint URL path.
     pub fn sign_request(&mut self, method: &str, target: &str, body: &[u8]) -> Result<(), Error> {
         if self.auth_proof.keyset_id.get_version() != crate::nuts::KeySetVersion::Version02 {
             return Ok(());
         }
+        let target = target
+            .strip_prefix(self.mint_path.as_str())
+            .filter(|rest| rest.starts_with('/'))
+            .ok_or(crate::nuts::nut10::nutroot::Error::InvalidWitness)?;
         let digest = crate::nuts::nut10::nutroot::authorized_request_digest(method, target, body)?;
         let key = self
             .signing_key
@@ -320,6 +337,7 @@ impl BlindAuthToken {
             auth_proof,
             signing_key: None,
             request_digest: None,
+            mint_path: String::new(),
         }
     }
 
@@ -330,6 +348,7 @@ impl BlindAuthToken {
         Self {
             signing_key: self.signing_key,
             request_digest: self.request_digest,
+            mint_path: self.mint_path.clone(),
             auth_proof: AuthProof {
                 witness: self.auth_proof.witness.clone(),
                 keyset_id: self.auth_proof.keyset_id,
@@ -596,6 +615,40 @@ mod tests {
 }
 
 #[cfg(test)]
+#[test]
+fn nutroot_bat_signs_target_relative_to_mint_url() {
+    use crate::nuts::nut10::nutroot::SpendInfo;
+    let key = crate::SecretKey::from_slice(&[9; 32]).unwrap();
+    let id = Id::from_bytes(&[vec![2], vec![1; 32]].concat()).unwrap();
+    let c = crate::nuts::nut01::BlsG1PublicKey::hash_to_curve(b"signature").into();
+    let mut proof = Proof::new(
+        1.into(),
+        id,
+        key.public_key().to_string().parse().unwrap(),
+        c,
+    );
+    proof.spend_info = Some(SpendInfo {
+        bearer_key: Some(key),
+        ..Default::default()
+    });
+    let mint_url: crate::MintUrl = "https://mint.example/Bitcoin/".parse().unwrap();
+    let mut outgoing = BlindAuthToken::from_proof(proof)
+        .unwrap()
+        .relative_to(&mint_url)
+        .without_dleq();
+    for outside in ["/v1/swap", "/Bitcoinx/v1/swap"] {
+        assert!(outgoing.sign_request("POST", outside, b"{}").is_err());
+    }
+    outgoing
+        .sign_request("POST", "/Bitcoin/v1/swap", b"{}")
+        .unwrap();
+    let mut incoming: BlindAuthToken = outgoing.to_string().parse().unwrap();
+    incoming
+        .set_request_context("POST", "/v1/swap", b"{}")
+        .unwrap();
+    incoming.verify_request().unwrap();
+}
+
 #[test]
 fn nutroot_bat_binds_request_and_does_not_serialize_private_context() {
     use crate::nuts::nut10::nutroot::SpendInfo;

@@ -1,7 +1,7 @@
 //! Nutroot primitives for version `02` keysets.
 //!
 //! Implements the draft in NUTs PR #443, revision
-//! `d27121e7cbee634429eae1af92d6af36e568cdfc`.
+//! `2df082740c0594fe3319fc6c2fd138eacf48a5fe`.
 //!
 //! CDK uses these primitives for version-02 transaction authorization, payment
 //! policies, signing packages, and request-bound blind authentication.
@@ -34,11 +34,12 @@ pub use self::derivation::{
 };
 pub use self::leaf::{Condition, Leaf, CORE_LEAF_TYPES};
 pub use self::locking::{nums_point, NutrootOption};
-pub use self::signing::{SigningInput, SigningKind, SigningPackage, SigningSpend};
+pub use self::signing::{SigningPackage, SigningSpend};
 pub use self::spend::SpendRecord;
 pub use self::spend_info::{nums_key, receiver_key, sender_key, SpendInfo};
 pub use self::transaction::{
     authorized_request_digest, input_section, MintQuoteInput, MintQuoteOutput, Quote, Transaction,
+    TransactionElement,
 };
 pub use self::tree::Tree;
 pub use self::witness::{ControlBlock, Witness};

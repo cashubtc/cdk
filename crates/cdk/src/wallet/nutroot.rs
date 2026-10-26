@@ -25,7 +25,7 @@ fn with_x_only_twins(keys: Vec<SecpSecretKey>) -> Vec<SecpSecretKey> {
 
 impl Wallet {
     /// Sign a caller-approved Nutroot package with matching wallet keyring keys.
-    /// Inspect its transaction and quote amount before calling this method.
+    /// Review it first: `SigningPackage::transaction()?.elements()` lists every input and output.
     #[tracing::instrument(skip_all)]
     pub async fn sign_nutroot_package(&self, encoded: &str) -> Result<String, Error> {
         let mut package: nutroot::SigningPackage = encoded.parse().map_err(error)?;

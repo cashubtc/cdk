@@ -1076,4 +1076,46 @@ mod tests {
                 .is_err()
         );
     }
+
+    #[test]
+    fn nutroot_nums_request_output_vectors() {
+        use bitcoin::secp256k1::SecretKey;
+
+        use crate::nuts::nut10::nutroot::NutrootOption;
+
+        // NUT-18 NUMS request paid with ephemeral 5, with and without its `b` entry.
+        let leaf = "00020200010104002102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1306000468a3be80";
+        let blinded_leaf = "000202000101040021039ca57991c48db95252bff61e02c31cf9b1e9ec2ef27d9dee33db6f0324e6ca8106000468a3be80";
+        let scalar = |n: u8| SecretKey::from_slice(&[[0; 31].as_slice(), &[n]].concat()).unwrap();
+        let mut policy: NutrootOption = serde_json::from_value(serde_json::json!({
+            "k": "0250929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0",
+            "l": [leaf],
+            "b": ["02e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13"],
+        }))
+        .unwrap();
+        let cases = [
+            (
+                7,
+                "02fb23814e330739413a6e3982a21916002962002bc101ac105a28e0cf3bcb46d1",
+                Some("022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4"),
+                "028edfebd6fdea3e1d89359af20868a2e76315b36cdb1a79de497a1757ca7bd407",
+                blinded_leaf,
+            ),
+            (
+                9,
+                "030b5dc180dd2ef76be0f0319fc5c254511fede8c8563a823d3b0fcd6f9012a0b2",
+                None,
+                "03b948fab26606a34380c4515ece4c27d25fcf53eb95d1041630ab44f2be4f7331",
+                leaf,
+            ),
+        ];
+        for (u, secret, e, k, tree_leaf) in cases {
+            let (actual, info) = policy.create_output(&scalar(5), &scalar(u)).unwrap();
+            assert_eq!(actual, secret);
+            assert_eq!(info.ephemeral_key.map(|e| e.to_string()).as_deref(), e);
+            assert_eq!(info.internal_key.unwrap().to_string(), k);
+            assert_eq!(info.tree, Some(vec![tree_leaf.to_owned()]));
+            policy.blind_keys = None;
+        }
+    }
 }

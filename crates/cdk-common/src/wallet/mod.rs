@@ -535,7 +535,7 @@ impl SendMemo {
 /// Receive options
 #[derive(Clone, Default)]
 pub struct ReceiveOptions {
-    /// Require an exact Nutroot payment policy before signing received inputs.
+    /// Exact Nutroot payment policy that received v3 proofs must meet.
     pub nutroot: Option<crate::nuts::nut10::nutroot::NutrootOption>,
     /// Amount split target
     pub amount_split_target: SplitTarget,

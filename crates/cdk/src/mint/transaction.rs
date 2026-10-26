@@ -320,21 +320,18 @@ pub(crate) async fn settle_with_melt(
     let mut outputs = melt_request_info.change_outputs.clone();
     let change = settlement_change(excess, quote.fee_reserve().into(), fee_paid);
     if outputs.iter().any(|o| o.amount == Amount::ZERO) {
-        // The outputs' own keyset, active or not.
-        let mut denominations = outputs
-            .first()
-            .and_then(|output| mint.get_keyset_info(&output.keyset_id))
-            .map(|keyset| keyset.amounts)
-            .unwrap_or_default();
-        denominations.sort_unstable_by(|a, b| b.cmp(a));
         let mut left = u64::from(change);
-        // Each blank in request order takes the largest amount that fits; one left at zero is not
-        // signed (NUT-08), and what is left stays with the mint.
+        // Each blank in request order takes the largest amount of its own keyset (active or not)
+        // that fits; one left at zero is not signed (NUT-08), and what is left stays with the mint.
         outputs.retain_mut(|output| {
             if output.amount != Amount::ZERO {
                 return true;
             }
-            match denominations.iter().find(|&&d| d > 0 && d <= left) {
+            let denominations = mint
+                .get_keyset_info(&output.keyset_id)
+                .map(|keyset| keyset.amounts)
+                .unwrap_or_default();
+            match denominations.iter().filter(|&&d| d > 0 && d <= left).max() {
                 Some(&amount) => {
                     output.amount = Amount::from(amount);
                     left -= amount;
@@ -649,10 +646,6 @@ impl Mint {
             Some(verification)
         };
         if !outputs.is_empty() {
-            let keyset = outputs[0].keyset_id;
-            if outputs.iter().any(|o| o.keyset_id != keyset) {
-                return Err(invalid("outputs must share one keyset"));
-            }
             units.insert(self.verify_outputs(outputs)?.amount.unit().clone());
         }
 
@@ -679,13 +672,15 @@ impl Mint {
                 }
             }
         }
-        // Outputs beside a melt need a keyset that outlives the melt quote (NUT-XX).
-        if let (Some(quote), Some(output)) = (&melt, outputs.first()) {
-            let final_expiry = self
-                .get_keyset_info(&output.keyset_id)
-                .and_then(|keyset| keyset.final_expiry);
-            if final_expiry.is_some_and(|expiry| expiry < quote.expiry) {
-                return Err(invalid("outputs' keyset expires before the melt quote"));
+        // Outputs beside a melt need keysets that outlive the melt quote (NUT-XX).
+        if let Some(quote) = &melt {
+            for output in outputs {
+                let final_expiry = self
+                    .get_keyset_info(&output.keyset_id)
+                    .and_then(|keyset| keyset.final_expiry);
+                if final_expiry.is_some_and(|expiry| expiry < quote.expiry) {
+                    return Err(invalid("an output's keyset expires before the melt quote"));
+                }
             }
         }
 
@@ -903,10 +898,10 @@ impl Mint {
                 return Err(err);
             }
         };
-        let states = if ys.is_empty() {
+        let states = if proofs.is_empty() {
             vec![]
         } else {
-            Mint::proof_states(&mut tx, &ys, State::Spent).await?
+            Mint::proof_states(&mut tx, &proofs, State::Spent).await?
         };
         tx.commit().await?;
 

@@ -1132,7 +1132,7 @@ mod tests {
         let quote_id = create_paid_bolt11_quote(&state).await;
         let mut batch_request = BatchMintRequest {
             quotes: vec![quote_id],
-            quote_amounts: None,
+            quote_amounts: Some(vec![Amount::from(2u64)]),
             outputs: outputs_for_amount(&state, 2),
             signatures: None,
         };

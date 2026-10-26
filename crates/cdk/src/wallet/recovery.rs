@@ -335,7 +335,14 @@ impl Wallet {
     ) -> Result<PreMintSecrets, Error> {
         if let Some(saga) = self.localstore.get_saga(saga_id).await? {
             if let Some(saved) = saga.data.premint_secrets() {
-                if saved.blinded_messages() != outputs {
+                // SIG_ALL writes a witness into the sent outputs only, so compare the blinded material.
+                let same_outputs = saved.secrets.len() == outputs.len()
+                    && saved.secrets.iter().zip(outputs).all(|(premint, output)| {
+                        let saved = &premint.blinded_message;
+                        (saved.amount, saved.keyset_id, saved.blinded_secret)
+                            == (output.amount, output.keyset_id, output.blinded_secret)
+                    });
+                if !same_outputs {
                     return Err(Error::InvalidMintResponse(
                         "saved output material does not match the request".to_owned(),
                     ));
