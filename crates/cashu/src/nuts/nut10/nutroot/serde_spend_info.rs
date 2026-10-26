@@ -15,9 +15,9 @@ struct Wire {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     i: Option<ByteBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    t: Option<Vec<ByteBuf>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     u: Option<ByteBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    t: Option<Vec<ByteBuf>>,
 }
 
 pub(crate) fn serialize<S>(info: &Option<SpendInfo>, serializer: S) -> Result<S::Ok, S::Error>

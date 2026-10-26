@@ -788,10 +788,8 @@ impl Mint {
                         let amount = match (input.is_batch(), entry.expected_amount) {
                             (false, _) => outputs_amount.clone().into(),
                             (true, Some(expected)) => Amount::from(expected),
-                            (true, None) if quote.payment_method.is_bolt11() => {
-                                quote.amount.clone().map(Into::into).unwrap_or(Amount::ZERO)
-                            }
-                            (true, None) => quote.amount_mintable().into(),
+                            // A v3 batch carries `quote_amounts` (NUT-29).
+                            (true, None) => return Err(Error::TransactionUnbalanced(0, 0, 0)),
                         };
                         Ok(crate::nuts::nut10::nutroot::MintQuoteInput {
                             id: entry.quote_id.to_string(),

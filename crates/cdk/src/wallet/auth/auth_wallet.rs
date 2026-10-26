@@ -330,7 +330,7 @@ impl AuthWallet {
     /// Get Auth Token
     #[instrument(skip(self))]
     pub async fn get_blind_auth_token(&self) -> Result<Option<BlindAuthToken>, Error> {
-        let auth_proof = match self
+        let proofs = self
             .localstore
             .get_proofs(
                 Some(self.mint_url.clone()),
@@ -338,19 +338,16 @@ impl AuthWallet {
                 Some(vec![State::Unspent]),
                 None,
             )
-            .await?
-            .pop()
-        {
-            Some(proof) => {
-                self.localstore
-                    .update_proofs(vec![], vec![proof.proof.y()?])
-                    .await?;
-                BlindAuthToken::from_proof(proof.proof)?
+            .await?;
+        // Use the last stored BAT that can sign; one without spend info stays stored.
+        for proof in proofs.into_iter().rev() {
+            let y = proof.proof.y()?;
+            if let Ok(token) = BlindAuthToken::from_proof(proof.proof) {
+                self.localstore.update_proofs(vec![], vec![y]).await?;
+                return Ok(Some(token.relative_to(&self.mint_url)));
             }
-            None => return Ok(None),
-        };
-
-        Ok(Some(auth_proof))
+        }
+        Ok(None)
     }
 
     /// Auth for request
@@ -716,6 +713,35 @@ mod tests {
             auth_client: connector,
             oidc_client: Arc::new(RwLock::new(None)),
         }
+    }
+
+    #[tokio::test]
+    async fn bat_without_spend_info_stays_stored() {
+        let wallet = auth_wallet(HashMap::new()).await;
+        let keyset_id = Id::from_bytes(&[vec![2], vec![42; 32]].concat()).unwrap();
+        let mut proof = crate::wallet::test_utils::test_proof(keyset_id, 1);
+        proof.secret =
+            crate::secret::Secret::new(crate::nuts::SecretKey::generate().public_key().to_hex());
+        let info = ProofInfo::new(
+            proof,
+            wallet.mint_url.clone(),
+            State::Unspent,
+            CurrencyUnit::Auth,
+        )
+        .unwrap();
+        wallet
+            .localstore
+            .update_proofs(vec![info], vec![])
+            .await
+            .unwrap();
+
+        assert!(wallet.get_blind_auth_token().await.unwrap().is_none());
+        let stored = wallet
+            .localstore
+            .get_proofs(None, Some(CurrencyUnit::Auth), None, None)
+            .await
+            .unwrap();
+        assert_eq!(stored.len(), 1);
     }
 
     #[tokio::test]

@@ -47,9 +47,7 @@ use cli::CLIArgs;
 use config::{AuthType, DatabaseEngine, PaymentBackendType};
 use env_vars::ENV_WORK_DIR;
 use setup::PaymentBackendSetup;
-use tower::ServiceBuilder;
 use tower_http::compression::CompressionLayer;
-use tower_http::decompression::RequestDecompressionLayer;
 use tower_http::trace::TraceLayer;
 use tracing_appender::{non_blocking, rolling};
 use tracing_subscriber::fmt::writer::MakeWriterExt;
@@ -2348,11 +2346,7 @@ impl PreparedMintd {
         let mut mint_service = Router::new()
             .merge(v1_service)
             .layer(DefaultBodyLimit::max(REQUEST_BODY_LIMIT_BYTES))
-            .layer(
-                ServiceBuilder::new()
-                    .layer(RequestDecompressionLayer::new())
-                    .layer(CompressionLayer::new()),
-            )
+            .layer(CompressionLayer::new())
             .layer(TraceLayer::new_for_http());
 
         for router in routers {

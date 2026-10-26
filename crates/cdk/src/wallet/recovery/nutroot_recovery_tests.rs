@@ -3,7 +3,7 @@ use cdk_common::wallet::{
     OperationData, SwapOperationData, SwapSagaState, WalletSaga, WalletSagaState,
 };
 
-use crate::nuts::{Id, PreMintSecrets};
+use crate::nuts::{Id, P2PKWitness, PreMintSecrets, Witness};
 use crate::wallet::test_utils::{create_test_db, create_test_wallet};
 
 #[tokio::test]
@@ -47,6 +47,19 @@ async fn random_nutroot_outputs_survive_saga_storage() {
             .key_path_key(&premint.secret.to_string(), None)
             .unwrap();
     }
+    let mut signed = outputs.clone();
+    for output in &mut signed {
+        output.witness = Some(Witness::P2PKWitness(P2PKWitness {
+            signatures: vec!["00".repeat(64)],
+        }));
+    }
+    assert_eq!(
+        restarted
+            .recover_premint_secrets(&saga_id, &signed, 0, 0)
+            .await
+            .unwrap(),
+        premints
+    );
     let mut wrong = outputs.clone();
     wrong.reverse();
     assert!(restarted

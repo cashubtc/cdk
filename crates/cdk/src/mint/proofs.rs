@@ -1,5 +1,7 @@
+use std::collections::HashMap;
+
 use cdk_common::database::mint::Acquired;
-use cdk_common::database::DynMintTransaction;
+use cdk_common::database::{DynMintDatabase, DynMintTransaction};
 use cdk_common::mint::ProofsWithState;
 use cdk_common::nuts::nut14::HTLCWitness;
 use cdk_common::nuts::SpendingConditions;
@@ -25,6 +27,71 @@ pub(crate) fn pending_legacy_witness(proof: &cdk_common::Proof) -> Option<Witnes
     }))
 }
 
+/// A proof state as check-state and NUT-17 publish it: v3 proofs show their spend record, pre-v3 ones
+/// their stored witness once spent and [`pending_legacy_witness`] while pending (NUT-07).
+pub(crate) fn published_state(
+    y: cdk_common::PublicKey,
+    state: State,
+    proof: Option<&cdk_common::Proof>,
+    record: Option<cdk_common::nuts::nut10::nutroot::SpendRecord>,
+) -> cdk_common::ProofState {
+    let mut result = cdk_common::ProofState {
+        y,
+        state,
+        witness: None,
+        input_digest: None,
+    };
+    if let Some(record) = record {
+        record.apply_to(&mut result);
+    } else if let Some(proof) = proof
+        .filter(|proof| proof.keyset_id.get_version() != cdk_common::nuts::KeySetVersion::Version02)
+    {
+        result.witness = match state {
+            State::Spent => proof.witness.clone(),
+            State::Pending => pending_legacy_witness(proof),
+            _ => None,
+        };
+    }
+    result
+}
+
+/// [`published_state`] for each of `ys`, `None` where the mint has no state for it.
+pub(crate) async fn published_states(
+    db: &DynMintDatabase,
+    ys: &[cdk_common::PublicKey],
+) -> Result<Vec<Option<cdk_common::ProofState>>, Error> {
+    let states = db.get_proofs_states(ys).await?;
+    if states.len() != ys.len() {
+        tracing::error!("Database did not return states for all proofs");
+        return Err(Error::UnknownPaymentState);
+    }
+    let needing_witness: Vec<_> = ys
+        .iter()
+        .zip(&states)
+        .filter(|(_, state)| matches!(state, Some(State::Spent | State::Pending)))
+        .map(|(y, _)| *y)
+        .collect();
+    let proofs: HashMap<_, _> = if needing_witness.is_empty() {
+        HashMap::new()
+    } else {
+        db.get_proofs_by_ys(&needing_witness)
+            .await?
+            .into_iter()
+            .flatten()
+            .filter_map(|proof| Some((proof.y().ok()?, proof)))
+            .collect()
+    };
+    let records = db.get_proof_spends(ys).await?;
+    Ok(ys
+        .iter()
+        .zip(states)
+        .zip(records)
+        .map(|((y, state), record)| {
+            state.map(|state| published_state(*y, state, proofs.get(y), record))
+        })
+        .collect())
+}
+
 impl Mint {
     pub(crate) async fn record_nutroot_spends(
         tx: &mut DynMintTransaction,
@@ -48,41 +115,23 @@ impl Mint {
         Ok(())
     }
 
+    /// States for `proofs` in `proof_state`, each with the witness NUT-07 lets it show.
     pub(crate) async fn proof_states(
         tx: &mut DynMintTransaction,
-        ys: &[cdk_common::PublicKey],
-        proof_state: State,
-    ) -> Result<Vec<cdk_common::ProofState>, Error> {
-        let records = tx.get_proof_spends(ys).await?;
-        Ok(ys
-            .iter()
-            .zip(records)
-            .map(|(y, record)| {
-                let mut state = (*y, proof_state).into();
-                if let Some(record) = record {
-                    record.apply_to(&mut state);
-                }
-                state
-            })
-            .collect())
-    }
-
-    /// Pending states for `proofs`, in order, each with the witness NUT-07 lets it show.
-    pub(crate) async fn pending_proof_states(
-        tx: &mut DynMintTransaction,
         proofs: &[cdk_common::Proof],
+        proof_state: State,
     ) -> Result<Vec<cdk_common::ProofState>, Error> {
         let ys = proofs
             .iter()
             .map(|proof| proof.y())
             .collect::<Result<Vec<_>, _>>()?;
-        let mut states = Self::proof_states(tx, &ys, State::Pending).await?;
-        for (state, proof) in states.iter_mut().zip(proofs) {
-            if state.witness.is_none() {
-                state.witness = pending_legacy_witness(proof);
-            }
-        }
-        Ok(states)
+        let records = tx.get_proof_spends(&ys).await?;
+        Ok(proofs
+            .iter()
+            .zip(ys)
+            .zip(records)
+            .map(|((proof, y), record)| published_state(y, proof_state, Some(proof), record))
+            .collect())
     }
 
     /// Updates the state of proofs with validation and error handling.
@@ -394,5 +443,17 @@ mod tests {
             super::pending_legacy_witness(&htlc_proof(Some(vec![]))),
             None
         );
+    }
+
+    /// Check-state and NUT-17 events publish one rule for pre-v3 proofs.
+    #[test]
+    fn published_state_shows_pre_v3_witness_by_state() {
+        let key = cdk_common::SecretKey::generate().public_key();
+        let proof = htlc_proof(Some(vec![key]));
+        let y = proof.y().unwrap();
+        let shown = |state| super::published_state(y, state, Some(&proof), None).witness;
+        assert_eq!(shown(State::Unspent), None);
+        assert_eq!(shown(State::Pending), super::pending_legacy_witness(&proof));
+        assert_eq!(shown(State::Spent), proof.witness);
     }
 }

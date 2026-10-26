@@ -710,10 +710,10 @@ impl Mint {
                 return Err(err);
             }
         };
-        let states = if ys.is_empty() {
+        let states = if proofs.is_empty() {
             vec![]
         } else {
-            Mint::proof_states(&mut tx, &ys, State::Spent).await?
+            Mint::proof_states(&mut tx, &proofs, State::Spent).await?
         };
         tx.commit().await?;
 

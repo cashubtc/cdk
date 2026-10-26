@@ -249,7 +249,7 @@ impl<'a> SwapSaga<'a, Initial> {
             return Err(err.into());
         }
 
-        let states = Mint::pending_proof_states(&mut tx, input_proofs).await?;
+        let states = Mint::proof_states(&mut tx, input_proofs, State::Pending).await?;
         tx.commit().await?;
         // Publish proof state changes
         for state in states {
@@ -451,7 +451,7 @@ impl SwapSaga<'_, Signed> {
             // Don't rollback - swap succeeded, orphaned saga is harmless
         }
 
-        let states = Mint::proof_states(&mut tx, &self.state_data.ys, State::Spent).await?;
+        let states = Mint::proof_states(&mut tx, &proofs, State::Spent).await?;
         tx.commit().await?;
         for state in states {
             self.pubsub.proof_state(state);
