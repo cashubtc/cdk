@@ -892,18 +892,7 @@ impl Mint {
                         .signature
                         .as_ref()
                         .ok_or(Error::SignatureMissingOrInvalid)?;
-                    ensure_cdk!(raw.len() <= 4096, Error::SignatureMissingOrInvalid);
-                    let witness = if raw.len() == 128 {
-                        crate::nuts::nut10::nutroot::Witness {
-                            signatures: vec![raw.clone()],
-                            leaf: None,
-                            control: None,
-                            preimage: None,
-                        }
-                    } else {
-                        serde_json::from_str(raw).map_err(|_| Error::SignatureMissingOrInvalid)?
-                    };
-                    witness
+                    crate::mint::transaction::parse_quote_witness(raw)?
                         .verify(
                             &pubkey.to_string(),
                             transaction
@@ -1012,6 +1001,7 @@ impl Mint {
             // locks. The database returns the quotes in request order, while locking
             // them by ID, so reversed batch requests cannot deadlock each other.
             let locked_quotes = tx.get_mint_quotes_by_ids(&quote_ids).await?;
+            crate::mint::transaction::refuse_pending_quotes(&mut tx, &quote_ids).await?;
             let mut issuance_events = Vec::with_capacity(quote_ids.len());
 
             // For batch minting, outputs are shared across all quotes and should be persisted once.

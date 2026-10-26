@@ -18,7 +18,8 @@ const AUTHORIZED_REQUEST: u8 = 0xf1;
 /// Quote identity and amount bound by a transaction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Quote {
-    /// Mint quote face amount, or melt amount including selected fee reserve.
+    /// Amount a mint quote issues in this transaction, or melt amount including
+    /// the selected fee reserve.
     pub amount: Amount,
     /// Quote identifier exactly as supplied by the mint.
     pub id: String,
