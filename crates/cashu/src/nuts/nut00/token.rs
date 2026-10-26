@@ -1331,6 +1331,22 @@ mod tests {
     }
 
     #[test]
+    fn test_nut28_utf8_pe_bytes_roundtrip() {
+        let mut bytes = [b'0'; 33];
+        bytes[0] = 0x02;
+        let key = PublicKey::from_slice(&bytes).unwrap();
+        assert!(std::str::from_utf8(&bytes).is_ok());
+
+        let encoded = nut28_token_with_pe(Some(ciborium::Value::Bytes(bytes.to_vec())));
+        let token = TokenV4::from_str(&encoded).unwrap();
+        assert!(token.token[0]
+            .proofs
+            .iter()
+            .all(|proof| proof.p2pk_e == Some(key)));
+        assert_eq!(TokenV4::from_str(&token.to_string()).unwrap(), token);
+    }
+
+    #[test]
     fn test_nut28_legacy_pe_normalizes_to_bytes() {
         let key = "02a8cda4cf448bfce9a9e46e588c06ea1780fcb94e3bbdf3277f42995d403a8b0c";
         let legacy = nut28_token_with_pe(Some(ciborium::Value::Text(key.to_string())));

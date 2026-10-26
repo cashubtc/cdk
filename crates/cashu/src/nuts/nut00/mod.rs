@@ -615,24 +615,54 @@ fn deserialize_v4_pubkey_option<'de, D>(deserializer: D) -> Result<Option<Public
 where
     D: serde::Deserializer<'de>,
 {
-    // Older CDK releases emitted hex text. Accept it on input while the
-    // serializer always emits the NUT-28 byte-string representation.
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum BytesOrHex {
-        Hex(String),
-        Bytes(#[serde(with = "serde_bytes")] Vec<u8>),
+    // Older CDK releases emitted hex text. Dispatch on the wire type so that
+    // byte strings containing valid UTF-8 are still parsed as public key bytes.
+    struct PeVisitor;
+
+    impl<'de> serde::de::Visitor<'de> for PeVisitor {
+        type Value = Option<PublicKey>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("public key bytes, a legacy hex public key, or null")
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_unit<E>(self) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            deserializer.deserialize_any(self)
+        }
+
+        fn visit_bytes<E>(self, bytes: &[u8]) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            PublicKey::from_slice(bytes).map(Some).map_err(E::custom)
+        }
+
+        fn visit_str<E>(self, hex: &str) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            PublicKey::from_hex(hex).map(Some).map_err(E::custom)
+        }
     }
 
-    match Option::<BytesOrHex>::deserialize(deserializer)? {
-        Some(BytesOrHex::Bytes(bytes)) => PublicKey::from_slice(&bytes)
-            .map(Some)
-            .map_err(serde::de::Error::custom),
-        Some(BytesOrHex::Hex(hex)) => PublicKey::from_hex(hex)
-            .map(Some)
-            .map_err(serde::de::Error::custom),
-        None => Ok(None),
-    }
+    deserializer.deserialize_option(PeVisitor)
 }
 
 /// Currency Unit
