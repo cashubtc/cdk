@@ -660,6 +660,19 @@ where
         {
             PublicKey::from_hex(hex).map(Some).map_err(E::custom)
         }
+
+        fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::SeqAccess<'de>,
+        {
+            let mut bytes = Vec::new();
+            while let Some(byte) = seq.next_element::<u8>()? {
+                bytes.push(byte);
+            }
+            PublicKey::from_slice(&bytes)
+                .map(Some)
+                .map_err(serde::de::Error::custom)
+        }
     }
 
     deserializer.deserialize_option(PeVisitor)

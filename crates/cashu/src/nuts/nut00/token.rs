@@ -1331,6 +1331,17 @@ mod tests {
     }
 
     #[test]
+    fn test_nut28_proof_v4_json_roundtrip() {
+        let token = TokenV4::from_str(NUT28_EXAMPLE_V4_TOKEN).unwrap();
+        for proof in &token.token[0].proofs {
+            assert!(proof.p2pk_e.is_some());
+            let json = serde_json::to_string(proof).unwrap();
+            let decoded: ProofV4 = serde_json::from_str(&json).unwrap();
+            assert_eq!(&decoded, proof);
+        }
+    }
+
+    #[test]
     fn test_nut28_utf8_pe_bytes_roundtrip() {
         let mut bytes = [b'0'; 33];
         bytes[0] = 0x02;

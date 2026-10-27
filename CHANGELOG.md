@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- cashu: P2BK V4 tokens now encode `pe` as CBOR bytes. Wallets using CDK 0.16–0.18 must upgrade to receive these tokens. Updated wallets continue to accept legacy hex-encoded tokens (#2712).
+
 ### Removed
 
 - cdk-common/cdk/cdk-ffi: **BREAKING** - Remove the shared `wallet::Wallet` trait and its forwarding implementations. Use concrete wallet methods instead; see the [v0.19 migration guide](docs/migrations/v0.19.md#wallet-trait-removal). The exported UniFFI API is unchanged.
