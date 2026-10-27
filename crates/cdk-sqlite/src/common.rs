@@ -1,20 +1,33 @@
 use std::fmt;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use cdk_sql_common::pool::{self, DatabasePool};
 use cdk_sql_common::value::Value;
-use rusqlite::Connection;
+use rusqlite::{ffi, Connection};
 
 use crate::async_sqlite;
 
 /// The config need to create a new SQLite connection
-#[derive(Clone)]
 pub struct Config {
     path: Option<String>,
     password: Option<String>,
+    /// Set once the in-memory database has been opened. It lives only inside its
+    /// single connection, so a second open means that connection was discarded.
+    in_memory_opened: AtomicBool,
+}
+
+impl Clone for Config {
+    fn clone(&self) -> Self {
+        Self {
+            path: self.path.clone(),
+            password: self.password.clone(),
+            // A cloned config describes a new pool with its own database.
+            in_memory_opened: AtomicBool::new(false),
+        }
+    }
 }
 
 impl fmt::Debug for Config {
@@ -56,6 +69,17 @@ impl DatabasePool for SqliteConnectionManager {
         _stale: Arc<AtomicBool>,
         _timeout: Duration,
     ) -> Result<Self::Connection, pool::Error<Self::Error>> {
+        let in_memory = config.path.is_none();
+        if in_memory && config.in_memory_opened.load(Ordering::SeqCst) {
+            // Handing out a fresh, empty database would silently drop every
+            // previous write, so make all later operations fail instead.
+            tracing::error!("In-memory SQLite connection was discarded; its database is lost");
+            return Err(pool::Error::Resource(rusqlite::Error::SqliteFailure(
+                ffi::Error::new(ffi::SQLITE_CANTOPEN),
+                Some("in-memory database was lost after its connection was discarded".to_owned()),
+            )));
+        }
+
         let conn = if let Some(path) = config.path.as_ref() {
             // Check if parent directory exists before attempting to open database
             let path_buf = PathBuf::from(path);
@@ -88,6 +112,10 @@ impl DatabasePool for SqliteConnectionManager {
 
         conn.busy_timeout(Duration::from_secs(10))?;
 
+        if in_memory {
+            config.in_memory_opened.store(true, Ordering::SeqCst);
+        }
+
         Ok(async_sqlite::AsyncSqlite::new(conn))
     }
 }
@@ -116,11 +144,13 @@ impl From<&str> for Config {
             Config {
                 path: None,
                 password: None,
+                in_memory_opened: Default::default(),
             }
         } else {
             Config {
                 path: Some(path.to_owned()),
                 password: None,
+                in_memory_opened: Default::default(),
             }
         }
     }
@@ -132,11 +162,13 @@ impl From<(&str, &str)> for Config {
             Config {
                 path: None,
                 password: Some(pass.to_owned()),
+                in_memory_opened: Default::default(),
             }
         } else {
             Config {
                 path: Some(path.to_owned()),
                 password: Some(pass.to_owned()),
+                in_memory_opened: Default::default(),
             }
         }
     }
