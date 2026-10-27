@@ -16,10 +16,13 @@ pub struct KeySetInfo {
     /// Input fee per thousand (ppk)
     pub input_fee_ppk: u64,
     /// Unix time from which the mint intends to sign with this keyset
+    #[uniffi(default = None)]
     pub active_from: Option<u64>,
     /// Unix time until which the mint intends to keep this keyset active
+    #[uniffi(default = None)]
     pub active_until: Option<u64>,
     /// Optional expiry timestamp
+    #[uniffi(default = None)]
     pub final_expiry: Option<u64>,
 }
 
@@ -173,10 +176,13 @@ pub struct KeySet {
     /// The keys (map of amount to public key hex)
     pub keys: HashMap<u64, String>,
     /// Unix time from which the mint intends to sign with this keyset
+    #[uniffi(default = None)]
     pub active_from: Option<u64>,
     /// Unix time until which the mint intends to keep this keyset active
+    #[uniffi(default = None)]
     pub active_until: Option<u64>,
     /// Optional expiry timestamp
+    #[uniffi(default = None)]
     pub final_expiry: Option<u64>,
 }
 
