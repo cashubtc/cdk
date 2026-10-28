@@ -7,6 +7,18 @@
 
 ## [Unreleased]
 
+## [0.18.3](https://github.com/cashubtc/cdk/releases/tag/v0.18.3)
+
+### Summary
+
+Version 0.18.3 fixes FFI runtime teardown panics, hardens SQL transaction cleanup, and prevents lost SQLite in-memory databases from being silently replaced with empty databases.
+
+### Fixed
+
+- cdk-ffi: Dropping an owned Tokio runtime from an async context no longer panics during binding teardown. Drops from synchronous contexts retain graceful blocking shutdown (#2731).
+- cdk-sql-common/cdk-sqlite: Transaction cleanup retains ownership of pooled connections until the transaction has ended and discards connections when cleanup fails, is cancelled, or times out. SQLite skips rollback when no transaction is active, preserving healthy connections (#2769).
+- cdk-sqlite: Losing an in-memory database connection now causes subsequent operations to return a database error instead of silently opening a fresh, empty database (#2769) ([thesimplekid]).
+
 ## [0.18.2](https://github.com/cashubtc/cdk/releases/tag/v0.18.2)
 
 ### Summary
