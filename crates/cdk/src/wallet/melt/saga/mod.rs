@@ -104,9 +104,9 @@ async fn finalize_melt_common<'a>(
     metadata: HashMap<String, String>,
     keyset_policy: KeysetLoadPolicy,
 ) -> Result<MeltSaga<'a, Finalized>, Error> {
-    let active_keyset_id = wallet.active_keyset_with_policy(keyset_policy).await?.id;
-    let active_keys = wallet
-        .keyset_with_policy(active_keyset_id, keyset_policy)
+    // The blanks' keyset signs the change, even if it has since rotated out (NUT-08).
+    let change_keys = wallet
+        .keyset_with_policy(premint_secrets.keyset_id, keyset_policy)
         .await?
         .keys;
 
@@ -139,7 +139,7 @@ async fn finalize_melt_common<'a>(
                 change,
                 premint_secrets.rs()[..num_change_proof].to_vec(),
                 premint_secrets.secrets()[..num_change_proof].to_vec(),
-                &active_keys,
+                &change_keys,
             )?)
         }
         None => None,
@@ -2040,6 +2040,55 @@ mod tests {
             result.unwrap().into_change().expect("change proofs")[0].amount,
             Amount::from(8)
         );
+    }
+
+    #[tokio::test]
+    async fn test_finalize_melt_unblinds_change_with_its_own_keyset() {
+        let db = create_test_db().await;
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+        // A newer keyset is active and the change keyset has rotated out
+        mock_client.enable_mint_signing();
+        let mut change_keyset = crate::wallet::test_utils::test_keyset();
+        change_keyset.active = Some(false);
+        mock_client.set_mint_keyset_response(Ok(change_keyset.clone()));
+        let wallet = create_test_wallet_with_mock(db, mock_client).await;
+
+        let quote = test_melt_quote();
+        let final_proofs = vec![test_proof_info(change_keyset.id, 1008, test_mint_url()).proof];
+        let premint_secrets =
+            PreMintSecrets::blank(change_keyset.id, Amount::from(8)).expect("blank premint");
+        let blinded = premint_secrets.blinded_messages()[0].blinded_secret;
+        let change = vec![BlindSignature {
+            amount: Amount::from(8),
+            keyset_id: change_keyset.id,
+            c: blinded,
+            dleq: None,
+        }];
+
+        let finalized = finalize_melt_common(
+            &wallet,
+            new_compensations(),
+            Uuid::new_v4(),
+            &quote,
+            &final_proofs,
+            &premint_secrets,
+            MeltQuoteState::Paid,
+            None,
+            Some(change),
+            HashMap::new(),
+            Default::default(),
+        )
+        .await
+        .expect("finalize");
+
+        let expected = cdk_common::dhke::unblind_message(
+            &blinded,
+            &premint_secrets.rs()[0],
+            &change_keyset.keys.amount_key(Amount::from(8)).expect("key"),
+        )
+        .expect("unblind");
+        assert_eq!(finalized.into_change().expect("change")[0].c, expected);
     }
 
     #[tokio::test]
