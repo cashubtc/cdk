@@ -8,6 +8,7 @@ use cdk_common::nuts::MeltQuoteState;
 use cdk_common::payment::MakePaymentResponse;
 use tracing::instrument;
 
+use crate::mint::melt::lease::{check_melt_lease, MeltLease};
 use crate::mint::subscription::PubSubManager;
 use crate::mint::Mint;
 use crate::Error;
@@ -48,6 +49,31 @@ pub(crate) async fn process_melt_saga_outcome(
     pubsub: &PubSubManager,
     mint: &Mint,
 ) -> Result<(), Error> {
+    let Some(mut lease) = MeltLease::claim(db, quote).await? else {
+        return Ok(());
+    };
+    let result = lease
+        .run(process_melt_saga_outcome_with_lease(
+            saga,
+            quote,
+            payment_response,
+            db,
+            pubsub,
+            mint,
+        ))
+        .await;
+    lease.release().await?;
+    result
+}
+
+pub(crate) async fn process_melt_saga_outcome_with_lease(
+    saga: &Saga,
+    quote: &mut MeltQuote,
+    payment_response: &MakePaymentResponse,
+    db: &cdk_common::database::DynMintDatabase,
+    pubsub: &PubSubManager,
+    mint: &Mint,
+) -> Result<(), Error> {
     match payment_response.status {
         MeltQuoteState::Paid => {
             finalize_paid_melt_outcome(saga, quote, payment_response, db, pubsub, mint).await
@@ -79,7 +105,7 @@ pub(crate) async fn process_melt_saga_outcome(
 
             persist_permanent_payment_failure(saga, quote, db, payment_response).await?;
 
-            recover_recorded_payment_failure(saga, quote, db, pubsub).await
+            recover_recorded_payment_failure_with_lease(saga, quote, db, pubsub).await
         }
         MeltQuoteState::Pending => {
             persist_pending_after_dispatch(saga, quote, payment_response, db).await?;
@@ -109,6 +135,7 @@ pub(crate) async fn process_melt_saga_outcome(
 /// [`cdk_common::payment::Event::PaymentFailed`] is an orchestration-level
 /// terminal signal, so event and polling outcomes share the same processing
 /// path.
+#[cfg(test)]
 pub(crate) async fn process_melt_saga_failure_event(
     saga: &Saga,
     quote: &mut MeltQuote,
@@ -136,6 +163,11 @@ async fn persist_permanent_payment_failure(
     payment_response: &MakePaymentResponse,
 ) -> Result<(), Error> {
     let mut tx = db.begin_transaction().await?;
+    let owned = tx
+        .get_melt_quote(&quote.id)
+        .await?
+        .ok_or(Error::UnknownQuote)?;
+    check_melt_lease(&mut tx, &owned, &quote.melt_lock).await?;
     let Some(mut current_saga) = tx.get_saga_for_update(&stale_saga.operation_id).await? else {
         tx.rollback().await?;
         return Ok(());
@@ -183,7 +215,7 @@ async fn persist_permanent_payment_failure(
 }
 
 /// Compensate a melt only when a durable authoritative failure was recorded.
-pub(crate) async fn recover_recorded_payment_failure(
+pub(crate) async fn recover_recorded_payment_failure_with_lease(
     stale_saga: &Saga,
     quote: &mut MeltQuote,
     db: &cdk_common::database::DynMintDatabase,
@@ -221,6 +253,7 @@ pub(crate) async fn recover_recorded_payment_failure(
         &input_ys,
         &blinded_secrets,
         &saga.operation_id,
+        &quote.melt_lock,
     )
     .await;
 
@@ -264,6 +297,11 @@ async fn persist_payment_lookup_id_in_transaction(
     quote: &mut MeltQuote,
     payment_response: &MakePaymentResponse,
 ) -> Result<(), Error> {
+    let owned = tx
+        .get_melt_quote(&quote.id)
+        .await?
+        .ok_or(Error::UnknownQuote)?;
+    check_melt_lease(tx, &owned, &quote.melt_lock).await?;
     let current_saga = tx
         .get_saga_for_update(&saga.operation_id)
         .await?
@@ -326,6 +364,11 @@ async fn finalize_paid_melt_outcome(
             })?;
 
     let mut tx = db.begin_transaction().await?;
+    let owned = tx
+        .get_melt_quote(&quote.id)
+        .await?
+        .ok_or(Error::UnknownQuote)?;
+    check_melt_lease(&mut tx, &owned, &quote.melt_lock).await?;
 
     // The saga row is the recovery record for this handoff. If it is already
     // gone, either finalization completed earlier (idempotent re-delivery of a
@@ -568,6 +611,7 @@ mod tests {
         };
 
         let started = std::time::Instant::now();
+        crate::test_helpers::mint::expire_melt_leases(&mint).await;
         process_melt_saga_outcome(
             &saga,
             &mut quote,
@@ -635,6 +679,8 @@ mod tests {
             status: MeltQuoteState::Paid,
             total_spent: Amount::from(9_250).with_unit(CurrencyUnit::Sat),
         };
+
+        crate::test_helpers::mint::expire_melt_leases(&mint).await;
 
         process_melt_saga_outcome(
             &saga,
@@ -741,6 +787,7 @@ mod tests {
         .unwrap();
         tx.commit().await.unwrap();
 
+        crate::test_helpers::mint::expire_melt_leases(&mint).await;
         mint.recover_from_incomplete_melt_sagas().await.unwrap();
 
         assert_saga_not_exists(&mint, &operation_id).await;
@@ -847,6 +894,8 @@ mod tests {
                 total_spent: quote.amount(),
             };
 
+            crate::test_helpers::mint::expire_melt_leases(&mint).await;
+
             process_melt_saga_outcome(
                 &saga,
                 &mut quote,
@@ -869,6 +918,7 @@ mod tests {
                 status: MeltQuoteState::Failed,
                 total_spent: quote.amount(),
             };
+            crate::test_helpers::mint::expire_melt_leases(&mint).await;
             process_melt_saga_failure_event(
                 &stored_saga,
                 &mut quote,
@@ -981,6 +1031,8 @@ mod tests {
                     total_spent: quote.amount(),
                 };
 
+                crate::test_helpers::mint::expire_melt_leases(&mint).await;
+
                 process_melt_saga_outcome(
                     &saga,
                     &mut quote,
@@ -1002,7 +1054,7 @@ mod tests {
                     .await
                     .unwrap()
                     .expect("quote should still exist after rollback");
-                assert_eq!(persisted_quote.state, MeltQuoteState::Unpaid);
+                assert_eq!(persisted_quote.state, quote.state);
             }
         }
     }
@@ -1056,7 +1108,7 @@ mod tests {
             operation_id,
             operation_kind: OperationKind::Melt,
             quote_id: Some(quote.id.to_string()),
-            state: SagaStateEnum::Melt(MeltSagaState::PaymentAttempted),
+            state: SagaStateEnum::Melt(MeltSagaState::PaymentPending),
             created_at: 0,
             finalization_data: None,
             updated_at: 0,
@@ -1072,6 +1124,7 @@ mod tests {
         // backend check reports Paid, and the already-completed finalization
         // (saga deleted, quote Paid) makes the paid outcome an idempotent
         // no-op instead of an error.
+        crate::test_helpers::mint::expire_melt_leases(&mint).await;
         process_melt_saga_outcome(
             &saga,
             &mut paid_quote,
@@ -1164,7 +1217,7 @@ mod tests {
             .expect("saga should exist");
         tx.update_acquired_saga(
             &mut saga,
-            SagaStateEnum::Melt(MeltSagaState::PaymentAttempted),
+            SagaStateEnum::Melt(MeltSagaState::PaymentPending),
         )
         .await
         .unwrap();
@@ -1202,6 +1255,7 @@ mod tests {
             status: MeltQuoteState::Failed,
             total_spent: stale_quote.amount(),
         };
+        crate::test_helpers::mint::expire_melt_leases(&mint).await;
         process_melt_saga_outcome(
             &stale_saga,
             &mut stale_quote,
@@ -1335,6 +1389,8 @@ mod tests {
             total_spent: quote.amount(),
         };
 
+        crate::test_helpers::mint::expire_melt_leases(&mint).await;
+
         process_melt_saga_outcome(
             &saga,
             &mut quote,
@@ -1430,7 +1486,7 @@ mod tests {
             .expect("saga should exist");
         tx.update_acquired_saga(
             &mut saga,
-            SagaStateEnum::Melt(MeltSagaState::PaymentAttempted),
+            SagaStateEnum::Melt(MeltSagaState::PaymentPending),
         )
         .await
         .unwrap();
@@ -1470,6 +1526,7 @@ mod tests {
             status: MeltQuoteState::Failed,
             total_spent: quote.amount(),
         };
+        crate::test_helpers::mint::expire_melt_leases(&mint).await;
         process_melt_saga_outcome(
             &stale_saga,
             &mut quote,
@@ -1557,6 +1614,8 @@ mod tests {
             total_spent: quote.amount(),
         };
 
+        crate::test_helpers::mint::expire_melt_leases(&mint).await;
+
         process_melt_saga_outcome(
             &stale_saga,
             &mut quote,
@@ -1623,6 +1682,8 @@ mod tests {
             total_spent: quote.amount(),
         };
 
+        crate::test_helpers::mint::expire_melt_leases(&mint).await;
+
         process_melt_saga_outcome(
             &saga,
             &mut quote,
@@ -1683,6 +1744,8 @@ mod tests {
             status: MeltQuoteState::Paid,
             total_spent: Amount::from(9_250).with_unit(CurrencyUnit::Usd),
         };
+
+        crate::test_helpers::mint::expire_melt_leases(&mint).await;
 
         let err = process_melt_saga_outcome(
             &saga,

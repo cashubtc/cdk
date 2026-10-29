@@ -10,6 +10,8 @@ service QuoteService {
     rpc UpdateQuoteTtl(UpdateQuoteTtlRequest) returns (UpdateQuoteTtlResponse) {}
     // Force-marks a mint quote as paid.
     rpc UpdateMintQuoteState(UpdateMintQuoteStateRequest) returns (UpdateMintQuoteStateResponse) {}
+    // Releases the melt execution lock on a melt quote.
+    rpc UnlockMeltQuote(UnlockMeltQuoteRequest) returns (UnlockMeltQuoteResponse) {}
 }
 
 // State of a mint quote, as defined by NUT-04. The mint derives it from the
@@ -74,4 +76,20 @@ message UpdateMintQuoteStateResponse {
     string quote_id = 1;
     // State of the quote after the update, derived from its recorded amounts.
     MintQuoteState state = 2;
+}
+
+message UnlockMeltQuoteRequest {
+    // ID of the melt quote to unlock. A quote the mint does not know fails
+    // with gRPC status INVALID_ARGUMENT.
+    string quote_id = 1;
+}
+
+// The outcome of the unlock. On failure a gRPC error status is returned
+// instead.
+message UnlockMeltQuoteResponse {
+    // ID of the melt quote.
+    string quote_id = 1;
+    // Whether an execution lock was held and released. A quote's state is
+    // never changed by this call.
+    bool was_locked = 2;
 }
