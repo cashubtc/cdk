@@ -1367,20 +1367,19 @@ impl Mint {
     }
 
     /// Restore
+    ///
+    /// Signatures are returned for every known blinded secret, expired keysets
+    /// included, so a recovering wallet can still account for what it was
+    /// issued. DLEQ proofs are no longer stored, so they are rebuilt here; the
+    /// proof is optional in a restore response, so a keyset the signatory can
+    /// no longer sign with yields the stored signature without one.
     #[instrument(skip_all)]
     pub async fn restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
         #[cfg(feature = "prometheus")]
         let metrics = MintMetricGuard::new("restore");
 
         let result = async {
-            let blinded_messages: Vec<BlindedMessage> = request
-                .outputs
-                .into_iter()
-                .filter(|bm| {
-                    self.get_keyset_info(&bm.keyset_id)
-                        .is_none_or(|keyset_info| !keyset_info.is_expired())
-                })
-                .collect();
+            let blinded_messages = request.outputs;
 
             let output_len = blinded_messages.len();
 
@@ -1431,13 +1430,21 @@ impl Mint {
             {
                 if let Some(mut blinded_signature) = blinded_signature {
                     if blinded_signature.dleq.is_none() {
-                        blinded_signature = self
+                        match self
                             .signatory
                             .reconstruct_dleq(ReconstructDleqArguments {
                                 blind_signature: blinded_signature.clone(),
                                 blind_secret: blinded_message.blinded_secret,
                             })
-                            .await?;
+                            .await
+                        {
+                            Ok(with_dleq) => blinded_signature = with_dleq,
+                            Err(err) => tracing::warn!(
+                                "Could not reconstruct DLEQ for restored signature on keyset {}: {}",
+                                blinded_signature.keyset_id,
+                                err
+                            ),
+                        }
                     }
 
                     outputs.push(blinded_message);
