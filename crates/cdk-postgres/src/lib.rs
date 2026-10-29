@@ -16,9 +16,14 @@ use tokio::sync::{Mutex, Notify};
 use tokio::time::timeout;
 use tokio_postgres::{Client, Error as PgError, NoTls};
 
+pub mod bus;
+mod connection;
 mod db;
 mod tls;
 mod value;
+
+pub use bus::{PostgresBus, PostgresBusConnector};
+use connection::{connect_and_drive, AwaitDrive};
 
 #[derive(Debug)]
 /// Postgres connection pool
@@ -57,6 +62,7 @@ pub struct PgConfig {
     tls_mode: Option<String>,
     max_connections: usize,
     connection_timeout: Duration,
+    application_name: Option<String>,
 }
 
 impl fmt::Debug for PgConfig {
@@ -67,6 +73,7 @@ impl fmt::Debug for PgConfig {
             .field("tls_mode", &self.tls_mode.as_ref().map(|_| "[configured]"))
             .field("max_connections", &self.max_connections)
             .field("connection_timeout", &self.connection_timeout)
+            .field("application_name", &self.application_name)
             .finish()
     }
 }
@@ -111,7 +118,17 @@ impl PgConfig {
             connection_timeout: Duration::from_secs(
                 connection_timeout_secs.unwrap_or(DEFAULT_CONNECTION_TIMEOUT_SECS),
             ),
+            application_name: None,
         }
+    }
+
+    /// Label the connections this config opens so they are identifiable in
+    /// `pg_stat_activity`. Setting it here rather than appending it to the
+    /// connection string keeps it independent of whether that string is a URI
+    /// or libpq keywords, which are spliced differently.
+    pub fn with_application_name(mut self, name: impl Into<String>) -> Self {
+        self.application_name = Some(name.into());
+        self
     }
 
     /// Validate connection parameters and construct the configured TLS connector.
@@ -119,7 +136,18 @@ impl PgConfig {
     /// Does not open a connection or verify the server's certificate. Uses the
     /// same TLS policy and connector construction as connection establishment.
     pub fn validate(&self) -> Result<(), Error> {
-        tls::configure(&self.url, self.tls_mode.as_deref()).map(|_| ())
+        self.connection().map(|_| ())
+    }
+
+    /// Connection parameters and TLS connector resolved from the configured
+    /// policy. Every connection this crate opens, pooled or listening, goes
+    /// through here, so they all enforce the same policy.
+    pub(crate) fn connection(&self) -> Result<(tokio_postgres::Config, SslMode), Error> {
+        let (mut config, tls) = tls::configure(&self.url, self.tls_mode.as_deref())?;
+        if let Some(name) = &self.application_name {
+            config.application_name(name.as_str());
+        }
+        Ok((config, tls))
     }
 
     /// Compare effective TLS policies, including certificate verification requirements.
@@ -204,9 +232,9 @@ impl PostgresConnection {
         }
 
         tokio::spawn(async move {
-            let (connection_config, tls) =
-                match tls::configure(&config.url, config.tls_mode.as_deref()) {
-                    Ok(config) => config,
+            let (client, _driver) =
+                match connect_and_drive(&config, AwaitDrive::new(stale.clone())).await {
+                    Ok(pair) => pair,
                     Err(err) => {
                         *error_clone.lock().await = Some(err);
                         stale.store(true, std::sync::atomic::Ordering::Release);
@@ -214,68 +242,18 @@ impl PostgresConnection {
                         return;
                     }
                 };
-            match tls {
-                SslMode::NoTls(tls) => {
-                    let (client, connection) = match connection_config.connect(tls).await {
-                        Ok((client, connection)) => (client, connection),
-                        Err(err) => {
-                            *error_clone.lock().await =
-                                Some(cdk_common::database::Error::Database(Box::new(err)));
-                            stale.store(true, std::sync::atomic::Ordering::Release);
-                            notify_clone.notify_waiters();
-                            return;
-                        }
-                    };
 
-                    let stale_for_spawn = stale.clone();
-                    tokio::spawn(async move {
-                        let _ = connection.await;
-                        stale_for_spawn.store(true, std::sync::atomic::Ordering::Release);
-                    });
-
-                    if let Some(schema) = config.schema.as_ref() {
-                        if let Err(err) = select_schema(&client, schema).await {
-                            *error_clone.lock().await = Some(err);
-                            stale.store(true, std::sync::atomic::Ordering::Release);
-                            notify_clone.notify_waiters();
-                            return;
-                        }
-                    }
-
-                    let _ = result_clone.set(client);
+            if let Some(schema) = config.schema.as_ref() {
+                if let Err(err) = select_schema(&client, schema).await {
+                    *error_clone.lock().await = Some(err);
+                    stale.store(true, std::sync::atomic::Ordering::Release);
                     notify_clone.notify_waiters();
-                }
-                SslMode::NativeTls(tls) => {
-                    let (client, connection) = match connection_config.connect(tls).await {
-                        Ok((client, connection)) => (client, connection),
-                        Err(err) => {
-                            *error_clone.lock().await =
-                                Some(cdk_common::database::Error::Database(Box::new(err)));
-                            stale.store(true, std::sync::atomic::Ordering::Release);
-                            notify_clone.notify_waiters();
-                            return;
-                        }
-                    };
-
-                    let stale_for_spawn = stale.clone();
-                    tokio::spawn(async move {
-                        let _ = connection.await;
-                        stale_for_spawn.store(true, std::sync::atomic::Ordering::Release);
-                    });
-
-                    if let Some(schema) = config.schema.as_ref() {
-                        if let Err(err) = select_schema(&client, schema).await {
-                            *error_clone.lock().await = Some(err);
-                            stale.store(true, std::sync::atomic::Ordering::Release);
-                            notify_clone.notify_waiters();
-                            return;
-                        }
-                    }
-
-                    let _ = result_clone.set(client);
-                    notify_clone.notify_waiters();
+                    return;
                 }
             }
+
+            let _ = result_clone.set(client);
+            notify_clone.notify_waiters();
         });
 
         Self {
@@ -481,7 +459,6 @@ mod test {
         )
         .await;
     }
-
     async fn provide_wallet_db(test_id: String) -> WalletPgDatabase {
         let db_url = std::env::var("CDK_MINTD_DATABASE_URL")
             .or_else(|_| std::env::var("PG_DB_URL")) // Fallback for compatibility
@@ -526,5 +503,32 @@ mod test {
             !rendered.contains("hunter2secret"),
             "PgConfig Debug leaked the DB password: {rendered}"
         );
+    }
+
+    /// Appending `application_name=` to a URI connection string silently folds
+    /// it into the database name, so the label has to be applied to the parsed
+    /// config instead. Both syntaxes must end up with the same label.
+    #[test]
+    fn application_name_labels_both_connection_string_syntaxes() {
+        for conn_str in [
+            "host=localhost user=u dbname=d",
+            "postgresql://u@localhost:5432/d",
+        ] {
+            let (config, _) = PgConfig::from(conn_str)
+                .with_application_name("cdk_mint_pubsub")
+                .connection()
+                .expect("connection parameters resolve");
+
+            assert_eq!(
+                config.get_application_name(),
+                Some("cdk_mint_pubsub"),
+                "{conn_str} did not carry the application name"
+            );
+            assert_eq!(
+                config.get_dbname(),
+                Some("d"),
+                "{conn_str} corrupted dbname"
+            );
+        }
     }
 }

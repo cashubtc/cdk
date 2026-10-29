@@ -2456,6 +2456,7 @@ engine = "sqlite"
                 url: "postgresql://ignored".to_owned(),
                 ..Default::default()
             }),
+            pubsub: Default::default(),
         };
         assert!(same_primary_database(&sqlite, &other_sqlite));
 
@@ -2467,6 +2468,7 @@ engine = "sqlite"
                 max_connections: Some(5),
                 connection_timeout_seconds: Some(3),
             }),
+            pubsub: Default::default(),
         };
         let right = Database {
             engine: DatabaseEngine::Postgres,
@@ -2476,6 +2478,7 @@ engine = "sqlite"
                 max_connections: Some(5),
                 connection_timeout_seconds: Some(3),
             }),
+            pubsub: Default::default(),
         };
         assert!(same_primary_database(&left, &right));
         let mut different = right.clone();
@@ -2486,6 +2489,7 @@ engine = "sqlite"
             &Database {
                 engine: DatabaseEngine::Postgres,
                 postgres: None,
+                pubsub: Default::default(),
             }
         ));
         assert!(!same_primary_database(&sqlite, &left));
@@ -2511,6 +2515,7 @@ engine = "sqlite"
                     tls_mode: mode.map(str::to_owned),
                     ..Default::default()
                 }),
+                pubsub: Default::default(),
             };
             assert_eq!(
                 same_primary_database(&database(stored_mode), &database(bootstrap_mode)),
