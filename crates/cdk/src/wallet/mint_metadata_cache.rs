@@ -24,7 +24,8 @@
 //! let fresh = manager.load_from_mint(&storage, &client).await?;
 //! ```
 
-use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Duration;
@@ -32,8 +33,10 @@ use std::time::Duration;
 use arc_swap::ArcSwap;
 use cdk_common::database::{self, WalletDatabase};
 use cdk_common::mint_url::MintUrl;
-use cdk_common::nuts::{KeySetInfo, Keys};
+use cdk_common::nuts::Keys;
 use cdk_common::parking_lot::RwLock;
+use cdk_common::util::unix_time;
+use cdk_common::wallet::WalletKeySetInfo;
 use cdk_common::{CurrencyUnit, KeySet, MintInfo};
 use tokio::sync::Mutex;
 use web_time::Instant;
@@ -82,13 +85,13 @@ pub struct MintMetadata {
     pub mint_info: MintInfo,
 
     /// All keysets indexed by their ID (includes both active and inactive)
-    pub keysets: HashMap<Id, Arc<KeySetInfo>>,
+    pub keysets: HashMap<Id, Arc<WalletKeySetInfo>>,
 
     /// Cryptographic keys for each keyset, indexed by keyset ID
     pub keys: HashMap<Id, Arc<Keys>>,
 
     /// Subset of keysets that are currently active (cached for convenience)
-    pub active_keysets: Vec<Arc<KeySetInfo>>,
+    pub active_keysets: Vec<Arc<WalletKeySetInfo>>,
 
     /// Freshness tracking for regular (non-auth) mint data
     pub(crate) status: FreshnessStatus,
@@ -344,18 +347,18 @@ impl MintMetadataCache {
         if let Some(keysets) = storage.get_mint_keysets(self.mint_url.clone()).await? {
             new_metadata.active_keysets.clear();
             for keyset_info in keysets {
-                let keyset_arc = Arc::new(keyset_info.clone());
-                new_metadata
-                    .keysets
-                    .insert(keyset_info.id, keyset_arc.clone());
+                let keyset_id = keyset_info.keyset.id;
+                let is_active = keyset_info.keyset.active;
+                let keyset_arc = Arc::new(keyset_info);
+                new_metadata.keysets.insert(keyset_id, keyset_arc.clone());
 
-                if keyset_info.active {
+                if is_active {
                     new_metadata.active_keysets.push(keyset_arc);
                 }
 
-                if let Some(keys) = storage.get_keys(&keyset_info.id).await? {
-                    tracing::trace!("Loaded keys for keyset {} from database", keyset_info.id);
-                    new_metadata.keys.insert(keyset_info.id, Arc::new(keys));
+                if let Some(keys) = storage.get_keys(&keyset_id).await? {
+                    tracing::trace!("Loaded keys for keyset {} from database", keyset_id);
+                    new_metadata.keys.insert(keyset_id, Arc::new(keys));
                 }
             }
         }
@@ -621,10 +624,10 @@ impl MintMetadataCache {
 
                 let keyset = KeySet {
                     id: *keyset_id,
-                    unit: keyset_info.unit.clone(),
-                    active: Some(keyset_info.active),
-                    input_fee_ppk: keyset_info.input_fee_ppk,
-                    final_expiry: keyset_info.final_expiry,
+                    unit: keyset_info.keyset.unit.clone(),
+                    active: Some(keyset_info.keyset.active),
+                    input_fee_ppk: keyset_info.keyset.input_fee_ppk,
+                    final_expiry: keyset_info.keyset.final_expiry,
                     keys: (**keys).clone(),
                 };
 
@@ -674,6 +677,8 @@ impl MintMetadataCache {
         // Start with current cache to preserve data from other sources
         let mut new_metadata = (*self.metadata.load().clone()).clone();
         let mut keysets_to_fetch = Vec::new();
+        let mut fetched_regular: Option<HashSet<Id>> = None;
+        let mut fetched_auth: Option<HashSet<Id>> = None;
 
         // Fetch regular mint data
         if let Some(client) = client.as_ref() {
@@ -687,24 +692,28 @@ impl MintMetadataCache {
             })?;
 
             // Get list of keysets
-            keysets_to_fetch.extend(
-                client
-                    .get_mint_keysets()
-                    .await
-                    .inspect_err(|err| {
-                        tracing::error!(
-                            "Failed to fetch keysets for {}: {}",
-                            escape_log_value(&self.mint_url),
-                            escape_log_value(err)
-                        );
-                    })?
-                    .keysets,
-            );
+            let keysets = client
+                .get_mint_keysets()
+                .await
+                .inspect_err(|err| {
+                    tracing::error!(
+                        "Failed to fetch keysets for {}: {}",
+                        escape_log_value(&self.mint_url),
+                        escape_log_value(err)
+                    );
+                })?
+                .keysets;
+
+            fetched_regular = Some(keysets.iter().map(|keyset| keyset.id).collect());
+            keysets_to_fetch.extend(keysets);
         }
 
         // Fetch auth keysets if auth client provided
         if let Some(auth_client) = auth_client.as_ref() {
-            keysets_to_fetch.extend(auth_client.get_mint_blind_auth_keysets().await?.keysets);
+            let keysets = auth_client.get_mint_blind_auth_keysets().await?.keysets;
+
+            fetched_auth = Some(keysets.iter().map(|keyset| keyset.id).collect());
+            keysets_to_fetch.extend(keysets);
         }
 
         tracing::debug!(
@@ -716,7 +725,7 @@ impl MintMetadataCache {
         // Fetch keys for each keyset
         new_metadata.active_keysets.clear();
         for keyset_info in keysets_to_fetch {
-            let keyset_arc = Arc::new(keyset_info.clone());
+            let keyset_arc = Arc::new(WalletKeySetInfo::listed(keyset_info.clone()));
             new_metadata
                 .keysets
                 .insert(keyset_info.id, keyset_arc.clone());
@@ -727,9 +736,7 @@ impl MintMetadataCache {
             }
 
             // Only fetch keys if we don't already have them cached
-            if let std::collections::hash_map::Entry::Vacant(e) =
-                new_metadata.keys.entry(keyset_info.id)
-            {
+            if let Entry::Vacant(e) = new_metadata.keys.entry(keyset_info.id) {
                 let keyset = if keyset_info.unit == CurrencyUnit::Auth {
                     auth_client
                         .as_ref()
@@ -750,6 +757,12 @@ impl MintMetadataCache {
                 e.insert(Arc::new(keyset.keys));
             }
         }
+
+        self.mark_unlisted_keysets(
+            &mut new_metadata,
+            fetched_regular.as_ref(),
+            fetched_auth.as_ref(),
+        );
 
         // Update freshness status based on what was fetched
         if client.is_some() {
@@ -777,8 +790,196 @@ impl MintMetadataCache {
         Ok(metadata_arc)
     }
 
+    /// Record which cached keysets the mint has stopped listing.
+    ///
+    /// A keyset that disappears from `GET /v1/keysets` (mint reset, restored
+    /// backup, lost database) is one the mint answers with error 12001 for
+    /// anything built on it, inputs included. The entry and its keys stay
+    /// cached, so proofs already issued under it still decode and restore.
+    ///
+    /// Nothing here clears a marker. The caller has already replaced every
+    /// keyset in `fetched` with the mint's own record, which carries no
+    /// marker, so a mint that restores a backup lifts it by listing the keyset
+    /// again. That is also why an entry already marked is left alone: it keeps
+    /// the time the wallet first noticed rather than the time of this refresh.
+    ///
+    /// Both flags are set, because they answer different questions.
+    /// `unlisted_at` makes the keyset read as expired
+    /// ([`WalletKeySetInfo::is_expired`]), which keeps its proofs out of input
+    /// selection, where they would otherwise be preferred: see
+    /// [`Wallet::retain_spendable_proofs`](crate::Wallet::retain_spendable_proofs).
+    /// `active` keeps it from being picked for new outputs.
+    ///
+    /// Auth keysets and all other units come from different endpoints and
+    /// different callers, so only the family actually fetched is swept. An
+    /// empty response is ignored, because a mint serving a momentarily empty
+    /// list would otherwise strand the whole balance.
+    fn mark_unlisted_keysets(
+        &self,
+        metadata: &mut MintMetadata,
+        fetched_regular: Option<&HashSet<Id>>,
+        fetched_auth: Option<&HashSet<Id>>,
+    ) {
+        for (id, keyset) in metadata.keysets.iter_mut() {
+            let fetched = match keyset.keyset.unit {
+                CurrencyUnit::Auth => fetched_auth,
+                _ => fetched_regular,
+            };
+
+            let Some(fetched) = fetched.filter(|ids| !ids.is_empty()) else {
+                continue;
+            };
+
+            if fetched.contains(id) || keyset.is_unlisted() {
+                continue;
+            }
+
+            tracing::warn!(
+                "Keyset {} is no longer listed by {}, its proofs can no longer be spent",
+                id,
+                escape_log_value(&self.mint_url)
+            );
+            let keyset = Arc::make_mut(keyset);
+            keyset.unlisted_at = Some(unix_time());
+            keyset.keyset.active = false;
+        }
+    }
+
     /// Get the mint URL this cache manages
     pub fn mint_url(&self) -> &MintUrl {
         &self.mint_url
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use cdk_common::nuts::KeySetInfo;
+
+    use super::*;
+
+    fn test_cache() -> MintMetadataCache {
+        MintMetadataCache::new(MintUrl::from_str("https://test-mint.example.com").unwrap())
+    }
+
+    fn keyset_info(id: Id, unit: CurrencyUnit, active: bool) -> Arc<WalletKeySetInfo> {
+        Arc::new(WalletKeySetInfo::listed(KeySetInfo {
+            id,
+            unit,
+            active,
+            input_fee_ppk: 0,
+            final_expiry: None,
+        }))
+    }
+
+    fn active_keyset_info(id: Id, unit: CurrencyUnit) -> Arc<WalletKeySetInfo> {
+        keyset_info(id, unit, true)
+    }
+
+    fn sat_id() -> Id {
+        Id::from_str("0094d5a774c40a32").unwrap()
+    }
+
+    fn auth_id() -> Id {
+        Id::from_str("009a1f293253e41e").unwrap()
+    }
+
+    fn other_id() -> Id {
+        Id::from_str("00ad268c4d1f5826").unwrap()
+    }
+
+    #[test]
+    fn mark_unlisted_keysets_only_sweeps_the_fetched_family() {
+        let cache = test_cache();
+        let mut metadata = MintMetadata::default();
+        metadata
+            .keysets
+            .insert(sat_id(), active_keyset_info(sat_id(), CurrencyUnit::Sat));
+        metadata
+            .keysets
+            .insert(auth_id(), active_keyset_info(auth_id(), CurrencyUnit::Auth));
+
+        let other = HashSet::from([other_id()]);
+        cache.mark_unlisted_keysets(&mut metadata, Some(&other), None);
+
+        assert!(metadata.keysets[&sat_id()].is_unlisted());
+        assert!(!metadata.keysets[&sat_id()].keyset.active);
+        assert!(
+            !metadata.keysets[&auth_id()].is_unlisted(),
+            "a regular keyset fetch must not sweep auth keysets"
+        );
+        assert!(metadata.keysets[&auth_id()].keyset.active);
+
+        cache.mark_unlisted_keysets(&mut metadata, None, Some(&other));
+
+        assert!(metadata.keysets[&auth_id()].is_unlisted());
+        assert!(!metadata.keysets[&auth_id()].keyset.active);
+    }
+
+    #[test]
+    fn mark_unlisted_keysets_leaves_listed_keysets_alone() {
+        let cache = test_cache();
+        let mut metadata = MintMetadata::default();
+        metadata
+            .keysets
+            .insert(sat_id(), active_keyset_info(sat_id(), CurrencyUnit::Sat));
+
+        let fetched = HashSet::from([sat_id()]);
+        cache.mark_unlisted_keysets(&mut metadata, Some(&fetched), None);
+
+        assert!(!metadata.keysets[&sat_id()].is_unlisted());
+        assert!(metadata.keysets[&sat_id()].keyset.active);
+    }
+
+    #[test]
+    fn mark_unlisted_keysets_ignores_empty_response() {
+        let cache = test_cache();
+        let mut metadata = MintMetadata::default();
+        metadata
+            .keysets
+            .insert(sat_id(), active_keyset_info(sat_id(), CurrencyUnit::Sat));
+
+        cache.mark_unlisted_keysets(&mut metadata, Some(&HashSet::new()), None);
+
+        assert!(
+            !metadata.keysets[&sat_id()].is_unlisted(),
+            "an empty keyset list must not strand the whole balance"
+        );
+        assert!(metadata.keysets[&sat_id()].keyset.active);
+    }
+
+    /// A keyset rotated out long ago is already inactive, and that is where an
+    /// old wallet keeps most of its proofs, so the sweep cannot skip it.
+    #[test]
+    fn mark_unlisted_keysets_marks_already_inactive_keysets() {
+        let cache = test_cache();
+        let mut metadata = MintMetadata::default();
+        metadata
+            .keysets
+            .insert(sat_id(), keyset_info(sat_id(), CurrencyUnit::Sat, false));
+
+        let fetched = HashSet::from([other_id()]);
+        cache.mark_unlisted_keysets(&mut metadata, Some(&fetched), None);
+
+        assert!(metadata.keysets[&sat_id()].is_unlisted());
+    }
+
+    #[test]
+    fn mark_unlisted_keysets_keeps_the_first_timestamp() {
+        let cache = test_cache();
+        let mut metadata = MintMetadata::default();
+        metadata
+            .keysets
+            .insert(sat_id(), active_keyset_info(sat_id(), CurrencyUnit::Sat));
+
+        let fetched = HashSet::from([other_id()]);
+        cache.mark_unlisted_keysets(&mut metadata, Some(&fetched), None);
+        let first = metadata.keysets[&sat_id()].unlisted_at;
+        assert!(first.is_some());
+
+        cache.mark_unlisted_keysets(&mut metadata, Some(&fetched), None);
+
+        assert_eq!(metadata.keysets[&sat_id()].unlisted_at, first);
     }
 }

@@ -15,6 +15,8 @@ pub struct KeySetInfo {
     pub active: bool,
     /// Input fee per thousand (ppk)
     pub input_fee_ppk: u64,
+    /// Unix timestamp after which the mint rejects this keyset's proofs
+    pub final_expiry: Option<u64>,
 }
 
 impl From<cdk::nuts::KeySetInfo> for KeySetInfo {
@@ -24,6 +26,7 @@ impl From<cdk::nuts::KeySetInfo> for KeySetInfo {
             unit: keyset.unit.into(),
             active: keyset.active,
             input_fee_ppk: keyset.input_fee_ppk,
+            final_expiry: keyset.final_expiry,
         }
     }
 }
@@ -39,8 +42,37 @@ impl TryFrom<KeySetInfo> for cdk::nuts::KeySetInfo {
                 .map_err(|e| FfiError::internal(format!("Invalid keyset ID: {}", e)))?,
             unit: keyset.unit.into(),
             active: keyset.active,
-            final_expiry: None,
+            final_expiry: keyset.final_expiry,
             input_fee_ppk: keyset.input_fee_ppk,
+        })
+    }
+}
+
+/// FFI-compatible WalletKeySetInfo: a keyset plus the wallet's own bookkeeping
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct WalletKeySetInfo {
+    /// The keyset as the mint describes it
+    pub keyset: KeySetInfo,
+    /// When the mint first stopped listing this keyset, if it has
+    pub unlisted_at: Option<u64>,
+}
+
+impl From<cdk::wallet::WalletKeySetInfo> for WalletKeySetInfo {
+    fn from(keyset: cdk::wallet::WalletKeySetInfo) -> Self {
+        Self {
+            keyset: keyset.keyset.into(),
+            unlisted_at: keyset.unlisted_at,
+        }
+    }
+}
+
+impl TryFrom<WalletKeySetInfo> for cdk::wallet::WalletKeySetInfo {
+    type Error = FfiError;
+
+    fn try_from(keyset: WalletKeySetInfo) -> Result<Self, Self::Error> {
+        Ok(Self {
+            keyset: keyset.keyset.try_into()?,
+            unlisted_at: keyset.unlisted_at,
         })
     }
 }

@@ -211,7 +211,9 @@ pub async fn transfer(
                 Err(cdk::Error::InsufficientFunds) if completed_transfers > 0 => break,
                 Err(error) => return Err(error.into()),
             };
-            let source_proofs = source_wallet.get_unspent_proofs().await?;
+            let source_proofs = source_wallet
+                .retain_spendable_proofs(source_wallet.get_unspent_proofs().await?)
+                .await?;
             let prepared = source_wallet
                 .prepare_melt_proofs(&quote.melt_quote.id, source_proofs, HashMap::new())
                 .await?;

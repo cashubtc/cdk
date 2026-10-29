@@ -6,9 +6,9 @@ use cdk_common::database::Error as CdkDatabaseError;
 use cdk_supabase::SupabaseWalletDatabase;
 
 use crate::{
-    CurrencyUnit, FfiError, FfiWalletDatabaseWrapper, Id, KeySet, KeySetInfo, Keys, MeltQuote,
-    MintInfo, MintQuote, MintUrl, P2PKSigningKey, ProofInfo, ProofState, PublicKey,
-    SpendingConditions, Transaction, TransactionDirection, TransactionId, WalletDatabase,
+    CurrencyUnit, FfiError, FfiWalletDatabaseWrapper, Id, KeySet, Keys, MeltQuote, MintInfo,
+    MintQuote, MintUrl, P2PKSigningKey, ProofInfo, ProofState, PublicKey, SpendingConditions,
+    Transaction, TransactionDirection, TransactionId, WalletDatabase, WalletKeySetInfo,
 };
 
 /// FFI wrapper for Supabase wallet database

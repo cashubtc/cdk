@@ -9,11 +9,10 @@ use cashu::KeySet;
 
 use super::Error;
 use crate::mint_url::MintUrl;
-use crate::nuts::{
-    CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions, State,
-};
+use crate::nuts::{CurrencyUnit, Id, Keys, MintInfo, PublicKey, SpendingConditions, State};
 use crate::wallet::{
-    self, MintQuote as WalletMintQuote, ProofInfo, Transaction, TransactionDirection, TransactionId,
+    self, MintQuote as WalletMintQuote, ProofInfo, Transaction, TransactionDirection,
+    TransactionId, WalletKeySetInfo,
 };
 
 #[cfg(feature = "test")]
@@ -33,10 +32,13 @@ where
     async fn get_mints(&self) -> Result<HashMap<MintUrl, Option<MintInfo>>, Err>;
 
     /// Get mint keysets for mint url
-    async fn get_mint_keysets(&self, mint_url: MintUrl) -> Result<Option<Vec<KeySetInfo>>, Err>;
+    async fn get_mint_keysets(
+        &self,
+        mint_url: MintUrl,
+    ) -> Result<Option<Vec<WalletKeySetInfo>>, Err>;
 
     /// Get mint keyset by id
-    async fn get_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<KeySetInfo>, Err>;
+    async fn get_keyset_by_id(&self, keyset_id: &Id) -> Result<Option<WalletKeySetInfo>, Err>;
 
     /// Get mint quote from storage
     async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<WalletMintQuote>, Err>;
@@ -128,7 +130,7 @@ where
     async fn add_mint_keysets(
         &self,
         mint_url: MintUrl,
-        keysets: Vec<KeySetInfo>,
+        keysets: Vec<WalletKeySetInfo>,
     ) -> Result<(), Err>;
 
     /// Add mint quote to storage

@@ -27,7 +27,7 @@ impl Wallet {
         memo: Option<String>,
         token: Option<String>,
     ) -> Result<Amount, Error> {
-        self.retry_on_inactive_keyset(|| async {
+        self.retry_on_stale_keyset(|| async {
             let saga = ReceiveSaga::new(self);
             let saga = saga
                 .prepare(proofs.clone(), opts.clone(), memo.clone(), token.clone())
