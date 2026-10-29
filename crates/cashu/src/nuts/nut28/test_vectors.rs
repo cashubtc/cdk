@@ -272,7 +272,8 @@ fn test_htlc_example_proof_receiver_derives_slot_1_and_2_keys() {
 
 #[test]
 fn test_htlc_example_proof_spendable_via_receiver_and_refund_paths() {
-    use crate::nuts::{nut00::Proof, Id};
+    use crate::nuts::nut00::Proof;
+    use crate::nuts::Id;
     use crate::secret::Secret;
     use crate::Amount;
 
