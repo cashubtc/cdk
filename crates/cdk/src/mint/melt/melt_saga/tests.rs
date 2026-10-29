@@ -563,6 +563,78 @@ async fn test_msat_total_spent_rounds_up_when_recording_sat_melt() {
 }
 
 #[tokio::test]
+async fn test_melt_signs_change_after_keyset_rotation() {
+    use cdk_common::nuts::PreMintSecrets;
+
+    let mint = create_test_mint().await.unwrap();
+    let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+    let amounts = vec![1, 3, 9, 27, 81, 243, 729];
+    let keyset = mint
+        .rotate_keyset(CurrencyUnit::Sat, amounts.clone(), 0, true, None)
+        .await
+        .unwrap();
+    let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+    let change_outputs = PreMintSecrets::blank(keyset.id, Amount::from(1_000))
+        .unwrap()
+        .blinded_messages();
+    let request = MeltRequest::new(quote.id.clone(), proofs, Some(change_outputs));
+    let verification = mint.verify_inputs(request.inputs()).await.unwrap();
+    let setup = MeltSaga::new(
+        std::sync::Arc::new(mint.clone()),
+        mint.localstore(),
+        mint.pubsub_manager(),
+    )
+    .setup_melt(
+        &request,
+        verification.clone(),
+        PaymentMethod::Known(KnownMethod::Bolt11),
+    )
+    .await
+    .unwrap();
+
+    mint.rotate_keyset(CurrencyUnit::Sat, vec![1, 2, 4, 8], 0, true, None)
+        .await
+        .unwrap();
+    assert!(!mint.get_keyset_info(&keyset.id).unwrap().active);
+
+    let rejected = MeltSaga::new(
+        std::sync::Arc::new(mint.clone()),
+        mint.localstore(),
+        mint.pubsub_manager(),
+    )
+    .setup_melt(
+        &request,
+        verification,
+        PaymentMethod::Known(KnownMethod::Bolt11),
+    )
+    .await;
+    assert!(matches!(rejected, Err(cdk_common::Error::InactiveKeyset)));
+
+    let change = finalize_melt_quote(
+        &mint,
+        &mint.localstore(),
+        &mint.pubsub_manager(),
+        &quote,
+        Amount::new(9_000, CurrencyUnit::Sat),
+        None,
+        &PaymentIdentifier::CustomId("rotation-payment".to_string()),
+        Some(setup.operation_id),
+    )
+    .await
+    .expect("accepted melt must return change after rotation")
+    .expect("melt has change");
+
+    assert_eq!(
+        Amount::try_sum(change.iter().map(|sig| sig.amount)).unwrap(),
+        Amount::from(1_000)
+    );
+    assert!(change
+        .iter()
+        .all(|sig| sig.keyset_id == keyset.id && amounts.contains(&sig.amount.to_u64())));
+    mint.stop().await.unwrap();
+}
+
+#[tokio::test]
 async fn test_finalizing_recovery_uses_persisted_payment_fee() {
     let mint = create_test_mint().await.unwrap();
     let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
