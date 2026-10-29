@@ -1286,6 +1286,10 @@ binding-dart:
   cp -r "$result"/* bindings/dart/
   chmod -R u+w bindings/dart/lib/src/generated/
 
+# Released mint/wallet -> current checkout compatibility (no regtest services).
+test-upgrade *ARGS:
+  cargo run --locked -p cdk-upgrade-tests -- {{ARGS}}
+
 # Run Dart binding tests
 test-dart:
   #!/usr/bin/env bash
