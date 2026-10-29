@@ -263,30 +263,70 @@ Built binaries are placed in `./static-bin/`.
 
 **Release process:**
 
-When a GitHub release is published, the [`static-build-publish.yml`](.github/workflows/static-build-publish.yml) workflow automatically:
+Publishing a `v<workspace version>` GitHub release triggers
+[`static-build-publish.yml`](.github/workflows/static-build-publish.yml). The workflow
+resolves the tag to a commit, requires full CI and Nutshell integration checks on
+that commit, and builds all three variants on Linux x86_64, Linux aarch64, and
+macOS aarch64. Release CI builds each package once, using the configured Nix
+caches where available. Each binary must also pass `--version` and `--help`.
+There is no automatic second build or independent verification gate.
 
-1. Builds the Linux static binaries and macOS aarch64 binaries via Nix
-2. Generates a `SHA256SUMS` file with checksums for each binary
-3. Uploads the binaries and checksums to the GitHub release
-
-The workflow can also be triggered manually via `workflow_dispatch` with a tag input. Pre-built static binaries are available on the [GitHub releases page](https://github.com/cashubtc/cdk/releases).
+After every platform succeeds, the workflow publishes the nine binaries,
+`SHA256SUMS`, and `BINARY-MANIFEST.json`. The manifest records the source commit,
+input file hashes, Nix derivations, and binary hashes. Publication verifies that
+the remote tag still names the built commit. Retrying a release uploads only
+missing assets and refuses to replace existing assets with different bytes.
+The workflow can also be dispatched manually with the release tag. Enable
+`check_reproducibility` to force a second build of each final package and compare
+its output using `nix build --rebuild`. A differing output fails the job. This
+optional check uploads workflow artifacts but does not publish release assets,
+so it can be run against an existing release without changing its manifest.
 
 **Reproducibility:**
 
-Static builds are designed to be reproducible. Two builds from the same source and `flake.lock` should produce identical binaries. This is achieved through:
+The checked-in Rust toolchain, Cargo lockfile, and Nix flake lockfile define the
+build inputs. Both platforms use the `release-static` Cargo profile. Linux uses
+musl and strips references to the Rust toolchain; macOS retains system dynamic
+libraries. The build helper archives the exact source commit into a temporary
+directory before building, excluding ignored files and local repository metadata.
+It supports both Git and JJ checkouts. In Git, the checkout must be clean; in JJ,
+the current working-copy commit is snapshotted first.
 
-- **Pinned toolchain and dependencies**: All inputs (Rust compiler, musl, OpenSSL, etc.) are pinned via the Nix flake lockfile.
-- **`release-static` Cargo profile**: Uses `codegen-units = 1` (eliminates parallel codegen ordering non-determinism), LTO, and `panic = "abort"`.
-- **Nix store path stripping**: A `postFixup` step runs `remove-references-to` on the final binaries to strip any embedded Nix store paths (e.g., the Rust toolchain path), which would otherwise differ across build machines.
-- **No non-deterministic metadata**: The codebase does not embed git hashes, build timestamps, or other non-deterministic values into binaries.
-
-You can verify a release binary by building locally and comparing checksums:
+To build all variants once for your current platform:
 
 ```bash
-nix build .#cdk-mintd-static
-sha256sum ./result/bin/*
-# Compare against SHA256SUMS from the release
+./scripts/release-binaries build
+# Optionally build only the wallet CLI:
+./scripts/release-binaries build --binaries cdk-cli
+# Optionally force a second build and compare its output:
+./scripts/release-binaries build --check-reproducibility
 ```
+
+To independently check a published release, check out its tag and confirm the
+commit matches the release manifest. Download its `SHA256SUMS` and the binaries
+for your platform from the release, verify their checksums, then rebuild:
+
+```bash
+# Run in a clean checkout of the release tag, replacing vX.Y.Z:
+./scripts/release-binaries build --tag vX.Y.Z --check-reproducibility
+# Use the downloaded SHA256SUMS here, not locally generated checksums.
+cd static-bin
+sha256sum --ignore-missing --check /path/to/downloaded/SHA256SUMS
+```
+
+On macOS, use `shasum -a 256` to compare each rebuilt binary's hash with the
+corresponding entry in the downloaded checksum file. The helper writes a
+`build-<system>.json` record after every selected binary passes its smoke tests
+and, when requested, the rebuild comparison. The `rebuild_checked` field records
+whether that comparison ran; ordinary release builds set it to `false`.
+Use `--check-reproducibility` for independent verification so a cached binary
+alone cannot satisfy the check. Compare the input hashes and derivations with
+the published manifest as well. A local rebuild checks the final derivation;
+it does not independently rebuild every cached dependency. Checksums and the
+manifest provide integrity and provenance information, not an independent signature.
+
+Run `just test-release-binaries` to test the build and publication contracts
+without compiling Rust or contacting GitHub.
 
 ### Cargo Profiles
 

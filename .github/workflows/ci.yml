@@ -68,6 +68,15 @@ jobs:
           useDaemon: false
           installCommand: nix profile install nixpkgs#cachix
         continue-on-error: true
+      - name: Release tooling contracts
+        run: |
+          nix develop --accept-flake-config --no-update-lock-file .#binary-release --command bash -euc '
+            python3 -m unittest discover -s scripts -p test_release_binaries.py
+            ruff check scripts/release_binaries.py scripts/test_release_binaries.py
+            ruff format --check scripts/release_binaries.py scripts/test_release_binaries.py
+            shellcheck scripts/release-binaries
+            actionlint .github/workflows/static-build-publish.yml
+          '
       - name: Cargo fmt
         run: nix develop --fallback -i -L .#stable --command cargo fmt --check
       - name: Compatibility fixture fmt

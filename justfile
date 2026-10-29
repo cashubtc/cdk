@@ -132,20 +132,15 @@ attic-push:
 build-static profile:
   #!/usr/bin/env bash
   set -euo pipefail
-  nix build .#{{profile}}
+  nix build --no-update-lock-file "path:.#$1"
   mkdir -p ./static-bin
   cp -f ./result/bin/* ./static-bin/
   echo "Static binaries in ./static-bin/:"
   ls -la ./static-bin/
 
-# Build all statically-linked binaries and generate checksums (requires nix)
-build-static-all: (build-static "cdk-mintd-static") (build-static "cdk-mintd-ldk-static") (build-static "cdk-cli-static")
-  #!/usr/bin/env bash
-  set -euo pipefail
-  cd ./static-bin
-  sha256sum -- *-x86_64 > SHA256SUMS
-  echo "Checksums:"
-  cat SHA256SUMS
+# Build all release binaries once for the current host (requires nix)
+build-static-all:
+  ./scripts/release-binaries build
 
 # Build the CI cache warmup targets locally.
 ci-cache-build:
@@ -1342,3 +1337,11 @@ test-swift:
   else
     DYLD_LIBRARY_PATH="$LIB_DIR" swift test
   fi
+
+# Build and verify release binaries, assemble checksums, or publish to a release.
+release-binaries *args:
+  @./scripts/release-binaries "$@"
+
+# Test release tooling in its pinned Nix environment.
+test-release-binaries:
+  nix develop --accept-flake-config --no-update-lock-file 'path:.#binary-release' --command python3 -m unittest discover -s scripts -p 'test_release_binaries.py'
