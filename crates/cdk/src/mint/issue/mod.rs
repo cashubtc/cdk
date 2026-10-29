@@ -1086,6 +1086,7 @@ mod batch_mint_tests {
         unit: CurrencyUnit,
         confirmations: u32,
         check_count: Arc<AtomicUsize>,
+        payments: Vec<WaitPaymentResponse>,
     }
 
     #[async_trait]
@@ -1146,7 +1147,7 @@ mod batch_mint_tests {
             _payment_identifier: &PaymentIdentifier,
         ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
             self.check_count.fetch_add(1, Ordering::Relaxed);
-            Ok(Vec::new())
+            Ok(self.payments.clone())
         }
 
         async fn check_outgoing_payment(
@@ -1201,6 +1202,14 @@ mod batch_mint_tests {
         onchain_min: u64,
         onchain_max: u64,
     ) -> (Mint, Arc<AtomicUsize>) {
+        create_test_mint_with_onchain_payments(onchain_min, onchain_max, Vec::new()).await
+    }
+
+    async fn create_test_mint_with_onchain_payments(
+        onchain_min: u64,
+        onchain_max: u64,
+        payments: Vec<WaitPaymentResponse>,
+    ) -> (Mint, Arc<AtomicUsize>) {
         let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
 
         let mut mint_builder = MintBuilder::new(db.clone());
@@ -1243,6 +1252,7 @@ mod batch_mint_tests {
             unit: CurrencyUnit::Sat,
             confirmations: 1,
             check_count: onchain_check_count.clone(),
+            payments,
         };
 
         mint_builder
@@ -1342,6 +1352,129 @@ mod batch_mint_tests {
             )
             .await
             .unwrap());
+    }
+
+    const OVERRIDDEN_PAYMENT_ID: &str = "matching-onchain-payment";
+
+    /// Records a manual override of `override_amount` for [`OVERRIDDEN_PAYMENT_ID`]
+    /// on an amountless on-chain quote, polls a backend reporting `backend_payments`
+    /// as `(payment_id, amount)`, and returns the persisted quote.
+    async fn poll_overridden_onchain_quote(
+        override_amount: u64,
+        backend_payments: &[(&str, u64)],
+    ) -> MintQuote {
+        let quote_id = QuoteId::new();
+        let payment_identifier = PaymentIdentifier::QuoteId(quote_id.clone());
+        let payments = backend_payments
+            .iter()
+            .map(|(payment_id, amount)| WaitPaymentResponse {
+                payment_identifier: payment_identifier.clone(),
+                payment_amount: Amount::new(*amount, CurrencyUnit::Sat),
+                payment_id: (*payment_id).to_owned(),
+            })
+            .collect();
+        let (mint, _) = create_test_mint_with_onchain_payments(1, 10_000, payments).await;
+        let now = cdk_common::util::unix_time();
+        let quote = MintQuote::new(
+            Some(quote_id.clone()),
+            "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_owned(),
+            CurrencyUnit::Sat,
+            None,
+            0,
+            payment_identifier,
+            None,
+            Amount::new(0, CurrencyUnit::Sat),
+            Amount::new(0, CurrencyUnit::Sat),
+            PaymentMethod::Known(KnownMethod::Onchain),
+            now,
+            now,
+            Vec::new(),
+            Vec::new(),
+            None,
+        );
+
+        let mut tx = mint.localstore().begin_transaction().await.unwrap();
+        let mut quote = tx.add_mint_quote(quote).await.unwrap();
+        let override_id = quote.manual_payment_override_id(Some(OVERRIDDEN_PAYMENT_ID));
+        quote
+            .add_payment(
+                Amount::new(override_amount, CurrencyUnit::Sat),
+                override_id,
+                None,
+            )
+            .unwrap();
+        tx.update_mint_quote(&mut quote).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let mut reloaded = mint
+            .localstore()
+            .get_mint_quote(&quote_id)
+            .await
+            .unwrap()
+            .expect("persisted quote");
+        mint.check_mint_quote_paid(&mut reloaded).await.unwrap();
+
+        mint.localstore()
+            .get_mint_quote(&quote_id)
+            .await
+            .unwrap()
+            .expect("persisted quote after polling")
+    }
+
+    fn recorded_payments(quote: &MintQuote) -> Vec<(String, u64)> {
+        quote
+            .payments
+            .iter()
+            .map(|payment| (payment.payment_id.clone(), payment.amount.value()))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn polling_deduplicates_manual_override_for_exact_backend_payment() {
+        let persisted = poll_overridden_onchain_quote(
+            20,
+            &[(OVERRIDDEN_PAYMENT_ID, 20), ("distinct-onchain-payment", 5)],
+        )
+        .await;
+
+        assert_eq!(persisted.amount_paid().value(), 25);
+        assert_eq!(persisted.amount_issued().value(), 0);
+        assert_eq!(persisted.amount_mintable().value(), 25);
+        assert_eq!(
+            recorded_payments(&persisted),
+            vec![
+                (
+                    persisted.manual_payment_override_id(Some(OVERRIDDEN_PAYMENT_ID)),
+                    20
+                ),
+                ("distinct-onchain-payment".to_owned(), 5),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn polling_credits_backend_amount_above_manual_override() {
+        let persisted = poll_overridden_onchain_quote(75, &[(OVERRIDDEN_PAYMENT_ID, 750)]).await;
+
+        assert_eq!(persisted.amount_paid().value(), 750);
+        assert_eq!(
+            recorded_payments(&persisted),
+            vec![
+                (
+                    persisted.manual_payment_override_id(Some(OVERRIDDEN_PAYMENT_ID)),
+                    75
+                ),
+                (OVERRIDDEN_PAYMENT_ID.to_owned(), 675),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn polling_keeps_manual_override_above_backend_amount() {
+        let persisted = poll_overridden_onchain_quote(75, &[(OVERRIDDEN_PAYMENT_ID, 50)]).await;
+
+        assert_eq!(persisted.amount_paid().value(), 75);
+        assert_eq!(persisted.payments.len(), 1);
     }
 
     async fn configure_nut29(

@@ -128,6 +128,16 @@ impl Mint {
                 );
 
                 let amount_paid = payment.payment_amount.convert_to(&new_quote.unit)?;
+                let amount_paid =
+                    new_quote.uncredited_backend_payment(&payment.payment_id, amount_paid);
+                if amount_paid.value() == 0 {
+                    tracing::debug!(
+                        quote_id = %new_quote.id,
+                        payment_id = %payment.payment_id,
+                        "Payment already credited by a manual quote payment override"
+                    );
+                    continue;
+                }
 
                 match new_quote.add_payment(amount_paid, payment.payment_id.clone(), None) {
                     Ok(()) => {

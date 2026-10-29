@@ -1224,6 +1224,19 @@ impl Mint {
                     return Err(Error::AmountUndefined);
                 }
 
+                let payment_amount_quote_unit = mint_quote.uncredited_backend_payment(
+                    &wait_payment_response.payment_id,
+                    payment_amount_quote_unit,
+                );
+                if payment_amount_quote_unit.value() == 0 {
+                    tracing::debug!(
+                        quote_id = %mint_quote.id,
+                        payment_id = %wait_payment_response.payment_id,
+                        "Payment notification already credited by a manual quote payment override"
+                    );
+                    return Ok(false);
+                }
+
                 tracing::debug!(
                     "Payment received amount in quote unit {} {}",
                     mint_quote.unit,

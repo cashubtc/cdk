@@ -738,6 +738,54 @@ impl MintQuote {
         self.payments.iter().map(|a| &a.payment_id).collect()
     }
 
+    /// Payment identifier reserved for a manual payment override.
+    ///
+    /// When `source_payment_id` is present, the identifier links the override
+    /// to the backend payment it represents so only that payment is
+    /// deduplicated. Other backend payments remain independently accountable.
+    pub fn manual_payment_override_id(&self, source_payment_id: Option<&str>) -> String {
+        let override_id = format!("cdk-payment-override:{}", self.id);
+        match source_payment_id {
+            Some(source_payment_id) => format!("{override_id}:{source_payment_id}"),
+            None => override_id,
+        }
+    }
+
+    /// Part of a backend payment not already credited by a manual override for it.
+    ///
+    /// The backend amount is authoritative. Without an override representing
+    /// `payment_id`, the whole payment is returned. When the override credited
+    /// less than the backend received, the difference is returned; otherwise
+    /// nothing is, since recorded payments cannot be retracted.
+    pub fn uncredited_backend_payment(
+        &self,
+        payment_id: &str,
+        amount: Amount<CurrencyUnit>,
+    ) -> Amount<CurrencyUnit> {
+        let override_id = self.manual_payment_override_id(Some(payment_id));
+        let Some(override_payment) = self
+            .payments
+            .iter()
+            .find(|payment| payment.payment_id == override_id)
+        else {
+            return amount;
+        };
+
+        if override_payment.amount.value() != amount.value() {
+            tracing::warn!(
+                quote_id = %self.id,
+                payment_id,
+                backend_amount = %amount,
+                override_amount = %override_payment.amount,
+                "Backend payment amount differs from its manual quote payment override"
+            );
+        }
+
+        amount
+            .checked_sub(&override_payment.amount)
+            .unwrap_or_else(|_| Amount::new(0, self.unit.clone()))
+    }
+
     /// Amount mintable
     /// Returns the amount that is still available for minting.
     ///

@@ -48,8 +48,10 @@ enabled = false
 # port = 8086
 # tls_dir = "/path/to/tls"
 # allow_insecure = false
-# Permits RPC callers to override mint quote state, including recording a
-# payment without confirmation from the payment backend.
+# Permits RPC callers to record a manual mint-quote payment without
+# payment-backend confirmation. Fixed-amount quotes default to their unpaid
+# remainder. Amountless and multi-payment quotes require a backend payment ID;
+# amountless quotes also require an explicit amount.
 # allow_mint_quote_payment_override = false
 
 #[prometheus]
