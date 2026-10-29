@@ -83,7 +83,12 @@ impl CoinSelectionAlgorithm for PessimisticFallback {
         let mut fee_amount = BitcoinAmount::ZERO;
 
         for weighted_utxo in required_utxos.into_iter().chain(optional_utxos) {
-            let input_fee = input_fee(fee_rate, weighted_utxo.satisfaction_weight);
+            let input_fee = input_fee(fee_rate, weighted_utxo.satisfaction_weight).ok_or(
+                InsufficientFunds {
+                    needed: BitcoinAmount::MAX_MONEY,
+                    available: selected_amount,
+                },
+            )?;
             let effective_value = weighted_utxo
                 .utxo
                 .txout()
@@ -99,8 +104,16 @@ impl CoinSelectionAlgorithm for PessimisticFallback {
                 })?;
 
             if selected_amount < needed_amount || effective_value > BitcoinAmount::ZERO {
-                fee_amount += input_fee;
-                selected_amount += weighted_utxo.utxo.txout().value;
+                fee_amount = fee_amount.checked_add(input_fee).ok_or(InsufficientFunds {
+                    needed: BitcoinAmount::MAX_MONEY,
+                    available: selected_amount,
+                })?;
+                selected_amount = selected_amount
+                    .checked_add(weighted_utxo.utxo.txout().value)
+                    .ok_or(InsufficientFunds {
+                        needed: BitcoinAmount::MAX_MONEY,
+                        available: selected_amount,
+                    })?;
                 selected.push(weighted_utxo.utxo);
             }
 
@@ -129,7 +142,13 @@ impl CoinSelectionAlgorithm for PessimisticFallback {
             });
         }
 
-        let remaining_amount = selected_amount - amount_needed_with_fees;
+        let remaining_amount =
+            selected_amount
+                .checked_sub(amount_needed_with_fees)
+                .ok_or(InsufficientFunds {
+                    needed: amount_needed_with_fees,
+                    available: selected_amount,
+                })?;
         let excess = decide_change(remaining_amount, fee_rate, drain_script);
 
         Ok(CoinSelectionResult {
@@ -168,19 +187,22 @@ impl CoinSelectionAlgorithm for TrackingFallback<'_> {
     }
 }
 
-fn input_fee(fee_rate: FeeRate, satisfaction_weight: Weight) -> BitcoinAmount {
-    fee_rate
-        * TxIn::default()
-            .segwit_weight()
-            .checked_add(satisfaction_weight)
-            .expect("input weight should not overflow")
+/// `None` when the input weight or the resulting fee would overflow, so the
+/// caller decides how an unusable fee rate surfaces.
+fn input_fee(fee_rate: FeeRate, satisfaction_weight: Weight) -> Option<BitcoinAmount> {
+    let input_weight = TxIn::default()
+        .segwit_weight()
+        .checked_add(satisfaction_weight)?;
+
+    fee_rate.checked_mul_by_weight(input_weight)
 }
 
+/// `None` when the fee would overflow; see [`input_fee`].
 fn base_transaction_fee(
     fee_rate: FeeRate,
     recipient_script: &Script,
     amount_sat: u64,
-) -> BitcoinAmount {
+) -> Option<BitcoinAmount> {
     let tx = Transaction {
         version: transaction::Version::TWO,
         lock_time: absolute::LockTime::ZERO,
@@ -191,7 +213,7 @@ fn base_transaction_fee(
         }],
     };
 
-    fee_rate * tx.weight()
+    fee_rate.checked_mul_by_weight(tx.weight())
 }
 
 fn raw_fee_from_selection(
@@ -295,7 +317,8 @@ impl CdkBdk {
         }
         let sampled_utxo_count = weighted_utxos.len();
 
-        let base_fee = base_transaction_fee(fee_rate, recipient_script.as_script(), amount_sat);
+        let base_fee = base_transaction_fee(fee_rate, recipient_script.as_script(), amount_sat)
+            .ok_or(Error::FeeEstimationOverflow)?;
         let target_amount = BitcoinAmount::from_sat(amount_sat)
             .checked_add(base_fee)
             .ok_or(Error::FeeEstimationOverflow)?;

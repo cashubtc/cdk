@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use cdk::wallet::WalletRepository;
 use cdk::Amount;
 
@@ -8,7 +8,9 @@ pub async fn mint_pending(wallet_repository: &WalletRepository) -> Result<()> {
 
     for wallet in wallets {
         let amount = wallet.check_all_pending_proofs().await?;
-        total_amount += amount;
+        total_amount = total_amount
+            .checked_add(amount)
+            .ok_or_else(|| anyhow!("total pending amount overflowed"))?;
     }
 
     println!("Amount: {total_amount}");
