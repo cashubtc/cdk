@@ -214,6 +214,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "fuzz_nut16_fountain_decode"
+path = "fuzz_targets/fuzz_nut16_fountain_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "fuzz_nut16_ur_multipart"
 path = "fuzz_targets/fuzz_nut16_ur_multipart.rs"
 test = false
