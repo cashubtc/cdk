@@ -489,6 +489,10 @@ impl TryFrom<ProtectedEndpoint> for cdk::nuts::ProtectedEndpoint {
 /// FFI-compatible Nuts settings (extended to include NUT-04 and NUT-05 settings)
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct Nuts {
+    /// NUT03 mint-rerandomized output support, absent on older mints
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[uniffi(default = None)]
+    pub nut03_rerandomize: Option<bool>,
     /// NUT04 Settings
     pub nut04: Nut04Settings,
     /// NUT05 Settings
@@ -535,6 +539,7 @@ impl From<cdk::nuts::Nuts> for Nuts {
             .collect();
 
         Self {
+            nut03_rerandomize: nuts.nut03.map(|settings| settings.rerandomize),
             nut04: nuts.nut04.clone().into(),
             nut05: nuts.nut05.clone().into(),
             nut07_supported: nuts.nut07.supported,
@@ -559,6 +564,9 @@ impl TryFrom<Nuts> for cdk::nuts::Nuts {
 
     fn try_from(n: Nuts) -> Result<Self, Self::Error> {
         Ok(Self {
+            nut03: n
+                .nut03_rerandomize
+                .map(|rerandomize| cdk::nuts::nut03::Settings { rerandomize }),
             nut04: n.nut04.try_into()?,
             nut05: n.nut05.try_into()?,
             nut07: cdk::nuts::nut06::SupportedSettings {
@@ -718,6 +726,7 @@ mod tests {
     /// Helper function to create a sample cdk::nuts::Nuts for testing
     fn create_sample_cdk_nuts() -> cdk::nuts::Nuts {
         cdk::nuts::Nuts {
+            nut03: Some(cdk::nuts::nut03::Settings { rerandomize: true }),
             nut04: cdk::nuts::nut04::Settings {
                 methods: vec![cdk::nuts::nut04::MintMethodSettings {
                     method: cdk::nuts::PaymentMethod::Known(KnownMethod::Bolt11),
@@ -779,6 +788,7 @@ mod tests {
     fn test_nuts_from_cdk_to_ffi() {
         let cdk_nuts = create_sample_cdk_nuts();
         let ffi_nuts: Nuts = cdk_nuts.clone().into();
+        assert_eq!(ffi_nuts.nut03_rerandomize, Some(true));
 
         // Verify NUT04 settings
         assert!(!ffi_nuts.nut04.disabled);
@@ -827,6 +837,7 @@ mod tests {
         // Convert cdk -> ffi -> cdk
         let ffi_nuts: Nuts = original_cdk_nuts.clone().into();
         let converted_back: cdk::nuts::Nuts = ffi_nuts.try_into().unwrap();
+        assert_eq!(original_cdk_nuts.nut03, converted_back.nut03);
 
         // Verify all supported flags match
         assert_eq!(
@@ -894,8 +905,20 @@ mod tests {
     }
 
     #[test]
+    fn older_ffi_nuts_json_without_nut03_remains_compatible() {
+        let ffi_nuts: Nuts = create_sample_cdk_nuts().into();
+        let mut value = serde_json::to_value(&ffi_nuts).unwrap();
+        value.as_object_mut().unwrap().remove("nut03_rerandomize");
+        let decoded: Nuts = serde_json::from_value(value).unwrap();
+        assert_eq!(decoded.nut03_rerandomize, None);
+        let decoded: cdk::nuts::Nuts = decoded.try_into().unwrap();
+        assert!(decoded.nut03.is_none());
+    }
+
+    #[test]
     fn test_nuts_without_auth() {
         let cdk_nuts = cdk::nuts::Nuts {
+            nut03: None,
             nut04: Default::default(),
             nut05: Default::default(),
             nut07: cdk::nuts::nut06::SupportedSettings { supported: true },
@@ -916,6 +939,7 @@ mod tests {
 
         let ffi_nuts: Nuts = cdk_nuts.into();
 
+        assert_eq!(ffi_nuts.nut03_rerandomize, None);
         assert!(ffi_nuts.nut21.is_none());
         assert!(ffi_nuts.nut22.is_none());
         assert!(ffi_nuts.nut07_supported);
@@ -925,6 +949,7 @@ mod tests {
     #[test]
     fn test_ffi_nuts_to_cdk_with_defaults() {
         let ffi_nuts = Nuts {
+            nut03_rerandomize: None,
             nut04: Nut04Settings {
                 methods: vec![],
                 disabled: true,
@@ -952,6 +977,7 @@ mod tests {
         assert!(cdk_nuts.is_ok());
 
         let cdk_nuts = cdk_nuts.unwrap();
+        assert!(cdk_nuts.nut03.is_none());
         assert!(!cdk_nuts.nut07.supported);
         assert!(!cdk_nuts.nut08.supported);
         assert!(cdk_nuts.nut21.is_none());
@@ -1082,6 +1108,7 @@ mod tests {
             description_long: None,
             contact: None,
             nuts: Nuts {
+                nut03_rerandomize: None,
                 nut04: Nut04Settings {
                     methods: vec![],
                     disabled: false,

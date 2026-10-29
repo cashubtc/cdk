@@ -349,6 +349,7 @@ macro_rules! mint_db_test {
         mint_db_test!(
             $make_db_fn,
             add_and_find_proofs,
+            rerandomization_recovery_storage,
             add_duplicate_proofs,
             kvstore_functionality,
             kvstore_write_if_absent,

@@ -282,7 +282,7 @@ pub(crate) fn extract_signatures_from_witness(
 /// Per NUT-11, there are two spending pathways after locktime:
 /// 1. Primary path (data + pubkeys): ALWAYS available
 /// 2. Refund path (refund keys): available AFTER locktime
-pub(crate) fn verify_sig_all_p2pk(first_input: &Proof, msg_to_sign: String) -> Result<(), Error> {
+pub(crate) fn verify_sig_all_p2pk(first_input: &Proof, digest: [u8; 32]) -> Result<(), Error> {
     // Get the first input, as it's the one with the signatures
     let first_secret =
         Nut10Secret::try_from(&first_input.secret).map_err(|_| Error::IncorrectSecretKind)?;
@@ -318,9 +318,7 @@ pub(crate) fn verify_sig_all_p2pk(first_input: &Proof, msg_to_sign: String) -> R
     {
         let primary_valid = extract_signatures_from_witness(first_witness)
             .ok()
-            .and_then(|sigs| {
-                valid_signatures(msg_to_sign.as_bytes(), &requirements.pubkeys, &sigs).ok()
-            })
+            .and_then(|sigs| valid_signatures_digest(digest, &requirements.pubkeys, &sigs).ok())
             .is_some_and(|count| count >= requirements.required_sigs);
 
         if primary_valid {
@@ -333,7 +331,7 @@ pub(crate) fn verify_sig_all_p2pk(first_input: &Proof, msg_to_sign: String) -> R
         if let Some(refund_path) = &requirements.refund_path {
             let signatures = extract_signatures_from_witness(first_witness)?;
             let valid_sig_count =
-                valid_signatures(msg_to_sign.as_bytes(), &refund_path.pubkeys, &signatures)
+                valid_signatures_digest(digest, &refund_path.pubkeys, &signatures)
                     .map_err(|_| Error::InvalidSignature)?;
 
             if valid_sig_count >= refund_path.required_sigs {
@@ -364,6 +362,27 @@ pub(crate) fn valid_signatures(
                 if !verified_pubkeys.insert(x_only) {
                     return Err(Error::DuplicateSignature);
                 }
+            }
+        }
+    }
+
+    Ok(verified_pubkeys.len() as u64)
+}
+
+/// Returns the count of valid signatures over an already hashed message.
+pub(crate) fn valid_signatures_digest(
+    digest: [u8; 32],
+    pubkeys: &[PublicKey],
+    signatures: &[Signature],
+) -> Result<u64, Error> {
+    let mut verified_pubkeys = HashSet::new();
+
+    for pubkey in pubkeys {
+        for signature in signatures {
+            if pubkey.verify_digest(digest, signature).is_ok()
+                && !verified_pubkeys.insert(pubkey.x_only_public_key())
+            {
+                return Err(Error::DuplicateSignature);
             }
         }
     }
@@ -522,9 +541,12 @@ pub struct EnforceSigFlag {
 impl SwapRequest {
     /// Sign swap request with SIG_ALL
     pub fn sign_sig_all(&mut self, secret_key: SecretKey) -> Result<(), Error> {
-        // Get message to sign
-        let msg = self.sig_all_msg_to_sign();
-        let signature = secret_key.sign(msg.as_bytes())?;
+        let signature = match self.rerandomized_sig_all_msg_to_sign() {
+            Some(message) => {
+                secret_key.sign_digest(crate::nut10::rerandomized_sig_all_message_hash(&message))
+            }
+            None => secret_key.sign(self.sig_all_msg_to_sign().as_bytes())?,
+        };
 
         // Add signature to first input witness
         let first_input = self
@@ -614,6 +636,134 @@ mod tests {
             dleq: None,
             p2pk_e: None,
         }
+    }
+
+    fn make_sig_all_swap_for_test(signers: &[SecretKey], rerandomize: bool) -> SwapRequest {
+        let primary = signers[0].public_key();
+        let conditions = Conditions {
+            pubkeys: (signers.len() > 1)
+                .then(|| signers[1..].iter().map(SecretKey::public_key).collect()),
+            num_sigs: Some(signers.len() as u64),
+            sig_flag: SigFlag::SigAll,
+            ..Default::default()
+        };
+        let secret: Secret = SpendingConditions::new_p2pk(primary, Some(conditions))
+            .try_into()
+            .unwrap();
+        let proof = Proof {
+            amount: Amount::ONE,
+            keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
+            secret,
+            c: SecretKey::generate().public_key(),
+            witness: None,
+            dleq: None,
+            p2pk_e: None,
+        };
+        let output = BlindedMessage::new(
+            Amount::ONE,
+            Id::from_str("009a1f293253e41e").unwrap(),
+            SecretKey::generate().public_key(),
+        );
+        let request = SwapRequest::new(vec![proof], vec![output]);
+
+        if rerandomize {
+            request.with_rerandomization()
+        } else {
+            request
+        }
+    }
+
+    #[test]
+    fn test_rerandomized_sig_all_accepts_only_rerandomized_digest() {
+        let signer = SecretKey::generate();
+        let mut request = make_sig_all_swap_for_test(std::slice::from_ref(&signer), true);
+        request.sign_sig_all(signer).unwrap();
+
+        assert!(request.verify_spending_conditions().is_ok());
+        let message = request.rerandomized_sig_all_msg_to_sign().unwrap();
+        assert!(message.starts_with(b"\x00\x00\x00\x00"));
+    }
+
+    #[test]
+    fn test_rerandomized_swap_rejects_previous_raw_output_transcript() {
+        let signer = SecretKey::generate();
+        let mut request = make_sig_all_swap_for_test(std::slice::from_ref(&signer), true);
+        let mut old_message = request.rerandomized_sig_all_msg_to_sign().unwrap();
+        old_message.truncate(old_message.len() - 32);
+        old_message.extend_from_slice(&33u32.to_be_bytes());
+        old_message.extend_from_slice(&request.outputs()[0].blinded_secret.to_bytes());
+        let old_digest = crate::nut10::rerandomized_sig_all_message_hash(&old_message);
+        let old_signature = signer.sign_digest(old_digest).to_string();
+        request.inputs_mut()[0].witness = Some(Witness::P2PKWitness(P2PKWitness {
+            signatures: vec![old_signature],
+        }));
+
+        assert!(request.verify_spending_conditions().is_err());
+        request.sign_sig_all(signer).unwrap();
+        assert!(request.verify_spending_conditions().is_ok());
+    }
+
+    #[test]
+    fn test_rerandomized_sig_all_rejects_ordinary_signature() {
+        let signer = SecretKey::generate();
+        let mut request = make_sig_all_swap_for_test(std::slice::from_ref(&signer), false);
+        request.sign_sig_all(signer).unwrap();
+        let request = request.with_rerandomization();
+
+        assert!(request.verify_spending_conditions().is_err());
+    }
+
+    #[test]
+    fn test_ordinary_sig_all_rejects_rerandomized_signature() {
+        let signer = SecretKey::generate();
+        let mut request = make_sig_all_swap_for_test(std::slice::from_ref(&signer), true);
+        request.sign_sig_all(signer).unwrap();
+
+        let mut value = serde_json::to_value(request).unwrap();
+        value.as_object_mut().unwrap().remove("rerandomize");
+        let ordinary_request: SwapRequest = serde_json::from_value(value).unwrap();
+
+        assert!(ordinary_request.verify_spending_conditions().is_err());
+    }
+
+    #[test]
+    fn test_rerandomized_sig_all_does_not_mix_authorization_modes() {
+        let first_signer = SecretKey::generate();
+        let second_signer = SecretKey::generate();
+        let mut request =
+            make_sig_all_swap_for_test(&[first_signer.clone(), second_signer.clone()], true);
+
+        let ordinary_signature = first_signer
+            .sign(request.sig_all_msg_to_sign().as_bytes())
+            .unwrap()
+            .to_string();
+        request.inputs_mut()[0].witness = Some(Witness::P2PKWitness(P2PKWitness {
+            signatures: vec![ordinary_signature],
+        }));
+        request.sign_sig_all(second_signer).unwrap();
+
+        assert!(request.verify_spending_conditions().is_err());
+
+        request.sign_sig_all(first_signer).unwrap();
+        assert!(request.verify_spending_conditions().is_ok());
+    }
+
+    #[test]
+    fn test_rerandomized_swap_requires_sig_all() {
+        let signer = SecretKey::generate();
+        let mut request = make_sig_all_swap_for_test(std::slice::from_ref(&signer), true);
+        let secret = Nut10Secret::try_from(&request.inputs()[0].secret).unwrap();
+        let conditions = Conditions {
+            sig_flag: SigFlag::SigInputs,
+            ..Conditions::try_from(secret.secret_data().tags().cloned().unwrap_or_default())
+                .unwrap()
+        };
+        request.inputs_mut()[0].secret =
+            SpendingConditions::new_p2pk(signer.public_key(), Some(conditions))
+                .try_into()
+                .unwrap();
+
+        assert!(request.verify_spending_conditions().is_err());
     }
 
     #[test]

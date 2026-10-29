@@ -204,13 +204,41 @@ where
         proofs: &mut Acquired<ProofsWithState>,
         new_state: State,
     ) -> Result<(), Self::Err> {
+        self.update_proofs_state_with_r(proofs, new_state, None)
+            .await
+    }
+
+    async fn update_proofs_state_with_r(
+        &mut self,
+        proofs: &mut Acquired<ProofsWithState>,
+        new_state: State,
+        r: Option<[u8; 32]>,
+    ) -> Result<(), Self::Err> {
         let ys = proofs.ys()?;
 
-        query(r#"UPDATE proof SET state = :new_state WHERE y IN (:ys)"#)?
-            .bind("new_state", new_state.to_string())
-            .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
-            .execute(&self.inner)
-            .await?;
+        if let Some(r) = r {
+            if proofs.state != State::Pending || new_state != State::Spent {
+                return Err(Error::Internal(
+                    "Recovery randomness requires a Pending-to-Spent transition".to_owned(),
+                ));
+            }
+            let changed = query("UPDATE proof SET state = 'SPENT', rerandomization_r = :r WHERE y IN (:ys) AND state = 'PENDING' AND rerandomization_r IS NULL")?
+                .bind("r", r.to_vec())
+                .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
+                .execute(&self.inner)
+                .await?;
+            if changed != ys.len() {
+                return Err(Error::Internal(
+                    "Recovery update did not affect all acquired proofs".to_owned(),
+                ));
+            }
+        } else {
+            query(r#"UPDATE proof SET state = :new_state WHERE y IN (:ys)"#)?
+                .bind("new_state", new_state.to_string())
+                .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
+                .execute(&self.inner)
+                .await?;
+        }
 
         if new_state == State::Spent {
             query(
@@ -426,6 +454,33 @@ where
     RM: DatabasePool + 'static,
 {
     type Err = Error;
+
+    fn supports_output_rerandomization(&self) -> bool {
+        true
+    }
+
+    async fn get_rerandomization_r(
+        &self,
+        ys: &[PublicKey],
+    ) -> Result<HashMap<PublicKey, [u8; 32]>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query("SELECT y, rerandomization_r FROM proof WHERE y IN (:ys) AND state = 'SPENT' AND rerandomization_r IS NOT NULL")?
+            .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
+            .fetch_all(&*conn)
+            .await?
+            .into_iter()
+            .map(|row| {
+                let y = column_as_string!(&row[0], PublicKey::from_hex, PublicKey::from_slice);
+                let bytes = crate::column_as_binary!(&row[1]);
+                let r = bytes.try_into().map_err(|_| Error::InvalidDbResponse)?;
+                Ok((y, r))
+            })
+            .collect()
+    }
 
     async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err> {
         let conn = self

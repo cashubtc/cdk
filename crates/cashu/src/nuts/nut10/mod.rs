@@ -5,9 +5,12 @@
 use std::fmt;
 use std::str::FromStr;
 
+use bitcoin::hashes::sha256::Hash as Sha256Hash;
+use bitcoin::hashes::Hash;
 use serde::{Deserialize, Serialize};
 
 use super::nut01::PublicKey;
+use super::nut20::{amount_to_minimal_bytes, append_len_prefixed};
 use crate::{nut11, nut14};
 
 pub mod spending_conditions;
@@ -269,6 +272,42 @@ pub(crate) fn get_pubkeys_and_required_sigs(
 
 use super::Proofs;
 
+/// BIP-340 tag for a mint-rerandomized NUT-11 v1 SIG_ALL swap.
+const SIG_ALL_RERANDOMIZED_TAG: &[u8] = b"Cashu_SigAllRerandomized_v1";
+
+/// SIG_ALL message for a mint-rerandomized swap.
+///
+/// Commits to an empty swap-context frame, each input's secret and C, then each
+/// output's framed amount (minimal big-endian bytes) and unframed SHA-256 of its
+/// original 33-byte compressed B_. This intentionally breaks the earlier raw-B_
+/// prototype while retaining the separately tagged signing domain.
+pub(crate) fn rerandomized_sig_all_msg_to_sign(
+    inputs: &Proofs,
+    outputs: &[super::BlindedMessage],
+) -> Vec<u8> {
+    let mut msg = Vec::new();
+    append_len_prefixed(&mut msg, &[]);
+    for proof in inputs {
+        append_len_prefixed(&mut msg, proof.secret.to_string().as_bytes());
+        append_len_prefixed(&mut msg, &proof.c.to_bytes());
+    }
+    for output in outputs {
+        append_len_prefixed(&mut msg, &amount_to_minimal_bytes(output.amount));
+        msg.extend_from_slice(&Sha256Hash::hash(&output.blinded_secret.to_bytes()).to_byte_array());
+    }
+    msg
+}
+
+/// Tagged hash of the rerandomized SIG_ALL message, signed without further hashing.
+pub(crate) fn rerandomized_sig_all_message_hash(message: &[u8]) -> [u8; 32] {
+    let tag_hash = Sha256Hash::hash(SIG_ALL_RERANDOMIZED_TAG).to_byte_array();
+    let mut preimage = Vec::with_capacity(64 + message.len());
+    preimage.extend_from_slice(&tag_hash);
+    preimage.extend_from_slice(&tag_hash);
+    preimage.extend_from_slice(message);
+    Sha256Hash::hash(&preimage).to_byte_array()
+}
+
 /// Trait for requests that spend proofs (SwapRequest, MeltRequest)
 pub trait SpendingConditionVerification {
     /// Get the input proofs
@@ -280,6 +319,11 @@ pub trait SpendingConditionVerification {
     /// For swap: input secrets + output blinded messages
     /// For melt: input secrets + quote/payment request
     fn sig_all_msg_to_sign(&self) -> String;
+
+    /// Construct a separately tagged SIG_ALL message when rerandomization is selected.
+    fn rerandomized_sig_all_msg_to_sign(&self) -> Option<Vec<u8>> {
+        None
+    }
 
     /// Check if at least one proof in the set has SIG_ALL flag set
     ///
@@ -365,7 +409,12 @@ pub trait SpendingConditionVerification {
     /// It checks if any input has SIG_ALL and dispatches to the appropriate verification path.
     fn verify_spending_conditions(&self) -> Result<(), Error> {
         // Check if any input has SIG_ALL flag
-        if self.has_at_least_one_sig_all()? {
+        let has_sig_all = self.has_at_least_one_sig_all()?;
+        if self.rerandomized_sig_all_msg_to_sign().is_some() && !has_sig_all {
+            return Err(Error::SpendConditionsNotMet);
+        }
+
+        if has_sig_all {
             // at least one input has SIG_ALL
             self.verify_full_sig_all_check()
         } else {
@@ -392,14 +441,18 @@ pub trait SpendingConditionVerification {
         let first_input = self.inputs().first().ok_or(Error::SpendConditionsNotMet)?;
         let first_secret =
             Secret::try_from(&first_input.secret).map_err(|_| Error::IncorrectSecretKind)?;
+        let digest = match self.rerandomized_sig_all_msg_to_sign() {
+            Some(message) => rerandomized_sig_all_message_hash(&message),
+            None => Sha256Hash::hash(self.sig_all_msg_to_sign().as_bytes()).to_byte_array(),
+        };
 
         // Dispatch based on secret kind
         match first_secret.kind() {
             Kind::P2PK => {
-                nut11::verify_sig_all_p2pk(first_input, self.sig_all_msg_to_sign())?;
+                nut11::verify_sig_all_p2pk(first_input, digest)?;
             }
             Kind::HTLC => {
-                nut14::verify_sig_all_htlc(first_input, self.sig_all_msg_to_sign())?;
+                nut14::verify_sig_all_htlc(first_input, digest)?;
             }
         }
 
@@ -452,6 +505,36 @@ mod tests {
     use super::*;
     use crate::nuts::{Id, Proof, SecretKey, SigFlag};
     use crate::{Amount, Proofs};
+
+    #[test]
+    fn rerandomized_sig_all_hashes_original_output_without_length_frame() {
+        let generator = PublicKey::from_str(
+            "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+        )
+        .unwrap();
+        let output = super::super::BlindedMessage::new(
+            Amount::ONE,
+            Id::from_str("009a1f293253e41e").unwrap(),
+            generator,
+        );
+        let message = rerandomized_sig_all_msg_to_sign(&vec![], &[output]);
+        assert_eq!(
+            message,
+            crate::util::hex::decode(concat!(
+                "000000000000000101",
+                "0f715baf5d4c2ed329785cef29e562f73488c8a2bb9dbc5700b361d54b9b0554"
+            ))
+            .unwrap()
+        );
+        assert_eq!(
+            rerandomized_sig_all_message_hash(&message),
+            crate::util::hex::decode(
+                "12ba73147194f4528cf2e06b4a557daff57a1f2153938106af49d51c399bbe2a"
+            )
+            .unwrap()
+            .as_slice()
+        );
+    }
 
     struct TestSpendRequest {
         inputs: Proofs,
