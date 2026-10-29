@@ -437,7 +437,7 @@
           commonCraneArgsMsrv
           // {
             pname = "cdk-deps-msrv";
-            cargoExtraArgs = "--workspace --exclude cdk-redb --exclude cdk-integration-tests --exclude cdk-ffi-dart --exclude cdk-ffi-swift --exclude cdk-ffi-kotlin --exclude cdk-cli";
+            cargoExtraArgs = "--workspace --exclude cdk-redb --exclude cdk-integration-tests --exclude cdk-ffi-dart --exclude cdk-ffi-swift --exclude cdk-ffi-kotlin --exclude cdk-ffi-python --exclude cdk-cli";
           }
         );
 
@@ -940,6 +940,7 @@
             buf
             nixpkgs-fmt
             typos
+            actionlint
             tokei
 
             cargo-outdated
@@ -1778,10 +1779,19 @@
                     echo "FFI development shell"
                     echo "  just ffi-test        - Run Python FFI tests"
                     echo "  just ffi-dev-python  - Launch Python REPL with CDK FFI"
+                    echo "  just binding-python  - Build the Python wheel"
+                    echo "  just test-python     - Test the Python wheel"
                   '';
                 buildInputs = baseBuildInputs ++ [
                   stable_toolchain
-                  pkgs.python311
+                  (pkgs.python311.withPackages (ps: [
+                    ps.build
+                    ps.pip
+                    ps.pytest
+                    ps.pytest-asyncio
+                    ps.setuptools
+                    ps.wheel
+                  ]))
                 ];
                 inherit nativeBuildInputs;
               }

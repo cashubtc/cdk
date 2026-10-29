@@ -27,6 +27,7 @@ jobs:
         continue-on-error: true
       - name: Run Nightly rustfmt
         run: |
+          # shellcheck disable=SC2016
           nix develop --fallback -i -L .#nightly --command bash -c '
             # Force use of Nix-provided rustfmt
             export RUSTFMT=$(command -v rustfmt)
@@ -35,7 +36,7 @@ jobs:
           # Manually remove trailing whitespace
           find . -name '*.rs' -type f -exec sed -E -i 's/[[:space:]]+$//' {} +
       - name: Get the current date
-        run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_ENV
+        run: echo "date=$(date +'%Y-%m-%d')" >> "$GITHUB_ENV"
       - name: Create Pull Request
         uses: peter-evans/create-pull-request@98357b18bf14b5342f975ff684046ec3b2a07725 # v8
         env:

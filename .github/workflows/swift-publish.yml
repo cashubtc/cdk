@@ -201,7 +201,8 @@ jobs:
 
       - name: Build
         run: |
-          export DEVELOPER_DIR=$(/usr/bin/xcrun xcode-select -p)
+          DEVELOPER_DIR="$(/usr/bin/xcrun xcode-select -p)"
+          export DEVELOPER_DIR
           if [[ "${{ matrix.unset_macos_env }}" == "true" ]]; then
             env -u MACOSX_DEPLOYMENT_TARGET -u SDKROOT \
               cargo build --locked --profile release-ffi -p cdk-ffi-swift \

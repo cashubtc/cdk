@@ -176,7 +176,7 @@ jobs:
       - name: Generate SHA256 checksums
         run: |
           cd ./static-bin
-          sha256sum * > SHA256SUMS
+          sha256sum -- * > SHA256SUMS
           echo "Checksums:"
           cat SHA256SUMS
 

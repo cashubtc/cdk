@@ -317,7 +317,7 @@ jobs:
             filename=$(basename "$f")
             for suffix in libcdk_ffi_dart.so libcdk_ffi_dart.dylib cdk_ffi_dart.dll; do
               if [[ "$filename" == *"-${suffix}" ]]; then
-                target="${filename%-${suffix}}"
+                target="${filename%-"${suffix}"}"
                 mkdir -p "cdk-dart/prebuilt/${target}"
                 cp "$f" "cdk-dart/prebuilt/${target}/${suffix}"
                 break

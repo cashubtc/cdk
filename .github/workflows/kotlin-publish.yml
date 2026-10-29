@@ -236,6 +236,7 @@ jobs:
         shell: bash
         run: |
           FILE="target/${{ matrix.target }}/release-ffi/${{ matrix.artifact }}"
+          # shellcheck disable=SC2016
           nix develop --fallback -L .#kotlin-build --command \
             bash -c '"$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" --strip-all '"$FILE"
 
@@ -324,7 +325,7 @@ jobs:
           for f in artifacts/*; do
             filename=$(basename "$f")
             [[ "$filename" == *"-${suffix}" ]] || continue
-            rust_target="${filename%-${suffix}}"
+            rust_target="${filename%-"${suffix}"}"
             abi="${ANDROID_ABI[$rust_target]+${ANDROID_ABI[$rust_target]}}"
             [[ -n "$abi" ]] || { echo "no ABI mapping for ${rust_target}, skipping" >&2; continue; }
             dst="cdk-kotlin/cdk-android/src/main/jniLibs/${abi}"

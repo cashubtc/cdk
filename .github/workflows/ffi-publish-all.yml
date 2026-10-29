@@ -71,3 +71,17 @@ jobs:
       cdk_ref: ${{ inputs.cdk_ref }}
       prerelease: ${{ needs.detect-prerelease.outputs.prerelease == 'true' }}
     secrets: inherit
+
+  python:
+    name: "Trigger Python bindings"
+    needs: detect-prerelease
+    uses: ./.github/workflows/python-publish.yml
+    with:
+      release_tag: ${{ inputs.release_tag }}
+      cdk_ref: ${{ inputs.cdk_ref }}
+      prerelease: ${{ needs.detect-prerelease.outputs.prerelease == 'true' }}
+      # The workflow resolves "auto" from the tag: PyPI for a stable release or
+      # a versioned pre-release, nothing for a nightly. Same split as the
+      # Maven Central gate in kotlin-publish.yml.
+      publish_target: auto
+    secrets: inherit
