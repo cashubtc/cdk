@@ -382,10 +382,9 @@ async fn execute_onchain_transaction(
     form: ConfirmOnchainForm,
 ) -> Result<Response, StatusCode> {
     tracing::info!(
-        "Web interface: Executing on-chain transaction to address={}, send_action={}, amount_sat={:?}",
-        form.address,
-        form.send_action,
-        form.amount_sat
+        send_action = %form.send_action,
+        amount_sat = ?form.amount_sat,
+        "Web interface: Executing on-chain transaction"
     );
 
     let address = match Address::from_str(&form.address) {
@@ -411,12 +410,14 @@ async fn execute_onchain_transaction(
         }
     };
 
+    tracing::debug!(
+        address = %address.assume_checked_ref(),
+        "Web interface: On-chain transaction destination"
+    );
+
     // Handle send all action
     let txid_result = if form.send_action == "send_all" {
-        tracing::info!(
-            "Web interface: Sending all available funds to {}",
-            form.address
-        );
+        tracing::info!("Web interface: Sending on-chain funds");
         state.node.inner.onchain_payment().send_all_to_address(
             address.assume_checked_ref(),
             false,
@@ -424,11 +425,7 @@ async fn execute_onchain_transaction(
         )
     } else {
         let amount_sats = form.amount_sat.ok_or(StatusCode::BAD_REQUEST)?;
-        tracing::info!(
-            "Web interface: Sending {} sats to {}",
-            amount_sats,
-            form.address
-        );
+        tracing::info!("Web interface: Sending on-chain funds");
         state.node.inner.onchain_payment().send_to_address(
             address.assume_checked_ref(),
             amount_sats,
@@ -438,18 +435,12 @@ async fn execute_onchain_transaction(
 
     let content = match txid_result {
         Ok(txid) => {
-            if form.send_action == "send_all" {
-                tracing::info!(
-                    "Web interface: Successfully sent all available funds, txid={}",
-                    txid
-                );
-            } else {
-                tracing::info!(
-                    "Web interface: Successfully sent {} sats, txid={}",
-                    form.amount_sat.unwrap_or(0),
-                    txid
-                );
-            }
+            tracing::info!(
+                txid = %txid,
+                send_action = %form.send_action,
+                amount_sat = ?form.amount_sat,
+                "Web interface: On-chain transaction sent"
+            );
             let amount = form.amount_sat;
             html! {
                         (success_message("Transaction sent successfully!"))

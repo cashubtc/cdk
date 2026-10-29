@@ -39,7 +39,7 @@ pub mod pub_sub;
 /// `Transport` trait it decorates.
 #[cfg(all(feature = "wallet", feature = "http"))]
 pub mod rate_limit;
-pub mod redact;
+pub use cashu::redact;
 #[cfg(feature = "mint")]
 pub mod state;
 pub mod stream;
