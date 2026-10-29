@@ -1375,6 +1375,12 @@ impl Mint {
     }
 
     /// Restore
+    ///
+    /// Signatures are returned for every known blinded secret, expired keysets
+    /// included, so a recovering wallet can still account for what it was
+    /// issued. DLEQ proofs are no longer stored, so they are rebuilt here; the
+    /// proof is optional in a restore response, so a keyset the signatory can
+    /// no longer sign with yields the stored signature without one.
     #[instrument(skip_all)]
     pub async fn restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
         #[cfg(feature = "prometheus")]
@@ -1382,6 +1388,7 @@ impl Mint {
 
         let result = async {
             let blinded_messages = request.outputs;
+
             let output_len = blinded_messages.len();
 
             if output_len == 0 {
@@ -1421,30 +1428,13 @@ impl Mint {
             for (blinded_message, blinded_signature) in
                 blinded_messages.into_iter().zip(blinded_signatures)
             {
-                let Some(blinded_signature) = blinded_signature else {
-                    continue;
-                };
-
-                // Claimed values must match what the mint actually signed
-                if blinded_signature.keyset_id != blinded_message.keyset_id
-                    || blinded_signature.amount != blinded_message.amount
-                {
-                    continue;
+                if let Some(blinded_signature) = blinded_signature {
+                    dleq_args.push(ReconstructDleqArguments {
+                        blind_signature: blinded_signature,
+                        blind_secret: blinded_message.blinded_secret,
+                    });
+                    outputs.push(blinded_message);
                 }
-
-                // Authoritative expiry check on the stored signature's keyset
-                if self
-                    .get_keyset_info(&blinded_signature.keyset_id)
-                    .is_some_and(|k| k.is_expired())
-                {
-                    continue;
-                }
-
-                dleq_args.push(ReconstructDleqArguments {
-                    blind_signature: blinded_signature,
-                    blind_secret: blinded_message.blinded_secret,
-                });
-                outputs.push(blinded_message);
             }
 
             let signatures = if dleq_args.is_empty() {
