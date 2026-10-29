@@ -807,10 +807,16 @@ impl Mint {
     }
 
     /// Check melt quote status
+    ///
+    /// Takes `expected_method` rather than leaving the caller to check the
+    /// scoping separately, which cost a second read of the quote. A quote
+    /// created for another method is rejected before the pending-melt handling
+    /// below can act on it.
     #[instrument(skip(self))]
     pub async fn check_melt_quote(
         &self,
         quote_id: &QuoteId,
+        expected_method: Option<&PaymentMethod>,
     ) -> Result<MeltQuoteResponse<QuoteId>, Error> {
         #[cfg(feature = "prometheus")]
         let metrics = super::MintMetricGuard::new("check_melt_quote");
@@ -821,6 +827,10 @@ impl Mint {
                 .get_melt_quote(quote_id)
                 .await?
                 .ok_or(Error::UnknownQuote)?;
+
+            if expected_method.is_some_and(|expected| &quote.payment_method != expected) {
+                return Err(Error::InvalidPaymentMethod);
+            }
 
             self.handle_pending_melt_quote(&mut quote).await?;
             let quote = Self::load_melt_quote_for_response(&self.localstore, quote_id)
@@ -896,6 +906,26 @@ impl Mint {
             .ok_or(Error::UnknownQuote)?;
 
         Ok(quote.payment_method)
+    }
+
+    /// Melt counterpart of [`Mint::ensure_mint_quote_methods`].
+    ///
+    /// Melting has no folded form: the check has to clear before the payment
+    /// executes, and a mismatch caught afterwards would report an error for a
+    /// payment that already settled and burned the inputs.
+    pub async fn ensure_melt_quote_method<M>(
+        &self,
+        method: M,
+        quote_id: &QuoteId,
+    ) -> Result<(), Error>
+    where
+        M: Into<PaymentMethod>,
+    {
+        if self.get_melt_quote_method(quote_id).await? != method.into() {
+            return Err(Error::InvalidPaymentMethod);
+        }
+
+        Ok(())
     }
 
     /// Get melt quotes

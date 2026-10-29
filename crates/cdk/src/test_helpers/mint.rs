@@ -148,7 +148,10 @@ pub async fn mint_test_proofs(mint: &Mint, amount: Amount) -> Result<Proofs, Err
 
     loop {
         let check: MintQuoteBolt11Response<_> = mint
-            .check_mint_quotes(&[cdk_common::QuoteId::from_str(&mint_quote.quote).unwrap()])
+            .check_mint_quotes(
+                &[cdk_common::QuoteId::from_str(&mint_quote.quote).unwrap()],
+                None,
+            )
             .await
             .unwrap()
             .first()

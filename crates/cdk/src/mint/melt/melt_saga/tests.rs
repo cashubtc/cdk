@@ -3164,7 +3164,10 @@ async fn test_paid_melt_responses_wait_for_change_commit() {
             .unwrap()
             .is_none());
         assert_eq!(
-            mint.check_melt_quote(&quote.id).await.unwrap().state(),
+            mint.check_melt_quote(&quote.id, None)
+                .await
+                .unwrap()
+                .state(),
             MeltQuoteState::Pending
         );
         assert_eq!(
@@ -3207,7 +3210,7 @@ async fn test_paid_melt_responses_wait_for_change_commit() {
             .await
             .unwrap()
             .unwrap();
-        let checked = mint.check_melt_quote(&quote.id).await.unwrap();
+        let checked = mint.check_melt_quote(&quote.id, None).await.unwrap();
         for response in [settled, checked] {
             assert_eq!(response.state(), MeltQuoteState::Paid);
             let amount = response

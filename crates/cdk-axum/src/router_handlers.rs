@@ -4,12 +4,12 @@ use axum::extract::{Json, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use cdk::error::ErrorResponse;
+use cdk::mint::MintServer;
 use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, Id, KeysResponse, KeysetResponse, MintInfo,
     RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
-use cdk::util::unix_time;
 use paste::paste;
 use tracing::instrument;
 
@@ -159,7 +159,7 @@ pub(crate) async fn post_check(
         .await
         .map_err(into_response)?;
 
-    let state = state.mint.check_state(&payload).await.map_err(|err| {
+    let state = state.mint.post_check_state(payload).await.map_err(|err| {
         tracing::error!("Could not check state of proofs");
         into_response(err)
     })?;
@@ -172,18 +172,10 @@ pub(crate) async fn post_check(
 pub(crate) async fn get_mint_info(
     State(state): State<MintState>,
 ) -> Result<Json<MintInfo>, Response> {
-    Ok(Json(
-        state
-            .mint
-            .mint_info()
-            .await
-            .map_err(|err| {
-                tracing::error!("Could not get mint info: {}", err);
-                into_response(err)
-            })?
-            .clone()
-            .time(unix_time()),
-    ))
+    Ok(Json(state.mint.get_mint_info().await.map_err(|err| {
+        tracing::error!("Could not get mint info: {}", err);
+        into_response(err)
+    })?))
 }
 
 /// Swap inputs for outputs of the same value
@@ -206,14 +198,10 @@ pub(crate) async fn post_swap(
         .await
         .map_err(into_response)?;
 
-    let swap_response = state
-        .mint
-        .process_swap_request(payload)
-        .await
-        .map_err(|err| {
-            tracing::error!("Could not process swap request: {}", err);
-            into_response(err)
-        })?;
+    let swap_response = state.mint.post_swap(payload).await.map_err(|err| {
+        tracing::error!("Could not process swap request: {}", err);
+        into_response(err)
+    })?;
 
     Ok(Json(swap_response))
 }
@@ -234,7 +222,7 @@ pub(crate) async fn post_restore(
         .await
         .map_err(into_response)?;
 
-    let restore_response = state.mint.restore(payload).await.map_err(|err| {
+    let restore_response = state.mint.post_restore(payload).await.map_err(|err| {
         tracing::error!("Could not process restore: {}", err);
         into_response(err)
     })?;
