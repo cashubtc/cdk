@@ -30,6 +30,94 @@ mod tests {
     use crate::WalletSqliteDatabase;
 
     #[tokio::test]
+    async fn transaction_points_and_metadata_roll_back_together() {
+        use cdk_common::wallet::{Transaction, TransactionDirection, TransactionStatus};
+        use cdk_common::{Amount, CurrencyUnit, SecretKey};
+
+        let db = memory::empty().await.unwrap();
+        let original = Transaction {
+            mint_url: "https://mint.example".parse().unwrap(),
+            direction: TransactionDirection::Incoming,
+            amount: Amount::from(1),
+            fee: Amount::ZERO,
+            unit: CurrencyUnit::Sat,
+            ys: vec![SecretKey::generate().public_key()],
+            timestamp: 123,
+            memo: Some("original".to_owned()),
+            metadata: Default::default(),
+            quote_id: None,
+            payment_request: None,
+            payment_proof: None,
+            payment_method: None,
+            saga_id: Some(uuid::Uuid::new_v4()),
+            status: TransactionStatus::Pending,
+        };
+        db.add_transaction(original.clone()).await.unwrap();
+        let mut invalid = original.clone();
+        invalid.memo = Some("must roll back".to_owned());
+        // Insert a valid point before a G2 mint key, which is not a proof identifier.
+        invalid.ys.push(SecretKey::generate_bls().public_key());
+        assert!(db.add_transaction(invalid).await.is_err());
+        let stored = db.get_transaction(original.id()).await.unwrap().unwrap();
+        assert_eq!(stored.ys, original.ys);
+        assert_eq!(stored.memo, original.memo);
+    }
+
+    #[test]
+    fn transaction_ys_migration_preserves_legacy_points() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../../../cdk-sql-common/src/wallet/migrations/sqlite/20250401120000_add_transactions_table.sql")).unwrap();
+        let first = cdk_common::SecretKey::generate().public_key().to_bytes();
+        let second = cdk_common::SecretKey::generate().public_key().to_bytes();
+        let points = [first.clone(), second.clone(), first.clone()];
+        for (id, ys) in [(vec![1u8], points.concat()), (vec![2u8], Vec::new())] {
+            conn.execute("INSERT INTO transactions (id, mint_url, direction, amount, fee, unit, ys, timestamp, memo) VALUES (?1, 'https://mint.example', 'Incoming', 1, 0, 'sat', ?2, 123, 'retained')", rusqlite::params![id, ys]).unwrap();
+        }
+        conn.execute_batch(include_str!("../../../cdk-sql-common/src/wallet/migrations/sqlite/20260924000000_normalize_transaction_ys.sql")).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT y FROM transaction_ys WHERE transaction_id = ?1 ORDER BY position")
+            .unwrap();
+        let stored = stmt
+            .query_map([vec![1u8]], |row| row.get::<_, Vec<u8>>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(stored, points);
+        let empty_count: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM transaction_ys WHERE transaction_id = ?1",
+                [vec![2u8]],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(empty_count, 0);
+        let retained: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM transactions WHERE memo = 'retained' AND timestamp = 123",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(retained, 2);
+        assert!(conn.prepare("SELECT ys FROM transactions").is_err());
+    }
+
+    #[test]
+    fn transaction_ys_migration_rejects_truncated_points_atomically() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../../../cdk-sql-common/src/wallet/migrations/sqlite/20250401120000_add_transactions_table.sql")).unwrap();
+        conn.execute("INSERT INTO transactions (id, mint_url, direction, amount, fee, unit, ys, timestamp) VALUES (?1, 'https://mint.example', 'Incoming', 1, 0, 'sat', ?2, 123)", rusqlite::params![vec![1u8], vec![2u8; 34]]).unwrap();
+        let tx = conn.transaction().unwrap();
+        assert!(tx.execute_batch(include_str!("../../../cdk-sql-common/src/wallet/migrations/sqlite/20260924000000_normalize_transaction_ys.sql")).is_err());
+        tx.rollback().unwrap();
+        let bytes: Vec<u8> = conn
+            .query_row("SELECT ys FROM transactions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(bytes, vec![2u8; 34]);
+        assert!(conn.prepare("SELECT * FROM transaction_ys").is_err());
+    }
+
+    #[tokio::test]
     #[cfg(feature = "sqlcipher")]
     async fn test_sqlcipher() {
         use cdk_common::mint_url::MintUrl;
