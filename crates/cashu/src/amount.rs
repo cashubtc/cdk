@@ -301,30 +301,76 @@ impl Amount<()> {
         Ok(parts)
     }
 
-    /// Splits amount into powers of two while accounting for the swap fee
+    /// Split an amount while covering the input fee of the returned proofs.
+    ///
+    /// Retain the returned denominations when constructing outputs: splitting
+    /// their sum again can change the proof count and therefore the fee.
     pub fn split_with_fee(&self, fee_and_amounts: &FeeAndAmounts) -> Result<Vec<Self>, Error> {
-        let without_fee_amounts = self.split(fee_and_amounts)?;
-        let total_fee_ppk = fee_and_amounts
-            .fee
-            .checked_mul(without_fee_amounts.len() as u64)
-            .ok_or(Error::AmountOverflow)?;
-        let fee = Amount::from(total_fee_ppk.div_ceil(1000));
-        let new_amount = self.checked_add(fee).ok_or(Error::AmountOverflow)?;
-
-        let split = new_amount.split(fee_and_amounts)?;
-        let split_fee_ppk = (split.len() as u64)
-            .checked_mul(fee_and_amounts.fee)
-            .ok_or(Error::AmountOverflow)?;
-        let split_fee = Amount::from(split_fee_ppk.div_ceil(1000));
-
-        if let Some(net_amount) = new_amount.checked_sub(split_fee) {
-            if net_amount >= *self {
-                return Ok(split);
+        let fee_for_count = |count: usize| {
+            fee_and_amounts
+                .fee
+                .checked_mul(count as u64)
+                .map(|ppk| Self::from(ppk.div_ceil(1000)))
+                .ok_or(Error::AmountOverflow)
+        };
+        let mut count = self.split(fee_and_amounts)?.len();
+        if count == 0 || fee_and_amounts.fee == 0 {
+            return self.split(fee_and_amounts);
+        }
+        if fee_and_amounts
+            .amounts
+            .iter()
+            .all(|amount| u128::from(*amount) * 1000 <= u128::from(fee_and_amounts.fee))
+        {
+            return Err(Error::InvalidAmount(
+                "input fees consume every supported denomination".to_owned(),
+            ));
+        }
+        let can_subdivide = fee_and_amounts.amounts.first() == Some(&1)
+            && fee_and_amounts
+                .amounts
+                .windows(2)
+                .all(|pair| pair[0].checked_mul(2) == Some(pair[1]));
+        if !can_subdivide {
+            // Restricted denominations may not represent an exact net amount.
+            // Keep their coverage guarantee without searching for an impossible
+            // equality (e.g. denominations {1, 4} at 1000 ppk).
+            let mut target = *self;
+            loop {
+                let fee = fee_for_count(target.split(fee_and_amounts)?.len())?;
+                let gross = target.checked_add(fee).ok_or(Error::AmountOverflow)?;
+                let split = gross.split(fee_and_amounts)?;
+                if gross
+                    .checked_sub(fee_for_count(split.len())?)
+                    .is_some_and(|net| net >= *self)
+                {
+                    return Ok(split);
+                }
+                target = target.checked_add(Self::ONE).ok_or(Error::AmountOverflow)?;
             }
         }
-        self.checked_add(Amount::ONE)
-            .ok_or(Error::AmountOverflow)?
-            .split_with_fee(fee_and_amounts)
+        loop {
+            let fee = fee_for_count(count)?;
+            let gross = self.checked_add(fee).ok_or(Error::AmountOverflow)?;
+            let mut split = gross.split(fee_and_amounts)?;
+            // Keep the gross value while increasing the proof count to match
+            // the fee above. Adjacent binary denominations can be subdivided
+            // without changing the value of the token.
+            while split.len() < count && fee_for_count(split.len())? < fee {
+                let Some(index) = split.iter().position(|amount| *amount > Self::ONE) else {
+                    break;
+                };
+                let amount = split.swap_remove(index);
+                let half = Self::from(amount.value / 2);
+                split.extend([half, half]);
+            }
+            if fee_for_count(split.len())? == fee {
+                return Ok(split);
+            }
+            count = split
+                .len()
+                .max(count.checked_add(1).ok_or(Error::AmountOverflow)?);
+        }
     }
 
     /// Checked addition for Amount. Returns None if overflow occurs.
@@ -859,6 +905,41 @@ mod tests {
         // With fee_ppk=1000 (100%), amount 3 requires proofs totaling at least 5
         // to cover both the amount (3) and fees (~2 for 2 proofs)
         assert_eq!(split, vec![Amount::from(4), Amount::from(1)]);
+    }
+
+    #[test]
+    fn split_with_fee_preserves_net_value_and_quoted_fee() {
+        for fee in [0, 1, 100, 333, 500, 999, 1000, 2000, 10000] {
+            for denominations in [
+                (0..16).map(|power| 1 << power).collect::<Vec<_>>(),
+                vec![1, 4, 16, 64, 256],
+            ] {
+                let fee_and_amounts = (fee, denominations).into();
+                for value in 0..256 {
+                    let amount = Amount::from(value);
+                    let split = amount.split_with_fee(&fee_and_amounts).unwrap();
+                    let gross = Amount::try_sum(split.iter().copied()).unwrap();
+                    let redemption_fee = Amount::from((split.len() as u64 * fee).div_ceil(1000));
+                    assert!(
+                        gross
+                            .checked_sub(redemption_fee)
+                            .is_some_and(|net| net >= amount),
+                        "amount={value}, fee_ppk={fee}, split={split:?}"
+                    );
+                    if fee_and_amounts.amounts().len() == 16 {
+                        assert_eq!(gross.checked_sub(redemption_fee), Some(amount));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn split_with_fee_rejects_unspendable_denominations() {
+        assert!(Amount::ONE.split_with_fee(&(1000, vec![1]).into()).is_err());
+        assert!(Amount::from(u64::MAX)
+            .split_with_fee(&(1000, (0..64).map(|power| 1 << power).collect()).into())
+            .is_err());
     }
 
     #[test]

@@ -42,7 +42,7 @@ mod swap;
 pub use issue::{IssueSagaState, MintOperationData};
 pub use melt::{MeltOperationData, MeltSagaState};
 pub use receive::{ReceiveOperationData, ReceiveSagaState};
-pub use send::{SendOperationData, SendSagaState};
+pub use send::{SendOperationData, SendOutputPlan, SendSagaState};
 pub use swap::{SwapOperationData, SwapSagaState};
 
 /// Wallet saga state for different operation types

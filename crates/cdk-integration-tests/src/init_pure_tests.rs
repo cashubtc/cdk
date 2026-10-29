@@ -32,6 +32,9 @@ use uuid::Uuid;
 pub struct DirectMintConnection {
     pub mint: Mint,
     auth_wallet: Arc<RwLock<Option<AuthWallet>>>,
+    payment_request_payloads:
+        Option<Arc<tokio::sync::Mutex<Vec<cdk::nuts::PaymentRequestPayload>>>>,
+    lose_swap_response: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl DirectMintConnection {
@@ -39,7 +42,24 @@ impl DirectMintConnection {
         Self {
             mint,
             auth_wallet: Arc::new(RwLock::new(None)),
+            payment_request_payloads: None,
+            lose_swap_response: None,
         }
+    }
+
+    /// Capture request delivery while retaining a real mint and payment backend.
+    pub fn with_payment_request_payloads(
+        mut self,
+        payloads: Arc<tokio::sync::Mutex<Vec<cdk::nuts::PaymentRequestPayload>>>,
+    ) -> Self {
+        self.payment_request_payloads = Some(payloads);
+        self
+    }
+
+    /// Lose one successful mint response to exercise uncertain swap recovery.
+    pub fn with_lost_swap_response(mut self, flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
+        self.lose_swap_response = Some(flag);
+        self
     }
 }
 
@@ -55,6 +75,25 @@ impl Debug for DirectMintConnection {
 /// Convert the requests and responses between the [String] and [Uuid] variants as necessary.
 #[async_trait]
 impl MintConnector for DirectMintConnection {
+    fn ensure_payment_request_deliverable(&self, _url: &str) -> Result<(), Error> {
+        self.payment_request_payloads
+            .as_ref()
+            .map(|_| ())
+            .ok_or(Error::PaymentRequestDeliveryUnsupported)
+    }
+
+    async fn post_payment_request_payload(
+        &self,
+        url: &str,
+        payload: &cdk::nuts::PaymentRequestPayload,
+    ) -> Result<(), Error> {
+        self.ensure_payment_request_deliverable(url)?;
+        if let Some(payloads) = &self.payment_request_payloads {
+            payloads.lock().await.push(payload.clone());
+        }
+        Ok(())
+    }
+
     async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, Error> {
         panic!("Not implemented");
     }
@@ -348,7 +387,15 @@ impl MintConnector for DirectMintConnection {
     }
 
     async fn post_swap(&self, swap_request: SwapRequest) -> Result<SwapResponse, Error> {
-        self.mint.process_swap_request(swap_request).await
+        let response = self.mint.process_swap_request(swap_request).await?;
+        if self
+            .lose_swap_response
+            .as_ref()
+            .is_some_and(|flag| flag.swap(false, std::sync::atomic::Ordering::SeqCst))
+        {
+            return Err(Error::Timeout);
+        }
+        Ok(response)
     }
 
     async fn get_mint_info(&self) -> Result<MintInfo, Error> {
