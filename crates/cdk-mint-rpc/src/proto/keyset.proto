@@ -6,6 +6,9 @@ package cdk_mint_keyset_v1;
 service KeysetService {
     // Rotates to the next keyset for the specified currency unit.
     rpc RotateNextKeyset(RotateNextKeysetRequest) returns (RotateNextKeysetResponse) {}
+
+    // Retrieves total issued and redeemed ecash amounts, aggregated by unit and broken down by keyset.
+    rpc GetKeysetTotals(GetKeysetTotalsRequest) returns (GetKeysetTotalsResponse) {}
 }
 
 message RotateNextKeysetRequest {
@@ -43,3 +46,47 @@ message RotateNextKeysetResponse {
     // Input fee per input, in parts per thousand, applied to this keyset.
     uint64 input_fee_ppk = 4;
 }
+
+// Request to retrieve ecash issued and redeemed totals.
+message GetKeysetTotalsRequest {
+    // Optional currency unit filter (e.g. "sat", "usd").
+    // Known units are matched case-insensitively; custom units are whitespace-trimmed and
+    // normalized to lowercase. If empty or omitted, totals for all units are returned.
+    optional string unit = 1;
+
+    // Optional keyset ID filter (hex string).
+    // If empty or omitted, totals for all keysets matching the unit filter are returned.
+    optional string keyset_id = 2;
+}
+
+// Aggregated ecash totals for a currency unit across all its keysets.
+message UnitTotal {
+    // Currency unit (e.g. "sat", "usd").
+    string unit = 1;
+    // Total ecash amount issued for this unit.
+    uint64 total_issued = 2;
+    // Total ecash amount redeemed for this unit.
+    uint64 total_redeemed = 3;
+}
+
+// Accounting totals for a specific keyset.
+message KeysetTotal {
+    // Hex-encoded ID of the keyset.
+    string keyset_id = 1;
+    // Currency unit for this keyset.
+    string unit = 2;
+    // Total ecash amount issued with this keyset.
+    uint64 total_issued = 3;
+    // Total ecash amount redeemed with this keyset.
+    uint64 total_redeemed = 4;
+}
+
+// Response containing ecash totals by unit and keyset.
+message GetKeysetTotalsResponse {
+    // Totals aggregated by currency unit.
+    repeated UnitTotal unit_totals = 1;
+
+    // Granular totals broken down by keyset ID.
+    repeated KeysetTotal keyset_totals = 2;
+}
+
