@@ -89,6 +89,8 @@ pub fn create_new_keyset<C: secp256k1::Signing>(
     unit: CurrencyUnit,
     amounts: &[u64],
     input_fee_ppk: u64,
+    active_from: Option<u64>,
+    active_until: Option<u64>,
     final_expiry: Option<u64>,
     keyset_id_version: nut02::KeySetVersion,
 ) -> (MintKeySet, MintKeySetInfo) {
@@ -108,6 +110,8 @@ pub fn create_new_keyset<C: secp256k1::Signing>(
         unit: keyset.unit.clone(),
         active: true,
         valid_from: unix_time(),
+        active_from,
+        active_until,
         final_expiry: keyset.final_expiry,
         derivation_path,
         derivation_path_index,

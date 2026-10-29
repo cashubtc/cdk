@@ -74,6 +74,8 @@ fn test_keyset_info(keyset_id: Id, _mint_url: &MintUrl) -> KeySetInfo {
         unit: CurrencyUnit::Sat,
         active: true,
         input_fee_ppk: 0,
+        active_from: None,
+        active_until: None,
         final_expiry: None,
     }
 }
@@ -320,6 +322,8 @@ where
         active: None,
         keys: keys.clone(),
         input_fee_ppk: 0,
+        active_from: None,
+        active_until: None,
         final_expiry: None,
     };
 
@@ -346,6 +350,8 @@ where
         active: None,
         keys: keys.clone(),
         input_fee_ppk: 0,
+        active_from: None,
+        active_until: None,
         final_expiry: None,
     };
 
@@ -372,6 +378,8 @@ where
         active: None,
         keys,
         input_fee_ppk: 0,
+        active_from: None,
+        active_until: None,
         final_expiry: None,
     };
 

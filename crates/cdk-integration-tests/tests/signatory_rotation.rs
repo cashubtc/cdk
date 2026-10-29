@@ -79,6 +79,8 @@ async fn concurrent_rotations_across_pg_instances_do_not_collide() {
                     amounts: vec![1, 2, 4, 8],
                     input_fee_ppk: 0,
                     keyset_id_type: KeySetVersion::Version00,
+                    active_from: None,
+                    active_until: None,
                     final_expiry: None,
                 })
                 .await

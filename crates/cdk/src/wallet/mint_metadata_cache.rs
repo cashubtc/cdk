@@ -624,6 +624,8 @@ impl MintMetadataCache {
                     unit: keyset_info.unit.clone(),
                     active: Some(keyset_info.active),
                     input_fee_ppk: keyset_info.input_fee_ppk,
+                    active_from: keyset_info.active_from,
+                    active_until: keyset_info.active_until,
                     final_expiry: keyset_info.final_expiry,
                     keys: (**keys).clone(),
                 };

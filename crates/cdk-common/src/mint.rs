@@ -1272,6 +1272,10 @@ pub struct MintKeySetInfo {
     /// Input Fee ppk
     #[serde(default = "default_fee")]
     pub input_fee_ppk: u64,
+    /// Unix time from which the mint intends to sign with this keyset
+    pub active_from: Option<u64>,
+    /// Unix time until which the mint intends to keep this keyset active
+    pub active_until: Option<u64>,
     /// Final expiry
     pub final_expiry: Option<u64>,
     /// Issuer Version
@@ -1297,6 +1301,8 @@ impl From<MintKeySetInfo> for KeySetInfo {
             unit: keyset_info.unit,
             active: keyset_info.active,
             input_fee_ppk: keyset_info.input_fee_ppk,
+            active_from: keyset_info.active_from,
+            active_until: keyset_info.active_until,
             final_expiry: keyset_info.final_expiry,
         }
     }
@@ -1826,6 +1832,8 @@ mod tests {
             derivation_path_index: Some(0),
             amounts: vec![1, 2, 4, 8, 16, 32, 64, 128, 256, 512],
             input_fee_ppk: 0,
+            active_from: None,
+            active_until: None,
             final_expiry,
             issuer_version: None,
         }

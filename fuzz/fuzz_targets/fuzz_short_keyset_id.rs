@@ -23,6 +23,8 @@ fuzz_target!(|data: &[u8]| {
         unit: CurrencyUnit::Sat,
         active: true,
         input_fee_ppk: 0,
+        active_from: None,
+        active_until: None,
         final_expiry: None,
     };
 
