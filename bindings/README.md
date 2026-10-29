@@ -135,6 +135,13 @@ instead. The test recipes additionally need that language's SDK on PATH, which
 
 ## Releasing
 
+An opt-in [reproducible candidate workflow](release/README.md) builds unsigned
+packages with Nix-provided tools, supports independent byte-for-byte rebuilding,
+and publishes verified candidate files without rebuilding. Its commands and
+qualification requirements are documented separately. The existing release
+workflows below remain the current path until that platform qualification is
+complete.
+
 ### All bindings at once
 
 The recommended way to release all FFI bindings is through the unified workflow,

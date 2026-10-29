@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "profile": "release-ffi",
+  "manylinux": {
+    "x86_64": "quay.io/pypa/manylinux_2_28_x86_64@sha256:4131ddd7acb9c6c966af02fe7e71edc51e078c2d41f475966697676430bfa2ae",
+    "aarch64": "quay.io/pypa/manylinux_2_28_aarch64@sha256:abd1230aa9e4058a74b89d27cd14ba18c0db036d7bfe6e6f219a29ea63c24eb6"
+  },
+  "android": {
+    "ndk": "27.0.12077973",
+    "sdk": "34",
+    "build_tools": "34.0.0",
+    "api": 24
+  },
+  "apple": {
+    "xcode": "16.4",
+    "build": "16F6",
+    "sdks": {"macosx": "15.5", "iphoneos": "18.5", "iphonesimulator": "18.5"},
+    "macos_min": "13.0",
+    "ios_min": "14.0"
+  },
+  "windows": {
+    "visual_studio": "17",
+    "crt": "14.44.17.14",
+    "sdk": "10.0.26100",
+    "sdk_hash": "sha256-mlF5xa8zjaGD3lYwiO7BR+REHf//qo+APJoyY9/kK3Y="
+  },
+  "gradle": {
+    "version": "8.12.1",
+    "sha256": "8d97a97984f6cbd2b85fe4c60a743440a347544bf18818048e611f5288d46c94"
+  },
+  "destinations": {
+    "dart": "cashubtc/cdk-dart",
+    "go": "cashubtc/cdk-go",
+    "kotlin": "cashubtc/cdk-kotlin",
+    "swift": "cashubtc/cdk-swift"
+  }
+}

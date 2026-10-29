@@ -4,6 +4,25 @@ plugins {
     `maven-publish`
 }
 
+val cdkCandidate = providers.gradleProperty("cdkReleaseRepository").isPresent
+val candidateJavadocJar = if (cdkCandidate) {
+    apply(plugin = "org.jetbrains.dokka")
+    val docs = tasks.named<org.jetbrains.dokka.gradle.DokkaTask>("dokkaJavadoc") {
+        offlineMode.set(true)
+        dokkaSourceSets.configureEach {
+            noJdkLink.set(true)
+            noStdlibLink.set(true)
+            noAndroidSdkLink.set(true)
+        }
+    }
+    tasks.register<Jar>("candidateJavadocJar") {
+        archiveClassifier.set("javadoc")
+        from(docs.flatMap { it.outputDirectory })
+    }
+} else {
+    null
+}
+
 android {
     namespace = "org.cashudevkit"
     compileSdk = 34
@@ -31,7 +50,9 @@ android {
     publishing {
         singleVariant("release") {
             withSourcesJar()
-            withJavadocJar()
+            if (!cdkCandidate) {
+                withJavadocJar()
+            }
         }
     }
 }
@@ -52,6 +73,7 @@ afterEvaluate {
         publications {
             create<MavenPublication>("release") {
                 from(components["release"])
+                candidateJavadocJar?.let { artifact(it) }
                 groupId = project.property("GROUP") as String
                 artifactId = "cdk-android"
                 version = project.property("VERSION_NAME") as String
