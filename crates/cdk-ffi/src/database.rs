@@ -6,6 +6,7 @@ use std::sync::Arc;
 use cdk_common::bitcoin::bip32::DerivationPath;
 use cdk_common::database::WalletDatabase as CdkWalletDatabase;
 use cdk_common::wallet::WalletSaga;
+use uniffi::deps::async_compat::CompatExt;
 
 use crate::error::FfiError;
 #[cfg(feature = "postgres")]
@@ -1081,6 +1082,9 @@ where
     }
 }
 
+// UniFFI does not apply async_runtime to trait-object calls. Adapt each native
+// database future so it is polled and dropped in a Tokio context, including
+// when a foreign executor cancels an operation.
 // Implement WalletDatabase trait - all read and write methods
 #[async_trait::async_trait]
 impl<T, E> WalletDatabase for FfiWalletDatabaseWrapper<T, E>
@@ -1104,6 +1108,7 @@ where
         let result = self
             .inner
             .get_proofs_by_ys(cdk_ys)
+            .compat()
             .await
             .map_err(FfiError::internal)?;
 
@@ -1115,13 +1120,19 @@ where
         let result = self
             .inner
             .get_mint(cdk_mint_url)
+            .compat()
             .await
             .map_err(FfiError::internal)?;
         Ok(result.map(Into::into))
     }
 
     async fn get_mints(&self) -> Result<HashMap<MintUrl, Option<MintInfo>>, FfiError> {
-        let result = self.inner.get_mints().await.map_err(FfiError::internal)?;
+        let result = self
+            .inner
+            .get_mints()
+            .compat()
+            .await
+            .map_err(FfiError::internal)?;
         Ok(result
             .into_iter()
             .map(|(k, v)| (k.into(), v.map(Into::into)))
@@ -1136,6 +1147,7 @@ where
         let result = self
             .inner
             .get_mint_keysets(cdk_mint_url)
+            .compat()
             .await
             .map_err(FfiError::internal)?;
         Ok(result.map(|keysets| keysets.into_iter().map(Into::into).collect()))
@@ -1146,6 +1158,7 @@ where
         let result = self
             .inner
             .get_keyset_by_id(&cdk_id)
+            .compat()
             .await
             .map_err(FfiError::internal)?;
         Ok(result.map(Into::into))
@@ -1155,6 +1168,7 @@ where
         let result = self
             .inner
             .get_mint_quote(&quote_id)
+            .compat()
             .await
             .map_err(FfiError::internal)?;
         Ok(result.map(|q| q.into()))
@@ -1164,6 +1178,7 @@ where
         let result = self
             .inner
             .get_mint_quotes()
+            .compat()
             .await
             .map_err(FfiError::internal)?;
         Ok(result.into_iter().map(|q| q.into()).collect())
@@ -1173,6 +1188,7 @@ where
         let result = self
             .inner
             .get_unissued_mint_quotes()
+            .compat()
             .await
             .map_err(FfiError::internal)?;
         Ok(result.into_iter().map(|q| q.into()).collect())
@@ -1182,6 +1198,7 @@ where
         let result = self
             .inner
             .get_melt_quote(&quote_id)
+            .compat()
             .await
             .map_err(FfiError::internal)?;
         Ok(result.map(|q| q.into()))
@@ -1191,6 +1208,7 @@ where
         let result = self
             .inner
             .get_melt_quotes()
+            .compat()
             .await
             .map_err(FfiError::internal)?;
         Ok(result.into_iter().map(|q| q.into()).collect())
@@ -1201,6 +1219,7 @@ where
         let result = self
             .inner
             .get_keys(&cdk_id)
+            .compat()
             .await
             .map_err(FfiError::internal)?;
         Ok(result.map(Into::into))
@@ -1228,6 +1247,7 @@ where
         let result = self
             .inner
             .get_proofs(cdk_mint_url, cdk_unit, cdk_state, cdk_spending_conditions)
+            .compat()
             .await
             .map_err(FfiError::internal)?;
 
@@ -1246,6 +1266,7 @@ where
 
         self.inner
             .get_balance(cdk_mint_url, cdk_unit, cdk_state)
+            .compat()
             .await
             .map_err(FfiError::internal)
     }
@@ -1258,6 +1279,7 @@ where
         let result = self
             .inner
             .get_transaction(cdk_id)
+            .compat()
             .await
             .map_err(FfiError::internal)?;
         Ok(result.map(Into::into))
@@ -1276,6 +1298,7 @@ where
         let result = self
             .inner
             .list_transactions(cdk_mint_url, cdk_direction, cdk_unit)
+            .compat()
             .await
             .map_err(FfiError::internal)?;
 
@@ -1290,6 +1313,7 @@ where
     ) -> Result<Option<Vec<u8>>, FfiError> {
         self.inner
             .kv_read(&primary_namespace, &secondary_namespace, &key)
+            .compat()
             .await
             .map_err(FfiError::internal)
     }
@@ -1301,6 +1325,7 @@ where
     ) -> Result<Vec<String>, FfiError> {
         self.inner
             .kv_list(&primary_namespace, &secondary_namespace)
+            .compat()
             .await
             .map_err(FfiError::internal)
     }
@@ -1321,6 +1346,7 @@ where
 
         self.inner
             .add_p2pk_key(&cdk_pubkey, cdk_derivation_path, derivation_index)
+            .compat()
             .await
             .map_err(FfiError::database)
     }
@@ -1330,6 +1356,7 @@ where
         let result = self
             .inner
             .get_p2pk_key(&cdk_pubkey)
+            .compat()
             .await
             .map_err(FfiError::database)?;
         Ok(result.map(Into::into))
@@ -1339,13 +1366,19 @@ where
         let result = self
             .inner
             .list_p2pk_keys()
+            .compat()
             .await
             .map_err(FfiError::database)?;
         Ok(result.into_iter().map(Into::into).collect())
     }
 
     async fn latest_p2pk(&self) -> Result<Option<P2PKSigningKey>, FfiError> {
-        let result = self.inner.latest_p2pk().await.map_err(FfiError::database)?;
+        let result = self
+            .inner
+            .latest_p2pk()
+            .compat()
+            .await
+            .map_err(FfiError::database)?;
         Ok(result.map(Into::into))
     }
 
@@ -1358,6 +1391,7 @@ where
     ) -> Result<(), FfiError> {
         self.inner
             .kv_write(&primary_namespace, &secondary_namespace, &key, &value)
+            .compat()
             .await
             .map_err(FfiError::internal)
     }
@@ -1370,6 +1404,7 @@ where
     ) -> Result<(), FfiError> {
         self.inner
             .kv_remove(&primary_namespace, &secondary_namespace, &key)
+            .compat()
             .await
             .map_err(FfiError::internal)
     }
@@ -1391,6 +1426,7 @@ where
 
         self.inner
             .update_proofs(cdk_added, cdk_removed_ys)
+            .compat()
             .await
             .map_err(FfiError::internal)
     }
@@ -1407,6 +1443,7 @@ where
 
         self.inner
             .update_proofs_state(cdk_ys, cdk_state)
+            .compat()
             .await
             .map_err(FfiError::internal)
     }
@@ -1415,6 +1452,7 @@ where
         let cdk_transaction: cdk::wallet::types::Transaction = transaction.try_into()?;
         self.inner
             .add_transaction(cdk_transaction)
+            .compat()
             .await
             .map_err(FfiError::internal)
     }
@@ -1423,6 +1461,7 @@ where
         let cdk_id = transaction_id.try_into()?;
         self.inner
             .remove_transaction(cdk_id)
+            .compat()
             .await
             .map_err(FfiError::internal)
     }
@@ -1436,6 +1475,7 @@ where
         let cdk_new = new_mint_url.try_into()?;
         self.inner
             .update_mint_url(cdk_old, cdk_new)
+            .compat()
             .await
             .map_err(FfiError::internal)
     }
@@ -1444,6 +1484,7 @@ where
         let cdk_id = keyset_id.try_into()?;
         self.inner
             .increment_keyset_counter(&cdk_id, count)
+            .compat()
             .await
             .map_err(FfiError::internal)
     }
@@ -1455,6 +1496,7 @@ where
     ) -> Result<u32, FfiError> {
         self.inner
             .increment_derivation_counter(&namespace, count)
+            .compat()
             .await
             .map_err(FfiError::internal)
     }
@@ -1468,6 +1510,7 @@ where
         let cdk_mint_info = mint_info.map(TryInto::try_into).transpose()?;
         self.inner
             .add_mint(cdk_mint_url, cdk_mint_info)
+            .compat()
             .await
             .map_err(FfiError::internal)
     }
@@ -1476,6 +1519,7 @@ where
         let cdk_mint_url = mint_url.try_into()?;
         self.inner
             .remove_mint(cdk_mint_url)
+            .compat()
             .await
             .map_err(FfiError::internal)
     }
@@ -1492,6 +1536,7 @@ where
             .collect::<Result<_, _>>()?;
         self.inner
             .add_mint_keysets(cdk_mint_url, cdk_keysets)
+            .compat()
             .await
             .map_err(FfiError::internal)
     }
@@ -1500,6 +1545,7 @@ where
         let cdk_quote = quote.try_into()?;
         self.inner
             .add_mint_quote(cdk_quote)
+            .compat()
             .await
             .map_err(FfiError::internal)
     }
@@ -1507,6 +1553,7 @@ where
     async fn remove_mint_quote(&self, quote_id: String) -> Result<(), FfiError> {
         self.inner
             .remove_mint_quote(&quote_id)
+            .compat()
             .await
             .map_err(FfiError::internal)
     }
@@ -1515,6 +1562,7 @@ where
         let cdk_quote = quote.try_into()?;
         self.inner
             .add_melt_quote(cdk_quote)
+            .compat()
             .await
             .map_err(FfiError::internal)
     }
@@ -1522,6 +1570,7 @@ where
     async fn remove_melt_quote(&self, quote_id: String) -> Result<(), FfiError> {
         self.inner
             .remove_melt_quote(&quote_id)
+            .compat()
             .await
             .map_err(FfiError::internal)
     }
@@ -1530,6 +1579,7 @@ where
         let cdk_keyset: cdk::nuts::KeySet = keyset.try_into()?;
         self.inner
             .add_keys(cdk_keyset)
+            .compat()
             .await
             .map_err(FfiError::internal)
     }
@@ -1538,6 +1588,7 @@ where
         let cdk_id = id.try_into()?;
         self.inner
             .remove_keys(&cdk_id)
+            .compat()
             .await
             .map_err(FfiError::internal)
     }
@@ -1546,12 +1597,21 @@ where
 
     async fn add_saga(&self, saga_json: String) -> Result<(), FfiError> {
         let saga: WalletSaga = serde_json::from_str(&saga_json).map_err(FfiError::internal)?;
-        self.inner.add_saga(saga).await.map_err(FfiError::internal)
+        self.inner
+            .add_saga(saga)
+            .compat()
+            .await
+            .map_err(FfiError::internal)
     }
 
     async fn get_saga(&self, id: String) -> Result<Option<String>, FfiError> {
         let id = uuid::Uuid::parse_str(&id).map_err(FfiError::internal)?;
-        let result = self.inner.get_saga(&id).await.map_err(FfiError::internal)?;
+        let result = self
+            .inner
+            .get_saga(&id)
+            .compat()
+            .await
+            .map_err(FfiError::internal)?;
 
         match result {
             Some(saga) => {
@@ -1566,6 +1626,7 @@ where
         let saga: WalletSaga = serde_json::from_str(&saga_json).map_err(FfiError::internal)?;
         self.inner
             .update_saga(saga)
+            .compat()
             .await
             .map_err(FfiError::internal)
     }
@@ -1574,6 +1635,7 @@ where
         let id = uuid::Uuid::parse_str(&id).map_err(FfiError::internal)?;
         self.inner
             .delete_saga(&id)
+            .compat()
             .await
             .map_err(FfiError::internal)
     }
@@ -1582,6 +1644,7 @@ where
         let result = self
             .inner
             .get_incomplete_sagas()
+            .compat()
             .await
             .map_err(FfiError::internal)?;
 
@@ -1604,6 +1667,7 @@ where
         let cdk_ys = cdk_ys?;
         self.inner
             .reserve_proofs(cdk_ys, &operation_id)
+            .compat()
             .await
             .map_err(FfiError::internal)
     }
@@ -1612,6 +1676,7 @@ where
         let operation_id = uuid::Uuid::parse_str(&operation_id).map_err(FfiError::internal)?;
         self.inner
             .release_proofs(&operation_id)
+            .compat()
             .await
             .map_err(FfiError::internal)
     }
@@ -1621,6 +1686,7 @@ where
         let result = self
             .inner
             .get_reserved_proofs(&operation_id)
+            .compat()
             .await
             .map_err(FfiError::internal)?;
 
@@ -1637,6 +1703,7 @@ where
         let operation_id = uuid::Uuid::parse_str(&operation_id).map_err(FfiError::internal)?;
         self.inner
             .reserve_melt_quote(&quote_id, &operation_id)
+            .compat()
             .await
             .map_err(FfiError::internal)
     }
@@ -1645,6 +1712,7 @@ where
         let operation_id = uuid::Uuid::parse_str(&operation_id).map_err(FfiError::internal)?;
         self.inner
             .release_melt_quote(&operation_id)
+            .compat()
             .await
             .map_err(FfiError::internal)
     }
@@ -1657,6 +1725,7 @@ where
         let operation_id = uuid::Uuid::parse_str(&operation_id).map_err(FfiError::internal)?;
         self.inner
             .reserve_mint_quote(&quote_id, &operation_id)
+            .compat()
             .await
             .map_err(FfiError::internal)
     }
@@ -1665,6 +1734,7 @@ where
         let operation_id = uuid::Uuid::parse_str(&operation_id).map_err(FfiError::internal)?;
         self.inner
             .release_mint_quote(&operation_id)
+            .compat()
             .await
             .map_err(FfiError::internal)
     }
@@ -2144,6 +2214,49 @@ mod tests {
     use cdk::types::ProofInfo as CdkProofInfo;
 
     use super::*;
+
+    #[test]
+    fn database_trait_calls_without_tokio_context() {
+        struct WakeThread(std::thread::Thread);
+
+        impl std::task::Wake for WakeThread {
+            fn wake(self: Arc<Self>) {
+                self.0.unpark();
+            }
+        }
+
+        fn run<F: std::future::Future>(future: F) -> F::Output {
+            let waker = std::task::Waker::from(Arc::new(WakeThread(std::thread::current())));
+            let mut context = std::task::Context::from_waker(&waker);
+            let mut future = std::pin::pin!(future);
+            loop {
+                match future.as_mut().poll(&mut context) {
+                    std::task::Poll::Ready(value) => return value,
+                    std::task::Poll::Pending => std::thread::park(),
+                }
+            }
+        }
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let native = runtime
+            .block_on(cdk_sqlite::wallet::memory::empty())
+            .unwrap();
+        let foreign: Arc<dyn WalletDatabase> = FfiWalletDatabaseWrapper::new(native);
+        drop(runtime);
+        assert!(tokio::runtime::Handle::try_current().is_err());
+        run(foreign.kv_write(
+            "review".to_owned(),
+            "".to_owned(),
+            "key".to_owned(),
+            vec![42],
+        ))
+        .unwrap();
+        assert_eq!(
+            run(foreign.kv_read("review".to_owned(), "".to_owned(), "key".to_owned())).unwrap(),
+            Some(vec![42])
+        );
+        assert!(run(foreign.get_mints()).unwrap().is_empty());
+    }
 
     fn proof_info() -> CdkProofInfo {
         let key = CdkSecretKey::generate();

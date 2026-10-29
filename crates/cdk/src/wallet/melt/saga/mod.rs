@@ -320,11 +320,9 @@ impl<'a> MeltSaga<'a, Initial> {
 
         let keyset_policy = self.state_data.keyset_policy;
 
-        let active_keyset_ids = self
-            .wallet
-            .keysets(keyset_policy)
-            .await?
-            .into_iter()
+        let all_keysets = self.wallet.keysets(keyset_policy).await?;
+        let active_keyset_ids = all_keysets
+            .iter()
             .filter(|k| k.active.unwrap_or(false))
             .map(|k| k.id)
             .collect();
@@ -332,6 +330,14 @@ impl<'a> MeltSaga<'a, Initial> {
             .wallet
             .get_keyset_fees_and_amounts_with_policy(keyset_policy)
             .await?;
+        let fee_rates = keyset_fees_and_amounts
+            .iter()
+            .map(|(id, fees)| (*id, fees.fee()))
+            .collect();
+
+        // Share selection with sends and cloned wallets. All mint metadata is
+        // loaded before taking this lock, so no network request holds it.
+        let selection_guard = self.wallet.proof_selection_lock.lock().await;
 
         let available_proofs = self.wallet.get_unspent_proofs().await?;
         let derivation_indices = self.wallet.unspent_proof_derivation_indices().await?;
@@ -349,11 +355,6 @@ impl<'a> MeltSaga<'a, Initial> {
         if proofs_total == inputs_needed_amount {
             let proof_ys = exact_input_proofs.ys()?;
             let operation_id = self.state_data.operation_id;
-
-            self.wallet
-                .localstore
-                .reserve_proofs(proof_ys.clone(), &operation_id)
-                .await?;
 
             let saga = WalletSaga::new(
                 operation_id,
@@ -374,7 +375,14 @@ impl<'a> MeltSaga<'a, Initial> {
                 }),
             );
 
+            // Save recovery information before the reservation can commit.
             self.wallet.localstore.add_saga(saga.clone()).await?;
+
+            self.wallet
+                .localstore
+                .reserve_proofs(proof_ys.clone(), &operation_id)
+                .await?;
+            drop(selection_guard);
 
             add_compensation(
                 &mut self.compensations,
@@ -386,7 +394,9 @@ impl<'a> MeltSaga<'a, Initial> {
             )
             .await;
 
-            let input_fee = self.wallet.get_proofs_fee(&exact_input_proofs).await?.total;
+            let input_fee =
+                crate::fees::calculate_fee(&exact_input_proofs.count_by_keyset(), &fee_rates)?
+                    .total;
 
             return Ok(MeltSaga {
                 wallet: self.wallet,
@@ -405,25 +415,24 @@ impl<'a> MeltSaga<'a, Initial> {
             });
         }
 
-        let active_keyset_id = self
-            .wallet
-            .active_keyset_with_policy(keyset_policy)
-            .await?
+        let active_keyset_id = all_keysets
+            .iter()
+            .filter(|keyset| keyset.active.unwrap_or(false))
+            .min_by_key(|keyset| keyset.input_fee_ppk)
+            .ok_or(Error::NoActiveKeyset)?
             .id;
-        let fee_and_amounts = self
-            .wallet
-            .get_keyset_fees_and_amounts_by_id_with_policy(active_keyset_id, keyset_policy)
-            .await?;
+        let fee_and_amounts = keyset_fees_and_amounts
+            .get(&active_keyset_id)
+            .ok_or(Error::UnknownKeySet)?;
 
-        let estimated_output_count = inputs_needed_amount.split(&fee_and_amounts)?.len();
-        let estimated_melt_fee = self
-            .wallet
-            .get_keyset_count_fee_with_policy(
-                &active_keyset_id,
-                estimated_output_count as u64,
-                keyset_policy,
-            )
-            .await?;
+        let estimated_output_count = inputs_needed_amount.split(fee_and_amounts)?.len();
+        let estimated_melt_fee = crate::fees::calculate_fee(
+            &[(active_keyset_id, estimated_output_count as u64)]
+                .into_iter()
+                .collect(),
+            &fee_rates,
+        )?
+        .total;
 
         let selection_amount = inputs_needed_amount
             .checked_add(estimated_melt_fee)
@@ -442,17 +451,11 @@ impl<'a> MeltSaga<'a, Initial> {
 
         let proofs_to_send = Proofs::new();
         let proofs_to_swap = input_proofs;
-        let swap_fee = self.wallet.get_proofs_fee(&proofs_to_swap).await?.total;
+        let swap_fee =
+            crate::fees::calculate_fee(&proofs_to_swap.count_by_keyset(), &fee_rates)?.total;
 
         let proof_ys = proofs_to_swap.ys()?;
         let operation_id = self.state_data.operation_id;
-
-        if !proof_ys.is_empty() {
-            self.wallet
-                .localstore
-                .reserve_proofs(proof_ys.clone(), &operation_id)
-                .await?;
-        }
 
         let saga = WalletSaga::new(
             operation_id,
@@ -473,7 +476,16 @@ impl<'a> MeltSaga<'a, Initial> {
             }),
         );
 
+        // Save recovery information before the reservation can commit.
         self.wallet.localstore.add_saga(saga.clone()).await?;
+
+        if !proof_ys.is_empty() {
+            self.wallet
+                .localstore
+                .reserve_proofs(proof_ys.clone(), &operation_id)
+                .await?;
+        }
+        drop(selection_guard);
 
         add_compensation(
             &mut self.compensations,
@@ -603,11 +615,6 @@ impl<'a> MeltSaga<'a, Initial> {
                 .and_then(|existing| existing.derivation_index);
         }
 
-        self.wallet
-            .localstore
-            .update_proofs(proofs_info, vec![])
-            .await?;
-
         let saga = WalletSaga::new(
             operation_id,
             WalletSagaState::Melt(MeltSagaState::ProofsReserved),
@@ -627,7 +634,13 @@ impl<'a> MeltSaga<'a, Initial> {
             }),
         );
 
+        // Save recovery information before the reservation can commit.
         self.wallet.localstore.add_saga(saga.clone()).await?;
+
+        self.wallet
+            .localstore
+            .update_proofs(proofs_info, vec![])
+            .await?;
 
         add_compensation(
             &mut self.compensations,
@@ -1433,6 +1446,73 @@ mod tests {
     };
     use crate::wallet::MeltConfirmOptions;
     use crate::{Amount, Error};
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_preparations_reserve_disjoint_proofs() {
+        check_concurrent_preparations(2).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_preparations_requiring_swap_reserve_disjoint_proofs() {
+        check_concurrent_preparations(4).await;
+    }
+
+    async fn check_concurrent_preparations(proof_amount: u64) {
+        let db = create_test_db().await;
+        let proofs = (0..4)
+            .map(|index| {
+                test_proof_info(test_keyset_id(), proof_amount, test_mint_url())
+                    .with_derivation_index(index)
+            })
+            .collect();
+        db.update_proofs(proofs, vec![]).await.unwrap();
+
+        let mut first_quote = test_melt_quote();
+        first_quote.amount = Amount::from(2);
+        first_quote.fee_reserve = Amount::ZERO;
+        let mut second_quote = first_quote.clone();
+        second_quote.id = Uuid::new_v4().to_string();
+        db.add_melt_quote(first_quote.clone()).await.unwrap();
+        db.add_melt_quote(second_quote.clone()).await.unwrap();
+
+        let client = Arc::new(MockMintConnector::new());
+        client.reset_default_mint_state();
+        let mut keyset = crate::wallet::test_utils::test_keyset();
+        keyset.input_fee_ppk = 0;
+        client.set_active_keyset(keyset);
+        let wallet = create_test_wallet_with_mock(db.clone(), client).await;
+        // Warm metadata so only proof selection and reservation overlap.
+        wallet.keysets(KeysetLoadPolicy::default()).await.unwrap();
+        let start = Arc::new(tokio::sync::Barrier::new(4));
+        let mut operations = Vec::new();
+        for quote_id in [None, None, Some(first_quote.id), Some(second_quote.id)] {
+            let wallet = wallet.clone();
+            let start = start.clone();
+            operations.push(tokio::spawn(async move {
+                start.wait().await;
+                match quote_id {
+                    Some(quote_id) => wallet
+                        .prepare_melt(&quote_id, HashMap::new())
+                        .await
+                        .unwrap()
+                        .operation_id(),
+                    None => wallet
+                        .prepare_send(Amount::from(2), Default::default())
+                        .await
+                        .unwrap()
+                        .operation_id(),
+                }
+            }));
+        }
+        let mut reserved_ys = std::collections::HashSet::new();
+        for operation in operations {
+            let operation = operation.await.unwrap();
+            let reserved = db.get_reserved_proofs(&operation).await.unwrap();
+            assert_eq!(reserved.len(), 1);
+            assert!(reserved_ys.insert(reserved[0].y));
+        }
+        assert_eq!(wallet.total_balance().await.unwrap(), Amount::ZERO);
+    }
 
     #[tokio::test]
     async fn test_prepare_melt_reserves_exact_input_proofs_for_operation() {

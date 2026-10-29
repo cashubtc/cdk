@@ -24,6 +24,9 @@ use tracing::instrument;
 use crate::nuts::PublicKey;
 use crate::Error;
 
+#[cfg(test)]
+mod reservation_tests;
+
 /// Trait for compensating actions in the saga pattern.
 /// Actions are executed in reverse order (LIFO) during rollback.
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
