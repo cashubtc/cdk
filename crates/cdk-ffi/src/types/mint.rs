@@ -16,11 +16,20 @@ pub struct MintUrl {
 }
 
 impl MintUrl {
+    /// Creates a new [`MintUrl`], validating the input format and normalizing it.
+    ///
+    /// Validates the input URL format and normalizes it to CDK core's canonical
+    /// mint URL representation, which can be read from `.url`.
+    /// Normalization follows core [`cdk::mint_url::MintUrl`] rules (e.g. scheme and
+    /// host casing, path and query handling, and trailing slash normalization).
     pub fn new(url: String) -> Result<Self, FfiError> {
         // Validate URL format
         url::Url::parse(&url).map_err(|e| FfiError::internal(format!("Invalid URL: {}", e)))?;
 
-        Ok(Self { url })
+        let canonical = cdk::mint_url::MintUrl::from_str(&url)
+            .map_err(|e| FfiError::internal(format!("Invalid URL: {}", e)))?;
+
+        Ok(canonical.into())
     }
 }
 
@@ -1120,5 +1129,98 @@ mod tests {
 
         let result = cdk::nuts::MintInfo::try_from(ffi_mint_info);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_mint_url_canonical_normalization() {
+        // Table of accepted valid URLs testing scheme/host casing, trailing slashes,
+        // path preservation, query preservation, and punycode.
+        let test_cases = [
+            // Test C: Scheme & host lowercasing, trailing slash removal
+            "HTTPS://MINT.EXAMPLE/Path/",
+            // Test D: Root trailing slashes vs no trailing slash
+            "https://mint.example/",
+            "https://mint.example",
+            // Test D: Non-root trailing slash
+            "https://mint.example/path/to/",
+            // Test E: Path casing preservation
+            "https://mint.example/Path/To/Mint",
+            // Test F: Query preservation
+            "https://mint.example/path?key=Value",
+            // Test G: Punycode domain
+            "https://xn--bcher-kva.example/mint",
+        ];
+
+        for &input in &test_cases {
+            let core_mint_url = cdk::mint_url::MintUrl::from_str(input)
+                .unwrap_or_else(|e| panic!("failed to parse core mint url for '{input}': {e}"));
+            let expected_canonical = core_mint_url.to_string();
+
+            // Test A: Core and FFI match
+            let ffi_mint_url = MintUrl::new(input.to_string())
+                .unwrap_or_else(|e| panic!("failed to create ffi mint url for '{input}': {e}"));
+            assert_eq!(
+                ffi_mint_url.url, expected_canonical,
+                "FFI url must match core canonical string for input '{input}'"
+            );
+
+            // Test B: Idempotent construction
+            let second_ffi_url = MintUrl::new(ffi_mint_url.url.clone())
+                .unwrap_or_else(|e| panic!("failed to re-parse canonical url for '{input}': {e}"));
+            assert_eq!(
+                ffi_mint_url.url, second_ffi_url.url,
+                "construction must be idempotent for input '{input}'"
+            );
+
+            // Phase 8: Round-trip conversion (FFI -> Core -> FFI)
+            let core_roundtrip: cdk::mint_url::MintUrl = ffi_mint_url
+                .clone()
+                .try_into()
+                .unwrap_or_else(|e| panic!("try_into core failed for '{input}': {e}"));
+            let ffi_roundtrip: MintUrl = core_roundtrip.into();
+            assert_eq!(
+                ffi_roundtrip.url, expected_canonical,
+                "roundtrip must preserve canonical representation for '{input}'"
+            );
+        }
+
+        // Test D: Verify trailing slash equivalence explicitly
+        let with_slash = MintUrl::new("https://mint.example/".to_string()).unwrap();
+        let without_slash = MintUrl::new("https://mint.example".to_string()).unwrap();
+        assert_eq!(with_slash.url, without_slash.url);
+        assert_eq!(with_slash.url, "https://mint.example");
+
+        let path_with_slash = MintUrl::new("https://mint.example/path/".to_string()).unwrap();
+        let path_without_slash = MintUrl::new("https://mint.example/path".to_string()).unwrap();
+        assert_eq!(path_with_slash.url, path_without_slash.url);
+        assert_eq!(path_with_slash.url, "https://mint.example/path");
+    }
+
+    #[test]
+    fn test_mint_url_invalid_urls_rejected() {
+        // Test H: Invalid URLs rejected preserving existing FFI validation error semantics
+        let invalid_cases = [
+            "",
+            "not-a-url",
+            "http://",
+            "https://",
+            "/relative/path",
+            "relative/path",
+            "mint.example",
+            "ftp://[::1",
+        ];
+
+        for &invalid_input in &invalid_cases {
+            let result = MintUrl::new(invalid_input.to_string());
+            assert!(
+                result.is_err(),
+                "expected invalid URL to be rejected: '{invalid_input}'"
+            );
+            let err_msg = result.unwrap_err().to_string();
+            assert!(
+                err_msg.starts_with("Invalid URL: "),
+                "error message for '{invalid_input}' must start with 'Invalid URL: ', got '{err_msg}'"
+            );
+        }
     }
 }
