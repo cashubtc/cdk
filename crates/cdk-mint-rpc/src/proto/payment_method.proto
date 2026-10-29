@@ -12,10 +12,10 @@ service PaymentMethodService {
     rpc UpdateDisabled(UpdateDisabledRequest) returns (UpdateDisabledResponse) {}
 }
 
-// Options of a bolt11 mint (NUT-04) payment method. Setting options on any
-// other method fails with gRPC status INVALID_ARGUMENT.
+// Options of a bolt11 or bolt12 mint (NUT-04) payment method. Setting options
+// on any other method fails with gRPC status INVALID_ARGUMENT.
 message Bolt11MintMethodOptions {
-    // Whether bolt11 mint quotes may carry an invoice description.
+    // Whether bolt11 or bolt12 mint quotes may carry an invoice description.
     bool description = 1;
 }
 
