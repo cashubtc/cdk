@@ -60,6 +60,13 @@ use crate::wallet::saga::{
 };
 use crate::{ensure_cdk, Amount, Error, Wallet};
 
+/// How many passes the input-fee fixed point gets before giving up.
+///
+/// Each pass strictly raises the estimate, and a pass adds at most one proof
+/// per denomination, so this bounds a pathological keyset instead of a real
+/// one. Shared by the prepare-side estimate and the confirm-side swap target.
+const MELT_INPUT_FEE_FIXED_POINT_LIMIT: u32 = 16;
+
 #[cfg(test)]
 mod change_fee_tests;
 pub(crate) mod compensation;
@@ -443,15 +450,36 @@ impl<'a> MeltSaga<'a, Initial> {
             .get_keyset_fees_and_amounts_by_id_with_policy(active_keyset_id, keyset_policy)
             .await?;
 
-        let estimated_output_count = inputs_needed_amount.split(&fee_and_amounts)?.len();
-        let estimated_melt_fee = self
-            .wallet
-            .get_keyset_count_fee_with_policy(
-                &active_keyset_id,
-                estimated_output_count as u64,
-                keyset_policy,
-            )
-            .await?;
+        // Size the swap target so it covers the input fee of its own
+        // outputs: iterate `T = needed + fee(split(T))` to a fixed point. A
+        // single estimate from `needed` alone under-counts when `needed + fee`
+        // splits into more proofs than `needed` does, so the swap lands short
+        // of what the melt requires and the mint refuses the melt after the
+        // swap fee is already spent (#2772). `estimated_melt_fee` rises each
+        // pass, so the loop converges.
+        let mut estimated_melt_fee = Amount::ZERO;
+        let mut fee_converged = false;
+        for _ in 0..MELT_INPUT_FEE_FIXED_POINT_LIMIT {
+            let target = inputs_needed_amount
+                .checked_add(estimated_melt_fee)
+                .ok_or(Error::AmountOverflow)?;
+            let count = target.split(&fee_and_amounts)?.len() as u64;
+            let fee = self
+                .wallet
+                .get_keyset_count_fee_with_policy(&active_keyset_id, count, keyset_policy)
+                .await?;
+            if fee <= estimated_melt_fee {
+                fee_converged = true;
+                break;
+            }
+            estimated_melt_fee = fee;
+        }
+        if !fee_converged {
+            // No fixed point: the keyset's fee grows with every extra proof,
+            // so no swap target covers its own outputs. Fail before selecting
+            // and reserving proofs.
+            return Err(Error::InsufficientFunds);
+        }
 
         let selection_amount = inputs_needed_amount
             .checked_add(estimated_melt_fee)
@@ -841,12 +869,44 @@ impl<'a> MeltSaga<'a, Prepared> {
                 final_proofs.extend(self.state_data.proofs_to_swap.clone());
             } else {
                 // Current behavior: swap first to get optimal denominations
-                let target_swap_amount = quote_info
+                // The swap's own outputs charge an input fee that must be
+                // paid out of the swapped value, otherwise `final_proofs`
+                // lands short of `amount + fee_reserve + actual_input_fee`
+                // and the melt is refused after the swap fee is spent
+                // (#2772). Solve `T = needed + fee(split(T))` to a fixed
+                // point; `input_fee` stays as the floor so a conservative
+                // prepare-side reservation is never dropped.
+                let needed = quote_info
                     .amount
                     .checked_add(quote_info.fee_reserve)
-                    .ok_or(Error::AmountOverflow)?
-                    .checked_add(input_fee)
                     .ok_or(Error::AmountOverflow)?;
+                let mut target_swap_amount =
+                    needed.checked_add(input_fee).ok_or(Error::AmountOverflow)?;
+                let swap_output_fees = self
+                    .wallet
+                    .get_keyset_fees_and_amounts_by_id_with_policy(active_keyset_id, keyset_policy)
+                    .await?;
+                let mut target_converged = false;
+                for _ in 0..MELT_INPUT_FEE_FIXED_POINT_LIMIT {
+                    let count = target_swap_amount.split(&swap_output_fees)?.len() as u64;
+                    let fee = self
+                        .wallet
+                        .get_keyset_count_fee_with_policy(&active_keyset_id, count, keyset_policy)
+                        .await?;
+                    let next = needed.checked_add(fee).ok_or(Error::AmountOverflow)?;
+                    if next <= target_swap_amount {
+                        target_converged = true;
+                        break;
+                    }
+                    target_swap_amount = next;
+                }
+                if !target_converged {
+                    // No target covers its own outputs' fee. Refuse before the
+                    // swap goes out, so its fee is not spent on a melt the
+                    // wallet already knows it cannot afford.
+                    self.compensate().await;
+                    return Err(Error::InsufficientFunds);
+                }
 
                 tracing::debug!(
                     "Swapping {} proofs (total: {}) for target amount {}",
@@ -2253,6 +2313,48 @@ mod tests {
             quote.used_by_operation.is_none(),
             "failed prepare left the quote reserved by {:?}",
             quote.used_by_operation
+        );
+    }
+    // Regression coverage for #2772: on a keyset charging 1000 ppk (1 sat per
+    // input), 1010 splits into 7 proofs but `1010 + 7` splits into 8, so the
+    // melt needs 1018. The old single-pass estimate left the swap one sat
+    // short and the mint refused the melt after the swap fee was paid.
+    #[tokio::test]
+    async fn melt_swap_covers_input_fee_of_swapped_outputs() {
+        let db = create_test_db().await;
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.enable_mint_signing();
+        let mut keyset = mock_client.keysets.lock().unwrap()[0].clone();
+        keyset.input_fee_ppk = 1000;
+        let keyset_id = keyset.id;
+        mock_client.set_active_keyset(keyset);
+
+        // One 2048-sat proof: plenty for 1000 + 10 reserve plus fees.
+        db.update_proofs(
+            vec![test_proof_info(keyset_id, 2048, test_mint_url())],
+            vec![],
+        )
+        .await
+        .unwrap();
+        let quote = test_melt_quote();
+        let quote_id = quote.id.clone();
+        db.add_melt_quote(quote).await.unwrap();
+
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client.clone()).await;
+        let prepared = MeltSaga::new(&wallet)
+            .prepare(&quote_id, HashMap::new())
+            .await
+            .unwrap();
+        assert_eq!(prepared.state_data.proofs_to_swap.len(), 1);
+
+        let result = prepared
+            .request_melt_with_options(MeltConfirmOptions::default())
+            .await;
+        assert!(
+            result.is_ok(),
+            "melt refused after swap: {:?}",
+            result.err()
         );
     }
 }
