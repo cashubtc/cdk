@@ -168,6 +168,51 @@ async fn test_onchain_setup_accepts_change_outputs() {
     assert_eq!(setup.state_data.quote.fee_reserve().value(), 500);
 }
 
+/// Test: change outputs already signed by an earlier request are rejected as
+/// already signed (NUT-00 11003), not as an already-paid invoice.
+#[tokio::test]
+async fn test_melt_setup_rejects_change_outputs_signed_by_earlier_swap() {
+    use cdk_common::nuts::{MeltRequest, SwapRequest};
+
+    use crate::test_helpers::mint::create_test_blinded_messages;
+
+    let mint = create_test_mint().await.unwrap();
+
+    // Have the mint sign a set of outputs in an ordinary swap first.
+    let (signed_outputs, _premint) = create_test_blinded_messages(&mint, Amount::from(500))
+        .await
+        .unwrap();
+    let swap_inputs = mint_test_proofs(&mint, Amount::from(500)).await.unwrap();
+    mint.process_swap_request(SwapRequest::new(swap_inputs, signed_outputs.clone()))
+        .await
+        .expect("swap should sign the outputs");
+
+    let quote = create_test_onchain_melt_quote(&mint).await;
+    let proofs = mint_test_proofs(&mint, Amount::from(9_500)).await.unwrap();
+    let melt_request =
+        MeltRequest::new(quote.id.clone(), proofs, Some(signed_outputs)).fee_index(0);
+    let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
+
+    let saga = MeltSaga::new(
+        std::sync::Arc::new(mint.clone()),
+        mint.localstore(),
+        mint.pubsub_manager(),
+    );
+    let result = saga
+        .setup_melt(
+            &melt_request,
+            verification,
+            PaymentMethod::Known(KnownMethod::Onchain),
+        )
+        .await;
+
+    assert!(
+        matches!(result, Err(cdk_common::Error::BlindedMessageAlreadySigned)),
+        "reused change outputs should be rejected as already signed, got: {:?}",
+        result.err()
+    );
+}
+
 /// Test: onchain melt setup accepts inputs greater than amount plus selected fee reserve.
 #[tokio::test]
 async fn test_onchain_setup_accepts_overfunded_inputs() {

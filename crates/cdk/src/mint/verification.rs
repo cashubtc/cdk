@@ -2,7 +2,8 @@ use std::collections::HashSet;
 
 use cdk_common::nuts::nut17::MAX_CUSTOM_KIND_LEN;
 use cdk_common::{
-    Amount, BlindedMessage, CurrencyUnit, Id, PaymentMethod, Proofs, ProofsMethods, PublicKey,
+    database, Amount, BlindedMessage, CurrencyUnit, Id, PaymentMethod, Proofs, ProofsMethods,
+    PublicKey,
 };
 use tracing::instrument;
 
@@ -76,6 +77,19 @@ impl Mint {
         }
 
         Ok(())
+    }
+
+    /// Map an error from storing a request's blinded messages
+    ///
+    /// Duplicates within one request are rejected by
+    /// [`Mint::check_outputs_unique`] before the outputs are stored, so a
+    /// duplicate reported by the database means an earlier request already
+    /// used these outputs (NUT-00 error 11003).
+    pub(crate) fn map_add_blinded_messages_error(err: database::Error) -> Error {
+        match err {
+            database::Error::Duplicate => Error::BlindedMessageAlreadySigned,
+            err => err.into(),
+        }
     }
 
     /// Verify output keyset

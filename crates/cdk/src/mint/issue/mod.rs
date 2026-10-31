@@ -943,7 +943,8 @@ impl Mint {
                 let batch_operation =
                     Operation::new_batch_mint(outputs_amount.clone().into(), batch_method.clone());
                 tx.add_blinded_messages(None, input.outputs(), &batch_operation)
-                    .await?;
+                    .await
+                    .map_err(Mint::map_add_blinded_messages_error)?;
                 tx.add_blind_signatures(&blinded_secrets, &all_blind_signatures, None)
                     .await?;
                 let fee_by_keyset = std::collections::HashMap::new();
@@ -984,7 +985,8 @@ impl Mint {
 
                 if !input.is_batch() {
                     tx.add_blinded_messages(Some(quote_id), input.outputs(), &operation)
-                        .await?;
+                        .await
+                        .map_err(Mint::map_add_blinded_messages_error)?;
 
                     tx.add_blind_signatures(
                         &blinded_secrets,
@@ -1527,6 +1529,51 @@ mod batch_mint_tests {
 
         assert!(
             matches!(err, Error::AmountOutofLimitRange(_, _, _)),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mint_rejects_outputs_signed_by_earlier_request() {
+        let mint = create_test_mint().await;
+
+        let mut quote_ids = Vec::new();
+        for _ in 0..2 {
+            let quote: MintQuoteBolt11Response<QuoteId> = mint
+                .get_mint_quote(
+                    MintQuoteBolt11Request {
+                        amount: Amount::from(64),
+                        unit: CurrencyUnit::Sat,
+                        description: None,
+                        pubkey: None,
+                    }
+                    .into(),
+                )
+                .await
+                .unwrap()
+                .try_into()
+                .unwrap();
+            wait_for_quote_paid(&mint, &quote.quote).await;
+            quote_ids.push(quote.quote);
+        }
+
+        let first_request = mint_request_for_amount(&mint, quote_ids[0].clone(), 64);
+        let reused_outputs = first_request.outputs.clone();
+        mint.process_mint_request(crate::mint::MintInput::Single(first_request))
+            .await
+            .expect("first mint request should succeed");
+
+        let err = mint
+            .process_mint_request(crate::mint::MintInput::Single(MintRequest {
+                quote: quote_ids[1].clone(),
+                outputs: reused_outputs,
+                signature: None,
+            }))
+            .await
+            .expect_err("outputs signed by an earlier request must be rejected");
+
+        assert!(
+            matches!(err, Error::BlindedMessageAlreadySigned),
             "unexpected error: {err:?}"
         );
     }

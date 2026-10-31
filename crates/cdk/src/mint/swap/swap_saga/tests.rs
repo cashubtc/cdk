@@ -333,6 +333,60 @@ async fn test_swap_saga_duplicate_outputs() {
     assert!(result.is_err(), "Setup should fail with duplicate outputs");
 }
 
+/// Tests that outputs already used by an earlier swap are rejected as already
+/// signed.
+///
+/// # What This Tests
+/// - The database unique constraint catches outputs from an earlier request
+/// - setup_swap() reports NUT-00 error 11003 (`BlindedMessageAlreadySigned`)
+///   rather than 11008 (`DuplicateOutputs`), which is reserved for the same
+///   output appearing twice within one request
+///
+/// # Success Criteria
+/// - The first swap succeeds
+/// - The second swap with fresh inputs and the same outputs fails with
+///   `BlindedMessageAlreadySigned`
+#[tokio::test]
+async fn test_swap_saga_rejects_outputs_signed_by_earlier_swap() {
+    let mint = create_test_mint().await.unwrap();
+
+    let amount = Amount::from(100);
+    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+
+    let (first_inputs, first_verification) = create_swap_inputs(&mint, amount).await;
+    SwapSaga::new(&mint, mint.localstore(), mint.pubsub_manager())
+        .setup_swap(
+            &first_inputs,
+            &output_blinded_messages,
+            None,
+            first_verification,
+        )
+        .await
+        .expect("First setup should succeed")
+        .sign_outputs()
+        .await
+        .expect("First signing should succeed")
+        .finalize()
+        .await
+        .expect("First finalize should succeed");
+
+    let (second_inputs, second_verification) = create_swap_inputs(&mint, amount).await;
+    let result = SwapSaga::new(&mint, mint.localstore(), mint.pubsub_manager())
+        .setup_swap(
+            &second_inputs,
+            &output_blinded_messages,
+            None,
+            second_verification,
+        )
+        .await;
+
+    assert!(
+        matches!(result, Err(cdk_common::Error::BlindedMessageAlreadySigned)),
+        "Reused outputs should be rejected as already signed, got: {:?}",
+        result.err()
+    );
+}
+
 /// Tests that unbalanced swap requests are rejected (outputs > inputs).
 ///
 /// # What This Tests
