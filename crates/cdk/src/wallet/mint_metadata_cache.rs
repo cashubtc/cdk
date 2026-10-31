@@ -43,6 +43,11 @@ use crate::wallet::util::escape_log_value;
 use crate::wallet::{AuthMintConnector, AuthWallet, MintConnector};
 use crate::{Error, Wallet};
 
+/// Shortest gap between two metadata requests to the same mint, for callers
+/// that force a refresh past the TTL. Keeps a mint that has nothing new to say
+/// from being asked once per wallet operation.
+const MIN_REFETCH_INTERVAL: Duration = Duration::from_secs(30);
+
 /// Metadata freshness and versioning information
 ///
 /// Tracks when data was last fetched and which version is currently cached.
@@ -125,6 +130,16 @@ pub struct MintMetadataCache {
     /// Default: 1 hour (3600 seconds).
     ttl: Arc<RwLock<Option<Duration>>>,
 
+    /// When the mint was last asked for metadata, successfully or not.
+    /// `None` means it has never been asked, so the first forced refresh is
+    /// never throttled.
+    last_mint_request: Arc<RwLock<Option<Instant>>>,
+
+    /// Shortest gap between two mint requests for callers that throttle
+    /// themselves through [`MintMetadataCache::asked_mint_recently`]. Only
+    /// tests move it off [`MIN_REFETCH_INTERVAL`].
+    min_refetch_interval: Arc<RwLock<Duration>>,
+
     /// Tracks which database instances have been synced to which cache version.
     /// Key: pointer identity of storage Arc, Value: last synced cache version
     db_sync_versions: Arc<RwLock<HashMap<usize, usize>>>,
@@ -197,6 +212,8 @@ impl MintMetadataCache {
             mint_url,
             metadata: Arc::new(ArcSwap::default()),
             ttl: Arc::new(RwLock::new(Some(Duration::from_secs(3600)))),
+            last_mint_request: Arc::new(RwLock::new(None)),
+            min_refetch_interval: Arc::new(RwLock::new(MIN_REFETCH_INTERVAL)),
             db_sync_versions: Arc::new(Default::default()),
             fetch_lock: Arc::new(Mutex::new(())),
         }
@@ -212,6 +229,27 @@ impl MintMetadataCache {
     /// Get the current TTL.
     pub fn ttl(&self) -> Option<Duration> {
         *self.ttl.read()
+    }
+
+    /// Set the shortest gap between two mint requests that
+    /// [`asked_mint_recently()`](Self::asked_mint_recently) enforces.
+    #[cfg(test)]
+    pub(crate) fn set_min_refetch_interval(&self, interval: Duration) {
+        *self.min_refetch_interval.write() = interval;
+    }
+
+    /// Whether the mint itself was asked for metadata within the minimum
+    /// refetch interval, successfully or not.
+    ///
+    /// Callers that bypass the TTL with a forced refresh use this to throttle
+    /// themselves: the keysets response covers the whole mint, so a request
+    /// from moments ago already answers the question.
+    pub(crate) fn asked_mint_recently(&self) -> bool {
+        let interval = *self.min_refetch_interval.read();
+        self.last_mint_request
+            .read()
+            .map(|at| at + interval > Instant::now())
+            .unwrap_or(false)
     }
 
     /// Return cached metadata if populated, without fetching or TTL checks.
@@ -677,6 +715,8 @@ impl MintMetadataCache {
 
         // Fetch regular mint data
         if let Some(client) = client.as_ref() {
+            *self.last_mint_request.write() = Some(Instant::now());
+
             // Get mint information
             new_metadata.mint_info = client.get_mint_info().await.inspect_err(|err| {
                 tracing::error!(

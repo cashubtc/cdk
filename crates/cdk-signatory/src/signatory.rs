@@ -67,10 +67,12 @@ pub struct SignatoryKeySet {
 }
 
 impl SignatoryKeySet {
-    /// Returns true if `final_expiry` is set and strictly in the past.
+    /// Returns true if `final_expiry` is set and strictly in the past. A
+    /// literal zero means no expiry rather than the epoch, since no mint sets
+    /// one in 1970.
     pub fn is_expired(&self) -> bool {
         self.final_expiry
-            .is_some_and(|expiry| expiry < cdk_common::util::unix_time())
+            .is_some_and(|expiry| expiry != 0 && expiry < cdk_common::util::unix_time())
     }
 }
 
@@ -224,9 +226,9 @@ mod tests {
     }
 
     #[test]
-    fn test_is_expired_zero() {
+    fn test_is_expired_zero_means_no_expiry() {
         let ks = dummy_signatory_keyset(Some(0));
-        assert!(ks.is_expired());
+        assert!(!ks.is_expired());
     }
 
     #[test]

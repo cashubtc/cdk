@@ -112,7 +112,8 @@ async def test_wallet_keyset_management():
             id=keyset_id.hex,
             unit=cdk_ffi.CurrencyUnit.SAT(),
             active=True,
-            input_fee_ppk=0
+            input_fee_ppk=0,
+            final_expiry=None
         )
         await db.add_mint_keysets(mint_url, [keyset_info])
         print("✓ Added mint and keyset")
@@ -155,7 +156,8 @@ async def test_wallet_keyset_counter():
             id=keyset_id.hex,
             unit=cdk_ffi.CurrencyUnit.SAT(),
             active=True,
-            input_fee_ppk=0
+            input_fee_ppk=0,
+            final_expiry=None
         )
         await db.add_mint_keysets(mint_url, [keyset_info])
         print("✓ Setup complete")

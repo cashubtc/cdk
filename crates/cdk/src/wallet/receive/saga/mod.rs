@@ -112,6 +112,8 @@ impl<'a> ReceiveSaga<'a, Initial> {
             self.state_data.operation_id
         );
 
+        self.wallet.ensure_spendable_proofs(&proofs).await?;
+
         let _mint_info = self.wallet.load_mint_info().await?;
 
         let keyset_policy = self.state_data.keyset_policy;

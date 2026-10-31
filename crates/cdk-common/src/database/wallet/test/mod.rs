@@ -287,6 +287,56 @@ where
     assert!(!keysets.unwrap().is_empty());
 }
 
+/// A re-synced keyset carries a changed expiry into storage
+///
+/// The wallet refuses proofs from an expired keyset, so an upsert that keeps the
+/// first `final_expiry` it ever saw would hide an expiry the mint announced
+/// later.
+pub async fn keyset_upsert_refreshes_final_expiry<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mint_url = test_mint_url();
+    let keyset_id = test_keyset_id();
+
+    db.add_mint(mint_url.clone(), None).await.unwrap();
+
+    let without_expiry = test_keyset_info(keyset_id, &mint_url);
+    db.add_mint_keysets(mint_url.clone(), vec![without_expiry.clone()])
+        .await
+        .unwrap();
+
+    let with_expiry = KeySetInfo {
+        active: !without_expiry.active,
+        input_fee_ppk: without_expiry.input_fee_ppk + 100,
+        final_expiry: Some(1_900_000_000),
+        ..without_expiry.clone()
+    };
+    db.add_mint_keysets(mint_url.clone(), vec![with_expiry.clone()])
+        .await
+        .unwrap();
+
+    let refreshed = db.get_keyset_by_id(&keyset_id).await.unwrap().unwrap();
+    assert_eq!(refreshed.final_expiry, with_expiry.final_expiry);
+    assert_eq!(refreshed.active, with_expiry.active);
+    assert_eq!(refreshed.input_fee_ppk, with_expiry.input_fee_ppk);
+
+    let keysets = db
+        .get_mint_keysets(mint_url.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(keysets.len(), 1);
+    assert_eq!(keysets[0].final_expiry, with_expiry.final_expiry);
+
+    db.add_mint_keysets(mint_url.clone(), vec![without_expiry.clone()])
+        .await
+        .unwrap();
+
+    let cleared = db.get_keyset_by_id(&keyset_id).await.unwrap().unwrap();
+    assert_eq!(cleared.final_expiry, None);
+}
+
 /// Test getting keyset by ID in transaction
 pub async fn get_keyset_by_id_in_transaction<DB>(db: DB)
 where
@@ -1754,6 +1804,7 @@ macro_rules! wallet_db_test {
             remove_mint,
             update_mint_url,
             add_and_get_keysets,
+            keyset_upsert_refreshes_final_expiry,
             get_keyset_by_id_in_transaction,
             add_and_get_keys,
             get_keys_in_transaction,

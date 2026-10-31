@@ -35,6 +35,12 @@ impl Wallet {
     ///
     /// This method reserves the input proofs before performing the swap,
     /// ensuring they cannot be used by concurrent operations.
+    ///
+    /// A proof from an expired keyset fails the whole call with
+    /// [`Error::ExpiredKeyset`]: trimming a pool the caller chose would spend
+    /// something other than what was asked for. Drop those proofs first with
+    /// [`Wallet::keysets`] and
+    /// [`KeySet::is_expired`](crate::nuts::KeySet::is_expired).
     #[instrument(skip(self, input_proofs))]
     pub async fn swap(
         &self,

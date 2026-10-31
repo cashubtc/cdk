@@ -79,6 +79,7 @@ use crate::fees::calculate_fee;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut11::{enforce_sig_flag, SigFlag};
 use crate::nuts::{Proof, Proofs, State, Token};
+use crate::wallet::keysets::usable_for_outputs;
 use crate::wallet::saga::{
     add_compensation, execute_compensations, new_compensations, Compensations,
     RevertProofReservation,
@@ -383,7 +384,7 @@ impl<'a> SendSaga<'a, Initial> {
 
         let keyset_policy = self.state_data.keyset_policy;
 
-        let all_keysets = self.wallet.keysets(keyset_policy).await?;
+        let all_keysets = self.wallet.keysets_for_outputs(keyset_policy).await?;
 
         let keyset_fees: KeysetFeeAndAmounts = all_keysets
             .iter()
@@ -410,7 +411,7 @@ impl<'a> SendSaga<'a, Initial> {
 
         let active_keyset = all_keysets
             .into_iter()
-            .filter(|k| k.active.unwrap_or(false))
+            .filter(usable_for_outputs)
             .min_by_key(|k| k.input_fee_ppk)
             .ok_or(Error::NoActiveKeyset)?;
 
@@ -426,6 +427,10 @@ impl<'a> SendSaga<'a, Initial> {
                 Some(vec![State::Unspent]),
                 opts.conditions.clone().map(|c| vec![c]),
             )
+            .await?;
+        available_proofs = self
+            .wallet
+            .retain_spendable_proofs(available_proofs)
             .await?;
 
         // When passthrough is not opted in, exclude P2PK-locked proofs for which the wallet
@@ -463,6 +468,10 @@ impl<'a> SendSaga<'a, Initial> {
                     .into_iter()
                     .map(|p| p.proof)
                     .collect();
+                available_proofs = self
+                    .wallet
+                    .retain_spendable_proofs(available_proofs)
+                    .await?;
 
                 if opts.p2pk_locked_proof_send_mode == P2PKLockedProofSendMode::Swap {
                     available_proofs = filter_signable_proofs(

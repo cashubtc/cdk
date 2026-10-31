@@ -19,6 +19,12 @@ impl Wallet {
     ///
     /// This is the internal implementation that uses the saga pattern
     /// for proper crash recovery and compensation.
+    ///
+    /// A proof from an expired keyset fails the whole call with
+    /// [`Error::ExpiredKeyset`]: trimming a pool the caller chose would spend
+    /// something other than what was asked for. Drop those proofs first with
+    /// [`Wallet::keysets`] and
+    /// [`KeySet::is_expired`](crate::nuts::KeySet::is_expired).
     #[instrument(skip_all)]
     pub async fn receive_proofs(
         &self,

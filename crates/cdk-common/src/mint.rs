@@ -1279,9 +1279,12 @@ pub struct MintKeySetInfo {
 }
 
 impl MintKeySetInfo {
-    /// Returns true if `final_expiry` is set and strictly in the past.
+    /// Returns true if `final_expiry` is set and strictly in the past. A
+    /// literal zero means no expiry rather than the epoch, since no mint sets
+    /// one in 1970.
     pub fn is_expired(&self) -> bool {
-        self.final_expiry.is_some_and(|expiry| expiry < unix_time())
+        self.final_expiry
+            .is_some_and(|expiry| expiry != 0 && expiry < unix_time())
     }
 }
 
@@ -1857,9 +1860,9 @@ mod tests {
     }
 
     #[test]
-    fn test_is_expired_zero() {
+    fn test_is_expired_zero_means_no_expiry() {
         let info = dummy_mint_keyset_info(Some(0));
-        assert!(info.is_expired());
+        assert!(!info.is_expired());
     }
 
     #[test]

@@ -858,11 +858,11 @@ impl Wallet {
     /// its mint for the corresponding melt quote. Because the melt fee reserve
     /// can depend on the invoice amount, the method repeats this process until
     /// the destination amount fits the source balance after both the melt fee
-    /// reserve and the input fee for all unspent source proofs.
+    /// reserve and the input fee for every spendable unspent source proof.
     ///
-    /// The returned plan assumes all currently unspent source proofs are used.
-    /// To preserve that accounting, prepare the melt with
-    /// [`Wallet::prepare_melt_proofs`] and confirm it with
+    /// The returned plan assumes that same set is used. To preserve the
+    /// accounting, pass [`Wallet::retain_spendable_proofs`] of the unspent
+    /// proofs to [`Wallet::prepare_melt_proofs`] and confirm with
     /// [`MeltConfirmOptions::skip_swap`].
     ///
     /// The melt fee is a reserve. If the actual Lightning fee is lower, the
@@ -890,7 +890,9 @@ impl Wallet {
 
         ensure_cdk!(self.unit == target_wallet.unit, Error::UnsupportedUnit);
 
-        let proofs = self.get_unspent_proofs().await?;
+        let proofs = self
+            .retain_spendable_proofs(self.get_unspent_proofs().await?)
+            .await?;
         let balance = proofs.total_amount()?;
         ensure_cdk!(balance > Amount::ZERO, Error::InsufficientFunds);
 
@@ -1098,6 +1100,9 @@ impl Wallet {
     }
 
     /// Prepare a melt operation with specific proofs.
+    ///
+    /// Locked inputs and expired keysets are handled as described in
+    /// [`prepare_melt_proofs_with_options`](Wallet::prepare_melt_proofs_with_options).
     #[instrument(skip(self, proofs, metadata))]
     pub async fn prepare_melt_proofs(
         &self,
@@ -1124,6 +1129,12 @@ impl Wallet {
     /// HTLC preimages from `options.preimages` are attached to matching
     /// proofs. SIG_ALL-locked proofs are rejected: their witness must commit
     /// to the melt request's change outputs, which only exist at confirmation.
+    ///
+    /// A proof from an expired keyset fails the whole call with
+    /// [`Error::ExpiredKeyset`]: trimming a pool the caller chose would spend
+    /// something other than what was asked for. Drop those proofs first with
+    /// [`Wallet::keysets`] and
+    /// [`KeySet::is_expired`](crate::nuts::KeySet::is_expired).
     #[instrument(skip(self, proofs, options))]
     pub async fn prepare_melt_proofs_with_options(
         &self,

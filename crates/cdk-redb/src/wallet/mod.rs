@@ -814,14 +814,10 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
             let mut existing_u32 = false;
 
             for keyset in keysets {
-                // Check if keyset already exists
-                let existing_keyset = {
-                    let existing_keyset = keysets_table
-                        .get(keyset.id.to_bytes().as_slice())
-                        .map_err(Error::from)?;
-
-                    existing_keyset.map(|r| r.value().to_string())
-                };
+                let already_stored = keysets_table
+                    .get(keyset.id.to_bytes().as_slice())
+                    .map_err(Error::from)?
+                    .is_some();
 
                 let existing = u32_table
                     .insert(u32::from(keyset.id), keyset.id.to_string().as_str())
@@ -841,23 +837,14 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
                     }
                 }
 
-                let keyset = if let Some(existing_keyset) = existing_keyset {
-                    let mut existing_keyset: KeySetInfo = serde_json::from_str(&existing_keyset)?;
-
-                    existing_keyset.active = keyset.active;
-                    existing_keyset.input_fee_ppk = keyset.input_fee_ppk;
-
-                    existing_keyset
-                } else {
+                if !already_stored {
                     table
                         .insert(
                             mint_url.to_string().as_str(),
                             keyset.id.to_bytes().as_slice(),
                         )
                         .map_err(Error::from)?;
-
-                    keyset
-                };
+                }
 
                 keysets_table
                     .insert(

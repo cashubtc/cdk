@@ -1205,7 +1205,8 @@ where
         (:mint_url, :id, :unit, :active, :input_fee_ppk, :final_expiry, :keyset_u32)
         ON CONFLICT(id) DO UPDATE SET
             active = excluded.active,
-            input_fee_ppk = excluded.input_fee_ppk
+            input_fee_ppk = excluded.input_fee_ppk,
+            final_expiry = excluded.final_expiry
         "#,
             )?
             .bind("mint_url", mint_url.to_string())

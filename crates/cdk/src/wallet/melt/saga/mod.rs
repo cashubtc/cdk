@@ -333,7 +333,10 @@ impl<'a> MeltSaga<'a, Initial> {
             .get_keyset_fees_and_amounts_with_policy(keyset_policy)
             .await?;
 
-        let available_proofs = self.wallet.get_unspent_proofs().await?;
+        let available_proofs = self
+            .wallet
+            .retain_spendable_proofs(self.wallet.get_unspent_proofs().await?)
+            .await?;
         let derivation_indices = self.wallet.unspent_proof_derivation_indices().await?;
 
         let exact_input_proofs = Wallet::select_proofs_with_derivation_indices(
@@ -530,6 +533,8 @@ impl<'a> MeltSaga<'a, Initial> {
             quote_id,
             self.state_data.operation_id
         );
+
+        self.wallet.ensure_spendable_proofs(&proofs).await?;
 
         // External proofs (e.g. from a token) may be P2PK/HTLC locked and
         // need witnesses before the mint will accept them as melt inputs.

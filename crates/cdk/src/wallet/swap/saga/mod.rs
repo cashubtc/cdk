@@ -108,6 +108,8 @@ impl<'a> SwapSaga<'a, Initial> {
             self.state_data.operation_id
         );
 
+        self.wallet.ensure_spendable_proofs(&input_proofs).await?;
+
         let keyset_policy = self.state_data.keyset_policy;
         let active_keyset_id = self
             .wallet
