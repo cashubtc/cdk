@@ -381,7 +381,8 @@ impl MeltSaga<Initial> {
             melt_request.outputs().as_ref().unwrap_or(&Vec::new()),
             &operation,
         )
-        .await?;
+        .await
+        .map_err(Mint::map_add_blinded_messages_error)?;
 
         // Get blinded secrets for compensation
         let blinded_secrets: Vec<PublicKey> = melt_request
