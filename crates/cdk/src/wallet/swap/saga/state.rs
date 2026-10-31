@@ -9,7 +9,6 @@ use core::fmt;
 use cdk_common::wallet::{KeysetLoadPolicy, WalletSaga};
 use uuid::Uuid;
 
-use crate::amount::SplitTarget;
 use crate::nuts::{PreSwap, Proofs, PublicKey, SpendingConditions};
 use crate::Amount;
 
@@ -31,10 +30,9 @@ pub struct Initial {
 pub struct Prepared {
     /// Unique operation identifier
     pub operation_id: Uuid,
-    /// Amount to swap (None means swap all)
-    pub amount: Option<Amount>,
-    /// Amount split target for output proofs
-    pub amount_split_target: SplitTarget,
+    /// Total of the send outputs, including the redemption fee when fees are
+    /// included (None means swap all)
+    pub send_amount: Option<Amount>,
     /// Y values of input proofs (for cleanup)
     pub input_ys: Vec<PublicKey>,
     /// Spending conditions for output proofs
@@ -50,8 +48,7 @@ impl fmt::Debug for Prepared {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Prepared")
             .field("operation_id", &self.operation_id)
-            .field("amount", &self.amount)
-            .field("amount_split_target", &self.amount_split_target)
+            .field("send_amount", &self.send_amount)
             .field("input_ys", &"[REDACTED]")
             .field("input_y_count", &self.input_ys.len())
             .field("spending_conditions", &self.spending_conditions)
@@ -130,7 +127,6 @@ mod tests {
     use uuid::Uuid;
 
     use super::{Finalized, Prepared};
-    use crate::amount::SplitTarget;
     use crate::nuts::{PreMintSecrets, PreSwap, SwapRequest};
     use crate::secret::Secret;
     use crate::wallet::test_utils::{test_keyset_id, test_mint_url, test_proof};
@@ -176,8 +172,7 @@ mod tests {
 
         let prepared = Prepared {
             operation_id,
-            amount: Some(Amount::from(1)),
-            amount_split_target: SplitTarget::default(),
+            send_amount: Some(Amount::from(1)),
             input_ys: vec![input_proof.y().expect("valid proof Y")],
             spending_conditions: None,
             pre_swap: PreSwap {

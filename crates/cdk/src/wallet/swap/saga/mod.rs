@@ -140,6 +140,13 @@ impl<'a> SwapSaga<'a, Initial> {
             )
             .await?;
 
+        // The send outputs created above cover `amount` plus, with
+        // `include_fees`, the receiver's redemption fee.
+        let send_amount = self
+            .wallet
+            .swap_send_amount(&active_keyset_id, &fee_and_amounts, amount, include_fees)
+            .await?;
+
         let fee = pre_swap.fee;
         let input_amount = input_proofs.total_amount()?;
 
@@ -191,8 +198,7 @@ impl<'a> SwapSaga<'a, Initial> {
             compensations: self.compensations,
             state_data: Prepared {
                 operation_id: self.state_data.operation_id,
-                amount,
-                amount_split_target,
+                send_amount,
                 input_ys,
                 spending_conditions,
                 pre_swap,
@@ -273,7 +279,7 @@ impl<'a> SwapSaga<'a, Prepared> {
             .get_keyset_fees_and_amounts_by_id(active_keyset_id)
             .await?;
 
-        match self.state_data.amount {
+        match self.state_data.send_amount {
             Some(amount) => {
                 let (proofs_with_condition, proofs_without_condition): (Proofs, Proofs) =
                     post_swap_proofs.into_iter().partition(|p| {
@@ -290,10 +296,10 @@ impl<'a> SwapSaga<'a, Prepared> {
 
                             let mut proofs_to_send = Proofs::new();
                             let mut proofs_to_keep = Proofs::new();
-                            let mut amount_split = amount.split_targeted(
-                                &self.state_data.amount_split_target,
-                                &fee_and_amounts,
-                            )?;
+                            // Match the denominations `create_swap` used for the
+                            // send outputs, not the change split target.
+                            let mut amount_split =
+                                amount.split_targeted(&SplitTarget::default(), &fee_and_amounts)?;
 
                             for proof in all_proofs {
                                 if let Some(idx) =
@@ -406,7 +412,8 @@ mod tests {
 
     use super::SwapSaga;
     use crate::amount::SplitTarget;
-    use crate::nuts::{BlindSignature, SecretKey as Nut01SecretKey, SwapResponse};
+    use crate::nuts::nut00::ProofsMethods;
+    use crate::nuts::{BlindSignature, Proofs, SecretKey as Nut01SecretKey, SwapResponse};
     use crate::wallet::swap::ProofReservation;
     use crate::wallet::test_utils::{
         create_test_db, create_test_wallet_with_mock, test_keyset_id, test_mint_url,
@@ -623,5 +630,88 @@ mod tests {
         let result = prepared.execute().await;
 
         assert!(matches!(result, Err(Error::InvalidMintResponse(_))));
+    }
+
+    /// Prepare and execute a swap of a single 16 sat proof against a mock mint
+    /// that signs the requested outputs, returning the proofs selected to send.
+    async fn swap_16_sat_proof(
+        amount: u64,
+        amount_split_target: SplitTarget,
+        input_fee_ppk: u64,
+        include_fees: bool,
+    ) -> Proofs {
+        let db = create_test_db().await;
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.enable_mint_signing();
+        let mut keyset = mock_client.keysets.lock().unwrap()[0].clone();
+        keyset.input_fee_ppk = input_fee_ppk;
+        let keyset_id = keyset.id;
+        mock_client.set_active_keyset(keyset);
+
+        let proof_info = test_proof_info(keyset_id, 16, test_mint_url());
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+        let wallet = create_test_wallet_with_mock(db, mock_client.clone()).await;
+
+        let input_proofs = wallet.get_unspent_proofs().await.unwrap();
+        let prepared = SwapSaga::new(&wallet)
+            .prepare(
+                Some(Amount::from(amount)),
+                amount_split_target,
+                input_proofs,
+                None,
+                false,
+                include_fees,
+                ProofReservation::Reserve,
+            )
+            .await
+            .expect("prepare swap saga");
+
+        let signatures = {
+            let signing_keys = mock_client.mint_signing_keys.lock().unwrap();
+            let signing_keys = signing_keys.as_ref().unwrap();
+            prepared
+                .state_data
+                .pre_swap
+                .swap_request
+                .outputs()
+                .iter()
+                .map(|output| BlindSignature {
+                    amount: output.amount,
+                    keyset_id: output.keyset_id,
+                    c: crate::dhke::sign_message(
+                        &signing_keys[&output.amount],
+                        &output.blinded_secret,
+                    )
+                    .unwrap(),
+                    dleq: None,
+                })
+                .collect()
+        };
+        mock_client.set_post_swap_response(Ok(SwapResponse { signatures }));
+
+        prepared
+            .execute()
+            .await
+            .expect("execute swap saga")
+            .into_send_proofs()
+            .expect("swap with an amount returns send proofs")
+    }
+
+    #[tokio::test]
+    async fn test_swap_with_split_target_sends_requested_amount() {
+        let send_proofs =
+            swap_16_sat_proof(10, SplitTarget::Value(Amount::from(1)), 0, false).await;
+
+        assert_eq!(send_proofs.total_amount().unwrap(), Amount::from(10));
+    }
+
+    #[tokio::test]
+    async fn test_swap_with_include_fees_sends_redemption_fee() {
+        // 1 sat per input: 10 sat splits into [8, 2], so the receiver needs 2 sat
+        // on top of the amount to redeem the send proofs.
+        let send_proofs = swap_16_sat_proof(10, SplitTarget::default(), 1000, true).await;
+
+        assert_eq!(send_proofs.total_amount().unwrap(), Amount::from(12));
+        assert_eq!(send_proofs.len(), 2);
     }
 }
