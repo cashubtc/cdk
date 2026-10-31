@@ -520,8 +520,8 @@ impl PaymentRequest {
         // 0x02 target: bytes
         match transport._type {
             TransportType::Nostr => {
-                // For nostr, decode nprofile to extract pubkey and relays
-                let (pubkey, relays) = Self::decode_nprofile(&transport.target)?;
+                // For nostr, decode the npub or nprofile to extract pubkey and relays
+                let (pubkey, relays) = Self::decode_nostr_target(&transport.target)?;
 
                 // Write the 32-byte pubkey
                 writer.write_tlv(0x02, &pubkey)?;
@@ -774,6 +774,21 @@ impl PaymentRequest {
         Ok(bytes)
     }
 
+    /// Decode a NIP-19 `npub` or `nprofile` transport target to (pubkey, relays)
+    ///
+    /// NUT-26 encoders accept either form; an `npub` carries no relays.
+    fn decode_nostr_target(target: &str) -> Result<(Vec<u8>, Vec<String>), Error> {
+        let (hrp, data) = bech32::decode(target).map_err(Error::Bech32Error)?;
+        if hrp.as_str() == "npub" {
+            if data.len() != 32 {
+                return Err(Error::InvalidLength);
+            }
+            return Ok((data, Vec::new()));
+        }
+
+        Self::decode_nprofile(target)
+    }
+
     /// Decode nprofile bech32 string to (pubkey, relays)
     /// NIP-19 nprofile TLV format:
     /// - Type 0: 32-byte pubkey (required, only one)
@@ -870,6 +885,64 @@ mod tests {
     fn nprofile_from_bytes(bytes: &[u8]) -> String {
         let hrp = bitcoin::bech32::Hrp::parse("nprofile").unwrap();
         bitcoin::bech32::encode::<bitcoin::bech32::Bech32>(hrp, bytes).unwrap()
+    }
+
+    fn npub_from_bytes(bytes: &[u8]) -> String {
+        let hrp = bitcoin::bech32::Hrp::parse("npub").unwrap();
+        bitcoin::bech32::encode::<bitcoin::bech32::Bech32>(hrp, bytes).unwrap()
+    }
+
+    fn nostr_payment_request(target: String) -> PaymentRequest {
+        PaymentRequest {
+            payment_id: Some("npub-target".to_string()),
+            amount: None,
+            unit: Some(CurrencyUnit::Sat),
+            single_use: None,
+            mints: vec![],
+            mint_preferred: None,
+            supported_methods: vec![],
+            description: None,
+            transports: vec![Transport {
+                _type: TransportType::Nostr,
+                target,
+                tags: vec![vec!["n".to_string(), "17".to_string()]],
+            }],
+            nut10: None,
+        }
+    }
+
+    #[test]
+    fn test_nostr_transport_accepts_npub_target() {
+        let payment_request = nostr_payment_request(npub_from_bytes(&[7u8; 32]));
+
+        let encoded = payment_request
+            .to_bech32_string()
+            .expect("npub targets should encode");
+        let decoded = PaymentRequest::from_bech32_string(&encoded).unwrap();
+        let transport = &decoded.transports[0];
+
+        let (pubkey, relays) = PaymentRequest::decode_nprofile(&transport.target).unwrap();
+        assert_eq!(pubkey, vec![7u8; 32]);
+        assert!(relays.is_empty());
+        assert_eq!(
+            transport.tags,
+            vec![vec!["n".to_string(), "17".to_string()]]
+        );
+
+        // An npub and the equivalent relay-less nprofile encode identically
+        let from_nprofile =
+            nostr_payment_request(PaymentRequest::encode_nprofile(&[7u8; 32], &[]).unwrap());
+        assert_eq!(encoded, from_nprofile.to_bech32_string().unwrap());
+    }
+
+    #[test]
+    fn test_nostr_transport_rejects_npub_with_wrong_length() {
+        let payment_request = nostr_payment_request(npub_from_bytes(&[7u8; 31]));
+
+        assert!(matches!(
+            payment_request.to_bech32_string(),
+            Err(Error::InvalidLength)
+        ));
     }
 
     #[test]
