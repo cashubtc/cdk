@@ -130,6 +130,15 @@ release. Every Apple slice is compiled from the monorepo checkout against its
 `cdk-ffi`. The following secrets and variables must be configured in the **CDK
 monorepo** repository settings (Settings > Secrets and variables > Actions).
 
+For a non-publishing macOS validation run, select an existing candidate
+`release_tag` and enable `verify_only` in this same workflow. It builds all five
+Apple slices, assembles and verifies the final package, and runs an offline
+arm64 macOS FFI consumer without deployment-repository clones or writes. No
+deployment secrets or repository variables are required in this mode; the
+candidate commit must still pass the normal full-CI gate. Download the SBOM
+artifact or failure evidence from the Actions run. `verify_only` defaults to
+false for normal publishing.
+
 ### Secrets
 
 | Name | Purpose |

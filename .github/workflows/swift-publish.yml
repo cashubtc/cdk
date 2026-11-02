@@ -21,6 +21,10 @@ on:
         description: 'Build an immutable nightly prerelease from an exact CDK commit.'
         type: boolean
         default: false
+      verify_only:
+        description: 'Verify a release candidate on macOS without cloning deployment repos or publishing.'
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       release_tag:
@@ -34,6 +38,10 @@ on:
         required: false
         default: false
       nightly:
+        type: boolean
+        required: false
+        default: false
+      verify_only:
         type: boolean
         required: false
         default: false
@@ -125,6 +133,7 @@ jobs:
           persist-credentials: false
 
       - name: Clone cdk-swift
+        if: ${{ !inputs.verify_only }}
         env:
           FFI_DEPLOY_KEY: ${{ secrets.FFI_DEPLOY_KEY }}
         run: |
@@ -138,6 +147,7 @@ jobs:
 
       - name: Copy bindings/swift to cdk-swift
         run: |
+          mkdir -p cdk-swift
           rsync -av --delete \
             --exclude='.github' \
             --exclude='target' \
@@ -153,7 +163,17 @@ jobs:
           # protects excluded paths in the destination, hence the explicit rm.
           rm -rf cdk-swift/rust cdk-swift/rust-toolchain.toml cdk-swift/resources
 
+      - name: Transfer local sources for verification without deployment credentials
+        if: inputs.verify_only
+        uses: actions/upload-artifact@v7
+        with:
+          name: swift-sources-staged
+          path: cdk-swift/
+          include-hidden-files: true
+          if-no-files-found: error
+
       - name: Push to cdk-swift release branch
+        if: ${{ !inputs.verify_only }}
         working-directory: cdk-swift
         env:
           FFI_DEPLOY_KEY: ${{ secrets.FFI_DEPLOY_KEY }}
@@ -220,12 +240,22 @@ jobs:
         uses: DeterminateSystems/nix-installer-action@v22
 
       - name: Build and inventory the exact release archives
+        shell: bash
         run: |
           nix develop --accept-flake-config --fallback -L .#sbom-apple-tools --command \
             python3 misc/sbom/apple_diagnostics.py exec --target ${{ matrix.target }} \
               python3 misc/sbom/sbom.py cdk-ffi-swift --exclude-language swift \
                 --build --clean-build --profile release-ffi --target ${{ matrix.target }} \
-                --require-assurance compiled_packages --output target/sbom/release-build
+                --require-assurance compiled_packages --output target/sbom/release-build \
+                2>&1 | tee swift-native-build.log
+
+      - name: Retain the build log without changing the evidence transfer layout
+        if: always()
+        run: |
+          if [[ -f swift-native-build.log ]]; then
+            mkdir -p target/sbom/release-build
+            cp swift-native-build.log target/sbom/release-build/native-build.log
+          fi
 
       - name: Prepare artifact
         run: |
@@ -342,10 +372,11 @@ jobs:
           cp bindings/swift/resources/Info-macOS.plist "$MAC_FW/Info.plist"
 
       - name: Generate Swift bindings
+        shell: bash
         run: |
           # Build uniffi-bindgen-swift binary. This is a host dev tool, so it
           # stays on the plain release profile rather than release-ffi.
-          cargo build --locked --release -p cdk-ffi-swift --bin uniffi-bindgen-swift
+          cargo build --locked --release -p cdk-ffi-swift --bin uniffi-bindgen-swift 2>&1 | tee swift-bindgen.log
 
           BINDGEN="./target/release/uniffi-bindgen-swift"
 
@@ -384,12 +415,14 @@ jobs:
           sed -i '' 's/import cdk_ffiFFI/import CashuDevKitFFI/g' "$SOURCES_DIR"/*.swift
 
       - name: Create XCFramework
+        shell: bash
         run: |
           xcodebuild -create-xcframework \
             -framework build/ios-device/CashuDevKitFFI.framework \
             -framework build/ios-simulator-framework/CashuDevKitFFI.framework \
             -framework build/macos-framework/CashuDevKitFFI.framework \
-            -output build/xcframework/CashuDevKitFFI.xcframework
+            -output build/xcframework/CashuDevKitFFI.xcframework \
+            2>&1 | tee swift-assembly.log
 
       - name: Create distribution archive
         working-directory: build/xcframework
@@ -411,8 +444,21 @@ jobs:
           name: swift-sources-generated
           path: build/Sources/Cdk/
 
+      - name: Retain assembly diagnostics if Xcode or binding generation fails
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: swift-assembly-incomplete
+          path: |
+            swift-bindgen.log
+            swift-assembly.log
+            build/**/Info.plist
+            build/**/module.modulemap
+            build/Sources/Cdk/
+          if-no-files-found: warn
+
   swift-publish:
-    name: "swift: Publish to cdk-swift"
+    name: "swift: Verify package / publish"
     runs-on: macos-15
     needs: [swift-sync-sources, swift-assemble-xcframework, validate-release-ref]
     steps:
@@ -440,6 +486,7 @@ jobs:
         uses: DeterminateSystems/nix-installer-action@v22
 
       - name: Clone cdk-swift
+        if: ${{ !inputs.verify_only }}
         env:
           FFI_DEPLOY_KEY: ${{ secrets.FFI_DEPLOY_KEY }}
         run: |
@@ -451,6 +498,13 @@ jobs:
           git -c "http.extraheader=$(auth_header)" \
             clone --branch "${RELEASE_BRANCH}" \
             https://github.com/${{ vars.CDK_SWIFT_REPO }}.git cdk-swift
+
+      - name: Download locally staged sources in verification-only mode
+        if: inputs.verify_only
+        uses: actions/download-artifact@v8
+        with:
+          name: swift-sources-staged
+          path: cdk-swift
 
       - name: Download XCFramework
         uses: actions/download-artifact@v8
@@ -520,7 +574,8 @@ jobs:
             python3 cdk/misc/sbom/apple_diagnostics.py exec --target aarch64-apple-darwin \
               python3 cdk/misc/sbom/finalize.py "${args[@]}" \
                 --distribution swift-package --swift-project swift-package \
-                --require-assurance final_bytes --require-assurance consumer_execution --output sbom/swift-final
+                --require-assurance final_bytes --require-assurance consumer_execution --output sbom/swift-final \
+                2>&1 | tee swift-finalization.log
 
       - name: Package final Swift SBOM evidence
         id: package-sbom
@@ -545,10 +600,32 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: swift-finalization-incomplete
-          path: sbom/swift-final/
+          path: |
+            sbom/swift-final/
+            swift-finalization.log
           if-no-files-found: warn
 
+      - name: Summarize release-candidate verification
+        if: always()
+        env:
+          VERIFY_ONLY: ${{ inputs.verify_only }}
+          SOURCE_REVISION: ${{ needs.validate-release-ref.outputs.revision }}
+          VERIFICATION_STATUS: ${{ job.status }}
+        run: |
+          {
+            echo '## Swift final-package verification'
+            echo "Source commit: $SOURCE_REVISION"
+            echo "Verification only: $VERIFY_ONLY"
+            echo "Verification-stage status: $VERIFICATION_STATUS"
+            if [[ "$VERIFY_ONLY" == "true" ]]; then
+              echo 'Deployment repository clones, commits, pushes, tags and releases are disabled.'
+            fi
+            echo 'Required checks: final bytes for all five Apple slices; native arm64 macOS consumer execution only.'
+            echo 'Download the versioned apple-sbom artifact on success, or incomplete evidence and job logs on failure.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Commit to release branch
+        if: ${{ !inputs.verify_only }}
         working-directory: cdk-swift
         run: |
           git config user.name "github-actions[bot]"
@@ -558,6 +635,7 @@ jobs:
           git commit -m "release: ${TAG} - add Swift sources, the XCFramework and Package.swift"
 
       - name: Push release branch
+        if: ${{ !inputs.verify_only }}
         working-directory: cdk-swift
         env:
           FFI_DEPLOY_KEY: ${{ secrets.FFI_DEPLOY_KEY }}
@@ -570,6 +648,7 @@ jobs:
           git -c "http.extraheader=$(auth_header)" push origin "${RELEASE_BRANCH}"
 
       - name: Create release on cdk-swift (creates tag and uploads asset atomically)
+        if: ${{ !inputs.verify_only }}
         working-directory: cdk-swift
         env:
           GH_TOKEN: ${{ secrets.FFI_DEPLOY_KEY }}
@@ -611,7 +690,7 @@ jobs:
             ../artifacts/CashuDevKitFFI.xcframework.zip
 
       - name: Merge to default branch
-        if: ${{ !inputs.nightly }}
+        if: ${{ !inputs.nightly && !inputs.verify_only }}
         working-directory: cdk-swift
         env:
           FFI_DEPLOY_KEY: ${{ secrets.FFI_DEPLOY_KEY }}
@@ -629,6 +708,7 @@ jobs:
           git -c "http.extraheader=$(auth_header)" push origin "${DEFAULT_BRANCH}"
 
       - name: Clean up release branch
+        if: ${{ !inputs.verify_only }}
         working-directory: cdk-swift
         env:
           FFI_DEPLOY_KEY: ${{ secrets.FFI_DEPLOY_KEY }}

@@ -453,6 +453,20 @@ Swift package dependencies; adding any requires a resolved Swift inventory.
 GitHub macOS runs must validate this pipeline before any Apple execution claim
 is made. Application signing and authenticated SBOM provenance remain separate.
 
+To validate on GitHub without publishing, run **FFI - Swift Bindings** manually
+with `release_tag` set to an existing candidate tag containing these changes
+(for example, `v0.18.0-rc.1`) and **`verify_only: true`**. Leave `cdk_ref` empty
+for a tagged candidate. The full-CI requirement on the candidate commit still
+applies. This mode runs the same five builds, Xcode assembly, finalizer and
+offline macOS consumer, staging the binding sources locally without cloning
+deployment repositories or requiring `FFI_DEPLOY_KEY`/`CDK_SWIFT_REPO`. It skips
+all deployment commits, pushes, tags and release creation. Verification failures
+remain failures; native build, assembly and finalization diagnostics are retained.
+Download the versioned `apple-sbom` artifact when successful, or incomplete
+evidence and the Actions job logs when unsuccessful. The default is
+`verify_only: false`, preserving normal release publishing. No PR/push triggers
+are added. This validates arm64 macOS execution, not Intel or iOS execution.
+
 ### Downloadable SBOM packages
 
 Release workflows upload explicit `.tar.gz` packages with companion
