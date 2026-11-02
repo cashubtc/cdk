@@ -309,7 +309,7 @@ remain compilation/link-input inventories, not finalized downstream linkage.
 Non-platform target dylibs and unclassified native flags still fail. Host
 libraries from the selected Rust sysroot require exact file hashes and a unique
 installed-component manifest; their distribution-file identity is explicitly
-not an independent upstream LLVM identity. Universal images, inherited runpaths
+not an independent upstream LLVM identity. Universal dynamic images, inherited runpaths
 and other host-library providers are not automatically supported. This Apple
 path still needs actual GitHub macOS execution validation; Linux fixture tests
 do not establish Apple runtime behavior.
@@ -433,6 +433,53 @@ and Linux Go publishing on these final-byte checks; Apple/Windows Go verificatio
 is not implied by a Linux gate. The Maven publication hook checks the AAR hash
 again when the actual artifact is staged, rather than assuming an earlier
 assembly remains unchanged.
+
+Swift releases use the **same finalizer**, with unchanged static archives on
+both iOS and macOS. Cargo's `release-ffi` profile strips debug information;
+there is no second strip, install-name edit or framework code-signing step.
+The final XCFramework ZIP must contain flat frameworks with valid platform/
+architecture metadata, headers and module maps. Universal static archives are
+split at their packaging boundaries and every complete slice must match an
+observed build **byte-for-byte**. Missing, extra, modified or incorrectly labelled
+slices fail; there is no Mach-O transformation-equivalence exemption.
+
+The Swift publish job finalizes a copy of the actual `Package.swift`, generated
+sources and XCFramework ZIP, then runs a standalone offline macOS executable
+against that package with loader overrides cleared. Publication rechecks both
+the complete non-Git source tree and the actual ZIP asset against the final
+manifest. `consumer_execution` explicitly covers the native macOS host only,
+not iOS or the other macOS architecture. The current manifest has no external
+Swift package dependencies; adding any requires a resolved Swift inventory.
+GitHub macOS runs must validate this pipeline before any Apple execution claim
+is made. Application signing and authenticated SBOM provenance remain separate.
+
+### Downloadable SBOM packages
+
+Release workflows upload explicit `.tar.gz` packages with companion
+`.tar.gz.sha256` checksum files, rather than an ambiguously named directory:
+
+- `cdk-ffi-go-<release-tag>-linux-sbom.tar.gz` covers the verified Linux Go package.
+- `cdk-ffi-kotlin-<release-tag>-android-sbom.tar.gz` covers the verified four-ABI AAR.
+- `cdk-ffi-swift-<release-tag>-apple-sbom.tar.gz` covers all five static Apple slices
+  and the assembled Swift package, after the release verification gates pass.
+- `cdk-ffi-swift-<release-tag>-<target>-release-ffi-sbom-diagnostics.tar.gz`
+  contains Apple diagnostic evidence, including failed/partial reports and logs.
+
+Each archive has a single top-level directory matching its name. The existing
+SBOM/evidence layout and bytes, index hashes and assurance claims remain unchanged.
+The packager rejects incomplete or hash-mismatched release indexes, requires
+verified `final_bytes` for non-diagnostic bundles, and refuses unsafe paths,
+symlinks, exclusions from release evidence, or changed inputs. Apple bundles
+omit the compiler target cache, not verification failures. Packaging does not
+turn diagnostic evidence into verified release evidence or sign any provenance.
+
+After downloading the Actions artifact, check the archive with
+`sha256sum -c <name>.tar.gz.sha256` (or `shasum -a 256 -c` on macOS), then unpack
+with `tar -xzf <name>.tar.gz`. A checksum detects changed archive bytes; it is
+not authenticated provenance. GitHub's artifact download may wrap the archive
+and checksum in an outer ZIP. These remain Actions artifacts, not automatically
+published release assets. Internal per-target evidence transfers retain their
+existing job-to-job names/layout so final package verification still finds them.
 
 ### Signed builder provenance
 
@@ -622,11 +669,13 @@ If the collector cannot reach compilation, a probe using its
 shared Cargo invocation collects actual build records, archive member listings,
 Mach-O load commands and embedded-Rust scans where applicable. It never converts
 a failed verifier into successful release evidence or retries a failed compiler.
-Swift package assembly, final XCFramework verification, signing and downstream
-consumer execution remain separate implementation milestones.
+This standalone diagnostic job does not assemble a Swift release. Final static
+XCFramework verification and the macOS consumer gate live in `swift-publish.yml`;
+the diagnostic bundle is never promoted merely because its build passed.
 
-Download the `apple-sbom-<product>-<target>-<run>-<attempt>` artifact from the
-Actions run and share it with the run URL. It retains:
+Download the versioned `<product>-<release-tag>-<target>-<profile>-sbom-diagnostics-<run>-<attempt>`
+artifact from the Actions run. Verify and unpack its archive, then share it with
+the run URL. It retains:
 
 - `runner.log`, `rust-setup.log` and `bootstrap.log`, including tool-setup failures;
 - `run/report.json`, per-command logs/exit codes and diagnostic limitations;
@@ -635,15 +684,17 @@ Actions run and share it with the run URL. It retains:
 - `run/diagnostic-files.json`, hashes of retained feedback files.
 
 Artifacts are uploaded even after failures, retained for 14 days, and exclude
-the large compiler target directory. Job cancellation/timeouts can leave an
+the large compiler target directory. If packaging itself fails, an explicitly
+named `sbom-diagnostics-unpackaged` artifact retains raw feedback and the run
+remains failed. Job cancellation/timeouts can leave an
 incomplete bundle; do not interpret missing reports as success. Logs can contain
 source paths or private package names, so review them before sharing publicly.
 `release_ready` stays false: collecting diagnostics is not a signed release SBOM.
 
 Only workflow syntax, orchestration and fixtures can be validated on Linux.
 Actual Apple-tool behavior must be confirmed by these GitHub macOS runs.
-Existing publishing workflows are intentionally not gated on this unfinished
-Apple verifier yet.
+The Swift publishing workflow has its own final-package gate and does not depend
+on the standalone diagnostic job.
 
 ## Tests
 
@@ -654,6 +705,11 @@ just test-sbom
 The standard-library tests use temporary fixtures and mocked generators. They
 need no package downloads, SDKs or running mint. Real collection still requires
 the generators and platform tools listed above.
+Unit tests check SBOM logic, not snapshots of workflow text, current package
+implementations, release versions or dependency counts. Changed package bytes
+are valid when their matching build evidence is updated; unexplained changes,
+missing dependencies and invalid evidence must still fail. Actual package/API
+execution belongs to the release integration gates, not the offline unit suite.
 
 Ed25519 tests use system OpenSSL when available. To additionally exercise the
 publication hook with real local Maven staging (requires a cached Gradle wrapper

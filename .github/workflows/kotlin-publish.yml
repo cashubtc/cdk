@@ -382,11 +382,23 @@ jobs:
               --distribution cdk-kotlin/cdk-android/build/outputs/aar/cdk-android-release.aar \
               --require-assurance final_bytes --output sbom/kotlin-final
 
-      - name: Retain verified release SBOMs
+      - name: Package Android release SBOMs and evidence
+        id: package-sbom
+        run: |
+          name="cdk-ffi-kotlin-${TAG}-android-sbom"
+          nix develop --fallback -L ./cdk#sbom --command \
+            python3 cdk/misc/sbom/package_evidence.py --source sbom/kotlin-final \
+              --output sbom/packages --name "$name"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - name: Retain the named Android release SBOM package
         uses: actions/upload-artifact@v7
         with:
-          name: kotlin-release-sbom
-          path: sbom/kotlin-final/
+          name: ${{ steps.package-sbom.outputs.name }}
+          path: |
+            sbom/packages/*.tar.gz
+            sbom/packages/*.sha256
+          compression-level: 0
           if-no-files-found: error
 
       - name: Commit to release branch

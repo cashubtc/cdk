@@ -92,6 +92,11 @@ def launch(args):
         environment[variable + "_" + args.target.replace("-", "_")] = path
         if tool == "clang":
             environment["CARGO_TARGET_" + args.target.upper().replace("-", "_") + "_LINKER"] = path
+    if args.command == "exec":
+        if not args.arguments:
+            raise ValueError("Supply a command to execute in the isolated Apple environment")
+        os.execvpe(args.arguments[0], args.arguments, environment)
+        return
     os.execve(sys.executable, [sys.executable, str(Path(__file__).resolve()), "run", "--target", args.target,
                              "--product", args.product, "--profile", args.profile, "--output", str(args.output)], environment)
 
@@ -317,6 +322,10 @@ def parser():
         command.add_argument("--output", type=Path, required=True)
         if name == "launch":
             command.add_argument("--xcode-version", default="16.4")
+    command = commands.add_parser("exec", help="run the shared release tools in the same isolated Apple environment")
+    command.add_argument("--target", choices=TARGETS, required=True)
+    command.add_argument("--xcode-version", default="16.4")
+    command.add_argument("arguments", nargs=argparse.REMAINDER)
     return result
 
 
@@ -326,7 +335,7 @@ def main():
         if args.command == "matrix":
             print(json.dumps(matrix(args.target_set, args.product)))
             return 0
-        if args.command == "launch":
+        if args.command in {"launch", "exec"}:
             launch(args)
             return 1  # execve never returns on success
         return diagnose(args)

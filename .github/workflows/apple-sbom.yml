@@ -9,6 +9,7 @@ env:
   PRODUCT: cdk-ffi-swift
   BUILD_PROFILE: release-ffi
   XCODE_VERSION: '16.4'
+  RELEASE_TAG: ${{ github.event.release.tag_name }}
 
 permissions:
   contents: read
@@ -101,11 +102,33 @@ jobs:
               --target "$BUILD_TARGET" --product "$PRODUCT" --profile "$BUILD_PROFILE" \
               --xcode-version "$XCODE_VERSION" --output "$OUT/run" \
               2>&1 | tee "$OUT/bootstrap.log"
-      - name: Upload feedback even when setup or verification fails
+      - name: Package diagnostic evidence even when verification fails
+        id: package
         if: always()
+        shell: bash
+        run: |
+          name="${PRODUCT}-${RELEASE_TAG}-${BUILD_TARGET}-${BUILD_PROFILE}-sbom-diagnostics"
+          nix develop --accept-flake-config --fallback -L .#sbom-apple-tools --command \
+            python3 misc/sbom/package_evidence.py --source "$OUT" \
+              --output target/sbom/apple-packages --name "$name" --kind diagnostics \
+              --exclude run/cargo-target
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+      - name: Upload the named diagnostic package and checksum
+        if: always() && steps.package.outcome == 'success'
         uses: actions/upload-artifact@v7
         with:
-          name: apple-sbom-${{ env.PRODUCT }}-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ steps.package.outputs.name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 14
+          if-no-files-found: error
+          compression-level: 0
+          path: |
+            target/sbom/apple-packages/*.tar.gz
+            target/sbom/apple-packages/*.sha256
+      - name: Retain raw diagnostics if packaging itself fails
+        if: always() && steps.package.outcome != 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.PRODUCT }}-${{ matrix.target }}-sbom-diagnostics-unpackaged-${{ github.run_id }}-${{ github.run_attempt }}
           retention-days: 14
           if-no-files-found: warn
           path: |
@@ -119,7 +142,8 @@ jobs:
             echo '## Apple release SBOM diagnostics — no publishing'
             echo "Revision: ${{ needs.prepare.outputs.revision }}"
             echo "Target: $BUILD_TARGET; product: $PRODUCT; profile: $BUILD_PROFILE"
-            echo 'Download the apple-sbom artifact and share report.json, logs, and incomplete collector indexes.'
+            echo 'Download the versioned sbom-diagnostics package and its SHA-256 file; share report.json and logs.'
+            echo 'An unpackaged artifact is a raw fallback when packaging itself failed; the run remains failed.'
             echo 'Setup failures are in runner.log/bootstrap.log or the Actions job log.'
             echo 'Apple native provenance and final XCFramework verification are still being implemented.'
             echo 'A diagnostic artifact is not a verified release SBOM; no publishing or signing credentials are used.'

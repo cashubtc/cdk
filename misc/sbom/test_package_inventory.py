@@ -205,13 +205,16 @@ class PackageInventoryTests(unittest.TestCase):
             library = root / "libcdk_ffi_go.so"
             library.write_bytes(elf(62))
             output = root / "assembled"
-            assemble(bindings, {"x86_64-unknown-linux-gnu": library}, output, "github.com/cashubtc/cdk-go")
+            module = "example.org/fixture-wallet"
+            assemble(bindings, {"x86_64-unknown-linux-gnu": library}, output, module)
             destination = output / "bindings/cdkffi/native/linux_amd64/libcdk_ffi_go.so"
             self.assertEqual(destination.read_bytes(), library.read_bytes())
             self.assertIn("-lcdk_ffi_go", (output / "bindings/cdkffi/link_linux_amd64.go").read_text())
-            self.assertEqual((output / "go.mod").read_text(), "module github.com/cashubtc/cdk-go\n\ngo 1.22\n")
+            directives = dict(line.split(maxsplit=1) for line in (output / "go.mod").read_text().splitlines() if line.strip())
+            self.assertEqual(directives["module"], module)
+            self.assertRegex(directives["go"], r"^\d+\.\d+(?:\.\d+)?$")
             with self.assertRaises(FileExistsError):
-                assemble(bindings, {"x86_64-unknown-linux-gnu": library}, output, "github.com/cashubtc/cdk-go")
+                assemble(bindings, {"x86_64-unknown-linux-gnu": library}, output, module)
 
 
 if __name__ == "__main__":

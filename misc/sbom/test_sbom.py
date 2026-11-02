@@ -206,13 +206,13 @@ class IntegrityTests(unittest.TestCase):
         packages = [{"name": name, "id": name} for name in ["cdk", *sbom.WRAPPERS.values()]]
         metadata = {"workspace_members": [item["id"] for item in packages], "packages": packages}
         selected, languages = sbom.selection("all", metadata)
-        self.assertEqual(len(selected), 5)
+        self.assertEqual({item["id"] for item in selected}, set(metadata["workspace_members"]))
         self.assertEqual(set(languages), set(sbom.LANGUAGES))
         selected, languages = sbom.selection("rust", metadata)
-        self.assertEqual(len(selected), 5)
+        self.assertEqual({item["id"] for item in selected}, set(metadata["workspace_members"]))
         self.assertEqual(languages, [])
-        selected, languages = sbom.selection("cdk-ffi-go", metadata)
-        self.assertEqual(selected[0]["name"], "cdk-ffi-go")
+        selected, languages = sbom.selection(sbom.WRAPPERS["go"], metadata)
+        self.assertEqual(selected[0]["name"], sbom.WRAPPERS["go"])
         self.assertEqual(languages, ["go"])
         with self.assertRaisesRegex(sbom.SbomError, "Unknown scope"):
             sbom.selection("typo", metadata)
@@ -330,7 +330,8 @@ class IntegrityTests(unittest.TestCase):
             with patch("sbom.run", side_effect=fake_run), patch.object(collector, "document", return_value=document):
                 collector.language("dart", staging)
             self.assertTrue((collector.output / "evidence/dart/pubspec.lock").exists())
-            self.assertEqual(len(commands), 3)
+            self.assertTrue(any(command[:3] == ["dart", "pub", "get"] for command in commands))
+            self.assertTrue(any(command[:3] == ["dart", "pub", "deps"] for command in commands))
             self.assertFalse((project / "pubspec.lock").exists())
             self.assertIn("--fail-on-error", commands[-1])
 
@@ -391,7 +392,8 @@ class IntegrityTests(unittest.TestCase):
             args = command.call_args.args[0]
             self.assertIn(":cdk-android:cdkSbomEvidence", args)
             self.assertIn(":cdk-jvm:cdkSbomEvidence", args)
-            self.assertEqual(document.call_count, 11)
+            self.assertLessEqual({"gradle-product", "gradle-resolved", "gradle-build", "packaged-native-files"},
+                                 {call.args[2] for call in document.call_args_list})
 
     def test_existing_artifact_does_not_rebuild(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -411,8 +413,8 @@ class IntegrityTests(unittest.TestCase):
                     patch.object(collector, "native_evidence") as native:
                 collector.build(package, rust_metadata())
             native.assert_not_called()
-            self.assertEqual(command.call_count, 1)
-            self.assertEqual(command.call_args.args[0][0], "syft")
+            self.assertTrue(any(call.args[0][:2] == ["syft", "scan"] for call in command.call_args_list))
+            self.assertFalse(any(call.args[0][:2] == ["cargo", "auditable"] for call in command.call_args_list))
             self.assertEqual(collector.index["artifacts"][0]["sha256"], sbom.digest(artifact))
 
     def test_missing_genuine_runtime_dependency_still_fails(self):

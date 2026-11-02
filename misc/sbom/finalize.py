@@ -15,7 +15,7 @@ import subprocess
 from assurance import DIMENSIONS, assessment, inherited_dimensions, require
 from elf_evidence import verify_postprocessing
 from provenance import digest, index_digest, read_run, verify_run
-from consumer import go_consumer
+from consumer import go_consumer, swift_consumer
 from sbom import ROOT, Collector, SbomError, native_files, parser as collector_parser, run, write_json
 
 
@@ -26,6 +26,8 @@ def cargo_packages(bom):
 
 
 def check_platform(record, artifact):
+    if record.get("apple_target") and record["apple_target"] != artifact["target"]:
+        raise ValueError("XCFramework slice platform/architecture does not match its verified build")
     parts = record["path"].replace("!", "/").split("/")
     abis = {"arm64-v8a": "aarch64-linux-android", "armeabi-v7a": "armv7-linux-androideabi",
             "x86": "i686-linux-android", "x86_64": "x86_64-linux-android"}
@@ -168,7 +170,14 @@ def finalize(args):
                     else:
                         source = path
                     member = record["path"].split("!", 1)[1] if "!" in record["path"] else None
-                    materialize(source, member, candidate)
+                    if "slice_offset" in record:
+                        container = Path(temporary) / "universal"
+                        materialize(source, member, container)
+                        with container.open("rb") as stream:
+                            stream.seek(record["slice_offset"])
+                            candidate.write_bytes(stream.read(record["slice_size"]))
+                    else:
+                        materialize(source, member, candidate)
                     if digest(candidate) != record["sha256"]:
                         raise ValueError("Packaged native bytes changed after inventory")
                     matches = []
@@ -238,8 +247,18 @@ def finalize(args):
         if consumer_results:
             collector.generated_evidence("go-final-consumer-tests.json", consumer_results)
             index["coverage"]["go_final_consumer_test"] = True
+        if getattr(args, "swift_project", None):
+            project = args.swift_project.resolve()
+            if project not in {path.resolve() for path in distributions if path.is_dir()}:
+                raise ValueError("Swift consumer must use the exact finalized distribution directory")
+            collector.generated_evidence("swift-final-consumer-test.json", swift_consumer(project, output))
+            expected = json.loads((output / next(item["manifest"] for item in index["distributions"] if Path(item["path"]) == project)).read_text())
+            after = [{"path": str(item.relative_to(project)), "sha256": digest(item)} for item in sorted(project.rglob("*")) if item.is_file()]
+            if after != expected:
+                raise ValueError("Swift distribution changed during its consumer test")
+            index["coverage"]["swift_final_consumer_test"] = True
         index["assurance"] = assessment(index)
-        index["assurance"]["dimensions"]["final_bytes"] = {"status": "verified", "artifacts": len(checks), "scope": "exact bytes or ELF runtime/audit equivalence"}
+        index["assurance"]["dimensions"]["final_bytes"] = {"status": "verified", "artifacts": len(checks), "scope": "exact native/slice bytes or ELF runtime/audit equivalence"}
         index["assurance"]["dimensions"].update(inherited_dimensions([build for _, build in builds]))
         if args.trust_policy:
             index["assurance"]["dimensions"]["authenticated_provenance"]["reason"] = "Input builds authenticated; this finalization still needs its own signature."
@@ -266,6 +285,7 @@ def main():
     parser.add_argument("--strip-tool", type=Path, help="run the real strip --strip-all on private copies, then verify those bytes")
     parser.add_argument("--trust-policy", type=Path, help="require authenticated input build indexes")
     parser.add_argument("--go-project", type=Path, help="compile and execute a downstream Go program against each final native library")
+    parser.add_argument("--swift-project", type=Path, help="compile and execute a native macOS consumer of this exact distribution directory")
     parser.add_argument("--go-runner", type=Path, help="explicit runner for cross-target Go execution, for example qemu-aarch64")
     parser.add_argument("--go-runner-arg", action="append", default=[])
     parser.add_argument("--require-assurance", action="append", choices=DIMENSIONS, default=["final_bytes"])

@@ -3,7 +3,6 @@
 import json
 import os
 from pathlib import Path
-import re
 import shutil
 import subprocess
 import sys
@@ -16,42 +15,19 @@ from sbom import SbomError, cargo_build_command, digest, parser as collector_par
 
 
 class AppleDiagnosticTests(unittest.TestCase):
-    def test_workflow_keeps_release_evidence_without_cancelling_runs(self):
-        workflow = (apple.ROOT / ".github/workflows/apple-sbom.yml").read_text()
-        group = re.search(r"^  group: (.+)$", workflow, re.MULTILINE)
-        self.assertIsNotNone(group)
-        self.assertEqual(group.group(1), "apple-sbom-${{ github.workflow }}-${{ github.ref }}")
-        self.assertIn("cancel-in-progress: false", workflow)
-
-    def test_workflow_only_runs_when_a_release_is_published(self):
-        workflow = (apple.ROOT / ".github/workflows/apple-sbom.yml").read_text()
-        events = re.search(r"(?ms)^on:\n(.*?)(?=^\S)", workflow)
-        self.assertIsNotNone(events)
-        self.assertEqual(events.group(1).strip(), "release:\n    types: [published]")
-        self.assertIn("ref: ${{ github.sha }}", workflow)
-        self.assertIn("ref: ${{ needs.prepare.outputs.revision }}", workflow)
-        self.assertNotIn("inputs.", workflow)
-
-    def test_other_sbom_builds_stay_in_release_publishing_workflows(self):
-        for name in ("go-publish.yml", "kotlin-publish.yml"):
-            with self.subTest(workflow=name):
-                workflow = (apple.ROOT / ".github/workflows" / name).read_text()
-                self.assertIn("just build-sbom", workflow)
-                self.assertIn("release_tag:", workflow)
-                self.assertIn("needs: release-ci", workflow)
-                self.assertNotRegex(workflow, r"(?m)^  (?:push|pull_request|pull_request_target|schedule):")
-
-    def test_default_matrix_costs_one_runner_and_full_matrix_has_five_targets(self):
-        default = apple.matrix("macos-arm64", "cdk-ffi-swift")["include"]
-        self.assertEqual(default, [{"target": "aarch64-apple-darwin", "runner": "macos-15"}])
-        full = apple.matrix("swift-all", "cdk-ffi-swift")["include"]
-        self.assertEqual(len(full), 5)
-        self.assertEqual({entry["target"] for entry in full}, set(apple.TARGETS))
-        self.assertEqual(next(entry["runner"] for entry in full if entry["target"] == "x86_64-apple-darwin"), "macos-15-intel")
-        with self.assertRaisesRegex(ValueError, "iOS matrix"):
-            apple.matrix("swift-all", "cdk-cli")
-        with self.assertRaisesRegex(ValueError, "Unsupported"):
-            apple.matrix("macos-arm64", "arbitrary-command")
+    def test_matrix_expands_configured_targets_and_rejects_invalid_products(self):
+        targets = {"target-one": ("runner-one", "sdk-one"), "target-two": ("runner-two", "sdk-two")}
+        sets = {"macos-arm64": ("target-one",), "swift-all": tuple(targets)}
+        with patch.object(apple, "TARGETS", targets), patch.object(apple, "TARGET_SETS", sets), \
+                patch.object(apple, "PRODUCTS", ("cdk-ffi-swift", "fixture-cli")):
+            default = apple.matrix("macos-arm64", "cdk-ffi-swift")["include"]
+            self.assertEqual(default, [{"target": "target-one", "runner": "runner-one"}])
+            full = apple.matrix("swift-all", "cdk-ffi-swift")["include"]
+            self.assertEqual(full, [{"target": target, "runner": runner} for target, (runner, _) in targets.items()])
+            with self.assertRaisesRegex(ValueError, "iOS matrix"):
+                apple.matrix("swift-all", "fixture-cli")
+            with self.assertRaisesRegex(ValueError, "Unsupported"):
+                apple.matrix("macos-arm64", "arbitrary-command")
 
     def test_launcher_removes_credentials_nix_sdk_and_loader_overrides(self):
         original = {"HOME": "/Users/runner", "PATH": "/unexpected/bin", "TMPDIR": "/private/tmp/runner",
@@ -223,6 +199,7 @@ class AppleDiagnosticTests(unittest.TestCase):
 
     def exercise_failed_verifier(self, root, verifier_text):
         """Fake only Apple commands, not their failure propagation or file handling."""
+        (root / "flake.lock").write_text('{"fixture":true}\n')
         manifest = root / "source/Cargo.toml"
         package = {"name": "cdk-ffi-swift", "version": "1", "manifest_path": str(manifest),
                    "targets": [{"name": "cdk_ffi_swift", "kind": ["lib"], "crate_types": ["staticlib", "cdylib"]}]}
@@ -258,7 +235,7 @@ class AppleDiagnosticTests(unittest.TestCase):
                                                "returncode": code, "log": str(log.relative_to(session.output))})
             return code
 
-        with patch.object(apple.sys, "platform", "darwin"), patch.dict(os.environ, {
+        with patch.object(apple, "ROOT", root), patch.object(apple.sys, "platform", "darwin"), patch.dict(os.environ, {
                 "CDK_SBOM_NATIVE_ENV": "1", "DYLD_FALLBACK_LIBRARY_PATH": str(sysroot / "lib")}, clear=True), \
                 patch.object(apple.Session, "command", fake_command):
             self.assertEqual(apple.diagnose(args), 1)

@@ -24,6 +24,8 @@ def assessment(index):
     }
     if coverage.get("external_native_assertions"):
         result["final_bytes"] = {"status": "partial", "reason": "Some packaged identities rely on unauthenticated external native BOM assertions."}
+    if coverage.get("swift_final_consumer_test"):
+        result["consumer_execution"] = {"status": "passed", "scope": "native-host macOS only; no iOS execution claimed"}
     return {"version": 1, "overall": "partial", "dimensions": result}
 
 

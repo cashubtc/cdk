@@ -75,6 +75,12 @@ print("Balance: \(balance.value) sats")
 
 The Swift package uses a pre-built `CashuDevKitFFI.xcframework.zip`, committed at the root of the cdk-swift repository and resolved by SPM as a local binary target. The same archive is also attached to each [GitHub release](https://github.com/cashubtc/cdk-swift/releases).
 
+Release frameworks contain static libraries on both iOS and macOS. The release
+workflow verifies every archive slice inside the final ZIP against its observed
+Rust build, runs an offline macOS consumer, and rechecks the publish tree before
+creating the release. Static code is linked into the consuming application;
+there is no separately loaded macOS dylib to embed or ad-hoc sign.
+
 Supported platforms:
 
 | Platform | Architecture |
