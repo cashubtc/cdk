@@ -700,6 +700,8 @@ impl Wallet {
     /// Starts each keyset at its stored next derivation index minus
     /// `lookback`, clamped to zero. `None` defaults to zero lookback.
     /// A keyset without a stored counter starts at zero.
+    /// Batches starting before the saved index do not count toward the gap
+    /// limit, preserving the forward scan coverage when using a lookback.
     ///
     /// Uses the NUT-13 default batch size and gap limit. Progress is saved
     /// after each recovered batch, so this can resume an interrupted
@@ -756,9 +758,9 @@ impl Wallet {
                 .increment_keyset_counter(&keyset.id, 0)
                 .await?;
             let mut empty_batch: u32 = 0;
-            let mut start_counter = match lookback {
-                Some(lookback) => keyset_counter.saturating_sub(lookback),
-                None => 0,
+            let (mut start_counter, gap_start_counter) = match lookback {
+                Some(lookback) => (keyset_counter.saturating_sub(lookback), keyset_counter),
+                None => (0, 0),
             };
 
             while empty_batch < max_gap {
@@ -797,7 +799,11 @@ impl Wallet {
                 }
 
                 if response.signatures.is_empty() {
-                    empty_batch += 1;
+                    // Preserve the forward gap budget while scanning lookback,
+                    // including a batch that straddles the saved counter.
+                    if start_counter >= gap_start_counter {
+                        empty_batch += 1;
+                    }
                     start_counter = start_counter.saturating_add(batch_size);
                     continue;
                 }
@@ -1834,6 +1840,7 @@ mod tests {
             (50, None, 50),
             (50, Some(0), 50),
             (50, Some(8), 42),
+            (50, Some(7), 43),
             (50, Some(100), 0),
             (0, None, 0),
         ] {
@@ -1847,7 +1854,8 @@ mod tests {
             let client = Arc::new(MockMintConnector::new());
             client.mint_info.lock().unwrap().time = None;
             let opts = NUT13Options::new(2, 2).unwrap();
-            for _ in 0..opts.max_gap {
+            let expected_batches = (counter - start).div_ceil(opts.batch_size) + opts.max_gap;
+            for _ in 0..expected_batches {
                 client
                     .restore_responses
                     .lock()
@@ -1866,7 +1874,7 @@ mod tests {
             assert_eq!(restored.unspent, Amount::ZERO);
             {
                 let requests = client.restore_requests.lock().unwrap();
-                assert_eq!(requests.len(), opts.max_gap as usize);
+                assert_eq!(requests.len(), expected_batches as usize);
                 for (batch, request) in requests.iter().enumerate() {
                     let batch_start = start + batch as u32 * opts.batch_size;
                     let expected = PreMintSecrets::restore_batch(
@@ -1985,6 +1993,75 @@ mod tests {
                 State::Unspent,
             ))],
         }));
+    }
+
+    #[tokio::test]
+    async fn resume_restore_lookback_preserves_forward_recovery_coverage() {
+        use crate::nuts::RestoreResponse;
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock_seed, MockMintConnector,
+        };
+
+        for lookback in [None, Some(50), Some(49)] {
+            // Recover both at the saved counter and at the end of the range
+            // covered by the forward gap budget, including unaligned lookback.
+            for index in [50, 53] {
+                let db = create_test_db().await;
+                let client = Arc::new(MockMintConnector::new());
+                client.mint_info.lock().unwrap().time = None;
+                client.enable_mint_signing();
+                let keyset_id = client.keysets.lock().unwrap()[0].id;
+                let counter: u32 = 50;
+                db.increment_keyset_counter(&keyset_id, counter)
+                    .await
+                    .unwrap();
+                let seed = [7; 64];
+                let opts = NUT13Options::new(2, 2).unwrap();
+                let start = counter.saturating_sub(lookback.unwrap_or_default());
+                let empty_batches = (index - start) / opts.batch_size;
+                for _ in 0..empty_batches {
+                    client
+                        .restore_responses
+                        .lock()
+                        .unwrap()
+                        .push_back(Ok(RestoreResponse {
+                            outputs: vec![],
+                            signatures: vec![],
+                        }));
+                }
+                stage_restore_proof(&client, &seed, keyset_id, index);
+                for _ in 0..opts.max_gap {
+                    client
+                        .restore_responses
+                        .lock()
+                        .unwrap()
+                        .push_back(Ok(RestoreResponse {
+                            outputs: vec![],
+                            signatures: vec![],
+                        }));
+                }
+                let wallet =
+                    create_test_wallet_with_mock_seed(db.clone(), client.clone(), seed).await;
+                let restored = wallet
+                    .resume_restore_with_opts(lookback, opts.clone())
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    restored.unspent,
+                    Amount::from(1),
+                    "lookback {lookback:?} must preserve recovery at index {index}"
+                );
+                assert_eq!(wallet.total_balance().await.unwrap(), Amount::from(1));
+                assert_eq!(
+                    db.increment_keyset_counter(&keyset_id, 0).await.unwrap(),
+                    index + 1
+                );
+                assert_eq!(
+                    client.restore_requests.lock().unwrap().len(),
+                    (empty_batches + 1 + opts.max_gap) as usize
+                );
+            }
+        }
     }
 
     #[tokio::test]
