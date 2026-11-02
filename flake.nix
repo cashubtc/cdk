@@ -46,7 +46,7 @@
     , crane
     , ...
     }@inputs:
-    flake-utils.lib.eachDefaultSystem (
+    flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ] (
       system:
       let
         # Architecture-specific configuration for static musl builds
@@ -969,19 +969,7 @@
         regtestBuildInputs =
           (with pkgsUnstable; [
             lnd
-            # TODO: Drop this override once nixpkgs ships CLN >= 26.06.7.
-            (clightning.overrideAttrs (finalAttrs: old: {
-              version = "26.06.7";
-              src = fetchurl {
-                url = "https://github.com/ElementsProject/lightning/releases/download/v${finalAttrs.version}/clightning-v${finalAttrs.version}.zip";
-                hash = "sha256-sxPSB+U/Hi2/n7rHnVr0jDUuh0plM5C924G1J5WhU9w=";
-              };
-              # The release archive omits the executable bit on this doc helper.
-              postPatch = (old.postPatch or "") + ''
-                chmod +x devtools/blockreplace.py
-                patchShebangs devtools/blockreplace.py
-              '';
-            }))
+            clightning
             bitcoind
           ])
           ++ (with pkgs; [
@@ -1745,13 +1733,17 @@
                     stable_toolchain
                     pkgs.docker-client
                     pkgs.python311
-                    pkgsUnstable.cargo-llvm-cov
                   ]
                   ++ builtins.attrValues itestBinaries;
                 inherit nativeBuildInputs;
               }
               // envVars
             );
+
+            # Keep coverage tooling out of ordinary integration-test jobs.
+            coverage = integration.overrideAttrs (old: {
+              buildInputs = old.buildInputs ++ [ pkgs.cargo-llvm-cov ];
+            });
 
             # Minimal shell for the Nutshell interoperability tests. These tests
             # compile their own binaries with Cargo and do not use the pre-built
@@ -1906,6 +1898,7 @@
               nightly
               nightly-regtest
               integration
+              coverage
               nutshell
               ffi
               bindings

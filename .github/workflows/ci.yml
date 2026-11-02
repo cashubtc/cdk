@@ -769,7 +769,7 @@ jobs:
           useDaemon: false
         continue-on-error: true
       - name: Generate Coverage
-        run: nix develop --fallback -i -L .#integration --command just coverage
+        run: nix develop --fallback -i -L .#coverage --command just coverage
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v6
         with:
