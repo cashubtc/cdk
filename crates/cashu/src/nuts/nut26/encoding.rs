@@ -537,9 +537,11 @@ impl PaymentRequest {
                         continue;
                     }
                     if (tag[0] == "r" || tag[0] == "relay") && tag.len() >= 2 {
-                        // Collect relays from tags to encode as "r" tag tuples
-                        if !all_relays.contains(&tag[1]) {
-                            all_relays.push(tag[1].clone());
+                        // Collect every relay value from tags to encode as "r" tag tuples
+                        for relay in &tag[1..] {
+                            if !all_relays.contains(relay) {
+                                all_relays.push(relay.clone());
+                            }
                         }
                     } else {
                         // NIP and other tags are generic tag tuples
