@@ -1062,17 +1062,22 @@ impl MintConnector for MockMintConnector {
     }
 
     async fn post_swap(&self, request: SwapRequest) -> Result<SwapResponse, Error> {
-        self.captured_swap_requests.lock().unwrap().push(request);
         let queued = self.post_swap_responses.lock().unwrap().pop_front();
-        match queued {
-            Some(response) => response,
-            None => self
-                .post_swap_response
-                .lock()
-                .unwrap()
-                .take()
-                .expect("MockMintConnector: post_swap called without configured response"),
+        if let Some(response) = queued {
+            self.captured_swap_requests.lock().unwrap().push(request);
+            return response;
         }
+        if let Some(response) = self.post_swap_response.lock().unwrap().take() {
+            self.captured_swap_requests.lock().unwrap().push(request);
+            return response;
+        }
+        self.captured_swap_requests
+            .lock()
+            .unwrap()
+            .push(request.clone());
+        self.sign_outputs(request.outputs())
+            .expect("MockMintConnector: post_swap called without configured response")
+            .map(|signatures| SwapResponse { signatures })
     }
 
     async fn get_mint_info(&self) -> Result<crate::nuts::MintInfo, Error> {
