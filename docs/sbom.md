@@ -545,6 +545,71 @@ Alpine and certificates but cannot by itself reconstruct every statically
 linked Rust/C dependency. Retain the binary's dependency documents alongside
 the image document.
 
+## Temporary Apple CI feedback loop
+
+`.github/workflows/apple-sbom.yml` is a **non-publishing diagnostic entry point**.
+It does not wait for release tags, clone deployment repositories, request signing
+keys, or publish packages. It calls the shared collector and uses the same Cargo
+build-command helper as production collection; it is not a second SBOM builder.
+
+For the first push, use the existing `leo/sbom_building_on_release` development
+branch or a dedicated branch matching `sbom/apple-**`. The temporary, path-filtered
+push trigger starts one macOS arm64 job. Remove that trigger once Apple support
+is validated. Manual `workflow_dispatch` runs normally require the workflow file
+on the default branch, so the push trigger is the initial bootstrap mechanism.
+
+Once manual dispatch is available, choose:
+
+- `target_set`: `macos-arm64` (default), `macos-both`, or `swift-all` (all five
+  existing Swift Apple targets).
+- `product`: the Swift wrapper by default, or an existing Rust/Go/Dart release
+  product. The iOS matrix is restricted to the existing Swift/Dart targets.
+- `profile`: `release-ffi` by default, matching binding releases; `dev` is a
+  faster diagnostic, not proof about a release-profile artifact.
+- `xcode_version`: `16.4` by default. Missing installations fail explicitly.
+
+The workflow freezes the checked-out commit before creating its matrix, pins
+Rust from `rust-toolchain.toml`, and gets SBOM tools and Protobuf (`protoc`) from
+`flake.lock`. It uses
+`macos-15` / `macos-15-intel`, not the retired macOS 14 image. Matrix concurrency
+is capped at two jobs; newer runs cancel older runs on the same branch, even
+when the selected target set, product or profile changes.
+
+The tools-only `sbom-apple-tools` Nix shell exports executable paths. The launcher
+then selects Xcode and starts a clean native environment, dropping Nix SDK/compiler
+flags, credentials and loader overrides. Rust builds use a fresh per-run target
+directory. The diagnostic deployment minima are macOS 13 / iOS 14, matching the
+Swift package; this is not an assertion about other products' compatibility.
+
+**The first runs can legitimately fail.** The shared collector still requires
+ELF tooling/native adapters that do not establish Apple provenance. That failure
+must remain red. If the collector cannot reach compilation, a probe using its
+shared Cargo invocation collects actual build records, archive member listings,
+Mach-O load commands and embedded-Rust scans where applicable. It never converts
+a failed verifier into successful release evidence or retries a failed compiler.
+Swift package assembly, final XCFramework verification, signing and downstream
+consumer execution remain separate implementation milestones.
+
+Download the `apple-sbom-<product>-<target>-<run>-<attempt>` artifact from the
+Actions run and share it with the run URL. It retains:
+
+- `runner.log` and `bootstrap.log`, including tool-setup failures;
+- `run/report.json`, per-command logs/exit codes and diagnostic limitations;
+- resolved inventories and incomplete verifier indexes, when available;
+- reduced Cargo build records, artifact hashes and Apple inspection reports;
+- `run/diagnostic-files.json`, hashes of retained feedback files.
+
+Artifacts are uploaded even after failures, retained for 14 days, and exclude
+the large compiler target directory. Job cancellation/timeouts can leave an
+incomplete bundle; do not interpret missing reports as success. Logs can contain
+source paths or private package names, so review them before sharing publicly.
+`release_ready` stays false: collecting diagnostics is not a signed release SBOM.
+
+Only workflow syntax, orchestration and fixtures can be validated on Linux.
+Actual Apple-tool behavior must be confirmed by these GitHub macOS runs. The
+entry point also supports `workflow_call` for later reuse, but existing release
+workflows are intentionally not gated on this unfinished Apple verifier yet.
+
 ## Tests
 
 ```sh

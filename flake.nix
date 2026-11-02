@@ -1809,6 +1809,24 @@
               ];
             };
 
+            # Export tool paths only: Apple builds must use Xcode's SDK/compiler,
+            # not the SDKROOT, flags or compiler injected by a Nix dev shell.
+            sbom-apple-tools =
+              let
+                tools = [
+                  pkgs.python3
+                  pkgs.protobuf
+                  pkgs.cargo-cyclonedx
+                  pkgs.cargo-auditable
+                  pkgs.cyclonedx-cli
+                  pkgs.syft
+                ];
+              in
+              pkgs.mkShell {
+                packages = tools;
+                CDK_SBOM_TOOLS_PATH = pkgs.lib.makeBinPath tools;
+              };
+
             # Shell for bindings development (Dart + Swift + Kotlin + Go FFI)
             bindings = pkgs.mkShell (
               {
@@ -1954,6 +1972,7 @@
               ffi
               bindings
               sbom
+              sbom-apple-tools
               kotlin-build
               kotlin-publish
               ;

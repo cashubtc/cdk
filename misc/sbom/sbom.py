@@ -335,6 +335,13 @@ def parse_projects(values):
     return projects
 
 
+def cargo_build_command(package, args):
+    """Share the production Cargo invocation with platform diagnostic probes."""
+    return ["cargo", "auditable", "build", "--locked", "--package", package["name"],
+            "--profile", args.profile, "--message-format", "json", *cargo_options(args),
+            *cargo_build_targets(package)]
+
+
 class Collector:
     def __init__(self, args, root=ROOT):
         self.args = args
@@ -655,13 +662,11 @@ class Collector:
             self.packaged_files(list(native_files(project)), language + "-project", WRAPPERS[language], project)
 
     def build(self, package, metadata):
-        command = ["cargo", "auditable", "build", "--locked", "--package", package["name"],
-                   "--profile", self.args.profile, "--message-format", "json", *cargo_options(self.args)]
         if self.args.existing:
             output = ""
             records = None
         else:
-            command.extend(cargo_build_targets(package))
+            command = cargo_build_command(package, self.args)
             environment = dict(os.environ)
             if self.args.clean_build:
                 self.cargo_target_directory = self.output / "clean-target"

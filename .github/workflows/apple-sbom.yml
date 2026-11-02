@@ -1,0 +1,157 @@
+name: "Apple SBOM diagnostics (no publishing)"
+
+on:
+  # Temporary bootstrap trigger: workflow_dispatch needs a default-branch file.
+  # Remove this push trigger once the Apple collector is validated in CI.
+  push:
+    branches:
+      - leo/sbom_building_on_release
+      - 'sbom/apple-**'
+    paths:
+      - .github/workflows/apple-sbom.yml
+      - misc/sbom/**
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - flake.nix
+      - flake.lock
+      - .cargo/**
+      - crates/**
+      - bindings/**
+  workflow_dispatch:
+    inputs:
+      target_set:
+        description: "Start with arm64; expand after its logs have been reviewed"
+        type: choice
+        default: macos-arm64
+        options: [macos-arm64, macos-both, swift-all]
+      product:
+        description: "Rust release product (Swift first; other Apple products reuse the collector)"
+        type: choice
+        default: cdk-ffi-swift
+        options: [cdk-ffi-swift, cdk-ffi-go, cdk-ffi-dart, cdk, cdk-common, cdk-cli, cdk-mintd]
+      profile:
+        description: "release-ffi matches binding releases; dev is a faster diagnostic only"
+        type: choice
+        default: release-ffi
+        options: [release-ffi, release, dev]
+      xcode_version:
+        description: "Exact installed Xcode version; missing versions fail rather than fall back"
+        type: string
+        default: '16.4'
+  workflow_call:
+    inputs:
+      target_set:
+        type: string
+        default: macos-arm64
+      product:
+        type: string
+        default: cdk-ffi-swift
+      profile:
+        type: string
+        default: release-ffi
+      xcode_version:
+        type: string
+        default: '16.4'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apple-sbom-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/heads/') }}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.configure.outputs.matrix }}
+      revision: ${{ steps.configure.outputs.revision }}
+      toolchain: ${{ steps.configure.outputs.toolchain }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Freeze the revision and select the diagnostic matrix
+        id: configure
+        env:
+          TARGET_SET: ${{ inputs.target_set || 'macos-arm64' }}
+          PRODUCT: ${{ inputs.product || 'cdk-ffi-swift' }}
+        run: |
+          matrix=$(python3 misc/sbom/apple_diagnostics.py matrix --target-set "$TARGET_SET" --product "$PRODUCT")
+          toolchain=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])')
+          {
+            echo "matrix=$matrix"
+            echo "revision=$(git rev-parse HEAD)"
+            echo "toolchain=$toolchain"
+          } >> "$GITHUB_OUTPUT"
+
+  diagnose:
+    name: "Apple evidence: ${{ matrix.target }}"
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    env:
+      BUILD_TARGET: ${{ matrix.target }}
+      PRODUCT: ${{ inputs.product || 'cdk-ffi-swift' }}
+      BUILD_PROFILE: ${{ inputs.profile || 'release-ffi' }}
+      XCODE_VERSION: ${{ inputs.xcode_version || '16.4' }}
+      OUT: target/sbom/apple-diagnostic
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.revision }}
+          persist-credentials: false
+      - name: Start the feedback bundle before tool installation
+        run: |
+          mkdir -p "$OUT"
+          {
+            /usr/bin/sw_vers
+            /usr/bin/uname -m
+            /usr/bin/xcode-select -p
+            /bin/df -h .
+          } 2>&1 | tee "$OUT/runner.log"
+      - name: Install the repository-pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ needs.prepare.outputs.toolchain }}
+          targets: ${{ matrix.target }}
+      - name: Install Nix for pinned SBOM tools only
+        uses: DeterminateSystems/nix-installer-action@v22
+      - name: Run the shared collector and retain additional Apple diagnostics
+        shell: bash
+        run: |
+          set -o pipefail
+          nix develop --accept-flake-config --fallback -L .#sbom-apple-tools --command \
+            python3 misc/sbom/apple_diagnostics.py launch \
+              --target "$BUILD_TARGET" --product "$PRODUCT" --profile "$BUILD_PROFILE" \
+              --xcode-version "$XCODE_VERSION" --output "$OUT/run" \
+              2>&1 | tee "$OUT/bootstrap.log"
+      - name: Upload feedback even when setup or verification fails
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: apple-sbom-${{ inputs.product || 'cdk-ffi-swift' }}-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            target/sbom/apple-diagnostic/
+            !target/sbom/apple-diagnostic/run/cargo-target/**
+      - name: Explain the diagnostic result
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## Apple SBOM diagnostic run — not a release'
+            echo "Revision: ${{ needs.prepare.outputs.revision }}"
+            echo "Target: $BUILD_TARGET; product: $PRODUCT; profile: $BUILD_PROFILE"
+            echo 'Download the apple-sbom artifact and share report.json, logs, and incomplete collector indexes.'
+            echo 'Setup failures are in runner.log/bootstrap.log or the Actions job log.'
+            echo 'Apple native provenance and final XCFramework verification are still being implemented.'
+            echo 'A diagnostic artifact is not a verified release SBOM; no publishing or signing credentials are used.'
+          } >> "$GITHUB_STEP_SUMMARY"
