@@ -4,11 +4,11 @@ use std::str::FromStr;
 use axum::body::Body;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
-use axum::response::{Html, Response};
-use axum::Extension;
+use axum::response::{Html, IntoResponse, Response};
+use axum::{Extension, Json};
 use ldk_node::bitcoin::secp256k1::PublicKey;
 use ldk_node::lightning::ln::msgs::SocketAddress;
-use ldk_node::UserChannelId;
+use ldk_node::{NodeError, UserChannelId};
 use maud::html;
 use serde::Deserialize;
 
@@ -30,6 +30,107 @@ pub struct OpenChannelForm {
     amount_sats: u64,
     #[serde(deserialize_with = "deserialize_optional_u64")]
     push_btc: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrivateOpenChannelForm {
+    _csrf: String,
+    node_id: String,
+    address: String,
+    port: u16,
+    amount_sats: u64,
+}
+
+/// Initiate a private channel with zero push using the running node.
+pub async fn post_open_private_channel(
+    State(state): State<AppState>,
+    form: Result<CsrfForm<PrivateOpenChannelForm>, StatusCode>,
+) -> Response {
+    let form = match form {
+        Ok(CsrfForm(form)) => form,
+        Err(StatusCode::FORBIDDEN) => {
+            return private_channel_error(
+                StatusCode::FORBIDDEN,
+                "csrf_failed",
+                "CSRF verification failed",
+                "not_started",
+            );
+        }
+        Err(_) => return invalid_private_channel_request("Invalid private channel request"),
+    };
+    if form.amount_sats == 0 || form.port == 0 {
+        return invalid_private_channel_request("Channel amount and port must be positive");
+    }
+    let pubkey = match PublicKey::from_str(&form.node_id) {
+        Ok(pubkey) => pubkey,
+        Err(_) => return invalid_private_channel_request("Invalid node public key"),
+    };
+    let address = match SocketAddress::from_str(&format!("{}:{}", form.address, form.port)) {
+        Ok(address) => address,
+        Err(_) => return invalid_private_channel_request("Invalid address or port"),
+    };
+
+    tracing::info!(
+        "Initiating private channel to {} with amount {} sats",
+        pubkey,
+        form.amount_sats
+    );
+    // This API connects if necessary and always opens an unannounced channel.
+    private_channel_response(state.node.inner.open_channel(
+        pubkey,
+        address,
+        form.amount_sats,
+        None,
+        None,
+    ))
+}
+
+fn private_channel_response(result: Result<UserChannelId, NodeError>) -> Response {
+    match result {
+        Ok(id) => (
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!({
+                "status": "initiated",
+                "user_channel_id": id.0.to_string(),
+                "announce_channel": false,
+            })),
+        )
+            .into_response(),
+        Err(error) => {
+            tracing::error!("Private channel opening returned an error: {}", error);
+            // LDK can fail persisting the peer after channel creation starts.
+            // The caller must inspect channel state before considering a retry.
+            private_channel_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "channel_open_failed",
+                &error.to_string(),
+                "unknown",
+            )
+        }
+    }
+}
+
+fn invalid_private_channel_request(message: &str) -> Response {
+    private_channel_error(
+        StatusCode::BAD_REQUEST,
+        "invalid_request",
+        message,
+        "not_started",
+    )
+}
+
+fn private_channel_error(
+    status: StatusCode,
+    error: &str,
+    message: &str,
+    outcome: &str,
+) -> Response {
+    (
+        status,
+        Json(serde_json::json!({ "error": error, "message": message, "outcome": outcome })),
+    )
+        .into_response()
 }
 
 #[derive(Deserialize)]
@@ -591,4 +692,33 @@ pub async fn post_force_close_channel(
             layout_with_status("Force Close Channel Result", content, true).into_string(),
         ))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::body::to_bytes;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn private_channel_receipt_preserves_full_user_channel_id() {
+        let response = private_channel_response(Ok(UserChannelId(u128::MAX)));
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let body: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 10_000).await.unwrap()).unwrap();
+        assert_eq!(body["status"], "initiated");
+        assert_eq!(body["user_channel_id"], u128::MAX.to_string());
+        assert_eq!(body["announce_channel"], false);
+    }
+
+    #[tokio::test]
+    async fn private_channel_persistence_error_has_unknown_outcome() {
+        let response = private_channel_response(Err(NodeError::PersistenceFailed));
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 10_000).await.unwrap()).unwrap();
+        assert_eq!(body["error"], "channel_open_failed");
+        assert_eq!(body["message"], NodeError::PersistenceFailed.to_string());
+        assert_eq!(body["outcome"], "unknown");
+    }
 }
