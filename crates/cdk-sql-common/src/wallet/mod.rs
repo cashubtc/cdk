@@ -1209,6 +1209,7 @@ where
         ON CONFLICT(id) DO UPDATE SET
             active = excluded.active,
             input_fee_ppk = excluded.input_fee_ppk,
+            final_expiry = excluded.final_expiry,
             unlisted_at = excluded.unlisted_at
         "#,
             )?

@@ -327,6 +327,53 @@ where
     );
 }
 
+/// Test that a refreshed keyset carries the mint's current final expiry
+///
+/// A v00 keyset id is derived from the keys alone, so the mint can change the
+/// expiry of a keyset the wallet already stored.
+pub async fn keyset_expiry_is_refreshed<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mint_url = test_mint_url();
+    let keyset_id = test_keyset_id();
+    let mut keyset_info = test_keyset_info(keyset_id, &mint_url);
+
+    db.add_mint(mint_url.clone(), None).await.unwrap();
+    db.add_mint_keysets(mint_url.clone(), vec![keyset_info.clone()])
+        .await
+        .unwrap();
+
+    let stored = db.get_keyset_by_id(&keyset_id).await.unwrap().unwrap();
+    assert_eq!(stored.keyset.final_expiry, None);
+    assert!(!stored.is_expired());
+
+    keyset_info.keyset.final_expiry = Some(1);
+    db.add_mint_keysets(mint_url.clone(), vec![keyset_info.clone()])
+        .await
+        .unwrap();
+
+    let stored = db.get_keyset_by_id(&keyset_id).await.unwrap().unwrap();
+    assert_eq!(
+        stored.keyset.final_expiry,
+        Some(1),
+        "an expiry the mint set after the first insert must be stored"
+    );
+    assert!(stored.is_expired());
+
+    keyset_info.keyset.final_expiry = None;
+    db.add_mint_keysets(mint_url, vec![keyset_info])
+        .await
+        .unwrap();
+
+    let stored = db.get_keyset_by_id(&keyset_id).await.unwrap().unwrap();
+    assert_eq!(
+        stored.keyset.final_expiry, None,
+        "a mint that lifts an expiry must clear the stored one"
+    );
+    assert!(!stored.is_expired());
+}
+
 /// Test getting keyset by ID in transaction
 pub async fn get_keyset_by_id_in_transaction<DB>(db: DB)
 where
@@ -1795,6 +1842,7 @@ macro_rules! wallet_db_test {
             update_mint_url,
             add_and_get_keysets,
             keyset_unlisted_marker_round_trip,
+            keyset_expiry_is_refreshed,
             get_keyset_by_id_in_transaction,
             add_and_get_keys,
             get_keys_in_transaction,

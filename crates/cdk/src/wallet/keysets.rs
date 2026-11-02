@@ -1,11 +1,36 @@
 use std::collections::HashMap;
 
 use cdk_common::amount::{FeeAndAmounts, KeysetFeeAndAmounts};
+use cdk_common::util::unix_time;
 use cdk_common::wallet::KeysetLoadPolicy;
 use tracing::instrument;
 
 use crate::nuts::{Id, KeySet, KeySetInfo, Proofs, Token};
 use crate::{Error, Wallet};
+
+/// The part of a keyset a stale-keyset retry can act on.
+///
+/// Carries the mint's raw `final_expiry` rather than a precomputed expired
+/// bit: both snapshots are taken after the failure, so a bit reads the same on
+/// either side whenever the stored value is the same, and misses a mint that
+/// moved an expiry without crossing now.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct KeysetFingerprint {
+    id: Id,
+    active: bool,
+    input_fee_ppk: u64,
+    final_expiry: Option<u64>,
+}
+
+impl KeysetFingerprint {
+    /// Whether the mint will still sign new outputs with this keyset.
+    ///
+    /// Mirrors what [`Wallet::active_keyset_with_policy`] selects, so the
+    /// retry gate agrees with the selection the retry would run.
+    fn can_sign_outputs(&self) -> bool {
+        self.active && !self.final_expiry.is_some_and(|expiry| expiry < unix_time())
+    }
+}
 
 impl Wallet {
     /// Get all keysets for this wallet's unit.
@@ -109,7 +134,10 @@ impl Wallet {
     /// network attempt before the original error is returned.
     ///
     /// The retry is gated on the refresh having actually changed the keysets,
-    /// so an operation that failed for some other reason is not run twice.
+    /// so an operation that failed for some other reason is not run twice, and
+    /// on it leaving a keyset the mint will still sign with. Without one, the
+    /// second attempt could only fail on output selection, which would replace
+    /// the mint's own error with a less informative one.
     ///
     /// Use this around any code path that selects the active keyset, builds
     /// outputs, and posts them to the mint.
@@ -133,9 +161,9 @@ impl Wallet {
         let before = self.keyset_snapshot(KeysetLoadPolicy::CacheOnly).await;
         let after = self.keyset_snapshot(KeysetLoadPolicy::Refresh).await;
 
-        let has_active = after.iter().any(|(_, active, _)| *active);
+        let can_sign = after.iter().any(KeysetFingerprint::can_sign_outputs);
 
-        if has_active && after != before {
+        if can_sign && after != before {
             tracing::info!("Keysets changed after refresh, retrying operation");
             f().await
         } else {
@@ -156,7 +184,7 @@ impl Wallet {
     /// would appear to swap places between two reads of a `HashMap`. A failed
     /// load yields an empty snapshot, which reads as "nothing to retry
     /// against" and surfaces the original error.
-    async fn keyset_snapshot(&self, policy: KeysetLoadPolicy) -> Vec<(Id, bool, u64)> {
+    async fn keyset_snapshot(&self, policy: KeysetLoadPolicy) -> Vec<KeysetFingerprint> {
         let keysets = match self.keysets(policy).await {
             Ok(keysets) => keysets,
             Err(err) => {
@@ -167,12 +195,11 @@ impl Wallet {
 
         let mut snapshot: Vec<_> = keysets
             .into_iter()
-            .map(|keyset| {
-                (
-                    keyset.id,
-                    keyset.active.unwrap_or(false),
-                    keyset.input_fee_ppk,
-                )
+            .map(|keyset| KeysetFingerprint {
+                id: keyset.id,
+                active: keyset.active.unwrap_or(false),
+                input_fee_ppk: keyset.input_fee_ppk,
+                final_expiry: keyset.final_expiry,
             })
             .collect();
         snapshot.sort_unstable();
@@ -800,6 +827,106 @@ mod tests {
             wallet.active_keyset().await.unwrap().id,
             cheapest_id,
             "the cheapest active keyset is deliberately unchanged"
+        );
+    }
+
+    /// A mint that sets an expiry on a keyset id it already serves changes
+    /// nothing about the ids, active flags or fees, but the refresh is exactly
+    /// what the retry needs: output selection then skips the expired keyset.
+    #[tokio::test]
+    async fn retry_on_stale_keyset_retries_when_only_the_expiry_changes() {
+        let expiring = test_keyset();
+
+        let mut survivor = make_inactive_keyset();
+        survivor.active = Some(true);
+
+        let db = create_test_db().await;
+        db.add_mint(test_mint_url(), None).await.unwrap();
+
+        let mock = Arc::new(MockMintConnector::new());
+        mock.set_mint_keys_response(Ok(vec![expiring.clone(), survivor.clone()]));
+        let wallet = create_test_wallet_with_mock(db, mock.clone()).await;
+
+        wallet.keysets(KeysetLoadPolicy::Refresh).await.unwrap();
+
+        // Same id, same active flag, same fee: only the expiry is new.
+        let mut expired = expiring;
+        expired.final_expiry = Some(1);
+
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+        let mock_clone = mock.clone();
+
+        let result = wallet
+            .retry_on_stale_keyset(|| {
+                let call_count = call_count_clone.clone();
+                let mock = mock_clone.clone();
+                let expired = expired.clone();
+                let survivor = survivor.clone();
+                async move {
+                    let n = call_count.fetch_add(1, Ordering::SeqCst);
+                    if n == 0 {
+                        mock.set_mint_keys_response(Ok(vec![expired, survivor]));
+                        Err(Error::ExpiredKeyset)
+                    } else {
+                        Ok(7u32)
+                    }
+                }
+            })
+            .await;
+
+        assert_eq!(result.unwrap(), 7);
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            2,
+            "an expiry the refresh learned is a change worth retrying on"
+        );
+    }
+
+    /// When the refresh leaves no keyset the mint will sign with, the retry
+    /// could only fail on output selection, so the mint's own error stands.
+    #[tokio::test]
+    async fn retry_on_stale_keyset_does_not_retry_when_nothing_can_sign() {
+        let only = test_keyset();
+
+        let db = create_test_db().await;
+        db.add_mint(test_mint_url(), None).await.unwrap();
+
+        let mock = Arc::new(MockMintConnector::new());
+        mock.set_mint_keys_response(Ok(vec![only.clone()]));
+        let wallet = create_test_wallet_with_mock(db, mock.clone()).await;
+
+        wallet.keysets(KeysetLoadPolicy::Refresh).await.unwrap();
+
+        let mut expired = only;
+        expired.final_expiry = Some(1);
+
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+        let mock_clone = mock.clone();
+
+        let result: Result<u32, Error> = wallet
+            .retry_on_stale_keyset(|| {
+                let call_count = call_count_clone.clone();
+                let mock = mock_clone.clone();
+                let expired = expired.clone();
+                async move {
+                    let n = call_count.fetch_add(1, Ordering::SeqCst);
+                    if n == 0 {
+                        mock.set_mint_keys_response(Ok(vec![expired]));
+                        Err(Error::ExpiredKeyset)
+                    } else {
+                        Ok(5u32)
+                    }
+                }
+            })
+            .await;
+
+        assert!(matches!(result, Err(Error::ExpiredKeyset)));
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            1,
+            "the only keyset is expired, so a second attempt cannot succeed"
         );
     }
 }
