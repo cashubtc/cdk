@@ -16,12 +16,17 @@ from sbom import SbomError, cargo_build_command, digest, parser as collector_par
 
 
 class AppleDiagnosticTests(unittest.TestCase):
-    def test_workflow_cancels_same_branch_runs_regardless_of_inputs(self):
+    def test_workflow_cancels_same_branch_or_pr_runs_regardless_of_inputs(self):
         workflow = (apple.ROOT / ".github/workflows/apple-sbom.yml").read_text()
         group = re.search(r"^  group: (.+)$", workflow, re.MULTILINE)
         self.assertIsNotNone(group)
         self.assertEqual(group.group(1), "apple-sbom-${{ github.workflow }}-${{ github.ref }}")
-        self.assertIn("cancel-in-progress: ${{ startsWith(github.ref, 'refs/heads/') }}", workflow)
+        self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' || startsWith(github.ref, 'refs/heads/') }}", workflow)
+
+    def test_workflow_runs_on_pull_requests_without_branch_or_path_filters(self):
+        workflow = (apple.ROOT / ".github/workflows/apple-sbom.yml").read_text()
+        self.assertRegex(workflow, r"(?m)^  pull_request: \{\}$")
+        self.assertNotIn("pull_request_target:", workflow)
 
     def test_default_matrix_costs_one_runner_and_full_matrix_has_five_targets(self):
         default = apple.matrix("macos-arm64", "cdk-ffi-swift")["include"]

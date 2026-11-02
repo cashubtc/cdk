@@ -1,6 +1,7 @@
 name: "Apple SBOM diagnostics (no publishing)"
 
 on:
+  pull_request: {}
   # Temporary bootstrap trigger: workflow_dispatch needs a default-branch file.
   # Remove this push trigger once the Apple collector is validated in CI.
   push:
@@ -59,7 +60,7 @@ permissions:
 
 concurrency:
   group: apple-sbom-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ startsWith(github.ref, 'refs/heads/') }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || startsWith(github.ref, 'refs/heads/') }}
 
 jobs:
   prepare:

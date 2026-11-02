@@ -552,6 +552,11 @@ It does not wait for release tags, clone deployment repositories, request signin
 keys, or publish packages. It calls the shared collector and uses the same Cargo
 build-command helper as production collection; it is not a second SBOM builder.
 
+All pull requests run the default macOS arm64 diagnostic job when opened,
+reopened or updated with new commits, without branch or path filters. New commits
+cancel older runs for the same PR. GitHub may require approval for forked PRs;
+the workflow retains read-only permissions and does not use deployment secrets.
+
 For the first push, use the existing `leo/sbom_building_on_release` development
 branch or a dedicated branch matching `sbom/apple-**`. The temporary, path-filtered
 push trigger starts one macOS arm64 job. Remove that trigger once Apple support
@@ -572,7 +577,7 @@ The workflow freezes the checked-out commit before creating its matrix, pins
 Rust from `rust-toolchain.toml`, and gets SBOM tools and Protobuf (`protoc`) from
 `flake.lock`. It uses
 `macos-15` / `macos-15-intel`, not the retired macOS 14 image. Matrix concurrency
-is capped at two jobs; newer runs cancel older runs on the same branch, even
+is capped at two jobs; newer runs cancel older runs on the same branch or PR, even
 when the selected target set, product or profile changes.
 
 The tools-only `sbom-apple-tools` Nix shell exports executable paths. The launcher
