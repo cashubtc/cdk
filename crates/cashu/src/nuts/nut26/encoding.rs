@@ -19,6 +19,9 @@ use crate::Amount;
 /// Human-readable part for CREQ-B bech32m encoding
 pub const CREQ_B_HRP: &str = "creqb";
 
+/// NIP-19 human-readable part for a bare Nostr public key
+const NPUB_HRP: Hrp = Hrp::parse_unchecked("npub");
+
 /// Unit representation for TLV encoding
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TlvUnit {
@@ -779,7 +782,8 @@ impl PaymentRequest {
     /// NUT-26 encoders accept either form; an `npub` carries no relays.
     fn decode_nostr_target(target: &str) -> Result<(Vec<u8>, Vec<String>), Error> {
         let (hrp, data) = bech32::decode(target).map_err(Error::Bech32Error)?;
-        if hrp.as_str() == "npub" {
+        // `Hrp` equality ignores case, so an all-uppercase NPUB1... matches too
+        if hrp == NPUB_HRP {
             if data.len() != 32 {
                 return Err(Error::InvalidLength);
             }
@@ -933,6 +937,20 @@ mod tests {
         let from_nprofile =
             nostr_payment_request(PaymentRequest::encode_nprofile(&[7u8; 32], &[]).unwrap());
         assert_eq!(encoded, from_nprofile.to_bech32_string().unwrap());
+    }
+
+    #[test]
+    fn test_nostr_transport_accepts_uppercase_npub_target() {
+        let npub = npub_from_bytes(&[7u8; 32]);
+        let lowercase = nostr_payment_request(npub.clone());
+        let uppercase = nostr_payment_request(npub.to_uppercase());
+
+        assert_eq!(
+            uppercase
+                .to_bech32_string()
+                .expect("uppercase npub targets should encode"),
+            lowercase.to_bech32_string().unwrap()
+        );
     }
 
     #[test]
