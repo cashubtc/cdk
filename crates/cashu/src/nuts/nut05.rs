@@ -346,13 +346,13 @@ impl<'de> Visitor<'de> for MeltMethodSettingsVisitor {
                     if min_amount.is_some() {
                         return Err(de::Error::duplicate_field("min_amount"));
                     }
-                    min_amount = Some(map.next_value()?);
+                    min_amount = map.next_value()?;
                 }
                 "max_amount" => {
                     if max_amount.is_some() {
                         return Err(de::Error::duplicate_field("max_amount"));
                     }
-                    max_amount = Some(map.next_value()?);
+                    max_amount = map.next_value()?;
                 }
                 "amountless" => {
                     if amountless.is_some() {
@@ -967,6 +967,27 @@ mod tests {
         let parsed: serde_json::Value = from_str(&serialized).unwrap();
 
         assert!(parsed.get("method_name").is_none());
+    }
+
+    #[test]
+    fn test_melt_method_settings_null_amount_limits_deserialize_as_none() {
+        let json_str = r#"{
+            "method": "bolt11",
+            "unit": "sat",
+            "min_amount": null,
+            "max_amount": null
+        }"#;
+
+        let settings: MeltMethodSettings = from_str(json_str).unwrap();
+
+        assert_eq!(settings.min_amount, None);
+        assert_eq!(settings.max_amount, None);
+
+        let serialized = to_string(&settings).unwrap();
+        let parsed: serde_json::Value = from_str(&serialized).unwrap();
+
+        assert!(parsed.get("min_amount").is_none());
+        assert!(parsed.get("max_amount").is_none());
     }
 
     #[test]
