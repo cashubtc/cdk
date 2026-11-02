@@ -57,6 +57,7 @@ pub struct WalletKeySetInfo {
     /// The keyset as the mint describes it
     pub keyset: KeySetInfo,
     /// When the mint first stopped listing this keyset, if it has
+    #[uniffi(default = None)]
     pub unlisted_at: Option<u64>,
 }
 
