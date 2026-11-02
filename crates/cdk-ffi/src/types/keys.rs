@@ -16,6 +16,7 @@ pub struct KeySetInfo {
     /// Input fee per thousand (ppk)
     pub input_fee_ppk: u64,
     /// Unix timestamp after which the mint rejects this keyset's proofs
+    #[uniffi(default = None)]
     pub final_expiry: Option<u64>,
 }
 
@@ -54,6 +55,7 @@ pub struct WalletKeySetInfo {
     /// The keyset as the mint describes it
     pub keyset: KeySetInfo,
     /// When the mint first stopped listing this keyset, if it has
+    #[uniffi(default = None)]
     pub unlisted_at: Option<u64>,
 }
 
