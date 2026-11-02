@@ -16,10 +16,11 @@ const ACTIVE_WINDOW_SECS: u64 = 30 * 24 * 60 * 60;
 /// Pick the keyset to mint new outputs on.
 ///
 /// Narrows before it ranks. Superseded keyset ID versions are dropped, then keysets that stop
-/// being usable within the next 30 days, then the cheapest of what remains wins. An absent
-/// timestamp counts as never, since NUT-02 forbids a mint inactivating a keyset it has not
-/// announced an `active_until` for. The horizon is dropped rather than failing when the mint
-/// offers nothing that long-lived.
+/// being usable within the next 30 days, then the cheapest of what remains wins, ties going to
+/// the keyset usable longest. A keyset is usable until the earlier of `active_until` and
+/// `final_expiry`; an absent timestamp counts as never, since NUT-02 forbids a mint inactivating
+/// a keyset it has not announced an `active_until` for. The horizon is dropped rather than
+/// failing when the mint offers nothing that long-lived.
 pub(crate) fn select_active_keyset<I>(keysets: I) -> Option<KeySet>
 where
     I: IntoIterator<Item = KeySet>,
@@ -35,10 +36,9 @@ where
         .collect::<Vec<_>>();
 
     let horizon = unix_time().saturating_add(ACTIVE_WINDOW_SECS);
-    let (long_lived, rest): (Vec<KeySet>, Vec<KeySet>) = current.into_iter().partition(|k| {
-        k.active_until.unwrap_or(u64::MAX) >= horizon
-            && k.final_expiry.unwrap_or(u64::MAX) >= horizon
-    });
+    let (long_lived, rest): (Vec<KeySet>, Vec<KeySet>) = current
+        .into_iter()
+        .partition(|k| usable_until(k) >= horizon);
 
     let pool = if long_lived.is_empty() {
         rest
@@ -48,13 +48,17 @@ where
     pool.into_iter().min_by_key(keyset_rank)
 }
 
-/// Cheapest fee, then the latest `active_until`, then the latest `final_expiry`.
-fn keyset_rank(keyset: &KeySet) -> (u64, Reverse<u64>, Reverse<u64>) {
-    (
-        keyset.input_fee_ppk,
-        Reverse(keyset.active_until.unwrap_or(u64::MAX)),
-        Reverse(keyset.final_expiry.unwrap_or(u64::MAX)),
-    )
+/// When the keyset stops being usable: the earlier of `active_until` and `final_expiry`.
+fn usable_until(keyset: &KeySet) -> u64 {
+    keyset
+        .active_until
+        .unwrap_or(u64::MAX)
+        .min(keyset.final_expiry.unwrap_or(u64::MAX))
+}
+
+/// Cheapest fee, then the keyset usable longest.
+fn keyset_rank(keyset: &KeySet) -> (u64, Reverse<u64>) {
+    (keyset.input_fee_ppk, Reverse(usable_until(keyset)))
 }
 
 impl Wallet {
@@ -125,7 +129,7 @@ impl Wallet {
     ///
     /// Filters the output of [`keysets()`](Self::keysets) for active keysets
     /// and returns the one with the minimum `input_fee_ppk`, breaking ties on
-    /// the latest `active_until`.
+    /// the one usable longest.
     #[instrument(skip(self))]
     pub async fn active_keyset(&self) -> Result<KeySet, Error> {
         self.active_keyset_with_policy(Default::default()).await
@@ -600,6 +604,21 @@ mod tests {
 
         let picked = select_active_keyset([sooner, later]).expect("a keyset");
         assert_eq!(picked.active_until, Some(far + 1_000), "the later one wins");
+    }
+
+    /// A keyset is usable until the earlier of `active_until` and `final_expiry`, so an
+    /// unannounced `active_until` does not outrank a nearer `final_expiry`.
+    #[test]
+    fn select_active_keyset_breaks_fee_ties_on_the_earlier_deadline() {
+        let far = unix_time() + 365 * 24 * 60 * 60;
+        let mut expires_first = test_keyset();
+        expires_first.final_expiry = Some(far);
+        let mut expires_later = test_keyset();
+        expires_later.active_until = Some(far + 1_000);
+        expires_later.final_expiry = Some(far + 2_000);
+
+        let picked = select_active_keyset([expires_first, expires_later]).expect("a keyset");
+        assert_eq!(picked.active_until, Some(far + 1_000));
     }
 
     /// Fee still outranks longevity among keysets that clear the horizon.
