@@ -16,17 +16,30 @@ from sbom import SbomError, cargo_build_command, digest, parser as collector_par
 
 
 class AppleDiagnosticTests(unittest.TestCase):
-    def test_workflow_cancels_same_branch_or_pr_runs_regardless_of_inputs(self):
+    def test_workflow_keeps_release_evidence_without_cancelling_runs(self):
         workflow = (apple.ROOT / ".github/workflows/apple-sbom.yml").read_text()
         group = re.search(r"^  group: (.+)$", workflow, re.MULTILINE)
         self.assertIsNotNone(group)
         self.assertEqual(group.group(1), "apple-sbom-${{ github.workflow }}-${{ github.ref }}")
-        self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' || startsWith(github.ref, 'refs/heads/') }}", workflow)
+        self.assertIn("cancel-in-progress: false", workflow)
 
-    def test_workflow_runs_on_pull_requests_without_branch_or_path_filters(self):
+    def test_workflow_only_runs_when_a_release_is_published(self):
         workflow = (apple.ROOT / ".github/workflows/apple-sbom.yml").read_text()
-        self.assertRegex(workflow, r"(?m)^  pull_request: \{\}$")
-        self.assertNotIn("pull_request_target:", workflow)
+        events = re.search(r"(?ms)^on:\n(.*?)(?=^\S)", workflow)
+        self.assertIsNotNone(events)
+        self.assertEqual(events.group(1).strip(), "release:\n    types: [published]")
+        self.assertIn("ref: ${{ github.sha }}", workflow)
+        self.assertIn("ref: ${{ needs.prepare.outputs.revision }}", workflow)
+        self.assertNotIn("inputs.", workflow)
+
+    def test_other_sbom_builds_stay_in_release_publishing_workflows(self):
+        for name in ("go-publish.yml", "kotlin-publish.yml"):
+            with self.subTest(workflow=name):
+                workflow = (apple.ROOT / ".github/workflows" / name).read_text()
+                self.assertIn("just build-sbom", workflow)
+                self.assertIn("release_tag:", workflow)
+                self.assertIn("needs: release-ci", workflow)
+                self.assertNotRegex(workflow, r"(?m)^  (?:push|pull_request|pull_request_target|schedule):")
 
     def test_default_matrix_costs_one_runner_and_full_matrix_has_five_targets(self):
         default = apple.matrix("macos-arm64", "cdk-ffi-swift")["include"]

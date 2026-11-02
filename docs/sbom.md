@@ -572,40 +572,31 @@ Alpine and certificates but cannot by itself reconstruct every statically
 linked Rust/C dependency. Retain the binary's dependency documents alongside
 the image document.
 
-## Temporary Apple CI feedback loop
+## Release-only SBOM builds and Apple diagnostics
 
 `.github/workflows/apple-sbom.yml` is a **non-publishing diagnostic entry point**.
-It does not wait for release tags, clone deployment repositories, request signing
-keys, or publish packages. It calls the shared collector and uses the same Cargo
+It runs only on `release: published` (including published prereleases), not on
+pull requests, branch/tag pushes, schedules, manual dispatch or reusable calls.
+It checks out the release event's exact commit, does not clone deployment
+repositories, request signing keys, or publish packages. It calls the shared collector and uses the same Cargo
 build-command helper as production collection; it is not a second SBOM builder.
 
-All pull requests run the default macOS arm64 diagnostic job when opened,
-reopened or updated with new commits, without branch or path filters. New commits
-cancel older runs for the same PR. GitHub may require approval for forked PRs;
-the workflow retains read-only permissions and does not use deployment secrets.
+The release job keeps the bounded `macos-arm64` matrix, `cdk-ffi-swift` product,
+`release-ffi` profile and Xcode `16.4`, configured in workflow environment values.
+Missing installations fail explicitly. Permissions remain read-only and the
+workflow does not use deployment secrets.
 
-For the first push, use the existing `leo/sbom_building_on_release` development
-branch or a dedicated branch matching `sbom/apple-**`. The temporary, path-filtered
-push trigger starts one macOS arm64 job. Remove that trigger once Apple support
-is validated. Manual `workflow_dispatch` runs normally require the workflow file
-on the default branch, so the push trigger is the initial bootstrap mechanism.
-
-Once manual dispatch is available, choose:
-
-- `target_set`: `macos-arm64` (default), `macos-both`, or `swift-all` (all five
-  existing Swift Apple targets).
-- `product`: the Swift wrapper by default, or an existing Rust/Go/Dart release
-  product. The iOS matrix is restricted to the existing Swift/Dart targets.
-- `profile`: `release-ffi` by default, matching binding releases; `dev` is a
-  faster diagnostic, not proof about a release-profile artifact.
-- `xcode_version`: `16.4` by default. Missing installations fail explicitly.
+Go and Kotlin SBOM builds remain inside their release-publishing workflows,
+including nightly prerelease publishing; they have no standalone PR/push build
+triggers. The lightweight offline SBOM regression tests still run in normal CI;
+they do not generate release SBOMs or build release artifacts.
 
 The workflow freezes the checked-out commit before creating its matrix, pins
 Rust from `rust-toolchain.toml`, and gets SBOM tools and Protobuf (`protoc`) from
 `flake.lock`. It uses
 `macos-15` / `macos-15-intel`, not the retired macOS 14 image. Matrix concurrency
-is capped at two jobs; newer runs cancel older runs on the same branch or PR, even
-when the selected target set, product or profile changes.
+is capped at two jobs; release runs are grouped by tag and do not cancel earlier
+runs, preserving their evidence.
 
 Before entering Nix, the workflow resolves the pinned `cargo` and `rustc` with
 `rustup which --toolchain`, records their binary directory and Cargo/rustup home
@@ -650,9 +641,9 @@ source paths or private package names, so review them before sharing publicly.
 `release_ready` stays false: collecting diagnostics is not a signed release SBOM.
 
 Only workflow syntax, orchestration and fixtures can be validated on Linux.
-Actual Apple-tool behavior must be confirmed by these GitHub macOS runs. The
-entry point also supports `workflow_call` for later reuse, but existing release
-workflows are intentionally not gated on this unfinished Apple verifier yet.
+Actual Apple-tool behavior must be confirmed by these GitHub macOS runs.
+Existing publishing workflows are intentionally not gated on this unfinished
+Apple verifier yet.
 
 ## Tests
 
