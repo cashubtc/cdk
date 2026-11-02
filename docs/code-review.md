@@ -60,6 +60,7 @@ Review CDK changes for observable correctness, Cashu interoperability, safe upgr
 - Prioritize repeated database/network operations, lock contention, and substantial allocations. Do not trade understandable APIs for excessive generics merely to avoid a small allocation. Performance claims need evidence.
 - Follow CODE_STYLE.md and automated formatting/linting. Do not mechanically suggest `fold` over `map().sum()`, or invent performance differences between equivalent iterator forms.
 - Use fully qualified `tracing::*` for diagnostics. Preserve intentional CLI/user-facing output. Prefer comments explaining invariants and reasons, and avoid redundant comments or dead commented-out code.
+- Comments should describe current behavior, constraints, or rationale. Avoid references to previous implementations, the current PR, or work "still under development"; keep development history and future plans in issues or PR discussions. Preserve temporal wording when it explains runtime ordering, such as quotes issued before disabling.
 - Keep feature work rebased rather than merging main, following DEVELOPMENT.md. Use JJ-native local operations in JJ workspaces. Treat history cleanup as workflow feedback, not a runtime defect.
 
 ## Tests and evidence
