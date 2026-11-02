@@ -45,6 +45,8 @@ continue from each keyset's stored next derivation index. To rescan recent
 history, pass a lookback: `resume_restore(Some(100))` starts 100 indices before
 each stored counter, clamped to zero. These methods apply to the wallet's mint
 and unit; keysets without a stored counter start at zero.
+Empty batches starting before the saved counter do not count toward the gap
+limit, so looking back preserves the forward scan coverage.
 
 Progress is saved after each successfully recovered batch. Empty batches do not
 advance the stored counter, so resuming may repeat the trailing empty portion

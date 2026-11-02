@@ -236,6 +236,7 @@ impl Wallet {
     /// `None` defaults to zero lookback. Progress is saved after each
     /// recovered batch; returned amounts include already stored proofs
     /// encountered in the scanned range.
+    /// Batches starting before the saved index do not count toward the gap limit.
     #[uniffi::method(default(lookback = None))]
     pub async fn resume_restore(&self, lookback: Option<u32>) -> Result<Restored, FfiError> {
         let restored = self.inner.resume_restore(lookback).await?;
