@@ -136,6 +136,36 @@ class NativeTests(unittest.TestCase):
         with self.assertRaises(NativeError):
             build_records('{"reason":"build-finished","success":false}')
 
+    def test_successful_cargo_status_cannot_hide_failed_stripping(self):
+        for diagnostic in ("stripping debug info with `rust-objcopy` failed: signal: 6 (SIGABRT)",
+                           "stripping symbols failed: runtime missing"):
+            output = '\n'.join(json.dumps(message) for message in [
+                {"reason": "compiler-message", "message": {"level": "warning", "message": diagnostic, "rendered": None}},
+                {"reason": "build-finished", "success": True},
+            ])
+            with self.subTest(diagnostic=diagnostic), self.assertRaisesRegex(NativeError, "stripping failure"):
+                build_records(output)
+        self.assertEqual(build_records('\n'.join(json.dumps(message) for message in [
+            {"reason": "compiler-message", "message": {"message": "unused variable", "rendered": None}},
+            {"reason": "build-finished", "success": True},
+        ])), [{"reason": "build-finished", "success": True}])
+
+    def test_rejected_cargo_record_retains_compiler_failure_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = sbom.parser().parse_args(["cdk", "--build"])
+            collector = sbom.Collector(args)
+            collector.output = Path(directory)
+            diagnostic = {"reason": "compiler-message", "message": {
+                "message": "stripping debug info with `rust-objcopy` failed: signal: 6 (SIGABRT)",
+                "children": [{"message": "Library not loaded: @rpath/libLLVM.dylib"}], "rendered": None}}
+            output = json.dumps(diagnostic) + '\n' + json.dumps({"reason": "build-finished", "success": True})
+            package = {"name": "cdk", "targets": [{"kind": ["lib"], "crate_types": ["lib"]}]}
+            with patch.object(sbom, "run", return_value=output), self.assertRaisesRegex(NativeError, "stripping failure"):
+                collector.build(package, {})
+            evidence = json.loads((collector.output / "evidence/cargo-build-failure.json").read_text())
+            self.assertEqual(evidence["compiler_diagnostics"], [diagnostic])
+            self.assertEqual(collector.index["evidence"][0]["sha256"], sha256(collector.output / "evidence/cargo-build-failure.json"))
+
     def test_registry_sources_are_verified_against_locked_archive(self):
         with tempfile.TemporaryDirectory() as directory:
             source, archive, package, lock = registry_fixture(Path(directory))

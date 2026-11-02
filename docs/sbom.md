@@ -290,10 +290,37 @@ platform libraries are provided by the deployment device. Non-platform shared
 libraries still require explicit provider evidence. Only the reviewed 16-KB
 page-alignment linker flags are accepted automatically, not arbitrary link flags.
 
+Apple builds have a separate native adapter for the five existing macOS/iOS
+Swift targets (including simulators). It inspects thin 64-bit Mach-O load commands
+without executing the image, checks architecture/platform and the SDK recorded
+in newly built images, and handles Cargo host build tools separately from target
+outputs. Preflight selects Xcode's `xcrun` instead of requiring ELF tools for an
+Apple-only build.
+
+Public Apple framework and `/usr/lib` requirements must resolve to matching
+TAPI v4/v5 stubs in the explicitly selected Xcode SDK. The evidence records SDK
+version/build, settings and stub hashes, minimum OS and image SDK metadata.
+Framework link flags require verified registry sources and no framework search
+overrides. These are **OS-provided requirements, not bundled libraries**: SDK
+versions, stub hashes and dylib compatibility versions do not identify deployed
+OS library bytes or their independent upstream composition. Static archives
+remain compilation/link-input inventories, not finalized downstream linkage.
+
+Non-platform target dylibs and unclassified native flags still fail. Host
+libraries from the selected Rust sysroot require exact file hashes and a unique
+installed-component manifest; their distribution-file identity is explicitly
+not an independent upstream LLVM identity. Universal images, inherited runpaths
+and other host-library providers are not automatically supported. This Apple
+path still needs actual GitHub macOS execution validation; Linux fixture tests
+do not establish Apple runtime behavior.
+
 The native document is bound to the artifact SHA-256 and target. Its companion
 `evidence/native-provenance-*.json` records source, archive and shared-library
 evidence. `evidence/cargo-build.json` preserves the relevant Cargo messages, not
 arbitrary compiler diagnostics or build-script environment variables.
+Known Cargo stripping-failure warnings fail collection even when Cargo reports
+`build-finished: success=true`. The shared collector retains compiler diagnostics
+in `evidence/cargo-build-failure.json` on build-record rejection.
 
 These checks assume a trusted compiler, Cargo and build cache; they are **not**
 a reproducible-build attestation or a defense against a compromised builder.
@@ -588,13 +615,19 @@ runner's entire ambient `PATH`.
 
 The tools-only `sbom-apple-tools` Nix shell exports executable paths. The launcher
 then selects Xcode and starts a clean native environment, dropping Nix SDK/compiler
-flags, credentials and loader overrides. Rust builds use a fresh per-run target
+flags, credentials and ambient loader overrides. It restores only the selected
+Rust toolchain's `lib` directory in `DYLD_FALLBACK_LIBRARY_PATH`, matching the
+runtime lookup bypassed by direct `rustup which` binaries, without substituting
+Nix's LLVM or restoring arbitrary user library directories. A logged
+`rust-objcopy --version` probe must succeed before inventory/build collection.
+Rust builds use a fresh per-run target
 directory. The diagnostic deployment minima are macOS 13 / iOS 14, matching the
 Swift package; this is not an assertion about other products' compatibility.
 
-**The first runs can legitimately fail.** The shared collector still requires
-ELF tooling/native adapters that do not establish Apple provenance. That failure
-must remain red. If the collector cannot reach compilation, a probe using its
+**The first runs can legitimately fail.** The shared collector now selects its
+Apple native adapter rather than treating missing `readelf` as an exemption.
+Unknown providers, unsupported layouts and tool failures must remain red.
+If the collector cannot reach compilation, a probe using its
 shared Cargo invocation collects actual build records, archive member listings,
 Mach-O load commands and embedded-Rust scans where applicable. It never converts
 a failed verifier into successful release evidence or retries a failed compiler.

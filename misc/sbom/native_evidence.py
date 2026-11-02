@@ -9,6 +9,7 @@ import tarfile
 import tomllib
 
 from package_inventory import binary_identity
+from apple_evidence import APPLE_TARGETS, AppleNative
 
 
 ANDROID_TARGETS = {
@@ -41,6 +42,11 @@ def build_records(output):
             message = json.loads(line)
         except ValueError:
             continue
+        if isinstance(message, dict) and message.get("reason") == "compiler-message":
+            diagnostic = message.get("message", {})
+            text = diagnostic.get("message", "") + "\n" + (diagnostic.get("rendered") or "")
+            if re.search(r"stripping\b[^\n]*\bfailed\b", text, re.IGNORECASE):
+                raise NativeError("Cargo reported a stripping failure despite build success: " + diagnostic.get("message", ""))
         if not isinstance(message, dict) or message.get("reason") not in fields:
             continue
         reason = message["reason"]
@@ -181,6 +187,7 @@ class NativeCollector:
         self.providers = []
         self.compiled = {}
         self.scripts = {}
+        self.apple = AppleNative(self) if target in APPLE_TARGETS else None
         for record in records:
             if record["reason"] == "compiler-artifact":
                 kinds = set(record["target"]["kind"])
@@ -296,6 +303,16 @@ class NativeCollector:
             if script is None:
                 raise NativeError(f"Missing target build-script evidence for {package['name']}")
             if script["linked_libs"]:
+                if self.apple and all(flag.startswith("framework=") for flag in script["linked_libs"]):
+                    if script["linked_paths"]:
+                        raise NativeError("Apple framework search overrides require additional provider evidence")
+                    _, provenance = verified_registry_source(package, self.lock)
+                    self.file_evidence(Path(provenance["archive"]))
+                    self.source_component(package)
+                    self.providers.append({"package_id": identifier, "links": package.get("links"), "source": provenance,
+                                           "classification": "apple-sdk-link-requirements",
+                                           "requirements": self.apple.link_requirements(script["linked_libs"])})
+                    continue
                 self.bundled(package, script, self.compiled[identifier].get("features", []))
                 continue
             if package["name"] not in {"rayon-core", "aws-lc-rs", "defmt", "prettyplease"}:
@@ -337,6 +354,8 @@ class NativeCollector:
         return result
 
     def shared_libraries(self, artifact):
+        if self.apple:
+            return self.apple.shared_libraries(artifact)
         with artifact.open("rb") as source:
             if source.read(4) != b"\x7fELF":
                 raise NativeError("Automatic native inspection currently requires ELF artifacts")
@@ -413,8 +432,8 @@ class NativeCollector:
         return requirements
 
     def collect(self, artifact, checksum):
-        if self.target not in {"x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", *ANDROID_TARGETS}:
-            raise NativeError("Automatic native provenance supports Linux GNU and Android targets only")
+        if self.target not in {"x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", *ANDROID_TARGETS, *APPLE_TARGETS}:
+            raise NativeError("Automatic native provenance supports Linux GNU, Android and selected Apple targets only")
         check_link_overrides(self.root, self.target)
         # One package may emit both its library and multiple binaries. Do not
         # lose earlier filenames when its last compiler-artifact replaces a unit.
@@ -437,6 +456,7 @@ class NativeCollector:
     def collect_build_environment(self, checksum):
         if not self.host:
             raise NativeError("Build-environment native inventory requires host compilation context")
+        check_link_overrides(self.root, self.target)
         self.providers_from_build()
         dynamic = []
         tools = set()
@@ -482,4 +502,10 @@ class NativeCollector:
                     "shared_libraries": dynamic,
                     "limitations": ["Trusted Cargo build/cache provenance, not a reproducible-build attestation.",
                                     "ELF default path resolution; runtime overrides and dlopen plugins require deployment inventory."]}
+        if self.apple:
+            evidence["apple_images"] = self.apple.images
+            evidence["limitations"][1] = (
+                "Apple SDK stubs identify link requirements, not deployment OS bytes or upstream composition. "
+                "Runtime overrides, inherited runpaths and dynamically loaded plugins require deployment inventory. "
+                "Static archives are link inputs; their downstream platform/linkage is not finalized here.")
         return bom, evidence

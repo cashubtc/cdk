@@ -60,6 +60,9 @@ def clean_environment(original, tools, developer, target, toolchain):
         DEVELOPER_DIR=str(developer), RUSTUP_TOOLCHAIN=toolchain, CARGO_BUILD_JOBS="2",
         LANG="en_US.UTF-8", LC_ALL="en_US.UTF-8", TZ="UTC", CDK_SBOM_NATIVE_ENV="1")
     environment.update(homes)
+    # Direct rustup-which binaries bypass rustup's macOS runtime setup. Restore
+    # only this toolchain's lib directory, never the ambient loader search path.
+    environment["DYLD_FALLBACK_LIBRARY_PATH"] = str((Path(selected_rust).parent / "lib").resolve())
     if original.get("TMPDIR"):
         environment["TMPDIR"] = original["TMPDIR"]
     if target.endswith("apple-darwin"):
@@ -105,7 +108,7 @@ class Session:
             "runner": {key: os.environ[key] for key in CONTEXT if key in os.environ},
             "limitations": [
                 "Diagnostics are not a final-artifact SBOM, authenticated provenance or a reproducible build.",
-                "The shared native collector currently supports Linux/Android, not Apple host/target provenance.",
+                "Apple native checks cover declared build inputs and platform requirements, not upstream OS composition.",
                 "Archive members are build inputs, not a claim about a downstream application's linked contents.",
                 "Swift package/XCFramework finalization and downstream execution are not performed by this probe.",
             ],
@@ -214,6 +217,23 @@ def inspect_artifacts(session, records, package, environment, target):
         session.save()
 
 
+def probe_rust_objcopy(session, environment):
+    """Fail before compilation if the selected strip tool cannot load its runtime."""
+    if session.command("rust-sysroot", ["rustc", "--print", "sysroot"], environment):
+        raise ValueError("Cannot locate the selected Rust sysroot")
+    sysroot = Path((session.output / "logs/rust-sysroot.log").read_text().strip()).resolve(strict=True)
+    host = re.findall(r"^host: ([A-Za-z0-9_-]+)$", (session.output / "logs/rust.log").read_text(), re.MULTILINE)
+    if len(host) != 1 or not host[0].endswith("-apple-darwin"):
+        raise ValueError("Cannot identify the Apple Rust host for the stripping-tool probe")
+    tool = sysroot / "lib/rustlib" / host[0] / "bin/rust-objcopy"
+    if not tool.is_file() or not tool.resolve().is_relative_to(sysroot):
+        raise ValueError(f"Missing/unsafe selected Rust stripping tool: {tool}")
+    if environment.get("DYLD_FALLBACK_LIBRARY_PATH") != str(sysroot / "lib"):
+        raise ValueError("Rust runtime lookup does not match the selected sysroot")
+    if session.command("rust-objcopy-runtime", [tool, "--version"], environment):
+        raise ValueError("Selected rust-objcopy cannot load its toolchain runtime; refusing an unstripped build")
+
+
 def diagnose(args):
     session = Session(args.output, args.target, args.product, args.profile)
     error = None
@@ -237,9 +257,10 @@ def diagnose(args):
                 ("cargo", ["cargo", "--version"])):
             session.command(name, command, environment)
         session.report["tool_selection"] = {key: environment[key] for key in (
-            "DEVELOPER_DIR", "RUSTUP_TOOLCHAIN", "CARGO_HOME", "RUSTUP_HOME", "MACOSX_DEPLOYMENT_TARGET",
+            "DEVELOPER_DIR", "RUSTUP_TOOLCHAIN", "CARGO_HOME", "RUSTUP_HOME", "DYLD_FALLBACK_LIBRARY_PATH", "MACOSX_DEPLOYMENT_TARGET",
             "IPHONEOS_DEPLOYMENT_TARGET") if key in environment}
         session.report["flake_lock_sha256"] = digest(ROOT / "flake.lock")
+        probe_rust_objcopy(session, environment)
         exclusions = [argument for language in LANGUAGES for argument in ("--exclude-language", language)]
         common = [sys.executable, ROOT / "misc/sbom/sbom.py", args.product, "--target", args.target,
                   "--profile", args.profile, *exclusions]

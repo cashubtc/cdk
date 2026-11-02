@@ -46,6 +46,7 @@ class AppleDiagnosticTests(unittest.TestCase):
                     "AWS_SECRET_ACCESS_KEY": "secret", "NIX_CFLAGS_COMPILE": "wrong-sdk-flags",
                     "SDKROOT": "/nix/store/not-xcode", "CC": "unexpected-compiler", "RUSTFLAGS": "-L/extra",
                     "DYLD_LIBRARY_PATH": "/unexpected/lib", "CARGO_TARGET_DIR": "/old-cache",
+                    "DYLD_FALLBACK_LIBRARY_PATH": "/unexpected/fallback:/nix/store/wrong-llvm/lib",
                     "CDK_SBOM_RUST_BIN": "/opt/runner-rust/toolchains/pinned/bin",
                     "CDK_SBOM_CARGO_HOME": "/opt/runner-rust/cargo", "CDK_SBOM_RUSTUP_HOME": "/opt/runner-rust/rustup"}
         env = apple.clean_environment(original, "/nix/store/tools/bin", Path("/Applications/Xcode.app/Contents/Developer"),
@@ -60,6 +61,7 @@ class AppleDiagnosticTests(unittest.TestCase):
         self.assertNotIn("/Users/runner/.cargo/bin", env["PATH"].split(os.pathsep))
         self.assertEqual(env["CARGO_HOME"], original["CDK_SBOM_CARGO_HOME"])
         self.assertEqual(env["RUSTUP_HOME"], original["CDK_SBOM_RUSTUP_HOME"])
+        self.assertEqual(env["DYLD_FALLBACK_LIBRARY_PATH"], "/opt/runner-rust/toolchains/pinned/lib")
         ios = apple.clean_environment(original, "/tools/bin", Path("/Xcode"), "aarch64-apple-ios", "1.99.0")
         self.assertNotIn("MACOSX_DEPLOYMENT_TARGET", ios)
         self.assertNotIn("SDKROOT", ios)
@@ -212,7 +214,11 @@ class AppleDiagnosticTests(unittest.TestCase):
         package = {"name": "cdk-ffi-swift", "version": "1", "manifest_path": str(manifest),
                    "targets": [{"name": "cdk_ffi_swift", "kind": ["lib"], "crate_types": ["staticlib", "cdylib"]}]}
         args = apple.parser().parse_args(["run", "--target", "aarch64-apple-darwin", "--profile", "dev",
-                                          "--output", str(root / "run")])
+                                           "--output", str(root / "run")])
+        sysroot = root / "rust-toolchain"
+        objcopy = sysroot / "lib/rustlib/aarch64-apple-darwin/bin/rust-objcopy"
+        objcopy.parent.mkdir(parents=True)
+        objcopy.write_text("tool fixture; not executed on Linux")
 
         def fake_command(session, name, arguments, environment=None, timeout=900):
             log = session.output / "logs" / (name + ".log")
@@ -221,6 +227,10 @@ class AppleDiagnosticTests(unittest.TestCase):
             code = 0
             if name == "shared-build-verifier":
                 code, text = 1, verifier_text
+            elif name == "rust":
+                text = "rustc fixture\nhost: aarch64-apple-darwin\n"
+            elif name == "rust-sysroot":
+                text = str(sysroot)
             elif name == "product-metadata":
                 text = json.dumps({"packages": [package]})
             elif name == "cargo-build-probe":
@@ -235,10 +245,37 @@ class AppleDiagnosticTests(unittest.TestCase):
                                                "returncode": code, "log": str(log.relative_to(session.output))})
             return code
 
-        with patch.object(apple.sys, "platform", "darwin"), patch.dict(os.environ, {"CDK_SBOM_NATIVE_ENV": "1"}, clear=True), \
+        with patch.object(apple.sys, "platform", "darwin"), patch.dict(os.environ, {
+                "CDK_SBOM_NATIVE_ENV": "1", "DYLD_FALLBACK_LIBRARY_PATH": str(sysroot / "lib")}, clear=True), \
                 patch.object(apple.Session, "command", fake_command):
             self.assertEqual(apple.diagnose(args), 1)
         return json.loads((root / "run/report.json").read_text())
+
+    def test_objcopy_runtime_failure_stops_before_any_compilation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sysroot = root / "toolchain"
+            tool = sysroot / "lib/rustlib/aarch64-apple-darwin/bin/rust-objcopy"
+            tool.parent.mkdir(parents=True)
+            tool.write_text("fixture")
+            session = apple.Session(root / "run", "aarch64-apple-darwin", "cdk-ffi-swift", "dev")
+            (session.output / "logs").mkdir()
+            (session.output / "logs/rust.log").write_text("host: aarch64-apple-darwin\n")
+
+            def command(name, arguments, environment):
+                if name == "rust-sysroot":
+                    (session.output / "logs/rust-sysroot.log").write_text(str(sysroot))
+                    return 0
+                self.assertEqual(name, "rust-objcopy-runtime")
+                self.assertEqual(arguments, [tool, "--version"])
+                return -6
+
+            environment = {"DYLD_FALLBACK_LIBRARY_PATH": str(sysroot / "lib")}
+            with patch.object(session, "command", side_effect=command):
+                with self.assertRaisesRegex(ValueError, "cannot load its toolchain runtime"):
+                    apple.probe_rust_objcopy(session, environment)
+                with self.assertRaisesRegex(ValueError, "does not match"):
+                    apple.probe_rust_objcopy(session, {"DYLD_FALLBACK_LIBRARY_PATH": "/other/llvm"})
 
     def test_fallback_collects_real_shaped_records_without_waiving_verifier_failure(self):
         with tempfile.TemporaryDirectory() as directory:

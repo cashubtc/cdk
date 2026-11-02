@@ -15,6 +15,7 @@ import tempfile
 import uuid
 
 from native_evidence import NativeCollector, NativeError, build_records
+from apple_evidence import APPLE_TARGETS
 from assurance import DIMENSIONS, assessment, require
 from package_inventory import archive_natives, file_bom, go_bom, maven_bom, native_files, native_record
 from rust_inventory import resolve_consumer, resolved_bom
@@ -372,7 +373,12 @@ class Collector:
         if self.args.build:
             tools.add("syft")
             if not self.args.existing:
-                tools.update({"cargo-auditable", "readelf"})
+                tools.add("cargo-auditable")
+                apple_target = self.args.target in APPLE_TARGETS or (not self.args.target and sys.platform == "darwin")
+                if sys.platform == "darwin" or apple_target:
+                    tools.add("xcrun")
+                if sys.platform != "darwin" or not apple_target:
+                    tools.add("readelf")
         missing = sorted(tool for tool in tools if not shutil.which(tool))
         if missing:
             raise SbomError("Missing tools: " + ", ".join(missing) +
@@ -684,7 +690,19 @@ class Collector:
                 self.evidence(ROOT / "misc/sbom/link_evidence.py", "linker/collector.py")
                 self.evidence(wrapper, "linker/wrapper.py")
             output = run(command, self.root, environment)
-            records = build_records(output)
+            try:
+                records = build_records(output)
+            except NativeError as error:
+                diagnostics = []
+                for line in output.splitlines():
+                    try:
+                        message = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(message, dict) and message.get("reason") == "compiler-message":
+                        diagnostics.append(message)
+                self.generated_evidence("cargo-build-failure.json", {"error": str(error), "compiler_diagnostics": diagnostics})
+                raise
             self.generated_evidence("cargo-build.json", records)
             if self.args.linker_maps:
                 maps = []
