@@ -1788,6 +1788,27 @@
               // envVars
             );
 
+            # Generator versions and their dependencies are pinned by flake.lock.
+            # Apple SDKs and the Android SDK remain platform-specific prerequisites.
+            sbom = pkgs.mkShell {
+              packages = [
+                stable_toolchain
+                pkgs.python3
+                pkgs.just
+                pkgs.git
+                pkgs.cargo-cyclonedx
+                pkgs.cargo-auditable
+                pkgs.cdxgen
+                pkgs.cyclonedx-cli
+                pkgs.syft
+                pkgs.binutils
+                pkgs.openssl
+                dartpkgs.default
+                pkgs.go
+                pkgs.jdk17
+              ];
+            };
+
             # Shell for bindings development (Dart + Swift + Kotlin + Go FFI)
             bindings = pkgs.mkShell (
               {
@@ -1894,6 +1915,32 @@
                 JAVA_HOME = "${pkgs.jdk17}";
               };
 
+            sbom-android =
+              let
+                pkgsAndroid = import nixpkgs {
+                  inherit system;
+                  config = {
+                    android_sdk.accept_license = true;
+                    allowUnfree = true;
+                  };
+                };
+                android = pkgsAndroid.androidenv.composeAndroidPackages {
+                  platformVersions = [ "34" ];
+                  buildToolsVersions = [ "34.0.0" ];
+                  includeEmulator = true;
+                  includeSystemImages = true;
+                  systemImageTypes = [ "google_apis" ];
+                  abiVersions = [ "x86_64" ];
+                  includeNDK = false;
+                };
+              in
+              pkgs.mkShell {
+                inputsFrom = [ sbom ];
+                packages = [ android.androidsdk pkgs.jdk21 ];
+                ANDROID_HOME = "${android.androidsdk}/libexec/android-sdk";
+                JAVA_HOME = "${pkgs.jdk21}";
+              };
+
           in
           {
             inherit
@@ -1906,11 +1953,12 @@
               nutshell
               ffi
               bindings
+              sbom
               kotlin-build
               kotlin-publish
               ;
             default = stable;
-          };
+          } // pkgs.lib.optionalAttrs (system == "x86_64-linux") { inherit sbom-android; };
       }
     );
 }

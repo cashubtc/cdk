@@ -203,9 +203,11 @@ jobs:
 
       - name: Build (Nix)
         run: |
-          nix develop --fallback -L .#kotlin-build --command \
-            cargo build --locked --profile release-ffi -p cdk-ffi-kotlin \
-              --target ${{ matrix.target }}
+          nix develop --fallback -L .#sbom --command \
+            nix develop --fallback -L .#kotlin-build --command \
+            just build-sbom cdk-ffi-kotlin --exclude-language kotlin \
+              --profile release-ffi --target ${{ matrix.target }} \
+              --linker-maps --output target/sbom/release-build
 
       # uniffi 0.30 reads the component interface statically from the library
       # (it does not load it), so the arm64 Android .so works as the source on
@@ -215,13 +217,13 @@ jobs:
       - name: Generate Kotlin bindings
         if: matrix.target == 'aarch64-linux-android'
         run: |
-          mkdir -p generated-bindings
+          mkdir -p target/kotlin-generated
           nix develop --fallback -L .#kotlin-build --command \
             cargo run --locked --release -p cdk-ffi-kotlin --bin uniffi-bindgen-kotlin -- generate \
               --library "target/${{ matrix.target }}/release-ffi/${{ matrix.artifact }}" \
               --language kotlin \
               --config bindings/kotlin/rust/uniffi.toml \
-              --out-dir generated-bindings \
+              --out-dir target/kotlin-generated \
               --no-format
 
       - name: Upload generated bindings
@@ -229,15 +231,20 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: kotlin-bindings-generated
-          path: generated-bindings/
+          path: target/kotlin-generated/
           if-no-files-found: error
 
       - name: Strip debug symbols
         shell: bash
         run: |
-          FILE="target/${{ matrix.target }}/release-ffi/${{ matrix.artifact }}"
-          nix develop --fallback -L .#kotlin-build --command \
-            bash -c '"$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" --strip-all '"$FILE"
+          # Expanded by the inner shell after the Android Nix environment loads.
+          # shellcheck disable=SC2016
+          nix develop --fallback -L .#sbom --command \
+            nix develop --fallback -L .#kotlin-build --command \
+            bash -c 'just finalize-sbom --build-run target/sbom/release-build \
+              --original "target/${{ matrix.target }}/release-ffi/${{ matrix.artifact }}" \
+              --strip-tool "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" \
+              --require-assurance final_bytes --output target/sbom/release-final'
 
       - name: Verify Android ELF 16 KB alignment
         # The 16 KB page size requirement applies to 64-bit ABIs only;
@@ -245,7 +252,7 @@ jobs:
         if: matrix.target == 'aarch64-linux-android' || matrix.target == 'x86_64-linux-android'
         shell: bash
         run: |
-          FILE="target/${{ matrix.target }}/release-ffi/${{ matrix.artifact }}"
+          FILE="target/sbom/release-final/stripped/0/${{ matrix.artifact }}"
           nix develop --fallback -L .#kotlin-build --command \
             .github/scripts/check-android-elf-alignment.sh "$FILE"
 
@@ -253,7 +260,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist
-          cp "target/${{ matrix.target }}/release-ffi/${{ matrix.artifact }}" \
+          cp "target/sbom/release-final/stripped/0/${{ matrix.artifact }}" \
              "dist/${{ matrix.target }}-${{ matrix.artifact }}"
 
       - name: Upload artifact
@@ -261,6 +268,13 @@ jobs:
         with:
           name: kotlin-native-${{ matrix.target }}
           path: dist/
+
+      - name: Upload native build and final-byte evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: kotlin-evidence-${{ matrix.target }}
+          path: target/sbom/release-final/
+          if-no-files-found: error
 
   kotlin-publish:
     name: "kotlin: Publish to cdk-kotlin"
@@ -324,7 +338,7 @@ jobs:
           for f in artifacts/*; do
             filename=$(basename "$f")
             [[ "$filename" == *"-${suffix}" ]] || continue
-            rust_target="${filename%-${suffix}}"
+            rust_target="${filename%-"${suffix}"}"
             abi="${ANDROID_ABI[$rust_target]+${ANDROID_ABI[$rust_target]}}"
             [[ -n "$abi" ]] || { echo "no ABI mapping for ${rust_target}, skipping" >&2; continue; }
             dst="cdk-kotlin/cdk-android/src/main/jniLibs/${abi}"
@@ -338,6 +352,42 @@ jobs:
         with:
           name: kotlin-bindings-generated
           path: cdk-kotlin/cdk-jvm/src/main/kotlin
+
+      - name: Download native verification evidence
+        uses: actions/download-artifact@v8
+        with:
+          path: ./native-evidence
+          pattern: kotlin-evidence-*
+
+      - name: Inventory binding dependencies and build the real release AAR
+        run: |
+          nix develop --fallback -L ./cdk#sbom --command \
+            nix develop --fallback -L ./cdk#kotlin-publish --command \
+            python3 cdk/misc/sbom/sbom.py kotlin --target aarch64-linux-android \
+              --project "kotlin=$PWD/cdk-kotlin" --output sbom/kotlin-resolved
+          nix develop --fallback -L ./cdk#kotlin-publish --command \
+            bash cdk-kotlin/gradlew -p cdk-kotlin --no-daemon :cdk-android:assembleRelease
+
+      - name: Verify every native library in the final release AAR
+        shell: bash
+        run: |
+          args=()
+          for target in aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android; do
+            args+=(--build-run "native-evidence/kotlin-evidence-${target}")
+            args+=(--original "artifacts/${target}-libcdk_ffi_kotlin.so")
+          done
+          nix develop --fallback -L ./cdk#sbom --command \
+            python3 cdk/misc/sbom/finalize.py "${args[@]}" \
+              --inventory-run sbom/kotlin-resolved \
+              --distribution cdk-kotlin/cdk-android/build/outputs/aar/cdk-android-release.aar \
+              --require-assurance final_bytes --output sbom/kotlin-final
+
+      - name: Retain verified release SBOMs
+        uses: actions/upload-artifact@v7
+        with:
+          name: kotlin-release-sbom
+          path: sbom/kotlin-final/
+          if-no-files-found: error
 
       - name: Commit to release branch
         working-directory: cdk-kotlin
@@ -369,9 +419,12 @@ jobs:
           ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }}
           ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_PASSWORD }}
         run: |
+          export CDK_SBOM_RELEASE_AAR_SHA256
+          CDK_SBOM_RELEASE_AAR_SHA256=$(python3 -c 'import json; print(json.load(open("../sbom/kotlin-final/evidence/distribution-0-manifest.json"))[0]["sha256"])')
           nix develop --fallback -L ../cdk#kotlin-publish --command \
             env -u ANDROID_SDK_ROOT \
-            ./gradlew --no-parallel publishAndReleaseToMavenCentral
+            ./gradlew --no-parallel --init-script ../cdk/misc/sbom/release-check.init.gradle \
+              publishAndReleaseToMavenCentral
 
       - name: Create release on cdk-kotlin
         working-directory: cdk-kotlin

@@ -81,6 +81,15 @@ jobs:
       - name: Cargo.lock is up to date
         run: nix develop --fallback -i -L .#stable --command cargo metadata --locked --format-version 1 > /dev/null
 
+  sbom-tests:
+    name: "SBOM collection integrity"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - name: Test SBOM orchestration (offline)
+        run: python3 -m unittest discover -s misc/sbom -p 'test_*.py' -v
+
   fuzz-check:
     name: "Fuzz targets compile and smoke test"
     runs-on: self-hosted

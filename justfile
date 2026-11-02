@@ -97,6 +97,46 @@ build *ARGS="--workspace --all-targets":
   fi
   cargo build {{ARGS}}
 
+# Generate Rust and language-binding dependency inventories (see docs/sbom.md).
+sbom *ARGS:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  exec python3 "{{justfile_directory()}}/misc/sbom/sbom.py" "$@"
+
+# Build a package and require artifact, Rust and native dependency evidence.
+build-sbom +ARGS:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  exec python3 "{{justfile_directory()}}/misc/sbom/sbom.py" --build "$@"
+
+# Test SBOM orchestration without downloading dependencies or building CDK.
+test-sbom:
+  python3 -m unittest discover -s misc/sbom -p 'test_*.py' -v
+
+# Assemble real generated Go bindings and explicitly supplied native libraries for inventory.
+sbom-go-package +ARGS:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  exec python3 "{{justfile_directory()}}/misc/sbom/assemble_go.py" "$@"
+
+# Verify actual stripped binaries and final packages against their observed builds.
+finalize-sbom +ARGS:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  exec python3 "{{justfile_directory()}}/misc/sbom/finalize.py" "$@"
+
+# Sign a completed index, or verify it against an explicitly authorized builder key.
+sbom-provenance +ARGS:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  exec python3 "{{justfile_directory()}}/misc/sbom/provenance.py" "$@"
+
+# Execute an AAR consumer on a private or explicitly selected Android emulator.
+test-sbom-android +ARGS:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  exec python3 "{{justfile_directory()}}/misc/sbom/android_consumer.py" "$@"
+
 # Build the default Nix package.
 nix-build:
   nix build --accept-flake-config

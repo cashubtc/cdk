@@ -1,0 +1,29 @@
+// Guard the bytes Maven actually stages, after artifact-producing tasks finish.
+import java.security.MessageDigest
+import org.gradle.api.publish.maven.tasks.PublishToMavenRepository
+
+def expected = System.getenv('CDK_SBOM_RELEASE_AAR_SHA256')
+if (expected == null || !(expected ==~ /[0-9a-f]{64}/)) {
+    throw new GradleException('A verified final AAR digest is required for publication')
+}
+
+allprojects {
+    tasks.withType(PublishToMavenRepository).configureEach {
+        def checkArtifacts = {
+            def archives = publication.artifacts.findAll { it.extension == 'aar' }
+            archives.each { artifact ->
+                def checksum = MessageDigest.getInstance('SHA-256')
+                artifact.file.withInputStream { input ->
+                    byte[] buffer = new byte[1024 * 1024]
+                    int count
+                    while ((count = input.read(buffer)) > 0) checksum.update(buffer, 0, count)
+                }
+                if (checksum.digest().encodeHex().toString() != expected) {
+                    throw new GradleException('Published AAR bytes differ from the final verified SBOM subject')
+                }
+            }
+        }
+        doFirst { checkArtifacts() }
+        doLast { checkArtifacts() }
+    }
+}

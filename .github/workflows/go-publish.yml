@@ -181,9 +181,21 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Build cdk-ffi-go
+        if: "!contains(matrix.target, 'unknown-linux')"
         run: |
           cargo build --locked --profile release-ffi --package cdk-ffi-go \
-            --target ${{ matrix.target }}
+              --target ${{ matrix.target }}
+
+      - name: Install Nix for Linux release verification
+        if: contains(matrix.target, 'unknown-linux')
+        uses: DeterminateSystems/nix-installer-action@v22
+
+      - name: Build and inventory Linux release library
+        if: contains(matrix.target, 'unknown-linux')
+        run: |
+          nix develop --fallback -L .#sbom --command \
+            just build-sbom cdk-ffi-go --exclude-language go --profile release-ffi \
+              --target ${{ matrix.target }} --linker-maps --output target/sbom/release-build
 
       - name: Fix dylib install name
         if: endsWith(matrix.artifact, '.dylib')
@@ -192,7 +204,7 @@ jobs:
             target/${{ matrix.target }}/release-ffi/${{ matrix.artifact }}
 
       - name: Install uniffi-bindgen-go
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        if: contains(matrix.target, 'unknown-linux')
         run: |
           cargo install uniffi-bindgen-go \
             --git https://github.com/NordSecurity/uniffi-bindgen-go \
@@ -200,25 +212,25 @@ jobs:
             --locked --force
 
       - name: Generate Go bindings
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        if: contains(matrix.target, 'unknown-linux')
         run: |
-          mkdir -p generated-bindings
+          mkdir -p target/go-generated
           uniffi-bindgen-go \
             "target/${{ matrix.target }}/release-ffi/${{ matrix.artifact }}" \
             --library \
             --config bindings/go/uniffi.toml \
-            --out-dir generated-bindings
+            --out-dir target/go-generated
 
       - name: Upload generated bindings
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         uses: actions/upload-artifact@v7
         with:
           name: go-bindings-generated
-          path: generated-bindings/
+          path: target/go-generated/
           if-no-files-found: error
 
       - name: Strip debug symbols (MSVC keeps them in a separate .pdb)
-        if: "!contains(matrix.target, 'windows')"
+        if: "!contains(matrix.target, 'windows') && !contains(matrix.target, 'unknown-linux')"
         run: |
           FILE="target/${{ matrix.target }}/release-ffi/${{ matrix.artifact }}"
           case "${{ matrix.target }}" in
@@ -226,17 +238,45 @@ jobs:
             *)          strip --strip-all "$FILE" ;;
           esac
 
+      - name: Verify stripped Linux bytes and run a real downstream Go executable
+        if: contains(matrix.target, 'unknown-linux')
+        run: |
+          nix develop --fallback -L .#sbom --command \
+            just sbom-go-package --bindings target/go-generated/cdkffi \
+              --library "${{ matrix.target }}=target/${{ matrix.target }}/release-ffi/${{ matrix.artifact }}" \
+              --output target/sbom/release-go-package
+          nix develop --fallback -L .#sbom --command \
+            just finalize-sbom --build-run target/sbom/release-build \
+              --original "target/${{ matrix.target }}/release-ffi/${{ matrix.artifact }}" \
+              --strip-tool strip --go-project target/sbom/release-go-package \
+              --require-assurance final_bytes --require-assurance consumer_execution \
+              --output target/sbom/release-final
+
       - name: Prepare artifact
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
         run: |
           mkdir -p dist
-          cp "target/${{ matrix.target }}/release-ffi/${{ matrix.artifact }}" \
-             "dist/${{ matrix.target }}-${{ matrix.artifact }}"
+          FILE="target/${{ matrix.target }}/release-ffi/${{ matrix.artifact }}"
+          if [[ "$BUILD_TARGET" == *unknown-linux* ]]; then
+            FILE="target/sbom/release-final/stripped/0/${{ matrix.artifact }}"
+          fi
+          cp "$FILE" \
+              "dist/${{ matrix.target }}-${{ matrix.artifact }}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
           name: go-native-${{ matrix.target }}
           path: dist/
+
+      - name: Upload verified Linux release evidence
+        if: contains(matrix.target, 'unknown-linux')
+        uses: actions/upload-artifact@v7
+        with:
+          name: go-evidence-${{ matrix.target }}
+          path: target/sbom/release-final/
+          if-no-files-found: error
 
   go-publish:
     name: "go: Publish to cdk-go"
@@ -371,6 +411,48 @@ jobs:
       - name: Verify the published package links and compiles
         working-directory: cdk-go
         run: go build ./bindings/cdkffi
+
+      - name: Checkout CDK verification tooling
+        uses: actions/checkout@v5
+        with:
+          path: cdk
+          ref: ${{ env.CDK_CHECKOUT_REF }}
+          persist-credentials: false
+
+      - name: Install Nix for final package verification
+        uses: DeterminateSystems/nix-installer-action@v22
+
+      - name: Download Linux verification evidence
+        uses: actions/download-artifact@v8
+        with:
+          path: ./native-evidence
+          pattern: go-evidence-*
+
+      - name: Inventory the assembled Go module
+        run: |
+          nix develop --fallback -L ./cdk#sbom --command \
+            python3 cdk/misc/sbom/sbom.py go --project "go=$PWD/cdk-go" --output sbom/go-resolved
+
+      - name: Verify Linux libraries in the exact publish tree
+        run: |
+          args=()
+          for pair in x86_64-unknown-linux-gnu:linux_amd64 aarch64-unknown-linux-gnu:linux_arm64; do
+            target=${pair%%:*}
+            platform=${pair#*:}
+            args+=(--build-run "native-evidence/go-evidence-${target}")
+            args+=(--original "cdk-go/bindings/cdkffi/native/${platform}/libcdk_ffi_go.so")
+            args+=(--distribution "cdk-go/bindings/cdkffi/native/${platform}")
+          done
+          nix develop --fallback -L ./cdk#sbom --command \
+            python3 cdk/misc/sbom/finalize.py "${args[@]}" --inventory-run sbom/go-resolved \
+              --require-assurance final_bytes --output sbom/go-linux-final
+
+      - name: Retain verified Linux release SBOMs
+        uses: actions/upload-artifact@v7
+        with:
+          name: go-linux-release-sbom
+          path: sbom/go-linux-final/
+          if-no-files-found: error
 
       - name: Update checksums
         run: |
