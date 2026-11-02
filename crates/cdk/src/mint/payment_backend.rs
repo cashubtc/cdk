@@ -4,7 +4,7 @@ use std::sync::Arc;
 use cdk_common::common::PaymentProcessorKey;
 use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::MintQuote;
-use cdk_common::payment::DynMintPayment;
+use cdk_common::payment::{DynMintPayment, WaitPaymentResponse};
 use cdk_common::util::unix_time;
 use cdk_common::MintQuoteState;
 use tracing::instrument;
@@ -17,6 +17,41 @@ use crate::Error;
 pub(super) const MINT_QUOTE_PAYMENT_CHECK_INTERVAL_SECS: u64 = 10;
 
 impl Mint {
+    // Both delivery paths retain the first recorded amount for a payment ID.
+    pub(super) fn payment_already_recorded(
+        quote: &MintQuote,
+        payment: &WaitPaymentResponse,
+    ) -> bool {
+        let Some(recorded) = quote
+            .payments
+            .iter()
+            .find(|p| p.payment_id == payment.payment_id)
+        else {
+            return false;
+        };
+        match payment.payment_amount.convert_to(&quote.unit) {
+            Ok(amount) if amount != recorded.amount => {
+                tracing::warn!(
+                    quote_id = %quote.id,
+                    payment_id = %payment.payment_id,
+                    recorded_amount = %recorded.amount,
+                    backend_amount = %amount,
+                    "Backend payment amount differs from recorded payment; keeping recorded amount",
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    quote_id = %quote.id,
+                    payment_id = %payment.payment_id,
+                    error = %error,
+                    "Could not compare duplicate backend payment amount; keeping recorded amount",
+                );
+            }
+            Ok(_) => {}
+        }
+        true
+    }
+
     /// Static implementation of check_mint_quote_paid to avoid circular dependency to the Mint
     pub(crate) async fn check_mint_quote_payments(
         localstore: DynMintDatabase,
@@ -117,7 +152,7 @@ impl Mint {
         let mut recorded_payment_count = 0usize;
 
         for payment in payment_status {
-            if !new_quote.payment_ids().contains(&&payment.payment_id)
+            if !Self::payment_already_recorded(&new_quote, &payment)
                 && payment.payment_amount.value() > 0
             {
                 tracing::debug!(

@@ -1206,10 +1206,7 @@ impl Mint {
         );
 
         let quote_state = mint_quote.state();
-        if !mint_quote
-            .payment_ids()
-            .contains(&&wait_payment_response.payment_id)
-        {
+        if !Self::payment_already_recorded(mint_quote, &wait_payment_response) {
             if mint_quote.payment_method.is_bolt11()
                 && (quote_state == MintQuoteState::Issued || quote_state == MintQuoteState::Paid)
             {

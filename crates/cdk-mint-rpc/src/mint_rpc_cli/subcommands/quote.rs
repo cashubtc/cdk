@@ -73,17 +73,24 @@ pub async fn get_quote_ttl(client: &mut QuoteServiceClient<Channel>) -> Result<(
     Ok(())
 }
 
-/// Command to update the state of a mint quote
+/// Command to record a manual payment against a mint quote.
 ///
-/// Mint quotes represent pending mint operations. This command allows updating
-/// the state of a quote (e.g., marking it as paid) to process the minting of tokens.
+/// Requires the actual backend payment ID. BOLT11 defaults to its unpaid
+/// remainder; other methods require an explicit amount. Later backend reports
+/// for the same payment ID do not adjust the recorded amount.
 #[derive(Args, Debug)]
 pub struct UpdateMintQuoteStateCommand {
     /// The ID of the quote to update
     quote_id: String,
-    /// The new state to set for the quote (default: "PAID")
+    /// The new state to set for the quote; the server only supports "PAID"
     #[arg(default_value = "PAID")]
     state: String,
+    /// Amount to credit; BOLT11 defaults to its full unpaid remainder, required otherwise
+    #[arg(long)]
+    amount: Option<u64>,
+    /// Actual backend payment ID represented by this credit
+    #[arg(long)]
+    payment_id: String,
 }
 
 /// Executes the update_mint_quote_state command against the mint server
@@ -109,6 +116,8 @@ pub async fn update_mint_quote_state(
         .update_mint_quote_state(Request::new(UpdateMintQuoteStateRequest {
             quote_id: sub_command_args.quote_id.clone(),
             state: state.into(),
+            amount: sub_command_args.amount,
+            payment_id: Some(sub_command_args.payment_id.clone()),
         }))
         .await?;
 
