@@ -5,7 +5,8 @@
 
 use std::str::FromStr;
 
-use bitcoin::bech32::{self, Bech32, Bech32m, Hrp};
+use bitcoin::bech32::primitives::decode::{CheckedHrpstring, CheckedHrpstringError};
+use bitcoin::bech32::{self, Bech32, Bech32m, DecodeError, Hrp};
 
 use super::Error;
 use crate::mint_url::MintUrl;
@@ -781,9 +782,17 @@ impl PaymentRequest {
     ///
     /// NUT-26 encoders accept either form; an `npub` carries no relays.
     fn decode_nostr_target(target: &str) -> Result<(Vec<u8>, Vec<String>), Error> {
-        let (hrp, data) = bech32::decode(target).map_err(Error::Bech32Error)?;
+        let (hrp, _) = bech32::decode(target).map_err(Error::Bech32Error)?;
         // `Hrp` equality ignores case, so an all-uppercase NPUB1... matches too
         if hrp == NPUB_HRP {
+            // NIP-19 bare keys use Bech32. `bech32::decode` also accepts Bech32m,
+            // which is only valid for the outer CREQ-B string.
+            let checked = CheckedHrpstring::new::<Bech32>(target).map_err(|e| match e {
+                CheckedHrpstringError::Checksum(e) => Error::Bech32Error(DecodeError::Checksum(e)),
+                CheckedHrpstringError::Parse(e) => Error::Bech32Error(DecodeError::Parse(e)),
+                _ => Error::InvalidStructure,
+            })?;
+            let data: Vec<u8> = checked.byte_iter().collect();
             if data.len() != 32 {
                 return Err(Error::InvalidLength);
             }
@@ -951,6 +960,19 @@ mod tests {
                 .expect("uppercase npub targets should encode"),
             lowercase.to_bech32_string().unwrap()
         );
+    }
+
+    #[test]
+    fn test_nostr_transport_rejects_bech32m_npub_target() {
+        let hrp = bitcoin::bech32::Hrp::parse("npub").unwrap();
+        let bech32m_npub =
+            bitcoin::bech32::encode::<bitcoin::bech32::Bech32m>(hrp, &[7u8; 32]).unwrap();
+        let payment_request = nostr_payment_request(bech32m_npub);
+
+        assert!(matches!(
+            payment_request.to_bech32_string(),
+            Err(Error::Bech32Error(DecodeError::Checksum(_)))
+        ));
     }
 
     #[test]
