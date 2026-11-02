@@ -580,6 +580,12 @@ Rust from `rust-toolchain.toml`, and gets SBOM tools and Protobuf (`protoc`) fro
 is capped at two jobs; newer runs cancel older runs on the same branch or PR, even
 when the selected target set, product or profile changes.
 
+Before entering Nix, the workflow resolves the pinned `cargo` and `rustc` with
+`rustup which --toolchain`, records their binary directory and Cargo/rustup home
+paths, and saves `rust-setup.log`. The launcher uses those explicit locations;
+it does not assume that Rust is installed in `$HOME/.cargo/bin` or restore the
+runner's entire ambient `PATH`.
+
 The tools-only `sbom-apple-tools` Nix shell exports executable paths. The launcher
 then selects Xcode and starts a clean native environment, dropping Nix SDK/compiler
 flags, credentials and loader overrides. Rust builds use a fresh per-run target
@@ -598,7 +604,7 @@ consumer execution remain separate implementation milestones.
 Download the `apple-sbom-<product>-<target>-<run>-<attempt>` artifact from the
 Actions run and share it with the run URL. It retains:
 
-- `runner.log` and `bootstrap.log`, including tool-setup failures;
+- `runner.log`, `rust-setup.log` and `bootstrap.log`, including tool-setup failures;
 - `run/report.json`, per-command logs/exit codes and diagnostic limitations;
 - resolved inventories and incomplete verifier indexes, when available;
 - reduced Cargo build records, artifact hashes and Apple inspection reports;

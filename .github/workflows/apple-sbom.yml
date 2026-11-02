@@ -122,6 +122,24 @@ jobs:
         with:
           toolchain: ${{ needs.prepare.outputs.toolchain }}
           targets: ${{ matrix.target }}
+      - name: Record Rust locations before entering Nix
+        env:
+          PINNED_TOOLCHAIN: ${{ needs.prepare.outputs.toolchain }}
+        run: |
+          rustc_path=$(rustup which --toolchain "$PINNED_TOOLCHAIN" rustc)
+          cargo_path=$(rustup which --toolchain "$PINNED_TOOLCHAIN" cargo)
+          rust_bin=$(dirname "$rustc_path")
+          [[ "$rust_bin" == "$(dirname "$cargo_path")" && -x "$rustc_path" && -x "$cargo_path" ]]
+          {
+            echo "CDK_SBOM_RUST_BIN=$rust_bin"
+            echo "CDK_SBOM_CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}"
+            echo "CDK_SBOM_RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}"
+          } >> "$GITHUB_ENV"
+          {
+            echo "Selected Rust binary directory: $rust_bin"
+            "$rustc_path" -vV
+            "$cargo_path" --version
+          } 2>&1 | tee "$OUT/rust-setup.log"
       - name: Install Nix for pinned SBOM tools only
         uses: DeterminateSystems/nix-installer-action@v22
       - name: Run the shared collector and retain additional Apple diagnostics

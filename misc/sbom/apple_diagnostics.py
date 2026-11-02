@@ -47,11 +47,19 @@ def clean_environment(original, tools, developer, target, toolchain):
     directories = tools.split(os.pathsep)
     if not home.is_absolute() or not directories or any(not Path(path).is_absolute() for path in directories):
         raise ValueError("HOME and pinned SBOM tool paths must be absolute")
+    selected_rust = original.get("CDK_SBOM_RUST_BIN")
+    if not selected_rust or not Path(selected_rust).is_absolute():
+        raise ValueError("Capture the pinned rustup toolchain's binary directory in CDK_SBOM_RUST_BIN before entering Nix")
+    homes = {key: original.get("CDK_SBOM_" + key, original.get(key, str(home / directory)))
+             for key, directory in (("CARGO_HOME", ".cargo"), ("RUSTUP_HOME", ".rustup"))}
+    if any(not Path(value).is_absolute() for value in homes.values()):
+        raise ValueError("Captured Cargo and rustup home paths must be absolute")
     environment = {key: original[key] for key in CONTEXT if key in original}
     environment.update(HOME=str(home), PATH=os.pathsep.join([
-        *directories, str(home / ".cargo/bin"), "/usr/bin", "/bin", "/usr/sbin", "/sbin"]),
+        selected_rust, *directories, "/usr/bin", "/bin", "/usr/sbin", "/sbin"]),
         DEVELOPER_DIR=str(developer), RUSTUP_TOOLCHAIN=toolchain, CARGO_BUILD_JOBS="2",
         LANG="en_US.UTF-8", LC_ALL="en_US.UTF-8", TZ="UTC", CDK_SBOM_NATIVE_ENV="1")
+    environment.update(homes)
     if original.get("TMPDIR"):
         environment["TMPDIR"] = original["TMPDIR"]
     if target.endswith("apple-darwin"):
@@ -71,6 +79,9 @@ def launch(args):
         raise ValueError(f"Requested Xcode is not installed: {developer}")
     toolchain = tomllib.loads((ROOT / "rust-toolchain.toml").read_text())["toolchain"]["channel"]
     environment = clean_environment(os.environ, os.environ["CDK_SBOM_TOOLS_PATH"], developer, args.target, toolchain)
+    rust_bin = Path(environment["PATH"].split(os.pathsep)[0])
+    if any(not os.access(rust_bin / name, os.X_OK) or not (rust_bin / name).is_file() for name in ("cargo", "rustc")):
+        raise ValueError(f"Pinned cargo/rustc executables are missing from the captured Rust directory: {rust_bin}")
     for tool, variable in (("clang", "CC"), ("clang++", "CXX"), ("ar", "AR")):
         path = subprocess.check_output(["/usr/bin/xcrun", "--find", tool], env=environment, text=True).strip()
         if not Path(path).is_file() or not Path(path).resolve().is_relative_to(developer):
@@ -226,7 +237,8 @@ def diagnose(args):
                 ("cargo", ["cargo", "--version"])):
             session.command(name, command, environment)
         session.report["tool_selection"] = {key: environment[key] for key in (
-            "DEVELOPER_DIR", "RUSTUP_TOOLCHAIN", "MACOSX_DEPLOYMENT_TARGET", "IPHONEOS_DEPLOYMENT_TARGET") if key in environment}
+            "DEVELOPER_DIR", "RUSTUP_TOOLCHAIN", "CARGO_HOME", "RUSTUP_HOME", "MACOSX_DEPLOYMENT_TARGET",
+            "IPHONEOS_DEPLOYMENT_TARGET") if key in environment}
         session.report["flake_lock_sha256"] = digest(ROOT / "flake.lock")
         exclusions = [argument for language in LANGUAGES for argument in ("--exclude-language", language)]
         common = [sys.executable, ROOT / "misc/sbom/sbom.py", args.product, "--target", args.target,

@@ -45,7 +45,9 @@ class AppleDiagnosticTests(unittest.TestCase):
                     "ImageVersion": "example-image", "GITHUB_RUN_ID": "123", "GITHUB_TOKEN": "secret",
                     "AWS_SECRET_ACCESS_KEY": "secret", "NIX_CFLAGS_COMPILE": "wrong-sdk-flags",
                     "SDKROOT": "/nix/store/not-xcode", "CC": "unexpected-compiler", "RUSTFLAGS": "-L/extra",
-                    "DYLD_LIBRARY_PATH": "/unexpected/lib", "CARGO_TARGET_DIR": "/old-cache"}
+                    "DYLD_LIBRARY_PATH": "/unexpected/lib", "CARGO_TARGET_DIR": "/old-cache",
+                    "CDK_SBOM_RUST_BIN": "/opt/runner-rust/toolchains/pinned/bin",
+                    "CDK_SBOM_CARGO_HOME": "/opt/runner-rust/cargo", "CDK_SBOM_RUSTUP_HOME": "/opt/runner-rust/rustup"}
         env = apple.clean_environment(original, "/nix/store/tools/bin", Path("/Applications/Xcode.app/Contents/Developer"),
                                       "aarch64-apple-darwin", "1.99.0")
         for key in ("GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY", "NIX_CFLAGS_COMPILE", "SDKROOT", "CC", "RUSTFLAGS",
@@ -54,7 +56,10 @@ class AppleDiagnosticTests(unittest.TestCase):
         self.assertEqual(env["RUSTUP_TOOLCHAIN"], "1.99.0")
         self.assertEqual(env["ImageVersion"], "example-image")
         self.assertEqual(env["MACOSX_DEPLOYMENT_TARGET"], "13.0")
-        self.assertIn("/Users/runner/.cargo/bin", env["PATH"])
+        self.assertEqual(env["PATH"].split(os.pathsep)[0], original["CDK_SBOM_RUST_BIN"])
+        self.assertNotIn("/Users/runner/.cargo/bin", env["PATH"].split(os.pathsep))
+        self.assertEqual(env["CARGO_HOME"], original["CDK_SBOM_CARGO_HOME"])
+        self.assertEqual(env["RUSTUP_HOME"], original["CDK_SBOM_RUSTUP_HOME"])
         ios = apple.clean_environment(original, "/tools/bin", Path("/Xcode"), "aarch64-apple-ios", "1.99.0")
         self.assertNotIn("MACOSX_DEPLOYMENT_TARGET", ios)
         self.assertNotIn("SDKROOT", ios)
@@ -63,7 +68,45 @@ class AppleDiagnosticTests(unittest.TestCase):
     def test_empty_or_relative_tool_paths_are_not_accepted(self):
         for tools in ("", "relative/bin", "/tools/bin:"):
             with self.subTest(tools=tools), self.assertRaises(ValueError):
-                apple.clean_environment({"HOME": "/Users/runner"}, tools, Path("/Xcode"), "aarch64-apple-darwin", "1.99.0")
+                apple.clean_environment({"HOME": "/Users/runner", "CDK_SBOM_RUST_BIN": "/rust/bin"}, tools,
+                                        Path("/Xcode"), "aarch64-apple-darwin", "1.99.0")
+
+    def test_missing_or_relative_rust_handoff_is_rejected(self):
+        for rust_bin in (None, "", "relative/rust/bin"):
+            original = {"HOME": "/Users/runner"}
+            if rust_bin is not None:
+                original["CDK_SBOM_RUST_BIN"] = rust_bin
+            with self.subTest(rust_bin=rust_bin), self.assertRaisesRegex(ValueError, "CDK_SBOM_RUST_BIN"):
+                apple.clean_environment(original, "/tools/bin", Path("/Xcode"), "aarch64-apple-darwin", "1.99.0")
+
+    def test_custom_rust_installation_remains_executable_after_isolation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            home = root / "home"
+            rust_bin = root / "runner-managed-toolchain/bin"
+            rust_bin.mkdir(parents=True)
+            tools = root / "nix-tools/bin"
+            tools.mkdir(parents=True)
+            for name in ("cargo", "rustc"):
+                path = rust_bin / name
+                path.write_text(f"#!{sys.executable}\nprint('{name} pinned installation')\n")
+                path.chmod(0o700)
+                # A conflicting tool in Nix must not supersede the selected Rust.
+                (tools / name).write_text("not the selected toolchain")
+                (tools / name).chmod(0o700)
+            original = {"HOME": str(home), "CDK_SBOM_RUST_BIN": str(rust_bin),
+                        "CARGO_HOME": str(root / "custom-cargo-home"), "RUSTUP_HOME": str(root / "custom-rustup-home"),
+                        "PATH": "/unrelated/bin", "RUSTFLAGS": "-L/unrelated", "GITHUB_TOKEN": "secret"}
+            environment = apple.clean_environment(original, str(tools), Path("/Xcode"), "aarch64-apple-darwin", "1.99.0")
+            self.assertFalse((home / ".cargo/bin").exists())
+            self.assertEqual(environment["CARGO_HOME"], original["CARGO_HOME"])
+            self.assertEqual(environment["RUSTUP_HOME"], original["RUSTUP_HOME"])
+            self.assertNotIn("RUSTFLAGS", environment)
+            self.assertNotIn("GITHUB_TOKEN", environment)
+            for name in ("cargo", "rustc"):
+                self.assertEqual(shutil.which(name, path=environment["PATH"]), str(rust_bin / name))
+                self.assertEqual(subprocess.check_output([name, "--version"], env=environment, text=True).strip(),
+                                 name + " pinned installation")
 
     def test_isolated_environment_finds_protoc_in_exported_tool_paths(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -73,7 +116,8 @@ class AppleDiagnosticTests(unittest.TestCase):
             protoc.write_text(f"#!{sys.executable}\nprint('pinned protoc fixture')\n")
             protoc.chmod(0o700)
             environment = apple.clean_environment(
-                {"HOME": directory, "PROTOC": "/unexpected/protoc", "PATH": "/unexpected/bin"},
+                {"HOME": directory, "PROTOC": "/unexpected/protoc", "PATH": "/unexpected/bin",
+                 "CDK_SBOM_RUST_BIN": str(Path(directory) / "rust/bin")},
                 str(tools), Path("/Xcode"), "aarch64-apple-darwin", "1.99.0")
             self.assertNotIn("PROTOC", environment)
             self.assertEqual(shutil.which("protoc", path=environment["PATH"]), str(protoc))
