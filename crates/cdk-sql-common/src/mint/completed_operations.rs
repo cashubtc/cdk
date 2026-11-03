@@ -11,7 +11,10 @@ use cdk_common::{mint, Amount, PaymentMethod};
 use super::{SQLMintDatabase, SQLTransaction};
 use crate::pool::DatabasePool;
 use crate::stmt::{query, Column};
-use crate::{column_as_nullable_string, column_as_number, column_as_string, unpack_into};
+use crate::{
+    column_as_nullable_number, column_as_nullable_string, column_as_number, column_as_string,
+    unpack_into,
+};
 
 fn sql_row_to_completed_operation(row: Vec<Column>) -> Result<mint::Operation, Error> {
     unpack_into!(
@@ -22,6 +25,8 @@ fn sql_row_to_completed_operation(row: Vec<Column>) -> Result<mint::Operation, E
             total_issued,
             total_redeemed,
             fee_collected,
+            payment_amount,
+            payment_fee,
             payment_method
         ) = row
     );
@@ -43,12 +48,15 @@ fn sql_row_to_completed_operation(row: Vec<Column>) -> Result<mint::Operation, E
     let total_redeemed = Amount::from(total_redeemed_u64);
     let fee_collected = Amount::from(fee_collected_u64);
 
+    let payment_amount: Option<u64> = column_as_nullable_number!(payment_amount);
+    let payment_fee: Option<u64> = column_as_nullable_number!(payment_fee);
+
     let payment_method = column_as_nullable_string!(payment_method)
         .map(|s| PaymentMethod::from_str(&s))
         .transpose()
         .map_err(|e| Error::Internal(format!("Invalid payment method: {e}")))?;
 
-    Ok(mint::Operation::new(
+    let mut operation = mint::Operation::new(
         operation_id,
         operation_kind,
         total_issued,
@@ -56,7 +64,14 @@ fn sql_row_to_completed_operation(row: Vec<Column>) -> Result<mint::Operation, E
         fee_collected,
         Some(completed_at),
         payment_method,
-    ))
+    );
+
+    // Melt operations store both payment details together
+    if let (Some(payment_amount), Some(payment_fee)) = (payment_amount, payment_fee) {
+        operation.set_payment_details(Amount::from(payment_amount), Amount::from(payment_fee));
+    }
+
+    Ok(operation)
 }
 
 #[async_trait]
@@ -142,6 +157,8 @@ where
                 total_issued,
                 total_redeemed,
                 fee_collected,
+                payment_amount,
+                payment_fee,
                 payment_method
             FROM
                 completed_operations
@@ -174,6 +191,8 @@ where
                 total_issued,
                 total_redeemed,
                 fee_collected,
+                payment_amount,
+                payment_fee,
                 payment_method
             FROM
                 completed_operations
@@ -205,6 +224,8 @@ where
                 total_issued,
                 total_redeemed,
                 fee_collected,
+                payment_amount,
+                payment_fee,
                 payment_method
             FROM
                 completed_operations
