@@ -39,8 +39,8 @@ impl Mint {
                             unit: key.unit.clone(),
                             active: key.active,
                             input_fee_ppk: key.input_fee_ppk,
-                            active_from: None,
-                            active_until: None,
+                            active_from: key.active_from,
+                            active_until: key.active_until,
                             final_expiry: key.final_expiry,
                         })
                     } else {

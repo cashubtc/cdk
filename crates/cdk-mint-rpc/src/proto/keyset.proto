@@ -28,6 +28,13 @@ message RotateNextKeysetRequest {
     // Absolute expiry as seconds since the UNIX epoch. Omit for a keyset
     // that never expires.
     optional uint64 final_expiry = 5;
+    // Seconds since the UNIX epoch from which the keyset is active (NUT-02).
+    // Rotation activates the keyset immediately, so this must not be in the
+    // future. Omit for no lower bound.
+    optional uint64 active_from = 6;
+    // Seconds since the UNIX epoch after which the mint stops signing new
+    // outputs to the keyset (NUT-02). Omit for no announced inactivation.
+    optional uint64 active_until = 7;
 }
 
 // Describes the keyset the mint activated. On failure a gRPC error status is
