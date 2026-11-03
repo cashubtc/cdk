@@ -530,17 +530,23 @@ impl PaymentRequest {
                 // Write the 32-byte pubkey
                 writer.write_tlv(0x02, &pubkey)?;
 
-                // Collect all relays (from nprofile and from "relay" tags)
+                // Collect all relays (from nprofile and from "r"/"relay" tags)
                 let mut all_relays = relays;
 
-                // Extract relays from the tags field
+                // Extract relays from the tags field. Decoding keeps the "r" tags
+                // next to the nprofile that carries the same relays, so each relay
+                // is collected once to keep re-encoding stable.
                 for tag in &transport.tags {
                     if tag.is_empty() {
                         continue;
                     }
-                    if tag[0] == "relay" && tag.len() >= 2 {
-                        // Collect relays from tags to encode as "r" tag tuples
-                        all_relays.push(tag[1].clone());
+                    if (tag[0] == "r" || tag[0] == "relay") && tag.len() >= 2 {
+                        // Collect every relay value from tags to encode as "r" tag tuples
+                        for relay in &tag[1..] {
+                            if !all_relays.contains(relay) {
+                                all_relays.push(relay.clone());
+                            }
+                        }
                     } else {
                         // NIP and other tags are generic tag tuples
                         let tag_bytes = Self::encode_tag_tuple(tag)?;
@@ -1083,6 +1089,101 @@ mod tests {
         assert!(tags.contains(&vec!["n".to_string(), "17".to_string()]));
         assert!(tags.contains(&vec!["r".to_string(), "wss://relay.example".to_string()]));
         assert!(tags.contains(&vec!["other".to_string(), "value".to_string()]));
+    }
+
+    #[test]
+    fn test_nostr_transport_relays_survive_repeated_round_trips() {
+        let relay = "wss://relay.example".to_string();
+        let target =
+            PaymentRequest::encode_nprofile(&[7u8; 32], std::slice::from_ref(&relay)).unwrap();
+        let payment_request = PaymentRequest {
+            payment_id: Some("nostr-roundtrip".to_string()),
+            amount: None,
+            unit: Some(CurrencyUnit::Sat),
+            single_use: None,
+            mints: vec![],
+            mint_preferred: None,
+            supported_methods: vec![],
+            description: None,
+            transports: vec![Transport {
+                _type: TransportType::Nostr,
+                target,
+                tags: vec![vec!["n".to_string(), "17".to_string()]],
+            }],
+            nut10: None,
+        };
+
+        let first =
+            PaymentRequest::from_bech32_string(&payment_request.to_bech32_string().unwrap())
+                .unwrap();
+        let second =
+            PaymentRequest::from_bech32_string(&first.to_bech32_string().unwrap()).unwrap();
+
+        assert_eq!(first, second);
+        assert_eq!(
+            first.to_bech32_string().unwrap(),
+            second.to_bech32_string().unwrap()
+        );
+
+        let relay_tags: Vec<&Vec<String>> = second.transports[0]
+            .tags
+            .iter()
+            .filter(|tag| tag.first().map(String::as_str) == Some("r"))
+            .collect();
+        assert_eq!(relay_tags, vec![&vec!["r".to_string(), relay.clone()]]);
+
+        let (_, nprofile_relays) =
+            PaymentRequest::decode_nprofile(&second.transports[0].target).unwrap();
+        assert_eq!(nprofile_relays, vec![relay]);
+    }
+
+    #[test]
+    fn test_nostr_transport_multi_value_relay_tag_survives_round_trips() {
+        let first_relay = "wss://first.example".to_string();
+        let second_relay = "wss://second.example".to_string();
+        let target = PaymentRequest::encode_nprofile(&[9u8; 32], &[]).unwrap();
+        let payment_request = PaymentRequest {
+            payment_id: Some("nostr-multi-relay".to_string()),
+            amount: None,
+            unit: Some(CurrencyUnit::Sat),
+            single_use: None,
+            mints: vec![],
+            mint_preferred: None,
+            supported_methods: vec![],
+            description: None,
+            transports: vec![Transport {
+                _type: TransportType::Nostr,
+                target,
+                tags: vec![vec![
+                    "r".to_string(),
+                    first_relay.clone(),
+                    second_relay.clone(),
+                ]],
+            }],
+            nut10: None,
+        };
+
+        let first =
+            PaymentRequest::from_bech32_string(&payment_request.to_bech32_string().unwrap())
+                .unwrap();
+        let second =
+            PaymentRequest::from_bech32_string(&first.to_bech32_string().unwrap()).unwrap();
+
+        assert_eq!(first, second);
+        assert_eq!(
+            first.to_bech32_string().unwrap(),
+            second.to_bech32_string().unwrap()
+        );
+
+        for decoded in [&first, &second] {
+            let relays: Vec<&String> = decoded.transports[0]
+                .tags
+                .iter()
+                .filter(|tag| tag.first().map(String::as_str) == Some("r"))
+                .flat_map(|tag| tag.iter().skip(1))
+                .collect();
+            assert_eq!(relays, vec![&first_relay, &second_relay]);
+        }
     }
 
     #[test]
