@@ -3157,6 +3157,7 @@ async fn test_paid_melt_responses_wait_for_change_commit() {
             spent.clone(),
             payment_proof.clone(),
             &lookup,
+            None,
         )
         .await
         .unwrap();
@@ -3201,6 +3202,7 @@ async fn test_paid_melt_responses_wait_for_change_commit() {
             payment_proof,
             &lookup,
             Some(setup.operation_id),
+            None,
         )
         .await
         .unwrap();

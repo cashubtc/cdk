@@ -1543,6 +1543,7 @@ mod tests {
             let pay_state = MakePaymentResponse {
                 payment_lookup_id: PaymentIdentifier::PaymentHash(*invoice.payment_hash().as_ref()),
                 payment_proof: Some("existing preimage".to_owned()),
+                bolt12_payer_proof_inputs: None,
                 status,
                 total_spent: Amount::new(1_234, CurrencyUnit::Msat),
             };
