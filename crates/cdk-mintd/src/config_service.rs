@@ -1300,6 +1300,34 @@ engine = "sqlite"
 
     #[cfg(feature = "fakewallet")]
     #[test]
+    fn remote_signatory_tolerates_a_keyset_refresh_interval() {
+        let resolved = ConfigurationService::validate_document(
+            r#"
+[info]
+keyset_refresh_interval_ms = 5000
+
+[signatory]
+enabled = true
+allow_insecure = true
+
+[payment_backend]
+backend = "fakewallet"
+
+[fake_wallet]
+
+[database]
+engine = "sqlite"
+"#,
+        )
+        .expect("an interval a remote signatory ignores must not fail startup");
+        assert_eq!(
+            resolved.settings.info.keyset_refresh_interval_ms,
+            Some(5000)
+        );
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
     fn literal_secrets_in_inactive_or_skipped_sections_are_rejected() {
         let assert_rejected = |document: String, expected_field| {
             let error = ConfigurationService::validate_document(&document)

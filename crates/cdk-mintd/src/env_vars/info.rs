@@ -63,6 +63,15 @@ impl Info {
             }
         }
 
+        if let Ok(interval) = env::var(ENV_KEYSET_REFRESH_INTERVAL_MS) {
+            match interval.parse() {
+                Ok(interval_ms) => self.keyset_refresh_interval_ms = Some(interval_ms),
+                Err(err) => tracing::warn!(
+                    "Invalid {ENV_KEYSET_REFRESH_INTERVAL_MS} '{interval}' in environment variable: {err}"
+                ),
+            }
+        }
+
         // Logging configuration
         if let Ok(output_str) = env::var(ENV_LOGGING_OUTPUT) {
             if let Ok(output) = LoggingOutput::from_str(&output_str) {
