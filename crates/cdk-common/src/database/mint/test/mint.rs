@@ -674,6 +674,60 @@ where
     tx.rollback().await.unwrap();
 }
 
+/// Payment details of a completed melt survive reading the operation back
+pub async fn completed_melt_operation_keeps_payment_details<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    let mut melt = Operation::new_melt(
+        Amount::from(1_000u64),
+        Amount::from(2u64),
+        cashu::PaymentMethod::Known(KnownMethod::Bolt11),
+    );
+    melt.set_payment_details(Amount::from(990u64), Amount::from(8u64));
+    let swap = Operation::new_swap(Amount::from(10u64), Amount::from(10u64), Amount::ZERO);
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_completed_operation(&melt, &std::collections::HashMap::new())
+        .await
+        .unwrap();
+    tx.add_completed_operation(&swap, &std::collections::HashMap::new())
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let by_id = db
+        .get_completed_operation(melt.id())
+        .await
+        .unwrap()
+        .unwrap();
+    let by_kind = db
+        .get_completed_operations_by_kind(melt.kind())
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|operation| operation.id() == melt.id())
+        .unwrap();
+    let all = db.get_completed_operations().await.unwrap();
+    let from_all = all
+        .iter()
+        .find(|operation| operation.id() == melt.id())
+        .unwrap();
+
+    for operation in [&by_id, &by_kind, from_all] {
+        assert_eq!(operation.payment_amount(), Some(Amount::from(990u64)));
+        assert_eq!(operation.payment_fee(), Some(Amount::from(8u64)));
+    }
+
+    // Operations without payment details still read back without them
+    let stored_swap = all
+        .iter()
+        .find(|operation| operation.id() == swap.id())
+        .unwrap();
+    assert_eq!(stored_swap.payment_amount(), None);
+    assert_eq!(stored_swap.payment_fee(), None);
+}
+
 /// Cleanup of melt request after processing
 pub async fn cleanup_melt_request_after_processing<DB>(db: DB)
 where
