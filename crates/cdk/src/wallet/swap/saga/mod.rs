@@ -760,4 +760,24 @@ mod tests {
             );
         }
     }
+
+    #[tokio::test]
+    async fn test_swap_send_amount_without_amount_is_none() {
+        let (wallet, _mock_client) = wallet_with_16_sat_proof(1000).await;
+        let active_keyset_id = wallet.active_keyset().await.unwrap().id;
+        let fee_and_amounts = wallet
+            .get_keyset_fees_and_amounts_by_id(active_keyset_id)
+            .await
+            .unwrap();
+
+        for include_fees in [false, true] {
+            assert_eq!(
+                wallet
+                    .swap_send_amount(&active_keyset_id, &fee_and_amounts, None, include_fees)
+                    .await
+                    .unwrap(),
+                None
+            );
+        }
+    }
 }
