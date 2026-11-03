@@ -12,8 +12,15 @@ impl Mint {
         &self,
         check_state: &CheckStateRequest,
     ) -> Result<CheckStateResponse, Error> {
-        // Check max inputs limit
         let ys_count = check_state.ys.len();
+
+        // Nothing to look up. The database rejects an empty IN clause, so answer
+        // here the same way restore does for an empty request.
+        if ys_count == 0 {
+            return Ok(CheckStateResponse { states: Vec::new() });
+        }
+
+        // Check max inputs limit
         if ys_count > self.max_inputs {
             tracing::warn!(
                 "CheckState request exceeds max inputs limit: {} > {}",
