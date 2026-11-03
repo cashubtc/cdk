@@ -42,9 +42,11 @@ def previous_release(releases, tag, *, nightly, prerelease):
         # Nightly version cores can lag stable patch releases. Publication order,
         # rather than SemVer, identifies the preceding nightly source snapshot.
         nightlies = [r for r in releases if "-nightly." in r["tag_name"]]
-        candidates = nightlies or [r for r in releases if not r["prerelease"]]
-        return max(candidates, key=lambda r: r["published_at"], default=None)
+        if nightlies:
+            return max(nightlies, key=lambda r: r["published_at"])
 
+    # A first nightly falls back to the highest stable version, even when a
+    # backport was published later or the nightly's version core lags behind it.
     candidates = []
     for release in releases:
         name = release["tag_name"]
@@ -54,9 +56,9 @@ def previous_release(releases, tag, *, nightly, prerelease):
             candidate = version(name)
         except ValueError:
             continue
-        if not prerelease and (release["prerelease"] or not candidate[3]):
+        if (nightly or not prerelease) and (release["prerelease"] or not candidate[3]):
             continue
-        if candidate < version(tag):
+        if nightly or candidate < version(tag):
             candidates.append(release)
     return max(candidates, key=lambda r: version(r["tag_name"]), default=None)
 

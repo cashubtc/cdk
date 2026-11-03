@@ -182,12 +182,67 @@ class ReleaseNotesTests(unittest.TestCase):
 
     def test_first_nightly_compares_to_latest_stable(self):
         body = self.generate(
-            [[release("v0.18.2"), release("v0.19.0-rc.1", prerelease=True)]],
+            [
+                [
+                    release("v0.18.3", published="2026-10-01T00:00:00Z"),
+                    release("v0.17.8", published="2026-10-20T00:00:00Z"),
+                    release("v0.19.0-rc.1", prerelease=True),
+                ]
+            ],
+            tag="v0.18.0-nightly.20261021.gaaaaaaa",
             nightly=True,
+            prerelease=True,
             response=[{"commits": []}],
         )
-        self.assertIn(f"/compare/v0.18.2...{SHA}", body)
+        self.assertIn(f"/compare/v0.18.3...{SHA}", body)
+        self.assertEqual(
+            self.calls[1][2],
+            f"repos/cashubtc/cdk/compare/v0.18.3...{SHA}?per_page=100",
+        )
         self.assertIn("No CDK source changes", body)
+
+    def test_first_nightly_ignores_invalid_and_unmarked_prerelease_tags(self):
+        body = self.generate(
+            [
+                [
+                    release("v0.18.3"),
+                    release("v0.19.0-rc.1"),
+                    release("not-a-version"),
+                    release("v0.19.0", draft=True),
+                ]
+            ],
+            tag="v0.18.0-nightly.20261021.gaaaaaaa",
+            nightly=True,
+            prerelease=True,
+            response=[{"commits": []}],
+        )
+        self.assertIn(f"/compare/v0.18.3...{SHA}", body)
+
+    def test_existing_nightlies_still_follow_publication_order(self):
+        body = self.generate(
+            [
+                [
+                    release(
+                        "v0.19.0-nightly.20261001.gccccccc",
+                        prerelease=True,
+                        published="2026-10-01T00:00:00Z",
+                        body=f"Nightly bindings built from CDK commit {'c' * 40}",
+                    ),
+                    release(
+                        "v0.18.0-nightly.20261020.gbbbbbbb",
+                        prerelease=True,
+                        published="2026-10-20T00:00:00Z",
+                        body=f"Nightly bindings built from CDK commit {PREVIOUS_SHA}",
+                    ),
+                    release("v0.19.0", published="2026-10-21T00:00:00Z"),
+                ]
+            ],
+            tag="v0.18.0-nightly.20261022.gaaaaaaa",
+            nightly=True,
+            prerelease=True,
+            response=[{"commits": []}],
+        )
+        self.assertIn(f"/compare/{PREVIOUS_SHA}...{SHA}", body)
 
     def test_missing_nightly_provenance_fails(self):
         with self.assertRaisesRegex(ValueError, "Missing CDK source commit"):
