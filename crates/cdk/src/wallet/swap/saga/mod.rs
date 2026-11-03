@@ -419,7 +419,7 @@ mod tests {
         create_test_db, create_test_wallet_with_mock, test_keyset_id, test_mint_url,
         test_proof_info, MockMintConnector,
     };
-    use crate::{Amount, Error};
+    use crate::{Amount, Error, Wallet};
 
     #[tokio::test]
     async fn test_prepare_swap_reserves_proofs_for_operation() {
@@ -632,14 +632,9 @@ mod tests {
         assert!(matches!(result, Err(Error::InvalidMintResponse(_))));
     }
 
-    /// Prepare and execute a swap of a single 16 sat proof against a mock mint
-    /// that signs the requested outputs, returning the proofs selected to send.
-    async fn swap_16_sat_proof(
-        amount: u64,
-        amount_split_target: SplitTarget,
-        input_fee_ppk: u64,
-        include_fees: bool,
-    ) -> Proofs {
+    /// A wallet holding a single 16 sat proof from a mock mint that signs the
+    /// requested outputs.
+    async fn wallet_with_16_sat_proof(input_fee_ppk: u64) -> (Wallet, Arc<MockMintConnector>) {
         let db = create_test_db().await;
         let mock_client = Arc::new(MockMintConnector::new());
         mock_client.enable_mint_signing();
@@ -651,6 +646,19 @@ mod tests {
         let proof_info = test_proof_info(keyset_id, 16, test_mint_url());
         db.update_proofs(vec![proof_info], vec![]).await.unwrap();
         let wallet = create_test_wallet_with_mock(db, mock_client.clone()).await;
+
+        (wallet, mock_client)
+    }
+
+    /// Prepare and execute a swap of a single 16 sat proof against a mock mint
+    /// that signs the requested outputs, returning the proofs selected to send.
+    async fn swap_16_sat_proof(
+        amount: u64,
+        amount_split_target: SplitTarget,
+        input_fee_ppk: u64,
+        include_fees: bool,
+    ) -> Proofs {
+        let (wallet, mock_client) = wallet_with_16_sat_proof(input_fee_ppk).await;
 
         let input_proofs = wallet.get_unspent_proofs().await.unwrap();
         let prepared = SwapSaga::new(&wallet)
@@ -713,5 +721,43 @@ mod tests {
 
         assert_eq!(send_proofs.total_amount().unwrap(), Amount::from(12));
         assert_eq!(send_proofs.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_prepared_swap_request_is_balanced() {
+        // 1 sat per input, a single 16 sat input: the outputs must total 15 sat
+        // whether or not the send outputs carry the receiver's redemption fee.
+        for (amount, include_fees) in [
+            (Some(10), false),
+            (Some(10), true),
+            (None, false),
+            (None, true),
+        ] {
+            let (wallet, _mock_client) = wallet_with_16_sat_proof(1000).await;
+            let input_proofs = wallet.get_unspent_proofs().await.unwrap();
+            let prepared = SwapSaga::new(&wallet)
+                .prepare(
+                    amount.map(Amount::from),
+                    SplitTarget::default(),
+                    input_proofs,
+                    None,
+                    false,
+                    include_fees,
+                    ProofReservation::Reserve,
+                )
+                .await
+                .expect("prepare swap saga");
+
+            let swap_request = &prepared.state_data.pre_swap.swap_request;
+            assert_eq!(
+                swap_request.input_amount().unwrap(),
+                swap_request
+                    .output_amount()
+                    .unwrap()
+                    .checked_add(Amount::from(1))
+                    .unwrap(),
+                "unbalanced swap for amount {amount:?}, include_fees {include_fees}"
+            );
+        }
     }
 }
