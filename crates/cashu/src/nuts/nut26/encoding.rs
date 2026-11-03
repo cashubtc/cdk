@@ -5,7 +5,8 @@
 
 use std::str::FromStr;
 
-use bitcoin::bech32::{self, Bech32, Bech32m, Hrp};
+use bitcoin::bech32::primitives::decode::{CheckedHrpstring, CheckedHrpstringError};
+use bitcoin::bech32::{self, Bech32, Bech32m, DecodeError, Hrp};
 
 use super::Error;
 use crate::mint_url::MintUrl;
@@ -18,6 +19,9 @@ use crate::Amount;
 
 /// Human-readable part for CREQ-B bech32m encoding
 pub const CREQ_B_HRP: &str = "creqb";
+
+/// NIP-19 human-readable part for a bare Nostr public key
+const NPUB_HRP: Hrp = Hrp::parse_unchecked("npub");
 
 /// Unit representation for TLV encoding
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -520,8 +524,8 @@ impl PaymentRequest {
         // 0x02 target: bytes
         match transport._type {
             TransportType::Nostr => {
-                // For nostr, decode nprofile to extract pubkey and relays
-                let (pubkey, relays) = Self::decode_nprofile(&transport.target)?;
+                // For nostr, decode the npub or nprofile to extract pubkey and relays
+                let (pubkey, relays) = Self::decode_nostr_target(&transport.target)?;
 
                 // Write the 32-byte pubkey
                 writer.write_tlv(0x02, &pubkey)?;
@@ -774,6 +778,30 @@ impl PaymentRequest {
         Ok(bytes)
     }
 
+    /// Decode a NIP-19 `npub` or `nprofile` transport target to (pubkey, relays)
+    ///
+    /// NUT-26 encoders accept either form; an `npub` carries no relays.
+    fn decode_nostr_target(target: &str) -> Result<(Vec<u8>, Vec<String>), Error> {
+        let (hrp, _) = bech32::decode(target).map_err(Error::Bech32Error)?;
+        // `Hrp` equality ignores case, so an all-uppercase NPUB1... matches too
+        if hrp == NPUB_HRP {
+            // NIP-19 bare keys use Bech32. `bech32::decode` also accepts Bech32m,
+            // which is only valid for the outer CREQ-B string.
+            let checked = CheckedHrpstring::new::<Bech32>(target).map_err(|e| match e {
+                CheckedHrpstringError::Checksum(e) => Error::Bech32Error(DecodeError::Checksum(e)),
+                CheckedHrpstringError::Parse(e) => Error::Bech32Error(DecodeError::Parse(e)),
+                _ => Error::InvalidStructure,
+            })?;
+            let data: Vec<u8> = checked.byte_iter().collect();
+            if data.len() != 32 {
+                return Err(Error::InvalidLength);
+            }
+            return Ok((data, Vec::new()));
+        }
+
+        Self::decode_nprofile(target)
+    }
+
     /// Decode nprofile bech32 string to (pubkey, relays)
     /// NIP-19 nprofile TLV format:
     /// - Type 0: 32-byte pubkey (required, only one)
@@ -870,6 +898,91 @@ mod tests {
     fn nprofile_from_bytes(bytes: &[u8]) -> String {
         let hrp = bitcoin::bech32::Hrp::parse("nprofile").unwrap();
         bitcoin::bech32::encode::<bitcoin::bech32::Bech32>(hrp, bytes).unwrap()
+    }
+
+    fn npub_from_bytes(bytes: &[u8]) -> String {
+        let hrp = bitcoin::bech32::Hrp::parse("npub").unwrap();
+        bitcoin::bech32::encode::<bitcoin::bech32::Bech32>(hrp, bytes).unwrap()
+    }
+
+    fn nostr_payment_request(target: String) -> PaymentRequest {
+        PaymentRequest {
+            payment_id: Some("npub-target".to_string()),
+            amount: None,
+            unit: Some(CurrencyUnit::Sat),
+            single_use: None,
+            mints: vec![],
+            mint_preferred: None,
+            supported_methods: vec![],
+            description: None,
+            transports: vec![Transport {
+                _type: TransportType::Nostr,
+                target,
+                tags: vec![vec!["n".to_string(), "17".to_string()]],
+            }],
+            nut10: None,
+        }
+    }
+
+    #[test]
+    fn test_nostr_transport_accepts_npub_target() {
+        let payment_request = nostr_payment_request(npub_from_bytes(&[7u8; 32]));
+
+        let encoded = payment_request
+            .to_bech32_string()
+            .expect("npub targets should encode");
+        let decoded = PaymentRequest::from_bech32_string(&encoded).unwrap();
+        let transport = &decoded.transports[0];
+
+        let (pubkey, relays) = PaymentRequest::decode_nprofile(&transport.target).unwrap();
+        assert_eq!(pubkey, vec![7u8; 32]);
+        assert!(relays.is_empty());
+        assert_eq!(
+            transport.tags,
+            vec![vec!["n".to_string(), "17".to_string()]]
+        );
+
+        // An npub and the equivalent relay-less nprofile encode identically
+        let from_nprofile =
+            nostr_payment_request(PaymentRequest::encode_nprofile(&[7u8; 32], &[]).unwrap());
+        assert_eq!(encoded, from_nprofile.to_bech32_string().unwrap());
+    }
+
+    #[test]
+    fn test_nostr_transport_accepts_uppercase_npub_target() {
+        let npub = npub_from_bytes(&[7u8; 32]);
+        let lowercase = nostr_payment_request(npub.clone());
+        let uppercase = nostr_payment_request(npub.to_uppercase());
+
+        assert_eq!(
+            uppercase
+                .to_bech32_string()
+                .expect("uppercase npub targets should encode"),
+            lowercase.to_bech32_string().unwrap()
+        );
+    }
+
+    #[test]
+    fn test_nostr_transport_rejects_bech32m_npub_target() {
+        let hrp = bitcoin::bech32::Hrp::parse("npub").unwrap();
+        let bech32m_npub =
+            bitcoin::bech32::encode::<bitcoin::bech32::Bech32m>(hrp, &[7u8; 32]).unwrap();
+        let payment_request = nostr_payment_request(bech32m_npub);
+
+        assert!(matches!(
+            payment_request.to_bech32_string(),
+            Err(Error::Bech32Error(DecodeError::Checksum(_)))
+        ));
+    }
+
+    #[test]
+    fn test_nostr_transport_rejects_npub_with_wrong_length() {
+        let payment_request = nostr_payment_request(npub_from_bytes(&[7u8; 31]));
+
+        assert!(matches!(
+            payment_request.to_bech32_string(),
+            Err(Error::InvalidLength)
+        ));
     }
 
     #[test]
