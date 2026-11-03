@@ -43,7 +43,7 @@ where
         unit: CurrencyUnit::Sat,
         active: true,
         valid_from: 0,
-        final_expiry: None,
+        final_expiry: 0,
         derivation_path: DerivationPath::from_str("m/0'/0'/0'").unwrap(),
         derivation_path_index: Some(0),
         input_fee_ppk: 0,

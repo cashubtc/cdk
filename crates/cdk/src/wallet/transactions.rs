@@ -1,3 +1,4 @@
+use cdk_common::nuts::State;
 use cdk_common::wallet::{Transaction, TransactionDirection, TransactionId, TransactionStatus};
 use cdk_common::Proofs;
 
@@ -151,7 +152,9 @@ impl Wallet {
     ///
     /// For legacy transactions (without `saga_id`), this function checks the proofs
     /// with the mint and marks any spent proofs accordingly. Unspent proofs are
-    /// left in their current state for manual recovery.
+    /// left in their current state for manual recovery. This reconciles rather
+    /// than spends, so it reads proofs on expired keysets too: skipping them
+    /// would leave them stuck in `PendingSpent` with nothing to settle them.
     ///
     /// # Errors
     ///
@@ -181,7 +184,7 @@ impl Wallet {
             // We don't attempt to swap for legacy transactions to avoid
             // interfering with any potential in-flight operations
             let pending_spent_proofs: Proofs = self
-                .get_pending_spent_proofs()
+                .get_all_proofs_with(Some(vec![State::PendingSpent]), None)
                 .await?
                 .into_iter()
                 .filter(|p| match p.y() {

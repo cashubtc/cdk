@@ -23,7 +23,7 @@ fuzz_target!(|data: &[u8]| {
         unit: CurrencyUnit::Sat,
         active: true,
         input_fee_ppk: 0,
-        final_expiry: None,
+        final_expiry: 0,
     };
 
     let keysets = vec![v1_info];

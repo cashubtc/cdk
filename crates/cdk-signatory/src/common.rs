@@ -89,7 +89,7 @@ pub fn create_new_keyset<C: secp256k1::Signing>(
     unit: CurrencyUnit,
     amounts: &[u64],
     input_fee_ppk: u64,
-    final_expiry: Option<u64>,
+    final_expiry: u64,
     keyset_id_version: nut02::KeySetVersion,
 ) -> (MintKeySet, MintKeySetInfo) {
     let keyset = MintKeySet::generate(

@@ -846,6 +846,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
 
                     existing_keyset.active = keyset.active;
                     existing_keyset.input_fee_ppk = keyset.input_fee_ppk;
+                    existing_keyset.final_expiry = keyset.final_expiry;
 
                     existing_keyset
                 } else {

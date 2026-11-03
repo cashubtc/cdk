@@ -942,7 +942,7 @@ mod tests {
                     unit: CurrencyUnit::Sat,
                     active: true,
                     input_fee_ppk: 0,
-                    final_expiry: None,
+                    final_expiry: 0,
                 }
             })
             .collect();
@@ -990,7 +990,7 @@ mod tests {
                     unit: CurrencyUnit::Sat,
                     active: true,
                     input_fee_ppk: 0,
-                    final_expiry: None,
+                    final_expiry: 0,
                 }
             })
             .collect();
