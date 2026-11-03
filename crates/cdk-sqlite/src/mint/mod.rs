@@ -162,6 +162,159 @@ mod test {
         remove_file(path).expect("remove auth database");
     }
 
+    /// The mint column carries the same requirement as the wallet one: a stored
+    /// zero reads back as an expiry at the epoch on a build that still types the
+    /// field as `Option<u64>`, which makes the keyset unusable.
+    #[tokio::test]
+    async fn zero_final_expiry_is_stored_as_null() {
+        use cdk_common::bitcoin::bip32::DerivationPath;
+        use cdk_common::database::mint::KeysDatabase;
+        use cdk_common::mint::MintKeySetInfo;
+        use cdk_common::nuts::CurrencyUnit;
+        use cdk_sql_common::value::Value;
+
+        use crate::test_support::stored_value;
+
+        let path = std::env::temp_dir()
+            .join(format!(
+                "cdk-test-mint-null-expiry-{}.sqlite",
+                uuid::Uuid::new_v4()
+            ))
+            .to_str()
+            .expect("temp dir is valid UTF-8")
+            .to_owned();
+
+        #[cfg(feature = "sqlcipher")]
+        let db = MintSqliteDatabase::new((path.as_str(), "test"))
+            .await
+            .expect("mint database");
+
+        #[cfg(not(feature = "sqlcipher"))]
+        let db = MintSqliteDatabase::new(path.as_str())
+            .await
+            .expect("mint database");
+
+        let mut keyset_info = MintKeySetInfo {
+            id: Id::from_str("00916bbf7ef91a36").expect("keyset id"),
+            unit: CurrencyUnit::Sat,
+            active: true,
+            valid_from: 0,
+            final_expiry: 0,
+            derivation_path: DerivationPath::from_str("m/0'/0'/0'").expect("derivation path"),
+            derivation_path_index: Some(0),
+            input_fee_ppk: 0,
+            amounts: vec![1, 2, 4, 8],
+            issuer_version: None,
+        };
+
+        let mut tx = KeysDatabase::begin_transaction(&db).await.expect("tx");
+        tx.add_keyset_info(keyset_info.clone()).await.expect("add");
+        tx.commit().await.expect("commit");
+        assert_eq!(
+            stored_value(&path, "SELECT valid_to FROM keyset").await,
+            Value::Null
+        );
+
+        keyset_info.final_expiry = 1_900_000_000;
+        let mut tx = KeysDatabase::begin_transaction(&db).await.expect("tx");
+        tx.add_keyset_info(keyset_info.clone()).await.expect("add");
+        tx.commit().await.expect("commit");
+        assert_eq!(
+            stored_value(&path, "SELECT valid_to FROM keyset").await,
+            Value::Integer(1_900_000_000)
+        );
+
+        keyset_info.final_expiry = 0;
+        let mut tx = KeysDatabase::begin_transaction(&db).await.expect("tx");
+        tx.add_keyset_info(keyset_info).await.expect("add");
+        tx.commit().await.expect("commit");
+        assert_eq!(
+            stored_value(&path, "SELECT valid_to FROM keyset").await,
+            Value::Null
+        );
+
+        drop(db);
+        let _ = remove_file(&path);
+    }
+
+    /// A database written before zero meant "no expiry" can hold a literal zero
+    /// in the column, which an older build reads as an expiry at the epoch, so
+    /// opening it has to rewrite those rows to NULL.
+    #[tokio::test]
+    async fn migration_nulls_a_stored_zero_valid_to() {
+        use cdk_sql_common::value::Value;
+
+        use crate::test_support::stored_value;
+
+        let file = std::env::temp_dir()
+            .join(format!(
+                "cdk-test-zero-valid-to-{}.sqlite",
+                uuid::Uuid::new_v4()
+            ))
+            .to_str()
+            .expect("temp dir is valid UTF-8")
+            .to_owned();
+
+        {
+            #[cfg(not(feature = "sqlcipher"))]
+            let config: Config = file.as_str().into();
+            #[cfg(feature = "sqlcipher")]
+            let config: Config = (file.as_str(), "test").into();
+
+            let pool = Pool::<SqliteConnectionManager>::new(config);
+            let conn = pool.get().await.expect("valid connection");
+
+            query(include_str!("../../tests/legacy-sqlx.sql"))
+                .expect("query")
+                .batch(&*conn)
+                .await
+                .expect("create former db failed");
+
+            for (id, valid_to, index) in [
+                ("00916bbf7ef91a36", "0", 1),
+                ("00916bbf7ef91a37", "1900000000", 2),
+            ] {
+                query(&format!(
+                    "INSERT INTO keyset VALUES ('{id}', 'sat', 1, 1749844864, {valid_to}, 'm/0/0/0', 32, 0, {index})"
+                ))
+                .expect("query")
+                .execute(&*conn)
+                .await
+                .expect("seed legacy expiry");
+            }
+        }
+
+        #[cfg(feature = "sqlcipher")]
+        let db = MintSqliteDatabase::new((file.as_str(), "test"))
+            .await
+            .expect("mint database");
+
+        #[cfg(not(feature = "sqlcipher"))]
+        let db = MintSqliteDatabase::new(file.as_str())
+            .await
+            .expect("mint database");
+
+        assert_eq!(
+            stored_value(
+                &file,
+                "SELECT valid_to FROM keyset WHERE id = '00916bbf7ef91a36'"
+            )
+            .await,
+            Value::Null
+        );
+        assert_eq!(
+            stored_value(
+                &file,
+                "SELECT valid_to FROM keyset WHERE id = '00916bbf7ef91a37'"
+            )
+            .await,
+            Value::Integer(1_900_000_000)
+        );
+
+        drop(db);
+        let _ = remove_file(&file);
+    }
+
     #[tokio::test]
     async fn open_legacy_and_migrate() {
         let file = format!(

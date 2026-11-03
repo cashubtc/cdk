@@ -24,7 +24,7 @@ use super::nut01::Keys;
 #[cfg(feature = "mint")]
 use super::nut01::{MintKeyPair, MintKeys};
 use crate::nuts::nut00::CurrencyUnit;
-use crate::util::hex;
+use crate::util::{hex, unix_time};
 use crate::{ensure_cdk, Amount};
 
 /// NUT02 Error
@@ -183,12 +183,7 @@ impl Id {
     ///
     /// This function will not panic under normal circumstances as the hash output
     /// is always valid hex and the correct length.
-    pub fn v2_from_data(
-        map: &Keys,
-        unit: &CurrencyUnit,
-        input_fee_ppk: u64,
-        expiry: Option<u64>,
-    ) -> Self {
+    pub fn v2_from_data(map: &Keys, unit: &CurrencyUnit, input_fee_ppk: u64, expiry: u64) -> Self {
         Self::v2_from_data_inner(map, unit, input_fee_ppk, expiry, false)
     }
 
@@ -196,7 +191,7 @@ impl Id {
         map: &Keys,
         unit: &CurrencyUnit,
         input_fee_ppk: u64,
-        expiry: Option<u64>,
+        expiry: u64,
         include_zero_expiry: bool,
     ) -> Self {
         let mut keys: Vec<(&Amount, &super::PublicKey)> = map.iter().collect();
@@ -215,10 +210,8 @@ impl Id {
             data.push_str(&format!("|input_fee_ppk:{}", input_fee_ppk));
         }
 
-        if let Some(expiry) = expiry {
-            if expiry > 0 || include_zero_expiry {
-                data.push_str(&format!("|final_expiry:{}", expiry));
-            }
+        if expiry > 0 || include_zero_expiry {
+            data.push_str(&format!("|final_expiry:{}", expiry));
         }
 
         let hash = Sha256::hash(data.as_bytes());
@@ -514,12 +507,34 @@ pub struct KeySet {
     /// Input Fee PPK
     #[serde(default)]
     pub input_fee_ppk: u64,
-    /// Expiry
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub final_expiry: Option<u64>,
+    /// Expiry, zero when the keyset has no final expiry
+    #[serde(
+        default,
+        deserialize_with = "deserialize_final_expiry",
+        skip_serializing_if = "no_final_expiry"
+    )]
+    pub final_expiry: u64,
+}
+
+/// Whether a keyset's `final_expiry` has passed at `now`.
+///
+/// Zero means the keyset has no final expiry, the value NUT-02 leaves out of the
+/// keyset ID. The comparison is strict, so a keyset whose expiry is exactly `now`
+/// is still usable. `now` is a parameter rather than a clock read so that
+/// boundary is testable.
+pub fn expiry_has_passed(final_expiry: u64, now: u64) -> bool {
+    final_expiry != 0 && final_expiry < now
 }
 
 impl KeySet {
+    /// Returns true if `final_expiry` is non-zero and strictly in the past.
+    ///
+    /// The mint refuses an expired keyset on both inputs and outputs, so the
+    /// wallet must not spend from it or request outputs on it.
+    pub fn is_expired(&self) -> bool {
+        expiry_has_passed(self.final_expiry, unix_time())
+    }
+
     /// Verify the keyset ID canonically matches its keys and metadata.
     pub fn verify_id(&self) -> Result<(), Error> {
         let keys_id = match self.id.version {
@@ -547,11 +562,11 @@ impl KeySet {
             return Ok(());
         }
         let legacy_zero_expiry_id = match (self.id.version, self.final_expiry) {
-            (KeySetVersion::Version01, None | Some(0)) => Some(Id::v2_from_data_inner(
+            (KeySetVersion::Version01, 0) => Some(Id::v2_from_data_inner(
                 &self.keys,
                 &self.unit,
                 self.input_fee_ppk,
-                Some(0),
+                0,
                 true,
             )),
             _ => None,
@@ -580,9 +595,23 @@ pub struct KeySetInfo {
         default = "default_input_fee_ppk"
     )]
     pub input_fee_ppk: u64,
-    /// Expiry of the keyset
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub final_expiry: Option<u64>,
+    /// Expiry of the keyset, zero when it has no final expiry
+    #[serde(
+        default,
+        deserialize_with = "deserialize_final_expiry",
+        skip_serializing_if = "no_final_expiry"
+    )]
+    pub final_expiry: u64,
+}
+
+impl KeySetInfo {
+    /// Returns true if `final_expiry` is non-zero and strictly in the past.
+    ///
+    /// The mint refuses an expired keyset on both inputs and outputs, so the
+    /// wallet must not spend from it or request outputs on it.
+    pub fn is_expired(&self) -> bool {
+        expiry_has_passed(self.final_expiry, unix_time())
+    }
 }
 
 /// List of [KeySetInfo]
@@ -620,6 +649,19 @@ fn default_input_fee_ppk() -> u64 {
     0
 }
 
+/// NUT-02 lets a mint omit `final_expiry` or send `null`; both mean the same as
+/// the zero this crate stores.
+fn deserialize_final_expiry<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<u64>::deserialize(deserializer)?.unwrap_or(0))
+}
+
+fn no_final_expiry(final_expiry: &u64) -> bool {
+    *final_expiry == 0
+}
+
 #[cfg(feature = "mint")]
 /// Mint keyset.
 ///
@@ -641,8 +683,9 @@ pub struct MintKeySet {
     /// Input Fee PPK
     #[serde(default)]
     pub input_fee_ppk: u64,
-    /// Expiry [`Option<u64>`]
-    pub final_expiry: Option<u64>,
+    /// Expiry, zero when the keyset has no final expiry
+    #[serde(default, deserialize_with = "deserialize_final_expiry")]
+    pub final_expiry: u64,
 }
 
 #[cfg(feature = "mint")]
@@ -659,7 +702,7 @@ impl MintKeySet {
         unit: CurrencyUnit,
         amounts: &[u64],
         input_fee_ppk: u64,
-        final_expiry: Option<u64>,
+        final_expiry: u64,
         version: KeySetVersion,
     ) -> Self {
         let mut map = BTreeMap::new();
@@ -711,7 +754,7 @@ impl MintKeySet {
         currency_unit: CurrencyUnit,
         derivation_path: DerivationPath,
         input_fee_ppk: u64,
-        final_expiry: Option<u64>,
+        final_expiry: u64,
         version: KeySetVersion,
     ) -> Self {
         let xpriv = Xpriv::new_master(bitcoin::Network::Bitcoin, seed).expect("RNG busted");
@@ -742,7 +785,7 @@ impl MintKeySet {
         currency_unit: CurrencyUnit,
         derivation_path: DerivationPath,
         input_fee_ppk: u64,
-        final_expiry: Option<u64>,
+        final_expiry: u64,
         version: KeySetVersion,
     ) -> Self {
         Self::generate(
@@ -790,10 +833,12 @@ mod test {
 
     use bitcoin::secp256k1::rand::{self, RngCore};
 
-    use super::{KeySetInfo, KeySetVersion, Keys, KeysetResponse, ShortKeysetId};
+    use super::{
+        expiry_has_passed, KeySet, KeySetInfo, KeySetVersion, Keys, KeysetResponse, ShortKeysetId,
+    };
     use crate::nuts::nut02::{Error, Id};
     use crate::nuts::KeysResponse;
-    use crate::util::hex;
+    use crate::util::{hex, unix_time};
     use crate::CurrencyUnit;
 
     const SHORT_KEYSET_ID: &str = "00456a94ab4e1c46";
@@ -903,17 +948,17 @@ mod test {
         let id_from_str =
             Id::from_str("015ba18a8adcd02e715a58358eb618da4a4b3791151a4bee5e968bb88406ccf76a")
                 .unwrap();
-        let id = Id::v2_from_data(&keys, &unit, input_fee_ppk, Some(expiry));
+        let id = Id::v2_from_data(&keys, &unit, input_fee_ppk, expiry);
         assert_eq!(id, id_from_str);
 
         let keys: Keys = serde_json::from_str(KEYSET).unwrap();
         let id_from_str =
             Id::from_str("01ab6aa4ff30390da34986d84be5274b48ad7a74265d791095bfc39f4098d9764f")
                 .unwrap();
-        let id = Id::v2_from_data(&keys, &unit, 0, Some(expiry));
+        let id = Id::v2_from_data(&keys, &unit, 0, expiry);
         assert_eq!(id, id_from_str);
 
-        let id = Id::v2_from_data(&keys, &unit, 0, None);
+        let id = Id::v2_from_data(&keys, &unit, 0, 0);
         let id_from_str =
             Id::from_str("012fbb01a4e200c76df911eeba3b8fe1831202914b24664f4bccbd25852a6708f8")
                 .unwrap();
@@ -1095,17 +1140,25 @@ mod test {
         assert!(matches!(short_id_with_non_ascii, Err(Error::HexError(_))));
     }
 
+    /// NUT-02 lets a mint omit the field or send null, and treats zero as no
+    /// expiry at all. All three have to land on the same keyset.
     #[test]
-    fn test_v2_from_data_expiry_zero_is_same_as_none() {
-        let unit: CurrencyUnit = CurrencyUnit::from_str("sat").unwrap();
-        let keys: Keys = serde_json::from_str(SHORT_KEYSET).unwrap();
+    fn every_spelling_of_no_expiry_decodes_to_zero() {
+        let base = r#""id":"009a1f293253e41e","unit":"sat","active":true,"input_fee_ppk":0"#;
+        for spelling in ["", r#","final_expiry":null"#, r#","final_expiry":0"#] {
+            let info: KeySetInfo =
+                serde_json::from_str(&format!("{{{base}{spelling}}}")).expect("keyset info");
+            assert_eq!(info.final_expiry, 0, "spelling {spelling:?}");
+        }
+    }
 
-        let id_with_none = Id::v2_from_data(&keys, &unit, 0, None);
-        let id_with_zero = Id::v2_from_data(&keys, &unit, 0, Some(0));
-        assert_eq!(
-            id_with_none, id_with_zero,
-            "expiry=Some(0) should be treated the same as expiry=None"
-        );
+    #[test]
+    fn no_expiry_is_omitted_from_the_wire() {
+        let json = serde_json::to_value(keyset_info_with_expiry(0)).expect("encode");
+        assert!(json.get("final_expiry").is_none());
+
+        let json = serde_json::to_value(keyset_info_with_expiry(1_900_000_000)).expect("encode");
+        assert_eq!(json["final_expiry"], 1_900_000_000u64);
     }
 
     #[test]
@@ -1113,8 +1166,8 @@ mod test {
         let unit: CurrencyUnit = CurrencyUnit::from_str("sat").unwrap();
         let keys: Keys = serde_json::from_str(SHORT_KEYSET).unwrap();
 
-        let id_without_fee = Id::v2_from_data(&keys, &unit, 0, Some(2059210353));
-        let id_with_same_inputs = Id::v2_from_data(&keys, &unit, 0, Some(2059210353));
+        let id_without_fee = Id::v2_from_data(&keys, &unit, 0, 2059210353);
+        let id_with_same_inputs = Id::v2_from_data(&keys, &unit, 0, 2059210353);
 
         assert_eq!(id_without_fee, id_with_same_inputs);
     }
@@ -1131,7 +1184,7 @@ mod test {
             unit: CurrencyUnit::Sat,
             active: true,
             input_fee_ppk: 0,
-            final_expiry: None,
+            final_expiry: 0,
         };
         let short = ShortKeysetId::from(first);
         for ids in [[first, second], [second, first]] {
@@ -1157,7 +1210,7 @@ mod test {
             unit: CurrencyUnit::Sat,
             active: true,
             input_fee_ppk: 0,
-            final_expiry: None,
+            final_expiry: 0,
         };
         let keysets = vec![v1_info];
 
@@ -1180,7 +1233,7 @@ mod test {
             unit: CurrencyUnit::Sat,
             active: true,
             input_fee_ppk: 0,
-            final_expiry: None,
+            final_expiry: 0,
         };
         let keysets = vec![v2_info];
 
@@ -1204,7 +1257,7 @@ mod test {
             unit: CurrencyUnit::Sat,
             active: true,
             input_fee_ppk: 0,
-            final_expiry: None,
+            final_expiry: 0,
         };
 
         // v2 id - 32 bytes
@@ -1216,7 +1269,7 @@ mod test {
             unit: CurrencyUnit::Sat,
             active: true,
             input_fee_ppk: 0,
-            final_expiry: None,
+            final_expiry: 0,
         };
 
         let keysets = vec![v1_info, v2_info];
@@ -1242,14 +1295,14 @@ mod test {
                 unit: CurrencyUnit::Sat,
                 active: true,
                 input_fee_ppk: 0,
-                final_expiry: None,
+                final_expiry: 0,
             },
             KeySetInfo {
                 id: v2_id,
                 unit: CurrencyUnit::Sat,
                 active: true,
                 input_fee_ppk: 0,
-                final_expiry: None,
+                final_expiry: 0,
             },
         ];
 
@@ -1276,7 +1329,7 @@ mod test {
             unit: CurrencyUnit::Sat,
             active: true,
             input_fee_ppk: 0,
-            final_expiry: None,
+            final_expiry: 0,
         }];
 
         let short_id = ShortKeysetId::from_str("01ffffffffffffff").unwrap();
@@ -1297,7 +1350,7 @@ mod test {
             unit: CurrencyUnit::Sat,
             active: true,
             input_fee_ppk: 0,
-            final_expiry: None,
+            final_expiry: 0,
         }];
 
         // Build a ShortKeysetId whose prefix equals the full 32-byte id.
@@ -1352,14 +1405,14 @@ mod test {
             active: Some(true),
             keys: keys.clone(),
             input_fee_ppk: 0,
-            final_expiry: None,
+            final_expiry: 0,
         };
         assert!(keyset.verify_id().is_ok(), "valid v1 keyset should verify");
 
         // v2 keyset
         let unit = CurrencyUnit::Sat;
         let input_fee_ppk = 100u64;
-        let expiry = Some(2059210353u64);
+        let expiry = 2059210353u64;
         let id_v2 = Id::v2_from_data(&keys, &unit, input_fee_ppk, expiry);
         let keyset_v2 = KeySet {
             id: id_v2,
@@ -1380,28 +1433,20 @@ mod test {
         use super::KeySet;
 
         let keys: Keys = serde_json::from_str(SHORT_KEYSET).expect("public keys");
-        let canonical = Id::v2_from_data(&keys, &CurrencyUnit::Sat, 100, None);
-        let legacy = Id::v2_from_data_inner(&keys, &CurrencyUnit::Sat, 100, Some(0), true);
+        let canonical = Id::v2_from_data(&keys, &CurrencyUnit::Sat, 100, 0);
+        let legacy = Id::v2_from_data_inner(&keys, &CurrencyUnit::Sat, 100, 0, true);
         assert_ne!(canonical, legacy);
-        assert_eq!(
-            canonical,
-            Id::v2_from_data(&keys, &CurrencyUnit::Sat, 100, Some(0))
-        );
         let mut keyset = KeySet {
             id: legacy,
             unit: CurrencyUnit::Sat,
             active: Some(false),
             keys,
             input_fee_ppk: 100,
-            final_expiry: None,
+            final_expiry: 0,
         };
-        for expiry in [None, Some(0)] {
-            keyset.final_expiry = expiry;
-            assert!(matches!(keyset.verify_id(), Err(Error::IncorrectKeysetId)));
-            keyset.id = canonical;
-            keyset.verify_id().expect("canonical ID verifies");
-            keyset.id = legacy;
-        }
+        assert!(matches!(keyset.verify_id(), Err(Error::IncorrectKeysetId)));
+        keyset.id = canonical;
+        keyset.verify_id().expect("canonical ID verifies");
     }
 
     #[cfg(feature = "mint")]
@@ -1411,9 +1456,8 @@ mod test {
 
         let keys: Keys = serde_json::from_str(SHORT_KEYSET).expect("public keys");
         let unit = CurrencyUnit::Sat;
-        let canonical = Id::v2_from_data(&keys, &unit, 100, None);
-        let legacy = Id::v2_from_data_inner(&keys, &unit, 100, Some(0), true);
-        assert_eq!(canonical, Id::v2_from_data(&keys, &unit, 100, Some(0)));
+        let canonical = Id::v2_from_data(&keys, &unit, 100, 0);
+        let legacy = Id::v2_from_data_inner(&keys, &unit, 100, 0, true);
         assert_ne!(canonical, legacy);
         let mut keyset = KeySet {
             id: legacy,
@@ -1421,22 +1465,19 @@ mod test {
             active: Some(false),
             keys,
             input_fee_ppk: 100,
-            final_expiry: None,
+            final_expiry: 0,
         };
-        for expiry in [None, Some(0)] {
-            keyset.final_expiry = expiry;
-            keyset
-                .verify_id_for_legacy_nutshell_migration()
-                .expect("legacy zero-expiry ID verifies");
-            keyset.id = canonical;
-            keyset
-                .verify_id_for_legacy_nutshell_migration()
-                .expect("canonical ID still verifies");
-            keyset.id = legacy;
-        }
+        keyset
+            .verify_id_for_legacy_nutshell_migration()
+            .expect("legacy zero-expiry ID verifies");
+        keyset.id = canonical;
+        keyset
+            .verify_id_for_legacy_nutshell_migration()
+            .expect("canonical ID still verifies");
+        keyset.id = legacy;
         for invalid in [
             KeySet {
-                final_expiry: Some(1),
+                final_expiry: 1,
                 ..keyset.clone()
             },
             KeySet {
@@ -1473,7 +1514,7 @@ mod test {
             active: Some(true),
             keys,
             input_fee_ppk: 0,
-            final_expiry: None,
+            final_expiry: 0,
         };
 
         let res = keyset.verify_id();
@@ -1482,6 +1523,61 @@ mod test {
             "expected IncorrectKeysetId, got {:?}",
             res
         );
+    }
+
+    fn keyset_info_with_expiry(final_expiry: u64) -> KeySetInfo {
+        KeySetInfo {
+            id: Id::from_str("009a1f293253e41e").unwrap(),
+            unit: CurrencyUnit::Sat,
+            active: true,
+            input_fee_ppk: 0,
+            final_expiry,
+        }
+    }
+
+    /// The rule takes `now` so the strict comparison is pinned without a clock
+    /// read. Every per-type test below goes through this same function.
+    #[test]
+    fn expiry_boundary_is_strict() {
+        let now = 1_900_000_000;
+        assert!(!expiry_has_passed(now + 1, now));
+        assert!(!expiry_has_passed(now, now));
+        assert!(expiry_has_passed(now - 1, now));
+    }
+
+    /// Nutshell announces a zero expiry for a keyset that never expires, and
+    /// NUT-02 leaves zero out of the keyset ID for the same reason. Reading it
+    /// as an epoch timestamp stranded every proof on such a keyset.
+    #[test]
+    fn a_zero_expiry_never_passes() {
+        assert!(!expiry_has_passed(0, 1_900_000_000));
+        assert!(!keyset_info_with_expiry(0).is_expired());
+    }
+
+    #[test]
+    fn test_keyset_info_is_expired() {
+        assert!(!keyset_info_with_expiry(unix_time() + 1_000_000).is_expired());
+        assert!(keyset_info_with_expiry(unix_time() - 1).is_expired());
+    }
+
+    #[test]
+    fn test_keyset_is_expired() {
+        let keys: Keys = serde_json::from_str(SHORT_KEYSET).unwrap();
+        let mut keyset = KeySet {
+            id: Id::from_str("009a1f293253e41e").unwrap(),
+            unit: CurrencyUnit::Sat,
+            active: Some(true),
+            keys,
+            input_fee_ppk: 0,
+            final_expiry: 0,
+        };
+        assert!(!keyset.is_expired());
+
+        keyset.final_expiry = unix_time() + 1_000_000;
+        assert!(!keyset.is_expired());
+
+        keyset.final_expiry = unix_time() - 1;
+        assert!(keyset.is_expired());
     }
 
     #[test]
@@ -1498,21 +1594,21 @@ mod test {
                 unit: CurrencyUnit::Sat,
                 active: true,
                 input_fee_ppk: 0,
-                final_expiry: None,
+                final_expiry: 0,
             },
             KeySetInfo {
                 id: id_b,
                 unit: CurrencyUnit::Sat,
                 active: false,
                 input_fee_ppk: 0,
-                final_expiry: None,
+                final_expiry: 0,
             },
             KeySetInfo {
                 id: id_c,
                 unit: CurrencyUnit::Usd,
                 active: true,
                 input_fee_ppk: 0,
-                final_expiry: None,
+                final_expiry: 0,
             },
         ];
 
@@ -1537,21 +1633,21 @@ mod test {
                 unit: CurrencyUnit::Sat,
                 active: true,
                 input_fee_ppk: 0,
-                final_expiry: None,
+                final_expiry: 0,
             },
             KeySetInfo {
                 id: id_b,
                 unit: CurrencyUnit::Usd,
                 active: true,
                 input_fee_ppk: 0,
-                final_expiry: None,
+                final_expiry: 0,
             },
             KeySetInfo {
                 id: id_c,
                 unit: CurrencyUnit::Sat,
                 active: false,
                 input_fee_ppk: 0,
-                final_expiry: None,
+                final_expiry: 0,
             },
         ];
 

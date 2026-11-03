@@ -113,12 +113,6 @@ async fn finalize_melt_common<'a>(
     metadata: HashMap<String, String>,
     keyset_policy: KeysetLoadPolicy,
 ) -> Result<MeltSaga<'a, Finalized>, Error> {
-    // The blanks' keyset signs the change, even if it has since rotated out (NUT-08).
-    let change_keys = wallet
-        .keyset_with_policy(premint_secrets.keyset_id, keyset_policy)
-        .await?
-        .keys;
-
     let change_proofs = match change {
         Some(change) => {
             let num_change_proof = change.len();
@@ -143,6 +137,12 @@ async fn finalize_melt_common<'a>(
                 SignatureAmountValidation::AllowZeroAmountPlaceholder,
             )
             .await?;
+
+            // The blanks' keyset signs the change, even if it has since rotated out (NUT-08).
+            let change_keys = wallet
+                .keyset_with_policy(premint_secrets.keyset_id, keyset_policy)
+                .await?
+                .keys;
 
             Some(construct_proofs(
                 change,
@@ -358,7 +358,7 @@ impl<'a> MeltSaga<'a, Initial> {
         let all_keysets = self.wallet.keysets(keyset_policy).await?;
         let active_keyset_ids = all_keysets
             .iter()
-            .filter(|k| k.active.unwrap_or(false))
+            .filter(|k| k.active.unwrap_or(false) && !k.is_expired())
             .map(|k| k.id)
             .collect();
         let keyset_fees_and_amounts = self
@@ -454,7 +454,7 @@ impl<'a> MeltSaga<'a, Initial> {
 
         let active_keyset_id = all_keysets
             .iter()
-            .filter(|keyset| keyset.active.unwrap_or(false))
+            .filter(|keyset| keyset.active.unwrap_or(false) && !keyset.is_expired())
             .min_by_key(|keyset| keyset.input_fee_ppk)
             .ok_or(Error::NoActiveKeyset)?
             .id;
@@ -1563,12 +1563,12 @@ mod tests {
     use cdk_common::{MeltQuoteOnchainResponse, MeltQuoteResponse, MeltQuoteState, PaymentMethod};
     use uuid::Uuid;
 
-    use super::{finalize_melt_common, MeltSaga, MeltSagaResult};
+    use super::{construct_proofs, finalize_melt_common, MeltSaga, MeltSagaResult};
     use crate::nuts::{BlindSignature, PreMintSecrets};
     use crate::wallet::saga::new_compensations;
     use crate::wallet::test_utils::{
-        create_test_db, create_test_wallet_with_mock, test_keyset_id, test_melt_quote,
-        test_mint_url, test_proof_info, MockMintConnector,
+        create_test_db, create_test_wallet_with_mock, make_inactive_keyset, test_keyset,
+        test_keyset_id, test_melt_quote, test_mint_url, test_proof_info, MockMintConnector,
     };
     use crate::wallet::MeltConfirmOptions;
     use crate::{Amount, Error};
@@ -2245,6 +2245,66 @@ mod tests {
         assert_eq!(
             result.unwrap().into_change().expect("change proofs")[0].amount,
             Amount::from(8)
+        );
+    }
+
+    /// The change outputs were blinded on the keyset the melt built them with,
+    /// so unblinding them with the active keyset's keys would store proofs that
+    /// look right and cannot be spent.
+    #[tokio::test]
+    async fn test_finalize_melt_unblinds_change_with_the_keyset_it_was_built_on() {
+        let change_keyset = make_inactive_keyset();
+
+        let db = create_test_db().await;
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.set_mint_keys_response(Ok(vec![test_keyset(), change_keyset.clone()]));
+        let wallet = create_test_wallet_with_mock(db, mock_client).await;
+
+        let quote = test_melt_quote();
+        let final_proofs = vec![test_proof_info(test_keyset_id(), 1008, test_mint_url()).proof];
+        let premint_secrets = PreMintSecrets::blank(change_keyset.id, Amount::from(8))
+            .expect("blank premint secrets");
+        let change = vec![BlindSignature {
+            amount: Amount::from(8),
+            keyset_id: change_keyset.id,
+            c: premint_secrets.blinded_messages()[0].blinded_secret,
+            dleq: None,
+        }];
+
+        let change_proofs = finalize_melt_common(
+            &wallet,
+            new_compensations(),
+            Uuid::new_v4(),
+            &quote,
+            &final_proofs,
+            &premint_secrets,
+            MeltQuoteState::Paid,
+            None,
+            Some(change.clone()),
+            HashMap::new(),
+            Default::default(),
+        )
+        .await
+        .expect("the change keyset is known to the wallet")
+        .into_change()
+        .expect("change proofs");
+
+        let rs = premint_secrets.rs()[..1].to_vec();
+        let secrets = premint_secrets.secrets()[..1].to_vec();
+        let expected = construct_proofs(
+            change.clone(),
+            rs.clone(),
+            secrets.clone(),
+            &change_keyset.keys,
+        )
+        .expect("the change keyset unblinds its own signatures");
+        let with_active_keys = construct_proofs(change, rs, secrets, &test_keyset().keys)
+            .expect("the active keyset has a key for this amount too");
+
+        assert_eq!(change_proofs[0].c, expected[0].c);
+        assert_ne!(
+            change_proofs[0].c, with_active_keys[0].c,
+            "the active keyset's keys must not be the ones used"
         );
     }
 

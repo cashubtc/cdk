@@ -30,7 +30,7 @@ struct Input {
     unit_tag: u8,
     custom_unit: Option<String>,
     input_fee_ppk: u64,
-    expiry: Option<u64>,
+    expiry: u64,
     // NUT-13 inputs.
     seed: [u8; 64],
     counter: u32,
@@ -52,7 +52,7 @@ impl<'a> Arbitrary<'a> for Input {
             unit_tag: u.arbitrary()?,
             custom_unit: Option::<String>::arbitrary(u)?,
             input_fee_ppk: u.arbitrary()?,
-            expiry: Option::<u64>::arbitrary(u)?,
+            expiry: u64::arbitrary(u)?,
             seed: u.arbitrary()?,
             counter: u.arbitrary()?,
             use_v2_id: u.arbitrary()?,

@@ -15,6 +15,7 @@ use cdk_common::nuts::{
     CurrencyUnit, Id, KeySet, KeySetInfo, Keys, KeysetResponse, MeltMethodSettings, MintInfo,
     MintMethodSettings, MintVersion, MppMethodSettings, Proof,
 };
+use cdk_common::util::unix_time;
 use cdk_common::wallet::{MeltQuote, MintQuote};
 use cdk_common::{
     Amount, CheckStateRequest, CheckStateResponse, MeltQuoteCreateResponse, MeltQuoteRequest,
@@ -238,7 +239,7 @@ pub fn test_keyset() -> KeySet {
         active: Some(true),
         keys: crate::nuts::Keys::new(keys),
         input_fee_ppk: 101,
-        final_expiry: None,
+        final_expiry: 0,
     }
 }
 
@@ -396,6 +397,17 @@ pub fn make_inactive_keyset() -> KeySet {
         .map(|(amount, pk)| (Amount::from(amount.to_u64() * 2), *pk))
         .collect();
     ks.keys = Keys::new(shifted_keys);
+    ks.id = Id::v2_from_data(&ks.keys, &ks.unit, ks.input_fee_ppk, ks.final_expiry);
+    ks
+}
+
+/// Create an expired keyset with a properly computed ID.
+///
+/// The v2 keyset id commits to `final_expiry`, so setting it is enough to make
+/// this keyset distinct from [`test_keyset`] and [`make_inactive_keyset`].
+pub fn make_expired_keyset() -> KeySet {
+    let mut ks = test_keyset();
+    ks.final_expiry = unix_time() - 1;
     ks.id = Id::v2_from_data(&ks.keys, &ks.unit, ks.input_fee_ppk, ks.final_expiry);
     ks
 }
@@ -814,7 +826,7 @@ impl MockMintConnector {
             active: Some(true),
             keys,
             input_fee_ppk: 0,
-            final_expiry: None,
+            final_expiry: 0,
         });
         *self.mint_signing_keys.lock().unwrap() = Some(signing_keys);
     }

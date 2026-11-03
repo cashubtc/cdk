@@ -657,7 +657,7 @@ async fn test_swap_overpay_underpay_fee() {
             cdk_integration_tests::standard_keyset_amounts(32),
             1,
             true,
-            None,
+            0,
         )
         .await
         .unwrap();
@@ -737,7 +737,7 @@ async fn test_mint_enforce_fee() {
             cdk_integration_tests::standard_keyset_amounts(32),
             1,
             true,
-            None,
+            0,
         )
         .await
         .unwrap();
@@ -1114,7 +1114,7 @@ async fn test_mint_change_with_fee_melt() {
             cdk_integration_tests::standard_keyset_amounts(32),
             1,
             true,
-            None,
+            0,
         )
         .await
         .unwrap();
@@ -2351,7 +2351,7 @@ async fn test_restore_after_keyset_rotation() {
     // Rotate the keyset — the original keyset becomes inactive
     let amounts: Vec<u64> = (0..32).map(|i| 2u64.pow(i)).collect();
 
-    mint.rotate_keyset(CurrencyUnit::Sat, amounts.clone(), 0, true, None)
+    mint.rotate_keyset(CurrencyUnit::Sat, amounts.clone(), 0, true, 0)
         .await
         .expect("Failed to rotate keyset");
 
@@ -2382,7 +2382,7 @@ async fn test_restore_after_keyset_rotation() {
 
     // A fixed past timestamp makes the third keyset expired without waiting.
     let third_keyset = mint
-        .rotate_keyset(CurrencyUnit::Sat, amounts, 0, true, Some(1))
+        .rotate_keyset(CurrencyUnit::Sat, amounts, 0, true, 1)
         .await
         .expect("Failed to rotate keyset");
 

@@ -326,7 +326,7 @@ mod tests {
                 amounts: vec![1, 2, 4, 8],
                 input_fee_ppk: 0,
                 keyset_id_type: KeySetVersion::Version00,
-                final_expiry: None,
+                final_expiry: 0,
             })
             .await
             .expect("rotate_keyset");

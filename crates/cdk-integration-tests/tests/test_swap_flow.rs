@@ -727,7 +727,7 @@ async fn test_swap_with_fees() {
         cdk_integration_tests::standard_keyset_amounts(32),
         100,
         true,
-        None,
+        0,
     )
     .await
     .expect("Failed to rotate keyset");
@@ -828,7 +828,7 @@ async fn test_melt_with_fees_swap_before_melt() {
         cdk_integration_tests::standard_keyset_amounts(32),
         1000, // 1 sat per proof
         true,
-        None,
+        0,
     )
     .await
     .expect("Failed to rotate keyset");
@@ -1077,7 +1077,7 @@ async fn test_melt_small_amount_tight_margin() {
         cdk_integration_tests::standard_keyset_amounts(32),
         1000,
         true,
-        None,
+        0,
     )
     .await
     .expect("Failed to rotate keyset");
@@ -1185,7 +1185,7 @@ async fn test_melt_swap_tight_margin_regression() {
         cdk_integration_tests::standard_keyset_amounts(32),
         250,
         true,
-        None,
+        0,
     )
     .await
     .expect("Failed to rotate keyset");
@@ -1514,7 +1514,7 @@ async fn test_wallet_multi_keyset_counter_updates() {
         cdk_integration_tests::standard_keyset_amounts(32),
         0,
         true,
-        None,
+        0,
     )
     .await
     .expect("Failed to rotate keyset");

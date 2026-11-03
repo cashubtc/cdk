@@ -5,6 +5,7 @@ use std::ops::Deref;
 use std::str::FromStr;
 
 use bitcoin::bip32::DerivationPath;
+use cashu::nuts::expiry_has_passed;
 use cashu::nuts::nut30::MeltQuoteOnchainFeeOption;
 use cashu::quote_id::QuoteId;
 use cashu::util::unix_time;
@@ -1297,16 +1298,17 @@ pub struct MintKeySetInfo {
     /// Input Fee ppk
     #[serde(default = "default_fee")]
     pub input_fee_ppk: u64,
-    /// Final expiry
-    pub final_expiry: Option<u64>,
+    /// Final expiry, zero when the keyset has no final expiry
+    #[serde(default)]
+    pub final_expiry: u64,
     /// Issuer Version
     pub issuer_version: Option<IssuerVersion>,
 }
 
 impl MintKeySetInfo {
-    /// Returns true if `final_expiry` is set and strictly in the past.
+    /// Returns true if `final_expiry` is non-zero and strictly in the past.
     pub fn is_expired(&self) -> bool {
-        self.final_expiry.is_some_and(|expiry| expiry < unix_time())
+        expiry_has_passed(self.final_expiry, unix_time())
     }
 }
 
@@ -1840,7 +1842,7 @@ mod tests {
         assert_eq!(response.request, None);
     }
 
-    fn dummy_mint_keyset_info(final_expiry: Option<u64>) -> MintKeySetInfo {
+    fn dummy_mint_keyset_info(final_expiry: u64) -> MintKeySetInfo {
         use std::str::FromStr;
         MintKeySetInfo {
             id: Id::from_str("009a1f293253e41e").unwrap(),
@@ -1857,34 +1859,23 @@ mod tests {
     }
 
     #[test]
-    fn test_is_expired_none() {
-        let info = dummy_mint_keyset_info(None);
-        assert!(!info.is_expired());
-    }
-
-    #[test]
     fn test_is_expired_far_future() {
-        let info = dummy_mint_keyset_info(Some(unix_time() + 1_000_000));
-        assert!(!info.is_expired());
-    }
-
-    #[test]
-    fn test_is_expired_exactly_now_is_not_expired() {
-        // strict less-than: expiry == now is not yet expired
-        let info = dummy_mint_keyset_info(Some(unix_time()));
+        let info = dummy_mint_keyset_info(unix_time() + 1_000_000);
         assert!(!info.is_expired());
     }
 
     #[test]
     fn test_is_expired_one_second_ago() {
-        let info = dummy_mint_keyset_info(Some(unix_time() - 1));
+        let info = dummy_mint_keyset_info(unix_time() - 1);
         assert!(info.is_expired());
     }
 
+    /// Zero is how Nutshell announces a keyset that never expires, so it must
+    /// not read as an epoch timestamp.
     #[test]
     fn test_is_expired_zero() {
-        let info = dummy_mint_keyset_info(Some(0));
-        assert!(info.is_expired());
+        let info = dummy_mint_keyset_info(0);
+        assert!(!info.is_expired());
     }
 
     #[test]

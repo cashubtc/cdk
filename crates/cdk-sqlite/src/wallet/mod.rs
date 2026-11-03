@@ -27,6 +27,7 @@ mod tests {
     use cdk_common::nuts::{ProofDleq, State};
     use cdk_common::secret::Secret;
 
+    use crate::test_support::stored_value;
     use crate::WalletSqliteDatabase;
 
     /// Upgrade a populated database built from every earlier migration through
@@ -735,5 +736,69 @@ mod tests {
 
         // Verify that fully paid and issued quote is not returned
         assert!(!quote_ids.contains(&"quote_fully_paid"));
+    }
+
+    /// A zero `final_expiry` has to reach the column as NULL: a build that reads
+    /// it back as `Option<u64>` treats a stored zero as an expiry at the epoch
+    /// and refuses to spend from the keyset.
+    #[tokio::test]
+    async fn zero_final_expiry_is_stored_as_null() {
+        use cdk_common::mint_url::MintUrl;
+        use cdk_common::nuts::{CurrencyUnit, Id, KeySetInfo};
+        use cdk_sql_common::value::Value;
+
+        let path = std::env::temp_dir()
+            .join(format!(
+                "cdk-test-null-expiry-{}.sqlite",
+                uuid::Uuid::new_v4()
+            ))
+            .to_str()
+            .expect("temp dir is valid UTF-8")
+            .to_owned();
+
+        #[cfg(feature = "sqlcipher")]
+        let db = WalletSqliteDatabase::new((path.as_str(), "test"))
+            .await
+            .unwrap();
+
+        #[cfg(not(feature = "sqlcipher"))]
+        let db = WalletSqliteDatabase::new(path.as_str()).await.unwrap();
+
+        let mint_url = MintUrl::from_str("https://example.com").unwrap();
+        let mut keyset = KeySetInfo {
+            id: Id::from_str("00916bbf7ef91a36").unwrap(),
+            unit: CurrencyUnit::Sat,
+            active: true,
+            input_fee_ppk: 0,
+            final_expiry: 0,
+        };
+
+        db.add_mint(mint_url.clone(), None).await.unwrap();
+        db.add_mint_keysets(mint_url.clone(), vec![keyset.clone()])
+            .await
+            .unwrap();
+        assert_eq!(
+            stored_value(&path, "SELECT final_expiry FROM keyset").await,
+            Value::Null
+        );
+
+        keyset.final_expiry = 1_900_000_000;
+        db.add_mint_keysets(mint_url.clone(), vec![keyset.clone()])
+            .await
+            .unwrap();
+        assert_eq!(
+            stored_value(&path, "SELECT final_expiry FROM keyset").await,
+            Value::Integer(1_900_000_000)
+        );
+
+        keyset.final_expiry = 0;
+        db.add_mint_keysets(mint_url, vec![keyset]).await.unwrap();
+        assert_eq!(
+            stored_value(&path, "SELECT final_expiry FROM keyset").await,
+            Value::Null
+        );
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
     }
 }

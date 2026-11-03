@@ -569,7 +569,7 @@ mod tests {
                     amounts: amounts.clone(),
                     input_fee_ppk: *fee,
                     keyset_id_type: KeySetVersion::Version00,
-                    final_expiry: None,
+                    final_expiry: 0,
                 })
                 .await
                 .expect("rotate keyset");
