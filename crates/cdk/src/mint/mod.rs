@@ -15,7 +15,9 @@ pub use cdk_common::quote_id::QuoteId;
 use cdk_common::stream::{BackoffPolicy, SupervisedStream};
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::MintMetricGuard;
-use cdk_signatory::signatory::{Signatory, SignatoryKeySet, SignatoryKeysets};
+use cdk_signatory::signatory::{
+    ReconstructDleqArguments, Signatory, SignatoryKeySet, SignatoryKeysets,
+};
 use futures::{Stream, StreamExt};
 use nut21::ProtectedEndpoint;
 use subscription::PubSubManager;
@@ -387,8 +389,12 @@ impl Mint {
         let payment_processors = Arc::new(payment_processors);
 
         Ok(Self {
-            signatory,
-            pubsub_manager: PubSubManager::new((localstore.clone(), payment_processors.clone())),
+            signatory: signatory.clone(),
+            pubsub_manager: PubSubManager::new((
+                localstore.clone(),
+                payment_processors.clone(),
+                signatory.clone(),
+            )),
             localstore,
             oidc_client: computed_info.nuts.nut21.as_ref().map(|nut21| {
                 OidcClient::new(
@@ -1361,13 +1367,21 @@ impl Mint {
     }
 
     /// Restore
+    ///
+    /// Signatures are returned for every known blinded secret, expired keysets
+    /// included, so a recovering wallet can still account for what it was
+    /// issued. DLEQ proofs are no longer stored, so they are rebuilt here; the
+    /// proof is optional in a restore response, so a keyset the signatory can
+    /// no longer sign with yields the stored signature without one.
     #[instrument(skip_all)]
     pub async fn restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
         #[cfg(feature = "prometheus")]
         let metrics = MintMetricGuard::new("restore");
 
         let result = async {
-            let output_len = request.outputs.len();
+            let blinded_messages = request.outputs;
+
+            let output_len = blinded_messages.len();
 
             if output_len == 0 {
                 return Ok(RestoreResponse {
@@ -1393,19 +1407,18 @@ impl Mint {
             let mut signatures = Vec::with_capacity(output_len);
 
             // Build a position map to track original request order for verification
-            let position_map: HashMap<PublicKey, usize> = request
-                .outputs
+            let position_map: HashMap<PublicKey, usize> = blinded_messages
                 .iter()
                 .enumerate()
                 .map(|(idx, output)| (output.blinded_secret, idx))
                 .collect();
 
-            let blinded_message: Vec<PublicKey> =
-                request.outputs.iter().map(|b| b.blinded_secret).collect();
+            let blinded_secrets: Vec<PublicKey> =
+                blinded_messages.iter().map(|b| b.blinded_secret).collect();
 
             let blinded_signatures = self
                 .localstore
-                .get_blind_signatures(&blinded_message)
+                .get_blind_signatures(&blinded_secrets)
                 .await?;
 
             if blinded_signatures.len() != output_len {
@@ -1413,9 +1426,27 @@ impl Mint {
             }
 
             for (blinded_message, blinded_signature) in
-                request.outputs.into_iter().zip(blinded_signatures)
+                blinded_messages.into_iter().zip(blinded_signatures)
             {
-                if let Some(blinded_signature) = blinded_signature {
+                if let Some(mut blinded_signature) = blinded_signature {
+                    if blinded_signature.dleq.is_none() {
+                        match self
+                            .signatory
+                            .reconstruct_dleq(ReconstructDleqArguments {
+                                blind_signature: blinded_signature.clone(),
+                                blind_secret: blinded_message.blinded_secret,
+                            })
+                            .await
+                        {
+                            Ok(with_dleq) => blinded_signature = with_dleq,
+                            Err(err) => tracing::warn!(
+                                "Could not reconstruct DLEQ for restored signature on keyset {}: {}",
+                                blinded_signature.keyset_id,
+                                err
+                            ),
+                        }
+                    }
+
                     outputs.push(blinded_message);
                     signatures.push(blinded_signature);
                 }
@@ -1545,12 +1576,12 @@ mod tests {
     /// driven by the test. Injected snapshots are delivered verbatim through
     /// `subscribe_keysets`, so the mint's drain task can be exercised in
     /// isolation from `DbSignatory`'s rotation logic.
-    struct MockSignatory {
+    pub struct MockSignatory {
         updates: watch::Sender<SignatoryKeysets>,
     }
 
     impl MockSignatory {
-        fn new(initial: SignatoryKeysets) -> Self {
+        pub fn new(initial: SignatoryKeysets) -> Self {
             let (updates, _) = watch::channel(initial);
             Self { updates }
         }
@@ -1589,12 +1620,19 @@ mod tests {
         async fn rotate_keyset(&self, _args: RotateKeyArguments) -> Result<SignatoryKeySet, Error> {
             Err(Error::Custom("unsupported in mock".to_string()))
         }
+
+        async fn reconstruct_dleq(
+            &self,
+            args: ReconstructDleqArguments,
+        ) -> Result<BlindSignature, Error> {
+            Ok(args.blind_signature)
+        }
     }
 
     /// Produce a sequence of valid, distinct keyset snapshots by rotating a real
     /// `DbSignatory` `count` times and reading the full set after each rotation.
     /// Each rotation makes a new active Sat keyset, so the snapshots differ.
-    async fn rotated_snapshots(count: usize) -> Vec<SignatoryKeysets> {
+    pub async fn rotated_snapshots(count: usize) -> Vec<SignatoryKeysets> {
         let store = Arc::new(
             cdk_sqlite::mint::memory::empty()
                 .await
@@ -2001,6 +2039,13 @@ mod tests {
 
         async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<SignatoryKeySet, Error> {
             self.inner.rotate_keyset(args).await
+        }
+
+        async fn reconstruct_dleq(
+            &self,
+            args: ReconstructDleqArguments,
+        ) -> Result<BlindSignature, Error> {
+            self.inner.reconstruct_dleq(args).await
         }
     }
 

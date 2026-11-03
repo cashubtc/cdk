@@ -17,9 +17,11 @@ use cdk_common::payment::{
 use cdk_common::quote_id::QuoteId;
 use cdk_common::subscription::Params;
 use cdk_common::{
-    MeltOptions, MeltQuoteBolt12Request, MeltQuoteCreateResponse, MeltQuoteCustomRequest,
-    MeltQuoteCustomResponse, MeltQuoteOnchainRequest, MeltQuoteOnchainResponse, MeltQuoteResponse,
+    BlindSignature, MeltOptions, MeltQuoteBolt12Request, MeltQuoteCreateResponse,
+    MeltQuoteCustomRequest, MeltQuoteCustomResponse, MeltQuoteOnchainRequest,
+    MeltQuoteOnchainResponse, MeltQuoteResponse,
 };
+use cdk_signatory::signatory::{ReconstructDleqArguments, Signatory};
 use lightning::offers::offer::Offer;
 use tracing::instrument;
 
@@ -167,6 +169,7 @@ impl Mint {
     /// state.
     async fn load_settled_melt_response(
         localstore: &DynMintDatabase,
+        signatory: &Arc<dyn Signatory + Send + Sync>,
         quote_id: &QuoteId,
     ) -> Result<Option<MeltQuoteResponse<QuoteId>>, Error> {
         let quote = Self::load_melt_quote_for_response(localstore, quote_id)
@@ -180,14 +183,28 @@ impl Mint {
             return Ok(None);
         }
 
-        let change = localstore.get_blind_signatures_for_quote(quote_id).await?;
-        let change_opt = if change.is_empty() {
-            None
-        } else {
-            Some(change)
-        };
+        let signatures_and_secrets = localstore
+            .get_blind_signatures_and_secret_for_quote(quote_id)
+            .await?;
 
-        Ok(Some(quote.into_response(change_opt)))
+        let mut blind_signatures: Vec<BlindSignature> =
+            Vec::with_capacity(signatures_and_secrets.len());
+
+        for (blind_signature, blind_secret) in signatures_and_secrets.iter() {
+            blind_signatures.push(
+                signatory
+                    .reconstruct_dleq(ReconstructDleqArguments {
+                        blind_signature: blind_signature.clone(),
+                        blind_secret: *blind_secret,
+                    })
+                    .await
+                    .unwrap_or(blind_signature.clone()),
+            );
+        }
+
+        let change = (!blind_signatures.is_empty()).then_some(blind_signatures);
+
+        Ok(Some(quote.into_response(change)))
     }
 
     #[instrument(skip_all)]
@@ -827,10 +844,25 @@ impl Mint {
                 .await?
                 .ok_or(Error::UnknownQuote)?;
 
-            let blind_signatures = self
+            let signatures_and_secrets = self
                 .localstore
-                .get_blind_signatures_for_quote(quote_id)
+                .get_blind_signatures_and_secret_for_quote(quote_id)
                 .await?;
+
+            let mut blind_signatures: Vec<BlindSignature> =
+                Vec::with_capacity(signatures_and_secrets.len());
+
+            for (blind_signature, blind_secret) in signatures_and_secrets.iter() {
+                blind_signatures.push(
+                    self.signatory
+                        .reconstruct_dleq(ReconstructDleqArguments {
+                            blind_signature: blind_signature.clone(),
+                            blind_secret: *blind_secret,
+                        })
+                        .await
+                        .unwrap_or(blind_signature.clone()),
+                );
+            }
 
             let change = (!blind_signatures.is_empty()).then_some(blind_signatures);
 
@@ -958,6 +990,7 @@ impl Mint {
         let quote_id_for_log = quote_id.clone();
         let localstore = self.localstore();
         let pubsub = self.pubsub_manager();
+        let signatory = self.signatory.clone();
 
         let quote_for_spawn = quote.clone();
         let completion = tokio::spawn(async move {
@@ -1030,6 +1063,7 @@ impl Mint {
                                 loop {
                                     if let Some(response) = Self::load_settled_melt_response(
                                         &localstore,
+                                        &signatory,
                                         &quote_id_for_log,
                                     )
                                     .await?
@@ -1082,6 +1116,7 @@ impl Mint {
                                             if let Some(response) =
                                                 Self::load_settled_melt_response(
                                                     &localstore,
+                                                    &signatory,
                                                     &quote_id_for_log,
                                                 )
                                                 .await?

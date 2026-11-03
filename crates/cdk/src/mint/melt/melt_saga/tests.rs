@@ -3159,10 +3159,12 @@ async fn test_paid_melt_responses_wait_for_change_commit() {
         .await
         .unwrap();
 
-        assert!(Mint::load_settled_melt_response(&db, &quote.id)
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            Mint::load_settled_melt_response(&db, &mint.signatory, &quote.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(
             mint.check_melt_quote(&quote.id).await.unwrap().state(),
             MeltQuoteState::Pending
@@ -3203,7 +3205,7 @@ async fn test_paid_melt_responses_wait_for_change_commit() {
         .await
         .unwrap();
 
-        let settled = Mint::load_settled_melt_response(&db, &quote.id)
+        let settled = Mint::load_settled_melt_response(&db, &mint.signatory, &quote.id)
             .await
             .unwrap()
             .unwrap();
