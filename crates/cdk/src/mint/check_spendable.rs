@@ -169,6 +169,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_check_state_without_ys_returns_no_states() {
+        let mint = create_test_mint().await.unwrap();
+
+        let response = mint
+            .check_state(&CheckStateRequest { ys: vec![] })
+            .await
+            .expect("an empty check state request should succeed");
+
+        assert!(response.states.is_empty());
+    }
+
+    #[tokio::test]
     async fn test_check_state_returns_spent_for_duplicate_y() {
         let mint = create_test_mint().await.unwrap();
         let proofs = mint_test_proofs(&mint, Amount::from(100)).await.unwrap();
