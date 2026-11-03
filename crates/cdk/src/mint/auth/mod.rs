@@ -392,4 +392,31 @@ mod tests {
             );
         }
     }
+
+    #[tokio::test]
+    async fn auth_keysets_reports_active_window() {
+        let mint = create_auth_enabled_mint().await;
+
+        let info = mint
+            .rotate_keyset(
+                CurrencyUnit::Auth,
+                vec![1],
+                0,
+                true,
+                Some(1),
+                Some(4_000_000_000),
+                None,
+            )
+            .await
+            .expect("rotate auth keyset");
+
+        let listed = mint
+            .auth_keysets()
+            .keysets
+            .into_iter()
+            .find(|k| k.id == info.id)
+            .expect("rotated auth keyset is listed");
+        assert_eq!(listed.active_from, Some(1));
+        assert_eq!(listed.active_until, Some(4_000_000_000));
+    }
 }

@@ -2,7 +2,6 @@
 
 use std::str::FromStr;
 
-use cdk::mint::MintKeySetInfo;
 use cdk::nuts::nut02::KeySetVersion;
 use cdk::nuts::CurrencyUnit;
 use tonic::{Request, Response, Status};
@@ -10,32 +9,6 @@ use tonic::{Request, Response, Status};
 use super::MintRPCServer;
 use crate::keyset::keyset_service_server::KeysetService;
 use crate::keyset::KeysetVersion;
-
-impl MintRPCServer {
-    /// Rotates to the next keyset for the given unit
-    async fn rotate_keyset(
-        &self,
-        unit: CurrencyUnit,
-        amounts: Vec<u64>,
-        input_fee_ppk: Option<u64>,
-        keyset_version: KeySetVersion,
-        final_expiry: Option<u64>,
-    ) -> Result<MintKeySetInfo, Status> {
-        self.ensure_mutation_allowed().await?;
-        self.mint
-            .rotate_keyset_by_version(
-                unit,
-                amounts,
-                input_fee_ppk.unwrap_or(0),
-                keyset_version,
-                None,
-                None,
-                final_expiry,
-            )
-            .await
-            .map_err(|_| Status::invalid_argument("Could not rotate keyset".to_string()))
-    }
-}
 
 #[tonic::async_trait]
 impl KeysetService for MintRPCServer {
@@ -71,15 +44,20 @@ impl KeysetService for MintRPCServer {
             Some(true) | None => KeySetVersion::Version01,
         });
 
+        self.ensure_mutation_allowed().await?;
         let keyset_info = self
-            .rotate_keyset(
+            .mint
+            .rotate_keyset_by_version(
                 unit,
                 request.amounts,
-                request.input_fee_ppk,
+                request.input_fee_ppk.unwrap_or(0),
                 keyset_version,
+                request.active_from,
+                request.active_until,
                 request.final_expiry,
             )
-            .await?;
+            .await
+            .map_err(|err| Status::invalid_argument(format!("Could not rotate keyset: {err}")))?;
 
         Ok(Response::new(crate::keyset::RotateNextKeysetResponse {
             id: keyset_info.id.to_string(),
@@ -108,6 +86,8 @@ mod tests {
                 use_keyset_v2: Some(true),
                 keyset_version: None,
                 final_expiry: None,
+                active_from: None,
+                active_until: Some(4_000_000_000),
             }),
         )
         .await
@@ -118,6 +98,15 @@ mod tests {
         assert_eq!(response.unit, "sat");
         assert_eq!(response.amounts, vec![1, 2, 4, 8]);
         assert_eq!(response.input_fee_ppk, 1);
+
+        let keyset = server
+            .mint
+            .keysets()
+            .keysets
+            .into_iter()
+            .find(|k| k.id.to_string() == response.id)
+            .expect("rotated keyset is listed");
+        assert_eq!(keyset.active_until, Some(4_000_000_000));
     }
     #[tokio::test]
     async fn test_keyset_version_selection_and_legacy_defaults() {
@@ -148,6 +137,8 @@ mod tests {
                     use_keyset_v2: legacy,
                     keyset_version: explicit.map(i32::from),
                     final_expiry: None,
+                    active_from: None,
+                    active_until: None,
                 }),
             )
             .await
@@ -173,6 +164,8 @@ mod tests {
                     use_keyset_v2: Some(legacy),
                     keyset_version: Some(version.into()),
                     final_expiry: None,
+                    active_from: None,
+                    active_until: None,
                 }),
             )
             .await
@@ -200,6 +193,8 @@ mod tests {
                     use_keyset_v2: Some(true),
                     keyset_version: Some(version),
                     final_expiry: None,
+                    active_from: None,
+                    active_until: None,
                 }),
             )
             .await

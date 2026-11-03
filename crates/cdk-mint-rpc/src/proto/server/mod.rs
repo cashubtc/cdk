@@ -328,6 +328,8 @@ mod tests {
                 use_keyset_v2: Some(true),
                 keyset_version: None,
                 final_expiry: None,
+                active_from: None,
+                active_until: None,
             }),
         )
         .await
