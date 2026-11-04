@@ -1212,6 +1212,30 @@ where
     );
 }
 
+/// A melt quote kept past its transaction can't change the lookup id of a quote that moved on.
+pub async fn update_melt_quote_request_lookup_id_refuses_stale_state<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    let melt_quote = stored_melt_quote(&db).await;
+    let mut stale = stale_melt_quote(&db, &melt_quote.id).await;
+    move_melt_quote(&db, &melt_quote.id, cashu::MeltQuoteState::Pending).await;
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let err = tx
+        .update_melt_quote_request_lookup_id(
+            &mut stale,
+            &PaymentIdentifier::CustomId(unique_string()),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::ConcurrentUpdate), "{err}");
+    tx.rollback().await.unwrap();
+
+    let stored = db.get_melt_quote(&melt_quote.id).await.unwrap().unwrap();
+    assert_eq!(stored.request_lookup_id, melt_quote.request_lookup_id);
+}
+
 /// Test getting all mint quotes
 pub async fn get_all_mint_quotes<DB>(db: DB)
 where

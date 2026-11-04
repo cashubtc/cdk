@@ -355,6 +355,8 @@ pub trait QuotesTransaction {
     /// Updates the request lookup id for a melt quote.
     ///
     /// Requires an [`Acquired`] melt quote to ensure the row is locked before modification.
+    /// Returns [`Error::ConcurrentUpdate`] if the stored state no longer matches the quote,
+    /// after which the caller must roll back the transaction.
     async fn update_melt_quote_request_lookup_id(
         &mut self,
         quote: &mut Acquired<mint::MeltQuote>,

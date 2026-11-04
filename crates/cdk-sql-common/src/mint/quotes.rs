@@ -1194,12 +1194,18 @@ where
         quote: &mut Acquired<mint::MeltQuote>,
         new_request_lookup_id: &PaymentIdentifier,
     ) -> Result<(), Self::Err> {
-        query(r#"UPDATE melt_quote SET request_lookup_id = :new_req_id, request_lookup_id_kind = :new_kind WHERE id = :id"#)?
+        let affected = query(r#"UPDATE melt_quote SET request_lookup_id = :new_req_id, request_lookup_id_kind = :new_kind WHERE id = :id AND state = :state"#)?
             .bind("new_req_id", new_request_lookup_id.to_string())
             .bind("new_kind", new_request_lookup_id.kind())
             .bind("id", quote.id.to_string())
+            .bind("state", quote.state.to_string())
             .execute(&self.inner)
             .await?;
+
+        if affected != 1 {
+            return Err(Error::ConcurrentUpdate);
+        }
+
         quote.request_lookup_id = Some(new_request_lookup_id.clone());
         Ok(())
     }
