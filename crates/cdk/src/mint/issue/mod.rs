@@ -1382,7 +1382,7 @@ mod batch_mint_tests {
             0,
             PaymentIdentifier::QuoteId(quote_id.clone()),
             None,
-            Amount::new(paid_amount, CurrencyUnit::Sat),
+            Amount::new(0, CurrencyUnit::Sat),
             Amount::new(0, CurrencyUnit::Sat),
             PaymentMethod::Known(KnownMethod::Onchain),
             now,
