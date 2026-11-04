@@ -309,6 +309,12 @@ pub enum Error {
     /// Payment state is unknown
     #[error("Payment state is unknown")]
     UnknownPaymentState,
+    /// Melt quote is locked by an in-progress payment execution
+    ///
+    /// The quote's outcome is owned by the lock holder; finalizing or rolling
+    /// back the quote without holding the lock is refused.
+    #[error("Melt quote is locked by an in-progress payment execution")]
+    MeltQuoteLocked,
     /// Melting is disabled
     #[error("Melting is disabled")]
     MeltingDisabled,

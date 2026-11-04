@@ -18,6 +18,7 @@ use tracing::instrument;
 use self::compensation::{CompensatingAction, RemoveMeltSetup};
 use self::state::{Initial, PaymentConfirmed, SettlementDecision, SetupComplete};
 use crate::cdk_payment::MakePaymentResponse;
+use crate::mint::melt::lease::{check_melt_lease, MELT_LEASE_SECONDS};
 use crate::mint::melt::shared;
 use crate::mint::subscription::PubSubManager;
 use crate::mint::verification::Verification;
@@ -327,6 +328,12 @@ impl MeltSaga<Initial> {
             }
         }
 
+        // Arm the melt execution lock in the same transaction that moves the
+        // quote to Pending, so any consistent read of a Pending quote also
+        // shows the executor that owns its outcome.
+        quote.melt_lock = self.operation_id.to_string();
+        quote.melt_lock_expires_at = tx.melt_lease_time().await? + MELT_LEASE_SECONDS;
+
         // Update quote state to Pending
         match tx
             .update_melt_quote_state(&mut quote, MeltQuoteState::Pending, None)
@@ -457,6 +464,10 @@ impl MeltSaga<Initial> {
 }
 
 impl MeltSaga<SetupComplete> {
+    pub(crate) fn lease_quote(&self) -> &cdk_common::mint::MeltQuote {
+        &self.state_data.quote
+    }
+
     /// Attempts to settle the melt internally (melt-to-mint on same mint).
     ///
     /// This checks if the payment request corresponds to an existing mint quote
@@ -524,6 +535,8 @@ impl MeltSaga<SetupComplete> {
                 return Err(Error::UnknownQuote);
             }
         };
+
+        check_melt_lease(&mut tx, &melt_quote, &self.state_data.quote.melt_lock).await?;
 
         let mut mint_quote = match tx
             .get_mint_quote_by_request(&self.state_data.quote.request.to_string())
@@ -598,7 +611,7 @@ impl MeltSaga<SetupComplete> {
         tx.update_mint_quote(&mut mint_quote).await?;
 
         // Mark the melt quote Paid in the same transaction as the mint quote
-        // credit.
+        // credit. Keep ownership until finalization spends the input proofs.
         tx.update_melt_quote_state(&mut melt_quote, MeltQuoteState::Paid, None)
             .await?;
 
@@ -773,6 +786,11 @@ impl MeltSaga<SetupComplete> {
         // recovery treats a crash during dispatch as ambiguous and fails closed.
         {
             let mut tx = self.db.begin_transaction().await?;
+            let current = tx
+                .get_melt_quote(&self.state_data.quote.id)
+                .await?
+                .ok_or(Error::UnknownQuote)?;
+            check_melt_lease(&mut tx, &current, &self.state_data.quote.melt_lock).await?;
             let mut saga = tx
                 .get_saga_for_update(&self.operation_id)
                 .await?
@@ -1008,6 +1026,7 @@ impl MeltSaga<SetupComplete> {
             .await?
             .ok_or(Error::UnknownQuote)?;
 
+        check_melt_lease(&mut tx, &quote, &self.state_data.quote.melt_lock).await?;
         let previous_payment_lookup_id = quote.request_lookup_id.clone();
         if quote.request_lookup_id.as_ref() != Some(payment_lookup_id) {
             tx.update_melt_quote_request_lookup_id(&mut quote, payment_lookup_id)
@@ -1078,6 +1097,11 @@ impl MeltSaga<SetupComplete> {
         payment_response: &MakePaymentResponse,
     ) -> Result<(), Error> {
         let mut tx = self.db.begin_transaction().await?;
+        let current = tx
+            .get_melt_quote(&self.state_data.quote.id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+        check_melt_lease(&mut tx, &current, &self.state_data.quote.melt_lock).await?;
         let Some(mut saga) = tx.get_saga_for_update(&self.operation_id).await? else {
             tx.rollback().await?;
             return Err(Error::UnknownPaymentState);
@@ -1195,6 +1219,11 @@ impl MeltSaga<PaymentConfirmed> {
         // This must happen before finalize_melt_quote which will commit TX1 internally.
         {
             let mut tx = self.db.begin_transaction().await?;
+            let current = tx
+                .get_melt_quote(&self.state_data.quote.id)
+                .await?
+                .ok_or(Error::UnknownQuote)?;
+            check_melt_lease(&mut tx, &current, &self.state_data.quote.melt_lock).await?;
             let finalization_data = MeltFinalizationData {
                 total_spent: total_spent.clone(),
                 payment_lookup_id: payment_lookup_id.clone(),
