@@ -3,34 +3,42 @@
 #![allow(clippy::missing_panics_doc)]
 
 use std::collections::{BTreeMap, HashMap};
+use std::future::pending;
 use std::io::{self, Write};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bip39::Mnemonic;
-use cdk_common::database::WalletDatabase;
+use bitcoin::bip32::DerivationPath;
+use cdk_common::database::{self, WalletDatabase};
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nuts::{
     CurrencyUnit, Id, KeySet, KeySetInfo, Keys, KeysetResponse, MeltMethodSettings, MintInfo,
-    MintMethodSettings, MintVersion, MppMethodSettings, Proof,
+    MintMethodSettings, MintVersion, MppMethodSettings, Proof, PublicKey, SpendingConditions,
 };
-use cdk_common::wallet::{MeltQuote, MintQuote};
+use cdk_common::wallet::{
+    MeltQuote, MintQuote, P2PKSigningKey, ProofInfo, Transaction, TransactionDirection,
+    TransactionId, WalletSaga,
+};
 use cdk_common::{
-    Amount, CheckStateRequest, CheckStateResponse, MeltQuoteCreateResponse, MeltQuoteRequest,
-    MeltQuoteResponse, MeltRequest, MintQuoteRequest, MintQuoteResponse, MintRequest, MintResponse,
-    RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
+    Amount, AuthToken, CheckStateRequest, CheckStateResponse, MeltQuoteCreateResponse,
+    MeltQuoteRequest, MeltQuoteResponse, MeltRequest, MintQuoteRequest, MintQuoteResponse,
+    MintRequest, MintResponse, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
+use tokio::sync::Notify;
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::fmt::MakeWriter;
+use uuid::Uuid;
 
 use crate::nuts::{
     nut17, nut19, BatchCheckMintQuoteRequest, BatchMintRequest, BlindSignature, BlindedMessage,
-    MeltQuoteBolt11Response, MeltQuoteState, NUT04Settings, NUT05Settings, PaymentMethod,
-    ProofState, SecretKey, State,
+    MeltQuoteBolt11Response, MeltQuoteState, MintAuthRequest, NUT04Settings, NUT05Settings,
+    PaymentMethod, ProofState, SecretKey, State,
 };
 use crate::secret::Secret;
-use crate::wallet::{MintConnector, Wallet};
+use crate::wallet::{AuthMintConnector, MintConnector, Wallet};
 use crate::Error;
 
 /// In-memory writer for asserting on tracing output.
@@ -1185,5 +1193,478 @@ impl MintConnector for MockMintConnector {
                 panic!("MockMintConnector: post_batch_mint called without configured response")
             }
         }
+    }
+}
+
+/// A blind auth keyset whose ID is derived from its own keys.
+///
+/// The amounts are shifted off `test_keyset` so the ID differs: reusing them
+/// would make the auth keyset collide with the regular one and overwrite it.
+/// A v1 id hashes the pubkeys alone, so the pairing has to change for this
+/// keyset to get an id of its own: re-pointing the amounts would collide with
+/// [`test_keyset`] and hide an overwrite behind a single map entry.
+pub fn test_auth_keyset() -> KeySet {
+    let mut ks = test_keyset();
+    ks.unit = CurrencyUnit::Auth;
+    ks.active = Some(true);
+    let mut pubkeys: Vec<_> = ks.keys.iter().map(|(_, pk)| *pk).collect();
+    pubkeys.reverse();
+    let repaired: BTreeMap<_, _> = ks
+        .keys
+        .iter()
+        .map(|(amount, _)| *amount)
+        .zip(pubkeys)
+        .collect();
+    ks.keys = Keys::new(repaired);
+    ks.id = Id::v1_from_keys(&ks.keys);
+    ks
+}
+
+/// Parks a mock auth keyset fetch so a test can run another fetch to
+/// completion while it waits.
+#[derive(Debug, Clone, Default)]
+pub struct AuthKeysetGate {
+    /// Notified once the auth fetch has reached the gate.
+    pub entered: Arc<Notify>,
+    /// Awaited by the auth fetch until the test lets it finish.
+    pub release: Arc<Notify>,
+}
+
+/// Mock AuthMintConnector serving a single blind auth keyset.
+#[derive(Debug)]
+pub struct MockAuthMintConnector {
+    pub keyset: KeySet,
+    pub gate: Option<AuthKeysetGate>,
+}
+
+impl MockAuthMintConnector {
+    pub fn new() -> Self {
+        Self {
+            keyset: test_auth_keyset(),
+            gate: None,
+        }
+    }
+}
+
+impl Default for MockAuthMintConnector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+impl AuthMintConnector for MockAuthMintConnector {
+    async fn get_auth_token(&self) -> Result<AuthToken, Error> {
+        Ok(AuthToken::ClearAuth("dummy".to_string()))
+    }
+
+    async fn set_auth_token(&self, _token: AuthToken) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn get_mint_info(&self) -> Result<MintInfo, Error> {
+        Ok(MintInfo::default())
+    }
+
+    async fn get_mint_blind_auth_keyset(&self, keyset_id: Id) -> Result<KeySet, Error> {
+        if keyset_id == self.keyset.id {
+            Ok(self.keyset.clone())
+        } else {
+            Err(Error::UnknownKeySet)
+        }
+    }
+
+    async fn get_mint_blind_auth_keysets(&self) -> Result<KeysetResponse, Error> {
+        if let Some(gate) = &self.gate {
+            gate.entered.notify_one();
+            gate.release.notified().await;
+        }
+
+        Ok(KeysetResponse {
+            keysets: vec![KeySetInfo {
+                id: self.keyset.id,
+                unit: CurrencyUnit::Auth,
+                active: true,
+                input_fee_ppk: self.keyset.input_fee_ppk,
+                final_expiry: self.keyset.final_expiry,
+            }],
+        })
+    }
+
+    async fn post_mint_blind_auth(&self, request: MintAuthRequest) -> Result<MintResponse, Error> {
+        Ok(MintResponse {
+            signatures: request
+                .outputs
+                .into_iter()
+                .map(|output| BlindSignature {
+                    amount: output.amount,
+                    keyset_id: output.keyset_id,
+                    c: output.blinded_secret,
+                    dleq: None,
+                })
+                .collect(),
+        })
+    }
+}
+
+/// Wallet database whose first `add_mint_keysets` call never returns, so a test
+/// can cancel the caller between two writes of the same persist.
+#[derive(Debug)]
+pub struct GatedWalletDatabase {
+    inner: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
+    suspended: Arc<Notify>,
+    gate_used: AtomicBool,
+}
+
+impl GatedWalletDatabase {
+    /// Pairs the database with the notify that fires once its first keyset
+    /// write has been reached and parked.
+    pub fn new(
+        inner: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
+    ) -> (Arc<Self>, Arc<Notify>) {
+        let suspended = Arc::new(Notify::new());
+        let gated = Arc::new(Self {
+            inner,
+            suspended: suspended.clone(),
+            gate_used: AtomicBool::new(false),
+        });
+
+        (gated, suspended)
+    }
+}
+
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+impl WalletDatabase<database::Error> for GatedWalletDatabase {
+    async fn add_mint_keysets(
+        &self,
+        mint_url: MintUrl,
+        keysets: Vec<KeySetInfo>,
+    ) -> Result<(), database::Error> {
+        if !self.gate_used.swap(true, Ordering::SeqCst) {
+            self.suspended.notify_one();
+            pending::<()>().await;
+        }
+
+        self.inner.add_mint_keysets(mint_url, keysets).await
+    }
+
+    async fn close(&self) -> Result<(), database::Error> {
+        self.inner.close().await
+    }
+
+    async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, database::Error> {
+        self.inner.get_mint(mint_url).await
+    }
+
+    async fn get_mints(&self) -> Result<HashMap<MintUrl, Option<MintInfo>>, database::Error> {
+        self.inner.get_mints().await
+    }
+
+    async fn get_mint_keysets(
+        &self,
+        mint_url: MintUrl,
+    ) -> Result<Option<Vec<KeySetInfo>>, database::Error> {
+        self.inner.get_mint_keysets(mint_url).await
+    }
+
+    async fn get_keyset_by_id(
+        &self,
+        keyset_id: &Id,
+    ) -> Result<Option<KeySetInfo>, database::Error> {
+        self.inner.get_keyset_by_id(keyset_id).await
+    }
+
+    async fn get_mint_quote(&self, quote_id: &str) -> Result<Option<MintQuote>, database::Error> {
+        self.inner.get_mint_quote(quote_id).await
+    }
+
+    async fn get_mint_quotes(&self) -> Result<Vec<MintQuote>, database::Error> {
+        self.inner.get_mint_quotes().await
+    }
+
+    async fn get_unissued_mint_quotes(&self) -> Result<Vec<MintQuote>, database::Error> {
+        self.inner.get_unissued_mint_quotes().await
+    }
+
+    async fn get_melt_quote(&self, quote_id: &str) -> Result<Option<MeltQuote>, database::Error> {
+        self.inner.get_melt_quote(quote_id).await
+    }
+
+    async fn get_melt_quotes(&self) -> Result<Vec<MeltQuote>, database::Error> {
+        self.inner.get_melt_quotes().await
+    }
+
+    async fn get_keys(&self, id: &Id) -> Result<Option<Keys>, database::Error> {
+        self.inner.get_keys(id).await
+    }
+
+    async fn get_proofs(
+        &self,
+        mint_url: Option<MintUrl>,
+        unit: Option<CurrencyUnit>,
+        state: Option<Vec<State>>,
+        spending_conditions: Option<Vec<SpendingConditions>>,
+    ) -> Result<Vec<ProofInfo>, database::Error> {
+        self.inner
+            .get_proofs(mint_url, unit, state, spending_conditions)
+            .await
+    }
+
+    async fn get_proofs_by_ys(
+        &self,
+        ys: Vec<PublicKey>,
+    ) -> Result<Vec<ProofInfo>, database::Error> {
+        self.inner.get_proofs_by_ys(ys).await
+    }
+
+    async fn get_balance(
+        &self,
+        mint_url: Option<MintUrl>,
+        unit: Option<CurrencyUnit>,
+        state: Option<Vec<State>>,
+    ) -> Result<u64, database::Error> {
+        self.inner.get_balance(mint_url, unit, state).await
+    }
+
+    async fn get_transaction(
+        &self,
+        transaction_id: TransactionId,
+    ) -> Result<Option<Transaction>, database::Error> {
+        self.inner.get_transaction(transaction_id).await
+    }
+
+    async fn list_transactions(
+        &self,
+        mint_url: Option<MintUrl>,
+        direction: Option<TransactionDirection>,
+        unit: Option<CurrencyUnit>,
+    ) -> Result<Vec<Transaction>, database::Error> {
+        self.inner
+            .list_transactions(mint_url, direction, unit)
+            .await
+    }
+
+    async fn update_proofs(
+        &self,
+        added: Vec<ProofInfo>,
+        removed_ys: Vec<PublicKey>,
+    ) -> Result<(), database::Error> {
+        self.inner.update_proofs(added, removed_ys).await
+    }
+
+    async fn update_proofs_state(
+        &self,
+        ys: Vec<PublicKey>,
+        state: State,
+    ) -> Result<(), database::Error> {
+        self.inner.update_proofs_state(ys, state).await
+    }
+
+    async fn add_transaction(&self, transaction: Transaction) -> Result<(), database::Error> {
+        self.inner.add_transaction(transaction).await
+    }
+
+    async fn update_mint_url(
+        &self,
+        old_mint_url: MintUrl,
+        new_mint_url: MintUrl,
+    ) -> Result<(), database::Error> {
+        self.inner.update_mint_url(old_mint_url, new_mint_url).await
+    }
+
+    async fn increment_keyset_counter(
+        &self,
+        keyset_id: &Id,
+        count: u32,
+    ) -> Result<u32, database::Error> {
+        self.inner.increment_keyset_counter(keyset_id, count).await
+    }
+
+    async fn increment_derivation_counter(
+        &self,
+        namespace: &str,
+        count: u32,
+    ) -> Result<u32, database::Error> {
+        self.inner
+            .increment_derivation_counter(namespace, count)
+            .await
+    }
+
+    async fn add_mint(
+        &self,
+        mint_url: MintUrl,
+        mint_info: Option<MintInfo>,
+    ) -> Result<(), database::Error> {
+        self.inner.add_mint(mint_url, mint_info).await
+    }
+
+    async fn remove_mint(&self, mint_url: MintUrl) -> Result<(), database::Error> {
+        self.inner.remove_mint(mint_url).await
+    }
+
+    async fn add_mint_quote(&self, quote: MintQuote) -> Result<(), database::Error> {
+        self.inner.add_mint_quote(quote).await
+    }
+
+    async fn remove_mint_quote(&self, quote_id: &str) -> Result<(), database::Error> {
+        self.inner.remove_mint_quote(quote_id).await
+    }
+
+    async fn add_melt_quote(&self, quote: MeltQuote) -> Result<(), database::Error> {
+        self.inner.add_melt_quote(quote).await
+    }
+
+    async fn remove_melt_quote(&self, quote_id: &str) -> Result<(), database::Error> {
+        self.inner.remove_melt_quote(quote_id).await
+    }
+
+    async fn add_keys(&self, keyset: KeySet) -> Result<(), database::Error> {
+        self.inner.add_keys(keyset).await
+    }
+
+    async fn remove_keys(&self, id: &Id) -> Result<(), database::Error> {
+        self.inner.remove_keys(id).await
+    }
+
+    async fn remove_transaction(
+        &self,
+        transaction_id: TransactionId,
+    ) -> Result<(), database::Error> {
+        self.inner.remove_transaction(transaction_id).await
+    }
+
+    async fn add_saga(&self, saga: WalletSaga) -> Result<(), database::Error> {
+        self.inner.add_saga(saga).await
+    }
+
+    async fn get_saga(&self, id: &Uuid) -> Result<Option<WalletSaga>, database::Error> {
+        self.inner.get_saga(id).await
+    }
+
+    async fn update_saga(&self, saga: WalletSaga) -> Result<bool, database::Error> {
+        self.inner.update_saga(saga).await
+    }
+
+    async fn delete_saga(&self, id: &Uuid) -> Result<(), database::Error> {
+        self.inner.delete_saga(id).await
+    }
+
+    async fn get_incomplete_sagas(&self) -> Result<Vec<WalletSaga>, database::Error> {
+        self.inner.get_incomplete_sagas().await
+    }
+
+    async fn reserve_proofs(
+        &self,
+        ys: Vec<PublicKey>,
+        operation_id: &Uuid,
+    ) -> Result<(), database::Error> {
+        self.inner.reserve_proofs(ys, operation_id).await
+    }
+
+    async fn release_proofs(&self, operation_id: &Uuid) -> Result<(), database::Error> {
+        self.inner.release_proofs(operation_id).await
+    }
+
+    async fn get_reserved_proofs(
+        &self,
+        operation_id: &Uuid,
+    ) -> Result<Vec<ProofInfo>, database::Error> {
+        self.inner.get_reserved_proofs(operation_id).await
+    }
+
+    async fn reserve_melt_quote(
+        &self,
+        quote_id: &str,
+        operation_id: &Uuid,
+    ) -> Result<(), database::Error> {
+        self.inner.reserve_melt_quote(quote_id, operation_id).await
+    }
+
+    async fn release_melt_quote(&self, operation_id: &Uuid) -> Result<(), database::Error> {
+        self.inner.release_melt_quote(operation_id).await
+    }
+
+    async fn reserve_mint_quote(
+        &self,
+        quote_id: &str,
+        operation_id: &Uuid,
+    ) -> Result<(), database::Error> {
+        self.inner.reserve_mint_quote(quote_id, operation_id).await
+    }
+
+    async fn release_mint_quote(&self, operation_id: &Uuid) -> Result<(), database::Error> {
+        self.inner.release_mint_quote(operation_id).await
+    }
+
+    async fn kv_read(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+    ) -> Result<Option<Vec<u8>>, database::Error> {
+        self.inner
+            .kv_read(primary_namespace, secondary_namespace, key)
+            .await
+    }
+
+    async fn kv_list(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+    ) -> Result<Vec<String>, database::Error> {
+        self.inner
+            .kv_list(primary_namespace, secondary_namespace)
+            .await
+    }
+
+    async fn kv_write(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+        value: &[u8],
+    ) -> Result<(), database::Error> {
+        self.inner
+            .kv_write(primary_namespace, secondary_namespace, key, value)
+            .await
+    }
+
+    async fn kv_remove(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+    ) -> Result<(), database::Error> {
+        self.inner
+            .kv_remove(primary_namespace, secondary_namespace, key)
+            .await
+    }
+
+    async fn add_p2pk_key(
+        &self,
+        pubkey: &PublicKey,
+        derivation_path: DerivationPath,
+        derivation_index: u32,
+    ) -> Result<(), database::Error> {
+        self.inner
+            .add_p2pk_key(pubkey, derivation_path, derivation_index)
+            .await
+    }
+
+    async fn get_p2pk_key(
+        &self,
+        pubkey: &PublicKey,
+    ) -> Result<Option<P2PKSigningKey>, database::Error> {
+        self.inner.get_p2pk_key(pubkey).await
+    }
+
+    async fn list_p2pk_keys(&self) -> Result<Vec<P2PKSigningKey>, database::Error> {
+        self.inner.list_p2pk_keys().await
+    }
+
+    async fn latest_p2pk(&self) -> Result<Option<P2PKSigningKey>, database::Error> {
+        self.inner.latest_p2pk().await
     }
 }
