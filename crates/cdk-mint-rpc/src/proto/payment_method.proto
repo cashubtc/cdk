@@ -63,7 +63,11 @@ message UpdateDisabledRequest {
     // True disables minting for every unit and method; false enables it.
     // Omit to keep the current value.
     optional bool mint_disabled = 1;
-    // True disables melting for every unit and method; false enables it.
+    // True disables creation of new melt quotes for every unit and method;
+    // false enables it. Previously issued, otherwise valid quotes remain executable.
+    // Already-dispatched payments continue through normal recovery and status reconciliation.
+    // Quote requests that passed the disabled-state check before disabling may still
+    // complete. Further guarantees for in-flight quote requests are still under development.
     // Omit to keep the current value.
     optional bool melt_disabled = 2;
 }
@@ -123,4 +127,3 @@ message UpdateMeltMethodResponse {
     // method by replacing '_' and '-' with spaces and title-casing words.
     optional string method_name = 6;
 }
-
