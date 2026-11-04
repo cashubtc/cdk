@@ -9,8 +9,8 @@
 //! once and bubbles up any error, so a failed load fails construction rather
 //! than leaving a signatory without keys. On success the returned signatory is
 //! loaded and serving.
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use arc_swap::ArcSwap;
@@ -20,14 +20,53 @@ use cdk_common::database::MintKeyDatabaseTransaction;
 use cdk_common::dhke::{sign_message, verify_message};
 use cdk_common::mint::MintKeySetInfo;
 use cdk_common::nuts::{BlindSignature, BlindedMessage, CurrencyUnit, Id, MintKeySet, Proof};
+use cdk_common::parking_lot::Mutex as SyncMutex;
+use cdk_common::util::unix_time;
 use cdk_common::{database, Error, PublicKey};
 use tokio::sync::{watch, Mutex};
+use tokio::task::JoinHandle;
+use tokio::time::MissedTickBehavior;
 use tracing::instrument;
 
 use crate::common::{
-    check_unit_string_collision, create_new_keyset, derivation_path_from_unit, init_keysets,
+    check_custom_path_branch, check_custom_path_uniqueness, check_unit_string_collision,
+    create_new_keyset, derivation_path_from_unit, init_keysets,
 };
 use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet, SignatoryKeysets};
+
+/// Longest gap between auto-rotation checks. The rotation loop polls at
+/// `min(interval, MAX_TICK_INTERVAL)` so a large interval (hours/days) still
+/// wakes periodically, while a small one is not checked slower than itself.
+const MAX_TICK_INTERVAL: Duration = Duration::from_secs(120);
+
+/// How long before an expired active keyset is warned about again. It stays
+/// excluded until an operator rotates it explicitly, so the warning is a
+/// reminder, and the rotation loop's own cadence (at most `MAX_TICK_INTERVAL`)
+/// is far too fast for one.
+const EXPIRED_WARN_INTERVAL: Duration = Duration::from_secs(3600);
+
+/// Why a keyset old enough to rotate was left out of a sweep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Exclusion {
+    Expired,
+    NoAmounts,
+    PinnedPath,
+    ContestedPath,
+}
+
+impl Exclusion {
+    /// How long before the same exclusion is reported again; `None` reports it
+    /// once. Only an exclusion that stops the unit from being served earns a
+    /// repeat: an expired keyset cannot sign, while the other three leave the
+    /// unit serving on the keys it has, and none of them change by being
+    /// restated.
+    fn repeat_after(self) -> Option<Duration> {
+        match self {
+            Self::Expired => Some(EXPIRED_WARN_INTERVAL),
+            Self::NoAmounts | Self::PinnedPath | Self::ContestedPath => None,
+        }
+    }
+}
 
 /// Immutable in-memory view of the keysets, swapped atomically on every change.
 ///
@@ -59,14 +98,16 @@ pub struct DbSignatory {
     /// coordination point (advisory lock and epoch token); this only mirrors
     /// it.
     keysets: ArcSwap<KeysetSnapshot>,
-    /// Serializes local keyset rotations. The standalone signatory gRPC server
-    /// calls rotate_keyset directly (no embedded single-runner), so two
-    /// concurrent local rotations of the same unit could otherwise open nested
-    /// transactions on a single-connection backend. Cross-process
-    /// serialization is the database's job.
+    /// Stops two local rotations from opening nested transactions on a
+    /// single-connection backend. Cross-process serialization is the database's
+    /// job.
     rotation_lock: Mutex<()>,
     localstore: Arc<dyn database::MintKeysDatabase<Err = database::Error> + Send + Sync>,
     secp_ctx: Secp256k1<secp256k1::All>,
+    /// Fixed derivation path per unit, overriding the index-derived default.
+    /// Once a keyset sits on the path the unit is excluded from automatic
+    /// rotation, since re-deriving from the same path would carry the keys it
+    /// replaces. No two units may share a path, enforced in [`Self::new`].
     custom_paths: HashMap<CurrencyUnit, DerivationPath>,
     /// Units to initialize on boot, as `init_keysets` expects them.
     supported_units: HashMap<CurrencyUnit, (u64, Vec<u64>)>,
@@ -75,6 +116,11 @@ pub struct DbSignatory {
     /// Latest keyset snapshot, published on every reload (initial load and each
     /// rotation).
     keyset_updates: watch::Sender<SignatoryKeysets>,
+    /// Last time each keyset and exclusion reason pair was reported, so a state
+    /// that has not changed is not logged again on every rotation tick. Pruned
+    /// to the active keysets on every read, so it stays bounded by the number of
+    /// units rather than growing with rotations.
+    warned_exclusions: SyncMutex<HashMap<(Id, Exclusion), u64>>,
 }
 
 impl DbSignatory {
@@ -83,6 +129,9 @@ impl DbSignatory {
     /// The load is attempted once and any error is bubbled up: a failed load
     /// fails construction rather than returning a signatory without keys. On
     /// success the returned signatory is loaded and serving.
+    ///
+    /// Fails when two units are pinned to one custom derivation path: they would
+    /// sign with identical keys.
     ///
     /// # Panics
     ///
@@ -93,6 +142,9 @@ impl DbSignatory {
         supported_units: HashMap<CurrencyUnit, (u64, Vec<u64>)>,
         custom_paths: HashMap<CurrencyUnit, DerivationPath>,
     ) -> Result<Self, Error> {
+        check_custom_path_uniqueness(&custom_paths)?;
+        check_custom_path_branch(&custom_paths)?;
+
         let secp_ctx = Secp256k1::new();
         let xpriv = Xpriv::new_master(bitcoin::Network::Bitcoin, seed).expect("RNG busted");
 
@@ -112,6 +164,7 @@ impl DbSignatory {
             secp_ctx,
             xpriv,
             keyset_updates,
+            warned_exclusions: Default::default(),
         };
 
         signatory.boot_load().await?;
@@ -334,6 +387,443 @@ impl DbSignatory {
                 .collect(),
         }
     }
+
+    /// True when this exclusion should be logged now, recording the report.
+    ///
+    /// A sweep reads the exclusions twice per tick, so without this the same
+    /// unchanged state is logged twice as often as the loop runs.
+    fn should_report(&self, id: Id, reason: Exclusion, now: u64) -> bool {
+        let mut warned = self.warned_exclusions.lock();
+        let report = match (warned.get(&(id, reason)), reason.repeat_after()) {
+            (None, _) => true,
+            (Some(last), Some(repeat)) => now.saturating_sub(*last) >= repeat.as_secs(),
+            (Some(_), None) => false,
+        };
+
+        if report {
+            warned.insert((id, reason), now);
+        }
+
+        report
+    }
+
+    /// Forget the report state of keysets that are no longer active, so one that
+    /// becomes excluded again is reported again.
+    fn forget_inactive_exclusions(&self, keysets: &KeysetSnapshot) {
+        self.warned_exclusions
+            .lock()
+            .retain(|(id, _), _| keysets.active_by_unit.values().any(|active| active == id));
+    }
+
+    /// Active keysets valid for at least `max_age`, read from the in-memory
+    /// snapshot and sorted by unit so a sweep is deterministic.
+    ///
+    /// A sweep calls this as a lock-free pre-check, and again inside the
+    /// rotation transaction where the reloaded snapshot is authoritative. The
+    /// exclusions are warned about here rather than under the transaction, which
+    /// would never fire in the case that matters: a stuck keyset that is the
+    /// only due one never opens one. Each exclusion is reported on the cadence
+    /// [`Exclusion::repeat_after`] gives it, since every one of them is a state
+    /// that persists across ticks.
+    fn due_keysets(&self, now: u64, max_age: u64) -> Vec<MintKeySetInfo> {
+        let keysets = self.keysets.load();
+        self.forget_inactive_exclusions(&keysets);
+        let mut due: Vec<MintKeySetInfo> = keysets
+            .active_by_unit
+            .values()
+            .filter_map(|id| keysets.by_id.get(id).map(|(info, _)| info))
+            .filter(|info| now.saturating_sub(info.valid_from) >= max_age)
+            // An expired keyset's replacement is pushed forward from an expiry
+            // that is already past, so it is born expired too and the unit stays
+            // unservable while the sweep churns a new row every tick. The
+            // builder refuses to rotate an expired keyset for the same reason;
+            // only an explicit rotation gets the unit serving again.
+            .filter(|info| {
+                if info.is_expired() {
+                    if self.should_report(info.id, Exclusion::Expired, now) {
+                        tracing::warn!(
+                            "Keyset {} for unit {} is active but expired, so it is not rotated \
+                             automatically and the unit cannot be served until it is rotated \
+                             explicitly",
+                            info.id,
+                            info.unit
+                        );
+                    }
+                    return false;
+                }
+                true
+            })
+            // A keyset with no amounts fails staging identically every tick, and
+            // the sweep is one transaction, so it would hold back every other
+            // unit forever. `amounts` is a required column, so reaching this is
+            // itself the bug worth reporting.
+            .filter(|info| {
+                if info.amounts.is_empty() {
+                    if self.should_report(info.id, Exclusion::NoAmounts, now) {
+                        tracing::warn!(
+                            "Keyset {} for unit {} is active and older than the rotation interval \
+                             but carries no amounts, so it cannot be rotated automatically",
+                            info.id,
+                            info.unit
+                        );
+                    }
+                    return false;
+                }
+                true
+            })
+            // A custom derivation path that already produced a keyset re-derives
+            // the same keys, so the replacement would be the keyset it replaces.
+            // A path no keyset uses yet is a migration and rotates normally.
+            // Excluded here rather than left to fail in staging, for the same
+            // reason as above: the sweep is one transaction and this unit would
+            // never succeed.
+            .filter(|info| match self.custom_paths.get(&info.unit) {
+                Some(path)
+                    if keysets
+                        .by_id
+                        .values()
+                        .any(|(existing, _)| &existing.derivation_path == path) =>
+                {
+                    if self.should_report(info.id, Exclusion::PinnedPath, now) {
+                        tracing::warn!(
+                            "Keyset {} for unit {} is pinned to custom derivation path {}, which \
+                             already has a keyset, so rotating it would re-derive the same keys \
+                             and it is not rotated automatically. Drop the custom derivation path \
+                             for the unit, or move it to one no keyset uses yet.",
+                            info.id,
+                            info.unit,
+                            path
+                        );
+                    }
+                    false
+                }
+                _ => true,
+            })
+            .cloned()
+            .collect();
+
+        due.sort_by(|a, b| a.unit.cmp(&b.unit));
+        due
+    }
+
+    /// Reject a new keyset whose unit shares a derivation index with a unit
+    /// that already has one.
+    ///
+    /// Sync so the `ArcSwap` guard cannot be held across an await: guards
+    /// implement `Drop` and so live to the end of their scope, which would make
+    /// the calling future non-`Send`.
+    fn check_unit_collision(&self, new_keyset: &MintKeySetInfo) -> Result<(), Error> {
+        let keysets = self.keysets.load();
+        check_unit_string_collision(
+            keysets.by_id.values().map(|(info, _)| &info.unit),
+            new_keyset,
+        )
+    }
+
+    /// Reject a rotation that re-derives an existing keyset's keys.
+    ///
+    /// Keys are a function of the xpriv and the derivation path alone, so a
+    /// path that already produced a keyset produces the same keys again. A
+    /// fixed custom path is how this happens; `add_keyset_info` upserts, so
+    /// without this the same row would be rewritten with a fresh `valid_from`
+    /// and reported as a rotation that never occurred.
+    ///
+    /// Keyed on the path rather than the derived id because a version 2 id also
+    /// hashes the unit, fee and expiry: a rotation that only moves
+    /// `final_expiry` earns a new id over identical signing keys, which an id
+    /// comparison would wave through.
+    ///
+    /// `staged` carries the paths already staged into the caller's open
+    /// transaction. The snapshot alone cannot see them: it is hydrated from
+    /// committed rows when the transaction opens and is not reloaded until the
+    /// commit, so in a sweep every unit after the first would be checked against
+    /// a view that predates its peers.
+    ///
+    /// Sync for the same reason as [`Self::check_unit_collision`].
+    fn check_derivation_path_reuse(
+        &self,
+        new_keyset: &MintKeySetInfo,
+        staged: &HashSet<DerivationPath>,
+    ) -> Result<(), Error> {
+        if staged.contains(&new_keyset.derivation_path) {
+            return Err(Error::DerivationPathContention {
+                unit: new_keyset.unit.clone(),
+                path: new_keyset.derivation_path.clone(),
+            });
+        }
+
+        let keysets = self.keysets.load();
+        match keysets
+            .by_id
+            .values()
+            .find(|(info, _)| info.derivation_path == new_keyset.derivation_path)
+        {
+            Some((existing, _)) => Err(Error::DerivationPathReuse {
+                unit: new_keyset.unit.clone(),
+                path: new_keyset.derivation_path.clone(),
+                existing: existing.id,
+            }),
+            None => Ok(()),
+        }
+    }
+
+    /// Allocate the index and path for an index-derived rotation, advancing past
+    /// any index whose path a keyset already holds.
+    ///
+    /// `next` is one past the highest index the unit has recorded, and a keyset
+    /// can sit on a path without having advanced that: a custom pin records the
+    /// allocator counter rather than the pin's own index component, and a row an
+    /// older configuration committed may carry no index at all. Without the
+    /// advance the unit would reach such a path and never get past it, since the
+    /// counter moves only when a rotation commits.
+    ///
+    /// Bounded because every iteration consumes one distinct occupied path, and
+    /// the snapshot and `staged` hold finitely many.
+    ///
+    /// Sync for the same reason as [`Self::check_unit_collision`].
+    fn allocate_index_path(
+        &self,
+        unit: &CurrencyUnit,
+        next: u32,
+        staged: &HashSet<DerivationPath>,
+    ) -> Result<(u32, DerivationPath), Error> {
+        let keysets = self.keysets.load();
+        let occupied: HashSet<&DerivationPath> = keysets
+            .by_id
+            .values()
+            .map(|(info, _)| &info.derivation_path)
+            .collect();
+
+        let mut index = next;
+        loop {
+            let path =
+                derivation_path_from_unit(unit.clone(), index).ok_or(Error::UnsupportedUnit)?;
+
+            if !occupied.contains(&path) && !staged.contains(&path) {
+                return Ok((index, path));
+            }
+
+            tracing::debug!(
+                "Derivation path {} for unit {} already holds a keyset, trying the next index",
+                path,
+                unit
+            );
+            index = index.checked_add(1).ok_or(Error::UnsupportedUnit)?;
+        }
+    }
+}
+
+/// Whether a staging failure belongs to the one unit rather than to the sweep.
+///
+/// Both derivation path checks run in memory before the unit writes anything, so
+/// the transaction survives and the units that follow still rotate, which is
+/// what keeps one refused unit from holding back every other one.
+///
+/// Defensive rather than load-bearing: index derivation advances past an
+/// occupied path ([`DbSignatory::allocate_index_path`]) and a pinned unit whose
+/// path is taken is excluded before staging, so nothing is expected to reach
+/// here.
+fn is_contested_path(err: &Error) -> bool {
+    matches!(
+        err,
+        Error::DerivationPathReuse { .. } | Error::DerivationPathContention { .. }
+    )
+}
+
+impl DbSignatory {
+    /// Rotate every active keyset that has been valid for at least `max_age`.
+    ///
+    /// Each replacement keeps the previous keyset's amounts, input fee and id
+    /// version. When the previous keyset had a `final_expiry`, the new one is
+    /// pushed forward by the keyset's active age so it stays valid at least as
+    /// long as the keyset it replaces.
+    ///
+    /// What gets rotated comes from the database, not from the mint's
+    /// configuration: every unit that holds an active keyset is swept, including
+    /// a unit the operator has dropped from the configuration and
+    /// `CurrencyUnit::Auth`. Such a unit earns a keyset per interval for as long
+    /// as rotation runs. Old keysets are retained, so tokens stay verifiable.
+    ///
+    /// The whole sweep is one transaction, so a failed statement is
+    /// all-or-nothing: none of the units rotate and the tick is retried later.
+    /// Postgres aborts a transaction on the first failed statement, so
+    /// continuing past one is not an option once the units share a transaction.
+    ///
+    /// A unit refused for a contested derivation path is the exception, see
+    /// [`is_contested_path`]. A sweep left with nothing to commit rolls back
+    /// instead, so skipped units do not reload the snapshot once per tick.
+    async fn rotate_aged_keysets(&self, max_age: Duration) {
+        if max_age.is_zero() {
+            return;
+        }
+
+        if let Err(err) = self.sweep_aged_keysets(max_age.as_secs()).await {
+            tracing::error!("Automatic keyset rotation failed: {}", err);
+        }
+    }
+
+    async fn sweep_aged_keysets(&self, max_age: u64) -> Result<(), Error> {
+        // Quiet ticks cost one atomic snapshot read: no rotation lock, no
+        // transaction, no global keyset lock. Safe because the snapshot only
+        // ever lags the database, and a lagging snapshot carries an older
+        // `valid_from`, so it can over-report due-ness but never under-report.
+        // A false positive is discarded by the authoritative under-lock read
+        // below.
+        if self.due_keysets(unix_time(), max_age).is_empty() {
+            return Ok(());
+        }
+
+        let _rotation = self.rotation_lock.lock().await;
+        let mut tx = self.begin_rotation().await?;
+
+        // The authoritative read, which the pre-check above never substitutes
+        // for. The reload above ran under the global keyset lock, held until
+        // this transaction ends, so a unit a peer already rotated carries that
+        // peer's fresh `valid_from` and is not due. Age alone decides; nothing
+        // has to re-check what it is replacing.
+        //
+        // `now` is taken after `begin_rotation`, which can block on the lock for
+        // an unbounded time: a stale one would skew each replacement's expiry.
+        let now = unix_time();
+        let due = self.due_keysets(now, max_age);
+
+        if due.is_empty() {
+            tx.rollback().await?;
+            return Ok(());
+        }
+
+        let mut staged = Ok(());
+        let mut staged_paths: HashSet<DerivationPath> = HashSet::new();
+        let mut rotated: Vec<(Id, CurrencyUnit, Id)> = Vec::with_capacity(due.len());
+        for info in &due {
+            let active_age = now.saturating_sub(info.valid_from);
+
+            tracing::info!(
+                "Auto-rotating keyset {} for unit {} (active for {}s, interval {}s)",
+                info.id,
+                info.unit,
+                active_age,
+                max_age
+            );
+
+            match self
+                .stage_rotation(
+                    &mut *tx,
+                    RotateKeyArguments {
+                        unit: info.unit.clone(),
+                        amounts: info.amounts.clone(),
+                        input_fee_ppk: info.input_fee_ppk,
+                        keyset_id_type: info.id.get_version(),
+                        // Pushed forward by the age the keyset reached, so the
+                        // replacement stays valid as long as it did.
+                        final_expiry: info
+                            .final_expiry
+                            .map(|expiry| expiry.saturating_add(active_age)),
+                    },
+                    &mut staged_paths,
+                )
+                .await
+            {
+                Ok(replacement) => rotated.push((info.id, info.unit.clone(), replacement.id)),
+                Err(err) if is_contested_path(&err) => {
+                    if self.should_report(info.id, Exclusion::ContestedPath, now) {
+                        tracing::warn!(
+                            "Skipping keyset {} for unit {}: {}",
+                            info.id,
+                            info.unit,
+                            err
+                        );
+                    }
+                }
+                Err(err) => {
+                    staged = Err(err);
+                    break;
+                }
+            }
+        }
+
+        if staged.is_ok() && rotated.is_empty() {
+            tx.rollback().await?;
+            return Ok(());
+        }
+
+        self.finish_rotation(tx, staged).await?;
+
+        for (retired, unit, replacement) in &rotated {
+            tracing::info!(
+                "Auto-rotated keyset {} for unit {} into keyset {}",
+                retired,
+                unit,
+                replacement
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Spawn the background keyset auto-rotation task.
+    ///
+    /// Every `interval` the task rotates each active keyset that has been valid
+    /// for at least `interval`. Rotations are published to keyset subscribers
+    /// through the same path as manual rotations, so mints learn about them
+    /// without a restart.
+    ///
+    /// A zero `interval` disables auto-rotation: the spawned task returns
+    /// immediately, so callers can spawn unconditionally without a panic.
+    ///
+    /// The task holds a weak reference to the signatory, so it stops on its own
+    /// once the signatory is dropped. Sending `true` on `shutdown` stops it
+    /// between sweeps, so shutdown never interrupts a rotation mid-flight.
+    pub fn spawn_auto_rotation(
+        self: &Arc<Self>,
+        interval: Duration,
+        shutdown: watch::Receiver<bool>,
+    ) -> JoinHandle<()> {
+        let weak = Arc::downgrade(self);
+        tokio::spawn(async move {
+            Self::auto_rotation_loop(weak, interval, shutdown).await;
+        })
+    }
+
+    async fn auto_rotation_loop(
+        weak: Weak<Self>,
+        interval: Duration,
+        mut shutdown: watch::Receiver<bool>,
+    ) {
+        // Auto-rotation disabled. Return before building the ticker:
+        // `tokio::time::interval(Duration::ZERO)` panics.
+        if interval.is_zero() {
+            return;
+        }
+
+        // Capped at `MAX_TICK_INTERVAL` so a large interval (hours/days) still
+        // checks periodically, floored at the interval so a small one is not
+        // checked slower than itself.
+        let mut ticker = tokio::time::interval(interval.min(MAX_TICK_INTERVAL));
+        // The period is a floor between checks, not a schedule to catch up
+        // on. A sweep can block on the cross-process keyset lock for an
+        // unbounded time, and the default `Burst` would then fire every tick it
+        // missed back to back, retrying a failed sweep with no spacing at all.
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+        loop {
+            // `biased` checks shutdown first, so once it is signalled the loop
+            // exits instead of running one more sweep. `wait_for` re-checks the
+            // latched value, so a signal sent mid-sweep is not missed. An `Err`
+            // means the sender was dropped (mint gone), which also stops us.
+            tokio::select! {
+                biased;
+                _ = shutdown.wait_for(|stop| *stop) => break,
+                _ = ticker.tick() => {}
+            }
+
+            let Some(signatory) = weak.upgrade() else {
+                break;
+            };
+
+            signatory.rotate_aged_keysets(interval).await;
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -412,26 +902,90 @@ impl Signatory for DbSignatory {
     /// Generate new keyset
     #[tracing::instrument(skip(self))]
     async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<SignatoryKeySet, Error> {
-        // Serialize local rotations. The standalone signatory gRPC server
-        // invokes this directly (no embedded single-runner), so without this two
-        // concurrent local rotations could open nested transactions on a
-        // single-connection backend. Held for the whole method. Cross-process
-        // rotations are serialized by the global keyset lock in the database.
         let _rotation = self.rotation_lock.lock().await;
+        let mut tx = self.begin_rotation().await?;
 
-        // Persist the rotation. This is the only path that writes to the
-        // database. Opening the transaction takes the global keyset advisory
-        // lock, held to commit, so all keyset transactions serialize across
-        // processes: index allocation is authoritative and two rotations cannot
-        // interleave.
+        // Unconditional: a mint-initiated rotation adopts whatever the database
+        // says is active rather than failing because a peer rotated first.
+        let staged = self
+            .stage_rotation(&mut *tx, args, &mut HashSet::new())
+            .await;
+
+        self.finish_rotation(tx, staged).await
+    }
+}
+
+impl DbSignatory {
+    /// Open the rotation transaction and refresh in-memory keysets through it.
+    ///
+    /// Opening the transaction takes the global keyset advisory lock, held until
+    /// the caller commits or rolls back, so all keyset transactions serialize
+    /// across processes: index allocation is authoritative and two rotations
+    /// cannot interleave.
+    ///
+    /// This is the only reload on the rotation path and it must precede every
+    /// write: `reload_from_tx` reads the keyset epoch through the transaction,
+    /// so after a write a second call would publish uncommitted rows into the
+    /// live snapshot. Finish the transaction through [`Self::finish_rotation`].
+    async fn begin_rotation<'a>(
+        &'a self,
+    ) -> Result<Box<dyn MintKeyDatabaseTransaction<'a, database::Error> + Send + Sync + 'a>, Error>
+    {
         let mut tx = self.localstore.begin_transaction().await?;
-        let path_index = tx.next_derivation_index(&args.unit).await?;
-
-        // Reload in-memory keysets from committed state through this
-        // transaction, under the global lock just taken. Both the default
-        // amounts below and the collision check further down then see peers'
-        // committed rotations rather than a possibly-stale in-memory snapshot.
         self.reload_from_tx(&mut *tx).await?;
+        Ok(tx)
+    }
+
+    /// Commit and refresh memory when everything staged, roll back otherwise.
+    /// Never let the transaction die by drop: that defers the rollback to a
+    /// detached task holding the connection, which stalls the next caller on a
+    /// single-connection backend.
+    ///
+    /// The refresh reloads full database state rather than patching memory by
+    /// hand, so it picks up any concurrent peer rotation and records the epoch
+    /// it loaded. (Recording the epoch from a bare post-commit read would be
+    /// unsafe: it could already include a peer change this instance has not
+    /// loaded.) A rollback wrote nothing, so there is nothing to refresh.
+    async fn finish_rotation<T>(
+        &self,
+        tx: Box<dyn MintKeyDatabaseTransaction<'_, database::Error> + Send + Sync + '_>,
+        staged: Result<T, Error>,
+    ) -> Result<T, Error> {
+        match staged {
+            Ok(staged) => {
+                tx.commit().await?;
+                self.load_keys_from_db().await?;
+                Ok(staged)
+            }
+            Err(err) => {
+                tx.rollback().await?;
+                Err(err)
+            }
+        }
+    }
+
+    /// Stage one unit's rotation into an open rotation transaction.
+    ///
+    /// Nothing is visible to anyone until the caller commits, so several units
+    /// can be staged into one transaction. `commit` and `rollback` take
+    /// `self: Box<Self>`, so taking the transaction by reference here means
+    /// staging cannot finish it by accident.
+    ///
+    /// `staged_paths` holds the derivation paths staged into this transaction so
+    /// far and gains this rotation's path. It is what keeps two units in one
+    /// sweep off a single path, which the in-memory snapshot cannot see.
+    ///
+    /// The recorded `derivation_path_index` is the index the path was derived
+    /// from, so the next allocation starts past it. A pin has no index of its own
+    /// and keeps the allocator counter instead, see [`Self::allocate_index_path`]
+    /// for what that costs.
+    async fn stage_rotation(
+        &self,
+        tx: &mut (dyn MintKeyDatabaseTransaction<'_, database::Error> + Send + Sync),
+        args: RotateKeyArguments,
+        staged_paths: &mut HashSet<DerivationPath>,
+    ) -> Result<SignatoryKeySet, Error> {
+        let next_index = tx.next_derivation_index(&args.unit).await?;
 
         // Default amounts come from the in-memory active keyset and are only
         // used when the caller does not specify any. The authoritative
@@ -447,10 +1001,9 @@ impl Signatory for DbSignatory {
                 .unwrap_or_default()
         };
 
-        let derivation_path = match self.custom_paths.get(&args.unit) {
-            Some(path) => path.clone(),
-            None => derivation_path_from_unit(args.unit.clone(), path_index)
-                .ok_or(Error::UnsupportedUnit)?,
+        let (path_index, derivation_path) = match self.custom_paths.get(&args.unit) {
+            Some(path) => (next_index, path.clone()),
+            None => self.allocate_index_path(&args.unit, next_index, staged_paths)?,
         };
 
         let amounts = if args.amounts.is_empty() {
@@ -474,41 +1027,38 @@ impl Signatory for DbSignatory {
             args.keyset_id_type,
         );
 
-        let keysets = self.keysets_snapshot();
-        check_unit_string_collision(keysets.keysets, &info)?;
+        self.check_unit_collision(&info)?;
+        self.check_derivation_path_reuse(&info, staged_paths)?;
+        staged_paths.insert(info.derivation_path.clone());
 
         let id = info.id;
 
         tx.add_keyset_info(info.clone()).await?;
         tx.set_active_keyset(args.unit.clone(), id).await?;
-        tx.commit().await?;
 
+        // Built from what was staged rather than read back after the commit: a
+        // peer may rotate the unit again before this instance reloads.
         let mut info = info;
         info.active = true;
-        let signatory_keyset: SignatoryKeySet = (&(info, keyset)).into();
-
-        // Refresh from the full database state rather than patching memory by
-        // hand. This picks up any concurrent peer rotation too, and records the
-        // keyset epoch we loaded, so the periodic refresh does not reload
-        // again on its next tick. (Recording the epoch from a bare post-commit
-        // read would be unsafe: it could already include a peer change this
-        // instance has not loaded.)
-        self.load_keys_from_db().await?;
-
-        Ok(signatory_keyset)
+        Ok((&(info, keyset)).into())
     }
 }
 
 #[cfg(test)]
 mod test {
     use std::collections::HashSet;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
 
     use bitcoin::key::Secp256k1;
     use bitcoin::Network;
-    use cdk_common::database::MintKeysDatabase;
+    use cdk_common::database::{
+        DbTransactionFinalizer, MintKeyDatabaseTransaction, MintKeysDatabase,
+    };
     use cdk_common::nuts::SecretKey;
     use cdk_common::util::{hex, unix_time};
     use cdk_common::{Amount, MintKeySet, PublicKey};
+    use cdk_sqlite::mint::MintSqliteDatabase;
 
     use super::*;
 
@@ -1604,6 +2154,1767 @@ mod test {
         assert_eq!(
             pubkey,
             "025b6c1ca8bb741a6f2321c953266df7bf3f3f2c3be8c54c0a6e41bb00976046a4".to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn rotate_aged_keysets_respects_age() {
+        let signatory = test_signatory(b"test-seed-for-aged-rotation").await;
+
+        // Seed one keyset aged 120 seconds.
+        let seeded = seed_aged_keyset(
+            &signatory,
+            CurrencyUnit::Sat,
+            &[1, 2, 4, 8],
+            0,
+            cdk_common::nut02::KeySetVersion::Version00,
+            None,
+            120,
+        )
+        .await;
+
+        // An interval larger than the keyset's age leaves it in place.
+        signatory
+            .rotate_aged_keysets(Duration::from_secs(600))
+            .await;
+        assert_eq!(
+            memory_active_keyset_id(&signatory, &CurrencyUnit::Sat),
+            Some(seeded),
+            "keyset younger than the interval must not rotate"
+        );
+
+        // An interval below the keyset's age makes it due, so it rotates.
+        signatory.rotate_aged_keysets(Duration::from_secs(60)).await;
+        assert_ne!(
+            memory_active_keyset_id(&signatory, &CurrencyUnit::Sat),
+            Some(seeded),
+            "keyset at or past the interval must rotate"
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_auto_rotation_pushes_new_keyset() {
+        let signatory = test_signatory(b"test-seed-for-auto-rotation").await;
+
+        // Seed an already-aged active Sat keyset for the task to rotate.
+        seed_aged_keyset(
+            &signatory,
+            CurrencyUnit::Sat,
+            &[1, 2, 4, 8],
+            0,
+            cdk_common::nut02::KeySetVersion::Version00,
+            None,
+            120,
+        )
+        .await;
+
+        let mut updates = signatory.subscribe_keysets().await.expect("subscribe");
+        let before = updates.borrow_and_update().keysets.len();
+
+        // The seeded keyset is older than this one second interval, so the
+        // first (immediate) tick rotates it. Keep the shutdown sender alive so
+        // the loop is not asked to stop.
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let _handle = signatory.spawn_auto_rotation(Duration::from_secs(1), shutdown_rx);
+
+        tokio::time::timeout(Duration::from_secs(5), updates.changed())
+            .await
+            .expect("auto rotation should push within timeout")
+            .expect("keyset update");
+
+        let after = updates.borrow_and_update().keysets.len();
+        assert!(
+            after > before,
+            "auto rotation should add a keyset ({after} > {before})"
+        );
+    }
+
+    /// Build an in-memory signatory with no keysets.
+    async fn test_signatory(seed: &[u8]) -> Arc<DbSignatory> {
+        let store = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("in-memory db"),
+        );
+        Arc::new(
+            DbSignatory::new(store, seed, Default::default(), Default::default())
+                .await
+                .expect("DbSignatory::new"),
+        )
+    }
+
+    /// Keys database that wraps a real one, counts the transactions opened
+    /// through it, and fails `set_active_keyset` for a single armed unit to
+    /// exercise a mid-sweep rotation failure. The armed unit is settable so
+    /// seeding runs before failure is armed.
+    struct FailUnitDb {
+        inner: MintSqliteDatabase,
+        fail_unit: Arc<Mutex<Option<CurrencyUnit>>>,
+        transactions: Arc<AtomicUsize>,
+    }
+
+    impl FailUnitDb {
+        async fn new() -> (
+            Arc<Self>,
+            Arc<Mutex<Option<CurrencyUnit>>>,
+            Arc<AtomicUsize>,
+        ) {
+            let fail_unit = Arc::new(Mutex::new(None));
+            let transactions = Arc::new(AtomicUsize::new(0));
+            let db = Arc::new(Self {
+                inner: cdk_sqlite::mint::memory::empty()
+                    .await
+                    .expect("in-memory db"),
+                fail_unit: fail_unit.clone(),
+                transactions: transactions.clone(),
+            });
+            (db, fail_unit, transactions)
+        }
+    }
+
+    struct FailUnitTx<'a> {
+        inner: Box<dyn MintKeyDatabaseTransaction<'a, database::Error> + Send + Sync + 'a>,
+        fail_unit: Arc<Mutex<Option<CurrencyUnit>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl DbTransactionFinalizer for FailUnitTx<'_> {
+        type Err = database::Error;
+
+        async fn commit(self: Box<Self>) -> Result<(), Self::Err> {
+            self.inner.commit().await
+        }
+
+        async fn rollback(self: Box<Self>) -> Result<(), Self::Err> {
+            self.inner.rollback().await
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl<'a> MintKeyDatabaseTransaction<'a, database::Error> for FailUnitTx<'a> {
+        async fn set_active_keyset(
+            &mut self,
+            unit: CurrencyUnit,
+            id: Id,
+        ) -> Result<(), database::Error> {
+            // Every rotation reassigns the active pointer, so injecting here
+            // fails the transaction the whole sweep is staged into.
+            if self.fail_unit.lock().expect("lock").as_ref() == Some(&unit) {
+                return Err(database::Error::Internal(
+                    "simulated set_active_keyset failure".to_string(),
+                ));
+            }
+            self.inner.set_active_keyset(unit, id).await
+        }
+
+        async fn add_keyset_info(&mut self, keyset: MintKeySetInfo) -> Result<(), database::Error> {
+            self.inner.add_keyset_info(keyset).await
+        }
+
+        async fn next_derivation_index(
+            &mut self,
+            unit: &CurrencyUnit,
+        ) -> Result<u32, database::Error> {
+            self.inner.next_derivation_index(unit).await
+        }
+
+        async fn get_keyset_infos_by_unit(
+            &mut self,
+            unit: &CurrencyUnit,
+        ) -> Result<Vec<MintKeySetInfo>, database::Error> {
+            self.inner.get_keyset_infos_by_unit(unit).await
+        }
+
+        async fn get_active_keysets(
+            &mut self,
+        ) -> Result<HashMap<CurrencyUnit, Id>, database::Error> {
+            self.inner.get_active_keysets().await
+        }
+
+        async fn get_keyset_infos(&mut self) -> Result<Vec<MintKeySetInfo>, database::Error> {
+            self.inner.get_keyset_infos().await
+        }
+
+        async fn keysets_epoch(&mut self) -> Result<u64, database::Error> {
+            self.inner.keysets_epoch().await
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MintKeysDatabase for FailUnitDb {
+        type Err = database::Error;
+
+        async fn begin_transaction<'a>(
+            &'a self,
+        ) -> Result<
+            Box<dyn MintKeyDatabaseTransaction<'a, database::Error> + Send + Sync + 'a>,
+            database::Error,
+        > {
+            self.transactions.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(FailUnitTx {
+                inner: self.inner.begin_transaction().await?,
+                fail_unit: self.fail_unit.clone(),
+            }))
+        }
+
+        async fn keysets_epoch(&self) -> Result<u64, Self::Err> {
+            self.inner.keysets_epoch().await
+        }
+    }
+
+    /// Return the single active keyset for `unit`, panicking if there isn't one.
+    async fn active_keyset(sig: &DbSignatory, unit: &CurrencyUnit) -> SignatoryKeySet {
+        sig.keysets()
+            .await
+            .expect("keysets")
+            .keysets
+            .into_iter()
+            .find(|k| k.active && &k.unit == unit)
+            .expect("active keyset for unit")
+    }
+
+    /// Return the unit's active keyset id as recorded in the database, bypassing
+    /// the signatory's in-memory snapshot. Keyset reads go through a transaction,
+    /// so this opens one.
+    async fn db_active_keyset_id(sig: &DbSignatory, unit: &CurrencyUnit) -> Option<Id> {
+        let mut tx = sig.localstore.begin_transaction().await.expect("begin tx");
+        let active = tx.get_active_keysets().await.expect("active keysets");
+        tx.commit().await.expect("commit");
+        active.get(unit).copied()
+    }
+
+    /// Return the unit's active keyset id as the signatory currently sees it.
+    fn memory_active_keyset_id(sig: &DbSignatory, unit: &CurrencyUnit) -> Option<Id> {
+        sig.keysets.load().active_by_unit.get(unit).copied()
+    }
+
+    /// Return the unit's active keyset row as the signatory currently sees it,
+    /// for the fields `SignatoryKeySet` does not carry (the derivation path and
+    /// the index it was derived from).
+    fn memory_active_keyset_info(sig: &DbSignatory, unit: &CurrencyUnit) -> MintKeySetInfo {
+        let keysets = sig.keysets.load();
+        let id = keysets
+            .active_by_unit
+            .get(unit)
+            .expect("active keyset for unit");
+        keysets
+            .by_id
+            .get(id)
+            .map(|(info, _)| info.clone())
+            .expect("keyset info for the active id")
+    }
+
+    /// Every keyset id recorded in the database, bypassing the in-memory snapshot.
+    async fn db_keyset_ids(sig: &DbSignatory) -> HashSet<Id> {
+        let mut tx = sig.localstore.begin_transaction().await.expect("begin tx");
+        let infos = tx.get_keyset_infos().await.expect("keyset infos");
+        tx.commit().await.expect("commit");
+        infos.into_iter().map(|info| info.id).collect()
+    }
+
+    /// Seed an active keyset for `unit` whose `valid_from` is backdated by
+    /// `age` seconds, so `rotate_aged_keysets` treats it as due for any
+    /// interval below `age`. Returns the seeded keyset id.
+    async fn seed_aged_keyset(
+        sig: &DbSignatory,
+        unit: CurrencyUnit,
+        amounts: &[u64],
+        input_fee_ppk: u64,
+        version: cdk_common::nut02::KeySetVersion,
+        final_expiry: Option<u64>,
+        age: u64,
+    ) -> Id {
+        let derivation_path = derivation_path_from_unit(unit.clone(), 1).expect("derivation path");
+        let (keyset, mut info) = create_new_keyset(
+            &sig.secp_ctx,
+            sig.xpriv,
+            derivation_path,
+            Some(1),
+            unit.clone(),
+            amounts,
+            input_fee_ppk,
+            final_expiry,
+            version,
+        );
+        // Backdate the keyset so it reads as aged without waiting.
+        info.valid_from = unix_time() - age;
+        let id = keyset.id;
+
+        let mut tx = sig.localstore.begin_transaction().await.expect("begin tx");
+        tx.add_keyset_info(info).await.expect("add keyset info");
+        tx.set_active_keyset(unit, id)
+            .await
+            .expect("set active keyset");
+        tx.commit().await.expect("commit");
+        sig.load_keys_from_db().await.expect("reload");
+
+        id
+    }
+
+    /// Commit an inactive keyset for `unit` at an arbitrary derivation path,
+    /// standing in for a row an older configuration left behind. `active` is a
+    /// column on the row, so it is cleared to leave the unit's real active
+    /// keyset in place.
+    async fn seed_keyset_at_path(sig: &DbSignatory, unit: CurrencyUnit, path: DerivationPath) {
+        let (_, mut info) = create_new_keyset(
+            &sig.secp_ctx,
+            sig.xpriv,
+            path,
+            None,
+            unit,
+            &[1, 2, 4, 8],
+            0,
+            None,
+            cdk_common::nut02::KeySetVersion::Version01,
+        );
+        info.active = false;
+
+        let mut tx = sig.localstore.begin_transaction().await.expect("begin tx");
+        tx.add_keyset_info(info).await.expect("add keyset info");
+        tx.commit().await.expect("commit");
+        sig.load_keys_from_db().await.expect("reload");
+    }
+
+    /// Backdate the active keyset for `unit` by `age` seconds so the next
+    /// `rotate_aged_keysets` treats it as due, then reload. Used to trigger a
+    /// second rotation after the first one produced a fresh (age zero) keyset.
+    async fn age_active_keyset(sig: &DbSignatory, unit: &CurrencyUnit, age: u64) {
+        let mut tx = sig.localstore.begin_transaction().await.expect("begin tx");
+        let active_id = *tx
+            .get_active_keysets()
+            .await
+            .expect("active keysets")
+            .get(unit)
+            .expect("active keyset for unit");
+        let mut info = tx
+            .get_keyset_infos_by_unit(unit)
+            .await
+            .expect("keyset infos")
+            .into_iter()
+            .find(|info| info.id == active_id)
+            .expect("keyset info present");
+        info.valid_from = unix_time() - age;
+
+        tx.add_keyset_info(info).await.expect("update keyset info");
+        tx.commit().await.expect("commit");
+        sig.load_keys_from_db().await.expect("reload");
+    }
+
+    async fn assert_rotation_preserves_metadata(version: cdk_common::nut02::KeySetVersion) {
+        let sig = test_signatory(b"test-seed-preserve").await;
+        let amounts = vec![1, 2, 4, 8, 16];
+        let fee = 100;
+
+        seed_aged_keyset(&sig, CurrencyUnit::Sat, &amounts, fee, version, None, 120).await;
+        let original = active_keyset(&sig, &CurrencyUnit::Sat).await;
+
+        sig.rotate_aged_keysets(Duration::from_secs(60)).await;
+
+        let rotated = active_keyset(&sig, &CurrencyUnit::Sat).await;
+        assert_ne!(rotated.id, original.id, "a new keyset must be created");
+        assert_eq!(rotated.amounts, amounts, "amounts must be preserved");
+        assert_eq!(rotated.input_fee_ppk, fee, "input fee must be preserved");
+        assert_eq!(
+            rotated.final_expiry, None,
+            "a keyset without a final_expiry rotates into one without a final_expiry"
+        );
+        assert_eq!(
+            rotated.id.get_version(),
+            version,
+            "keyset id version must be preserved"
+        );
+        assert_eq!(
+            rotated.version,
+            original.version + 1,
+            "derivation index must increment on rotation"
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_rotation_preserves_amounts_fee_and_version_v1() {
+        assert_rotation_preserves_metadata(cdk_common::nut02::KeySetVersion::Version00).await;
+    }
+
+    #[tokio::test]
+    async fn auto_rotation_preserves_amounts_fee_and_version_v2() {
+        assert_rotation_preserves_metadata(cdk_common::nut02::KeySetVersion::Version01).await;
+    }
+
+    #[tokio::test]
+    async fn rotate_aged_keysets_pushes_final_expiry_forward() {
+        let sig = test_signatory(b"test-seed-final-expiry").await;
+        let age = 100;
+        // Far enough in the future that the keyset is not treated as expired.
+        let expiry = unix_time() + 10_000;
+
+        seed_aged_keyset(
+            &sig,
+            CurrencyUnit::Sat,
+            &[1, 2, 4, 8],
+            0,
+            cdk_common::nut02::KeySetVersion::Version00,
+            Some(expiry),
+            age,
+        )
+        .await;
+
+        sig.rotate_aged_keysets(Duration::from_secs(60)).await;
+
+        let rotated = active_keyset(&sig, &CurrencyUnit::Sat).await;
+        let bumped = rotated
+            .final_expiry
+            .expect("rotated keyset carries a final_expiry");
+        // The new expiry is the old one pushed forward by the active age, which
+        // is at least `age`. Use `>=` since the clock may tick during the test.
+        assert!(
+            bumped >= expiry + age,
+            "final_expiry must be pushed forward by the active age (got {bumped}, expected >= {})",
+            expiry + age
+        );
+    }
+
+    #[tokio::test]
+    async fn rotate_aged_keysets_noop_without_active_keysets() {
+        let sig = test_signatory(b"test-seed-noop").await;
+
+        let before = sig.keysets().await.expect("keysets").keysets.len();
+        sig.rotate_aged_keysets(Duration::ZERO).await;
+        let after = sig.keysets().await.expect("keysets").keysets.len();
+
+        assert_eq!(before, 0, "fresh signatory has no keysets");
+        assert_eq!(after, before, "no active keysets means nothing to rotate");
+    }
+
+    #[tokio::test]
+    async fn rotate_aged_keysets_ignores_inactive_keysets() {
+        let sig = test_signatory(b"test-seed-inactive").await;
+
+        seed_aged_keyset(
+            &sig,
+            CurrencyUnit::Sat,
+            &[1, 2, 4, 8],
+            0,
+            cdk_common::nut02::KeySetVersion::Version00,
+            None,
+            120,
+        )
+        .await;
+
+        let total = |ks: &SignatoryKeysets| ks.keysets.len();
+        let active_sat = |ks: &SignatoryKeysets| {
+            ks.keysets
+                .iter()
+                .filter(|k| k.active && k.unit == CurrencyUnit::Sat)
+                .count()
+        };
+
+        let after_seed = sig.keysets().await.expect("keysets");
+        assert_eq!(total(&after_seed), 1);
+        assert_eq!(active_sat(&after_seed), 1);
+
+        sig.rotate_aged_keysets(Duration::from_secs(60)).await;
+        let after_first = sig.keysets().await.expect("keysets");
+        assert_eq!(
+            total(&after_first),
+            2,
+            "one rotation adds exactly one keyset"
+        );
+        assert_eq!(active_sat(&after_first), 1, "exactly one active Sat keyset");
+
+        // The first rotation left a fresh active keyset (age zero). Age it so
+        // the next pass finds it due. The keyset the first pass retired stays
+        // inactive and aged, so if inactive keysets were re-rotated the count
+        // would grow by more than one.
+        age_active_keyset(&sig, &CurrencyUnit::Sat, 120).await;
+
+        sig.rotate_aged_keysets(Duration::from_secs(60)).await;
+        let after_second = sig.keysets().await.expect("keysets");
+        assert_eq!(
+            total(&after_second),
+            3,
+            "second rotation adds exactly one more; inactive keysets are not re-rotated"
+        );
+        assert_eq!(
+            active_sat(&after_second),
+            1,
+            "still exactly one active Sat keyset"
+        );
+    }
+
+    #[tokio::test]
+    async fn rotate_aged_keysets_rotates_all_aged_units() {
+        let sig = test_signatory(b"test-seed-multi-unit").await;
+
+        let sat = seed_aged_keyset(
+            &sig,
+            CurrencyUnit::Sat,
+            &[1, 2, 4, 8],
+            0,
+            cdk_common::nut02::KeySetVersion::Version00,
+            None,
+            120,
+        )
+        .await;
+        let usd = seed_aged_keyset(
+            &sig,
+            CurrencyUnit::Usd,
+            &[1, 2, 4, 8],
+            0,
+            cdk_common::nut02::KeySetVersion::Version00,
+            None,
+            120,
+        )
+        .await;
+
+        sig.rotate_aged_keysets(Duration::from_secs(60)).await;
+
+        let new_sat = active_keyset(&sig, &CurrencyUnit::Sat).await;
+        let new_usd = active_keyset(&sig, &CurrencyUnit::Usd).await;
+        assert_ne!(new_sat.id, sat, "Sat keyset should rotate");
+        assert_ne!(new_usd.id, usd, "Usd keyset should rotate");
+    }
+
+    #[tokio::test]
+    async fn rotate_aged_keysets_rolls_back_every_unit_when_one_fails() {
+        // The sweep stages every due unit into one transaction, so one unit
+        // failing leaves none of them rotated. The failure must also be
+        // transient rather than a poison pill: once it clears, the next sweep
+        // rotates everything.
+        let (store, fail_unit, _transactions) = FailUnitDb::new().await;
+        let sig = Arc::new(
+            DbSignatory::new(
+                store.clone(),
+                b"test-seed-partial-fail",
+                Default::default(),
+                Default::default(),
+            )
+            .await
+            .expect("DbSignatory::new"),
+        );
+
+        // Seed two aged units while failure is disarmed.
+        let sat = seed_aged_keyset(
+            &sig,
+            CurrencyUnit::Sat,
+            &[1, 2, 4, 8],
+            0,
+            cdk_common::nut02::KeySetVersion::Version00,
+            None,
+            120,
+        )
+        .await;
+        let usd = seed_aged_keyset(
+            &sig,
+            CurrencyUnit::Usd,
+            &[1, 2, 4, 8],
+            0,
+            cdk_common::nut02::KeySetVersion::Version00,
+            None,
+            120,
+        )
+        .await;
+
+        // Arm failure for Usd only, then sweep. Sat sorts before Usd, so Sat is
+        // staged first and is the unit the rollback has to undo.
+        let epoch_before = store.keysets_epoch().await.expect("epoch");
+        *fail_unit.lock().expect("lock") = Some(CurrencyUnit::Usd);
+        sig.rotate_aged_keysets(Duration::from_secs(60)).await;
+
+        for (unit, seeded) in [(CurrencyUnit::Sat, sat), (CurrencyUnit::Usd, usd)] {
+            assert_eq!(
+                db_active_keyset_id(&sig, &unit).await,
+                Some(seeded),
+                "{unit} must keep its active pointer when the sweep rolls back"
+            );
+            assert_eq!(
+                memory_active_keyset_id(&sig, &unit),
+                Some(seeded),
+                "{unit} must be unchanged in memory: only committed state is published"
+            );
+        }
+        assert_eq!(
+            store.keysets_epoch().await.expect("epoch"),
+            epoch_before,
+            "a rolled-back sweep must write nothing at all"
+        );
+        assert_eq!(
+            db_keyset_ids(&sig).await.len(),
+            2,
+            "the staged keyset of the unit that did succeed must not survive"
+        );
+
+        // Disarm and sweep again: the failure was transient, not a poison pill.
+        *fail_unit.lock().expect("lock") = None;
+        sig.rotate_aged_keysets(Duration::from_secs(60)).await;
+
+        assert_ne!(
+            db_active_keyset_id(&sig, &CurrencyUnit::Sat).await,
+            Some(sat),
+            "Sat rotates once the failure clears"
+        );
+        assert_ne!(
+            db_active_keyset_id(&sig, &CurrencyUnit::Usd).await,
+            Some(usd),
+            "Usd rotates once the failure clears"
+        );
+    }
+
+    #[tokio::test]
+    async fn rotate_aged_keysets_stages_every_unit_in_one_transaction() {
+        let (store, _fail_unit, transactions) = FailUnitDb::new().await;
+        let sig = Arc::new(
+            DbSignatory::new(
+                store,
+                b"test-seed-one-transaction",
+                Default::default(),
+                Default::default(),
+            )
+            .await
+            .expect("DbSignatory::new"),
+        );
+
+        for unit in [CurrencyUnit::Sat, CurrencyUnit::Usd, CurrencyUnit::Eur] {
+            seed_aged_keyset(
+                &sig,
+                unit,
+                &[1, 2, 4, 8],
+                0,
+                cdk_common::nut02::KeySetVersion::Version00,
+                None,
+                120,
+            )
+            .await;
+        }
+
+        transactions.store(0, Ordering::SeqCst);
+        sig.rotate_aged_keysets(Duration::from_secs(60)).await;
+
+        // One transaction stages and commits all three units, and the
+        // post-commit `load_keys_from_db` opens the second. A per-unit sweep
+        // would open six.
+        assert_eq!(
+            transactions.load(Ordering::SeqCst),
+            2,
+            "the sweep must stage every unit in a single transaction"
+        );
+        assert_eq!(
+            db_keyset_ids(&sig).await.len(),
+            6,
+            "all three units rotated"
+        );
+    }
+
+    #[tokio::test]
+    async fn sweep_with_nothing_due_touches_the_database_not_at_all() {
+        // The loop polls at most every MAX_TICK_INTERVAL, so nearly every tick
+        // has nothing due. Those ticks must not open a transaction: opening one
+        // takes the global keyset lock every process shares, and parks the
+        // rotation lock a real rotation needs.
+        let (store, _fail_unit, transactions) = FailUnitDb::new().await;
+        let sig = Arc::new(
+            DbSignatory::new(
+                store,
+                b"test-seed-quiet-tick",
+                Default::default(),
+                Default::default(),
+            )
+            .await
+            .expect("DbSignatory::new"),
+        );
+
+        seed_aged_keyset(
+            &sig,
+            CurrencyUnit::Sat,
+            &[1, 2, 4, 8],
+            0,
+            cdk_common::nut02::KeySetVersion::Version00,
+            None,
+            120,
+        )
+        .await;
+
+        transactions.store(0, Ordering::SeqCst);
+        sig.rotate_aged_keysets(Duration::from_secs(600)).await;
+
+        assert_eq!(
+            transactions.load(Ordering::SeqCst),
+            0,
+            "a sweep with nothing due must not open a transaction"
+        );
+    }
+
+    /// An amountless keyset would fail staging identically on every tick, and
+    /// the sweep is one transaction, so rotating it would hold back every other
+    /// unit forever. It is skipped instead, and warned about so the unit does
+    /// not silently stop rotating.
+    #[tokio::test]
+    async fn rotate_aged_keysets_skips_a_keyset_with_no_amounts() {
+        let (store, _fail_unit, transactions) = FailUnitDb::new().await;
+        let sig = Arc::new(
+            DbSignatory::new(
+                store.clone(),
+                b"test-seed-empty-amounts",
+                Default::default(),
+                Default::default(),
+            )
+            .await
+            .expect("DbSignatory::new"),
+        );
+
+        let seeded = seed_aged_keyset(
+            &sig,
+            CurrencyUnit::Sat,
+            &[],
+            0,
+            cdk_common::nut02::KeySetVersion::Version00,
+            None,
+            120,
+        )
+        .await;
+
+        let epoch_before = store.keysets_epoch().await.expect("epoch");
+        transactions.store(0, Ordering::SeqCst);
+        sig.rotate_aged_keysets(Duration::from_secs(60)).await;
+
+        assert_eq!(
+            transactions.load(Ordering::SeqCst),
+            0,
+            "an amountless keyset is the only due one, so no transaction is opened"
+        );
+        assert_eq!(
+            store.keysets_epoch().await.expect("epoch"),
+            epoch_before,
+            "nothing was written"
+        );
+        assert_eq!(
+            memory_active_keyset_id(&sig, &CurrencyUnit::Sat),
+            Some(seeded),
+            "the amountless keyset stays active rather than rotating"
+        );
+    }
+
+    /// A custom derivation path that no keyset uses can still produce new keys, so
+    /// the sweep moves the unit onto it once and leaves it alone from then on.
+    #[tokio::test]
+    async fn auto_rotation_moves_a_unit_onto_an_unused_custom_derivation_path() {
+        let (store, _fail_unit, transactions) = FailUnitDb::new().await;
+        let path: DerivationPath = "m/8'/0'/9'".parse().expect("derivation path");
+        let sig = Arc::new(
+            DbSignatory::new(
+                store.clone(),
+                b"test-seed-custom-path-migration",
+                Default::default(),
+                HashMap::from([(CurrencyUnit::Sat, path.clone())]),
+            )
+            .await
+            .expect("DbSignatory::new"),
+        );
+
+        let seeded = seed_aged_keyset(
+            &sig,
+            CurrencyUnit::Sat,
+            &[1, 2, 4, 8],
+            0,
+            cdk_common::nut02::KeySetVersion::Version01,
+            None,
+            120,
+        )
+        .await;
+
+        sig.rotate_aged_keysets(Duration::from_secs(60)).await;
+
+        let active = memory_active_keyset_id(&sig, &CurrencyUnit::Sat).expect("an active keyset");
+        assert_ne!(
+            active, seeded,
+            "the unit rotated off the index-derived keyset"
+        );
+        assert_eq!(db_keyset_ids(&sig).await.len(), 2);
+        assert_eq!(
+            sig.keysets
+                .load()
+                .by_id
+                .get(&active)
+                .map(|(info, _)| info.derivation_path.clone()),
+            Some(path),
+            "the replacement was derived from the custom path"
+        );
+
+        age_active_keyset(&sig, &CurrencyUnit::Sat, 120).await;
+        let epoch_before = store.keysets_epoch().await.expect("epoch");
+        transactions.store(0, Ordering::SeqCst);
+        sig.rotate_aged_keysets(Duration::from_secs(60)).await;
+
+        assert_eq!(
+            transactions.load(Ordering::SeqCst),
+            0,
+            "the custom path now has a keyset, so the unit is no longer due"
+        );
+        assert_eq!(
+            store.keysets_epoch().await.expect("epoch"),
+            epoch_before,
+            "nothing was written"
+        );
+    }
+
+    /// A fixed custom derivation path cannot yield new keys, so the sweep must
+    /// leave the unit alone instead of upserting the same keyset with a fresh
+    /// `valid_from` and reporting a rotation.
+    #[tokio::test]
+    async fn auto_rotation_skips_a_unit_with_a_custom_derivation_path() {
+        let (store, _fail_unit, transactions) = FailUnitDb::new().await;
+        let path: DerivationPath = "m/8'/0'/1'".parse().expect("derivation path");
+        let sig = Arc::new(
+            DbSignatory::new(
+                store.clone(),
+                b"test-seed-custom-auto-rotation",
+                Default::default(),
+                HashMap::from([(CurrencyUnit::Sat, path)]),
+            )
+            .await
+            .expect("DbSignatory::new"),
+        );
+
+        let original = sig
+            .rotate_keyset(RotateKeyArguments {
+                unit: CurrencyUnit::Sat,
+                amounts: vec![1, 2, 4, 8],
+                input_fee_ppk: 0,
+                keyset_id_type: cdk_common::nut02::KeySetVersion::Version01,
+                final_expiry: None,
+            })
+            .await
+            .expect("rotate_keyset");
+
+        age_active_keyset(&sig, &CurrencyUnit::Sat, 120).await;
+
+        let epoch_before = store.keysets_epoch().await.expect("epoch");
+        transactions.store(0, Ordering::SeqCst);
+        sig.rotate_aged_keysets(Duration::from_secs(60)).await;
+
+        assert_eq!(
+            transactions.load(Ordering::SeqCst),
+            0,
+            "the custom-path unit is the only due one, so no transaction is opened"
+        );
+        assert_eq!(
+            store.keysets_epoch().await.expect("epoch"),
+            epoch_before,
+            "nothing was written, so valid_from was not refreshed"
+        );
+        assert_eq!(
+            memory_active_keyset_id(&sig, &CurrencyUnit::Sat),
+            Some(original.id),
+            "the custom-path keyset stays active rather than rotating"
+        );
+        assert_eq!(
+            db_keyset_ids(&sig).await.len(),
+            1,
+            "no second keyset was created"
+        );
+    }
+
+    /// Keys derive from the xpriv and the derivation path alone, so two units
+    /// pinned to one path would sign with interchangeable keys. Refuse to build
+    /// the signatory at all rather than discover it at the first rotation.
+    #[tokio::test]
+    async fn new_rejects_two_units_pinned_to_one_derivation_path() {
+        let shared: DerivationPath = "m/8'/0'/9'".parse().expect("derivation path");
+        let store = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("in-memory db"),
+        );
+
+        let err = DbSignatory::new(
+            store.clone(),
+            b"test-seed-duplicate-custom-path",
+            Default::default(),
+            HashMap::from([
+                (CurrencyUnit::Sat, shared.clone()),
+                (CurrencyUnit::Usd, shared),
+            ]),
+        )
+        .await
+        .err()
+        .expect("two units on one derivation path");
+        assert!(err.to_string().contains("derivation path"), "{err}");
+
+        DbSignatory::new(
+            store,
+            b"test-seed-duplicate-custom-path",
+            Default::default(),
+            HashMap::from([
+                (
+                    CurrencyUnit::Sat,
+                    "m/8'/0'/9'".parse().expect("derivation path"),
+                ),
+                (
+                    CurrencyUnit::Usd,
+                    "m/8'/2'/9'".parse().expect("derivation path"),
+                ),
+            ]),
+        )
+        .await
+        .expect("distinct paths build");
+    }
+
+    /// Index derivation walks `m/129372'/<hashed unit>'/<index>'`, so a unit
+    /// pinned into another unit's branch sits on a path that unit will reach and
+    /// re-derive. Refused at construction rather than left for the sweep to trip
+    /// over every tick.
+    #[tokio::test]
+    async fn new_rejects_a_pin_inside_another_unit_branch() {
+        let (store, _fail_unit, _transactions) = FailUnitDb::new().await;
+        // Sat reaches index 2 as soon as its seeded keyset at index 1 rotates.
+        let contested = derivation_path_from_unit(CurrencyUnit::Sat, 2).expect("derivation path");
+
+        let err = DbSignatory::new(
+            store,
+            b"test-seed-foreign-branch-pin",
+            Default::default(),
+            HashMap::from([(CurrencyUnit::Usd, contested.clone())]),
+        )
+        .await
+        .err()
+        .expect("a pin in another unit's branch is refused");
+
+        assert!(
+            matches!(err, Error::CustomPathOutsideUnitBranch { ref unit, ref path }
+                if unit == &CurrencyUnit::Usd && path == &contested),
+            "{err}"
+        );
+    }
+
+    /// A keyset left on a foreign branch by an older configuration is data, not
+    /// configuration, so no construction check can refuse it. The unit whose next
+    /// index derives that path must step over it: its derivation index advances
+    /// only on a commit, so failing there would stall the unit for good.
+    #[tokio::test]
+    async fn sweep_advances_past_a_derivation_path_a_stale_keyset_holds() {
+        let (store, _fail_unit, transactions) = FailUnitDb::new().await;
+        let sig = Arc::new(
+            DbSignatory::new(
+                store.clone(),
+                b"test-seed-stale-foreign-branch",
+                Default::default(),
+                HashMap::new(),
+            )
+            .await
+            .expect("DbSignatory::new"),
+        );
+
+        let sat = seed_aged_keyset(
+            &sig,
+            CurrencyUnit::Sat,
+            &[1, 2, 4, 8],
+            0,
+            cdk_common::nut02::KeySetVersion::Version01,
+            None,
+            120,
+        )
+        .await;
+        let usd = seed_aged_keyset(
+            &sig,
+            CurrencyUnit::Usd,
+            &[1, 2, 4, 8],
+            0,
+            cdk_common::nut02::KeySetVersion::Version01,
+            None,
+            120,
+        )
+        .await;
+        // What an older binary left behind: a Usd keyset sitting on the path
+        // Sat's next rotation derives.
+        seed_keyset_at_path(
+            &sig,
+            CurrencyUnit::Usd,
+            derivation_path_from_unit(CurrencyUnit::Sat, 2).expect("derivation path"),
+        )
+        .await;
+
+        let ids_before = db_keyset_ids(&sig).await;
+        transactions.store(0, Ordering::SeqCst);
+
+        sig.rotate_aged_keysets(Duration::from_secs(60)).await;
+
+        let rotated_sat = memory_active_keyset_info(&sig, &CurrencyUnit::Sat);
+        assert_ne!(rotated_sat.id, sat, "sat rotated past the stale row");
+        assert_eq!(
+            rotated_sat.derivation_path,
+            derivation_path_from_unit(CurrencyUnit::Sat, 3).expect("derivation path"),
+            "index 2 is taken, so sat lands on 3"
+        );
+        assert_eq!(
+            rotated_sat.derivation_path_index,
+            Some(3),
+            "the recorded index is the one the path was derived from, so the next \
+             allocation starts past it"
+        );
+        let rotated_usd =
+            memory_active_keyset_id(&sig, &CurrencyUnit::Usd).expect("usd active keyset");
+        assert_ne!(rotated_usd, usd, "usd rotated too");
+        assert_eq!(
+            db_keyset_ids(&sig).await.len(),
+            ids_before.len() + 2,
+            "the sweep commits both replacements"
+        );
+    }
+
+    /// The same stale row with nothing else due. Stepping over it is what keeps
+    /// the unit off the lock on every later tick: it rotates once, and the fresh
+    /// `valid_from` then leaves the tick on the lock-free path.
+    #[tokio::test]
+    async fn a_stale_row_on_the_next_path_does_not_stop_the_unit() {
+        let (store, _fail_unit, transactions) = FailUnitDb::new().await;
+        let sig = Arc::new(
+            DbSignatory::new(
+                store.clone(),
+                b"test-seed-contested-path-quiet-tick",
+                Default::default(),
+                HashMap::new(),
+            )
+            .await
+            .expect("DbSignatory::new"),
+        );
+
+        let sat = seed_aged_keyset(
+            &sig,
+            CurrencyUnit::Sat,
+            &[1, 2, 4, 8],
+            0,
+            cdk_common::nut02::KeySetVersion::Version01,
+            None,
+            120,
+        )
+        .await;
+        seed_keyset_at_path(
+            &sig,
+            CurrencyUnit::Usd,
+            derivation_path_from_unit(CurrencyUnit::Sat, 2).expect("derivation path"),
+        )
+        .await;
+
+        let ids_before = db_keyset_ids(&sig).await;
+        transactions.store(0, Ordering::SeqCst);
+
+        sig.rotate_aged_keysets(Duration::from_secs(60)).await;
+        let transactions_after_rotating = transactions.load(Ordering::SeqCst);
+        sig.rotate_aged_keysets(Duration::from_secs(60)).await;
+
+        assert_eq!(
+            transactions.load(Ordering::SeqCst),
+            transactions_after_rotating,
+            "the replacement is not due, so the second tick stays off the lock"
+        );
+        let rotated = memory_active_keyset_info(&sig, &CurrencyUnit::Sat);
+        assert_ne!(rotated.id, sat, "sat rotated past the stale row");
+        assert_eq!(
+            rotated.derivation_path,
+            derivation_path_from_unit(CurrencyUnit::Sat, 3).expect("derivation path"),
+            "index 2 is taken, so sat lands on 3"
+        );
+        assert_eq!(
+            db_keyset_ids(&sig).await.len(),
+            ids_before.len() + 1,
+            "exactly one replacement was committed"
+        );
+    }
+
+    /// A pin inside the unit's own branch is accepted at construction, and it
+    /// records the allocator counter rather than its own index component, so
+    /// dropping the pin leaves index derivation walking towards a path that is
+    /// already taken. It has to step over it.
+    #[tokio::test]
+    async fn rotation_resumes_past_an_own_branch_pin_after_the_pin_is_removed() {
+        let store = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("in-memory db"),
+        );
+        let seed = b"test-seed-own-branch-pin-then-unpinned";
+        let pin = derivation_path_from_unit(CurrencyUnit::Sat, 3).expect("derivation path");
+
+        let pinned = DbSignatory::new(
+            store.clone(),
+            seed,
+            Default::default(),
+            HashMap::from([(CurrencyUnit::Sat, pin.clone())]),
+        )
+        .await
+        .expect("DbSignatory::new");
+
+        seed_aged_keyset(
+            &pinned,
+            CurrencyUnit::Sat,
+            &[1, 2, 4, 8],
+            0,
+            cdk_common::nut02::KeySetVersion::Version01,
+            None,
+            120,
+        )
+        .await;
+        pinned.rotate_aged_keysets(Duration::from_secs(60)).await;
+
+        let on_the_pin = memory_active_keyset_info(&pinned, &CurrencyUnit::Sat);
+        assert_eq!(
+            on_the_pin.derivation_path, pin,
+            "the unit rotated onto the pin"
+        );
+        assert_eq!(
+            on_the_pin.derivation_path_index,
+            Some(2),
+            "a pin keeps the allocator counter, which is what makes index \
+             derivation walk back onto it later"
+        );
+
+        let unpinned = DbSignatory::new(store.clone(), seed, Default::default(), HashMap::new())
+            .await
+            .expect("DbSignatory::new");
+
+        for _ in 0..3 {
+            age_active_keyset(&unpinned, &CurrencyUnit::Sat, 120).await;
+            unpinned.rotate_aged_keysets(Duration::from_secs(60)).await;
+        }
+
+        let rotated: Vec<MintKeySetInfo> = {
+            let keysets = unpinned.keysets.load();
+            keysets
+                .by_id
+                .values()
+                .map(|(info, _)| info.clone())
+                .collect()
+        };
+        assert_eq!(
+            rotated.len(),
+            5,
+            "the seeded keyset, the pinned one, and one replacement per sweep"
+        );
+        assert_eq!(
+            rotated
+                .iter()
+                .filter(|info| info.derivation_path == pin)
+                .count(),
+            1,
+            "index derivation stepped over the pinned path instead of re-deriving it"
+        );
+        let indexes: HashSet<Option<u32>> = rotated
+            .iter()
+            .map(|info| info.derivation_path_index)
+            .collect();
+        assert!(
+            indexes.contains(&Some(4)) && indexes.contains(&Some(5)) && indexes.contains(&Some(6)),
+            "the three post-pin rotations skip index 3 and continue upward, got {indexes:?}"
+        );
+    }
+
+    /// The advance is only durable if the index it lands on is the one recorded:
+    /// the allocator is `MAX(derivation_path_index) + 1`, so recording the
+    /// pre-advance index would walk the unit back onto the same taken path.
+    #[tokio::test]
+    async fn an_advanced_index_moves_the_database_allocator_past_it() {
+        let sig = test_signatory(b"test-seed-advanced-index-allocator").await;
+
+        seed_aged_keyset(
+            &sig,
+            CurrencyUnit::Sat,
+            &[1, 2, 4, 8],
+            0,
+            cdk_common::nut02::KeySetVersion::Version01,
+            None,
+            120,
+        )
+        .await;
+        seed_keyset_at_path(
+            &sig,
+            CurrencyUnit::Sat,
+            derivation_path_from_unit(CurrencyUnit::Sat, 2).expect("derivation path"),
+        )
+        .await;
+
+        sig.rotate_aged_keysets(Duration::from_secs(60)).await;
+
+        assert_eq!(
+            memory_active_keyset_info(&sig, &CurrencyUnit::Sat).derivation_path_index,
+            Some(3),
+            "index 2 is taken, so the rotation records the index it actually used"
+        );
+
+        let mut tx = sig.localstore.begin_transaction().await.expect("begin tx");
+        let next = tx
+            .next_derivation_index(&CurrencyUnit::Sat)
+            .await
+            .expect("next derivation index");
+        tx.rollback().await.expect("rollback");
+
+        assert_eq!(next, 4, "the allocator starts past the advanced index");
+    }
+
+    /// An expired keyset's replacement is pushed forward from an expiry already
+    /// in the past, so it is born expired too. Rotating it would churn a fresh
+    /// unusable keyset every tick and log it as a success.
+    #[tokio::test]
+    async fn auto_rotation_skips_an_expired_active_keyset() {
+        let (store, _fail_unit, transactions) = FailUnitDb::new().await;
+        let sig = Arc::new(
+            DbSignatory::new(
+                store.clone(),
+                b"test-seed-expired-active-keyset",
+                Default::default(),
+                Default::default(),
+            )
+            .await
+            .expect("DbSignatory::new"),
+        );
+
+        let seeded = seed_aged_keyset(
+            &sig,
+            CurrencyUnit::Sat,
+            &[1, 2, 4, 8],
+            0,
+            cdk_common::nut02::KeySetVersion::Version01,
+            Some(unix_time() - 1),
+            120,
+        )
+        .await;
+
+        let epoch_before = store.keysets_epoch().await.expect("epoch");
+        transactions.store(0, Ordering::SeqCst);
+
+        sig.rotate_aged_keysets(Duration::from_secs(60)).await;
+        sig.rotate_aged_keysets(Duration::from_secs(60)).await;
+
+        assert_eq!(
+            transactions.load(Ordering::SeqCst),
+            0,
+            "the expired keyset is the only due one, so no transaction is opened"
+        );
+        assert_eq!(
+            store.keysets_epoch().await.expect("epoch"),
+            epoch_before,
+            "nothing was written"
+        );
+        assert_eq!(
+            db_keyset_ids(&sig).await.len(),
+            1,
+            "no replacement keyset was created"
+        );
+        assert_eq!(
+            memory_active_keyset_id(&sig, &CurrencyUnit::Sat),
+            Some(seeded),
+            "the expired keyset stays active until it is rotated explicitly"
+        );
+    }
+
+    /// An expired keyset stays excluded until an operator rotates it, so the
+    /// warning is a reminder and earns a repeat. The rotation loop's own cadence
+    /// is far too fast to be one.
+    #[tokio::test]
+    async fn expired_exclusion_warning_repeats_on_a_slow_cadence() {
+        let sig = test_signatory(b"test-seed-expired-warn-cadence").await;
+        let id = seed_aged_keyset(
+            &sig,
+            CurrencyUnit::Sat,
+            &[1, 2, 4, 8],
+            0,
+            cdk_common::nut02::KeySetVersion::Version01,
+            Some(unix_time() - 1),
+            120,
+        )
+        .await;
+
+        let now = unix_time();
+
+        assert!(
+            sig.should_report(id, Exclusion::Expired, now),
+            "the first exclusion is reported"
+        );
+        assert!(
+            !sig.should_report(id, Exclusion::Expired, now + MAX_TICK_INTERVAL.as_secs()),
+            "a tick later nothing has changed, so it is not reported again"
+        );
+        assert!(
+            sig.should_report(
+                id,
+                Exclusion::Expired,
+                now + EXPIRED_WARN_INTERVAL.as_secs()
+            ),
+            "the reminder fires once the repeat interval has passed"
+        );
+    }
+
+    /// A pinned derivation path is a deliberate configuration; an amountless
+    /// keyset and a keyset squatting the unit's next path are data bugs. None
+    /// becomes new information by being restated, so each is reported once for
+    /// the life of the keyset.
+    #[tokio::test]
+    async fn permanent_exclusion_warns_once_per_keyset() {
+        let sig = test_signatory(b"test-seed-permanent-exclusion-warn").await;
+        let id = seed_aged_keyset(
+            &sig,
+            CurrencyUnit::Sat,
+            &[1, 2, 4, 8],
+            0,
+            cdk_common::nut02::KeySetVersion::Version01,
+            None,
+            120,
+        )
+        .await;
+
+        let now = unix_time();
+
+        for reason in [
+            Exclusion::NoAmounts,
+            Exclusion::PinnedPath,
+            Exclusion::ContestedPath,
+        ] {
+            assert!(
+                sig.should_report(id, reason, now),
+                "{reason:?} is reported the first time"
+            );
+            assert!(
+                !sig.should_report(id, reason, now + EXPIRED_WARN_INTERVAL.as_secs() * 24),
+                "{reason:?} is never reported again, however long the process runs"
+            );
+        }
+    }
+
+    /// A sweep reads the exclusions twice, once as the lock-free pre-check and
+    /// once under the transaction. Both go through the same gate, so the tick
+    /// warns once rather than twice.
+    #[tokio::test]
+    async fn a_sweeping_tick_reports_an_exclusion_once() {
+        let sig = test_signatory(b"test-seed-sweep-reports-once").await;
+
+        let expired = seed_aged_keyset(
+            &sig,
+            CurrencyUnit::Sat,
+            &[1, 2, 4, 8],
+            0,
+            cdk_common::nut02::KeySetVersion::Version01,
+            Some(unix_time() - 1),
+            120,
+        )
+        .await;
+        let usd = seed_aged_keyset(
+            &sig,
+            CurrencyUnit::Usd,
+            &[1, 2, 4, 8],
+            0,
+            cdk_common::nut02::KeySetVersion::Version01,
+            None,
+            120,
+        )
+        .await;
+
+        let now = unix_time();
+        sig.rotate_aged_keysets(Duration::from_secs(60)).await;
+
+        assert_ne!(
+            memory_active_keyset_id(&sig, &CurrencyUnit::Usd),
+            Some(usd),
+            "usd rotated, so the sweep opened a transaction and read the exclusions twice"
+        );
+        assert!(
+            !sig.should_report(expired, Exclusion::Expired, now),
+            "the read under the transaction found the pre-check's report already recorded"
+        );
+    }
+
+    /// Report state keyed on a keyset id would otherwise outlive the keyset,
+    /// silencing a unit that becomes excluded again on a fresh keyset.
+    #[tokio::test]
+    async fn exclusion_report_state_is_forgotten_when_the_keyset_goes_inactive() {
+        let sig = test_signatory(b"test-seed-forget-inactive-exclusion").await;
+
+        let amountless = seed_aged_keyset(
+            &sig,
+            CurrencyUnit::Sat,
+            &[],
+            0,
+            cdk_common::nut02::KeySetVersion::Version01,
+            None,
+            120,
+        )
+        .await;
+
+        assert!(
+            sig.due_keysets(unix_time(), 60).is_empty(),
+            "the amountless keyset is excluded"
+        );
+        assert!(
+            sig.warned_exclusions
+                .lock()
+                .contains_key(&(amountless, Exclusion::NoAmounts)),
+            "the exclusion was recorded"
+        );
+
+        sig.rotate_keyset(RotateKeyArguments {
+            unit: CurrencyUnit::Sat,
+            amounts: vec![1, 2, 4, 8],
+            input_fee_ppk: 0,
+            keyset_id_type: cdk_common::nut02::KeySetVersion::Version01,
+            final_expiry: None,
+        })
+        .await
+        .expect("explicit rotation");
+
+        sig.due_keysets(unix_time(), 60);
+
+        assert!(
+            sig.warned_exclusions.lock().is_empty(),
+            "the retired keyset's report state is forgotten"
+        );
+    }
+
+    /// The sweep filter never reaches an explicit rotation, so staging rejects a
+    /// path that already produced a keyset rather than upserting over it.
+    #[tokio::test]
+    async fn rotate_keyset_rejects_a_custom_path_that_rederives_an_existing_keyset() {
+        let store = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("in-memory db"),
+        );
+        let path: DerivationPath = "m/8'/0'/1'".parse().expect("derivation path");
+        let sig = DbSignatory::new(
+            store,
+            b"test-seed-custom-manual-rotation",
+            Default::default(),
+            HashMap::from([(CurrencyUnit::Sat, path)]),
+        )
+        .await
+        .expect("DbSignatory::new");
+
+        let rotate = |final_expiry| RotateKeyArguments {
+            unit: CurrencyUnit::Sat,
+            amounts: vec![1, 2, 4, 8],
+            input_fee_ppk: 0,
+            keyset_id_type: cdk_common::nut02::KeySetVersion::Version01,
+            final_expiry,
+        };
+
+        let original = sig
+            .rotate_keyset(rotate(None))
+            .await
+            .expect("the first rotation creates the keyset");
+
+        let err = sig
+            .rotate_keyset(rotate(None))
+            .await
+            .expect_err("re-deriving the same keys must be rejected");
+        let message = err.to_string();
+        assert!(
+            message.contains(&original.id.to_string()),
+            "the error must name the keyset it would have overwritten: {message}"
+        );
+
+        // A version 2 id also hashes the expiry, so this rotation earns a
+        // distinct id over identical keys. Rejected because the guard compares
+        // derivation paths, not ids.
+        sig.rotate_keyset(rotate(Some(unix_time() + 3600)))
+            .await
+            .expect_err("a new expiry over the same keys must be rejected too");
+
+        assert_eq!(
+            memory_active_keyset_id(&sig, &CurrencyUnit::Sat),
+            Some(original.id),
+            "a rejected rotation leaves the active keyset untouched"
+        );
+        assert_eq!(
+            db_keyset_ids(&sig).await.len(),
+            1,
+            "a rejected rotation rolls back cleanly"
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_auto_rotation_stops_when_signatory_dropped() {
+        let sig = test_signatory(b"test-seed-drop").await;
+        // Keep the shutdown sender alive so the loop can only exit through the
+        // dropped-signatory path, not a shutdown signal.
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let handle = sig.spawn_auto_rotation(Duration::from_millis(50), shutdown_rx);
+
+        // Drop the only strong reference; the task's weak upgrade then fails and
+        // the loop exits on its next tick.
+        drop(sig);
+
+        tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("auto rotation task should stop after the signatory is dropped")
+            .expect("task should not panic");
+    }
+
+    #[tokio::test]
+    async fn spawn_auto_rotation_stops_on_shutdown_signal() {
+        // The signatory stays alive; only the shutdown signal ends the loop.
+        let sig = test_signatory(b"test-seed-shutdown").await;
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let handle = sig.spawn_auto_rotation(Duration::from_millis(50), shutdown_rx);
+
+        shutdown_tx.send(true).expect("receiver alive");
+
+        tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("auto rotation task should stop after shutdown is signalled")
+            .expect("task should not panic");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_rotations_all_land_in_memory() {
+        // Consistency guard for concurrent rotations: several run at once on
+        // distinct units (as auto-rotation and a mint-initiated rotate might).
+        // `rotate_keyset` serializes them through `rotation_lock`, commits each
+        // to the DB, and updates memory in place. After they settle, the
+        // in-memory map and the published watch snapshot must both equal the
+        // full DB set, with no keyset lost to a race.
+        let sig = test_signatory(b"test-seed-concurrent-rotations").await;
+
+        // Distinct units so each rotation creates its own keyset without
+        // contending on a shared unit's derivation index.
+        let units: Vec<CurrencyUnit> = (0..12)
+            .map(|i| CurrencyUnit::custom(format!("UNIT{i}")))
+            .collect();
+
+        let mut handles = Vec::new();
+        for unit in units.iter().cloned() {
+            let sig = Arc::clone(&sig);
+            handles.push(tokio::spawn(async move {
+                sig.rotate_keyset(RotateKeyArguments {
+                    unit,
+                    amounts: vec![1, 2, 4, 8],
+                    input_fee_ppk: 0,
+                    keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                    final_expiry: None,
+                })
+                .await
+                .expect("rotate_keyset");
+            }));
+        }
+        for handle in handles {
+            handle.await.expect("rotation task should not panic");
+        }
+
+        let db_ids: HashSet<Id> = {
+            let mut tx = sig.localstore.begin_transaction().await.expect("begin tx");
+            let infos = tx.get_keyset_infos().await.expect("keyset infos");
+            tx.commit().await.expect("commit");
+            infos.into_iter().map(|info| info.id).collect()
+        };
+        assert_eq!(
+            db_ids.len(),
+            units.len(),
+            "every rotation committed a keyset"
+        );
+
+        let memory_ids: HashSet<Id> = sig
+            .keysets()
+            .await
+            .expect("keysets")
+            .keysets
+            .into_iter()
+            .map(|k| k.id)
+            .collect();
+        assert_eq!(
+            memory_ids, db_ids,
+            "in-memory keysets must match the DB after concurrent rotations"
+        );
+
+        let watch_ids: HashSet<Id> = sig
+            .subscribe_keysets()
+            .await
+            .expect("subscribe")
+            .borrow()
+            .keysets
+            .iter()
+            .map(|k| k.id)
+            .collect();
+        assert_eq!(
+            watch_ids, db_ids,
+            "published keyset snapshot must match the DB after concurrent rotations"
+        );
+    }
+
+    /// A peer's rotation must not be followed by a redundant second one. The
+    /// sweep reads its due set only after reloading inside the rotation
+    /// transaction, so it sees the peer's fresh `valid_from` and the unit is
+    /// simply not due. No identity re-check is involved.
+    #[tokio::test]
+    async fn rotate_aged_keysets_skips_unit_a_peer_already_rotated() {
+        let sig = test_signatory(b"test-seed-peer-rotation-skip").await;
+
+        // The keyset this signatory's stale snapshot still thinks is due.
+        let _seeded = seed_aged_keyset(
+            &sig,
+            CurrencyUnit::Sat,
+            &[1, 2, 4, 8],
+            0,
+            cdk_common::nut02::KeySetVersion::Version00,
+            None,
+            120,
+        )
+        .await;
+
+        // A peer rotates the unit: move the DB active pointer without touching
+        // this signatory's snapshot, exactly what a second instance sharing the
+        // database would leave behind.
+        let external_path =
+            derivation_path_from_unit(CurrencyUnit::Sat, 99).expect("derivation path");
+        let (external_keyset, mut external_info) = create_new_keyset(
+            &sig.secp_ctx,
+            sig.xpriv,
+            external_path,
+            Some(99),
+            CurrencyUnit::Sat,
+            &[1, 2, 4, 8],
+            0,
+            None,
+            cdk_common::nut02::KeySetVersion::Version00,
+        );
+        // The freshness of this `valid_from` is the entire skip mechanism.
+        external_info.valid_from = unix_time();
+        let external_id = external_keyset.id;
+        let mut tx = sig.localstore.begin_transaction().await.expect("begin tx");
+        tx.add_keyset_info(external_info).await.expect("add keyset");
+        tx.set_active_keyset(CurrencyUnit::Sat, external_id)
+            .await
+            .expect("set active");
+        tx.commit().await.expect("commit");
+
+        let epoch_before = sig.localstore.keysets_epoch().await.expect("epoch");
+        sig.rotate_aged_keysets(Duration::from_secs(60)).await;
+
+        assert_eq!(
+            sig.localstore.keysets_epoch().await.expect("epoch"),
+            epoch_before,
+            "a unit the peer already rotated must not be rotated again"
+        );
+        assert_eq!(
+            db_keyset_ids(&sig).await.len(),
+            2,
+            "no third keyset was created"
+        );
+        assert_eq!(
+            db_active_keyset_id(&sig, &CurrencyUnit::Sat).await,
+            Some(external_id),
+            "the peer's active pointer stands",
+        );
+        // Load-bearing: this can only hold if the sweep opened its transaction
+        // and adopted the peer's view, rather than deciding from the stale
+        // snapshot alone.
+        assert_eq!(
+            memory_active_keyset_id(&sig, &CurrencyUnit::Sat),
+            Some(external_id),
+            "the sweep's under-lock reload adopts the peer's keyset"
+        );
+    }
+
+    /// Two units that differ as `CurrencyUnit` values but share a derivation
+    /// index must not both get keysets. `Custom("sat")` is not `Sat`, so the
+    /// "unit already exists" shortcut does not fire, but both display as `SAT`
+    /// once `hashed_derivation_index` uppercases them, so they collide.
+    #[tokio::test]
+    async fn rotate_keyset_rejects_a_unit_colliding_with_an_existing_one() {
+        let sig = test_signatory(b"test-seed-unit-collision").await;
+
+        seed_aged_keyset(
+            &sig,
+            CurrencyUnit::Sat,
+            &[1, 2, 4, 8],
+            0,
+            cdk_common::nut02::KeySetVersion::Version00,
+            None,
+            0,
+        )
+        .await;
+
+        let colliding = CurrencyUnit::custom("sat");
+        assert_ne!(
+            colliding,
+            CurrencyUnit::Sat,
+            "the collision path is only reached for a unit that is not already present"
+        );
+
+        let err = sig
+            .rotate_keyset(RotateKeyArguments {
+                unit: colliding,
+                amounts: vec![1, 2, 4, 8],
+                input_fee_ppk: 0,
+                keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                final_expiry: None,
+            })
+            .await
+            .expect_err("a colliding unit must be rejected");
+
+        assert!(
+            matches!(err, Error::UnitStringCollision(_)),
+            "expected a unit string collision, got: {err:?}"
+        );
+        assert_eq!(
+            db_keyset_ids(&sig).await.len(),
+            1,
+            "the rejected rotation must roll back, leaving only the seeded keyset"
+        );
+    }
+
+    /// A mint-initiated rotation is unconditional: it adopts whatever the
+    /// database says is active instead of failing because a peer rotated first.
+    #[tokio::test]
+    async fn rotate_keyset_succeeds_when_a_peer_rotated_first() {
+        let sig = test_signatory(b"test-seed-peer-rotation-adopt").await;
+
+        seed_aged_keyset(
+            &sig,
+            CurrencyUnit::Sat,
+            &[1, 2, 4, 8],
+            0,
+            cdk_common::nut02::KeySetVersion::Version00,
+            None,
+            120,
+        )
+        .await;
+
+        let external_path =
+            derivation_path_from_unit(CurrencyUnit::Sat, 99).expect("derivation path");
+        let (external_keyset, mut external_info) = create_new_keyset(
+            &sig.secp_ctx,
+            sig.xpriv,
+            external_path,
+            Some(99),
+            CurrencyUnit::Sat,
+            &[1, 2, 4, 8],
+            0,
+            None,
+            cdk_common::nut02::KeySetVersion::Version00,
+        );
+        external_info.valid_from = unix_time();
+        let external_id = external_keyset.id;
+        let mut tx = sig.localstore.begin_transaction().await.expect("begin tx");
+        tx.add_keyset_info(external_info).await.expect("add keyset");
+        tx.set_active_keyset(CurrencyUnit::Sat, external_id)
+            .await
+            .expect("set active");
+        tx.commit().await.expect("commit");
+
+        let rotated = sig
+            .rotate_keyset(RotateKeyArguments {
+                unit: CurrencyUnit::Sat,
+                amounts: vec![1, 2, 4, 8],
+                input_fee_ppk: 0,
+                keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                final_expiry: None,
+            })
+            .await
+            .expect("rotate_keyset");
+
+        assert_ne!(
+            rotated.id, external_id,
+            "the rotation creates a keyset of its own"
+        );
+        assert_eq!(
+            memory_active_keyset_id(&sig, &CurrencyUnit::Sat),
+            Some(rotated.id),
+            "the new keyset becomes active"
         );
     }
 }

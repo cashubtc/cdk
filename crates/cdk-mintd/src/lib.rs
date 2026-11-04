@@ -8,6 +8,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
 // external crates
 use anyhow::{anyhow, bail, Context, Result};
@@ -1208,7 +1209,30 @@ fn configure_basic_info(settings: &config::Settings, mint_builder: MintBuilder) 
 
     builder = builder.with_keyset_v2(settings.info.use_keyset_v2);
 
+    builder = builder.with_keyset_rotation_interval(keyset_rotation_interval(settings));
+
     builder
+}
+
+/// Embedded signatory keyset auto-rotation interval, or `None` when rotation is
+/// disabled.
+///
+/// `0` is both the documented off switch and the default, so a mint only
+/// rotates once its operator asks for it.
+fn keyset_rotation_interval(settings: &config::Settings) -> Option<Duration> {
+    match settings.info.keyset_rotation_interval_seconds {
+        0 => None,
+        seconds => Some(Duration::from_secs(seconds)),
+    }
+}
+
+/// Whether a configured keyset rotation interval cannot take effect.
+///
+/// Only the embedded signatory turns the interval into a rotation loop, so a
+/// remote `[signatory]` drops it. Worth saying out loud: the operator who set it
+/// believes rotation is running.
+fn keyset_rotation_interval_is_ignored(settings: &config::Settings) -> bool {
+    settings.enabled_signatory().is_some() && keyset_rotation_interval(settings).is_some()
 }
 /// Configures payment backends based on the specified backend types
 async fn configure_payment_backends(
@@ -1895,6 +1919,13 @@ async fn build_mint(
             );
         }
 
+        if keyset_rotation_interval_is_ignored(settings) {
+            tracing::warn!(
+                "[info].keyset_rotation_interval_seconds is ignored with a remote [signatory]; \
+                 configure rotation on the signatory host with --rotation-interval-secs"
+            );
+        }
+
         let remote_signatory = match validated_signing_source
             .and_then(|validated| validated.remote_signatory.clone())
         {
@@ -2431,6 +2462,11 @@ impl PreparedMintd {
 impl RunningMintd {
     /// Serves requests until the shutdown signal fires, then stops all
     /// services gracefully.
+    ///
+    /// The mint and the management-RPC server are torn down concurrently. A
+    /// keyset rotation wedged on the cross-process lock can hold
+    /// [`Mint::stop`] for up to its own timeout, and the admin surface must
+    /// not keep serving for that whole window.
     async fn serve(
         self,
         shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
@@ -2477,14 +2513,22 @@ impl RunningMintd {
             }
         }
 
-        self.mint.stop().await?;
-
+        let mint = self.mint;
         #[cfg(feature = "management-rpc")]
-        {
-            if let Some(rpc_server) = self.rpc_server {
+        let rpc_server = self.rpc_server;
+
+        let stop_rpc = async {
+            #[cfg(feature = "management-rpc")]
+            if let Some(rpc_server) = rpc_server {
                 rpc_server.stop().await?;
             }
-        }
+            Ok::<(), anyhow::Error>(())
+        };
+
+        let (mint_result, rpc_result) = tokio::join!(mint.stop(), stop_rpc);
+
+        mint_result?;
+        rpc_result?;
 
         Ok(())
     }
@@ -3509,6 +3553,108 @@ engine = "sqlite"
         assert_eq!(settings.database.engine, DatabaseEngine::Sqlite);
         assert!(settings.database.postgres.is_none());
         clear_mintd_env();
+    }
+
+    /// Upgrading a mint whose config never mentions the setting must not start
+    /// rotating its keysets behind the operator's back.
+    #[test]
+    fn keyset_rotation_interval_defaults_without_explicit_configuration() {
+        let settings = config::Settings::default();
+
+        assert_eq!(
+            keyset_rotation_interval(&settings),
+            None,
+            "an unconfigured mint must leave auto-rotation off"
+        );
+    }
+
+    /// `0` is the documented off switch, in the README, `example.config.toml`
+    /// and the signatory CLI. It has to actually disable rotation.
+    #[test]
+    fn keyset_rotation_interval_zero_disables_rotation() {
+        let settings = config::Settings {
+            info: config::Info {
+                keyset_rotation_interval_seconds: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert_eq!(keyset_rotation_interval(&settings), None);
+    }
+
+    #[test]
+    fn keyset_rotation_interval_uses_the_configured_value() {
+        let settings = config::Settings {
+            info: config::Info {
+                keyset_rotation_interval_seconds: 3600,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert_eq!(
+            keyset_rotation_interval(&settings),
+            Some(Duration::from_secs(3600))
+        );
+    }
+
+    fn remote_signatory_settings(keyset_rotation_interval_seconds: u64) -> config::Settings {
+        config::Settings {
+            info: config::Info {
+                keyset_rotation_interval_seconds,
+                ..Default::default()
+            },
+            signatory: Some(config::Signatory {
+                enabled: true,
+                address: "127.0.0.1".to_string(),
+                port: 15060,
+                tls_dir: Some("/tmp/certs".into()),
+                allow_insecure: false,
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// The interval only becomes a rotation loop on the embedded signatory, so
+    /// an operator who set it alongside a remote one gets no rotation at all and
+    /// has to be told.
+    #[test]
+    fn keyset_rotation_interval_is_ignored_with_a_remote_signatory() {
+        assert!(keyset_rotation_interval_is_ignored(
+            &remote_signatory_settings(3600)
+        ));
+    }
+
+    #[test]
+    fn an_unset_keyset_rotation_interval_is_not_reported_as_ignored() {
+        assert!(!keyset_rotation_interval_is_ignored(
+            &remote_signatory_settings(0)
+        ));
+    }
+
+    #[test]
+    fn keyset_rotation_interval_is_not_ignored_without_a_remote_signatory() {
+        let embedded = config::Settings {
+            info: config::Info {
+                keyset_rotation_interval_seconds: 3600,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert!(!keyset_rotation_interval_is_ignored(&embedded));
+
+        let mut disabled = remote_signatory_settings(3600);
+        disabled.signatory = disabled.signatory.map(|signatory| config::Signatory {
+            enabled: false,
+            ..signatory
+        });
+
+        assert!(
+            !keyset_rotation_interval_is_ignored(&disabled),
+            "a disabled [signatory] runs the embedded one, which honours the interval"
+        );
     }
 
     #[test]

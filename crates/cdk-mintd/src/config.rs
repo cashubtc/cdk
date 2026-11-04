@@ -61,6 +61,15 @@ pub struct Info {
     /// Use keyset v2
     pub use_keyset_v2: Option<bool>,
 
+    /// Automatically rotate active keysets once they reach this age, in
+    /// seconds.
+    ///
+    /// Defaults to `0`, which keeps auto-rotation off so an upgrade never
+    /// changes an existing mint's keysets on its own. Applies to the embedded
+    /// signatory the mint runs for itself; a remote `[signatory]` manages its
+    /// own rotation schedule and ignores this value.
+    pub keyset_rotation_interval_seconds: u64,
+
     pub http_cache: cache::Config,
 
     /// Logging configuration
@@ -90,6 +99,7 @@ impl Default for Info {
             mnemonic: None,
             input_fee_ppk: None,
             use_keyset_v2: None,
+            keyset_rotation_interval_seconds: 0,
             http_cache: cache::Config::default(),
             enable_info_page: Some(true),
             logging: LoggingConfig::default(),
@@ -117,6 +127,10 @@ impl std::fmt::Debug for Info {
             .field("mnemonic", &mnemonic_display)
             .field("input_fee_ppk", &self.input_fee_ppk)
             .field("use_keyset_v2", &self.use_keyset_v2)
+            .field(
+                "keyset_rotation_interval_seconds",
+                &self.keyset_rotation_interval_seconds,
+            )
             .field("http_cache", &self.http_cache)
             .field("logging", &self.logging)
             .field("enable_info_page", &self.enable_info_page)

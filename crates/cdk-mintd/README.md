@@ -477,6 +477,44 @@ cdk-mint-cli rotate-next-keyset --use-keyset-v2 true  # Rotate to V2
 cdk-mint-cli rotate-next-keyset --use-keyset-v2 false # Rotate to V1
 ```
 
+**Automatic Rotation:**
+An embedded signatory can rotate active keysets automatically once they reach a
+given age. The replacement keeps the previous amounts, input fee and version. A
+`final_expiry` moves forward with it, by the age the retired keyset reached, so
+the unit keeps the validity window it was given instead of inheriting an expiry
+that is closer every rotation. Meant for long periods (days), so 7776000
+seconds (90 days) is a reasonable interval.
+
+- **Default**: `0`, auto-rotation is off. Upgrading a mint never starts
+  rotating its keysets until you ask for it.
+- `[info].keyset_rotation_interval_seconds = <seconds>` (or
+  `CDK_MINTD_KEYSET_ROTATION_INTERVAL_SECONDS=<seconds>`): enable rotation at
+  that interval.
+
+Rotation follows the database, not the configuration file. Every unit that
+holds an active keyset is rotated, including a unit you have removed from the
+configuration and the `auth` unit, so each of those gains a keyset per interval
+for as long as rotation runs. Old keysets are kept, so tokens issued under them
+stay redeemable.
+
+A unit whose active keyset has already expired is not rotated: the replacement
+would inherit an expiry in the past. Rotate it explicitly to get the unit
+serving again.
+
+Keys derive from the seed and the derivation path alone, so a rotation onto a
+path that already holds a keyset would hand the unit back the keys it has.
+Rotation steps over such a path and takes the next free one, which can leave a
+gap in a unit's derivation indexes.
+
+A unit pinned to a custom derivation path is the exception: it has one path and
+nowhere to step to, so once that path holds a keyset the unit stops rotating,
+logged with the unit and the path. Drop the pin for the unit, or move it to a
+path no keyset uses yet, to get it rotating again.
+
+This applies only to an embedded signatory. A remote signatory manages its own
+rotation schedule, with `--rotation-interval-secs` on the signatory host, and
+ignores this setting; mintd warns at startup when both are configured.
+
 ## Production Examples
 
 ### With LDK Node (Recommended for Testing)
