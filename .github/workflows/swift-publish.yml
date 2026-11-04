@@ -21,6 +21,10 @@ on:
         description: 'Build an immutable nightly prerelease from an exact CDK commit.'
         type: boolean
         default: false
+      verify_only:
+        description: 'Verify a release candidate on macOS without cloning deployment repos or publishing.'
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       release_tag:
@@ -37,12 +41,17 @@ on:
         type: boolean
         required: false
         default: false
+      verify_only:
+        type: boolean
+        required: false
+        default: false
 env:
   CARGO_TERM_COLOR: ${{ vars.CARGO_TERM_COLOR }}
   TAG: ${{ inputs.release_tag }}
   CDK_REF: ${{ inputs.cdk_ref || inputs.release_tag }}
   CDK_CHECKOUT_REF: ${{ inputs.nightly && inputs.cdk_ref || format('refs/tags/{0}', inputs.release_tag) }}
   RELEASE_BRANCH: release/${{ inputs.release_tag }}
+  DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
 
 jobs:
   release-ci:
@@ -54,6 +63,9 @@ jobs:
     needs: release-ci
     name: "swift: Validate release ref"
     runs-on: ubuntu-latest
+    outputs:
+      toolchain: ${{ steps.toolchain.outputs.channel }}
+      revision: ${{ steps.toolchain.outputs.revision }}
     steps:
       - name: Validate release ref
         shell: bash
@@ -89,6 +101,13 @@ jobs:
           ref: ${{ env.CDK_CHECKOUT_REF }}
           fetch-depth: 1
           persist-credentials: false
+      - name: Read the pinned Rust toolchain
+        id: toolchain
+        run: |
+          {
+            echo "channel=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])')"
+            echo "revision=$(git rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
 
   swift-sync-sources:
     name: "swift: Sync sources to cdk-swift"
@@ -110,10 +129,11 @@ jobs:
       - name: Checkout monorepo
         uses: actions/checkout@v5
         with:
-          ref: ${{ env.CDK_CHECKOUT_REF }}
+          ref: ${{ needs.validate-release-ref.outputs.revision }}
           persist-credentials: false
 
       - name: Clone cdk-swift
+        if: ${{ !inputs.verify_only }}
         env:
           FFI_DEPLOY_KEY: ${{ secrets.FFI_DEPLOY_KEY }}
         run: |
@@ -127,6 +147,7 @@ jobs:
 
       - name: Copy bindings/swift to cdk-swift
         run: |
+          mkdir -p cdk-swift
           rsync -av --delete \
             --exclude='.github' \
             --exclude='target' \
@@ -142,7 +163,17 @@ jobs:
           # protects excluded paths in the destination, hence the explicit rm.
           rm -rf cdk-swift/rust cdk-swift/rust-toolchain.toml cdk-swift/resources
 
+      - name: Transfer local sources for verification without deployment credentials
+        if: inputs.verify_only
+        uses: actions/upload-artifact@v7
+        with:
+          name: swift-sources-staged
+          path: cdk-swift/
+          include-hidden-files: true
+          if-no-files-found: error
+
       - name: Push to cdk-swift release branch
+        if: ${{ !inputs.verify_only }}
         working-directory: cdk-swift
         env:
           FFI_DEPLOY_KEY: ${{ secrets.FFI_DEPLOY_KEY }}
@@ -167,84 +198,113 @@ jobs:
   swift-build-native:
     name: "swift: Build ${{ matrix.target }}"
     needs: [validate-release-ref]
-    runs-on: macos-14
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         include:
           - target: aarch64-apple-ios
-            artifact: libcdk_ffi_swift.a
-            unset_macos_env: true
+            runner: macos-15
           - target: aarch64-apple-ios-sim
-            artifact: libcdk_ffi_swift.a
-            unset_macos_env: true
+            runner: macos-15
           - target: x86_64-apple-ios
-            artifact: libcdk_ffi_swift.a
-            unset_macos_env: true
+            runner: macos-15-intel
           - target: aarch64-apple-darwin
-            artifact: libcdk_ffi_swift.dylib
-            unset_macos_env: false
+            runner: macos-15
           - target: x86_64-apple-darwin
-            artifact: libcdk_ffi_swift.dylib
-            unset_macos_env: false
+            runner: macos-15-intel
     steps:
       - name: Checkout monorepo
         uses: actions/checkout@v5
         with:
-          ref: ${{ env.CDK_CHECKOUT_REF }}
+          ref: ${{ needs.validate-release-ref.outputs.revision }}
           persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ needs.validate-release-ref.outputs.toolchain }}
           targets: ${{ matrix.target }}
 
-      - name: Build
+      - name: Capture Rust before entering Nix
         run: |
-          export DEVELOPER_DIR=$(/usr/bin/xcrun xcode-select -p)
-          if [[ "${{ matrix.unset_macos_env }}" == "true" ]]; then
-            env -u MACOSX_DEPLOYMENT_TARGET -u SDKROOT \
-              cargo build --locked --profile release-ffi -p cdk-ffi-swift \
-                --target ${{ matrix.target }}
-          else
-            cargo build --locked --profile release-ffi -p cdk-ffi-swift \
-              --target ${{ matrix.target }}
+          {
+            echo "CDK_SBOM_RUST_BIN=$(dirname "$(rustup which --toolchain '${{ needs.validate-release-ref.outputs.toolchain }}' rustc)")"
+            echo "CDK_SBOM_CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}"
+            echo "CDK_SBOM_RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}"
+          } >> "$GITHUB_ENV"
+
+      - name: Install Nix for SBOM tools
+        uses: DeterminateSystems/nix-installer-action@v22
+
+      - name: Build and inventory the exact release archives
+        shell: bash
+        run: |
+          nix develop --accept-flake-config --fallback -L .#sbom-apple-tools --command \
+            python3 misc/sbom/apple_diagnostics.py exec --target ${{ matrix.target }} \
+              python3 misc/sbom/sbom.py cdk-ffi-swift --exclude-language swift \
+                --build --clean-build --profile release-ffi --target ${{ matrix.target }} \
+                --require-assurance compiled_packages --output target/sbom/release-build \
+                2>&1 | tee swift-native-build.log
+
+      - name: Retain the build log without changing the evidence transfer layout
+        if: always()
+        run: |
+          if [[ -f swift-native-build.log ]]; then
+            mkdir -p target/sbom/release-build
+            cp swift-native-build.log target/sbom/release-build/native-build.log
           fi
-
-      - name: Fix dylib install name
-        if: endsWith(matrix.artifact, '.dylib')
-        run: |
-          install_name_tool -id @rpath/CashuDevKitFFI.framework/Versions/A/CashuDevKitFFI \
-            target/${{ matrix.target }}/release-ffi/${{ matrix.artifact }}
-
-      - name: Strip debug symbols
-        run: strip -S target/${{ matrix.target }}/release-ffi/${{ matrix.artifact }}
 
       - name: Prepare artifact
         run: |
           mkdir -p dist
-          cp target/${{ matrix.target }}/release-ffi/${{ matrix.artifact }} \
-             dist/${{ matrix.target }}-${{ matrix.artifact }}
+          # Cargo's release-ffi profile already strips debug info. Preserve its exact archive bytes.
+          cp target/sbom/release-build/clean-target/${{ matrix.target }}/release-ffi/libcdk_ffi_swift.a \
+             dist/${{ matrix.target }}-libcdk_ffi_swift.a
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
           name: swift-native-${{ matrix.target }}
           path: dist/
+          if-no-files-found: error
+
+      - name: Upload native build evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: swift-evidence-${{ matrix.target }}
+          path: |
+            target/sbom/release-build/
+            !target/sbom/release-build/clean-target/**
+          if-no-files-found: error
+
+      - name: Retain incomplete build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: swift-incomplete-${{ matrix.target }}
+          path: |
+            target/sbom/release-build/
+            !target/sbom/release-build/clean-target/**
+          if-no-files-found: warn
 
   swift-assemble-xcframework:
     name: "swift: Assemble XCFramework"
-    needs: [swift-build-native]
-    runs-on: macos-14
+    needs: [swift-build-native, validate-release-ref]
+    runs-on: macos-15
     steps:
       - name: Checkout monorepo
         uses: actions/checkout@v5
         with:
-          ref: ${{ env.CDK_CHECKOUT_REF }}
+          ref: ${{ needs.validate-release-ref.outputs.revision }}
           persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ needs.validate-release-ref.outputs.toolchain }}
 
       - name: Stamp framework Info.plist versions
         run: |
@@ -287,9 +347,9 @@ jobs:
           # macOS universal binary (arm64 + x86_64)
           mkdir -p build/macos
           lipo -create \
-            artifacts/aarch64-apple-darwin-libcdk_ffi_swift.dylib \
-            artifacts/x86_64-apple-darwin-libcdk_ffi_swift.dylib \
-            -output build/macos/libcdk_ffi_swift.dylib
+            artifacts/aarch64-apple-darwin-libcdk_ffi_swift.a \
+            artifacts/x86_64-apple-darwin-libcdk_ffi_swift.a \
+            -output build/macos/libcdk_ffi_swift.a
 
       - name: Create framework structures
         run: |
@@ -305,24 +365,18 @@ jobs:
           cp build/ios-simulator/libcdk_ffi_swift.a "$SIM_FW/CashuDevKitFFI"
           cp bindings/swift/resources/Info-iOSSimulator.plist "$SIM_FW/Info.plist"
 
-          # macOS framework (versioned bundle layout)
+          # Static macOS framework: same flat layout and unchanged archives as iOS.
           MAC_FW="build/macos-framework/CashuDevKitFFI.framework"
-          mkdir -p "$MAC_FW/Versions/A/Resources"
-          cp build/macos/libcdk_ffi_swift.dylib "$MAC_FW/Versions/A/CashuDevKitFFI"
-          cp bindings/swift/resources/Info-macOS.plist "$MAC_FW/Versions/A/Resources/Info.plist"
-
-          # Create symlinks for versioned framework structure
-          ln -s A "$MAC_FW/Versions/Current"
-          ln -s Versions/Current/CashuDevKitFFI "$MAC_FW/CashuDevKitFFI"
-          ln -s Versions/Current/Headers "$MAC_FW/Headers"
-          ln -s Versions/Current/Modules "$MAC_FW/Modules"
-          ln -s Versions/Current/Resources "$MAC_FW/Resources"
+          mkdir -p "$MAC_FW"
+          cp build/macos/libcdk_ffi_swift.a "$MAC_FW/CashuDevKitFFI"
+          cp bindings/swift/resources/Info-macOS.plist "$MAC_FW/Info.plist"
 
       - name: Generate Swift bindings
+        shell: bash
         run: |
           # Build uniffi-bindgen-swift binary. This is a host dev tool, so it
           # stays on the plain release profile rather than release-ffi.
-          cargo build --locked --release -p cdk-ffi-swift --bin uniffi-bindgen-swift
+          cargo build --locked --release -p cdk-ffi-swift --bin uniffi-bindgen-swift 2>&1 | tee swift-bindgen.log
 
           BINDGEN="./target/release/uniffi-bindgen-swift"
 
@@ -344,32 +398,31 @@ jobs:
 
           # Generate headers and modulemaps for macOS
           MAC_FW="build/macos-framework/CashuDevKitFFI.framework"
-          $BINDGEN artifacts/aarch64-apple-darwin-libcdk_ffi_swift.dylib \
-            "$MAC_FW/Versions/A/Headers" --headers
-          $BINDGEN artifacts/aarch64-apple-darwin-libcdk_ffi_swift.dylib \
-            "$MAC_FW/Versions/A/Modules" --xcframework --modulemap \
+          $BINDGEN artifacts/aarch64-apple-darwin-libcdk_ffi_swift.a \
+            "$MAC_FW/Headers" --headers
+          $BINDGEN artifacts/aarch64-apple-darwin-libcdk_ffi_swift.a \
+            "$MAC_FW/Modules" --xcframework --modulemap \
             --module-name CashuDevKitFFI --modulemap-filename module.modulemap
 
           # Generate Swift source files
           SOURCES_DIR="build/Sources/Cdk"
           mkdir -p "$SOURCES_DIR"
-          $BINDGEN artifacts/aarch64-apple-darwin-libcdk_ffi_swift.dylib \
+          $BINDGEN artifacts/aarch64-apple-darwin-libcdk_ffi_swift.a \
             "$SOURCES_DIR" --swift-sources
 
           # Fix FFI module import to match the XCFramework module name
           sed -i '' 's/canImport(cdk_ffiFFI)/canImport(CashuDevKitFFI)/g' "$SOURCES_DIR"/*.swift
           sed -i '' 's/import cdk_ffiFFI/import CashuDevKitFFI/g' "$SOURCES_DIR"/*.swift
 
-      - name: Re-sign macOS framework
-        run: codesign --force --sign - build/macos-framework/CashuDevKitFFI.framework
-
       - name: Create XCFramework
+        shell: bash
         run: |
           xcodebuild -create-xcframework \
             -framework build/ios-device/CashuDevKitFFI.framework \
             -framework build/ios-simulator-framework/CashuDevKitFFI.framework \
             -framework build/macos-framework/CashuDevKitFFI.framework \
-            -output build/xcframework/CashuDevKitFFI.xcframework
+            -output build/xcframework/CashuDevKitFFI.xcframework \
+            2>&1 | tee swift-assembly.log
 
       - name: Create distribution archive
         working-directory: build/xcframework
@@ -391,12 +444,49 @@ jobs:
           name: swift-sources-generated
           path: build/Sources/Cdk/
 
+      - name: Retain assembly diagnostics if Xcode or binding generation fails
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: swift-assembly-incomplete
+          path: |
+            swift-bindgen.log
+            swift-assembly.log
+            build/**/Info.plist
+            build/**/module.modulemap
+            build/Sources/Cdk/
+          if-no-files-found: warn
+
   swift-publish:
-    name: "swift: Publish to cdk-swift"
-    runs-on: ubuntu-latest
-    needs: [swift-sync-sources, swift-assemble-xcframework]
+    name: "swift: Verify package / publish"
+    runs-on: macos-15
+    needs: [swift-sync-sources, swift-assemble-xcframework, validate-release-ref]
     steps:
+      - name: Checkout the exact monorepo release source
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.validate-release-ref.outputs.revision }}
+          path: cdk
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ needs.validate-release-ref.outputs.toolchain }}
+
+      - name: Capture Rust before entering Nix
+        run: |
+          {
+            echo "CDK_SBOM_RUST_BIN=$(dirname "$(rustup which --toolchain '${{ needs.validate-release-ref.outputs.toolchain }}' rustc)")"
+            echo "CDK_SBOM_CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}"
+            echo "CDK_SBOM_RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}"
+          } >> "$GITHUB_ENV"
+
+      - name: Install Nix for final package verification
+        uses: DeterminateSystems/nix-installer-action@v22
+
       - name: Clone cdk-swift
+        if: ${{ !inputs.verify_only }}
         env:
           FFI_DEPLOY_KEY: ${{ secrets.FFI_DEPLOY_KEY }}
         run: |
@@ -408,6 +498,13 @@ jobs:
           git -c "http.extraheader=$(auth_header)" \
             clone --branch "${RELEASE_BRANCH}" \
             https://github.com/${{ vars.CDK_SWIFT_REPO }}.git cdk-swift
+
+      - name: Download locally staged sources in verification-only mode
+        if: inputs.verify_only
+        uses: actions/download-artifact@v8
+        with:
+          name: swift-sources-staged
+          path: cdk-swift
 
       - name: Download XCFramework
         uses: actions/download-artifact@v8
@@ -443,14 +540,92 @@ jobs:
                   ),
                   .target(
                       name: "Cdk",
-                      dependencies: ["CashuDevKitFFI"],
-                      path: "Sources/Cdk"
+                       dependencies: ["CashuDevKitFFI"],
+                       path: "Sources/Cdk",
+                       linkerSettings: [.linkedFramework("Security"), .linkedFramework("CoreFoundation"), .linkedLibrary("iconv")]
                   ),
               ]
           )
           EOF
 
+      - name: Download observed native build evidence and archives
+        uses: actions/download-artifact@v8
+        with:
+          path: native-evidence
+          pattern: swift-evidence-*
+
+      - name: Download the original native archives
+        uses: actions/download-artifact@v8
+        with:
+          path: originals
+          pattern: swift-native-*
+          merge-multiple: true
+
+      - name: Verify the actual Swift package and execute a native consumer
+        shell: bash
+        run: |
+          rsync -a --exclude='.git' cdk-swift/ swift-package/
+          args=()
+          for target in aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios aarch64-apple-darwin x86_64-apple-darwin; do
+            args+=(--build-run "native-evidence/swift-evidence-${target}")
+            args+=(--original "originals/${target}-libcdk_ffi_swift.a")
+          done
+          nix develop --accept-flake-config --fallback -L ./cdk#sbom-apple-tools --command \
+            python3 cdk/misc/sbom/apple_diagnostics.py exec --target aarch64-apple-darwin \
+              python3 cdk/misc/sbom/finalize.py "${args[@]}" \
+                --distribution swift-package --swift-project swift-package \
+                --require-assurance final_bytes --require-assurance consumer_execution --output sbom/swift-final \
+                2>&1 | tee swift-finalization.log
+
+      - name: Package final Swift SBOM evidence
+        id: package-sbom
+        run: |
+          name="cdk-ffi-swift-${TAG}-apple-sbom"
+          nix develop --accept-flake-config --fallback -L ./cdk#sbom-apple-tools --command \
+            python3 cdk/misc/sbom/package_evidence.py --source sbom/swift-final --output sbom/packages --name "$name"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - name: Retain the final Swift SBOM package
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.package-sbom.outputs.name }}
+          path: |
+            sbom/packages/*.tar.gz
+            sbom/packages/*.sha256
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Retain failed finalization evidence
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: swift-finalization-incomplete
+          path: |
+            sbom/swift-final/
+            swift-finalization.log
+          if-no-files-found: warn
+
+      - name: Summarize release-candidate verification
+        if: always()
+        env:
+          VERIFY_ONLY: ${{ inputs.verify_only }}
+          SOURCE_REVISION: ${{ needs.validate-release-ref.outputs.revision }}
+          VERIFICATION_STATUS: ${{ job.status }}
+        run: |
+          {
+            echo '## Swift final-package verification'
+            echo "Source commit: $SOURCE_REVISION"
+            echo "Verification only: $VERIFY_ONLY"
+            echo "Verification-stage status: $VERIFICATION_STATUS"
+            if [[ "$VERIFY_ONLY" == "true" ]]; then
+              echo 'Deployment repository clones, commits, pushes, tags and releases are disabled.'
+            fi
+            echo 'Required checks: final bytes for all five Apple slices; native arm64 macOS consumer execution only.'
+            echo 'Download the versioned apple-sbom artifact on success, or incomplete evidence and job logs on failure.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Commit to release branch
+        if: ${{ !inputs.verify_only }}
         working-directory: cdk-swift
         run: |
           git config user.name "github-actions[bot]"
@@ -460,6 +635,7 @@ jobs:
           git commit -m "release: ${TAG} - add Swift sources, the XCFramework and Package.swift"
 
       - name: Push release branch
+        if: ${{ !inputs.verify_only }}
         working-directory: cdk-swift
         env:
           FFI_DEPLOY_KEY: ${{ secrets.FFI_DEPLOY_KEY }}
@@ -472,10 +648,28 @@ jobs:
           git -c "http.extraheader=$(auth_header)" push origin "${RELEASE_BRANCH}"
 
       - name: Create release on cdk-swift (creates tag and uploads asset atomically)
+        if: ${{ !inputs.verify_only }}
         working-directory: cdk-swift
         env:
           GH_TOKEN: ${{ secrets.FFI_DEPLOY_KEY }}
         run: |
+          # Check the exact publish tree and release asset again after staging/committing.
+          nix develop --accept-flake-config --fallback -L ../cdk#sbom-apple-tools --command python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          def digest(path):
+              with path.open('rb') as stream:
+                  return hashlib.file_digest(stream, 'sha256').hexdigest()
+          root = Path('.')
+          manifest = json.loads(Path('../sbom/swift-final/evidence/distribution-0-manifest.json').read_text())
+          current = [{'path': str(path.relative_to(root)), 'sha256': digest(path)} for path in sorted(root.rglob('*'))
+                     if '.git' not in path.parts and path.is_file()]
+          if current != manifest or any(path.is_symlink() for path in root.rglob('*') if '.git' not in path.parts):
+              raise SystemExit('Swift publish tree differs from the verified distribution')
+          expected = next(item['sha256'] for item in manifest if item['path'] == 'CashuDevKitFFI.xcframework.zip')
+          if digest(Path('../artifacts/CashuDevKitFFI.xcframework.zip')) != expected:
+              raise SystemExit('Swift release asset differs from the verified ZIP')
+          PY
           COMMIT_SHA=$(git rev-parse HEAD)
           RELEASE_OPTIONS=(--generate-notes)
           if [[ "${{ inputs.nightly }}" == "true" ]]; then
@@ -496,7 +690,7 @@ jobs:
             ../artifacts/CashuDevKitFFI.xcframework.zip
 
       - name: Merge to default branch
-        if: ${{ !inputs.nightly }}
+        if: ${{ !inputs.nightly && !inputs.verify_only }}
         working-directory: cdk-swift
         env:
           FFI_DEPLOY_KEY: ${{ secrets.FFI_DEPLOY_KEY }}
@@ -514,6 +708,7 @@ jobs:
           git -c "http.extraheader=$(auth_header)" push origin "${DEFAULT_BRANCH}"
 
       - name: Clean up release branch
+        if: ${{ !inputs.verify_only }}
         working-directory: cdk-swift
         env:
           FFI_DEPLOY_KEY: ${{ secrets.FFI_DEPLOY_KEY }}
