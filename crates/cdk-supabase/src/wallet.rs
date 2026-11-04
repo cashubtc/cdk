@@ -1091,7 +1091,7 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
 
     async fn get_unissued_mint_quotes(&self) -> Result<Vec<MintQuote>, DatabaseError> {
         let (status, text) = self
-            .get_request("rest/v1/mint_quote?amount_issued=eq.0")
+            .get_request("rest/v1/mint_quote?or=(amount_issued.eq.0,payment_method.neq.bolt11)")
             .await?;
 
         if !status.is_success() {
