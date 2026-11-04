@@ -629,6 +629,9 @@ pub struct ProofStateUpdate {
     pub state: ProofState,
     /// Optional witness data
     pub witness: Option<Witness>,
+    /// Hex-encoded recovery randomness for spent mint-rerandomized inputs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerandomization_r: Option<String>,
 }
 
 impl From<cdk::nuts::nut07::ProofState> for ProofStateUpdate {
@@ -637,6 +640,7 @@ impl From<cdk::nuts::nut07::ProofState> for ProofStateUpdate {
             y: proof_state.y.to_string(),
             state: proof_state.state.into(),
             witness: proof_state.witness.map(Into::into),
+            rerandomization_r: proof_state.rerandomization_r.map(String::from),
         }
     }
 }
@@ -691,6 +695,7 @@ mod tests {
                     signatures: Some(vec!["public-signature".to_string()]),
                 },
             )),
+            rerandomization_r: None,
         };
 
         let update: ProofStateUpdate = proof_state.into();

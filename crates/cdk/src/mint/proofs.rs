@@ -23,13 +23,23 @@ impl Mint {
         proofs: &mut Acquired<ProofsWithState>,
         new_state: State,
     ) -> Result<(), Error> {
+        Self::update_proofs_state_with_r(tx, proofs, new_state, None).await
+    }
+
+    /// Validate a state transition and persist optional recovery randomness with it.
+    pub(crate) async fn update_proofs_state_with_r(
+        tx: &mut DynMintTransaction,
+        proofs: &mut Acquired<ProofsWithState>,
+        new_state: State,
+        r: Option<[u8; 32]>,
+    ) -> Result<(), Error> {
         check_state_transition(proofs.state, new_state).map_err(|err| match err {
             state::Error::AlreadySpent => Error::TokenAlreadySpent,
             state::Error::Pending => Error::TokenPending,
             _ => Error::UnexpectedProofState,
         })?;
 
-        tx.update_proofs_state(proofs, new_state)
+        tx.update_proofs_state_with_r(proofs, new_state, r)
             .await
             .map_err(|err| match err {
                 cdk_common::database::Error::AttemptUpdateSpentProof

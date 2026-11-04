@@ -22,6 +22,179 @@ fn create_verification(amount: Amount) -> Verification {
     }
 }
 
+#[tokio::test]
+async fn rerandomization_r_visible_only_after_finalization() {
+    use cdk_common::nuts::nut03::{tweak_swap_outputs, RerandomizationR};
+    use cdk_common::nuts::nut17::Kind;
+    use cdk_common::nuts::{CheckStateRequest, NotificationPayload};
+    use cdk_common::subscription::{Params, SubId};
+    use tokio::time::{timeout, Duration};
+
+    for failure in ["", "GENERAL", "AFTER_RERANDOMIZATION_R"] {
+        let mint = create_test_mint().await.unwrap();
+        let (inputs, verification) = create_swap_inputs(&mint, Amount::from(3)).await;
+        let (originals, _) = create_test_blinded_messages(&mint, Amount::from(3))
+            .await
+            .unwrap();
+        let r = RerandomizationR([42; 32]);
+        let outputs = tweak_swap_outputs(&r.0, &originals).unwrap();
+        let points: Vec<_> = outputs.iter().map(|o| o.blinded_secret).collect();
+        let original_points: Vec<_> = originals.iter().map(|o| o.blinded_secret).collect();
+        let ys = inputs.ys().unwrap();
+        let db = mint.localstore();
+        let mut subscriber = if failure.is_empty() {
+            Some(
+                mint.pubsub_manager()
+                    .subscribe(Params {
+                        kind: Kind::ProofState,
+                        filters: vec![ys[0].to_string()],
+                        id: Arc::new(SubId::from("rerandomized-live")),
+                    })
+                    .unwrap(),
+            )
+        } else {
+            None
+        };
+        let saga = SwapSaga::new(&mint, db.clone(), mint.pubsub_manager())
+            .with_rerandomization_r(Some(r))
+            .setup_swap(&inputs, &outputs, None, verification)
+            .await
+            .unwrap();
+
+        if let Some(subscriber) = subscriber.as_mut() {
+            let event = timeout(Duration::from_secs(5), subscriber.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                matches!(event.into_inner(), NotificationPayload::ProofState(state)
+                if state.state == State::Pending && state.rerandomization_r.is_none())
+            );
+        }
+
+        let states = mint
+            .check_state(&CheckStateRequest { ys: ys.clone() })
+            .await
+            .unwrap();
+        assert!(states
+            .states
+            .iter()
+            .all(|s| s.state == State::Pending && s.rerandomization_r.is_none()));
+        assert!(db.get_rerandomization_r(&ys).await.unwrap().is_empty());
+        if failure == "GENERAL" {
+            set_fail_for("GENERAL");
+            let result = saga.sign_outputs().await;
+            clear_fail_for("GENERAL");
+            assert!(result.is_err());
+            assert!(db.get_rerandomization_r(&ys).await.unwrap().is_empty());
+            assert!(db
+                .get_proofs_states(&ys)
+                .await
+                .unwrap()
+                .iter()
+                .all(Option::is_none));
+            continue;
+        }
+        let saga = saga.sign_outputs().await.unwrap();
+        assert!(db.get_rerandomization_r(&ys).await.unwrap().is_empty());
+        assert!(db
+            .get_blind_signatures(&points)
+            .await
+            .unwrap()
+            .iter()
+            .all(Option::is_none));
+
+        if !failure.is_empty() {
+            set_fail_for("AFTER_RERANDOMIZATION_R");
+        }
+        let result = saga.finalize().await;
+        clear_fail_for("AFTER_RERANDOMIZATION_R");
+        let states = mint
+            .check_state(&CheckStateRequest { ys: ys.clone() })
+            .await
+            .unwrap();
+        if !failure.is_empty() {
+            assert!(result.is_err());
+            assert!(states
+                .states
+                .iter()
+                .all(|s| s.state == State::Unspent && s.rerandomization_r.is_none()));
+            assert!(db.get_rerandomization_r(&ys).await.unwrap().is_empty());
+            assert!(db
+                .get_blind_signatures(&points)
+                .await
+                .unwrap()
+                .iter()
+                .all(Option::is_none));
+        } else {
+            assert_eq!(result.unwrap().rerandomization_r, Some(r));
+            let event = timeout(Duration::from_secs(5), subscriber.as_mut().unwrap().recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                matches!(event.into_inner(), NotificationPayload::ProofState(state)
+                if state.state == State::Spent && state.rerandomization_r == Some(r))
+            );
+            assert_eq!(states.states.len(), inputs.len());
+            assert!(states
+                .states
+                .iter()
+                .all(|s| s.state == State::Spent && s.rerandomization_r == Some(r)));
+            assert!(db
+                .get_blind_signatures(&points)
+                .await
+                .unwrap()
+                .iter()
+                .all(Option::is_some));
+        }
+        assert!(db
+            .get_blind_signatures(&original_points)
+            .await
+            .unwrap()
+            .iter()
+            .all(Option::is_none));
+    }
+}
+
+#[tokio::test]
+async fn rerandomized_incomplete_saga_recovery_discards_private_r() {
+    use cdk_common::nuts::nut03::{tweak_swap_outputs, RerandomizationR};
+    let mint = create_test_mint().await.unwrap();
+    let (inputs, verification) = create_swap_inputs(&mint, Amount::ONE).await;
+    let (originals, _) = create_test_blinded_messages(&mint, Amount::ONE)
+        .await
+        .unwrap();
+    let r = RerandomizationR([42; 32]);
+    let outputs = tweak_swap_outputs(&r.0, &originals).unwrap();
+    let points: Vec<_> = outputs.iter().map(|o| o.blinded_secret).collect();
+    let db = mint.localstore();
+    let saga = SwapSaga::new(&mint, db.clone(), mint.pubsub_manager())
+        .with_rerandomization_r(Some(r))
+        .setup_swap(&inputs, &outputs, None, verification)
+        .await
+        .unwrap()
+        .sign_outputs()
+        .await
+        .unwrap();
+    drop(saga);
+    mint.recover_from_incomplete_sagas().await.unwrap();
+    let ys = inputs.ys().unwrap();
+    assert!(db
+        .get_proofs_states(&ys)
+        .await
+        .unwrap()
+        .iter()
+        .all(Option::is_none));
+    assert!(db.get_rerandomization_r(&ys).await.unwrap().is_empty());
+    assert!(db
+        .get_blind_signatures(&points)
+        .await
+        .unwrap()
+        .iter()
+        .all(Option::is_none));
+}
+
 /// Helper to create test proofs for swapping using the mint's process
 async fn create_swap_inputs(mint: &Mint, amount: Amount) -> (Proofs, Verification) {
     let proofs = crate::test_helpers::mint::mint_test_proofs(mint, amount)

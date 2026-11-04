@@ -3,8 +3,10 @@
 //! These tests verify that the mint correctly enforces SIG_ALL flag behavior
 
 use cdk_common::dhke::construct_proofs;
-use cdk_common::nuts::{Conditions, SigFlag, SpendingConditions};
-use cdk_common::Amount;
+use cdk_common::nuts::{
+    CheckStateRequest, Conditions, ProofsMethods, SigFlag, SpendingConditions, SwapRequest,
+};
+use cdk_common::{Amount, State};
 
 use crate::test_helpers::mint::create_test_blinded_messages;
 use crate::test_helpers::nut10::{create_test_keypair, unzip3, TestMintHelper};
@@ -128,6 +130,321 @@ async fn test_p2pk_sig_all_requires_transaction_signature() {
     let result = mint.process_swap_request(swap_request_with_sig).await;
     assert!(result.is_ok(), "Should succeed with valid signature");
     println!("✓ Spending WITH ALL signatures (SIG_ALL) succeeded");
+}
+
+async fn mint_sig_all_inputs(
+    test_mint: &TestMintHelper,
+    pubkey: cdk_common::PublicKey,
+    amount: Amount,
+) -> cdk_common::Proofs {
+    let mint = test_mint.mint();
+    let conditions = SpendingConditions::new_p2pk(
+        pubkey,
+        Some(Conditions::new(None, None, None, None, Some(SigFlag::SigAll), None).unwrap()),
+    );
+    let initial_proofs = test_mint.mint_proofs(amount).await.unwrap();
+    let (locked_output, blinding_factor, secret) =
+        test_mint.create_blinded_message(amount, &conditions);
+    let issued = mint
+        .process_swap_request(SwapRequest::new(initial_proofs, vec![locked_output]))
+        .await
+        .unwrap();
+    construct_proofs(
+        issued.signatures,
+        vec![blinding_factor],
+        vec![secret],
+        &test_mint.public_keys_of_the_active_sat_keyset,
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn test_rerandomized_swap_recovers_and_spends_after_original_is_signed() {
+    let test_mint = TestMintHelper::new().await.unwrap();
+    let mint = test_mint.mint();
+    let (signer, pubkey) = create_test_keypair();
+    let amount = Amount::ONE;
+    let locked_proofs = mint_sig_all_inputs(&test_mint, pubkey, amount).await;
+
+    let (outputs, pre_mint) = create_test_blinded_messages(mint, amount).await.unwrap();
+    let mut request =
+        SwapRequest::new(locked_proofs.clone(), outputs.clone()).with_rerandomization();
+    request.sign_sig_all(signer.clone()).unwrap();
+    assert!(
+        cdk_common::SpendingConditionVerification::verify_spending_conditions(&request).is_ok()
+    );
+
+    let mut duplicates = SwapRequest::new(
+        locked_proofs.clone(),
+        vec![outputs[0].clone(), outputs[0].clone()],
+    )
+    .with_rerandomization();
+    duplicates.sign_sig_all(signer.clone()).unwrap();
+    assert!(matches!(
+        mint.process_swap_request(duplicates).await,
+        Err(crate::Error::DuplicateOutputs)
+    ));
+
+    let states = mint
+        .check_state(&CheckStateRequest {
+            ys: locked_proofs.ys().unwrap(),
+        })
+        .await
+        .unwrap();
+    assert!(states
+        .states
+        .iter()
+        .all(|state| state.state == State::Unspent));
+
+    // Sign the original point in a separate transaction before executing the request.
+    let other_inputs = test_mint.mint_proofs(amount).await.unwrap();
+    let original_signature = mint
+        .process_swap_request(SwapRequest::new(other_inputs, outputs.clone()))
+        .await
+        .unwrap();
+    assert!(original_signature.rerandomization_r.is_none());
+    // Force the first candidate to collide with a previously signed execution point.
+    let collision_r = [7u8; 32];
+    let collision_outputs =
+        cdk_common::nuts::nut03::tweak_swap_outputs(&collision_r, &outputs).unwrap();
+    let collision_inputs = test_mint.mint_proofs(amount).await.unwrap();
+    mint.process_swap_request(SwapRequest::new(collision_inputs, collision_outputs))
+        .await
+        .unwrap();
+    let mut exhausted_attempts = 0;
+    assert!(matches!(
+        mint.process_swap_with_randomness(request.clone(), || {
+            exhausted_attempts += 1;
+            Ok(collision_r)
+        })
+        .await,
+        Err(crate::Error::Internal)
+    ));
+    assert_eq!(exhausted_attempts, 16);
+    assert!(mint
+        .localstore()
+        .get_rerandomization_r(&locked_proofs.ys().unwrap())
+        .await
+        .unwrap()
+        .is_empty());
+
+    let mut attempts = 0;
+    let response = mint
+        .process_swap_with_randomness(request.clone(), || {
+            attempts += 1;
+            Ok(if attempts == 1 {
+                collision_r
+            } else {
+                [8u8; 32]
+            })
+        })
+        .await
+        .unwrap();
+    assert_eq!(attempts, 2);
+    assert_eq!(response.rerandomization_r.unwrap().0, [8u8; 32]);
+    // A spent-input failure is not an output collision and must not be retried.
+    let mut attempts = 0;
+    assert!(mint
+        .process_swap_with_randomness(request, || {
+            attempts += 1;
+            Ok([9u8; 32])
+        })
+        .await
+        .is_err());
+    assert_eq!(attempts, 1);
+    let check = mint
+        .check_state(&CheckStateRequest {
+            ys: locked_proofs.ys().unwrap(),
+        })
+        .await
+        .unwrap();
+    assert!(check
+        .states
+        .iter()
+        .all(|s| s.state == State::Spent && s.rerandomization_r == response.rerandomization_r));
+    let r = check.states[0].rerandomization_r.unwrap();
+    let tweaked = cdk_common::nuts::nut03::tweak_swap_outputs(&r.0, &outputs).unwrap();
+    let recovered = mint
+        .restore(cdk_common::nuts::RestoreRequest {
+            outputs: tweaked.clone(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(recovered.signatures, response.signatures);
+    let signatures = recovered.signatures;
+    let tweak = cdk_common::nuts::nut03::derive_rerandomization_tweak(&r.0).unwrap();
+    let mut effective_rs = Vec::with_capacity(signatures.len());
+    for (i, signature) in signatures.iter().enumerate() {
+        let mint_pubkey = test_mint
+            .public_keys_of_the_active_sat_keyset
+            .amount_key(signature.amount)
+            .unwrap();
+        signature
+            .verify_dleq(mint_pubkey, tweaked[i].blinded_secret)
+            .unwrap();
+
+        let signed_tweak = mint_pubkey
+            .mul_tweak(&bitcoin::secp256k1::Secp256k1::new(), &tweak)
+            .unwrap()
+            .negate(&bitcoin::secp256k1::Secp256k1::new());
+        let untweaked = signature.c.combine(&signed_tweak).unwrap();
+        assert_eq!(untweaked, *original_signature.signatures[i].c);
+
+        let effective_r =
+            bitcoin::secp256k1::SecretKey::from_slice(pre_mint.rs()[i].as_secret_bytes())
+                .unwrap()
+                .add_tweak(&tweak)
+                .unwrap();
+        effective_rs
+            .push(cdk_common::nuts::SecretKey::from_slice(&effective_r.secret_bytes()).unwrap());
+    }
+    let proofs = construct_proofs(
+        signatures,
+        effective_rs,
+        pre_mint.secrets(),
+        &test_mint.public_keys_of_the_active_sat_keyset,
+    )
+    .unwrap();
+    for proof in &proofs {
+        proof
+            .verify_dleq(
+                test_mint
+                    .public_keys_of_the_active_sat_keyset
+                    .amount_key(proof.amount)
+                    .unwrap(),
+            )
+            .unwrap();
+    }
+    let (fresh_outputs, _) = create_test_blinded_messages(mint, amount).await.unwrap();
+    assert!(mint
+        .process_swap_request(SwapRequest::new(proofs, fresh_outputs))
+        .await
+        .is_ok());
+}
+
+#[tokio::test]
+async fn test_rerandomized_swap_retries_point_at_infinity() {
+    let test_mint = TestMintHelper::new().await.unwrap();
+    let mint = test_mint.mint();
+    let (signer, pubkey) = create_test_keypair();
+    let amount = Amount::ONE;
+
+    let locked_proofs = mint_sig_all_inputs(&test_mint, pubkey, amount).await;
+
+    let infinity_r = [0x42; 32];
+    let tweak = cdk_common::nuts::nut03::derive_rerandomization_tweak(&infinity_r).unwrap();
+    let infinity_original = bitcoin::secp256k1::SecretKey::from_slice(&tweak.to_be_bytes())
+        .unwrap()
+        .public_key(&bitcoin::secp256k1::Secp256k1::new())
+        .negate(&bitcoin::secp256k1::Secp256k1::new())
+        .into();
+    let (mut outputs, _) = create_test_blinded_messages(mint, amount).await.unwrap();
+    outputs[0].blinded_secret = infinity_original;
+    let mut request = SwapRequest::new(locked_proofs, outputs).with_rerandomization();
+    request.sign_sig_all(signer).unwrap();
+
+    let successful_r = [0x43; 32];
+    let mut attempts = 0;
+    let response = mint
+        .process_swap_with_randomness(request, || {
+            attempts += 1;
+            Ok(if attempts == 1 {
+                infinity_r
+            } else {
+                successful_r
+            })
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(attempts, 2);
+    assert_eq!(
+        response.rerandomization_r,
+        Some(cdk_common::nuts::nut03::RerandomizationR(successful_r))
+    );
+}
+
+#[tokio::test]
+async fn rerandomized_completed_swap_recovers_after_mint_restart() {
+    use std::sync::Arc;
+
+    use cdk_common::dhke::blind_message;
+    use cdk_common::nuts::{BlindedMessage, RestoreRequest};
+
+    use crate::test_helpers::mint::{create_test_mint_with_db, mint_test_proofs};
+
+    let path = std::env::temp_dir().join(format!(
+        "cdk-rerandomized-restart-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let seed = [42u8; 64];
+    let db = Arc::new(
+        cdk_sqlite::mint::MintSqliteDatabase::new(&path)
+            .await
+            .unwrap(),
+    );
+    let mint = create_test_mint_with_db(db.clone(), &seed).await.unwrap();
+    let amount = Amount::ONE;
+    let keyset = mint.get_active_keysets()[&cdk_common::CurrencyUnit::Sat];
+    let keys = mint.keyset_pubkeys(&keyset).unwrap().keysets[0]
+        .keys
+        .clone();
+    let (signer, pubkey) = create_test_keypair();
+    let conditions = SpendingConditions::new_p2pk(
+        pubkey,
+        Some(Conditions {
+            sig_flag: SigFlag::SigAll,
+            ..Default::default()
+        }),
+    );
+    let secret: cdk_common::secret::Secret = conditions.try_into().unwrap();
+    let (blinded, blinding_factor) = blind_message(secret.as_bytes(), None).unwrap();
+    let initial = mint_test_proofs(&mint, amount).await.unwrap();
+    let issued = mint
+        .process_swap_request(SwapRequest::new(
+            initial,
+            vec![BlindedMessage::new(amount, keyset, blinded)],
+        ))
+        .await
+        .unwrap();
+    let locked = construct_proofs(
+        issued.signatures,
+        vec![blinding_factor],
+        vec![secret],
+        &keys,
+    )
+    .unwrap();
+    let ys = locked.ys().unwrap();
+    let (outputs, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let mut request = SwapRequest::new(locked, outputs.clone()).with_rerandomization();
+    request.sign_sig_all(signer).unwrap();
+    let response = mint.process_swap_request(request).await.unwrap();
+    let r = response.rerandomization_r.unwrap();
+    mint.stop().await.unwrap();
+    drop(mint);
+    drop(db);
+
+    let reopened = Arc::new(
+        cdk_sqlite::mint::MintSqliteDatabase::new(&path)
+            .await
+            .unwrap(),
+    );
+    let mint = create_test_mint_with_db(reopened, &seed).await.unwrap();
+    let states = mint.check_state(&CheckStateRequest { ys }).await.unwrap();
+    assert!(states
+        .states
+        .iter()
+        .all(|state| state.state == State::Spent && state.rerandomization_r == Some(r)));
+    let r = states.states[0].rerandomization_r.unwrap();
+    let tweaked = cdk_common::nuts::nut03::tweak_swap_outputs(&r.0, &outputs).unwrap();
+    let restored = mint
+        .restore(RestoreRequest { outputs: tweaked })
+        .await
+        .unwrap();
+    assert_eq!(restored.signatures, response.signatures);
+    mint.stop().await.unwrap();
+    drop(mint);
+    std::fs::remove_file(path).unwrap();
 }
 
 /// Test: P2PK multisig (2-of-3) with SIG_ALL

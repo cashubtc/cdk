@@ -13,6 +13,92 @@ use crate::database::mint::{Database, DynMintDatabase, Error, KeysDatabase, Proo
 use crate::mint::Operation;
 use crate::state::check_state_transition;
 
+/// Recovery randomness is batched with the Pending-to-Spent transition and rolls back with it.
+pub async fn rerandomization_recovery_storage<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error> + Sync,
+{
+    assert!(db.supports_output_rerandomization());
+    let keyset_id = setup_keyset(&db).await;
+    let proof = Proof {
+        amount: Amount::ONE,
+        keyset_id,
+        secret: Secret::generate(),
+        c: SecretKey::generate().public_key(),
+        witness: None,
+        dleq: None,
+        p2pk_e: None,
+    };
+    let mut second = proof.clone();
+    second.secret = Secret::generate();
+    let proofs = vec![proof, second];
+    let ys: Vec<_> = proofs.iter().map(|p| p.y().unwrap()).collect();
+    let operation = Operation::new_swap(Amount::ONE, Amount::ONE, Amount::ZERO);
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut acquired = tx.add_proofs(proofs, None, &operation).await.unwrap();
+    tx.update_proofs_state(&mut acquired, State::Pending)
+        .await
+        .unwrap();
+    assert!(tx
+        .update_proofs_state_with_r(&mut acquired, State::Pending, Some([42; 32]))
+        .await
+        .is_err());
+    tx.commit().await.unwrap();
+    assert!(db.get_rerandomization_r(&ys).await.unwrap().is_empty());
+
+    // An incomplete batch must fail; rolling back restores every input.
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut acquired = tx.get_proofs(&ys).await.unwrap();
+    tx.remove_proofs(&ys[..1], None).await.unwrap();
+    assert!(tx
+        .update_proofs_state_with_r(&mut acquired, State::Spent, Some([42; 32]))
+        .await
+        .is_err());
+    tx.rollback().await.unwrap();
+    assert_eq!(
+        db.get_proofs_states(&ys).await.unwrap(),
+        vec![Some(State::Pending); ys.len()]
+    );
+    assert!(db.get_rerandomization_r(&ys).await.unwrap().is_empty());
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut acquired = tx.get_proofs(&ys).await.unwrap();
+    tx.update_proofs_state_with_r(&mut acquired, State::Spent, Some([42; 32]))
+        .await
+        .unwrap();
+    tx.rollback().await.unwrap();
+    assert_eq!(
+        db.get_proofs_states(&ys).await.unwrap(),
+        vec![Some(State::Pending); ys.len()]
+    );
+    assert!(db.get_rerandomization_r(&ys).await.unwrap().is_empty());
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut acquired = tx.get_proofs(&ys).await.unwrap();
+    tx.update_proofs_state_with_r(&mut acquired, State::Spent, Some([42; 32]))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let recovered = db.get_rerandomization_r(&ys).await.unwrap();
+    assert_eq!(recovered.len(), ys.len());
+    assert!(ys.iter().all(|y| recovered.get(y) == Some(&[42; 32])));
+    assert_eq!(
+        db.get_total_redeemed().await.unwrap().get(&keyset_id),
+        Some(&Amount::from(2))
+    );
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut acquired = tx.get_proofs(&ys).await.unwrap();
+    assert!(tx
+        .update_proofs_state_with_r(&mut acquired, State::Spent, Some([43; 32]))
+        .await
+        .is_err());
+    tx.rollback().await.unwrap();
+    assert_eq!(
+        db.get_rerandomization_r(&ys).await.unwrap().get(&ys[0]),
+        Some(&[42; 32])
+    );
+}
+
 /// Test get proofs by keyset id
 pub async fn get_proofs_by_keyset_id<DB>(db: DB)
 where

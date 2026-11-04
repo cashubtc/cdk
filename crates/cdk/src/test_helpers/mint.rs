@@ -75,7 +75,15 @@ pub(crate) fn should_fail_for(operation: &str) -> bool {
 /// ```
 pub async fn create_test_mint() -> Result<Mint, Error> {
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await?);
+    let mnemonic = Mnemonic::generate(12).map_err(|e| Error::Custom(e.to_string()))?;
+    create_test_mint_with_db(db, &mnemonic.to_seed_normalized("")).await
+}
 
+/// Build the usual test mint against a supplied database and reproducible seed.
+pub(crate) async fn create_test_mint_with_db(
+    db: Arc<cdk_sqlite::mint::MintSqliteDatabase>,
+    seed: &[u8],
+) -> Result<Mint, Error> {
     let mut mint_builder = MintBuilder::new(db.clone());
 
     let fee_reserve = FeeReserve {
@@ -100,8 +108,6 @@ pub async fn create_test_mint() -> Result<Mint, Error> {
         )
         .await?;
 
-    let mnemonic = Mnemonic::generate(12).map_err(|e| Error::Custom(e.to_string()))?;
-
     mint_builder = mint_builder
         .with_name("test mint".to_string())
         .with_description("test mint for unit tests".to_string())
@@ -109,9 +115,7 @@ pub async fn create_test_mint() -> Result<Mint, Error> {
 
     let quote_ttl = QuoteTTL::new(10000, 10000);
 
-    let mint = mint_builder
-        .build_with_seed(db.clone(), &mnemonic.to_seed_normalized(""))
-        .await?;
+    let mint = mint_builder.build_with_seed(db.clone(), seed).await?;
 
     mint.set_quote_ttl(quote_ttl).await?;
 

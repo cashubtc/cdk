@@ -197,16 +197,20 @@ impl MintPubSubSpec {
         }
 
         if !public_keys.is_empty() {
-            to_return.extend(
-                self.db
-                    .get_proofs_states(public_keys.as_slice())
-                    .await
-                    .map_err(|e| e.to_string())?
-                    .into_iter()
-                    .enumerate()
-                    .filter_map(|(idx, state)| state.map(|state| (public_keys[idx], state).into()))
-                    .map(|state: ProofState| state.into()),
-            );
+            let states = self
+                .db
+                .get_proofs_states(&public_keys)
+                .await
+                .map_err(|e| e.to_string())?;
+            let mut states: Vec<ProofState> = states
+                .into_iter()
+                .enumerate()
+                .filter_map(|(idx, state)| state.map(|state| (public_keys[idx], state).into()))
+                .collect();
+            super::check_spendable::attach_rerandomization_r(&self.db, &mut states)
+                .await
+                .map_err(|e| e.to_string())?;
+            to_return.extend(states.into_iter().map(Into::into));
         }
 
         Ok(to_return)
@@ -925,5 +929,49 @@ mod tests {
         drop(manager);
         assert!(manager_weak.upgrade().is_none());
         assert!(db_weak.upgrade().is_none());
+    }
+
+    #[tokio::test]
+    async fn rerandomized_subscription_snapshot_exposes_only_committed_r() {
+        use crate::test_helpers::mint::{create_test_mint, mint_test_proofs};
+        use cdk_common::nuts::nut03::RerandomizationR;
+        let mint = create_test_mint().await.unwrap();
+        let proofs = mint_test_proofs(&mint, Amount::ONE).await.unwrap();
+        let y = proofs[0].y().unwrap();
+        let db = mint.localstore();
+        let spec = MintPubSubSpec::new_instance((db.clone(), Arc::new(HashMap::new())));
+        let mut tx = db.begin_transaction().await.unwrap();
+        let mut acquired = tx
+            .add_proofs(
+                proofs,
+                None,
+                &cdk_common::mint::Operation::new_swap(Amount::ONE, Amount::ONE, Amount::ZERO),
+            )
+            .await
+            .unwrap();
+        tx.update_proofs_state(&mut acquired, cdk_common::State::Pending)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let events = spec
+            .get_events_from_db(&[NotificationId::ProofState(y)])
+            .await
+            .unwrap();
+        assert!(
+            matches!(events[0].clone().into_inner(), NotificationPayload::ProofState(s) if s.rerandomization_r.is_none())
+        );
+        let mut tx = db.begin_transaction().await.unwrap();
+        let mut acquired = tx.get_proofs(&[y]).await.unwrap();
+        tx.update_proofs_state_with_r(&mut acquired, cdk_common::State::Spent, Some([42; 32]))
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let events = spec
+            .get_events_from_db(&[NotificationId::ProofState(y)])
+            .await
+            .unwrap();
+        assert!(
+            matches!(events[0].clone().into_inner(), NotificationPayload::ProofState(s) if s.rerandomization_r == Some(RerandomizationR([42; 32])))
+        );
     }
 }

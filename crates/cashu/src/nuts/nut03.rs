@@ -2,14 +2,52 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/03.md>
 
+use bitcoin::hashes::sha256::Hash as Sha256Hash;
+use bitcoin::hashes::Hash;
+use bitcoin::secp256k1::{Scalar, SecretKey};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[cfg(feature = "wallet")]
 use super::nut00::PreMintSecrets;
 use super::nut00::{BlindSignature, BlindedMessage, Proofs};
+use super::nut01::PublicKey;
 use super::ProofsMethods;
 use crate::Amount;
+use crate::SECP256K1;
+
+const RERANDOMIZATION_TWEAK_TAG: &[u8] = b"Cashu_OutputRerandomization_secp256k1_v1";
+
+/// Optional NUT-03 swap capabilities advertised in NUT-06 mint information.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Settings {
+    /// Whether this mint supports mint-rerandomized V2 swaps and durable recovery.
+    pub rerandomize: bool,
+}
+
+/// Mint-generated recovery randomness, encoded as 64 hexadecimal characters on the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct RerandomizationR(pub [u8; 32]);
+
+impl TryFrom<String> for RerandomizationR {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        let bytes = crate::util::hex::decode(&value).map_err(|e| e.to_string())?;
+        Ok(Self(
+            bytes
+                .try_into()
+                .map_err(|_| "R must be 32 bytes".to_owned())?,
+        ))
+    }
+}
+
+impl From<RerandomizationR> for String {
+    fn from(value: RerandomizationR) -> Self {
+        crate::util::hex::encode(value.0)
+    }
+}
 
 /// NUT03 Error
 #[derive(Debug, Error)]
@@ -20,6 +58,62 @@ pub enum Error {
     /// Amount Error
     #[error(transparent)]
     Amount(#[from] crate::amount::Error),
+    /// An additive output rerandomization produced the point at infinity.
+    #[error("Output rerandomization produced the point at infinity")]
+    RerandomizationPointAtInfinity,
+}
+
+/// Derive the shared nonzero secp256k1 scalar from the mint's 32-byte random value.
+///
+/// Rejection sampling uses tagged SHA-256 over `R || uint32_be(counter)`, starting at
+/// counter zero, until the digest represents an integer in `[1, n-1]`.
+pub fn derive_rerandomization_tweak(r: &[u8; 32]) -> Result<Scalar, Error> {
+    let tag_hash = Sha256Hash::hash(RERANDOMIZATION_TWEAK_TAG).to_byte_array();
+    for counter in 0..=u32::MAX {
+        let mut preimage = Vec::with_capacity(100);
+        preimage.extend_from_slice(&tag_hash);
+        preimage.extend_from_slice(&tag_hash);
+        preimage.extend_from_slice(r);
+        preimage.extend_from_slice(&counter.to_be_bytes());
+        let digest = Sha256Hash::hash(&preimage).to_byte_array();
+        if let Ok(secret) = SecretKey::from_slice(&digest) {
+            return Ok(Scalar::from(secret));
+        }
+    }
+    Err(crate::dhke::Error::Custom("Could not derive a nonzero tweak".to_owned()).into())
+}
+
+fn add_rerandomization_tweak(original: &PublicKey, tweak: &Scalar) -> Result<PublicKey, Error> {
+    Ok(original
+        .add_exp_tweak(&SECP256K1, tweak)
+        .map_err(|_| Error::RerandomizationPointAtInfinity)?
+        .into())
+}
+
+/// Add the shared tweak derived from `R` to a blinded point.
+pub fn tweak_blinded_point(r: &[u8; 32], original: &PublicKey) -> Result<PublicKey, Error> {
+    let tweak = derive_rerandomization_tweak(r)?;
+    add_rerandomization_tweak(original, &tweak)
+}
+
+/// Build the execution outputs for a mint-rerandomized swap, retaining their original order.
+///
+/// Callers must check that the original points are distinct before deriving outputs.
+/// A collision between tweaked points requires choosing a new `R`.
+pub fn tweak_swap_outputs(
+    r: &[u8; 32],
+    original: &[BlindedMessage],
+) -> Result<Vec<BlindedMessage>, Error> {
+    let tweak = derive_rerandomization_tweak(r)?;
+    original
+        .iter()
+        .map(|output| {
+            let point = add_rerandomization_tweak(&output.blinded_secret, &tweak)?;
+            let mut output = output.clone();
+            output.blinded_secret = point;
+            Ok(output)
+        })
+        .collect()
 }
 
 /// Preswap information
@@ -45,6 +139,13 @@ pub struct SwapRequest {
     inputs: Proofs,
     /// Blinded Messages for Mint to sign
     outputs: Vec<BlindedMessage>,
+    /// Whether the mint should rerandomize outputs during this swap.
+    #[serde(default, skip_serializing_if = "is_false")]
+    rerandomize: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 impl SwapRequest {
@@ -53,7 +154,19 @@ impl SwapRequest {
         Self {
             inputs: inputs.without_dleqs(),
             outputs,
+            rerandomize: false,
         }
+    }
+
+    /// Select mint-rerandomized outputs for this swap.
+    pub fn with_rerandomization(mut self) -> Self {
+        self.rerandomize = true;
+        self
+    }
+
+    /// Whether this swap requests mint-rerandomized outputs.
+    pub fn is_rerandomized(&self) -> bool {
+        self.rerandomize
     }
 
     /// Get inputs (proofs)
@@ -115,6 +228,10 @@ impl super::nut10::SpendingConditionVerification for SwapRequest {
 
         msg
     }
+    fn rerandomized_sig_all_msg_to_sign(&self) -> Option<Vec<u8>> {
+        self.rerandomize
+            .then(|| super::nut10::rerandomized_sig_all_msg_to_sign(&self.inputs, &self.outputs))
+    }
 }
 
 /// Split Response [NUT-06]
@@ -122,6 +239,9 @@ impl super::nut10::SpendingConditionVerification for SwapRequest {
 pub struct SwapResponse {
     /// Promises
     pub signatures: Vec<BlindSignature>,
+    /// Recovery randomness for a committed mint-rerandomized swap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerandomization_r: Option<RerandomizationR>,
 }
 
 impl SwapResponse {
@@ -129,6 +249,7 @@ impl SwapResponse {
     pub fn new(promises: Vec<BlindSignature>) -> Self {
         Self {
             signatures: promises,
+            rerandomization_r: None,
         }
     }
 
@@ -145,6 +266,26 @@ impl SwapResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rerandomization_r_wire_encoding_and_ordinary_response_compatibility() {
+        let r = RerandomizationR([0xab; 32]);
+        let encoded = serde_json::to_string(&r).unwrap();
+        assert_eq!(encoded, format!("\"{}\"", "ab".repeat(32)));
+        assert_eq!(
+            serde_json::from_str::<RerandomizationR>(&encoded).unwrap(),
+            r
+        );
+        for invalid in ["\"00\"", "\"zz\"", "null", "[]"] {
+            assert!(serde_json::from_str::<RerandomizationR>(invalid).is_err());
+        }
+        assert_eq!(
+            serde_json::to_string(&SwapResponse::new(vec![])).unwrap(),
+            "{\"signatures\":[]}"
+        );
+        let response: SwapResponse = serde_json::from_str("{\"signatures\":[]}").unwrap();
+        assert!(response.rerandomization_r.is_none());
+    }
 
     const SWAP_REQUEST_JSON: &str = r#"{
         "inputs": [
@@ -241,5 +382,80 @@ mod tests {
         .unwrap();
 
         assert_eq!(response.promises_amount().unwrap(), Amount::from(12));
+    }
+
+    #[test]
+    fn rerandomization_tweak_vector_and_signing_linearity() {
+        let r = [0x42; 32];
+        let original = PublicKey::from_hex(
+            "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+        )
+        .unwrap();
+        let scalar = derive_rerandomization_tweak(&r).unwrap();
+        assert_eq!(
+            scalar.to_be_bytes(),
+            crate::util::hex::decode(
+                "ea8bfdd0711f5a0cdd1377930ed729ca779722a8a5f97156242fcef09965eeb5"
+            )
+            .unwrap()
+            .as_slice()
+        );
+
+        let mint_key = crate::nuts::nut01::SecretKey::generate();
+        let signed_tweaked =
+            crate::dhke::sign_message(&mint_key, &tweak_blinded_point(&r, &original).unwrap())
+                .unwrap();
+        let signed_original = crate::dhke::sign_message(&mint_key, &original).unwrap();
+        let signed_tweak = mint_key
+            .public_key()
+            .mul_tweak(&SECP256K1, &scalar)
+            .unwrap();
+        assert_eq!(
+            signed_tweaked,
+            PublicKey::from(signed_original.combine(&signed_tweak).unwrap())
+        );
+        assert_ne!(
+            tweak_blinded_point(&[0x43; 32], &original).unwrap(),
+            tweak_blinded_point(&r, &original).unwrap()
+        );
+    }
+
+    #[test]
+    fn rerandomization_additive_tweak_rejects_point_at_infinity() {
+        let r = [0x42; 32];
+        let scalar = derive_rerandomization_tweak(&r).unwrap();
+        let tweak = SecretKey::from_slice(&scalar.to_be_bytes())
+            .unwrap()
+            .public_key(&SECP256K1)
+            .negate(&SECP256K1)
+            .into();
+
+        assert!(matches!(
+            tweak_blinded_point(&r, &tweak),
+            Err(Error::RerandomizationPointAtInfinity)
+        ));
+    }
+
+    #[test]
+    fn rerandomized_outputs_preserve_order() {
+        let request: SwapRequest = serde_json::from_str(SWAP_REQUEST_JSON).unwrap();
+        let first = request.outputs()[0].clone();
+        let second = BlindedMessage::new(
+            Amount::from(4),
+            first.keyset_id,
+            crate::nuts::nut01::SecretKey::generate().public_key(),
+        );
+        let r = [0x42; 32];
+        let outputs = tweak_swap_outputs(&r, &[first.clone(), second.clone()]).unwrap();
+        assert_eq!(outputs[0].amount, first.amount);
+        assert_eq!(outputs[1].amount, second.amount);
+        assert_eq!(
+            outputs[0].blinded_secret,
+            tweak_blinded_point(&r, &first.blinded_secret).unwrap()
+        );
+        assert_eq!(
+            outputs[1].blinded_secret,
+            tweak_blinded_point(&r, &second.blinded_secret).unwrap()
+        );
     }
 }

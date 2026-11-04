@@ -177,7 +177,7 @@ impl Mint {
 
     /// Verifies outputs
     ///
-    /// Checks outputs are unique, of the same unit and not signed before.
+    /// Checks outputs are unique and of the same unit.
     /// Returns an error if outputs are empty - callers should guard against
     /// empty outputs before calling this function.
     #[instrument(skip_all)]
