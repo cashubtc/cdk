@@ -482,11 +482,12 @@ impl PaymentRequest {
         // Build the target string based on transport type
         let target = match transport_type {
             TransportType::Nostr => {
-                // Always use nprofile (with empty relay list if no relays)
-                if let Some(pk) = pubkey {
-                    Self::encode_nprofile(&pk, &relays)?
+                // NUT-26: an npub when there are no relays, an nprofile otherwise
+                let pk = pubkey.ok_or(Error::InvalidStructure)?;
+                if relays.is_empty() {
+                    Self::encode_npub(&pk)?
                 } else {
-                    return Err(Error::InvalidStructure);
+                    Self::encode_nprofile(&pk, &relays)?
                 }
             }
             TransportType::HttpPost => http_target.ok_or(Error::InvalidStructure)?,
@@ -863,6 +864,15 @@ impl PaymentRequest {
         Ok((pubkey, relays))
     }
 
+    /// Encode a 32-byte pubkey as a NIP-19 `npub` bech32 string
+    fn encode_npub(pubkey: &[u8]) -> Result<String, Error> {
+        if pubkey.len() != 32 {
+            return Err(Error::InvalidLength);
+        }
+
+        bech32::encode::<Bech32>(NPUB_HRP, pubkey).map_err(|_| Error::InvalidStructure)
+    }
+
     /// Encode pubkey and relays to nprofile bech32 string
     /// NIP-19 nprofile TLV format (Type: 1 byte, Length: 1 byte, Value: variable)
     fn encode_nprofile(pubkey: &[u8], relays: &[String]) -> Result<String, Error> {
@@ -911,6 +921,17 @@ mod tests {
         bitcoin::bech32::encode::<bitcoin::bech32::Bech32>(hrp, bytes).unwrap()
     }
 
+    /// Pubkey of a decoded Nostr target, checking that it is a bare npub
+    fn npub_pubkey(target: &str) -> Vec<u8> {
+        assert!(
+            target.starts_with("npub1"),
+            "expected an npub, got {target}"
+        );
+        let (pubkey, relays) = PaymentRequest::decode_nostr_target(target).unwrap();
+        assert!(relays.is_empty());
+        pubkey
+    }
+
     fn nostr_payment_request(target: String) -> PaymentRequest {
         PaymentRequest {
             payment_id: Some("npub-target".to_string()),
@@ -940,9 +961,8 @@ mod tests {
         let decoded = PaymentRequest::from_bech32_string(&encoded).unwrap();
         let transport = &decoded.transports[0];
 
-        let (pubkey, relays) = PaymentRequest::decode_nprofile(&transport.target).unwrap();
-        assert_eq!(pubkey, vec![7u8; 32]);
-        assert!(relays.is_empty());
+        assert_eq!(transport.target, npub_from_bytes(&[7u8; 32]));
+        assert_eq!(npub_pubkey(&transport.target), vec![7u8; 32]);
         assert_eq!(
             transport.tags,
             vec![vec!["n".to_string(), "17".to_string()]]
@@ -952,6 +972,43 @@ mod tests {
         let from_nprofile =
             nostr_payment_request(PaymentRequest::encode_nprofile(&[7u8; 32], &[]).unwrap());
         assert_eq!(encoded, from_nprofile.to_bech32_string().unwrap());
+    }
+
+    #[test]
+    fn test_nostr_transport_decodes_npub_or_nprofile_by_relays() {
+        let relay = "wss://relay.example.com".to_string();
+        let npub = npub_from_bytes(&[7u8; 32]);
+
+        // No relays: the decoded target is the npub, and it round-trips exactly
+        let without_relays = nostr_payment_request(npub.clone());
+        let encoded = without_relays.to_bech32_string().unwrap();
+        let decoded = PaymentRequest::from_bech32_string(&encoded).unwrap();
+        assert_eq!(decoded.transports[0].target, npub);
+        assert_eq!(decoded, without_relays);
+        assert_eq!(decoded.to_bech32_string().unwrap(), encoded);
+
+        // With relays: the decoded target is an nprofile carrying them, and the
+        // "r" tag stays next to the other tags
+        let mut with_relays = nostr_payment_request(npub);
+        with_relays.transports[0]
+            .tags
+            .push(vec!["r".to_string(), relay.clone()]);
+        let encoded = with_relays.to_bech32_string().unwrap();
+        let decoded = PaymentRequest::from_bech32_string(&encoded).unwrap();
+        let transport = &decoded.transports[0];
+        assert!(transport.target.starts_with("nprofile1"));
+        assert_eq!(
+            PaymentRequest::decode_nprofile(&transport.target).unwrap(),
+            (vec![7u8; 32], vec![relay.clone()])
+        );
+        assert_eq!(
+            transport.tags,
+            vec![
+                vec!["n".to_string(), "17".to_string()],
+                vec!["r".to_string(), relay]
+            ]
+        );
+        assert_eq!(decoded.to_bech32_string().unwrap(), encoded);
     }
 
     #[test]
@@ -1608,7 +1665,8 @@ mod tests {
         assert_eq!(decoded.payment_id, payment_request.payment_id);
         assert_eq!(decoded.transports.len(), 1);
         assert_eq!(decoded.transports[0]._type, TransportType::Nostr);
-        assert!(decoded.transports[0].target.starts_with("nprofile"));
+        // A relay-less nprofile comes back as the equivalent npub
+        assert_eq!(npub_pubkey(&decoded.transports[0].target), pubkey_bytes);
 
         // Check that NIP-17 tag was preserved
         let tags = &decoded.transports[0].tags;
@@ -1816,17 +1874,10 @@ mod tests {
         // Verify transports
         assert_eq!(decoded.transports.len(), 2);
 
-        // Verify first transport (nprofile with no relays)
+        // Verify first transport (nprofile with no relays decodes as npub)
         let transport1_decoded = &decoded.transports[0];
         assert_eq!(transport1_decoded._type, TransportType::Nostr);
-        assert!(transport1_decoded.target.starts_with("nprofile"));
-
-        // Decode the nprofile to verify the pubkey
-        let (decoded_pubkey1, decoded_relays1) =
-            PaymentRequest::decode_nprofile(&transport1_decoded.target)
-                .expect("should decode nprofile");
-        assert_eq!(decoded_pubkey1, pubkey1_bytes);
-        assert!(decoded_relays1.is_empty());
+        assert_eq!(npub_pubkey(&transport1_decoded.target), pubkey1_bytes);
 
         // Verify NIP-17 tag
         let tags1 = &transport1_decoded.tags;
@@ -2007,8 +2058,14 @@ mod tests {
         // Verify exact encoding matches expected
         assert_eq!(encoded, expected_encoded);
 
+        // The relay-less nprofile comes back as the npub for the same key;
+        // everything else round-trips unchanged
         let decoded = PaymentRequest::from_str(&encoded).unwrap();
-        assert_eq!(payment_request, decoded);
+        assert_eq!(npub_pubkey(&decoded.transports[0].target), vec![0u8; 32]);
+        let mut expected = payment_request.clone();
+        expected.transports[0].target = decoded.transports[0].target.clone();
+        assert_eq!(expected, decoded);
+        assert_eq!(decoded.to_bech32_string().unwrap(), expected_encoded);
 
         // Test decoding the expected encoded string
         let decoded_from_spec = PaymentRequest::from_bech32_string(expected_encoded).unwrap();
@@ -2462,9 +2519,9 @@ mod tests {
         // Verify all three transports are preserved in order
         assert_eq!(decoded.transports.len(), 3);
 
-        // First transport: Nostr
+        // First transport: Nostr, no relays so it decodes as an npub
         assert_eq!(decoded.transports[0]._type, TransportType::Nostr);
-        assert!(decoded.transports[0].target.starts_with("nprofile"));
+        assert!(decoded.transports[0].target.starts_with("npub1"));
 
         // Second transport: HTTP POST
         assert_eq!(decoded.transports[1]._type, TransportType::HttpPost);
@@ -2524,7 +2581,10 @@ mod tests {
 
         assert_eq!(decoded.transports.len(), 1);
         assert_eq!(decoded.transports[0]._type, TransportType::Nostr);
-        assert!(decoded.transports[0].target.starts_with("nprofile"));
+        assert_eq!(
+            hex::encode(npub_pubkey(&decoded.transports[0].target)),
+            "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d"
+        );
 
         // Tags should be None for minimal transport
         assert!(decoded.transports[0].tags.is_empty());
