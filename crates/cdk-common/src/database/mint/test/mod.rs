@@ -426,6 +426,8 @@ macro_rules! mint_db_test {
             get_proofs_with_inconsistent_states_fails,
             get_proofs_fails_when_some_not_found,
             update_proofs_state_updates_proofs_with_state,
+            update_proofs_state_refuses_stale_state,
+            update_proofs_state_refuses_partially_stale_state,
             get_mint_quotes_by_ids,
             get_melt_quotes_by_request_lookup_id,
             lock_melt_quote_and_related,

@@ -448,6 +448,9 @@ pub trait ProofsTransaction {
     ///
     /// Also updates the `state` field on the [`ProofsWithState`] wrapper to reflect
     /// the new state after the database update succeeds.
+    ///
+    /// Returns [`Error::ConcurrentUpdate`] if any stored proof is no longer in the wrapper's
+    /// state, after which the caller must roll back the transaction.
     async fn update_proofs_state(
         &mut self,
         proofs: &mut Acquired<ProofsWithState>,
