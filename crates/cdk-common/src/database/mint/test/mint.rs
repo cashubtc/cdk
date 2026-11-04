@@ -728,6 +728,156 @@ where
     assert_eq!(stored_swap.payment_fee(), None);
 }
 
+/// Reusing a blinded message that is stored but not signed yet reports it as
+/// pending, not as a duplicate of an already-signed output
+pub async fn reject_pending_blinded_message_as_pending<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    let blinded_messages = vec![cashu::BlindedMessage {
+        blinded_secret: SecretKey::generate().public_key(),
+        keyset_id: Id::from_str("001711afb1de20cb").unwrap(),
+        amount: Amount::from(100u64),
+        witness: None,
+    }];
+    let operation = Operation::new_mint(
+        Amount::ZERO,
+        cashu::PaymentMethod::Known(KnownMethod::Bolt11),
+    );
+
+    // Reserve the output without signing it (c stays NULL)
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_blinded_messages(None, &blinded_messages, &operation)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let result = tx
+        .add_blinded_messages(None, &blinded_messages, &operation)
+        .await;
+    assert!(
+        matches!(result, Err(Error::BlindedMessagePending)),
+        "unexpected result: {result:?}"
+    );
+    tx.rollback().await.unwrap();
+}
+
+/// A request that reuses both a signed and a pending output reports the
+/// signed one, even when the pending output is reached first
+pub async fn reject_signed_and_pending_blinded_messages_as_signed<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    let keyset_id = Id::from_str("001711afb1de20cb").unwrap();
+    let operation = Operation::new_mint(
+        Amount::ZERO,
+        cashu::PaymentMethod::Known(KnownMethod::Bolt11),
+    );
+    let blinded_message = || cashu::BlindedMessage {
+        blinded_secret: SecretKey::generate().public_key(),
+        keyset_id,
+        amount: Amount::from(100u64),
+        witness: None,
+    };
+
+    // Outputs are stored in blinded-secret order. Make the pending output
+    // sort first so its conflict is the one hit first; an implementation that
+    // only looks at the first conflict would then report it as pending.
+    let (mut pending, mut signed) = (blinded_message(), blinded_message());
+    if pending.blinded_secret.to_bytes() > signed.blinded_secret.to_bytes() {
+        std::mem::swap(&mut pending, &mut signed);
+    }
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_blinded_messages(None, &[pending.clone(), signed.clone()], &operation)
+        .await
+        .unwrap();
+    tx.add_blind_signatures(
+        &[signed.blinded_secret],
+        &[cashu::BlindSignature {
+            amount: Amount::from(100u64),
+            keyset_id,
+            c: SecretKey::generate().public_key(),
+            dleq: None,
+        }],
+        None,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let result = tx
+        .add_blinded_messages(None, &[pending, signed], &operation)
+        .await;
+    assert!(
+        matches!(result, Err(Error::Duplicate)),
+        "unexpected result: {result:?}"
+    );
+    tx.rollback().await.unwrap();
+}
+
+/// A request that reuses an output while another transaction is still
+/// reserving it waits for that transaction, then reports the output as
+/// pending rather than already signed.
+///
+/// `second_insert_waiting` must resolve only once the second request is
+/// blocked on the first transaction's uncommitted reservation, so the first
+/// transaction commits while the second one is waiting.
+pub async fn concurrent_reservation_of_output_reports_pending<F>(
+    db: DynMintDatabase,
+    second_insert_waiting: F,
+) where
+    F: std::future::Future<Output = ()>,
+{
+    let blinded_messages = vec![cashu::BlindedMessage {
+        blinded_secret: SecretKey::generate().public_key(),
+        keyset_id: Id::from_str("001711afb1de20cb").unwrap(),
+        amount: Amount::from(100u64),
+        witness: None,
+    }];
+    let operation = || {
+        Operation::new_mint(
+            Amount::ZERO,
+            cashu::PaymentMethod::Known(KnownMethod::Bolt11),
+        )
+    };
+
+    let mut first = db.begin_transaction().await.unwrap();
+    first
+        .add_blinded_messages(None, &blinded_messages, &operation())
+        .await
+        .unwrap();
+
+    let second_messages = blinded_messages.clone();
+    let second = tokio::spawn(async move {
+        let mut tx = db.begin_transaction().await?;
+        let result = tx
+            .add_blinded_messages(None, &second_messages, &operation())
+            .await;
+        tx.rollback().await?;
+        Ok::<_, Error>(result)
+    });
+
+    second_insert_waiting.await;
+    assert!(
+        !second.is_finished(),
+        "second request should wait for the reservation"
+    );
+    first.commit().await.unwrap();
+
+    let result = tokio::time::timeout(Duration::from_secs(10), second)
+        .await
+        .expect("second request should finish once the reservation commits")
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(result, Err(Error::BlindedMessagePending)),
+        "unexpected result: {result:?}"
+    );
+}
+
 /// Cleanup of melt request after processing
 pub async fn cleanup_melt_request_after_processing<DB>(db: DB)
 where
