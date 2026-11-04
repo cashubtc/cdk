@@ -430,7 +430,7 @@ where
             WHERE
                 amount_issued = 0
                 OR
-                payment_method = 'bolt12'
+                payment_method <> 'bolt11'
             "#,
         )?
         .fetch_all(&*conn)
