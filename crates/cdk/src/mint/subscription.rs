@@ -9,15 +9,20 @@ use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::{MeltQuote, MintQuote};
 use cdk_common::nut17::NotificationId;
 use cdk_common::payment::DynMintPayment;
-use cdk_common::pub_sub::{Pubsub, Spec, Subscriber};
+use cdk_common::pub_sub::{
+    Error as PubSubError, Pubsub, PubsubLimits, Spec, Subscriber, ValidatedPubsubLimits,
+};
 use cdk_common::subscription::SubId;
+use cdk_common::task::spawn;
 use cdk_common::{
     Amount, BlindSignature, CurrencyUnit, MeltQuoteBolt11Response, MeltQuoteBolt12Response,
     MeltQuoteOnchainResponse, MeltQuoteResponse, MeltQuoteState, MintQuoteBolt11Response,
     MintQuoteBolt12Response, MintQuoteCustomResponse, MintQuoteOnchainResponse, MintQuoteState,
     NotificationPayload, ProofState, PublicKey, QuoteId,
 };
+use tokio::time::Instant;
 
+use super::payment_backend::{before, PaymentCheck};
 use super::Mint;
 use crate::event::MintEvent;
 
@@ -29,6 +34,7 @@ pub struct MintPubSubSpec {
     payment_processors: Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
     // The manager owns this spec; a strong reference back would retain both forever.
     pubsub_manager: Weak<PubSubManager>,
+    limits: PubsubLimits,
 }
 
 impl MintPubSubSpec {
@@ -36,29 +42,69 @@ impl MintPubSubSpec {
     async fn get_mint_quotes(
         &self,
         quote_ids: &[QuoteId],
+        deadline: Instant,
     ) -> Result<HashMap<QuoteId, MintQuote>, cdk_common::Error> {
         if quote_ids.is_empty() {
             return Ok(HashMap::new());
         }
 
         let mut quotes = HashMap::new();
+        let mut checks_left = self.limits.max_quote_checks_per_backfill;
+        let mut unchecked = 0usize;
 
-        for mut quote in self
-            .db
-            .get_mint_quotes_by_ids(quote_ids)
-            .await?
+        for mut quote in before(Some(deadline), self.db.get_mint_quotes_by_ids(quote_ids))
+            .await??
             .into_iter()
             .flatten()
         {
-            Mint::check_mint_quote_payments(
-                self.db.clone(),
-                self.payment_processors.clone(),
-                self.pubsub_manager.upgrade(),
-                &mut quote,
-            )
-            .await?;
+            // Only round trips that reach the payment backend are charged, so a
+            // subscription covering many already-settled quotes does not spend
+            // the budget that keeps one backfill from holding its slot too long.
+            if checks_left > 0 {
+                // Spawned rather than awaited inline because this task is
+                // aborted when the subscriber drops, and a payment the backend
+                // has already reported has to be recorded even then. Dropping a
+                // `JoinHandle` does not cancel its task, so an abort abandons
+                // the rest of the backfill and leaves the check in flight to
+                // finish, commit and publish.
+                //
+                // The detached check no longer holds the backfill concurrency
+                // permit, which dies with the aborted task. What it can still
+                // do is bounded: one rate-limit claim, one deadline-bounded
+                // backend query and one transaction. It keeps the upgraded
+                // manager alive for its own lifetime so the post-commit
+                // notification still reaches the subscribers that remain.
+                let (updated, check) = spawn(Mint::check_mint_quote_payments(
+                    self.db.clone(),
+                    self.payment_processors.clone(),
+                    self.pubsub_manager.upgrade(),
+                    quote,
+                    Some(deadline),
+                ))
+                .await
+                .map_err(|err| {
+                    tracing::error!("Mint quote payment check failed to join: {err}");
+                    cdk_common::Error::Internal
+                })??;
+
+                quote = updated;
+
+                if check == PaymentCheck::Queried {
+                    checks_left -= 1;
+                }
+            } else {
+                unchecked += 1;
+            }
 
             quotes.insert(quote.id.clone(), quote);
+        }
+
+        if unchecked > 0 {
+            tracing::warn!(
+                budget = self.limits.max_quote_checks_per_backfill,
+                served_from_storage = unchecked,
+                "Backfill quote-check budget exhausted; some quotes were served without a payment-backend check",
+            );
         }
 
         Ok(quotes)
@@ -67,10 +113,13 @@ impl MintPubSubSpec {
     async fn get_melt_quote_response(
         &self,
         quote_id: &QuoteId,
-    ) -> Result<Option<MeltQuoteResponse<QuoteId>>, String> {
-        let quote = match Mint::load_melt_quote_for_response(&self.db, quote_id)
-            .await
-            .map_err(|e| e.to_string())?
+        deadline: Instant,
+    ) -> Result<Option<MeltQuoteResponse<QuoteId>>, cdk_common::Error> {
+        let quote = match before(
+            Some(deadline),
+            Mint::load_melt_quote_for_response(&self.db, quote_id),
+        )
+        .await??
         {
             Some(quote) => quote,
             None => return Ok(None),
@@ -81,11 +130,11 @@ impl MintPubSubSpec {
         ) {
             None
         } else {
-            let signatures = self
-                .db
-                .get_blind_signatures_for_quote(quote_id)
-                .await
-                .map_err(|e| e.to_string())?;
+            let signatures = before(
+                Some(deadline),
+                self.db.get_blind_signatures_for_quote(quote_id),
+            )
+            .await??;
             (!signatures.is_empty()).then_some(signatures)
         };
         Ok(Some(quote.into_response(change)))
@@ -94,7 +143,8 @@ impl MintPubSubSpec {
     async fn get_events_from_db(
         &self,
         request: &[NotificationId<QuoteId>],
-    ) -> Result<Vec<MintEvent<QuoteId>>, String> {
+        deadline: Instant,
+    ) -> Result<Vec<MintEvent<QuoteId>>, cdk_common::Error> {
         let mut to_return = vec![];
         let mut public_keys: Vec<PublicKey> = Vec::new();
         let mint_quote_ids = request
@@ -107,10 +157,7 @@ impl MintPubSubSpec {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        let mint_quotes = self
-            .get_mint_quotes(&mint_quote_ids)
-            .await
-            .map_err(|e| e.to_string())?;
+        let mint_quotes = self.get_mint_quotes(&mint_quote_ids, deadline).await?;
 
         for idx in request.iter() {
             match idx {
@@ -120,7 +167,7 @@ impl MintPubSubSpec {
                 | NotificationId::MeltQuoteOnchain(uuid)
                 | NotificationId::MeltQuoteCustom(_, uuid) => {
                     // TODO: Check pending payments with the backend, as the HTTP handler does.
-                    if let Some(response) = self.get_melt_quote_response(uuid).await? {
+                    if let Some(response) = self.get_melt_quote_response(uuid, deadline).await? {
                         let event: MintEvent<QuoteId> = match (idx, response) {
                             (NotificationId::MeltQuoteBolt11(_), MeltQuoteResponse::Bolt11(r)) => {
                                 r.into()
@@ -198,14 +245,15 @@ impl MintPubSubSpec {
 
         if !public_keys.is_empty() {
             to_return.extend(
-                self.db
-                    .get_proofs_states(public_keys.as_slice())
-                    .await
-                    .map_err(|e| e.to_string())?
-                    .into_iter()
-                    .enumerate()
-                    .filter_map(|(idx, state)| state.map(|state| (public_keys[idx], state).into()))
-                    .map(|state: ProofState| state.into()),
+                before(
+                    Some(deadline),
+                    self.db.get_proofs_states(public_keys.as_slice()),
+                )
+                .await??
+                .into_iter()
+                .enumerate()
+                .filter_map(|(idx, state)| state.map(|state| (public_keys[idx], state).into()))
+                .map(|state: ProofState| state.into()),
             );
         }
 
@@ -231,18 +279,32 @@ impl Spec for MintPubSubSpec {
             db: context.0,
             payment_processors: context.1,
             pubsub_manager: Weak::new(),
+            limits: PubsubLimits::default(),
         })
     }
 
-    async fn fetch_events(self: &Arc<Self>, topics: Vec<Self::Topic>, reply_to: Subscriber<Self>) {
-        for event in self
-            .get_events_from_db(&topics)
+    /// Reads the state each topic had at the moment of subscribing, under the
+    /// deadline that bounds how long this backfill holds its concurrency slot.
+    ///
+    /// Nothing is sent when the deadline passes: a partial snapshot would look
+    /// to the subscriber exactly like a complete one.
+    async fn fetch_events(
+        self: &Arc<Self>,
+        topics: Vec<Self::Topic>,
+        reply_to: Subscriber<Self>,
+    ) -> Result<(), PubSubError> {
+        let deadline = Instant::now() + self.limits.backfill_timeout;
+
+        let events = self
+            .get_events_from_db(&topics, deadline)
             .await
-            .inspect_err(|err| tracing::error!("Error reading events from db {err:?}"))
-            .unwrap_or_default()
-        {
+            .map_err(|err| PubSubError::BackfillFailed(err.to_string()))?;
+
+        for event in events {
             let _ = reply_to.send(event);
         }
+
+        Ok(())
     }
 }
 
@@ -251,19 +313,37 @@ impl Spec for MintPubSubSpec {
 pub struct PubSubManager(Pubsub<MintPubSubSpec>);
 
 impl PubSubManager {
-    /// Create a new instance
+    /// Create a new instance with [`PubsubLimits::default`]
     pub fn new(
         context: (
             DynMintDatabase,
             Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
         ),
     ) -> Arc<Self> {
+        Self::with_limits(context, ValidatedPubsubLimits::default())
+    }
+
+    /// Create a new instance whose shared resources are capped by `limits`
+    ///
+    /// Takes limits already checked by [`PubsubLimits::validate`], so the
+    /// caller reports an unservable configuration before the manager exists.
+    pub fn with_limits(
+        context: (
+            DynMintDatabase,
+            Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
+        ),
+        limits: ValidatedPubsubLimits,
+    ) -> Arc<Self> {
         Arc::new_cyclic(|manager| {
-            Self(Pubsub::new(Arc::new(MintPubSubSpec {
-                db: context.0,
-                payment_processors: context.1,
-                pubsub_manager: manager.clone(),
-            })))
+            Self(Pubsub::with_limits(
+                Arc::new(MintPubSubSpec {
+                    db: context.0,
+                    payment_processors: context.1,
+                    pubsub_manager: manager.clone(),
+                    limits: limits.into_inner(),
+                }),
+                limits,
+            ))
         })
     }
 
@@ -435,6 +515,12 @@ mod tests {
 
     use super::*;
 
+    /// A deadline far enough out that it never fires, for tests about what a
+    /// backfill reads rather than how long it may take.
+    fn generous() -> Instant {
+        Instant::now() + Duration::from_secs(60)
+    }
+
     fn bolt11_quote(id: QuoteId, amount: u64) -> MintQuote {
         MintQuote::new(
             Some(id),
@@ -483,10 +569,13 @@ mod tests {
 
         let spec = MintPubSubSpec::new_instance((db, Arc::new(HashMap::new())));
         let events = spec
-            .get_events_from_db(&[
-                NotificationId::MintQuoteBolt11(first_quote_id.clone()),
-                NotificationId::MintQuoteBolt11(second_quote_id.clone()),
-            ])
+            .get_events_from_db(
+                &[
+                    NotificationId::MintQuoteBolt11(first_quote_id.clone()),
+                    NotificationId::MintQuoteBolt11(second_quote_id.clone()),
+                ],
+                generous(),
+            )
             .await
             .expect("get events");
 
@@ -607,7 +696,7 @@ mod tests {
             tx.commit().await.unwrap();
 
             let response = spec
-                .get_melt_quote_response(&quote.id)
+                .get_melt_quote_response(&quote.id, generous())
                 .await
                 .unwrap()
                 .unwrap();
@@ -619,7 +708,7 @@ mod tests {
             tx.delete_melt_request(&quote.id).await.unwrap();
             tx.commit().await.unwrap();
             let response = spec
-                .get_melt_quote_response(&quote.id)
+                .get_melt_quote_response(&quote.id, generous())
                 .await
                 .unwrap()
                 .unwrap();
@@ -652,7 +741,10 @@ mod tests {
                     KnownMethod::Bolt12 => NotificationId::MeltQuoteBolt12(quote.id.clone()),
                     KnownMethod::Onchain => NotificationId::MeltQuoteOnchain(quote.id.clone()),
                 };
-                let events = spec.get_events_from_db(&[topic]).await.expect("backfill");
+                let events = spec
+                    .get_events_from_db(&[topic], generous())
+                    .await
+                    .expect("backfill");
                 assert_eq!(events.len(), 1);
                 let (id, actual_state, change) = match events[0].inner() {
                     NotificationPayload::MeltQuoteBolt11Response(r) => {
@@ -696,11 +788,14 @@ mod tests {
             .expect("record payment check"));
         let spec = MintPubSubSpec::new_instance((db, Arc::new(HashMap::new())));
         let events = spec
-            .get_events_from_db(&[
-                NotificationId::MintQuoteCustom(method.clone(), quote.id.clone()),
-                NotificationId::MintQuoteCustom("wrong_method".to_owned(), quote.id.clone()),
-                NotificationId::MintQuoteCustom(method.clone(), QuoteId::new()),
-            ])
+            .get_events_from_db(
+                &[
+                    NotificationId::MintQuoteCustom(method.clone(), quote.id.clone()),
+                    NotificationId::MintQuoteCustom("wrong_method".to_owned(), quote.id.clone()),
+                    NotificationId::MintQuoteCustom(method.clone(), QuoteId::new()),
+                ],
+                generous(),
+            )
             .await
             .expect("backfill");
         assert_eq!(events.len(), 1);
@@ -730,11 +825,14 @@ mod tests {
         let change = add_melt_quote(&db, quote.clone(), true).await;
         let spec = MintPubSubSpec::new_instance((db, Arc::new(HashMap::new())));
         let events = spec
-            .get_events_from_db(&[
-                NotificationId::MeltQuoteCustom(method.clone(), quote.id.clone()),
-                NotificationId::MeltQuoteCustom("wrong_method".to_owned(), quote.id.clone()),
-                NotificationId::MeltQuoteCustom(method.clone(), QuoteId::new()),
-            ])
+            .get_events_from_db(
+                &[
+                    NotificationId::MeltQuoteCustom(method.clone(), quote.id.clone()),
+                    NotificationId::MeltQuoteCustom("wrong_method".to_owned(), quote.id.clone()),
+                    NotificationId::MeltQuoteCustom(method.clone(), QuoteId::new()),
+                ],
+                generous(),
+            )
             .await
             .expect("backfill");
         assert_eq!(events.len(), 1);
@@ -913,6 +1011,180 @@ mod tests {
             .await
             .expect("both subscribers must observe the committed payment");
         }
+    }
+
+    /// Dropping a subscription aborts its backfill, and the abort lands
+    /// wherever the task happens to be awaiting, including between the payment
+    /// backend reporting a payment and the transaction recording it. Excluding
+    /// that transaction from the backfill deadline does nothing about this, so
+    /// the check runs on its own task and the payment survives the disconnect.
+    #[tokio::test]
+    async fn a_disconnect_does_not_discard_a_reported_payment() {
+        use cdk_common::nut17::Kind;
+
+        timeout(Duration::from_secs(5), async {
+            let db: DynMintDatabase =
+                Arc::new(cdk_sqlite::mint::memory::empty().await.expect("database"));
+            let quote = bolt11_quote(QuoteId::new(), 21);
+            let mut tx = db.begin_transaction().await.expect("transaction");
+            tx.add_mint_quote(quote.clone())
+                .await
+                .expect("unpaid quote");
+            tx.commit().await.expect("commit");
+
+            let backend = Arc::new(BlockingPaymentBackend::default());
+            let processors = HashMap::from([(
+                PaymentProcessorKey::new(
+                    CurrencyUnit::Sat,
+                    cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt11),
+                ),
+                backend.clone() as DynMintPayment,
+            )]);
+            let manager = PubSubManager::new((db.clone(), Arc::new(processors)));
+            let params = Params {
+                kind: Kind::Bolt11MintQuote,
+                filters: vec![quote.id.to_string()],
+                id: Arc::new(SubId::from("initiating")),
+            };
+
+            let first = manager
+                .subscribe(params.clone())
+                .expect("initiating subscription");
+            backend.entered.notified().await;
+
+            // Subscribed while the first check holds the rate limit, so this
+            // one is served from storage and never reaches the backend.
+            let mut second = manager
+                .subscribe(Params {
+                    id: Arc::new(SubId::from("observer")),
+                    ..params
+                })
+                .expect("second subscription");
+            let initial = second.recv().await.expect("unpaid backfill");
+            match initial.inner() {
+                NotificationPayload::MintQuoteBolt11Response(r) => {
+                    assert_eq!(r.state, MintQuoteState::Unpaid)
+                }
+                payload => panic!("unexpected payload: {payload:?}"),
+            }
+            assert_eq!(backend.checks.load(Ordering::Relaxed), 1);
+
+            // The subscriber that started the check disconnects while the
+            // backend still holds it.
+            drop(first);
+
+            backend.release.notify_one();
+
+            let event = second.recv().await.expect("paid notification");
+            match event.inner() {
+                NotificationPayload::MintQuoteBolt11Response(r) => {
+                    assert_eq!(r.quote, quote.id);
+                    assert_eq!(r.state, MintQuoteState::Paid);
+                }
+                payload => panic!("unexpected payload: {payload:?}"),
+            }
+
+            let stored = db
+                .get_mint_quote(&quote.id)
+                .await
+                .expect("read quote")
+                .expect("quote");
+            assert_eq!(stored.amount_paid(), Amount::new(21, CurrencyUnit::Sat));
+            assert_eq!(backend.checks.load(Ordering::Relaxed), 1);
+        })
+        .await
+        .expect("the reported payment must outlive the subscriber that asked for it");
+    }
+
+    /// A backfill that stalls in the payment backend must give its concurrency
+    /// slot back at the deadline. The check budget bounds how many round trips
+    /// a backfill makes, not how long they take, so without a deadline a
+    /// handful of stalled checks would hold every slot and unrelated
+    /// subscriptions would never be backfilled at all.
+    #[tokio::test]
+    async fn a_stalled_backfill_releases_its_slot_at_its_deadline() {
+        use cdk_common::nut17::Kind;
+
+        let db: DynMintDatabase =
+            Arc::new(cdk_sqlite::mint::memory::empty().await.expect("database"));
+
+        // Unpaid, so its backfill reaches the payment backend and parks there.
+        let stalling = bolt11_quote(QuoteId::new(), 21);
+        let mut tx = db.begin_transaction().await.expect("transaction");
+        tx.add_mint_quote(stalling.clone())
+            .await
+            .expect("unpaid quote");
+        tx.commit().await.expect("commit");
+
+        // Already paid, so its backfill only reads the database and can be
+        // served the moment a slot frees up.
+        let settled = bolt11_quote(QuoteId::new(), 42);
+        add_mint_quote(&db, settled.clone()).await;
+
+        let backend = Arc::new(BlockingPaymentBackend::default());
+        let processors = HashMap::from([(
+            PaymentProcessorKey::new(
+                CurrencyUnit::Sat,
+                cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt11),
+            ),
+            backend.clone() as DynMintPayment,
+        )]);
+
+        let backfill_timeout = Duration::from_millis(300);
+        let manager = PubSubManager::with_limits(
+            (db, Arc::new(processors)),
+            PubsubLimits {
+                max_concurrent_backfills: 1,
+                backfill_timeout,
+                ..PubsubLimits::default()
+            }
+            .validate()
+            .expect("servable limits"),
+        );
+
+        let _stalled = manager
+            .subscribe(Params {
+                kind: Kind::Bolt11MintQuote,
+                filters: vec![stalling.id.to_string()],
+                id: Arc::new(SubId::from("stalled")),
+            })
+            .expect("first subscription");
+        backend.entered.notified().await;
+
+        let mut queued = manager
+            .subscribe(Params {
+                kind: Kind::Bolt11MintQuote,
+                filters: vec![settled.id.to_string()],
+                id: Arc::new(SubId::from("queued")),
+            })
+            .expect("second subscription");
+
+        assert!(
+            timeout(backfill_timeout / 3, queued.recv()).await.is_err(),
+            "the only backfill slot is still held by the stalled check"
+        );
+
+        let event = timeout(Duration::from_secs(5), queued.recv())
+            .await
+            .expect("the slot must be released once the deadline passes")
+            .expect("backfill event");
+        match event.inner() {
+            NotificationPayload::MintQuoteBolt11Response(response) => {
+                assert_eq!(response.quote, settled.id);
+            }
+            payload => panic!("unexpected payload: {payload:?}"),
+        }
+
+        assert_eq!(
+            backend.checks.load(Ordering::Relaxed),
+            1,
+            "only the stalled quote should have reached the payment backend"
+        );
+        assert_eq!(
+            manager.active_subscribers(),
+            2,
+            "a timed-out backfill leaves its subscription live for later events"
+        );
     }
 
     #[tokio::test]

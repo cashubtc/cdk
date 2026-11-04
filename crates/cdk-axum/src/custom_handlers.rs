@@ -790,6 +790,7 @@ mod tests {
 
     use super::*;
     use crate::cache::HttpCache;
+    use crate::ws::{WsConnectionLimiter, WsLimits};
 
     fn create_test_request(prefer_header: Option<&str>) -> Request<()> {
         let mut req = Request::builder()
@@ -858,6 +859,7 @@ mod tests {
         MintState {
             mint: Arc::new(mint),
             cache: Arc::new(HttpCache::default()),
+            ws_limiter: Arc::new(WsConnectionLimiter::new(WsLimits::default())),
         }
     }
 
@@ -910,6 +912,7 @@ mod tests {
         MintState {
             mint: Arc::new(mint),
             cache: Arc::new(HttpCache::default()),
+            ws_limiter: Arc::new(WsConnectionLimiter::new(WsLimits::default())),
         }
     }
 
