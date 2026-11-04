@@ -14,7 +14,7 @@ use cdk_common::{Amount, PaymentRequest, PaymentRequestPayload, SupportedMethod,
 #[cfg(feature = "nostr")]
 use futures::StreamExt;
 #[cfg(feature = "nostr")]
-use nostr::prelude::nip19::Nip19Profile;
+use nostr::prelude::nip19::{Nip19, Nip19Profile};
 #[cfg(all(feature = "nostr", test))]
 use nostr::prelude::EventId;
 #[cfg(all(feature = "nostr", target_arch = "wasm32"))]
@@ -204,6 +204,49 @@ fn payment_request_delivery_result(
         operation_id,
         source: Box::new(source),
     })
+}
+
+/// Receiver key and relays for a Nostr transport.
+///
+/// NUT-26 decodes a transport without relays to an `npub` and one with relays
+/// to an `nprofile`, so both forms are accepted. Relays listed in `"r"` tags
+/// are added to the ones carried by the target.
+#[cfg(feature = "nostr")]
+fn nostr_transport_receiver(
+    transport: &cdk_common::Transport,
+) -> Result<(PublicKey, Vec<RelayUrl>), Error> {
+    let (public_key, mut relays) = match Nip19::from_bech32(&transport.target)
+        .map_err(|e| Error::Custom(format!("Invalid Nostr target: {e}")))?
+    {
+        Nip19::Pubkey(public_key) => (public_key, Vec::new()),
+        Nip19::Profile(profile) => (profile.public_key, profile.relays),
+        _ => {
+            return Err(Error::Custom(
+                "Nostr target must be an npub or nprofile".to_string(),
+            ))
+        }
+    };
+
+    for tag in &transport.tags {
+        let Some((key, values)) = tag.split_first() else {
+            continue;
+        };
+        if key != "r" && key != "relay" {
+            continue;
+        }
+        for value in values {
+            match RelayUrl::parse(value) {
+                Ok(relay) => {
+                    if !relays.contains(&relay) {
+                        relays.push(relay);
+                    }
+                }
+                Err(e) => tracing::warn!("Ignoring invalid relay {value}: {e}"),
+            }
+        }
+    }
+
+    Ok((public_key, relays))
 }
 
 #[cfg(feature = "nostr")]
@@ -401,17 +444,15 @@ impl Wallet {
                     let client = NostrClient::builder()
                         .authenticator(SignerAuthenticator::new(keys.clone()))
                         .build();
-                    let nprofile = Nip19Profile::from_bech32(&transport.target)
-                        .map_err(|e| Error::Custom(format!("Invalid nprofile: {e}")))?;
+                    let (receiver, relays) = nostr_transport_receiver(transport)?;
 
                     let gift_wrap_event = PrivateDirectMessageBuilder::new(
-                        nprofile.public_key,
+                        receiver,
                         serde_json::to_string(&payload)
                             .map_err(|e| Error::Custom(format!("Serialize payload: {e}")))?,
                     )
                     .finalize(&keys)
                     .map_err(|e| Error::Custom(format!("Build Nostr gift wrap: {e}")))?;
-                    let relays = nprofile.relays;
 
                     for relay in relays.iter() {
                         client
@@ -891,6 +932,116 @@ mod tests {
             }
             error => panic!("unexpected error: {error}"),
         }
+    }
+
+    #[cfg(feature = "nostr")]
+    fn nostr_transport(target: String, tags: Vec<Vec<String>>) -> Transport {
+        Transport {
+            _type: TransportType::Nostr,
+            target,
+            tags,
+        }
+    }
+
+    #[cfg(feature = "nostr")]
+    #[test]
+    fn nostr_receiver_accepts_npub_target() {
+        let public_key = Keys::generate().public_key();
+        let transport = nostr_transport(
+            public_key.to_bech32().expect("npub"),
+            vec![vec!["n".to_string(), "17".to_string()]],
+        );
+
+        let (receiver, relays) = nostr_transport_receiver(&transport).expect("npub target");
+
+        assert_eq!(receiver, public_key);
+        assert!(relays.is_empty());
+    }
+
+    #[cfg(feature = "nostr")]
+    #[test]
+    fn nostr_receiver_accepts_nprofile_target() {
+        let public_key = Keys::generate().public_key();
+        let relay = RelayUrl::parse("wss://relay.example.com").expect("valid relay URL");
+        let nprofile = Nip19Profile::new(public_key, vec![relay.clone()]);
+        // Decoded CREQ-B requests carry the nprofile relays as "r" tags too
+        let transport = nostr_transport(
+            nprofile.to_bech32().expect("nprofile"),
+            vec![vec!["r".to_string(), relay.to_string()]],
+        );
+
+        let (receiver, relays) = nostr_transport_receiver(&transport).expect("nprofile target");
+
+        assert_eq!(receiver, public_key);
+        assert_eq!(relays, vec![relay]);
+    }
+
+    #[cfg(feature = "nostr")]
+    #[test]
+    fn nostr_receiver_adds_relays_from_tags() {
+        let public_key = Keys::generate().public_key();
+        let transport = nostr_transport(
+            public_key.to_bech32().expect("npub"),
+            vec![
+                vec![
+                    "r".to_string(),
+                    "wss://one.example.com".to_string(),
+                    "not a relay".to_string(),
+                ],
+                vec!["relay".to_string(), "wss://two.example.com".to_string()],
+                vec!["n".to_string(), "17".to_string()],
+            ],
+        );
+
+        let (_, relays) = nostr_transport_receiver(&transport).expect("npub target");
+
+        assert_eq!(
+            relays,
+            vec![
+                RelayUrl::parse("wss://one.example.com").expect("valid relay URL"),
+                RelayUrl::parse("wss://two.example.com").expect("valid relay URL"),
+            ]
+        );
+    }
+
+    #[cfg(feature = "nostr")]
+    #[test]
+    fn nostr_receiver_accepts_decoded_creqb_without_relays() {
+        let public_key = Keys::generate().public_key();
+        let request = PaymentRequest {
+            payment_id: Some("npub".to_string()),
+            amount: Some(Amount::from(10)),
+            unit: Some(CurrencyUnit::Sat),
+            single_use: None,
+            mints: vec![],
+            mint_preferred: None,
+            supported_methods: vec![],
+            description: None,
+            transports: vec![nostr_transport(
+                Nip19Profile::new(public_key, Vec::<RelayUrl>::new())
+                    .to_bech32()
+                    .expect("nprofile"),
+                vec![],
+            )],
+            nut10: None,
+        };
+
+        let encoded = request.to_bech32_string().expect("encode CREQ-B");
+        let decoded = PaymentRequest::from_bech32_string(&encoded).expect("decode CREQ-B");
+        let (receiver, relays) =
+            nostr_transport_receiver(&decoded.transports[0]).expect("decoded target");
+
+        assert_eq!(receiver, public_key);
+        assert!(relays.is_empty());
+    }
+
+    #[cfg(feature = "nostr")]
+    #[test]
+    fn nostr_receiver_rejects_other_nip19_entities() {
+        let note = EventId::from_byte_array([1; 32]).to_bech32().expect("note");
+        let transport = nostr_transport(note, vec![]);
+
+        assert!(nostr_transport_receiver(&transport).is_err());
     }
 
     #[test]
