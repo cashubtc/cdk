@@ -57,6 +57,20 @@ pub(crate) fn should_fail_for(operation: &str) -> bool {
     TEST_FAILURES.with(|failures| failures.borrow().contains(&operation.to_string()))
 }
 
+/// Consumes a failure flag so subsequent calls can succeed.
+pub(crate) fn take_fail_for(operation: &str) -> bool {
+    TEST_FAILURES.with(|failures| {
+        let mut failures = failures.borrow_mut();
+        match failures.iter().position(|failure| failure == operation) {
+            Some(index) => {
+                failures.remove(index);
+                true
+            }
+            None => false,
+        }
+    })
+}
+
 /// Creates and starts a test mint with in-memory storage and a fake payment backend.
 ///
 /// This mint can be used for unit tests without requiring external dependencies
@@ -234,4 +248,17 @@ pub async fn get_active_keyset_id(mint: &Mint) -> Result<Id, Error> {
         .clone();
     keys.verify_id()?;
     Ok(keys.id)
+}
+
+/// Models abandoned executions whose recorded leases have expired.
+pub(crate) async fn expire_melt_leases(mint: &Mint) {
+    for quote in mint.localstore().get_melt_quotes().await.unwrap() {
+        if quote.is_locked() {
+            let mut tx = mint.localstore().begin_transaction().await.unwrap();
+            tx.renew_melt_quote_lease(&quote.id, &quote.melt_lock, 0)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+        }
+    }
 }
