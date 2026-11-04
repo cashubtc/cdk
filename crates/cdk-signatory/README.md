@@ -82,9 +82,15 @@ Common options:
 | `--units` | Supported unit in `name,input_fee_ppk,max_order` format | `sat,0,32` |
 | `--enable-logging` | Enable tracing output | `false` |
 | `--log-level` | Log level when logging is enabled | `debug` |
+| `--keyset-refresh-interval-ms` | How often to reload keysets from the shared database; `0` disables it | `0` |
 
 `--units` can be repeated to support multiple units. `max_order` controls the generated powers-of-two
 amounts, from `2^0` through `2^(max_order - 1)`.
+
+`--keyset-refresh-interval-ms` is only needed when several signatory processes
+share one database: each then picks up another's keyset rotation within one
+interval rather than at the next restart. A mint running an embedded signatory
+configures the same reload with `[info].keyset_refresh_interval_ms`.
 
 ## Configuration for cdk-mintd
 

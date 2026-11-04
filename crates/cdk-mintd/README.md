@@ -367,6 +367,14 @@ local seed or mnemonic. During database-backed startup it retains the validated
 remote connection and checks its public identity again immediately before mint
 construction and keyset operations.
 
+Several mints can share one keys database (see the embedded signatory's periodic
+keyset reload). Set `[info].keyset_refresh_interval_ms` in the persisted
+document so each instance picks up a peer's rotation within one interval instead
+of at the next restart. It is off by default, which is correct for a single mint
+that owns its database. The key applies to the embedded signatory only: with
+`[signatory].enabled = true`, startup warns that it has no effect and the
+interval belongs on the signatory process's `--keyset-refresh-interval-ms`.
+
 ### Secret References
 
 Secret fields must contain a reference, never a literal value:

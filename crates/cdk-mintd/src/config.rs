@@ -60,6 +60,10 @@ pub struct Info {
     pub input_fee_ppk: Option<u64>,
     /// Use keyset v2
     pub use_keyset_v2: Option<bool>,
+    /// How often, in milliseconds, the embedded signatory reloads keysets from
+    /// the database. Unset or `0` disables it; set an interval only when several
+    /// mints or signatories share one database.
+    pub keyset_refresh_interval_ms: Option<u64>,
 
     pub http_cache: cache::Config,
 
@@ -90,6 +94,7 @@ impl Default for Info {
             mnemonic: None,
             input_fee_ppk: None,
             use_keyset_v2: None,
+            keyset_refresh_interval_ms: None,
             http_cache: cache::Config::default(),
             enable_info_page: Some(true),
             logging: LoggingConfig::default(),
@@ -117,6 +122,10 @@ impl std::fmt::Debug for Info {
             .field("mnemonic", &mnemonic_display)
             .field("input_fee_ppk", &self.input_fee_ppk)
             .field("use_keyset_v2", &self.use_keyset_v2)
+            .field(
+                "keyset_refresh_interval_ms",
+                &self.keyset_refresh_interval_ms,
+            )
             .field("http_cache", &self.http_cache)
             .field("logging", &self.logging)
             .field("enable_info_page", &self.enable_info_page)
@@ -1546,6 +1555,49 @@ listen_por = 8085
         let message = error.to_string();
         assert!(message.contains("info.listen_por"));
         assert!(!message.contains("info.signatory_url"));
+    }
+
+    #[test]
+    fn keyset_refresh_interval_is_off_by_default() {
+        assert_eq!(Info::default().keyset_refresh_interval_ms, None);
+    }
+
+    #[test]
+    fn keyset_refresh_interval_parses_from_toml() {
+        let settings = Settings::try_from_toml(
+            r#"
+[info]
+url = "https://mint.example.com"
+keyset_refresh_interval_ms = 5000
+"#,
+        )
+        .expect("document should parse");
+
+        assert_eq!(settings.info.keyset_refresh_interval_ms, Some(5000));
+    }
+
+    #[test]
+    fn keyset_refresh_interval_env_override_keeps_value_when_unparsable() {
+        let _guard = config_env_lock();
+        std::env::remove_var(crate::env_vars::ENV_KEYSET_REFRESH_INTERVAL_MS);
+
+        std::env::set_var(crate::env_vars::ENV_KEYSET_REFRESH_INTERVAL_MS, "2500");
+        assert_eq!(
+            Info::default().from_env().keyset_refresh_interval_ms,
+            Some(2500)
+        );
+
+        std::env::set_var(
+            crate::env_vars::ENV_KEYSET_REFRESH_INTERVAL_MS,
+            "not-a-number",
+        );
+        let configured = Info {
+            keyset_refresh_interval_ms: Some(2500),
+            ..Default::default()
+        };
+        assert_eq!(configured.from_env().keyset_refresh_interval_ms, Some(2500));
+
+        std::env::remove_var(crate::env_vars::ENV_KEYSET_REFRESH_INTERVAL_MS);
     }
 
     fn config_env_lock() -> std::sync::MutexGuard<'static, ()> {

@@ -17,6 +17,13 @@ mnemonic = "env:CDK_MINTD_MNEMONIC"
 # If unset (default), existing keysets are preserved, but new ones use V2.
 # use_keyset_v2 = true
 
+# How often, in milliseconds, the embedded signatory reloads keysets from the
+# database. Off by default: a single mint owns its database and needs no
+# polling. Set it only when several mints or signatories share one database, so
+# each picks up another's rotation without a restart. It has no effect with a
+# remote [signatory]; that process takes --keyset-refresh-interval-ms instead.
+# keyset_refresh_interval_ms = 5000
+
 [info.quote_ttl]
 # Prefer explicit fields over inline tables for readability and reviewable edits
 mint_ttl = 600

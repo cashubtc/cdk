@@ -8,6 +8,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
 // external crates
 use anyhow::{anyhow, bail, Context, Result};
@@ -654,6 +655,17 @@ fn validate_signing_config(settings: &config::Settings) -> Result<()> {
             );
         }
 
+        if settings
+            .info
+            .keyset_refresh_interval_ms
+            .is_some_and(|interval_ms| interval_ms > 0)
+        {
+            tracing::warn!(
+                "[info].keyset_refresh_interval_ms has no effect with a remote signatory; \
+                 set --keyset-refresh-interval-ms on the signatory process instead"
+            );
+        }
+
         return Ok(());
     }
 
@@ -1207,6 +1219,14 @@ fn configure_basic_info(settings: &config::Settings, mint_builder: MintBuilder) 
     }
 
     builder = builder.with_keyset_v2(settings.info.use_keyset_v2);
+
+    builder = builder.with_keyset_refresh_interval(
+        settings
+            .info
+            .keyset_refresh_interval_ms
+            .filter(|interval_ms| *interval_ms > 0)
+            .map(Duration::from_millis),
+    );
 
     builder
 }
