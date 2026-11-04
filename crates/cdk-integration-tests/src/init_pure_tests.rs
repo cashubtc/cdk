@@ -9,6 +9,7 @@ use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use bip39::Mnemonic;
 use cashu::nut00::KnownMethod;
+use cashu::nutxx::MintQuoteByPubkeyRequest;
 use cashu::quote_id::QuoteId;
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::{self, WalletDatabase};
@@ -133,6 +134,34 @@ impl MintConnector for DirectMintConnection {
                 }
             }
         }
+    }
+
+    async fn post_mint_quote_by_pubkey(
+        &self,
+        method: PaymentMethod,
+        request: MintQuoteByPubkeyRequest,
+    ) -> Result<Vec<MintQuoteResponse<String>>, Error> {
+        let response = self
+            .mint
+            .get_mint_quote_by_pubkey(method.clone(), request.pubkeys, request.pubkey_signatures)
+            .await?
+            .into_iter()
+            .map(|r| match r {
+                cdk::mint::MintQuoteResponse::Bolt11(x) => {
+                    MintQuoteResponse::<String>::Bolt11(x.into())
+                }
+                cdk::mint::MintQuoteResponse::Bolt12(x) => MintQuoteResponse::Bolt12(x.into()),
+                cdk::mint::MintQuoteResponse::Onchain(x) => MintQuoteResponse::Onchain(x.into()),
+                cdk::mint::MintQuoteResponse::Custom { response: x, .. } => {
+                    MintQuoteResponse::Custom {
+                        method: method.clone(),
+                        response: x.into(),
+                    }
+                }
+            })
+            .collect();
+
+        Ok(response)
     }
 
     async fn get_mint_quote_status(
