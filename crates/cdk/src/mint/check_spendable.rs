@@ -12,8 +12,15 @@ impl Mint {
         &self,
         check_state: &CheckStateRequest,
     ) -> Result<CheckStateResponse, Error> {
-        // Check max inputs limit
         let ys_count = check_state.ys.len();
+
+        // Nothing to look up. The database rejects an empty IN clause, so answer
+        // here the same way restore does for an empty request.
+        if ys_count == 0 {
+            return Ok(CheckStateResponse { states: Vec::new() });
+        }
+
+        // Check max inputs limit
         if ys_count > self.max_inputs {
             tracing::warn!(
                 "CheckState request exceeds max inputs limit: {} > {}",
@@ -159,6 +166,18 @@ mod tests {
     #[tokio::test]
     async fn test_check_state_returns_witness_for_spent_proofs() {
         assert!(check_state_witness_for_proof_state(State::Spent).await);
+    }
+
+    #[tokio::test]
+    async fn test_check_state_without_ys_returns_no_states() {
+        let mint = create_test_mint().await.unwrap();
+
+        let response = mint
+            .check_state(&CheckStateRequest { ys: vec![] })
+            .await
+            .expect("an empty check state request should succeed");
+
+        assert!(response.states.is_empty());
     }
 
     #[tokio::test]
