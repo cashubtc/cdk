@@ -281,6 +281,13 @@ pub trait QuotesTransaction {
     /// Implementations should call [`mint::MintQuote::take_changes`] to retrieve pending
     /// changes, then persist each payment and issuance record, and finally update the
     /// quote's aggregate counters (`amount_paid`, `amount_issued`) in the database.
+    ///
+    /// The counters must only be updated if the stored row still holds the values the quote
+    /// had before these changes. Otherwise return [`Error::ConcurrentUpdate`], after which the
+    /// caller must roll back the transaction.
+    ///
+    /// The pending changes are consumed even if this fails, so a caller that retries must reload
+    /// the quote first. Calling this again with the same quote writes nothing and returns `Ok`.
     async fn update_mint_quote(
         &mut self,
         quote: &mut Acquired<mint::MintQuote>,

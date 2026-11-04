@@ -955,7 +955,28 @@ where
             return Ok(());
         }
 
-        for payment in changes.payments.take().unwrap_or_default() {
+        let payments = changes.payments.take().unwrap_or_default();
+        let issuances = changes.issuances.take().unwrap_or_default();
+
+        // The counters the stored row must still hold for these changes to apply to it.
+        let expected_paid = payments
+            .iter()
+            .try_fold(quote.amount_paid().value(), |total, payment| {
+                total.checked_sub(payment.amount.value())
+            });
+        let expected_issued = issuances
+            .iter()
+            .try_fold(quote.amount_issued().value(), |total, amount| {
+                total.checked_sub(amount.to_u64())
+            });
+        let (Some(expected_paid), Some(expected_issued)) = (expected_paid, expected_issued) else {
+            return Err(Error::Internal(format!(
+                "mint quote {} has changes larger than its totals",
+                quote.id
+            )));
+        };
+
+        for payment in payments {
             query(
                 r#"
                 INSERT INTO mint_quote_payments
@@ -977,7 +998,7 @@ where
 
         let current_time = unix_time();
 
-        for amount_issued in changes.issuances.take().unwrap_or_default() {
+        for amount_issued in issuances {
             query(
                 r#"
                 INSERT INTO mint_quote_issued
@@ -992,7 +1013,7 @@ where
             .await?;
         }
 
-        query(
+        let affected = query(
             r#"
             UPDATE
                 mint_quote
@@ -1005,6 +1026,8 @@ where
                 END
             WHERE
                 id = :quote_id
+                AND amount_paid = :expected_paid
+                AND amount_issued = :expected_issued
             "#,
         )?
         .bind("quote_id", quote.id.to_string())
@@ -1013,12 +1036,18 @@ where
             i64::try_from(quote.amount_issued().to_u64())?,
         )
         .bind("amount_paid", i64::try_from(quote.amount_paid().to_u64())?)
+        .bind("expected_paid", i64::try_from(expected_paid)?)
+        .bind("expected_issued", i64::try_from(expected_issued)?)
         .bind("current_time", i64::try_from(current_time)?)
         .execute(&self.inner)
         .await
         .inspect_err(|err| {
             tracing::error!("SQL could not update mint quote accounting: {}", err);
         })?;
+
+        if affected != 1 {
+            return Err(Error::ConcurrentUpdate);
+        }
 
         let updated_at = query(
             r#"

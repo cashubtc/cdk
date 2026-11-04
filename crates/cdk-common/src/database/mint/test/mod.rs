@@ -356,6 +356,8 @@ macro_rules! mint_db_test {
             add_mint_quote,
             add_mint_quote_only_once,
             register_payments,
+            update_mint_quote_refuses_stale_amount_paid,
+            update_mint_quote_refuses_stale_amount_issued,
             read_mint_from_db_and_tx,
             get_proofs_by_keyset_id,
             reject_duplicate_payments_same_tx,
