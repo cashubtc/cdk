@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Explicit dependency maintenance; never called during a release build.
+set -euo pipefail
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
+exec nix develop --no-update-lock-file "path:$root#bindings-release-android" \
+    --command python3 "$root/scripts/bindings/lock_dependencies.py" "$root"
