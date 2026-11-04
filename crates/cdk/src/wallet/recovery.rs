@@ -17,7 +17,7 @@
 use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
-use cdk_common::wallet::{ProofInfo, WalletSagaState};
+use cdk_common::wallet::{ProofInfo, SendSagaState, TransactionStatus, WalletSaga, WalletSagaState};
 use cdk_common::BlindedMessage;
 use tracing::instrument;
 
@@ -406,6 +406,19 @@ impl Wallet {
 
         let mut report = RecoveryReport::default();
 
+        // Batched pre-flight for accumulated `Send/TokenCreated` rows:
+        // one chunked NUT-07 pass finalizes the spent ones before the
+        // sequential resume loop runs (see batch_finalize_spent_sends).
+        let (sagas, batch_finalized) = self.batch_finalize_spent_sends(sagas).await?;
+        report.recovered += batch_finalized;
+        if batch_finalized > 0 {
+            tracing::info!(
+                batch_finalized,
+                remaining = sagas.len(),
+                "batch-finalized spent send sagas in chunked NUT-07 passes"
+            );
+        }
+
         for saga in sagas {
             tracing::info!(
                 "Recovering saga {} (kind: {:?}, state: {})",
@@ -468,6 +481,157 @@ impl Wallet {
         );
 
         Ok(report)
+    }
+
+    /// Batched pre-flight for accumulated `Send/TokenCreated` saga rows.
+    ///
+    /// A send saga deliberately outlives `confirm()` — the revoke window
+    /// stays open until the recipient redeems the proofs — and nothing in
+    /// a running wallet finalizes the row when they do, so one row per
+    /// send accumulates over a wallet's life. Without this pass every
+    /// boot re-resumes each of those rows sequentially with an individual
+    /// NUT-07 round-trip (one RTT per row), which compounds badly:
+    /// wallets with a few thousand historical sends have measured
+    /// multi-minute recovery passes at startup.
+    ///
+    /// This pass asks the mint about every candidate's proofs in chunked
+    /// batch requests and applies exactly the spent branch
+    /// `recover_or_complete_send` would: proofs marked `Spent`,
+    /// transaction flipped `Pending -> Completed`, saga row deleted.
+    /// Unspent rows (the revoke window is money), orphaned rows without
+    /// reserved proofs, and every other saga kind are returned untouched
+    /// for the sequential resume paths. A failed batch request degrades
+    /// gracefully: the whole chunk falls through to sequential recovery.
+    async fn batch_finalize_spent_sends(
+        &self,
+        sagas: Vec<WalletSaga>,
+    ) -> Result<(Vec<WalletSaga>, usize), Error> {
+        /// Proof count per NUT-07 request — bounds the payload and gives
+        /// the mint a reasonable work unit.
+        const PROOFS_PER_CHECK: usize = 256;
+
+        let mut candidates = Vec::new();
+        let mut remainder = Vec::new();
+        for saga in sagas {
+            if matches!(
+                saga.state,
+                WalletSagaState::Send(SendSagaState::TokenCreated)
+            ) {
+                candidates.push(saga);
+            } else {
+                remainder.push(saga);
+            }
+        }
+
+        let mut with_proofs = Vec::with_capacity(candidates.len());
+        for saga in candidates {
+            match self.localstore.get_reserved_proofs(&saga.id).await {
+                Ok(proofs) => with_proofs.push((saga, proofs)),
+                Err(e) => {
+                    tracing::warn!(
+                        saga_id = %saga.id,
+                        error = %e,
+                        "batch pre-flight: reserved-proof lookup failed, deferring to sequential recovery"
+                    );
+                    remainder.push(saga);
+                }
+            }
+        }
+
+        let mut finalized = 0usize;
+        let mut live = Vec::with_capacity(with_proofs.len());
+        for (saga, proofs) in with_proofs {
+            if proofs.is_empty() {
+                // Orphaned row, nothing at stake, no network needed —
+                // mirrors `recover_or_complete_send`'s orphan cleanup.
+                self.update_transaction_status_by_saga_id(
+                    saga.id,
+                    TransactionStatus::Completed,
+                )
+                .await?;
+                self.localstore.delete_saga(&saga.id).await?;
+                finalized += 1;
+            } else {
+                live.push((saga, proofs));
+            }
+        }
+
+        let mut chunk: Vec<(WalletSaga, Vec<ProofInfo>)> = Vec::new();
+        let mut chunk_proofs = 0usize;
+        for (saga, proofs) in live {
+            chunk_proofs += proofs.len();
+            chunk.push((saga, proofs));
+            if chunk_proofs >= PROOFS_PER_CHECK {
+                chunk_proofs = 0;
+                finalized += self
+                    .finalize_spent_send_chunk(std::mem::take(&mut chunk), &mut remainder)
+                    .await?;
+            }
+        }
+        if !chunk.is_empty() {
+            finalized += self
+                .finalize_spent_send_chunk(std::mem::take(&mut chunk), &mut remainder)
+                .await?;
+        }
+
+        Ok((remainder, finalized))
+    }
+
+    /// One batched NUT-07 pass over a chunk of send-saga candidates:
+    /// finalize the sagas whose proofs are ALL spent, defer the rest to
+    /// sequential recovery (including the whole chunk, when the mint
+    /// cannot be reached).
+    async fn finalize_spent_send_chunk(
+        &self,
+        chunk: Vec<(WalletSaga, Vec<ProofInfo>)>,
+        remainder: &mut Vec<WalletSaga>,
+    ) -> Result<usize, Error> {
+        let ys: Vec<_> = chunk
+            .iter()
+            .flat_map(|(_, proofs)| proofs.iter().map(|p| p.y))
+            .collect();
+        let spent: HashSet<_> = match self
+            .client
+            .post_check_state(CheckStateRequest { ys })
+            .await
+        {
+            Ok(response) => response
+                .states
+                .into_iter()
+                .filter(|s| s.state == State::Spent)
+                .map(|s| s.y)
+                .collect(),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "batch pre-flight: mint unreachable, deferring chunk to sequential recovery"
+                );
+                for (saga, _) in chunk {
+                    remainder.push(saga);
+                }
+                return Ok(0);
+            }
+        };
+
+        let mut finalized = 0usize;
+        for (saga, proofs) in chunk {
+            if proofs.iter().all(|p| spent.contains(&p.y)) {
+                let ys: Vec<_> = proofs.iter().map(|p| p.y).collect();
+                self.localstore
+                    .update_proofs_state(ys, State::Spent)
+                    .await?;
+                self.update_transaction_status_by_saga_id(
+                    saga.id,
+                    TransactionStatus::Completed,
+                )
+                .await?;
+                self.localstore.delete_saga(&saga.id).await?;
+                finalized += 1;
+            } else {
+                remainder.push(saga);
+            }
+        }
+        Ok(finalized)
     }
 
     /// Recover outputs using stored blinded messages.
@@ -830,6 +994,143 @@ mod tests {
     use cdk_common::Amount;
 
     use crate::wallet::test_utils::*;
+    use crate::Wallet;
+
+    // ---- batched spent-send pre-flight (Send/TokenCreated residue) ----
+
+    async fn seed_send_saga(
+        wallet: &Wallet,
+        saga_id: uuid::Uuid,
+        n_proofs: usize,
+    ) -> Vec<cdk_common::nuts::PublicKey> {
+        use cdk_common::wallet::SendOperationData;
+
+        let keyset_id = wallet.localstore.get_mint_keysets(wallet.mint_url.clone()).await
+            .ok()
+            .and_then(|k| k.and_then(|k| k.first().cloned()))
+            .map(|k| k.id)
+            .unwrap_or_else(test_keyset_id);
+        let saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Send(cdk_common::wallet::SendSagaState::TokenCreated),
+            cdk_common::Amount::from(n_proofs as u64),
+            wallet.mint_url.clone(),
+            wallet.unit.clone(),
+            OperationData::Send(SendOperationData {
+                amount: cdk_common::Amount::from(n_proofs as u64),
+                memo: None,
+                counter_start: None,
+                counter_end: None,
+                token: None,
+                proofs: None,
+            }),
+        );
+        wallet.localstore.add_saga(saga).await.unwrap();
+
+        let mut ys = Vec::new();
+        let mut proofs = Vec::new();
+        for _ in 0..n_proofs {
+            let info = test_proof_info(keyset_id, 1, wallet.mint_url.clone());
+            ys.push(info.y);
+            proofs.push(info);
+        }
+        wallet.localstore.update_proofs(proofs, vec![]).await.unwrap();
+        wallet.localstore.reserve_proofs(ys.clone(), &saga_id).await.unwrap();
+        ys
+    }
+
+    fn spent_states(ys: &[cdk_common::nuts::PublicKey]) -> cdk_common::nuts::CheckStateResponse {
+        cdk_common::nuts::CheckStateResponse {
+            states: ys
+                .iter()
+                .map(|y| cdk_common::nuts::ProofState {
+                    y: *y,
+                    state: cdk_common::nuts::State::Spent,
+                    witness: None,
+                })
+                .collect(),
+        }
+    }
+
+    #[tokio::test]
+    async fn batch_recovery_finalizes_spent_send_sagas() {
+        let db = create_test_db().await;
+        let client = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db, client.clone()).await;
+
+        let mut all_ys = Vec::new();
+        let mut ids = Vec::new();
+        for _ in 0..5 {
+            let id = uuid::Uuid::new_v4();
+            all_ys.extend(seed_send_saga(&wallet, id, 2).await);
+            ids.push(id);
+        }
+        client.set_check_state_response(Ok(spent_states(&all_ys)));
+
+        let report = wallet.recover_incomplete_sagas().await.unwrap();
+
+        // All five finalized in the batched pass: rows gone, recovered
+        // counted, no sequential resumes needed.
+        assert_eq!(report.recovered, 5);
+        for id in ids {
+            assert!(wallet.localstore.get_saga(&id).await.unwrap().is_none());
+        }
+    }
+
+    // The mock consumes each staged check-state response once, so these
+    // two exercise the batched pre-flight helper directly (same-module
+    // private access); the full-pipeline behavior above covers the
+    // happy path through `recover_incomplete_sagas`.
+    #[tokio::test]
+    async fn batch_pre_flight_keeps_unspent_send_sagas_for_the_revoke_window() {
+        let db = create_test_db().await;
+        let client = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db, client.clone()).await;
+
+        let id = uuid::Uuid::new_v4();
+        let ys = seed_send_saga(&wallet, id, 1).await;
+        client.set_check_state_response(Ok(cdk_common::nuts::CheckStateResponse {
+            states: vec![cdk_common::nuts::ProofState {
+                y: ys[0],
+                state: cdk_common::nuts::State::Unspent,
+                witness: None,
+            }],
+        }));
+
+        let sagas = wallet.localstore.get_incomplete_sagas().await.unwrap();
+        let (remainder, finalized) =
+            wallet.batch_finalize_spent_sends(sagas).await.unwrap();
+
+        // Unspent = the revoke window is still money: nothing finalized,
+        // the row is deferred untouched for the sequential path.
+        assert_eq!(finalized, 0);
+        assert_eq!(remainder.len(), 1);
+        assert!(wallet.localstore.get_saga(&id).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn batch_pre_flight_defers_chunk_when_mint_unreachable() {
+        let db = create_test_db().await;
+        let client = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db, client.clone()).await;
+
+        let id = uuid::Uuid::new_v4();
+        seed_send_saga(&wallet, id, 1).await;
+        client.set_check_state_response(Err(crate::Error::Custom(
+            "connection closed".to_string(),
+        )));
+
+        let sagas = wallet.localstore.get_incomplete_sagas().await.unwrap();
+        let (remainder, finalized) =
+            wallet.batch_finalize_spent_sends(sagas).await.unwrap();
+
+        // Degraded gracefully: the whole chunk fell through, nothing
+        // finalized or deleted.
+        assert_eq!(finalized, 0);
+        assert_eq!(remainder.len(), 1);
+        assert!(wallet.localstore.get_saga(&id).await.unwrap().is_some());
+    }
+
 
     #[tokio::test]
     async fn test_partial_output_recovery_validates_response_identities() {
