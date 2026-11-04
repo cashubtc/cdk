@@ -17,20 +17,20 @@ use cdk_common::nuts::{
 };
 use cdk_common::wallet::{MeltQuote, MintQuote};
 use cdk_common::{
-    Amount, CheckStateRequest, CheckStateResponse, MeltQuoteCreateResponse, MeltQuoteRequest,
-    MeltQuoteResponse, MeltRequest, MintQuoteRequest, MintQuoteResponse, MintRequest, MintResponse,
-    RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
+    Amount, AuthToken, CheckStateRequest, CheckStateResponse, MeltQuoteCreateResponse,
+    MeltQuoteRequest, MeltQuoteResponse, MeltRequest, MintQuoteRequest, MintQuoteResponse,
+    MintRequest, MintResponse, RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::fmt::MakeWriter;
 
 use crate::nuts::{
     nut17, nut19, BatchCheckMintQuoteRequest, BatchMintRequest, BlindSignature, BlindedMessage,
-    MeltQuoteBolt11Response, MeltQuoteState, NUT04Settings, NUT05Settings, PaymentMethod,
-    SecretKey, State,
+    MeltQuoteBolt11Response, MeltQuoteState, MintAuthRequest, NUT04Settings, NUT05Settings,
+    PaymentMethod, SecretKey, State,
 };
 use crate::secret::Secret;
-use crate::wallet::{MintConnector, Wallet};
+use crate::wallet::{AuthMintConnector, MintConnector, Wallet};
 use crate::Error;
 
 /// In-memory writer for asserting on tracing output.
@@ -1158,5 +1158,94 @@ impl MintConnector for MockMintConnector {
                 panic!("MockMintConnector: post_batch_mint called without configured response")
             }
         }
+    }
+}
+
+/// A blind auth keyset whose ID is derived from its own keys.
+///
+/// The amounts are shifted off `test_keyset` so the ID differs: reusing them
+/// would make the auth keyset collide with the regular one and overwrite it.
+pub fn test_auth_keyset() -> KeySet {
+    let mut ks = test_keyset();
+    ks.unit = CurrencyUnit::Auth;
+    ks.active = Some(true);
+    let shifted: BTreeMap<_, _> = ks
+        .keys
+        .iter()
+        .map(|(amount, pk)| (Amount::from(amount.to_u64() * 3), *pk))
+        .collect();
+    ks.keys = Keys::new(shifted);
+    ks.id = Id::v1_from_keys(&ks.keys);
+    ks
+}
+
+/// Mock AuthMintConnector serving a single blind auth keyset.
+#[derive(Debug)]
+pub struct MockAuthMintConnector {
+    pub keyset: KeySet,
+}
+
+impl MockAuthMintConnector {
+    pub fn new() -> Self {
+        Self {
+            keyset: test_auth_keyset(),
+        }
+    }
+}
+
+impl Default for MockAuthMintConnector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+impl AuthMintConnector for MockAuthMintConnector {
+    async fn get_auth_token(&self) -> Result<AuthToken, Error> {
+        Ok(AuthToken::ClearAuth("dummy".to_string()))
+    }
+
+    async fn set_auth_token(&self, _token: AuthToken) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn get_mint_info(&self) -> Result<MintInfo, Error> {
+        Ok(MintInfo::default())
+    }
+
+    async fn get_mint_blind_auth_keyset(&self, keyset_id: Id) -> Result<KeySet, Error> {
+        if keyset_id == self.keyset.id {
+            Ok(self.keyset.clone())
+        } else {
+            Err(Error::UnknownKeySet)
+        }
+    }
+
+    async fn get_mint_blind_auth_keysets(&self) -> Result<KeysetResponse, Error> {
+        Ok(KeysetResponse {
+            keysets: vec![KeySetInfo {
+                id: self.keyset.id,
+                unit: CurrencyUnit::Auth,
+                active: true,
+                input_fee_ppk: self.keyset.input_fee_ppk,
+                final_expiry: self.keyset.final_expiry,
+            }],
+        })
+    }
+
+    async fn post_mint_blind_auth(&self, request: MintAuthRequest) -> Result<MintResponse, Error> {
+        Ok(MintResponse {
+            signatures: request
+                .outputs
+                .into_iter()
+                .map(|output| BlindSignature {
+                    amount: output.amount,
+                    keyset_id: output.keyset_id,
+                    c: output.blinded_secret,
+                    dleq: None,
+                })
+                .collect(),
+        })
     }
 }
