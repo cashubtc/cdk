@@ -122,6 +122,7 @@ fn outgoing_payment_failure_response(
     MakePaymentResponse {
         payment_lookup_id,
         payment_proof: None,
+        bolt12_payer_proof_inputs: None,
         status: MeltQuoteState::Failed,
         total_spent: Amount::new(0, unit.clone()),
     }
@@ -465,6 +466,7 @@ impl CdkLdkNode {
         Ok(MakePaymentResponse {
             payment_lookup_id,
             payment_proof,
+            bolt12_payer_proof_inputs: None,
             status,
             total_spent,
         })
@@ -1469,6 +1471,7 @@ impl MintPayment for CdkLdkNode {
                         return Ok(MakePaymentResponse {
                             payment_lookup_id: request_lookup_id.clone(),
                             payment_proof: None,
+                            bolt12_payer_proof_inputs: None,
                             status,
                             total_spent: Amount::new(0, CurrencyUnit::Msat),
                         });
@@ -1479,6 +1482,7 @@ impl MintPayment for CdkLdkNode {
                 return Ok(MakePaymentResponse {
                     payment_lookup_id: request_lookup_id.clone(),
                     payment_proof: None,
+                    bolt12_payer_proof_inputs: None,
                     status: MeltQuoteState::Unknown,
                     total_spent: Amount::new(0, CurrencyUnit::Msat),
                 });

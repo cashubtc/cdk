@@ -273,6 +273,8 @@ pub struct MeltFinalizationData {
     pub payment_lookup_id: PaymentIdentifier,
     /// Optional payment proof / preimage.
     pub payment_proof: Option<String>,
+    /// Optional BOLT 12 payer-proof construction inputs.
+    pub bolt12_payer_proof_inputs: Option<crate::payment::Bolt12PayerProofInputs>,
 }
 
 impl fmt::Debug for MeltFinalizationData {
@@ -284,6 +286,7 @@ impl fmt::Debug for MeltFinalizationData {
                 "payment_proof",
                 &self.payment_proof.as_ref().map(|_| "[REDACTED]"),
             )
+            .field("bolt12_payer_proof_inputs", &self.bolt12_payer_proof_inputs)
             .finish()
     }
 }
@@ -299,6 +302,8 @@ impl Serialize for MeltFinalizationData {
             unit: &'a CurrencyUnit,
             payment_lookup_id: &'a PaymentIdentifier,
             payment_proof: &'a Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            bolt12_payer_proof_inputs: &'a Option<crate::payment::Bolt12PayerProofInputs>,
         }
 
         MeltFinalizationDataSer {
@@ -306,6 +311,7 @@ impl Serialize for MeltFinalizationData {
             unit: self.total_spent.unit(),
             payment_lookup_id: &self.payment_lookup_id,
             payment_proof: &self.payment_proof,
+            bolt12_payer_proof_inputs: &self.bolt12_payer_proof_inputs,
         }
         .serialize(serializer)
     }
@@ -322,6 +328,8 @@ impl<'de> Deserialize<'de> for MeltFinalizationData {
             unit: CurrencyUnit,
             payment_lookup_id: PaymentIdentifier,
             payment_proof: Option<String>,
+            #[serde(default)]
+            bolt12_payer_proof_inputs: Option<crate::payment::Bolt12PayerProofInputs>,
         }
 
         let data = MeltFinalizationDataDe::deserialize(deserializer)?;
@@ -330,6 +338,7 @@ impl<'de> Deserialize<'de> for MeltFinalizationData {
             total_spent: data.total_spent.with_unit(data.unit),
             payment_lookup_id: data.payment_lookup_id,
             payment_proof: data.payment_proof,
+            bolt12_payer_proof_inputs: data.bolt12_payer_proof_inputs,
         })
     }
 }
@@ -890,6 +899,12 @@ pub struct MeltQuote {
     pub expiry: u64,
     /// Payment proof (e.g. Lightning preimage or onchain outpoint)
     pub payment_proof: Option<String>,
+    /// Optional BOLT 12 payer-proof construction inputs.
+    ///
+    /// Present only after a successful BOLT 12 melt when the backend captured
+    /// the paid invoice. The mint uses these to construct a signed `lnp1...`
+    /// proof on demand. Not returned on NUT-25 melt responses.
+    pub bolt12_payer_proof_inputs: Option<crate::payment::Bolt12PayerProofInputs>,
     /// Value used by the payment backend to look up state of request
     pub request_lookup_id: Option<PaymentIdentifier>,
     /// Payment options
@@ -934,6 +949,7 @@ impl fmt::Debug for MeltQuote {
                 "payment_proof",
                 &self.payment_proof.as_ref().map(|_| "[REDACTED]"),
             )
+            .field("bolt12_payer_proof_inputs", &self.bolt12_payer_proof_inputs)
             .field("request_lookup_id", &self.request_lookup_id)
             .field("options", &self.options)
             .field("created_time", &self.created_time)
@@ -984,6 +1000,7 @@ impl MeltQuote {
             state: MeltQuoteState::Unpaid,
             expiry,
             payment_proof: None,
+            bolt12_payer_proof_inputs: None,
             request_lookup_id,
             options,
             created_time: unix_time(),
@@ -1047,6 +1064,7 @@ impl MeltQuote {
             state: MeltQuoteState::Unpaid,
             expiry,
             payment_proof: None,
+            bolt12_payer_proof_inputs: None,
             request_lookup_id,
             options: None,
             created_time: unix_time(),
@@ -1158,6 +1176,7 @@ impl MeltQuote {
         state: MeltQuoteState,
         expiry: u64,
         payment_proof: Option<String>,
+        bolt12_payer_proof_inputs: Option<crate::payment::Bolt12PayerProofInputs>,
         request_lookup_id: Option<PaymentIdentifier>,
         options: Option<MeltOptions>,
         created_time: u64,
@@ -1185,6 +1204,7 @@ impl MeltQuote {
             state,
             expiry,
             payment_proof,
+            bolt12_payer_proof_inputs,
             request_lookup_id,
             options,
             created_time,
@@ -1717,6 +1737,7 @@ mod tests {
             total_spent: Amount::new(102, CurrencyUnit::Sat),
             payment_lookup_id: lookup_id,
             payment_proof: Some(secret.to_string()),
+            bolt12_payer_proof_inputs: None,
         };
 
         for debug in [format!("{quote:?}"), format!("{finalization:?}")] {
@@ -1724,6 +1745,21 @@ mod tests {
             assert!(debug.contains("[REDACTED]"));
             assert!(!debug.contains(secret));
         }
+    }
+
+    #[test]
+    fn melt_finalization_data_deserializes_without_bolt12_payer_proof_inputs() {
+        let lookup_id = PaymentIdentifier::CustomId("public-lookup-id".to_string());
+        let json = serde_json::json!({
+            "total_spent": 102,
+            "unit": "sat",
+            "payment_lookup_id": lookup_id,
+            "payment_proof": "preimage"
+        });
+        let data: MeltFinalizationData =
+            serde_json::from_value(json).expect("legacy saga payload must load");
+        assert_eq!(data.payment_proof.as_deref(), Some("preimage"));
+        assert!(data.bolt12_payer_proof_inputs.is_none());
     }
 
     #[test]
@@ -2318,6 +2354,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             unix_time(),
             None,
             PaymentMethod::Known(cashu::nuts::nut00::KnownMethod::Onchain),
@@ -2375,6 +2412,7 @@ mod tests {
             100,
             MeltQuoteState::Unpaid,
             unix_time() + 3600,
+            None,
             None,
             None,
             None,

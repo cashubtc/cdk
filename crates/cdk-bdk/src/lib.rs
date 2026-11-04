@@ -231,6 +231,7 @@ impl CdkBdk {
         MakePaymentResponse {
             payment_lookup_id: PaymentIdentifier::QuoteId(quote_id.clone()),
             payment_proof: None,
+            bolt12_payer_proof_inputs: None,
             status: MeltQuoteState::Failed,
             total_spent: Amount::new(0, unit.clone()),
         }
@@ -833,6 +834,7 @@ impl MintPayment for CdkBdk {
         Ok(MakePaymentResponse {
             payment_lookup_id: PaymentIdentifier::QuoteId(quote_id),
             payment_proof: None,
+            bolt12_payer_proof_inputs: None,
             status: MeltQuoteState::Pending,
             total_spent: Amount::new(0, unit.clone()),
         })
@@ -985,6 +987,7 @@ impl MintPayment for CdkBdk {
             return Ok(MakePaymentResponse {
                 payment_lookup_id: payment_identifier.clone(),
                 payment_proof: None,
+                bolt12_payer_proof_inputs: None,
                 status,
                 total_spent,
             });
@@ -999,6 +1002,7 @@ impl MintPayment for CdkBdk {
             return Ok(MakePaymentResponse {
                 payment_lookup_id: payment_identifier.clone(),
                 payment_proof: Some(record.outpoint),
+                bolt12_payer_proof_inputs: None,
                 status: MeltQuoteState::Paid,
                 total_spent: Amount::new(record.total_spent_sat, CurrencyUnit::Sat),
             });
@@ -1007,6 +1011,7 @@ impl MintPayment for CdkBdk {
         Ok(MakePaymentResponse {
             payment_lookup_id: payment_identifier.clone(),
             payment_proof: None,
+            bolt12_payer_proof_inputs: None,
             status: MeltQuoteState::Unknown,
             total_spent: Amount::new(0, CurrencyUnit::Sat),
         })
