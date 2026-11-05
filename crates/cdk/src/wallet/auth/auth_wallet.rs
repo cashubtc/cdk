@@ -277,16 +277,20 @@ impl AuthWallet {
         self.load_mint_keysets().await
     }
 
-    /// Get the first active blind auth keyset - always goes online
+    /// Get the active blind auth keyset - always goes online
     ///
     /// This method always goes online to refresh keysets from the mint and then returns
-    /// the first active keyset found. Use this when you need the most up-to-date
-    /// keyset information for blind auth operations.
+    /// the active keyset with the lowest input fee, like the wallet's
+    /// [`active_keyset`](crate::Wallet::active_keyset). Use this when you need the most
+    /// up-to-date keyset information for blind auth operations.
     #[instrument(skip(self))]
     pub async fn fetch_active_keyset(&self) -> Result<KeySetInfo, Error> {
-        let auth_keysets = self.refresh_keysets().await?;
-        let keyset = auth_keysets.first().ok_or(Error::NoActiveKeyset)?;
-        Ok(keyset.clone())
+        self.refresh_keysets()
+            .await?
+            .into_iter()
+            .filter(|keyset| keyset.active)
+            .min_by_key(|keyset| keyset.input_fee_ppk)
+            .ok_or(Error::NoActiveKeyset)
     }
 
     /// Get unspent auth proofs from local database only - offline operation
