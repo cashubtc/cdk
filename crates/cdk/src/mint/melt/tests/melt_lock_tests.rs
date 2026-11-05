@@ -22,8 +22,7 @@ use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription, FakeWallet};
 
 use crate::mint::melt::melt_saga::MeltSaga;
 use crate::mint::melt::shared;
-use crate::mint::saga_recovery;
-use crate::mint::{MeltQuote, Mint, MintBuilder, MintMeltLimits};
+use crate::mint::{saga_recovery, MeltQuote, Mint, MintBuilder, MintMeltLimits};
 use crate::test_helpers::mint::{
     create_test_blinded_messages, create_test_mint, mint_test_proofs, set_fail_for, should_fail_for,
 };
