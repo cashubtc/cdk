@@ -118,6 +118,40 @@ impl Wallet {
         .await
     }
 
+    /// Total of the send outputs of a swap.
+    ///
+    /// Send outputs are always split with [`SplitTarget::default`]. When
+    /// `include_fees` is set they also cover the input fee the receiver pays
+    /// to redeem them.
+    pub(crate) async fn swap_send_amount(
+        &self,
+        active_keyset_id: &Id,
+        fee_and_amounts: &FeeAndAmounts,
+        amount: Option<Amount>,
+        include_fees: bool,
+    ) -> Result<Option<Amount>, Error> {
+        let Some(amount) = amount else {
+            return Ok(None);
+        };
+
+        if !include_fees {
+            return Ok(Some(amount));
+        }
+
+        let split_count = amount
+            .split_targeted(&SplitTarget::default(), fee_and_amounts)?
+            .len();
+
+        let fee_to_redeem = self
+            .get_keyset_count_fee(active_keyset_id, split_count as u64)
+            .await?;
+
+        amount
+            .checked_add(fee_to_redeem)
+            .map(Some)
+            .ok_or(Error::AmountOverflow)
+    }
+
     /// Create Swap Payload
     #[instrument(skip(self, proofs))]
     #[allow(clippy::too_many_arguments)]
@@ -154,28 +188,16 @@ impl Wallet {
             .checked_sub(total_to_subtract)
             .ok_or(Error::InsufficientFunds)?;
 
-        let (send_amount, change_amount) = match include_fees {
-            true => {
-                let split_count = amount
-                    .unwrap_or(Amount::ZERO)
-                    .split_targeted(&SplitTarget::default(), fee_and_amounts)?
-                    .len();
-
-                let fee_to_redeem = self
-                    .get_keyset_count_fee(&active_keyset_id, split_count as u64)
-                    .await?;
-
-                (
-                    amount
-                        .map(|a| a.checked_add(fee_to_redeem).ok_or(Error::AmountOverflow))
-                        .transpose()?,
-                    change_amount
-                        .checked_sub(fee_to_redeem)
-                        .ok_or(Error::InsufficientFunds)?,
-                )
-            }
-            false => (amount, change_amount),
-        };
+        let send_amount = self
+            .swap_send_amount(&active_keyset_id, fee_and_amounts, amount, include_fees)
+            .await?;
+        let fee_to_redeem = send_amount
+            .unwrap_or(Amount::ZERO)
+            .checked_sub(amount.unwrap_or(Amount::ZERO))
+            .ok_or(Error::AmountOverflow)?;
+        let change_amount = change_amount
+            .checked_sub(fee_to_redeem)
+            .ok_or(Error::InsufficientFunds)?;
 
         // If a non None split target is passed use that
         // else use state refill
