@@ -16,6 +16,7 @@ use super::ProofsMethods;
 use crate::nut00::KnownMethod;
 #[cfg(feature = "mint")]
 use crate::quote_id::QuoteId;
+use crate::util::serde_helpers::deserialize_empty_map_as_null;
 use crate::Amount;
 
 /// NUT05 Error
@@ -510,7 +511,12 @@ pub struct MeltQuoteCustomRequest {
     ///
     /// These fields are flattened into the JSON representation, allowing
     /// custom payment methods to include additional data.
-    #[serde(flatten, default, skip_serializing_if = "serde_json::Value::is_null")]
+    #[serde(
+        flatten,
+        default,
+        skip_serializing_if = "serde_json::Value::is_null",
+        deserialize_with = "deserialize_empty_map_as_null"
+    )]
     pub extra: serde_json::Value,
 }
 
@@ -570,7 +576,12 @@ pub struct MeltQuoteCustomResponse<Q> {
     ///
     /// These fields are flattened into the JSON representation, allowing
     /// custom payment methods to include additional data without nesting.
-    #[serde(flatten, default, skip_serializing_if = "serde_json::Value::is_null")]
+    #[serde(
+        flatten,
+        default,
+        skip_serializing_if = "serde_json::Value::is_null",
+        deserialize_with = "deserialize_empty_map_as_null"
+    )]
     pub extra: serde_json::Value,
 }
 
@@ -1104,5 +1115,71 @@ mod tests {
 
         assert_eq!(parsed["fee_reserve"], json!(10));
         assert_eq!(parsed["method"], json!("custom"));
+    }
+
+    #[test]
+    fn custom_melt_quote_extra_round_trips_as_null_when_absent() {
+        let request = MeltQuoteCustomRequest {
+            method: "paypal".to_string(),
+            request: "pay://abc".to_string(),
+            unit: CurrencyUnit::Sat,
+            amount: Some(Amount::from(10)),
+            extra: serde_json::Value::Null,
+        };
+
+        let decoded: MeltQuoteCustomRequest =
+            from_str(&to_string(&request).expect("serializes")).expect("parses");
+        assert_eq!(decoded, request);
+
+        let response = MeltQuoteCustomResponse {
+            quote: "q1".to_string(),
+            method: PaymentMethod::Custom("paypal".to_string()),
+            amount: Amount::from(10),
+            fee_reserve: Some(Amount::from(1)),
+            state: QuoteState::Unpaid,
+            expiry: 9999,
+            payment_preimage: None,
+            change: None,
+            request: Some("pay://abc".to_string()),
+            unit: Some(CurrencyUnit::Sat),
+            extra: serde_json::Value::Null,
+        };
+
+        let decoded: MeltQuoteCustomResponse<String> =
+            from_str(&to_string(&response).expect("serializes")).expect("parses");
+        assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn custom_melt_quote_extra_round_trips_when_populated() {
+        let request = MeltQuoteCustomRequest {
+            method: "paypal".to_string(),
+            request: "pay://abc".to_string(),
+            unit: CurrencyUnit::Sat,
+            amount: Some(Amount::from(10)),
+            extra: json!({"account": "a@b.c"}),
+        };
+
+        let decoded: MeltQuoteCustomRequest =
+            from_str(&to_string(&request).expect("serializes")).expect("parses");
+        assert_eq!(decoded, request);
+
+        let response = MeltQuoteCustomResponse {
+            quote: "q1".to_string(),
+            method: PaymentMethod::Custom("paypal".to_string()),
+            amount: Amount::from(10),
+            fee_reserve: Some(Amount::from(1)),
+            state: QuoteState::Unpaid,
+            expiry: 9999,
+            payment_preimage: None,
+            change: None,
+            request: Some("pay://abc".to_string()),
+            unit: Some(CurrencyUnit::Sat),
+            extra: json!({"settlement_id": "s1", "ref": 42}),
+        };
+
+        let decoded: MeltQuoteCustomResponse<String> =
+            from_str(&to_string(&response).expect("serializes")).expect("parses");
+        assert_eq!(decoded, response);
     }
 }

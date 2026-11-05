@@ -223,6 +223,34 @@ where
     CustomMeltQuoteResponse(String, MeltQuoteCustomResponse<T>),
 }
 
+impl<T> NotificationPayload<T>
+where
+    T: Clone,
+{
+    /// The subscription kind that produced this payload.
+    ///
+    /// Payloads are not self-describing (see [`deserialize_payload_for_kind`]),
+    /// so anything that stores or forwards a payload must keep the kind next to
+    /// it to be able to decode it again.
+    pub fn kind(&self) -> Kind {
+        match self {
+            NotificationPayload::ProofState(_) => Kind::ProofState,
+            NotificationPayload::MintQuoteBolt11Response(_) => Kind::Bolt11MintQuote,
+            NotificationPayload::MeltQuoteBolt11Response(_) => Kind::Bolt11MeltQuote,
+            NotificationPayload::MintQuoteBolt12Response(_) => Kind::Bolt12MintQuote,
+            NotificationPayload::MeltQuoteBolt12Response(_) => Kind::Bolt12MeltQuote,
+            NotificationPayload::MintQuoteOnchainResponse(_) => Kind::OnchainMintQuote,
+            NotificationPayload::MeltQuoteOnchainResponse(_) => Kind::OnchainMeltQuote,
+            NotificationPayload::CustomMintQuoteResponse(method, _) => {
+                Kind::Custom(format!("{method}_mint_quote"))
+            }
+            NotificationPayload::CustomMeltQuoteResponse(method, _) => {
+                Kind::Custom(format!("{method}_melt_quote"))
+            }
+        }
+    }
+}
+
 fn fill_response_method<E>(value: &mut serde_json::Value, method: &str) -> Result<(), E>
 where
     E: DeError,
