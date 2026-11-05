@@ -256,6 +256,115 @@ where
     assert_eq!(states[1], Some(State::Spent));
 }
 
+/// Proofs kept past their transaction can't overwrite a state stored since.
+pub async fn update_proofs_state_refuses_stale_state<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    let keyset_id = setup_keyset(&db).await;
+    let proofs = vec![Proof {
+        amount: Amount::from(100),
+        keyset_id,
+        secret: Secret::generate(),
+        c: SecretKey::generate().public_key(),
+        witness: None,
+        dleq: None,
+        p2pk_e: None,
+    }];
+    let ys: Vec<_> = proofs.iter().map(|p| p.y().unwrap()).collect();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut stale = tx
+        .add_proofs(
+            proofs,
+            None,
+            &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut current = tx.get_proofs(&ys).await.unwrap();
+    tx.update_proofs_state(&mut current, State::Pending)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let err = tx
+        .update_proofs_state(&mut stale, State::Spent)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::ConcurrentUpdate), "{err}");
+    tx.rollback().await.unwrap();
+
+    assert_eq!(
+        db.get_proofs_states(&ys).await.unwrap(),
+        vec![Some(State::Pending)]
+    );
+}
+
+/// The update is refused if even one of the proofs has moved on.
+pub async fn update_proofs_state_refuses_partially_stale_state<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    let keyset_id = setup_keyset(&db).await;
+    let proofs = vec![
+        Proof {
+            amount: Amount::from(100),
+            keyset_id,
+            secret: Secret::generate(),
+            c: SecretKey::generate().public_key(),
+            witness: None,
+            dleq: None,
+            p2pk_e: None,
+        },
+        Proof {
+            amount: Amount::from(200),
+            keyset_id,
+            secret: Secret::generate(),
+            c: SecretKey::generate().public_key(),
+            witness: None,
+            dleq: None,
+            p2pk_e: None,
+        },
+    ];
+    let ys: Vec<_> = proofs.iter().map(|p| p.y().unwrap()).collect();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut stale = tx
+        .add_proofs(
+            proofs,
+            None,
+            &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut current = tx.get_proofs(&ys[..1]).await.unwrap();
+    tx.update_proofs_state(&mut current, State::Pending)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let err = tx
+        .update_proofs_state(&mut stale, State::Spent)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::ConcurrentUpdate), "{err}");
+    tx.rollback().await.unwrap();
+
+    assert_eq!(
+        db.get_proofs_states(&ys).await.unwrap(),
+        vec![Some(State::Pending), Some(State::Unspent)]
+    );
+}
+
 /// Test that update_proofs_state updates the ProofsWithState.state field
 pub async fn update_proofs_state_updates_proofs_with_state<DB>(db: DB)
 where

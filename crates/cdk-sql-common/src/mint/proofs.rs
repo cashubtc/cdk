@@ -206,11 +206,18 @@ where
     ) -> Result<(), Self::Err> {
         let ys = proofs.ys()?;
 
-        query(r#"UPDATE proof SET state = :new_state WHERE y IN (:ys)"#)?
-            .bind("new_state", new_state.to_string())
-            .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
-            .execute(&self.inner)
-            .await?;
+        let affected = query(
+            r#"UPDATE proof SET state = :new_state WHERE y IN (:ys) AND state = :old_state"#,
+        )?
+        .bind("new_state", new_state.to_string())
+        .bind("old_state", proofs.state.to_string())
+        .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
+        .execute(&self.inner)
+        .await?;
+
+        if affected != ys.len() {
+            return Err(Error::ConcurrentUpdate);
+        }
 
         if new_state == State::Spent {
             query(
