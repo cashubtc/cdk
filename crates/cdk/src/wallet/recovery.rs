@@ -1092,6 +1092,7 @@ mod tests {
                         counter_end: Some(output_count as u32),
                         amount: Some(amount),
                         blinded_messages: Some(outputs.clone()),
+                        replaced_proofs: Vec::new(),
                     }),
                 ),
                 _ => (
@@ -1231,6 +1232,7 @@ mod tests {
                 counter_end: None,
                 amount: Some(Amount::from(100)),
                 blinded_messages: None,
+                replaced_proofs: Vec::new(),
             }),
         );
         db.add_saga(saga).await.unwrap();
@@ -1816,6 +1818,7 @@ mod tests {
                 counter_end: None,
                 amount: Some(Amount::from(100)),
                 blinded_messages: None,
+                replaced_proofs: Vec::new(),
             }),
         );
         db.add_saga(saga_1).await.unwrap();
@@ -1833,6 +1836,7 @@ mod tests {
                 counter_end: None,
                 amount: Some(Amount::from(100)),
                 blinded_messages: None,
+                replaced_proofs: Vec::new(),
             }),
         );
         db.add_saga(saga_2).await.unwrap();
@@ -1850,6 +1854,7 @@ mod tests {
                 counter_end: None,
                 amount: Some(Amount::from(100)),
                 blinded_messages: None,
+                replaced_proofs: Vec::new(),
             }),
         );
         db.add_saga(saga_3).await.unwrap();

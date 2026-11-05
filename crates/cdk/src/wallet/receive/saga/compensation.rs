@@ -3,10 +3,12 @@
 //! When a saga step fails, compensating actions execute in reverse order (LIFO)
 //! to undo completed steps and restore the database to its pre-saga state.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use cdk_common::database::{self, WalletDatabase};
+use cdk_common::wallet::ProofInfo;
 use tracing::instrument;
 
 use crate::nuts::PublicKey;
@@ -16,13 +18,17 @@ use crate::Error;
 /// Compensation action to remove pending proofs that were stored during receive.
 ///
 /// This compensation is used when receive fails after proofs have been stored
-/// in Pending state (before the swap is executed). It removes those proofs
-/// and deletes the saga record.
+/// in Pending state (before the swap is executed). It removes those proofs,
+/// puts back the rows the wallet stored for them before the receive, and
+/// deletes the saga record.
 pub struct RemovePendingProofs {
     /// Database reference
     pub localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
     /// Y values (public keys) of the pending proofs to remove
     pub proof_ys: Vec<PublicKey>,
+    /// Rows the wallet stored for these proofs before the receive. They are
+    /// written back unchanged instead of being removed.
+    pub restore_proofs: Vec<ProofInfo>,
     /// Saga ID for cleanup
     pub saga_id: uuid::Uuid,
 }
@@ -37,8 +43,16 @@ impl CompensatingAction for RemovePendingProofs {
             self.proof_ys.len()
         );
 
+        let restored_ys: HashSet<PublicKey> = self.restore_proofs.iter().map(|p| p.y).collect();
+        let removed_ys = self
+            .proof_ys
+            .iter()
+            .filter(|y| !restored_ys.contains(y))
+            .copied()
+            .collect();
+
         self.localstore
-            .update_proofs(vec![], self.proof_ys.clone())
+            .update_proofs(self.restore_proofs.clone(), removed_ys)
             .await
             .map_err(Error::Database)?;
 
@@ -85,6 +99,7 @@ mod tests {
                 counter_start: Some(0),
                 counter_end: Some(10),
                 blinded_messages: None,
+                replaced_proofs: Vec::new(),
             }),
         )
     }
@@ -106,6 +121,7 @@ mod tests {
         let compensation = RemovePendingProofs {
             localstore: db.clone(),
             proof_ys: vec![proof_y],
+            restore_proofs: Vec::new(),
             saga_id,
         };
 
@@ -134,6 +150,7 @@ mod tests {
         let compensation = RemovePendingProofs {
             localstore: db.clone(),
             proof_ys: vec![proof_y],
+            restore_proofs: Vec::new(),
             saga_id,
         };
 
@@ -168,6 +185,7 @@ mod tests {
         let compensation = RemovePendingProofs {
             localstore: db.clone(),
             proof_ys: vec![proof_y_1],
+            restore_proofs: Vec::new(),
             saga_id,
         };
         compensation.execute().await.unwrap();

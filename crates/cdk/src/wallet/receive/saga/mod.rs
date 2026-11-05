@@ -307,9 +307,13 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             })
             .collect::<Result<Vec<ProofInfo>, _>>()?;
 
-        self.wallet
+        // The wallet may already store some of these proofs, for example when
+        // it receives a token it sent itself. Keep those rows so a failed
+        // receive can put them back rather than delete proofs it still owns.
+        let replaced_proofs = self
+            .wallet
             .localstore
-            .update_proofs(proofs_info.clone(), vec![])
+            .get_proofs_by_ys(proofs_ys.clone())
             .await?;
 
         let mut saga = WalletSaga::new(
@@ -324,16 +328,25 @@ impl<'a> ReceiveSaga<'a, Prepared> {
                 counter_end: None,
                 amount: Some(self.state_data.proofs_amount),
                 blinded_messages: None,
+                replaced_proofs: replaced_proofs.clone(),
             }),
         );
 
+        // Persist the saga, and with it the replaced rows, before overwriting
+        // them, so recovery can restore them after a crash
         self.wallet.localstore.add_saga(saga.clone()).await?;
+
+        self.wallet
+            .localstore
+            .update_proofs(proofs_info.clone(), vec![])
+            .await?;
 
         add_compensation(
             &mut self.compensations,
             Box::new(RemovePendingProofs {
                 localstore: self.wallet.localstore.clone(),
                 proof_ys: proofs_info.iter().map(|p| p.y).collect(),
+                restore_proofs: replaced_proofs,
                 saga_id: operation_id,
             }),
         )

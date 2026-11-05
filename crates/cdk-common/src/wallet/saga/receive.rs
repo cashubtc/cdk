@@ -5,6 +5,7 @@ use core::fmt;
 use cashu::BlindedMessage;
 use serde::{Deserialize, Serialize};
 
+use crate::wallet::ProofInfo;
 use crate::{Amount, Error};
 
 /// States specific to receive saga
@@ -54,6 +55,14 @@ pub struct ReceiveOperationData {
     /// we can use these to query the mint for signatures and reconstruct proofs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blinded_messages: Option<Vec<BlindedMessage>>,
+    /// Rows the wallet already stored for the received proofs, such as the
+    /// proofs of a token it sent and has not seen claimed yet.
+    ///
+    /// Receive marks every incoming proof as pending for this operation, which
+    /// replaces those rows. Compensation puts them back instead of deleting the
+    /// proofs, which are still unspent at the mint.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub replaced_proofs: Vec<ProofInfo>,
 }
 
 impl fmt::Debug for ReceiveOperationData {
@@ -67,6 +76,7 @@ impl fmt::Debug for ReceiveOperationData {
                 "blinded_message_count",
                 &self.blinded_messages.as_ref().map(Vec::len),
             )
+            .field("replaced_proof_count", &self.replaced_proofs.len())
             .finish()
     }
 }
@@ -93,6 +103,7 @@ mod tests {
             counter_end: Some(5),
             amount: Some(Amount::from(1)),
             blinded_messages: None,
+            replaced_proofs: Vec::new(),
         };
 
         let data_debug = format!("{data:?}");
