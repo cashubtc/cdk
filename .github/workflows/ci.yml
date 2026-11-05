@@ -149,7 +149,7 @@ jobs:
           if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
             checks='["pr-unit-tests","pr-feature-tests","core-cashu","core-sdk-baseline","core-sdk-wallet","core-sdk-mint"]'
             msrv_checks='["msrv-cdk-all-features"]'
-            wasm_checks='["wasm-cdk-wallet"]'
+            wasm_checks='["wasm-cdk-wallet","wasm-cdk-common-tests"]'
           fi
           {
             echo "examples=$examples"

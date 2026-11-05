@@ -951,11 +951,67 @@
           "cdk-wallet" = "-p cdk --no-default-features --features wallet";
         };
 
+        # wasm-bindgen refuses a CLI built for a different schema version, and
+        # nixpkgs only packages some versions, so the CLI comes from the crate at
+        # whatever version the lockfile resolved. On a bump, fetchCrate and then
+        # fetchCargoVendor each fail with the hash to paste in.
+        wasmBindgenCli =
+          let
+            lock = builtins.fromTOML (builtins.readFile ./Cargo.lock);
+            version =
+              (builtins.head
+                (builtins.filter (p: p.name == "wasm-bindgen") lock.package)
+              ).version;
+          in
+          pkgsUnstable.buildWasmBindgenCli rec {
+            src = pkgsUnstable.fetchCrate {
+              pname = "wasm-bindgen-cli";
+              inherit version;
+              hash = "sha256-9Og1O/6/VC3sc5hBjoIWBErmLW2UHGMsTQO+6+m/dng=";
+            };
+
+            cargoDeps = pkgsUnstable.rustPlatform.fetchCargoVendor {
+              inherit src;
+              inherit (src) pname version;
+              hash = "sha256-j81sUf1m5yXU4FJfGj7GV+hdqVCV8mRmNb0QIsMCjqw=";
+            };
+          };
+
+        # secp256k1-sys and minicov compile C for wasm32 and carry their own
+        # headers, but the native stdenv CC emits host objects that only fail once
+        # a wasm test binary is linked, which the library-only checks never do.
+        wasmEnv = {
+          CC_wasm32_unknown_unknown = "${pkgs.llvmPackages.clang-unwrapped}/bin/clang";
+          AR_wasm32_unknown_unknown = "${pkgs.llvmPackages.llvm}/bin/llvm-ar";
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER = "wasm-bindgen-test-runner";
+        };
+
+        # Unlike the wasm build checks this links and runs a real wasm binary, so
+        # it needs the cross compiler settings and node.
+        wasmTests = craneLib.cargoTest (
+          {
+            inherit src version cargoVendorDir;
+            pname = "cdk-wasm-tests";
+            cargoArtifacts = workspaceDeps;
+            cargoExtraArgs = "-p cdk-common --target wasm32-unknown-unknown";
+            cargoTestExtraArgs = "--lib";
+            nativeBuildInputs = [
+              pkgs.pkg-config
+              pkgs.nodejs
+              wasmBindgenCli
+            ];
+            buildInputs = [ ];
+            doInstallCargoArtifacts = false;
+          }
+          // wasmEnv
+        );
+
         # Common inputs
         envVars = {
           # rust analyzer needs  NIX_PATH for some reason.
           NIX_PATH = "nixpkgs=${inputs.nixpkgs}";
-        };
+        }
+        // wasmEnv;
 
         baseBuildInputs =
           with pkgs;
@@ -977,6 +1033,10 @@
             cargo-mutants
             cargo-fuzz
             cargo-nextest
+
+            # wasm-bindgen-test-runner drives the wasm tests through node
+            nodejs
+            wasmBindgenCli
 
             # Database
             postgresql_16
@@ -1667,6 +1727,8 @@
               exampleChecks
           ))
           // {
+            wasm-cdk-common-tests = wasmTests;
+
             # PRs run the default unit suite once; alternate feature combinations
             # remain in the full matrix. PostgreSQL has a separate service job.
             pr-unit-tests = craneLib.mkCargoDerivation (

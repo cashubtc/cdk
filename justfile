@@ -653,6 +653,7 @@ update-msrv-lock:
         cargo_update icu_normalizer --precise 2.0.1
         cargo_update icu_provider --precise 2.1.1
         cargo_update icu_locale_core --precise 2.1.1
+        cargo_update psm --precise 0.1.27
         cp "$lock_dir/Cargo.lock" Cargo.lock.msrv
         echo "Updated Cargo.lock.msrv for MSRV 1.85.0"
     '
@@ -787,6 +788,7 @@ check-wasm *ARGS="--target wasm32-unknown-unknown":
     "-p cdk --no-default-features"
     "-p cdk --no-default-features --features wallet"
     "-p cdk --no-default-features --features mint"
+    "-p cdk-common"
   )
 
   for arg in "${buildargs[@]}"; do
@@ -794,6 +796,31 @@ check-wasm *ARGS="--target wasm32-unknown-unknown":
     cargo check $arg {{ARGS}}
     echo
   done
+
+# Run the cdk-common wasm unit tests under Node. The flake provides the matching
+# wasm-bindgen-cli, so run this from `nix develop`.
+test-wasm *ARGS:
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  if [ ! -f Cargo.toml ]; then
+    cd {{invocation_directory()}}
+  fi
+
+  wanted=$(cargo pkgid wasm-bindgen | sed 's/.*[@#]//')
+  have=$(wasm-bindgen --version 2>/dev/null | awk '{print $2}' || true)
+
+  if [ "$have" != "$wanted" ]; then
+    echo "need wasm-bindgen-cli $wanted, found ${have:-none}." >&2
+    echo "The flake pins a matching one; run this inside the Nix environment:" >&2
+    echo "  nix develop .#stable --command just test-wasm" >&2
+    echo "Or run the sandboxed check directly:" >&2
+    echo "  nix build -L .#checks.x86_64-linux.wasm-cdk-common-tests" >&2
+    exit 1
+  fi
+
+  export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner
+  cargo test -p cdk-common --lib --target wasm32-unknown-unknown {{ARGS}}
 
 # Publish release crates; --skip-ci overrides the green-CI requirement.
 release *ARGS:
