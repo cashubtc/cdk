@@ -138,7 +138,12 @@ async fn test_concurrent_sends_isolated() -> Result<()> {
 
     // Verify final balance is correct
     let final_balance = wallet.total_balance().await?;
-    assert_eq!(final_balance, initial_amount - Amount::from(700));
+    assert_eq!(
+        final_balance,
+        initial_amount
+            .checked_sub(Amount::from(700))
+            .expect("balance")
+    );
 
     Ok(())
 }
@@ -465,7 +470,10 @@ async fn test_melt_swap_gap_recovery() -> Result<()> {
     // We only need to swap for the amount + reserve, change will handle the rest.
     // Including input_fee in target request causes us to request more than we have available
     // (since input_fee is deducted from inputs).
-    let target_swap_amount = melt_quote.amount + melt_quote.fee_reserve;
+    let target_swap_amount = melt_quote
+        .amount
+        .checked_add(melt_quote.fee_reserve)
+        .expect("target");
 
     tracing::info!("Simulating swap for amount: {}", target_swap_amount);
 
@@ -531,7 +539,10 @@ async fn test_melt_swap_gap_recovery() -> Result<()> {
         "Balance should have decreased by fee"
     );
     assert!(
-        current_balance > Amount::from(initial_amount) - Amount::from(50),
+        current_balance
+            > Amount::from(initial_amount)
+                .checked_sub(Amount::from(50))
+                .expect("balance"),
         "Fee shouldn't be huge. Initial: {}, Current: {}",
         initial_amount,
         current_balance

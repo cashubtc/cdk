@@ -79,8 +79,11 @@ impl PreparedSend<'_> {
     }
 
     /// Total fee (swap + send)
+    ///
+    /// Saturates rather than erroring: both operands come from the checked
+    /// `calculate_fee`, and this getter is infallible because `Debug` uses it.
     pub fn fee(&self) -> Amount {
-        self.swap_fee + self.send_fee
+        self.swap_fee.saturating_add(self.send_fee)
     }
 
     /// Confirm the prepared send and create a token
@@ -404,7 +407,9 @@ pub(crate) fn split_proofs_for_send(
 
         // Check if swap is actually needed
         if !proofs_to_swap.is_empty() {
-            let swap_output_needed = (amount + send_fee)
+            let swap_output_needed = amount
+                .checked_add(send_fee)
+                .ok_or(Error::AmountOverflow)?
                 .checked_sub(proofs_to_send.total_amount()?)
                 .unwrap_or(Amount::ZERO);
 

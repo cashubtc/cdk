@@ -881,7 +881,9 @@ async fn test_p2pk_sig_all_mixed_proofs_different_data() {
 
     // Step 7: Try to spend Alice's and Bob's proofs together in one transaction (should FAIL!)
     // This violates NUT-11 requirement that all SIG_ALL proofs must have same data
-    let total_amount = alice_input_amount + bob_input_amount;
+    let total_amount = alice_input_amount
+        .checked_add(bob_input_amount)
+        .expect("total");
     let (new_outputs, _) = create_test_blinded_messages(mint, total_amount)
         .await
         .unwrap();

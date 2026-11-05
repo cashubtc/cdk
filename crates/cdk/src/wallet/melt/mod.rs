@@ -553,8 +553,11 @@ impl<'a> PreparedMelt<'a> {
     }
 
     /// Get the total fee (with swap, if applicable)
+    ///
+    /// Saturates rather than erroring: both operands come from the checked
+    /// `calculate_fee`, and this getter is infallible because `Debug` uses it.
     pub fn total_fee(&self) -> Amount {
-        self.saga.swap_fee() + self.saga.input_fee()
+        self.saga.swap_fee().saturating_add(self.saga.input_fee())
     }
 
     /// Returns true if a swap would be performed (proofs_to_swap is not empty)
@@ -563,8 +566,10 @@ impl<'a> PreparedMelt<'a> {
     }
 
     /// Get the total fee if swap is performed (current default behavior)
+    ///
+    /// Saturates for the same reason as [`Self::total_fee`].
     pub fn total_fee_with_swap(&self) -> Amount {
-        self.saga.swap_fee() + self.saga.input_fee()
+        self.saga.swap_fee().saturating_add(self.saga.input_fee())
     }
 
     /// Get the input fee if swap is skipped (fee on all proofs sent directly)
@@ -581,12 +586,17 @@ impl<'a> PreparedMelt<'a> {
 
     /// Get the expected change amount if swap is skipped
     pub fn change_amount_without_swap(&self) -> Amount {
-        let all_proofs_total = self.saga.proofs().total_amount().unwrap_or(Amount::ZERO)
-            + self
-                .saga
-                .proofs_to_swap()
-                .total_amount()
-                .unwrap_or(Amount::ZERO);
+        let all_proofs_total = self
+            .saga
+            .proofs()
+            .total_amount()
+            .unwrap_or(Amount::ZERO)
+            .saturating_add(
+                self.saga
+                    .proofs_to_swap()
+                    .total_amount()
+                    .unwrap_or(Amount::ZERO),
+            );
         let quote = self.saga.quote();
         let needed = quote
             .amount
@@ -1019,7 +1029,9 @@ impl Wallet {
                     || next_amount >= upper
                     || attempted_amounts.contains(&next_amount)
                 {
-                    next_amount = Amount::from(lower_value + (upper_value - lower_value) / 2);
+                    next_amount = Amount::from(
+                        lower_value.saturating_add(upper_value.saturating_sub(lower_value) / 2),
+                    );
                 }
             }
 

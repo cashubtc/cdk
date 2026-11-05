@@ -128,7 +128,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let total = wallet.total_balance().await?;
-    let expected_total = amount_1 + amount_2;
+    let expected_total = amount_1.checked_add(amount_2).expect("total");
 
     println!(
         "\n   Total: {} sats (expected: {} sats)",

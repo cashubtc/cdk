@@ -139,10 +139,11 @@ pub async fn create_invoice_for_env(amount_sat: Option<u64>) -> Result<String> {
             .map_err(|e| anyhow!("Failed to create regtest invoice: {}", e))
     } else {
         // Not in regtest mode, create a fake invoice
-        let fake_invoice = create_fake_invoice(
-            amount_sat.expect("Amount must be defined") * 1_000,
-            "".to_string(),
-        );
+        let amount_msat = amount_sat
+            .expect("Amount must be defined")
+            .checked_mul(1_000)
+            .ok_or_else(|| anyhow!("amount is too large to express in millisatoshis"))?;
+        let fake_invoice = create_fake_invoice(amount_msat, "".to_string());
         Ok(fake_invoice.to_string())
     }
 }

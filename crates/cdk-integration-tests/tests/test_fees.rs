@@ -131,7 +131,12 @@ async fn test_fake_melt_change_in_quote() {
         .unwrap();
     let melt = prepared.confirm().await.unwrap();
     let change = melt.change().unwrap().total_amount().unwrap();
-    let idk = proofs.total_amount().unwrap() - Amount::from(invoice_amount) - change;
+    let idk = proofs
+        .total_amount()
+        .unwrap()
+        .checked_sub(Amount::from(invoice_amount))
+        .and_then(|b| b.checked_sub(change))
+        .expect("remainder");
 
     println!("{}", idk);
     println!("{}", fee_breakdown.total);
