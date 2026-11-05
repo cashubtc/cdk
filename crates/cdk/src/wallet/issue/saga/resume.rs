@@ -19,12 +19,9 @@ use cdk_common::wallet::{
 use cdk_common::{Amount, PaymentMethod};
 use tracing::instrument;
 
-use crate::dhke::{construct_proofs, hash_to_curve};
-use crate::nuts::{MintRequest, PreMintSecrets, State};
+use crate::dhke::hash_to_curve;
+use crate::nuts::{MintRequest, PreMintSecrets};
 use crate::util::unix_time;
-use crate::wallet::blind_signature::{
-    validate_mint_response_signatures, SignatureAmountValidation,
-};
 use crate::wallet::issue::saga::compensation::ReleaseMintQuote;
 use crate::wallet::issue::saga::state::PreparedMintRequest;
 use crate::wallet::recovery::{OutputRecoveryMode, OutputRecoveryResult, RecoveryAction};
@@ -495,50 +492,16 @@ impl Wallet {
                 }
             };
 
-            let keyset_id = blinded_messages[0].keyset_id;
-
-            let premint_secrets = crate::nuts::PreMintSecrets::restore_batch(
-                keyset_id,
-                &self.seed,
-                counter_start,
-                counter_end,
-            )?;
-
-            let keys = self.keyset(keyset_id).await?.keys;
-
-            validate_mint_response_signatures(
-                self,
-                &mint_response.signatures,
-                blinded_messages.iter(),
-                SignatureAmountValidation::Exact,
-            )
-            .await?;
-
-            let proofs = construct_proofs(
-                mint_response.signatures,
-                premint_secrets.rs(),
-                premint_secrets.secrets(),
-                &keys,
-            )?;
-
-            let proof_infos: Vec<ProofInfo> = proofs
-                .into_iter()
-                .zip(&premint_secrets.secrets)
-                .map(|(p, premint)| {
-                    let proof_info = ProofInfo::new(
-                        p,
-                        self.mint_url.clone(),
-                        State::Unspent,
-                        self.unit.clone(),
-                    )?;
-                    Ok::<_, Error>(match premint.derivation_index {
-                        Some(index) => proof_info.with_derivation_index(index),
-                        None => proof_info,
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-
-            return Ok(Some(proof_infos));
+            return self
+                .construct_replayed_proofs(
+                    saga_id,
+                    "Issue",
+                    mint_response.signatures,
+                    blinded_messages,
+                    counter_start,
+                    counter_end,
+                )
+                .await;
         }
 
         // Single quote replay (existing logic)
@@ -635,46 +598,15 @@ impl Wallet {
             }
         };
 
-        let keyset_id = blinded_messages[0].keyset_id;
-
-        let premint_secrets = crate::nuts::PreMintSecrets::restore_batch(
-            keyset_id,
-            &self.seed,
+        self.construct_replayed_proofs(
+            saga_id,
+            "Issue",
+            mint_response.signatures,
+            blinded_messages,
             counter_start,
             counter_end,
-        )?;
-
-        let keys = self.keyset(keyset_id).await?.keys;
-
-        validate_mint_response_signatures(
-            self,
-            &mint_response.signatures,
-            blinded_messages.iter(),
-            SignatureAmountValidation::Exact,
         )
-        .await?;
-
-        let proofs = construct_proofs(
-            mint_response.signatures,
-            premint_secrets.rs(),
-            premint_secrets.secrets(),
-            &keys,
-        )?;
-
-        let proof_infos: Vec<ProofInfo> = proofs
-            .into_iter()
-            .zip(&premint_secrets.secrets)
-            .map(|(p, premint)| {
-                let proof_info =
-                    ProofInfo::new(p, self.mint_url.clone(), State::Unspent, self.unit.clone())?;
-                Ok::<_, Error>(match premint.derivation_index {
-                    Some(index) => proof_info.with_derivation_index(index),
-                    None => proof_info,
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-
-        Ok(Some(proof_infos))
+        .await
     }
 
     /// Compensate an issue saga by releasing the quote and deleting the saga.
