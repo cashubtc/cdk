@@ -40,7 +40,7 @@ use crate::nuts::nut18::Nut10SecretRequest;
 use crate::nuts::{CurrencyUnit, Nut10Secret, PaymentMethod, Transport};
 #[cfg(feature = "nostr")]
 use crate::wallet::ReceiveOptions;
-use crate::wallet::{SendOptions, WalletRepository};
+use crate::wallet::{SendKind, SendOptions, WalletRepository};
 use crate::Wallet;
 
 /// Optional limits that callers can check before confirming a prepared NUT-18
@@ -69,6 +69,7 @@ pub struct PreparedPaymentRequest {
     method: Option<String>,
     method_fee: Amount,
     payment_amount: Amount,
+    send_amount: Amount,
     swap_fee: Amount,
     send_fee: Amount,
     input_fee: Amount,
@@ -125,7 +126,7 @@ impl PreparedPaymentRequest {
         self.method_fee
     }
 
-    /// Requested amount plus the applicable method fee.
+    /// Minimum recipient value: requested amount plus the applicable method fee.
     pub fn payment_amount(&self) -> Amount {
         self.payment_amount
     }
@@ -145,7 +146,7 @@ impl PreparedPaymentRequest {
         self.input_fee
     }
 
-    /// Total amount deducted from the wallet.
+    /// Total wallet debit, including any required denomination rounding.
     pub fn total_amount(&self) -> Amount {
         self.total_amount
     }
@@ -169,7 +170,7 @@ impl PreparedPaymentRequest {
             .wallet
             .confirm_send(
                 operation_id,
-                self.payment_amount,
+                self.send_amount,
                 self.send_options,
                 self.proofs_to_swap,
                 self.proofs_to_send,
@@ -327,12 +328,25 @@ impl Wallet {
 
         ensure_wallet_can_deliver(self, &transport)?;
 
+        // NUT-18 permits denomination rounding above the requested net value.
+        // Keep that separate from the exact-send API and from actual input fees.
+        let keyset = self.active_keyset().await?;
+        let policy = self.get_keyset_fees_and_amounts_by_id(keyset.id).await?;
+        let split = payment_amount.split_with_fee(&policy)?;
+        // Existing proofs may cover the minimum without a swap. Permit net
+        // surplus within the candidate's fee/rounding allowance; the full debit
+        // is quoted and remains subject to the caller's total-amount limit.
+        let tolerance = Amount::try_sum(split.iter().copied())?
+            .checked_sub(payment_amount)
+            .ok_or(Error::InsufficientFunds)?;
+
         let prepared_send = self
             .prepare_send(
                 payment_amount,
                 SendOptions {
                     conditions,
                     include_fee: true,
+                    send_kind: SendKind::OnlineTolerance(tolerance),
                     ..Default::default()
                 },
             )
@@ -348,7 +362,7 @@ impl Wallet {
                 return Err(Error::AmountOverflow);
             }
         };
-        let total_amount = match payment_amount.checked_add(input_fee) {
+        let total_amount = match prepared_send.amount().checked_add(input_fee) {
             Some(total_amount) => total_amount,
             None => {
                 prepared_send.cancel().await?;
@@ -365,6 +379,7 @@ impl Wallet {
             method: selected_method.method,
             method_fee,
             payment_amount,
+            send_amount: prepared_send.amount(),
             swap_fee: prepared_send.swap_fee(),
             send_fee: prepared_send.send_fee(),
             input_fee,

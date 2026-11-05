@@ -3,6 +3,7 @@
 //! This module provides functionality for swapping proofs.
 
 use cdk_common::amount::FeeAndAmounts;
+use cdk_common::wallet::SendOutputPlan;
 use cdk_common::Id;
 use tracing::instrument;
 
@@ -30,6 +31,13 @@ pub(crate) enum ProofReservation {
     Skip,
 }
 
+/// Frozen outputs and reservation owner of a nested send swap.
+#[derive(Debug, Clone)]
+pub(crate) struct SwapSendPlan {
+    pub output: SendOutputPlan,
+    pub owner: uuid::Uuid,
+}
+
 impl Wallet {
     /// Swap proofs using the saga pattern.
     ///
@@ -53,6 +61,7 @@ impl Wallet {
             include_fees,
             use_p2bk,
             ProofReservation::Reserve,
+            None,
         )
         .await
     }
@@ -72,6 +81,7 @@ impl Wallet {
         spending_conditions: Option<SpendingConditions>,
         include_fees: bool,
         use_p2bk: bool,
+        send_plan: Option<SwapSendPlan>,
     ) -> Result<Option<Proofs>, Error> {
         self.swap_internal(
             amount,
@@ -81,6 +91,7 @@ impl Wallet {
             include_fees,
             use_p2bk,
             ProofReservation::Skip,
+            send_plan,
         )
         .await
     }
@@ -96,11 +107,15 @@ impl Wallet {
         include_fees: bool,
         use_p2bk: bool,
         proof_reservation: ProofReservation,
+        send_plan: Option<SwapSendPlan>,
     ) -> Result<Option<Proofs>, Error> {
         tracing::info!("Swapping");
 
-        self.retry_on_inactive_keyset(|| async {
-            let saga = SwapSaga::new(self);
+        let execute = || async {
+            let mut saga = SwapSaga::new(self);
+            if let Some(plan) = &send_plan {
+                saga = saga.with_send_plan(plan.clone());
+            }
             let saga = saga
                 .prepare(
                     amount,
@@ -114,8 +129,13 @@ impl Wallet {
                 .await?;
             let saga = saga.execute().await?;
             Ok(saga.into_send_proofs())
-        })
-        .await
+        };
+        // A confirmed quote cannot be moved to a different fee policy. The
+        // caller can prepare a new send after an inactive-keyset rejection.
+        match send_plan {
+            Some(_) => execute().await,
+            None => self.retry_on_inactive_keyset(execute).await,
+        }
     }
 
     /// Create Swap Payload
@@ -128,6 +148,7 @@ impl Wallet {
         fee_and_amounts: &FeeAndAmounts,
         amount: Option<Amount>,
         amount_split_target: SplitTarget,
+        send_split_target: &SplitTarget,
         proofs: Proofs,
         spending_conditions: Option<SpendingConditions>,
         include_fees: bool,
@@ -158,7 +179,7 @@ impl Wallet {
             true => {
                 let split_count = amount
                     .unwrap_or(Amount::ZERO)
-                    .split_targeted(&SplitTarget::default(), fee_and_amounts)?
+                    .split_targeted(send_split_target, fee_and_amounts)?
                     .len();
 
                 let fee_to_redeem = self
@@ -201,7 +222,7 @@ impl Wallet {
                 // For no spending conditions, count both send and change secrets
                 let send_count = send_amount
                     .unwrap_or(Amount::ZERO)
-                    .split_targeted(&SplitTarget::default(), fee_and_amounts)?
+                    .split_targeted(send_split_target, fee_and_amounts)?
                     .len() as u32;
                 let change_count = change_amount
                     .split_targeted(&change_split_target, fee_and_amounts)?
@@ -251,7 +272,7 @@ impl Wallet {
                             .is_some_and(|c| c.sig_flag == crate::nuts::nut11::SigFlag::SigAll);
                         let amount_split = send_amount
                             .unwrap_or(Amount::ZERO)
-                            .split_targeted(&SplitTarget::default(), fee_and_amounts)?;
+                            .split_targeted(send_split_target, fee_and_amounts)?;
                         let keys_count = if is_sig_all { 1 } else { amount_split.len() };
                         let ephemeral_keys: Vec<_> = (0..keys_count)
                             .map(|_| crate::nuts::nut01::SecretKey::generate())
@@ -260,7 +281,7 @@ impl Wallet {
                             PreMintSecrets::with_p2bk(
                                 active_keyset_id,
                                 send_amount.unwrap_or(Amount::ZERO),
-                                &SplitTarget::default(),
+                                send_split_target,
                                 data,
                                 conditions,
                                 &ephemeral_keys,
@@ -276,7 +297,7 @@ impl Wallet {
                         PreMintSecrets::with_conditions(
                             active_keyset_id,
                             send_amount.unwrap_or(Amount::ZERO),
-                            &SplitTarget::default(),
+                            send_split_target,
                             &conditions,
                             fee_and_amounts,
                         )?,
@@ -293,7 +314,7 @@ impl Wallet {
                     count,
                     &self.seed,
                     send_amount.unwrap_or(Amount::ZERO),
-                    &SplitTarget::default(),
+                    send_split_target,
                     fee_and_amounts,
                 )?;
 

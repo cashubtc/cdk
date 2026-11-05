@@ -128,6 +128,7 @@ mod tests {
             CurrencyUnit::Sat,
             OperationData::Send(SendOperationData {
                 amount,
+                output_plan: None,
                 memo: None,
                 counter_start: None,
                 counter_end: None,

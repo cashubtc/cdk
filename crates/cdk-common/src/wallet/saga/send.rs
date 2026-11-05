@@ -4,7 +4,7 @@ use core::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::nuts::Proofs;
+use crate::nuts::{Id, Proofs};
 use crate::{Amount, Error};
 
 /// States specific to send saga
@@ -46,6 +46,9 @@ impl std::str::FromStr for SendSagaState {
 pub struct SendOperationData {
     /// Target amount to send
     pub amount: Amount,
+    /// Output keyset and denominations frozen when the send was prepared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_plan: Option<SendOutputPlan>,
     /// Memo for the send
     pub memo: Option<String>,
     /// Derivation counter start
@@ -58,10 +61,20 @@ pub struct SendOperationData {
     pub proofs: Option<Proofs>,
 }
 
+/// A prepared send's output denominations and their immutable fee policy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SendOutputPlan {
+    /// Keyset that must sign the outputs.
+    pub keyset_id: Id,
+    /// Denominations of the entire outgoing token.
+    pub amounts: Vec<Amount>,
+}
+
 impl fmt::Debug for SendOperationData {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SendOperationData")
             .field("amount", &self.amount)
+            .field("output_plan", &self.output_plan)
             .field("memo", &self.memo)
             .field("counter_start", &self.counter_start)
             .field("counter_end", &self.counter_end)
@@ -83,6 +96,22 @@ mod tests {
     const SECRET_MARKER: &str = "super_secret_spending_material_xyz";
     const TOKEN_MARKER: &str = "cashuB_super_secret_bearer_token_marker";
 
+    #[test]
+    fn legacy_send_data_and_frozen_plan_round_trip() {
+        let legacy = serde_json::json!({
+            "amount": 21, "memo": null, "counter_start": null,
+            "counter_end": null, "token": null, "proofs": null
+        });
+        let mut data: SendOperationData = serde_json::from_value(legacy).unwrap();
+        assert!(data.output_plan.is_none());
+        data.output_plan = Some(super::SendOutputPlan {
+            keyset_id: Id::from_str("00deadbeef123456").unwrap(),
+            amounts: vec![16.into(), 4.into(), 4.into()],
+        });
+        let encoded = serde_json::to_value(&data).unwrap();
+        assert_eq!(data, serde_json::from_value(encoded).unwrap());
+    }
+
     #[allow(clippy::use_debug)]
     #[test]
     fn send_operation_data_debug_does_not_leak_spending_secrets() {
@@ -96,6 +125,7 @@ mod tests {
 
         let data = SendOperationData {
             amount: Amount::from(1),
+            output_plan: None,
             memo: None,
             counter_start: None,
             counter_end: None,

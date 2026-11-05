@@ -9,6 +9,8 @@
 //! - Tests run concurrently with multi-threaded tokio runtime
 //! - No external dependencies (Lightning nodes, databases) required
 
+mod send_recipient_fees;
+
 use std::assert_eq;
 use std::collections::{HashMap, HashSet};
 use std::hash::RandomState;

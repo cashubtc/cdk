@@ -4,10 +4,10 @@
 //! by a crash. It determines the actual state by querying the mint and
 //! either completes the operation or compensates.
 
-use cdk_common::wallet::{OperationData, SendSagaState, TransactionStatus, WalletSaga};
+use cdk_common::wallet::{OperationData, ProofInfo, SendSagaState, TransactionStatus, WalletSaga};
 use tracing::instrument;
 
-use crate::nuts::State;
+use crate::nuts::{CheckStateRequest, Proof, State};
 use crate::wallet::recovery::{RecoveryAction, RecoveryHelpers};
 use crate::wallet::saga::{CompensatingAction, RevertProofReservation};
 use crate::wallet::util::escape_log_value;
@@ -30,7 +30,7 @@ impl Wallet {
             }
         };
 
-        let _data = match &saga.data {
+        let data = match &saga.data {
             OperationData::Send(d) => d,
             _ => {
                 return Err(Error::Custom(format!(
@@ -46,6 +46,43 @@ impl Wallet {
                     "Send saga {} in ProofsReserved state - compensating",
                     saga.id
                 );
+                if data.counter_start.is_some() {
+                    let proofs = self.localstore.get_reserved_proofs(&saga.id).await?;
+                    if !proofs.is_empty() {
+                        let ys: std::collections::HashSet<_> =
+                            proofs.iter().map(|proof| proof.y).collect();
+                        let response = match self
+                            .client
+                            .post_check_state(CheckStateRequest {
+                                ys: ys.iter().copied().collect(),
+                            })
+                            .await
+                        {
+                            Ok(response) => response,
+                            Err(_) => return Ok(RecoveryAction::Skipped),
+                        };
+                        let returned: std::collections::HashSet<_> =
+                            response.states.iter().map(|state| state.y).collect();
+                        if response.states.len() != ys.len()
+                            || returned != ys
+                            || response
+                                .states
+                                .iter()
+                                .any(|state| state.state == State::Pending)
+                        {
+                            return Ok(RecoveryAction::Skipped);
+                        }
+                        let spent = response
+                            .states
+                            .into_iter()
+                            .filter(|state| state.state == State::Spent)
+                            .map(|state| state.y)
+                            .collect();
+                        self.localstore
+                            .update_proofs_state(spent, State::Spent)
+                            .await?;
+                    }
+                }
                 self.mark_transaction_failed(saga.id).await?;
                 self.compensate_send(&saga.id).await?;
                 Ok(RecoveryAction::Compensated)
@@ -55,14 +92,16 @@ impl Wallet {
                     "Send saga {} in TokenCreated state - checking proof states",
                     saga.id
                 );
-                self.recover_or_complete_send(&saga.id).await
+                self.recover_or_complete_send(&saga.id, data.proofs.as_deref())
+                    .await
             }
             SendSagaState::RollingBack => {
                 tracing::info!(
                     "Send saga {} in RollingBack state - checking proof states",
                     saga.id
                 );
-                self.recover_rolling_back_send(&saga.id).await
+                self.recover_rolling_back_send(&saga.id, data.proofs.as_deref())
+                    .await
             }
         }
     }
@@ -71,8 +110,9 @@ impl Wallet {
     async fn recover_rolling_back_send(
         &self,
         saga_id: &uuid::Uuid,
+        sent_proofs: Option<&[Proof]>,
     ) -> Result<RecoveryAction, Error> {
-        let reserved_proofs = self.localstore.get_reserved_proofs(saga_id).await?;
+        let reserved_proofs = self.send_recovery_proofs(saga_id, sent_proofs).await?;
 
         if reserved_proofs.is_empty() {
             tracing::warn!(
@@ -141,8 +181,9 @@ impl Wallet {
     async fn recover_or_complete_send(
         &self,
         saga_id: &uuid::Uuid,
+        sent_proofs: Option<&[Proof]>,
     ) -> Result<RecoveryAction, Error> {
-        let reserved_proofs = self.localstore.get_reserved_proofs(saga_id).await?;
+        let reserved_proofs = self.send_recovery_proofs(saga_id, sent_proofs).await?;
 
         if reserved_proofs.is_empty() {
             tracing::warn!(
@@ -186,6 +227,33 @@ impl Wallet {
                 );
                 Ok(RecoveryAction::Skipped)
             }
+        }
+    }
+
+    // Original reservations can be spent swap inputs. Both confirmation and
+    // revocation recovery must follow the token's persisted output proofs.
+    async fn send_recovery_proofs(
+        &self,
+        saga_id: &uuid::Uuid,
+        sent_proofs: Option<&[Proof]>,
+    ) -> Result<Vec<ProofInfo>, Error> {
+        match sent_proofs {
+            Some(proofs) => proofs
+                .iter()
+                .map(|proof| {
+                    ProofInfo::new(
+                        proof.clone(),
+                        self.mint_url.clone(),
+                        State::PendingSpent,
+                        self.unit.clone(),
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>(),
+            None => self
+                .localstore
+                .get_reserved_proofs(saga_id)
+                .await
+                .map_err(Into::into),
         }
     }
 
@@ -244,6 +312,81 @@ mod tests {
     };
 
     #[tokio::test]
+    async fn checkpointed_send_waits_for_complete_terminal_input_states() {
+        for response_kind in 0..5 {
+            let db = create_test_db().await;
+            let saga_id = uuid::Uuid::new_v4();
+            let proof = test_proof_info(test_keyset_id(), 100, test_mint_url(), State::Unspent);
+            let y = proof.y;
+            db.update_proofs(vec![proof], vec![]).await.unwrap();
+            db.reserve_proofs(vec![y], &saga_id).await.unwrap();
+            db.add_saga(WalletSaga::new(
+                saga_id,
+                WalletSagaState::Send(SendSagaState::ProofsReserved),
+                100.into(),
+                test_mint_url(),
+                CurrencyUnit::Sat,
+                OperationData::Send(SendOperationData {
+                    amount: 100.into(),
+                    output_plan: None,
+                    memo: None,
+                    counter_start: Some(0),
+                    counter_end: None,
+                    token: None,
+                    proofs: None,
+                }),
+            ))
+            .await
+            .unwrap();
+            let client = Arc::new(MockMintConnector::new());
+            let state = ProofState {
+                y,
+                state: State::Unspent,
+                witness: None,
+            };
+            let response = match response_kind {
+                0 => Err(crate::Error::Timeout),
+                1 => Ok(CheckStateResponse { states: vec![] }),
+                2 => Ok(CheckStateResponse {
+                    states: vec![ProofState {
+                        state: State::Pending,
+                        ..state
+                    }],
+                }),
+                3 => Ok(CheckStateResponse {
+                    states: vec![state.clone(), state],
+                }),
+                _ => Ok(CheckStateResponse {
+                    states: vec![ProofState {
+                        y: crate::nuts::SecretKey::generate().public_key(),
+                        ..state
+                    }],
+                }),
+            };
+            client.set_check_state_response(response);
+            let wallet = create_test_wallet_with_mock(db.clone(), client.clone()).await;
+            let report = wallet.recover_incomplete_sagas().await.unwrap();
+            assert_eq!(report.skipped, 1);
+            let stored = db.get_proofs_by_ys(vec![y]).await.unwrap();
+            assert_eq!(stored[0].state, State::Reserved);
+            assert_eq!(stored[0].used_by_operation, Some(saga_id));
+            assert!(db.get_saga(&saga_id).await.unwrap().is_some());
+            client.set_check_state_response(Ok(CheckStateResponse {
+                states: vec![ProofState {
+                    y,
+                    state: State::Spent,
+                    witness: None,
+                }],
+            }));
+            let report = wallet.recover_incomplete_sagas().await.unwrap();
+            assert_eq!(report.compensated, 1);
+            let stored = db.get_proofs_by_ys(vec![y]).await.unwrap();
+            assert_eq!(stored[0].state, State::Spent);
+            assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+        }
+    }
+
+    #[tokio::test]
     async fn test_recover_send_proofs_reserved() {
         let db = create_test_db().await;
         let mint_url = test_mint_url();
@@ -264,6 +407,7 @@ mod tests {
             CurrencyUnit::Sat,
             OperationData::Send(SendOperationData {
                 amount: Amount::from(100),
+                output_plan: None,
                 memo: None,
                 counter_start: None,
                 counter_end: None,
@@ -311,6 +455,7 @@ mod tests {
             CurrencyUnit::Sat,
             OperationData::Send(SendOperationData {
                 amount: Amount::from(100),
+                output_plan: None,
                 memo: None,
                 counter_start: None,
                 counter_end: None,
@@ -355,6 +500,7 @@ mod tests {
             CurrencyUnit::Sat,
             OperationData::Send(SendOperationData {
                 amount: Amount::from(100),
+                output_plan: None,
                 memo: None,
                 counter_start: None,
                 counter_end: None,
@@ -401,6 +547,7 @@ mod tests {
             CurrencyUnit::Sat,
             OperationData::Send(SendOperationData {
                 amount: Amount::from(100),
+                output_plan: None,
                 memo: None,
                 counter_start: None,
                 counter_end: None,
@@ -478,6 +625,7 @@ mod tests {
             CurrencyUnit::Sat,
             OperationData::Send(SendOperationData {
                 amount: Amount::from(100),
+                output_plan: None,
                 memo: None,
                 counter_start: None,
                 counter_end: None,
@@ -535,6 +683,7 @@ mod tests {
             CurrencyUnit::Sat,
             OperationData::Send(SendOperationData {
                 amount: Amount::from(100),
+                output_plan: None,
                 memo: None,
                 counter_start: None,
                 counter_end: None,
@@ -612,6 +761,7 @@ mod tests {
             CurrencyUnit::Sat,
             OperationData::Send(SendOperationData {
                 amount: Amount::from(100),
+                output_plan: None,
                 memo: None,
                 counter_start: None,
                 counter_end: None,

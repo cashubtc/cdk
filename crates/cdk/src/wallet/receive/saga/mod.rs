@@ -344,6 +344,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
                 &fee_and_amounts,
                 None,
                 self.state_data.options.amount_split_target.clone(),
+                &crate::amount::SplitTarget::default(),
                 proofs,
                 None,
                 false,

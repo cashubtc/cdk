@@ -10,7 +10,7 @@ use cdk_common::wallet::{KeysetLoadPolicy, WalletSaga};
 use uuid::Uuid;
 
 use crate::amount::SplitTarget;
-use crate::nuts::{PreSwap, Proofs, PublicKey, SpendingConditions};
+use crate::nuts::{Id, PreSwap, Proofs, PublicKey, SpendingConditions};
 use crate::Amount;
 
 /// Initial state - operation ID assigned but no work done yet.
@@ -22,6 +22,12 @@ pub struct Initial {
     pub operation_id: Uuid,
     /// Policy controlling how keysets are loaded during this saga
     pub keyset_policy: KeysetLoadPolicy,
+    /// Denominations for the outputs sent by a parent saga.
+    pub send_split_target: SplitTarget,
+    /// A parent's frozen output keyset, when this is a send swap.
+    pub output_keyset_id: Option<Id>,
+    /// Parent reservation owner of newly created send proofs.
+    pub send_owner: Option<Uuid>,
 }
 
 /// Prepared state - swap request created, proofs reserved.
@@ -35,6 +41,10 @@ pub struct Prepared {
     pub amount: Option<Amount>,
     /// Amount split target for output proofs
     pub amount_split_target: SplitTarget,
+    /// Denominations for the send outputs, independently of change.
+    pub send_split_target: SplitTarget,
+    /// Parent reservation owner of newly created send proofs.
+    pub send_owner: Option<Uuid>,
     /// Y values of input proofs (for cleanup)
     pub input_ys: Vec<PublicKey>,
     /// Spending conditions for output proofs
@@ -178,6 +188,8 @@ mod tests {
             operation_id,
             amount: Some(Amount::from(1)),
             amount_split_target: SplitTarget::default(),
+            send_split_target: SplitTarget::default(),
+            send_owner: None,
             input_ys: vec![input_proof.y().expect("valid proof Y")],
             spending_conditions: None,
             pre_swap: PreSwap {

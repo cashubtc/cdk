@@ -499,6 +499,37 @@ impl<'a> SendSaga<'a, Initial> {
 
         let proof_pool = available_proofs.clone();
         let derivation_indices = self.wallet.unspent_proof_derivation_indices().await?;
+        // A token within the requested net range needs no swap fee.
+        // Selecting for both redemption and a hypothetical swap would reject
+        // wallets whose entire balance is precisely this token.
+        if opts.include_fee && !force_swap && !may_swap_p2pk_locked {
+            let direct_proofs = Wallet::select_proofs_with_derivation_indices(
+                amount,
+                available_proofs.clone(),
+                &active_keyset_ids,
+                &keyset_fees,
+                true,
+                &derivation_indices,
+            )?;
+            let direct_fee = self.wallet.get_proofs_fee(&direct_proofs).await?.total;
+            let tolerance = match opts.send_kind {
+                SendKind::OnlineTolerance(value) | SendKind::OfflineTolerance(value) => value,
+                _ => Amount::ZERO,
+            };
+            if direct_proofs
+                .total_amount()?
+                .checked_sub(direct_fee)
+                .and_then(|net| net.checked_sub(amount))
+                .is_some_and(|surplus| surplus <= tolerance)
+                && opts
+                    .max_proofs
+                    .is_none_or(|limit| direct_proofs.len() <= limit)
+            {
+                return self
+                    .internal_prepare(amount, opts, direct_proofs, false, keyset_policy)
+                    .await;
+            }
+        }
         let mut selected_proofs = Wallet::select_proofs_with_derivation_indices(
             selection_amount,
             available_proofs,
@@ -550,7 +581,12 @@ impl<'a> SendSaga<'a, Initial> {
             _ => None,
         };
         if let Some(tolerance) = tolerance {
-            if selected_total - amount > tolerance && opts.send_kind.is_offline() {
+            if opts.send_kind.is_offline()
+                && !selected_total
+                    .checked_sub(send_fee)
+                    .and_then(|net| net.checked_sub(amount))
+                    .is_some_and(|surplus| surplus <= tolerance)
+            {
                 return Err(Error::InsufficientFunds);
             }
         }
@@ -580,7 +616,33 @@ impl<'a> SendSaga<'a, Initial> {
             .cloned()
             .ok_or(Error::UnknownKeySet)?;
 
-        let (send_amounts, send_fee) = if opts.include_fee {
+        let direct_fee = if opts.include_fee {
+            self.wallet.get_proofs_fee(&proofs).await?
+        } else {
+            crate::fees::ProofsFeeBreakdown {
+                total: Amount::ZERO,
+                per_keyset: HashMap::new(),
+            }
+        };
+        let tolerance = match opts.send_kind {
+            SendKind::OnlineTolerance(value) | SendKind::OfflineTolerance(value) => value,
+            _ => Amount::ZERO,
+        };
+        let direct_net = proofs.total_amount()?.checked_sub(direct_fee.total);
+        let direct_net_matches = !force_swap
+            && !(opts.p2pk_locked_proof_send_mode == P2PKLockedProofSendMode::Swap
+                && proofs.iter().any(crate::wallet::util::is_p2pk_locked))
+            && opts.max_proofs.is_none_or(|limit| proofs.len() <= limit)
+            && direct_net.is_some_and(|net| {
+                net.checked_sub(amount)
+                    .is_some_and(|surplus| surplus <= tolerance)
+            });
+        let (send_amounts, send_fee) = if direct_net_matches {
+            (
+                proofs.iter().map(|proof| proof.amount).collect(),
+                direct_fee,
+            )
+        } else if opts.include_fee {
             let send_split = amount.split_with_fee(&fee_and_amounts)?;
             let send_fee = self
                 .wallet
@@ -600,13 +662,41 @@ impl<'a> SendSaga<'a, Initial> {
             (send_split, send_fee)
         };
 
+        let quoted_amount = Amount::try_sum(send_amounts.iter().copied())?
+            .checked_sub(send_fee.total)
+            .ok_or(Error::InsufficientFunds)?;
+        if !quoted_amount
+            .checked_sub(amount)
+            .is_some_and(|surplus| surplus <= tolerance)
+        {
+            return Err(Error::InsufficientFunds);
+        }
+        // The prepared amount is the actual recipient value. Permitted surplus
+        // is part of the payment, never reported as an input fee.
+        let amount = quoted_amount;
+        if opts
+            .max_proofs
+            .is_some_and(|limit| send_amounts.len() > limit)
+        {
+            return Err(Error::InsufficientFunds);
+        }
+
+        // Direct inputs can belong to older keysets with a different fee. If
+        // they do not already form an exact token, refresh them into the keyset
+        // whose denominations and fees were used for the send plan.
+        let force_swap = force_swap
+            || (opts.include_fee
+                && !direct_net_matches
+                && proofs
+                    .iter()
+                    .any(|proof| proof.keyset_id != active_keyset_id));
+
         let mut exact_proofs = proofs.total_amount()? == amount + send_fee.total;
         if let Some(max_proofs) = opts.max_proofs {
             exact_proofs &= proofs.len() <= max_proofs;
         }
 
-        let is_exact_or_offline =
-            exact_proofs || opts.send_kind.is_offline() || opts.send_kind.has_tolerance();
+        let is_exact_or_offline = exact_proofs || opts.send_kind.is_offline();
 
         let keyset_fees_and_amounts = self
             .wallet
@@ -630,6 +720,16 @@ impl<'a> SendSaga<'a, Initial> {
             },
         )?;
 
+        if opts
+            .max_proofs
+            .is_some_and(|limit| split_result.proofs_to_send.len() > limit)
+        {
+            return Err(Error::InsufficientFunds);
+        }
+        if opts.send_kind.is_offline() && !split_result.proofs_to_swap.is_empty() {
+            return Err(Error::InsufficientFunds);
+        }
+
         let mut proof_ys = split_result.proofs_to_swap.ys()?;
         proof_ys.extend(split_result.proofs_to_send.ys()?);
 
@@ -647,6 +747,10 @@ impl<'a> SendSaga<'a, Initial> {
             self.wallet.unit.clone(),
             OperationData::Send(SendOperationData {
                 amount,
+                output_plan: Some(cdk_common::wallet::SendOutputPlan {
+                    keyset_id: active_keyset_id,
+                    amounts: send_amounts,
+                }),
                 memo: memo_text.clone(),
                 counter_start: None,
                 counter_end: None,
@@ -713,9 +817,27 @@ impl<'a> SendSaga<'a, Prepared> {
             ));
         }
 
+        if matches!(&saga.data, OperationData::Send(data) if data.counter_start.is_some()) {
+            // A previous confirmation may have reached the mint. Recovery owns
+            // that outcome; stale confirm/cancel handles must not release inputs.
+            return Err(Error::ConcurrentUpdate);
+        }
+
+        let mut compensations = new_compensations();
+        compensations.push_front(Box::new(RevertProofReservation {
+            localstore: wallet.localstore.clone(),
+            proof_ys: proofs_to_swap
+                .iter()
+                .chain(&proofs_to_send)
+                .map(|proof| proof.y())
+                .collect::<Result<Vec<_>, _>>()?,
+            saga_id: operation_id,
+        })
+            as Box<dyn crate::wallet::saga::CompensatingAction>);
+
         Ok(Self {
             wallet,
-            compensations: new_compensations(),
+            compensations,
             state_data: Prepared {
                 operation_id,
                 amount,
@@ -784,6 +906,7 @@ impl<'a> SendSaga<'a, Prepared> {
         tracing::info!("Confirming prepared send for operation {}", operation_id);
 
         let logic_res = async {
+            let mut saga = self.state_data.saga.clone();
             let total_send_fee = swap_fee + send_fee;
             let mut final_proofs_to_send = proofs_to_send.clone();
 
@@ -838,7 +961,47 @@ impl<'a> SendSaga<'a, Prepared> {
                     crate::wallet::util::sign_proofs(&mut proofs_to_swap, &keys)?;
                 }
 
-                let keyset_id = self.wallet.active_keyset().await?.id;
+                let mut output_plan = match &self.state_data.saga.data {
+                    OperationData::Send(data) => data.output_plan.clone(),
+                    _ => return Err(Error::InvalidOperationState),
+                };
+                if output_plan.is_none() {
+                    // Older prepared records have no frozen plan. Reconstruct
+                    // only if it still agrees with the caller's quote.
+                    let keyset_id = self.wallet.active_keyset().await?.id;
+                    let policy = self
+                        .wallet
+                        .get_keyset_fees_and_amounts_by_id(keyset_id)
+                        .await?;
+                    output_plan = Some(cdk_common::wallet::SendOutputPlan {
+                        keyset_id,
+                        amounts: if options.include_fee {
+                            amount.split_with_fee(&policy)?
+                        } else {
+                            amount.split(&policy)?
+                        },
+                    });
+                }
+                let mut output_plan = output_plan.ok_or(Error::InvalidOperationState)?;
+                let keyset_id = output_plan.keyset_id;
+                if Amount::try_sum(output_plan.amounts.iter().copied())? != total_send_amount {
+                    return Err(Error::IncorrectQuoteAmount);
+                }
+                for proof in &final_proofs_to_send {
+                    let index = output_plan
+                        .amounts
+                        .iter()
+                        .position(|value| *value == proof.amount)
+                        .ok_or(Error::InsufficientFunds)?;
+                    output_plan.amounts.remove(index);
+                }
+                if options.include_fee {
+                    let mut counts = final_proofs_to_send.count_by_keyset();
+                    *counts.entry(keyset_id).or_default() += output_plan.amounts.len() as u64;
+                    if self.wallet.get_proofs_fee_by_count(counts).await?.total != send_fee {
+                        return Err(Error::IncorrectQuoteAmount);
+                    }
+                }
 
                 // Capture counter start before swap
                 counter_start = Some(
@@ -847,6 +1010,16 @@ impl<'a> SendSaga<'a, Prepared> {
                         .increment_keyset_counter(&keyset_id, 0)
                         .await?,
                 );
+
+                // Persist that inputs may be consumed before contacting the
+                // mint. Recovery must check them before releasing reservations.
+                if let OperationData::Send(data) = &mut saga.data {
+                    data.counter_start = counter_start;
+                }
+                saga.update_state(WalletSagaState::Send(SendSagaState::ProofsReserved));
+                if !self.wallet.localstore.update_saga(saga.clone()).await? {
+                    return Err(Error::ConcurrentUpdate);
+                }
 
                 if let Some(swapped_proofs) = self
                     .wallet
@@ -857,6 +1030,10 @@ impl<'a> SendSaga<'a, Prepared> {
                         options.conditions.clone(),
                         false,
                         options.use_p2bk,
+                        Some(crate::wallet::swap::SwapSendPlan {
+                            output: output_plan,
+                            owner: operation_id,
+                        }),
                     )
                     .await?
                 {
@@ -872,7 +1049,28 @@ impl<'a> SendSaga<'a, Prepared> {
                 );
             }
 
-            if amount > final_proofs_to_send.total_amount()? {
+            let final_value = final_proofs_to_send.total_amount()?;
+            let recipient_fee = if options.include_fee {
+                self.wallet
+                    .get_proofs_fee(&final_proofs_to_send)
+                    .await?
+                    .total
+            } else {
+                Amount::ZERO
+            };
+            if recipient_fee != send_fee
+                || final_value != total_send_amount
+                || options
+                    .max_proofs
+                    .is_some_and(|limit| final_proofs_to_send.len() > limit)
+            {
+                return Err(Error::IncorrectQuoteAmount);
+            }
+            if final_value
+                .checked_sub(recipient_fee)
+                .ok_or(Error::InsufficientFunds)?
+                < amount
+            {
                 return Err(Error::InsufficientFunds);
             }
 
@@ -913,9 +1111,12 @@ impl<'a> SendSaga<'a, Prepared> {
                 self.wallet.unit.clone(),
             );
 
-            let mut saga = self.state_data.saga.clone();
             saga.data = OperationData::Send(SendOperationData {
                 amount,
+                output_plan: match &saga.data {
+                    OperationData::Send(data) => data.output_plan.clone(),
+                    _ => None,
+                },
                 memo: options.memo.as_ref().map(|m| m.memo.clone()),
                 counter_start,
                 counter_end,
@@ -1029,6 +1230,7 @@ impl<'a> SendSaga<'a, TokenCreated> {
                 None,
                 false,
                 false,
+                None,
             )
             .await;
 
@@ -1053,6 +1255,11 @@ impl<'a> SendSaga<'a, TokenCreated> {
                 Ok(amount_recovered)
             }
             Err(e) => {
+                if !e.is_definitive_failure() {
+                    // The refund may already have spent the token. Keep the
+                    // rollback state until recovery resolves the mint outcome.
+                    return Err(e);
+                }
                 tracing::error!("Revoke swap failed: {}. Reverting lock.", e);
 
                 // Revert state to TokenCreated and mark proofs as PendingSpent to resume monitoring.
@@ -1358,6 +1565,7 @@ mod tests {
             CurrencyUnit::Sat,
             OperationData::Send(SendOperationData {
                 amount: Amount::from(100),
+                output_plan: None,
                 memo: None,
                 counter_start: None,
                 counter_end: None,
@@ -1400,6 +1608,7 @@ mod tests {
             CurrencyUnit::Sat,
             OperationData::Send(SendOperationData {
                 amount: Amount::from(8),
+                output_plan: None,
                 memo: None,
                 counter_start: None,
                 counter_end: None,

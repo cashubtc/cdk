@@ -41,7 +41,8 @@ impl PreparedSend<'_> {
         self.operation_id
     }
 
-    /// Amount to send
+    /// Amount to send, including any surplus permitted by the selected tolerance.
+    /// With `include_fee`, this is the recipient's net value.
     pub fn amount(&self) -> Amount {
         self.amount
     }
