@@ -1262,6 +1262,7 @@ dependencies = [
  "cdk-nostr",
  "cdk-prometheus",
  "cdk-signatory",
+ "cdk-sql-common",
  "cdk-sqlite",
  "criterion",
  "futures",
