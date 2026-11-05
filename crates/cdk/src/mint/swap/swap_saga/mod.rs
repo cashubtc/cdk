@@ -138,7 +138,9 @@ impl<'a> SwapSaga<'a, Initial> {
     ///
     /// - `TokenPending`: Proofs are already pending or blinded messages are duplicates
     /// - `TokenAlreadySpent`: Proofs have already been spent
-    /// - `DuplicateOutputs`: Output blinded messages already exist
+    /// - `DuplicateOutputs`: The request contains the same output more than once
+    /// - `BlindedMessageAlreadySigned`: Output blinded messages were signed for an earlier request
+    /// - `OutputsPending`: Output blinded messages are reserved by a request that has not signed them yet
     #[instrument(skip_all)]
     pub async fn setup_swap(
         mut self,
@@ -215,7 +217,8 @@ impl<'a> SwapSaga<'a, Initial> {
         {
             tx.rollback().await?;
             return Err(match err {
-                database::Error::Duplicate => Error::DuplicateOutputs,
+                database::Error::Duplicate => Error::BlindedMessageAlreadySigned,
+                database::Error::BlindedMessagePending => Error::OutputsPending,
                 _ => Error::Database(err),
             });
         }

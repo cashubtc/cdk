@@ -324,6 +324,9 @@ pub enum Error {
     /// BlindedMessage is already signed
     #[error("Blinded Message is already signed")]
     BlindedMessageAlreadySigned,
+    /// BlindedMessage is reserved by another request but not signed yet
+    #[error("Outputs are pending")]
+    OutputsPending,
     /// Inactive Keyset
     #[error("Inactive Keyset")]
     InactiveKeyset,
@@ -729,6 +732,18 @@ mod tests {
         assert!(max_outputs.is_definitive_failure());
     }
 
+    #[test]
+    fn test_outputs_pending_error_response_round_trip() {
+        let response = ErrorResponse::from(Error::OutputsPending);
+        assert_eq!(response.code, ErrorCode::OutputsPending);
+
+        // 11004 must not collapse into the 11002 TokenPending error
+        let decoded = Error::from(response);
+        assert!(matches!(decoded, Error::OutputsPending));
+        assert!(!decoded.is_definitive_failure());
+        assert_eq!(ErrorResponse::from(decoded).code, ErrorCode::OutputsPending);
+    }
+
     #[cfg(feature = "mint")]
     #[test]
     fn payment_backend_error_response_redacts_backend_detail() {
@@ -1013,6 +1028,10 @@ impl From<Error> for ErrorResponse {
                 code: ErrorCode::BlindedMessageAlreadySigned,
                 detail: err.to_string(),
             },
+            Error::OutputsPending => ErrorResponse {
+                code: ErrorCode::OutputsPending,
+                detail: err.to_string(),
+            },
             Error::InsufficientFunds => ErrorResponse {
                 code: ErrorCode::TransactionUnbalanced,
                 detail: err.to_string(),
@@ -1275,6 +1294,7 @@ impl From<crate::database::Error> for Error {
                 state => Self::Database(crate::database::Error::InvalidStateTransition(state)),
             },
             crate::database::Error::ConcurrentUpdate => Self::ConcurrentUpdate,
+            crate::database::Error::BlindedMessagePending => Self::OutputsPending,
             db_error => Self::Database(db_error),
         }
     }
@@ -1306,7 +1326,7 @@ impl From<ErrorResponse> for Error {
             ErrorCode::TokenAlreadySpent => Self::TokenAlreadySpent,
             ErrorCode::TokenPending => Self::TokenPending,
             ErrorCode::BlindedMessageAlreadySigned => Self::BlindedMessageAlreadySigned,
-            ErrorCode::OutputsPending => Self::TokenPending, // Map to closest equivalent
+            ErrorCode::OutputsPending => Self::OutputsPending,
             ErrorCode::TransactionUnbalanced => Self::TransactionUnbalanced(0, 0, 0),
             ErrorCode::AmountOutofLimitRange => {
                 Self::AmountOutofLimitRange(Amount::default(), Amount::default(), Amount::default())

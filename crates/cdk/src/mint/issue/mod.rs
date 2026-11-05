@@ -943,7 +943,8 @@ impl Mint {
                 let batch_operation =
                     Operation::new_batch_mint(outputs_amount.clone().into(), batch_method.clone());
                 tx.add_blinded_messages(None, input.outputs(), &batch_operation)
-                    .await?;
+                    .await
+                    .map_err(Mint::map_add_blinded_messages_error)?;
                 tx.add_blind_signatures(&blinded_secrets, &all_blind_signatures, None)
                     .await?;
                 let fee_by_keyset = std::collections::HashMap::new();
@@ -984,7 +985,8 @@ impl Mint {
 
                 if !input.is_batch() {
                     tx.add_blinded_messages(Some(quote_id), input.outputs(), &operation)
-                        .await?;
+                        .await
+                        .map_err(Mint::map_add_blinded_messages_error)?;
 
                     tx.add_blind_signatures(
                         &blinded_secrets,
@@ -1059,9 +1061,9 @@ mod batch_mint_tests {
     use async_trait::async_trait;
     use bip39::Mnemonic;
     use cdk_common::amount::SplitTarget;
-    use cdk_common::mint::MintQuote;
+    use cdk_common::mint::{MintQuote, Operation};
     use cdk_common::nut00::KnownMethod;
-    use cdk_common::nuts::PreMintSecrets;
+    use cdk_common::nuts::{BlindedMessage, PreMintSecrets};
     use cdk_common::payment::{
         self, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions, MakePaymentResponse,
         MintPayment, OnchainSettings, OutgoingPaymentOptions, PaymentIdentifier,
@@ -1527,6 +1529,130 @@ mod batch_mint_tests {
 
         assert!(
             matches!(err, Error::AmountOutofLimitRange(_, _, _)),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    /// Store outputs the way a swap or melt does before it signs them, leaving
+    /// them reserved with no signature
+    async fn reserve_outputs_without_signing(mint: &Mint, outputs: &[BlindedMessage]) {
+        let mut tx = mint.localstore().begin_transaction().await.unwrap();
+        tx.add_blinded_messages(
+            None,
+            outputs,
+            &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    async fn paid_mint_quote(mint: &Mint, amount: u64) -> QuoteId {
+        let quote: MintQuoteBolt11Response<QuoteId> = mint
+            .get_mint_quote(
+                MintQuoteBolt11Request {
+                    amount: Amount::from(amount),
+                    unit: CurrencyUnit::Sat,
+                    description: None,
+                    pubkey: None,
+                }
+                .into(),
+            )
+            .await
+            .unwrap()
+            .try_into()
+            .unwrap();
+        wait_for_quote_paid(mint, &quote.quote).await;
+        quote.quote
+    }
+
+    #[tokio::test]
+    async fn test_mint_rejects_outputs_pending_in_another_request() {
+        let mint = create_test_mint().await;
+        let quote_id = paid_mint_quote(&mint, 64).await;
+
+        let request = mint_request_for_amount(&mint, quote_id, 64);
+        reserve_outputs_without_signing(&mint, &request.outputs).await;
+
+        let err = mint
+            .process_mint_request(crate::mint::MintInput::Single(request))
+            .await
+            .expect_err("outputs reserved by another request must be rejected");
+
+        assert!(
+            matches!(err, Error::OutputsPending),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_batch_mint_rejects_outputs_pending_in_another_request() {
+        let mint = create_test_mint().await;
+        let quotes = vec![
+            paid_mint_quote(&mint, 32).await,
+            paid_mint_quote(&mint, 32).await,
+        ];
+
+        let outputs = mint_request_for_amount(&mint, quotes[0].clone(), 64).outputs;
+        reserve_outputs_without_signing(&mint, &outputs).await;
+
+        let err = mint
+            .process_mint_request(crate::mint::MintInput::Batch(BatchMintRequest {
+                quotes,
+                quote_amounts: None,
+                outputs,
+                signatures: None,
+            }))
+            .await
+            .expect_err("outputs reserved by another request must be rejected");
+
+        assert!(
+            matches!(err, Error::OutputsPending),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mint_rejects_outputs_signed_by_earlier_request() {
+        let mint = create_test_mint().await;
+
+        let mut quote_ids = Vec::new();
+        for _ in 0..2 {
+            let quote: MintQuoteBolt11Response<QuoteId> = mint
+                .get_mint_quote(
+                    MintQuoteBolt11Request {
+                        amount: Amount::from(64),
+                        unit: CurrencyUnit::Sat,
+                        description: None,
+                        pubkey: None,
+                    }
+                    .into(),
+                )
+                .await
+                .unwrap()
+                .try_into()
+                .unwrap();
+            wait_for_quote_paid(&mint, &quote.quote).await;
+            quote_ids.push(quote.quote);
+        }
+
+        let first_request = mint_request_for_amount(&mint, quote_ids[0].clone(), 64);
+        let reused_outputs = first_request.outputs.clone();
+        mint.process_mint_request(crate::mint::MintInput::Single(first_request))
+            .await
+            .expect("first mint request should succeed");
+
+        let err = mint
+            .process_mint_request(crate::mint::MintInput::Single(MintRequest {
+                quote: quote_ids[1].clone(),
+                outputs: reused_outputs,
+                signature: None,
+            }))
+            .await
+            .expect_err("outputs signed by an earlier request must be rejected");
+
+        assert!(
+            matches!(err, Error::BlindedMessageAlreadySigned),
             "unexpected error: {err:?}"
         );
     }

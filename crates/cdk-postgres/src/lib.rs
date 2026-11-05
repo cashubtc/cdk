@@ -470,6 +470,53 @@ mod test {
         .await;
     }
 
+    /// Resolves once a blind signature insert is waiting on a row lock held
+    /// by another transaction
+    async fn blind_signature_insert_waiting_on_lock() {
+        let db_url = std::env::var("CDK_MINTD_DATABASE_URL")
+            .or_else(|_| std::env::var("PG_DB_URL"))
+            .unwrap_or(
+                "host=localhost user=cdk_user password=cdk_password dbname=cdk_mint port=5432"
+                    .to_owned(),
+            );
+        let (client, connection) = tokio_postgres::connect(&db_url, NoTls)
+            .await
+            .expect("monitor connection");
+        tokio::spawn(connection);
+
+        for _ in 0..400 {
+            let waiting: i64 = client
+                .query_one(
+                    "SELECT count(*) FROM pg_stat_activity
+                     WHERE datname = current_database()
+                       AND wait_event_type = 'Lock'
+                       AND query LIKE '%INSERT INTO blind_signature%'",
+                    &[],
+                )
+                .await
+                .expect("pg_stat_activity")
+                .get(0);
+            if waiting > 0 {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        panic!("no blind signature insert started waiting on a lock");
+    }
+
+    #[tokio::test]
+    async fn concurrent_reservation_of_output_reports_pending() {
+        let test_id = format!(
+            "test_concurrent_reservation_pending_{}",
+            uuid::Uuid::new_v4()
+        );
+        cdk_common::database::mint::test::concurrent_reservation_of_output_reports_pending(
+            Arc::new(provide_mint_db(test_id).await),
+            blind_signature_insert_waiting_on_lock(),
+        )
+        .await;
+    }
+
     #[tokio::test]
     async fn concurrent_multi_keyset_spends_use_consistent_lock_order() {
         let test_id = format!(

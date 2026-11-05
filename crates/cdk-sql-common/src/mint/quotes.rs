@@ -708,6 +708,10 @@ where
         blinded_messages: &[BlindedMessage],
         operation: &Operation,
     ) -> Result<(), Self::Err> {
+        if blinded_messages.is_empty() {
+            return Ok(());
+        }
+
         let current_time = unix_time();
 
         let mut ordered_messages = blinded_messages.iter().enumerate().collect::<Vec<_>>();
@@ -717,8 +721,14 @@ where
                 .cmp(&right.blinded_secret.to_bytes())
         });
 
-        // Insert blinded_messages directly into blind_signature with c = NULL
-        // Let the database constraint handle duplicate detection
+        let blinded_secrets: Vec<Vec<u8>> = ordered_messages
+            .iter()
+            .map(|(_, message)| message.blinded_secret.to_bytes().to_vec())
+            .collect();
+
+        // Insert blinded_messages directly into blind_signature with c = NULL.
+        // ON CONFLICT DO NOTHING waits for a concurrent transaction that is
+        // inserting the same output, so a reservation it commits is seen below.
         for (i, message) in ordered_messages {
             match query(
                 r#"
@@ -726,6 +736,7 @@ where
                 (blinded_message, amount, keyset_id, c, quote_id, created_time, operation_kind, operation_id, order_index)
                 VALUES
                 (:blinded_message, :amount, :keyset_id, NULL, :quote_id, :created_time, :operation_kind, :operation_id, :order_index)
+                ON CONFLICT (blinded_message) DO NOTHING
                 "#,
             )?
             .bind(
@@ -742,12 +753,35 @@ where
             .execute(&self.inner)
             .await
             {
+                Ok(0) => {
+                    // The output is already stored. Outputs that were signed
+                    // (c IS NOT NULL) and outputs another operation reserved but
+                    // has not signed yet (c IS NULL) map to different NUT-00
+                    // errors. A signed output visible to this query takes
+                    // precedence; under READ COMMITTED another transaction may
+                    // still sign one after this snapshot.
+                    let signed = query(
+                        r#"
+                        SELECT blinded_message
+                        FROM blind_signature
+                        WHERE blinded_message IN (:blinded_secrets) AND c IS NOT NULL
+                        LIMIT 1
+                        "#,
+                    )?
+                    .bind_vec("blinded_secrets", blinded_secrets)?
+                    .pluck(&self.inner)
+                    .await?
+                    .is_some();
+
+                    return Err(if signed {
+                        database::Error::Duplicate
+                    } else {
+                        database::Error::BlindedMessagePending
+                    });
+                }
                 Ok(_) => continue,
                 Err(database::Error::Duplicate) => {
                     // Primary key constraint violation - blinded message already exists
-                    // This could be either:
-                    // 1. Already signed (c IS NOT NULL) - definitely an error
-                    // 2. Already pending (c IS NULL) - also an error
                     return Err(database::Error::Duplicate);
                 }
                 Err(err) => return Err(err),

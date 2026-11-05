@@ -116,6 +116,10 @@ pub enum Error {
     #[error("Duplicate entry")]
     Duplicate,
 
+    /// Blinded message is reserved by another operation but not signed yet
+    #[error("Blinded message is pending")]
+    BlindedMessagePending,
+
     /// Locked resource
     #[error("Locked resource")]
     Locked,
