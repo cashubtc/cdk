@@ -305,6 +305,17 @@ impl Serialize for MeltMethodSettings {
 
 struct MeltMethodSettingsVisitor;
 
+/// Recognized keys checked for duplicates; unknown keys are ignored
+const MELT_METHOD_SETTINGS_FIELDS: &[&str] = &[
+    "method",
+    "unit",
+    "method_name",
+    "min_amount",
+    "max_amount",
+    "amountless",
+    "options",
+];
+
 impl<'de> Visitor<'de> for MeltMethodSettingsVisitor {
     type Value = MeltMethodSettings;
 
@@ -323,12 +334,18 @@ impl<'de> Visitor<'de> for MeltMethodSettingsVisitor {
         let mut max_amount: Option<Amount> = None;
         let mut amountless: Option<bool> = None;
 
-        // Keys seen so far, so repeated keys are rejected even when a value is `null`
-        let mut seen_keys: HashSet<String> = HashSet::new();
+        // Recognized keys seen so far, so repeated keys are rejected even when a
+        // value is `null`
+        let mut seen_fields: HashSet<&'static str> = HashSet::new();
 
         while let Some(key) = map.next_key::<String>()? {
-            if !seen_keys.insert(key.clone()) {
-                return Err(de::Error::custom(format_args!("duplicate field `{key}`")));
+            if let Some(field) = MELT_METHOD_SETTINGS_FIELDS
+                .iter()
+                .find(|field| **field == key)
+            {
+                if !seen_fields.insert(field) {
+                    return Err(de::Error::duplicate_field(field));
+                }
             }
 
             match key.as_str() {
@@ -801,6 +818,25 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_melt_method_settings_rejects_duplicate_options() {
+        let json_str = r#"{"method":"bolt11","unit":"sat","options":{"amountless":true},"options":{"amountless":true}}"#;
+
+        let err = from_str::<MeltMethodSettings>(json_str).unwrap_err();
+
+        assert!(err.to_string().contains("duplicate field `options`"));
+    }
+
+    #[test]
+    fn test_melt_method_settings_ignores_duplicate_unknown_fields() {
+        let json_str =
+            r#"{"method":"bolt11","unit":"sat","min_amount":100,"extra":1,"extra":null}"#;
+
+        let settings: MeltMethodSettings = from_str(json_str).unwrap();
+
+        assert_eq!(settings.min_amount, Some(Amount::from(100)));
     }
 
     #[test]
