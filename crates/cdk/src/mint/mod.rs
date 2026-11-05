@@ -1,5 +1,6 @@
 //! Cashu Mint
 
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::{Arc, Weak};
@@ -1205,31 +1206,37 @@ impl Mint {
     pub(crate) fn creditable_payment_amount(
         mint_quote: &MintQuote,
         received: Amount<CurrencyUnit>,
-    ) -> Amount<CurrencyUnit> {
+    ) -> Result<Amount<CurrencyUnit>, Error> {
         let Some(quote_amount) = mint_quote
             .amount
             .as_ref()
             .filter(|_| mint_quote.payment_method.is_bolt11())
         else {
-            return received;
+            return Ok(received);
         };
 
-        let remaining = quote_amount
-            .value()
-            .saturating_sub(mint_quote.amount_paid().value());
+        let amount_paid = mint_quote.amount_paid();
+        let remaining = match amount_paid.partial_cmp(quote_amount) {
+            Some(Ordering::Less) => quote_amount.checked_sub(&amount_paid)?,
+            // Already paid in full (or overpaid before this was capped)
+            Some(_) => Amount::new(0, quote_amount.unit().clone()),
+            None => return Err(Error::UnitMismatch),
+        };
 
-        if received.value() > remaining {
-            tracing::warn!(
-                quote_id = %mint_quote.id,
-                received = received.value(),
-                credited = remaining,
-                unit = %mint_quote.unit,
-                "BOLT11 mint quote paid more than its amount; crediting the quote amount"
-            );
-            return Amount::new(remaining, mint_quote.unit.clone());
+        match received.partial_cmp(&remaining) {
+            Some(Ordering::Greater) => {
+                tracing::warn!(
+                    quote_id = %mint_quote.id,
+                    received = received.value(),
+                    credited = remaining.value(),
+                    unit = %mint_quote.unit,
+                    "BOLT11 mint quote paid more than its amount; crediting the quote amount"
+                );
+                Ok(remaining)
+            }
+            Some(_) => Ok(received),
+            None => Err(Error::UnitMismatch),
         }
-
-        received
     }
 
     /// Handle payment for a specific mint quote (extracted from pay_mint_quote)
@@ -1270,7 +1277,7 @@ impl Mint {
                 }
 
                 let payment_amount_quote_unit =
-                    Self::creditable_payment_amount(mint_quote, payment_amount_quote_unit);
+                    Self::creditable_payment_amount(mint_quote, payment_amount_quote_unit)?;
                 if payment_amount_quote_unit.value() == 0 {
                     tracing::debug!("Mint quote {} is already fully paid.", mint_quote.id);
                     return Ok(false);

@@ -130,7 +130,7 @@ impl Mint {
                 let amount_paid = Mint::creditable_payment_amount(
                     &new_quote,
                     payment.payment_amount.convert_to(&new_quote.unit)?,
-                );
+                )?;
                 if amount_paid.value() == 0 {
                     continue;
                 }
