@@ -3,15 +3,20 @@
 //! This module provides functionality for minting new proofs via Bolt11, Bolt12, and Custom methods.
 
 use std::collections::HashMap;
+use std::str::FromStr;
 
 pub(crate) mod saga;
 
+#[cfg(test)]
+mod quote_check_tests;
 #[cfg(test)]
 mod status_tests;
 
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nut04::MintMethodOptions;
-use cdk_common::{MintQuoteRequest, MintQuoteResponse, PaymentMethod};
+use cdk_common::nuts::CurrencyUnit;
+use cdk_common::{MintQuoteBolt11Response, MintQuoteRequest, MintQuoteResponse, PaymentMethod};
+use lightning_invoice::Bolt11Invoice;
 pub(crate) use saga::MintSaga;
 use tracing::instrument;
 
@@ -179,6 +184,62 @@ fn is_stale_mint_quote_update(
         || amount_issued < quote.amount_issued
 }
 
+/// Refuse a BOLT11 mint quote that is not for the amount requested.
+///
+/// Runs on newly requested BOLT11 mint quotes, before the quote is stored;
+/// it does not cover invoices later retrieved by quote-status calls. A
+/// sat/msat mix-up at the mint would otherwise ask the payer for 1000x the
+/// ecash they get. The quote's unit and amount are compared when the mint
+/// sends them; both are optional in the response, and an omitted one is
+/// skipped rather than refused. The invoice amount is compared for sat and
+/// msat wallets only, whether or not those fields are present;
+/// other units are priced at the mint's rate. Unlike a melt quote there is no
+/// rounding here, because the request is in whole units.
+fn check_bolt11_mint_quote(
+    response: &MintQuoteBolt11Response<String>,
+    unit: &CurrencyUnit,
+    requested: Amount,
+) -> Result<(), Error> {
+    if let Some(quoted_unit) = &response.unit {
+        if quoted_unit != unit {
+            return Err(Error::UnitMismatch);
+        }
+    }
+    if let Some(quoted) = response.amount {
+        if quoted != requested {
+            tracing::warn!(
+                "Mint quoted {} {}, but {} was requested",
+                quoted,
+                unit,
+                requested
+            );
+            return Err(Error::IncorrectQuoteAmount);
+        }
+    }
+
+    let expected_msat = match unit {
+        CurrencyUnit::Sat => requested
+            .to_u64()
+            .checked_mul(1_000)
+            .ok_or(Error::AmountOverflow)?,
+        CurrencyUnit::Msat => requested.to_u64(),
+        _ => return Ok(()),
+    };
+    let invoice_msat = Bolt11Invoice::from_str(&response.request)?
+        .amount_milli_satoshis()
+        .ok_or(Error::InvoiceAmountUndefined)?;
+    if invoice_msat != expected_msat {
+        tracing::warn!(
+            "Mint invoice asks for {} msat, but {} {} was requested",
+            invoice_msat,
+            requested,
+            unit
+        );
+        return Err(Error::IncorrectQuoteAmount);
+    }
+    Ok(())
+}
+
 fn local_mint_quote_amount(method: &PaymentMethod, amount: Option<Amount>) -> Option<Amount> {
     match method {
         PaymentMethod::Known(KnownMethod::Onchain) => None,
@@ -321,6 +382,9 @@ impl Wallet {
         };
 
         let response: MintQuoteResponse<String> = self.client.post_mint_quote(request).await?;
+        if let (MintQuoteResponse::Bolt11(bolt11), Some(requested)) = (&response, amount) {
+            check_bolt11_mint_quote(bolt11, &unit, requested)?;
+        }
         let quote_id = response.quote().to_string();
         let request_str = response.request().to_string();
         let expiry = response.expiry();
