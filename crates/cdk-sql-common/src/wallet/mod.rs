@@ -430,6 +430,8 @@ where
             WHERE
                 amount_issued = 0
                 OR
+                amount_paid > amount_issued
+                OR
                 payment_method <> 'bolt11'
             "#,
         )?

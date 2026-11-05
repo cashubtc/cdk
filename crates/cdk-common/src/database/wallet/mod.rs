@@ -44,8 +44,9 @@ where
     /// Get mint quotes from storage
     async fn get_mint_quotes(&self) -> Result<Vec<WalletMintQuote>, Err>;
     /// Get unissued mint quotes from storage
-    /// Returns bolt11 quotes where nothing has been issued yet (amount_issued = 0) and all quotes
-    /// of other payment methods (bolt12, onchain, custom), which can be paid more than once.
+    /// Returns bolt11 quotes where nothing has been issued yet (amount_issued = 0) or a paid
+    /// amount is still left to issue (amount_paid > amount_issued), and all quotes of other
+    /// payment methods (bolt12, onchain, custom), which can be paid more than once.
     /// Includes unpaid bolt11 quotes to allow checking with the mint if they've been paid (wallet state may be outdated).
     async fn get_unissued_mint_quotes(&self) -> Result<Vec<WalletMintQuote>, Err>;
 

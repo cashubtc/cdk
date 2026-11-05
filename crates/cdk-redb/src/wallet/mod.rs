@@ -341,7 +341,9 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
             .flatten()
             .flat_map(|(_id, quote)| serde_json::from_str::<MintQuote>(quote.value()).ok())
             .filter(|quote| {
-                quote.amount_issued == Amount::ZERO || !quote.payment_method.is_bolt11()
+                quote.amount_issued == Amount::ZERO
+                    || quote.amount_paid > quote.amount_issued
+                    || !quote.payment_method.is_bolt11()
             })
             .collect())
     }
