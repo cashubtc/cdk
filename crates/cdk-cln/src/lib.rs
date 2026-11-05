@@ -452,7 +452,10 @@ impl MintPayment for Cln {
                     match melt_options {
                         MeltOptions::Mpp { mpp } => partial_amount = Some(mpp.amount.into()),
                         MeltOptions::Amountless { amountless } => {
-                            amount_msat = Some(amountless.amount_msat.into());
+                            amount_msat = bolt11_xpay_amount_msat(
+                                &bolt11_options.bolt11,
+                                amountless.amount_msat.into(),
+                            )?;
                         }
                     }
                 }
@@ -1337,6 +1340,25 @@ fn outgoing_payment_response_with_status(
         payment_proof: None,
         status,
         total_spent: Amount::new(0, CurrencyUnit::Msat),
+    }
+}
+
+/// Select the `amount_msat` sent to xpay for an amountless melt.
+///
+/// xpay only takes an amount for an invoice that omits it, and rejects one for
+/// an invoice that carries an amount ("amount_msat unnecessary") before
+/// dispatching anything. A matching amount is therefore left out, as the
+/// invoice already states it.
+fn bolt11_xpay_amount_msat(
+    bolt11: &Bolt11Invoice,
+    requested_amount_msat: u64,
+) -> Result<Option<u64>, payment::Error> {
+    match bolt11.amount_milli_satoshis() {
+        Some(invoice_amount) if invoice_amount != requested_amount_msat => {
+            Err(payment::Error::AmountMismatch)
+        }
+        Some(_) => Ok(None),
+        None => Ok(Some(requested_amount_msat)),
     }
 }
 
