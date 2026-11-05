@@ -64,7 +64,7 @@ impl Wallet {
                     "Receive saga {} in ProofsPending state - compensating",
                     saga.id
                 );
-                self.compensate_receive(&saga.id).await?;
+                self.compensate_receive(&saga.id, data).await?;
                 Ok(RecoveryAction::Compensated)
             }
             ReceiveSagaState::SwapRequested => {
@@ -186,7 +186,7 @@ impl Wallet {
                     saga_id
                 );
                 self.mark_transaction_failed(*saga_id).await?;
-                self.compensate_receive(saga_id).await?;
+                self.compensate_receive(saga_id, data).await?;
                 Ok(RecoveryAction::Compensated)
             }
             Err(e) => {
@@ -240,14 +240,20 @@ impl Wallet {
         Ok(())
     }
 
-    /// Compensate a receive saga by removing pending proofs.
-    async fn compensate_receive(&self, saga_id: &uuid::Uuid) -> Result<(), Error> {
+    /// Compensate a receive saga by removing pending proofs and putting back
+    /// the rows the wallet stored for them before the receive.
+    async fn compensate_receive(
+        &self,
+        saga_id: &uuid::Uuid,
+        data: &ReceiveOperationData,
+    ) -> Result<(), Error> {
         let pending_proofs = self.localstore.get_reserved_proofs(saga_id).await?;
         let proof_ys = pending_proofs.iter().map(|p| p.y).collect();
 
         RemovePendingProofs {
             localstore: self.localstore.clone(),
             proof_ys,
+            restore_proofs: data.replaced_proofs.clone(),
             saga_id: *saga_id,
         }
         .execute()
@@ -300,6 +306,7 @@ mod tests {
                 counter_end: None,
                 amount: Some(Amount::from(100)),
                 blinded_messages: None,
+                replaced_proofs: Vec::new(),
             }),
         );
         db.add_saga(saga).await.unwrap();
@@ -342,6 +349,7 @@ mod tests {
                 counter_end: Some(1),
                 amount: Some(Amount::from(100)),
                 blinded_messages: Some(vec![]),
+                replaced_proofs: Vec::new(),
             }),
         );
         db.add_saga(saga).await.unwrap();
@@ -406,6 +414,7 @@ mod tests {
                 counter_end: Some(10),
                 amount: Some(Amount::from(100)),
                 blinded_messages: Some(vec![]), // Empty for simplicity
+                replaced_proofs: Vec::new(),
             }),
         );
         db.add_saga(saga).await.unwrap();
@@ -471,6 +480,7 @@ mod tests {
                 counter_end: Some(10),
                 amount: Some(Amount::from(100)),
                 blinded_messages: Some(vec![]),
+                replaced_proofs: Vec::new(),
             }),
         );
         db.add_saga(saga).await.unwrap();
