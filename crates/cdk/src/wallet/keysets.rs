@@ -15,19 +15,20 @@ const ACTIVE_WINDOW_SECS: u64 = 30 * 24 * 60 * 60;
 
 /// Pick the keyset to mint new outputs on.
 ///
-/// Narrows before it ranks. Superseded keyset ID versions are dropped, then keysets that stop
-/// being usable within the next 30 days, then the cheapest of what remains wins, ties going to
-/// the keyset usable longest. A keyset is usable until the earlier of `active_until` and
-/// `final_expiry`; an absent timestamp counts as never, since NUT-02 forbids a mint inactivating
-/// a keyset it has not announced an `active_until` for. The horizon is dropped rather than
-/// failing when the mint offers nothing that long-lived.
+/// Narrows before it ranks. Keysets past `final_expiry` count as inactive whatever the mint
+/// reports (NUT-02). Superseded keyset ID versions are dropped, then keysets that stop being
+/// usable within the next 30 days, then the cheapest of what remains wins, ties going to the
+/// keyset usable longest. A keyset is usable until the earlier of `active_until` and
+/// `final_expiry`; an absent timestamp counts as never. When the mint offers nothing that
+/// long-lived the horizon is dropped, and ties go to the latest `final_expiry` instead.
 pub(crate) fn select_active_keyset<I>(keysets: I) -> Option<KeySet>
 where
     I: IntoIterator<Item = KeySet>,
 {
+    let now = unix_time();
     let active: Vec<KeySet> = keysets
         .into_iter()
-        .filter(|k| k.active.unwrap_or(false))
+        .filter(|k| k.active.unwrap_or(false) && expires_at(k.final_expiry) > now)
         .collect();
     let newest = active.iter().map(|k| k.id.get_version()).max()?;
     let current = active
@@ -35,17 +36,25 @@ where
         .filter(|k| k.id.get_version() == newest)
         .collect::<Vec<_>>();
 
-    let horizon = unix_time().saturating_add(ACTIVE_WINDOW_SECS);
+    let horizon = now.saturating_add(ACTIVE_WINDOW_SECS);
     let (long_lived, rest): (Vec<KeySet>, Vec<KeySet>) = current
         .into_iter()
         .partition(|k| usable_until(k) >= horizon);
 
-    let pool = if long_lived.is_empty() {
-        rest
-    } else {
-        long_lived
-    };
-    pool.into_iter().min_by_key(keyset_rank)
+    if long_lived.is_empty() {
+        // Proofs stay redeemable past `active_until`, but not past `final_expiry`.
+        return rest
+            .into_iter()
+            .min_by_key(|k| (k.input_fee_ppk, Reverse(expires_at(k.final_expiry))));
+    }
+    long_lived.into_iter().min_by_key(keyset_rank)
+}
+
+/// When a keyset expires. Zero means no expiry, as in the keyset ID.
+pub(crate) fn expires_at(final_expiry: Option<u64>) -> u64 {
+    final_expiry
+        .filter(|expiry| *expiry != 0)
+        .unwrap_or(u64::MAX)
 }
 
 /// When the keyset stops being usable: the earlier of `active_until` and `final_expiry`.
@@ -53,7 +62,7 @@ fn usable_until(keyset: &KeySet) -> u64 {
     keyset
         .active_until
         .unwrap_or(u64::MAX)
-        .min(keyset.final_expiry.unwrap_or(u64::MAX))
+        .min(expires_at(keyset.final_expiry))
 }
 
 /// Cheapest fee, then the keyset usable longest.
@@ -583,6 +592,46 @@ mod tests {
 
         let picked = select_active_keyset([dear_sooner, cheap_soon]).expect("a keyset");
         assert_eq!(picked.input_fee_ppk, 1);
+    }
+
+    /// With nothing long-lived, a keyset still in its grace period beats one about to expire.
+    #[test]
+    fn select_active_keyset_falls_back_to_the_latest_final_expiry() {
+        let now = unix_time();
+        let mut expiring = test_keyset();
+        expiring.final_expiry = Some(now + 24 * 60 * 60);
+        let mut overdue = test_keyset();
+        overdue.active_until = Some(now - 2 * 24 * 60 * 60);
+        overdue.final_expiry = Some(now + 3650 * 24 * 60 * 60);
+
+        let picked = select_active_keyset([expiring, overdue.clone()]).expect("a keyset");
+        assert_eq!(picked.final_expiry, overdue.final_expiry);
+    }
+
+    /// A keyset past `final_expiry` loses however cheap or new it is, whatever `active` says.
+    #[test]
+    fn select_active_keyset_skips_expired_keysets() {
+        let now = unix_time();
+        let mut cheap_expired = keyset_v1();
+        cheap_expired.input_fee_ppk = 1;
+        cheap_expired.final_expiry = Some(now - 1);
+        let mut dear_older = test_keyset();
+        dear_older.input_fee_ppk = 100;
+
+        let picked =
+            select_active_keyset([cheap_expired.clone(), dear_older.clone()]).expect("a keyset");
+        assert_eq!(picked.id, dear_older.id);
+        assert!(select_active_keyset([cheap_expired]).is_none());
+    }
+
+    /// Some mints report a `final_expiry` of zero, which means no expiry.
+    #[test]
+    fn select_active_keyset_treats_zero_final_expiry_as_none() {
+        let mut zero = test_keyset();
+        zero.final_expiry = Some(0);
+
+        let picked = select_active_keyset([zero]).expect("a keyset");
+        assert_eq!(picked.final_expiry, Some(0));
     }
 
     /// Equal fees fall through to the latest `active_until`, absent counting as latest.

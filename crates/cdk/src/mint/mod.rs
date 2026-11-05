@@ -1302,7 +1302,7 @@ impl Mint {
             .load()
             .iter()
             .filter_map(|keyset| {
-                if keyset.active {
+                if keyset.is_active() {
                     Some((keyset.unit.clone(), keyset.id))
                 } else {
                     None
@@ -2741,6 +2741,43 @@ mod tests {
         );
 
         mint.stop().await.expect("mint should stop");
+    }
+
+    /// A keyset that expires after the snapshot was taken is listed inactive from then on.
+    #[tokio::test]
+    async fn expired_keyset_is_listed_inactive() {
+        use cdk_common::util::unix_time;
+
+        let mut supported_units = HashMap::new();
+        let amounts: Vec<u64> = (0..8).map(|i| 2u64.pow(i)).collect();
+        supported_units.insert(CurrencyUnit::default(), (0, amounts));
+        let config = MintConfig::<'_> {
+            supported_units,
+            ..Default::default()
+        };
+        let mint = create_mint(config).await;
+
+        let expired: Vec<SignatoryKeySet> = mint
+            .keysets
+            .load()
+            .iter()
+            .cloned()
+            .map(|mut ks| {
+                ks.final_expiry = Some(unix_time() - 1);
+                ks
+            })
+            .collect();
+        let id = expired[0].id;
+        assert!(expired[0].active, "the stored flag is stale by design");
+        mint.keysets.store(Arc::new(expired));
+
+        assert!(mint.keysets().keysets.iter().all(|k| !k.active));
+        assert!(mint.pubkeys().keysets.is_empty());
+        assert!(mint.get_active_keysets().is_empty());
+        let by_id = mint
+            .keyset_pubkeys(&id)
+            .expect("still served for redemption");
+        assert_eq!(by_id.keysets[0].active, Some(false));
     }
 
     #[tokio::test]

@@ -80,6 +80,12 @@ impl SignatoryKeySet {
         self.final_expiry
             .is_some_and(|expiry| expiry < cdk_common::util::unix_time())
     }
+
+    /// Whether wallets see this keyset as active. A snapshot cannot track the clock, so
+    /// NUT-02's inactivation at `final_expiry` is applied here.
+    pub fn is_active(&self) -> bool {
+        self.active && !self.is_expired()
+    }
 }
 
 impl From<&SignatoryKeySet> for KeySet {
@@ -90,10 +96,11 @@ impl From<&SignatoryKeySet> for KeySet {
 
 impl From<SignatoryKeySet> for KeySet {
     fn from(val: SignatoryKeySet) -> Self {
+        let active = Some(val.is_active());
         KeySet {
             id: val.id,
             unit: val.unit,
-            active: Some(val.active),
+            active,
             keys: val.keys,
             input_fee_ppk: val.input_fee_ppk,
             active_from: val.active_from,

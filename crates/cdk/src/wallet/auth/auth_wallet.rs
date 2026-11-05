@@ -285,10 +285,11 @@ impl AuthWallet {
     /// up-to-date keyset information for blind auth operations.
     #[instrument(skip(self))]
     pub async fn fetch_active_keyset(&self) -> Result<KeySetInfo, Error> {
+        let now = crate::util::unix_time();
         self.refresh_keysets()
             .await?
             .into_iter()
-            .filter(|keyset| keyset.active)
+            .filter(|k| k.active && crate::wallet::keysets::expires_at(k.final_expiry) > now)
             .min_by_key(|keyset| keyset.input_fee_ppk)
             .ok_or(Error::NoActiveKeyset)
     }
@@ -649,7 +650,7 @@ mod tests {
                     input_fee_ppk: 0,
                     active_from: None,
                     active_until: None,
-                    final_expiry: None,
+                    final_expiry: self.keyset_active.final_expiry,
                 },
                 KeySetInfo {
                     id: self.keyset_inactive.id,
@@ -728,6 +729,27 @@ mod tests {
             auth_client: connector,
             oidc_client: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// An auth keyset past `final_expiry` is not picked, whatever `active` says.
+    #[tokio::test]
+    async fn fetch_active_keyset_skips_expired_keysets() {
+        let mut keyset_active = build_auth_keyset(1);
+        keyset_active.final_expiry = Some(crate::util::unix_time() - 1);
+
+        let wallet = auth_wallet_with_connector(Arc::new(MockAuthConnector {
+            keyset_active,
+            keyset_inactive: build_auth_keyset(2),
+            respond_with_unrequested_keyset: false,
+            list_only_inactive_keyset: false,
+            requested_keysets: Default::default(),
+        }))
+        .await;
+
+        assert!(matches!(
+            wallet.fetch_active_keyset().await,
+            Err(Error::NoActiveKeyset)
+        ));
     }
 
     #[tokio::test]
