@@ -636,7 +636,7 @@ mod tests {
     use std::sync::Arc;
 
     use cdk_common::amount::{FeeAndAmounts, SplitTarget};
-    use cdk_common::nuts::{CurrencyUnit, RestoreResponse};
+    use cdk_common::nuts::{CurrencyUnit, RestoreResponse, State};
     use cdk_common::wallet::{
         IssueSagaState, MintOperationData, OperationData, ProofInfo, TransactionId,
         TransactionStatus, WalletSaga, WalletSagaState,
@@ -991,5 +991,73 @@ mod tests {
         let transactions = db.list_transactions(None, None, None).await.unwrap();
         assert_eq!(transactions.len(), 1);
         assert_eq!(transactions[0].status, TransactionStatus::Failed);
+    }
+
+    /// A mint with spending conditions uses random secrets, so the recorded
+    /// counter range belongs to earlier proofs. Replaying it must not unblind
+    /// the signatures with those secrets and overwrite the stored proofs.
+    #[tokio::test]
+    async fn test_recover_issue_replay_does_not_overwrite_proofs_of_other_counters() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let saga_id = uuid::Uuid::new_v4();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.enable_mint_signing();
+        mock_client._set_restore_response(Ok(RestoreResponse {
+            outputs: vec![],
+            signatures: vec![],
+        }));
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let keyset_id = wallet.active_keyset().await.unwrap().id;
+
+        // An earlier, spent proof derived at counter 0
+        let earlier = cdk_common::Proof {
+            amount: Amount::from(2),
+            keyset_id,
+            secret: crate::secret::Secret::from_seed(&wallet.seed, keyset_id, 0).unwrap(),
+            c: crate::nuts::SecretKey::generate().public_key(),
+            witness: None,
+            dleq: None,
+            p2pk_e: None,
+        };
+        let earlier =
+            ProofInfo::new(earlier, mint_url.clone(), State::Spent, CurrencyUnit::Sat).unwrap();
+        let earlier_y = earlier.y;
+        let earlier_c = earlier.proof.c;
+        db.update_proofs(vec![earlier], vec![]).await.unwrap();
+
+        // The mint's output uses a random secret, as with spending conditions,
+        // while counters 0..1 are what the saga recorded
+        let (blinded_secret, _r) =
+            crate::dhke::blind_message(&crate::secret::Secret::generate().to_bytes(), None)
+                .unwrap();
+        let output = cdk_common::BlindedMessage::new(Amount::from(2), keyset_id, blinded_secret);
+
+        let quote = test_mint_quote(mint_url.clone());
+        db.add_mint_quote(quote.clone()).await.unwrap();
+
+        let saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Issue(IssueSagaState::MintRequested),
+            Amount::from(2),
+            mint_url,
+            CurrencyUnit::Sat,
+            OperationData::Mint(MintOperationData::new_single(
+                quote.id,
+                Amount::from(2),
+                Some(0),
+                Some(1),
+                Some(vec![output]),
+            )),
+        );
+        db.add_saga(saga).await.unwrap();
+
+        wallet.recover_incomplete_sagas().await.unwrap();
+
+        let stored = db.get_proofs_by_ys(vec![earlier_y]).await.unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].state, State::Spent);
+        assert_eq!(stored[0].proof.c, earlier_c);
     }
 }
