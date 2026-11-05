@@ -23,6 +23,7 @@ use crate::stmt::query;
 mod auth;
 mod completed_operations;
 mod keys;
+mod keyset_ledger;
 mod keyvalue;
 mod proofs;
 mod quotes;
@@ -37,6 +38,7 @@ mod migrations {
 pub use auth::SQLMintAuthDatabase;
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::MintMetricGuard;
+use keyset_ledger::LedgerMoves;
 use migrations::MIGRATIONS;
 
 /// Mint SQL Database
@@ -55,6 +57,7 @@ where
     RM: DatabasePool + 'static,
 {
     pub(crate) inner: ConnectionWithTransaction<RM::Connection, PooledResource<RM>>,
+    pending_ledger: LedgerMoves,
 }
 
 /// Sorted, deduplicated advisory lock keys for a batch of quotes.
@@ -87,12 +90,12 @@ where
     async fn begin_transaction_from_pool(
         pool: &Arc<Pool<RM>>,
     ) -> Result<Box<dyn database::MintTransaction<Error> + Send + Sync>, Error> {
-        let tx = SQLTransaction {
-            inner: ConnectionWithTransaction::new(
+        let tx = SQLTransaction::new(
+            ConnectionWithTransaction::new(
                 pool.get().await.map_err(|e| Error::Database(Box::new(e)))?,
             )
             .await?,
-        };
+        );
 
         Ok(Box::new(tx))
     }
@@ -110,6 +113,27 @@ impl<RM> SQLTransaction<RM>
 where
     RM: DatabasePool + 'static,
 {
+    /// Open a transaction with nothing staged against the keyset ledger.
+    pub(in crate::mint) fn new(
+        inner: ConnectionWithTransaction<RM::Connection, PooledResource<RM>>,
+    ) -> Self {
+        Self {
+            inner,
+            pending_ledger: LedgerMoves::new(),
+        }
+    }
+
+    /// The per-keyset movements this transaction has staged.
+    ///
+    /// Operations record their movements here instead of writing
+    /// `keyset_amounts` as they go, so the whole transaction touches those rows
+    /// exactly once, at commit, in keyset ID order. That keeps them the last
+    /// locks the transaction takes and leaves no room for two paths to visit
+    /// them in opposite orders.
+    pub(in crate::mint) fn ledger(&mut self) -> &mut LedgerMoves {
+        &mut self.pending_ledger
+    }
+
     /// Take quote advisory locks in one statement and stable key order.
     async fn take_quote_locks(&mut self, quote_ids: &[QuoteId]) -> Result<bool, Error> {
         if quote_ids.is_empty() || RM::Connection::name() != "postgres" {
@@ -153,7 +177,28 @@ where
         #[cfg(feature = "prometheus")]
         let metrics = MintMetricGuard::new("transaction_commit");
 
-        let result = self.inner.commit().await;
+        let Self {
+            inner,
+            pending_ledger,
+        } = *self;
+
+        if let Err(err) = keyset_ledger::commit_moves(&inner, &pending_ledger).await {
+            if let Err(rollback_err) = inner.rollback().await {
+                tracing::warn!(
+                    "rolling back a refused ledger pass failed: {}",
+                    rollback_err
+                );
+            }
+
+            #[cfg(feature = "prometheus")]
+            {
+                metrics.record(false);
+            }
+
+            return Err(err);
+        }
+
+        let result = inner.commit().await;
 
         #[cfg(feature = "prometheus")]
         {
@@ -186,6 +231,18 @@ where
         &self,
     ) -> Result<Box<dyn database::MintTransaction<Error> + Send + Sync>, Error> {
         Self::begin_transaction_from_pool(&self.pool).await
+    }
+
+    async fn reconcile_keyset_ledger(&self) -> Result<(), Error> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        let tx = ConnectionWithTransaction::new(conn).await?;
+        keyset_ledger::reconcile(&tx).await?;
+        tx.commit().await?;
+        Ok(())
     }
 }
 
@@ -335,7 +392,7 @@ mod tests {
             .await
             .expect("test transaction should begin");
 
-        SQLTransaction { inner }
+        SQLTransaction::new(inner)
     }
 
     fn labels_match(

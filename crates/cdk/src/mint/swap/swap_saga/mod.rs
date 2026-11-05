@@ -361,30 +361,6 @@ impl SwapSaga<'_, Signed> {
 
         let mut tx = self.db.begin_transaction().await?;
 
-        // Add blind signatures to outputs
-        // TODO: WE should move the should fail to the db so the there is not this extra rollback.
-        // This would allow the error to be from the same place in test and prod
-        #[cfg(test)]
-        {
-            if crate::test_helpers::mint::should_fail_for("ADD_SIGNATURES") {
-                tx.rollback().await?;
-                self.compensate_all().await?;
-                return Err(Error::Database(database::Error::Database(
-                    "Test failure: ADD_SIGNATURES".into(),
-                )));
-            }
-        }
-
-        if let Err(err) = tx
-            .add_blind_signatures(&blinded_secrets, &self.state_data.signatures, None)
-            .await
-        {
-            tx.rollback().await?;
-            self.compensate_all().await?;
-            return Err(err.into());
-        }
-
-        // Mark input proofs as spent
         // TODO: WE should move the should fail to the db so the there is not this extra rollback.
         // This would allow the error to be from the same place in test and prod
         #[cfg(test)]
@@ -411,6 +387,29 @@ impl SwapSaga<'_, Signed> {
             tx.rollback().await?;
             self.compensate_all().await?;
             return Err(err);
+        }
+
+        // Add blind signatures to outputs
+        // TODO: WE should move the should fail to the db so the there is not this extra rollback.
+        // This would allow the error to be from the same place in test and prod
+        #[cfg(test)]
+        {
+            if crate::test_helpers::mint::should_fail_for("ADD_SIGNATURES") {
+                tx.rollback().await?;
+                self.compensate_all().await?;
+                return Err(Error::Database(database::Error::Database(
+                    "Test failure: ADD_SIGNATURES".into(),
+                )));
+            }
+        }
+
+        if let Err(err) = tx
+            .add_blind_signatures(&blinded_secrets, &self.state_data.signatures, None)
+            .await
+        {
+            tx.rollback().await?;
+            self.compensate_all().await?;
+            return Err(err.into());
         }
 
         if let Err(err) = tx
