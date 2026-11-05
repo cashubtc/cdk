@@ -1440,6 +1440,58 @@ mod batch_mint_tests {
         quote_id
     }
 
+    fn bolt11_mint_quote(amount: u64, amount_paid: u64) -> MintQuote {
+        let now = cdk_common::util::unix_time();
+        MintQuote::new(
+            Some(QuoteId::new()),
+            "lnbc-overpayment-test".to_string(),
+            CurrencyUnit::Sat,
+            Some(Amount::new(amount, CurrencyUnit::Sat)),
+            now + 3600,
+            PaymentIdentifier::CustomId("lookup".to_string()),
+            None,
+            Amount::new(amount_paid, CurrencyUnit::Sat),
+            Amount::new(0, CurrencyUnit::Sat),
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            now,
+            now,
+            vec![],
+            vec![],
+            None,
+        )
+    }
+
+    #[test]
+    fn test_bolt11_credit_is_capped_at_the_unpaid_remainder() {
+        let quote = bolt11_mint_quote(64, 0);
+
+        let credited =
+            Mint::creditable_payment_amount(&quote, Amount::new(65, CurrencyUnit::Sat)).unwrap();
+        assert_eq!(credited, Amount::new(64, CurrencyUnit::Sat));
+
+        let credited =
+            Mint::creditable_payment_amount(&quote, Amount::new(40, CurrencyUnit::Sat)).unwrap();
+        assert_eq!(credited, Amount::new(40, CurrencyUnit::Sat));
+    }
+
+    #[test]
+    fn test_bolt11_credit_of_an_already_overpaid_quote_is_zero() {
+        let quote = bolt11_mint_quote(64, 65);
+
+        let credited =
+            Mint::creditable_payment_amount(&quote, Amount::new(10, CurrencyUnit::Sat)).unwrap();
+        assert_eq!(credited, Amount::new(0, CurrencyUnit::Sat));
+    }
+
+    #[test]
+    fn test_bolt11_credit_rejects_a_payment_in_another_unit() {
+        let quote = bolt11_mint_quote(64, 0);
+
+        let result =
+            Mint::creditable_payment_amount(&quote, Amount::new(64_000, CurrencyUnit::Msat));
+        assert!(matches!(result, Err(crate::Error::UnitMismatch)));
+    }
+
     fn mint_request_for_amount(mint: &Mint, quote: QuoteId, amount: u64) -> MintRequest<QuoteId> {
         let keyset_id = *mint.get_active_keysets().get(&CurrencyUnit::Sat).unwrap();
         let keys = mint
