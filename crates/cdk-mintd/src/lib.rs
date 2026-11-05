@@ -61,6 +61,8 @@ pub mod config;
 mod config_migration;
 mod config_service;
 mod config_store;
+#[cfg(feature = "mint-discovery")]
+pub mod discovery;
 pub mod env_vars;
 mod secret;
 pub mod setup;
@@ -570,6 +572,11 @@ pub(crate) fn validate_settings(settings: &config::Settings) -> Result<()> {
     validate_auth_config(settings)?;
     validate_management_rpc_config(settings)?;
     validate_prometheus_config(settings)?;
+
+    #[cfg(feature = "mint-discovery")]
+    if let Some(discovery) = &settings.mint_discovery {
+        discovery.validate(&settings.info.url)?;
+    }
 
     Ok(())
 }
@@ -2022,6 +2029,11 @@ async fn reconcile_canonical_configuration(
 /// A mint daemon with every resource built and all database reconciliation
 /// completed, ready to start its services.
 struct PreparedMintd {
+    #[cfg(feature = "mint-discovery")]
+    discovery: Option<(
+        cdk_nostr::nostr::prelude::Event,
+        Vec<cdk_nostr::nostr::prelude::RelayUrl>,
+    )>,
     mint: Arc<cdk::mint::Mint>,
     #[cfg(feature = "prometheus")]
     prometheus: Option<config::Prometheus>,
@@ -2038,6 +2050,11 @@ struct PreparedMintd {
 /// A mint daemon with all services started and its configuration committed
 /// as applied, serving requests until shutdown.
 struct RunningMintd {
+    #[cfg(feature = "mint-discovery")]
+    discovery: Option<(
+        cdk_nostr::nostr::prelude::Event,
+        Vec<cdk_nostr::nostr::prelude::RelayUrl>,
+    )>,
     mint: Arc<cdk::mint::Mint>,
     mint_service: Router,
     listener: tokio::net::TcpListener,
@@ -2356,7 +2373,20 @@ impl PreparedMintd {
         // Create a broadcast channel to share shutdown signal between services
         let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
 
+        #[cfg(feature = "mint-discovery")]
+        let discovery = settings
+            .mint_discovery
+            .as_ref()
+            .map(|discovery| {
+                discovery
+                    .announcement(&settings.info.url, &mint_info)
+                    .map(|event| (event, discovery.relays.clone()))
+            })
+            .transpose()?;
+
         Ok(Self {
+            #[cfg(feature = "mint-discovery")]
+            discovery,
             mint,
             #[cfg(feature = "prometheus")]
             prometheus: settings.prometheus.clone(),
@@ -2436,6 +2466,8 @@ impl PreparedMintd {
         }
 
         Ok(RunningMintd {
+            #[cfg(feature = "mint-discovery")]
+            discovery: self.discovery,
             mint: self.mint,
             mint_service: self.mint_service,
             listener,
@@ -2455,6 +2487,9 @@ impl RunningMintd {
         self,
         shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
     ) -> Result<()> {
+        #[cfg(feature = "mint-discovery")]
+        let discovery_shutdown = self.shutdown_tx.subscribe();
+
         // Create a task to wait for the shutdown signal and broadcast it
         let shutdown_broadcast_task = {
             let shutdown_tx = self.shutdown_tx.clone();
@@ -2475,7 +2510,26 @@ impl RunningMintd {
         let axum_result =
             axum::serve(self.listener, self.mint_service).with_graceful_shutdown(axum_shutdown);
 
-        match axum_result.await {
+        // Keep publication owned by this serving future so any server exit also
+        // drops its relay client. A completed announcement leaves no worker.
+        #[cfg(feature = "mint-discovery")]
+        let axum_result = {
+            let serving = async { axum_result.await };
+            tokio::pin!(serving);
+            let publication = async {
+                if let Some((event, relays)) = self.discovery {
+                    discovery::publish(event, relays, discovery_shutdown).await;
+                }
+            };
+            tokio::select! {
+                result = &mut serving => result,
+                _ = publication => serving.await,
+            }
+        };
+        #[cfg(not(feature = "mint-discovery"))]
+        let axum_result = axum_result.await;
+
+        match axum_result {
             Ok(_) => {
                 tracing::info!("Axum server stopped with okay status");
             }

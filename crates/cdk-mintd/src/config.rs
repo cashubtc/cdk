@@ -1135,6 +1135,10 @@ pub struct Settings {
     pub info: Info,
     pub signatory: Option<Signatory>,
     pub mint_info: MintInfo,
+    /// Optional NIP-87 mint discovery announcement.
+    #[cfg(feature = "mint-discovery")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mint_discovery: Option<crate::discovery::MintDiscovery>,
     #[serde(default, deserialize_with = "deserialize_payment_backend")]
     pub payment_backend: Vec<PaymentBackend>,
     pub onchain: Option<Onchain>,
@@ -1411,6 +1415,16 @@ impl Settings {
 mod tests {
 
     use super::*;
+
+    #[cfg(not(feature = "mint-discovery"))]
+    #[test]
+    fn mint_discovery_requires_the_build_feature() {
+        let error = Settings::try_from_toml(
+            "[mint_discovery]\nsecret_key = \"env:NOSTR_KEY\"\nrelays = [\"wss://relay.example\"]\nnetwork = \"mainnet\"",
+        )
+        .expect_err("unsupported discovery configuration must not be silently ignored");
+        assert!(error.to_string().contains("mint_discovery"));
+    }
 
     #[test]
     fn postgres_tls_defaults_preserve_connection_url_policy() {

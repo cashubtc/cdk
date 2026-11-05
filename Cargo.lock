@@ -1681,6 +1681,7 @@ dependencies = [
  "cdk-ldk-node",
  "cdk-lnd",
  "cdk-mint-rpc",
+ "cdk-nostr",
  "cdk-payment-processor",
  "cdk-postgres",
  "cdk-prometheus",

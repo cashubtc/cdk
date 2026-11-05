@@ -6,6 +6,8 @@ Nostr support for the Cashu Development Kit in a single crate.
 
 - **`keys`** — secret key generation/parsing and x-only public key derivation.
 - **`nip44`** — NIP-44 v2 authenticated encryption between Nostr keys.
+- **`nip87`** (feature `nip87`) — builds signed-event-ready Cashu mint discovery
+  announcements from `cashu::nuts::MintInfo`, using the existing Nostr SDK.
 - **`inbox`** — standing NIP-17 inbox listener: subscribes relays for gift
   wraps addressed to an identity, unwraps them, and delivers the rumors to a
   `NostrInboxListener` callback.
