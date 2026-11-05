@@ -279,51 +279,109 @@ impl RecoveryHelpers for Wallet {
             swap_response.signatures.len()
         );
 
-        // Get keyset ID from the first blinded message
+        self.construct_replayed_proofs(
+            saga_id,
+            saga_type,
+            swap_response.signatures,
+            blinded_messages,
+            counter_start,
+            counter_end,
+        )
+        .await
+    }
+}
+
+impl Wallet {
+    /// Construct the proofs for the signatures of a replayed request.
+    ///
+    /// The secrets are re-derived from the stored counter range, which yields
+    /// them in counter order. The outputs don't have to be in that order (a
+    /// swap sorts its outputs by amount), and outputs with spending conditions
+    /// use random secrets that no counter derives. Each output is therefore
+    /// matched to its secret by `B_`, so a signature is only unblinded with the
+    /// secret and blinding factor of its own output.
+    ///
+    /// Returns `Ok(None)` if an output has no secret in the range, so the caller
+    /// can fall back to `/restore`, which matches outputs the same way.
+    pub(crate) async fn construct_replayed_proofs(
+        &self,
+        saga_id: &uuid::Uuid,
+        saga_type: &str,
+        signatures: Vec<BlindSignature>,
+        blinded_messages: &[BlindedMessage],
+        counter_start: u32,
+        counter_end: u32,
+    ) -> Result<Option<Vec<ProofInfo>>, Error> {
         let keyset_id = blinded_messages[0].keyset_id;
 
-        // Re-derive premint secrets
         let premint_secrets =
             PreMintSecrets::restore_batch(keyset_id, &self.seed, counter_start, counter_end)?;
 
-        // Load keyset keys
+        let premints_by_blinded_secret = premint_secrets
+            .secrets
+            .iter()
+            .map(|premint| (premint.blinded_message.blinded_secret, premint))
+            .collect::<HashMap<_, _>>();
+
+        let Some(premints) = blinded_messages
+            .iter()
+            .map(|output| {
+                premints_by_blinded_secret
+                    .get(&output.blinded_secret)
+                    .copied()
+            })
+            .collect::<Option<Vec<_>>>()
+        else {
+            tracing::warn!(
+                "{} saga {} - stored outputs are not derived from counters {}..{}, \
+                 cannot construct proofs from the replay",
+                saga_type,
+                saga_id,
+                counter_start,
+                counter_end
+            );
+            return Ok(None);
+        };
+
         let keys = self.keyset(keyset_id).await?.keys;
 
         validate_mint_response_signatures(
             self,
-            &swap_response.signatures,
+            &signatures,
             blinded_messages.iter(),
             SignatureAmountValidation::Exact,
         )
         .await?;
 
-        // Construct proofs
         let proofs = construct_proofs(
-            swap_response.signatures,
-            premint_secrets.rs(),
-            premint_secrets.secrets(),
+            signatures,
+            premints.iter().map(|premint| premint.r.clone()).collect(),
+            premints
+                .iter()
+                .map(|premint| premint.secret.clone())
+                .collect(),
             &keys,
         )?;
 
-        // Convert to ProofInfo
-        let proof_infos: Vec<ProofInfo> = proofs
+        proofs
             .into_iter()
-            .zip(&premint_secrets.secrets)
-            .map(|(p, premint)| {
-                let proof_info =
-                    ProofInfo::new(p, self.mint_url.clone(), State::Unspent, self.unit.clone())?;
-                Ok::<_, Error>(match premint.derivation_index {
+            .zip(premints)
+            .map(|(proof, premint)| {
+                let proof_info = ProofInfo::new(
+                    proof,
+                    self.mint_url.clone(),
+                    State::Unspent,
+                    self.unit.clone(),
+                )?;
+                Ok(match premint.derivation_index {
                     Some(index) => proof_info.with_derivation_index(index),
                     None => proof_info,
                 })
             })
-            .collect::<Result<Vec<_>, _>>()?;
-
-        Ok(Some(proof_infos))
+            .collect::<Result<Vec<_>, Error>>()
+            .map(Some)
     }
-}
 
-impl Wallet {
     /// Restore outputs, requiring complete coverage for fixed-output operations.
     pub(crate) async fn restore_outputs_with_result(
         &self,
