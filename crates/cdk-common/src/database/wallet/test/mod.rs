@@ -584,6 +584,35 @@ where
     assert_ne!(retrieved.amount, Amount::from(999));
 }
 
+/// Test that updating a melt quote without a payment proof keeps the stored one
+pub async fn add_melt_quote_keeps_payment_proof<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mut quote = test_melt_quote();
+    quote.state = MeltQuoteState::Paid;
+    quote.payment_proof = Some("preimage".to_string());
+    db.add_melt_quote(quote.clone()).await.unwrap();
+
+    // A later status update that does not carry the payment proof
+    let mut update = db.get_melt_quote(&quote.id).await.unwrap().unwrap();
+    update.payment_proof = None;
+    db.add_melt_quote(update).await.unwrap();
+
+    let retrieved = db.get_melt_quote(&quote.id).await.unwrap().unwrap();
+    assert_eq!(retrieved.payment_proof, Some("preimage".to_string()));
+    assert_eq!(retrieved.state, MeltQuoteState::Paid);
+    assert_eq!(retrieved.version, 1);
+
+    // A new payment proof still replaces the stored one
+    let mut update = retrieved;
+    update.payment_proof = Some("other".to_string());
+    db.add_melt_quote(update).await.unwrap();
+
+    let retrieved = db.get_melt_quote(&quote.id).await.unwrap().unwrap();
+    assert_eq!(retrieved.payment_proof, Some("other".to_string()));
+}
+
 // =============================================================================
 // Proof Management Tests
 // =============================================================================
@@ -1766,6 +1795,7 @@ macro_rules! wallet_db_test {
             remove_melt_quote,
             add_mint_quote_optimistic_locking,
             add_melt_quote_optimistic_locking,
+            add_melt_quote_keeps_payment_proof,
             add_and_get_proofs,
             get_proofs_in_transaction,
             update_proofs,
