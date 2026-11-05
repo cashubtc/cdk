@@ -32,7 +32,7 @@ impl Mint {
                 .keysets
                 .load()
                 .iter()
-                .filter(|keyset| keyset.active && keyset.unit != CurrencyUnit::Auth)
+                .filter(|keyset| keyset.is_active() && keyset.unit != CurrencyUnit::Auth)
                 .map(|key| key.into())
                 .collect::<Vec<_>>(),
         }
@@ -50,7 +50,7 @@ impl Mint {
                 .map(|k| KeySetInfo {
                     id: k.id,
                     unit: k.unit.clone(),
-                    active: k.active,
+                    active: k.is_active(),
                     input_fee_ppk: k.input_fee_ppk,
                     active_from: k.active_from,
                     active_until: k.active_until,
