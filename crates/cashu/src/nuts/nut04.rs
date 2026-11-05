@@ -2,6 +2,7 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/04.md>
 
+use std::collections::HashSet;
 use std::fmt;
 #[cfg(feature = "mint")]
 use std::str::FromStr;
@@ -184,6 +185,17 @@ impl Serialize for MintMethodSettings {
 
 struct MintMethodSettingsVisitor;
 
+/// Recognized keys checked for duplicates; unknown keys are ignored
+const MINT_METHOD_SETTINGS_FIELDS: &[&str] = &[
+    "method",
+    "unit",
+    "method_name",
+    "min_amount",
+    "max_amount",
+    "description",
+    "options",
+];
+
 impl<'de> Visitor<'de> for MintMethodSettingsVisitor {
     type Value = MintMethodSettings;
 
@@ -203,42 +215,37 @@ impl<'de> Visitor<'de> for MintMethodSettingsVisitor {
         let mut description: Option<bool> = None;
         let mut confirmations: Option<u32> = None;
 
+        // Recognized keys seen so far, so repeated keys are rejected even when a
+        // value is `null`
+        let mut seen_fields: HashSet<&'static str> = HashSet::new();
+
         while let Some(key) = map.next_key::<String>()? {
+            if let Some(field) = MINT_METHOD_SETTINGS_FIELDS
+                .iter()
+                .find(|field| **field == key)
+            {
+                if !seen_fields.insert(field) {
+                    return Err(de::Error::duplicate_field(field));
+                }
+            }
+
             match key.as_str() {
                 "method" => {
-                    if method.is_some() {
-                        return Err(de::Error::duplicate_field("method"));
-                    }
                     method = Some(map.next_value()?);
                 }
                 "unit" => {
-                    if unit.is_some() {
-                        return Err(de::Error::duplicate_field("unit"));
-                    }
                     unit = Some(map.next_value()?);
                 }
                 "method_name" => {
-                    if method_name.is_some() {
-                        return Err(de::Error::duplicate_field("method_name"));
-                    }
                     method_name = map.next_value()?;
                 }
                 "min_amount" => {
-                    if min_amount.is_some() {
-                        return Err(de::Error::duplicate_field("min_amount"));
-                    }
                     min_amount = map.next_value()?;
                 }
                 "max_amount" => {
-                    if max_amount.is_some() {
-                        return Err(de::Error::duplicate_field("max_amount"));
-                    }
                     max_amount = map.next_value()?;
                 }
                 "description" => {
-                    if description.is_some() {
-                        return Err(de::Error::duplicate_field("description"));
-                    }
                     description = Some(map.next_value()?);
                 }
                 "confirmations" => {
@@ -1005,6 +1012,53 @@ mod tests {
 
         assert!(parsed.get("min_amount").is_none());
         assert!(parsed.get("max_amount").is_none());
+    }
+
+    #[test]
+    fn test_mint_method_settings_rejects_duplicate_nullable_fields() {
+        for (field, value) in [
+            ("method_name", r#""Lightning""#),
+            ("min_amount", "100"),
+            ("max_amount", "100"),
+        ] {
+            for (first, second) in [
+                ("null", value),
+                (value, "null"),
+                ("null", "null"),
+                (value, value),
+            ] {
+                let json_str = format!(
+                    r#"{{"method":"bolt11","unit":"sat","{field}":{first},"{field}":{second}}}"#
+                );
+
+                let err = from_str::<MintMethodSettings>(&json_str).unwrap_err();
+
+                assert!(
+                    err.to_string()
+                        .contains(&format!("duplicate field `{field}`")),
+                    "{field}: {first} then {second} should be rejected, got: {err}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_mint_method_settings_rejects_duplicate_options() {
+        let json_str = r#"{"method":"bolt11","unit":"sat","options":{"description":true},"options":{"description":true}}"#;
+
+        let err = from_str::<MintMethodSettings>(json_str).unwrap_err();
+
+        assert!(err.to_string().contains("duplicate field `options`"));
+    }
+
+    #[test]
+    fn test_mint_method_settings_ignores_duplicate_unknown_fields() {
+        let json_str =
+            r#"{"method":"bolt11","unit":"sat","min_amount":100,"extra":1,"extra":null}"#;
+
+        let settings: MintMethodSettings = from_str(json_str).unwrap();
+
+        assert_eq!(settings.min_amount, Some(Amount::from(100)));
     }
 
     #[test]
