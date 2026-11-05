@@ -1407,6 +1407,91 @@ mod batch_mint_tests {
         quote_id
     }
 
+    /// Store an unpaid BOLT11 quote for `amount` sat, paid through `lookup_id`
+    async fn add_unpaid_bolt11_mint_quote(
+        mint: &Mint,
+        amount: u64,
+        lookup_id: &PaymentIdentifier,
+    ) -> QuoteId {
+        let quote_id = QuoteId::new();
+        let now = cdk_common::util::unix_time();
+        let quote = MintQuote::new(
+            Some(quote_id.clone()),
+            "lnbc-overpayment-test".to_string(),
+            CurrencyUnit::Sat,
+            Some(Amount::new(amount, CurrencyUnit::Sat)),
+            now + 3600,
+            lookup_id.clone(),
+            None,
+            Amount::new(0, CurrencyUnit::Sat),
+            Amount::new(0, CurrencyUnit::Sat),
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            now,
+            now,
+            vec![],
+            vec![],
+            None,
+        );
+
+        let mut tx = mint.localstore().begin_transaction().await.unwrap();
+        tx.add_mint_quote(quote).await.unwrap();
+        tx.commit().await.unwrap();
+
+        quote_id
+    }
+
+    fn bolt11_mint_quote(amount: u64, amount_paid: u64) -> MintQuote {
+        let now = cdk_common::util::unix_time();
+        MintQuote::new(
+            Some(QuoteId::new()),
+            "lnbc-overpayment-test".to_string(),
+            CurrencyUnit::Sat,
+            Some(Amount::new(amount, CurrencyUnit::Sat)),
+            now + 3600,
+            PaymentIdentifier::CustomId("lookup".to_string()),
+            None,
+            Amount::new(amount_paid, CurrencyUnit::Sat),
+            Amount::new(0, CurrencyUnit::Sat),
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            now,
+            now,
+            vec![],
+            vec![],
+            None,
+        )
+    }
+
+    #[test]
+    fn test_bolt11_credit_is_capped_at_the_unpaid_remainder() {
+        let quote = bolt11_mint_quote(64, 0);
+
+        let credited =
+            Mint::creditable_payment_amount(&quote, Amount::new(65, CurrencyUnit::Sat)).unwrap();
+        assert_eq!(credited, Amount::new(64, CurrencyUnit::Sat));
+
+        let credited =
+            Mint::creditable_payment_amount(&quote, Amount::new(40, CurrencyUnit::Sat)).unwrap();
+        assert_eq!(credited, Amount::new(40, CurrencyUnit::Sat));
+    }
+
+    #[test]
+    fn test_bolt11_credit_of_an_already_overpaid_quote_is_zero() {
+        let quote = bolt11_mint_quote(64, 65);
+
+        let credited =
+            Mint::creditable_payment_amount(&quote, Amount::new(10, CurrencyUnit::Sat)).unwrap();
+        assert_eq!(credited, Amount::new(0, CurrencyUnit::Sat));
+    }
+
+    #[test]
+    fn test_bolt11_credit_rejects_a_payment_in_another_unit() {
+        let quote = bolt11_mint_quote(64, 0);
+
+        let result =
+            Mint::creditable_payment_amount(&quote, Amount::new(64_000, CurrencyUnit::Msat));
+        assert!(matches!(result, Err(crate::Error::UnitMismatch)));
+    }
+
     fn mint_request_for_amount(mint: &Mint, quote: QuoteId, amount: u64) -> MintRequest<QuoteId> {
         let keyset_id = *mint.get_active_keysets().get(&CurrencyUnit::Sat).unwrap();
         let keys = mint
@@ -1432,6 +1517,77 @@ mod batch_mint_tests {
             outputs: premint_secrets.blinded_messages().to_vec(),
             signature: None,
         }
+    }
+
+    /// A BOLT11 invoice paid more than its amount must still let the quote
+    /// be issued; the quote is minted in one go for exactly its amount
+    #[tokio::test]
+    async fn test_overpaid_bolt11_quote_can_be_issued() {
+        let mint = create_test_mint().await;
+        let lookup_id = PaymentIdentifier::CustomId("overpaid-bolt11".to_string());
+        let quote_id = add_unpaid_bolt11_mint_quote(&mint, 64, &lookup_id).await;
+
+        mint.pay_mint_quote_for_request_id(WaitPaymentResponse {
+            payment_identifier: lookup_id,
+            payment_amount: Amount::new(65, CurrencyUnit::Sat),
+            payment_id: "overpayment".to_string(),
+        })
+        .await
+        .unwrap();
+
+        let quote = mint
+            .localstore()
+            .get_mint_quote(&quote_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(quote.state(), MintQuoteState::Paid);
+        assert_eq!(quote.amount_paid().value(), 64);
+
+        mint.process_mint_request(crate::mint::MintInput::Single(mint_request_for_amount(
+            &mint,
+            quote_id.clone(),
+            64,
+        )))
+        .await
+        .unwrap();
+
+        let quote = mint
+            .localstore()
+            .get_mint_quote(&quote_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(quote.state(), MintQuoteState::Issued);
+        assert_eq!(quote.amount_issued(), quote.amount_paid());
+    }
+
+    /// A second payment to a BOLT11 quote that is already paid is not
+    /// credited again
+    #[tokio::test]
+    async fn test_bolt11_quote_ignores_payment_beyond_its_amount() {
+        let mint = create_test_mint().await;
+        let lookup_id = PaymentIdentifier::CustomId("repaid-bolt11".to_string());
+        let quote_id = add_unpaid_bolt11_mint_quote(&mint, 64, &lookup_id).await;
+
+        for payment_id in ["first", "second"] {
+            mint.pay_mint_quote_for_request_id(WaitPaymentResponse {
+                payment_identifier: lookup_id.clone(),
+                payment_amount: Amount::new(64, CurrencyUnit::Sat),
+                payment_id: payment_id.to_string(),
+            })
+            .await
+            .unwrap();
+        }
+
+        let quote = mint
+            .localstore()
+            .get_mint_quote(&quote_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(quote.amount_paid().value(), 64);
+        assert_eq!(quote.payments.len(), 1);
     }
 
     #[tokio::test]

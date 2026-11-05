@@ -127,7 +127,13 @@ impl Mint {
                     new_quote.id
                 );
 
-                let amount_paid = payment.payment_amount.convert_to(&new_quote.unit)?;
+                let amount_paid = Mint::creditable_payment_amount(
+                    &new_quote,
+                    payment.payment_amount.convert_to(&new_quote.unit)?,
+                )?;
+                if amount_paid.value() == 0 {
+                    continue;
+                }
 
                 match new_quote.add_payment(amount_paid, payment.payment_id.clone(), None) {
                     Ok(()) => {
