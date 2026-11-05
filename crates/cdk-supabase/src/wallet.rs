@@ -2723,6 +2723,9 @@ struct MeltQuoteTable {
     fee_reserve: i64,
     state: String,
     expiry: i64,
+    /// Left out when `None`, so an update without a payment proof keeps the
+    /// stored one
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     payment_proof: Option<String>,
     payment_method: String,
     #[serde(default)]
@@ -3234,6 +3237,41 @@ mod tests {
         assert!(debug.contains("public-user-id"));
         assert!(!debug.contains(access_token));
         assert!(!debug.contains(refresh_token));
+    }
+
+    #[test]
+    fn melt_quote_row_without_payment_proof_leaves_the_column_out() {
+        let mut quote = wallet::MeltQuote {
+            id: "quote".to_string(),
+            mint_url: None,
+            unit: CurrencyUnit::Sat,
+            amount: cdk_common::Amount::from(1000),
+            request: "lnbc1000...".to_string(),
+            fee_reserve: cdk_common::Amount::from(10),
+            state: cdk_common::MeltQuoteState::Paid,
+            expiry: 2_000_000_000,
+            payment_proof: None,
+            estimated_blocks: None,
+            fee_index: None,
+            payment_method: cdk_common::PaymentMethod::from_str("bolt11").unwrap(),
+            used_by_operation: None,
+            version: 0,
+        };
+
+        // The update PATCH must not send `"payment_proof": null`, which would
+        // clear a stored payment proof.
+        let row: MeltQuoteTable = quote.clone().try_into().unwrap();
+        let body = serde_json::to_value(&row).unwrap();
+        assert!(body.get("payment_proof").is_none());
+
+        quote.payment_proof = Some("preimage".to_string());
+        let row: MeltQuoteTable = quote.try_into().unwrap();
+        let body = serde_json::to_value(&row).unwrap();
+        assert_eq!(body["payment_proof"], json!("preimage"));
+
+        let row: MeltQuoteTable = serde_json::from_value(body).unwrap();
+        let quote: wallet::MeltQuote = row.try_into().unwrap();
+        assert_eq!(quote.payment_proof.as_deref(), Some("preimage"));
     }
 
     #[tokio::test]
