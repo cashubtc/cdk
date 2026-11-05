@@ -4,9 +4,12 @@
 //! by a crash. It determines the actual state by querying the mint and
 //! either completes the operation or compensates.
 
-use cdk_common::wallet::{OperationData, SendSagaState, TransactionStatus, WalletSaga};
+use cdk_common::wallet::{
+    OperationData, ProofInfo, SendOperationData, SendSagaState, TransactionStatus, WalletSaga,
+};
 use tracing::instrument;
 
+use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::State;
 use crate::wallet::recovery::{RecoveryAction, RecoveryHelpers};
 use crate::wallet::saga::{CompensatingAction, RevertProofReservation};
@@ -30,7 +33,7 @@ impl Wallet {
             }
         };
 
-        let _data = match &saga.data {
+        let data = match &saga.data {
             OperationData::Send(d) => d,
             _ => {
                 return Err(Error::Custom(format!(
@@ -55,28 +58,51 @@ impl Wallet {
                     "Send saga {} in TokenCreated state - checking proof states",
                     saga.id
                 );
-                self.recover_or_complete_send(&saga.id).await
+                self.recover_or_complete_send(&saga.id, data).await
             }
             SendSagaState::RollingBack => {
                 tracing::info!(
                     "Send saga {} in RollingBack state - checking proof states",
                     saga.id
                 );
-                self.recover_rolling_back_send(&saga.id).await
+                self.recover_rolling_back_send(&saga.id, data).await
             }
         }
+    }
+
+    /// Proofs that make up the token of a send saga.
+    ///
+    /// Once the token is created the saga records its proofs. When the send
+    /// had to swap first, those are new proofs that are not linked to the
+    /// operation, and the proofs reserved by the operation are the swap inputs,
+    /// which the swap already spent. Only fall back to the reserved proofs when
+    /// the saga has no token proofs recorded.
+    async fn send_token_proofs(
+        &self,
+        saga_id: &uuid::Uuid,
+        data: &SendOperationData,
+    ) -> Result<Vec<ProofInfo>, Error> {
+        if let Some(proofs) = &data.proofs {
+            let token_proofs = self.localstore.get_proofs_by_ys(proofs.ys()?).await?;
+            if !token_proofs.is_empty() {
+                return Ok(token_proofs);
+            }
+        }
+
+        Ok(self.localstore.get_reserved_proofs(saga_id).await?)
     }
 
     /// Recover a saga that crashed during revocation (RollingBack state).
     async fn recover_rolling_back_send(
         &self,
         saga_id: &uuid::Uuid,
+        data: &SendOperationData,
     ) -> Result<RecoveryAction, Error> {
-        let reserved_proofs = self.localstore.get_reserved_proofs(saga_id).await?;
+        let token_proofs = self.send_token_proofs(saga_id, data).await?;
 
-        if reserved_proofs.is_empty() {
+        if token_proofs.is_empty() {
             tracing::warn!(
-                "No reserved proofs found for rolling back send saga {} - assuming swap success",
+                "No token proofs found for rolling back send saga {} - assuming swap success",
                 saga_id
             );
             self.update_transaction_status_by_saga_id(*saga_id, TransactionStatus::Failed)
@@ -85,13 +111,13 @@ impl Wallet {
             return Ok(RecoveryAction::Recovered);
         }
 
-        match self.are_proofs_spent(&reserved_proofs).await {
+        match self.are_proofs_spent(&token_proofs).await {
             Ok(true) => {
                 tracing::info!(
                     "Send saga {} (RollingBack) - proofs are spent, marking as complete",
                     saga_id
                 );
-                let proof_ys: Vec<_> = reserved_proofs.iter().map(|p| p.y).collect();
+                let proof_ys: Vec<_> = token_proofs.iter().map(|p| p.y).collect();
                 self.localstore
                     .update_proofs_state(proof_ys, State::Spent)
                     .await?;
@@ -119,7 +145,7 @@ impl Wallet {
 
                 self.localstore.update_saga(revert_saga).await?;
 
-                let proof_ys: Vec<_> = reserved_proofs.iter().map(|p| p.y).collect();
+                let proof_ys: Vec<_> = token_proofs.iter().map(|p| p.y).collect();
                 self.localstore
                     .update_proofs_state(proof_ys, State::PendingSpent)
                     .await?;
@@ -141,12 +167,13 @@ impl Wallet {
     async fn recover_or_complete_send(
         &self,
         saga_id: &uuid::Uuid,
+        data: &SendOperationData,
     ) -> Result<RecoveryAction, Error> {
-        let reserved_proofs = self.localstore.get_reserved_proofs(saga_id).await?;
+        let token_proofs = self.send_token_proofs(saga_id, data).await?;
 
-        if reserved_proofs.is_empty() {
+        if token_proofs.is_empty() {
             tracing::warn!(
-                "No reserved proofs found for send saga {} - cleaning up orphaned saga",
+                "No token proofs found for send saga {} - cleaning up orphaned saga",
                 saga_id
             );
             self.update_transaction_status_by_saga_id(*saga_id, TransactionStatus::Completed)
@@ -155,9 +182,9 @@ impl Wallet {
             return Ok(RecoveryAction::Recovered);
         }
 
-        let proof_ys: Vec<_> = reserved_proofs.iter().map(|p| p.y).collect();
+        let proof_ys: Vec<_> = token_proofs.iter().map(|p| p.y).collect();
 
-        match self.are_proofs_spent(&reserved_proofs).await {
+        match self.are_proofs_spent(&token_proofs).await {
             Ok(true) => {
                 tracing::info!(
                     "Send saga {} - proofs are spent, marking as complete",
@@ -647,4 +674,5 @@ mod tests {
             WalletSagaState::Send(SendSagaState::TokenCreated)
         ));
     }
+
 }
