@@ -26,7 +26,7 @@
 
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
@@ -78,8 +78,9 @@ impl Default for FreshnessStatus {
 /// Cloning is cheap due to `Arc` wrapping of large data structures.
 #[derive(Clone, Debug, Default)]
 pub struct MintMetadata {
-    /// Mint server information (name, description, supported features, etc.)
-    pub mint_info: MintInfo,
+    /// Mint server information, `None` until a fetch or a database read has
+    /// supplied it.
+    pub mint_info: Option<MintInfo>,
 
     /// All keysets indexed by their ID (includes both active and inactive)
     pub keysets: HashMap<Id, Arc<KeySetInfo>>,
@@ -106,6 +107,17 @@ pub struct MintMetadata {
 struct SnapshotVersions {
     status: usize,
     auth: usize,
+}
+
+/// What one database has been written up to, with a handle that keeps its
+/// address from being reused.
+///
+/// The map is keyed by the storage `Arc`'s address, so a record has to outlive
+/// the strong pointers it was made for: the `Weak` holds the allocation open,
+/// which stops a later database from being allocated on top of a stale record.
+struct SyncRecord {
+    storage: Weak<dyn WalletDatabase<database::Error> + Send + Sync>,
+    versions: SnapshotVersions,
 }
 
 impl MintMetadata {
@@ -160,9 +172,13 @@ pub struct MintMetadataCache {
     /// Default: 1 hour (3600 seconds).
     ttl: Arc<RwLock<Option<Duration>>>,
 
-    /// Tracks which database instances have been synced to which cache version.
-    /// Key: pointer identity of storage Arc, Value: last synced cache versions
-    db_sync_versions: Arc<RwLock<HashMap<usize, SnapshotVersions>>>,
+    /// What each database has been written up to, keyed by the pointer
+    /// identity of its storage `Arc`.
+    ///
+    /// A missing entry means that database has never been written to, which is
+    /// not the same as written up to version zero: a snapshot read out of
+    /// another database stays at version zero and still has to be persisted.
+    db_sync_versions: Arc<RwLock<HashMap<usize, SyncRecord>>>,
 
     /// Mutex to ensure only one fetch operation runs at a time
     /// Other callers wait for the lock, then re-read the updated cache
@@ -209,6 +225,9 @@ impl MintMetadataCache {
     /// Used to track which storage instances have been synced. We use pointer
     /// identity rather than a counter because wallets may use multiple storage
     /// backends simultaneously (e.g., different databases for different mints).
+    /// Each record keeps a `Weak` to its `Arc`, because an address the
+    /// allocator recycles would otherwise let a new database inherit the sync
+    /// state of a dropped one.
     fn arc_pointer_id<T>(arc: &Arc<T>) -> usize
     where
         T: ?Sized,
@@ -409,7 +428,7 @@ impl MintMetadataCache {
             let mut next = (**current).clone();
 
             if let Some(mint_info) = mint_info.clone() {
-                next.mint_info = mint_info;
+                next.mint_info = Some(mint_info);
             }
 
             for keyset_info in &stored {
@@ -478,8 +497,7 @@ impl MintMetadataCache {
             .db_sync_versions
             .read()
             .get(&storage_id)
-            .cloned()
-            .unwrap_or_default();
+            .map(|record| record.versions);
 
         if cached_metadata.status.is_populated
             && ttl
@@ -487,7 +505,7 @@ impl MintMetadataCache {
                 .unwrap_or(true)
         {
             // Cache is ready - check if database needs updating
-            if db_synced_version != cached_metadata.versions() {
+            if db_synced_version != Some(cached_metadata.versions()) {
                 // Database is stale - sync before returning
                 self.database_sync(storage.clone(), cached_metadata.clone())
                     .await;
@@ -549,8 +567,7 @@ impl MintMetadataCache {
             .db_sync_versions
             .read()
             .get(&storage_id)
-            .cloned()
-            .unwrap_or_default();
+            .map(|record| record.versions);
 
         // Check if auth data is populated in cache and still fresh
         if cached_metadata.auth_status.is_populated
@@ -558,7 +575,7 @@ impl MintMetadataCache {
                 .map(|ttl| cached_metadata.auth_status.updated_at + ttl > Instant::now())
                 .unwrap_or(true)
         {
-            if db_synced_version != cached_metadata.versions() {
+            if db_synced_version != Some(cached_metadata.versions()) {
                 // Database needs updating - sync before returning
                 self.database_sync(storage.clone(), cached_metadata.clone())
                     .await;
@@ -613,11 +630,13 @@ impl MintMetadataCache {
     /// Saves mint info, keysets, and keys to the database. Checks version
     /// before writing to avoid redundant work if a newer version has already
     /// been persisted. The version is claimed before the writes start, so a
-    /// concurrent persist of the same snapshot does not duplicate them.
+    /// concurrent persist of the same snapshot does not duplicate them. A
+    /// database with no record of its own is always written to, because a
+    /// snapshot read out of another database never leaves version zero.
     ///
-    /// Mint info is written only once a fetch has supplied it. `add_mint`
+    /// Mint info is written only when the snapshot carries it. `add_mint`
     /// assigns every column, so persisting an auth-only snapshot, which never
-    /// fetches mint info, would erase what is stored.
+    /// reads mint info, would erase what is stored.
     ///
     /// Writes are best effort: a wallet stays usable on its in-memory snapshot
     /// when the database rejects them, so each failure is logged rather than
@@ -634,29 +653,39 @@ impl MintMetadataCache {
         mint_url: MintUrl,
         storage: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
         metadata: Arc<MintMetadata>,
-        db_sync_versions: Arc<RwLock<HashMap<usize, SnapshotVersions>>>,
+        db_sync_versions: Arc<RwLock<HashMap<usize, SyncRecord>>>,
     ) {
         let storage_id = Self::arc_pointer_id(&storage);
 
         let previous_version = {
             let mut versions = db_sync_versions.write();
 
-            let current_synced_version = versions.get(&storage_id).cloned().unwrap_or_default();
+            versions.retain(|_, record| record.storage.strong_count() > 0);
 
-            if metadata.versions() <= current_synced_version {
-                // A newer version has already been persisted - skip this write
+            if versions
+                .get(&storage_id)
+                .is_some_and(|record| metadata.versions() <= record.versions)
+            {
                 return;
             }
 
-            versions.insert(storage_id, metadata.versions())
+            versions
+                .insert(
+                    storage_id,
+                    SyncRecord {
+                        storage: Arc::downgrade(&storage),
+                        versions: metadata.versions(),
+                    },
+                )
+                .map(|record| record.versions)
         };
 
         let mut persisted = true;
 
         // Save mint info
-        if metadata.status.version > 0 {
+        if let Some(mint_info) = &metadata.mint_info {
             persisted &= storage
-                .add_mint(mint_url.clone(), Some(metadata.mint_info.clone()))
+                .add_mint(mint_url.clone(), Some(mint_info.clone()))
                 .await
                 .inspect_err(|e| tracing::warn!("Failed to save mint info for {}: {}", mint_url, e))
                 .is_ok();
@@ -727,10 +756,16 @@ impl MintMetadataCache {
         }
 
         let mut versions = db_sync_versions.write();
-        if versions.get(&storage_id) == Some(&metadata.versions()) {
+        if versions.get(&storage_id).map(|record| record.versions) == Some(metadata.versions()) {
             match previous_version {
                 Some(version) => {
-                    versions.insert(storage_id, version);
+                    versions.insert(
+                        storage_id,
+                        SyncRecord {
+                            storage: Arc::downgrade(&storage),
+                            versions: version,
+                        },
+                    );
                 }
                 None => {
                     versions.remove(&storage_id);
@@ -843,7 +878,7 @@ impl MintMetadataCache {
             let mut next = (**current).clone();
 
             if let Some(mint_info) = mint_info.clone() {
-                next.mint_info = mint_info;
+                next.mint_info = Some(mint_info);
             }
 
             for keyset_info in &fetched_keysets {
@@ -1104,6 +1139,111 @@ mod tests {
         assert!(
             storage.get_keys(&auth_id).await.unwrap().is_some(),
             "the auth keys should have reached the database too"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_database_read_reaches_a_second_database() {
+        let keyset = test_keyset();
+        let source = create_test_db().await;
+        source
+            .add_mint(test_mint_url(), Some(test_mint_info()))
+            .await
+            .unwrap();
+        source
+            .add_mint_keysets(test_mint_url(), vec![info(&keyset, OLD_EXPIRY)])
+            .await
+            .unwrap();
+        source.add_keys(keyset.clone()).await.unwrap();
+
+        let target = create_test_db().await;
+        let cache = MintMetadataCache::new(test_mint_url());
+
+        cache.load_from_db(&source).await.unwrap();
+        cache.load(&target, &mock_client(NEW_EXPIRY)).await.unwrap();
+
+        let stored = target
+            .get_mint_keysets(test_mint_url())
+            .await
+            .unwrap()
+            .unwrap_or_default();
+        assert_eq!(
+            stored.len(),
+            1,
+            "a snapshot read out of one database must still reach another"
+        );
+        assert_eq!(
+            stored[0].final_expiry, OLD_EXPIRY,
+            "the keyset came from the first database, so no fetch was needed"
+        );
+        assert!(
+            target.get_keys(&keyset.id).await.unwrap().is_some(),
+            "the keys should have reached the second database too"
+        );
+        assert_eq!(
+            target
+                .get_mint(test_mint_url())
+                .await
+                .unwrap()
+                .and_then(|stored| stored.name),
+            test_mint_info().name,
+            "mint info the first database supplied should reach the second"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_persisted_snapshot_is_not_written_twice() {
+        let keyset = test_keyset();
+        let source = storage_with(vec![info(&keyset, OLD_EXPIRY)]).await;
+        let target = create_test_db().await;
+        let cache = MintMetadataCache::new(test_mint_url());
+        let client = mock_client(OLD_EXPIRY);
+
+        cache.load_from_db(&source).await.unwrap();
+        cache.load(&target, &client).await.unwrap();
+
+        let mut retired = info(&keyset, OLD_EXPIRY);
+        retired.active = false;
+        target
+            .add_mint_keysets(test_mint_url(), vec![retired])
+            .await
+            .unwrap();
+        cache.load(&target, &client).await.unwrap();
+
+        let stored = target
+            .get_mint_keysets(test_mint_url())
+            .await
+            .unwrap()
+            .unwrap_or_default();
+        assert!(
+            !stored[0].active,
+            "the snapshot was already persisted, so a second load must not write it again"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dropped_database_leaves_no_sync_record() {
+        let first = storage_with(vec![]).await;
+        let first_id = MintMetadataCache::arc_pointer_id(&first);
+        let cache = MintMetadataCache::new(test_mint_url());
+
+        cache
+            .load_from_mint(&first, &mock_client(OLD_EXPIRY))
+            .await
+            .unwrap();
+        assert!(
+            cache.db_sync_versions.read().contains_key(&first_id),
+            "the fetch should have been recorded against the first database"
+        );
+
+        drop(first);
+
+        let second = storage_with(vec![]).await;
+        cache.load(&second, &mock_client(OLD_EXPIRY)).await.unwrap();
+
+        assert!(
+            !cache.db_sync_versions.read().contains_key(&first_id),
+            "a dropped database must not leave a record a recycled address could inherit"
         );
     }
 

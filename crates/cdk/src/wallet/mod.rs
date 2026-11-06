@@ -506,12 +506,15 @@ impl Wallet {
     /// Query mint for current mint information
     #[instrument(skip(self))]
     pub async fn fetch_mint_info(&self) -> Result<Option<MintInfo>, Error> {
-        let mint_info = self
+        let Some(mint_info) = self
             .metadata_cache
             .load_from_mint(&self.localstore, &self.client)
             .await?
             .mint_info
-            .clone();
+            .clone()
+        else {
+            return Ok(None);
+        };
 
         // If mint provides time make sure it is accurate
         if let Some(mint_unix_time) = mint_info.time {
@@ -602,7 +605,8 @@ impl Wallet {
             .load(&self.localstore, &self.client)
             .await?
             .mint_info
-            .clone();
+            .clone()
+            .unwrap_or_default();
 
         Ok(mint_info)
     }
