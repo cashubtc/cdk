@@ -101,6 +101,12 @@ impl From<cdk::nuts::nut16::Error> for FfiError {
     }
 }
 
+impl From<cdk::nuts::nut16::fountain::Error> for FfiError {
+    fn from(err: cdk::nuts::nut16::fountain::Error) -> Self {
+        Self::internal(err)
+    }
+}
+
 impl From<serde_json::Error> for FfiError {
     fn from(err: serde_json::Error) -> Self {
         FfiError::internal(err)

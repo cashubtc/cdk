@@ -72,7 +72,7 @@ pub use nut11::{P2PKWitness, SigFlag};
 pub use nut12::{BlindSignatureDleq, ProofDleq};
 pub use nut14::HTLCWitness;
 pub use nut15::{Mpp, MppMethodSettings, Settings as NUT15Settings};
-pub use nut16::{TokenUrDecoder, TokenUrEncoder};
+pub use nut16::{TokenFountainDecoder, TokenFountainEncoder, TokenUrDecoder, TokenUrEncoder};
 pub use nut17::NotificationPayload;
 pub use nut18::{
     Nut10SecretRequest, PaymentRequest, PaymentRequestBuilder, PaymentRequestPayload,
