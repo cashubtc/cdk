@@ -48,6 +48,8 @@ use bitcoin_payment_instructions::{
 use tracing::instrument;
 use url::form_urlencoded;
 
+mod concrete;
+
 #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
 use crate::bip353::Bip353Address;
 use crate::error::Error;
@@ -187,6 +189,8 @@ impl PaymentRequestBip321Ext for PaymentRequest {
 ///
 /// Supports BIP 321 URIs and standalone Cashu, BOLT11, BOLT12, and on-chain inputs.
 /// Human-readable name resolution (`user@domain.com`, BIP 353, LNURL) is not supported.
+/// Unsupported optional URI parameters (including `lnurl`) are ignored. Unknown
+/// required parameters reject the entire URI; LNURL-only inputs are unsupported.
 #[instrument(skip_all)]
 pub async fn parse_payment_instruction(
     instruction: &str,
@@ -194,9 +198,13 @@ pub async fn parse_payment_instruction(
 ) -> Result<ParsedPaymentInstruction, Error> {
     let resolver = DummyHrnResolver;
 
-    let parsed = PaymentInstructions::parse(instruction, network, &resolver, false)
-        .await
-        .map_err(|e| Error::Bip321Parse(format!("{e:?}")))?;
+    let parsed = match instruction.split_once(':') {
+        Some((scheme, _)) if scheme.eq_ignore_ascii_case("bitcoin") => {
+            concrete::parse(instruction, network).await
+        }
+        _ => PaymentInstructions::parse(instruction, network, &resolver, false).await,
+    }
+    .map_err(|e| Error::Bip321Parse(format!("{e:?}")))?;
 
     convert_payment_instructions(parsed)
 }
@@ -421,6 +429,75 @@ mod tests {
 
     const TEST_CREQ: &str = "CREQB1QYQQWER9D4HNZV3NQGQQSQQQQQQQQQQRAQPSQQGQQSQQZQG9QQVXSAR5WPEN5TE0D45KUAPWV4UXZMTSD3JJUCM0D5RQQRJRDANXVET9YPCXZ7TDV4H8GXHR3TQ";
     const TEST_BOLT11: &str = "lnbc1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpl2pkx2ctnv5sxxmmwwd5kgetjypeh2ursdae8g6twvus8g6rfwvs8qun0dfjkxaq9qrsgq357wnc5r2ueh7ck6q93dj32dlqnls087fxdwk8qakdyafkq3yap9us6v52vjjsrvywa6rt52cm9r9zqt8r2t7mlcwspyetp5h2tztugp9lfyql";
+
+    const TEST_OFFER: &str = "lno1zcss9mk8y3wkklfvevcrszlmu23kfrxh49px20665dqwmn4p72pksese";
+    const TEST_LNURL: &str =
+        "lnurl1dp68gurn8ghj7anvwshxwef09emk2mrv944kummhdchkcmn4wfk8qte3xf6x2um50n5cup";
+    const TEST_ADDRESS: &str = "bc1p73p4sc52mdamccfrth4gn8wull0h7ywkzzn6d8e2mxqr4m7evdqqwusn64";
+
+    #[tokio::test]
+    async fn concrete_bip321_ignores_optional_lnurl() {
+        for scheme in ["bitcoin", "BITCOIN", "bItCoIn"] {
+            for (body, extra) in [
+                ("", String::new()),
+                ("", format!("&lnurl={TEST_LNURL}")),
+                (TEST_ADDRESS, format!("&lnurl={TEST_LNURL}")),
+                ("", format!("&LNURL={TEST_LNURL}&label={TEST_LNURL}")),
+            ] {
+                let uri = format!("{scheme}:{body}?lno={TEST_OFFER}{extra}");
+                let parsed = parse_payment_instruction(&uri, bitcoin::Network::Bitcoin)
+                    .await
+                    .expect("concrete URI should not resolve optional LNURL");
+                assert_eq!(parsed.bolt12_offers, [TEST_OFFER]);
+                assert_eq!(
+                    parsed.onchain_addresses.len(),
+                    usize::from(!body.is_empty())
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn concrete_bip321_preserves_validation_with_lnurl() {
+        for params in [
+            "lno=not-an-offer".to_owned(),
+            format!("lno={TEST_OFFER}&req-unknown=1"),
+            format!("lno={TEST_OFFER}&req-lnurl={TEST_LNURL}"),
+            format!("lno={TEST_OFFER}&REQ-LNURL={TEST_LNURL}"),
+            format!("lno={TEST_OFFER}&amount=not-an-amount"),
+            format!("lno={TEST_OFFER}&amount=21000001"),
+            format!("lno={TEST_OFFER}&amount=1&amount=2"),
+        ] {
+            let error = parse_payment_instruction(
+                &format!("bitcoin:?{params}&lnurl={TEST_LNURL}"),
+                bitcoin::Network::Bitcoin,
+            )
+            .await
+            .expect_err("optional LNURL must not bypass URI validation");
+            assert!(matches!(error, Error::Bip321Parse(_)), "{error}");
+            assert!(!error.to_string().contains("LNURL resolution not supported"));
+        }
+        let error = parse_payment_instruction(
+            &format!("bitcoin:{TEST_ADDRESS}?lnurl={TEST_LNURL}"),
+            bitcoin::Network::Regtest,
+        )
+        .await
+        .expect_err("wrong network must fail");
+        assert!(error.to_string().contains("WrongNetwork"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn lnurl_only_remains_unsupported() {
+        for uri in [
+            TEST_LNURL.to_owned(),
+            format!("bitcoin:?lnurl={TEST_LNURL}"),
+        ] {
+            let error = parse_payment_instruction(&uri, bitcoin::Network::Bitcoin)
+                .await
+                .expect_err("LNURL is unsupported");
+            assert!(matches!(error, Error::Bip321Parse(_)));
+        }
+    }
 
     fn test_payment_request() -> PaymentRequest {
         PaymentRequest::from_str(TEST_CREQ).expect("should parse test vector")
