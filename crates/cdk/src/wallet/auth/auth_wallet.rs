@@ -277,16 +277,20 @@ impl AuthWallet {
         self.load_mint_keysets().await
     }
 
-    /// Get the first active blind auth keyset - always goes online
+    /// Get the active blind auth keyset - always goes online
     ///
     /// This method always goes online to refresh keysets from the mint and then returns
-    /// the first active keyset found. Use this when you need the most up-to-date
-    /// keyset information for blind auth operations.
+    /// the active keyset with the lowest input fee, like the wallet's
+    /// [`active_keyset`](crate::Wallet::active_keyset). Use this when you need the most
+    /// up-to-date keyset information for blind auth operations.
     #[instrument(skip(self))]
     pub async fn fetch_active_keyset(&self) -> Result<KeySetInfo, Error> {
-        let auth_keysets = self.refresh_keysets().await?;
-        let keyset = auth_keysets.first().ok_or(Error::NoActiveKeyset)?;
-        Ok(keyset.clone())
+        self.refresh_keysets()
+            .await?
+            .into_iter()
+            .filter(|keyset| keyset.active)
+            .min_by_key(|keyset| keyset.input_fee_ppk)
+            .ok_or(Error::NoActiveKeyset)
     }
 
     /// Get unspent auth proofs from local database only - offline operation
@@ -608,6 +612,8 @@ mod tests {
         keyset_active: KeySet,
         keyset_inactive: KeySet,
         respond_with_unrequested_keyset: bool,
+        list_only_inactive_keyset: bool,
+        requested_keysets: std::sync::Mutex<Vec<Id>>,
     }
 
     #[async_trait]
@@ -633,30 +639,46 @@ mod tests {
         }
 
         async fn get_mint_blind_auth_keysets(&self) -> Result<KeysetResponse, Error> {
-            Ok(KeysetResponse {
-                keysets: vec![
-                    KeySetInfo {
-                        id: self.keyset_active.id,
-                        unit: CurrencyUnit::Auth,
-                        active: true,
-                        input_fee_ppk: 0,
-                        final_expiry: None,
-                    },
-                    KeySetInfo {
-                        id: self.keyset_inactive.id,
-                        unit: CurrencyUnit::Auth,
-                        active: false,
-                        input_fee_ppk: 0,
-                        final_expiry: None,
-                    },
-                ],
-            })
+            let mut keysets = vec![
+                KeySetInfo {
+                    id: self.keyset_active.id,
+                    unit: CurrencyUnit::Auth,
+                    active: true,
+                    input_fee_ppk: 0,
+                    final_expiry: None,
+                },
+                KeySetInfo {
+                    id: self.keyset_inactive.id,
+                    unit: CurrencyUnit::Auth,
+                    active: false,
+                    input_fee_ppk: 0,
+                    final_expiry: None,
+                },
+            ];
+            if self.list_only_inactive_keyset {
+                keysets.retain(|keyset| !keyset.active);
+            }
+            Ok(KeysetResponse { keysets })
         }
 
         async fn post_mint_blind_auth(
             &self,
             request: MintAuthRequest,
         ) -> Result<MintResponse, Error> {
+            self.requested_keysets
+                .lock()
+                .unwrap()
+                .extend(request.outputs.iter().map(|output| output.keyset_id));
+
+            // Like the mint's signatory, refuse to sign on an inactive keyset
+            if request
+                .outputs
+                .iter()
+                .any(|output| output.keyset_id == self.keyset_inactive.id)
+            {
+                return Err(Error::InactiveKeyset);
+            }
+
             let signatures = request
                 .outputs
                 .into_iter()
@@ -713,6 +735,8 @@ mod tests {
             keyset_active,
             keyset_inactive: keyset_inactive.clone(),
             respond_with_unrequested_keyset: false,
+            list_only_inactive_keyset: false,
+            requested_keysets: Default::default(),
         }))
         .await;
 
@@ -733,6 +757,8 @@ mod tests {
             keyset_active,
             respond_with_unrequested_keyset: true,
             keyset_inactive,
+            list_only_inactive_keyset: false,
+            requested_keysets: Default::default(),
         }))
         .await;
 
@@ -745,6 +771,60 @@ mod tests {
             matches!(err, Error::InvalidMintResponse(ref message) if message.contains("keyset")),
             "expected keyset mismatch error, got {err}"
         );
+    }
+
+    fn connector_with_auth_keysets(list_only_inactive_keyset: bool) -> Arc<MockAuthConnector> {
+        Arc::new(MockAuthConnector {
+            keyset_active: build_auth_keyset(1),
+            keyset_inactive: build_auth_keyset(2),
+            respond_with_unrequested_keyset: false,
+            list_only_inactive_keyset,
+            requested_keysets: Default::default(),
+        })
+    }
+
+    #[tokio::test]
+    async fn fetch_active_keyset_skips_inactive_auth_keysets() {
+        let connector = connector_with_auth_keysets(false);
+
+        // The keysets come out of a HashMap, so check several fresh wallets
+        for _ in 0..16 {
+            let wallet = auth_wallet_with_connector(connector.clone()).await;
+            let keyset = wallet.fetch_active_keyset().await.unwrap();
+            assert_eq!(keyset.id, connector.keyset_active.id);
+            assert!(keyset.active);
+        }
+    }
+
+    #[tokio::test]
+    async fn fetch_active_keyset_fails_without_an_active_auth_keyset() {
+        let wallet = auth_wallet_with_connector(connector_with_auth_keysets(true)).await;
+
+        assert!(matches!(
+            wallet.fetch_active_keyset().await,
+            Err(Error::NoActiveKeyset)
+        ));
+    }
+
+    #[tokio::test]
+    async fn mint_blind_auth_requests_outputs_on_the_active_auth_keyset() {
+        let connector = connector_with_auth_keysets(false);
+
+        for _ in 0..16 {
+            let wallet = auth_wallet_with_connector(connector.clone()).await;
+            // The mock's signatures carry no DLEQ proof, so only the request matters
+            let result = wallet.mint_blind_auth(Amount::from(1)).await;
+            assert!(
+                !matches!(result, Err(Error::InactiveKeyset)),
+                "blind auth was requested on the inactive keyset"
+            );
+        }
+
+        let requested = connector.requested_keysets.lock().unwrap();
+        assert!(!requested.is_empty());
+        assert!(requested
+            .iter()
+            .all(|keyset_id| *keyset_id == connector.keyset_active.id));
     }
 
     #[tokio::test]
