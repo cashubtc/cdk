@@ -600,8 +600,6 @@ impl<'a> MintSaga<'a, Initial> {
         spending_conditions: Option<SpendingConditions>,
         external_keys: Option<&std::collections::HashMap<String, SecretKey>>,
     ) -> Result<MintSaga<'a, Prepared>, Error> {
-        use crate::nuts::BatchMintRequest;
-
         if quote_ids.is_empty() {
             return Err(Error::UnknownQuote);
         }
@@ -668,15 +666,9 @@ impl<'a> MintSaga<'a, Initial> {
             return Err(Error::AmountUndefined);
         }
 
-        // Reserve all quotes (with rollback on failure)
-        for quote_id in quote_ids {
-            self.wallet
-                .localstore
-                .reserve_mint_quote(quote_id, &self.state_data.operation_id)
-                .await?;
-        }
-
-        // Register compensation to release all quotes on failure
+        // Register the compensation before reserving so that a batch that is
+        // only partially reserved is rolled back too: `release_mint_quote`
+        // frees every quote held by this operation.
         add_compensation(
             &mut self.compensations,
             Box::new(ReleaseMintQuote {
@@ -685,6 +677,80 @@ impl<'a> MintSaga<'a, Initial> {
             }),
         )
         .await;
+
+        // Nothing has been sent to the mint or persisted as a saga yet, so a
+        // failed reservation always releases the quotes reserved so far.
+        for quote_id in quote_ids {
+            if let Err(e) = self
+                .wallet
+                .localstore
+                .reserve_mint_quote(quote_id, &self.state_data.operation_id)
+                .await
+            {
+                if let Err(comp_err) = execute_compensations(&mut self.compensations).await {
+                    tracing::error!("Compensation failed during batch prepare: {}", comp_err);
+                }
+                return Err(e.into());
+            }
+        }
+
+        // All work after this point has registered compensations.
+        // If any step fails, we must run compensations to release the quotes
+        // rather than leaving them reserved.
+        let prepare_result = self
+            .prepare_batch_after_reserve(
+                quote_ids,
+                quote_infos,
+                quote_amounts,
+                total_amount,
+                payment_method,
+                amount_split_target,
+                spending_conditions,
+                external_keys,
+            )
+            .await;
+
+        match prepare_result {
+            Ok(prepared) => Ok(MintSaga {
+                wallet: self.wallet,
+                compensations: self.compensations,
+                state_data: prepared,
+            }),
+            Err(e) => {
+                if e.is_definitive_failure() {
+                    tracing::warn!(
+                        "Batch mint saga prepare failed (definitive): {}. Running compensations.",
+                        e
+                    );
+                    if let Err(comp_err) = execute_compensations(&mut self.compensations).await {
+                        tracing::error!("Compensation failed during batch prepare: {}", comp_err);
+                    }
+                } else {
+                    tracing::warn!("Batch mint saga prepare failed (ambiguous): {}.", e);
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Fallible batch prepare logic that runs after the quotes have been
+    /// reserved.
+    ///
+    /// Separated from `prepare_batch` so that the caller can execute
+    /// compensations (releasing the reserved quotes) if this method fails.
+    #[allow(clippy::too_many_arguments)]
+    async fn prepare_batch_after_reserve(
+        &mut self,
+        quote_ids: &[&str],
+        mut quote_infos: Vec<MintQuote>,
+        quote_amounts: Vec<Amount>,
+        total_amount: Amount,
+        payment_method: PaymentMethod,
+        amount_split_target: SplitTarget,
+        spending_conditions: Option<SpendingConditions>,
+        external_keys: Option<&std::collections::HashMap<String, SecretKey>>,
+    ) -> Result<Prepared, Error> {
+        use crate::nuts::BatchMintRequest;
 
         // Get active keyset
         let keyset_policy = self.state_data.keyset_policy;
@@ -836,23 +902,19 @@ impl<'a> MintSaga<'a, Initial> {
         )
         .await;
 
-        Ok(MintSaga {
-            wallet: self.wallet,
-            compensations: self.compensations,
-            state_data: Prepared {
-                operation_id: self.state_data.operation_id,
-                active_keyset_id,
-                premint_secrets,
-                mint_request: PreparedMintRequest::Batch {
-                    quote_ids: quote_ids.iter().map(|s| s.to_string()).collect(),
-                    quote_infos,
-                    output_counts,
-                    request: batch_request,
-                },
-                payment_method,
-                keyset_policy,
-                saga,
+        Ok(Prepared {
+            operation_id: self.state_data.operation_id,
+            active_keyset_id,
+            premint_secrets,
+            mint_request: PreparedMintRequest::Batch {
+                quote_ids: quote_ids.iter().map(|s| s.to_string()).collect(),
+                quote_infos,
+                output_counts,
+                request: batch_request,
             },
+            payment_method,
+            keyset_policy,
+            saga,
         })
     }
 }
@@ -1536,4 +1598,5 @@ mod tests {
         );
         assert_eq!(requests[0].1.outputs, requests[2].1.outputs);
     }
+
 }
