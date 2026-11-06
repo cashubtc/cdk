@@ -213,3 +213,255 @@ impl DatabaseExecutor for AsyncSqlite {
         run_db_operation_sync(&sql, || conn.execute_batch(&sql), to_sqlite_error)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs::remove_file;
+    use std::sync::mpsc::channel;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    use cdk_sql_common::database::ConnectionWithTransaction;
+    use cdk_sql_common::pool::Pool;
+    use cdk_sql_common::value::Value;
+    use tokio::runtime::Builder;
+    use tokio::task::JoinSet;
+    use tokio::time::{sleep, timeout};
+
+    use super::*;
+    use crate::common::{Config, SqliteConnectionManager};
+
+    fn in_memory() -> AsyncSqlite {
+        AsyncSqlite::new(Connection::open_in_memory().expect("in memory database"))
+    }
+
+    fn temp_path(prefix: &str) -> String {
+        std::env::temp_dir()
+            .join(format!("cdk-{prefix}-{}.sqlite", uuid::Uuid::new_v4()))
+            .to_str()
+            .expect("utf8 path")
+            .to_owned()
+    }
+
+    fn remove_database(path: &str) {
+        let _ = remove_file(path);
+        let _ = remove_file(format!("{path}-wal"));
+        let _ = remove_file(format!("{path}-shm"));
+    }
+
+    fn config_for(path: &str) -> Config {
+        #[cfg(not(feature = "sqlcipher"))]
+        let config: Config = path.into();
+        #[cfg(feature = "sqlcipher")]
+        let config: Config = (path, "test").into();
+
+        config
+    }
+
+    /// Runs `writers` write transactions at once, each keeping the write lock for `statements`
+    /// inserts plus an optional suspension, and reports what every writer got.
+    async fn write_burst(
+        writers: usize,
+        statements: usize,
+        hold: Option<Duration>,
+    ) -> Vec<Result<(), Error>> {
+        let path = temp_path("write-burst");
+        let pool = Pool::<SqliteConnectionManager>::new(config_for(&path));
+
+        {
+            let conn = pool.get().await.expect("connection");
+            query("CREATE TABLE t (v INTEGER)")
+                .expect("sql")
+                .execute(&*conn)
+                .await
+                .expect("create table");
+        }
+
+        let mut burst = JoinSet::new();
+        for _ in 0..writers {
+            let pool = pool.clone();
+            burst.spawn(async move {
+                let conn = pool
+                    .get()
+                    .await
+                    .map_err(|err| Error::Internal(err.to_string()))?;
+                let tx = ConnectionWithTransaction::new(conn).await?;
+
+                if let Some(hold) = hold {
+                    sleep(hold).await;
+                }
+
+                for v in 0..statements {
+                    query("INSERT INTO t (v) VALUES (:v)")?
+                        .bind("v", i64::try_from(v).expect("fits in i64"))
+                        .execute(&tx)
+                        .await?;
+                }
+
+                tx.commit().await
+            });
+        }
+
+        let mut results = Vec::with_capacity(writers);
+        while let Some(joined) = burst.join_next().await {
+            results.push(joined.expect("writer task"));
+        }
+
+        drop(pool);
+        remove_database(&path);
+
+        results
+    }
+
+    fn assert_burst_is_clean(results: &[Result<(), Error>], elapsed: Duration) {
+        assert!(
+            results.iter().all(|result| result.is_ok()),
+            "writers failed: {results:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "burst took {elapsed:?}, the write lock was not released promptly"
+        );
+    }
+
+    /// Writers queueing for the write lock must not stop its holder from committing, here with a
+    /// transaction long enough that the runtime suspends it part way through.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_writers_do_not_starve_a_long_transaction() {
+        let start = Instant::now();
+        let results = write_burst(16, 130, None).await;
+
+        assert_burst_is_clean(&results, start.elapsed());
+    }
+
+    /// The same guarantee when the holder is suspended by something other than the length of its
+    /// transaction, with fewer runtime workers than writers.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_writers_do_not_starve_a_suspended_transaction() {
+        let start = Instant::now();
+        let results = write_burst(4, 4, Some(Duration::from_millis(1))).await;
+
+        assert_burst_is_clean(&results, start.elapsed());
+    }
+
+    #[tokio::test]
+    async fn transaction_round_trip_sees_its_own_writes() {
+        let mut db = in_memory();
+
+        db.batch(query("CREATE TABLE t (v INTEGER)").expect("sql"))
+            .await
+            .expect("create table");
+
+        SQLiteTransactionHandler::begin(&mut db)
+            .await
+            .expect("begin");
+        db.execute(query("INSERT INTO t (v) VALUES (42)").expect("sql"))
+            .await
+            .expect("insert");
+        SQLiteTransactionHandler::commit(&mut db)
+            .await
+            .expect("commit");
+
+        assert_eq!(
+            db.pluck(query("SELECT v FROM t").expect("sql"))
+                .await
+                .expect("select"),
+            Some(Value::Integer(42))
+        );
+    }
+
+    #[tokio::test]
+    async fn rollback_discards_the_transaction_and_is_a_noop_without_begin() {
+        let mut db = in_memory();
+
+        SQLiteTransactionHandler::rollback(&mut db)
+            .await
+            .expect("rollback outside a transaction");
+
+        db.batch(query("CREATE TABLE t (v INTEGER)").expect("sql"))
+            .await
+            .expect("create table");
+
+        SQLiteTransactionHandler::begin(&mut db)
+            .await
+            .expect("begin");
+        db.execute(query("INSERT INTO t (v) VALUES (42)").expect("sql"))
+            .await
+            .expect("insert");
+        SQLiteTransactionHandler::rollback(&mut db)
+            .await
+            .expect("rollback");
+
+        assert_eq!(
+            db.pluck(query("SELECT v FROM t").expect("sql"))
+                .await
+                .expect("select"),
+            None
+        );
+    }
+
+    /// A cancelled statement keeps running to completion, so the next statement must queue behind
+    /// it instead of overtaking it, which is what stops a rollback preceding the write it undoes.
+    #[tokio::test]
+    async fn a_cancelled_statement_runs_before_the_next_one() {
+        let db = in_memory();
+
+        db.batch(query("CREATE TABLE t (v INTEGER)").expect("sql"))
+            .await
+            .expect("create table");
+
+        let slow = db.execute(
+            query(
+                r#"
+                INSERT INTO t (v)
+                SELECT count(*) FROM (
+                    WITH RECURSIVE c(x) AS (
+                        SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 1000000
+                    )
+                    SELECT x FROM c
+                )
+                "#,
+            )
+            .expect("sql"),
+        );
+
+        assert!(
+            timeout(Duration::from_millis(1), slow).await.is_err(),
+            "the statement finished before it could be cancelled"
+        );
+
+        assert_eq!(
+            db.pluck(query("SELECT count(*) FROM t").expect("sql"))
+                .await
+                .expect("select"),
+            Some(Value::Integer(1))
+        );
+    }
+
+    /// A connection outliving its runtime must not hold up that runtime's shutdown.
+    #[test]
+    fn dropping_a_runtime_does_not_hang_on_a_live_connection() {
+        let (done, is_done) = channel();
+
+        thread::spawn(move || {
+            let runtime = Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime");
+            runtime.block_on(async {
+                let db: &'static AsyncSqlite = Box::leak(Box::new(in_memory()));
+
+                db.pluck(query("SELECT 1").expect("sql"))
+                    .await
+                    .expect("select");
+            });
+            drop(runtime);
+
+            done.send(()).expect("report the shutdown");
+        });
+
+        is_done
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the runtime shut down while a connection was still alive");
+    }
+}
