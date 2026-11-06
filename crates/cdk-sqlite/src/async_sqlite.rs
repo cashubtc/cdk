@@ -1,72 +1,223 @@
 //! Simple SQLite
-use std::convert::identity;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use cdk_common::database::Error;
 use cdk_sql_common::database::{DatabaseConnector, DatabaseExecutor, DatabaseTransaction};
-use cdk_sql_common::run_db_operation;
 use cdk_sql_common::stmt::{query, Column, SqlPart, Statement};
 use cdk_sql_common::value::Value;
-use rusqlite::{ffi, CachedStatement, Connection, Error as SqliteError, ErrorCode};
+use cdk_sql_common::SLOW_QUERY_THRESHOLD_MS;
+use rusqlite::{ffi, CachedStatement, Connection, Error as SqliteError, ErrorCode, Row};
 use tokio::runtime::Handle;
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, oneshot};
+use tokio::task::spawn_blocking;
 
 use crate::common::{from_sqlite, to_sqlite};
+
+/// Where a caller waits for its answer.
+type Reply<T> = oneshot::Sender<Result<T, Error>>;
+
+/// A statement for the task owning the connection, carrying the channel its answer goes back on.
+enum Request {
+    /// Runs the statement for its affected row count.
+    Execute {
+        sql: Arc<str>,
+        values: Vec<Value>,
+        reply: Reply<usize>,
+    },
+    /// Runs the statement for its first row.
+    FetchOne {
+        sql: Arc<str>,
+        values: Vec<Value>,
+        reply: Reply<Option<Vec<Column>>>,
+    },
+    /// Runs the statement for every row.
+    FetchAll {
+        sql: Arc<str>,
+        values: Vec<Value>,
+        reply: Reply<Vec<Vec<Column>>>,
+    },
+    /// Runs the statement for the first column of its first row.
+    Pluck {
+        sql: Arc<str>,
+        values: Vec<Value>,
+        reply: Reply<Option<Column>>,
+    },
+    /// Runs several statements with no placeholders.
+    Batch { sql: Arc<str>, reply: Reply<()> },
+    /// Asks whether the connection is outside a transaction.
+    IsAutocommit { reply: Reply<bool> },
+    /// Kills the connection, so the tests can reach the staleness path. The reply channel rides
+    /// along unread because the unwind dropping it is what its caller observes.
+    #[cfg(test)]
+    Panic { _reply: Reply<()> },
+}
 
 /// Async Sqlite wrapper
 #[derive(Debug)]
 pub struct AsyncSqlite {
-    conn: Arc<Mutex<Connection>>,
+    sender: mpsc::UnboundedSender<Request>,
     stale: Arc<AtomicBool>,
 }
 
 impl AsyncSqlite {
-    /// Shares the connection behind an async mutex so each statement can run on a blocking thread,
-    /// since every rusqlite call blocks.
+    /// Hands the connection to a tokio task fed by a channel, so callers queue requests instead of
+    /// sharing the connection, and the queue order is what keeps a rollback behind the statement
+    /// it has to undo even when that statement's caller was cancelled.
     ///
-    /// The blocking work is one task per statement rather than a parked worker loop, because
-    /// dropping a runtime waits for every blocking task it owns and a loop parked until its last
-    /// handle drops would never return.
-    pub fn new(conn: Connection, stale: Arc<AtomicBool>) -> Self {
-        Self {
-            conn: Arc::new(Mutex::new(conn)),
-            stale,
-        }
+    /// The task is an async one and each request gets its own blocking task, so an idle connection
+    /// holds no thread and nothing of ours is parked when the runtime shuts down.
+    pub fn new(conn: Connection, stale: Arc<AtomicBool>) -> Result<Self, SqliteError> {
+        let Ok(handle) = Handle::try_current() else {
+            return Err(SqliteError::SqliteFailure(
+                ffi::Error::new(ffi::SQLITE_MISUSE),
+                Some("sqlite connections must be opened inside a tokio runtime".to_owned()),
+            ));
+        };
+        let (sender, mut receiver) = mpsc::unbounded_channel::<Request>();
+
+        handle.spawn(async move {
+            let mut conn = conn;
+
+            while let Some(request) = receiver.recv().await {
+                conn = match spawn_blocking(move || {
+                    serve(&conn, request);
+                    conn
+                })
+                .await
+                {
+                    Ok(conn) => conn,
+                    Err(err) => {
+                        tracing::error!("A sqlite request failed to return its connection: {err}");
+                        return;
+                    }
+                };
+            }
+        });
+
+        Ok(Self { sender, stale })
     }
 
-    /// Runs `f` on a blocking thread holding the connection, timed as `info`, marking the
-    /// connection stale when `f` panics and leaves sqlite's state ambiguous.
-    ///
-    /// The guard is taken before the task is spawned because tokio's mutex is FIFO, which is what
-    /// keeps a rollback queued behind the cancelled statement it has to undo.
-    async fn call<T, F>(&self, info: &str, f: F) -> Result<T, Error>
-    where
-        F: FnOnce(&Connection) -> Result<T, Error> + Send + 'static,
-        T: Send + 'static,
-    {
-        run_db_operation(
-            info,
-            async {
-                let handle = Handle::try_current()
-                    .map_err(|_| Error::Internal("sqlite calls need a tokio runtime".to_owned()))?;
-                let guard = Arc::clone(&self.conn).lock_owned().await;
+    /// Takes the connection out of the pool, since a request that never answered leaves sqlite's
+    /// state unknown and the connection is gone with the task that owned it.
+    fn lost<T>(&self, reason: &str) -> Result<T, Error> {
+        tracing::error!("{reason}");
+        self.stale.store(true, Ordering::SeqCst);
+        Err(Error::Internal(reason.to_owned()))
+    }
 
-                handle
-                    .spawn_blocking(move || f(&guard))
-                    .await
-                    .map_err(|err| {
-                        if err.is_panic() {
-                            self.stale.store(true, Ordering::SeqCst);
-                            Error::Internal("sqlite call panicked".to_owned())
-                        } else {
-                            Error::Internal("sqlite call was cancelled".to_owned())
-                        }
-                    })?
-            },
-            identity,
-        )
-        .await
+    /// Kills the connection by panicking on its task.
+    #[cfg(test)]
+    async fn provoke_panic(&self) -> Result<(), Error> {
+        let (reply, response) = oneshot::channel();
+        let request = Request::Panic { _reply: reply };
+
+        if self.sender.send(request).is_err() {
+            return self.lost("the sqlite connection task is gone");
+        }
+
+        match response.await {
+            Ok(result) => result,
+            Err(_) => self.lost("the sqlite request did not answer"),
+        }
+    }
+}
+
+/// Runs one request against the connection, timing the statement alone rather than the wait that
+/// preceded it.
+fn serve(conn: &Connection, request: Request) {
+    let info = match &request {
+        Request::Execute { sql, .. }
+        | Request::FetchOne { sql, .. }
+        | Request::FetchAll { sql, .. }
+        | Request::Pluck { sql, .. }
+        | Request::Batch { sql, .. } => Arc::clone(sql),
+        Request::IsAutocommit { .. } => "is_autocommit".into(),
+        #[cfg(test)]
+        Request::Panic { .. } => "panic".into(),
+    };
+    let start = Instant::now();
+
+    tracing::trace!("Running db operation {info}");
+
+    match request {
+        Request::Execute { sql, values, reply } => {
+            let result = match prepare(conn, &sql, values) {
+                Ok(mut stmt) => stmt.raw_execute().map_err(to_sqlite_error),
+                Err(err) => Err(err),
+            };
+
+            if reply.send(result).is_err() {
+                tracing::debug!("Discarded a sqlite result, its caller is gone");
+            }
+        }
+        Request::FetchOne { sql, values, reply } => {
+            let result = match prepare(conn, &sql, values) {
+                Err(err) => Err(err),
+                Ok(mut stmt) => {
+                    let count = stmt.column_count();
+                    let mut rows = stmt.raw_query();
+
+                    match rows.next() {
+                        Ok(Some(row)) => row_columns(row, count).map(Some),
+                        Ok(None) => Ok(None),
+                        Err(err) => Err(to_sqlite_error(err)),
+                    }
+                }
+            };
+
+            if reply.send(result).is_err() {
+                tracing::debug!("Discarded a sqlite result, its caller is gone");
+            }
+        }
+        Request::FetchAll { sql, values, reply } => {
+            if reply.send(all_rows(conn, &sql, values)).is_err() {
+                tracing::debug!("Discarded a sqlite result, its caller is gone");
+            }
+        }
+        Request::Pluck { sql, values, reply } => {
+            let result = match prepare(conn, &sql, values) {
+                Err(err) => Err(err),
+                Ok(mut stmt) => {
+                    let mut rows = stmt.raw_query();
+
+                    match rows.next() {
+                        Ok(Some(row)) => row
+                            .get(0usize)
+                            .map(from_sqlite)
+                            .map(Some)
+                            .map_err(to_sqlite_error),
+                        Ok(None) => Ok(None),
+                        Err(err) => Err(to_sqlite_error(err)),
+                    }
+                }
+            };
+
+            if reply.send(result).is_err() {
+                tracing::debug!("Discarded a sqlite result, its caller is gone");
+            }
+        }
+        Request::Batch { sql, reply } => {
+            if reply
+                .send(conn.execute_batch(&sql).map_err(to_sqlite_error))
+                .is_err()
+            {
+                tracing::debug!("Discarded a sqlite result, its caller is gone");
+            }
+        }
+        Request::IsAutocommit { reply } => {
+            if reply.send(Ok(conn.is_autocommit())).is_err() {
+                tracing::debug!("Discarded a sqlite result, its caller is gone");
+            }
+        }
+        #[cfg(test)]
+        Request::Panic { .. } => panic!("the request dies here"),
+    }
+
+    let elapsed = start.elapsed().as_millis();
+    if elapsed > SLOW_QUERY_THRESHOLD_MS {
+        tracing::warn!("[SLOW QUERY] Took {elapsed} ms: {info}");
     }
 }
 
@@ -75,55 +226,48 @@ impl AsyncSqlite {
 fn prepare<'a>(
     conn: &'a Connection,
     sql: &str,
-    placeholder_values: Vec<Value>,
+    values: Vec<Value>,
 ) -> Result<CachedStatement<'a>, Error> {
     let mut stmt = conn
         .prepare_cached(sql.trim().trim_end_matches("FOR UPDATE"))
-        .map_err(|e| Error::Database(Box::new(e)))?;
+        .map_err(prepare_error)?;
 
-    for (i, value) in placeholder_values.into_iter().enumerate() {
+    for (i, value) in values.into_iter().enumerate() {
         stmt.raw_bind_parameter(i + 1, to_sqlite(value))
-            .map_err(|e| Error::Database(Box::new(e)))?;
+            .map_err(prepare_error)?;
     }
 
     Ok(stmt)
 }
 
-fn first_row(stmt: &mut CachedStatement<'_>) -> Result<Option<Vec<Column>>, SqliteError> {
-    let columns = stmt.column_count();
-    let mut rows = stmt.raw_query();
-
-    rows.next()?
-        .map(|row| {
-            (0..columns)
-                .map(|i| row.get(i).map(from_sqlite))
-                .collect::<Result<Vec<_>, _>>()
-        })
-        .transpose()
+/// Keeps prepare and bind failures out of `to_sqlite_error`'s `Error::Duplicate` mapping, which
+/// only makes sense for a statement that ran.
+fn prepare_error(err: SqliteError) -> Error {
+    Error::Database(Box::new(err))
 }
 
-fn all_rows(stmt: &mut CachedStatement<'_>) -> Result<Vec<Vec<Column>>, SqliteError> {
-    let columns = stmt.column_count();
+/// Reads every column of `row` in order.
+fn row_columns(row: &Row<'_>, count: usize) -> Result<Vec<Column>, Error> {
+    let mut columns = Vec::with_capacity(count);
+
+    for i in 0..count {
+        columns.push(from_sqlite(row.get(i).map_err(to_sqlite_error)?));
+    }
+
+    Ok(columns)
+}
+
+fn all_rows(conn: &Connection, sql: &str, values: Vec<Value>) -> Result<Vec<Vec<Column>>, Error> {
+    let mut stmt = prepare(conn, sql, values)?;
+    let count = stmt.column_count();
     let mut rows = stmt.raw_query();
     let mut results = vec![];
 
-    while let Some(row) = rows.next()? {
-        results.push(
-            (0..columns)
-                .map(|i| row.get(i).map(from_sqlite))
-                .collect::<Result<Vec<_>, _>>()?,
-        )
+    while let Some(row) = rows.next().map_err(to_sqlite_error)? {
+        results.push(row_columns(row, count)?);
     }
 
     Ok(results)
-}
-
-fn first_column(stmt: &mut CachedStatement<'_>) -> Result<Option<Column>, SqliteError> {
-    let mut rows = stmt.raw_query();
-
-    rows.next()?
-        .map(|row| row.get(0usize).map(from_sqlite))
-        .transpose()
 }
 
 #[inline(always)]
@@ -172,12 +316,19 @@ impl DatabaseTransaction<AsyncSqlite> for SQLiteTransactionHandler {
     /// begun, since the resulting error would discard the connection and with it an in-memory
     /// database.
     async fn rollback(conn: &mut AsyncSqlite) -> Result<(), Error> {
-        if conn
-            .call("is_autocommit", |inner: &Connection| {
-                Ok(inner.is_autocommit())
-            })
-            .await?
-        {
+        let (reply, response) = oneshot::channel();
+        let request = Request::IsAutocommit { reply };
+
+        if conn.sender.send(request).is_err() {
+            return conn.lost("the sqlite connection task is gone");
+        }
+
+        let autocommit = match response.await {
+            Ok(result) => result?,
+            Err(_) => return conn.lost("the sqlite request did not answer"),
+        };
+
+        if autocommit {
             return Ok(());
         }
         query("ROLLBACK")?.execute(conn).await?;
@@ -196,73 +347,107 @@ impl DatabaseExecutor for AsyncSqlite {
     }
 
     async fn execute(&self, statement: Statement) -> Result<usize, Error> {
-        let (sql, placeholder_values) = statement.to_sql()?;
-        let prepared: Arc<str> = sql.as_str().into();
+        let (sql, values) = statement.to_sql()?;
+        let (reply, response) = oneshot::channel();
+        let request = Request::Execute {
+            sql: sql.into(),
+            values,
+            reply,
+        };
 
-        self.call(&sql, move |conn| {
-            prepare(conn, &prepared, placeholder_values)?
-                .raw_execute()
-                .map_err(to_sqlite_error)
-        })
-        .await
+        if self.sender.send(request).is_err() {
+            return self.lost("the sqlite connection task is gone");
+        }
+
+        match response.await {
+            Ok(result) => result,
+            Err(_) => self.lost("the sqlite request did not answer"),
+        }
     }
 
     async fn fetch_one(&self, statement: Statement) -> Result<Option<Vec<Column>>, Error> {
-        let (sql, placeholder_values) = statement.to_sql()?;
-        let prepared: Arc<str> = sql.as_str().into();
+        let (sql, values) = statement.to_sql()?;
+        let (reply, response) = oneshot::channel();
+        let request = Request::FetchOne {
+            sql: sql.into(),
+            values,
+            reply,
+        };
 
-        self.call(&sql, move |conn| {
-            first_row(&mut prepare(conn, &prepared, placeholder_values)?).map_err(to_sqlite_error)
-        })
-        .await
+        if self.sender.send(request).is_err() {
+            return self.lost("the sqlite connection task is gone");
+        }
+
+        match response.await {
+            Ok(result) => result,
+            Err(_) => self.lost("the sqlite request did not answer"),
+        }
     }
 
     async fn fetch_all(&self, statement: Statement) -> Result<Vec<Vec<Column>>, Error> {
-        let (sql, placeholder_values) = statement.to_sql()?;
-        let prepared: Arc<str> = sql.as_str().into();
+        let (sql, values) = statement.to_sql()?;
+        let (reply, response) = oneshot::channel();
+        let request = Request::FetchAll {
+            sql: sql.into(),
+            values,
+            reply,
+        };
 
-        self.call(&sql, move |conn| {
-            all_rows(&mut prepare(conn, &prepared, placeholder_values)?).map_err(to_sqlite_error)
-        })
-        .await
+        if self.sender.send(request).is_err() {
+            return self.lost("the sqlite connection task is gone");
+        }
+
+        match response.await {
+            Ok(result) => result,
+            Err(_) => self.lost("the sqlite request did not answer"),
+        }
     }
 
     async fn pluck(&self, statement: Statement) -> Result<Option<Column>, Error> {
-        let (sql, placeholder_values) = statement.to_sql()?;
-        let prepared: Arc<str> = sql.as_str().into();
+        let (sql, values) = statement.to_sql()?;
+        let (reply, response) = oneshot::channel();
+        let request = Request::Pluck {
+            sql: sql.into(),
+            values,
+            reply,
+        };
 
-        self.call(&sql, move |conn| {
-            first_column(&mut prepare(conn, &prepared, placeholder_values)?)
-                .map_err(to_sqlite_error)
-        })
-        .await
+        if self.sender.send(request).is_err() {
+            return self.lost("the sqlite connection task is gone");
+        }
+
+        match response.await {
+            Ok(result) => result,
+            Err(_) => self.lost("the sqlite request did not answer"),
+        }
     }
 
     async fn batch(&self, mut statement: Statement) -> Result<(), Error> {
-        let sql = {
-            let part = statement
-                .parts
-                .pop()
-                .ok_or(Error::Internal("Empty SQL".to_owned()))?;
+        let part = statement
+            .parts
+            .pop()
+            .ok_or(Error::Internal("Empty SQL".to_owned()))?;
 
-            if !statement.parts.is_empty() || matches!(part, SqlPart::Placeholder(_, _)) {
+        let sql = match (statement.parts.is_empty(), part) {
+            (true, SqlPart::Raw(sql)) => sql,
+            _ => {
                 return Err(Error::Internal(
                     "Invalid usage, batch does not support placeholders".to_owned(),
-                ));
-            }
-
-            if let SqlPart::Raw(sql) = part {
-                sql
-            } else {
-                unreachable!()
+                ))
             }
         };
-        let batch = Arc::clone(&sql);
 
-        self.call(&sql, move |conn| {
-            conn.execute_batch(&batch).map_err(to_sqlite_error)
-        })
-        .await
+        let (reply, response) = oneshot::channel();
+        let request = Request::Batch { sql, reply };
+
+        if self.sender.send(request).is_err() {
+            return self.lost("the sqlite connection task is gone");
+        }
+
+        match response.await {
+            Ok(result) => result,
+            Err(_) => self.lost("the sqlite request did not answer"),
+        }
     }
 }
 
@@ -288,6 +473,7 @@ mod tests {
             Connection::open_in_memory().expect("in memory database"),
             Arc::new(AtomicBool::new(false)),
         )
+        .expect("connection task")
     }
 
     fn temp_path(prefix: &str) -> String {
@@ -461,15 +647,10 @@ mod tests {
         let db = AsyncSqlite::new(
             Connection::open_in_memory().expect("in memory database"),
             stale.clone(),
-        );
+        )
+        .expect("connection task");
 
-        assert!(matches!(
-            db.call("panic", |_: &Connection| -> Result<(), Error> {
-                panic!("the call dies here")
-            })
-            .await,
-            Err(Error::Internal(_))
-        ));
+        assert!(matches!(db.provoke_panic().await, Err(Error::Internal(_))));
 
         assert!(
             stale.load(Ordering::SeqCst),
@@ -487,10 +668,7 @@ mod tests {
         {
             let conn = pool.get().await.expect("connection");
             assert!(matches!(
-                conn.call("panic", |_: &Connection| -> Result<(), Error> {
-                    panic!("the call dies here")
-                })
-                .await,
+                conn.provoke_panic().await,
                 Err(Error::Internal(_))
             ));
         }
@@ -539,6 +717,17 @@ mod tests {
         );
     }
 
+    /// The connection task cannot be spawned without a runtime, and a pool handing out a
+    /// connection whose task never started would hang every query on it.
+    #[test]
+    fn opening_a_connection_outside_a_runtime_fails() {
+        assert!(AsyncSqlite::new(
+            Connection::open_in_memory().expect("in memory database"),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .is_err());
+    }
+
     /// A connection outliving its runtime must not hold up that runtime's shutdown, which is why
     /// the blocking work is one task per statement and never a parked loop.
     #[test]
@@ -550,9 +739,9 @@ mod tests {
                 .enable_all()
                 .build()
                 .expect("runtime");
-            let db: &'static AsyncSqlite = Box::leak(Box::new(in_memory()));
-
             runtime.block_on(async {
+                let db: &'static AsyncSqlite = Box::leak(Box::new(in_memory()));
+
                 db.pluck(query("SELECT 1").expect("sql"))
                     .await
                     .expect("select");

@@ -7,7 +7,8 @@ use cdk_common::database::Error;
 use crate::database::DatabaseExecutor;
 use crate::stmt::query;
 
-const SLOW_QUERY_THRESHOLD_MS: u128 = 20;
+/// Above this, a database operation is logged as slow.
+pub const SLOW_QUERY_THRESHOLD_MS: u128 = 20;
 
 /// Run a database operation and log slow operations, it also converts and logs any error with a
 /// given info for more context

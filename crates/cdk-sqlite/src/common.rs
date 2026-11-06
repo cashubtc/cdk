@@ -115,7 +115,7 @@ impl DatabasePool for SqliteConnectionManager {
             config.in_memory_opened.store(true, Ordering::SeqCst);
         }
 
-        Ok(async_sqlite::AsyncSqlite::new(conn, stale))
+        Ok(async_sqlite::AsyncSqlite::new(conn, stale)?)
     }
 }
 
