@@ -290,3 +290,122 @@ impl Signatory for SignatoryRpcClient {
             .map_err(|e| Error::Custom(e.to_string()))?
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use cdk_common::nut02::KeySetVersion;
+    use cdk_common::secret::Secret;
+    use cdk_common::{Amount, CurrencyUnit, SecretKey};
+    use tokio::net::TcpListener;
+    use tokio_stream::wrappers::TcpListenerStream;
+
+    use super::*;
+    use crate::db_signatory::DbSignatory;
+    use crate::proto::server::start_grpc_server_with_incoming;
+
+    /// Serves a fresh `DbSignatory` over gRPC on a local port and returns it with a client.
+    async fn remote_signatory() -> (Arc<DbSignatory>, SignatoryRpcClient) {
+        let store = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("in-memory db"),
+        );
+        let signatory = Arc::new(
+            DbSignatory::new(
+                store,
+                b"remote-verify",
+                Default::default(),
+                Default::default(),
+            )
+            .await
+            .expect("DbSignatory::new"),
+        );
+        signatory
+            .rotate_keyset(RotateKeyArguments {
+                unit: CurrencyUnit::Sat,
+                amounts: vec![1, 2, 4, 8],
+                input_fee_ppk: 0,
+                keyset_id_type: KeySetVersion::Version00,
+                final_expiry: None,
+            })
+            .await
+            .expect("rotate_keyset");
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().expect("local addr").port();
+        tokio::spawn(start_grpc_server_with_incoming(
+            signatory.clone(),
+            TcpListenerStream::new(listener),
+        ));
+
+        let client = SignatoryRpcClient::new("127.0.0.1", port, None)
+            .await
+            .expect("connect to signatory");
+
+        (signatory, client)
+    }
+
+    #[tokio::test]
+    async fn verify_proofs_reports_an_invalid_signature_like_the_local_signatory() {
+        let (local, remote) = remote_signatory().await;
+        let keyset = local.keysets().await.expect("keysets").keysets[0].clone();
+
+        // A proof on a known keyset and amount whose `C` was not signed by the mint.
+        let forged = Proof::new(
+            Amount::from(1),
+            keyset.id,
+            Secret::generate(),
+            SecretKey::generate().public_key(),
+        );
+
+        let local_err = local
+            .verify_proofs(vec![forged.clone()])
+            .await
+            .expect_err("local signatory rejects a forged proof");
+        let remote_err = remote
+            .verify_proofs(vec![forged])
+            .await
+            .expect_err("remote signatory rejects a forged proof");
+
+        assert!(matches!(
+            local_err,
+            Error::DHKE(cdk_common::dhke::Error::TokenNotVerified)
+        ));
+        assert!(
+            matches!(
+                remote_err,
+                Error::DHKE(cdk_common::dhke::Error::TokenNotVerified)
+            ),
+            "unexpected remote error: {remote_err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_proofs_reports_an_unknown_keyset_like_the_local_signatory() {
+        let (local, remote) = remote_signatory().await;
+        let keyset = local.keysets().await.expect("keysets").keysets[0].clone();
+
+        // The amount is not part of the keyset, so no key exists to verify it with.
+        let proof = Proof::new(
+            Amount::from(16),
+            keyset.id,
+            Secret::generate(),
+            SecretKey::generate().public_key(),
+        );
+
+        let local_err = local
+            .verify_proofs(vec![proof.clone()])
+            .await
+            .expect_err("local signatory rejects the proof");
+        let remote_err = remote
+            .verify_proofs(vec![proof])
+            .await
+            .expect_err("remote signatory rejects the proof");
+
+        assert!(matches!(local_err, Error::UnknownKeySet));
+        assert!(
+            matches!(remote_err, Error::UnknownKeySet),
+            "unexpected remote error: {remote_err:?}"
+        );
+    }
+}
