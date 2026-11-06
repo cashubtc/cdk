@@ -156,24 +156,34 @@ impl MintPubSubSpec {
                 | NotificationId::MintQuoteCustom(_, uuid) => {
                     if let Some(mint_quote) = mint_quotes.get(uuid).cloned() {
                         let mint_quote = match idx {
-                            NotificationId::MintQuoteBolt11(_) => {
+                            NotificationId::MintQuoteBolt11(_)
+                                if mint_quote.payment_method.is_bolt11() =>
+                            {
                                 let response: MintQuoteBolt11Response<QuoteId> = mint_quote.into();
                                 response.into()
                             }
-                            NotificationId::MintQuoteBolt12(_) => match mint_quote.try_into() {
-                                Ok(response) => {
-                                    let response: MintQuoteBolt12Response<QuoteId> = response;
-                                    response.into()
+                            NotificationId::MintQuoteBolt12(_)
+                                if mint_quote.payment_method.is_bolt12() =>
+                            {
+                                match mint_quote.try_into() {
+                                    Ok(response) => {
+                                        let response: MintQuoteBolt12Response<QuoteId> = response;
+                                        response.into()
+                                    }
+                                    Err(_) => continue,
                                 }
-                                Err(_) => continue,
-                            },
-                            NotificationId::MintQuoteOnchain(_) => match mint_quote.try_into() {
-                                Ok(response) => {
-                                    let response: MintQuoteOnchainResponse<QuoteId> = response;
-                                    response.into()
+                            }
+                            NotificationId::MintQuoteOnchain(_)
+                                if mint_quote.payment_method.is_onchain() =>
+                            {
+                                match mint_quote.try_into() {
+                                    Ok(response) => {
+                                        let response: MintQuoteOnchainResponse<QuoteId> = response;
+                                        response.into()
+                                    }
+                                    Err(_) => continue,
                                 }
-                                Err(_) => continue,
-                            },
+                            }
                             NotificationId::MintQuoteCustom(method, _)
                                 if mint_quote.payment_method
                                     == cdk_common::PaymentMethod::Custom(method.clone()) =>
