@@ -13,7 +13,9 @@ pub use self::info::{
     UpdateLongDescriptionCommand, UpdateMotdCommand, UpdateNameCommand,
     UpdateShortDescriptionCommand, UpdateTosUrlCommand,
 };
-pub use self::keyset::{rotate_next_keyset, RotateNextKeysetCommand};
+pub use self::keyset::{
+    get_keyset_totals, rotate_next_keyset, GetKeysetTotalsCommand, RotateNextKeysetCommand,
+};
 pub use self::payment_method::{
     update_disabled, update_melt_method, update_mint_method, UpdateDisabledCommand,
     UpdateMeltMethodCommand, UpdateMintMethodCommand,
