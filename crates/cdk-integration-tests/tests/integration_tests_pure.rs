@@ -17,6 +17,8 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::routing::post;
+use axum::{Json, Router};
 use bip39::Mnemonic;
 use cashu::amount::SplitTarget;
 use cashu::dhke::construct_proofs;
@@ -25,8 +27,8 @@ use cashu::nuts::nut10::Conditions;
 use cashu::nuts::SigFlag;
 use cashu::{
     BlindSignature, BlindedMessage, CurrencyUnit, Id, KeySet, KeySetInfo, MeltRequest,
-    NotificationPayload, PaymentMethod, PreMintSecrets, ProofState, SecretKey, SpendingConditions,
-    State, SwapRequest,
+    NotificationPayload, PaymentMethod, PaymentRequest, PaymentRequestPayload, PreMintSecrets,
+    ProofState, SecretKey, SpendingConditions, State, SwapRequest, Token, Transport, TransportType,
 };
 use cdk::mint::Mint;
 use cdk::nuts::nut00::ProofsMethods;
@@ -39,7 +41,7 @@ use cdk_common::mint::OperationKind;
 use cdk_common::payment::{
     MintPayment, OutgoingPaymentOptions, PaymentIdentifier, PaymentQuoteResponse,
 };
-use cdk_common::wallet::ProofInfo;
+use cdk_common::wallet::{ProofInfo, SendKind};
 use cdk_common::{MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse};
 use cdk_fake_wallet::create_fake_invoice;
 use cdk_integration_tests::init_pure_tests::*;
@@ -57,6 +59,498 @@ fn to_keyset_infos(keysets: &[KeySet]) -> Vec<KeySetInfo> {
             final_expiry: ks.final_expiry,
         })
         .collect()
+}
+
+/// Receiver fee coverage must use the denominations actually sent to the recipient.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_send_include_fee_covers_actual_redemption() {
+    assert_send_receiver_fee(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_ffi_send_exact_receiver_fee() {
+    assert_send_receiver_fee(true).await;
+}
+
+#[tokio::test]
+async fn test_p2pk_exact_receiver_fee_regression() {
+    assert_locked_send_receiver_fee(false).await;
+}
+
+#[tokio::test]
+async fn test_p2bk_exact_receiver_fee_regression() {
+    assert_locked_send_receiver_fee(true).await;
+}
+
+async fn assert_locked_send_receiver_fee(use_p2bk: bool) {
+    let mint = create_mint_with_fee(1000).await.unwrap();
+    let sender = create_test_wallet_for_mint(mint.clone()).await.unwrap();
+    let receiver = create_test_wallet_for_mint(mint).await.unwrap();
+    fund_wallet(sender.clone(), 64, None).await.unwrap();
+
+    let secret = SecretKey::generate();
+    let requested = Amount::from(21);
+    let prepared = sender
+        .prepare_send(
+            requested,
+            SendOptions {
+                conditions: Some(SpendingConditions::new_p2pk(secret.public_key(), None)),
+                include_fee: true,
+                use_p2bk,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(!prepared.proofs_to_swap().is_empty());
+    let quoted_debit = requested + prepared.fee();
+    let token = prepared.confirm(None).await.unwrap();
+    if use_p2bk {
+        let keysets = to_keyset_infos(&sender.keysets(Default::default()).await.unwrap());
+        assert!(token
+            .proofs(&keysets)
+            .unwrap()
+            .iter()
+            .all(|proof| proof.p2pk_e.is_some()));
+    }
+    let received = receiver
+        .receive(
+            &token.to_string(),
+            ReceiveOptions {
+                p2pk_signing_keys: vec![secret],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(received, requested);
+    assert_eq!(receiver.total_balance().await.unwrap(), requested);
+    assert_eq!(
+        sender.total_balance().await.unwrap() + quoted_debit,
+        Amount::from(64)
+    );
+}
+
+async fn assert_send_receiver_fee(ffi_confirm: bool) {
+    let mint = create_mint_with_fee(1000).await.unwrap();
+    let sender = create_test_wallet_for_mint(mint.clone()).await.unwrap();
+    let receiver = create_test_wallet_for_mint(mint).await.unwrap();
+    fund_wallet(sender.clone(), 100, None).await.unwrap();
+
+    let requested = Amount::from(21);
+    let prepared = sender
+        .prepare_send(
+            requested,
+            SendOptions {
+                include_fee: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let quoted_debit = requested + prepared.fee();
+    let token: Token = if ffi_confirm {
+        Arc::new(cdk_ffi::PreparedSend::new(
+            Arc::new(sender.clone()),
+            &prepared,
+        ))
+        .confirm(None)
+        .await
+        .unwrap()
+        .into()
+    } else {
+        prepared.confirm(None).await.unwrap()
+    };
+    let received = receiver
+        .receive(&token.to_string(), ReceiveOptions::default())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        received, requested,
+        "The recipient must redeem the exact requested amount"
+    );
+    assert_eq!(receiver.total_balance().await.unwrap(), received);
+    assert_eq!(
+        sender.total_balance().await.unwrap() + quoted_debit,
+        Amount::from(100),
+        "Confirmation must honor the debit quoted during preparation"
+    );
+}
+
+#[tokio::test]
+async fn test_send_include_fee_with_sparse_denominations() {
+    let mint = create_mint_with_fee(1000).await.unwrap();
+    mint.rotate_keyset(CurrencyUnit::Sat, vec![1, 2, 8], 1000, true, None)
+        .await
+        .unwrap();
+    let sender = create_test_wallet_for_mint(mint.clone()).await.unwrap();
+    let receiver = create_test_wallet_for_mint(mint).await.unwrap();
+    fund_wallet(
+        sender.clone(),
+        16,
+        Some(SplitTarget::Values(vec![8.into(); 2])),
+    )
+    .await
+    .unwrap();
+
+    let prepared = sender
+        .prepare_send(
+            5.into(),
+            SendOptions {
+                include_fee: true,
+                max_proofs: Some(5),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(prepared.send_fee(), Amount::from(5));
+    let quoted_debit = prepared.amount() + prepared.fee();
+    let token = prepared.confirm(None).await.unwrap();
+    assert_eq!(
+        receiver
+            .receive(&token.to_string(), ReceiveOptions::default())
+            .await
+            .unwrap(),
+        Amount::from(5)
+    );
+    assert_eq!(receiver.total_balance().await.unwrap(), Amount::from(5));
+    assert_eq!(
+        sender.total_balance().await.unwrap() + quoted_debit,
+        Amount::from(16)
+    );
+}
+
+#[tokio::test]
+async fn test_send_include_fee_rotation_preserves_quote_and_balance() {
+    for (new_fee, refresh) in [(0, true), (0, false), (2000, true), (2000, false)] {
+        let mint = create_mint_with_fee(1000).await.unwrap();
+        let sender = create_test_wallet_for_mint(mint.clone()).await.unwrap();
+        fund_wallet(
+            sender.clone(),
+            100,
+            Some(SplitTarget::Values(vec![64.into(), 32.into(), 4.into()])),
+        )
+        .await
+        .unwrap();
+        let options = SendOptions {
+            include_fee: true,
+            ..Default::default()
+        };
+        let prepared = sender
+            .prepare_send(21.into(), options.clone())
+            .await
+            .unwrap();
+        assert!(!prepared.proofs_to_swap().is_empty());
+        let input_ys = prepared.proofs().ys().unwrap();
+
+        mint.rotate_keyset(
+            CurrencyUnit::Sat,
+            cdk_integration_tests::standard_keyset_amounts(32),
+            new_fee,
+            true,
+            None,
+        )
+        .await
+        .unwrap();
+        if refresh {
+            sender
+                .keysets(cdk_common::wallet::KeysetLoadPolicy::Refresh)
+                .await
+                .unwrap();
+        }
+
+        let error = prepared.confirm(None).await.unwrap_err();
+        assert!(matches!(
+            error,
+            cdk::Error::IncorrectQuoteAmount | cdk::Error::InactiveKeyset
+        ));
+        assert_eq!(sender.total_balance().await.unwrap(), Amount::from(100));
+        assert!(sender.get_reserved_proofs().await.unwrap().is_empty());
+        let states = mint
+            .check_state(&cashu::CheckStateRequest { ys: input_ys })
+            .await
+            .unwrap();
+        assert!(states
+            .states
+            .iter()
+            .all(|proof| proof.state == State::Unspent));
+        for _ in 0..2 {
+            assert!(sender.recover_incomplete_sagas().await.unwrap().is_empty());
+            assert_eq!(sender.total_balance().await.unwrap(), Amount::from(100));
+            assert!(sender.get_reserved_proofs().await.unwrap().is_empty());
+            assert!(sender.get_pending_sends().await.unwrap().is_empty());
+        }
+
+        // A fresh quote can use the new fee policy and spend the same inputs.
+        sender
+            .keysets(cdk_common::wallet::KeysetLoadPolicy::Refresh)
+            .await
+            .unwrap();
+        let prepared = sender.prepare_send(21.into(), options).await.unwrap();
+        let quoted_debit = prepared.amount() + prepared.fee();
+        let token = prepared.confirm(None).await.unwrap();
+        let receiver = create_test_wallet_for_mint(mint).await.unwrap();
+        assert_eq!(
+            receiver
+                .receive(&token.to_string(), ReceiveOptions::default())
+                .await
+                .unwrap(),
+            Amount::from(21)
+        );
+        assert_eq!(
+            sender.total_balance().await.unwrap() + quoted_debit,
+            Amount::from(100)
+        );
+    }
+}
+
+/// Direct sends use the fees of their actual inputs, even after keyset rotation.
+#[tokio::test]
+async fn test_exact_direct_send_after_keyset_rotation() {
+    for send_kind in [SendKind::OfflineExact, SendKind::OnlineExact] {
+        for (old_fee, new_fee, mixed, requested, expected_fee) in [
+            (1000, 0, false, 31, 1),
+            (0, 1000, false, 32, 0),
+            (100, 600, true, 39, 1),
+            (1000, 2000, true, 37, 3),
+        ] {
+            let mint = create_mint_with_fee(old_fee).await.unwrap();
+            let sender = create_test_wallet_for_mint(mint.clone()).await.unwrap();
+            fund_wallet(
+                sender.clone(),
+                32,
+                Some(SplitTarget::Values(vec![32.into()])),
+            )
+            .await
+            .unwrap();
+            mint.rotate_keyset(
+                CurrencyUnit::Sat,
+                cdk_integration_tests::standard_keyset_amounts(32),
+                new_fee,
+                true,
+                None,
+            )
+            .await
+            .unwrap();
+            sender
+                .keysets(cdk_common::wallet::KeysetLoadPolicy::Refresh)
+                .await
+                .unwrap();
+            if mixed {
+                fund_wallet(sender.clone(), 8, Some(SplitTarget::Values(vec![8.into()])))
+                    .await
+                    .unwrap();
+            }
+            let original_proofs = sender.get_unspent_proofs().await.unwrap();
+            let options = SendOptions {
+                send_kind: send_kind.clone(),
+                include_fee: true,
+                max_proofs: Some(original_proofs.len()),
+                ..Default::default()
+            };
+
+            if send_kind.is_offline() {
+                // Neither an invalid net amount nor a too-small proof limit
+                // may leave behind a prepared send that needs an online swap.
+                for (amount, max_proofs) in [
+                    (requested - 1, original_proofs.len()),
+                    (requested, original_proofs.len() - 1),
+                ] {
+                    let error = sender
+                        .prepare_send(
+                            Amount::from(amount),
+                            SendOptions {
+                                max_proofs: Some(max_proofs),
+                                ..options.clone()
+                            },
+                        )
+                        .await
+                        .unwrap_err();
+                    assert!(matches!(error, cdk::Error::InsufficientFunds));
+                    assert!(sender.get_reserved_proofs().await.unwrap().is_empty());
+                }
+            }
+
+            let prepared = sender
+                .prepare_send(Amount::from(requested), options)
+                .await
+                .unwrap();
+            assert!(prepared.proofs_to_swap().is_empty());
+            assert_eq!(prepared.swap_fee(), Amount::ZERO);
+            assert_eq!(prepared.send_fee(), Amount::from(expected_fee));
+            let token = prepared.confirm(None).await.unwrap();
+            let keysets = to_keyset_infos(&sender.keysets(Default::default()).await.unwrap());
+            let sent = token.proofs(&keysets).unwrap();
+            assert_eq!(sent.len(), original_proofs.len());
+            assert!(original_proofs.iter().all(|proof| sent.contains(proof)));
+
+            let receiver = create_test_wallet_for_mint(mint).await.unwrap();
+            assert_eq!(
+                receiver
+                    .receive(&token.to_string(), ReceiveOptions::default())
+                    .await
+                    .unwrap(),
+                Amount::from(requested)
+            );
+            assert_eq!(sender.total_balance().await.unwrap(), Amount::ZERO);
+        }
+    }
+}
+
+/// Reusing proofs from an expensive inactive keyset must not underfund redemption.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_send_include_fee_covers_reused_keyset_fees() {
+    let mint = create_mint_with_fee(4000).await.unwrap();
+    let sender = create_test_wallet_for_mint(mint.clone()).await.unwrap();
+    let receiver = create_test_wallet_for_mint(mint.clone()).await.unwrap();
+    fund_wallet(
+        sender.clone(),
+        100,
+        Some(SplitTarget::Value(Amount::from(16))),
+    )
+    .await
+    .unwrap();
+    mint.rotate_keyset(
+        CurrencyUnit::Sat,
+        cdk_integration_tests::standard_keyset_amounts(32),
+        1000,
+        true,
+        None,
+    )
+    .await
+    .unwrap();
+
+    // This tests mixed-keyset fee accounting with current metadata; detecting
+    // a rotation through the wallet's cache policy is a separate concern.
+    sender
+        .keysets(cdk_common::wallet::KeysetLoadPolicy::Refresh)
+        .await
+        .unwrap();
+    let requested = Amount::from(21);
+    let prepared = sender
+        .prepare_send(
+            requested,
+            SendOptions {
+                include_fee: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let quoted_debit = requested + prepared.fee();
+    let token = prepared.confirm(None).await.unwrap();
+    let received = receiver
+        .receive(&token.to_string(), ReceiveOptions::default())
+        .await
+        .unwrap();
+
+    assert_eq!(received, requested);
+    assert_eq!(receiver.total_balance().await.unwrap(), received);
+    assert_eq!(
+        sender.total_balance().await.unwrap() + quoted_debit,
+        Amount::from(100)
+    );
+}
+
+async fn assert_payment_request_receiver_fee(fixed_amount: bool) {
+    let (deliveries, mut received_payloads) = tokio::sync::mpsc::channel(1);
+    let app = Router::new().route(
+        "/receive",
+        post(move |Json(payload): Json<PaymentRequestPayload>| {
+            let deliveries = deliveries.clone();
+            async move { deliveries.send(payload).await.unwrap() }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let target = format!("http://{}/receive", listener.local_addr().unwrap());
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                stopped.await.ok();
+            })
+            .await
+            .unwrap();
+    });
+
+    // Cover a full swap, reuse of existing denominations, fractional input fees,
+    // and the zero-fee control with independently funded wallets in each case.
+    for (fee_ppk, funding_split) in [
+        (1000, SplitTarget::None),
+        (1000, SplitTarget::Value(Amount::from(8))),
+        (1000, SplitTarget::Value(Amount::from(16))),
+        (100, SplitTarget::Value(Amount::from(16))),
+        (0, SplitTarget::None),
+    ] {
+        let mint = create_mint_with_fee(fee_ppk).await.unwrap();
+        let sender = create_test_wallet_for_mint(mint.clone()).await.unwrap();
+        let receiver = create_test_wallet_for_mint(mint).await.unwrap();
+        fund_wallet(sender.clone(), 100, Some(funding_split))
+            .await
+            .unwrap();
+
+        let requested = Amount::from(21);
+        let mut request = PaymentRequest::builder()
+            .payment_id("receiver-fee-regression")
+            .unit(CurrencyUnit::Sat)
+            .add_mint(sender.mint_url.clone())
+            .add_transport(Transport {
+                _type: TransportType::HttpPost,
+                target: target.clone(),
+                tags: vec![],
+            })
+            .build();
+        request.amount = fixed_amount.then_some(requested);
+        let prepared = sender
+            .prepare_pay_request(request, (!fixed_amount).then_some(requested))
+            .await
+            .unwrap();
+        let quoted_debit = prepared.total_amount();
+        prepared.confirm().await.unwrap();
+
+        let payload = tokio::time::timeout(Duration::from_secs(5), received_payloads.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(payload.id.as_deref(), Some("receiver-fee-regression"));
+        assert_eq!(payload.mint, sender.mint_url);
+        assert_eq!(payload.unit, CurrencyUnit::Sat);
+        let token = Token::new(payload.mint, payload.proofs, payload.memo, payload.unit);
+        let received = receiver
+            .receive(&token.to_string(), ReceiveOptions::default())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            received, requested,
+            "Incorrect net payment at {fee_ppk} ppk"
+        );
+        assert_eq!(receiver.total_balance().await.unwrap(), received);
+        assert_eq!(
+            sender.total_balance().await.unwrap() + quoted_debit,
+            Amount::from(100)
+        );
+        if fee_ppk == 0 {
+            assert_eq!(received, requested);
+            assert_eq!(quoted_debit, requested);
+        }
+    }
+
+    stop.send(()).unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_fixed_payment_request_receiver_fee() {
+    assert_payment_request_receiver_fee(true).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_amountless_payment_request_receiver_fee() {
+    assert_payment_request_receiver_fee(false).await;
 }
 
 /// Tests the token swap and send functionality:

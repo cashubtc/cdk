@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use bip39::Mnemonic;
 use cashu::nut00::KnownMethod;
 use cashu::quote_id::QuoteId;
+use cashu::PaymentRequestPayload;
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::{self, WalletDatabase};
 use cdk::mint::{MintBuilder, MintMeltLimits};
@@ -71,6 +72,35 @@ impl MintConnector for DirectMintConnection {
         _url: &str,
     ) -> Result<cdk::wallet::LnurlPayInvoiceResponse, Error> {
         unimplemented!("Lightning address not supported in DirectMintConnection")
+    }
+
+    /// The pure tests deliver NUT-18 payloads to local HTTP receivers that the
+    /// tests spin up themselves, so every http(s) target is deliverable.
+    fn ensure_payment_request_deliverable(&self, _url: &str) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn post_payment_request_payload(
+        &self,
+        url: &str,
+        payload: &PaymentRequestPayload,
+    ) -> Result<(), Error> {
+        let response = cdk_common::HttpClient::new()
+            .post(url)
+            .json(payload)
+            .send()
+            .await
+            .map_err(|err| Error::HttpError(None, err.to_string()))?;
+
+        if response.is_success() {
+            tracing::info!("Successfully posted payment request payload");
+            Ok(())
+        } else {
+            Err(Error::HttpError(
+                Some(response.status()),
+                response.body_lossy(),
+            ))
+        }
     }
 
     async fn get_mint_keys(&self) -> Result<Vec<KeySet>, Error> {

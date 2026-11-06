@@ -61,6 +61,7 @@ getrandom = { version = "0.4", features = ["wasm_js"] }
 uuid = { workspace = true, features = ["js"] }
 
 [dev-dependencies]
+axum = { workspace = true }
 bip39 = { workspace = true, features = ["rand"] }
 anyhow.workspace = true
 cdk-axum = { workspace = true }

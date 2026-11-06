@@ -924,6 +924,7 @@ impl<'a> MeltSaga<'a, Prepared> {
                         None,
                         false,
                         false,
+                        None,
                     )
                     .await?
                 {
