@@ -27,6 +27,10 @@ pub struct RotateKeyArguments {
     pub input_fee_ppk: u64,
     /// KeySet Version
     pub keyset_id_type: KeySetVersion,
+    /// Unix time from which the mint intends to sign with this keyset
+    pub active_from: Option<u64>,
+    /// Unix time until which the mint intends to keep this keyset active
+    pub active_until: Option<u64>,
     /// FinalExpiry
     pub final_expiry: Option<u64>,
 }
@@ -58,6 +62,10 @@ pub struct SignatoryKeySet {
     pub amounts: Vec<u64>,
     /// Input fee for the keyset (parts per thousand)
     pub input_fee_ppk: u64,
+    /// Unix time from which the mint intends to sign with this keyset
+    pub active_from: Option<u64>,
+    /// Unix time until which the mint intends to keep this keyset active
+    pub active_until: Option<u64>,
     /// Final expiry of the keyset (unix timestamp in the future)
     pub final_expiry: Option<u64>,
     /// Issuer Version
@@ -72,6 +80,12 @@ impl SignatoryKeySet {
         self.final_expiry
             .is_some_and(|expiry| expiry < cdk_common::util::unix_time())
     }
+
+    /// Whether wallets see this keyset as active. A snapshot cannot track the clock, so
+    /// NUT-02's inactivation at `final_expiry` is applied here.
+    pub fn is_active(&self) -> bool {
+        self.active && !self.is_expired()
+    }
 }
 
 impl From<&SignatoryKeySet> for KeySet {
@@ -82,12 +96,15 @@ impl From<&SignatoryKeySet> for KeySet {
 
 impl From<SignatoryKeySet> for KeySet {
     fn from(val: SignatoryKeySet) -> Self {
+        let active = Some(val.is_active());
         KeySet {
             id: val.id,
             unit: val.unit,
-            active: Some(val.active),
+            active,
             keys: val.keys,
             input_fee_ppk: val.input_fee_ppk,
+            active_from: val.active_from,
+            active_until: val.active_until,
             final_expiry: val.final_expiry,
         }
     }
@@ -109,6 +126,8 @@ impl From<SignatoryKeySet> for MintKeySetInfo {
             derivation_path: Default::default(),
             derivation_path_index: Default::default(),
             amounts: val.amounts,
+            active_from: val.active_from,
+            active_until: val.active_until,
             final_expiry: val.final_expiry,
             issuer_version: val.issuer_version,
             valid_from: 0,
@@ -129,6 +148,8 @@ impl From<&(MintKeySetInfo, MintKeySet)> for SignatoryKeySet {
             amounts: info.amounts.clone(),
             keys: key.keys.clone().into(),
             version: info.derivation_path_index.unwrap_or(1),
+            active_from: info.active_from,
+            active_until: info.active_until,
             final_expiry: info.final_expiry,
             issuer_version: info.issuer_version.clone(),
         }
@@ -192,6 +213,8 @@ mod tests {
             keys: Keys::new(BTreeMap::new()),
             amounts: vec![1, 2, 4, 8, 16, 32, 64, 128, 256, 512],
             input_fee_ppk: 0,
+            active_from: None,
+            active_until: None,
             final_expiry,
             issuer_version: None,
             version: 0,
@@ -252,6 +275,8 @@ mod tests {
             derivation_path_index: Some(1),
             amounts: vec![1, 2, 4, 8],
             input_fee_ppk: 0,
+            active_from: None,
+            active_until: None,
             final_expiry: Some(111),
             issuer_version: None,
         };

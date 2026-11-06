@@ -243,7 +243,7 @@ impl SupabaseWalletDatabase {
     /// This must match the latest `schema_version` value set in the migration files.
     /// When adding new migrations, update this constant and set the same value
     /// in the new migration's `INSERT INTO schema_info` statement.
-    pub const REQUIRED_SCHEMA_VERSION: u32 = 10;
+    pub const REQUIRED_SCHEMA_VERSION: u32 = 11;
 
     /// Get the full database schema SQL
     ///
@@ -2545,6 +2545,8 @@ struct KeySetTable {
     unit: String,
     active: bool,
     input_fee_ppk: i64,
+    active_from: Option<i64>,
+    active_until: Option<i64>,
     final_expiry: Option<i64>,
     keyset_u32: Option<i64>,
     /// Extra fields from other applications (captured during deserialization, ignored during serialization)
@@ -2560,6 +2562,8 @@ impl KeySetTable {
             unit: info.unit.to_string(),
             active: info.active,
             input_fee_ppk: info.input_fee_ppk as i64,
+            active_from: info.active_from.map(|v| v as i64),
+            active_until: info.active_until.map(|v| v as i64),
             final_expiry: info.final_expiry.map(|v| v as i64),
             keyset_u32: Some(u32::from(info.id) as i64),
             _extra: Default::default(),
@@ -2576,6 +2580,8 @@ impl TryInto<KeySetInfo> for KeySetTable {
                 .map_err(|_| DatabaseError::Internal("Invalid unit".into()))?,
             active: self.active,
             input_fee_ppk: self.input_fee_ppk as u64,
+            active_from: self.active_from.map(|v| v as u64),
+            active_until: self.active_until.map(|v| v as u64),
             final_expiry: self.final_expiry.map(|v| v as u64),
         })
     }

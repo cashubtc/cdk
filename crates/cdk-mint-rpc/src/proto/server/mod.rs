@@ -327,6 +327,8 @@ mod tests {
                 input_fee_ppk: Some(1),
                 use_keyset_v2: Some(true),
                 final_expiry: None,
+                active_from: None,
+                active_until: None,
             }),
         )
         .await

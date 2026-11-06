@@ -1300,7 +1300,7 @@ impl Mint {
             .load()
             .iter()
             .filter_map(|keyset| {
-                if keyset.active {
+                if keyset.is_active() {
                     Some((keyset.unit.clone(), keyset.id))
                 } else {
                     None
@@ -1626,6 +1626,8 @@ mod tests {
                     amounts: amounts.clone(),
                     input_fee_ppk: 0,
                     keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                    active_from: None,
+                    active_until: None,
                     final_expiry: None,
                 })
                 .await
@@ -2053,6 +2055,8 @@ mod tests {
                     amounts: amts.clone(),
                     input_fee_ppk: *fee,
                     keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                    active_from: None,
+                    active_until: None,
                     final_expiry: None,
                 })
                 .await
@@ -2071,7 +2075,7 @@ mod tests {
         let amts = amounts.clone();
         let rotate = tokio::spawn(async move {
             mint_c
-                .rotate_keyset(CurrencyUnit::Sat, amts, 0, true, None)
+                .rotate_keyset(CurrencyUnit::Sat, amts, 0, true, None, None, None)
                 .await
         });
 
@@ -2087,6 +2091,8 @@ mod tests {
                 amounts: amounts.clone(),
                 input_fee_ppk: 0,
                 keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                active_from: None,
+                active_until: None,
                 final_expiry: None,
             })
             .await
@@ -2151,6 +2157,8 @@ mod tests {
                     amounts: amounts.clone(),
                     input_fee_ppk: *fee,
                     keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                    active_from: None,
+                    active_until: None,
                     final_expiry: None,
                 })
                 .await
@@ -2215,7 +2223,7 @@ mod tests {
         let first_keyset_id = keysets.keysets[0].id;
 
         // set the first keyset to inactive and generate a new keyset
-        mint.rotate_keyset(CurrencyUnit::default(), vec![1], 1, true, None)
+        mint.rotate_keyset(CurrencyUnit::default(), vec![1], 1, true, None, None, None)
             .await
             .expect("test");
 
@@ -2245,7 +2253,15 @@ mod tests {
 
         let expiry: u64 = 1_000_000;
         let keyset_info = mint
-            .rotate_keyset(CurrencyUnit::default(), vec![1], 0, true, Some(expiry))
+            .rotate_keyset(
+                CurrencyUnit::default(),
+                vec![1],
+                0,
+                true,
+                None,
+                None,
+                Some(expiry),
+            )
             .await
             .expect("rotate with expiry");
 
@@ -2656,6 +2672,8 @@ mod tests {
             amounts,
             input_fee_ppk: 100,
             keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+            active_from: None,
+            active_until: None,
             final_expiry: None,
         };
         let rotation_result = mint.signatory.rotate_keyset(rotate_argument).await;
@@ -2691,6 +2709,8 @@ mod tests {
                 amounts,
                 input_fee_ppk: 0,
                 keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                active_from: None,
+                active_until: None,
                 final_expiry: None,
             })
             .await
@@ -2719,6 +2739,43 @@ mod tests {
         );
 
         mint.stop().await.expect("mint should stop");
+    }
+
+    /// A keyset that expires after the snapshot was taken is listed inactive from then on.
+    #[tokio::test]
+    async fn expired_keyset_is_listed_inactive() {
+        use cdk_common::util::unix_time;
+
+        let mut supported_units = HashMap::new();
+        let amounts: Vec<u64> = (0..8).map(|i| 2u64.pow(i)).collect();
+        supported_units.insert(CurrencyUnit::default(), (0, amounts));
+        let config = MintConfig::<'_> {
+            supported_units,
+            ..Default::default()
+        };
+        let mint = create_mint(config).await;
+
+        let expired: Vec<SignatoryKeySet> = mint
+            .keysets
+            .load()
+            .iter()
+            .cloned()
+            .map(|mut ks| {
+                ks.final_expiry = Some(unix_time() - 1);
+                ks
+            })
+            .collect();
+        let id = expired[0].id;
+        assert!(expired[0].active, "the stored flag is stale by design");
+        mint.keysets.store(Arc::new(expired));
+
+        assert!(mint.keysets().keysets.iter().all(|k| !k.active));
+        assert!(mint.pubkeys().keysets.is_empty());
+        assert!(mint.get_active_keysets().is_empty());
+        let by_id = mint
+            .keyset_pubkeys(&id)
+            .expect("still served for redemption");
+        assert_eq!(by_id.keysets[0].active, Some(false));
     }
 
     #[tokio::test]

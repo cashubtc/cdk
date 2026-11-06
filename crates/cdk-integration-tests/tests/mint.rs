@@ -83,6 +83,8 @@ async fn test_correct_keyset() {
         0,
         true,
         None,
+        None,
+        None,
     )
     .await
     .unwrap();
@@ -102,6 +104,8 @@ async fn test_correct_keyset() {
         cdk_integration_tests::standard_keyset_amounts(32),
         0,
         true,
+        None,
+        None,
         None,
     )
     .await
@@ -351,15 +355,18 @@ async fn test_rotate_keyset_with_expiry() {
 
     // Rotate with a past expiry timestamp
     let past_expiry = cdk::util::unix_time().saturating_sub(3600);
-    mint.rotate_keyset(
-        CurrencyUnit::Sat,
-        cdk_integration_tests::standard_keyset_amounts(32),
-        0,
-        true,
-        Some(past_expiry),
-    )
-    .await
-    .unwrap();
+    let expired = mint
+        .rotate_keyset(
+            CurrencyUnit::Sat,
+            cdk_integration_tests::standard_keyset_amounts(32),
+            0,
+            true,
+            None,
+            None,
+            Some(past_expiry),
+        )
+        .await
+        .unwrap();
 
     // The old keyset should now be inactive
     let old_keyset = mint
@@ -367,14 +374,14 @@ async fn test_rotate_keyset_with_expiry() {
         .expect("Old keyset still exists");
     assert!(!old_keyset.active, "Old keyset should be inactive");
 
-    // The new keyset should be active
-    let active = mint.get_active_keysets();
-    let new_active_id = active
-        .get(&CurrencyUnit::Sat)
-        .expect("There is an active keyset");
+    // The new keyset differs from the old, but is past final_expiry so counts as inactive
     assert_ne!(
-        *new_active_id, initial_keyset.id,
-        "New active keyset should differ from old"
+        expired.id, initial_keyset.id,
+        "New keyset should differ from old"
+    );
+    assert!(
+        !mint.get_active_keysets().contains_key(&CurrencyUnit::Sat),
+        "A keyset past final_expiry is not active"
     );
 
     // Rotate again without expiry
@@ -383,6 +390,8 @@ async fn test_rotate_keyset_with_expiry() {
         cdk_integration_tests::standard_keyset_amounts(32),
         0,
         true,
+        None,
+        None,
         None,
     )
     .await
@@ -451,6 +460,8 @@ async fn test_builder_does_not_replace_all_expired_keysets() {
             cdk_integration_tests::standard_keyset_amounts(32),
             0,
             true,
+            None,
+            None,
             Some(future_expiry),
         )
         .await

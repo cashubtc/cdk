@@ -412,6 +412,26 @@ impl Signatory for DbSignatory {
     /// Generate new keyset
     #[tracing::instrument(skip(self))]
     async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<SignatoryKeySet, Error> {
+        // Rotation activates the keyset now, so a future active_from would be a false
+        // announcement (NUT-02).
+        if args
+            .active_from
+            .is_some_and(|from| from > cdk_common::util::unix_time())
+        {
+            return Err(Error::Custom(
+                "active_from cannot be in the future".to_string(),
+            ));
+        }
+        let bounds: Vec<u64> = [args.active_from, args.active_until, args.final_expiry]
+            .into_iter()
+            .flatten()
+            .collect();
+        if bounds.windows(2).any(|w| w[0] >= w[1]) {
+            return Err(Error::Custom(
+                "keyset requires active_from < active_until < final_expiry".to_string(),
+            ));
+        }
+
         // Serialize local rotations. The standalone signatory gRPC server
         // invokes this directly (no embedded single-runner), so without this two
         // concurrent local rotations could open nested transactions on a
@@ -470,6 +490,8 @@ impl Signatory for DbSignatory {
             args.unit.clone(),
             &amounts,
             args.input_fee_ppk,
+            args.active_from,
+            args.active_until,
             args.final_expiry,
             args.keyset_id_type,
         );
@@ -533,6 +555,8 @@ mod test {
             amounts: vec![1, 2, 4, 8],
             input_fee_ppk: 0,
             keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+            active_from: None,
+            active_until: None,
             final_expiry: None,
         };
 
@@ -602,6 +626,8 @@ mod test {
             amounts: vec![1, 2, 4, 8],
             input_fee_ppk: 0,
             keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+            active_from: None,
+            active_until: None,
             final_expiry: None,
         };
 
@@ -659,6 +685,8 @@ mod test {
             amounts,
             input_fee_ppk: 0,
             keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+            active_from: None,
+            active_until: None,
             final_expiry: None,
         };
 
@@ -710,6 +738,8 @@ mod test {
                 amounts: vec![1, 2, 4, 8],
                 input_fee_ppk: 0,
                 keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                active_from: None,
+                active_until: None,
                 final_expiry: Some(unix_time() - 1),
             })
             .await
@@ -752,6 +782,8 @@ mod test {
                 amounts: vec![1, 2, 4, 8],
                 input_fee_ppk: 0,
                 keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                active_from: None,
+                active_until: None,
                 final_expiry: Some(unix_time() + 1_000),
             })
             .await
@@ -811,6 +843,8 @@ mod test {
                 amounts: vec![1, 2, 4, 8],
                 input_fee_ppk: 0,
                 keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                active_from: None,
+                active_until: None,
                 final_expiry: None,
             })
             .await
@@ -864,6 +898,8 @@ mod test {
                 amounts: vec![1, 2, 4, 8],
                 input_fee_ppk: 0,
                 keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                active_from: None,
+                active_until: None,
                 final_expiry: None,
             })
             .await
@@ -922,6 +958,8 @@ mod test {
                         amounts: vec![1, 2, 4, 8],
                         input_fee_ppk: 0,
                         keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                        active_from: None,
+                        active_until: None,
                         final_expiry: None,
                     })
                     .await
@@ -1004,6 +1042,8 @@ mod test {
                         amounts: vec![1, 2, 4, 8],
                         input_fee_ppk: 0,
                         keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                        active_from: None,
+                        active_until: None,
                         final_expiry: None,
                     })
                     .await
@@ -1061,6 +1101,8 @@ mod test {
                 amounts: vec![1, 2, 4, 8],
                 input_fee_ppk: 0,
                 keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                active_from: None,
+                active_until: None,
                 final_expiry: None,
             })
             .await
@@ -1076,6 +1118,8 @@ mod test {
                             amounts: vec![1, 2, 4, 8],
                             input_fee_ppk: 0,
                             keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                            active_from: None,
+                            active_until: None,
                             final_expiry: None,
                         })
                         .await
@@ -1605,5 +1649,48 @@ mod test {
             pubkey,
             "025b6c1ca8bb741a6f2321c953266df7bf3f3f2c3be8c54c0a6e41bb00976046a4".to_string()
         );
+    }
+
+    #[tokio::test]
+    async fn rotate_keyset_rejects_bad_active_window() {
+        let store = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("in-memory db"),
+        );
+        let signatory = DbSignatory::new(
+            store,
+            b"test-seed-active-window",
+            Default::default(),
+            Default::default(),
+        )
+        .await
+        .expect("DbSignatory::new");
+
+        let now = unix_time();
+        let rotate = |active_from, active_until, final_expiry| RotateKeyArguments {
+            unit: CurrencyUnit::Sat,
+            amounts: vec![1, 2, 4, 8],
+            input_fee_ppk: 0,
+            keyset_id_type: cdk_common::nut02::KeySetVersion::Version01,
+            active_from,
+            active_until,
+            final_expiry,
+        };
+
+        for bad in [
+            rotate(Some(now + 3600), None, None),
+            rotate(Some(now), Some(now), None),
+            rotate(None, Some(now + 10), Some(now + 5)),
+            rotate(Some(now - 10), None, Some(now - 20)),
+        ] {
+            assert!(signatory.rotate_keyset(bad).await.is_err());
+        }
+
+        let ok = signatory
+            .rotate_keyset(rotate(Some(now), Some(now + 10), Some(now + 20)))
+            .await
+            .expect("ordered window rotates");
+        assert_eq!(ok.active_until, Some(now + 10));
     }
 }
