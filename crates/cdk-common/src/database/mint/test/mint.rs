@@ -10,7 +10,7 @@ use cashu::nut00::KnownMethod;
 use cashu::quote_id::QuoteId;
 use cashu::{Amount, BlindSignature, CurrencyUnit, Id, SecretKey};
 
-use crate::database::mint::{Database, DynMintDatabase, Error, KeysDatabase};
+use crate::database::mint::{Acquired, Database, DynMintDatabase, Error, KeysDatabase};
 use crate::database::MintSignaturesDatabase;
 use crate::mint::{MeltPaymentRequest, MeltQuote, MintQuote, Operation};
 use crate::payment::PaymentIdentifier;
@@ -1003,6 +1003,59 @@ where
     tx.rollback().await.unwrap();
 }
 
+/// An unpaid melt quote, already stored in the database.
+async fn stored_melt_quote<DB>(db: &DB) -> MeltQuote
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    let melt_quote = MeltQuote::new(
+        None,
+        MeltPaymentRequest::Bolt11 {
+            bolt11: "lnbc330n1p5d85skpp5344v3ktclujsjl3h09wgsfm7zytumr7h7zhrl857f5w8nv0a52zqdqqcqzzsxqyz5vqrzjqvueefmrckfdwyyu39m0lf24sqzcr9vcrmxrvgfn6empxz7phrjxvrttncqq0lcqqyqqqqlgqqqqqqgq2qsp5j3rrg8kvpemqxtf86j8tjm90wq77c7ende4e5qmrerq4xsg02vhq9qxpqysgqjltywgyk6uc5qcgwh8xnzmawl2tjlhz8d28tgp3yx8xwtz76x0jqkfh6mmq70hervjxs0keun7ur0spldgll29l0dnz3md50d65sfqqqwrwpsu".parse().unwrap()
+        },
+        cashu::CurrencyUnit::Sat,
+        Amount::new(100, cashu::CurrencyUnit::Sat),
+        Amount::new(10, cashu::CurrencyUnit::Sat),
+        0,
+        Some(PaymentIdentifier::CustomId(unique_string())),
+        None,
+        cashu::PaymentMethod::Known(KnownMethod::Bolt11),
+        None,
+        None,
+    );
+
+    let mut tx = Database::begin_transaction(db).await.unwrap();
+    tx.add_melt_quote(melt_quote.clone()).await.unwrap();
+    tx.commit().await.unwrap();
+
+    melt_quote
+}
+
+/// Moves a stored melt quote to `new_state` in a transaction of its own.
+async fn move_melt_quote<DB>(db: &DB, quote_id: &QuoteId, new_state: cashu::MeltQuoteState)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    let mut tx = Database::begin_transaction(db).await.unwrap();
+    let mut quote = tx.get_melt_quote(quote_id).await.unwrap().unwrap();
+    tx.update_melt_quote_state(&mut quote, new_state, None)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+}
+
+/// Loads a melt quote and ends the transaction, so the copy outlives its row lock.
+async fn stale_melt_quote<DB>(db: &DB, quote_id: &QuoteId) -> Acquired<MeltQuote>
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    let mut tx = Database::begin_transaction(db).await.unwrap();
+    let quote = tx.get_melt_quote(quote_id).await.unwrap().unwrap();
+    tx.commit().await.unwrap();
+
+    quote
+}
+
 /// Test updating melt quote state
 pub async fn update_melt_quote_state_transition<DB>(db: DB)
 where
@@ -1059,6 +1112,60 @@ where
     assert_eq!(quote.state, MeltQuoteState::Paid);
     // The payment proof is stored in the melt quote (verification depends on implementation)
     tx.commit().await.unwrap();
+}
+
+/// A melt quote kept past its transaction can't move a paid quote back to unpaid.
+pub async fn update_melt_quote_state_refuses_stale_state<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    use cashu::MeltQuoteState;
+
+    let quote_id = stored_melt_quote(&db).await.id;
+    move_melt_quote(&db, &quote_id, MeltQuoteState::Pending).await;
+    let mut stale = stale_melt_quote(&db, &quote_id).await;
+    move_melt_quote(&db, &quote_id, MeltQuoteState::Paid).await;
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let err = tx
+        .update_melt_quote_state(&mut stale, MeltQuoteState::Unpaid, None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::ConcurrentUpdate), "{err}");
+    tx.rollback().await.unwrap();
+
+    let stored = db.get_melt_quote(&quote_id).await.unwrap().unwrap();
+    assert_eq!(stored.state, MeltQuoteState::Paid);
+}
+
+/// A melt quote kept past its transaction can't mark a quote paid after it was rolled back.
+pub async fn update_melt_quote_state_to_paid_refuses_stale_state<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    use cashu::MeltQuoteState;
+
+    let quote_id = stored_melt_quote(&db).await.id;
+    move_melt_quote(&db, &quote_id, MeltQuoteState::Pending).await;
+    let mut stale = stale_melt_quote(&db, &quote_id).await;
+    move_melt_quote(&db, &quote_id, MeltQuoteState::Unpaid).await;
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let err = tx
+        .update_melt_quote_state(
+            &mut stale,
+            MeltQuoteState::Paid,
+            Some("payment_proof".to_string()),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::ConcurrentUpdate), "{err}");
+    tx.rollback().await.unwrap();
+
+    let stored = db.get_melt_quote(&quote_id).await.unwrap().unwrap();
+    assert_eq!(stored.state, MeltQuoteState::Unpaid);
+    assert_eq!(stored.paid_time, None);
+    assert_eq!(stored.payment_proof, None);
 }
 
 /// Test updating melt quote request lookup id
