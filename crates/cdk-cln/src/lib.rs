@@ -445,7 +445,10 @@ impl MintPayment for Cln {
                     match melt_options {
                         MeltOptions::Mpp { mpp } => partial_amount = Some(mpp.amount.into()),
                         MeltOptions::Amountless { amountless } => {
-                            amount_msat = Some(amountless.amount_msat.into());
+                            amount_msat = bolt11_xpay_amount_msat(
+                                &bolt11_options.bolt11,
+                                amountless.amount_msat.into(),
+                            )?;
                         }
                     }
                 }
@@ -1333,6 +1336,25 @@ fn outgoing_payment_response_with_status(
     }
 }
 
+/// Select the `amount_msat` sent to xpay for an amountless melt.
+///
+/// xpay only takes an amount for an invoice that omits it, and rejects one for
+/// an invoice that carries an amount ("amount_msat unnecessary") before
+/// dispatching anything. A matching amount is therefore left out, as the
+/// invoice already states it.
+fn bolt11_xpay_amount_msat(
+    bolt11: &Bolt11Invoice,
+    requested_amount_msat: u64,
+) -> Result<Option<u64>, payment::Error> {
+    match bolt11.amount_milli_satoshis() {
+        Some(invoice_amount) if invoice_amount != requested_amount_msat => {
+            Err(payment::Error::AmountMismatch)
+        }
+        Some(_) => Ok(None),
+        None => Ok(Some(requested_amount_msat)),
+    }
+}
+
 fn xpay_error_state(
     error: &cln_rpc::RpcError,
     observed_state: Option<MeltQuoteState>,
@@ -1944,6 +1966,98 @@ mod tests {
             .await
             .expect("mock payment must complete promptly");
         }
+    }
+
+    fn amountless_invoice() -> Bolt11Invoice {
+        use cdk_common::bitcoin::hashes::{sha256, Hash};
+        use cdk_common::bitcoin::secp256k1::{Secp256k1, SecretKey};
+        use cdk_common::lightning_invoice::{Currency, InvoiceBuilder, PaymentSecret};
+
+        let key = SecretKey::from_slice(&[1; 32]).unwrap();
+        InvoiceBuilder::new(Currency::Regtest)
+            .description("amountless".to_owned())
+            .payment_hash(sha256::Hash::from_byte_array([42; 32]))
+            .payment_secret(PaymentSecret([43; 32]))
+            .current_timestamp()
+            .min_final_cltv_expiry_delta(144)
+            .build_signed(|hash| Secp256k1::new().sign_ecdsa_recoverable(hash, &key))
+            .unwrap()
+    }
+
+    #[test]
+    fn xpay_amount_is_only_sent_for_amountless_invoices() {
+        assert_eq!(
+            bolt11_xpay_amount_msat(&amountless_invoice(), 10_000).unwrap(),
+            Some(10_000)
+        );
+
+        // The test invoice carries 10,000 msat
+        let invoice = test_invoice();
+        assert_eq!(bolt11_xpay_amount_msat(&invoice, 10_000).unwrap(), None);
+        for amount in [9_999, 10_001] {
+            assert!(matches!(
+                bolt11_xpay_amount_msat(&invoice, amount),
+                Err(payment::Error::AmountMismatch)
+            ));
+        }
+    }
+
+    /// An amountless melt option matching the invoice is accepted at quote time,
+    /// so the payment must not hand xpay an `amount_msat` it rejects as
+    /// unnecessary for an invoice with an amount.
+    #[tokio::test]
+    async fn amountless_option_on_invoice_with_amount_omits_xpay_amount() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let socket = TestRpcSocket::new();
+            let listener = UnixListener::bind(&socket.0).unwrap();
+            let mut cln = test_cln();
+            cln.rpc_socket = socket.0.clone();
+            let invoice = test_invoice();
+            let invoice_amount = invoice.amount_milli_satoshis().unwrap();
+            let payment = cln.make_payment(
+                &CurrencyUnit::Msat,
+                OutgoingPaymentOptions::Bolt11(Box::new(Bolt11OutgoingPaymentOptions {
+                    bolt11: invoice,
+                    max_fee_amount: None,
+                    timeout_secs: None,
+                    melt_options: Some(MeltOptions::new_amountless(invoice_amount)),
+                    quote_id: QuoteId::new(),
+                })),
+            );
+            let server = async {
+                let (connection, _) = listener.accept().await.unwrap();
+                let mut pay = Framed::new(connection, cln_rpc::codec::JsonCodec::default());
+                let (connection, _) = listener.accept().await.unwrap();
+                let mut check = Framed::new(connection, cln_rpc::codec::JsonCodec::default());
+                let request = check.next().await.unwrap().unwrap();
+                assert_eq!(request["method"], "listpays");
+                check
+                    .send(serde_json::json!({
+                        "jsonrpc": "2.0", "id": request["id"], "result": {"pays": []}
+                    }))
+                    .await
+                    .unwrap();
+                let request = pay.next().await.unwrap().unwrap();
+                assert_eq!(request["method"], "xpay");
+                assert!(
+                    request["params"]["amount_msat"].is_null(),
+                    "xpay rejects amount_msat for an invoice with an amount"
+                );
+                pay.send(serde_json::json!({
+                    "jsonrpc": "2.0", "id": request["id"], "result": {
+                        "amount_msat": 10000, "amount_sent_msat": 10000,
+                        "failed_parts": 0, "successful_parts": 1,
+                        "payment_preimage": "01".repeat(32)
+                    }
+                }))
+                .await
+                .unwrap();
+            };
+            let (response, ()) = tokio::join!(payment, server);
+            assert_eq!(response.unwrap().status, MeltQuoteState::Paid);
+        })
+        .await
+        .expect("mock payment must complete promptly");
     }
 
     #[tokio::test]
