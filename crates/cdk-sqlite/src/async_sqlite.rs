@@ -1,7 +1,7 @@
 //! Simple SQLite
 use std::convert::identity;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::{io, thread};
 
 use cdk_common::database::Error;
 use cdk_sql_common::database::{DatabaseConnector, DatabaseExecutor, DatabaseTransaction};
@@ -9,42 +9,37 @@ use cdk_sql_common::run_db_operation;
 use cdk_sql_common::stmt::{query, Column, SqlPart, Statement};
 use cdk_sql_common::value::Value;
 use rusqlite::{ffi, CachedStatement, Connection, Error as SqliteError, ErrorCode};
-use tokio::sync::{mpsc, oneshot};
+use tokio::runtime::Handle;
+use tokio::sync::Mutex;
 
 use crate::common::{from_sqlite, to_sqlite};
-
-/// Piece of work for the thread that owns the connection.
-type Job = Box<dyn FnOnce(&Connection) + Send>;
 
 /// Async Sqlite wrapper
 #[derive(Debug)]
 pub struct AsyncSqlite {
-    sender: mpsc::UnboundedSender<Job>,
+    conn: Arc<Mutex<Connection>>,
+    stale: Arc<AtomicBool>,
 }
 
 impl AsyncSqlite {
-    /// Hands the connection to a dedicated thread, since every rusqlite call blocks and the
-    /// connection must stay on one thread to keep its prepared statement cache.
+    /// Shares the connection behind an async mutex so each statement can run on a blocking thread,
+    /// since every rusqlite call blocks.
     ///
-    /// The thread is deliberately not a tokio blocking task: it parks until the last handle is
-    /// dropped, and dropping a runtime waits for every blocking task it owns, so a connection
-    /// that outlives its runtime would deadlock shutdown.
-    pub fn new(conn: Connection) -> Result<Self, io::Error> {
-        let (sender, mut receiver) = mpsc::unbounded_channel::<Job>();
-
-        thread::Builder::new()
-            .name("cdk-sqlite".to_owned())
-            .spawn(move || {
-                while let Some(job) = receiver.blocking_recv() {
-                    job(&conn);
-                }
-            })?;
-
-        Ok(Self { sender })
+    /// The blocking work is one task per statement rather than a parked worker loop, because
+    /// dropping a runtime waits for every blocking task it owns and a loop parked until its last
+    /// handle drops would never return.
+    pub fn new(conn: Connection, stale: Arc<AtomicBool>) -> Self {
+        Self {
+            conn: Arc::new(Mutex::new(conn)),
+            stale,
+        }
     }
 
-    /// Runs `f` on the thread owning the connection, timed as `info`, and drops the result with a
-    /// log line when the caller is gone, which happens whenever its future is cancelled mid query.
+    /// Runs `f` on a blocking thread holding the connection, timed as `info`, marking the
+    /// connection stale when `f` panics and leaves sqlite's state ambiguous.
+    ///
+    /// The guard is taken before the task is spawned because tokio's mutex is FIFO, which is what
+    /// keeps a rollback queued behind the cancelled statement it has to undo.
     async fn call<T, F>(&self, info: &str, f: F) -> Result<T, Error>
     where
         F: FnOnce(&Connection) -> Result<T, Error> + Send + 'static,
@@ -53,19 +48,21 @@ impl AsyncSqlite {
         run_db_operation(
             info,
             async {
-                let (reply, response) = oneshot::channel();
+                let handle = Handle::try_current()
+                    .map_err(|_| Error::Internal("sqlite calls need a tokio runtime".to_owned()))?;
+                let guard = Arc::clone(&self.conn).lock_owned().await;
 
-                self.sender
-                    .send(Box::new(move |conn: &Connection| {
-                        if reply.send(f(conn)).is_err() {
-                            tracing::debug!("Discarded a sqlite result, its caller is gone");
+                handle
+                    .spawn_blocking(move || f(&guard))
+                    .await
+                    .map_err(|err| {
+                        if err.is_panic() {
+                            self.stale.store(true, Ordering::SeqCst);
+                            Error::Internal("sqlite call panicked".to_owned())
+                        } else {
+                            Error::Internal("sqlite call was cancelled".to_owned())
                         }
-                    }))
-                    .map_err(|_| Error::Internal("sqlite connection worker is gone".to_owned()))?;
-
-                response.await.map_err(|_| {
-                    Error::Internal("sqlite connection worker died mid query".to_owned())
-                })?
+                    })?
             },
             identity,
         )
@@ -273,6 +270,7 @@ impl DatabaseExecutor for AsyncSqlite {
 mod tests {
     use std::fs::remove_file;
     use std::sync::mpsc::channel;
+    use std::thread;
     use std::time::{Duration, Instant};
 
     use cdk_sql_common::database::ConnectionWithTransaction;
@@ -286,8 +284,10 @@ mod tests {
     use crate::common::{Config, SqliteConnectionManager};
 
     fn in_memory() -> AsyncSqlite {
-        AsyncSqlite::new(Connection::open_in_memory().expect("in memory database"))
-            .expect("connection thread")
+        AsyncSqlite::new(
+            Connection::open_in_memory().expect("in memory database"),
+            Arc::new(AtomicBool::new(false)),
+        )
     }
 
     fn temp_path(prefix: &str) -> String {
@@ -455,24 +455,50 @@ mod tests {
         );
     }
 
-    /// A panicking job unwinds the thread that owns the connection, so every later query on it
-    /// must fail instead of waiting for a worker that will never answer.
     #[tokio::test]
-    async fn a_dead_worker_fails_queries_instead_of_hanging() {
-        let db = in_memory();
+    async fn a_panicking_call_marks_the_connection_stale() {
+        let stale = Arc::new(AtomicBool::new(false));
+        let db = AsyncSqlite::new(
+            Connection::open_in_memory().expect("in memory database"),
+            stale.clone(),
+        );
 
         assert!(matches!(
             db.call("panic", |_: &Connection| -> Result<(), Error> {
-                panic!("the worker dies here")
+                panic!("the call dies here")
             })
             .await,
             Err(Error::Internal(_))
         ));
 
-        assert!(matches!(
-            db.pluck(query("SELECT 1").expect("sql")).await,
-            Err(Error::Internal(_))
-        ));
+        assert!(
+            stale.load(Ordering::SeqCst),
+            "a panicking call left the connection usable"
+        );
+    }
+
+    /// A panicking call must take its connection out of the pool rather than leave one with
+    /// ambiguous sqlite state to be handed out again, asserted against an in-memory database
+    /// because discarding its only connection is the one case the pool refuses to replace.
+    #[tokio::test]
+    async fn a_panicking_call_takes_its_connection_out_of_the_pool() {
+        let pool = Pool::<SqliteConnectionManager>::new(config_for(":memory:"));
+
+        {
+            let conn = pool.get().await.expect("connection");
+            assert!(matches!(
+                conn.call("panic", |_: &Connection| -> Result<(), Error> {
+                    panic!("the call dies here")
+                })
+                .await,
+                Err(Error::Internal(_))
+            ));
+        }
+
+        assert!(
+            pool.get().await.is_err(),
+            "the panicked connection was handed out again"
+        );
     }
 
     /// A cancelled statement keeps running to completion, so the next statement must queue behind
@@ -514,7 +540,7 @@ mod tests {
     }
 
     /// A connection outliving its runtime must not hold up that runtime's shutdown, which is why
-    /// its thread is its own and not one of the runtime's.
+    /// the blocking work is one task per statement and never a parked loop.
     #[test]
     fn dropping_a_runtime_does_not_hang_on_a_live_connection() {
         let (done, is_done) = channel();
@@ -524,9 +550,9 @@ mod tests {
                 .enable_all()
                 .build()
                 .expect("runtime");
-            runtime.block_on(async {
-                let db: &'static AsyncSqlite = Box::leak(Box::new(in_memory()));
+            let db: &'static AsyncSqlite = Box::leak(Box::new(in_memory()));
 
+            runtime.block_on(async {
                 db.pluck(query("SELECT 1").expect("sql"))
                     .await
                     .expect("select");
