@@ -2430,6 +2430,132 @@ async fn test_restore_after_keyset_rotation() {
     );
 }
 
+/// Restoring into a wallet in use must not hand back the proofs of a token
+/// that was sent but not claimed yet
+#[tokio::test]
+async fn test_restore_keeps_pending_spent_proofs() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet = create_test_wallet_for_mint(mint)
+        .await
+        .expect("Failed to create test wallet");
+    fund_wallet(wallet.clone(), 100, None)
+        .await
+        .expect("Failed to fund wallet");
+
+    let _token = wallet
+        .prepare_send(Amount::from(40), SendOptions::default())
+        .await
+        .expect("Failed to prepare send")
+        .confirm(None)
+        .await
+        .expect("Failed to confirm send");
+
+    let balance_before = wallet.total_balance().await.unwrap();
+    let pending_before: HashSet<_, RandomState> = HashSet::from_iter(
+        wallet
+            .get_pending_spent_proofs()
+            .await
+            .unwrap()
+            .ys()
+            .unwrap(),
+    );
+    assert!(!pending_before.is_empty());
+
+    let restored = wallet.restore().await.expect("Restore failed");
+
+    let pending_after: HashSet<_, RandomState> = HashSet::from_iter(
+        wallet
+            .get_pending_spent_proofs()
+            .await
+            .unwrap()
+            .ys()
+            .unwrap(),
+    );
+    assert_eq!(pending_after, pending_before);
+    assert_eq!(wallet.total_balance().await.unwrap(), balance_before);
+    // Scan totals still count the proofs the wallet already stores
+    assert_eq!(restored.unspent, Amount::from(100));
+}
+
+/// Restoring while a send is prepared must leave its proofs reserved
+#[tokio::test]
+async fn test_restore_keeps_reserved_proofs() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet = create_test_wallet_for_mint(mint)
+        .await
+        .expect("Failed to create test wallet");
+    fund_wallet(wallet.clone(), 100, None)
+        .await
+        .expect("Failed to fund wallet");
+
+    let prepared = wallet
+        .prepare_send(Amount::from(40), SendOptions::default())
+        .await
+        .expect("Failed to prepare send");
+
+    let balance_before = wallet.total_balance().await.unwrap();
+    let reserved_before: HashSet<_, RandomState> =
+        HashSet::from_iter(wallet.get_reserved_proofs().await.unwrap().ys().unwrap());
+    assert!(!reserved_before.is_empty());
+
+    let restored = wallet.restore().await.expect("Restore failed");
+
+    let reserved_after: HashSet<_, RandomState> =
+        HashSet::from_iter(wallet.get_reserved_proofs().await.unwrap().ys().unwrap());
+    assert_eq!(reserved_after, reserved_before);
+    assert_eq!(wallet.total_balance().await.unwrap(), balance_before);
+    // Scan totals still count the proofs the wallet already stores
+    assert_eq!(restored.unspent, Amount::from(100));
+
+    // The send still owns its proofs, so cancelling releases them as usual
+    prepared.cancel().await.expect("Failed to cancel send");
+    assert_eq!(wallet.total_balance().await.unwrap(), Amount::from(100));
+}
+
+/// Restoring into a wallet in use still adds the proofs it is missing
+#[tokio::test]
+async fn test_restore_adds_only_missing_proofs() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet = create_test_wallet_for_mint(mint)
+        .await
+        .expect("Failed to create test wallet");
+    fund_wallet(wallet.clone(), 100, None)
+        .await
+        .expect("Failed to fund wallet");
+
+    let dropped = wallet
+        .get_unspent_proofs()
+        .await
+        .unwrap()
+        .first()
+        .cloned()
+        .expect("Wallet should hold a proof");
+    wallet
+        .localstore
+        .update_proofs(vec![], vec![dropped.y().unwrap()])
+        .await
+        .unwrap();
+    assert_eq!(
+        wallet.total_balance().await.unwrap(),
+        Amount::from(100).checked_sub(dropped.amount).unwrap()
+    );
+
+    let restored = wallet.restore().await.expect("Restore failed");
+
+    // The scan reports everything it found, not only the proof it added back
+    assert_eq!(restored.unspent, Amount::from(100));
+    assert_eq!(wallet.total_balance().await.unwrap(), Amount::from(100));
+}
+
 #[derive(Debug, Default)]
 struct CustomPaymentProcessor {
     /// Captures the quote_id seen by `get_payment_quote` so tests can assert
