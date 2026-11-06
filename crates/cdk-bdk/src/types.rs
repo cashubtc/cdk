@@ -235,11 +235,15 @@ pub fn validate_fee_options(fee_options: &[PaymentTier]) -> Result<(), String> {
 
 /// Opaque key-value metadata attached to a send intent
 ///
-/// Stored for future extensions. In v1 no behavior is driven by metadata
-/// values. Future features like payjoin may consume this metadata.
+/// Legacy string entries remain opaque. Payjoin parameters select the durable
+/// Payjoin negotiation path.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct PaymentMetadata {
+    /// Payjoin destination supplied by the melt quote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payjoin: Option<cdk_common::nuts::nut31::PayjoinV2>,
     /// Key-value pairs
+    #[serde(default)]
     pub entries: std::collections::HashMap<String, String>,
 }
 
@@ -253,12 +257,19 @@ impl PaymentMetadata {
             return Self::default();
         };
         // Try deserializing as full struct first
-        if let Ok(meta) = serde_json::from_str::<PaymentMetadata>(s) {
-            return meta;
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(s) {
+            if value.get("entries").is_some() || value.get("payjoin").is_some() {
+                if let Ok(meta) = serde_json::from_value::<Self>(value) {
+                    return meta;
+                }
+            }
         }
         // Fall back to interpreting the JSON as a bare key-value map
         if let Ok(entries) = serde_json::from_str::<std::collections::HashMap<String, String>>(s) {
-            return Self { entries };
+            return Self {
+                entries,
+                payjoin: None,
+            };
         }
         Self::default()
     }

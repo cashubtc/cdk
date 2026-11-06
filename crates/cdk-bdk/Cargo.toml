@@ -15,6 +15,8 @@ default = ["bitcoin-rpc", "electrum", "esplora"]
 bitcoin-rpc = ["dep:bdk_bitcoind_rpc"]
 electrum = ["dep:bdk_electrum"]
 esplora = ["dep:bdk_esplora"]
+# Local TLS relay/directory and Bitcoin Core tests; not needed by the backend.
+payjoin-regtest = ["bitcoin-rpc", "esplora", "payjoin/_manual-tls", "dep:payjoin-mailroom", "dep:axum-server", "dep:rcgen", "dep:rustls"]
 
 [dependencies]
 async-trait.workspace = true
@@ -31,7 +33,13 @@ thiserror.workspace = true
 tokio-stream = { workspace = true, features = ["sync"] }
 serde.workspace = true
 serde_json.workspace = true
+payjoin = { version = "=1.2.0", features = ["io"] }
+reqwest.workspace = true
 uuid.workspace = true
+payjoin-mailroom = { version = "=0.1.3", default-features = false, features = ["connect-bootstrap", "_manual-tls"], optional = true }
+axum-server = { version = "0.8", default-features = false, features = ["tls-rustls-no-provider"], optional = true }
+rcgen = { version = "0.14", optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring"], optional = true }
 
 [dev-dependencies]
 cdk-sqlite = { workspace = true }

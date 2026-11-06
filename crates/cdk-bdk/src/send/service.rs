@@ -18,7 +18,11 @@ use crate::types::PaymentTier;
 use crate::CdkBdk;
 
 impl CdkBdk {
-    async fn fail_send_intents(&self, intents: &[SendIntent<intent_state::Pending>], reason: &str) {
+    pub(crate) async fn fail_send_intents(
+        &self,
+        intents: &[SendIntent<intent_state::Pending>],
+        reason: &str,
+    ) {
         for intent in intents {
             if let Err(err) = intent.clone().fail(&self.storage, reason.to_string()).await {
                 tracing::error!(
@@ -26,6 +30,7 @@ impl CdkBdk {
                     intent.intent_id,
                     err
                 );
+                continue;
             }
 
             if let Ok(quote_id) = QuoteId::from_str(&intent.quote_id) {
@@ -243,6 +248,7 @@ impl CdkBdk {
     }
 
     pub(crate) async fn process_ready_intents(&self) -> Result<(), Error> {
+        let _processing = self.send_processing.lock().await;
         let pending = self.storage.get_pending_send_intents().await?;
         if pending.is_empty() {
             return Ok(());
@@ -257,6 +263,9 @@ impl CdkBdk {
         let mut has_ready_economy = false;
 
         for intent in &pending {
+            if intent.metadata.payjoin.is_some() {
+                continue;
+            }
             let created_at = match &intent.state {
                 crate::send::payment_intent::record::SendIntentState::Pending { created_at } => {
                     *created_at
@@ -413,7 +422,9 @@ impl CdkBdk {
 
         // 1. Build the PSBT
         let mut wallet_with_db = self.wallet_with_db.lock().await;
+        let reserved = self.storage.payjoin_reserved_inputs().await?;
         let mut tx_builder = wallet_with_db.wallet.build_tx();
+        tx_builder.unspendable(reserved);
         for (address, amount) in recipients {
             tx_builder.add_recipient(address, bdk_wallet::bitcoin::Amount::from_sat(amount));
         }

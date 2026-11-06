@@ -6,7 +6,7 @@ use uuid::Uuid;
 use crate::types::{PaymentMetadata, PaymentTier};
 
 /// Durable send intent state
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SendIntentState {
     /// Intent is waiting for batch assignment
     Pending {
@@ -46,7 +46,7 @@ pub enum SendIntentState {
 }
 
 /// Full durable record for a send intent
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SendIntentRecord {
     /// Unique intent identifier
     pub intent_id: Uuid,

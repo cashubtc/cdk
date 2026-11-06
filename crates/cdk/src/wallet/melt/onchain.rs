@@ -39,11 +39,24 @@ impl Wallet {
         amount: Amount,
         max_fee_amount: Option<Amount>,
     ) -> Result<Vec<MeltQuote>, Error> {
+        self.quote_onchain_melt_options_with_payjoin(address, amount, max_fee_amount, None)
+            .await
+    }
+
+    /// Fetch onchain melt options with a Payjoin v2 destination.
+    #[instrument(skip_all)]
+    pub async fn quote_onchain_melt_options_with_payjoin(
+        &self,
+        address: &str,
+        amount: Amount,
+        max_fee_amount: Option<Amount>,
+        payjoin: Option<cdk_common::nuts::nut31::PayjoinV2>,
+    ) -> Result<Vec<MeltQuote>, Error> {
         let quote_request = MeltQuoteOnchainRequest {
             request: address.to_string(),
             unit: self.unit.clone(),
             amount,
-            payjoin: None,
+            payjoin: payjoin.clone(),
         };
 
         let quote_res = self
@@ -55,6 +68,10 @@ impl Wallet {
             MeltQuoteCreateResponse::Onchain(quote) => quote,
             _ => return Err(Error::InvalidPaymentMethod),
         };
+
+        if payjoin.is_some() && quote_res.payjoin != payjoin {
+            return Err(Error::InvalidPaymentMethod);
+        }
 
         let mut filtered_quotes = Vec::new();
 

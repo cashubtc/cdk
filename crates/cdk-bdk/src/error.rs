@@ -9,6 +9,9 @@ use uuid::Uuid;
 /// CDK BDK onchain backend error
 #[derive(Debug, Error)]
 pub enum Error {
+    /// Payjoin negotiation or persistence failed.
+    #[error("Payjoin: {0}")]
+    Payjoin(String),
     /// Fee estimation failed
     #[error("Fee estimation failed: {0}")]
     FeeEstimationFailed(String),

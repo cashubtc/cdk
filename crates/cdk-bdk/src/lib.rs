@@ -50,6 +50,7 @@ pub use crate::types::{
 pub mod chain;
 pub mod error;
 pub(crate) mod fee;
+pub mod payjoin;
 pub mod receive;
 pub(crate) mod recovery;
 pub mod send;
@@ -126,6 +127,7 @@ pub(crate) struct BackgroundTasks {
     pub(crate) cancel: CancellationToken,
     pub(crate) sync: JoinHandle<()>,
     pub(crate) batch: JoinHandle<()>,
+    pub(crate) payjoin: JoinHandle<()>,
 }
 
 struct PaymentEventStream {
@@ -183,6 +185,10 @@ impl WalletWithDb {
 /// CDK onchain payment backend using BDK (Bitcoin Development Kit)
 #[derive(Clone)]
 pub struct CdkBdk {
+    #[cfg(all(test, feature = "payjoin-regtest"))]
+    pub(crate) payjoin_test_root: Option<Vec<u8>>,
+    pub(crate) payjoin_config: Option<payjoin::PayjoinConfig>,
+    pub(crate) send_processing: Arc<Mutex<()>>,
     pub(crate) fee_reserve: FeeReserve,
     pub(crate) wait_invoice_cancel_token: CancellationToken,
     pub(crate) wait_invoice_is_active: Arc<AtomicBool>,
@@ -478,6 +484,10 @@ impl CdkBdk {
         let (payment_sender, _) = tokio::sync::broadcast::channel(channel_capacity);
 
         Ok(Self {
+            #[cfg(all(test, feature = "payjoin-regtest"))]
+            payjoin_test_root: None,
+            payjoin_config: None,
+            send_processing: Arc::new(Mutex::new(())),
             fee_reserve,
             wait_invoice_cancel_token: CancellationToken::new(),
             wait_invoice_is_active: Arc::new(AtomicBool::new(false)),
@@ -606,10 +616,21 @@ impl MintPayment for CdkBdk {
             .await;
         });
 
+        let payjoin_self = self.clone();
+        let payjoin_cancel = cancel.clone();
+        let payjoin_handle = tokio::spawn(async move {
+            supervise("payjoin processor", payjoin_cancel, move |cancel| {
+                let me = payjoin_self.clone();
+                async move { me.run_payjoin_processor(cancel).await }
+            })
+            .await;
+        });
+
         *tasks_lock = Some(BackgroundTasks {
             cancel,
             sync: sync_handle,
             batch: batch_handle,
+            payjoin: payjoin_handle,
         });
 
         Ok(())
@@ -628,16 +649,19 @@ impl MintPayment for CdkBdk {
 
             let sync_aborter = bg.sync.abort_handle();
             let batch_aborter = bg.batch.abort_handle();
+            let payjoin_aborter = bg.payjoin.abort_handle();
 
             let joined = tokio::time::timeout(self.shutdown_timeout, async move {
                 let _ = bg.sync.await;
                 let _ = bg.batch.await;
+                let _ = bg.payjoin.await;
             })
             .await;
 
             if joined.is_err() {
                 sync_aborter.abort();
                 batch_aborter.abort();
+                payjoin_aborter.abort();
                 tracing::error!(
                     "cdk-bdk background tasks did not exit within {:?}; forced abort",
                     self.shutdown_timeout
@@ -674,6 +698,8 @@ impl MintPayment for CdkBdk {
             _ => return Err(cdk_common::payment::Error::UnsupportedPaymentOption),
         };
 
+        self.validate_payjoin_metadata(onchain_options.metadata.as_deref())?;
+
         let amount_sat = Self::payment_amount_to_sat(unit, &onchain_options.amount)?;
         self.validate_send_amount(&onchain_options.address, amount_sat)?;
 
@@ -685,7 +711,25 @@ impl MintPayment for CdkBdk {
             let fee_estimate = self
                 .estimate_onchain_fee_reserve(&onchain_options.address, amount_sat, *tier)
                 .await?;
-            let fee_reserve = Amount::new(fee_estimate.fee_reserve_sat, CurrencyUnit::Sat)
+            let mut reserve = fee_estimate.fee_reserve_sat;
+            if PaymentMetadata::from_optional_json(onchain_options.metadata.as_deref())
+                .payjoin
+                .is_some()
+            {
+                let rate = self
+                    .estimate_fee_rate_sat_per_vb(*tier)
+                    .await
+                    .unwrap_or(self.batch_config.fee_estimation.fallback_sat_per_vb);
+                let rate = crate::fee::fee_rate_from_sat_per_vb(rate)?;
+                let contribution = rate
+                    .fee_vb(68)
+                    .ok_or(Error::FeeEstimationOverflow)?
+                    .to_sat();
+                reserve = reserve
+                    .checked_add(contribution)
+                    .ok_or(Error::FeeEstimationOverflow)?;
+            }
+            let fee_reserve = Amount::new(reserve, CurrencyUnit::Sat)
                 .convert_to(unit)
                 .map_err(Error::AmountConversion)?;
             fee_options.push(MeltQuoteOnchainFeeOption {
@@ -713,7 +757,12 @@ impl MintPayment for CdkBdk {
             amount: onchain_options.amount,
             fee: Amount::new(cheapest.fee_reserve.into(), unit.clone()),
             state: MeltQuoteState::Unpaid,
-            extra_json: None,
+            extra_json: onchain_options
+                .metadata
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()
+                .map_err(Error::from)?,
             estimated_blocks: Some(cheapest.estimated_blocks),
             fee_options: Some(fee_options),
         })
@@ -750,6 +799,12 @@ impl MintPayment for CdkBdk {
                 });
             }
             MeltQuoteState::Unpaid | MeltQuoteState::Unknown | MeltQuoteState::Failed => {}
+        }
+
+        if let Err(err) = self.validate_payjoin_metadata(onchain_options.metadata.as_deref()) {
+            return Ok(Self::outgoing_payment_failure_response(
+                unit, &quote_id, err,
+            ));
         }
 
         if let Err(err) = Self::ensure_supported_payment_unit(unit) {
@@ -901,11 +956,16 @@ impl MintPayment for CdkBdk {
             .into());
         };
 
+        drop(wallet_with_db);
+        let extra_json = self
+            .create_payjoin_receiver(&quote_id_string, &address_str)
+            .await?;
+
         Ok(CreateIncomingPaymentResponse {
             request_lookup_id: PaymentIdentifier::QuoteId(quote_id),
             request: address_str,
             expiry: None,
-            extra_json: None,
+            extra_json,
         })
     }
 
@@ -1190,7 +1250,7 @@ mod tests {
             .0
     }
 
-    async fn build_test_instance_with_tempdir(
+    pub(super) async fn build_test_instance_with_tempdir(
         shutdown_timeout_secs: u64,
     ) -> (CdkBdk, tempfile::TempDir) {
         build_test_instance_with_config(shutdown_timeout_secs, None, 60)
@@ -1484,7 +1544,10 @@ mod tests {
         assert_eq!(page.items[1].derivation_index, 0);
     }
 
-    async fn fund_backend_wallet_transactions(backend: &CdkBdk, amounts_sat: &[u64]) -> Vec<Txid> {
+    pub(super) async fn fund_backend_wallet_transactions(
+        backend: &CdkBdk,
+        amounts_sat: &[u64],
+    ) -> Vec<Txid> {
         let mut wallet_with_db = backend.wallet_with_db.lock().await;
         let funding_script = wallet_with_db
             .wallet

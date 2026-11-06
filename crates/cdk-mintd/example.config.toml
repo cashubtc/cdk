@@ -251,6 +251,13 @@ onchain_backend = "fakewallet"
 # # (QUOTE_INPUT_VBYTES, the +1 padding input) are hard-coded and cannot be
 # # tuned via config. They contribute a smaller but non-zero over-estimate.
 
+# # Optional Payjoin v2 for the BDK backend.
+# [bdk.payjoin]
+# relay_url = "https://your-ohttp-relay.example"
+# # Set a directory to enable receiving; requires chain_source_type = "bitcoinrpc".
+# # Use a directory operated independently of the relay. Omit for sending only.
+# directory_url = "https://your-payjoin-directory.example"
+
 # [cln]
 # rpc_path = "/path/to/.lightning/bitcoin/lightning-rpc"
 # bolt12 = true              # Optional, defaults to true

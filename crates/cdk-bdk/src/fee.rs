@@ -267,9 +267,11 @@ impl CdkBdk {
                 .fee_estimation
                 .quote_max_input_count
                 .max(1);
+            let reserved = self.storage.payjoin_reserved_inputs().await?;
             let weighted_utxos = wallet_with_db
                 .wallet
                 .list_unspent()
+                .filter(|utxo| !reserved.contains(&utxo.outpoint))
                 .take(max_inputs)
                 .map(|utxo| {
                     Ok(WeightedUtxo {

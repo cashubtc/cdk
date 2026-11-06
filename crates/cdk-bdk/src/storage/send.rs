@@ -4,8 +4,8 @@ use uuid::Uuid;
 
 use super::{
     outpoint_to_key, BdkStorage, FailedSendAttemptRecord, FinalizedSendIntentRecord, BDK_NAMESPACE,
-    FINALIZED_INTENT_NAMESPACE, FINALIZED_SEND_INTENT_QUOTE_ID_NAMESPACE, SEND_INTENT_NAMESPACE,
-    SEND_INTENT_QUOTE_ID_NAMESPACE, SEND_OUTPOINT_QUOTE_ID_BACKFILL_KEY,
+    FINALIZED_INTENT_NAMESPACE, FINALIZED_SEND_INTENT_QUOTE_ID_NAMESPACE, SEND_BATCH_NAMESPACE,
+    SEND_INTENT_NAMESPACE, SEND_INTENT_QUOTE_ID_NAMESPACE, SEND_OUTPOINT_QUOTE_ID_BACKFILL_KEY,
     SEND_OUTPOINT_QUOTE_ID_NAMESPACE, STORAGE_MIGRATION_NAMESPACE,
 };
 use crate::error::Error;
@@ -13,6 +13,58 @@ use crate::send::batch_transaction::record::{SendBatchRecord, SendBatchState};
 use crate::send::payment_intent::record::{SendIntentRecord, SendIntentState};
 
 impl BdkStorage {
+    /// Atomically hand a pending Payjoin intent to a durable signed batch.
+    /// Refuse stale intents and existing batches instead of replacing a transaction.
+    pub(crate) async fn commit_payjoin_batch(
+        &self,
+        pending: &SendIntentRecord,
+        batch: &SendBatchRecord,
+    ) -> Result<SendIntentRecord, Error> {
+        let SendIntentState::Pending { created_at } = pending.state else {
+            return Err(Error::Payjoin("Expected a pending intent".to_string()));
+        };
+        let mut tx = self.kv_store.begin_transaction().await?;
+        let key = pending.intent_id.to_string();
+        let bytes = tx
+            .kv_read(BDK_NAMESPACE, SEND_INTENT_NAMESPACE, &key)
+            .await?
+            .ok_or_else(|| Error::Payjoin("Send intent is no longer pending".to_string()))?;
+        if serde_json::from_slice::<SendIntentRecord>(&bytes)? != *pending {
+            return Err(Error::Payjoin(
+                "Send intent changed during negotiation".to_string(),
+            ));
+        }
+        let mut batched = pending.clone();
+        batched.state = SendIntentState::Batched {
+            batch_id: batch.batch_id,
+            created_at,
+        };
+        if !tx
+            .kv_write_if_equals(
+                BDK_NAMESPACE,
+                SEND_INTENT_NAMESPACE,
+                &key,
+                &bytes,
+                &serde_json::to_vec(&batched)?,
+            )
+            .await?
+            || !tx
+                .kv_write_if_absent(
+                    BDK_NAMESPACE,
+                    SEND_BATCH_NAMESPACE,
+                    &batch.batch_id.to_string(),
+                    &serde_json::to_vec(batch)?,
+                )
+                .await?
+        {
+            return Err(Error::Payjoin(
+                "Payjoin handoff already changed".to_string(),
+            ));
+        }
+        tx.commit().await?;
+        Ok(batched)
+    }
+
     // ── Send Intent storage ──────────────────────────────────────────
 
     /// Store a new send intent and quote-id index atomically.

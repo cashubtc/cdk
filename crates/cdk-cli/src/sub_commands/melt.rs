@@ -52,6 +52,9 @@ impl From<BitcoinNetwork> for bitcoin::Network {
 
 #[derive(Args)]
 pub struct MeltSubCommand {
+    /// BIP77 receiver endpoint for an onchain Payjoin payment
+    #[arg(long, requires = "address")]
+    payjoin_endpoint: Option<String>,
     /// Use Multi-Path Payment (split payment across multiple mints, BOLT11 only)
     #[arg(short, long, conflicts_with = "mint_url")]
     mpp: bool,
@@ -171,11 +174,74 @@ fn select_onchain_quote(
     }
 }
 
+fn parse_onchain_destination(
+    input: &str,
+    amount: Option<u64>,
+    endpoint: Option<&str>,
+) -> Result<(
+    String,
+    Option<u64>,
+    Option<cdk_common::nuts::nut31::PayjoinV2>,
+)> {
+    let mut address = input.to_string();
+    let mut uri_amount = None;
+    let mut uri_endpoint = None;
+    if input
+        .get(..8)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("bitcoin:"))
+    {
+        let uri = url::Url::parse(input)?;
+        if uri.host().is_some() || uri.fragment().is_some() {
+            bail!("Invalid Bitcoin payment URI");
+        }
+        address = uri.path().to_string();
+        for (key, value) in uri.query_pairs() {
+            match key.as_ref() {
+                "amount" => {
+                    if uri_amount.is_some() {
+                        bail!("Duplicate URI amount");
+                    }
+                    uri_amount = Some(cdk_common::bitcoin_uri::parse_bip21_amount_to_sats(&value)?);
+                }
+                "pj" => {
+                    if uri_endpoint.is_some() {
+                        bail!("Duplicate Payjoin endpoint");
+                    }
+                    uri_endpoint = Some(value.into_owned());
+                }
+                key if key.starts_with("req-") => {
+                    bail!("Unsupported required URI parameter: {key}")
+                }
+                _ => {}
+            }
+        }
+    }
+    if amount.zip(uri_amount).is_some_and(|(a, b)| a != b) {
+        bail!("--amount conflicts with the Bitcoin URI amount");
+    }
+    if endpoint
+        .zip(uri_endpoint.as_deref())
+        .is_some_and(|(a, b)| a != b)
+    {
+        bail!("--payjoin-endpoint conflicts with the Bitcoin URI");
+    }
+    let payjoin = endpoint
+        .or(uri_endpoint.as_deref())
+        .map(cdk_common::payjoin::payjoin_v2_from_bip77_endpoint)
+        .transpose()?;
+    Ok((address, amount.or(uri_amount), payjoin))
+}
+
 pub async fn pay(
     wallet_repository: &WalletRepository,
     sub_command_args: &MeltSubCommand,
     unit: &CurrencyUnit,
 ) -> Result<()> {
+    if sub_command_args.payjoin_endpoint.is_some()
+        && sub_command_args.method != PaymentType::Onchain
+    {
+        bail!("--payjoin-endpoint requires --method onchain");
+    }
     // Check total balance for the requested unit
     let balances_by_unit = wallet_repository.total_balance().await?;
     let total_balance = balances_by_unit.get(unit).copied().unwrap_or(Amount::ZERO);
@@ -453,7 +519,12 @@ pub async fn pay(
             let onchain_address =
                 input_or_prompt(sub_command_args.address.as_ref(), "Enter onchain address")?;
 
-            let amount_sat = match sub_command_args.amount {
+            let (onchain_address, amount, payjoin) = parse_onchain_destination(
+                &onchain_address,
+                sub_command_args.amount,
+                sub_command_args.payjoin_endpoint.as_deref(),
+            )?;
+            let amount_sat = match amount {
                 Some(amount_sat) if amount_sat > 0 => amount_sat,
                 Some(_) => bail!("Onchain melt amount must be greater than zero"),
                 None => get_number_input::<u64>("Enter the amount you would like to melt in sats")?,
@@ -479,7 +550,12 @@ pub async fn pay(
             let wallet = get_or_create_wallet(wallet_repository, &mint_url, unit).await?;
 
             let quote_options = wallet
-                .quote_onchain_melt_options(&onchain_address, melt_amount, None)
+                .quote_onchain_melt_options_with_payjoin(
+                    &onchain_address,
+                    melt_amount,
+                    None,
+                    payjoin,
+                )
                 .await?;
 
             let selected_quote = select_onchain_quote(&quote_options)?;
@@ -672,4 +748,45 @@ async fn pay_mpp(
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_onchain_destination;
+
+    #[test]
+    fn onchain_uri_rejects_conflicting_or_required_fields() {
+        assert!(
+            parse_onchain_destination("bitcoin:address?amount=0.001", Some(100), None).is_err()
+        );
+        assert!(
+            parse_onchain_destination("bitcoin:address?amount=0.001&amount=0.001", None, None)
+                .is_err()
+        );
+        assert!(parse_onchain_destination("bitcoin:address?req-unknown=1", None, None).is_err());
+        assert!(
+            parse_onchain_destination("bitcoin:address?pj=invalid&pj=invalid", None, None).is_err()
+        );
+        let (address, amount, payjoin) =
+            parse_onchain_destination("bitcoin:address?amount=0.001", None, None).unwrap();
+        assert_eq!(address, "address");
+        assert_eq!(amount, Some(100_000));
+        assert_eq!(payjoin, None);
+    }
+
+    #[test]
+    fn onchain_uri_decodes_payjoin_endpoint_fragment() {
+        let params = cdk_common::nuts::nut31::PayjoinV2::new(
+            "https://payjoin.example/pj".to_string(),
+            "QYPFLM8XL59R0XV4VGPLS7FRDSSM4TUXL07TXCWC4S0GLVLNK2SE4NQ",
+            "QV6WSX0UQPAEA0RH54430D0UVZWS8CZ6FEGZF4RGFCDKJLPGMYEJG",
+            4_000_000_000,
+        )
+        .unwrap();
+        let endpoint = cdk_common::payjoin::payjoin_v2_to_bip77_endpoint(&params).unwrap();
+        let mut uri = url::Url::parse("bitcoin:address").unwrap();
+        uri.query_pairs_mut().append_pair("pj", &endpoint);
+        let (_, _, parsed) = parse_onchain_destination(uri.as_str(), Some(1_000), None).unwrap();
+        assert_eq!(parsed, Some(params));
+    }
 }

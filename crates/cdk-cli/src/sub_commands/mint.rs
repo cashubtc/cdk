@@ -128,6 +128,18 @@ pub async fn mint(
                     quote.expiry
                 );
                 println!("Send sats to: {}", escape_control(&quote.request));
+                if let Some(payjoin) = wallet.onchain_mint_quote_payjoin(&quote.id).await? {
+                    let endpoint = cdk_common::payjoin::payjoin_v2_to_bip77_endpoint(&payjoin)?;
+                    let mut uri = url::Url::parse(&format!("bitcoin:{}", quote.request))?;
+                    uri.query_pairs_mut().append_pair("pj", &endpoint);
+                    if let Some(amount) = amount {
+                        uri.query_pairs_mut().append_pair(
+                            "amount",
+                            &cdk_common::bitcoin_uri::format_bip21_amount_from_sats(amount),
+                        );
+                    }
+                    println!("Payjoin: {}", escape_control(uri.as_str()));
+                }
 
                 quote
             }

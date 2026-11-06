@@ -84,6 +84,7 @@ impl CdkBdk {
             tracked_addresses.into_iter().collect();
 
         let wallet_with_db = self.wallet_with_db.lock().await;
+        let payjoin_records = self.storage.payjoin_records().await?;
         tracing::debug!(
             wallet_balance = ?wallet_with_db.wallet.balance(),
             checkpoint_height = wallet_with_db.wallet.latest_checkpoint().height(),
@@ -107,14 +108,21 @@ impl CdkBdk {
                     return None;
                 };
 
+                let tx = wallet_with_db.wallet.get_tx(o.outpoint.txid)?;
+
                 derived_address
                     .filter(|address| address_set.contains(address))
                     .map(|address| {
                         (
-                            address,
+                            address.clone(),
                             o.outpoint.txid.to_string(),
                             o.outpoint.to_string(),
-                            o.txout.value.to_sat(),
+                            crate::payjoin::net_received_amount(
+                                &tx.tx_node.tx,
+                                o.outpoint.vout,
+                                &address,
+                                &payjoin_records,
+                            ),
                             anchor.block_id.height,
                         )
                     })
@@ -124,7 +132,7 @@ impl CdkBdk {
         drop(wallet_with_db);
 
         for (address, txid, outpoint, amount_sat, block_height) in utxos {
-            if self.should_ignore_receive_amount(amount_sat) {
+            if amount_sat == 0 || self.should_ignore_receive_amount(amount_sat) {
                 tracing::trace!(
                     address,
                     txid,
