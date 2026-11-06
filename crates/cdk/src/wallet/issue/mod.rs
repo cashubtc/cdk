@@ -1072,6 +1072,7 @@ mod tests {
                 amount_paid: Amount::from(1_000),
                 amount_issued: Amount::ZERO,
                 updated_at: 1,
+                payjoin: None,
             }),
         );
 
@@ -1118,6 +1119,7 @@ mod tests {
                 amount_paid: Amount::from(250_366),
                 amount_issued: Amount::ZERO,
                 updated_at: 1,
+                payjoin: None,
             }),
         );
 
@@ -1383,6 +1385,7 @@ mod tests {
                 amount_paid: Amount::from(1_000),
                 amount_issued: Amount::from(250),
                 updated_at: 0,
+                payjoin: None,
             });
 
         assert_eq!(mint_quote_response_amount(&response), None);

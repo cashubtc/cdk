@@ -2166,6 +2166,7 @@ mod tests {
                             selected_fee_index: Some(2),
                             outpoint: None,
                             change: None,
+                            payjoin: None,
                         })
                     }
                 };
@@ -2227,6 +2228,7 @@ mod tests {
             selected_fee_index: None,
             outpoint: None,
             change: None,
+            payjoin: None,
         });
         client
             .melt_quote_status_responses
