@@ -59,9 +59,14 @@ const ENCRYPTION_METADATA_VERSION: i64 = 1;
 const ENCRYPTION_KDF: &str = "scrypt";
 const ENCRYPTION_SALT_BYTES: usize = 16;
 const ENCRYPTION_KEY_BYTES: usize = 32;
+const ENCRYPTION_NONCE_BYTES: usize = 12;
 const SCRYPT_LOG_N: u8 = 15;
 const SCRYPT_R: u32 = 8;
 const SCRYPT_P: u32 = 1;
+
+const SAGA_ENVELOPE_VERSION: u32 = 1;
+const SAGA_ENVELOPE_FORMAT: &str = "cdk-encrypted-saga";
+const SAGA_ENVELOPE_ALGORITHM: &str = "AES-256-GCM";
 
 /// Decode JWT expiration from token string (without verification)
 fn decode_jwt_expiry(token: &str) -> Option<u64> {
@@ -453,17 +458,76 @@ impl SupabaseWalletDatabase {
             .ok_or(DatabaseError::Internal("Encryption key not set".into()))?;
         let cipher = Aes256Gcm::new(key);
 
-        if data.len() < 12 {
+        if data.len() < ENCRYPTION_NONCE_BYTES {
             return Err(DatabaseError::Internal("Invalid ciphertext length".into()));
         }
 
-        let nonce = <&Nonce<Aes256Gcm>>::try_from(&data[0..12])
+        let nonce = <&Nonce<Aes256Gcm>>::try_from(&data[..ENCRYPTION_NONCE_BYTES])
             .map_err(|_| DatabaseError::Internal("Invalid nonce length".into()))?;
-        let ciphertext = &data[12..];
+        let ciphertext = &data[ENCRYPTION_NONCE_BYTES..];
 
         cipher
             .decrypt(nonce, ciphertext)
             .map_err(|_| DatabaseError::Internal("Decryption failed".into()))
+    }
+
+    async fn encrypt_saga(&self, saga: &WalletSaga) -> Result<String, DatabaseError> {
+        let plaintext = serde_json::to_vec(saga)
+            .map_err(|_| DatabaseError::Internal("Serialize saga failed".to_string()))?;
+        let encrypted = self.encrypt(&plaintext).await?;
+
+        let envelope = SagaEnvelope {
+            version: SAGA_ENVELOPE_VERSION,
+            format: SAGA_ENVELOPE_FORMAT.to_string(),
+            algorithm: SAGA_ENVELOPE_ALGORITHM.to_string(),
+            ciphertext: hex::encode(encrypted),
+        };
+
+        serde_json::to_string(&envelope)
+            .map_err(|_| DatabaseError::Internal("Serialize saga envelope failed".to_string()))
+    }
+
+    async fn decrypt_saga(&self, data: &str) -> Result<WalletSaga, DatabaseError> {
+        let envelope: SagaEnvelope = serde_json::from_str(data)
+            .map_err(|_| DatabaseError::Internal("Invalid saga envelope".to_string()))?;
+
+        if envelope.format != SAGA_ENVELOPE_FORMAT {
+            return Err(DatabaseError::Internal(
+                "Unsupported saga envelope format".to_string(),
+            ));
+        }
+        if envelope.version != SAGA_ENVELOPE_VERSION {
+            return Err(DatabaseError::Internal(
+                "Unsupported saga envelope version".to_string(),
+            ));
+        }
+        if envelope.algorithm != SAGA_ENVELOPE_ALGORITHM {
+            return Err(DatabaseError::Internal(
+                "Unsupported saga envelope algorithm".to_string(),
+            ));
+        }
+
+        let ciphertext = hex::decode(&envelope.ciphertext)
+            .map_err(|_| DatabaseError::Internal("Invalid saga ciphertext encoding".to_string()))?;
+        let plaintext = self.decrypt(&ciphertext).await?;
+
+        serde_json::from_slice(&plaintext)
+            .map_err(|_| DatabaseError::Internal("Deserialize saga failed".to_string()))
+    }
+
+    async fn decode_saga(&self, data: &str) -> Result<WalletSaga, DatabaseError> {
+        let value: serde_json::Value = serde_json::from_str(data)
+            .map_err(|_| DatabaseError::Internal("Invalid saga data".to_string()))?;
+
+        if ["format", "algorithm", "ciphertext"]
+            .iter()
+            .any(|field| value.get(field).is_some())
+        {
+            return self.decrypt_saga(data).await;
+        }
+
+        serde_json::from_str(data)
+            .map_err(|_| DatabaseError::Internal("Deserialize legacy saga failed".to_string()))
     }
 
     async fn decrypt_proof_table(&self, p: &mut ProofTable) {
@@ -1932,12 +1996,11 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
     // ========== Saga methods ==========
 
     async fn add_saga(&self, saga: WalletSaga) -> Result<(), DatabaseError> {
-        let saga_json = serde_json::to_string(&saga)
-            .map_err(|e| DatabaseError::Internal(format!("Serialize saga: {e}")))?;
+        let data = self.encrypt_saga(&saga).await?;
 
         let item = SagaTable {
             id: saga.id.to_string(),
-            data: saga_json,
+            data,
             version: saga.version as i32,
             completed: false,
             created_at: saga.created_at as i64,
@@ -1971,8 +2034,7 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
 
         if let Some(items) = Self::parse_response::<SagaTable>(&text)? {
             if let Some(item) = items.into_iter().next() {
-                let saga: WalletSaga = serde_json::from_str(&item.data)
-                    .map_err(|e| DatabaseError::Internal(format!("Deserialize saga: {e}")))?;
+                let saga = self.decode_saga(&item.data).await?;
                 return Ok(Some(saga));
             }
         }
@@ -1981,12 +2043,11 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
 
     async fn update_saga(&self, saga: WalletSaga) -> Result<bool, DatabaseError> {
         let expected_version = saga.version.saturating_sub(1);
-        let saga_json = serde_json::to_string(&saga)
-            .map_err(|e| DatabaseError::Internal(format!("Serialize saga: {e}")))?;
+        let data = self.encrypt_saga(&saga).await?;
 
         let item = SagaTable {
             id: saga.id.to_string(),
-            data: saga_json,
+            data,
             version: saga.version as i32,
             completed: false,
             created_at: saga.created_at as i64,
@@ -2047,8 +2108,7 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         if let Some(items) = Self::parse_response::<SagaTable>(&text)? {
             let mut sagas = Vec::new();
             for item in items {
-                let saga: WalletSaga = serde_json::from_str(&item.data)
-                    .map_err(|e| DatabaseError::Internal(format!("Deserialize saga: {e}")))?;
+                let saga = self.decode_saga(&item.data).await?;
                 sagas.push(saga);
             }
             Ok(sagas)
@@ -3057,10 +3117,20 @@ fn default_transaction_status() -> String {
     TransactionStatus::Completed.to_string()
 }
 
+/// Versioned envelope for an encrypted wallet saga payload.
+#[derive(Debug, Serialize, Deserialize)]
+struct SagaEnvelope {
+    version: u32,
+    format: String,
+    algorithm: String,
+    /// Hex-encoded nonce, ciphertext, and authentication tag returned by `encrypt`.
+    ciphertext: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct SagaTable {
     id: String,
-    data: String, // JSON-serialized WalletSaga
+    data: String, // Serialized SagaEnvelope or legacy WalletSaga JSON.
     version: i32,
     completed: bool,
     created_at: i64,
@@ -3189,6 +3259,11 @@ mod tests {
     use bitcoin::base64::engine::general_purpose;
     use bitcoin::base64::Engine as _;
     use cdk_common::database::{Error as DatabaseError, WalletDatabase};
+    use cdk_common::nuts::{Proof, SecretKey};
+    use cdk_common::wallet::{
+        OperationData, ReceiveOperationData, ReceiveSagaState, SendOperationData, SendSagaState,
+        WalletSagaState,
+    };
     #[cfg(feature = "integration-tests")]
     use cdk_common::wallet_db_test;
     use mockito::Matcher;
@@ -3198,6 +3273,161 @@ mod tests {
     use super::*;
     #[cfg(feature = "integration-tests")]
     use crate::Error;
+
+    const SAGA_TEST_TOKEN: &str = "cashuB_saga_token_marker";
+    const SAGA_TEST_SECRET: &str = "saga_proof_secret_marker";
+
+    async fn saga_test_database() -> SupabaseWalletDatabase {
+        let db = SupabaseWalletDatabase::new(
+            Url::parse("https://example.supabase.co").expect("valid URL"),
+            "anon-key".to_string(),
+        )
+        .await
+        .expect("database should initialize");
+        *db.encryption_key.write().await = Some([1u8; ENCRYPTION_KEY_BYTES].into());
+        db
+    }
+
+    fn saga_test_payloads() -> [WalletSaga; 2] {
+        let amount = cdk_common::Amount::from(1);
+        let send = WalletSaga::new(
+            uuid::Uuid::new_v4(),
+            WalletSagaState::Send(SendSagaState::TokenCreated),
+            amount,
+            MintUrl::from_str("https://example.com").expect("valid mint URL"),
+            CurrencyUnit::Sat,
+            OperationData::Send(SendOperationData {
+                amount,
+                memo: None,
+                counter_start: Some(1),
+                counter_end: Some(2),
+                token: Some(SAGA_TEST_TOKEN.to_string()),
+                proofs: Some(vec![Proof::new(
+                    amount,
+                    Id::from_str("00deadbeef123456").expect("valid keyset ID"),
+                    Secret::new(SAGA_TEST_SECRET),
+                    SecretKey::generate().public_key(),
+                )]),
+            }),
+        );
+        let receive = WalletSaga::new(
+            uuid::Uuid::new_v4(),
+            WalletSagaState::Receive(ReceiveSagaState::ProofsPending),
+            amount,
+            send.mint_url.clone(),
+            CurrencyUnit::Sat,
+            OperationData::Receive(ReceiveOperationData {
+                token: Some(SAGA_TEST_TOKEN.to_string()),
+                counter_start: Some(3),
+                counter_end: Some(4),
+                amount: Some(amount),
+                blinded_messages: None,
+            }),
+        );
+        [send, receive]
+    }
+
+    #[tokio::test]
+    async fn saga_writes_do_not_store_plaintext_secrets() {
+        let mut server = mockito::Server::new_async().await;
+        let mut db = saga_test_database().await;
+        db.url = Url::parse(&server.url()).expect("mock server URL");
+        let sagas = saga_test_payloads();
+
+        let check_payload = |request: &mockito::Request| {
+            let row: SagaTable = serde_json::from_slice(request.body().expect("request body"))
+                .expect("saga table row");
+            assert!(!row.data.contains(SAGA_TEST_TOKEN));
+            assert!(!row.data.contains(SAGA_TEST_SECRET));
+            let envelope: SagaEnvelope =
+                serde_json::from_str(&row.data).expect("encrypted envelope");
+            assert_eq!(envelope.format, SAGA_ENVELOPE_FORMAT);
+            assert_eq!(envelope.version, SAGA_ENVELOPE_VERSION);
+            assert_eq!(envelope.algorithm, SAGA_ENVELOPE_ALGORITHM);
+            assert!(!envelope.ciphertext.is_empty());
+            true
+        };
+        let insert = server
+            .mock("POST", "/rest/v1/saga")
+            .match_query(Matcher::Any)
+            .match_request(check_payload)
+            .with_status(201)
+            .expect(sagas.len())
+            .create_async()
+            .await;
+        let update = server
+            .mock("PATCH", "/rest/v1/saga")
+            .match_query(Matcher::Any)
+            .match_request(check_payload)
+            .with_status(200)
+            .with_body_from_request(|request| {
+                let body = std::str::from_utf8(request.body().expect("request body"))
+                    .expect("JSON request body");
+                format!("[{body}]").into_bytes()
+            })
+            .expect(sagas.len())
+            .create_async()
+            .await;
+
+        for mut saga in sagas {
+            db.add_saga(saga.clone()).await.expect("add saga");
+            saga.update_state(saga.state);
+            assert!(db.update_saga(saga).await.expect("update saga"));
+        }
+        insert.assert_async().await;
+        update.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn saga_reads_support_legacy_plaintext_rows() {
+        let mut server = mockito::Server::new_async().await;
+        let mut db = saga_test_database().await;
+        db.url = Url::parse(&server.url()).expect("mock server URL");
+        let [legacy, encrypted] = saga_test_payloads();
+        let rows = json!([
+            {
+                "id": legacy.id,
+                "data": serde_json::to_string(&legacy).expect("legacy JSON"),
+                "version": legacy.version,
+                "completed": false,
+                "created_at": legacy.created_at,
+                "updated_at": legacy.updated_at
+            },
+            {
+                "id": encrypted.id,
+                "data": db.encrypt_saga(&encrypted).await.expect("encrypt saga"),
+                "version": encrypted.version,
+                "completed": false,
+                "created_at": encrypted.created_at,
+                "updated_at": encrypted.updated_at
+            }
+        ]);
+        let get = server
+            .mock("GET", "/rest/v1/saga")
+            .match_query(format!("id=eq.{}", legacy.id).as_str())
+            .with_status(200)
+            .with_body(json!([rows[0]]).to_string())
+            .create_async()
+            .await;
+        let list = server
+            .mock("GET", "/rest/v1/saga")
+            .match_query("completed=eq.false&order=created_at.asc")
+            .with_status(200)
+            .with_body(rows.to_string())
+            .create_async()
+            .await;
+
+        assert_eq!(
+            db.get_saga(&legacy.id).await.expect("legacy saga"),
+            Some(legacy.clone())
+        );
+        assert_eq!(
+            db.get_incomplete_sagas().await.expect("mixed sagas"),
+            vec![legacy, encrypted]
+        );
+        get.assert_async().await;
+        list.assert_async().await;
+    }
 
     #[test]
     fn token_response_debug_redacts_tokens() {
