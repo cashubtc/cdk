@@ -728,6 +728,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn get_events_from_db_skips_mint_quotes_of_another_method() {
+        let db: DynMintDatabase =
+            Arc::new(cdk_sqlite::mint::memory::empty().await.expect("database"));
+        let pubkey = cdk_common::SecretKey::generate().public_key();
+
+        // Both quotes carry a NUT-20 pubkey, so every known response type can be built from
+        // them and only the payment method tells them apart.
+        let mut bolt11 = bolt11_quote(QuoteId::new(), 21);
+        bolt11.pubkey = Some(pubkey);
+        let mut bolt12 = bolt11_quote(QuoteId::new(), 34);
+        bolt12.pubkey = Some(pubkey);
+        bolt12.payment_method =
+            cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt12);
+
+        for quote in [&bolt11, &bolt12] {
+            add_mint_quote(&db, quote.clone()).await;
+            assert!(db
+                .try_update_mint_quote_last_checked(&quote.id, cdk_common::util::unix_time(), 0)
+                .await
+                .expect("record payment check"));
+        }
+        let spec = MintPubSubSpec::new_instance((db, Arc::new(HashMap::new())));
+
+        let events = spec
+            .get_events_from_db(&[
+                NotificationId::MintQuoteBolt12(bolt11.id.clone()),
+                NotificationId::MintQuoteOnchain(bolt11.id.clone()),
+                NotificationId::MintQuoteBolt11(bolt12.id.clone()),
+                NotificationId::MintQuoteOnchain(bolt12.id.clone()),
+            ])
+            .await
+            .expect("backfill");
+        assert!(events.is_empty(), "unexpected events: {events:?}");
+
+        let events = spec
+            .get_events_from_db(&[
+                NotificationId::MintQuoteBolt11(bolt11.id.clone()),
+                NotificationId::MintQuoteBolt12(bolt12.id.clone()),
+            ])
+            .await
+            .expect("backfill");
+        assert_eq!(events.len(), 2);
+        match events[0].inner() {
+            NotificationPayload::MintQuoteBolt11Response(response) => {
+                assert_eq!(response.quote, bolt11.id);
+            }
+            payload => panic!("unexpected payload: {payload:?}"),
+        }
+        match events[1].inner() {
+            NotificationPayload::MintQuoteBolt12Response(response) => {
+                assert_eq!(response.quote, bolt12.id);
+            }
+            payload => panic!("unexpected payload: {payload:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn get_events_from_db_backfills_custom_melt_quotes() {
         let db: DynMintDatabase =
             Arc::new(cdk_sqlite::mint::memory::empty().await.expect("database"));
