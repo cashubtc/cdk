@@ -105,8 +105,8 @@ pub(crate) fn sign_proofs(
 
     let key_map: HashMap<XOnlyPublicKey, &SecretKey> = p2pk_signing_keys
         .iter()
-        .map(|s| (s.x_only_public_key(&SECP256K1).0, s))
-        .collect();
+        .map(|s| Ok((s.as_secp256k1()?.x_only_public_key(&SECP256K1).0, s)))
+        .collect::<Result<_, Error>>()?;
 
     for proof in proofs.iter_mut() {
         let Ok(secret) = <crate::secret::Secret as TryInto<crate::nuts::nut10::Secret>>::try_into(
@@ -150,6 +150,7 @@ pub(crate) fn sign_proofs(
         let ephemeral_key = proof.p2pk_e;
         let mut signed_with_ephemeral_key = false;
         for (i, pubkey) in pubkeys.iter().enumerate() {
+            let x_only_pubkey = pubkey.as_secp256k1()?.x_only_public_key().0;
             let already_signed = proof
                 .witness
                 .as_ref()
@@ -179,7 +180,7 @@ pub(crate) fn sign_proofs(
                         }
                     }
                 }
-            } else if let Some(signing) = key_map.get(&pubkey.x_only_public_key()) {
+            } else if let Some(signing) = key_map.get(&x_only_pubkey) {
                 proof.sign_p2pk((*signing).clone())?;
             }
         }
@@ -223,12 +224,12 @@ pub(crate) async fn merge_keyring_keys(
     let mut keys = explicit_keys.to_vec();
     let covered: HashSet<XOnlyPublicKey> = keys
         .iter()
-        .map(|k| k.x_only_public_key(&SECP256K1).0)
-        .collect();
+        .map(|k| Ok(k.as_secp256k1()?.x_only_public_key(&SECP256K1).0))
+        .collect::<Result<_, Error>>()?;
 
     let pubkeys = collect_p2pk_pubkeys(proofs)?;
     for pubkey in pubkeys {
-        let x_only = pubkey.x_only_public_key();
+        let x_only = pubkey.as_secp256k1()?.x_only_public_key().0;
         if !covered.contains(&x_only) {
             if let Some(secret_key) = wallet.get_signing_key(&pubkey).await? {
                 keys.push(secret_key);

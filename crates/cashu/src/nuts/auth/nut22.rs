@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::nut21::ProtectedEndpoint;
-use crate::dhke::hash_to_curve;
+use crate::dhke::hash_to_curve_for_version;
 use crate::secret::Secret;
 use crate::util::hex;
 use crate::{BlindedMessage, Id, Proof, ProofDleq, PublicKey};
@@ -164,7 +164,10 @@ pub struct AuthProof {
 impl AuthProof {
     /// Y of AuthProof
     pub fn y(&self) -> Result<PublicKey, Error> {
-        Ok(hash_to_curve(self.secret.as_bytes())?)
+        Ok(hash_to_curve_for_version(
+            self.secret.as_bytes(),
+            self.keyset_id.get_version(),
+        )?)
     }
 }
 

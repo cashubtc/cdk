@@ -54,6 +54,11 @@ pub async fn init_keysets(
             );
             let id = highest_index_keyset.id;
 
+            highest_index_keyset
+                .id
+                .get_version()
+                .validate_unit(&highest_index_keyset.unit)?;
+
             // Validate we can generate it (sanity check)
             let _ = MintKeySet::generate_from_xpriv(
                 secp_ctx,
