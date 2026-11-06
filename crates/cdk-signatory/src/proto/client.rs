@@ -256,7 +256,9 @@ impl Signatory for SignatoryRpcClient {
                 if handle_error!(response, success, scalar) {
                     Ok(())
                 } else {
-                    Err(Error::SignatureMissingOrInvalid)
+                    // The server only reports `success: false` for a DHKE failure, which the
+                    // in-process signatory surfaces as `TokenNotVerified`.
+                    Err(Error::DHKE(cdk_common::dhke::Error::TokenNotVerified))
                 }
             })
             .map_err(|e| Error::Custom(e.to_string()))?
