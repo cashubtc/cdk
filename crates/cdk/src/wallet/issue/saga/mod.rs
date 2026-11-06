@@ -600,8 +600,6 @@ impl<'a> MintSaga<'a, Initial> {
         spending_conditions: Option<SpendingConditions>,
         external_keys: Option<&std::collections::HashMap<String, SecretKey>>,
     ) -> Result<MintSaga<'a, Prepared>, Error> {
-        use crate::nuts::BatchMintRequest;
-
         if quote_ids.is_empty() {
             return Err(Error::UnknownQuote);
         }
@@ -668,15 +666,9 @@ impl<'a> MintSaga<'a, Initial> {
             return Err(Error::AmountUndefined);
         }
 
-        // Reserve all quotes (with rollback on failure)
-        for quote_id in quote_ids {
-            self.wallet
-                .localstore
-                .reserve_mint_quote(quote_id, &self.state_data.operation_id)
-                .await?;
-        }
-
-        // Register compensation to release all quotes on failure
+        // Register the compensation before reserving so that a batch that is
+        // only partially reserved is rolled back too: `release_mint_quote`
+        // frees every quote held by this operation.
         add_compensation(
             &mut self.compensations,
             Box::new(ReleaseMintQuote {
@@ -685,6 +677,80 @@ impl<'a> MintSaga<'a, Initial> {
             }),
         )
         .await;
+
+        // Nothing has been sent to the mint or persisted as a saga yet, so a
+        // failed reservation always releases the quotes reserved so far.
+        for quote_id in quote_ids {
+            if let Err(e) = self
+                .wallet
+                .localstore
+                .reserve_mint_quote(quote_id, &self.state_data.operation_id)
+                .await
+            {
+                if let Err(comp_err) = execute_compensations(&mut self.compensations).await {
+                    tracing::error!("Compensation failed during batch prepare: {}", comp_err);
+                }
+                return Err(e.into());
+            }
+        }
+
+        // All work after this point has registered compensations.
+        // If any step fails, we must run compensations to release the quotes
+        // rather than leaving them reserved.
+        let prepare_result = self
+            .prepare_batch_after_reserve(
+                quote_ids,
+                quote_infos,
+                quote_amounts,
+                total_amount,
+                payment_method,
+                amount_split_target,
+                spending_conditions,
+                external_keys,
+            )
+            .await;
+
+        match prepare_result {
+            Ok(prepared) => Ok(MintSaga {
+                wallet: self.wallet,
+                compensations: self.compensations,
+                state_data: prepared,
+            }),
+            Err(e) => {
+                if e.is_definitive_failure() {
+                    tracing::warn!(
+                        "Batch mint saga prepare failed (definitive): {}. Running compensations.",
+                        e
+                    );
+                    if let Err(comp_err) = execute_compensations(&mut self.compensations).await {
+                        tracing::error!("Compensation failed during batch prepare: {}", comp_err);
+                    }
+                } else {
+                    tracing::warn!("Batch mint saga prepare failed (ambiguous): {}.", e);
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Fallible batch prepare logic that runs after the quotes have been
+    /// reserved.
+    ///
+    /// Separated from `prepare_batch` so that the caller can execute
+    /// compensations (releasing the reserved quotes) if this method fails.
+    #[allow(clippy::too_many_arguments)]
+    async fn prepare_batch_after_reserve(
+        &mut self,
+        quote_ids: &[&str],
+        mut quote_infos: Vec<MintQuote>,
+        quote_amounts: Vec<Amount>,
+        total_amount: Amount,
+        payment_method: PaymentMethod,
+        amount_split_target: SplitTarget,
+        spending_conditions: Option<SpendingConditions>,
+        external_keys: Option<&std::collections::HashMap<String, SecretKey>>,
+    ) -> Result<Prepared, Error> {
+        use crate::nuts::BatchMintRequest;
 
         // Get active keyset
         let keyset_policy = self.state_data.keyset_policy;
@@ -836,23 +902,19 @@ impl<'a> MintSaga<'a, Initial> {
         )
         .await;
 
-        Ok(MintSaga {
-            wallet: self.wallet,
-            compensations: self.compensations,
-            state_data: Prepared {
-                operation_id: self.state_data.operation_id,
-                active_keyset_id,
-                premint_secrets,
-                mint_request: PreparedMintRequest::Batch {
-                    quote_ids: quote_ids.iter().map(|s| s.to_string()).collect(),
-                    quote_infos,
-                    output_counts,
-                    request: batch_request,
-                },
-                payment_method,
-                keyset_policy,
-                saga,
+        Ok(Prepared {
+            operation_id: self.state_data.operation_id,
+            active_keyset_id,
+            premint_secrets,
+            mint_request: PreparedMintRequest::Batch {
+                quote_ids: quote_ids.iter().map(|s| s.to_string()).collect(),
+                quote_infos,
+                output_counts,
+                request: batch_request,
             },
+            payment_method,
+            keyset_policy,
+            saga,
         })
     }
 }
@@ -1535,5 +1597,111 @@ mod tests {
             "npub.cash fallback goes out unsigned"
         );
         assert_eq!(requests[0].1.outputs, requests[2].1.outputs);
+    }
+
+    #[tokio::test]
+    async fn prepare_batch_failure_releases_reserved_quotes() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+
+        // A batch of two BOLT12 quotes where the second has no signing key,
+        // so NUT-20 signing fails after both quotes were reserved.
+        let signing_key =
+            SecretKey::from_hex("50d7fd7aa2b2fe4607f41f4ce6f8794fc184dd47b8cdfbe4b3d1249aa02d35aa")
+                .expect("valid signing key");
+        let mut signed = paid_signed_mint_quote(mint_url.clone(), Amount::from(64), signing_key);
+        signed.payment_method = PaymentMethod::Known(KnownMethod::Bolt12);
+        let mut unsigned =
+            paid_signed_mint_quote(mint_url, Amount::from(32), SecretKey::generate());
+        unsigned.payment_method = PaymentMethod::Known(KnownMethod::Bolt12);
+        unsigned.secret_key = None;
+
+        let quote_ids = [signed.id.clone(), unsigned.id.clone()];
+        db.add_mint_quote(signed).await.expect("add mint quote");
+        db.add_mint_quote(unsigned).await.expect("add mint quote");
+
+        let result = MintSaga::new(&wallet)
+            .prepare_batch(
+                &[quote_ids[0].as_str(), quote_ids[1].as_str()],
+                SplitTarget::None,
+                None,
+                None,
+            )
+            .await;
+        assert!(
+            matches!(result, Err(Error::SignatureMissingOrInvalid)),
+            "{:?}",
+            result.err()
+        );
+
+        for quote_id in &quote_ids {
+            let quote = db
+                .get_mint_quote(quote_id)
+                .await
+                .expect("get mint quote")
+                .expect("mint quote exists");
+            assert!(
+                quote.used_by_operation.is_none(),
+                "failed batch prepare left {quote_id} reserved by {:?}",
+                quote.used_by_operation
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn prepare_batch_partial_reservation_is_rolled_back() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+
+        let free =
+            paid_signed_mint_quote(mint_url.clone(), Amount::from(64), SecretKey::generate());
+        let busy = paid_signed_mint_quote(mint_url, Amount::from(32), SecretKey::generate());
+        let free_id = free.id.clone();
+        let busy_id = busy.id.clone();
+        db.add_mint_quote(free).await.expect("add mint quote");
+        db.add_mint_quote(busy).await.expect("add mint quote");
+
+        // Another operation already holds the second quote.
+        let other_operation = uuid::Uuid::now_v7();
+        db.reserve_mint_quote(&busy_id, &other_operation)
+            .await
+            .expect("reserve mint quote");
+
+        let result = MintSaga::new(&wallet)
+            .prepare_batch(
+                &[free_id.as_str(), busy_id.as_str()],
+                SplitTarget::None,
+                None,
+                None,
+            )
+            .await;
+        assert!(result.is_err());
+
+        let free = db
+            .get_mint_quote(&free_id)
+            .await
+            .expect("get mint quote")
+            .expect("mint quote exists");
+        assert!(
+            free.used_by_operation.is_none(),
+            "partially reserved batch left the first quote reserved by {:?}",
+            free.used_by_operation
+        );
+
+        // The rollback must not touch the other operation's reservation.
+        let busy = db
+            .get_mint_quote(&busy_id)
+            .await
+            .expect("get mint quote")
+            .expect("mint quote exists");
+        assert_eq!(busy.used_by_operation, Some(other_operation.to_string()));
     }
 }
