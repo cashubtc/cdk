@@ -995,15 +995,7 @@ impl MintPayment for CdkLdkNode {
                 let amount =
                     Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to_ceil(unit)?;
 
-                let relative_fee_reserve =
-                    (self.fee_reserve.percent_fee_reserve * amount.value() as f32) as u64;
-
-                let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
-
-                let fee = match relative_fee_reserve > absolute_fee_reserve {
-                    true => relative_fee_reserve,
-                    false => absolute_fee_reserve,
-                };
+                let fee = self.fee_reserve.fee_for_amount(amount.value());
 
                 let payment_hash = bolt11.payment_hash().to_string();
                 let payment_hash_bytes = hex::decode(&payment_hash)?
@@ -1039,15 +1031,7 @@ impl MintPayment for CdkLdkNode {
                 let amount =
                     Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to_ceil(unit)?;
 
-                let relative_fee_reserve =
-                    (self.fee_reserve.percent_fee_reserve * amount.value() as f32) as u64;
-
-                let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
-
-                let fee = match relative_fee_reserve > absolute_fee_reserve {
-                    true => relative_fee_reserve,
-                    false => absolute_fee_reserve,
-                };
+                let fee = self.fee_reserve.fee_for_amount(amount.value());
 
                 Ok(PaymentQuoteResponse {
                     request_lookup_id: Some(PaymentIdentifier::QuoteId(

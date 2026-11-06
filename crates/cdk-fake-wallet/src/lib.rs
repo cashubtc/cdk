@@ -11,7 +11,6 @@
 
 #![doc = include_str!("../README.md")]
 
-use std::cmp::max;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -428,13 +427,8 @@ impl FakeWallet {
     }
 
     fn fee_for_amount(&self, amount: &Amount<CurrencyUnit>) -> Amount<CurrencyUnit> {
-        let relative_fee_reserve =
-            (self.fee_reserve.percent_fee_reserve * amount.value() as f32) as u64;
-
-        let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
-
         Amount::new(
-            max(relative_fee_reserve, absolute_fee_reserve),
+            self.fee_reserve.fee_for_amount(amount.value()),
             amount.unit().clone(),
         )
     }
