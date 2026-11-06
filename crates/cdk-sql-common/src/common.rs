@@ -7,37 +7,8 @@ use cdk_common::database::Error;
 use crate::database::DatabaseExecutor;
 use crate::stmt::query;
 
-const SLOW_QUERY_THRESHOLD_MS: u128 = 20;
-
-/// Run a database operation and log slow operations, it also converts and logs any error with a
-/// given info for more context. This function is expecting a synchronous database operation
-#[inline(always)]
-pub fn run_db_operation_sync<F, E, E1, T>(
-    info: &str,
-    operation: F,
-    error_map: E,
-) -> Result<T, Error>
-where
-    F: FnOnce() -> Result<T, E1>,
-    E1: Debug,
-    E: FnOnce(E1) -> Error,
-{
-    let start = Instant::now();
-
-    tracing::trace!("Running db operation {}", info);
-
-    let result = operation().map_err(|e| {
-        tracing::error!("Query {} failed with error {:?}", info, e);
-        error_map(e)
-    });
-
-    let duration = start.elapsed();
-    if duration.as_millis() > SLOW_QUERY_THRESHOLD_MS {
-        tracing::warn!("[SLOW QUERY] Took {} ms: {}", duration.as_millis(), info);
-    }
-
-    result
-}
+/// Above this, a database operation is logged as slow.
+pub const SLOW_QUERY_THRESHOLD_MS: u128 = 20;
 
 /// Run a database operation and log slow operations, it also converts and logs any error with a
 /// given info for more context
