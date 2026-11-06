@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 
 pub mod amount;
+pub mod bip77;
 pub mod dhke;
 pub mod mint_url;
 pub mod nuts;
