@@ -2,7 +2,6 @@
 
 #![doc = include_str!("../README.md")]
 
-use std::cmp::max;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::str::FromStr;
@@ -369,10 +368,7 @@ impl MintPayment for Cln {
                     Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to_ceil(unit)?;
 
                 // Calculate fee
-                let relative_fee_reserve =
-                    (self.fee_reserve.percent_fee_reserve * amount.value() as f32) as u64;
-                let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
-                let fee = max(relative_fee_reserve, absolute_fee_reserve);
+                let fee = self.fee_reserve.fee_for_amount(amount.value());
 
                 Ok(PaymentQuoteResponse {
                     request_lookup_id: Some(PaymentIdentifier::PaymentHash(
@@ -407,10 +403,7 @@ impl MintPayment for Cln {
                 let amount = Amount::new(amount_msat, CurrencyUnit::Msat).convert_to_ceil(unit)?;
 
                 // Calculate fee
-                let relative_fee_reserve =
-                    (self.fee_reserve.percent_fee_reserve * amount.value() as f32) as u64;
-                let absolute_fee_reserve: u64 = self.fee_reserve.min_fee_reserve.into();
-                let fee = max(relative_fee_reserve, absolute_fee_reserve);
+                let fee = self.fee_reserve.fee_for_amount(amount.value());
 
                 Ok(PaymentQuoteResponse {
                     request_lookup_id: Some(PaymentIdentifier::QuoteId(quote_id)),

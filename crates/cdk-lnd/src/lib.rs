@@ -4,7 +4,6 @@
 
 #![doc = include_str!("../README.md")]
 
-use std::cmp::max;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::str::FromStr;
@@ -108,11 +107,7 @@ impl Lnd {
         // The quote must cover the entire millisatoshi principal.
         let amount = Amount::new(amount_msat.into(), CurrencyUnit::Msat).convert_to_ceil(unit)?;
 
-        let relative_fee_reserve = (fee_reserve.percent_fee_reserve * amount.value() as f32) as u64;
-
-        let absolute_fee_reserve: u64 = fee_reserve.min_fee_reserve.into();
-
-        let fee = max(relative_fee_reserve, absolute_fee_reserve);
+        let fee = fee_reserve.fee_for_amount(amount.value());
 
         Ok(PaymentQuoteResponse {
             request_lookup_id: Some(PaymentIdentifier::PaymentHash(

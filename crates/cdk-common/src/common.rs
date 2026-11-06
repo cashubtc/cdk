@@ -205,6 +205,25 @@ pub struct FeeReserve {
     pub percent_fee_reserve: f32,
 }
 
+impl FeeReserve {
+    /// Calculate the fee reserve for an amount.
+    ///
+    /// Returns `percent_fee_reserve` of `amount`, rounded up to the next whole
+    /// unit, or `min_fee_reserve` if that is larger. Rounding up means the
+    /// reserve always covers the full proportional fee, e.g. 1% of 1,550 is 16,
+    /// not 15. Uses whole-number maths only.
+    pub fn fee_for_amount(&self, amount: u64) -> u64 {
+        // Turn the percentage into parts per million, e.g. 0.01 (1%) -> 10_000
+        let parts_per_million = (f64::from(self.percent_fee_reserve) * 1_000_000.0).round() as u64;
+
+        let relative_fee_reserve =
+            (u128::from(amount) * u128::from(parts_per_million)).div_ceil(1_000_000);
+        let relative_fee_reserve = u64::try_from(relative_fee_reserve).unwrap_or(u64::MAX);
+
+        relative_fee_reserve.max(u64::from(self.min_fee_reserve))
+    }
+}
+
 /// CDK Version
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct IssuerVersion {
@@ -494,5 +513,66 @@ mod tests {
         let v2 = IssuerVersion::from_str("nutshell/0.15.0").unwrap();
 
         assert_eq!(v1.partial_cmp(&v2), None);
+    }
+
+    use super::FeeReserve;
+
+    fn fee_reserve(min: u64, percent: f32) -> FeeReserve {
+        FeeReserve {
+            min_fee_reserve: Amount::from(min),
+            percent_fee_reserve: percent,
+        }
+    }
+
+    #[test]
+    fn fee_for_amount_rounds_fractional_reserve_up() {
+        // 1% of 1,550 is 15.5, rounded up to 16
+        assert_eq!(fee_reserve(0, 0.01).fee_for_amount(1_550), 16);
+        // 1% of 1 is 0.01, rounded up to 1
+        assert_eq!(fee_reserve(0, 0.01).fee_for_amount(1), 1);
+    }
+
+    #[test]
+    fn fee_for_amount_exact_multiple_is_not_rounded() {
+        assert_eq!(fee_reserve(0, 0.01).fee_for_amount(1_500), 15);
+        assert_eq!(fee_reserve(0, 0.02).fee_for_amount(1_000_000), 20_000);
+    }
+
+    #[test]
+    fn fee_for_amount_zero() {
+        // Zero amount gives zero reserve
+        assert_eq!(fee_reserve(0, 0.01).fee_for_amount(0), 0);
+        // Zero percent falls back to the minimum
+        assert_eq!(fee_reserve(5, 0.0).fee_for_amount(1_000_000), 5);
+    }
+
+    #[test]
+    fn fee_for_amount_uses_minimum_when_larger() {
+        // 1% of 50 is 0.5, rounded up to 1, so the minimum of 2 wins
+        assert_eq!(fee_reserve(2, 0.01).fee_for_amount(50), 2);
+    }
+
+    #[test]
+    fn fee_for_amount_does_not_overflow() {
+        // 1% of u64::MAX is not a whole number, so it rounds up by one
+        assert_eq!(
+            fee_reserve(0, 0.01).fee_for_amount(u64::MAX),
+            u64::MAX / 100 + 1
+        );
+    }
+
+    #[test]
+    fn fee_for_amount_is_previous_float_result_or_one_more() {
+        for percent in [0.001_f32, 0.005, 0.01, 0.02, 0.03, 0.05, 0.1] {
+            let reserve = fee_reserve(0, percent);
+            for amount in 0..=100_000_u64 {
+                let previous = (percent * amount as f32) as u64;
+                let fee = reserve.fee_for_amount(amount);
+                assert!(
+                    fee == previous || fee == previous + 1,
+                    "{percent} of {amount}: {fee} vs {previous}"
+                );
+            }
+        }
     }
 }
