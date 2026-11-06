@@ -2030,19 +2030,24 @@ impl Wallet {
                     response.outpoint.clone(),
                 )
                 .await?;
-                quote.fee_index = response
+                // NUT-30 only reports `selected_fee_index` once the quote is
+                // executed. Before that, keep the tier the user selected
+                // (its `fee_reserve` is what the melt reserves proofs for)
+                // instead of falling back to the first option.
+                let fee_index = response
                     .selected_fee_index
+                    .or(quote.fee_index)
                     .or_else(|| response.fee_options.first().map(|option| option.fee_index));
-                quote.estimated_blocks = response
-                    .selected_fee_index
+                quote.estimated_blocks = fee_index
                     .and_then(|selected| {
                         response
                             .fee_options
                             .iter()
                             .find(|option| option.fee_index == selected)
                     })
-                    .or_else(|| response.fee_options.first())
-                    .map(|option| option.estimated_blocks);
+                    .map(|option| option.estimated_blocks)
+                    .or(quote.estimated_blocks);
+                quote.fee_index = fee_index;
                 self.localstore.add_melt_quote(quote.clone()).await?;
                 quote = self
                     .localstore
