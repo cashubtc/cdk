@@ -589,7 +589,7 @@ mod tests {
             CurrencyUnit::Auth,
             path,
             0,
-            None,
+            0,
             KeySetVersion::Version00,
         );
 
@@ -640,14 +640,14 @@ mod tests {
                         unit: CurrencyUnit::Auth,
                         active: true,
                         input_fee_ppk: 0,
-                        final_expiry: None,
+                        final_expiry: 0,
                     },
                     KeySetInfo {
                         id: self.keyset_inactive.id,
                         unit: CurrencyUnit::Auth,
                         active: false,
                         input_fee_ppk: 0,
-                        final_expiry: None,
+                        final_expiry: 0,
                     },
                 ],
             })

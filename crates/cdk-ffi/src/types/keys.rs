@@ -15,6 +15,10 @@ pub struct KeySetInfo {
     pub active: bool,
     /// Input fee per thousand (ppk)
     pub input_fee_ppk: u64,
+    /// Unix timestamp past which the mint rejects this keyset on both inputs
+    /// and outputs, zero when the keyset has no final expiry
+    #[uniffi(default = 0)]
+    pub final_expiry: u64,
 }
 
 impl From<cdk::nuts::KeySetInfo> for KeySetInfo {
@@ -24,6 +28,7 @@ impl From<cdk::nuts::KeySetInfo> for KeySetInfo {
             unit: keyset.unit.into(),
             active: keyset.active,
             input_fee_ppk: keyset.input_fee_ppk,
+            final_expiry: keyset.final_expiry,
         }
     }
 }
@@ -39,28 +44,37 @@ impl TryFrom<KeySetInfo> for cdk::nuts::KeySetInfo {
                 .map_err(|e| FfiError::internal(format!("Invalid keyset ID: {}", e)))?,
             unit: keyset.unit.into(),
             active: keyset.active,
-            final_expiry: None,
+            final_expiry: keyset.final_expiry,
             input_fee_ppk: keyset.input_fee_ppk,
         })
     }
 }
 
 impl KeySetInfo {
-    /// Convert KeySetInfo to JSON string
+    /// Convert KeySetInfo to NUT-02 JSON
     pub fn to_json(&self) -> Result<String, FfiError> {
-        Ok(serde_json::to_string(self)?)
+        encode_key_set_info(self.clone())
     }
 }
 
 /// Decode KeySetInfo from JSON string
+///
+/// The JSON is NUT-02's, so it goes through the native type rather than this
+/// record's derived serde, whose enum representation spells a unit `Sat` where
+/// a mint sends `sat`.
 #[uniffi::export]
 pub fn decode_key_set_info(json: String) -> Result<KeySetInfo, FfiError> {
-    Ok(serde_json::from_str(&json)?)
+    let info: cdk::nuts::KeySetInfo = serde_json::from_str(&json)?;
+    Ok(info.into())
 }
 
 /// Encode KeySetInfo to JSON string
+///
+/// Produces NUT-02's encoding, so the result is what a mint would send and
+/// what [`decode_key_set_info`] accepts.
 #[uniffi::export]
 pub fn encode_key_set_info(info: KeySetInfo) -> Result<String, FfiError> {
+    let info: cdk::nuts::KeySetInfo = info.try_into()?;
     Ok(serde_json::to_string(&info)?)
 }
 
@@ -161,8 +175,10 @@ pub struct KeySet {
     pub input_fee_ppk: u64,
     /// The keys (map of amount to public key hex)
     pub keys: HashMap<u64, String>,
-    /// Optional expiry timestamp
-    pub final_expiry: Option<u64>,
+    /// Unix timestamp past which the mint rejects this keyset on both inputs
+    /// and outputs, zero when the keyset has no final expiry
+    #[uniffi(default = 0)]
+    pub final_expiry: u64,
 }
 
 impl From<cdk::nuts::KeySet> for KeySet {
@@ -184,14 +200,9 @@ impl TryFrom<KeySet> for cdk::nuts::KeySet {
     fn try_from(keyset: KeySet) -> Result<Self, Self::Error> {
         use std::str::FromStr;
 
-        // Convert id
         let id = cdk::nuts::Id::from_str(&keyset.id)
             .map_err(|e| FfiError::internal(format!("Invalid keyset ID: {}", e)))?;
-
-        // Convert unit
         let unit: cdk::nuts::CurrencyUnit = keyset.unit.into();
-
-        // Convert keys
         let keys = Keys { keys: keyset.keys }.try_into()?;
 
         Ok(Self {
@@ -206,21 +217,30 @@ impl TryFrom<KeySet> for cdk::nuts::KeySet {
 }
 
 impl KeySet {
-    /// Convert KeySet to JSON string
+    /// Convert KeySet to NUT-02 JSON
     pub fn to_json(&self) -> Result<String, FfiError> {
-        Ok(serde_json::to_string(self)?)
+        encode_key_set(self.clone())
     }
 }
 
 /// Decode KeySet from JSON string
+///
+/// The JSON is NUT-02's, so it goes through the native type rather than this
+/// record's derived serde, which spells a unit `Sat` where a mint sends `sat`
+/// and refuses a keyset that omits `input_fee_ppk`.
 #[uniffi::export]
 pub fn decode_key_set(json: String) -> Result<KeySet, FfiError> {
-    Ok(serde_json::from_str(&json)?)
+    let keyset: cdk::nuts::KeySet = serde_json::from_str(&json)?;
+    Ok(keyset.into())
 }
 
 /// Encode KeySet to JSON string
+///
+/// Produces NUT-02's encoding, so the result is an entry of what a mint sends
+/// from `/v1/keys` and what [`decode_key_set`] accepts.
 #[uniffi::export]
 pub fn encode_key_set(keyset: KeySet) -> Result<String, FfiError> {
+    let keyset: cdk::nuts::KeySet = keyset.try_into()?;
     Ok(serde_json::to_string(&keyset)?)
 }
 
@@ -246,5 +266,150 @@ impl TryFrom<Id> for cdk::nuts::Id {
         use std::str::FromStr;
 
         Self::from_str(&id.hex).map_err(|e| FfiError::internal(format!("Invalid ID hex: {}", e)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::iter::once;
+
+    use cdk::nuts::{
+        CurrencyUnit as CdkCurrencyUnit, KeySet as CdkKeySet, KeySetInfo as CdkKeySetInfo,
+        Keys as CdkKeys, SecretKey,
+    };
+    use cdk::Amount;
+
+    use super::*;
+
+    const KEYSET_ID: &str = "00916bbf7ef91a36";
+
+    fn native_key_set_info(final_expiry: u64) -> CdkKeySetInfo {
+        CdkKeySetInfo {
+            id: KEYSET_ID.parse().unwrap(),
+            unit: CdkCurrencyUnit::Sat,
+            active: true,
+            input_fee_ppk: 100,
+            final_expiry,
+        }
+    }
+
+    fn native_key_set(final_expiry: u64) -> CdkKeySet {
+        let key = SecretKey::generate().public_key();
+        CdkKeySet {
+            id: KEYSET_ID.parse().unwrap(),
+            unit: CdkCurrencyUnit::Sat,
+            active: Some(true),
+            keys: CdkKeys::new(once((Amount::from(1), key)).collect()),
+            input_fee_ppk: 100,
+            final_expiry,
+        }
+    }
+
+    /// The conversion used to hardcode a missing expiry, so a foreign database
+    /// returning a keyset left the wallet believing it never expires.
+    #[test]
+    fn key_set_info_conversion_preserves_final_expiry() {
+        for final_expiry in [1_900_000_000, 0] {
+            let expected = native_key_set_info(final_expiry);
+            let ffi: KeySetInfo = expected.clone().into();
+            assert_eq!(ffi.final_expiry, final_expiry);
+
+            let converted: CdkKeySetInfo = ffi.try_into().unwrap();
+            assert_eq!(converted, expected);
+        }
+    }
+
+    #[test]
+    fn key_set_conversion_preserves_final_expiry() {
+        for final_expiry in [1_900_000_000, 0] {
+            let expected = native_key_set(final_expiry);
+            let ffi: KeySet = expected.clone().into();
+            assert_eq!(ffi.final_expiry, final_expiry);
+
+            let converted: CdkKeySet = ffi.try_into().unwrap();
+            assert_eq!(converted, expected);
+        }
+    }
+
+    /// The exported codecs are what a host points at a mint's response, so they
+    /// have to speak NUT-02 rather than these records' derived serde.
+    #[test]
+    fn key_set_info_json_is_the_mints_encoding() {
+        for final_expiry in [1_900_000_000, 0] {
+            let expected = native_key_set_info(final_expiry);
+
+            let json = encode_key_set_info(expected.clone().into()).unwrap();
+            assert_eq!(json, serde_json::to_string(&expected).unwrap());
+
+            let decoded: CdkKeySetInfo = decode_key_set_info(json).unwrap().try_into().unwrap();
+            assert_eq!(decoded, expected);
+        }
+    }
+
+    #[test]
+    fn key_set_json_is_the_mints_encoding() {
+        for final_expiry in [1_900_000_000, 0] {
+            let expected = native_key_set(final_expiry);
+
+            let json = encode_key_set(expected.clone().into()).unwrap();
+            assert_eq!(json, serde_json::to_string(&expected).unwrap());
+
+            let decoded: CdkKeySet = decode_key_set(json).unwrap().try_into().unwrap();
+            assert_eq!(decoded, expected);
+        }
+    }
+
+    /// A mint omits final_expiry rather than sending null, and so does every
+    /// keyset a wallet stored before the field existed. Zero is the record's
+    /// spelling for the same thing.
+    #[test]
+    fn an_absent_final_expiry_decodes_to_zero() {
+        let info = decode_key_set_info(format!(
+            r#"{{"id":"{KEYSET_ID}","unit":"sat","active":true,"input_fee_ppk":100}}"#
+        ))
+        .unwrap();
+        assert_eq!(info.final_expiry, 0);
+
+        let mut json = serde_json::to_value(native_key_set(1_900_000_000)).unwrap();
+        json.as_object_mut().unwrap().remove("final_expiry");
+        let keyset = decode_key_set(json.to_string()).unwrap();
+        assert_eq!(keyset.final_expiry, 0);
+    }
+
+    /// NUT-02 reads an absent input_fee_ppk as zero. The record's derived
+    /// serde rejected such a keyset outright.
+    #[test]
+    fn an_absent_input_fee_decodes_to_zero() {
+        let mut json = serde_json::to_value(native_key_set(0)).unwrap();
+        json.as_object_mut().unwrap().remove("input_fee_ppk");
+        let keyset = decode_key_set(json.to_string()).unwrap();
+        assert_eq!(keyset.input_fee_ppk, 0);
+    }
+
+    #[test]
+    fn to_json_matches_the_exported_encoder() {
+        let info: KeySetInfo = native_key_set_info(1_900_000_000).into();
+        assert_eq!(
+            info.to_json().unwrap(),
+            encode_key_set_info(info.clone()).unwrap()
+        );
+        assert_eq!(
+            decode_key_set_info(info.to_json().unwrap())
+                .unwrap()
+                .final_expiry,
+            info.final_expiry
+        );
+
+        let keyset: KeySet = native_key_set(1_900_000_000).into();
+        assert_eq!(
+            keyset.to_json().unwrap(),
+            encode_key_set(keyset.clone()).unwrap()
+        );
+        assert_eq!(
+            decode_key_set(keyset.to_json().unwrap())
+                .unwrap()
+                .final_expiry,
+            keyset.final_expiry
+        );
     }
 }

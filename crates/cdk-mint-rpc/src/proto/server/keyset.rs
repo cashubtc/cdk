@@ -26,7 +26,7 @@ impl MintRPCServer {
                 amounts,
                 input_fee_ppk.unwrap_or(0),
                 use_keyset_v2.unwrap_or(true),
-                final_expiry,
+                final_expiry.unwrap_or(0),
             )
             .await
             .map_err(|_| Status::invalid_argument("Could not rotate keyset".to_string()))

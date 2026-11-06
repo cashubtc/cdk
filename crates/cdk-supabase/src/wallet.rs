@@ -2560,7 +2560,9 @@ impl KeySetTable {
             unit: info.unit.to_string(),
             active: info.active,
             input_fee_ppk: info.input_fee_ppk as i64,
-            final_expiry: info.final_expiry.map(|v| v as i64),
+            final_expiry: (info.final_expiry != 0)
+                .then(|| i64::try_from(info.final_expiry))
+                .transpose()?,
             keyset_u32: Some(u32::from(info.id) as i64),
             _extra: Default::default(),
         })
@@ -2576,7 +2578,8 @@ impl TryInto<KeySetInfo> for KeySetTable {
                 .map_err(|_| DatabaseError::Internal("Invalid unit".into()))?,
             active: self.active,
             input_fee_ppk: self.input_fee_ppk as u64,
-            final_expiry: self.final_expiry.map(|v| v as u64),
+            final_expiry: u64::try_from(self.final_expiry.unwrap_or(0))
+                .map_err(|_| DatabaseError::Internal("Negative final_expiry".into()))?,
         })
     }
 }

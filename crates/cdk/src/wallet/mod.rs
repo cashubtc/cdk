@@ -1293,7 +1293,7 @@ mod tests {
             CurrencyUnit::Auth,
             path,
             0,
-            None,
+            0,
             KeySetVersion::Version00,
         );
 
@@ -1856,7 +1856,7 @@ mod tests {
             active: Some(true),
             keys,
             input_fee_ppk: 0,
-            final_expiry: None,
+            final_expiry: 0,
         };
         let premint_secrets = PreMintSecrets::restore_batch(keyset_id, &seed, 0, 2)
             .expect("restore secrets should derive");

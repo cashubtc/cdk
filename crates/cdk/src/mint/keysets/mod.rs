@@ -77,7 +77,7 @@ impl Mint {
         amounts: Vec<u64>,
         input_fee_ppk: u64,
         use_keyset_v2: bool,
-        final_expiry: Option<u64>,
+        final_expiry: u64,
     ) -> Result<MintKeySetInfo, Error> {
         let result = self
             .signatory

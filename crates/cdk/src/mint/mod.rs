@@ -1626,7 +1626,7 @@ mod tests {
                     amounts: amounts.clone(),
                     input_fee_ppk: 0,
                     keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
-                    final_expiry: None,
+                    final_expiry: 0,
                 })
                 .await
                 .expect("rotate_keyset");
@@ -2053,7 +2053,7 @@ mod tests {
                     amounts: amts.clone(),
                     input_fee_ppk: *fee,
                     keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
-                    final_expiry: None,
+                    final_expiry: 0,
                 })
                 .await
                 .expect("seed rotate");
@@ -2071,7 +2071,7 @@ mod tests {
         let amts = amounts.clone();
         let rotate = tokio::spawn(async move {
             mint_c
-                .rotate_keyset(CurrencyUnit::Sat, amts, 0, true, None)
+                .rotate_keyset(CurrencyUnit::Sat, amts, 0, true, 0)
                 .await
         });
 
@@ -2087,7 +2087,7 @@ mod tests {
                 amounts: amounts.clone(),
                 input_fee_ppk: 0,
                 keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
-                final_expiry: None,
+                final_expiry: 0,
             })
             .await
             .expect("out-of-band msat rotate");
@@ -2151,7 +2151,7 @@ mod tests {
                     amounts: amounts.clone(),
                     input_fee_ppk: *fee,
                     keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
-                    final_expiry: None,
+                    final_expiry: 0,
                 })
                 .await
                 .unwrap();
@@ -2215,7 +2215,7 @@ mod tests {
         let first_keyset_id = keysets.keysets[0].id;
 
         // set the first keyset to inactive and generate a new keyset
-        mint.rotate_keyset(CurrencyUnit::default(), vec![1], 1, true, None)
+        mint.rotate_keyset(CurrencyUnit::default(), vec![1], 1, true, 0)
             .await
             .expect("test");
 
@@ -2245,13 +2245,12 @@ mod tests {
 
         let expiry: u64 = 1_000_000;
         let keyset_info = mint
-            .rotate_keyset(CurrencyUnit::default(), vec![1], 0, true, Some(expiry))
+            .rotate_keyset(CurrencyUnit::default(), vec![1], 0, true, expiry)
             .await
             .expect("rotate with expiry");
 
         assert_eq!(
-            keyset_info.final_expiry,
-            Some(expiry),
+            keyset_info.final_expiry, expiry,
             "final_expiry must be stored in the rotated keyset"
         );
 
@@ -2259,7 +2258,7 @@ mod tests {
         let stored = mint
             .get_keyset_info(&keyset_info.id)
             .expect("keyset should be found");
-        assert_eq!(stored.final_expiry, Some(expiry));
+        assert_eq!(stored.final_expiry, expiry);
     }
 
     #[tokio::test]
@@ -2656,7 +2655,7 @@ mod tests {
             amounts,
             input_fee_ppk: 100,
             keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
-            final_expiry: None,
+            final_expiry: 0,
         };
         let rotation_result = mint.signatory.rotate_keyset(rotate_argument).await;
 
@@ -2691,7 +2690,7 @@ mod tests {
                 amounts,
                 input_fee_ppk: 0,
                 keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
-                final_expiry: None,
+                final_expiry: 0,
             })
             .await
             .expect("rotate_keyset");
@@ -2742,7 +2741,7 @@ mod tests {
         let expired_keysets: Vec<SignatoryKeySet> = current_keysets
             .into_iter()
             .map(|mut ks| {
-                ks.final_expiry = Some(unix_time() - 1);
+                ks.final_expiry = unix_time() - 1;
                 ks
             })
             .collect();
@@ -2782,7 +2781,7 @@ mod tests {
         let expired_keysets: Vec<SignatoryKeySet> = current_keysets
             .into_iter()
             .map(|mut ks| {
-                ks.final_expiry = Some(unix_time() - 1);
+                ks.final_expiry = unix_time() - 1;
                 ks
             })
             .collect();

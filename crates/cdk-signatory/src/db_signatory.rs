@@ -533,7 +533,7 @@ mod test {
             amounts: vec![1, 2, 4, 8],
             input_fee_ppk: 0,
             keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
-            final_expiry: None,
+            final_expiry: 0,
         };
 
         let before = store.keysets_epoch().await.expect("epoch");
@@ -602,7 +602,7 @@ mod test {
             amounts: vec![1, 2, 4, 8],
             input_fee_ppk: 0,
             keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
-            final_expiry: None,
+            final_expiry: 0,
         };
 
         // B rotates Sat and commits. A's in-memory view is untouched.
@@ -659,7 +659,7 @@ mod test {
             amounts,
             input_fee_ppk: 0,
             keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
-            final_expiry: None,
+            final_expiry: 0,
         };
 
         // A establishes an active Sat keyset, then B rotates it to a distinct
@@ -710,7 +710,7 @@ mod test {
                 amounts: vec![1, 2, 4, 8],
                 input_fee_ppk: 0,
                 keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
-                final_expiry: Some(unix_time() - 1),
+                final_expiry: unix_time() - 1,
             })
             .await
             .expect("rotate_keyset");
@@ -752,7 +752,7 @@ mod test {
                 amounts: vec![1, 2, 4, 8],
                 input_fee_ppk: 0,
                 keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
-                final_expiry: Some(unix_time() + 1_000),
+                final_expiry: unix_time() + 1_000,
             })
             .await
             .expect("rotate_keyset");
@@ -767,7 +767,7 @@ mod test {
             (epoch, current.active_by_unit.clone(), info.clone())
         };
 
-        let new_expiry = Some(unix_time() + 9_000);
+        let new_expiry = unix_time() + 9_000;
         info.final_expiry = new_expiry;
         signatory.publish_snapshot(epoch + 1, active, vec![info]);
 
@@ -811,7 +811,7 @@ mod test {
                 amounts: vec![1, 2, 4, 8],
                 input_fee_ppk: 0,
                 keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
-                final_expiry: None,
+                final_expiry: 0,
             })
             .await
             .expect("rotate_keyset");
@@ -864,7 +864,7 @@ mod test {
                 amounts: vec![1, 2, 4, 8],
                 input_fee_ppk: 0,
                 keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
-                final_expiry: None,
+                final_expiry: 0,
             })
             .await
             .expect("rotate_keyset");
@@ -922,7 +922,7 @@ mod test {
                         amounts: vec![1, 2, 4, 8],
                         input_fee_ppk: 0,
                         keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
-                        final_expiry: None,
+                        final_expiry: 0,
                     })
                     .await
                     .expect("rotate_keyset")
@@ -1004,7 +1004,7 @@ mod test {
                         amounts: vec![1, 2, 4, 8],
                         input_fee_ppk: 0,
                         keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
-                        final_expiry: None,
+                        final_expiry: 0,
                     })
                     .await
                     .expect("rotate_keyset")
@@ -1061,7 +1061,7 @@ mod test {
                 amounts: vec![1, 2, 4, 8],
                 input_fee_ppk: 0,
                 keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
-                final_expiry: None,
+                final_expiry: 0,
             })
             .await
             .expect("seed rotation");
@@ -1076,7 +1076,7 @@ mod test {
                             amounts: vec![1, 2, 4, 8],
                             input_fee_ppk: 0,
                             keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
-                            final_expiry: None,
+                            final_expiry: 0,
                         })
                         .await
                         .expect("peer rotation")
@@ -1126,7 +1126,7 @@ mod test {
             CurrencyUnit::Sat,
             derivation_path_from_unit(CurrencyUnit::Sat, 0).unwrap(),
             0,
-            None,
+            0,
             cdk_common::nut02::KeySetVersion::Version01,
         );
 
@@ -1174,7 +1174,7 @@ mod test {
             CurrencyUnit::Sat,
             derivation_path_from_unit(CurrencyUnit::Sat, 0).unwrap(),
             0,
-            None,
+            0,
             cdk_common::nut02::KeySetVersion::Version00,
         );
 
@@ -1287,7 +1287,7 @@ mod test {
             CurrencyUnit::Sat,
             derivation_path_from_unit(CurrencyUnit::Sat, 1).unwrap(),
             0,
-            None,
+            0,
             cdk_common::nut02::KeySetVersion::Version00,
         );
 
@@ -1584,7 +1584,7 @@ mod test {
             CurrencyUnit::Auth,
             derivation_path_from_unit(CurrencyUnit::Auth, 1).unwrap(),
             0,
-            None,
+            0,
             cdk_common::nut02::KeySetVersion::Version00,
         );
 

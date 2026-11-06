@@ -113,7 +113,9 @@ where
         .bind("valid_from", i64::try_from(keyset.valid_from)?)
         .bind(
             "valid_to",
-            keyset.final_expiry.map(i64::try_from).transpose()?,
+            (keyset.final_expiry != 0)
+                .then(|| i64::try_from(keyset.final_expiry))
+                .transpose()?,
         )
         .bind("derivation_path", keyset.derivation_path.to_string())
         .bind("amounts", serde_json::to_string(&keyset.amounts).ok())
