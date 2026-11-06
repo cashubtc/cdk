@@ -105,7 +105,9 @@ enum Commands {
     UpdateQuoteTtl(subcommands::UpdateQuoteTtlCommand),
     /// Get quote ttl
     GetQuoteTtl,
-    /// Update mint quote state
+    /// Record a manual payment against a mint quote
+    ///
+    /// Requires --payment-id. BOLT11 defaults to its unpaid remainder; other methods require --amount.
     #[command(alias = "update-nut04-quote-state")]
     UpdateMintQuoteState(subcommands::UpdateMintQuoteStateCommand),
     /// Release the melt execution lock on a melt quote
