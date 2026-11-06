@@ -1,6 +1,6 @@
 #![doc = include_str!("./README.md")]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -678,6 +678,13 @@ impl Wallet {
     /// Scans each keyset in batches of `opts.batch_size` blinded messages
     /// and stops after `opts.max_gap` consecutive empty batches. Lowering
     /// `batch_size` trades scan latency for a gentler request pattern.
+    ///
+    /// Proofs the wallet already stores are left as they are, so restoring
+    /// into a wallet in use does not release proofs held by a pending send or
+    /// another operation. The exception is a pending proof no operation owns,
+    /// which becomes unspent again once the mint reports it unspent. The
+    /// returned amounts are scan totals: they count every proof found with the
+    /// state the mint reports, including proofs the wallet already stores.
     #[instrument(skip(self))]
     pub async fn restore_with_opts(&self, opts: NUT13Options) -> Result<Restored, Error> {
         let opts = NUT13Options::new(opts.batch_size, opts.max_gap)?;
@@ -828,6 +835,37 @@ impl Wallet {
 
                 let states = self.check_proofs_spent(proofs.clone()).await?;
 
+                // The state of a proof the wallet already stores belongs to the
+                // operation using it. The mint reporting it unspent does not
+                // mean that operation is over, so only add proofs we don't have.
+                // A pending proof no operation owns has nothing to wait for (an
+                // earlier restore stores proofs the mint reports pending that
+                // way), so it becomes unspent again once the mint says so.
+                // Spent ones were already removed by `check_proofs_spent`.
+                // The returned totals still count every scanned proof.
+                let stored_proofs = self
+                    .localstore
+                    .get_proofs_by_ys(states.iter().map(|state| state.y).collect())
+                    .await?;
+                let known_ys: HashSet<_> = stored_proofs
+                    .iter()
+                    .map(|proof_info| proof_info.y)
+                    .collect();
+                let unowned_pending_ys: HashSet<_> = stored_proofs
+                    .iter()
+                    .filter(|proof_info| {
+                        proof_info.state == State::Pending && proof_info.used_by_operation.is_none()
+                    })
+                    .map(|proof_info| proof_info.y)
+                    .collect();
+                let released_ys: Vec<_> = states
+                    .iter()
+                    .filter(|state| {
+                        state.state == State::Unspent && unowned_pending_ys.contains(&state.y)
+                    })
+                    .map(|state| state.y)
+                    .collect();
+
                 let (unspent_proofs, updated_restored) = proofs
                     .into_iter()
                     .zip(states)
@@ -856,14 +894,18 @@ impl Wallet {
                                         .unspent
                                         .checked_add(proof_info.proof.amount)
                                         .ok_or(Error::AmountOverflow)?;
-                                    proofs.push(proof_info);
+                                    if !known_ys.contains(&proof_info.y) {
+                                        proofs.push(proof_info);
+                                    }
                                 }
                                 State::Pending => {
                                     restored_result.pending = restored_result
                                         .pending
                                         .checked_add(proof_info.proof.amount)
                                         .ok_or(Error::AmountOverflow)?;
-                                    proofs.push(proof_info);
+                                    if !known_ys.contains(&proof_info.y) {
+                                        proofs.push(proof_info);
+                                    }
                                 }
                                 _ => {
                                     unreachable!("These states are unknown to the mint and cannot be returned")
@@ -878,6 +920,12 @@ impl Wallet {
                 self.localstore
                     .update_proofs(unspent_proofs, vec![])
                     .await?;
+
+                if !released_ys.is_empty() {
+                    self.localstore
+                        .update_proofs_state(released_ys, State::Unspent)
+                        .await?;
+                }
 
                 empty_batch = 0;
                 start_counter = start_counter.saturating_add(batch_size);
