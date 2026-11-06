@@ -114,14 +114,18 @@ async def test_wallet_keyset_management():
             active=True,
             input_fee_ppk=0
         )
-        await db.add_mint_keysets(mint_url, [keyset_info])
+        await db.add_mint_keysets(
+            mint_url,
+            [cdk_ffi.WalletKeySetInfo(keyset=keyset_info)]
+        )
         print("✓ Added mint and keyset")
 
         # Query keyset by ID
         keyset = await db.get_keyset_by_id(keyset_id)
         assert keyset is not None, "Keyset should exist"
-        assert keyset.id == keyset_id.hex, "Keyset ID should match"
-        print(f"✓ Retrieved keyset: {keyset.id}")
+        assert keyset.keyset.id == keyset_id.hex, "Keyset ID should match"
+        assert keyset.unlisted_at is None, "Keyset should still be listed"
+        print(f"✓ Retrieved keyset: {keyset.keyset.id}")
 
         # Query keysets for mint
         keysets = await db.get_mint_keysets(mint_url)
@@ -157,7 +161,10 @@ async def test_wallet_keyset_counter():
             active=True,
             input_fee_ppk=0
         )
-        await db.add_mint_keysets(mint_url, [keyset_info])
+        await db.add_mint_keysets(
+            mint_url,
+            [cdk_ffi.WalletKeySetInfo(keyset=keyset_info)]
+        )
         print("✓ Setup complete")
 
         # Increment counter

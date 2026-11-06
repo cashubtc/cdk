@@ -99,7 +99,7 @@ impl Wallet {
     ) -> Result<Option<Proofs>, Error> {
         tracing::info!("Swapping");
 
-        self.retry_on_inactive_keyset(|| async {
+        self.retry_on_stale_keyset(|| async {
             let saga = SwapSaga::new(self);
             let saga = saga
                 .prepare(
