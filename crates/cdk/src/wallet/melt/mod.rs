@@ -2188,6 +2188,60 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn quote_status_keeps_selected_onchain_fee_option() {
+        let db = create_test_db().await;
+        let client = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db.clone(), client.clone()).await;
+
+        // The user picked the second, cheaper tier of an onchain quote.
+        let mut quote = test_melt_quote();
+        quote.payment_method = PaymentMethod::Known(KnownMethod::Onchain);
+        quote.fee_reserve = Amount::from(1_000);
+        quote.fee_index = Some(1);
+        quote.estimated_blocks = Some(6);
+        db.add_melt_quote(quote.clone()).await.unwrap();
+
+        // Before the melt runs, the mint lists every tier and has not
+        // selected one yet.
+        let response = MeltQuoteResponse::Onchain(cdk_common::nut30::MeltQuoteOnchainResponse {
+            quote: quote.id.clone(),
+            amount: quote.amount,
+            unit: quote.unit.clone(),
+            method: quote.payment_method.clone(),
+            state: MeltQuoteState::Unpaid,
+            expiry: quote.expiry,
+            request: quote.request.clone(),
+            fee_options: vec![
+                cdk_common::nut30::MeltQuoteOnchainFeeOption {
+                    fee_index: 0,
+                    fee_reserve: Amount::from(5_000),
+                    estimated_blocks: 1,
+                },
+                cdk_common::nut30::MeltQuoteOnchainFeeOption {
+                    fee_index: 1,
+                    fee_reserve: Amount::from(1_000),
+                    estimated_blocks: 6,
+                },
+            ],
+            selected_fee_index: None,
+            outpoint: None,
+            change: None,
+        });
+        client
+            .melt_quote_status_responses
+            .lock()
+            .unwrap()
+            .push_back(Ok(response));
+
+        let returned = wallet.check_melt_quote_status(&quote.id).await.unwrap();
+        let stored = db.get_melt_quote(&quote.id).await.unwrap().unwrap();
+        assert_eq!(returned, stored);
+        assert_eq!(stored.fee_index, Some(1));
+        assert_eq!(stored.estimated_blocks, Some(6));
+        assert_eq!(stored.fee_reserve, Amount::from(1_000));
+    }
+
     type TestWalletDatabase =
         Arc<dyn cdk_common::database::WalletDatabase<cdk_common::database::Error> + Send + Sync>;
 
