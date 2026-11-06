@@ -414,6 +414,82 @@ where
     assert!(!quotes.is_empty());
 }
 
+/// Unissued mint quotes include every quote that can be paid more than once
+///
+/// Bolt12, onchain (NUT-30) and custom methods can receive further payments
+/// after a first mint, so they must stay in the list for the wallet to pick up
+/// the new amount. A bolt11 quote stays in the list while part of what was paid
+/// is still to issue, and is done once it has been issued in full.
+pub async fn get_unissued_mint_quotes_includes_reusable_methods<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mint_url = test_mint_url();
+
+    let reusable_quote = |payment_method: cashu::PaymentMethod| {
+        let mut quote = test_mint_quote(mint_url.clone());
+        quote.payment_method = payment_method;
+        quote.amount = None;
+        quote.state = MintQuoteState::Paid;
+        quote.amount_paid = Amount::from(15);
+        quote.amount_issued = Amount::from(10);
+        quote
+    };
+
+    let bolt12 = reusable_quote(cashu::PaymentMethod::Known(KnownMethod::Bolt12));
+    let onchain = reusable_quote(cashu::PaymentMethod::Known(KnownMethod::Onchain));
+    let custom = reusable_quote(cashu::PaymentMethod::Custom("paypal".to_string()));
+
+    let mut unpaid_bolt11 = test_mint_quote(mint_url.clone());
+    unpaid_bolt11.state = MintQuoteState::Unpaid;
+
+    // Paid in full but only partly issued: the rest is still to mint
+    let mut partially_issued_bolt11 = test_mint_quote(mint_url.clone());
+    partially_issued_bolt11.state = MintQuoteState::Paid;
+    partially_issued_bolt11.amount_paid = Amount::from(100);
+    partially_issued_bolt11.amount_issued = Amount::from(40);
+
+    let mut issued_bolt11 = test_mint_quote(mint_url);
+    issued_bolt11.state = MintQuoteState::Issued;
+    issued_bolt11.amount_paid = Amount::from(1000);
+    issued_bolt11.amount_issued = Amount::from(1000);
+
+    for quote in [
+        &bolt12,
+        &onchain,
+        &custom,
+        &unpaid_bolt11,
+        &partially_issued_bolt11,
+        &issued_bolt11,
+    ] {
+        db.add_mint_quote(quote.clone()).await.unwrap();
+    }
+
+    let unissued: Vec<String> = db
+        .get_unissued_mint_quotes()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|quote| quote.id)
+        .collect();
+
+    for quote in [&bolt12, &onchain, &custom, &unpaid_bolt11] {
+        assert!(
+            unissued.contains(&quote.id),
+            "{} quote should be unissued",
+            quote.payment_method
+        );
+    }
+    assert!(
+        unissued.contains(&partially_issued_bolt11.id),
+        "partially issued bolt11 quote should be unissued"
+    );
+    assert!(
+        !unissued.contains(&issued_bolt11.id),
+        "issued bolt11 quote should not be unissued"
+    );
+}
+
 /// Test getting mint quote in transaction
 pub async fn get_mint_quote_in_transaction<DB>(db: DB)
 where
@@ -1759,6 +1835,7 @@ macro_rules! wallet_db_test {
             get_keys_in_transaction,
             remove_keys,
             add_and_get_mint_quote,
+            get_unissued_mint_quotes_includes_reusable_methods,
             get_mint_quote_in_transaction,
             remove_mint_quote,
             add_and_get_melt_quote,
