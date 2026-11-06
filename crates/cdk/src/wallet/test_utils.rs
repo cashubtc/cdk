@@ -27,7 +27,7 @@ use tracing_subscriber::fmt::MakeWriter;
 use crate::nuts::{
     nut17, nut19, BatchCheckMintQuoteRequest, BatchMintRequest, BlindSignature, BlindedMessage,
     MeltQuoteBolt11Response, MeltQuoteState, NUT04Settings, NUT05Settings, PaymentMethod,
-    SecretKey, State,
+    ProofState, SecretKey, State,
 };
 use crate::secret::Secret;
 use crate::wallet::{MintConnector, Wallet};
@@ -503,6 +503,11 @@ pub struct MockMintConnector {
     pub mint_info: Mutex<MintInfo>,
     /// Response for post_check_state calls
     pub check_state_response: Mutex<Option<Result<CheckStateResponse, Error>>>,
+    /// Per-proof states answered by post_check_state when no response is configured.
+    ///
+    /// Unlike `check_state_response`, this answers for the ys the wallet
+    /// actually asked about (unknown ys are Unspent).
+    pub proof_states: Mutex<HashMap<crate::nuts::PublicKey, State>>,
     /// Response for post_restore calls
     pub restore_response: Mutex<Option<Result<RestoreResponse, Error>>>,
     /// Response for get_melt_quote_status calls
@@ -601,6 +606,7 @@ impl MockMintConnector {
             keysets: Mutex::new(vec![keyset]),
             mint_info: Mutex::new(mint_info),
             check_state_response: Mutex::new(None),
+            proof_states: Mutex::new(HashMap::new()),
             restore_response: Mutex::new(None),
             melt_quote_status_response: Mutex::new(None),
             melt_quote_status_responses: Mutex::new(std::collections::VecDeque::new()),
@@ -633,6 +639,11 @@ impl MockMintConnector {
 
     pub fn set_check_state_response(&self, response: Result<CheckStateResponse, Error>) {
         *self.check_state_response.lock().unwrap() = Some(response);
+    }
+
+    /// Set the state the mock mint reports for a proof `y`.
+    pub fn set_proof_state(&self, y: crate::nuts::PublicKey, state: State) {
+        self.proof_states.lock().unwrap().insert(y, state);
     }
 
     pub fn set_mint_keys_response(&self, response: Result<Vec<KeySet>, Error>) {
@@ -1086,13 +1097,29 @@ impl MintConnector for MockMintConnector {
 
     async fn post_check_state(
         &self,
-        _request: CheckStateRequest,
+        request: CheckStateRequest,
     ) -> Result<CheckStateResponse, Error> {
-        self.check_state_response
-            .lock()
-            .unwrap()
-            .take()
-            .expect("MockMintConnector: post_check_state called without configured response")
+        if let Some(response) = self.check_state_response.lock().unwrap().take() {
+            return response;
+        }
+
+        let proof_states = self.proof_states.lock().unwrap();
+        assert!(
+            !proof_states.is_empty(),
+            "MockMintConnector: post_check_state called without configured response"
+        );
+
+        Ok(CheckStateResponse {
+            states: request
+                .ys
+                .into_iter()
+                .map(|y| ProofState {
+                    y,
+                    state: proof_states.get(&y).copied().unwrap_or(State::Unspent),
+                    witness: None,
+                })
+                .collect(),
+        })
     }
 
     async fn post_restore(&self, _request: RestoreRequest) -> Result<RestoreResponse, Error> {
