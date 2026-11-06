@@ -42,6 +42,18 @@ pub enum Error {
     /// Invalid payment request
     #[error("Invalid payment request")]
     InvalidPaymentRequest,
+    /// Listening for a payment request was cancelled before redemption started.
+    #[error("Payment request reception cancelled")]
+    PaymentRequestReceiveCancelled,
+    /// Another caller is already receiving this payment request.
+    #[error("Payment request reception already in progress")]
+    PaymentRequestReceiveInProgress,
+    /// This handle has already started redeeming a payment.
+    #[error("Payment request receive handle already consumed; check wallet transactions")]
+    PaymentRequestReceiveConsumed,
+    /// The transport ended without delivering an accepted payment.
+    #[error("Payment request transport closed before payment was received")]
+    PaymentRequestReceiveClosed,
     /// A payment-request token was created but transport delivery failed.
     ///
     /// The token remains a pending send. Callers can pass `operation_id` to
@@ -880,6 +892,11 @@ impl Error {
             | Self::Database(_)
             | Self::NostrPublishFailed { .. }
             | Self::Custom(_) => false,
+
+            Self::PaymentRequestReceiveCancelled
+            | Self::PaymentRequestReceiveInProgress
+            | Self::PaymentRequestReceiveClosed => true,
+            Self::PaymentRequestReceiveConsumed => false,
 
             // Auth Errors (Generally definitive if rejected)
             Self::ClearAuthRequired

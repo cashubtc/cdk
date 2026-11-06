@@ -35,6 +35,41 @@ pub struct WalletRepository {
 
 #[uniffi::export(async_runtime = "tokio")]
 impl WalletRepository {
+    /// Create receive requests using CDK's NUT-18 builder.
+    /// With nostr_pubkey, the app receives using its own identity and no wait info is returned.
+    /// Without it, Nostr transport generates an ephemeral identity.
+    pub async fn create_request(
+        &self,
+        params: CreateRequestParams,
+    ) -> Result<CreateRequestResult, FfiError> {
+        let (payment_request, nostr_wait_info) = self.inner.create_request(params.into()).await?;
+        Ok(CreateRequestResult::from_inner(
+            payment_request,
+            nostr_wait_info,
+        ))
+    }
+
+    /// Wait for a managed Nostr request, decrypt its payload, validate it, and redeem it.
+    ///
+    /// Pass the wait info returned by `create_request`. No Nostr private key is
+    /// needed. Optional receive options supply P2PK signing keys or HTLC preimages.
+    /// Call `info.cancel()` to stop listening. Redemption already in progress
+    /// finishes normally. Keep the handle alive; pending requests are memory-only.
+    pub async fn wait_for_nostr_payment(
+        &self,
+        info: Arc<NostrWaitInfo>,
+        options: Option<ReceiveOptions>,
+    ) -> Result<Amount, FfiError> {
+        Ok(self
+            .inner
+            .wait_for_nostr_payment_with_options(
+                info.inner().clone(),
+                options.unwrap_or_default().try_into()?,
+            )
+            .await?
+            .into())
+    }
+
     /// Create a new WalletRepository from locally persisted wallet state.
     ///
     /// Construction does not make network requests to configured mints.

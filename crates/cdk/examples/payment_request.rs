@@ -133,6 +133,7 @@ async fn main() -> anyhow::Result<()> {
         mints: None,
         mint_preferred: None,
         supported_methods: vec![],
+        ..Default::default()
     };
 
     let (payment_request, nostr_wait_info) = wallet.create_request(nostr_params).await?;
@@ -191,6 +192,7 @@ async fn main() -> anyhow::Result<()> {
         mints: None,
         mint_preferred: None,
         supported_methods: vec![],
+        ..Default::default()
     };
 
     let (http_request, _) = wallet.create_request(http_params).await?;
@@ -237,6 +239,7 @@ async fn main() -> anyhow::Result<()> {
         mints: None,
         mint_preferred: None,
         supported_methods: vec![],
+        ..Default::default()
     };
 
     let (p2pk_request, _) = wallet.create_request(p2pk_params).await?;

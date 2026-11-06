@@ -63,6 +63,30 @@ Tests that use wallet database methods directly without explicit transactions:
 12. **Wallet Quote Operations** - Tests querying mint and melt quotes
 13. **Wallet Get Proofs by Y Values** - Tests retrieving proofs by Y values
 
+### Payment Request Tests
+
+`test_payment_request.py` exercises request creation through generated UniFFI
+bindings using an in-memory SQLite store, without contacting external mints or relays.
+It covers caller-selected Nostr destinations and request IDs, ephemeral
+identities, mint policies, spending conditions, validation errors, and NUT-18
+and NUT-26 encoding/decoding round trips. It also exercises managed receive
+cancellation errors through the generated async API. Detailed construction validation,
+concurrent waits, and connection cleanup are covered in Rust. Core Rust tests also
+use a local WebSocket relay and a signing mock mint to exercise NIP-17 decryption
+through P2PK/HTLC redemption.
+
+The test is included in `just ffi-test`. To run it directly, generate the
+Python bindings and place the matching shared library beside `cdk_ffi.py` in
+`target/bindings/python/`, then run:
+
+```bash
+python3 crates/cdk-ffi/tests/test_payment_request.py
+```
+
+For another binding directory, set `CDK_FFI_BINDINGS_DIR` to that directory.
+These tests exercise the shared UniFFI interface; they do not run Swift or
+Kotlin code.
+
 ### Key Features Tested
 
 **Transaction Features:**
