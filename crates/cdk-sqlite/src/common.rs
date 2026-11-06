@@ -116,7 +116,14 @@ impl DatabasePool for SqliteConnectionManager {
             config.in_memory_opened.store(true, Ordering::SeqCst);
         }
 
-        Ok(async_sqlite::AsyncSqlite::new(conn))
+        async_sqlite::AsyncSqlite::new(conn).map_err(|err| {
+            pool::Error::Resource(rusqlite::Error::SqliteFailure(
+                ffi::Error::new(ffi::SQLITE_NOMEM),
+                Some(format!(
+                    "could not start the sqlite connection thread: {err}"
+                )),
+            ))
+        })
     }
 }
 
