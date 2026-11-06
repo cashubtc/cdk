@@ -459,6 +459,15 @@ mod test {
     }
 
     #[tokio::test]
+    async fn stale_mint_quote_write_waits_for_lock_then_is_refused() {
+        let test_id = format!("test_stale_mint_quote_write_{}", uuid::Uuid::new_v4());
+        cdk_common::database::mint::test::stale_mint_quote_write_waits_for_lock_then_is_refused(
+            Arc::new(provide_mint_db(test_id).await),
+        )
+        .await;
+    }
+
+    #[tokio::test]
     async fn concurrent_mint_quote_batches_use_consistent_lock_order() {
         let test_id = format!(
             "test_concurrent_mint_quote_batches_{}",
