@@ -1227,8 +1227,9 @@ where
             let current_time = unix_time();
             quote.paid_time = Some(current_time);
             quote.payment_proof = payment_proof.clone();
-            query(r#"UPDATE melt_quote SET state = :state, paid_time = :paid_time, payment_proof = :payment_proof, fee_reserve = :fee_reserve, estimated_blocks = :estimated_blocks, selected_fee_index = :selected_fee_index, melt_lock = :melt_lock, melt_lock_expires_at = :melt_lock_expires_at WHERE id = :id"#)?
+            query(r#"UPDATE melt_quote SET state = :state, paid_time = :paid_time, payment_proof = :payment_proof, fee_reserve = :fee_reserve, estimated_blocks = :estimated_blocks, selected_fee_index = :selected_fee_index, melt_lock = :melt_lock, melt_lock_expires_at = :melt_lock_expires_at WHERE id = :id AND state = :old_state"#)?
                 .bind("state", state.to_string())
+                .bind("old_state", old_state.to_string())
                 .bind("paid_time", i64::try_from(current_time)?)
                 .bind("payment_proof", payment_proof)
                 .bind("fee_reserve", i64::try_from(quote.fee_reserve().value())?)
@@ -1240,8 +1241,9 @@ where
                 .execute(&self.inner)
                 .await
         } else {
-            query(r#"UPDATE melt_quote SET state = :state, fee_reserve = :fee_reserve, estimated_blocks = :estimated_blocks, selected_fee_index = :selected_fee_index, melt_lock = :melt_lock, melt_lock_expires_at = :melt_lock_expires_at WHERE id = :id"#)?
+            query(r#"UPDATE melt_quote SET state = :state, fee_reserve = :fee_reserve, estimated_blocks = :estimated_blocks, selected_fee_index = :selected_fee_index, melt_lock = :melt_lock, melt_lock_expires_at = :melt_lock_expires_at WHERE id = :id AND state = :old_state"#)?
                 .bind("state", state.to_string())
+                .bind("old_state", old_state.to_string())
                 .bind("fee_reserve", i64::try_from(quote.fee_reserve().value())?)
                 .bind("estimated_blocks", quote.estimated_blocks.map(i64::from))
                 .bind("selected_fee_index", quote.selected_fee_index.map(i64::from))
@@ -1253,7 +1255,8 @@ where
         };
 
         match rec {
-            Ok(_) => {}
+            Ok(1) => {}
+            Ok(_) => return Err(Error::ConcurrentUpdate),
             Err(err) => {
                 tracing::error!("SQLite Could not update melt quote");
                 return Err(err);
