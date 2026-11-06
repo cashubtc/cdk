@@ -2,9 +2,8 @@
 //! melt quote and txout quotes out.
 //!
 //! A transaction without a melt settles in one database transaction. One with
-//! a melt runs the melt saga: quote inputs are reserved, fixed txout quote ids
-//! claimed and the record stored in the saga's setup transaction, and the shared
-//! melt finalization and rollback paths settle or fail the record by its melt quote id.
+//! a melt runs the melt saga: quote inputs are reserved and the record stored in
+//! the saga's setup transaction, and the shared melt finalization and rollback paths settle or fail the record by its melt quote id.
 
 use std::collections::HashSet;
 use std::str::FromStr;
@@ -82,15 +81,6 @@ pub(crate) fn parse_quote_witness(raw: &str) -> Result<Witness, Error> {
 /// A mint quote output: its id, lock key and fixed amount.
 type QuoteOutput = (QuoteId, PublicKey, Amount);
 
-/// Parse a fixed txout quote's `id_preimage`: exactly 32 bytes of hex.
-fn parse_id_preimage(raw: &str) -> Result<[u8; 32], Error> {
-    (raw.len() == 64)
-        .then(|| cdk_common::util::hex::decode(raw).ok())
-        .flatten()
-        .and_then(|bytes| bytes.try_into().ok())
-        .ok_or_else(|| invalid("txout quote id_preimage must be 32 bytes of hex"))
-}
-
 /// Change on settlement: the excess less what the payment cost, the cost capped at the reserve.
 ///
 /// The balance rule keeps `excess >= fee_reserve`, so this never underflows; a
@@ -135,21 +125,6 @@ fn txout_quote(unit: &CurrencyUnit, id: &QuoteId, amount: Amount, pubkey: Public
 /// Lookup and payment id of a txout quote.
 fn txout_payment_id(id: &QuoteId) -> String {
     format!("txout:{id}")
-}
-
-/// Claim a transaction's fixed txout quote ids at acceptance; a claimed id refuses the transaction.
-pub(crate) async fn claim_txout_quote_ids(
-    tx: &mut DynMintTransaction,
-    outputs: &[QuoteOutput],
-    melt_quote_id: Option<&QuoteId>,
-) -> Result<(), Error> {
-    let ids: Vec<QuoteId> = outputs.iter().map(|(id, _, _)| id.clone()).collect();
-    tx.claim_mint_quote_ids(&ids, melt_quote_id)
-        .await
-        .map_err(|err| match err {
-            database::Error::Duplicate => Error::DuplicateOutputs,
-            err => Error::Database(err),
-        })
 }
 
 /// Create each fixed txout quote, paid in full on creation.
@@ -459,11 +434,6 @@ impl Mint {
         }
         let mut quote_requests = Vec::with_capacity(request.mint_quote_outputs.len());
         for output in &request.mint_quote_outputs {
-            let id_preimage = output
-                .id_preimage
-                .as_deref()
-                .map(parse_id_preimage)
-                .transpose()?;
             let pubkey = PublicKey::from_hex(&output.pubkey)
                 .ok()
                 .filter(|key| key.as_secp256k1().is_ok())
@@ -473,7 +443,7 @@ impl Mint {
             if output.amount == Amount::ZERO {
                 return Err(invalid("txout quote amount must be positive"));
             }
-            quote_requests.push((id_preimage, pubkey, output.amount));
+            quote_requests.push((pubkey, output.amount));
         }
         let has_fixed = !quote_requests.is_empty();
         if outputs.is_empty() && request.melt_quote_outputs.is_empty() && !has_fixed {
@@ -487,7 +457,7 @@ impl Mint {
                 max: self.max_inputs,
             });
         }
-        // Txout quotes count with blinded outputs: each is a claim and a quote row.
+        // Txout quotes count with blinded outputs: each is a quote row.
         let outputs_count = outputs.len() + request.mint_quote_outputs.len();
         if outputs_count > self.max_outputs {
             return Err(Error::MaxOutputsExceeded {
@@ -596,31 +566,20 @@ impl Mint {
             quote_issued.push(quote.amount_issued().into());
         }
         // Ids resolve once quote inputs load: an input-bound id hashes their issued amounts too.
-        let section = if quote_requests
-            .iter()
-            .any(|(preimage, _, _)| preimage.is_none())
-        {
+        let section = if quote_requests.is_empty() {
+            vec![]
+        } else {
             nutroot::input_section(proofs, &transcript_quotes)
                 .map_err(cdk_common::nuts::nut10::Error::from)?
-        } else {
-            vec![]
         };
         let mut quote_outputs: Vec<QuoteOutput> = Vec::with_capacity(quote_requests.len());
         let mut transcript_quote_outputs = Vec::with_capacity(quote_requests.len());
-        let mut ids = HashSet::new();
-        for (k, (id_preimage, pubkey, amount)) in quote_requests.into_iter().enumerate() {
-            // A fixed txout quote is named by its preimage or, without one, its inputs.
-            let id = match id_preimage {
-                Some(preimage) => nutroot::derived_quote_id(&preimage),
-                None => nutroot::input_bound_quote_id(
-                    &section,
-                    u32::try_from(k).map_err(|_| invalid("too many mint quote outputs"))?,
-                ),
-            };
+        for (k, (pubkey, amount)) in quote_requests.into_iter().enumerate() {
+            let id = nutroot::input_bound_quote_id(
+                &section,
+                u32::try_from(k).map_err(|_| invalid("too many mint quote outputs"))?,
+            );
             let quote_id = QuoteId::BASE64(id.clone());
-            if !ids.insert(quote_id.clone()) {
-                return Err(Error::DuplicateOutputs);
-            }
             transcript_quote_outputs.push(nutroot::MintQuoteOutput {
                 amount,
                 pubkey: *pubkey.as_secp256k1()?,
@@ -877,8 +836,6 @@ impl Mint {
                 }
                 Mint::update_proofs_state(&mut tx, &mut stored, State::Spent).await?;
             }
-            // Same lock order as the melt saga: mint quotes, proofs, then txout quote ids.
-            claim_txout_quote_ids(&mut tx, &prepared.quote_outputs, None).await?;
             if !outputs.is_empty() {
                 let secrets: Vec<PublicKey> = outputs.iter().map(|o| o.blinded_secret).collect();
                 tx.add_blind_signatures(&secrets, &signatures, None).await?;

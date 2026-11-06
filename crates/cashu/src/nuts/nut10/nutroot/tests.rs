@@ -926,7 +926,6 @@ fn shared_fixed_txout_vectors() {
         if let Some(expected) = case.get("input_section_hash") {
             assert_eq!(<[u8; 32]>::from(Sha256::digest(&section)), hash(expected));
         }
-        // A fixed txout quote is named by its preimage or, without one, its inputs.
         let quote_outputs: Vec<_> = tx["mint_quote_outputs"]
             .as_array()
             .unwrap()
@@ -938,10 +937,7 @@ fn shared_fixed_txout_vectors() {
                     .unwrap()
                     .as_secp256k1()
                     .unwrap(),
-                id: match v.get("id_preimage") {
-                    Some(preimage) => derived_quote_id(&hash(preimage)),
-                    None => input_bound_quote_id(&section, k as u32),
-                },
+                id: input_bound_quote_id(&section, k as u32),
             })
             .collect();
         let transaction =
@@ -974,23 +970,6 @@ fn shared_fixed_txout_vectors() {
     }
 }
 
-#[test]
-fn quote_id_preimage_vectors() {
-    let shared: Value = serde_json::from_str(include_str!("nutroot_v3_vectors.json")).unwrap();
-    let nut13 = &shared["nut13_v3"];
-    let seed = bytes(&nut13["seed_hex"]);
-    let mint = key(&nut13["mint_identity"]);
-    for vector in nut13["quote_locks"].as_array().unwrap() {
-        let counter = vector["counter"].as_u64().unwrap();
-        let preimage = derive_quote_id_preimage(&seed, mint, counter).unwrap();
-        assert_eq!(preimage, hash(&vector["id_preimage"]));
-        assert_eq!(
-            derived_quote_id(&preimage),
-            vector["quote_id"].as_str().unwrap()
-        );
-    }
-}
-
 /// A template vector's proof inputs.
 fn template_proofs(tx: &Value) -> Vec<crate::Proof> {
     use std::str::FromStr;
@@ -1013,20 +992,23 @@ fn template_proofs(tx: &Value) -> Vec<crate::Proof> {
 
 /// A template vector's `tx`: proof inputs and fixed txout quote outputs only.
 fn template_transaction(tx: &Value) -> Transaction {
+    let proofs = template_proofs(tx);
+    let section = input_section(&proofs, &[]).unwrap();
     let quote_outputs: Vec<_> = tx["mint_quote_outputs"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|v| MintQuoteOutput {
+        .enumerate()
+        .map(|(k, v)| MintQuoteOutput {
             amount: v["amount"].as_u64().unwrap().into(),
             pubkey: *crate::nuts::PublicKey::from_hex(v["pubkey"].as_str().unwrap())
                 .unwrap()
                 .as_secp256k1()
                 .unwrap(),
-            id: derived_quote_id(&hash(&v["id_preimage"])),
+            id: input_bound_quote_id(&section, k as u32),
         })
         .collect();
-    Transaction::with_quote_outputs(&template_proofs(tx), &[], &[], &[], &quote_outputs).unwrap()
+    Transaction::with_quote_outputs(&proofs, &[], &[], &[], &quote_outputs).unwrap()
 }
 
 #[test]
@@ -1071,7 +1053,7 @@ fn shared_template_leaf_vectors() {
         .map(|(pubkey, n)| MintQuoteOutput {
             amount: 1.into(),
             pubkey: *pubkey,
-            id: derived_quote_id(&[n; 32]),
+            id: crate::util::hex::encode([n; 32]),
         })
         .collect();
     let mixed = Transaction::from_bytes(

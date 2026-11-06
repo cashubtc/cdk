@@ -1396,41 +1396,6 @@ where
         record.state = state;
         Ok(())
     }
-
-    async fn claim_mint_quote_ids(
-        &mut self,
-        ids: &[QuoteId],
-        melt_quote_id: Option<&QuoteId>,
-    ) -> Result<(), Self::Err> {
-        // The primary key serializes concurrent transactions naming the same id; an id that
-        // names a mint quote is claimed too.
-        for id in ids {
-            let affected = query(
-                r#"
-                INSERT INTO mint_quote_id_claim (quote_id, melt_quote_id)
-                SELECT :quote_id, :melt_quote_id
-                WHERE NOT EXISTS (SELECT 1 FROM mint_quote WHERE id = :quote_id)
-                ON CONFLICT (quote_id) DO NOTHING
-                "#,
-            )?
-            .bind("quote_id", id.to_string())
-            .bind("melt_quote_id", melt_quote_id.map(|q| q.to_string()))
-            .execute(&self.inner)
-            .await?;
-            if affected == 0 {
-                return Err(Error::Duplicate);
-            }
-        }
-        Ok(())
-    }
-
-    async fn release_mint_quote_ids(&mut self, melt_quote_id: &QuoteId) -> Result<(), Self::Err> {
-        query(r#"DELETE FROM mint_quote_id_claim WHERE melt_quote_id = :melt_quote_id"#)?
-            .bind("melt_quote_id", melt_quote_id.to_string())
-            .execute(&self.inner)
-            .await?;
-        Ok(())
-    }
 }
 
 #[async_trait]

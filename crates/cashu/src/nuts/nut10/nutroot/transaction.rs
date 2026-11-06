@@ -47,7 +47,7 @@ pub struct MintQuoteOutput {
     pub amount: Amount,
     /// Lock key of the txout quote.
     pub pubkey: bitcoin::secp256k1::PublicKey,
-    /// The txout quote's id: [`super::derived_quote_id`] or [`super::input_bound_quote_id`].
+    /// The txout quote's id: [`super::input_bound_quote_id`].
     pub id: String,
 }
 

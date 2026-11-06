@@ -58,10 +58,6 @@ pub struct TransactionMintQuoteOutput {
     pub pubkey: String,
     /// Fixed amount
     pub amount: Amount,
-    /// 32-byte hex preimage of the quote's derived id (NUT-04); omitted for an id bound to the
-    /// inputs
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub id_preimage: Option<String>,
 }
 
 /// `POST /v1/transaction` request
@@ -140,12 +136,11 @@ mod tests {
     #[test]
     fn request_arrays_default_to_empty() {
         let request: TransactionRequest = serde_json::from_str(
-            r#"{"mint_quote_outputs":[{"pubkey":"02aa","amount":3,"id_preimage":"aa"},{"pubkey":"02bb","amount":5}]}"#,
+            r#"{"mint_quote_outputs":[{"pubkey":"02aa","amount":3},{"pubkey":"02bb","amount":5}]}"#,
         )
         .unwrap();
         assert!(request.proof_inputs.is_empty() && request.melt_quote_outputs.is_empty());
         assert_eq!(request.mint_quote_outputs[0].amount, Amount::from(3));
-        assert_eq!(request.mint_quote_outputs[1].id_preimage, None);
         assert_eq!(
             serde_json::to_string(&request.mint_quote_outputs[1]).unwrap(),
             r#"{"pubkey":"02bb","amount":5}"#
