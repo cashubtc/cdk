@@ -455,6 +455,11 @@ impl<'a> SendSaga<'a, Initial> {
                 return Err(crate::nuts::nut10::Error::SpendConditionsNotMet.into());
             }
             policy.validate().map_err(crate::nuts::nut10::Error::from)?;
+            if policy.is_script_only() {
+                policy
+                    .check_listed_leaves(&self.wallet.load_mint_info().await?.nuts.nut10.leaves)
+                    .map_err(crate::nuts::nut10::Error::from)?;
+            }
         }
         let mut force_swap = opts.nutroot.is_some();
         let available_sum = available_proofs.total_amount()?;

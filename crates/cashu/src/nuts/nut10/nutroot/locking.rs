@@ -122,6 +122,33 @@ impl NutrootOption {
         Ok(tree)
     }
 
+    /// True when the lock has no key path (a NUMS internal key).
+    pub fn is_script_only(&self) -> bool {
+        self.key == nums_point()
+    }
+
+    /// Refuse a leaf type the mint does not list; a script-only lock must pass this (NUT-10 Signaling).
+    ///
+    /// An empty `listed` reads as the core leaves: mint info without `leaves` deserializes to one.
+    pub fn check_listed_leaves(&self, listed: &[String]) -> Result<(), Error> {
+        let is_listed = |leaf_type: &str| {
+            if listed.is_empty() {
+                super::CORE_LEAF_TYPES.contains(&leaf_type)
+            } else {
+                listed.iter().any(|listed| listed == leaf_type)
+            }
+        };
+        if self
+            .validate()?
+            .iter()
+            .flat_map(Tree::leaves)
+            .any(|leaf| !is_listed(&hex::encode(&leaf.to_bytes()[..2])))
+        {
+            return Err(Error::InvalidSpendInfo);
+        }
+        Ok(())
+    }
+
     /// Construct one output. Callers must supply fresh scalars for every proof.
     pub fn create_output(
         &self,

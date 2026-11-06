@@ -51,6 +51,12 @@ impl Info {
             }
         }
 
+        if let Ok(fee_str) = env::var(ENV_QUOTE_INPUT_FEE_PPK) {
+            if let Ok(fee) = fee_str.parse() {
+                self.quote_input_fee_ppk = Some(fee);
+            }
+        }
+
         if let Ok(info_page_str) = env::var(ENV_ENABLE_INFO_PAGE) {
             if let Ok(enable) = info_page_str.parse() {
                 self.enable_info_page = Some(enable);

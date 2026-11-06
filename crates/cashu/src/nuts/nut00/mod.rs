@@ -974,6 +974,11 @@ impl PaymentMethod {
     pub fn is_onchain(&self) -> bool {
         matches!(self, Self::Known(KnownMethod::Onchain))
     }
+
+    /// Check if this is a txout quote (NUT-XX), which has no payment backend
+    pub fn is_txout(&self) -> bool {
+        matches!(self, Self::Custom(method) if method == super::nutxx::TXOUT_METHOD)
+    }
 }
 
 impl FromStr for PaymentMethod {

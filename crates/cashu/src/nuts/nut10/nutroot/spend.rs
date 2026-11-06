@@ -50,7 +50,12 @@ impl SpendRecord {
         if transaction.proof_digest(proof)? != input_digest {
             return Err(Error::InvalidTransaction);
         }
-        witness.verify(&proof.secret.to_string(), input_digest, now)?;
+        witness.verify_in(
+            &proof.secret.to_string(),
+            input_digest,
+            transaction.txout_keys(),
+            now,
+        )?;
         Ok(Self {
             input_digest,
             witness: raw,

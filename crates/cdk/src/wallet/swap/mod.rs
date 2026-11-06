@@ -152,6 +152,11 @@ impl Wallet {
                 return Err(crate::nuts::nut10::Error::SpendConditionsNotMet.into());
             }
             policy.validate().map_err(crate::nuts::nut10::Error::from)?;
+            if policy.is_script_only() {
+                policy
+                    .check_listed_leaves(&self.load_mint_info().await?.nuts.nut10.leaves)
+                    .map_err(crate::nuts::nut10::Error::from)?;
+            }
         }
 
         // Desired amount is either amount passed or value of all proof
