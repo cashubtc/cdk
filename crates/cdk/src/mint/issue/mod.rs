@@ -268,9 +268,6 @@ impl Mint {
 
                     let description = bolt12_request.description;
 
-                    let mint_ttl = self.quote_ttl().await?.mint_ttl;
-                    let quote_expiry = unix_time() + mint_ttl;
-
                     // Check that the backend supports offer descriptions
                     let settings = payment_backend.get_settings().await?;
 
@@ -281,10 +278,33 @@ impl Mint {
                         }
                     }
 
+                    // BOLT12 mint quotes are long-lived by default (perpetual offer).
+                    // If the wallet requests `expiry_seconds` (NUT-25, nuts#415),
+                    // honor it exactly: offer absolute_expiry == quote expiry.
+                    // Otherwise the offer has no absolute_expiry and the quote
+                    // uses the 0 (never-expires) sentinel.
+                    let requested_expiry = bolt12_request.expiry_seconds;
+                    let mint_ttl = self.quote_ttl().await?.mint_ttl;
+                    let unix_expiry = match requested_expiry {
+                        None => None,
+                        Some(s) => {
+                            if s == 0 {
+                                return Err(Error::QuoteExpiryInvalid {
+                                    detail: "expiry_seconds must be positive".to_string(),
+                                });
+                            }
+                            if s > mint_ttl {
+                                return Err(Error::QuoteExpiryInvalid {
+                                    detail: format!("expiry_seconds {s} exceeds max {mint_ttl}"),
+                                });
+                            }
+                            Some(unix_time() + s)
+                        }
+                    };
                     let bolt12_options = Bolt12IncomingPaymentOptions {
                         description,
                         amount: amount.map(|a| a.with_unit(unit.clone())),
-                        unix_expiry: Some(quote_expiry),
+                        unix_expiry,
                     };
 
                     IncomingPaymentOptions::Bolt12(Box::new(bolt12_options))
@@ -1446,6 +1466,7 @@ mod batch_mint_tests {
                     unit: CurrencyUnit::Sat,
                     description: None,
                     pubkey: None,
+                    expiry_seconds: None,
                 }
                 .into(),
             )
@@ -1461,6 +1482,7 @@ mod batch_mint_tests {
                     unit: CurrencyUnit::Sat,
                     description: None,
                     pubkey: None,
+                    expiry_seconds: None,
                 }
                 .into(),
             )
@@ -1687,6 +1709,7 @@ mod batch_mint_tests {
                     unit: CurrencyUnit::Sat,
                     description: None,
                     pubkey: None,
+                    expiry_seconds: None,
                 }
                 .into(),
             )
@@ -1702,6 +1725,7 @@ mod batch_mint_tests {
                     unit: CurrencyUnit::Sat,
                     description: None,
                     pubkey: None,
+                    expiry_seconds: None,
                 }
                 .into(),
             )
@@ -1762,6 +1786,7 @@ mod batch_mint_tests {
                     unit: CurrencyUnit::Sat,
                     description: None,
                     pubkey: None,
+                    expiry_seconds: None,
                 }
                 .into(),
             )
@@ -1777,6 +1802,7 @@ mod batch_mint_tests {
                     unit: CurrencyUnit::Sat,
                     description: None,
                     pubkey: None,
+                    expiry_seconds: None,
                 }
                 .into(),
             )
@@ -1837,6 +1863,7 @@ mod batch_mint_tests {
                     unit: CurrencyUnit::Sat,
                     description: None,
                     pubkey: None,
+                    expiry_seconds: None,
                 }
                 .into(),
             )
@@ -1893,6 +1920,7 @@ mod batch_mint_tests {
                     unit: CurrencyUnit::Sat,
                     description: None,
                     pubkey: None,
+                    expiry_seconds: None,
                 }
                 .into(),
             )
@@ -1908,6 +1936,7 @@ mod batch_mint_tests {
                     unit: CurrencyUnit::Sat,
                     description: None,
                     pubkey: None,
+                    expiry_seconds: None,
                 }
                 .into(),
             )
@@ -1969,6 +1998,7 @@ mod batch_mint_tests {
                     unit: CurrencyUnit::Sat,
                     description: None,
                     pubkey: None,
+                    expiry_seconds: None,
                 }
                 .into(),
             )
@@ -2016,6 +2046,7 @@ mod batch_mint_tests {
                     unit: CurrencyUnit::Sat,
                     description: None,
                     pubkey: None,
+                    expiry_seconds: None,
                 }
                 .into(),
             )
@@ -2088,6 +2119,7 @@ mod batch_mint_tests {
                     unit: CurrencyUnit::Sat,
                     description: None,
                     pubkey: None,
+                    expiry_seconds: None,
                 }
                 .into(),
             )
@@ -2103,6 +2135,7 @@ mod batch_mint_tests {
                     unit: CurrencyUnit::Sat,
                     description: None,
                     pubkey: None,
+                    expiry_seconds: None,
                 }
                 .into(),
             )
@@ -2163,6 +2196,7 @@ mod batch_mint_tests {
                     unit: CurrencyUnit::Sat,
                     description: None,
                     pubkey: None,
+                    expiry_seconds: None,
                 }
                 .into(),
             )
@@ -2178,6 +2212,7 @@ mod batch_mint_tests {
                     unit: CurrencyUnit::Sat,
                     description: None,
                     pubkey: None,
+                    expiry_seconds: None,
                 }
                 .into(),
             )
@@ -2238,6 +2273,7 @@ mod batch_mint_tests {
                     unit: CurrencyUnit::Sat,
                     description: None,
                     pubkey: None,
+                    expiry_seconds: None,
                 }
                 .into(),
             )
@@ -2253,6 +2289,7 @@ mod batch_mint_tests {
                     unit: CurrencyUnit::Sat,
                     description: None,
                     pubkey: None,
+                    expiry_seconds: None,
                 }
                 .into(),
             )
@@ -2302,10 +2339,8 @@ mod batch_mint_tests {
     }
 
     #[tokio::test]
-    async fn bolt12_mint_quote_sets_offer_absolute_expiry_from_mint_ttl() {
+    async fn bolt12_mint_quote_follows_long_lived_offer_expiry() {
         let mint = create_test_mint().await;
-        let mint_ttl = mint.quote_ttl().await.unwrap().mint_ttl;
-        let before = cdk_common::util::unix_time();
 
         let quote: MintQuoteBolt12Response<QuoteId> = mint
             .get_mint_quote(
@@ -2317,6 +2352,7 @@ mod batch_mint_tests {
                         "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
                     )
                     .expect("test public key"),
+                    expiry_seconds: None,
                 }
                 .into(),
             )
@@ -2325,16 +2361,81 @@ mod batch_mint_tests {
             .try_into()
             .unwrap();
 
-        let after = cdk_common::util::unix_time();
+        let offer = Offer::from_str(&quote.request).expect("BOLT12 offer");
+
+        assert!(
+            offer.absolute_expiry().is_none(),
+            "BOLT12 mint offers are long-lived and must not inherit mint_ttl"
+        );
+        assert_eq!(
+            quote.expiry, None,
+            "quote expiry must follow the offer (none when the offer has no absolute_expiry)"
+        );
+    }
+
+    #[tokio::test]
+    async fn bolt12_mint_quote_requested_expiry_sets_offer_and_quote() {
+        let mint = create_test_mint().await;
+
+        let quote: MintQuoteBolt12Response<QuoteId> = mint
+            .get_mint_quote(
+                MintQuoteBolt12Request {
+                    amount: Some(Amount::from(32)),
+                    unit: CurrencyUnit::Sat,
+                    description: None,
+                    pubkey: PublicKey::from_hex(
+                        "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
+                    )
+                    .expect("test public key"),
+                    expiry_seconds: Some(600),
+                }
+                .into(),
+            )
+            .await
+            .unwrap()
+            .try_into()
+            .unwrap();
+
         let offer = Offer::from_str(&quote.request).expect("BOLT12 offer");
         let offer_expiry = offer
             .absolute_expiry()
-            .expect("offer must include absolute_expiry")
-            .as_secs();
-        let quote_expiry = quote.expiry.expect("quote must include expiry");
+            .map(|d| d.as_secs())
+            .expect("requested expiry must set offer absolute_expiry");
+        let quote_expiry = quote.expiry.expect("quote expiry must be set");
+        assert_eq!(
+            offer_expiry, quote_expiry,
+            "offer and quote expiry must match"
+        );
+    }
 
-        assert_eq!(offer_expiry, quote_expiry);
-        assert!(offer_expiry >= before + mint_ttl);
-        assert!(offer_expiry <= after + mint_ttl);
+    #[tokio::test]
+    async fn bolt12_mint_quote_rejects_bad_expiry() {
+        let mint = create_test_mint().await;
+        let pubkey = PublicKey::from_hex(
+            "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac",
+        )
+        .expect("test public key");
+
+        for bad in [0, 1_000_000] {
+            let err = mint
+                .get_mint_quote(
+                    MintQuoteBolt12Request {
+                        amount: Some(Amount::from(32)),
+                        unit: CurrencyUnit::Sat,
+                        description: None,
+                        pubkey,
+                        expiry_seconds: Some(bad),
+                    }
+                    .into(),
+                )
+                .await
+                .expect_err("bad expiry must fail");
+            assert!(
+                matches!(err, Error::QuoteExpiryInvalid { .. }),
+                "expected QuoteExpiryInvalid, got {err:?}"
+            );
+            let code = cdk_common::error::ErrorResponse::from(err).code;
+            assert_eq!(code.to_code(), 11018);
+        }
     }
 }

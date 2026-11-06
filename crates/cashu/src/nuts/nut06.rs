@@ -695,7 +695,13 @@ mod tests {
 
         let t = t.options.unwrap();
 
-        matches!(t, MintMethodOptions::Bolt11 { description: true });
+        matches!(
+            t,
+            MintMethodOptions::Bolt11 {
+                description: true,
+                ..
+            }
+        );
 
         assert_eq!(info, mint_info);
     }
@@ -830,7 +836,10 @@ mod tests {
                 method_name: Some("Lightning".to_string()),
                 min_amount: Some(Amount::from(1)),
                 max_amount: Some(Amount::from(10)),
-                options: Some(MintMethodOptions::Bolt11 { description: true }),
+                options: Some(MintMethodOptions::Bolt11 {
+                    description: true,
+                    max_expiry_seconds: None,
+                }),
             }],
             false,
         );

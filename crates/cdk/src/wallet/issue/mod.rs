@@ -231,8 +231,26 @@ impl Wallet {
         description: Option<String>,
         extra: Option<String>,
     ) -> Result<MintQuote, Error> {
+        self.mint_quote_with_expiry(method, amount, description, extra, None)
+            .await
+    }
+
+    /// Create a mint quote with an optional requested expiry (nuts#415).
+    ///
+    /// Expiry is forwarded as-is; omit for the mint default
+    /// (BOLT12 perpetual offer). The mint rejects values it cannot
+    /// honor with 11018.
+    #[instrument(skip(self, method, extra))]
+    pub async fn mint_quote_with_expiry(
+        &self,
+        method: PaymentMethod,
+        amount: Option<Amount>,
+        description: Option<String>,
+        extra: Option<String>,
+        expiry_seconds: Option<u64>,
+    ) -> Result<MintQuote, Error> {
         let quote = self
-            .request_mint_quote(method, amount, description, extra)
+            .request_mint_quote_with_expiry(method, amount, description, extra, expiry_seconds)
             .await?;
 
         self.localstore.add_mint_quote(quote.clone()).await?;
@@ -247,6 +265,19 @@ impl Wallet {
         amount: Option<Amount>,
         description: Option<String>,
         extra: Option<String>,
+    ) -> Result<MintQuote, Error> {
+        self.request_mint_quote_with_expiry(method, amount, description, extra, None)
+            .await
+    }
+
+    /// Request a mint quote with optional expiry without persisting it.
+    pub(crate) async fn request_mint_quote_with_expiry(
+        &self,
+        method: PaymentMethod,
+        amount: Option<Amount>,
+        description: Option<String>,
+        extra: Option<String>,
+        expiry_seconds: Option<u64>,
     ) -> Result<MintQuote, Error> {
         let mint_info = self.load_mint_info().await?;
         let mint_url = self.mint_url.clone();
@@ -263,11 +294,11 @@ impl Wallet {
             let description_supported = match (&method, settings.options) {
                 (
                     PaymentMethod::Known(KnownMethod::Bolt11),
-                    Some(MintMethodOptions::Bolt11 { description }),
+                    Some(MintMethodOptions::Bolt11 { description, .. }),
                 )
                 | (
                     PaymentMethod::Known(KnownMethod::Bolt12),
-                    Some(MintMethodOptions::Bolt12 { description }),
+                    Some(MintMethodOptions::Bolt12 { description, .. }),
                 ) => description,
                 _ => false,
             };
@@ -289,6 +320,7 @@ impl Wallet {
                     unit: unit.clone(),
                     description,
                     pubkey: Some(secret_key.public_key()),
+                    expiry_seconds,
                 })
             }
             PaymentMethod::Known(KnownMethod::Bolt12) => {
@@ -297,6 +329,7 @@ impl Wallet {
                     unit: unit.clone(),
                     description,
                     pubkey: secret_key.public_key(),
+                    expiry_seconds,
                 })
             }
             PaymentMethod::Custom(_) => {
@@ -316,6 +349,7 @@ impl Wallet {
                 MintQuoteRequest::Onchain(cdk_common::nuts::nut30::MintQuoteOnchainRequest {
                     unit: unit.clone(),
                     pubkey: secret_key.public_key(),
+                    expiry_seconds,
                 })
             }
         };
@@ -704,7 +738,7 @@ impl Wallet {
             quote.mint_url == self.mint_url
                 && quote.unit == self.unit
                 && quote.state != MintQuoteState::Issued
-                && quote.expiry > unix_time
+                && !quote.is_expired(unix_time)
         });
         Ok(mint_quotes)
     }
