@@ -360,9 +360,6 @@ impl Signatory for DbSignatory {
                 } = blinded_message;
 
                 let (info, key) = keysets.by_id.get(&keyset_id).ok_or(Error::UnknownKeySet)?;
-                if !info.active {
-                    return Err(Error::InactiveKeyset);
-                }
                 if info.is_expired() {
                     return Err(Error::ExpiredKeyset);
                 }
