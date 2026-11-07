@@ -35,6 +35,7 @@
 use std::collections::HashMap;
 
 use cdk_common::amount::SplitTarget;
+use cdk_common::database::wallet::{CounterReservation, OperationPreparation, QuoteReservation};
 use cdk_common::dhke::construct_proofs;
 use cdk_common::wallet::{
     KeysetLoadPolicy, MeltOperationData, MeltPrepareOptions, MeltQuote, MeltSagaState,
@@ -281,23 +282,48 @@ impl<'a> MeltSaga<'a, Initial> {
             Error::ExpiredQuote(quote_info.expiry, unix_time())
         );
 
-        // Reserve the quote to prevent concurrent operations from using it
+        ensure_cdk!(quote_info.unit == self.wallet.unit, Error::UnsupportedUnit);
+        ensure_cdk!(
+            quote_info
+                .mint_url
+                .as_ref()
+                .is_none_or(|url| *url == self.wallet.mint_url),
+            Error::IncorrectMint
+        );
+        Ok(quote_info)
+    }
+
+    async fn persist_preparation(
+        &mut self,
+        saga: &WalletSaga,
+        quote: &mut MeltQuote,
+        proof_ys: Vec<crate::nuts::PublicKey>,
+        proofs: Vec<ProofInfo>,
+    ) -> Result<(), Error> {
         self.wallet
             .localstore
-            .reserve_melt_quote(quote_id, &self.state_data.operation_id)
+            .prepare_operation(OperationPreparation {
+                saga: saga.clone(),
+                proof_ys,
+                proofs,
+                quotes: vec![QuoteReservation {
+                    quote_id: quote.id.clone(),
+                    version: quote.version,
+                }],
+                counter: None,
+            })
             .await?;
-
-        // Register compensation to release quote on failure
+        quote.version = quote.version.checked_add(1).ok_or(Error::AmountOverflow)?;
+        quote.used_by_operation = Some(saga.id.to_string());
         add_compensation(
             &mut self.compensations,
             Box::new(ReleaseMeltQuote {
                 localstore: self.wallet.localstore.clone(),
-                operation_id: self.state_data.operation_id,
+                operation_id: saga.id,
             }),
         )
         .await;
-
-        Ok(quote_info)
+        Ok(())
     }
 
     /// Prepare the melt operation by selecting and reserving proofs.
@@ -317,13 +343,7 @@ impl<'a> MeltSaga<'a, Initial> {
         match self.prepare_inner(quote_id, metadata).await {
             Ok(prepared) => Ok(prepared),
             Err(err) => {
-                // `initialize_melt` reserves the quote before anything else,
-                // and every step after it (`keysets`, proof selection, the fee
-                // estimate, `reserve_proofs`, `add_saga`) can fail. Run the
-                // compensations so a failed prepare does not pin the quote to
-                // this operation until the next startup recovery sweep
-                // (#2771). Before the reservation there is nothing to undo,
-                // so this is a no-op then.
+                // Run any compensations registered by committed preparation.
                 let mut compensations = self.compensations;
                 if let Err(e) = execute_compensations(&mut compensations).await {
                     tracing::warn!("Failed to compensate melt prepare: {}", e);
@@ -333,8 +353,7 @@ impl<'a> MeltSaga<'a, Initial> {
         }
     }
 
-    /// Body of [`prepare`](Self::prepare). Kept separate so every error after
-    /// the quote reservation is compensated by the caller.
+    /// Build preparation while allowing the caller to handle compensations.
     async fn prepare_inner(
         &mut self,
         quote_id: &str,
@@ -346,7 +365,7 @@ impl<'a> MeltSaga<'a, Initial> {
             self.state_data.operation_id
         );
 
-        let quote_info = self.initialize_melt(quote_id).await?;
+        let mut quote_info = self.initialize_melt(quote_id).await?;
 
         let inputs_needed_amount = quote_info
             .amount
@@ -385,10 +404,7 @@ impl<'a> MeltSaga<'a, Initial> {
             let proof_ys = exact_input_proofs.ys()?;
             let operation_id = self.state_data.operation_id;
 
-            self.wallet
-                .localstore
-                .reserve_proofs(proof_ys.clone(), &operation_id)
-                .await?;
+            let input_fee = self.wallet.get_proofs_fee(&exact_input_proofs).await?.total;
 
             let saga = WalletSaga::new(
                 operation_id,
@@ -409,7 +425,8 @@ impl<'a> MeltSaga<'a, Initial> {
                 }),
             );
 
-            self.wallet.localstore.add_saga(saga.clone()).await?;
+            self.persist_preparation(&saga, &mut quote_info, proof_ys.clone(), vec![])
+                .await?;
 
             add_compensation(
                 &mut self.compensations,
@@ -420,8 +437,6 @@ impl<'a> MeltSaga<'a, Initial> {
                 }),
             )
             .await;
-
-            let input_fee = self.wallet.get_proofs_fee(&exact_input_proofs).await?.total;
 
             return Ok(MeltSaga {
                 wallet: self.wallet,
@@ -503,13 +518,6 @@ impl<'a> MeltSaga<'a, Initial> {
         let proof_ys = proofs_to_swap.ys()?;
         let operation_id = self.state_data.operation_id;
 
-        if !proof_ys.is_empty() {
-            self.wallet
-                .localstore
-                .reserve_proofs(proof_ys.clone(), &operation_id)
-                .await?;
-        }
-
         let saga = WalletSaga::new(
             operation_id,
             WalletSagaState::Melt(MeltSagaState::ProofsReserved),
@@ -529,7 +537,8 @@ impl<'a> MeltSaga<'a, Initial> {
             }),
         );
 
-        self.wallet.localstore.add_saga(saga.clone()).await?;
+        self.persist_preparation(&saga, &mut quote_info, proof_ys.clone(), vec![])
+            .await?;
 
         add_compensation(
             &mut self.compensations,
@@ -648,7 +657,7 @@ impl<'a> MeltSaga<'a, Initial> {
         options: MeltPrepareOptions,
     ) -> Result<MeltSaga<'a, Prepared>, Error> {
         // Validate locked inputs before reserving the quote.
-        let quote_info = self.initialize_melt(quote_id).await?;
+        let mut quote_info = self.initialize_melt(quote_id).await?;
 
         let metadata = options.metadata;
 
@@ -666,38 +675,19 @@ impl<'a> MeltSaga<'a, Initial> {
         let operation_id = self.state_data.operation_id;
         let proof_ys = proofs.ys()?;
 
-        // Since proofs may be external (not in our database), add them first
-        // while preserving the operation link needed for recovery.
-        let existing_proofs = self
-            .wallet
-            .localstore
-            .get_proofs_by_ys(proof_ys.clone())
-            .await?;
-        let mut proofs_info = proofs
+        let proofs_info = proofs
             .clone()
             .into_iter()
-            .map(|p| {
-                ProofInfo::new_with_operations(
-                    p,
+            .map(|proof| {
+                ProofInfo::new(
+                    proof,
                     self.wallet.mint_url.clone(),
-                    State::Reserved,
+                    State::Unspent,
                     self.wallet.unit.clone(),
-                    Some(operation_id),
-                    None,
                 )
             })
-            .collect::<Result<Vec<ProofInfo>, _>>()?;
-        for proof_info in &mut proofs_info {
-            proof_info.derivation_index = existing_proofs
-                .iter()
-                .find(|existing| existing.y == proof_info.y)
-                .and_then(|existing| existing.derivation_index);
-        }
-
-        self.wallet
-            .localstore
-            .update_proofs(proofs_info, vec![])
-            .await?;
+            .collect::<Result<Vec<_>, _>>()?;
+        let input_fee = self.wallet.get_proofs_fee(&proofs).await?.total;
 
         let saga = WalletSaga::new(
             operation_id,
@@ -718,7 +708,8 @@ impl<'a> MeltSaga<'a, Initial> {
             }),
         );
 
-        self.wallet.localstore.add_saga(saga.clone()).await?;
+        self.persist_preparation(&saga, &mut quote_info, vec![], proofs_info)
+            .await?;
 
         add_compensation(
             &mut self.compensations,
@@ -729,8 +720,6 @@ impl<'a> MeltSaga<'a, Initial> {
             }),
         )
         .await;
-
-        let input_fee = self.wallet.get_proofs_fee(&proofs).await?.total;
 
         Ok(MeltSaga {
             wallet: self.wallet,
@@ -904,7 +893,7 @@ impl<'a> MeltSaga<'a, Prepared> {
                     // No target covers its own outputs' fee. Refuse before the
                     // swap goes out, so its fee is not spent on a melt the
                     // wallet already knows it cannot afford.
-                    self.compensate().await;
+                    self.compensate().await?;
                     return Err(Error::InsufficientFunds);
                 }
 
@@ -932,6 +921,17 @@ impl<'a> MeltSaga<'a, Prepared> {
             }
         }
 
+        let current = self
+            .wallet
+            .localstore
+            .get_saga(&operation_id)
+            .await?
+            .ok_or(Error::ConcurrentUpdate)?;
+        if current.state != WalletSagaState::Melt(MeltSagaState::ProofsReserved) {
+            return Err(Error::ConcurrentUpdate);
+        }
+        self.state_data.saga = current;
+
         // Recalculate the actual input_fee based on final_proofs
         let actual_input_fee = self.wallet.get_proofs_fee(&final_proofs).await?.total;
         let inputs_needed_amount = quote_info
@@ -944,70 +944,29 @@ impl<'a> MeltSaga<'a, Prepared> {
         let proofs_total = final_proofs.total_amount()?;
         if proofs_total < inputs_needed_amount {
             // Insufficient funds - execute compensations
-            self.compensate().await;
+            self.compensate().await?;
             return Err(Error::InsufficientFunds);
         }
-
-        // Set proofs to Pending state before making melt request
-        let final_proof_ys = final_proofs.ys()?;
-        let existing_proofs = self
-            .wallet
-            .localstore
-            .get_proofs_by_ys(final_proof_ys)
-            .await?;
-        let mut proofs_info = final_proofs
-            .clone()
-            .into_iter()
-            .map(|p| {
-                ProofInfo::new_with_operations(
-                    p,
-                    self.wallet.mint_url.clone(),
-                    State::Pending,
-                    self.wallet.unit.clone(),
-                    Some(operation_id),
-                    None,
-                )
-            })
-            .collect::<Result<Vec<ProofInfo>, _>>()?;
-        for proof_info in &mut proofs_info {
-            proof_info.derivation_index = existing_proofs
-                .iter()
-                .find(|existing| existing.y == proof_info.y)
-                .and_then(|existing| existing.derivation_index);
-        }
-
-        self.wallet
-            .localstore
-            .update_proofs(proofs_info, vec![])
-            .await?;
-
-        // Add compensation to revert the new proofs if the saga fails later
-        add_compensation(
-            &mut self.compensations,
-            Box::new(RevertProofReservation {
-                localstore: self.wallet.localstore.clone(),
-                proof_ys: final_proofs.ys()?,
-                saga_id: operation_id,
-            }),
-        )
-        .await;
 
         // Calculate change accounting for input fees
         let change_amount = proofs_total - quote_info.amount - actual_input_fee;
 
+        let counter_start = self
+            .wallet
+            .localstore
+            .increment_keyset_counter(&active_keyset_id, 0)
+            .await?;
+        let mut counter_end = counter_start;
         let premint_secrets = if change_amount <= Amount::ZERO {
             PreMintSecrets::new(active_keyset_id)
         } else {
             let num_secrets =
                 ((u64::from(change_amount) as f64).log2().ceil() as u64).max(1) as u32;
 
-            let new_counter = self
-                .wallet
-                .localstore
-                .increment_keyset_counter(&active_keyset_id, num_secrets)
-                .await?;
-
-            let count = new_counter - num_secrets;
+            let count = counter_start;
+            counter_end = count
+                .checked_add(num_secrets)
+                .ok_or(Error::AmountOverflow)?;
 
             PreMintSecrets::from_seed_blank(
                 active_keyset_id,
@@ -1016,14 +975,6 @@ impl<'a> MeltSaga<'a, Prepared> {
                 change_amount,
             )?
         };
-
-        // Get counter range for recovery
-        let counter_end = self
-            .wallet
-            .localstore
-            .increment_keyset_counter(&active_keyset_id, 0)
-            .await?;
-        let counter_start = counter_end.saturating_sub(premint_secrets.secrets.len() as u32);
 
         let change_blinded_messages = if change_amount > Amount::ZERO {
             Some(premint_secrets.blinded_messages())
@@ -1044,7 +995,7 @@ impl<'a> MeltSaga<'a, Prepared> {
             } else {
                 None
             };
-            data.final_proof_ys = Some(final_proof_ys);
+            data.final_proof_ys = Some(final_proof_ys.clone());
             data.change_blinded_messages = change_blinded_messages.clone();
         }
 
@@ -1053,9 +1004,23 @@ impl<'a> MeltSaga<'a, Prepared> {
             _ => HashMap::new(),
         };
 
-        if !self.wallet.localstore.update_saga(saga.clone()).await? {
-            return Err(Error::ConcurrentUpdate);
-        }
+        self.wallet
+            .localstore
+            .prepare_operation(OperationPreparation {
+                saga: saga.clone(),
+                proof_ys: final_proof_ys,
+                proofs: vec![],
+                quotes: vec![QuoteReservation {
+                    quote_id: quote_info.id.clone(),
+                    version: quote_info.version,
+                }],
+                counter: (counter_end > counter_start).then_some(CounterReservation {
+                    keyset_id: active_keyset_id,
+                    start: counter_start,
+                    end: counter_end,
+                }),
+            })
+            .await?;
 
         self.wallet
             .upsert_transaction(Transaction {
@@ -1090,20 +1055,24 @@ impl<'a> MeltSaga<'a, Prepared> {
     }
 
     /// Execute compensations and cancel the melt.
-    async fn compensate(self) {
-        // Move compensations out of self to iterate while owning self
-        let mut compensations = self.compensations;
-        while let Some(action) = compensations.pop_front() {
-            if let Err(e) = action.execute().await {
-                tracing::warn!("Compensation {} failed: {}", action.name(), e);
-            }
+    async fn compensate(self) -> Result<(), Error> {
+        if self
+            .wallet
+            .claim_and_compensate_melt(
+                &self.state_data.operation_id,
+                &[MeltSagaState::ProofsReserved],
+            )
+            .await?
+        {
+            Ok(())
+        } else {
+            Err(Error::ConcurrentUpdate)
         }
     }
 
     /// Cancel the prepared melt and release reserved proofs.
     pub async fn cancel(self) -> Result<(), Error> {
-        self.compensate().await;
-        Ok(())
+        self.compensate().await
     }
 }
 
@@ -1538,6 +1507,7 @@ mod tests {
     use std::sync::Arc;
 
     use cdk_common::amount::{FeeAndAmounts, SplitTarget};
+    use cdk_common::database::WalletDatabase;
     use cdk_common::nut00::KnownMethod;
     use cdk_common::nuts::nut30::MeltQuoteOnchainFeeOption;
     use cdk_common::nuts::{CurrencyUnit, State};
@@ -1556,6 +1526,229 @@ mod tests {
     };
     use crate::wallet::MeltConfirmOptions;
     use crate::{Amount, Error};
+
+    #[tokio::test]
+    async fn preparation_insert_failure_preserves_spendability_after_reopen() {
+        for method in [
+            KnownMethod::Bolt11,
+            KnownMethod::Bolt12,
+            KnownMethod::Onchain,
+        ] {
+            for path_kind in [0, 1, 2, 3] {
+                let path =
+                    std::env::temp_dir().join(format!("cdk-prepare-{}.sqlite", Uuid::new_v4()));
+                let db = Arc::new(
+                    cdk_sqlite::WalletSqliteDatabase::new(path.clone())
+                        .await
+                        .unwrap(),
+                );
+                let amount = if path_kind == 0 { 1010 } else { 2000 };
+                let proof_info = test_proof_info(test_keyset_id(), amount, test_mint_url());
+                let y = proof_info.y;
+                let proof = proof_info.proof.clone();
+                if path_kind != 3 {
+                    db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+                }
+                let mut quote = test_melt_quote();
+                quote.payment_method = method.into();
+                let quote_id = quote.id.clone();
+                db.add_melt_quote(quote).await.unwrap();
+                let conn = rusqlite::Connection::open(&path).unwrap();
+                conn.execute_batch("CREATE TRIGGER fail_preparation BEFORE INSERT ON wallet_sagas BEGIN SELECT RAISE(ABORT, 'injected preparation failure'); END;").unwrap();
+                let mock = Arc::new(MockMintConnector::new());
+                mock.reset_default_mint_state();
+                let wallet = create_test_wallet_with_mock(db.clone(), mock.clone()).await;
+                let result = if path_kind >= 2 {
+                    wallet
+                        .prepare_melt_proofs(&quote_id, vec![proof.clone()], HashMap::new())
+                        .await
+                } else {
+                    wallet.prepare_melt(&quote_id, HashMap::new()).await
+                };
+                assert!(result.is_err());
+                assert!(mock.last_post_melt_request.lock().unwrap().is_none());
+                drop(result);
+                drop(wallet);
+                drop(db);
+                let db = Arc::new(
+                    cdk_sqlite::WalletSqliteDatabase::new(path.clone())
+                        .await
+                        .unwrap(),
+                );
+                let proofs = db.get_proofs_by_ys(vec![y]).await.unwrap();
+                if path_kind == 3 {
+                    assert!(proofs.is_empty());
+                } else {
+                    assert_eq!(proofs[0].state, State::Unspent);
+                    assert_eq!(proofs[0].used_by_operation, None);
+                    assert_eq!(
+                        db.get_balance(
+                            Some(test_mint_url()),
+                            Some(CurrencyUnit::Sat),
+                            Some(vec![State::Unspent])
+                        )
+                        .await
+                        .unwrap(),
+                        amount
+                    );
+                }
+                assert_eq!(
+                    db.get_melt_quote(&quote_id)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .used_by_operation,
+                    None
+                );
+                assert!(db.get_incomplete_sagas().await.unwrap().is_empty());
+                assert!(db
+                    .list_transactions(None, None, None)
+                    .await
+                    .unwrap()
+                    .is_empty());
+                conn.execute_batch("DROP TRIGGER fail_preparation;")
+                    .unwrap();
+                let wallet = create_test_wallet_with_mock(db.clone(), mock).await;
+                // The same inputs must still be usable, including explicit max-transfer inputs.
+                let prepared = wallet
+                    .prepare_melt_proofs(&quote_id, vec![proof], HashMap::new())
+                    .await
+                    .unwrap();
+                assert_eq!(prepared.proofs().len(), 1);
+                drop(prepared);
+                wallet.recover_incomplete_sagas().await.unwrap();
+                wallet.recover_incomplete_sagas().await.unwrap();
+                assert_eq!(
+                    db.get_proofs_by_ys(vec![y]).await.unwrap()[0].state,
+                    State::Unspent
+                );
+                assert_eq!(
+                    db.get_melt_quote(&quote_id)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .used_by_operation,
+                    None
+                );
+                drop(wallet);
+                drop(db);
+                drop(conn);
+                std::fs::remove_file(path).unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn nested_swap_preparation_keeps_parent_recoverable() {
+        use crate::wallet::swap::saga::SwapSaga;
+        use crate::wallet::swap::ProofReservation;
+        let db = create_test_db().await;
+        let info = test_proof_info(test_keyset_id(), 2048, test_mint_url());
+        let y = info.y;
+        db.update_proofs(vec![info], vec![]).await.unwrap();
+        let quote = test_melt_quote();
+        db.add_melt_quote(quote.clone()).await.unwrap();
+        let mock = Arc::new(MockMintConnector::new());
+        mock.reset_default_mint_state();
+        let wallet = create_test_wallet_with_mock(db.clone(), mock.clone()).await;
+        let parent = MeltSaga::new(&wallet)
+            .prepare(&quote.id, HashMap::new())
+            .await
+            .unwrap();
+        let parent_id = parent.state_data.operation_id;
+        let child = SwapSaga::new(&wallet)
+            .prepare(
+                None,
+                SplitTarget::default(),
+                parent.state_data.proofs_to_swap.clone(),
+                None,
+                false,
+                false,
+                ProofReservation::Skip,
+            )
+            .await
+            .unwrap();
+        drop(child);
+        assert!(db.get_reserved_proofs(&parent_id).await.unwrap().is_empty());
+        assert_eq!(
+            db.get_proofs_by_ys(vec![y]).await.unwrap()[0].state,
+            State::Reserved
+        );
+        assert!(wallet
+            .resume_melt_saga(&parent.state_data.saga)
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            db.get_proofs_by_ys(vec![y]).await.unwrap()[0].state,
+            State::Reserved
+        );
+        wallet.recover_incomplete_sagas().await.unwrap();
+        wallet.recover_incomplete_sagas().await.unwrap();
+        assert_eq!(
+            db.get_proofs_by_ys(vec![y]).await.unwrap()[0].state,
+            State::Unspent
+        );
+        assert_eq!(
+            db.get_balance(None, None, Some(vec![State::Unspent]))
+                .await
+                .unwrap(),
+            2048
+        );
+        assert!(db.get_incomplete_sagas().await.unwrap().is_empty());
+        assert_eq!(
+            db.get_melt_quote(&quote.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .used_by_operation,
+            None
+        );
+        assert!(mock.captured_swap_requests.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancellation_failure_retains_recovery_record() {
+        let path = std::env::temp_dir().join(format!("cdk-cancel-{}.sqlite", Uuid::new_v4()));
+        let db = Arc::new(
+            cdk_sqlite::WalletSqliteDatabase::new(path.clone())
+                .await
+                .unwrap(),
+        );
+        let info = test_proof_info(test_keyset_id(), 2048, test_mint_url());
+        let y = info.y;
+        db.update_proofs(vec![info], vec![]).await.unwrap();
+        let quote = test_melt_quote();
+        db.add_melt_quote(quote.clone()).await.unwrap();
+        let mock = Arc::new(MockMintConnector::new());
+        mock.reset_default_mint_state();
+        let wallet = create_test_wallet_with_mock(db.clone(), mock).await;
+        let prepared = wallet
+            .prepare_melt(&quote.id, HashMap::new())
+            .await
+            .unwrap();
+        let operation = prepared.operation_id();
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch("CREATE TRIGGER fail_release BEFORE UPDATE ON proof WHEN NEW.state = 'UNSPENT' BEGIN SELECT RAISE(ABORT, 'injected cleanup failure'); END;").unwrap();
+        assert!(prepared.cancel().await.is_err());
+        assert!(db.get_saga(&operation).await.unwrap().is_some());
+        assert_eq!(
+            db.get_proofs_by_ys(vec![y]).await.unwrap()[0].state,
+            State::Reserved
+        );
+        conn.execute_batch("DROP TRIGGER fail_release;").unwrap();
+        wallet.recover_incomplete_sagas().await.unwrap();
+        wallet.recover_incomplete_sagas().await.unwrap();
+        assert_eq!(
+            db.get_proofs_by_ys(vec![y]).await.unwrap()[0].state,
+            State::Unspent
+        );
+        assert!(db.get_saga(&operation).await.unwrap().is_none());
+        drop(wallet);
+        drop(db);
+        drop(conn);
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[tokio::test]
     async fn test_prepare_melt_reserves_exact_input_proofs_for_operation() {

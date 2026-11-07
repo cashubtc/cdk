@@ -6,6 +6,9 @@ use crate::common::SqliteConnectionManager;
 
 pub mod memory;
 
+#[cfg(all(test, not(feature = "sqlcipher")))]
+mod preparation_tests;
+
 /// Mint SQLite implementation with rusqlite
 pub type WalletSqliteDatabase = SQLWalletDatabase<SqliteConnectionManager>;
 

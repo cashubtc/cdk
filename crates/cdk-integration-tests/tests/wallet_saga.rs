@@ -477,10 +477,9 @@ async fn test_melt_swap_gap_recovery() -> Result<()> {
     // First unreserve the proofs so the public swap() can re-reserve them.
     // In the real melt flow, swap_no_reserve() is used internally, but
     // that is not accessible from outside the crate.
-    let swap_ys = proofs_to_swap.ys()?;
     wallet
         .localstore
-        .update_proofs_state(swap_ys, cdk::nuts::State::Unspent)
+        .release_proofs(&prepared.operation_id())
         .await?;
 
     let swapped_proofs = wallet

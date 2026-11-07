@@ -35,6 +35,8 @@ pub struct Prepared {
     pub send_amount: Option<Amount>,
     /// Y values of input proofs (for cleanup)
     pub input_ys: Vec<PublicKey>,
+    /// Parent operation that owns reserved swap outputs.
+    pub reservation_owner: Option<Uuid>,
     /// Spending conditions for output proofs
     pub spending_conditions: Option<SpendingConditions>,
     /// Pre-swap data (request and secrets)
@@ -142,6 +144,7 @@ mod tests {
             test_mint_url(),
             CurrencyUnit::Sat,
             OperationData::Swap(SwapOperationData {
+                parent: None,
                 input_amount: Amount::from(1),
                 output_amount: Amount::from(1),
                 counter_start: Some(0),
@@ -173,6 +176,7 @@ mod tests {
         let prepared = Prepared {
             operation_id,
             send_amount: Some(Amount::from(1)),
+            reservation_owner: None,
             input_ys: vec![input_proof.y().expect("valid proof Y")],
             spending_conditions: None,
             pre_swap: PreSwap {

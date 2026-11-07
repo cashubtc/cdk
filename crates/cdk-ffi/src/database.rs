@@ -226,6 +226,11 @@ pub trait WalletDatabase: Send + Sync {
     /// Add a wallet saga to storage (JSON serialized)
     async fn add_saga(&self, saga_json: String) -> Result<(), FfiError>;
 
+    /// Atomically commit an OperationPreparation JSON value in one backend transaction.
+    /// Custom stores must delegate this as one call to the native database or
+    /// implement the complete transaction, including conflict checks, themselves.
+    async fn prepare_operation(&self, preparation_json: String) -> Result<(), FfiError>;
+
     /// Get a wallet saga by ID (returns JSON serialized)
     async fn get_saga(&self, id: String) -> Result<Option<String>, FfiError>;
 
@@ -843,6 +848,17 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
         let ffi_id = transaction_id.into();
         self.ffi_db
             .remove_transaction(ffi_id)
+            .await
+            .map_err(into_database_error)
+    }
+
+    async fn prepare_operation(
+        &self,
+        preparation: cdk_common::database::wallet::OperationPreparation,
+    ) -> Result<(), cdk::cdk_database::Error> {
+        let json = serde_json::to_string(&preparation).map_err(into_database_error)?;
+        self.ffi_db
+            .prepare_operation(json)
             .await
             .map_err(into_database_error)
     }
@@ -1544,6 +1560,14 @@ where
 
     // ========== Saga management methods ==========
 
+    async fn prepare_operation(&self, preparation_json: String) -> Result<(), FfiError> {
+        let preparation = serde_json::from_str(&preparation_json).map_err(FfiError::internal)?;
+        self.inner
+            .prepare_operation(preparation)
+            .await
+            .map_err(FfiError::internal)
+    }
+
     async fn add_saga(&self, saga_json: String) -> Result<(), FfiError> {
         let saga: WalletSaga = serde_json::from_str(&saga_json).map_err(FfiError::internal)?;
         self.inner.add_saga(saga).await.map_err(FfiError::internal)
@@ -1959,6 +1983,10 @@ macro_rules! impl_ffi_wallet_database {
 
             // ========== Saga management methods ==========
 
+            async fn prepare_operation(&self, preparation_json: String) -> Result<(), FfiError> {
+                self.inner.prepare_operation(preparation_json).await
+            }
+
             async fn add_saga(&self, saga_json: String) -> Result<(), FfiError> {
                 self.inner.add_saga(saga_json).await
             }
@@ -2179,6 +2207,119 @@ mod tests {
         info.used_by_operation = Some(uuid::Uuid::new_v4());
         info.created_by_operation = Some(uuid::Uuid::new_v4());
         info
+    }
+
+    #[tokio::test]
+    async fn custom_store_preparation_keeps_native_transaction_boundary() {
+        use cdk_common::database::wallet::{OperationPreparation, QuoteReservation};
+        use cdk_common::wallet::{
+            MeltOperationData, MeltSagaState, OperationData, WalletSagaState,
+        };
+
+        let path =
+            std::env::temp_dir().join(format!("ffi-preparation-{}.sqlite", uuid::Uuid::new_v4()));
+        let native = cdk_sqlite::WalletSqliteDatabase::new(path.clone())
+            .await
+            .unwrap();
+        let mut proof = proof_info();
+        proof.state = State::Unspent;
+        proof.used_by_operation = None;
+        native
+            .update_proofs(vec![proof.clone()], vec![])
+            .await
+            .unwrap();
+        let quote = cdk_common::wallet::MeltQuote {
+            id: "ffi-preparation".to_owned(),
+            mint_url: Some(proof.mint_url.clone()),
+            unit: proof.unit.clone(),
+            amount: 32.into(),
+            request: "test request".to_owned(),
+            fee_reserve: 1.into(),
+            state: cdk_common::MeltQuoteState::Unpaid,
+            expiry: 9999999999,
+            payment_proof: None,
+            estimated_blocks: None,
+            fee_index: None,
+            payment_method: cdk_common::nut00::KnownMethod::Bolt11.into(),
+            used_by_operation: None,
+            version: 0,
+        };
+        native.add_melt_quote(quote.clone()).await.unwrap();
+        let saga = WalletSaga::new(
+            uuid::Uuid::new_v4(),
+            WalletSagaState::Melt(MeltSagaState::ProofsReserved),
+            quote.amount,
+            proof.mint_url.clone(),
+            proof.unit.clone(),
+            OperationData::Melt(MeltOperationData {
+                quote_id: quote.id.clone(),
+                amount: quote.amount,
+                fee_reserve: quote.fee_reserve,
+                counter_start: None,
+                counter_end: None,
+                change_amount: None,
+                metadata: HashMap::new(),
+                final_proof_ys: None,
+                change_blinded_messages: None,
+            }),
+        );
+        let request = OperationPreparation {
+            saga: saga.clone(),
+            proof_ys: vec![],
+            proofs: vec![proof.clone()],
+            quotes: vec![QuoteReservation {
+                quote_id: quote.id.clone(),
+                version: 0,
+            }],
+            counter: None,
+        };
+        native.add_saga(saga.clone()).await.unwrap();
+        let callback = FfiWalletDatabaseWrapper::new(native);
+        let store = resolve_wallet_store(custom_wallet_store(callback)).unwrap();
+        let bridged = create_cdk_database_from_ffi(store);
+        assert!(bridged.prepare_operation(request.clone()).await.is_err());
+        drop(bridged);
+        let reopened = cdk_sqlite::WalletSqliteDatabase::new(path.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            reopened.get_proofs_by_ys(vec![proof.y]).await.unwrap(),
+            vec![proof.clone()]
+        );
+        assert_eq!(
+            reopened.get_melt_quote(&quote.id).await.unwrap(),
+            Some(quote.clone())
+        );
+        reopened.delete_saga(&saga.id).await.unwrap();
+        let callback = FfiWalletDatabaseWrapper::new(reopened);
+        let bridged = create_cdk_database_from_ffi(
+            resolve_wallet_store(custom_wallet_store(callback)).unwrap(),
+        );
+        bridged.prepare_operation(request).await.unwrap();
+        drop(bridged);
+        let reopened = cdk_sqlite::WalletSqliteDatabase::new(path.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            reopened.get_saga(&saga.id).await.unwrap(),
+            Some(saga.clone())
+        );
+        let owned = reopened.get_reserved_proofs(&saga.id).await.unwrap();
+        assert_eq!(owned.len(), 1);
+        assert_eq!(owned[0].state, State::Reserved);
+        assert_eq!(owned[0].derivation_index, proof.derivation_index);
+        assert_eq!(owned[0].created_by_operation, proof.created_by_operation);
+        assert_eq!(
+            reopened
+                .get_melt_quote(&quote.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .used_by_operation,
+            Some(saga.id.to_string())
+        );
+        drop(reopened);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[tokio::test]

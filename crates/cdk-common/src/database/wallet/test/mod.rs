@@ -21,6 +21,9 @@ use crate::wallet::{
     TransactionDirection, TransactionStatus, WalletSaga, WalletSagaState,
 };
 
+mod preparation;
+pub use self::preparation::*;
+
 /// Generate a unique test ID
 fn unique_id() -> String {
     format!("test-{}", uuid::Uuid::now_v7())
@@ -162,6 +165,7 @@ fn test_wallet_saga(mint_url: MintUrl) -> WalletSaga {
         mint_url,
         CurrencyUnit::Sat,
         OperationData::Swap(SwapOperationData {
+            parent: None,
             input_amount: Amount::from(1000),
             output_amount: Amount::from(990),
             counter_start: Some(0),
@@ -1799,7 +1803,14 @@ macro_rules! wallet_db_test {
             release_proofs_preserves_spent,
             get_reserved_proofs,
             reserve_proofs_already_reserved,
-            reserve_proofs_is_atomic
+            reserve_proofs_is_atomic,
+            preparation_commits_owned_resources,
+            preparation_rolls_back_on_saga_conflict,
+            preparation_rolls_back_on_input_conflict,
+            preparation_competes_for_quote_and_inputs,
+            preparation_mint_counters_and_batch_quotes,
+            preparation_melt_transition_is_atomic,
+            preparation_nested_swap_owns_inputs
         );
     };
     ($make_db_fn:ident, $($name:ident),+ $(,)?) => {
