@@ -380,15 +380,30 @@ impl MintQuote {
     }
 }
 
-/// Amounts recovered during a restore operation
+/// Amounts found and added during a restore operation
+///
+/// `spent`, `unspent` and `pending` are scan totals: they count every proof the
+/// mint reported in that state, including proofs this wallet already stored.
+/// They are not the wallet balance and not the amount added by this call.
+///
+/// `newly_added_unspent` and `newly_added_pending` count only the proofs this
+/// call stored that were not stored before. They are per call: a repeat
+/// restore, or a retry after a partial restore, only reports what that call
+/// added. A zero newly added amount does not mean the wallet holds no funds.
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Default)]
 pub struct Restored {
-    /// Amount in the restore that has already been spent
+    /// Total amount found in the scan that has already been spent
     pub spent: Amount,
-    /// Amount restored that is unspent
+    /// Total amount found in the scan that is unspent, including proofs that
+    /// were already stored
     pub unspent: Amount,
-    /// Amount restored that is pending
+    /// Total amount found in the scan that is pending, including proofs that
+    /// were already stored
     pub pending: Amount,
+    /// Amount of unspent proofs this call added that were not already stored
+    pub newly_added_unspent: Amount,
+    /// Amount of pending proofs this call added that were not already stored
+    pub newly_added_pending: Amount,
 }
 
 /// Options for restoring a wallet from seed.
