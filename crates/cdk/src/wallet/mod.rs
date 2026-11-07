@@ -1,6 +1,6 @@
 #![doc = include_str!("./README.md")]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -884,6 +884,37 @@ impl Wallet {
                     )?;
 
                 restored_result = updated_restored;
+
+                // Proofs already in the local store still count towards the scan
+                // totals above, but not towards the newly added amounts.
+                let already_stored: HashSet<PublicKey> = self
+                    .localstore
+                    .get_proofs_by_ys(unspent_proofs.iter().map(|p| p.y).collect())
+                    .await?
+                    .into_iter()
+                    .map(|p| p.y)
+                    .collect();
+
+                for proof_info in unspent_proofs
+                    .iter()
+                    .filter(|p| !already_stored.contains(&p.y))
+                {
+                    match proof_info.state {
+                        State::Unspent => {
+                            restored_result.newly_added_unspent = restored_result
+                                .newly_added_unspent
+                                .checked_add(proof_info.proof.amount)
+                                .ok_or(Error::AmountOverflow)?;
+                        }
+                        State::Pending => {
+                            restored_result.newly_added_pending = restored_result
+                                .newly_added_pending
+                                .checked_add(proof_info.proof.amount)
+                                .ok_or(Error::AmountOverflow)?;
+                        }
+                        _ => {}
+                    }
+                }
 
                 self.localstore
                     .update_proofs(unspent_proofs, vec![])
@@ -1910,6 +1941,174 @@ mod tests {
             matches!(result, Err(Error::AmountOverflow)),
             "expected amount overflow, got {result:?}"
         );
+    }
+    /// Mint-side data for restore tests: a keyset with keys for 1 and 2, and
+    /// valid signatures for the first two deterministic outputs of `seed`,
+    /// worth 1 and 2.
+    fn restore_fixture(
+        seed: &[u8; 64],
+    ) -> (
+        KeySet,
+        Vec<BlindedMessage>,
+        Vec<BlindSignature>,
+        Vec<PublicKey>,
+    ) {
+        let one_key = SecretKey::from_slice(&[1; 32]).expect("valid secret key");
+        let two_key = SecretKey::from_slice(&[2; 32]).expect("valid secret key");
+        let keys = crate::nuts::Keys::new(BTreeMap::from([
+            (Amount::from(1), one_key.public_key()),
+            (Amount::from(2), two_key.public_key()),
+        ]));
+        let keyset_id = Id::v1_from_keys(&keys);
+        let keyset = KeySet {
+            id: keyset_id,
+            unit: CurrencyUnit::Sat,
+            active: Some(true),
+            keys,
+            input_fee_ppk: 0,
+            final_expiry: None,
+        };
+        let premint_secrets = PreMintSecrets::restore_batch(keyset_id, seed, 0, 2)
+            .expect("restore secrets should derive");
+        let outputs = premint_secrets.blinded_messages();
+        let signatures = [(1, &one_key), (2, &two_key)]
+            .into_iter()
+            .zip(&outputs)
+            .map(|((amount, key), output)| BlindSignature {
+                amount: Amount::from(amount),
+                keyset_id,
+                c: crate::dhke::sign_message(key, &output.blinded_secret)
+                    .expect("blind signature should be valid"),
+                dleq: None,
+            })
+            .collect();
+        let ys = premint_secrets
+            .secrets
+            .iter()
+            .map(|premint| {
+                crate::dhke::hash_to_curve(premint.secret.as_bytes())
+                    .expect("proof Y should derive")
+            })
+            .collect();
+        (keyset, outputs, signatures, ys)
+    }
+
+    /// Stage one restore scan: a single batch returning the given proofs,
+    /// followed by an empty batch that ends the scan.
+    fn stage_restore_scan(
+        client: &MockMintConnector,
+        outputs: &[BlindedMessage],
+        signatures: &[BlindSignature],
+        states: Vec<crate::nuts::ProofState>,
+    ) {
+        client.push_restore_response(Ok(crate::nuts::RestoreResponse {
+            outputs: outputs.to_vec(),
+            signatures: signatures.to_vec(),
+        }));
+        client.push_restore_response(Ok(crate::nuts::RestoreResponse {
+            outputs: vec![],
+            signatures: vec![],
+        }));
+        client.set_check_state_response(Ok(crate::nuts::CheckStateResponse { states }));
+    }
+
+    async fn restore_test_wallet(
+        seed: [u8; 64],
+        keyset: KeySet,
+    ) -> (Wallet, Arc<MockMintConnector>) {
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock_seed, test_mint_info,
+        };
+
+        let client = Arc::new(MockMintConnector::new());
+        client.set_active_keyset(keyset);
+        let mut mint_info = test_mint_info();
+        mint_info.time = None;
+        client.set_mint_info_response(Ok(mint_info));
+        let wallet =
+            create_test_wallet_with_mock_seed(create_test_db().await, client.clone(), seed).await;
+        (wallet, client)
+    }
+
+    #[tokio::test]
+    async fn restore_reports_newly_added_amounts_and_zero_on_repeat() {
+        use crate::nuts::ProofState;
+
+        let seed = [7; 64];
+        let (keyset, outputs, signatures, ys) = restore_fixture(&seed);
+        let states = || {
+            vec![
+                ProofState::from((ys[0], State::Unspent)),
+                ProofState::from((ys[1], State::Pending)),
+            ]
+        };
+        let (wallet, client) = restore_test_wallet(seed, keyset).await;
+        let opts = || NUT13Options::new(2, 1).expect("valid restore options");
+
+        // Empty wallet: everything found is newly added.
+        stage_restore_scan(&client, &outputs, &signatures, states());
+        let first = wallet.restore_with_opts(opts()).await.unwrap();
+        assert_eq!(first.unspent, Amount::from(1));
+        assert_eq!(first.pending, Amount::from(2));
+        assert_eq!(first.newly_added_unspent, Amount::from(1));
+        assert_eq!(first.newly_added_pending, Amount::from(2));
+
+        // Populated wallet: the scan totals stay the same, nothing is new.
+        stage_restore_scan(&client, &outputs, &signatures, states());
+        let repeat = wallet.restore_with_opts(opts()).await.unwrap();
+        assert_eq!(repeat.unspent, Amount::from(1));
+        assert_eq!(repeat.pending, Amount::from(2));
+        assert_eq!(repeat.newly_added_unspent, Amount::ZERO);
+        assert_eq!(repeat.newly_added_pending, Amount::ZERO);
+    }
+
+    #[tokio::test]
+    async fn restore_retry_after_partial_restore_reports_only_new_proofs() {
+        use crate::nuts::{CheckStateResponse, ProofState, RestoreResponse};
+
+        let seed = [7; 64];
+        let (keyset, outputs, signatures, ys) = restore_fixture(&seed);
+        let (wallet, client) = restore_test_wallet(seed, keyset).await;
+
+        // Partial restore: the first batch stores the proof worth 1, then the
+        // mint fails on the next batch.
+        client.push_restore_response(Ok(RestoreResponse {
+            outputs: outputs[..1].to_vec(),
+            signatures: signatures[..1].to_vec(),
+        }));
+        client.push_restore_response(Err(Error::InvalidMintResponse(
+            "mint unavailable".to_string(),
+        )));
+        client.set_check_state_response(Ok(CheckStateResponse {
+            states: vec![ProofState::from((ys[0], State::Unspent))],
+        }));
+        let partial = wallet
+            .restore_with_opts(NUT13Options::new(1, 1).expect("valid restore options"))
+            .await;
+        assert!(partial.is_err(), "expected partial restore to fail");
+        assert_eq!(
+            wallet.get_unspent_proofs().await.unwrap().len(),
+            1,
+            "first batch should have been stored before the failure"
+        );
+
+        // Retry: both proofs are found, only the proof worth 2 is new.
+        stage_restore_scan(
+            &client,
+            &outputs,
+            &signatures,
+            vec![
+                ProofState::from((ys[0], State::Unspent)),
+                ProofState::from((ys[1], State::Unspent)),
+            ],
+        );
+        let retry = wallet
+            .restore_with_opts(NUT13Options::new(2, 1).expect("valid restore options"))
+            .await
+            .unwrap();
+        assert_eq!(retry.unspent, Amount::from(3));
+        assert_eq!(retry.newly_added_unspent, Amount::from(2));
+        assert_eq!(retry.newly_added_pending, Amount::ZERO);
     }
 
     #[tokio::test]

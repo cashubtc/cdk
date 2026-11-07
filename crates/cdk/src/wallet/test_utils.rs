@@ -505,6 +505,13 @@ pub struct MockMintConnector {
     pub check_state_response: Mutex<Option<Result<CheckStateResponse, Error>>>,
     /// Response for post_restore calls
     pub restore_response: Mutex<Option<Result<RestoreResponse, Error>>>,
+    /// Queue of responses for successive post_restore calls.
+    ///
+    /// When non-empty, each `post_restore` call pops the front entry. Takes
+    /// precedence over `restore_response`, letting a single test stage the
+    /// batches of a multi-batch restore scan.
+    pub restore_responses: Mutex<std::collections::VecDeque<Result<RestoreResponse, Error>>>,
+
     /// Response for get_melt_quote_status calls
     pub melt_quote_status_response: Mutex<Option<Result<MeltQuoteBolt11Response<String>, Error>>>,
     /// Queue of responses for successive get_melt_quote_status calls.
@@ -602,6 +609,7 @@ impl MockMintConnector {
             mint_info: Mutex::new(mint_info),
             check_state_response: Mutex::new(None),
             restore_response: Mutex::new(None),
+            restore_responses: Mutex::new(std::collections::VecDeque::new()),
             melt_quote_status_response: Mutex::new(None),
             melt_quote_status_responses: Mutex::new(std::collections::VecDeque::new()),
             post_mint_response: Mutex::new(None),
@@ -693,6 +701,10 @@ impl MockMintConnector {
 
     pub fn _set_restore_response(&self, response: Result<RestoreResponse, Error>) {
         *self.restore_response.lock().unwrap() = Some(response);
+    }
+
+    pub fn push_restore_response(&self, response: Result<RestoreResponse, Error>) {
+        self.restore_responses.lock().unwrap().push_back(response);
     }
 
     pub fn set_melt_quote_status_response(
@@ -1096,6 +1108,9 @@ impl MintConnector for MockMintConnector {
     }
 
     async fn post_restore(&self, _request: RestoreRequest) -> Result<RestoreResponse, Error> {
+        if let Some(response) = self.restore_responses.lock().unwrap().pop_front() {
+            return response;
+        }
         self.restore_response
             .lock()
             .unwrap()
