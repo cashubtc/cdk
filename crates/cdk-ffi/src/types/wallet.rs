@@ -1024,11 +1024,18 @@ impl From<cdk::nuts::MeltOptions> for MeltOptions {
 }
 
 /// Restored Data
+///
+/// `spent`, `unspent` and `pending` are scan totals and include proofs that
+/// were already stored. `newly_added_unspent` and `newly_added_pending` count
+/// only what this restore call added. A zero newly added amount does not mean
+/// the wallet holds no funds.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct Restored {
     pub spent: Amount,
     pub unspent: Amount,
     pub pending: Amount,
+    pub newly_added_unspent: Amount,
+    pub newly_added_pending: Amount,
 }
 
 impl From<cdk_common::wallet::Restored> for Restored {
@@ -1037,6 +1044,8 @@ impl From<cdk_common::wallet::Restored> for Restored {
             spent: restored.spent.into(),
             unspent: restored.unspent.into(),
             pending: restored.pending.into(),
+            newly_added_unspent: restored.newly_added_unspent.into(),
+            newly_added_pending: restored.newly_added_pending.into(),
         }
     }
 }
