@@ -391,6 +391,10 @@ impl MintMetadataCache {
     /// database as synced. Data out of a database is not a new version, and
     /// claiming it was made a concurrent fetch look already persisted.
     ///
+    /// Blind auth keysets do not populate the regular status: a database
+    /// holding only those would otherwise make `load` serve a snapshot with no
+    /// keyset for the wallet's unit until the TTL expires.
+    ///
     /// # Arguments
     ///
     /// * `storage` - Database to load metadata from
@@ -442,7 +446,10 @@ impl MintMetadataCache {
             }
 
             next.rebuild_active_keysets();
-            next.status.is_populated = !next.keysets.is_empty();
+            next.status.is_populated = next
+                .keysets
+                .values()
+                .any(|keyset| keyset.unit != CurrencyUnit::Auth);
 
             Arc::new(next)
         });
@@ -634,9 +641,13 @@ impl MintMetadataCache {
     /// database with no record of its own is always written to, because a
     /// snapshot read out of another database never leaves version zero.
     ///
+    /// A snapshot carrying no regular data is not written at all, because the
+    /// mint row its keysets need may not exist yet and the first regular
+    /// persist carries the auth keysets anyway.
+    ///
     /// Mint info is written only when the snapshot carries it. `add_mint`
-    /// assigns every column, so persisting an auth-only snapshot, which never
-    /// reads mint info, would erase what is stored.
+    /// assigns every column, so persisting a snapshot read out of a database
+    /// with no mint row would erase what is stored.
     ///
     /// Writes are best effort: a wallet stays usable on its in-memory snapshot
     /// when the database rejects them, so each failure is logged rather than
@@ -655,6 +666,10 @@ impl MintMetadataCache {
         metadata: Arc<MintMetadata>,
         db_sync_versions: Arc<RwLock<HashMap<usize, SyncRecord>>>,
     ) {
+        if !metadata.status.is_populated {
+            return;
+        }
+
         let storage_id = Self::arc_pointer_id(&storage);
 
         let previous_version = {
@@ -1117,16 +1132,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_auth_only_fetch_reaches_the_database() {
+    async fn an_auth_only_fetch_waits_for_regular_data() {
         let storage = storage_with(vec![]).await;
         let cache = MintMetadataCache::new(test_mint_url());
+        let auth_id = test_auth_keyset().id;
 
         cache
             .load_auth(&storage, &mock_auth_client())
             .await
             .unwrap();
 
-        let auth_id = test_auth_keyset().id;
+        let stored = storage
+            .get_mint_keysets(test_mint_url())
+            .await
+            .unwrap()
+            .unwrap_or_default();
+        assert!(
+            !stored.iter().any(|keyset| keyset.id == auth_id),
+            "an auth-only snapshot leaves the regular status unpopulated, so a \
+             restart would read these rows back as regular mint data"
+        );
+        assert!(
+            storage.get_keys(&auth_id).await.unwrap().is_none(),
+            "the auth keys wait with their keyset"
+        );
+
+        cache
+            .load_from_mint(&storage, &mock_client(OLD_EXPIRY))
+            .await
+            .unwrap();
+
         let stored = storage
             .get_mint_keysets(test_mint_url())
             .await
@@ -1134,11 +1169,43 @@ mod tests {
             .unwrap_or_default();
         assert!(
             stored.iter().any(|keyset| keyset.id == auth_id),
-            "an auth fetch is new data, so it should have been persisted"
+            "the first regular persist carries the auth keyset with it"
         );
         assert!(
             storage.get_keys(&auth_id).await.unwrap().is_some(),
-            "the auth keys should have reached the database too"
+            "the auth keys should have reached the database with it"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_database_holding_only_auth_keysets_is_not_populated() {
+        let auth_keyset = test_auth_keyset();
+        let storage = storage_with(vec![info(&auth_keyset, None)]).await;
+        let cache = MintMetadataCache::new(test_mint_url());
+
+        let loaded = cache.load_from_db(&storage).await.unwrap();
+
+        assert!(
+            !loaded.status.is_populated,
+            "blind auth keysets are not regular mint data"
+        );
+        assert!(
+            loaded.keysets.contains_key(&auth_keyset.id),
+            "the auth keyset stays cached, so a later auth fetch skips its keys"
+        );
+
+        let metadata = cache
+            .load(&storage, &mock_client(NEW_EXPIRY))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            metadata
+                .keysets
+                .get(&test_keyset_id())
+                .map(|keyset| keyset.final_expiry),
+            Some(NEW_EXPIRY),
+            "a database with no regular keyset must not keep the wallet off the mint"
         );
     }
 
@@ -1248,7 +1315,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_auth_only_persist_leaves_stored_mint_info_alone() {
+    async fn a_snapshot_without_mint_info_leaves_stored_mint_info_alone() {
+        let keyset = test_keyset();
         let storage = create_test_db().await;
         storage
             .add_mint(test_mint_url(), Some(test_mint_info()))
@@ -1256,10 +1324,19 @@ mod tests {
             .unwrap();
         let cache = MintMetadataCache::new(test_mint_url());
 
+        let mut snapshot = MintMetadata {
+            keysets: [(keyset.id, Arc::new(info(&keyset, OLD_EXPIRY)))]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        snapshot.status.is_populated = true;
+        snapshot.status.version = 1;
+        snapshot.rebuild_active_keysets();
+
         cache
-            .load_auth(&storage, &mock_auth_client())
-            .await
-            .unwrap();
+            .database_sync(storage.clone(), Arc::new(snapshot))
+            .await;
 
         assert_eq!(
             storage
@@ -1268,7 +1345,8 @@ mod tests {
                 .unwrap()
                 .and_then(|info| info.name),
             test_mint_info().name,
-            "an auth fetch never reads mint info, so persisting it must not erase what is stored"
+            "a snapshot read out of a database with no mint row carries no mint info, so \
+             persisting it must not erase what is stored"
         );
     }
 }
