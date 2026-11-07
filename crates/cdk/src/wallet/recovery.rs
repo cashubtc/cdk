@@ -741,6 +741,18 @@ impl Wallet {
                             // Saga exists, this is not orphaned
                         }
                         Ok(None) => {
+                            if !self
+                                .localstore
+                                .get_reserved_proofs(&operation_id)
+                                .await?
+                                .is_empty()
+                            {
+                                tracing::warn!(
+                                    "Keeping legacy orphan reservation {} for reconciliation",
+                                    operation_id
+                                );
+                                continue;
+                            }
                             // No saga found - this is an orphaned reservation
                             tracing::warn!(
                                 "Found orphaned melt quote reservation: quote={}, operation={}. Releasing.",
@@ -1037,6 +1049,7 @@ mod tests {
                 _ => (
                     WalletSagaState::Swap(SwapSagaState::SwapRequested),
                     OperationData::Swap(SwapOperationData {
+                        parent: None,
                         input_amount: amount,
                         output_amount: amount,
                         counter_start: Some(0),
@@ -1368,6 +1381,35 @@ mod tests {
         // All sagas should be deleted
         let sagas = db.get_incomplete_sagas().await.unwrap();
         assert!(sagas.is_empty());
+    }
+
+    #[tokio::test]
+    async fn legacy_orphan_reservations_require_reconciliation() {
+        let db = create_test_db().await;
+        let operation_id = uuid::Uuid::new_v4();
+        let mut quote = test_melt_quote();
+        quote.used_by_operation = Some(operation_id.to_string());
+        db.add_melt_quote(quote.clone()).await.unwrap();
+        let proof = test_proof_info(test_keyset_id(), 2048, test_mint_url());
+        db.update_proofs(vec![proof.clone()], vec![]).await.unwrap();
+        db.reserve_proofs(vec![proof.y], &operation_id)
+            .await
+            .unwrap();
+        let wallet = create_test_wallet(db.clone()).await;
+        wallet.recover_incomplete_sagas().await.unwrap();
+        wallet.recover_incomplete_sagas().await.unwrap();
+        assert_eq!(
+            db.get_proofs_by_ys(vec![proof.y]).await.unwrap()[0].state,
+            State::Reserved
+        );
+        assert_eq!(
+            db.get_melt_quote(&quote.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .used_by_operation,
+            Some(operation_id.to_string())
+        );
     }
 
     #[tokio::test]

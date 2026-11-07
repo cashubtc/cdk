@@ -72,6 +72,11 @@ impl Wallet {
 
         match state {
             IssueSagaState::SecretsPrepared => {
+                let mut claimed = saga.clone();
+                claimed.update_state(saga.state);
+                if !self.localstore.update_saga(claimed).await? {
+                    return Ok(RecoveryAction::Skipped);
+                }
                 // No mint request was sent - safe to delete saga
                 // Counter increments are not reversed (by design)
                 tracing::info!(
@@ -679,20 +684,12 @@ impl Wallet {
 
     /// Compensate an issue saga by releasing the quote and deleting the saga.
     async fn compensate_issue(&self, saga_id: &uuid::Uuid) -> Result<(), Error> {
-        // Release the mint quote reservation (best-effort, continue on error)
-        if let Err(e) = (ReleaseMintQuote {
+        ReleaseMintQuote {
             localstore: self.localstore.clone(),
             operation_id: *saga_id,
         }
         .execute()
-        .await)
-        {
-            tracing::warn!(
-                "Failed to release mint quote for saga {}: {}. Continuing with saga cleanup.",
-                saga_id,
-                escape_log_value(&e)
-            );
-        }
+        .await?;
 
         self.localstore.delete_saga(saga_id).await?;
         Ok(())

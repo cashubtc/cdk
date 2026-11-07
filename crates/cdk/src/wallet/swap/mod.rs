@@ -28,6 +28,8 @@ pub(crate) enum ProofReservation {
     Reserve,
     /// Skip reservation because a parent saga already reserved these proofs.
     Skip,
+    /// Stage inputs and counters for the saga transaction.
+    Prepare,
 }
 
 impl Wallet {
@@ -242,10 +244,21 @@ impl Wallet {
 
             let new_counter = self
                 .localstore
-                .increment_keyset_counter(&active_keyset_id, total_secrets_needed)
+                .increment_keyset_counter(
+                    &active_keyset_id,
+                    if proof_reservation == ProofReservation::Prepare {
+                        0
+                    } else {
+                        total_secrets_needed
+                    },
+                )
                 .await?;
 
-            new_counter - total_secrets_needed
+            if proof_reservation == ProofReservation::Prepare {
+                new_counter
+            } else {
+                new_counter - total_secrets_needed
+            }
         } else {
             0
         };

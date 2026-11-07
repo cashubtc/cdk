@@ -510,20 +510,12 @@ impl Wallet {
     async fn compensate_melt(&self, saga_id: &uuid::Uuid) -> Result<(), Error> {
         self.mark_transaction_failed(*saga_id).await?;
 
-        // Release melt quote (best-effort, continue on error)
-        if let Err(e) = (ReleaseMeltQuote {
+        ReleaseMeltQuote {
             localstore: self.localstore.clone(),
             operation_id: *saga_id,
         }
         .execute()
-        .await)
-        {
-            tracing::warn!(
-                "Failed to release melt quote for saga {}: {}. Continuing with saga cleanup.",
-                saga_id,
-                escape_log_value(&e)
-            );
-        }
+        .await?;
 
         // Release proofs and delete saga
         let reserved_proofs = self.localstore.get_reserved_proofs(saga_id).await?;
@@ -544,7 +536,7 @@ impl Wallet {
     ///
     /// The no-op state update is an optimistic-locking claim. A stale caller
     /// loses the claim if another task advanced the saga after it was read.
-    pub(super) async fn claim_and_compensate_melt(
+    pub(crate) async fn claim_and_compensate_melt(
         &self,
         saga_id: &uuid::Uuid,
         expected_states: &[MeltSagaState],
@@ -565,6 +557,9 @@ impl Wallet {
             return Ok(false);
         }
 
+        if self.localstore.get_incomplete_sagas().await?.iter().any(|saga| {
+            matches!(&saga.data, OperationData::Swap(data) if data.parent.as_ref().is_some_and(|parent| parent.id == *saga_id))
+        }) { return Ok(false); }
         saga.update_state(WalletSagaState::Melt(current_state));
         if !self.localstore.update_saga(saga).await? {
             return Ok(false);

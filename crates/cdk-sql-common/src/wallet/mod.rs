@@ -71,6 +71,128 @@ where
         Ok(())
     }
 
+    async fn write_proof<T>(conn: &T, proof: ProofInfo) -> Result<(), Error>
+    where
+        T: DatabaseExecutor,
+    {
+        query(
+                r#"
+    INSERT INTO proof
+    (y, mint_url, state, spending_condition, unit, amount, keyset_id, secret, c, witness, dleq_e, dleq_s, dleq_r, used_by_operation, created_by_operation, derivation_index, p2pk_e)
+    VALUES
+    (:y, :mint_url, :state, :spending_condition, :unit, :amount, :keyset_id, :secret, :c, :witness, :dleq_e, :dleq_s, :dleq_r, :used_by_operation, :created_by_operation, :derivation_index, :p2pk_e)
+    ON CONFLICT(y) DO UPDATE SET
+        mint_url = excluded.mint_url,
+        state = excluded.state,
+        spending_condition = excluded.spending_condition,
+        unit = excluded.unit,
+        amount = excluded.amount,
+        keyset_id = excluded.keyset_id,
+        secret = excluded.secret,
+        c = excluded.c,
+        witness = excluded.witness,
+        dleq_e = excluded.dleq_e,
+        dleq_s = excluded.dleq_s,
+        dleq_r = excluded.dleq_r,
+        used_by_operation = excluded.used_by_operation,
+        created_by_operation = excluded.created_by_operation,
+        derivation_index = COALESCE(excluded.derivation_index, proof.derivation_index),
+        p2pk_e = excluded.p2pk_e
+    ;
+            "#,
+            )?
+            .bind("y", proof.y.to_bytes().to_vec())
+            .bind("mint_url", proof.mint_url.to_string())
+            .bind("state", proof.state.to_string())
+            .bind(
+                "spending_condition",
+                proof
+                    .spending_condition
+                    .map(|s| serde_json::to_string(&s).ok()),
+            )
+            .bind("unit", proof.unit.to_string())
+            .bind("amount", i64::try_from(u64::from(proof.proof.amount))?)
+            .bind("keyset_id", proof.proof.keyset_id.to_string())
+            .bind("secret", proof.proof.secret.to_string())
+            .bind("c", proof.proof.c.to_bytes().to_vec())
+            .bind(
+                "witness",
+                proof
+                    .proof
+                    .witness
+                    .and_then(|w| serde_json::to_string(&w).ok()),
+            )
+            .bind(
+                "dleq_e",
+                proof.proof.dleq.as_ref().map(|dleq| dleq.e.to_secret_bytes().to_vec()),
+            )
+            .bind(
+                "dleq_s",
+                proof.proof.dleq.as_ref().map(|dleq| dleq.s.to_secret_bytes().to_vec()),
+            )
+            .bind(
+                "dleq_r",
+                proof.proof.dleq.as_ref().map(|dleq| dleq.r.to_secret_bytes().to_vec()),
+            )
+            .bind("used_by_operation", proof.used_by_operation.map(|id| id.to_string()))
+            .bind("created_by_operation", proof.created_by_operation.map(|id| id.to_string()))
+            .bind("derivation_index", proof.derivation_index.map(i64::from))
+            .bind(
+                "p2pk_e",
+                proof
+                    .proof
+                    .p2pk_e
+                    .as_ref()
+                    .map(|pk| pk.to_bytes().to_vec()),
+            )
+            .execute(conn)
+            .await?;
+        Ok(())
+    }
+
+    async fn insert_saga<T>(conn: &T, saga: wallet::WalletSaga) -> Result<(), Error>
+    where
+        T: DatabaseExecutor,
+    {
+        let state_json = serde_json::to_string(&saga.state).map_err(|e| {
+            Error::Database(Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Failed to serialize saga state: {}", e),
+            )))
+        })?;
+
+        let data_json = serde_json::to_string(&saga.data).map_err(|e| {
+            Error::Database(Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Failed to serialize saga data: {}", e),
+            )))
+        })?;
+
+        query(
+            r#"
+            INSERT INTO wallet_sagas
+            (id, kind, state, amount, mint_url, unit, quote_id, created_at, updated_at, data, version)
+            VALUES
+            (:id, :kind, :state, :amount, :mint_url, :unit, :quote_id, :created_at, :updated_at, :data, :version)
+            "#,
+        )?
+        .bind("id", saga.id.to_string())
+        .bind("kind", saga.kind.to_string())
+        .bind("state", state_json)
+        .bind("amount", i64::try_from(u64::from(saga.amount))?)
+        .bind("mint_url", saga.mint_url.to_string())
+        .bind("unit", saga.unit.to_string())
+        .bind("quote_id", saga.quote_id)
+        .bind("created_at", i64::try_from(saga.created_at)?)
+        .bind("updated_at", i64::try_from(saga.updated_at)?)
+        .bind("data", data_json)
+        .bind("version", i64::from(saga.version))
+        .execute(conn)
+        .await?;
+
+        Ok(())
+    }
+
     async fn add_keyset_u32<T>(conn: &T) -> Result<(), Error>
     where
         T: DatabaseExecutor,
@@ -770,78 +892,7 @@ where
         let tx = ConnectionWithTransaction::new(conn).await?;
 
         for proof in added {
-            query(
-                r#"
-    INSERT INTO proof
-    (y, mint_url, state, spending_condition, unit, amount, keyset_id, secret, c, witness, dleq_e, dleq_s, dleq_r, used_by_operation, created_by_operation, derivation_index, p2pk_e)
-    VALUES
-    (:y, :mint_url, :state, :spending_condition, :unit, :amount, :keyset_id, :secret, :c, :witness, :dleq_e, :dleq_s, :dleq_r, :used_by_operation, :created_by_operation, :derivation_index, :p2pk_e)
-    ON CONFLICT(y) DO UPDATE SET
-        mint_url = excluded.mint_url,
-        state = excluded.state,
-        spending_condition = excluded.spending_condition,
-        unit = excluded.unit,
-        amount = excluded.amount,
-        keyset_id = excluded.keyset_id,
-        secret = excluded.secret,
-        c = excluded.c,
-        witness = excluded.witness,
-        dleq_e = excluded.dleq_e,
-        dleq_s = excluded.dleq_s,
-        dleq_r = excluded.dleq_r,
-        used_by_operation = excluded.used_by_operation,
-        created_by_operation = excluded.created_by_operation,
-        derivation_index = COALESCE(excluded.derivation_index, proof.derivation_index),
-        p2pk_e = excluded.p2pk_e
-    ;
-            "#,
-            )?
-            .bind("y", proof.y.to_bytes().to_vec())
-            .bind("mint_url", proof.mint_url.to_string())
-            .bind("state", proof.state.to_string())
-            .bind(
-                "spending_condition",
-                proof
-                    .spending_condition
-                    .map(|s| serde_json::to_string(&s).ok()),
-            )
-            .bind("unit", proof.unit.to_string())
-            .bind("amount", i64::try_from(u64::from(proof.proof.amount))?)
-            .bind("keyset_id", proof.proof.keyset_id.to_string())
-            .bind("secret", proof.proof.secret.to_string())
-            .bind("c", proof.proof.c.to_bytes().to_vec())
-            .bind(
-                "witness",
-                proof
-                    .proof
-                    .witness
-                    .and_then(|w| serde_json::to_string(&w).ok()),
-            )
-            .bind(
-                "dleq_e",
-                proof.proof.dleq.as_ref().map(|dleq| dleq.e.to_secret_bytes().to_vec()),
-            )
-            .bind(
-                "dleq_s",
-                proof.proof.dleq.as_ref().map(|dleq| dleq.s.to_secret_bytes().to_vec()),
-            )
-            .bind(
-                "dleq_r",
-                proof.proof.dleq.as_ref().map(|dleq| dleq.r.to_secret_bytes().to_vec()),
-            )
-            .bind("used_by_operation", proof.used_by_operation.map(|id| id.to_string()))
-            .bind("created_by_operation", proof.created_by_operation.map(|id| id.to_string()))
-            .bind("derivation_index", proof.derivation_index.map(i64::from))
-            .bind(
-                "p2pk_e",
-                proof
-                    .proof
-                    .p2pk_e
-                    .as_ref()
-                    .map(|pk| pk.to_bytes().to_vec()),
-            )
-            .execute(&tx)
-            .await?;
+            Self::write_proof(&tx, proof).await?;
         }
 
         if !removed_ys.is_empty() {
@@ -1458,43 +1509,111 @@ where
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
 
-        let state_json = serde_json::to_string(&saga.state).map_err(|e| {
-            Error::Database(Box::new(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("Failed to serialize saga state: {}", e),
-            )))
-        })?;
+        Self::insert_saga(&*conn, saga).await
+    }
 
-        let data_json = serde_json::to_string(&saga.data).map_err(|e| {
-            Error::Database(Box::new(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("Failed to serialize saga data: {}", e),
-            )))
-        })?;
-
-        query(
-            r#"
-            INSERT INTO wallet_sagas
-            (id, kind, state, amount, mint_url, unit, quote_id, created_at, updated_at, data, version)
-            VALUES
-            (:id, :kind, :state, :amount, :mint_url, :unit, :quote_id, :created_at, :updated_at, :data, :version)
-            "#,
-        )?
-        .bind("id", saga.id.to_string())
-        .bind("kind", saga.kind.to_string())
-        .bind("state", state_json)
-        .bind("amount", i64::try_from(u64::from(saga.amount))?)
-        .bind("mint_url", saga.mint_url.to_string())
-        .bind("unit", saga.unit.to_string())
-        .bind("quote_id", saga.quote_id)
-        .bind("created_at", i64::try_from(saga.created_at)?)
-        .bind("updated_at", i64::try_from(saga.updated_at)?)
-        .bind("data", data_json)
-        .bind("version", i64::from(saga.version))
-        .execute(&*conn)
-        .await?;
-
-        Ok(())
+    #[instrument(skip_all)]
+    async fn prepare_operation(
+        &self,
+        preparation: database::wallet::OperationPreparation,
+    ) -> Result<(), Error> {
+        preparation.validate()?;
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        let tx = ConnectionWithTransaction::new(conn).await?;
+        let result = async {
+            let saga = &preparation.saga;
+            let initial = saga.version == 0;
+            if !initial {
+                let changed = query("UPDATE wallet_sagas SET state = :state, data = :data, updated_at = :updated_at, version = :version WHERE id = :id AND version = :expected AND mint_url = :mint_url AND unit = :unit AND quote_id = :quote_id AND state = :prepared_state")?
+                    .bind("state", serde_json::to_string(&saga.state)?).bind("data", serde_json::to_string(&saga.data)?)
+                    .bind("updated_at", i64::try_from(saga.updated_at)?).bind("version", saga.version)
+                    .bind("id", saga.id.to_string()).bind("expected", saga.version - 1)
+                    .bind("mint_url", saga.mint_url.to_string()).bind("unit", saga.unit.to_string()).bind("quote_id", saga.quote_id.clone())
+                    .bind("prepared_state", serde_json::to_string(&wallet::WalletSagaState::Melt(wallet::MeltSagaState::ProofsReserved))?)
+                    .execute(&tx).await?;
+                if changed != 1 { return Err(Error::ConcurrentUpdate); }
+            }
+            let parent = match &saga.data { wallet::OperationData::Swap(data) => data.parent.as_ref(), _ => None };
+            if let Some(parent) = parent {
+                if query("UPDATE wallet_sagas SET version = version + 1 WHERE id = :id AND version = :version AND mint_url = :mint_url AND unit = :unit AND state IN (:melt_state, :send_state)")?
+                    .bind("id", parent.id.to_string()).bind("version", parent.version)
+                    .bind("mint_url", saga.mint_url.to_string()).bind("unit", saga.unit.to_string())
+                    .bind("melt_state", serde_json::to_string(&wallet::WalletSagaState::Melt(wallet::MeltSagaState::ProofsReserved))?)
+                    .bind("send_state", serde_json::to_string(&wallet::WalletSagaState::Send(wallet::SendSagaState::ProofsReserved))?)
+                    .execute(&tx).await? != 1 { return Err(Error::ConcurrentUpdate); }
+            }
+            let is_mint = matches!(saga.data, wallet::OperationData::Mint(_));
+            for quote in &preparation.quotes {
+                let sql = if !initial {
+                    "UPDATE melt_quote SET used_by_operation = :operation_id WHERE id = :id AND version = :version AND used_by_operation = :operation_id AND (mint_url = :mint_url OR mint_url IS NULL) AND unit = :unit AND state = 'UNPAID'"
+                } else if is_mint {
+                    "UPDATE mint_quote SET used_by_operation = :operation_id, version = version + 1 WHERE id = :id AND version = :version AND used_by_operation IS NULL AND mint_url = :mint_url AND unit = :unit"
+                } else {
+                    "UPDATE melt_quote SET used_by_operation = :operation_id, version = version + 1 WHERE id = :id AND version = :version AND used_by_operation IS NULL AND (mint_url = :mint_url OR mint_url IS NULL) AND unit = :unit AND state = 'UNPAID'"
+                };
+                if query(sql)?.bind("operation_id", saga.id.to_string())
+                    .bind("id", quote.quote_id.clone()).bind("version", quote.version)
+                    .bind("mint_url", saga.mint_url.to_string()).bind("unit", saga.unit.to_string())
+                    .execute(&tx).await? != 1
+                { return Err(Error::ConcurrentUpdate); }
+            }
+            for (y, imported) in preparation.proof_ys.iter().map(|y| (y, None))
+                .chain(preparation.proofs.iter().map(|proof| (&proof.y, Some(proof))))
+            {
+                let row = query("SELECT amount, unit, keyset_id, secret, c, witness, dleq_e, dleq_s, dleq_r, y, mint_url, state, spending_condition, used_by_operation, created_by_operation, derivation_index, p2pk_e FROM proof WHERE y = :y")?
+                    .bind("y", y.to_bytes().to_vec()).fetch_one(&tx).await?;
+                let proof = match row {
+                    Some(row) => sql_row_to_proof_info(row)?,
+                    None => imported.cloned().ok_or(Error::ProofNotFound)?,
+                };
+                let reserved = preparation.reserve_input(proof, imported)?;
+                // The conditional update locks existing rows and rejects a
+                // concurrent reservation even under READ COMMITTED isolation.
+                let sql = if parent.is_some() {
+                    "UPDATE proof SET state = 'RESERVED', used_by_operation = :operation_id WHERE y = :y AND state = 'RESERVED' AND used_by_operation = :input_owner AND mint_url = :mint_url AND unit = :unit"
+                } else if initial {
+                    "UPDATE proof SET state = 'RESERVED', used_by_operation = :operation_id WHERE y = :y AND state = 'UNSPENT' AND used_by_operation IS NULL AND mint_url = :mint_url AND unit = :unit"
+                } else {
+                    "UPDATE proof SET state = 'PENDING' WHERE y = :y AND state = 'RESERVED' AND used_by_operation = :operation_id AND mint_url = :mint_url AND unit = :unit"
+                };
+                let changed = query(sql)?
+                    .bind("input_owner", parent.map(|parent| parent.id.to_string()))
+                    .bind("operation_id", saga.id.to_string()).bind("y", y.to_bytes().to_vec())
+                    .bind("mint_url", saga.mint_url.to_string()).bind("unit", saga.unit.to_string())
+                    .execute(&tx).await?;
+                if changed == 0 {
+                    if imported.is_none() { return Err(Error::ProofNotUnspent); }
+                    // A concurrent import must fail instead of overwriting it.
+                    query("INSERT INTO proof (y, mint_url, state, unit, amount, keyset_id, secret, c) VALUES (:y, :mint_url, 'RESERVED', :unit, :amount, :keyset_id, :secret, :c)")?
+                        .bind("y", y.to_bytes().to_vec()).bind("mint_url", saga.mint_url.to_string())
+                        .bind("unit", saga.unit.to_string()).bind("amount", i64::try_from(reserved.proof.amount.to_u64())?)
+                        .bind("keyset_id", reserved.proof.keyset_id.to_string()).bind("secret", reserved.proof.secret.to_string())
+                        .bind("c", reserved.proof.c.to_bytes().to_vec()).execute(&tx).await?;
+                }
+                Self::write_proof(&tx, reserved).await?;
+            }
+            if let Some(counter) = &preparation.counter {
+                query("INSERT INTO keyset_counter (keyset_id, counter) VALUES (:id, 0) ON CONFLICT(keyset_id) DO NOTHING")?
+                    .bind("id", counter.keyset_id.to_string()).execute(&tx).await?;
+                if query("UPDATE keyset_counter SET counter = :end WHERE keyset_id = :id AND counter = :start")?
+                    .bind("id", counter.keyset_id.to_string()).bind("start", counter.start).bind("end", counter.end)
+                    .execute(&tx).await? != 1
+                { return Err(Error::ConcurrentUpdate); }
+            }
+            if initial { Self::insert_saga(&tx, preparation.saga).await?; }
+            Ok(())
+        }.await;
+        match result {
+            Ok(()) => tx.commit().await,
+            Err(error) => {
+                tx.rollback().await?;
+                Err(error)
+            }
+        }
     }
 
     #[instrument(skip(self))]

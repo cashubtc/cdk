@@ -1526,47 +1526,15 @@ impl Wallet {
             .ok_or(Error::InvalidOperationState)?;
         self.ensure_melt_saga_state(&db_saga, MeltSagaState::ProofsReserved)?;
 
-        let mut all_ys = proofs.ys()?;
-        all_ys.extend(proofs_to_swap.ys()?);
-
-        if !all_ys.is_empty() {
-            let current = self.localstore.get_proofs_by_ys(all_ys).await?;
-            let mut proofs_to_revert: Vec<_> = current
-                .into_iter()
-                .filter(|proof| {
-                    proof.used_by_operation == Some(operation_id)
-                        && matches!(proof.state, State::Reserved | State::Pending)
-                })
-                .collect();
-
-            for proof in proofs_to_revert.iter_mut() {
-                proof.state = State::Unspent;
-                proof.used_by_operation = None;
-            }
-
-            if !proofs_to_revert.is_empty() {
-                self.localstore
-                    .update_proofs(proofs_to_revert, vec![])
-                    .await?;
-            }
+        let _ = (proofs, proofs_to_swap);
+        if self
+            .claim_and_compensate_melt(&operation_id, &[MeltSagaState::ProofsReserved])
+            .await?
+        {
+            Ok(())
+        } else {
+            Err(Error::ConcurrentUpdate)
         }
-
-        if let Err(e) = self.localstore.release_melt_quote(&operation_id).await {
-            tracing::warn!(
-                "Failed to release melt quote for operation {}: {}",
-                operation_id,
-                e
-            );
-        }
-
-        if let Err(e) = self.localstore.delete_saga(&operation_id).await {
-            tracing::warn!(
-                "Failed to delete melt saga {}: {}. Will be cleaned up on recovery.",
-                operation_id,
-                e
-            );
-        }
-        Ok(())
     }
 
     /// Get all active melt quotes from the wallet

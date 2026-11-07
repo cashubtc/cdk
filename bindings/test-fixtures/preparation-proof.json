@@ -1,0 +1,13 @@
+{
+  "mint_url": "https://preparation.example.com",
+  "proof": {
+    "C": "031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+    "amount": 2048,
+    "id": "00916bbf7ef91a36",
+    "secret": "binding-preparation-test"
+  },
+  "spending_condition": null,
+  "state": "UNSPENT",
+  "unit": "sat",
+  "y": "02f00790fc2cc6a147a86148dfc47393c3135ec4e8e984fc6eddab18603b6c601e"
+}
