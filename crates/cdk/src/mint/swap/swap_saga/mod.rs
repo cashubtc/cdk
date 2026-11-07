@@ -439,7 +439,12 @@ impl SwapSaga<'_, Signed> {
             // Don't rollback - swap succeeded, orphaned saga is harmless
         }
 
-        tx.commit().await?;
+        // A failed commit may still have landed. Compensation is then a no-op:
+        // it only removes outputs that are unsigned and proofs that are not spent.
+        if let Err(err) = tx.commit().await {
+            self.compensate_all().await?;
+            return Err(err.into());
+        }
         // Publish proof state changes
         for pk in &self.state_data.ys {
             self.pubsub.proof_state((*pk, State::Spent));

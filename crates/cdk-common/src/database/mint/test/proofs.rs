@@ -5,11 +5,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cashu::secret::Secret;
-use cashu::{Amount, Id, SecretKey, State};
+use cashu::{Amount, BlindSignature, Id, SecretKey, State};
 use tokio::sync::Barrier;
 
 use crate::database::mint::test::setup_keyset;
 use crate::database::mint::{Database, DynMintDatabase, Error, KeysDatabase, Proof, QuoteId};
+use crate::database::MintSignaturesDatabase;
 use crate::mint::Operation;
 use crate::state::check_state_transition;
 
@@ -446,8 +447,8 @@ pub async fn concurrent_multi_keyset_spends_use_consistent_lock_order(db: DynMin
     };
 
     // The transactions use disjoint proof rows but update the same two
-    // keyset_amounts rows. Reverse the proof/keyset order so only the explicit
-    // keyset ordering in the upsert can guarantee a common lock order.
+    // keyset_amounts rows. Reverse the proof/keyset order so only writing the
+    // keysets in ID order at commit can guarantee a common lock order.
     let first_proofs = vec![create_proof(first_keyset), create_proof(second_keyset)];
     let second_proofs = vec![create_proof(second_keyset), create_proof(first_keyset)];
     let first_ys: Vec<_> = first_proofs
@@ -641,6 +642,70 @@ where
 
     // Should be 300 (100 + 200)
     assert!(total >= Amount::from(300));
+}
+
+fn new_proof(keyset_id: Id, amount: u64) -> Proof {
+    Proof {
+        amount: Amount::from(amount),
+        keyset_id,
+        secret: Secret::generate(),
+        c: SecretKey::generate().public_key(),
+        witness: None,
+        dleq: None,
+        p2pk_e: None,
+    }
+}
+
+fn new_signature(keyset_id: Id, amount: u64) -> BlindSignature {
+    BlindSignature {
+        amount: Amount::from(amount),
+        keyset_id,
+        c: SecretKey::generate().public_key(),
+        dleq: None,
+    }
+}
+
+/// Test that issued and redeemed totals from one transaction add up per keyset on commit
+pub async fn keyset_totals_add_up_on_commit<DB>(db: DB)
+where
+    DB: Database<Error> + MintSignaturesDatabase<Err = Error>,
+{
+    let keyset_a = Id::from_str("00916bbf7ef91a36").unwrap();
+    let keyset_b = Id::from_str("001711afb1de20cb").unwrap();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_blind_signatures(
+        &[
+            SecretKey::generate().public_key(),
+            SecretKey::generate().public_key(),
+        ],
+        &[new_signature(keyset_a, 64), new_signature(keyset_a, 32)],
+        None,
+    )
+    .await
+    .unwrap();
+    let mut proofs = tx
+        .add_proofs(
+            vec![
+                new_proof(keyset_a, 100),
+                new_proof(keyset_a, 200),
+                new_proof(keyset_b, 50),
+            ],
+            None,
+            &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+        )
+        .await
+        .unwrap();
+    tx.update_proofs_state(&mut proofs, State::Spent)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let issued = db.get_total_issued().await.unwrap();
+    let redeemed = db.get_total_redeemed().await.unwrap();
+    assert_eq!(issued[&keyset_a], Amount::from(96));
+    assert_eq!(redeemed[&keyset_a], Amount::from(300));
+    assert_eq!(redeemed[&keyset_b], Amount::from(50));
 }
 
 /// Test get proof ys by quote id
