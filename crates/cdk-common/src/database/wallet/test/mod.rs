@@ -257,6 +257,214 @@ where
         .unwrap();
 }
 
+/// Test that renaming a mint carries every table that references it
+pub async fn update_mint_url_renames_all_tables<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let old_url = test_mint_url();
+    let new_url = test_mint_url_2();
+    let keyset_id = test_keyset_id();
+
+    db.add_mint(old_url.clone(), None).await.unwrap();
+    db.add_mint_keysets(old_url.clone(), vec![test_keyset_info(keyset_id, &old_url)])
+        .await
+        .unwrap();
+
+    let proof_info = test_proof_info(keyset_id, 100, old_url.clone());
+    db.update_proofs(vec![proof_info.clone()], vec![])
+        .await
+        .unwrap();
+
+    let mint_quote = test_mint_quote(old_url.clone());
+    db.add_mint_quote(mint_quote.clone()).await.unwrap();
+
+    let mut melt_quote = test_melt_quote();
+    melt_quote.mint_url = Some(old_url.clone());
+    db.add_melt_quote(melt_quote.clone()).await.unwrap();
+
+    let transaction = test_transaction(old_url.clone(), TransactionDirection::Incoming);
+    let transaction_id = transaction.id();
+    db.add_transaction(transaction).await.unwrap();
+
+    let saga = test_wallet_saga(old_url.clone());
+    db.add_saga(saga.clone()).await.unwrap();
+
+    db.update_mint_url(old_url.clone(), new_url.clone())
+        .await
+        .unwrap();
+
+    assert!(db.get_mint(new_url.clone()).await.unwrap().is_some());
+    assert!(db.get_mint(old_url.clone()).await.unwrap().is_none());
+
+    let mints = db.get_mints().await.unwrap();
+    assert!(mints.contains_key(&new_url));
+    assert!(!mints.contains_key(&old_url));
+
+    assert!(db
+        .get_mint_keysets(new_url.clone())
+        .await
+        .unwrap()
+        .is_some_and(|keysets| !keysets.is_empty()));
+    assert!(db
+        .get_mint_keysets(old_url.clone())
+        .await
+        .unwrap()
+        .is_none());
+
+    let proofs = db
+        .get_proofs(Some(new_url.clone()), None, None, None)
+        .await
+        .unwrap();
+    assert_eq!(proofs.len(), 1);
+    assert!(db
+        .get_proofs(Some(old_url.clone()), None, None, None)
+        .await
+        .unwrap()
+        .is_empty());
+
+    assert_eq!(
+        db.get_balance(Some(new_url.clone()), None, None)
+            .await
+            .unwrap(),
+        100
+    );
+    assert_eq!(
+        db.get_balance(Some(old_url.clone()), None, None)
+            .await
+            .unwrap(),
+        0
+    );
+
+    let stored_mint_quote = db.get_mint_quote(&mint_quote.id).await.unwrap().unwrap();
+    assert_eq!(stored_mint_quote.mint_url, new_url);
+
+    let stored_melt_quote = db.get_melt_quote(&melt_quote.id).await.unwrap().unwrap();
+    assert_eq!(stored_melt_quote.mint_url, Some(new_url.clone()));
+
+    assert!(!db
+        .list_transactions(Some(new_url.clone()), None, None)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(db
+        .list_transactions(Some(old_url.clone()), None, None)
+        .await
+        .unwrap()
+        .is_empty());
+
+    let stored_transaction = db.get_transaction(transaction_id).await.unwrap().unwrap();
+    assert_eq!(stored_transaction.mint_url, new_url);
+
+    let stored_saga = db.get_saga(&saga.id).await.unwrap().unwrap();
+    assert_eq!(stored_saga.mint_url, new_url);
+}
+
+/// Test that renaming onto an already stored URL merges the two mints into one
+pub async fn update_mint_url_merges_colliding_mint<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let old_url = test_mint_url();
+    let new_url = test_mint_url_2();
+    let keyset_id = test_keyset_id();
+
+    db.add_mint(old_url.clone(), None).await.unwrap();
+    db.add_mint(new_url.clone(), None).await.unwrap();
+
+    let before = db.get_mints().await.unwrap().len();
+
+    db.update_proofs(
+        vec![
+            test_proof_info(keyset_id, 100, old_url.clone()),
+            test_proof_info(keyset_id, 200, new_url.clone()),
+        ],
+        vec![],
+    )
+    .await
+    .unwrap();
+
+    db.update_mint_url(old_url.clone(), new_url.clone())
+        .await
+        .unwrap();
+
+    let mints = db.get_mints().await.unwrap();
+    assert!(mints.contains_key(&new_url));
+    assert!(!mints.contains_key(&old_url));
+    assert_eq!(mints.len(), before - 1);
+
+    let proofs = db
+        .get_proofs(Some(new_url.clone()), None, None, None)
+        .await
+        .unwrap();
+    assert_eq!(proofs.len(), 2);
+    assert!(db
+        .get_proofs(Some(old_url.clone()), None, None, None)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        db.get_balance(Some(new_url), None, None).await.unwrap(),
+        300
+    );
+}
+
+/// Test that renaming a mint that was never stored changes nothing
+pub async fn update_mint_url_unknown_mint_is_noop<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    db.update_mint_url(test_mint_url(), test_mint_url_2())
+        .await
+        .unwrap();
+
+    assert!(db.get_mints().await.unwrap().is_empty());
+}
+
+/// Test that removing a mint hides it without discarding its recorded value
+pub async fn remove_mint_keeps_proofs<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mint_url = test_mint_url();
+    let keyset_id = test_keyset_id();
+
+    db.add_mint(mint_url.clone(), None).await.unwrap();
+    db.update_proofs(
+        vec![test_proof_info(keyset_id, 100, mint_url.clone())],
+        vec![],
+    )
+    .await
+    .unwrap();
+
+    db.remove_mint(mint_url.clone()).await.unwrap();
+
+    assert!(db.get_mint(mint_url.clone()).await.unwrap().is_none());
+    assert!(!db.get_mints().await.unwrap().contains_key(&mint_url));
+
+    let proofs = db
+        .get_proofs(Some(mint_url.clone()), None, None, None)
+        .await
+        .unwrap();
+    assert_eq!(proofs.len(), 1);
+    assert_eq!(
+        db.get_balance(Some(mint_url.clone()), None, None)
+            .await
+            .unwrap(),
+        100
+    );
+
+    db.add_mint(mint_url.clone(), None).await.unwrap();
+    assert!(db.get_mint(mint_url.clone()).await.unwrap().is_some());
+    assert_eq!(
+        db.get_proofs(Some(mint_url), None, None, None)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
 // =============================================================================
 // Keyset Management Tests
 // =============================================================================

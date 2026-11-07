@@ -20,9 +20,18 @@ mod tests {
     }
 
     wallet_db_test!(provide_db);
+
+    wallet_db_test!(
+        provide_db,
+        update_mint_url_renames_all_tables,
+        update_mint_url_merges_colliding_mint,
+        update_mint_url_unknown_mint_is_noop,
+        remove_mint_keeps_proofs,
+    );
     use std::str::FromStr;
 
     use cdk_common::database::WalletDatabase;
+    use cdk_common::mint_url::MintUrl;
     use cdk_common::nut00::KnownMethod;
     use cdk_common::nuts::{ProofDleq, State};
     use cdk_common::secret::Secret;
@@ -735,5 +744,111 @@ mod tests {
 
         // Verify that fully paid and issued quote is not returned
         assert!(!quote_ids.contains(&"quote_fully_paid"));
+    }
+
+    /// The mint_id migration is the first to need a populated legacy database:
+    /// rows whose mint_url had no `mint` row must survive it.
+    #[tokio::test]
+    async fn wallet_mint_id_migration_backfills_referenced_mints() {
+        const MINT_ID_MIGRATION: &str = "20261107000000_wallet_mint_id.sql";
+
+        let path = std::env::temp_dir().join(format!(
+            "cdk-wallet-mint-id-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS migrations (
+                     name TEXT PRIMARY KEY,
+                     applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                 );",
+            )
+            .unwrap();
+
+            for (prefix, name, sql) in cdk_sql_common::wallet::migrations::MIGRATIONS {
+                if *prefix != "sqlite" || *name == MINT_ID_MIGRATION {
+                    continue;
+                }
+                conn.execute_batch(sql).unwrap();
+                conn.execute("INSERT INTO migrations (name) VALUES (?1)", [name])
+                    .unwrap();
+            }
+
+            conn.execute_batch(
+                "INSERT INTO mint (mint_url, name) VALUES ('https://known.test', 'Known');
+                 INSERT INTO proof (y, mint_url, state, unit, amount, keyset_id, secret, c)
+                 VALUES (
+                     x'0203eaee4db749b0fc7c49870d082024b2c31d889f9bc3b32473d4f1dfa3625788',
+                     'https://known.test', 'UNSPENT', 'sat', 10, '00916bbf7ef91a36', 'secret-1',
+                     x'0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41'
+                 );
+                 INSERT INTO proof (y, mint_url, state, unit, amount, keyset_id, secret, c)
+                 VALUES (
+                     x'02095e3e443d98ca3dfabcebc2f9154f3656b889783f7edb8290cfb01f497e63cf',
+                     'https://orphan.test', 'UNSPENT', 'sat', 7, '00916bbf7ef91a36', 'secret-2',
+                     x'02174667f98114abeb741f4964bdc88a3b86efde0afa38f791094c1e07e5df3beb'
+                 );
+                 INSERT INTO transactions (id, mint_url, direction, amount, fee, unit, timestamp)
+                 VALUES (x'05', 'https://orphan.test', 'Incoming', 5, 0, 'sat', 1);
+                 INSERT INTO transaction_ys (transaction_id, position, y)
+                 VALUES (
+                     x'05', 0,
+                     x'02194603ffa36356f4a56b7df9371fc3192472351453ec7398b8da8117e7c3e104'
+                 );
+                 INSERT INTO melt_quote (id, unit, amount, request, fee_reserve, expiry)
+                 VALUES ('lq_no_mint', 'sat', 1, 'r', 0, 0);",
+            )
+            .unwrap();
+        }
+
+        let db = WalletSqliteDatabase::new(path.to_str().unwrap())
+            .await
+            .unwrap();
+
+        let known = MintUrl::from_str("https://known.test").unwrap();
+        let orphan = MintUrl::from_str("https://orphan.test").unwrap();
+
+        assert_eq!(
+            db.get_proofs(None, None, None, None).await.unwrap().len(),
+            2
+        );
+        assert_eq!(
+            db.get_proofs(Some(orphan.clone()), None, None, None)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            db.list_transactions(Some(orphan.clone()), None, None)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            db.get_balance(Some(orphan.clone()), None, None)
+                .await
+                .unwrap(),
+            7
+        );
+
+        let mints = db.get_mints().await.unwrap();
+        assert!(mints.contains_key(&known));
+        assert!(!mints.contains_key(&orphan));
+        assert!(db.get_mint(orphan).await.unwrap().is_none());
+
+        assert_eq!(
+            db.get_melt_quote("lq_no_mint")
+                .await
+                .unwrap()
+                .unwrap()
+                .mint_url,
+            None
+        );
+
+        std::fs::remove_file(&path).unwrap();
     }
 }
