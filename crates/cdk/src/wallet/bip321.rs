@@ -45,6 +45,10 @@ use bitcoin_payment_instructions::hrn_resolution::DummyHrnResolver;
 use bitcoin_payment_instructions::{
     PaymentInstructions, PaymentMethod as BpiPaymentMethod, PossiblyResolvedPaymentMethod,
 };
+use cdk_common::bitcoin_uri::{
+    format_bip21_amount_from_sats as format_btc_amount_from_sats,
+    uppercase_bip21_address as uppercase_qr_address,
+};
 use tracing::instrument;
 use url::form_urlencoded;
 
@@ -371,33 +375,6 @@ fn qr_friendly_cashu_request(creq: &str) -> String {
     }
 
     creq.to_string()
-}
-
-fn uppercase_qr_address(address: &str) -> String {
-    if is_qr_friendly_segwit_address(address) {
-        return address.to_ascii_uppercase();
-    }
-
-    address.to_string()
-}
-
-fn is_qr_friendly_segwit_address(address: &str) -> bool {
-    let lowercase = address.to_ascii_lowercase();
-
-    lowercase.starts_with("bc1") || lowercase.starts_with("tb1") || lowercase.starts_with("bcrt1")
-}
-
-/// Format satoshis to BTC string without trailing zeros, per BIP 21.
-fn format_btc_amount_from_sats(sats: u64) -> String {
-    let whole = sats / 100_000_000;
-    let fractional = sats % 100_000_000;
-
-    if fractional == 0 {
-        return whole.to_string();
-    }
-
-    let formatted = format!("{whole}.{fractional:08}");
-    formatted.trim_end_matches('0').to_string()
 }
 
 #[cfg(test)]
