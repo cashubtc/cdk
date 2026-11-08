@@ -5,6 +5,7 @@ use core::fmt;
 use serde::{Deserialize, Serialize};
 
 use super::amount::{Amount, CurrencyUnit};
+use super::codec::decode_json;
 use super::mint::MintUrl;
 use crate::error::FfiError;
 
@@ -168,10 +169,13 @@ pub fn mint_quote_amount_mintable(quote: &MintQuote) -> Result<Amount, FfiError>
 }
 
 /// Decode MintQuote from JSON string
+///
+/// Accepts both the native encoding and what [`encode_mint_quote`] writes,
+/// which is this record's derived serde and differs in the spelling of the
+/// unit and the state.
 #[uniffi::export]
 pub fn decode_mint_quote(json: String) -> Result<MintQuote, FfiError> {
-    let quote: cdk::wallet::MintQuote = serde_json::from_str(&json)?;
-    Ok(quote.into())
+    decode_json::<cdk::wallet::MintQuote, _>(&json)
 }
 
 /// Encode MintQuote to JSON string
@@ -650,10 +654,13 @@ impl MeltQuote {
 }
 
 /// Decode MeltQuote from JSON string
+///
+/// Accepts both the native encoding and what [`encode_melt_quote`] writes,
+/// which is this record's derived serde and differs in the spelling of the
+/// unit and the state.
 #[uniffi::export]
 pub fn decode_melt_quote(json: String) -> Result<MeltQuote, FfiError> {
-    let quote: cdk::wallet::MeltQuote = serde_json::from_str(&json)?;
-    Ok(quote.into())
+    decode_json::<cdk::wallet::MeltQuote, _>(&json)
 }
 
 /// Encode MeltQuote to JSON string
@@ -800,5 +807,71 @@ mod tests {
         assert!(debug.contains("public-melt-quote-id"));
         assert!(debug.contains("payment_proof: Some(\"[REDACTED]\")"));
         assert!(!debug.contains(secret));
+    }
+
+    /// `encode_mint_quote` writes this record's derived serde, which spells the
+    /// unit and the state differently from the native type the decoder reads,
+    /// so a quote a host persisted has to decode through the fallback.
+    #[test]
+    fn a_mint_quote_encoded_by_this_crate_still_decodes() {
+        let quote = MintQuote {
+            id: "quote-id".to_string(),
+            amount: Some(Amount::new(100)),
+            unit: CurrencyUnit::Custom {
+                unit: "usdt".to_string(),
+            },
+            request: "payment-request".to_string(),
+            state: QuoteState::Issued,
+            expiry: 1_000,
+            mint_url: MintUrl {
+                url: "https://mint.example.com".to_string(),
+            },
+            amount_issued: Amount::new(100),
+            amount_paid: Amount::new(100),
+            updated_at: 500,
+            estimated_blocks: None,
+            payment_method: PaymentMethod::Bolt11,
+            secret_key: None,
+            used_by_operation: Some("operation-id".to_string()),
+            version: 1,
+        };
+
+        let json = encode_mint_quote(quote.clone()).unwrap();
+        let decoded = decode_mint_quote(json.clone()).unwrap();
+
+        assert_eq!(decoded.unit, quote.unit);
+        assert_eq!(decoded.state, quote.state);
+        assert_eq!(encode_mint_quote(decoded).unwrap(), json);
+    }
+
+    #[test]
+    fn a_melt_quote_encoded_by_this_crate_still_decodes() {
+        let quote = MeltQuote {
+            id: "quote-id".to_string(),
+            mint_url: Some(MintUrl {
+                url: "https://mint.example.com".to_string(),
+            }),
+            amount: Amount::new(100),
+            unit: CurrencyUnit::Custom {
+                unit: "usdt".to_string(),
+            },
+            request: "payment-request".to_string(),
+            fee_reserve: Amount::new(1),
+            state: QuoteState::Paid,
+            expiry: 1_000,
+            payment_proof: None,
+            estimated_blocks: None,
+            fee_index: None,
+            payment_method: PaymentMethod::Bolt11,
+            used_by_operation: None,
+            version: 0,
+        };
+
+        let json = encode_melt_quote(quote.clone()).unwrap();
+        let decoded = decode_melt_quote(json.clone()).unwrap();
+
+        assert_eq!(decoded.unit, quote.unit);
+        assert_eq!(decoded.state, quote.state);
+        assert_eq!(encode_melt_quote(decoded).unwrap(), json);
     }
 }

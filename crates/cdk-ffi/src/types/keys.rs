@@ -2,9 +2,10 @@
 
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use super::amount::CurrencyUnit;
+use super::codec::decode_json;
 use crate::error::FfiError;
 
 /// FFI-compatible KeySetInfo
@@ -18,6 +19,7 @@ pub struct KeySetInfo {
     /// Unix timestamp past which the mint rejects this keyset on both inputs
     /// and outputs, zero when the keyset has no final expiry
     #[uniffi(default = 0)]
+    #[serde(default, deserialize_with = "deserialize_final_expiry")]
     pub final_expiry: u64,
 }
 
@@ -61,11 +63,11 @@ impl KeySetInfo {
 ///
 /// The JSON is NUT-02's, so it goes through the native type rather than this
 /// record's derived serde, whose enum representation spells a unit `Sat` where
-/// a mint sends `sat`.
+/// a mint sends `sat`. A record an earlier version of this crate encoded is
+/// still accepted, so a host that persisted one can load it.
 #[uniffi::export]
 pub fn decode_key_set_info(json: String) -> Result<KeySetInfo, FfiError> {
-    let info: cdk::nuts::KeySetInfo = serde_json::from_str(&json)?;
-    Ok(info.into())
+    decode_json::<cdk::nuts::KeySetInfo, _>(&json)
 }
 
 /// Encode KeySetInfo to JSON string
@@ -76,6 +78,15 @@ pub fn decode_key_set_info(json: String) -> Result<KeySetInfo, FfiError> {
 pub fn encode_key_set_info(info: KeySetInfo) -> Result<String, FfiError> {
     let info: cdk::nuts::KeySetInfo = info.try_into()?;
     Ok(serde_json::to_string(&info)?)
+}
+
+/// An earlier version of this crate held the field as an `Option<u64>`, so a
+/// record it encoded spells a missing expiry `null` where this one writes zero.
+fn deserialize_final_expiry<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<u64>::deserialize(deserializer)?.unwrap_or(0))
 }
 
 /// FFI-compatible PublicKey
@@ -178,6 +189,7 @@ pub struct KeySet {
     /// Unix timestamp past which the mint rejects this keyset on both inputs
     /// and outputs, zero when the keyset has no final expiry
     #[uniffi(default = 0)]
+    #[serde(default, deserialize_with = "deserialize_final_expiry")]
     pub final_expiry: u64,
 }
 
@@ -227,11 +239,12 @@ impl KeySet {
 ///
 /// The JSON is NUT-02's, so it goes through the native type rather than this
 /// record's derived serde, which spells a unit `Sat` where a mint sends `sat`
-/// and refuses a keyset that omits `input_fee_ppk`.
+/// and refuses a keyset that omits `input_fee_ppk`. A record an earlier version
+/// of this crate encoded is still accepted, so a host that persisted one can
+/// load it.
 #[uniffi::export]
 pub fn decode_key_set(json: String) -> Result<KeySet, FfiError> {
-    let keyset: cdk::nuts::KeySet = serde_json::from_str(&json)?;
-    Ok(keyset.into())
+    decode_json::<cdk::nuts::KeySet, _>(&json)
 }
 
 /// Encode KeySet to JSON string
@@ -282,6 +295,7 @@ mod tests {
     use super::*;
 
     const KEYSET_ID: &str = "00916bbf7ef91a36";
+    const PUBKEY: &str = "03a40f20667ed53513075dc51e715ff2046cad64eb68960632269ba7f0210e38bc";
 
     fn native_key_set_info(final_expiry: u64) -> CdkKeySetInfo {
         CdkKeySetInfo {
@@ -384,6 +398,63 @@ mod tests {
         json.as_object_mut().unwrap().remove("input_fee_ppk");
         let keyset = decode_key_set(json.to_string()).unwrap();
         assert_eq!(keyset.input_fee_ppk, 0);
+    }
+
+    /// A host that persisted what an earlier version of this crate encoded has
+    /// a custom unit spelled as the FFI enum and, on a keyset, a null expiry.
+    #[test]
+    fn a_record_encoded_before_the_codecs_moved_still_decodes() {
+        let info = decode_key_set_info(format!(
+            r#"{{"id":"{KEYSET_ID}","unit":{{"Custom":{{"unit":"usdt"}}}},"active":true,"input_fee_ppk":100}}"#
+        ))
+        .unwrap();
+        assert_eq!(
+            info.unit,
+            CurrencyUnit::Custom {
+                unit: "usdt".to_string()
+            }
+        );
+        assert_eq!(info.final_expiry, 0);
+
+        let native: CdkKeySetInfo = info.try_into().unwrap();
+        assert_eq!(native.unit, CdkCurrencyUnit::custom("usdt"));
+
+        let keyset = decode_key_set(format!(
+            r#"{{"id":"{KEYSET_ID}","unit":{{"Custom":{{"unit":"usdt"}}}},"active":true,"input_fee_ppk":100,"keys":{{"1":"{PUBKEY}"}},"final_expiry":null}}"#
+        ))
+        .unwrap();
+        assert_eq!(
+            keyset.unit,
+            CurrencyUnit::Custom {
+                unit: "usdt".to_string()
+            }
+        );
+        assert_eq!(keyset.final_expiry, 0);
+
+        let native: CdkKeySet = keyset.try_into().unwrap();
+        assert_eq!(native.unit, CdkCurrencyUnit::custom("usdt"));
+    }
+
+    /// Only a custom unit needed the fallback: the enum's spelling of a known
+    /// unit is one NUT-00 already reads, since it parses case-insensitively.
+    #[test]
+    fn a_legacy_known_unit_decodes_through_the_protocol_path() {
+        let info = decode_key_set_info(format!(
+            r#"{{"id":"{KEYSET_ID}","unit":"Sat","active":true,"input_fee_ppk":100}}"#
+        ))
+        .unwrap();
+        assert_eq!(info.unit, CurrencyUnit::Sat);
+    }
+
+    #[test]
+    fn json_in_neither_format_is_rejected() {
+        let error = decode_key_set_info(format!(
+            r#"{{"id":"{KEYSET_ID}","unit":{{"Bogus":{{"unit":"usdt"}}}},"active":true}}"#
+        ))
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("protocol encoding"), "{error}");
+        assert!(error.contains("this crate encoded"), "{error}");
     }
 
     #[test]
