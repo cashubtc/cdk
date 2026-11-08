@@ -1055,6 +1055,55 @@ mod tests {
         assert_eq!(store.loads.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
+    /// The manager must wait for every origin's writer, regardless of map order.
+    #[tokio::test]
+    async fn manager_flush_covers_every_origin() {
+        for blocked_origin in 0..2 {
+            let cfg = config(2, 1);
+            let manager = RateLimiterManager::new(cfg, None);
+            let mut origins = Vec::new();
+            for host in ["a.example.com", "b.example.com"] {
+                let store = Arc::new(GatedStore {
+                    loads: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                    writes: Arc::new(Mutex::new(Vec::new())),
+                    gate: Arc::new(tokio::sync::Semaphore::new(0)),
+                });
+                let bucket = TokenBucket::with_store(cfg, store.clone());
+                bucket.acquire(async {}).await;
+                bucket.acquire(async {}).await;
+                let writer = bucket.inner.started.get().unwrap().as_ref().unwrap();
+                let target = *writer.desired.borrow();
+                let key = origin_key(&parse(&format!("https://{host}"))).unwrap();
+                lock(&manager.buckets).insert(key, bucket.clone());
+                origins.push((bucket, store, target));
+            }
+
+            let flush = manager.flush();
+            tokio::pin!(flush);
+            assert!(futures::poll!(&mut flush).is_pending());
+
+            // Complete one origin's writes while the other remains blocked.
+            let (ready_bucket, ready_store, _) = &origins[1 - blocked_origin];
+            ready_store.gate.add_permits(1);
+            ready_bucket.flush().await;
+            assert!(
+                futures::poll!(&mut flush).is_pending(),
+                "manager flush must wait for origin {blocked_origin}",
+            );
+
+            origins[blocked_origin].1.gate.add_permits(1);
+            flush.await;
+            for (_, store, target) in &origins {
+                assert!(
+                    lock(&store.writes)
+                        .last()
+                        .is_some_and(|value| value >= target),
+                    "flush must persist the latest budget for each origin",
+                );
+            }
+        }
+    }
+
     #[tokio::test]
     async fn failing_store_never_blocks_acquire() {
         let store = Arc::new(StubStore { fail: true });
