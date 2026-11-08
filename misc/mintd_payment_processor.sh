@@ -138,6 +138,16 @@ if [ "$PAYMENT_BACKEND" != "FAKEWALLET" ]; then
     # Wait for up to 300 seconds (5 minutes) for regtest setup
     # This needs to be long enough for cargo to compile start_regtest binary
     for ((i=0; i<300; i++)); do
+        if ! kill -0 "$CDK_REGTEST_PID" 2>/dev/null; then
+            regtest_status=0
+            wait "$CDK_REGTEST_PID" || regtest_status=$?
+            echo "Regtest launcher exited before readiness with status $regtest_status" >&2
+            # Even a successful exit is a setup failure without a live regtest.
+            if [ "$regtest_status" -eq 0 ]; then
+                regtest_status=1
+            fi
+            exit "$regtest_status"
+        fi
         if [ -f "$CDK_ITESTS_DIR/signal_received" ]; then
             echo "Checkpoint signal received"
             break
