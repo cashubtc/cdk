@@ -364,7 +364,8 @@ pub trait QuotesTransaction {
     /// Update [`mint::MeltQuote`] state.
     ///
     /// Requires an [`Acquired`] melt quote to ensure the row is locked before modification.
-    /// Returns the previous state.
+    /// Returns the previous state, or [`Error::ConcurrentUpdate`] if the stored state no longer
+    /// matches the quote, after which the caller must roll back the transaction.
     async fn update_melt_quote_state(
         &mut self,
         quote: &mut Acquired<mint::MeltQuote>,
