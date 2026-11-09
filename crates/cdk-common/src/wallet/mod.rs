@@ -15,7 +15,7 @@ use uuid::Uuid;
 use crate::mint_quote::quote_state_from_amounts;
 use crate::mint_url::MintUrl;
 use crate::nuts::{
-    CurrencyUnit, MeltQuoteState, MintQuoteState, SecretKey, SpendingConditions, State,
+    CurrencyUnit, Id, MeltQuoteState, MintQuoteState, SecretKey, SpendingConditions, State,
 };
 use crate::{Amount, Error};
 
@@ -391,19 +391,39 @@ pub struct Restored {
     pub pending: Amount,
 }
 
+/// Starting position for each keyset during a seed restore.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum RestoreStart {
+    /// Scan every keyset from index zero.
+    #[default]
+    FromZero,
+    /// Inclusive starting indices by keyset ID. Missing keysets start at zero.
+    KeysetIndices(HashMap<Id, u32>),
+    /// Subtract this lookback from each keyset's stored next derivation index,
+    /// clamped to zero. Keysets without a stored counter start at zero.
+    ///
+    /// Batches starting before the stored counter do not count toward the gap
+    /// limit. The counter tracks secret allocation, not completed recovery work,
+    /// so this mode can skip earlier proofs and is not a reliable scan checkpoint.
+    Lookback(u32),
+}
+
 /// Options for restoring a wallet from seed.
 ///
 /// Defaults match the NUT-13 spec recommendation
 /// (<https://github.com/cashubtc/nuts/blob/main/13.md#generate-blindedmessages>):
 /// a batch of 100 blinded messages and three consecutive empty batches to
 /// signal end-of-history. Callers that need more conservative pacing or
-/// different gap tolerance can override either field.
+/// different gap tolerance can override either field. The default starting
+/// position is zero for every keyset.
 #[derive(Debug, Clone)]
 pub struct NUT13Options {
     /// Number of blinded messages to request per batch.
     pub batch_size: u32,
     /// Number of consecutive empty batches that terminate the scan.
     pub max_gap: u32,
+    /// Starting position, applied independently to each keyset.
+    pub start: RestoreStart,
 }
 
 impl Default for NUT13Options {
@@ -411,6 +431,7 @@ impl Default for NUT13Options {
         Self {
             batch_size: Self::DEFAULT_BATCH_SIZE,
             max_gap: Self::DEFAULT_MAX_GAP,
+            start: RestoreStart::default(),
         }
     }
 }
@@ -427,9 +448,16 @@ impl NUT13Options {
         let opts = Self {
             batch_size,
             max_gap,
+            start: RestoreStart::default(),
         };
         opts.validate()?;
         Ok(opts)
+    }
+
+    /// Set the starting position for each keyset's restore scan.
+    pub fn with_start(mut self, start: RestoreStart) -> Self {
+        self.start = start;
+        self
     }
 
     pub(crate) fn validate(&self) -> Result<(), Error> {
@@ -1251,6 +1279,7 @@ mod tests {
         let opts = NUT13Options::default();
         assert_eq!(opts.batch_size, NUT13Options::DEFAULT_BATCH_SIZE);
         assert_eq!(opts.max_gap, NUT13Options::DEFAULT_MAX_GAP);
+        assert_eq!(opts.start, RestoreStart::FromZero);
     }
 
     #[test]
@@ -1259,6 +1288,7 @@ mod tests {
         let cloned = opts.clone();
         assert_eq!(cloned.batch_size, 25);
         assert_eq!(cloned.max_gap, 2);
+        assert_eq!(cloned.start, RestoreStart::FromZero);
     }
 
     #[test]
