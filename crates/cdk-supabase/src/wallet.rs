@@ -1091,7 +1091,11 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
 
     async fn get_unissued_mint_quotes(&self) -> Result<Vec<MintQuote>, DatabaseError> {
         let (status, text) = self
-            .get_request("rest/v1/mint_quote?amount_issued=eq.0")
+            // PostgREST can't compare two columns, so `amount_paid.gt.0` fetches
+            // a superset and partially issued quotes are picked out below.
+            .get_request(
+                "rest/v1/mint_quote?or=(amount_issued.eq.0,amount_paid.gt.0,payment_method.neq.bolt11)",
+            )
             .await?;
 
         if !status.is_success() {
@@ -1102,7 +1106,15 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         }
 
         if let Some(quotes) = Self::parse_response::<MintQuoteTable>(&text)? {
-            quotes.into_iter().map(|q| q.try_into()).collect()
+            quotes
+                .into_iter()
+                .filter(|q| {
+                    q.amount_issued == 0
+                        || q.amount_paid > q.amount_issued
+                        || q.payment_method != "bolt11"
+                })
+                .map(|q| q.try_into())
+                .collect()
         } else {
             Ok(Vec::new())
         }
