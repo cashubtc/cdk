@@ -158,6 +158,59 @@ struct InputFeeCoverageContext<'a> {
     derivation_indices: &'a HashMap<Proof, u32>,
 }
 
+/// The keyset a send prices its denominations and its recipient fee against.
+struct SplitBasis {
+    id: Id,
+    /// Why no keyset can sign outputs, when the basis is only a handover fallback.
+    unsignable: Option<Error>,
+}
+
+/// Resolve the keyset the mint would sign this send's outputs on, falling back
+/// to any unexpired keyset so a send that signs nothing can still be priced.
+async fn resolve_split_basis(
+    wallet: &Wallet,
+    policy: KeysetLoadPolicy,
+) -> Result<SplitBasis, Error> {
+    match wallet.active_keyset_with_policy(policy).await {
+        Ok(keyset) => Ok(SplitBasis {
+            id: keyset.id,
+            unsignable: None,
+        }),
+        Err(verdict @ (Error::ExpiredKeyset | Error::NoActiveKeyset)) => Ok(SplitBasis {
+            id: wallet.split_basis_keyset(policy).await?.id,
+            unsignable: Some(verdict),
+        }),
+        Err(err) => Err(err),
+    }
+}
+
+/// Denominations and the fee the recipient pays to redeem `amount` in outputs
+/// the mint signs on `keyset_id`.
+///
+/// Both the denomination count and the per-proof fee have to come from the same
+/// keyset. Preparing prices off the snapshot it already loaded, since no mint
+/// request may happen while it holds the proof selection lock.
+async fn recipient_redeem_fee(
+    wallet: &Wallet,
+    keyset_id: Id,
+    amount: Amount,
+    policy: KeysetLoadPolicy,
+) -> Result<(Vec<Amount>, Amount), Error> {
+    let fee_and_amounts = wallet
+        .get_keyset_fees_and_amounts_by_id_with_policy(keyset_id, policy)
+        .await?;
+    let send_split = amount.split_with_fee(&fee_and_amounts)?;
+    let send_fee = wallet
+        .get_proofs_fee_by_count(
+            vec![(keyset_id, send_split.len() as u64)]
+                .into_iter()
+                .collect(),
+        )
+        .await?;
+
+    Ok((send_split, send_fee.total))
+}
+
 fn ensure_selected_proofs_cover_input_fees(
     mut selected_proofs: Proofs,
     proof_pool: Proofs,
@@ -368,9 +421,9 @@ impl<'a> SendSaga<'a, Initial> {
     /// Refreshes keysets (if online), selects and reserves proofs for the
     /// requested amount, and splits proofs between direct send and swap.
     ///
-    /// Resolves the split basis before snapshotting the keyset list, so a
-    /// refresh that the selection triggers is reflected in the fees read back
-    /// from that snapshot.
+    /// Resolves the keyset the mint would sign outputs on before snapshotting
+    /// the keyset list, so a refresh that the selection triggers is reflected in
+    /// the fees read back from that snapshot.
     ///
     /// Registers compensation to revert proof reservation on failure.
     #[instrument(skip_all)]
@@ -387,7 +440,7 @@ impl<'a> SendSaga<'a, Initial> {
 
         let keyset_policy = self.state_data.keyset_policy;
 
-        let split_basis_id = self.wallet.split_basis_keyset(keyset_policy).await?.id;
+        let basis = resolve_split_basis(self.wallet, keyset_policy).await?;
 
         let all_keysets = self.wallet.keysets(keyset_policy).await?;
 
@@ -415,7 +468,7 @@ impl<'a> SendSaga<'a, Initial> {
             .collect();
 
         let fee_and_amounts = keyset_fees
-            .get(&split_basis_id)
+            .get(&basis.id)
             .cloned()
             .ok_or(Error::UnknownKeySet)?;
         // Input fees need keyset information, not cached public keys.
@@ -477,11 +530,8 @@ impl<'a> SendSaga<'a, Initial> {
 
         let send_amounts = if opts.include_fee {
             let send_split = amount.split_with_fee(&fee_and_amounts)?;
-            let send_fee = fee_metadata.proofs_fee(
-                &[(split_basis_id, send_split.len() as u64)]
-                    .into_iter()
-                    .collect(),
-            )?;
+            let send_fee = fee_metadata
+                .proofs_fee(&[(basis.id, send_split.len() as u64)].into_iter().collect())?;
             (send_split, send_fee.total)
         } else {
             (amount.split(&fee_and_amounts)?, Amount::ZERO)
@@ -542,7 +592,7 @@ impl<'a> SendSaga<'a, Initial> {
                     opts,
                     selected_proofs,
                     force_swap,
-                    split_basis_id,
+                    basis,
                     &keyset_fees,
                 )
                 .await;
@@ -566,23 +616,28 @@ impl<'a> SendSaga<'a, Initial> {
             opts,
             selected_proofs,
             force_swap,
-            split_basis_id,
+            basis,
             &keyset_fees,
         )
         .await
     }
 
+    /// Split the selected proofs, reserve them, and persist the saga.
+    ///
+    /// Refuses a basis that no keyset can sign on only once the split shows the
+    /// send swaps, since a pure handover needs no signable keyset, and refuses
+    /// it before the proofs are reserved so nothing has to be compensated.
     async fn internal_prepare(
         mut self,
         amount: Amount,
         opts: SendOptions,
         proofs: Proofs,
         force_swap: bool,
-        split_basis_id: Id,
+        basis: SplitBasis,
         keyset_fees_and_amounts: &KeysetFeeAndAmounts,
     ) -> Result<SendSaga<'a, Prepared>, Error> {
         let fee_and_amounts = keyset_fees_and_amounts
-            .get(&split_basis_id)
+            .get(&basis.id)
             .ok_or(Error::UnknownKeySet)?;
         let keyset_fees: HashMap<Id, u64> = keyset_fees_and_amounts
             .iter()
@@ -592,22 +647,16 @@ impl<'a> SendSaga<'a, Initial> {
         let (send_amounts, send_fee) = if opts.include_fee {
             let send_split = amount.split_with_fee(fee_and_amounts)?;
             let send_fee = calculate_fee(
-                &[(split_basis_id, send_split.len() as u64)]
-                    .into_iter()
-                    .collect(),
+                &[(basis.id, send_split.len() as u64)].into_iter().collect(),
                 &keyset_fees,
-            )?;
+            )?
+            .total;
             (send_split, send_fee)
         } else {
-            let send_split = amount.split(fee_and_amounts)?;
-            let send_fee = crate::fees::ProofsFeeBreakdown {
-                total: Amount::ZERO,
-                per_keyset: std::collections::HashMap::new(),
-            };
-            (send_split, send_fee)
+            (amount.split(fee_and_amounts)?, Amount::ZERO)
         };
 
-        let mut exact_proofs = proofs.total_amount()? == amount + send_fee.total;
+        let mut exact_proofs = proofs.total_amount()? == amount + send_fee;
         if let Some(max_proofs) = opts.max_proofs {
             exact_proofs &= proofs.len() <= max_proofs;
         }
@@ -621,12 +670,18 @@ impl<'a> SendSaga<'a, Initial> {
             SendSplitContext {
                 send_amounts: &send_amounts,
                 amount,
-                send_fee: send_fee.total,
+                send_fee,
                 keyset_fees: &keyset_fees,
                 force_swap,
                 is_exact_or_offline,
             },
         )?;
+
+        if !split_result.proofs_to_swap.is_empty() {
+            if let Some(verdict) = basis.unsignable {
+                return Err(verdict);
+            }
+        }
 
         let mut proof_ys = split_result.proofs_to_swap.ys()?;
         proof_ys.extend(split_result.proofs_to_send.ys()?);
@@ -677,7 +732,7 @@ impl<'a> SendSaga<'a, Initial> {
                 proofs_to_swap: split_result.proofs_to_swap,
                 swap_fee: split_result.swap_fee,
                 proofs_to_send: split_result.proofs_to_send,
-                send_fee: send_fee.total,
+                send_fee,
                 saga,
             },
         })
@@ -768,6 +823,13 @@ impl<'a> SendSaga<'a, Prepared> {
     ///
     /// Performs necessary swaps, marks proofs as pending spent, creates the
     /// token, and persists the saga in TokenCreated state.
+    ///
+    /// Re-prices the recipient fee on the keyset the swap signs on, since the
+    /// mint may have rotated since the send was prepared and the recipient's
+    /// claim to the requested amount outranks the figure quoted to the sender.
+    /// One window stays open: `swap_internal` retries through
+    /// `retry_on_inactive_keyset`, so a retry can land on a keyset other than
+    /// the one priced here.
     #[instrument(skip(self), err)]
     pub async fn confirm(
         mut self,
@@ -779,15 +841,13 @@ impl<'a> SendSaga<'a, Prepared> {
         let mut proofs_to_swap = self.state_data.proofs_to_swap.clone();
         let proofs_to_send = self.state_data.proofs_to_send.clone();
         let swap_fee = self.state_data.swap_fee;
-        let send_fee = self.state_data.send_fee;
+        let quoted_send_fee = self.state_data.send_fee;
 
         tracing::info!("Confirming prepared send for operation {}", operation_id);
 
         let logic_res = async {
-            let total_send_fee = swap_fee + send_fee;
+            let mut send_fee = quoted_send_fee;
             let mut final_proofs_to_send = proofs_to_send.clone();
-
-            let total_send_amount = amount + send_fee;
 
             let mut counter_start = None;
             let mut counter_end = None;
@@ -825,7 +885,29 @@ impl<'a> SendSaga<'a, Prepared> {
                     return Err(Error::InsufficientFunds);
                 }
 
-                let swap_amount = total_send_amount
+                let keyset_id = self.wallet.active_keyset().await?.id;
+
+                if options.include_fee {
+                    let (_, repriced) = recipient_redeem_fee(
+                        self.wallet,
+                        keyset_id,
+                        amount,
+                        KeysetLoadPolicy::default(),
+                    )
+                    .await?;
+                    send_fee = repriced;
+
+                    if send_fee != quoted_send_fee {
+                        tracing::warn!(
+                            "Keyset {} charges {} to redeem, not the {} quoted when this send was prepared",
+                            keyset_id,
+                            send_fee,
+                            quoted_send_fee
+                        );
+                    }
+                }
+
+                let swap_amount = (amount + send_fee)
                     .checked_sub(final_proofs_to_send.total_amount()?)
                     .unwrap_or(Amount::ZERO);
 
@@ -837,8 +919,6 @@ impl<'a> SendSaga<'a, Prepared> {
                 if !keys.is_empty() {
                     crate::wallet::util::sign_proofs(&mut proofs_to_swap, &keys)?;
                 }
-
-                let keyset_id = self.wallet.active_keyset().await?.id;
 
                 // Capture counter start before swap
                 counter_start = Some(
@@ -891,7 +971,7 @@ impl<'a> SendSaga<'a, Prepared> {
                     mint_url: self.wallet.mint_url.clone(),
                     direction: TransactionDirection::Outgoing,
                     amount,
-                    fee: total_send_fee,
+                    fee: swap_fee + send_fee,
                     unit: self.wallet.unit.clone(),
                     ys: final_proofs_to_send.ys()?,
                     timestamp: unix_time(),
@@ -1168,12 +1248,16 @@ mod tests {
     };
     use cdk_common::{CurrencyUnit, ProofsMethods};
 
-    use super::{ensure_selected_proofs_cover_input_fees, InputFeeCoverageContext, SendSaga};
-    use crate::nuts::{Proof, SecretKey, SpendingConditions};
+    use super::{
+        ensure_selected_proofs_cover_input_fees, resolve_split_basis, InputFeeCoverageContext,
+        SendSaga,
+    };
+    use crate::nuts::{Id, Proof, SecretKey, SpendingConditions};
     use crate::wallet::send::SendOptions;
     use crate::wallet::test_utils::{
         create_test_db, create_test_wallet_with_mock, make_expired_keyset, make_inactive_keyset,
-        test_keyset, test_keyset_id, test_mint_url, test_proof, test_proof_info, MockMintConnector,
+        mint_signing_keyset, test_keyset, test_keyset_id, test_mint_url, test_proof,
+        test_proof_info, MockMintConnector,
     };
     use crate::Amount;
 
@@ -1290,6 +1374,9 @@ mod tests {
         mock_client.reset_default_mint_state();
 
         let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let basis = resolve_split_basis(&wallet, KeysetLoadPolicy::default())
+            .await
+            .unwrap();
         let saga = SendSaga::new(&wallet);
         let prepared = saga
             .internal_prepare(
@@ -1297,7 +1384,7 @@ mod tests {
                 SendOptions::default(),
                 vec![unused_proof, send_8_proof, send_2_proof],
                 false,
-                wallet.active_keyset().await.unwrap().id,
+                basis,
                 &wallet.get_keyset_fees_and_amounts().await.unwrap(),
             )
             .await
@@ -1582,9 +1669,10 @@ mod tests {
     }
 
     /// The same wallet still cannot complete an online send that has to swap,
-    /// because a swap does build outputs. The requirement is enforced in
-    /// `confirm`, where the swap actually happens, and reports that the keyset
-    /// expired rather than claiming the wallet has none.
+    /// because a swap does build outputs. Preparing reports that the keyset
+    /// expired rather than claiming the wallet has none, and does so before
+    /// reserving anything, since the fee it would otherwise quote comes from a
+    /// keyset the swap could never use.
     #[tokio::test]
     async fn test_online_send_reports_expiry_when_every_active_keyset_is_expired() {
         let mut expired = make_expired_keyset();
@@ -1598,9 +1686,9 @@ mod tests {
 
         let mock_client = Arc::new(MockMintConnector::new());
         mock_client.set_mint_keys_response(Ok(vec![expired, inactive]));
-        let wallet = create_test_wallet_with_mock(db, mock_client).await;
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
 
-        let prepared = SendSaga::new(&wallet)
+        let err = SendSaga::new(&wallet)
             .prepare(
                 Amount::from(32),
                 SendOptions {
@@ -1609,21 +1697,25 @@ mod tests {
                 },
             )
             .await
-            .expect("preparing does not build outputs");
-
-        assert!(
-            !prepared.state_data.proofs_to_swap.is_empty(),
-            "a 32 send from a single 64 proof has to swap"
-        );
-
-        let err = match prepared.confirm(None).await {
-            Ok(_) => panic!("a swap cannot build outputs on an expired keyset"),
-            Err(err) => err,
-        };
+            .expect_err("a 32 send from a single 64 proof has to swap");
 
         assert!(
             matches!(err, crate::Error::ExpiredKeyset),
             "expected ExpiredKeyset, got: {err:?}"
+        );
+
+        assert!(
+            db.get_incomplete_sagas().await.unwrap().is_empty(),
+            "a send refused at prepare leaves no saga behind"
+        );
+        let unspent = wallet
+            .get_proofs_with(Some(vec![State::Unspent]), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            unspent.total_amount().unwrap(),
+            Amount::from(64),
+            "a send refused at prepare reserves nothing"
         );
     }
 
@@ -1728,6 +1820,174 @@ mod tests {
             prepared.state_data.proofs_to_swap,
             Vec::new(),
             "an exact send needs no swap"
+        );
+    }
+
+    /// A cheaper inactive keyset is only a fallback for a send that signs
+    /// nothing, so a send that has to swap prices its recipient fee on the
+    /// keyset the mint rotated to. Resolving the output keyset is what reaches
+    /// that rotation: the cached verdict alone would settle on the free
+    /// inactive keyset and quote nothing.
+    #[tokio::test]
+    async fn test_online_send_prices_the_recipient_fee_on_the_rotated_keyset() {
+        let mut expired = make_expired_keyset();
+        expired.active = Some(true);
+        let mut free = test_keyset();
+        free.active = Some(false);
+        free.input_fee_ppk = 0;
+        free.id = Id::v2_from_data(
+            &free.keys,
+            &free.unit,
+            free.input_fee_ppk,
+            free.final_expiry,
+        );
+        let mut rotated = test_keyset();
+        rotated.input_fee_ppk = 1000;
+        rotated.id = Id::v2_from_data(
+            &rotated.keys,
+            &rotated.unit,
+            rotated.input_fee_ppk,
+            rotated.final_expiry,
+        );
+
+        let db = create_test_db().await;
+        let proof_info = test_proof_info(free.id, 64, test_mint_url());
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.set_mint_keys_response(Ok(vec![expired.clone(), free.clone()]));
+        let wallet = create_test_wallet_with_mock(db, mock_client.clone()).await;
+        wallet.set_metadata_cache_ttl(None);
+        wallet.keysets(KeysetLoadPolicy::Refresh).await.unwrap();
+
+        let mut deactivated = expired;
+        deactivated.active = Some(false);
+        mock_client.set_mint_keys_response(Ok(vec![deactivated, free, rotated.clone()]));
+
+        let prepared = SendSaga::new(&wallet)
+            .prepare(
+                Amount::from(32),
+                SendOptions {
+                    send_kind: SendKind::OnlineExact,
+                    include_fee: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("the rotated keyset can sign the swap this send needs");
+
+        assert!(
+            !prepared.state_data.proofs_to_swap.is_empty(),
+            "a 32 send from a single 64 proof has to swap"
+        );
+        assert_eq!(
+            prepared.send_fee(),
+            Amount::from(2),
+            "the allowance has to cover the rotated keyset's 1000 ppk, not the free fallback's 0"
+        );
+    }
+
+    /// A rotation between `prepare` and `confirm` moves the fee the recipient
+    /// will pay, and the token has to grow with it: the recipient is owed the
+    /// amount that was sent, net of what redeeming it costs them.
+    #[tokio::test]
+    async fn test_confirm_reprices_the_recipient_fee_when_the_keyset_rotates() {
+        let free = mint_signing_keyset(0);
+        let rotated = mint_signing_keyset(1000);
+
+        let db = create_test_db().await;
+        let proof_info = test_proof_info(free.id, 64, test_mint_url());
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.enable_mint_signing();
+        mock_client.set_mint_keys_response(Ok(vec![free.clone()]));
+        let wallet = create_test_wallet_with_mock(db, mock_client.clone()).await;
+        wallet.set_metadata_cache_ttl(Some(std::time::Duration::ZERO));
+
+        let prepared = SendSaga::new(&wallet)
+            .prepare(
+                Amount::from(32),
+                SendOptions {
+                    send_kind: SendKind::OnlineExact,
+                    include_fee: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("the free keyset can sign the swap this send needs");
+
+        assert_eq!(
+            prepared.send_fee(),
+            Amount::ZERO,
+            "the free keyset costs the recipient nothing to redeem"
+        );
+
+        let mut deactivated = free;
+        deactivated.active = Some(false);
+        mock_client.set_mint_keys_response(Ok(vec![deactivated, rotated.clone()]));
+
+        let (_token, saga) = prepared
+            .confirm(None)
+            .await
+            .expect("the rotated keyset signs the swap");
+
+        let sent = saga.state_data.proofs.clone();
+        let redeem_fee = wallet.get_proofs_fee(&sent).await.unwrap().total;
+        assert_eq!(
+            sent.total_amount().unwrap() - redeem_fee,
+            Amount::from(32),
+            "the recipient nets what was sent after paying the rotated keyset's fee"
+        );
+    }
+
+    /// The re-priced allowance can outgrow the proofs that were reserved for
+    /// the old one. The send then fails without reaching the mint, rather than
+    /// handing over a token that leaves the recipient short.
+    #[tokio::test]
+    async fn test_confirm_fails_when_the_repriced_fee_outgrows_the_reserved_proofs() {
+        let free = mint_signing_keyset(0);
+        let rotated = mint_signing_keyset(1000);
+
+        let db = create_test_db().await;
+        let proof_info = test_proof_info(free.id, 33, test_mint_url());
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.enable_mint_signing();
+        mock_client.set_mint_keys_response(Ok(vec![free.clone()]));
+        let wallet = create_test_wallet_with_mock(db, mock_client.clone()).await;
+        wallet.set_metadata_cache_ttl(Some(std::time::Duration::ZERO));
+
+        let prepared = SendSaga::new(&wallet)
+            .prepare(
+                Amount::from(32),
+                SendOptions {
+                    send_kind: SendKind::OnlineExact,
+                    include_fee: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("33 covers a 32 send on a keyset that charges nothing");
+
+        let mut deactivated = free;
+        deactivated.active = Some(false);
+        mock_client.set_mint_keys_response(Ok(vec![deactivated, rotated]));
+
+        let err = prepared
+            .confirm(None)
+            .await
+            .map(|(token, _)| token)
+            .expect_err("33 cannot cover a 32 send plus the rotated keyset's fee");
+
+        assert!(
+            matches!(err, crate::Error::InsufficientFunds),
+            "expected InsufficientFunds, got: {err:?}"
+        );
+        assert!(
+            mock_client.captured_swap_requests().is_empty(),
+            "a short send must not reach the mint"
         );
     }
 

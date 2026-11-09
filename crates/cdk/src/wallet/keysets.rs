@@ -98,7 +98,7 @@ impl Wallet {
     /// outputs signed by them.
     ///
     /// Use this only where the mint has to sign something. A send that hands
-    /// over proofs the wallet already holds needs
+    /// over proofs the wallet already holds falls back to
     /// [`split_basis_keyset()`](Self::split_basis_keyset) instead.
     #[instrument(skip(self))]
     pub async fn active_keyset(&self) -> Result<KeySet, Error> {
@@ -124,16 +124,15 @@ impl Wallet {
         self.select_keyset(policy, select_active_keyset).await
     }
 
-    /// The keyset whose denominations and input fee the send path splits
-    /// against.
+    /// The fallback basis a send prices against when no keyset can sign
+    /// outputs.
     ///
-    /// Prefers an unexpired active keyset, since those are the denominations a
-    /// later swap would use, but falls back to any unexpired keyset. A send that
-    /// hands over proofs the wallet already holds signs no new outputs, so it
-    /// must not fail just because the mint let its active keyset expire; the
-    /// swap in `SendSaga::confirm` resolves
-    /// [`active_keyset()`](Self::active_keyset) itself, which is where a keyset
-    /// the mint will sign on is genuinely required.
+    /// Returns the cheapest unexpired keyset, preferring an active one, so a
+    /// send that hands over proofs the wallet already holds does not fail just
+    /// because the mint let its active keyset expire. A send that has to swap
+    /// does need a signable keyset, and `SendSaga::internal_prepare` refuses
+    /// this fallback once the split shows the swap, before any proof is
+    /// reserved.
     #[instrument(skip(self))]
     pub(crate) async fn split_basis_keyset(
         &self,

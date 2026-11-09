@@ -412,6 +412,39 @@ pub fn make_expired_keyset() -> KeySet {
     ks
 }
 
+/// The keys the mock signs with, as signing keys and their public half.
+fn mint_signing_keys() -> (BTreeMap<Amount, SecretKey>, Keys) {
+    let mut signing_keys = BTreeMap::new();
+    let mut public_keys = BTreeMap::new();
+    for power in 0..32u8 {
+        let amount = Amount::from(1u64 << power);
+        let secret_key =
+            SecretKey::from_slice(&[power + 1; 32]).expect("test key is a valid secret");
+        public_keys.insert(amount, secret_key.public_key());
+        signing_keys.insert(amount, secret_key);
+    }
+
+    (signing_keys, Keys::new(public_keys))
+}
+
+/// The keyset the mock signs with, at a chosen input fee.
+///
+/// Signing looks keys up by amount alone, so a test may serve this keyset at any
+/// fee and still get valid signatures back, and the v2 id keeps two fees apart.
+pub fn mint_signing_keyset(input_fee_ppk: u64) -> KeySet {
+    let (_, keys) = mint_signing_keys();
+    let unit = CurrencyUnit::Sat;
+
+    KeySet {
+        id: Id::v2_from_data(&keys, &unit, input_fee_ppk, 0),
+        unit,
+        active: Some(true),
+        keys,
+        input_fee_ppk,
+        final_expiry: 0,
+    }
+}
+
 /// Create a test melt quote
 pub fn test_melt_quote() -> MeltQuote {
     MeltQuote {
@@ -809,16 +842,7 @@ impl MockMintConnector {
     /// keys, so that unstaged `post_mint`/`post_batch_mint` calls are
     /// answered with valid blind signatures for the requested outputs.
     pub fn enable_mint_signing(&self) {
-        let mut signing_keys = BTreeMap::new();
-        let mut public_keys = BTreeMap::new();
-        for power in 0..32u8 {
-            let amount = Amount::from(1u64 << power);
-            let secret_key =
-                SecretKey::from_slice(&[power + 1; 32]).expect("test key is a valid secret");
-            public_keys.insert(amount, secret_key.public_key());
-            signing_keys.insert(amount, secret_key);
-        }
-        let keys = Keys::new(public_keys);
+        let (signing_keys, keys) = mint_signing_keys();
 
         self.set_active_keyset(KeySet {
             id: Id::v1_from_keys(&keys),
