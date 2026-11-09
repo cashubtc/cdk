@@ -553,6 +553,221 @@ mod test {
             .expect("database")
     }
 
+    #[tokio::test]
+    async fn wallet_transaction_ys_migration() {
+        let db_url = std::env::var("CDK_MINTD_DATABASE_URL")
+            .or_else(|_| std::env::var("PG_DB_URL"))
+            .unwrap_or(
+                "host=localhost user=cdk_user password=cdk_password dbname=cdk_mint port=5432"
+                    .to_owned(),
+            );
+        let (mut client, connection) = tokio_postgres::connect(&db_url, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        tokio::spawn(async move {
+            connection.await.unwrap();
+        });
+        // Temporary tables keep this migration fixture isolated from other tests.
+        client.batch_execute("CREATE TEMP TABLE transactions (id BYTEA PRIMARY KEY, ys BYTEA NOT NULL, memo TEXT);").await.unwrap();
+        let first = cdk_common::SecretKey::generate().public_key().to_bytes();
+        let second = cdk_common::SecretKey::generate().public_key().to_bytes();
+        let points = [first, second, first];
+        client
+            .execute(
+                "INSERT INTO transactions VALUES ($1, $2, 'retained'), ($3, $4, 'empty')",
+                &[&vec![1u8], &points.concat(), &vec![2u8], &Vec::<u8>::new()],
+            )
+            .await
+            .unwrap();
+        // The migration's child table is temporary too, so all fixture data is removed on disconnect.
+        let migration = include_str!("../../cdk-sql-common/src/wallet/migrations/postgres/20260924000000_normalize_transaction_ys.sql")
+            .replace("CREATE TABLE transaction_ys", "CREATE TEMP TABLE transaction_ys");
+        let tx = client.transaction().await.unwrap();
+        tx.batch_execute(&migration).await.unwrap();
+        tx.commit().await.unwrap();
+        let rows = client
+            .query(
+                "SELECT y FROM transaction_ys WHERE transaction_id = $1 ORDER BY position",
+                &[&vec![1u8]],
+            )
+            .await
+            .unwrap();
+        let stored: Vec<Vec<u8>> = rows.iter().map(|row| row.get(0)).collect();
+        assert_eq!(stored, points);
+        let empty_count: i64 = client
+            .query_one(
+                "SELECT count(*) FROM transaction_ys WHERE transaction_id = $1",
+                &[&vec![2u8]],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(empty_count, 0);
+        let memo: String = client
+            .query_one("SELECT memo FROM transactions WHERE id = $1", &[&vec![1u8]])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(memo, "retained");
+        assert!(client
+            .query("SELECT ys FROM transactions", &[])
+            .await
+            .is_err());
+
+        client.batch_execute("DROP TABLE transaction_ys; DROP TABLE transactions; CREATE TEMP TABLE transactions (id BYTEA PRIMARY KEY, ys BYTEA NOT NULL);").await.unwrap();
+        client
+            .execute(
+                "INSERT INTO transactions VALUES ($1, $2)",
+                &[&vec![1u8], &vec![2u8; 34]],
+            )
+            .await
+            .unwrap();
+        let tx = client.transaction().await.unwrap();
+        assert!(tx.batch_execute(&migration).await.is_err());
+        tx.rollback().await.unwrap();
+        let stored: Vec<u8> = client
+            .query_one("SELECT ys FROM transactions", &[])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(stored, vec![2u8; 34]);
+    }
+
+    /// Returns the backend blocked by `blocker`, once one is waiting on a lock.
+    async fn backend_blocked_by(client: &Client, blocker: i32, query_like: &str) -> i32 {
+        for _ in 0..400 {
+            let row = client
+                .query_opt(
+                    "SELECT pid FROM pg_stat_activity
+                     WHERE wait_event_type = 'Lock'
+                       AND $1 = ANY(pg_blocking_pids(pid))
+                       AND query LIKE $2",
+                    &[&blocker, &query_like],
+                )
+                .await
+                .expect("pg_stat_activity");
+            if let Some(row) = row {
+                return row.get(0);
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("no backend matching {query_like} became blocked by {blocker}");
+    }
+
+    #[tokio::test]
+    async fn concurrent_transaction_update_and_removal_do_not_deadlock() {
+        use cdk_common::database::WalletDatabase;
+        use cdk_common::wallet::{Transaction, TransactionDirection, TransactionStatus};
+        use cdk_common::{Amount, CurrencyUnit, SecretKey};
+
+        let test_id = format!(
+            "test_transaction_lock_order_{}",
+            uuid::Uuid::new_v4().simple()
+        );
+        let db = Arc::new(provide_wallet_db(test_id.clone()).await);
+        let db_url = std::env::var("CDK_MINTD_DATABASE_URL")
+            .or_else(|_| std::env::var("PG_DB_URL"))
+            .unwrap_or(
+                "host=localhost user=cdk_user password=cdk_password dbname=cdk_mint port=5432"
+                    .to_owned(),
+            );
+        let (client, connection) = tokio_postgres::connect(&db_url, NoTls)
+            .await
+            .expect("control connection");
+        tokio::spawn(connection);
+
+        let original = Transaction {
+            mint_url: "https://mint.example".parse().expect("mint url"),
+            direction: TransactionDirection::Incoming,
+            amount: Amount::from(1),
+            fee: Amount::ZERO,
+            unit: CurrencyUnit::Sat,
+            ys: vec![
+                SecretKey::generate().public_key(),
+                SecretKey::generate().public_key(),
+            ],
+            timestamp: 123,
+            memo: None,
+            metadata: Default::default(),
+            quote_id: None,
+            payment_request: None,
+            payment_proof: None,
+            payment_method: None,
+            saga_id: Some(uuid::Uuid::new_v4()),
+            status: TransactionStatus::Pending,
+        };
+        let id = original.id();
+        db.add_transaction(original.clone())
+            .await
+            .expect("add transaction");
+
+        // Pause updates after they lock the parent row and before they touch
+        // its points, the window in which a deletion previously locked points.
+        // Advisory locks are database-wide, so use a key unique to this test run.
+        let lock_key = uuid::Uuid::new_v4().as_u64_pair().0 as i64;
+        client
+            .batch_execute(&format!(
+                r#"SET search_path TO "{test_id}";
+                CREATE FUNCTION pause_transaction_update() RETURNS trigger AS $$
+                BEGIN
+                    PERFORM pg_advisory_xact_lock_shared({lock_key});
+                    RETURN NEW;
+                END $$ LANGUAGE plpgsql;
+                CREATE TRIGGER pause_transaction_update AFTER UPDATE ON transactions
+                    FOR EACH ROW EXECUTE FUNCTION pause_transaction_update();
+                SELECT pg_advisory_lock({lock_key});"#
+            ))
+            .await
+            .expect("install pause trigger");
+        let control_pid: i32 = client
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await
+            .expect("control pid")
+            .get(0);
+
+        let mut updated = original.clone();
+        updated.ys = vec![SecretKey::generate().public_key()];
+        let update = tokio::spawn({
+            let db = Arc::clone(&db);
+            async move { db.add_transaction(updated).await }
+        });
+        let update_pid =
+            backend_blocked_by(&client, control_pid, "%INSERT INTO transactions%").await;
+
+        let removal = tokio::spawn({
+            let db = Arc::clone(&db);
+            async move { db.remove_transaction(id).await }
+        });
+        backend_blocked_by(&client, update_pid, "%DELETE FROM transactions%").await;
+
+        client
+            .execute("SELECT pg_advisory_unlock($1)", &[&lock_key])
+            .await
+            .expect("release update");
+        let (update, removal) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(update, removal)
+        })
+        .await
+        .expect("operations finished");
+        update.expect("update task").expect("update succeeds");
+        removal.expect("removal task").expect("removal succeeds");
+
+        assert!(db
+            .get_transaction(id)
+            .await
+            .expect("get transaction")
+            .is_none());
+        let points: i64 = client
+            .query_one(
+                "SELECT count(*) FROM transaction_ys WHERE transaction_id = $1",
+                &[&id.as_slice().to_vec()],
+            )
+            .await
+            .expect("count points")
+            .get(0);
+        assert_eq!(points, 0);
+    }
+
     wallet_db_test!(provide_wallet_db);
 
     #[tokio::test]
