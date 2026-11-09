@@ -380,6 +380,32 @@ async def test_kv_persistence_across_instances():
             os.unlink(db_path)
 
 
+async def test_sqlite_close_before_backup():
+    """Await close through generated bindings before copying the main file."""
+    with tempfile.TemporaryDirectory() as directory:
+        path = str(Path(directory) / "wallet.sqlite")
+        backup = str(Path(directory) / "backup.sqlite")
+        db = cdk_ffi.WalletSqliteDatabase(path)
+        await db.kv_write("backup", "test", "key", b"committed")
+
+        # Multiple callers may close the same shared pool without dropping handles.
+        await asyncio.gather(db.close(), db.close())
+        try:
+            await db.kv_read("backup", "test", "key")
+        except cdk_ffi.FfiError as error:
+            assert "closed" in str(error).lower(), str(error)
+        else:
+            raise AssertionError("closed database still accepted a query")
+
+        shutil.copyfile(path, backup)
+        reopened = cdk_ffi.WalletSqliteDatabase(backup)
+        try:
+            value = await reopened.kv_read("backup", "test", "key")
+            assert bytes(value) == b"committed", value
+        finally:
+            await reopened.close()
+
+
 async def test_kv_in_memory_concurrent_access():
     """Test concurrent FFI access to the single-connection in-memory SQLite pool"""
     print("\n=== Test: KV In-Memory Concurrent Access ===")
@@ -428,6 +454,7 @@ async def main():
         ("KV Persistence Across Instances", test_kv_persistence_across_instances),
         # In-memory SQLite pool
         ("KV In-Memory Concurrent Access", test_kv_in_memory_concurrent_access),
+        ("SQLite Close Before Backup", test_sqlite_close_before_backup),
     ]
 
     passed = 0

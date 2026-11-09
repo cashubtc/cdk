@@ -57,5 +57,16 @@ impl WalletSqliteDatabase {
     }
 }
 
+#[uniffi::export(async_runtime = "tokio")]
+impl WalletSqliteDatabase {
+    /// Close this database and all wallets sharing it after stopping their operations.
+    ///
+    /// Waits for pending database operations and cleanup. Await this before copying
+    /// the database file; dropping a handle alone does not wait for closure.
+    pub async fn close(&self) -> Result<(), FfiError> {
+        self.inner.inner().close().await.map_err(FfiError::database)
+    }
+}
+
 // Use macro to implement WalletDatabase trait - delegates all methods to inner
 crate::impl_ffi_wallet_database!(WalletSqliteDatabase);
