@@ -362,6 +362,7 @@ impl WalletBuilder {
             localstore,
             metadata_cache,
             target_proof_count: self.target_proof_count.unwrap_or(3),
+            proof_selection_lock: Arc::new(tokio::sync::Mutex::new(())),
             auth_wallet: Arc::new(TokioRwLock::new(auth_wallet)),
             auth_connector: self.auth_connector.take(),
             #[cfg(feature = "npubcash")]
