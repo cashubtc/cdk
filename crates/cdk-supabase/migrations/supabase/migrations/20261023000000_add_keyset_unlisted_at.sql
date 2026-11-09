@@ -1,0 +1,1 @@
+ALTER TABLE keyset ADD COLUMN IF NOT EXISTS unlisted_at BIGINT;

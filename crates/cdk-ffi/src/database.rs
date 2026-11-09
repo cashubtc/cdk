@@ -39,10 +39,10 @@ pub trait WalletDatabase: Send + Sync {
     async fn get_mint_keysets(
         &self,
         mint_url: MintUrl,
-    ) -> Result<Option<Vec<KeySetInfo>>, FfiError>;
+    ) -> Result<Option<Vec<WalletKeySetInfo>>, FfiError>;
 
     /// Get mint keyset by id
-    async fn get_keyset_by_id(&self, keyset_id: Id) -> Result<Option<KeySetInfo>, FfiError>;
+    async fn get_keyset_by_id(&self, keyset_id: Id) -> Result<Option<WalletKeySetInfo>, FfiError>;
 
     /// Get mint quote from storage
     async fn get_mint_quote(&self, quote_id: String) -> Result<Option<MintQuote>, FfiError>;
@@ -199,7 +199,7 @@ pub trait WalletDatabase: Send + Sync {
     async fn add_mint_keysets(
         &self,
         mint_url: MintUrl,
-        keysets: Vec<KeySetInfo>,
+        keysets: Vec<WalletKeySetInfo>,
     ) -> Result<(), FfiError>;
 
     /// Add mint quote to storage
@@ -374,7 +374,7 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
     async fn get_mint_keysets(
         &self,
         mint_url: cdk::mint_url::MintUrl,
-    ) -> Result<Option<Vec<cdk::nuts::KeySetInfo>>, cdk::cdk_database::Error> {
+    ) -> Result<Option<Vec<cdk::wallet::WalletKeySetInfo>>, cdk::cdk_database::Error> {
         let ffi_mint_url = mint_url.into();
         let result = self
             .ffi_db
@@ -397,7 +397,7 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
     async fn get_keyset_by_id(
         &self,
         keyset_id: &cdk::nuts::Id,
-    ) -> Result<Option<cdk::nuts::KeySetInfo>, cdk::cdk_database::Error> {
+    ) -> Result<Option<cdk::wallet::WalletKeySetInfo>, cdk::cdk_database::Error> {
         let ffi_id = (*keyset_id).into();
         let result = self
             .ffi_db
@@ -774,10 +774,10 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
     async fn add_mint_keysets(
         &self,
         mint_url: cdk::mint_url::MintUrl,
-        keysets: Vec<cdk::nuts::KeySetInfo>,
+        keysets: Vec<cdk::wallet::WalletKeySetInfo>,
     ) -> Result<(), cdk::cdk_database::Error> {
         let ffi_mint_url = mint_url.into();
-        let ffi_keysets: Vec<KeySetInfo> = keysets.into_iter().map(Into::into).collect();
+        let ffi_keysets: Vec<WalletKeySetInfo> = keysets.into_iter().map(Into::into).collect();
         self.ffi_db
             .add_mint_keysets(ffi_mint_url, ffi_keysets)
             .await
@@ -1131,7 +1131,7 @@ where
     async fn get_mint_keysets(
         &self,
         mint_url: MintUrl,
-    ) -> Result<Option<Vec<KeySetInfo>>, FfiError> {
+    ) -> Result<Option<Vec<WalletKeySetInfo>>, FfiError> {
         let cdk_mint_url = mint_url.try_into()?;
         let result = self
             .inner
@@ -1141,7 +1141,7 @@ where
         Ok(result.map(|keysets| keysets.into_iter().map(Into::into).collect()))
     }
 
-    async fn get_keyset_by_id(&self, keyset_id: Id) -> Result<Option<KeySetInfo>, FfiError> {
+    async fn get_keyset_by_id(&self, keyset_id: Id) -> Result<Option<WalletKeySetInfo>, FfiError> {
         let cdk_id = keyset_id.try_into()?;
         let result = self
             .inner
@@ -1483,10 +1483,10 @@ where
     async fn add_mint_keysets(
         &self,
         mint_url: MintUrl,
-        keysets: Vec<KeySetInfo>,
+        keysets: Vec<WalletKeySetInfo>,
     ) -> Result<(), FfiError> {
         let cdk_mint_url = mint_url.try_into()?;
-        let cdk_keysets: Vec<cdk::nuts::KeySetInfo> = keysets
+        let cdk_keysets: Vec<cdk::wallet::WalletKeySetInfo> = keysets
             .into_iter()
             .map(TryInto::try_into)
             .collect::<Result<_, _>>()?;
@@ -1706,14 +1706,14 @@ macro_rules! impl_ffi_wallet_database {
             async fn get_mint_keysets(
                 &self,
                 mint_url: MintUrl,
-            ) -> Result<Option<Vec<KeySetInfo>>, FfiError> {
+            ) -> Result<Option<Vec<WalletKeySetInfo>>, FfiError> {
                 self.inner.get_mint_keysets(mint_url).await
             }
 
             async fn get_keyset_by_id(
                 &self,
                 keyset_id: Id,
-            ) -> Result<Option<KeySetInfo>, FfiError> {
+            ) -> Result<Option<WalletKeySetInfo>, FfiError> {
                 self.inner.get_keyset_by_id(keyset_id).await
             }
 
@@ -1900,7 +1900,7 @@ macro_rules! impl_ffi_wallet_database {
             async fn add_mint_keysets(
                 &self,
                 mint_url: MintUrl,
-                keysets: Vec<KeySetInfo>,
+                keysets: Vec<WalletKeySetInfo>,
             ) -> Result<(), FfiError> {
                 self.inner.add_mint_keysets(mint_url, keysets).await
             }

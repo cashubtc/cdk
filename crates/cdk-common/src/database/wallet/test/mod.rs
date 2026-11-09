@@ -68,14 +68,14 @@ fn test_mint_url_2() -> MintUrl {
 }
 
 /// Create test keyset info
-fn test_keyset_info(keyset_id: Id, _mint_url: &MintUrl) -> KeySetInfo {
-    KeySetInfo {
+fn test_keyset_info(keyset_id: Id, _mint_url: &MintUrl) -> WalletKeySetInfo {
+    WalletKeySetInfo::listed(KeySetInfo {
         id: keyset_id,
         unit: CurrencyUnit::Sat,
         active: true,
         input_fee_ppk: 0,
         final_expiry: None,
-    }
+    })
 }
 
 /// Create a test proof
@@ -279,12 +279,99 @@ where
     // Get keyset by ID
     let retrieved = db.get_keyset_by_id(&keyset_id).await.unwrap();
     assert!(retrieved.is_some());
-    assert_eq!(retrieved.unwrap().id, keyset_id);
+    assert_eq!(retrieved.unwrap().keyset.id, keyset_id);
 
     // Get keysets for mint
     let keysets = db.get_mint_keysets(mint_url).await.unwrap();
     assert!(keysets.is_some());
     assert!(!keysets.unwrap().is_empty());
+}
+
+/// Test that the wallet-local unlisted marker round-trips and can be cleared
+pub async fn keyset_unlisted_marker_round_trip<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mint_url = test_mint_url();
+    let keyset_id = test_keyset_id();
+    let mut keyset_info = test_keyset_info(keyset_id, &mint_url);
+
+    db.add_mint(mint_url.clone(), None).await.unwrap();
+    db.add_mint_keysets(mint_url.clone(), vec![keyset_info.clone()])
+        .await
+        .unwrap();
+
+    let stored = db.get_keyset_by_id(&keyset_id).await.unwrap().unwrap();
+    assert!(!stored.is_unlisted());
+
+    keyset_info.unlisted_at = Some(1_700_000_000);
+    keyset_info.keyset.active = false;
+    db.add_mint_keysets(mint_url.clone(), vec![keyset_info.clone()])
+        .await
+        .unwrap();
+
+    let stored = db.get_keyset_by_id(&keyset_id).await.unwrap().unwrap();
+    assert_eq!(stored.unlisted_at, Some(1_700_000_000));
+    assert!(!stored.keyset.active);
+
+    keyset_info.unlisted_at = None;
+    keyset_info.keyset.active = true;
+    db.add_mint_keysets(mint_url, vec![keyset_info])
+        .await
+        .unwrap();
+
+    let stored = db.get_keyset_by_id(&keyset_id).await.unwrap().unwrap();
+    assert!(
+        !stored.is_unlisted(),
+        "a mint that lists the keyset again must clear the marker"
+    );
+}
+
+/// Test that a refreshed keyset carries the mint's current final expiry
+///
+/// A v00 keyset id is derived from the keys alone, so the mint can change the
+/// expiry of a keyset the wallet already stored.
+pub async fn keyset_expiry_is_refreshed<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mint_url = test_mint_url();
+    let keyset_id = test_keyset_id();
+    let mut keyset_info = test_keyset_info(keyset_id, &mint_url);
+
+    db.add_mint(mint_url.clone(), None).await.unwrap();
+    db.add_mint_keysets(mint_url.clone(), vec![keyset_info.clone()])
+        .await
+        .unwrap();
+
+    let stored = db.get_keyset_by_id(&keyset_id).await.unwrap().unwrap();
+    assert_eq!(stored.keyset.final_expiry, None);
+    assert!(!stored.is_expired());
+
+    keyset_info.keyset.final_expiry = Some(1);
+    db.add_mint_keysets(mint_url.clone(), vec![keyset_info.clone()])
+        .await
+        .unwrap();
+
+    let stored = db.get_keyset_by_id(&keyset_id).await.unwrap().unwrap();
+    assert_eq!(
+        stored.keyset.final_expiry,
+        Some(1),
+        "an expiry the mint set after the first insert must be stored"
+    );
+    assert!(stored.is_expired());
+
+    keyset_info.keyset.final_expiry = None;
+    db.add_mint_keysets(mint_url, vec![keyset_info])
+        .await
+        .unwrap();
+
+    let stored = db.get_keyset_by_id(&keyset_id).await.unwrap().unwrap();
+    assert_eq!(
+        stored.keyset.final_expiry, None,
+        "a mint that lifts an expiry must clear the stored one"
+    );
+    assert!(!stored.is_expired());
 }
 
 /// Test getting keyset by ID in transaction
@@ -1754,6 +1841,8 @@ macro_rules! wallet_db_test {
             remove_mint,
             update_mint_url,
             add_and_get_keysets,
+            keyset_unlisted_marker_round_trip,
+            keyset_expiry_is_refreshed,
             get_keyset_by_id_in_transaction,
             add_and_get_keys,
             get_keys_in_transaction,
