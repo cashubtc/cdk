@@ -414,7 +414,7 @@ mod tests {
     fn sign_refund_proof(proof: &mut Proof, key: &SecretKey) {
         let digest = Sha256Hash::hash(proof.secret.as_bytes());
         let message = Message::from_digest(digest.to_byte_array());
-        let keypair = Keypair::from_secret_key(&crate::SECP256K1, key);
+        let keypair = Keypair::from_secret_key(&crate::SECP256K1, key.as_secp256k1().unwrap());
         let signature = crate::SECP256K1.sign_schnorr_no_aux_rand(&message, &keypair);
         proof.witness = Some(Witness::P2PKWitness(crate::nuts::nut11::P2PKWitness {
             signatures: vec![signature.to_string()],
