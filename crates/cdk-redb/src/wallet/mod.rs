@@ -202,6 +202,12 @@ impl WalletRedbDatabase {
 
         let db = Database::create(path)?;
 
+        let tx = db.begin_write()?;
+        {
+            let _ = tx.open_table(SAGAS_TABLE)?;
+        }
+        tx.commit()?;
+
         Ok(Self { db: Arc::new(db) })
     }
 }
@@ -1074,6 +1080,185 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
                 .map_err(Error::from)?;
         }
         write_txn.commit().map_err(Error::from)?;
+        Ok(())
+    }
+
+    #[instrument(skip_all)]
+    async fn prepare_operation(
+        &self,
+        preparation: database::wallet::OperationPreparation,
+    ) -> Result<(), database::Error> {
+        preparation.validate()?;
+        let tx = self.db.begin_write().map_err(Error::from)?;
+        let saga = &preparation.saga;
+        let operation_id = saga.id.to_string();
+        let initial = saga.version == 0;
+        if !initial {
+            let table = tx.open_table(SAGAS_TABLE).map_err(Error::from)?;
+            let json = table
+                .get(operation_id.as_str())
+                .map_err(Error::from)?
+                .ok_or(database::Error::ConcurrentUpdate)?
+                .value()
+                .to_owned();
+            let previous: wallet::WalletSaga = serde_json::from_str(&json).map_err(Error::from)?;
+            if previous.version != saga.version - 1
+                || previous.mint_url != saga.mint_url
+                || previous.unit != saga.unit
+                || previous.quote_id != saga.quote_id
+                || previous.state
+                    != wallet::WalletSagaState::Melt(wallet::MeltSagaState::ProofsReserved)
+            {
+                return Err(database::Error::ConcurrentUpdate);
+            }
+        }
+        if let wallet::OperationData::Swap(data) = &saga.data {
+            if let Some(parent) = &data.parent {
+                let mut table = tx.open_table(SAGAS_TABLE).map_err(Error::from)?;
+                let json = table
+                    .get(parent.id.to_string().as_str())
+                    .map_err(Error::from)?
+                    .ok_or(database::Error::ConcurrentUpdate)?
+                    .value()
+                    .to_owned();
+                let mut previous: wallet::WalletSaga =
+                    serde_json::from_str(&json).map_err(Error::from)?;
+                if previous.version != parent.version
+                    || previous.mint_url != saga.mint_url
+                    || previous.unit != saga.unit
+                    || !matches!(
+                        previous.state,
+                        wallet::WalletSagaState::Melt(wallet::MeltSagaState::ProofsReserved)
+                            | wallet::WalletSagaState::Send(wallet::SendSagaState::ProofsReserved)
+                    )
+                {
+                    return Err(database::Error::ConcurrentUpdate);
+                }
+                previous.update_state(previous.state);
+                let json = serde_json::to_string(&previous).map_err(Error::from)?;
+                table
+                    .insert(parent.id.to_string().as_str(), json.as_str())
+                    .map_err(Error::from)?;
+            }
+        }
+        let is_mint = matches!(saga.data, wallet::OperationData::Mint(_));
+        {
+            let mut table = tx
+                .open_table(if is_mint {
+                    MINT_QUOTES_TABLE
+                } else {
+                    MELT_QUOTES_TABLE
+                })
+                .map_err(Error::from)?;
+            for snapshot in &preparation.quotes {
+                let json = table
+                    .get(snapshot.quote_id.as_str())
+                    .map_err(Error::from)?
+                    .ok_or(database::Error::UnknownQuote)?
+                    .value()
+                    .to_owned();
+                let updated = if is_mint {
+                    let mut quote: MintQuote = serde_json::from_str(&json).map_err(Error::from)?;
+                    if quote.version != snapshot.version
+                        || quote.used_by_operation.is_some()
+                        || quote.mint_url != saga.mint_url
+                        || quote.unit != saga.unit
+                    {
+                        return Err(database::Error::ConcurrentUpdate);
+                    }
+                    quote.version = quote
+                        .version
+                        .checked_add(1)
+                        .ok_or(database::Error::AmountOverflow)?;
+                    quote.used_by_operation = Some(operation_id.clone());
+                    serde_json::to_string(&quote).map_err(Error::from)?
+                } else {
+                    let mut quote: wallet::MeltQuote =
+                        serde_json::from_str(&json).map_err(Error::from)?;
+                    if quote.version != snapshot.version
+                        || (if initial {
+                            quote.used_by_operation.is_some()
+                        } else {
+                            quote.used_by_operation.as_deref() != Some(operation_id.as_str())
+                        })
+                        || quote
+                            .mint_url
+                            .as_ref()
+                            .is_some_and(|url| *url != saga.mint_url)
+                        || quote.unit != saga.unit
+                        || quote.state != cdk_common::MeltQuoteState::Unpaid
+                    {
+                        return Err(database::Error::ConcurrentUpdate);
+                    }
+                    if initial {
+                        quote.version = quote
+                            .version
+                            .checked_add(1)
+                            .ok_or(database::Error::AmountOverflow)?;
+                    }
+                    quote.used_by_operation = Some(operation_id.clone());
+                    serde_json::to_string(&quote).map_err(Error::from)?
+                };
+                table
+                    .insert(snapshot.quote_id.as_str(), updated.as_str())
+                    .map_err(Error::from)?;
+            }
+        }
+        {
+            let mut table = tx.open_table(PROOFS_TABLE).map_err(Error::from)?;
+            for (y, imported) in preparation.proof_ys.iter().map(|y| (y, None)).chain(
+                preparation
+                    .proofs
+                    .iter()
+                    .map(|proof| (&proof.y, Some(proof))),
+            ) {
+                let bytes = y.to_bytes();
+                let json = table
+                    .get(bytes.as_slice())
+                    .map_err(Error::from)?
+                    .map(|value| value.value().to_owned());
+                let proof = match json {
+                    Some(json) => serde_json::from_str(&json).map_err(Error::from)?,
+                    None => imported.cloned().ok_or(database::Error::ProofNotFound)?,
+                };
+                let proof = preparation.reserve_input(proof, imported)?;
+                let json = serde_json::to_string(&proof).map_err(Error::from)?;
+                table
+                    .insert(bytes.as_slice(), json.as_str())
+                    .map_err(Error::from)?;
+            }
+        }
+        if let Some(counter) = &preparation.counter {
+            let mut table = tx.open_table(KEYSET_COUNTER).map_err(Error::from)?;
+            let id = counter.keyset_id.to_string();
+            let current = table
+                .get(id.as_str())
+                .map_err(Error::from)?
+                .map(|value| value.value())
+                .unwrap_or(0);
+            if current != counter.start {
+                return Err(database::Error::ConcurrentUpdate);
+            }
+            table
+                .insert(id.as_str(), counter.end)
+                .map_err(Error::from)?;
+        }
+        {
+            let mut table = tx.open_table(SAGAS_TABLE).map_err(Error::from)?;
+            if initial
+                && table
+                    .get(operation_id.as_str())
+                    .map_err(Error::from)?
+                    .is_some()
+            {
+                return Err(database::Error::Duplicate);
+            }
+            let json = serde_json::to_string(saga).map_err(Error::from)?;
+            table
+                .insert(operation_id.as_str(), json.as_str())
+                .map_err(Error::from)?;
+        }
+        tx.commit().map_err(Error::from)?;
         Ok(())
     }
 

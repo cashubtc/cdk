@@ -123,6 +123,22 @@ impl<'a> SwapSaga<'a, Initial> {
 
         let input_ys = input_proofs.ys()?;
 
+        let reservation_owner = if proof_reservation == ProofReservation::Skip {
+            let inputs = self
+                .wallet
+                .localstore
+                .get_proofs_by_ys(input_ys.clone())
+                .await?;
+            let owner = inputs.first().and_then(|proof| proof.used_by_operation);
+            if owner.is_some() && inputs.iter().all(|proof| proof.used_by_operation == owner) {
+                owner
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         let pre_swap = self
             .wallet
             .create_swap(
@@ -136,7 +152,7 @@ impl<'a> SwapSaga<'a, Initial> {
                 include_fees,
                 use_p2bk,
                 &fee_breakdown,
-                proof_reservation,
+                ProofReservation::Prepare,
             )
             .await?;
 
@@ -150,16 +166,48 @@ impl<'a> SwapSaga<'a, Initial> {
         let fee = pre_swap.fee;
         let input_amount = input_proofs.total_amount()?;
 
-        let counter_end = self
-            .wallet
-            .localstore
-            .increment_keyset_counter(&active_keyset_id, 0)
-            .await?;
-        let counter_start = counter_end.saturating_sub(pre_swap.derived_secret_count);
+        let counter_start = pre_swap
+            .pre_mint_secrets
+            .secrets
+            .iter()
+            .filter_map(|secret| secret.derivation_index)
+            .min()
+            .unwrap_or(0);
+        let counter_end = counter_start
+            .checked_add(pre_swap.derived_secret_count)
+            .ok_or(Error::AmountOverflow)?;
+        let parent = match reservation_owner {
+            Some(id) => {
+                let parent = self
+                    .wallet
+                    .localstore
+                    .get_saga(&id)
+                    .await?
+                    .ok_or(Error::InvalidOperationState)?;
+                if matches!(
+                    parent.state,
+                    WalletSagaState::Melt(cdk_common::wallet::MeltSagaState::ProofsReserved)
+                ) {
+                    Some(cdk_common::wallet::SwapParent {
+                        id,
+                        version: parent.version,
+                    })
+                } else if matches!(parent.state, WalletSagaState::Send(_)) {
+                    None
+                } else {
+                    return Err(Error::ConcurrentUpdate);
+                }
+            }
+            None if proof_reservation == ProofReservation::Skip => {
+                return Err(Error::InvalidOperationState)
+            }
+            None => None,
+        };
         let output_amount = input_amount
             .checked_sub(fee)
             .ok_or(Error::InsufficientFunds)?;
 
+        let reserve_inputs = proof_reservation == ProofReservation::Reserve || parent.is_some();
         let saga = WalletSaga::new(
             self.state_data.operation_id,
             WalletSagaState::Swap(SwapSagaState::ProofsReserved),
@@ -167,6 +215,7 @@ impl<'a> SwapSaga<'a, Initial> {
             self.wallet.mint_url.clone(),
             self.wallet.unit.clone(),
             OperationData::Swap(SwapOperationData {
+                parent,
                 input_amount,
                 output_amount,
                 counter_start: Some(counter_start),
@@ -175,7 +224,26 @@ impl<'a> SwapSaga<'a, Initial> {
             }),
         );
 
-        self.wallet.localstore.add_saga(saga.clone()).await?;
+        self.wallet
+            .localstore
+            .prepare_operation(cdk_common::database::wallet::OperationPreparation {
+                saga: saga.clone(),
+                proof_ys: if reserve_inputs {
+                    input_ys.clone()
+                } else {
+                    vec![]
+                },
+                proofs: vec![],
+                quotes: vec![],
+                counter: (pre_swap.derived_secret_count > 0).then_some(
+                    cdk_common::database::wallet::CounterReservation {
+                        keyset_id: active_keyset_id,
+                        start: counter_start,
+                        end: counter_end,
+                    },
+                ),
+            })
+            .await?;
 
         // Only register compensation if we own the proof reservation.
         // When called from a parent saga (send, melt, receive) with
@@ -200,6 +268,7 @@ impl<'a> SwapSaga<'a, Initial> {
                 operation_id: self.state_data.operation_id,
                 send_amount,
                 input_ys,
+                reservation_owner,
                 spending_conditions,
                 pre_swap,
                 saga,
@@ -351,6 +420,10 @@ impl<'a> SwapSaga<'a, Prepared> {
             .collect::<Result<Vec<ProofInfo>, _>>()?;
         added_proofs.extend(keep_proofs);
         for proof_info in &mut added_proofs {
+            proof_info.created_by_operation = Some(operation_id);
+            if proof_info.state == State::Reserved {
+                proof_info.used_by_operation = self.state_data.reservation_owner;
+            }
             proof_info.derivation_index = self
                 .state_data
                 .pre_swap
@@ -538,6 +611,16 @@ mod tests {
         db.reserve_proofs(vec![proof_y], &parent_op_id)
             .await
             .unwrap();
+
+        let mut parent = crate::wallet::saga::test_utils::test_simple_saga(
+            crate::wallet::test_utils::test_mint_url(),
+        );
+        parent.id = parent_op_id;
+        parent.state = cdk_common::wallet::WalletSagaState::Send(
+            cdk_common::wallet::SendSagaState::ProofsReserved,
+        );
+        parent.kind = parent.state.kind();
+        db.add_saga(parent).await.unwrap();
 
         let mock_client = Arc::new(MockMintConnector::new());
         mock_client.reset_default_mint_state();

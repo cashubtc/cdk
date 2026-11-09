@@ -12,6 +12,11 @@ import java.io.File
 
 class WalletTest {
 
+    @Test
+    fun `custom SQLite stores preserve preparation transactions`() = runBlocking {
+        runPreparationBindingRegression(File("../../test-fixtures"))
+    }
+
     private lateinit var wallet: Wallet
     private lateinit var dbFile: File
 

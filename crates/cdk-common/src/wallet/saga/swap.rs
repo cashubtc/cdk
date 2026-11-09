@@ -35,9 +35,21 @@ impl std::str::FromStr for SwapSagaState {
     }
 }
 
+/// A parent operation whose inputs a nested swap takes over atomically.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SwapParent {
+    /// Parent saga ID.
+    pub id: uuid::Uuid,
+    /// Expected parent saga version before the ownership transfer.
+    pub version: u32,
+}
+
 /// Operation-specific data for Swap operations
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SwapOperationData {
+    /// Parent operation, for nested swaps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<SwapParent>,
     /// Input amount
     pub input_amount: Amount,
     /// Output amount

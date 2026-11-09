@@ -43,7 +43,7 @@ pub use issue::{IssueSagaState, MintOperationData};
 pub use melt::{MeltOperationData, MeltSagaState};
 pub use receive::{ReceiveOperationData, ReceiveSagaState};
 pub use send::{SendOperationData, SendSagaState};
-pub use swap::{SwapOperationData, SwapSagaState};
+pub use swap::{SwapOperationData, SwapParent, SwapSagaState};
 
 /// Wallet saga state for different operation types
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]

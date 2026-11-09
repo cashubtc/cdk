@@ -16,6 +16,9 @@ use crate::wallet::{
     self, MintQuote as WalletMintQuote, ProofInfo, Transaction, TransactionDirection, TransactionId,
 };
 
+mod preparation;
+pub use self::preparation::{CounterReservation, OperationPreparation, QuoteReservation};
+
 #[cfg(feature = "test")]
 pub mod test;
 
@@ -157,6 +160,15 @@ where
     /// The saga should be created with `WalletSaga::new()` which initializes
     /// `version = 0`. This is the starting point for optimistic locking.
     async fn add_saga(&self, saga: wallet::WalletSaga) -> Result<(), Err>;
+
+    /// Commit mint, melt or swap preparation, including recovery data, quote
+    /// ownership, input reservations and output counters, in one transaction.
+    ///
+    /// No sequential fallback is permitted. On conflict or failure every staged
+    /// change must roll back. A successful commit increments acquired quote
+    /// versions. A nested melt swap also advances its parent version. Callers
+    /// must use the new versions before later versioned writes.
+    async fn prepare_operation(&self, preparation: OperationPreparation) -> Result<(), Err>;
 
     /// Get a wallet saga by ID.
     async fn get_saga(&self, id: &uuid::Uuid) -> Result<Option<wallet::WalletSaga>, Err>;

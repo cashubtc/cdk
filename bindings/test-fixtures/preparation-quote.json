@@ -1,0 +1,15 @@
+{
+  "amount": 1000,
+  "expiry": 9999999999,
+  "fee_index": 0,
+  "fee_reserve": 10,
+  "id": "binding-preparation",
+  "mint_url": "https://preparation.example.com",
+  "payment_method": "bolt11",
+  "payment_proof": null,
+  "request": "test request",
+  "state": "UNPAID",
+  "unit": "sat",
+  "used_by_operation": null,
+  "version": 0
+}

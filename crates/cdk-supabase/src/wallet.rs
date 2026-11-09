@@ -243,7 +243,7 @@ impl SupabaseWalletDatabase {
     /// This must match the latest `schema_version` value set in the migration files.
     /// When adding new migrations, update this constant and set the same value
     /// in the new migration's `INSERT INTO schema_info` statement.
-    pub const REQUIRED_SCHEMA_VERSION: u32 = 10;
+    pub const REQUIRED_SCHEMA_VERSION: u32 = 11;
 
     /// Get the full database schema SQL
     ///
@@ -1930,6 +1930,40 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
     }
 
     // ========== Saga methods ==========
+
+    async fn prepare_operation(
+        &self,
+        preparation: cdk_common::database::wallet::OperationPreparation,
+    ) -> Result<(), DatabaseError> {
+        preparation.validate()?;
+        let mut proofs = Vec::with_capacity(preparation.proofs.len());
+        for proof in preparation.proofs.iter().cloned() {
+            let mut table: ProofTable = proof.try_into()?;
+            table.secret = hex::encode(self.encrypt(table.secret.as_bytes()).await?);
+            let c = hex::decode(&table.c).map_err(|_| DatabaseError::InvalidDbResponse)?;
+            table.c = hex::encode(self.encrypt(&c).await?);
+            proofs.push(table);
+        }
+        let body = serde_json::json!({
+            "p_saga": serde_json::to_value(&preparation.saga)?,
+            "p_proof_ys": preparation.proof_ys.iter().map(|y| hex::encode(y.to_bytes())).collect::<Vec<_>>(),
+            "p_proofs": proofs,
+            "p_quotes": preparation.quotes,
+            "p_counter": preparation.counter,
+        });
+        let (status, _) = self
+            .post_request("rest/v1/rpc/prepare_wallet_operation", &body)
+            .await?;
+        if status.is_success() {
+            return Ok(());
+        }
+        if status == StatusCode::CONFLICT {
+            return Err(DatabaseError::ConcurrentUpdate);
+        }
+        Err(DatabaseError::Internal(format!(
+            "prepare_wallet_operation RPC failed: HTTP {status}. Ensure migrations have been run."
+        )))
+    }
 
     async fn add_saga(&self, saga: WalletSaga) -> Result<(), DatabaseError> {
         let saga_json = serde_json::to_string(&saga)

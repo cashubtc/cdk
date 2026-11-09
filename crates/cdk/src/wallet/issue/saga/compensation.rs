@@ -73,13 +73,8 @@ impl CompensatingAction for MintCompensation {
             self.quote_id
         );
 
-        if let Err(e) = self.localstore.delete_saga(&self.saga_id).await {
-            tracing::warn!(
-                "Compensation: Failed to delete saga {}: {}. Will be cleaned up on recovery.",
-                self.saga_id,
-                e
-            );
-        }
+        self.localstore.release_mint_quote(&self.saga_id).await?;
+        self.localstore.delete_saga(&self.saga_id).await?;
 
         Ok(())
     }
@@ -111,6 +106,7 @@ mod tests {
             mint_url,
             CurrencyUnit::Sat,
             OperationData::Swap(SwapOperationData {
+                parent: None,
                 input_amount: Amount::from(1000),
                 output_amount: Amount::from(990),
                 counter_start: Some(0),
