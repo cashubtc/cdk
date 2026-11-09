@@ -67,6 +67,13 @@ exclude_re = [
     "crates/cashu/src/nuts/nut01/secret_key.rs:.*SecretKeyVisitor.*expecting",
     "crates/cashu/src/nuts/nut10/secret.rs:.*SecretVisitor.*expecting",
 
+    # PeVisitor::expecting only describes invalid input; it does not affect decoding.
+    "crates/cashu/src/nuts/nut00/mod.rs:.*deserialize_v4_pubkey_option.*PeVisitor.*expecting",
+
+    # Both absent/null visitor methods already return Ok(None), exactly the
+    # same value as Ok(Default::default()) for Option<PublicKey>.
+    "crates/cashu/src/nuts/nut00/mod.rs:.*deserialize_v4_pubkey_option.*PeVisitor.*visit_(none|unit).*with Ok\\(Default::default\\(\\)\\)",
+
     # Inline benchmark harness is not runtime behavior.
     "crates/cashu/src/nuts/nut01/public_key.rs:.*benches::public_key_from_hex",
 
@@ -156,6 +163,11 @@ exclude_re = [
     # Target-before-kind transport data is ignored and remains invalid later
     # because no valid target is available for the decoded kind.
     "crates/cashu/src/nuts/nut26/encoding.rs:.*delete match arm None in PaymentRequest::decode_transport",
+
+    # bech32::decode has already parsed the same target successfully. The
+    # second parse in CheckedHrpstring::new cannot fail; only its stricter
+    # checksum validation can fail (and remains covered by tests).
+    "crates/cashu/src/nuts/nut26/encoding.rs:.*delete match arm CheckedHrpstringError::Parse\\(e\\) in PaymentRequest::decode_nostr_target",
 
     # Equivalent loop boundary: pos == data.len() enters then immediately breaks
     # on the inner type+length guard, same as exiting the loop.
