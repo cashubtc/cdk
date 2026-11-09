@@ -2381,14 +2381,16 @@ async fn test_restore_after_keyset_rotation() {
         "Restore should recover proofs from both active and inactive keysets"
     );
 
-    // Resuming from the saved counters finds only subsequently minted proofs.
+    // Starting at the stored counters finds only subsequently minted proofs.
     fund_wallet(wallet.clone(), 8, None)
         .await
         .expect("Failed to fund wallet after restore");
     let resumed = wallet_restored
-        .resume_restore(None)
+        .restore_with_opts(
+            cdk::wallet::NUT13Options::default().with_start(cdk::wallet::RestoreStart::Lookback(0)),
+        )
         .await
-        .expect("Resume restore failed");
+        .expect("Restore from stored counters failed");
     assert_eq!(resumed.unspent, Amount::from(8));
     assert_eq!(
         wallet_restored.total_balance().await.unwrap(),
@@ -2397,7 +2399,11 @@ async fn test_restore_after_keyset_rotation() {
 
     // Looking back across both keysets recovers the same proofs idempotently.
     let rescanned = wallet_restored
-        .resume_restore_with_opts(Some(100), cdk::wallet::NUT13Options::new(10, 1).unwrap())
+        .restore_with_opts(
+            cdk::wallet::NUT13Options::new(10, 1)
+                .unwrap()
+                .with_start(cdk::wallet::RestoreStart::Lookback(100)),
+        )
         .await
         .expect("Restore with lookback failed");
     assert_eq!(rescanned.unspent, Amount::from(total + 8));

@@ -225,34 +225,11 @@ impl Wallet {
         Ok(restored.into())
     }
 
-    /// Restore wallet from seed with custom NUT-13 options
+    /// Restore wallet from seed with a starting mode and custom NUT-13 options.
+    /// Stored counters track secret allocation, not completed recovery work;
+    /// lookback does not reliably resume an interrupted scan.
     pub async fn restore_with_opts(&self, opts: NUT13Options) -> Result<Restored, FfiError> {
         let restored = self.inner.restore_with_opts(opts.try_into()?).await?;
-        Ok(restored.into())
-    }
-
-    /// Resume restoring this mint and unit from each keyset's stored next
-    /// derivation index minus `lookback`, clamped to zero.
-    /// `None` defaults to zero lookback. Progress is saved after each
-    /// recovered batch; returned amounts include already stored proofs
-    /// encountered in the scanned range.
-    /// Batches starting before the saved index do not count toward the gap limit.
-    #[uniffi::method(default(lookback = None))]
-    pub async fn resume_restore(&self, lookback: Option<u32>) -> Result<Restored, FfiError> {
-        let restored = self.inner.resume_restore(lookback).await?;
-        Ok(restored.into())
-    }
-
-    /// Resume restoring with a lookback and custom NUT-13 options.
-    pub async fn resume_restore_with_opts(
-        &self,
-        lookback: Option<u32>,
-        opts: NUT13Options,
-    ) -> Result<Restored, FfiError> {
-        let restored = self
-            .inner
-            .resume_restore_with_opts(lookback, opts.try_into()?)
-            .await?;
         Ok(restored.into())
     }
 
