@@ -6,6 +6,7 @@ mod onchain_quote_id_tests;
 mod p2pk_sigall_spending_conditions_tests;
 mod p2pk_spending_conditions_tests;
 mod pending_async_melt_tests;
+mod quote_method_scope_tests;
 
 use cdk_common::nuts::nut17::MAX_CUSTOM_KIND_LEN;
 use serde_json::Value;

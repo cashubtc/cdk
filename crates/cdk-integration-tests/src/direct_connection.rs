@@ -3,8 +3,10 @@
 //! `DirectMintConnection` is the client-side counterpart to a local mint: it
 //! implements [`MintConnector`] by forwarding to the mint's
 //! [`MintServer`](cdk::mint::MintServer) implementation, so no HTTP transport is
-//! involved. All wire-type conversions live in `MintServer`; this type only
-//! forwards. It is a test helper, so it lives here rather than in `cdk`.
+//! involved. `MintServer` speaks [`QuoteId`](cdk::mint::QuoteId), so this type
+//! owns the `String` conversions that a wallet-side connector needs, the same
+//! work an HTTP client does when it parses an id off the wire. It is a test
+//! helper, so it lives here rather than in `cdk`.
 
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
@@ -83,7 +85,7 @@ impl MintConnector for DirectMintConnection {
         &self,
         request: MintQuoteRequest,
     ) -> Result<MintQuoteResponse<String>, Error> {
-        self.mint.post_mint_quote(request).await
+        self.mint.post_mint_quote(request).await.map(Into::into)
     }
 
     async fn get_mint_quote_status(
@@ -91,7 +93,12 @@ impl MintConnector for DirectMintConnection {
         method: PaymentMethod,
         quote_id: &str,
     ) -> Result<MintQuoteResponse<String>, Error> {
-        self.mint.get_mint_quote_status(method, quote_id).await
+        let quote_id = quote_id.parse()?;
+
+        self.mint
+            .get_mint_quote_status(&method, &quote_id)
+            .await
+            .map(Into::into)
     }
 
     async fn post_mint(
@@ -99,7 +106,7 @@ impl MintConnector for DirectMintConnection {
         method: &PaymentMethod,
         request: MintRequest<String>,
     ) -> Result<MintResponse, Error> {
-        self.mint.post_mint(method, request).await
+        self.mint.post_mint(method, request.try_into()?).await
     }
 
     async fn post_batch_check_mint_quote_status(
@@ -108,8 +115,9 @@ impl MintConnector for DirectMintConnection {
         request: BatchCheckMintQuoteRequest<String>,
     ) -> Result<Vec<MintQuoteResponse<String>>, Error> {
         self.mint
-            .post_batch_check_mint_quote_status(method, request)
+            .post_batch_check_mint_quote_status(method, request.try_into()?)
             .await
+            .map(|responses| responses.into_iter().map(Into::into).collect())
     }
 
     async fn post_batch_mint(
@@ -117,14 +125,17 @@ impl MintConnector for DirectMintConnection {
         method: &PaymentMethod,
         request: BatchMintRequest<String>,
     ) -> Result<MintResponse, Error> {
-        self.mint.post_batch_mint(method, request).await
+        self.mint.post_batch_mint(method, request.try_into()?).await
     }
 
     async fn post_melt_quote(
         &self,
         request: MeltQuoteRequest,
     ) -> Result<MeltQuoteCreateResponse<String>, Error> {
-        self.mint.post_melt_quote(request).await
+        self.mint
+            .post_melt_quote(&request.method(), request)
+            .await
+            .map(Into::into)
     }
 
     async fn get_melt_quote_status(
@@ -132,7 +143,12 @@ impl MintConnector for DirectMintConnection {
         method: PaymentMethod,
         quote_id: &str,
     ) -> Result<MeltQuoteResponse<String>, Error> {
-        self.mint.get_melt_quote_status(method, quote_id).await
+        let quote_id = quote_id.parse()?;
+
+        self.mint
+            .get_melt_quote_status(&method, &quote_id)
+            .await
+            .map(Into::into)
     }
 
     /// Mirrors the HTTP transport's choice: answer with the pending response
@@ -144,12 +160,12 @@ impl MintConnector for DirectMintConnection {
         request: MeltRequest<String>,
     ) -> Result<MeltQuoteResponse<String>, Error> {
         let prefer_async = request.is_prefer_async();
-        let pending = self.mint.post_melt(method, request).await?;
+        let pending = self.mint.post_melt(method, request.try_into()?).await?;
 
         if prefer_async || pending.requires_async_response() {
-            Ok(pending.into_pending_response())
+            Ok(pending.into_pending_response().into())
         } else {
-            pending.await
+            pending.await.map(Into::into)
         }
     }
 

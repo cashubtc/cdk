@@ -3,32 +3,27 @@
 //! [`MintServer`] is the server-side counterpart of the wallet's
 //! [`MintConnector`](crate::wallet::MintConnector): it exposes the same RPC
 //! surface but is implemented by whatever serves requests (here, [`Mint`]).
-//! It speaks the wire types (`String` quote IDs), so an in-process caller gets
-//! the surface an HTTP client sees without redoing the [`QuoteId`] conversions
-//! itself.
+//! It speaks [`QuoteId`], which serializes as the plain string the wire
+//! carries, so both transports share one interface and only a client holding
+//! an id it has not parsed yet needs the `String` spelling.
 //!
-//! cdk-axum does not share those conversions. Its extractors parse a
-//! [`QuoteId`] straight out of the path and body, and it answers with each
-//! variant's payload rather than the externally tagged enum, so it shapes its
-//! own requests and responses. What both transports do share is the per-method
-//! quote scoping, which lives on the mint
-//! ([`Mint::ensure_mint_quote_methods`], [`Mint::ensure_melt_quote_method`],
-//! and the `expected_method` argument the status calls take), so neither
-//! transport carries a copy of it. A melt is the other shared piece: the mint
-//! hands back a [`PendingMelt`] and each transport decides whether to wait for
-//! settlement.
+//! cdk-axum routes every request through it and keeps what is HTTP: parsing a
+//! body whose type the path's method selects, auth, the NUT-19 cache, and
+//! answering with each variant's payload rather than the externally tagged
+//! enum. The `String` conversions live in `DirectMintConnection`, the
+//! in-process [`MintConnector`](crate::wallet::MintConnector) adapter, because
+//! that is the one place the representation changes.
 
 use std::slice;
-use std::str::FromStr;
 
 use async_trait::async_trait;
-use cdk_common::nut00::KnownMethod;
 use cdk_common::{
     MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse, MintQuoteRequest,
     MintQuoteResponse,
 };
 
 use super::{Mint, MintInput, PendingMelt, QuoteId};
+use crate::ensure_cdk;
 use crate::error::Error;
 use crate::nuts::{
     BatchCheckMintQuoteRequest, BatchMintRequest, CheckStateRequest, CheckStateResponse, Id,
@@ -39,15 +34,16 @@ use crate::util::unix_time;
 
 /// Server-side equivalent of [`MintConnector`](crate::wallet::MintConnector).
 ///
-/// Every method maps one-to-one to a mint RPC and speaks the wire types, so an
-/// implementor performs any internal representation conversions (notably
-/// `String` <-> [`QuoteId`]) itself.
+/// Every method maps one-to-one to a mint RPC.
 ///
 /// A `method` argument names the route the caller is speaking on. It is
 /// caller-supplied, so an implementor must reject a request whose quotes were
 /// not created for that method before touching any state: auth is scoped per
 /// method, and a mismatch would otherwise let a token for one method drive
-/// another method's quotes.
+/// another method's quotes. Only the calls that reach an existing quote take
+/// it, plus [`MintServer::post_melt_quote`], whose request carries a method of
+/// its own; a mint-quote request takes its method from the route and so has
+/// nothing to disagree with.
 #[async_trait]
 pub trait MintServer: Send + Sync {
     /// Active mint keys [NUT-01]
@@ -60,42 +56,43 @@ pub trait MintServer: Send + Sync {
     async fn post_mint_quote(
         &self,
         request: MintQuoteRequest,
-    ) -> Result<MintQuoteResponse<String>, Error>;
+    ) -> Result<MintQuoteResponse<QuoteId>, Error>;
     /// Mint quote status
     async fn get_mint_quote_status(
         &self,
-        method: PaymentMethod,
-        quote_id: &str,
-    ) -> Result<MintQuoteResponse<String>, Error>;
+        method: &PaymentMethod,
+        quote_id: &QuoteId,
+    ) -> Result<MintQuoteResponse<QuoteId>, Error>;
     /// Mint tokens [NUT-04]
     async fn post_mint(
         &self,
         method: &PaymentMethod,
-        request: MintRequest<String>,
+        request: MintRequest<QuoteId>,
     ) -> Result<MintResponse, Error>;
     /// Batch check mint quote status [NUT-29]
     async fn post_batch_check_mint_quote_status(
         &self,
         method: &PaymentMethod,
-        request: BatchCheckMintQuoteRequest<String>,
-    ) -> Result<Vec<MintQuoteResponse<String>>, Error>;
+        request: BatchCheckMintQuoteRequest<QuoteId>,
+    ) -> Result<Vec<MintQuoteResponse<QuoteId>>, Error>;
     /// Batch mint tokens [NUT-29]
     async fn post_batch_mint(
         &self,
         method: &PaymentMethod,
-        request: BatchMintRequest<String>,
+        request: BatchMintRequest<QuoteId>,
     ) -> Result<MintResponse, Error>;
     /// Melt quote [NUT-05]
     async fn post_melt_quote(
         &self,
+        method: &PaymentMethod,
         request: MeltQuoteRequest,
-    ) -> Result<MeltQuoteCreateResponse<String>, Error>;
+    ) -> Result<MeltQuoteCreateResponse<QuoteId>, Error>;
     /// Melt quote status
     async fn get_melt_quote_status(
         &self,
-        method: PaymentMethod,
-        quote_id: &str,
-    ) -> Result<MeltQuoteResponse<String>, Error>;
+        method: &PaymentMethod,
+        quote_id: &QuoteId,
+    ) -> Result<MeltQuoteResponse<QuoteId>, Error>;
     /// Melt [NUT-05, NUT-08]
     ///
     /// Answers before the payment settles, so the caller decides whether to
@@ -106,8 +103,8 @@ pub trait MintServer: Send + Sync {
     async fn post_melt(
         &self,
         method: &PaymentMethod,
-        request: MeltRequest<String>,
-    ) -> Result<PendingMelt<String>, Error>;
+        request: MeltRequest<QuoteId>,
+    ) -> Result<PendingMelt, Error>;
     /// Swap [NUT-03, NUT-06]
     async fn post_swap(&self, request: SwapRequest) -> Result<SwapResponse, Error>;
     /// Mint info [NUT-06]
@@ -121,9 +118,9 @@ pub trait MintServer: Send + Sync {
     async fn post_restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error>;
 }
 
-/// Implements the generic [`MintServer`] (wire types, `String` quote IDs) for a
-/// [`Mint`] that uses [`QuoteId`]s internally, converting requests and
-/// responses between the `String` and [`QuoteId`] variants as necessary.
+/// Implements [`MintServer`] for a [`Mint`], which already works in
+/// [`QuoteId`], so each method adds only the scoping the caller-supplied
+/// `method` calls for.
 #[async_trait]
 impl MintServer for Mint {
     async fn get_mint_keys(&self) -> Result<Vec<KeySet>, Error> {
@@ -141,185 +138,82 @@ impl MintServer for Mint {
     async fn post_mint_quote(
         &self,
         request: MintQuoteRequest,
-    ) -> Result<MintQuoteResponse<String>, Error> {
-        match request {
-            MintQuoteRequest::Bolt11(req) => match self.get_mint_quote(req.into()).await? {
-                MintQuoteResponse::Bolt11(r) => Ok(MintQuoteResponse::Bolt11(r.to_string_id())),
-                _ => Err(Error::InvalidPaymentMethod),
-            },
-            MintQuoteRequest::Bolt12(req) => match self.get_mint_quote(req.into()).await? {
-                MintQuoteResponse::Bolt12(r) => Ok(MintQuoteResponse::Bolt12(r.to_string_id())),
-                _ => Err(Error::InvalidPaymentMethod),
-            },
-            MintQuoteRequest::Onchain(req) => match self.get_mint_quote(req.into()).await? {
-                MintQuoteResponse::Onchain(r) => Ok(MintQuoteResponse::Onchain(r.to_string_id())),
-                _ => Err(Error::InvalidPaymentMethod),
-            },
-            MintQuoteRequest::Custom { method, request } => {
-                match self
-                    .get_mint_quote(super::MintQuoteRequest::Custom { method, request })
-                    .await?
-                {
-                    MintQuoteResponse::Custom { method, response } => {
-                        Ok(MintQuoteResponse::Custom {
-                            method,
-                            response: response.to_string_id(),
-                        })
-                    }
-                    _ => Err(Error::InvalidPaymentMethod),
-                }
-            }
-        }
+    ) -> Result<MintQuoteResponse<QuoteId>, Error> {
+        self.get_mint_quote(request).await
     }
 
     async fn get_mint_quote_status(
         &self,
-        method: PaymentMethod,
-        quote_id: &str,
-    ) -> Result<MintQuoteResponse<String>, Error> {
-        let quote_ids = [QuoteId::from_str(quote_id)?];
-
-        let response = self
-            .check_mint_quotes(&quote_ids, Some(&method))
+        method: &PaymentMethod,
+        quote_id: &QuoteId,
+    ) -> Result<MintQuoteResponse<QuoteId>, Error> {
+        self.check_mint_quotes(slice::from_ref(quote_id), Some(method))
             .await?
-            .first()
-            .ok_or(Error::UnknownQuote)?
-            .clone();
-
-        match method {
-            PaymentMethod::Known(KnownMethod::Bolt11) => match response {
-                MintQuoteResponse::Bolt11(r) => Ok(MintQuoteResponse::Bolt11(r.to_string_id())),
-                _ => Err(Error::InvalidPaymentMethod),
-            },
-            PaymentMethod::Known(KnownMethod::Bolt12) => match response {
-                MintQuoteResponse::Bolt12(r) => Ok(MintQuoteResponse::Bolt12(r.to_string_id())),
-                _ => Err(Error::InvalidPaymentMethod),
-            },
-            PaymentMethod::Known(KnownMethod::Onchain) => match response {
-                MintQuoteResponse::Onchain(r) => Ok(MintQuoteResponse::Onchain(r.to_string_id())),
-                _ => Err(Error::InvalidPaymentMethod),
-            },
-            PaymentMethod::Custom(_) => match response {
-                MintQuoteResponse::Custom { method, response } => Ok(MintQuoteResponse::Custom {
-                    method,
-                    response: response.to_string_id(),
-                }),
-                _ => Err(Error::InvalidPaymentMethod),
-            },
-        }
+            .into_iter()
+            .next()
+            .ok_or(Error::UnknownQuote)
     }
 
     async fn post_mint(
         &self,
         method: &PaymentMethod,
-        request: MintRequest<String>,
+        request: MintRequest<QuoteId>,
     ) -> Result<MintResponse, Error> {
-        let request_id: MintRequest<QuoteId> = request.try_into()?;
-        self.ensure_mint_quote_methods(method.clone(), slice::from_ref(&request_id.quote))
+        self.ensure_mint_quote_methods(method.clone(), slice::from_ref(&request.quote))
             .await?;
 
-        self.process_mint_request(MintInput::Single(request_id))
-            .await
+        self.process_mint_request(MintInput::Single(request)).await
     }
 
     async fn post_batch_check_mint_quote_status(
         &self,
         method: &PaymentMethod,
-        request: BatchCheckMintQuoteRequest<String>,
-    ) -> Result<Vec<MintQuoteResponse<String>>, Error> {
-        let quote_ids = request
-            .quotes
-            .iter()
-            .map(|s| QuoteId::from_str(s))
-            .collect::<Result<Vec<_>, _>>()?;
-        self.validate_batch_quote_ids(&quote_ids).await?;
+        request: BatchCheckMintQuoteRequest<QuoteId>,
+    ) -> Result<Vec<MintQuoteResponse<QuoteId>>, Error> {
+        self.validate_batch_quote_ids(&request.quotes).await?;
 
-        self.check_mint_quotes(&quote_ids, Some(method))
-            .await
-            .map(|responses| responses.into_iter().map(Into::into).collect())
+        self.check_mint_quotes(&request.quotes, Some(method)).await
     }
 
     async fn post_batch_mint(
         &self,
         method: &PaymentMethod,
-        request: BatchMintRequest<String>,
+        request: BatchMintRequest<QuoteId>,
     ) -> Result<MintResponse, Error> {
-        let quotes = request
-            .quotes
-            .iter()
-            .map(|s| QuoteId::from_str(s))
-            .collect::<Result<Vec<_>, _>>()?;
-        self.validate_batch_quote_ids(&quotes).await?;
-        self.ensure_mint_quote_methods(method.clone(), &quotes)
+        self.validate_batch_quote_ids(&request.quotes).await?;
+        self.ensure_mint_quote_methods(method.clone(), &request.quotes)
             .await?;
 
-        let request_id = BatchMintRequest {
-            quotes,
-            quote_amounts: request.quote_amounts,
-            outputs: request.outputs,
-            signatures: request.signatures,
-        };
-
-        self.process_mint_request(MintInput::Batch(request_id))
-            .await
+        self.process_mint_request(MintInput::Batch(request)).await
     }
 
     async fn post_melt_quote(
         &self,
+        method: &PaymentMethod,
         request: MeltQuoteRequest,
-    ) -> Result<MeltQuoteCreateResponse<String>, Error> {
-        match request {
-            MeltQuoteRequest::Bolt11(req) => match self.get_melt_quote(req.into()).await? {
-                MeltQuoteCreateResponse::Bolt11(r) => {
-                    Ok(MeltQuoteCreateResponse::Bolt11(r.to_string_id()))
-                }
-                _ => Err(Error::InvalidPaymentMethod),
-            },
-            MeltQuoteRequest::Bolt12(req) => match self.get_melt_quote(req.into()).await? {
-                MeltQuoteCreateResponse::Bolt12(r) => {
-                    Ok(MeltQuoteCreateResponse::Bolt12(r.to_string_id()))
-                }
-                _ => Err(Error::InvalidPaymentMethod),
-            },
-            MeltQuoteRequest::Custom(req) => match self.get_melt_quote(req.into()).await? {
-                MeltQuoteCreateResponse::Custom((method, r)) => {
-                    Ok(MeltQuoteCreateResponse::Custom((method, r.to_string_id())))
-                }
-                _ => Err(Error::InvalidPaymentMethod),
-            },
-            MeltQuoteRequest::Onchain(req) => match self.get_melt_quote(req.into()).await? {
-                MeltQuoteCreateResponse::Onchain(r) => {
-                    Ok(MeltQuoteCreateResponse::Onchain(r.into()))
-                }
-                _ => Err(Error::InvalidPaymentMethod),
-            },
-        }
+    ) -> Result<MeltQuoteCreateResponse<QuoteId>, Error> {
+        ensure_cdk!(&request.method() == method, Error::InvalidPaymentMethod);
+
+        self.get_melt_quote(request).await
     }
 
     async fn get_melt_quote_status(
         &self,
-        method: PaymentMethod,
-        quote_id: &str,
-    ) -> Result<MeltQuoteResponse<String>, Error> {
-        let quote_id = QuoteId::from_str(quote_id)?;
-
-        let response = self.check_melt_quote(&quote_id, Some(&method)).await?;
-        convert_melt_quote_response(method, response)
+        method: &PaymentMethod,
+        quote_id: &QuoteId,
+    ) -> Result<MeltQuoteResponse<QuoteId>, Error> {
+        self.check_melt_quote(quote_id, Some(method)).await
     }
 
     async fn post_melt(
         &self,
         method: &PaymentMethod,
-        request: MeltRequest<String>,
-    ) -> Result<PendingMelt<String>, Error> {
-        let request_uuid: MeltRequest<QuoteId> = request.try_into()?;
-        self.ensure_melt_quote_method(method.clone(), request_uuid.quote())
+        request: MeltRequest<QuoteId>,
+    ) -> Result<PendingMelt, Error> {
+        self.ensure_melt_quote_method(method.clone(), request.quote())
             .await?;
 
-        let method = method.clone();
-        self.melt(&request_uuid)
-            .await?
-            .try_map(move |response| convert_melt_quote_response(method.clone(), response))
+        self.melt(&request).await
     }
 
     async fn post_swap(&self, request: SwapRequest) -> Result<SwapResponse, Error> {
@@ -339,33 +233,5 @@ impl MintServer for Mint {
 
     async fn post_restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
         self.restore(request).await
-    }
-}
-
-/// Shared `QuoteId` -> `String` conversion for the melt-quote status and melt
-/// responses, which dispatch identically on the payment method.
-fn convert_melt_quote_response(
-    method: PaymentMethod,
-    response: MeltQuoteResponse<QuoteId>,
-) -> Result<MeltQuoteResponse<String>, Error> {
-    match method {
-        PaymentMethod::Known(KnownMethod::Bolt11) => match response {
-            MeltQuoteResponse::Bolt11(r) => Ok(MeltQuoteResponse::Bolt11(r.to_string_id())),
-            _ => Err(Error::InvalidPaymentMethod),
-        },
-        PaymentMethod::Known(KnownMethod::Bolt12) => match response {
-            MeltQuoteResponse::Bolt12(r) => Ok(MeltQuoteResponse::Bolt12(r.to_string_id())),
-            _ => Err(Error::InvalidPaymentMethod),
-        },
-        PaymentMethod::Known(KnownMethod::Onchain) => match response {
-            MeltQuoteResponse::Onchain(r) => Ok(MeltQuoteResponse::Onchain(r.into())),
-            _ => Err(Error::InvalidPaymentMethod),
-        },
-        PaymentMethod::Custom(_) => match response {
-            MeltQuoteResponse::Custom((quote_method, r)) => {
-                Ok(MeltQuoteResponse::Custom((quote_method, r.to_string_id())))
-            }
-            _ => Err(Error::InvalidPaymentMethod),
-        },
     }
 }
