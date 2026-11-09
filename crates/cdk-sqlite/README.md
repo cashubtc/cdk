@@ -8,6 +8,24 @@
 
 SQLite storage backend implementation for the Cashu Development Kit (CDK).
 
+## Closing a database
+
+Stop wallet or mint operations, release any transactions, then call
+`database.close().await` before backing up or moving its SQLite file. Closing
+permanently rejects new operations through every clone of that database handle,
+waits for borrowed connections and pending cleanup, and closes connections on
+blocking workers. The close can be retried if its caller is cancelled.
+
+Other independently opened connections to the same file must also be closed
+before relying on SQLite's final WAL checkpoint for a main-file-only backup.
+For live backups, use a SQLite-aware backup mechanism instead of copying files.
+
+Dropping the last handle inside Tokio schedules connection disposal but does not
+wait for it. Outside a Tokio runtime, disposal is synchronous. Explicit close is
+the completion boundary; dropping a handle alone is not a backup boundary.
+
+The FFI `WalletSqliteDatabase` also exposes async `close()` with the same semantics.
+
 ## Features
 
 The following crate feature flags are available:

@@ -10,7 +10,7 @@ use std::time::Duration;
 
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::metrics::METRICS;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedRwLockReadGuard, OwnedSemaphorePermit, RwLock, Semaphore};
 
 use crate::database::DatabaseConnector;
 
@@ -27,6 +27,18 @@ where
     /// Timeout error
     #[error("Timed out waiting for a resource")]
     Timeout,
+
+    /// The pool has been closed
+    #[error("Database pool is closed")]
+    Closed,
+
+    /// No Tokio runtime is available for pool operations
+    #[error("Database pool operations require a Tokio runtime")]
+    MissingRuntime,
+
+    /// A blocking database worker failed
+    #[error("Database worker task failed: {0}")]
+    Task(tokio::task::JoinError),
 
     /// Internal database error
     #[error(transparent)]
@@ -45,10 +57,10 @@ pub trait DatabaseConfig: Clone + Debug + Send + Sync {
 /// Trait to manage resources
 pub trait DatabasePool: Debug {
     /// The resource to be pooled
-    type Connection: DatabaseConnector;
+    type Connection: DatabaseConnector + 'static;
 
     /// The configuration that is needed in order to create the resource
-    type Config: DatabaseConfig;
+    type Config: DatabaseConfig + 'static;
 
     /// The error the resource may return when creating a new instance
     type Error: Debug + std::error::Error + Send + Sync + 'static;
@@ -63,7 +75,9 @@ pub trait DatabasePool: Debug {
         timeout: Duration,
     ) -> Result<Self::Connection, Error<Self::Error>>;
 
-    /// The object is dropped
+    /// Close a resource, waiting for any detached operations to finish.
+    ///
+    /// The pool runs this on a blocking worker when a Tokio runtime is available.
     fn drop(_resource: Self::Connection) {}
 }
 
@@ -77,6 +91,9 @@ where
     max_size: usize,
     default_timeout: Duration,
     semaphore: Arc<Semaphore>,
+    // Read guards cover loans, constructors, and stale-connection disposal.
+    // Closing takes the write guard before draining idle connections.
+    lifecycle: Arc<RwLock<()>>,
 }
 
 impl<RM> Debug for Pool<RM>
@@ -101,6 +118,7 @@ where
     resource: Option<(Arc<AtomicBool>, RM::Connection)>,
     pool: Arc<Pool<RM>>,
     _permit: OwnedSemaphorePermit,
+    lifecycle: Option<OwnedRwLockReadGuard<()>>,
     #[cfg(feature = "prometheus")]
     start_time: std::time::Instant,
 }
@@ -134,24 +152,31 @@ where
     fn drop(&mut self) {
         if let Some((stale, resource)) = self.resource.take() {
             if stale.load(Ordering::SeqCst) {
-                RM::drop(resource);
+                let lifecycle = self.lifecycle.take();
+                let dispose = move || {
+                    let _lifecycle = lifecycle;
+                    RM::drop(resource);
+                };
+                match tokio::runtime::Handle::try_current() {
+                    Ok(runtime) => {
+                        runtime.spawn_blocking(dispose);
+                    }
+                    Err(_) => dispose(),
+                }
             } else {
                 let mut active_resource = self.pool.queue.lock().expect("active_resource");
                 active_resource.push((stale, resource));
             }
-
-            #[cfg(feature = "prometheus")]
-            {
-                METRICS.decrement_db_connections_active();
-
-                let duration = self.start_time.elapsed().as_secs_f64();
-
-                METRICS.record_db_operation(duration, "drop");
-            }
-
-            // The semaphore permit is dropped automatically after this,
-            // which wakes any async task waiting in `get()`.
         }
+
+        #[cfg(feature = "prometheus")]
+        {
+            METRICS.decrement_db_connections_active();
+            let duration = self.start_time.elapsed().as_secs_f64();
+            METRICS.record_db_operation(duration, "drop");
+        }
+        // The permit is released only after returning the resource or abandoning
+        // a failed constructor. A cancelled constructor still owns this loan.
     }
 }
 
@@ -177,7 +202,7 @@ where
 
 impl<RM> Pool<RM>
 where
-    RM: DatabasePool,
+    RM: DatabasePool + 'static,
 {
     /// Creates a new pool
     pub fn new(config: RM::Config) -> Arc<Self> {
@@ -188,7 +213,35 @@ where
             config,
             queue: Default::default(),
             semaphore: Arc::new(Semaphore::new(max_size)),
+            lifecycle: Arc::new(RwLock::new(())),
         })
+    }
+
+    /// Permanently close this pool and all its clones.
+    ///
+    /// Rejects new checkouts, waits for outstanding loans and cleanup, then closes
+    /// idle connections on a blocking worker. Release borrowed connections before
+    /// awaiting this method. Cancellation leaves the pool closed to new checkouts;
+    /// calling `close` again waits for any closure already dispatched to finish.
+    pub async fn close(self: &Arc<Self>) -> Result<(), Error<RM::Error>> {
+        let runtime = tokio::runtime::Handle::try_current().map_err(|_| Error::MissingRuntime)?;
+        self.semaphore.close();
+        let lifecycle = self.lifecycle.clone().write_owned().await;
+        let pool = self.clone();
+        runtime
+            .spawn_blocking(move || {
+                let _lifecycle = lifecycle;
+                let resources = {
+                    let mut queue = pool.queue.lock().map_err(|_| Error::Poison)?;
+                    std::mem::take(&mut *queue)
+                };
+                for (_, resource) in resources {
+                    RM::drop(resource);
+                }
+                Ok(())
+            })
+            .await
+            .map_err(Error::Task)?
     }
 
     /// Similar to get_timeout but uses the default timeout value.
@@ -206,10 +259,12 @@ where
         self: &Arc<Self>,
         timeout: Duration,
     ) -> Result<PooledResource<RM>, Error<RM::Error>> {
+        let runtime = tokio::runtime::Handle::try_current().map_err(|_| Error::MissingRuntime)?;
+
         // Fast path: try to grab a permit without waiting.
         let permit = match self.semaphore.clone().try_acquire_owned() {
             Ok(permit) => permit,
-            Err(tokio::sync::TryAcquireError::Closed) => return Err(Error::Poison),
+            Err(tokio::sync::TryAcquireError::Closed) => return Err(Error::Closed),
             Err(tokio::sync::TryAcquireError::NoPermits) => {
                 // All permits are in use — wait asynchronously.  This yields
                 // the task instead of blocking the OS thread, preventing Tokio
@@ -221,57 +276,68 @@ where
                 tokio::time::timeout(timeout, self.semaphore.clone().acquire_owned())
                     .await
                     .map_err(|_| Error::Timeout)?
-                    .map_err(|_| Error::Poison)?
+                    .map_err(|_| Error::Closed)?
             }
         };
+
+        let lifecycle = self.lifecycle.clone().read_owned().await;
+        if self.semaphore.is_closed() {
+            return Err(Error::Closed);
+        }
 
         #[cfg(feature = "prometheus")]
         METRICS.increment_db_connections_active();
 
+        let mut loan = PooledResource {
+            resource: None,
+            pool: self.clone(),
+            _permit: permit,
+            lifecycle: Some(lifecycle),
+            #[cfg(feature = "prometheus")]
+            start_time: std::time::Instant::now(),
+        };
+
         // Briefly lock the idle queue to try to pop a non-stale connection.
         // This mutex is held for nanoseconds (just a Vec::pop).
+        let mut discarded = Vec::new();
         {
             let mut resources = match self.queue.lock() {
                 Ok(resources) => resources,
-                Err(_) => {
-                    #[cfg(feature = "prometheus")]
-                    METRICS.decrement_db_connections_active();
-                    return Err(Error::Poison);
-                }
+                Err(_) => return Err(Error::Poison),
             };
             while let Some((stale, resource)) = resources.pop() {
                 if !stale.load(Ordering::SeqCst) {
-                    return Ok(PooledResource {
-                        resource: Some((stale, resource)),
-                        pool: self.clone(),
-                        _permit: permit,
-                        #[cfg(feature = "prometheus")]
-                        start_time: std::time::Instant::now(),
-                    });
+                    loan.resource = Some((stale, resource));
+                    break;
                 }
-                // Stale connection — drop it and keep looking.
+                discarded.push(resource);
             }
         }
 
-        // No idle connection available — create a new one.
-        // The semaphore already guarantees we won't exceed max_size.
-        let stale: Arc<AtomicBool> = Arc::new(false.into());
-        match RM::new_resource(&self.config, stale.clone(), timeout) {
-            Ok(new_resource) => Ok(PooledResource {
-                resource: Some((stale, new_resource)),
-                pool: self.clone(),
-                _permit: permit,
-                #[cfg(feature = "prometheus")]
-                start_time: std::time::Instant::now(),
-            }),
-            Err(e) => {
-                #[cfg(feature = "prometheus")]
-                METRICS.decrement_db_connections_active();
-
-                // Permit is dropped here, releasing the slot back to the semaphore.
-                Err(e)
-            }
+        if loan.resource.is_some() && discarded.is_empty() {
+            return Ok(loan);
         }
+
+        // Opening a connection and configuring its journal can block too. The
+        // worker owns the permit, including after cancellation of this await.
+        let span = tracing::Span::current();
+        runtime
+            .spawn_blocking(move || {
+                span.in_scope(move || {
+                    for resource in discarded {
+                        RM::drop(resource);
+                    }
+                    if loan.resource.is_none() {
+                        let stale = Arc::new(AtomicBool::new(false));
+                        let connection =
+                            RM::new_resource(&loan.pool.config, stale.clone(), timeout)?;
+                        loan.resource = Some((stale, connection));
+                    }
+                    Ok(loan)
+                })
+            })
+            .await
+            .map_err(Error::Task)?
     }
 }
 
@@ -283,11 +349,24 @@ where
         // Close the semaphore so no new acquisitions can succeed.
         self.semaphore.close();
 
-        // Drain all idle connections.
-        if let Ok(mut resources) = self.queue.lock() {
-            while let Some(resource) = resources.pop() {
-                RM::drop(resource.1);
+        // Drop is best effort; callers needing a completed close must await close().
+        let resources = match self.queue.get_mut() {
+            Ok(resources) => std::mem::take(resources),
+            Err(error) => std::mem::take(error.into_inner()),
+        };
+        if resources.is_empty() {
+            return;
+        }
+        let dispose = move || {
+            for (_, resource) in resources {
+                RM::drop(resource);
             }
+        };
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => {
+                runtime.spawn_blocking(dispose);
+            }
+            Err(_) => dispose(),
         }
     }
 }

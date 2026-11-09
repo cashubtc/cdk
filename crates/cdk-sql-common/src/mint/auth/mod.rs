@@ -36,6 +36,19 @@ impl<RM> SQLMintAuthDatabase<RM>
 where
     RM: DatabasePool + 'static,
 {
+    /// Permanently close the shared pool, including all database clones.
+    ///
+    /// Stop callers and release transactions before awaiting this method. It waits
+    /// for outstanding database operations and closes connections off async workers.
+    /// For SQLite, await this before copying a database file; no other connection
+    /// to the same file may remain open when relying on the final WAL checkpoint.
+    pub async fn close(&self) -> Result<(), Error> {
+        self.pool
+            .close()
+            .await
+            .map_err(|error| Error::Database(Box::new(error)))
+    }
+
     /// Creates a new instance
     pub async fn new<X>(db: X) -> Result<Self, Error>
     where
@@ -250,6 +263,10 @@ where
     RM: DatabasePool + 'static,
 {
     type Err = database::Error;
+
+    async fn close(&self) -> Result<(), Error> {
+        Self::close(self).await
+    }
 
     async fn begin_transaction<'a>(
         &'a self,

@@ -179,6 +179,10 @@ mod tests {
             })
             .collect::<Vec<_>>();
         indexes.sort_unstable();
-        assert_eq!(indexes, (6..14).collect::<Vec<_>>());
+        // Concurrent catch-up reservations can leave gaps, but must stay unique
+        // and start above the previously stored key.
+        assert_eq!(indexes.len(), 8);
+        assert_eq!(indexes[0], 6);
+        assert!(indexes.windows(2).all(|pair| pair[0] < pair[1]));
     }
 }

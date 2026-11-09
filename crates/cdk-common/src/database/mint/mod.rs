@@ -751,6 +751,14 @@ pub trait Database<Error>:
     + SagaDatabase<Err = Error>
     + CompletedOperationsDatabase<Err = Error>
 {
+    /// Release database resources after stopping all services that use them.
+    ///
+    /// The default does nothing. SQL backends permanently close the shared pool,
+    /// including clones, and wait for outstanding transactions and cleanup.
+    async fn close(&self) -> Result<(), Error> {
+        Ok(())
+    }
+
     /// Begins a transaction
     async fn begin_transaction(&self) -> Result<Box<dyn Transaction<Error> + Send + Sync>, Error>;
 }
