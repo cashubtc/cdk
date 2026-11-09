@@ -14,7 +14,9 @@
 //! quote scoping, which lives on the mint
 //! ([`Mint::ensure_mint_quote_methods`], [`Mint::ensure_melt_quote_method`],
 //! and the `expected_method` argument the status calls take), so neither
-//! transport carries a copy of it.
+//! transport carries a copy of it. A melt is the other shared piece: the mint
+//! hands back a [`PendingMelt`] and each transport decides whether to wait for
+//! settlement.
 
 use std::slice;
 use std::str::FromStr;
@@ -26,7 +28,7 @@ use cdk_common::{
     MintQuoteResponse,
 };
 
-use super::{Mint, MintInput, QuoteId};
+use super::{Mint, MintInput, PendingMelt, QuoteId};
 use crate::error::Error;
 use crate::nuts::{
     BatchCheckMintQuoteRequest, BatchMintRequest, CheckStateRequest, CheckStateResponse, Id,
@@ -95,11 +97,17 @@ pub trait MintServer: Send + Sync {
         quote_id: &str,
     ) -> Result<MeltQuoteResponse<String>, Error>;
     /// Melt [NUT-05, NUT-08]
+    ///
+    /// Answers before the payment settles, so the caller decides whether to
+    /// return the pending response (the NUT-05 async flow, which the request's
+    /// `prefer_async` flag asks for and
+    /// [`PendingMelt::requires_async_response`] demands) or to await the
+    /// handle.
     async fn post_melt(
         &self,
         method: &PaymentMethod,
         request: MeltRequest<String>,
-    ) -> Result<MeltQuoteResponse<String>, Error>;
+    ) -> Result<PendingMelt<String>, Error>;
     /// Swap [NUT-03, NUT-06]
     async fn post_swap(&self, request: SwapRequest) -> Result<SwapResponse, Error>;
     /// Mint info [NUT-06]
@@ -303,13 +311,15 @@ impl MintServer for Mint {
         &self,
         method: &PaymentMethod,
         request: MeltRequest<String>,
-    ) -> Result<MeltQuoteResponse<String>, Error> {
+    ) -> Result<PendingMelt<String>, Error> {
         let request_uuid: MeltRequest<QuoteId> = request.try_into()?;
         self.ensure_melt_quote_method(method.clone(), request_uuid.quote())
             .await?;
 
-        let response = self.melt(&request_uuid).await?.await?;
-        convert_melt_quote_response(method.clone(), response)
+        let method = method.clone();
+        self.melt(&request_uuid)
+            .await?
+            .try_map(move |response| convert_melt_quote_response(method.clone(), response))
     }
 
     async fn post_swap(&self, request: SwapRequest) -> Result<SwapResponse, Error> {

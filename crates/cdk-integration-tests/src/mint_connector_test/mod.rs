@@ -284,6 +284,54 @@ pub async fn melt_flow<C: MintConnector>(conn: C) {
     );
 }
 
+/// [NUT-05] A melt asking for asynchronous processing answers `Pending` before
+/// the payment settles, over either transport, and the quote still reaches
+/// `Paid` on its own.
+pub async fn melt_flow_prefer_async<C: MintConnector>(conn: C) {
+    let invoice = create_fake_invoice(2_000, String::new());
+    let quote = conn
+        .post_melt_quote(MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
+            request: invoice,
+            unit: CurrencyUnit::Sat,
+            options: None,
+        }))
+        .await
+        .expect("melt quote");
+    let (quote_id, needed) = match quote {
+        MeltQuoteCreateResponse::Bolt11(r) => (r.quote, r.amount + r.fee_reserve),
+        _ => panic!("expected a bolt11 melt quote"),
+    };
+
+    let (proofs, _, _) = mint_proofs(&conn, needed).await;
+
+    let response = conn
+        .post_melt(
+            &PaymentMethod::BOLT11,
+            MeltRequest::new(quote_id.clone(), proofs, None).prefer_async(true),
+        )
+        .await
+        .expect("melt");
+    assert_eq!(
+        response.state(),
+        MeltQuoteState::Pending,
+        "prefer_async must answer before settlement"
+    );
+
+    let mut paid = false;
+    for _ in 0..150 {
+        let status = conn
+            .get_melt_quote_status(PaymentMethod::BOLT11, &quote_id)
+            .await
+            .expect("melt quote status");
+        if status.state() == MeltQuoteState::Paid {
+            paid = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(paid, "the background melt should settle the quote");
+}
+
 /// [NUT-29] Batch-minting two settled quotes issues their combined value, batch
 /// status returns one entry per quote, and a malformed quote id is rejected
 /// rather than silently dropped, which would return a shorter, misaligned status
@@ -637,6 +685,7 @@ macro_rules! mint_connector_test {
             mint_flow,
             swap_flow,
             melt_flow,
+            melt_flow_prefer_async,
             batch_flow,
             batch_limit_enforced,
             method_mismatch_rejected,

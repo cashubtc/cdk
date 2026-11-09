@@ -1,4 +1,5 @@
-use std::future::Future;
+use std::fmt;
+use std::future::{Future, IntoFuture};
 use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -21,6 +22,7 @@ use cdk_common::{
     MeltQuoteCustomResponse, MeltQuoteOnchainRequest, MeltQuoteOnchainResponse, MeltQuoteResponse,
 };
 use lightning::offers::offer::Offer;
+use tokio::task::JoinHandle;
 use tracing::instrument;
 
 use super::{
@@ -61,40 +63,88 @@ fn pending_melt_notification_wait_interval() -> Duration {
 }
 
 /// A pending mint melt that can optionally be awaited.
-#[derive(Debug)]
-pub struct PendingMelt {
-    response: MeltQuoteResponse<QuoteId>,
-    completion: tokio::task::JoinHandle<Result<MeltQuoteResponse<QuoteId>, Error>>,
+///
+/// `I` is how the quote id is spelled: the mint settles on [`QuoteId`], and
+/// [`MintServer`](crate::mint::MintServer) re-types it to the wire's `String`.
+pub struct PendingMelt<I: 'static = QuoteId> {
+    response: MeltQuoteResponse<I>,
+    completion: Pin<Box<dyn Future<Output = Result<MeltQuoteResponse<I>, Error>> + Send>>,
 }
 
-impl PendingMelt {
+impl<I: fmt::Debug> fmt::Debug for PendingMelt<I> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PendingMelt")
+            .field("response", &self.response)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<I: Send + 'static> PendingMelt<I> {
+    fn new(
+        response: MeltQuoteResponse<I>,
+        completion: JoinHandle<Result<MeltQuoteResponse<I>, Error>>,
+    ) -> Self {
+        Self {
+            response,
+            completion: Box::pin(async move {
+                match completion.await {
+                    Ok(result) => result,
+                    Err(err) => {
+                        tracing::error!("Background melt task failed to join: {}", err);
+                        Err(Error::Internal)
+                    }
+                }
+            }),
+        }
+    }
+
+    /// Re-type the quote ids, converting the pending response now and the
+    /// settled one once the handle is awaited.
+    pub(super) fn try_map<J: Send + 'static>(
+        self,
+        convert: impl Fn(MeltQuoteResponse<I>) -> Result<MeltQuoteResponse<J>, Error> + Send + 'static,
+    ) -> Result<PendingMelt<J>, Error> {
+        let Self {
+            response,
+            completion,
+        } = self;
+        let response = convert(response)?;
+
+        Ok(PendingMelt {
+            response,
+            completion: Box::pin(async move {
+                let settled = completion.await?;
+                convert(settled)
+            }),
+        })
+    }
+}
+
+impl<I: 'static> PendingMelt<I> {
     /// Return the immediate pending response (NUT-05 style) without consuming self.
-    pub fn pending_response(&self) -> &MeltQuoteResponse<QuoteId> {
+    pub fn pending_response(&self) -> &MeltQuoteResponse<I> {
         &self.response
     }
 
     /// Return the immediate pending response (NUT-05 style).
-    pub fn into_pending_response(self) -> MeltQuoteResponse<QuoteId> {
+    pub fn into_pending_response(self) -> MeltQuoteResponse<I> {
         self.response
     }
 
-    async fn wait(self) -> Result<MeltQuoteResponse<QuoteId>, Error> {
-        match self.completion.await {
-            Ok(result) => result,
-            Err(err) => {
-                tracing::error!("Background melt task failed to join: {}", err);
-                Err(Error::Internal)
-            }
-        }
+    /// Whether the caller has to answer with the pending response instead of
+    /// awaiting settlement: an onchain payment confirms on chain time, so the
+    /// NUT-05 async flow is the only workable one.
+    pub fn requires_async_response(&self) -> bool {
+        self.response.method() == PaymentMethod::Known(KnownMethod::Onchain)
     }
 }
 
-impl std::future::IntoFuture for PendingMelt {
-    type Output = Result<MeltQuoteResponse<QuoteId>, Error>;
+impl<I: 'static> IntoFuture for PendingMelt<I> {
+    type Output = Result<MeltQuoteResponse<I>, Error>;
     type IntoFuture = Pin<Box<dyn Future<Output = Self::Output> + Send>>;
 
     fn into_future(self) -> Self::IntoFuture {
-        Box::pin(self.wait())
+        self.completion
     }
 }
 
@@ -1145,9 +1195,6 @@ impl Mint {
         quote_clone.state = MeltQuoteState::Pending;
         let response = quote_clone.into_response(None);
 
-        Ok(PendingMelt {
-            response,
-            completion,
-        })
+        Ok(PendingMelt::new(response, completion))
     }
 }

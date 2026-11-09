@@ -135,12 +135,22 @@ impl MintConnector for DirectMintConnection {
         self.mint.get_melt_quote_status(method, quote_id).await
     }
 
+    /// Mirrors the HTTP transport's choice: answer with the pending response
+    /// when the request asked for it or the method cannot settle in band,
+    /// otherwise wait for settlement.
     async fn post_melt(
         &self,
         method: &PaymentMethod,
         request: MeltRequest<String>,
     ) -> Result<MeltQuoteResponse<String>, Error> {
-        self.mint.post_melt(method, request).await
+        let prefer_async = request.is_prefer_async();
+        let pending = self.mint.post_melt(method, request).await?;
+
+        if prefer_async || pending.requires_async_response() {
+            Ok(pending.into_pending_response())
+        } else {
+            pending.await
+        }
     }
 
     async fn post_swap(&self, request: SwapRequest) -> Result<SwapResponse, Error> {

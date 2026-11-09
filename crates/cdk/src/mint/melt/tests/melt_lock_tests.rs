@@ -463,7 +463,7 @@ async fn status_poll_recovers_setup_skipped_at_restart_after_lease_expires() {
     mint.stop().await.unwrap();
     mint.start().await.unwrap();
 
-    let response = mint.check_melt_quote(&setup.quote.id).await.unwrap();
+    let response = mint.check_melt_quote(&setup.quote.id, None).await.unwrap();
     assert_eq!(response.state(), MeltQuoteState::Pending);
     let current = stored_quote(&mint, &setup.quote.id).await;
     assert_eq!(current.melt_lock, setup.operation_id.to_string());
@@ -481,7 +481,7 @@ async fn status_poll_recovers_setup_skipped_at_restart_after_lease_expires() {
     tx.commit().await.unwrap();
 
     for _ in 0..2 {
-        let response = mint.check_melt_quote(&setup.quote.id).await.unwrap();
+        let response = mint.check_melt_quote(&setup.quote.id, None).await.unwrap();
         assert_eq!(response.state(), MeltQuoteState::Unpaid);
         assert!(!stored_quote(&mint, &setup.quote.id).await.is_locked());
         assert!(proofs_state(&mint, &setup.input_ys)
@@ -521,7 +521,7 @@ async fn status_poll_preserves_unknown_attempted_payment_after_lease_expires() {
         .unwrap());
     tx.commit().await.unwrap();
 
-    let response = mint.check_melt_quote(&setup.quote.id).await.unwrap();
+    let response = mint.check_melt_quote(&setup.quote.id, None).await.unwrap();
     assert_eq!(response.state(), MeltQuoteState::Pending);
     assert!(proofs_state(&mint, &setup.input_ys)
         .await
@@ -576,7 +576,7 @@ async fn status_poll_replays_finalizing_handoff_after_lease_expires() {
 
         mint.stop().await.unwrap();
         mint.start().await.unwrap();
-        let response = mint.check_melt_quote(&setup.quote.id).await.unwrap();
+        let response = mint.check_melt_quote(&setup.quote.id, None).await.unwrap();
         assert_eq!(response.state(), MeltQuoteState::Pending);
         assert!(proofs_state(&mint, &setup.input_ys)
             .await
@@ -591,7 +591,7 @@ async fn status_poll_replays_finalizing_handoff_after_lease_expires() {
         tx.commit().await.unwrap();
 
         for _ in 0..2 {
-            let response = mint.check_melt_quote(&setup.quote.id).await.unwrap();
+            let response = mint.check_melt_quote(&setup.quote.id, None).await.unwrap();
             assert_eq!(response.state(), MeltQuoteState::Paid);
             assert_eq!(
                 response.payment_proof(),
@@ -709,7 +709,7 @@ async fn recovery_preserves_success_after_release_failure() {
         set_fail_for("MELT_LEASE_RELEASE");
         match caller {
             "status" => {
-                let response = mint.check_melt_quote(&setup.quote.id).await.unwrap();
+                let response = mint.check_melt_quote(&setup.quote.id, None).await.unwrap();
                 assert_eq!(response.state(), MeltQuoteState::Paid);
             }
             "startup" => mint.recover_from_incomplete_melt_sagas().await.unwrap(),
@@ -788,7 +788,7 @@ async fn external_payment_preimage_is_hidden_until_finalization_completes() {
         .unwrap();
     assert_eq!(quote.state, MeltQuoteState::Pending);
     assert!(quote.payment_proof.is_none());
-    let response = mint.check_melt_quote(&setup.quote.id).await.unwrap();
+    let response = mint.check_melt_quote(&setup.quote.id, None).await.unwrap();
     assert_eq!(response.state(), MeltQuoteState::Pending);
     assert!(response.payment_proof().is_none());
     let stored = stored_quote(&mint, &setup.quote.id).await;

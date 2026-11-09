@@ -1477,7 +1477,7 @@ async fn test_status_poll_waits_for_internal_melt_finalization() {
     assert_eq!(stored.melt_lock, operation_id.to_string());
     assert_proofs_state(&mint, &input_ys, Some(State::Pending)).await;
 
-    let response = mint.check_melt_quote(&melt_quote.id).await.unwrap();
+    let response = mint.check_melt_quote(&melt_quote.id, None).await.unwrap();
     assert_eq!(response.state(), MeltQuoteState::Pending);
     assert!(response.payment_proof().is_none());
     assert!(response.change().is_none());
@@ -1508,7 +1508,7 @@ async fn test_status_poll_waits_for_internal_melt_finalization() {
     assert_eq!(finalized.melt_lock_expires_at, 0);
 
     for _ in 0..2 {
-        let response = mint.check_melt_quote(&melt_quote.id).await.unwrap();
+        let response = mint.check_melt_quote(&melt_quote.id, None).await.unwrap();
         assert_eq!(response.state(), MeltQuoteState::Paid);
         let change = response
             .change()

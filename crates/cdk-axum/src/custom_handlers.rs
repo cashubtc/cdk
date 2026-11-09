@@ -482,20 +482,15 @@ pub async fn get_check_melt_custom_quote(
 async fn process_melt_request(
     prefer: PreferHeader,
     state: &MintState,
-    method: &str,
     payload: &cdk::nuts::MeltRequest<QuoteId>,
 ) -> Result<MeltQuoteResponse<QuoteId>, cdk::Error> {
-    // Check for async preference in either the Prefer header or the request body
-    // For onchain we always want to do the async flow
-    let respond_async = prefer.respond_async || payload.is_prefer_async() || method == "onchain";
-
     let pending = state.mint.melt(payload).await?;
+    let respond_async =
+        prefer.respond_async || payload.is_prefer_async() || pending.requires_async_response();
 
     let res = if respond_async {
-        // Asynchronous processing - return immediately after setup
         pending.into_pending_response()
     } else {
-        // Synchronous processing - wait for completion
         pending.await?
     };
 
@@ -586,7 +581,7 @@ pub async fn cache_post_melt_custom(
         {
             Some(key) => key,
             None => {
-                let result = process_melt_request(prefer, &mint_state, &method, &parsed_payload)
+                let result = process_melt_request(prefer, &mint_state, &parsed_payload)
                     .await
                     .map_err(into_response)?;
 
@@ -602,7 +597,7 @@ pub async fn cache_post_melt_custom(
         return Ok(melt_quote_response_to_json(cached_response));
     }
 
-    let result = process_melt_request(prefer, &mint_state, &method, &parsed_payload)
+    let result = process_melt_request(prefer, &mint_state, &parsed_payload)
         .await
         .map_err(into_response)?;
 
