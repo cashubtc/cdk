@@ -316,6 +316,25 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             .get_proofs_by_ys(proofs_ys.clone())
             .await?;
 
+        // A pending row owned by an operation that is not resolved yet, such
+        // as an earlier receive of the same token that failed ambiguously,
+        // belongs to that operation's recovery. Overwriting it would keep the
+        // wrong row to restore here and leave the earlier operation without
+        // its proofs, so refuse until that operation is recovered.
+        for proof in &replaced_proofs {
+            if let (State::Pending, Some(operation_id)) = (proof.state, proof.used_by_operation) {
+                if self
+                    .wallet
+                    .localstore
+                    .get_saga(&operation_id)
+                    .await?
+                    .is_some()
+                {
+                    return Err(Error::TokenPending);
+                }
+            }
+        }
+
         let mut saga = WalletSaga::new(
             operation_id,
             WalletSagaState::Receive(ReceiveSagaState::ProofsPending),
