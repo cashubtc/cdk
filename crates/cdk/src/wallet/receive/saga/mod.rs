@@ -619,8 +619,8 @@ mod tests {
     use crate::amount::SplitTarget;
     use crate::dhke::{hash_to_curve, sign_message};
     use crate::nuts::{
-        nut00, BlindSignature, CheckStateResponse, PreMintSecrets, Proof, ProofState,
-        PublicKey, SecretKey, State, SwapResponse,
+        nut00, BlindSignature, CheckStateResponse, PreMintSecrets, Proof, ProofState, PublicKey,
+        SecretKey, State, SwapResponse,
     };
     use crate::wallet::test_utils::{
         create_test_db, create_test_wallet_with_mock_seed, test_keyset_id, test_proof,
@@ -792,6 +792,60 @@ mod tests {
         assert_eq!(report.compensated, 1);
 
         assert_still_sent_token(&wallet, y, send_operation).await;
+    }
+
+    #[tokio::test]
+    async fn test_receive_retry_keeps_proofs_the_wallet_already_stored() {
+        let (wallet, mock, input, _) = receive_fixture().await;
+        let (send_operation, y) = store_as_sent_token(&wallet, &input).await;
+
+        // The first attempt fails ambiguously and is left for recovery
+        mock.set_post_swap_response(Err(Error::HttpError(Some(503), "unavailable".to_string())));
+        assert!(wallet
+            .receive_proofs(vec![input.clone()], receive_options(), None, None)
+            .await
+            .is_err());
+
+        // Retrying before that receive is resolved must not take over its
+        // proofs: it would keep the first attempt's pending row to restore
+        mock.set_post_swap_response(Err(Error::HttpError(Some(503), "unavailable".to_string())));
+        let retry = wallet
+            .receive_proofs(vec![input.clone()], receive_options(), None, None)
+            .await;
+        assert!(
+            matches!(retry, Err(Error::TokenPending)),
+            "unexpected result: {retry:?}"
+        );
+        assert_eq!(
+            wallet
+                .localstore
+                .get_incomplete_sagas()
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // Recovery cannot replay the swap and the mint reports the input
+        // unspent, so the first receive is compensated
+        mock.push_post_swap_response(Err(Error::HttpError(Some(400), "bad request".to_string())));
+        mock.set_check_state_response(Ok(CheckStateResponse {
+            states: vec![ProofState {
+                y,
+                state: State::Unspent,
+                witness: None,
+            }],
+        }));
+        let report = wallet.recover_incomplete_sagas().await.unwrap();
+        assert_eq!(report.compensated, 1);
+
+        assert_still_sent_token(&wallet, y, send_operation).await;
+        assert!(wallet
+            .localstore
+            .get_incomplete_sagas()
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
