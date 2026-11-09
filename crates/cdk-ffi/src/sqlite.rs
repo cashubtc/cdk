@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use cdk_common::database::Error as CdkDatabaseError;
+use cdk_common::database::{Error as CdkDatabaseError, WalletDatabase as CdkWalletDatabase};
 use cdk_sqlite::wallet::WalletSqliteDatabase as CdkWalletSqliteDatabase;
 
 use crate::{

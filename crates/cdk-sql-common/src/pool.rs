@@ -5,7 +5,7 @@
 use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 #[cfg(feature = "prometheus")]
@@ -13,6 +13,19 @@ use cdk_prometheus::metrics::METRICS;
 use tokio::sync::{OwnedRwLockReadGuard, OwnedSemaphorePermit, RwLock, Semaphore};
 
 use crate::database::DatabaseConnector;
+
+// Drop cannot await disposal. Outside Tokio there is no worker to dispatch to.
+fn dispose_on_blocking_worker<F>(dispose: F)
+where
+    F: FnOnce() + Send + 'static,
+{
+    match tokio::runtime::Handle::try_current() {
+        Ok(runtime) => {
+            runtime.spawn_blocking(dispose);
+        }
+        Err(_) => dispose(),
+    }
+}
 
 /// Pool error
 #[derive(Debug, thiserror::Error)]
@@ -153,16 +166,10 @@ where
         if let Some((stale, resource)) = self.resource.take() {
             if stale.load(Ordering::SeqCst) {
                 let lifecycle = self.lifecycle.take();
-                let dispose = move || {
+                dispose_on_blocking_worker(move || {
                     let _lifecycle = lifecycle;
                     RM::drop(resource);
-                };
-                match tokio::runtime::Handle::try_current() {
-                    Ok(runtime) => {
-                        runtime.spawn_blocking(dispose);
-                    }
-                    Err(_) => dispose(),
-                }
+                });
             } else {
                 let mut active_resource = self.pool.queue.lock().expect("active_resource");
                 active_resource.push((stale, resource));
@@ -350,24 +357,16 @@ where
         self.semaphore.close();
 
         // Drop is best effort; callers needing a completed close must await close().
-        let resources = match self.queue.get_mut() {
-            Ok(resources) => std::mem::take(resources),
-            Err(error) => std::mem::take(error.into_inner()),
-        };
+        let resources =
+            std::mem::take(self.queue.get_mut().unwrap_or_else(PoisonError::into_inner));
         if resources.is_empty() {
             return;
         }
-        let dispose = move || {
+        dispose_on_blocking_worker(move || {
             for (_, resource) in resources {
                 RM::drop(resource);
             }
-        };
-        match tokio::runtime::Handle::try_current() {
-            Ok(runtime) => {
-                runtime.spawn_blocking(dispose);
-            }
-            Err(_) => dispose(),
-        }
+        });
     }
 }
 
