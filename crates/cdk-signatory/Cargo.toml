@@ -45,6 +45,9 @@ tokio-stream = { workspace = true, features = ["sync"] }
 tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
 getrandom = { version = "0.4", features = ["wasm_js"] }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tokio-stream = { workspace = true, features = ["net"] }
+
 [build-dependencies]
 tonic-prost-build = { workspace = true, optional = true }
 
