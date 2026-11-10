@@ -148,6 +148,11 @@ pub(crate) fn sign_proofs(
         }
 
         let ephemeral_key = proof.p2pk_e;
+        if ephemeral_key.is_some() {
+            if let Some(last_index) = pubkeys.len().checked_sub(1) {
+                p2bk_slot(secret.kind(), last_index)?;
+            }
+        }
         let mut signed_with_ephemeral_key = false;
         for (i, pubkey) in pubkeys.iter().enumerate() {
             let already_signed = proof
@@ -163,11 +168,8 @@ pub(crate) fn sign_proofs(
                 continue;
             }
 
-            let slot = match secret.kind() {
-                Kind::P2PK => i as u8,
-                Kind::HTLC => (i + 1) as u8,
-            };
             if let Some(ephemeral_key) = ephemeral_key {
+                let slot = p2bk_slot(secret.kind(), i)?;
                 for signing_key in key_map.values() {
                     if let Ok(r) = crate::nuts::nut28::ecdh_kdf(signing_key, &ephemeral_key, slot) {
                         if let Ok(derived_key) =
@@ -190,6 +192,23 @@ pub(crate) fn sign_proofs(
     }
 
     Ok(())
+}
+
+/// Convert a key's position to a valid NUT-28 slot.
+pub(crate) fn p2bk_slot(kind: Kind, index: usize) -> Result<u8, Error> {
+    let slot = match kind {
+        Kind::P2PK => index,
+        Kind::HTLC => index.saturating_add(1),
+    };
+    let invalid_slot = || {
+        Error::NUT11(crate::nuts::nut11::Error::TooManyPubkeys {
+            slots: slot.saturating_add(1),
+        })
+    };
+    if slot >= crate::nuts::nut10::MAX_LOCKING_SLOTS {
+        return Err(invalid_slot());
+    }
+    u8::try_from(slot).map_err(|_| invalid_slot())
 }
 
 /// Verify the spending witness on every P2PK/HTLC-locked proof.
@@ -393,6 +412,55 @@ mod tests {
 
         assert!(round_tripped_proof.witness.is_some());
         assert!(round_tripped_proof.p2pk_e.is_none());
+    }
+
+    #[test]
+    fn p2bk_slot_checks_boundaries() {
+        assert_eq!(p2bk_slot(Kind::P2PK, 0).unwrap(), 0);
+        assert_eq!(p2bk_slot(Kind::P2PK, 10).unwrap(), 10);
+        assert_eq!(p2bk_slot(Kind::HTLC, 0).unwrap(), 1);
+        assert_eq!(p2bk_slot(Kind::HTLC, 9).unwrap(), 10);
+        for index in [11, 255, 256, usize::MAX] {
+            assert!(p2bk_slot(Kind::P2PK, index).is_err());
+        }
+        for index in [10, 254, 255, usize::MAX] {
+            assert!(p2bk_slot(Kind::HTLC, index).is_err());
+        }
+    }
+
+    #[test]
+    fn sign_proofs_rejects_excess_p2bk_slots_only() {
+        let signing_key = SecretKey::generate();
+        let pubkey = SecretKey::generate().public_key();
+        for kind in [Kind::P2PK, Kind::HTLC] {
+            for key_count in [11, 256] {
+                let mut tag = vec!["pubkeys".to_string()];
+                tag.extend((0..key_count).map(|_| pubkey.to_string()));
+                let data = match kind {
+                    Kind::P2PK => pubkey.to_string(),
+                    Kind::HTLC => "00".repeat(32),
+                };
+                let secret = serde_json::json!([kind, {
+                    "nonce": "test",
+                    "data": data,
+                    "tags": [tag]
+                }]);
+                let mut proof = make_plain_proof();
+                proof.secret = crate::secret::Secret::new(secret.to_string());
+                let mut proofs = vec![proof];
+                sign_proofs(&mut proofs, std::slice::from_ref(&signing_key)).unwrap();
+
+                proofs[0].p2pk_e = Some(SecretKey::generate().public_key());
+                assert!(matches!(
+                    sign_proofs(&mut proofs, std::slice::from_ref(&signing_key)),
+                    Err(Error::NUT11(
+                        crate::nuts::nut11::Error::TooManyPubkeys { .. }
+                    ))
+                ));
+                assert!(proofs[0].witness.is_none());
+                assert!(proofs[0].p2pk_e.is_some());
+            }
+        }
     }
 
     #[test]
