@@ -833,21 +833,32 @@ impl Mint {
                     MintQuoteState::Paid => (),
                 }
 
-                // Determine the expected amount for this quote.
-                //
-                // For bolt11 (all-or-nothing): the expected amount is always the
-                // quote amount since bolt11 invoices are paid in full.
-                //
-                // For bolt12 and other methods: the expected amount comes from
-                // the batch `quote_amounts` field if present, otherwise it falls
-                // back to the full mintable amount (amount_paid - amount_issued).
-                let expected_amount = if mint_quote.payment_method.is_bolt11() {
-                    mint_quote.amount.clone().ok_or(Error::AmountUndefined)?
-                } else if let Some(expected) = entry.expected_amount {
-                    Amount::new(expected, mint_quote.unit.clone())
-                } else {
-                    mint_quote.amount_mintable()
+                // The batch `quote_amounts` entry is the amount issued from this
+                // quote (and the amount a v3 quote witness commits); without one,
+                // bolt11 issues the quote amount and other methods what is mintable.
+                let expected_amount = match entry.expected_amount {
+                    Some(expected) => Amount::new(expected, mint_quote.unit.clone()),
+                    None if mint_quote.payment_method.is_bolt11() => {
+                        mint_quote.amount.clone().ok_or(Error::AmountUndefined)?
+                    }
+                    None => mint_quote.amount_mintable(),
                 };
+
+                // bolt11 is all or nothing
+                if mint_quote.payment_method.is_bolt11()
+                    && Some(&expected_amount) != mint_quote.amount.as_ref()
+                {
+                    tracing::error!(
+                        "Quote {} expected amount {} is not its bolt11 amount",
+                        entry.quote_id,
+                        expected_amount
+                    );
+                    return Err(Error::TransactionUnbalanced(
+                        mint_quote.amount.as_ref().map_or(0, |a| a.value()),
+                        expected_amount.value(),
+                        0,
+                    ));
+                }
 
                 // Validate the expected amount does not exceed what is actually mintable
                 let mintable = mint_quote.amount_mintable();
@@ -1759,6 +1770,67 @@ mod batch_mint_tests {
             .await;
 
         assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::TransactionUnbalanced(_, _, _)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_process_batch_mint_bolt11_entry_differs_from_quote_amount() {
+        let mint = create_test_mint().await;
+
+        let mut quotes = Vec::new();
+        for _ in 0..2 {
+            let quote: MintQuoteBolt11Response<QuoteId> = mint
+                .get_mint_quote(
+                    MintQuoteBolt11Request {
+                        amount: Amount::from(32),
+                        unit: CurrencyUnit::Sat,
+                        description: None,
+                        pubkey: None,
+                    }
+                    .into(),
+                )
+                .await
+                .unwrap()
+                .try_into()
+                .unwrap();
+            wait_for_quote_paid(&mint, &quote.quote).await;
+            quotes.push(quote.quote);
+        }
+
+        let keyset_id = *mint.get_active_keysets().get(&CurrencyUnit::Sat).unwrap();
+        let keys = mint
+            .keyset_pubkeys(&keyset_id)
+            .unwrap()
+            .keysets
+            .first()
+            .unwrap()
+            .keys
+            .clone();
+        let fees: (u64, Vec<u64>) = (0, keys.iter().map(|a| a.0.to_u64()).collect::<Vec<_>>());
+
+        // Outputs match the quotes' total, but the entries shift value between them
+        let premint_secrets = PreMintSecrets::random(
+            keyset_id,
+            Amount::from(64),
+            &SplitTarget::None,
+            &fees.into(),
+        )
+        .unwrap();
+
+        let batch_request = BatchMintRequest {
+            quotes,
+            quote_amounts: Some(vec![Amount::from(16), Amount::from(48)]),
+            outputs: premint_secrets.blinded_messages().to_vec(),
+            signatures: None,
+        };
+
+        let result = mint
+            .process_mint_request(crate::mint::MintInput::Batch(batch_request))
+            .await;
+
         assert!(matches!(
             result.unwrap_err(),
             Error::TransactionUnbalanced(_, _, _)
