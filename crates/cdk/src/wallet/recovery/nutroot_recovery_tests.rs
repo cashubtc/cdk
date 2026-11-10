@@ -112,9 +112,9 @@ async fn swap_replay_falls_back_when_a_v3_input_cannot_be_signed() {
     // The NUT-10 swap vector's input: a v3 proof whose key this wallet does not hold.
     let proof = Proof {
         amount: 8.into(),
-        keyset_id: Id::from_str("02b7e077d020fabed456a6be138a8e20e9ef40b44d873fa12c005b656eb0cf99f6").unwrap(),
-        secret: Secret::from_str("02e6e7cfa7b82d4b3b449fa6466c893469a727d0214d48db4956a6054b8022a29b").unwrap(),
-        c: PublicKey::from_hex("84d1b7291ae5737f3c851aa33cafe0f7afeb5ccb4da086c482bb85b7525e61547f1b5a6d1a01b1fed1f960d1a9d03327").unwrap(),
+        keyset_id: Id::from_str("022546ab0a2dee9f79510f4e20a4e3d9e894a97361047c594902573a7e64f9d701").unwrap(),
+        secret: Secret::from_str("0240c186f3e19f6f8cd00db81c5266d5c74ddca48ff848efd0e3e125b2846f30d9").unwrap(),
+        c: PublicKey::from_hex("a33dd4de26ea950060ae5c45bdc408d72aaf51ba9f4ccdeee4a040df067ca87c799a406fec88c2a328b75b290e27f7b6").unwrap(),
         witness: None,
         dleq: None,
         p2pk_e: None,
