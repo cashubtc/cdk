@@ -962,13 +962,25 @@ where
             .bind("id", id.as_slice().to_vec())
             .execute(&tx)
             .await?;
-        for (position, y) in transaction.ys.iter().enumerate() {
-            query("INSERT INTO transaction_ys (transaction_id, position, y) VALUES (:id, :position, :y)")?
-                .bind("id", id.as_slice().to_vec())
-                .bind("position", i64::try_from(position)?)
-                .bind("y", y.to_bytes().to_vec())
-                .execute(&tx)
-                .await?;
+        // Three parameters per row keep each batch below SQLite's legacy
+        // 999-parameter limit while reducing PostgreSQL round trips.
+        const BATCH_SIZE: usize = 300;
+        for (batch_index, ys) in transaction.ys.chunks(BATCH_SIZE).enumerate() {
+            let values = (0..ys.len())
+                .map(|index| format!("(:id_{index}, :position_{index}, :y_{index})"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let mut statement = query(&format!(
+                "INSERT INTO transaction_ys (transaction_id, position, y) VALUES {values}"
+            ))?;
+            for (index, y) in ys.iter().enumerate() {
+                let position = batch_index * BATCH_SIZE + index;
+                statement = statement
+                    .bind(format!("id_{index}"), id.as_slice().to_vec())
+                    .bind(format!("position_{index}"), i64::try_from(position)?)
+                    .bind(format!("y_{index}"), y.to_bytes().to_vec());
+            }
+            statement.execute(&tx).await?;
         }
         tx.commit().await?;
         Ok(())

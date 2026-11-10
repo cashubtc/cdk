@@ -222,16 +222,13 @@ mod tests {
         db.add_transaction(original.clone()).await.unwrap();
         let mut invalid = original.clone();
         invalid.memo = Some("must roll back".to_owned());
-        // Fail after replacing metadata, deleting old points, and inserting one point.
+        // Fail in the second insert batch after metadata and the first batch were written.
         conn.execute_batch(
-            "CREATE TRIGGER reject_second_point BEFORE INSERT ON transaction_ys
-             WHEN NEW.position = 1 BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
+            "CREATE TRIGGER reject_second_batch BEFORE INSERT ON transaction_ys
+             WHEN NEW.position = 300 BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
         )
         .unwrap();
-        invalid.ys = vec![
-            SecretKey::generate().public_key(),
-            SecretKey::generate().public_key(),
-        ];
+        invalid.ys = vec![SecretKey::generate().public_key(); 301];
         assert!(db.add_transaction(invalid).await.is_err());
         let stored = db.get_transaction(original.id()).await.unwrap().unwrap();
         assert_eq!(stored.ys, original.ys);

@@ -1032,7 +1032,17 @@ where
 {
     let secp = SecretKey::generate().public_key();
     let second = SecretKey::generate().public_key();
-    let cases = [vec![], vec![secp], vec![second], vec![second, secp, second]];
+    // Cross multiple SQL insert batches, including a partial final batch.
+    let many = (0..601)
+        .map(|index| if index % 2 == 0 { second } else { secp })
+        .collect();
+    let cases = [
+        vec![],
+        vec![secp],
+        vec![second],
+        vec![second, secp, second],
+        many,
+    ];
     let mut expected = Vec::new();
     for ys in cases {
         let mut transaction = test_transaction(test_mint_url(), TransactionDirection::Incoming);
