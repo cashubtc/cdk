@@ -952,6 +952,86 @@ async fn test_mint_unissued_quotes_onchain() {
     );
 }
 
+/// Mint unissued quotes until `expected` has been minted, giving the mint time
+/// to see the confirmed payment
+async fn mint_unissued_until(wallet: &Wallet, expected: u64) -> cdk::amount::Amount {
+    let mut minted = cdk::amount::Amount::ZERO;
+    for _ in 0..30 {
+        minted = minted
+            .checked_add(wallet.mint_unissued_quotes().await.unwrap())
+            .unwrap();
+        if minted >= expected.into() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    minted
+}
+
+/// An onchain address can be paid again after its quote has been minted
+/// (NUT-30). mint_unissued_quotes must still pick up the new deposit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_mint_unissued_quotes_onchain_after_second_deposit() {
+    let bitcoin_client = init_bitcoin_client().expect("Failed to init bitcoin client");
+
+    let wallet = Wallet::new(
+        &get_mint_url_from_env(),
+        CurrencyUnit::Sat,
+        Arc::new(memory::empty().await.unwrap()),
+        Mnemonic::generate(12).unwrap().to_seed_normalized(""),
+        None,
+    )
+    .expect("failed to create new wallet");
+
+    let payment_1 = 10_000;
+    let payment_2 = 20_000;
+
+    let mint_quote = wallet
+        .mint_quote(
+            PaymentMethod::from_str("onchain").unwrap(),
+            Some((payment_1 + payment_2).into()),
+            None,
+            None,
+        )
+        .await
+        .expect("Failed to get mint quote");
+
+    let mine_addr = bitcoin_client
+        .get_new_address()
+        .expect("Failed to get address");
+
+    // 1. First deposit, minted through mint_unissued_quotes
+    bitcoin_client
+        .send_to_address(&mint_quote.request, payment_1)
+        .expect("Failed to send bitcoin");
+    bitcoin_client
+        .generate_blocks(&mine_addr, 1)
+        .expect("Failed to mine block");
+
+    assert_eq!(
+        mint_unissued_until(&wallet, payment_1).await,
+        cdk::amount::Amount::from(payment_1)
+    );
+
+    // 2. Second deposit to the same address after the quote has issued
+    bitcoin_client
+        .send_to_address(&mint_quote.request, payment_2)
+        .expect("Failed to send bitcoin");
+    bitcoin_client
+        .generate_blocks(&mine_addr, 1)
+        .expect("Failed to mine block");
+
+    assert_eq!(
+        mint_unissued_until(&wallet, payment_2).await,
+        cdk::amount::Amount::from(payment_2),
+        "mint_unissued_quotes should mint the second deposit"
+    );
+    assert_eq!(
+        wallet.total_balance().await.unwrap(),
+        cdk::amount::Amount::from(payment_1 + payment_2)
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_check_all_mint_quotes_onchain() {
     let bitcoin_client = init_bitcoin_client().expect("Failed to init bitcoin client");

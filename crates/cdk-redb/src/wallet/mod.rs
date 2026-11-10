@@ -10,14 +10,13 @@ use async_trait::async_trait;
 use cdk_common::bitcoin::bip32::DerivationPath;
 use cdk_common::database::{validate_kvstore_params, WalletDatabase};
 use cdk_common::mint_url::MintUrl;
-use cdk_common::nut00::KnownMethod;
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{
     self, MintQuote, ProofInfo, Transaction, TransactionDirection, TransactionId,
 };
 use cdk_common::{
-    database, Amount, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, PaymentMethod,
-    PublicKey, SpendingConditions, State,
+    database, Amount, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, PublicKey,
+    SpendingConditions, State,
 };
 use redb::{Database, MultimapTableDefinition, ReadableDatabase, ReadableTable, TableDefinition};
 use tracing::instrument;
@@ -343,7 +342,8 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
             .flat_map(|(_id, quote)| serde_json::from_str::<MintQuote>(quote.value()).ok())
             .filter(|quote| {
                 quote.amount_issued == Amount::ZERO
-                    || quote.payment_method == PaymentMethod::Known(KnownMethod::Bolt12)
+                    || quote.amount_paid > quote.amount_issued
+                    || !quote.payment_method.is_bolt11()
             })
             .collect())
     }
