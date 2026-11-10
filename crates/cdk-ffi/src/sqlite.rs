@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use cdk_common::database::Error as CdkDatabaseError;
+use cdk_common::database::{Error as CdkDatabaseError, WalletDatabase as CdkWalletDatabase};
 use cdk_sqlite::wallet::WalletSqliteDatabase as CdkWalletSqliteDatabase;
 
 use crate::{
@@ -54,6 +54,17 @@ impl WalletSqliteDatabase {
             inner: FfiWalletDatabaseWrapper::new(db),
             _runtime: rt,
         }))
+    }
+}
+
+#[uniffi::export(async_runtime = "tokio")]
+impl WalletSqliteDatabase {
+    /// Close this database and all wallets sharing it after stopping their operations.
+    ///
+    /// Waits for pending database operations and cleanup. Await this before copying
+    /// the database file; dropping a handle alone does not wait for closure.
+    pub async fn close(&self) -> Result<(), FfiError> {
+        self.inner.inner().close().await.map_err(FfiError::database)
     }
 }
 

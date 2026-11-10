@@ -26,6 +26,14 @@ pub trait Database<Err>: Debug
 where
     Err: Into<Error> + From<Error>,
 {
+    /// Release database resources after callers have stopped wallet operations.
+    ///
+    /// The default does nothing. SQL backends permanently close their shared pool,
+    /// including clones, and wait for outstanding database operations and cleanup.
+    async fn close(&self) -> Result<(), Err> {
+        Ok(())
+    }
+
     /// Get mint from storage
     async fn get_mint(&self, mint_url: MintUrl) -> Result<Option<MintInfo>, Err>;
 

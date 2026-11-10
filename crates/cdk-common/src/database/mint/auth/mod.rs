@@ -59,6 +59,14 @@ pub trait MintAuthDatabase {
     /// Mint Database Error
     type Err: Into<Error> + From<Error>;
 
+    /// Release database resources after stopping all services that use them.
+    ///
+    /// The default does nothing. SQL backends permanently close their shared pool
+    /// and wait for outstanding transactions and cleanup, including across clones.
+    async fn close(&self) -> Result<(), Self::Err> {
+        Ok(())
+    }
+
     /// Begins a transaction
     async fn begin_transaction<'a>(
         &'a self,

@@ -182,6 +182,13 @@ impl<RM> MintDatabase<Error> for SQLMintDatabase<RM>
 where
     RM: DatabasePool + 'static,
 {
+    async fn close(&self) -> Result<(), Error> {
+        self.pool
+            .close()
+            .await
+            .map_err(|error| Error::Database(Box::new(error)))
+    }
+
     async fn begin_transaction(
         &self,
     ) -> Result<Box<dyn database::MintTransaction<Error> + Send + Sync>, Error> {

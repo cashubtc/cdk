@@ -2023,6 +2023,7 @@ async fn reconcile_canonical_configuration(
 /// completed, ready to start its services.
 struct PreparedMintd {
     mint: Arc<cdk::mint::Mint>,
+    auth_localstore: Option<cdk_common::database::DynMintAuthDatabase>,
     #[cfg(feature = "prometheus")]
     prometheus: Option<config::Prometheus>,
     mint_service: Router,
@@ -2039,6 +2040,7 @@ struct PreparedMintd {
 /// as applied, serving requests until shutdown.
 struct RunningMintd {
     mint: Arc<cdk::mint::Mint>,
+    auth_localstore: Option<cdk_common::database::DynMintAuthDatabase>,
     mint_service: Router,
     listener: tokio::net::TcpListener,
     shutdown_tx: tokio::sync::broadcast::Sender<()>,
@@ -2358,6 +2360,7 @@ impl PreparedMintd {
 
         Ok(Self {
             mint,
+            auth_localstore,
             #[cfg(feature = "prometheus")]
             prometheus: settings.prometheus.clone(),
             mint_service,
@@ -2437,6 +2440,7 @@ impl PreparedMintd {
 
         Ok(RunningMintd {
             mint: self.mint,
+            auth_localstore: self.auth_localstore,
             mint_service: self.mint_service,
             listener,
             shutdown_tx: self.shutdown_tx,
@@ -2504,6 +2508,12 @@ impl RunningMintd {
             if let Some(rpc_server) = self.rpc_server {
                 rpc_server.stop().await?;
             }
+        }
+
+        // No service may start new database work after closing the shared pools.
+        self.mint.localstore().close().await?;
+        if let Some(auth_localstore) = self.auth_localstore {
+            auth_localstore.close().await?;
         }
 
         Ok(())

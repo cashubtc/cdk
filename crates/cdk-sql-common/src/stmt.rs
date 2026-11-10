@@ -196,7 +196,7 @@ pub fn split_sql_parts(input: &str) -> Result<Vec<SqlPart>, SqlParseError> {
 type Cache = HashMap<String, (Vec<SqlPart>, Option<Arc<str>>)>;
 
 /// Sql message
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Statement {
     cache: Arc<RwLock<Cache>>,
     cached_sql: Option<Arc<str>>,

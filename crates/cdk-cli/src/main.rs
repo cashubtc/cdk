@@ -404,6 +404,10 @@ async fn main() -> Result<()> {
         }
     };
 
+    // Complete database cleanup before exiting, including after command errors.
+    wallet_repository.flush_rate_limits().await;
+    localstore.close().await?;
+
     // Errors may embed mint-controlled response bodies; escape control
     // characters so a malicious mint cannot inject terminal escape sequences.
     if let Err(err) = result {

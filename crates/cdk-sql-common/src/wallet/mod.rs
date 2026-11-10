@@ -148,6 +148,13 @@ impl<RM> WalletDatabase<database::Error> for SQLWalletDatabase<RM>
 where
     RM: DatabasePool + 'static,
 {
+    async fn close(&self) -> Result<(), Error> {
+        self.pool
+            .close()
+            .await
+            .map_err(|error| Error::Database(Box::new(error)))
+    }
+
     #[instrument(skip(self))]
     async fn get_melt_quotes(&self) -> Result<Vec<wallet::MeltQuote>, database::Error> {
         let conn = self
