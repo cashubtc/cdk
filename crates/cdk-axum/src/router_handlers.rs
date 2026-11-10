@@ -10,7 +10,10 @@ use cdk::nuts::{
     RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
 use cdk::util::unix_time;
+use cdk_common::nutxx::{MintQuoteByPubkeyRequest, MintQuoteByPubkeyResponse};
+use cdk_common::{MintQuoteResponse, PaymentMethod, QuoteId};
 use paste::paste;
+use serde_json::Value;
 use tracing::instrument;
 
 use crate::auth::AuthHeader;
@@ -240,6 +243,64 @@ pub(crate) async fn post_restore(
     })?;
 
     Ok(Json(restore_response))
+}
+
+/// Handler for mint quote lookup by public key (NUT-XX)
+///
+/// Method-agnostic: a pubkey may hold quotes across several payment methods and they are all
+/// returned together, each in its own NUT-04 response format.
+#[instrument(skip_all)]
+pub async fn post_mint_quote_by_pubkey(
+    auth: AuthHeader,
+    Path(method): Path<String>,
+    State(state): State<MintState>,
+    Json(request): Json<MintQuoteByPubkeyRequest>,
+) -> Result<Response, Response> {
+    state
+        .mint
+        .verify_auth(
+            auth.into(),
+            &ProtectedEndpoint::new(
+                Method::Post,
+                RoutePath::MintQuoteByPubkey(method.clone().to_lowercase()),
+            ),
+        )
+        .await
+        .map_err(into_response)?;
+
+    let method = PaymentMethod::from(method);
+
+    let quotes = state
+        .mint
+        .get_mint_quote_by_pubkey(method, request.pubkeys, request.pubkey_signatures)
+        .await
+        .map_err(into_response)?;
+
+    let quotes = quotes
+        .into_iter()
+        .map(mint_quote_response_to_value)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| {
+            tracing::error!("Failed to serialize mint quotes: {}", e);
+            into_response(cdk::Error::Internal)
+        })?;
+
+    Ok(Json(MintQuoteByPubkeyResponse { quotes }).into_response())
+}
+
+/// Flatten a `MintQuoteResponse` to the NUT-04 quote object that goes on the wire.
+///
+/// `MintQuoteResponse` is an externally tagged enum, so serialising it directly would wrap
+/// each quote in a `{"Bolt11": …}` envelope that no NUT describes.
+fn mint_quote_response_to_value(
+    response: MintQuoteResponse<QuoteId>,
+) -> Result<Value, serde_json::Error> {
+    match response {
+        MintQuoteResponse::Bolt11(r) => serde_json::to_value(r),
+        MintQuoteResponse::Bolt12(r) => serde_json::to_value(r),
+        MintQuoteResponse::Onchain(r) => serde_json::to_value(r),
+        MintQuoteResponse::Custom { response, .. } => serde_json::to_value(response),
+    }
 }
 
 #[cfg(feature = "info-page")]
