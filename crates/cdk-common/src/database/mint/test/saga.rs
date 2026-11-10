@@ -1,6 +1,6 @@
 //! Saga database tests
 
-use crate::database::mint::{Database, Error};
+use crate::database::mint::{Acquired, Database, Error};
 use crate::mint::{
     MeltFinalizationData, MeltSagaState, OperationKind, Saga, SagaStateEnum, SwapSagaState,
 };
@@ -65,6 +65,52 @@ where
     tx.rollback().await.unwrap();
 }
 
+/// A melt saga in `SetupComplete`, already stored in the database.
+async fn stored_melt_saga<DB>(db: &DB) -> uuid::Uuid
+where
+    DB: Database<Error>,
+{
+    let operation_id = uuid::Uuid::new_v4();
+    let saga = Saga {
+        operation_id,
+        operation_kind: OperationKind::Melt,
+        state: SagaStateEnum::Melt(MeltSagaState::SetupComplete),
+        quote_id: Some("test_quote_id".to_string()),
+        finalization_data: None,
+        created_at: 1234567890,
+        updated_at: 1234567890,
+    };
+
+    let mut tx = Database::begin_transaction(db).await.unwrap();
+    tx.add_saga(&saga).await.unwrap();
+    tx.commit().await.unwrap();
+
+    operation_id
+}
+
+/// Moves a stored saga to `new_state` in a transaction of its own.
+async fn move_saga<DB>(db: &DB, operation_id: &uuid::Uuid, new_state: SagaStateEnum)
+where
+    DB: Database<Error>,
+{
+    let mut tx = Database::begin_transaction(db).await.unwrap();
+    let mut saga = tx.get_saga_for_update(operation_id).await.unwrap().unwrap();
+    tx.update_acquired_saga(&mut saga, new_state).await.unwrap();
+    tx.commit().await.unwrap();
+}
+
+/// Loads a saga and ends the transaction, so the copy outlives its row lock.
+async fn stale_saga<DB>(db: &DB, operation_id: &uuid::Uuid) -> Acquired<Saga>
+where
+    DB: Database<Error>,
+{
+    let mut tx = Database::begin_transaction(db).await.unwrap();
+    let saga = tx.get_saga_for_update(operation_id).await.unwrap().unwrap();
+    tx.commit().await.unwrap();
+
+    saga
+}
+
 /// Test updating saga state
 pub async fn update_saga_state<DB>(db: DB)
 where
@@ -101,6 +147,37 @@ where
     let retrieved = tx.get_saga(&operation_id).await.unwrap().unwrap();
     assert_eq!(retrieved.state, new_state);
     assert!(retrieved.updated_at >= saga.updated_at);
+    tx.commit().await.unwrap();
+}
+
+/// A saga kept past its transaction can't undo a `Finalizing` handoff.
+pub async fn update_acquired_saga_refuses_stale_state<DB>(db: DB)
+where
+    DB: Database<Error>,
+{
+    let operation_id = stored_melt_saga(&db).await;
+    let mut stale = stale_saga(&db, &operation_id).await;
+    move_saga(
+        &db,
+        &operation_id,
+        SagaStateEnum::Melt(MeltSagaState::Finalizing),
+    )
+    .await;
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let err = tx
+        .update_acquired_saga(
+            &mut stale,
+            SagaStateEnum::Melt(MeltSagaState::PaymentFailed),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::ConcurrentUpdate), "{err}");
+    tx.rollback().await.unwrap();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let stored = tx.get_saga(&operation_id).await.unwrap().unwrap();
+    assert_eq!(stored.state, SagaStateEnum::Melt(MeltSagaState::Finalizing));
     tx.commit().await.unwrap();
 }
 

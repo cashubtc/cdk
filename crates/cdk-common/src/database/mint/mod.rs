@@ -645,6 +645,9 @@ pub trait SagaTransaction {
     async fn add_saga(&mut self, saga: &mint::Saga) -> Result<(), Self::Err>;
 
     /// Update the state of an acquired saga.
+    ///
+    /// Returns [`Error::ConcurrentUpdate`] if the stored saga no longer exists or its state no
+    /// longer matches, after which the caller must roll back the transaction.
     async fn update_acquired_saga(
         &mut self,
         saga: &mut Acquired<mint::Saga>,
