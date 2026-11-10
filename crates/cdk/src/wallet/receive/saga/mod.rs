@@ -581,7 +581,9 @@ mod tests {
 
     use crate::amount::SplitTarget;
     use crate::dhke::{hash_to_curve, sign_message};
-    use crate::nuts::{BlindSignature, PreMintSecrets, Proof, SecretKey, State, SwapResponse};
+    use crate::nuts::{
+        nut00, BlindSignature, PreMintSecrets, Proof, SecretKey, State, SwapResponse,
+    };
     use crate::wallet::test_utils::{
         create_test_db, create_test_wallet_with_mock_seed, test_keyset_id, test_proof,
         MockMintConnector,
@@ -660,6 +662,47 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(transaction.status, TransactionStatus::Pending);
+    }
+
+    #[tokio::test]
+    async fn test_receive_rejects_repeated_proof_before_writing() {
+        let (wallet, mock, input, signature) = receive_fixture().await;
+        mock.set_post_swap_response(Ok(SwapResponse {
+            signatures: vec![signature],
+        }));
+
+        let result = wallet
+            .receive_proofs(
+                vec![input.clone(), input],
+                ReceiveOptions::default(),
+                None,
+                None,
+            )
+            .await;
+        assert!(
+            matches!(result, Err(Error::NUT00(nut00::Error::DuplicateProofs))),
+            "{result:?}"
+        );
+
+        assert!(mock.captured_swap_requests().is_empty());
+        assert!(wallet
+            .localstore
+            .get_incomplete_sagas()
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(wallet
+            .localstore
+            .get_proofs(None, None, None, None)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(wallet
+            .localstore
+            .list_transactions(None, None, None)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
