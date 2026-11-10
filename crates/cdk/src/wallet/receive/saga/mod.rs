@@ -665,44 +665,54 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_receive_rejects_repeated_proof_before_writing() {
-        let (wallet, mock, input, signature) = receive_fixture().await;
-        mock.set_post_swap_response(Ok(SwapResponse {
-            signatures: vec![signature],
-        }));
+    async fn test_receive_rejects_duplicate_inputs_without_side_effects() {
+        for different_amount in [false, true] {
+            let (wallet, mock, input, signature) = receive_fixture().await;
+            let mut duplicate = input.clone();
+            if different_amount {
+                // Uniqueness depends on Y, not equality of the entire proof.
+                duplicate.amount = Amount::from(1);
+            }
+            mock.set_post_swap_response(Err(Error::DuplicateInputs));
+            let result = wallet
+                .receive_proofs(
+                    vec![input.clone(), duplicate],
+                    ReceiveOptions::default(),
+                    None,
+                    None,
+                )
+                .await;
+            assert!(
+                matches!(result, Err(Error::NUT00(nut00::Error::DuplicateProofs))),
+                "{result:?}"
+            );
+            assert!(mock.captured_swap_requests().is_empty());
+            assert!(wallet
+                .localstore
+                .get_incomplete_sagas()
+                .await
+                .unwrap()
+                .is_empty());
+            assert!(wallet
+                .localstore
+                .list_transactions(None, None, None)
+                .await
+                .unwrap()
+                .is_empty());
+            assert!(wallet
+                .localstore
+                .get_proofs(None, None, None, None)
+                .await
+                .unwrap()
+                .is_empty());
 
-        let result = wallet
-            .receive_proofs(
-                vec![input.clone(), input],
-                ReceiveOptions::default(),
-                None,
-                None,
-            )
-            .await;
-        assert!(
-            matches!(result, Err(Error::NUT00(nut00::Error::DuplicateProofs))),
-            "{result:?}"
-        );
-
-        assert!(mock.captured_swap_requests().is_empty());
-        assert!(wallet
-            .localstore
-            .get_incomplete_sagas()
-            .await
-            .unwrap()
-            .is_empty());
-        assert!(wallet
-            .localstore
-            .get_proofs(None, None, None, None)
-            .await
-            .unwrap()
-            .is_empty());
-        assert!(wallet
-            .localstore
-            .list_transactions(None, None, None)
-            .await
-            .unwrap()
-            .is_empty());
+            // Rejection must leave the original proof usable for a valid receive.
+            let amount = receive_response(&wallet, &mock, &input, vec![signature])
+                .await
+                .unwrap();
+            assert_eq!(amount, Amount::from(2));
+            assert_eq!(wallet.total_balance().await.unwrap(), amount);
+        }
     }
 
     #[tokio::test]

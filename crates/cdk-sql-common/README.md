@@ -36,8 +36,9 @@ a pre-upgrade database backup if downgrade is required. Redb's JSON transaction
 format is unchanged.
 
 Updating an existing transaction replaces its proof identifiers as well as its
-metadata. Transaction listing reports decoding errors instead of silently
-omitting malformed records.
+metadata. Transaction listing skips malformed transactions with a warning, including the
+entire transaction if any proof identifier cannot be decoded. Single-transaction
+lookups still report decoding errors, and database query failures are propagated.
 
 ## License
 

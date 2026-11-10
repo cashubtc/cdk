@@ -240,6 +240,7 @@ impl Wallet {
 
     /// Receive proofs directly.
     ///
+    /// Duplicate proof identifiers are rejected before mint requests or storage writes.
     /// This verifies and persists received proofs in the local store. Mobile
     /// hosts should avoid starting it during app background transitions unless
     /// background network and storage activity is intended.

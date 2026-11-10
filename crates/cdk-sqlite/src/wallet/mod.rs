@@ -238,6 +238,67 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
+    #[tokio::test]
+    async fn transaction_listing_skips_malformed_transactions() {
+        use cdk_common::wallet::{Transaction, TransactionDirection, TransactionStatus};
+        use cdk_common::{Amount, CurrencyUnit, SecretKey};
+
+        let path = std::env::temp_dir().join(format!(
+            "cdk-transaction-corruption-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let db = WalletSqliteDatabase::new(&path).await.unwrap();
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let valid = Transaction {
+            mint_url: "https://mint.example".parse().unwrap(),
+            direction: TransactionDirection::Incoming,
+            amount: Amount::from(1),
+            fee: Amount::ZERO,
+            unit: CurrencyUnit::Sat,
+            ys: vec![SecretKey::generate().public_key()],
+            timestamp: 123,
+            memo: Some("original".to_owned()),
+            metadata: Default::default(),
+            quote_id: None,
+            payment_request: None,
+            payment_proof: None,
+            payment_method: None,
+            saga_id: Some(uuid::Uuid::new_v4()),
+            status: TransactionStatus::Pending,
+        };
+        db.add_transaction(valid.clone()).await.unwrap();
+        let mut bad_metadata = valid.clone();
+        bad_metadata.saga_id = Some(uuid::Uuid::new_v4());
+        db.add_transaction(bad_metadata.clone()).await.unwrap();
+        let mut bad_point = valid.clone();
+        bad_point.saga_id = Some(uuid::Uuid::new_v4());
+        bad_point.ys = vec![SecretKey::generate().public_key(); 3];
+        db.add_transaction(bad_point.clone()).await.unwrap();
+        // Simulate corruption that normal writes reject.
+        conn.execute_batch("PRAGMA ignore_check_constraints = ON;")
+            .unwrap();
+        conn.execute(
+            "UPDATE transactions SET direction = 'invalid' WHERE id = ?1",
+            [bad_metadata.id().as_slice()],
+        )
+        .unwrap();
+        // A bad middle point must discard both earlier and later joined rows.
+        conn.execute(
+            "UPDATE transaction_ys SET y = ?1 WHERE transaction_id = ?2 AND position = 1",
+            rusqlite::params![vec![0u8; 33], bad_point.id().as_slice()],
+        )
+        .unwrap();
+        assert_eq!(
+            db.list_transactions(None, None, None).await.unwrap(),
+            vec![valid]
+        );
+        assert!(db.get_transaction(bad_metadata.id()).await.is_err());
+        assert!(db.get_transaction(bad_point.id()).await.is_err());
+        drop(conn);
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
+
     #[test]
     fn transaction_ys_migration_preserves_legacy_points() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();

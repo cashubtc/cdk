@@ -715,7 +715,7 @@ where
         .bind("id", transaction_id.as_slice().to_vec())
         .fetch_all(&*conn)
         .await?;
-        Ok(sql_rows_to_transactions(rows)?.into_iter().next())
+        Ok(sql_rows_to_transactions(rows, false)?.into_iter().next())
     }
 
     #[instrument(skip(self))]
@@ -758,7 +758,7 @@ where
         )?
         .fetch_all(&*conn)
         .await?;
-        Ok(sql_rows_to_transactions(rows)?
+        Ok(sql_rows_to_transactions(rows, true)?
             .into_iter()
             .filter(|transaction| transaction.matches_conditions(&mint_url, &direction, &unit))
             .collect())
@@ -2342,8 +2342,11 @@ fn sql_row_to_wallet_saga(row: Vec<Column>) -> Result<wallet::WalletSaga, Error>
 }
 
 // Both transaction queries use one join, avoiding a separate query per transaction.
-fn sql_rows_to_transactions(rows: Vec<Vec<Column>>) -> Result<Vec<Transaction>, Error> {
-    let mut transactions: Vec<Transaction> = Vec::new();
+fn sql_rows_to_transactions(
+    rows: Vec<Vec<Column>>,
+    skip_invalid: bool,
+) -> Result<Vec<Transaction>, Error> {
+    let mut transactions: Vec<Result<Transaction, Error>> = Vec::new();
     let mut indices = HashMap::new();
     for mut row in rows {
         let y = row
@@ -2353,23 +2356,39 @@ fn sql_rows_to_transactions(rows: Vec<Vec<Column>>) -> Result<Vec<Transaction>, 
             .pop()
             .ok_or_else(|| Error::Internal("Missing transaction ID column".to_owned()))?;
         let id = column_as_binary!(id);
-        let y = column_as_nullable_binary!(y)
-            .map(|bytes| PublicKey::from_slice(&bytes))
-            .transpose()?;
         let index = match indices.get(&id) {
             Some(index) => *index,
             None => {
                 let index = transactions.len();
-                transactions.push(sql_row_to_transaction(row, Vec::new())?);
+                transactions.push(sql_row_to_transaction(row, Vec::new()));
                 indices.insert(id, index);
                 index
             }
         };
-        if let Some(y) = y {
-            transactions[index].ys.push(y);
+        if let Ok(transaction) = &mut transactions[index] {
+            let point = (|| -> Result<Option<PublicKey>, Error> {
+                Ok(column_as_nullable_binary!(y)
+                    .map(|bytes| PublicKey::from_slice(&bytes))
+                    .transpose()?)
+            })();
+            match point {
+                Ok(Some(y)) => transaction.ys.push(y),
+                Ok(None) => {}
+                // Discard the whole transaction, including previously decoded points.
+                Err(error) => transactions[index] = Err(error),
+            }
         }
     }
-    Ok(transactions)
+    transactions
+        .into_iter()
+        .filter_map(|transaction| match transaction {
+            Err(error) if skip_invalid => {
+                tracing::warn!(%error, "Skipping malformed wallet transaction");
+                None
+            }
+            result => Some(result),
+        })
+        .collect()
 }
 
 fn sql_row_to_transaction(row: Vec<Column>, ys: Vec<PublicKey>) -> Result<Transaction, Error> {
