@@ -2005,6 +2005,7 @@ mod tests {
                 selected_fee_index: Some(0),
                 outpoint: None,
                 change: None,
+                payjoin: None,
             },
         )));
         let wallet = create_test_wallet_with_mock(db.clone(), mock_client.clone()).await;
@@ -2076,6 +2077,7 @@ mod tests {
             selected_fee_index: quote.fee_index,
             outpoint: None,
             change: None,
+            payjoin: None,
         })
     }
 
