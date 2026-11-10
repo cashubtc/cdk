@@ -481,9 +481,13 @@ By default, the mint will use V2 (Version01) for *new* keysets but will preserve
 You can manually trigger a rotation to a specific version using the CLI:
 
 ```bash
-cdk-mint-cli rotate-next-keyset --use-keyset-v2 true  # Rotate to V2
-cdk-mint-cli rotate-next-keyset --use-keyset-v2 false # Rotate to V1
+cdk-mint-cli rotate-next-keyset --keyset-version v2 # Rotate to V2
+cdk-mint-cli rotate-next-keyset --keyset-version v1 # Rotate to V1
 ```
+
+The selector accepts `v1` or `v2`. The legacy
+`--use-keyset-v2 true|false` flag remains supported, but cannot be combined with
+`--keyset-version`. Omitting both selects V2.
 
 ## Production Examples
 
