@@ -58,7 +58,7 @@ use crate::wallet::saga::{
     add_compensation, clear_compensations, execute_compensations, new_compensations, Compensations,
 };
 use crate::wallet::swap::ProofReservation;
-use crate::wallet::util::escape_log_value;
+use crate::wallet::util::{escape_log_value, p2bk_slot};
 use crate::{Amount, Error, Wallet, SECP256K1};
 
 pub(crate) mod compensation;
@@ -193,11 +193,13 @@ impl<'a> ReceiveSaga<'a, Initial> {
                         pubkeys.append(&mut refund_keys);
                     }
 
+                    if proof.p2pk_e.is_some() {
+                        if let Some(last_index) = pubkeys.len().checked_sub(1) {
+                            p2bk_slot(secret.kind(), last_index)?;
+                        }
+                    }
+
                     for (i, pubkey) in pubkeys.iter().enumerate() {
-                        let slot = match secret.kind() {
-                            Kind::P2PK => i as u8,
-                            _ => (i + 1) as u8, // HTLC skips slot 0 since it's a hash, not a pubkey
-                        };
                         let x_only_pubkey = pubkey.x_only_public_key();
 
                         if let std::collections::hash_map::Entry::Vacant(entry) =
@@ -209,6 +211,7 @@ impl<'a> ReceiveSaga<'a, Initial> {
                         }
 
                         if let Some(ephemeral_key) = proof.p2pk_e {
+                            let slot = p2bk_slot(secret.kind(), i)?;
                             for signing_key in p2pk_signing_keys.values() {
                                 if let Ok(r) =
                                     crate::nuts::nut28::ecdh_kdf(signing_key, &ephemeral_key, slot)
