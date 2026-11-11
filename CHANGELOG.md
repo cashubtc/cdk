@@ -10,6 +10,7 @@
 ### Fixed
 
 - cashu: P2BK V4 tokens now encode `pe` as CBOR bytes. Wallets using CDK 0.16–0.18 must upgrade to receive these tokens. Updated wallets continue to accept legacy hex-encoded tokens (#2712).
+- cdk-cli/cdk-mintd: Reject a database password when the selected database engine does not use it, instead of starting without it.
 
 ### Removed
 

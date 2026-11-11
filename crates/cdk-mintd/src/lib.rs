@@ -944,21 +944,47 @@ pub fn apply_seed_file(settings: &mut config::Settings, seed_file: &Path) -> Res
     Ok(())
 }
 
+/// Rejects a database password that the selected engine would not use.
+///
+/// Only SQLite in a build with the `sqlcipher` feature reads the password.
+/// Any other combination would open the database without it.
+fn reject_unused_database_password(engine: &DatabaseEngine, password: Option<&str>) -> Result<()> {
+    match (engine, password) {
+        (_, None) => Ok(()),
+        #[cfg(feature = "sqlcipher")]
+        (DatabaseEngine::Sqlite, Some(_)) => Ok(()),
+        #[cfg(not(feature = "sqlcipher"))]
+        (DatabaseEngine::Sqlite, Some(_)) => {
+            bail!(
+                "A database password requires the sqlcipher feature; \
+                 this build cannot encrypt the SQLite database"
+            )
+        }
+        (DatabaseEngine::Postgres, Some(_)) => {
+            bail!(
+                "The PostgreSQL database engine does not use a database password; \
+                 set its credentials in the connection URL"
+            )
+        }
+    }
+}
+
 async fn setup_database(
     settings: &config::Settings,
     _work_dir: &Path,
-    _db_password: Option<String>,
+    db_password: Option<String>,
 ) -> Result<(
     DynMintDatabase,
     Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
     Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync>,
     Arc<dyn KVStoreCompareAndSwap<Err = cdk_database::Error> + Send + Sync>,
 )> {
+    reject_unused_database_password(&settings.database.engine, db_password.as_deref())?;
     tracing::info!("Using database engine: {:?}", settings.database.engine);
     match settings.database.engine {
         #[cfg(feature = "sqlite")]
         DatabaseEngine::Sqlite => {
-            let db = setup_sqlite_database(_work_dir, _db_password).await?;
+            let db = setup_sqlite_database(_work_dir, db_password).await?;
             let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> = db.clone();
             let kv: Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync> = db.clone();
             let configuration_store: Arc<
@@ -3527,6 +3553,47 @@ engine = "sqlite"
         assert!(!work_dir.join("bdk_wallet/bdk_wallet.sqlite").exists());
 
         let _ = fs::remove_dir_all(&work_dir);
+    }
+
+    #[tokio::test]
+    async fn postgres_engine_rejects_database_password() {
+        let work_dir = crate::test_utils::unique_temp_path("postgres_rejects_password");
+        let mut settings = config::Settings::default();
+        settings.database.engine = DatabaseEngine::Postgres;
+        settings.database.postgres = Some(config::PostgresConfig {
+            url: "postgresql://cdk@127.0.0.1:1/cdk".to_string(),
+            ..Default::default()
+        });
+
+        let error = match setup_database(&settings, &work_dir, Some("pass-value".to_string())).await
+        {
+            Ok(_) => panic!("postgres must not accept a database password"),
+            Err(error) => error.to_string(),
+        };
+
+        assert!(
+            error.contains("does not use a database password"),
+            "{error}"
+        );
+        assert!(!error.contains("pass-value"), "{error}");
+    }
+
+    #[cfg(all(feature = "sqlite", not(feature = "sqlcipher")))]
+    #[tokio::test]
+    async fn sqlite_without_sqlcipher_rejects_database_password() {
+        let work_dir = crate::test_utils::unique_temp_path("sqlite_rejects_password");
+        fs::create_dir_all(&work_dir).expect("work directory");
+        let settings = config::Settings::default();
+
+        let error = match setup_database(&settings, &work_dir, Some("pass-value".to_string())).await
+        {
+            Ok(_) => panic!("a build without sqlcipher must not accept a database password"),
+            Err(error) => error.to_string(),
+        };
+
+        assert!(error.contains("requires the sqlcipher feature"), "{error}");
+        assert!(!error.contains("pass-value"), "{error}");
+        assert!(!work_dir.join("cdk-mintd.sqlite").exists());
     }
 
     #[test]

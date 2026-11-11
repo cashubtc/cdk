@@ -14,9 +14,7 @@ use cdk::nuts::CurrencyUnit;
 #[cfg(feature = "redb")]
 use cdk_redb::WalletRedbDatabase;
 use cdk_sqlite::WalletSqliteDatabase;
-#[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
-use clap::ValueEnum;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use tracing::Level;
 use tracing_subscriber::EnvFilter;
 use url::Url;
@@ -38,13 +36,23 @@ enum TorToggle {
     Off,
 }
 
+/// Database engine for the wallet store
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum Engine {
+    /// SQLite
+    Sqlite,
+    /// redb
+    #[cfg(feature = "redb")]
+    Redb,
+}
+
 #[derive(Parser)]
 #[command(name = "cdk-cli", author = "thesimplekid <tsk@thesimplekid.com>", version = CARGO_PKG_VERSION.unwrap_or("Unknown"), about, long_about = None)]
 struct Cli {
-    /// Database engine to use (sqlite/redb)
-    #[arg(short, long, default_value = "sqlite")]
-    engine: String,
-    /// Database password for sqlcipher
+    /// Database engine to use
+    #[arg(short, long, value_enum, default_value_t = Engine::Sqlite)]
+    engine: Engine,
+    /// Database password for sqlcipher (sqlite engine only)
     #[cfg(feature = "sqlcipher")]
     #[arg(long)]
     password: Option<String>,
@@ -77,6 +85,22 @@ struct Cli {
     /// Subcommand to run
     #[command(subcommand)]
     command: Commands,
+}
+
+impl Cli {
+    /// Rejects a database password that the selected engine would not use.
+    ///
+    /// The match is exhaustive so that a new engine must decide whether it reads the password.
+    fn reject_unused_database_password(&self) -> Result<()> {
+        #[cfg(feature = "sqlcipher")]
+        match (self.engine, &self.password) {
+            (_, None) => {}
+            (Engine::Sqlite, Some(_)) => {}
+            #[cfg(feature = "redb")]
+            (Engine::Redb, Some(_)) => bail!("--password applies only to the sqlite engine"),
+        }
+        Ok(())
+    }
 }
 
 #[derive(Subcommand)]
@@ -145,6 +169,7 @@ enum Commands {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Cli = Cli::parse();
+    args.reject_unused_database_password()?;
     utils::set_non_interactive(args.non_interactive);
     let default_filter = args.log_level;
 
@@ -172,35 +197,27 @@ async fn main() -> Result<()> {
         fs::create_dir_all(&work_dir)?;
     }
 
-    let localstore: Arc<dyn WalletDatabase<cdk_database::Error> + Send + Sync> =
-        match args.engine.as_str() {
-            "sqlite" => {
-                let sql_path = work_dir.join("cdk-cli.sqlite");
-                #[cfg(not(feature = "sqlcipher"))]
-                let sql = WalletSqliteDatabase::new(&sql_path).await?;
-                #[cfg(feature = "sqlcipher")]
-                let sql = {
-                    match args.password {
-                        Some(pass) => WalletSqliteDatabase::new((sql_path, pass)).await?,
-                        None => bail!("Missing database password"),
-                    }
-                };
+    let localstore: Arc<dyn WalletDatabase<cdk_database::Error> + Send + Sync> = match args.engine {
+        Engine::Sqlite => {
+            let sql_path = work_dir.join("cdk-cli.sqlite");
+            #[cfg(not(feature = "sqlcipher"))]
+            let sql = WalletSqliteDatabase::new(&sql_path).await?;
+            #[cfg(feature = "sqlcipher")]
+            let sql = {
+                match args.password {
+                    Some(pass) => WalletSqliteDatabase::new((sql_path, pass)).await?,
+                    None => bail!("Missing database password"),
+                }
+            };
 
-                Arc::new(sql)
-            }
-            "redb" => {
-                #[cfg(feature = "redb")]
-                {
-                    let redb_path = work_dir.join("cdk-cli.redb");
-                    Arc::new(WalletRedbDatabase::new(&redb_path)?)
-                }
-                #[cfg(not(feature = "redb"))]
-                {
-                    bail!("redb feature not enabled");
-                }
-            }
-            _ => bail!("Unknown DB engine"),
-        };
+            Arc::new(sql)
+        }
+        #[cfg(feature = "redb")]
+        Engine::Redb => {
+            let redb_path = work_dir.join("cdk-cli.redb");
+            Arc::new(WalletRedbDatabase::new(&redb_path)?)
+        }
+    };
 
     let seed_path = work_dir.join("seed");
 
@@ -462,5 +479,32 @@ mod tests {
             cli.proxy.as_ref().map(url::Url::as_str),
             Some("http://127.0.0.1:8080/")
         );
+    }
+
+    #[cfg(feature = "sqlcipher")]
+    #[test]
+    fn sqlite_engine_accepts_password() {
+        let cli = Cli::parse_from(["cdk-cli", "--password", "pass-value", "balance"]);
+
+        cli.reject_unused_database_password()
+            .expect("sqlite uses the password");
+    }
+
+    #[cfg(all(feature = "sqlcipher", feature = "redb"))]
+    #[test]
+    fn redb_engine_rejects_password() {
+        let cli = Cli::parse_from([
+            "cdk-cli",
+            "--engine",
+            "redb",
+            "--password",
+            "pass-value",
+            "balance",
+        ]);
+
+        let error = cli
+            .reject_unused_database_password()
+            .expect_err("redb cannot use the password");
+        assert!(!error.to_string().contains("pass-value"), "{error}");
     }
 }
