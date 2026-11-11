@@ -44,6 +44,7 @@ impl Clnd {
             self.bitcoin_data_dir.to_string_lossy()
         ));
         cmd.arg("--network=regtest");
+        cmd.arg("--log-level=debug");
         cmd.arg(format!(
             "--lightning-dir={}",
             self.data_dir.to_string_lossy()
