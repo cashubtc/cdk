@@ -63,7 +63,7 @@ impl WalletSqliteDatabase {
     ///
     /// Waits for pending database operations and cleanup. Await this before copying
     /// the database file; dropping a handle alone does not wait for closure.
-    pub async fn close(&self) -> Result<(), FfiError> {
+    pub async fn close_database(&self) -> Result<(), FfiError> {
         self.inner.inner().close().await.map_err(FfiError::database)
     }
 }
