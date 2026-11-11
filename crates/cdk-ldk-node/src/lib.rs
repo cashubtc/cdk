@@ -1275,6 +1275,7 @@ impl MintPayment for CdkLdkNode {
                         amount_msat = ?payment_details.amount_msat,
                         fee_paid_msat = ?payment_details.fee_paid_msat,
                         payment_kind = ?payment_details.kind,
+                        node_status = ?self.inner.status(),
                         "Bolt12 payment failed"
                     );
                     self.cleanup_bolt12_dispatch_binding(&quote_id, Some(&payment_id))

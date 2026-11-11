@@ -152,7 +152,15 @@ start_regtest_processes() {
 
 # Function to perform cleanup
 cleanup() {
+    local status=$?
     echo "Cleaning up..."
+
+    if [ "$status" -ne 0 ] && [ -n "${CDK_LN_DIAGNOSTICS_DIR:-}" ] &&
+        [ -d "${CDK_ITESTS_DIR:-}" ]; then
+        echo "Collecting Lightning diagnostics in $CDK_LN_DIAGNOSTICS_DIR"
+        bash "$(dirname "${BASH_SOURCE[0]}")/collect_ln_diagnostics.sh" \
+            "$CDK_ITESTS_DIR" "$CDK_LN_DIAGNOSTICS_DIR" || true
+    fi
 
     echo "Killing the cdk regtest and mints"
     stop_regtest_processes
@@ -184,6 +192,7 @@ cleanup() {
     # unset RUST_BACKTRACE
     unset CDK_TEST_REGTEST
     unset CDK_TEST_LIGHTNING_CLIENT
+    return "$status"
 }
 
 # Set up trap to call cleanup on script exit

@@ -499,10 +499,20 @@ jobs:
         id: archive
         run: echo "path=$(nix build .#itest-archive --print-out-paths --no-link)/itest-archive.tar.zst" >> $GITHUB_OUTPUT
       - name: Test
+        env:
+          CDK_LN_DIAGNOSTICS_DIR: ${{ runner.temp }}/ln-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.database }}
         run: |
           export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}'
-          nix develop --fallback -i -L -k CDK_ITEST_ARCHIVE -k CDK_NEXTEST_EXTRACT_ROOT -k CDK_ITEST_SUITE_TIMEOUT_SECONDS .#regtest \
+          nix develop --fallback -i -L -k CDK_ITEST_ARCHIVE -k CDK_NEXTEST_EXTRACT_ROOT -k CDK_ITEST_SUITE_TIMEOUT_SECONDS -k CDK_LN_DIAGNOSTICS_DIR .#regtest \
             --command misc/with_ci_tmpdir.sh just itest-ln ${{ matrix.database }}
+      - name: Upload Lightning failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ln-diagnostics-${{ matrix.database }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ln-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.database }}
+          if-no-files-found: warn
+          retention-days: 7
 
   regtest-onchain-itest:
     name: "Integration regtest Onchain tests"
