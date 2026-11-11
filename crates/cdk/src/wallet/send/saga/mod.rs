@@ -827,9 +827,12 @@ impl<'a> SendSaga<'a, Prepared> {
     /// Re-prices the recipient fee on the keyset the swap signs on, since the
     /// mint may have rotated since the send was prepared and the recipient's
     /// claim to the requested amount outranks the figure quoted to the sender.
-    /// One window stays open: `swap_internal` retries through
-    /// `retry_on_inactive_keyset`, so a retry can land on a keyset other than
-    /// the one priced here.
+    /// The swap can still retry onto a third keyset through
+    /// `retry_on_inactive_keyset`, so the proofs it returns are checked against
+    /// the keyset they were priced on before they reach the token. A send
+    /// refused there has already swapped: its inputs are spent and the outputs
+    /// stay in the wallet, reserved, until recovery or a state sync releases
+    /// them.
     #[instrument(skip(self), err)]
     pub async fn confirm(
         mut self,
@@ -940,6 +943,32 @@ impl<'a> SendSaga<'a, Prepared> {
                     )
                     .await?
                 {
+                    if options.include_fee {
+                        for signed_on in swapped_proofs.count_by_keyset().into_keys() {
+                            if signed_on == keyset_id {
+                                continue;
+                            }
+
+                            let (_, repriced) = recipient_redeem_fee(
+                                self.wallet,
+                                signed_on,
+                                amount,
+                                KeysetLoadPolicy::CacheOnly,
+                            )
+                            .await?;
+
+                            if repriced > send_fee {
+                                tracing::warn!(
+                                    "Swap signed on keyset {}, which charges {} to redeem, past the {} this send was sized for",
+                                    signed_on,
+                                    repriced,
+                                    send_fee
+                                );
+                                return Err(Error::InsufficientFunds);
+                            }
+                        }
+                    }
+
                     final_proofs_to_send.extend(swapped_proofs);
                 }
 
@@ -1988,6 +2017,92 @@ mod tests {
         assert!(
             mock_client.captured_swap_requests().is_empty(),
             "a short send must not reach the mint"
+        );
+    }
+
+    /// Only the mint can tell that a keyset it still lists as active was
+    /// deactivated, so the swap retries on a keyset nothing priced against.
+    /// Landing on a dearer one leaves the recipient short of what the token
+    /// promised, and the send has to fail rather than hand it over.
+    ///
+    /// The metadata cache keeps its default lifetime here, so confirm still
+    /// prices on the free keyset and only the retry's refresh sees the
+    /// rotation. That is what opens the window.
+    #[tokio::test]
+    async fn test_confirm_fails_when_the_swap_retries_onto_a_dearer_keyset() {
+        let free = mint_signing_keyset(0);
+        let rotated = mint_signing_keyset(1000);
+
+        let db = create_test_db().await;
+        let proof_info = test_proof_info(free.id, 64, test_mint_url());
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.enable_mint_signing();
+        mock_client.set_mint_keys_response(Ok(vec![free.clone()]));
+        let wallet = create_test_wallet_with_mock(db, mock_client.clone()).await;
+
+        let prepared = SendSaga::new(&wallet)
+            .prepare(
+                Amount::from(32),
+                SendOptions {
+                    send_kind: SendKind::OnlineExact,
+                    include_fee: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("the free keyset can sign the swap this send needs");
+
+        assert_eq!(
+            prepared.send_fee(),
+            Amount::ZERO,
+            "the free keyset costs the recipient nothing to redeem"
+        );
+
+        let mut deactivated = free.clone();
+        deactivated.active = Some(false);
+        mock_client.set_mint_keys_response(Ok(vec![deactivated, rotated.clone()]));
+        mock_client.push_post_swap_response(Err(crate::Error::InactiveKeyset));
+
+        let err = prepared
+            .confirm(None)
+            .await
+            .map(|(token, _)| token)
+            .expect_err("the retry signs on a keyset that charges the recipient more");
+
+        assert!(
+            matches!(err, crate::Error::InsufficientFunds),
+            "expected InsufficientFunds, got: {err:?}"
+        );
+
+        let requests = mock_client.captured_swap_requests();
+        assert_eq!(
+            requests.len(),
+            2,
+            "the swap has to retry for this to be a test of the retry"
+        );
+        assert!(
+            requests[0].outputs().iter().all(|o| o.keyset_id == free.id),
+            "the first attempt signs on the keyset confirm priced"
+        );
+        assert!(
+            requests[1]
+                .outputs()
+                .iter()
+                .all(|o| o.keyset_id == rotated.id),
+            "the retry signs on the rotated keyset, which nothing priced against"
+        );
+
+        assert_eq!(
+            wallet.total_balance().await.unwrap(),
+            Amount::from(32),
+            "the swap change stays spendable"
+        );
+        assert_eq!(
+            wallet.total_reserved_balance().await.unwrap(),
+            Amount::from(32),
+            "the output the token never carried is stranded reserved, not lost"
         );
     }
 
