@@ -2,7 +2,7 @@
 //!
 //! `DirectMintConnection` is the client-side counterpart to a local mint: it
 //! implements [`MintConnector`] by forwarding to the mint's
-//! [`MintServer`](cdk::mint::MintServer) implementation, so no HTTP transport is
+//! [`MintServer`] implementation, so no HTTP transport is
 //! involved. `MintServer` speaks [`QuoteId`](cdk::mint::QuoteId), so this type
 //! owns the `String` conversions that a wallet-side connector needs, the same
 //! work an HTTP client does when it parses an id off the wire. It is a test

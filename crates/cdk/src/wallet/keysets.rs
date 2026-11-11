@@ -98,8 +98,8 @@ impl Wallet {
     /// outputs signed by them.
     ///
     /// Use this only where the mint has to sign something. A send that hands
-    /// over proofs the wallet already holds falls back to
-    /// [`split_basis_keyset()`](Self::split_basis_keyset) instead.
+    /// over proofs the wallet already holds falls back to the crate-private
+    /// `split_basis_keyset` instead.
     #[instrument(skip(self))]
     pub async fn active_keyset(&self) -> Result<KeySet, Error> {
         self.active_keyset_with_policy(Default::default()).await
