@@ -85,8 +85,8 @@ pub use bip321::{
 pub use builder::WalletBuilder;
 pub use cdk_common::wallet as types;
 pub use cdk_common::wallet::{
-    MeltPrepareOptions, NUT13Options, P2PKLockedProofSendMode, ReceiveOptions, SendMemo,
-    SendOptions,
+    MeltPrepareOptions, NUT13Options, P2PKLockedProofSendMode, ReceiveOptions, RestoreStart,
+    SendMemo, SendOptions,
 };
 pub use melt::{MeltConfirmOptions, MeltOutcome, PendingMelt, PreparedMelt};
 pub use mint_connector::transport::Transport as HttpTransport;
@@ -668,7 +668,7 @@ impl Wallet {
     ///
     /// This is a thin wrapper over
     /// [`Wallet::restore_with_opts`](Self::restore_with_opts). Call that
-    /// directly if you need to override the batch size or gap limit.
+    /// directly if you need to override the starting position, batch size or gap limit.
     pub async fn restore(&self) -> Result<Restored, Error> {
         self.restore_with_opts(NUT13Options::default()).await
     }
@@ -678,9 +678,24 @@ impl Wallet {
     /// Scans each keyset in batches of `opts.batch_size` blinded messages
     /// and stops after `opts.max_gap` consecutive empty batches. Lowering
     /// `batch_size` trades scan latency for a gentler request pattern.
-    #[instrument(skip(self))]
+    ///
+    /// [`RestoreStart`] selects a full scan from zero (the default), explicit
+    /// inclusive indices per keyset, or a lookback from stored counters.
+    /// Lookback batches starting before the stored counter do not count toward
+    /// the gap limit, preserving the forward scan coverage.
+    ///
+    /// After each recovered batch, the stored next derivation index advances
+    /// past the recovered signatures without decreasing an existing counter.
+    /// Empty batches do not advance it. These counters track secret allocation,
+    /// not completed recovery work: lookback can skip earlier proofs and does
+    /// not reliably resume an interrupted scan. Use a full scan or independently
+    /// tracked per-keyset positions when earlier history must be recovered.
+    ///
+    /// Returned amounts cover the scanned range, including proofs already
+    /// present in the wallet.
+    #[instrument(skip_all)]
     pub async fn restore_with_opts(&self, opts: NUT13Options) -> Result<Restored, Error> {
-        let opts = NUT13Options::new(opts.batch_size, opts.max_gap)?;
+        let opts = NUT13Options::new(opts.batch_size, opts.max_gap)?.with_start(opts.start);
         let batch_size = opts.batch_size;
         let max_gap = opts.max_gap;
 
@@ -700,13 +715,27 @@ impl Wallet {
 
         for keyset in keysets {
             let keys = self.keyset(keyset.id).await?.keys;
+            let mut keyset_counter = self
+                .localstore
+                .increment_keyset_counter(&keyset.id, 0)
+                .await?;
             let mut empty_batch: u32 = 0;
-            let mut start_counter: u32 = 0;
-            // Track the highest counter value that had a signature
-            let mut highest_counter: Option<u32> = None;
+            let (mut start_counter, gap_start_counter) = match &opts.start {
+                RestoreStart::FromZero => (0, 0),
+                RestoreStart::KeysetIndices(indices) => {
+                    let start = indices.get(&keyset.id).copied().unwrap_or_default();
+                    (start, start)
+                }
+                RestoreStart::Lookback(lookback) => {
+                    (keyset_counter.saturating_sub(*lookback), keyset_counter)
+                }
+            };
 
             while empty_batch < max_gap {
                 let batch_end = start_counter.saturating_add(batch_size);
+                if batch_end == start_counter {
+                    break;
+                }
                 let premint_secrets =
                     PreMintSecrets::restore_batch(keyset.id, &self.seed, start_counter, batch_end)?;
 
@@ -738,7 +767,11 @@ impl Wallet {
                 }
 
                 if response.signatures.is_empty() {
-                    empty_batch += 1;
+                    // Preserve the forward gap budget while scanning lookback,
+                    // including a batch that straddles the saved counter.
+                    if start_counter >= gap_start_counter {
+                        empty_batch += 1;
+                    }
                     start_counter = start_counter.saturating_add(batch_size);
                     continue;
                 }
@@ -764,13 +797,6 @@ impl Wallet {
                             .map(|sig| (idx, p, sig.clone()))
                     })
                     .collect();
-
-                // Update highest counter based on matched indices
-                if let Some(&(max_idx, _, _)) = matched_secrets.last() {
-                    let counter_value = start_counter + max_idx as u32;
-                    highest_counter =
-                        Some(highest_counter.map_or(counter_value, |c| c.max(counter_value)));
-                }
 
                 // the response outputs and premint secrets should be the same after filtering
                 // blinded messages the mint did not have signatures for
@@ -879,19 +905,26 @@ impl Wallet {
                     .update_proofs(unspent_proofs, vec![])
                     .await?;
 
-                empty_batch = 0;
-                start_counter = start_counter.saturating_add(batch_size);
-            }
+                // Save progress only after the proofs are persisted. Keep the
+                // counter at least one past the last recovered signature,
+                // without adding the absolute index again on a rescan.
+                if let Some(&(max_idx, _, _)) = matched_secrets.last() {
+                    let next_counter = start_counter + max_idx as u32 + 1;
+                    if next_counter > keyset_counter {
+                        keyset_counter = self
+                            .localstore
+                            .increment_keyset_counter(&keyset.id, next_counter - keyset_counter)
+                            .await?;
+                        tracing::debug!(
+                            "Advanced keyset {} counter to {} after restore batch",
+                            keyset.id,
+                            keyset_counter
+                        );
+                    }
+                }
 
-            if let Some(highest) = highest_counter {
-                self.localstore
-                    .increment_keyset_counter(&keyset.id, highest + 1)
-                    .await?;
-                tracing::debug!(
-                    "Set keyset {} counter to {} after restore",
-                    keyset.id,
-                    highest + 1
-                );
+                empty_batch = 0;
+                start_counter = batch_end;
             }
         }
         Ok(restored_result)
@@ -1762,6 +1795,487 @@ mod tests {
             matches!(result, Err(Error::AmountOverflow)),
             "expected amount overflow, got {result:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn restore_starts_at_stored_counter_with_lookback() {
+        use crate::nuts::RestoreResponse;
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock_seed, test_keyset_id, MockMintConnector,
+        };
+
+        for (counter, lookback, start) in [
+            (50, 0, 50),
+            (50, 8, 42),
+            (50, 7, 43),
+            (50, 100, 0),
+            (0, 0, 0),
+            (0, 100, 0),
+        ] {
+            let db = create_test_db().await;
+            let keyset_id = test_keyset_id();
+            if counter > 0 {
+                db.increment_keyset_counter(&keyset_id, counter)
+                    .await
+                    .unwrap();
+            }
+            let client = Arc::new(MockMintConnector::new());
+            client.mint_info.lock().unwrap().time = None;
+            let opts = NUT13Options::new(2, 2).unwrap();
+            let expected_batches = (counter - start).div_ceil(opts.batch_size) + opts.max_gap;
+            for _ in 0..expected_batches {
+                client
+                    .restore_responses
+                    .lock()
+                    .unwrap()
+                    .push_back(Ok(RestoreResponse {
+                        outputs: vec![],
+                        signatures: vec![],
+                    }));
+            }
+            let seed = [7; 64];
+            let wallet = create_test_wallet_with_mock_seed(db.clone(), client.clone(), seed).await;
+            let restored = wallet
+                .restore_with_opts(opts.clone().with_start(RestoreStart::Lookback(lookback)))
+                .await
+                .unwrap();
+            assert_eq!(restored.unspent, Amount::ZERO);
+            {
+                let requests = client.restore_requests.lock().unwrap();
+                assert_eq!(requests.len(), expected_batches as usize);
+                for (batch, request) in requests.iter().enumerate() {
+                    let batch_start = start + batch as u32 * opts.batch_size;
+                    let expected = PreMintSecrets::restore_batch(
+                        keyset_id,
+                        &seed,
+                        batch_start,
+                        batch_start + opts.batch_size,
+                    )
+                    .unwrap();
+                    assert_eq!(request.outputs, expected.blinded_messages());
+                }
+            }
+            assert_eq!(
+                db.increment_keyset_counter(&keyset_id, 0).await.unwrap(),
+                counter,
+                "empty batches must not advance the derivation counter"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn restore_start_modes_apply_independently_to_keysets() {
+        use crate::nuts::{Keys, RestoreResponse};
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock_seed, test_keyset, MockMintConnector,
+        };
+
+        let db = create_test_db().await;
+        let client = Arc::new(MockMintConnector::new());
+        client.mint_info.lock().unwrap().time = None;
+        let first = test_keyset();
+        let mut second = first.clone();
+        second.keys = Keys::new(BTreeMap::from([(
+            Amount::from(1),
+            SecretKey::from_slice(&[2; 32]).unwrap().public_key(),
+        )]));
+        second.id = Id::v1_from_keys(&second.keys);
+        second.active = Some(false);
+        let mut other_unit = second.clone();
+        other_unit.keys = Keys::new(BTreeMap::from([(
+            Amount::from(1),
+            SecretKey::from_slice(&[3; 32]).unwrap().public_key(),
+        )]));
+        other_unit.id = Id::v1_from_keys(&other_unit.keys);
+        other_unit.unit = CurrencyUnit::Usd;
+        *client.keysets.lock().unwrap() = vec![first.clone(), second.clone(), other_unit];
+        db.increment_keyset_counter(&first.id, 1_000).await.unwrap();
+        db.increment_keyset_counter(&second.id, 250).await.unwrap();
+        let opts = NUT13Options::default();
+        let seed = [7; 64];
+        let wallet = create_test_wallet_with_mock_seed(db.clone(), client.clone(), seed).await;
+        for (mode, starts, lookback_batches) in [
+            (RestoreStart::FromZero, [0, 0], 0),
+            (RestoreStart::Lookback(0), [1_000, 250], 0),
+            (RestoreStart::Lookback(100), [900, 150], 1),
+            (
+                RestoreStart::KeysetIndices(HashMap::from([(first.id, 25), (second.id, 1_250)])),
+                [25, 1_250],
+                0,
+            ),
+            (
+                RestoreStart::KeysetIndices(HashMap::from([(first.id, 1_000)])),
+                [1_000, 0],
+                0,
+            ),
+            (RestoreStart::KeysetIndices(HashMap::new()), [0, 0], 0),
+        ] {
+            let expected_batches = opts.max_gap + lookback_batches;
+            for _ in 0..2 * expected_batches {
+                client
+                    .restore_responses
+                    .lock()
+                    .unwrap()
+                    .push_back(Ok(RestoreResponse {
+                        outputs: vec![],
+                        signatures: vec![],
+                    }));
+            }
+            wallet
+                .restore_with_opts(opts.clone().with_start(mode))
+                .await
+                .unwrap();
+            {
+                let requests = client.restore_requests.lock().unwrap();
+                assert_eq!(requests.len(), 2 * expected_batches as usize);
+                for (keyset_id, start) in [(first.id, starts[0]), (second.id, starts[1])] {
+                    let batches: Vec<_> = requests
+                        .iter()
+                        .filter(|request| request.outputs[0].keyset_id == keyset_id)
+                        .collect();
+                    assert_eq!(batches.len(), expected_batches as usize);
+                    for (batch, request) in batches.iter().enumerate() {
+                        let batch_start = start + batch as u32 * opts.batch_size;
+                        assert_eq!(
+                            request.outputs,
+                            PreMintSecrets::restore_batch(
+                                keyset_id,
+                                &seed,
+                                batch_start,
+                                batch_start + opts.batch_size,
+                            )
+                            .unwrap()
+                            .blinded_messages()
+                        );
+                    }
+                }
+            }
+            client.restore_requests.lock().unwrap().clear();
+            assert_eq!(
+                db.increment_keyset_counter(&first.id, 0).await.unwrap(),
+                1_000
+            );
+            assert_eq!(
+                db.increment_keyset_counter(&second.id, 0).await.unwrap(),
+                250
+            );
+        }
+    }
+
+    fn stage_restore_proof(
+        client: &crate::wallet::test_utils::MockMintConnector,
+        seed: &[u8; 64],
+        keyset_id: Id,
+        index: u32,
+    ) {
+        use crate::nuts::{CheckStateResponse, ProofState, RestoreResponse};
+
+        let premint = PreMintSecrets::restore_batch(keyset_id, seed, index, index + 1).unwrap();
+        let outputs = premint.blinded_messages();
+        let signing_key = SecretKey::from_slice(&[1; 32]).unwrap();
+        let signature = BlindSignature {
+            amount: Amount::from(1),
+            keyset_id,
+            c: crate::dhke::sign_message(&signing_key, &outputs[0].blinded_secret).unwrap(),
+            dleq: None,
+        };
+        client
+            .restore_responses
+            .lock()
+            .unwrap()
+            .push_back(Ok(RestoreResponse {
+                outputs,
+                signatures: vec![signature],
+            }));
+        client.set_check_state_response(Ok(CheckStateResponse {
+            states: vec![ProofState::from((
+                crate::dhke::hash_to_curve(premint.secrets[0].secret.as_bytes()).unwrap(),
+                State::Unspent,
+            ))],
+        }));
+    }
+
+    #[tokio::test]
+    async fn restore_recovers_from_inclusive_keyset_index() {
+        use crate::nuts::RestoreResponse;
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock_seed, MockMintConnector,
+        };
+
+        for (counter, start, index) in [(50, 7, 7), (2, 7, 10)] {
+            let db = create_test_db().await;
+            let client = Arc::new(MockMintConnector::new());
+            client.mint_info.lock().unwrap().time = None;
+            client.enable_mint_signing();
+            let keyset_id = client.keysets.lock().unwrap()[0].id;
+            db.increment_keyset_counter(&keyset_id, counter)
+                .await
+                .unwrap();
+            let seed = [7; 64];
+            stage_restore_proof(&client, &seed, keyset_id, index);
+            client._set_restore_response(Ok(RestoreResponse {
+                outputs: vec![],
+                signatures: vec![],
+            }));
+            let wallet = create_test_wallet_with_mock_seed(db.clone(), client.clone(), seed).await;
+            let opts = NUT13Options::new(4, 1)
+                .unwrap()
+                .with_start(RestoreStart::KeysetIndices(HashMap::from([(
+                    keyset_id, start,
+                )])));
+            let restored = wallet.restore_with_opts(opts).await.unwrap();
+            assert_eq!(restored.unspent, Amount::from(1));
+            assert_eq!(wallet.total_balance().await.unwrap(), Amount::from(1));
+            assert_eq!(
+                db.increment_keyset_counter(&keyset_id, 0).await.unwrap(),
+                counter.max(index + 1)
+            );
+            assert_eq!(client.restore_requests.lock().unwrap().len(), 2);
+        }
+    }
+
+    #[tokio::test]
+    async fn restore_lookback_preserves_forward_recovery_coverage() {
+        use crate::nuts::RestoreResponse;
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock_seed, MockMintConnector,
+        };
+
+        for lookback in [0, 50, 49] {
+            // Recover both at the saved counter and at the end of the range
+            // covered by the forward gap budget, including unaligned lookback.
+            for index in [50, 53] {
+                let db = create_test_db().await;
+                let client = Arc::new(MockMintConnector::new());
+                client.mint_info.lock().unwrap().time = None;
+                client.enable_mint_signing();
+                let keyset_id = client.keysets.lock().unwrap()[0].id;
+                let counter: u32 = 50;
+                db.increment_keyset_counter(&keyset_id, counter)
+                    .await
+                    .unwrap();
+                let seed = [7; 64];
+                let opts = NUT13Options::new(2, 2).unwrap();
+                let start = counter.saturating_sub(lookback);
+                let empty_batches = (index - start) / opts.batch_size;
+                for _ in 0..empty_batches {
+                    client
+                        .restore_responses
+                        .lock()
+                        .unwrap()
+                        .push_back(Ok(RestoreResponse {
+                            outputs: vec![],
+                            signatures: vec![],
+                        }));
+                }
+                stage_restore_proof(&client, &seed, keyset_id, index);
+                for _ in 0..opts.max_gap {
+                    client
+                        .restore_responses
+                        .lock()
+                        .unwrap()
+                        .push_back(Ok(RestoreResponse {
+                            outputs: vec![],
+                            signatures: vec![],
+                        }));
+                }
+                let wallet =
+                    create_test_wallet_with_mock_seed(db.clone(), client.clone(), seed).await;
+                let restored = wallet
+                    .restore_with_opts(opts.clone().with_start(RestoreStart::Lookback(lookback)))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    restored.unspent,
+                    Amount::from(1),
+                    "lookback {lookback:?} must preserve recovery at index {index}"
+                );
+                assert_eq!(wallet.total_balance().await.unwrap(), Amount::from(1));
+                assert_eq!(
+                    db.increment_keyset_counter(&keyset_id, 0).await.unwrap(),
+                    index + 1
+                );
+                assert_eq!(
+                    client.restore_requests.lock().unwrap().len(),
+                    (empty_batches + 1 + opts.max_gap) as usize
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn restore_updates_counters_and_looks_back_after_reopening() {
+        use crate::nuts::RestoreResponse;
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock_seed, MockMintConnector,
+        };
+
+        // Exercise both a full restore and a lookback scan failing
+        // after recovering a partial batch, then reopening the wallet.
+        for lookback in [false, true] {
+            let db = create_test_db().await;
+            let client = Arc::new(MockMintConnector::new());
+            client.mint_info.lock().unwrap().time = None;
+            client.enable_mint_signing();
+            let keyset_id = client.keysets.lock().unwrap()[0].id;
+            let start = if lookback { 10 } else { 0 };
+            db.increment_keyset_counter(&keyset_id, start)
+                .await
+                .unwrap();
+            let seed = [7; 64];
+            stage_restore_proof(&client, &seed, keyset_id, start + 2);
+            client
+                .restore_responses
+                .lock()
+                .unwrap()
+                .push_back(Err(Error::Timeout));
+            let wallet = create_test_wallet_with_mock_seed(db.clone(), client.clone(), seed).await;
+            let opts = NUT13Options::new(4, 1).unwrap();
+            let start_mode = match lookback {
+                true => RestoreStart::Lookback(0),
+                false => RestoreStart::FromZero,
+            };
+            let result = wallet
+                .restore_with_opts(opts.clone().with_start(start_mode))
+                .await;
+            assert!(matches!(result, Err(Error::Timeout)));
+            assert_eq!(
+                db.increment_keyset_counter(&keyset_id, 0).await.unwrap(),
+                start + 3,
+                "save the index after the last signature, excluding the unsigned batch tail"
+            );
+            assert_eq!(wallet.total_balance().await.unwrap(), Amount::from(1));
+            assert_eq!(
+                wallet
+                    .localstore
+                    .get_proofs(
+                        Some(wallet.mint_url.clone()),
+                        Some(wallet.unit.clone()),
+                        Some(vec![State::Unspent]),
+                        None,
+                    )
+                    .await
+                    .unwrap()[0]
+                    .derivation_index,
+                Some(start + 2)
+            );
+            drop(wallet);
+
+            client.restore_requests.lock().unwrap().clear();
+            client._set_restore_response(Ok(RestoreResponse {
+                outputs: vec![],
+                signatures: vec![],
+            }));
+            let reopened =
+                create_test_wallet_with_mock_seed(db.clone(), client.clone(), seed).await;
+            reopened
+                .restore_with_opts(opts.clone().with_start(RestoreStart::Lookback(0)))
+                .await
+                .unwrap();
+            assert_eq!(
+                client.restore_requests.lock().unwrap()[0].outputs,
+                PreMintSecrets::restore_batch(keyset_id, &seed, start + 3, start + 7)
+                    .unwrap()
+                    .blinded_messages()
+            );
+
+            // A lookback may find the same proof again, but must neither
+            // duplicate its balance nor add the absolute index to the counter.
+            stage_restore_proof(&client, &seed, keyset_id, start + 2);
+            client._set_restore_response(Ok(RestoreResponse {
+                outputs: vec![],
+                signatures: vec![],
+            }));
+            let rescanned = reopened
+                .restore_with_opts(opts.clone().with_start(RestoreStart::Lookback(3)))
+                .await
+                .unwrap();
+            assert_eq!(rescanned.unspent, Amount::from(1));
+            assert_eq!(reopened.total_balance().await.unwrap(), Amount::from(1));
+            assert_eq!(
+                db.increment_keyset_counter(&keyset_id, 0).await.unwrap(),
+                start + 3
+            );
+
+            stage_restore_proof(&client, &seed, keyset_id, start + 2);
+            client._set_restore_response(Ok(RestoreResponse {
+                outputs: vec![],
+                signatures: vec![],
+            }));
+            // Full restore still starts from zero, even with a stored counter.
+            // For the lookback case, use a batch large enough to reach the proof.
+            client.restore_requests.lock().unwrap().clear();
+            reopened
+                .restore_with_opts(NUT13Options::new(start + 4, 1).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                client.restore_requests.lock().unwrap()[0].outputs,
+                PreMintSecrets::restore_batch(keyset_id, &seed, 0, start + 4)
+                    .unwrap()
+                    .blinded_messages()
+            );
+            assert_eq!(
+                db.increment_keyset_counter(&keyset_id, 0).await.unwrap(),
+                start + 3
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn restore_does_not_advance_counter_for_a_failed_batch() {
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock_seed, MockMintConnector,
+        };
+
+        let db = create_test_db().await;
+        let client = Arc::new(MockMintConnector::new());
+        client.mint_info.lock().unwrap().time = None;
+        client.enable_mint_signing();
+        let keyset_id = client.keysets.lock().unwrap()[0].id;
+        db.increment_keyset_counter(&keyset_id, 10).await.unwrap();
+        let seed = [7; 64];
+        stage_restore_proof(&client, &seed, keyset_id, 12);
+        client.set_check_state_response(Err(Error::Timeout));
+        let wallet = create_test_wallet_with_mock_seed(db.clone(), client, seed).await;
+        assert!(matches!(
+            wallet
+                .restore_with_opts(
+                    NUT13Options::new(4, 1)
+                        .unwrap()
+                        .with_start(RestoreStart::Lookback(0)),
+                )
+                .await,
+            Err(Error::Timeout)
+        ));
+        assert_eq!(
+            db.increment_keyset_counter(&keyset_id, 0).await.unwrap(),
+            10
+        );
+        assert_eq!(wallet.total_balance().await.unwrap(), Amount::ZERO);
+    }
+
+    #[tokio::test]
+    async fn restore_rejects_invalid_options_before_scanning() {
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock, MockMintConnector,
+        };
+
+        let client = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(create_test_db().await, client.clone()).await;
+        for (batch_size, max_gap) in [(0, 1), (1, 0)] {
+            assert!(matches!(
+                wallet
+                    .restore_with_opts(NUT13Options {
+                        batch_size,
+                        max_gap,
+                        start: RestoreStart::Lookback(0),
+                    })
+                    .await,
+                Err(Error::InvalidNut13Options { .. })
+            ));
+        }
+        assert!(client.restore_requests.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

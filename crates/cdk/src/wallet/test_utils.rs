@@ -510,6 +510,10 @@ pub struct MockMintConnector {
     pub proof_states: Mutex<HashMap<crate::nuts::PublicKey, State>>,
     /// Response for post_restore calls
     pub restore_response: Mutex<Option<Result<RestoreResponse, Error>>>,
+    /// Queue of responses for successive post_restore calls.
+    pub restore_responses: Mutex<std::collections::VecDeque<Result<RestoreResponse, Error>>>,
+    /// Captured post_restore requests.
+    pub restore_requests: Mutex<Vec<RestoreRequest>>,
     /// Response for get_melt_quote_status calls
     pub melt_quote_status_response: Mutex<Option<Result<MeltQuoteBolt11Response<String>, Error>>>,
     /// Queue of responses for successive get_melt_quote_status calls.
@@ -608,6 +612,8 @@ impl MockMintConnector {
             check_state_response: Mutex::new(None),
             proof_states: Mutex::new(HashMap::new()),
             restore_response: Mutex::new(None),
+            restore_responses: Mutex::new(std::collections::VecDeque::new()),
+            restore_requests: Mutex::new(Vec::new()),
             melt_quote_status_response: Mutex::new(None),
             melt_quote_status_responses: Mutex::new(std::collections::VecDeque::new()),
             post_mint_response: Mutex::new(None),
@@ -1122,12 +1128,17 @@ impl MintConnector for MockMintConnector {
         })
     }
 
-    async fn post_restore(&self, _request: RestoreRequest) -> Result<RestoreResponse, Error> {
-        self.restore_response
-            .lock()
-            .unwrap()
-            .take()
-            .expect("MockMintConnector: post_restore called without configured response")
+    async fn post_restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
+        self.restore_requests.lock().unwrap().push(request);
+        match self.restore_responses.lock().unwrap().pop_front() {
+            Some(response) => response,
+            None => self
+                .restore_response
+                .lock()
+                .unwrap()
+                .take()
+                .expect("MockMintConnector: post_restore called without configured response"),
+        }
     }
 
     async fn get_auth_wallet(&self) -> Option<crate::wallet::AuthWallet> {
