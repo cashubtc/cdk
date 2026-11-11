@@ -23,7 +23,7 @@ fn config_for(path: &str) -> Config {
     #[cfg(not(feature = "sqlcipher"))]
     let config: Config = path.into();
     #[cfg(feature = "sqlcipher")]
-    let config: Config = (path, "test").into();
+    let config: Config = (path, "test".parse().expect("non-empty key")).into();
 
     config
 }

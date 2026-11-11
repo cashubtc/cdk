@@ -27,6 +27,7 @@ rusqlite = { version = ">=0.31.0, <0.40.0", features = ["bundled"]}
 tokio = { workspace = true, features = ["rt-multi-thread"]}
 tracing.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]

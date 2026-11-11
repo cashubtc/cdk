@@ -2,8 +2,10 @@
 
 mod async_sqlite;
 mod common;
+mod sqlcipher_key;
 
 pub use common::SqliteConnectionManager;
+pub use sqlcipher_key::{SqlcipherKey, SqlcipherKeyError};
 
 #[cfg(feature = "mint")]
 pub mod mint;

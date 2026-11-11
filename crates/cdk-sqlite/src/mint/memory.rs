@@ -17,7 +17,12 @@ pub async fn empty() -> Result<MintSqliteDatabase, database::Error> {
     #[cfg(not(feature = "sqlcipher"))]
     let path = ":memory:";
     #[cfg(feature = "sqlcipher")]
-    let path = (":memory:", "memory");
+    let path = (
+        ":memory:",
+        "memory"
+            .parse::<crate::SqlcipherKey>()
+            .map_err(|e| database::Error::Database(Box::new(e)))?,
+    );
 
     MintSqliteDatabase::new(path).await
 }
