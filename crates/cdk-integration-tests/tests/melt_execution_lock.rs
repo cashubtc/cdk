@@ -289,7 +289,7 @@ async fn mint_proofs(mint: &Mint, amount: Amount) -> Proofs {
     timeout(Duration::from_secs(30), async {
         loop {
             let check: MintQuoteBolt11Response<_> = mint
-                .check_mint_quotes(&[QuoteId::from_str(&mint_quote.quote).unwrap()])
+                .check_mint_quotes(&[QuoteId::from_str(&mint_quote.quote).unwrap()], None)
                 .await
                 .unwrap()
                 .first()
@@ -437,7 +437,7 @@ async fn status_poll_preserves_completion_during_change_signing() {
     let mut poll = tokio::spawn({
         let replica = replica.clone();
         let quote_id = quote_id.clone();
-        async move { replica.check_melt_quote(&quote_id).await }
+        async move { replica.check_melt_quote(&quote_id, None).await }
     });
     let response = timeout(Duration::from_secs(10), async {
         tokio::select! {
@@ -461,7 +461,7 @@ async fn status_poll_preserves_completion_during_change_signing() {
             .unwrap()
             .unwrap(),
     };
-    let finalized = replica.check_melt_quote(&quote_id).await.unwrap();
+    let finalized = replica.check_melt_quote(&quote_id, None).await.unwrap();
     let stored = mint
         .localstore()
         .get_melt_quote(&quote_id)
@@ -534,7 +534,7 @@ async fn expired_executor_cannot_override_replica_recovery() {
         .unwrap()
         .unwrap();
     let replica = create_mint_with_store(Arc::clone(&backend), localstore).await;
-    let response = replica.check_melt_quote(&quote_id).await.unwrap();
+    let response = replica.check_melt_quote(&quote_id, None).await.unwrap();
     assert_eq!(melt_quote_state(&response), MeltQuoteState::Pending);
     assert_eq!(
         mint.localstore()
@@ -553,7 +553,7 @@ async fn expired_executor_cannot_override_replica_recovery() {
         .await
         .unwrap());
     tx.commit().await.unwrap();
-    let response = replica.check_melt_quote(&quote_id).await.unwrap();
+    let response = replica.check_melt_quote(&quote_id, None).await.unwrap();
     assert_eq!(melt_quote_state(&response), MeltQuoteState::Pending);
     assert!(mint
         .localstore()
@@ -578,7 +578,7 @@ async fn expired_executor_cannot_override_replica_recovery() {
     assert!(!quote.is_locked());
 
     backend.set_check_status(MeltQuoteState::Paid);
-    let response = replica.check_melt_quote(&quote_id).await.unwrap();
+    let response = replica.check_melt_quote(&quote_id, None).await.unwrap();
     assert_eq!(melt_quote_state(&response), MeltQuoteState::Paid);
     assert!(mint
         .localstore()
@@ -643,13 +643,13 @@ async fn in_doubt_executor_releases_lock_and_later_poll_resolves() {
 
     // While the backend reports the payment in flight, polls keep the quote
     // Pending.
-    let response = mint.check_melt_quote(&quote_id).await.unwrap();
+    let response = mint.check_melt_quote(&quote_id, None).await.unwrap();
     assert_eq!(melt_quote_state(&response), MeltQuoteState::Pending);
 
     // Once the backend reports the payment settled, a poll finalizes the
     // melt and spends the proofs.
     backend.set_check_status(MeltQuoteState::Paid);
-    let response = mint.check_melt_quote(&quote_id).await.unwrap();
+    let response = mint.check_melt_quote(&quote_id, None).await.unwrap();
     assert_eq!(melt_quote_state(&response), MeltQuoteState::Paid);
     assert!(mint
         .localstore()
