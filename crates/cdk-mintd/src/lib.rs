@@ -47,6 +47,9 @@ use cdk_sqlite::MintSqliteDatabase;
 use cli::CLIArgs;
 use config::{AuthType, DatabaseEngine, PaymentBackendType};
 use env_vars::ENV_WORK_DIR;
+use primary_database::PrimaryDatabase;
+#[cfg(feature = "sqlite")]
+use primary_database::SqliteKey;
 use setup::PaymentBackendSetup;
 use tower::ServiceBuilder;
 use tower_http::compression::CompressionLayer;
@@ -62,6 +65,7 @@ mod config_migration;
 mod config_service;
 mod config_store;
 pub mod env_vars;
+mod primary_database;
 mod secret;
 pub mod setup;
 
@@ -369,8 +373,7 @@ fn expand_path(path: &str) -> Option<PathBuf> {
 /// and initializing the database connection.
 async fn initial_setup(
     work_dir: &Path,
-    settings: &config::Settings,
-    db_password: Option<String>,
+    database: &PrimaryDatabase,
 ) -> Result<(
     DynMintDatabase,
     Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
@@ -379,7 +382,7 @@ async fn initial_setup(
 )> {
     tracing::info!("Initializing database...");
     let (localstore, keystore, kv, configuration_store) =
-        setup_database(settings, work_dir, db_password).await?;
+        setup_database(database, work_dir).await?;
     tracing::info!("Database initialized successfully");
     Ok((localstore, keystore, kv, configuration_store))
 }
@@ -944,47 +947,19 @@ pub fn apply_seed_file(settings: &mut config::Settings, seed_file: &Path) -> Res
     Ok(())
 }
 
-/// Rejects a database password that the selected engine would not use.
-///
-/// Only SQLite in a build with the `sqlcipher` feature reads the password.
-/// Any other combination would open the database without it.
-fn reject_unused_database_password(engine: &DatabaseEngine, password: Option<&str>) -> Result<()> {
-    match (engine, password) {
-        (_, None) => Ok(()),
-        #[cfg(feature = "sqlcipher")]
-        (DatabaseEngine::Sqlite, Some(_)) => Ok(()),
-        #[cfg(not(feature = "sqlcipher"))]
-        (DatabaseEngine::Sqlite, Some(_)) => {
-            bail!(
-                "A database password requires the sqlcipher feature; \
-                 this build cannot encrypt the SQLite database"
-            )
-        }
-        (DatabaseEngine::Postgres, Some(_)) => {
-            bail!(
-                "The PostgreSQL database engine does not use a database password; \
-                 set its credentials in the connection URL"
-            )
-        }
-    }
-}
-
 async fn setup_database(
-    settings: &config::Settings,
+    database: &PrimaryDatabase,
     _work_dir: &Path,
-    db_password: Option<String>,
 ) -> Result<(
     DynMintDatabase,
     Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
     Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync>,
     Arc<dyn KVStoreCompareAndSwap<Err = cdk_database::Error> + Send + Sync>,
 )> {
-    reject_unused_database_password(&settings.database.engine, db_password.as_deref())?;
-    tracing::info!("Using database engine: {:?}", settings.database.engine);
-    match settings.database.engine {
+    match *database {
         #[cfg(feature = "sqlite")]
-        DatabaseEngine::Sqlite => {
-            let db = setup_sqlite_database(_work_dir, db_password).await?;
+        PrimaryDatabase::Sqlite(ref key) => {
+            let db = setup_sqlite_database(_work_dir, key).await?;
             let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> = db.clone();
             let kv: Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync> = db.clone();
             let configuration_store: Arc<
@@ -994,52 +969,24 @@ async fn setup_database(
             Ok((localstore, keystore, kv, configuration_store))
         }
         #[cfg(feature = "postgres")]
-        DatabaseEngine::Postgres => {
-            // Get the PostgreSQL configuration, ensuring it exists
-            let pg_config = settings.database.postgres.as_ref().ok_or_else(|| {
-                anyhow!("PostgreSQL configuration is required when using PostgreSQL engine")
-            })?;
-
-            if pg_config.url.is_empty() {
-                bail!("PostgreSQL URL is required. Set it in config file [database.postgres] section or via CDK_MINTD_POSTGRES_URL/CDK_MINTD_DATABASE_URL environment variable");
-            }
-
-            #[cfg(feature = "postgres")]
+        PrimaryDatabase::Postgres(ref pg_config) => {
             let db_config = PgConfig::new(
                 pg_config.url.as_str(),
                 pg_config.tls_mode.as_deref(),
                 pg_config.max_connections,
                 pg_config.connection_timeout_seconds,
             );
-            #[cfg(feature = "postgres")]
             let pg_db = Arc::new(MintPgDatabase::new(db_config).await?);
             tracing::info!("PostgreSQL database connection established");
-            #[cfg(feature = "postgres")]
             let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> =
                 pg_db.clone();
-            #[cfg(feature = "postgres")]
             let kv: Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync> = pg_db.clone();
-            #[cfg(feature = "postgres")]
             let configuration_store: Arc<
                 dyn KVStoreCompareAndSwap<Err = cdk_database::Error> + Send + Sync,
             > = pg_db.clone();
-            #[cfg(feature = "postgres")]
-            let keystore: Arc<
-                dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync,
-            > = pg_db;
-            #[cfg(feature = "postgres")]
-            return Ok((localstore, keystore, kv, configuration_store));
-
-            #[cfg(not(feature = "postgres"))]
-            bail!("PostgreSQL support not compiled in. Enable the 'postgres' feature to use PostgreSQL database.")
-        }
-        #[cfg(not(feature = "sqlite"))]
-        DatabaseEngine::Sqlite => {
-            bail!("SQLite support not compiled in. Enable the 'sqlite' feature to use SQLite database.")
-        }
-        #[cfg(not(feature = "postgres"))]
-        DatabaseEngine::Postgres => {
-            bail!("PostgreSQL support not compiled in. Enable the 'postgres' feature to use PostgreSQL database.")
+            let keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync> =
+                pg_db;
+            Ok((localstore, keystore, kv, configuration_store))
         }
     }
 }
@@ -1047,21 +994,14 @@ async fn setup_database(
 #[cfg(feature = "sqlite")]
 async fn setup_sqlite_database(
     work_dir: &Path,
-    _password: Option<String>,
+    key: &SqliteKey,
 ) -> Result<Arc<MintSqliteDatabase>> {
     let sql_db_path = work_dir.join("cdk-mintd.sqlite");
     tracing::info!("SQLite database path: {}", sql_db_path.display());
 
-    #[cfg(not(feature = "sqlcipher"))]
-    let db = MintSqliteDatabase::new(&sql_db_path).await?;
     #[cfg(feature = "sqlcipher")]
-    let db = {
-        // Get password from command line arguments for sqlcipher
-        let password = _password
-            .ok_or_else(|| anyhow!("Password required when sqlcipher feature is enabled"))?;
-        tracing::info!("Using SQLCipher encryption for SQLite database");
-        MintSqliteDatabase::new((sql_db_path, password)).await?
-    };
+    tracing::info!("Using SQLCipher encryption for SQLite database");
+    let db = MintSqliteDatabase::new(key.database(sql_db_path)).await?;
 
     tracing::info!("SQLite database initialized successfully");
     Ok(Arc::new(db))
@@ -1754,7 +1694,7 @@ async fn setup_authentication(
     settings: &config::Settings,
     _work_dir: &Path,
     mut mint_builder: MintBuilder,
-    _password: Option<String>,
+    database: &PrimaryDatabase,
 ) -> Result<(
     MintBuilder,
     Option<cdk_common::database::DynMintAuthDatabase>,
@@ -1763,67 +1703,34 @@ async fn setup_authentication(
         use cdk_common::database::DynMintAuthDatabase;
 
         tracing::info!("Auth settings are defined. {:?}", auth_settings);
-        let auth_localstore: DynMintAuthDatabase = match settings.database.engine {
+        let auth_localstore: DynMintAuthDatabase = match *database {
             #[cfg(feature = "sqlite")]
-            DatabaseEngine::Sqlite => {
-                #[cfg(feature = "sqlite")]
-                {
-                    let sql_db_path = _work_dir.join("cdk-mintd-auth.sqlite");
-                    #[cfg(not(feature = "sqlcipher"))]
-                    let sqlite_db = MintSqliteAuthDatabase::new(&sql_db_path).await?;
-                    #[cfg(feature = "sqlcipher")]
-                    let sqlite_db = {
-                        // Get password from command line arguments for sqlcipher
-                        let password = _password.clone().ok_or_else(|| {
-                            anyhow!("Password required when sqlcipher feature is enabled")
-                        })?;
-                        MintSqliteAuthDatabase::new((sql_db_path, password)).await?
-                    };
-
-                    Arc::new(sqlite_db)
-                }
-                #[cfg(not(feature = "sqlite"))]
-                {
-                    bail!("SQLite support not compiled in. Enable the 'sqlite' feature to use SQLite database.")
-                }
+            PrimaryDatabase::Sqlite(ref key) => {
+                let sql_db_path = _work_dir.join("cdk-mintd-auth.sqlite");
+                Arc::new(MintSqliteAuthDatabase::new(key.database(sql_db_path)).await?)
             }
             #[cfg(feature = "postgres")]
-            DatabaseEngine::Postgres => {
-                #[cfg(feature = "postgres")]
-                {
-                    // Require dedicated auth database configuration - no fallback to main database
-                    let auth_db_config = settings.auth_database.as_ref().ok_or_else(|| {
-                        anyhow!("Auth database configuration is required when using PostgreSQL with authentication. Set [auth_database]")
-                    })?;
+            PrimaryDatabase::Postgres(_) => {
+                // Require dedicated auth database configuration - no fallback to main database
+                let auth_db_config = settings.auth_database.as_ref().ok_or_else(|| {
+                    anyhow!("Auth database configuration is required when using PostgreSQL with authentication. Set [auth_database]")
+                })?;
 
-                    let auth_pg_config = auth_db_config.postgres.as_ref().ok_or_else(|| {
-                        anyhow!("PostgreSQL auth database configuration is required when using PostgreSQL with authentication. Set [auth_database.postgres]")
-                    })?;
+                let auth_pg_config = auth_db_config.postgres.as_ref().ok_or_else(|| {
+                    anyhow!("PostgreSQL auth database configuration is required when using PostgreSQL with authentication. Set [auth_database.postgres]")
+                })?;
 
-                    if auth_pg_config.url.is_empty() {
-                        bail!("Auth database PostgreSQL URL is required and cannot be empty. Set [auth_database.postgres].url to an env: or file: secret reference");
-                    }
-
-                    let auth_db_config = PgConfig::new(
-                        auth_pg_config.url.as_str(),
-                        auth_pg_config.tls_mode.as_deref(),
-                        auth_pg_config.max_connections,
-                        auth_pg_config.connection_timeout_seconds,
-                    );
-                    Arc::new(MintPgAuthDatabase::new(auth_db_config).await?)
+                if auth_pg_config.url.is_empty() {
+                    bail!("Auth database PostgreSQL URL is required and cannot be empty. Set [auth_database.postgres].url to an env: or file: secret reference");
                 }
-                #[cfg(not(feature = "postgres"))]
-                {
-                    bail!("PostgreSQL support not compiled in. Enable the 'postgres' feature to use PostgreSQL database.")
-                }
-            }
-            #[cfg(not(feature = "sqlite"))]
-            DatabaseEngine::Sqlite => {
-                bail!("SQLite support not compiled in. Enable the 'sqlite' feature to use SQLite database.")
-            }
-            #[cfg(not(feature = "postgres"))]
-            DatabaseEngine::Postgres => {
-                bail!("PostgreSQL support not compiled in. Enable the 'postgres' feature to use PostgreSQL database.")
+
+                let auth_db_config = PgConfig::new(
+                    auth_pg_config.url.as_str(),
+                    auth_pg_config.tls_mode.as_deref(),
+                    auth_pg_config.max_connections,
+                    auth_pg_config.connection_timeout_seconds,
+                );
+                Arc::new(MintPgAuthDatabase::new(auth_db_config).await?)
             }
         };
 
@@ -2637,8 +2544,9 @@ pub async fn run_mintd_with_shutdown(
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
     routers: Vec<Router>,
 ) -> Result<()> {
+    let database = PrimaryDatabase::select(&settings.database, db_password)?;
     let (localstore, keystore, kv, _configuration_store) =
-        initial_setup(work_dir, settings, db_password.clone()).await?;
+        initial_setup(work_dir, &database).await?;
 
     run_mintd_with_database_and_shutdown(
         work_dir,
@@ -2647,7 +2555,7 @@ pub async fn run_mintd_with_shutdown(
         keystore,
         kv,
         shutdown_signal,
-        db_password,
+        &database,
         runtime,
         routers,
         None,
@@ -2664,7 +2572,7 @@ async fn run_mintd_with_database_and_shutdown(
     keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
     kv: Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync>,
     shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
-    db_password: Option<String>,
+    database: &PrimaryDatabase,
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
     routers: Vec<Router>,
     activation: Option<ConfigurationActivation>,
@@ -2712,7 +2620,7 @@ async fn run_mintd_with_database_and_shutdown(
     )
     .await?;
     let (mint_builder, auth_localstore) =
-        setup_authentication(settings, work_dir, mint_builder, db_password).await?;
+        setup_authentication(settings, work_dir, mint_builder, database).await?;
 
     let config_mint_info = mint_builder.current_mint_info();
 
@@ -2782,8 +2690,9 @@ pub async fn initialize_configuration(
     db_password: Option<String>,
 ) -> Result<()> {
     let bootstrap = load_database_bootstrap_settings()?;
+    let database = PrimaryDatabase::select(&bootstrap.database, db_password)?;
     let (localstore, keystore, _kv, configuration_store) =
-        initial_setup(work_dir, &bootstrap, db_password).await?;
+        initial_setup(work_dir, &database).await?;
     let mut mint_builder = MintBuilder::new(localstore.clone());
     mint_builder.init_from_db_if_present().await?;
     let database_pubkey = mint_builder.current_mint_info().pubkey;
@@ -2821,8 +2730,9 @@ pub async fn apply_configuration(
     db_password: Option<String>,
 ) -> Result<ApplyOutcome> {
     let bootstrap = load_database_bootstrap_settings()?;
+    let database = PrimaryDatabase::select(&bootstrap.database, db_password)?;
     let (_localstore, _keystore, _kv, configuration_store) =
-        initial_setup(work_dir, &bootstrap, db_password).await?;
+        initial_setup(work_dir, &database).await?;
     Ok(configuration_service(configuration_store, &bootstrap)
         .apply(document, validate_only, work_dir, bdk_wallet_policy)
         .await?)
@@ -2834,8 +2744,9 @@ pub async fn rollback_configuration(
     db_password: Option<String>,
 ) -> Result<RollbackOutcome> {
     let bootstrap = load_database_bootstrap_settings()?;
+    let database = PrimaryDatabase::select(&bootstrap.database, db_password)?;
     let (_localstore, _keystore, _kv, configuration_store) =
-        initial_setup(work_dir, &bootstrap, db_password).await?;
+        initial_setup(work_dir, &database).await?;
     Ok(configuration_service(configuration_store, &bootstrap)
         .rollback()
         .await?)
@@ -2847,8 +2758,9 @@ pub async fn stored_configuration_document(
     db_password: Option<String>,
 ) -> Result<String> {
     let bootstrap = load_database_bootstrap_settings()?;
+    let database = PrimaryDatabase::select(&bootstrap.database, db_password)?;
     let (_localstore, _keystore, _kv, configuration_store) =
-        initial_setup(work_dir, &bootstrap, db_password).await?;
+        initial_setup(work_dir, &database).await?;
     Ok(configuration_service(configuration_store, &bootstrap)
         .document()
         .await?)
@@ -2863,8 +2775,9 @@ pub async fn run_mintd_from_database(
     routers: Vec<Router>,
 ) -> Result<()> {
     let bootstrap = load_database_bootstrap_settings()?;
+    let database = PrimaryDatabase::select(&bootstrap.database, db_password)?;
     let (localstore, keystore, kv, configuration_store) =
-        initial_setup(work_dir, &bootstrap, db_password.clone()).await?;
+        initial_setup(work_dir, &database).await?;
     let service = configuration_service(configuration_store, &bootstrap);
     let startup = service.startup().await?;
     config_service::require_existing_bdk_wallet(
@@ -2898,7 +2811,7 @@ pub async fn run_mintd_from_database(
         keystore,
         kv,
         shutdown_signal(),
-        db_password,
+        &database,
         runtime,
         routers,
         activation,
@@ -2929,6 +2842,11 @@ mod tests {
 
     fn temp_seed_file(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("cdk_mintd_{name}_{}", std::process::id()))
+    }
+
+    #[cfg(all(feature = "sqlite", feature = "fakewallet"))]
+    fn test_database(bootstrap: &config::Settings, password: Option<String>) -> PrimaryDatabase {
+        PrimaryDatabase::select(&bootstrap.database, password).expect("database selection")
     }
 
     #[cfg(all(feature = "sqlite", feature = "fakewallet"))]
@@ -3214,7 +3132,7 @@ engine = "sqlite"
             .replace("[mint_info]", "[mint_info]\npubkey = \"02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619\"");
         let bootstrap = load_database_bootstrap_settings().expect("bootstrap");
         let (db, keystore, _, config_store) =
-            initial_setup(&work_dir, &bootstrap, password.clone())
+            initial_setup(&work_dir, &test_database(&bootstrap, password.clone()))
                 .await
                 .expect("database");
         let mut builder = MintBuilder::new(db.clone());
@@ -3439,7 +3357,7 @@ engine = "sqlite"
 
         let bootstrap = load_database_bootstrap_settings().expect("bootstrap settings");
         let (localstore, keystore, _kv, _configuration_store) =
-            initial_setup(&work_dir, &bootstrap, password.clone())
+            initial_setup(&work_dir, &test_database(&bootstrap, password.clone()))
                 .await
                 .expect("initialize database");
         let mut builder = MintBuilder::new(localstore);
@@ -3497,7 +3415,7 @@ engine = "sqlite"
 
         let bootstrap = load_database_bootstrap_settings().expect("bootstrap settings");
         let (localstore, keystore, _kv, _configuration_store) =
-            initial_setup(&work_dir, &bootstrap, password.clone())
+            initial_setup(&work_dir, &test_database(&bootstrap, password.clone()))
                 .await
                 .expect("initialize database");
         let mut builder = MintBuilder::new(localstore);
@@ -3553,47 +3471,6 @@ engine = "sqlite"
         assert!(!work_dir.join("bdk_wallet/bdk_wallet.sqlite").exists());
 
         let _ = fs::remove_dir_all(&work_dir);
-    }
-
-    #[tokio::test]
-    async fn postgres_engine_rejects_database_password() {
-        let work_dir = crate::test_utils::unique_temp_path("postgres_rejects_password");
-        let mut settings = config::Settings::default();
-        settings.database.engine = DatabaseEngine::Postgres;
-        settings.database.postgres = Some(config::PostgresConfig {
-            url: "postgresql://cdk@127.0.0.1:1/cdk".to_string(),
-            ..Default::default()
-        });
-
-        let error = match setup_database(&settings, &work_dir, Some("pass-value".to_string())).await
-        {
-            Ok(_) => panic!("postgres must not accept a database password"),
-            Err(error) => error.to_string(),
-        };
-
-        assert!(
-            error.contains("does not use a database password"),
-            "{error}"
-        );
-        assert!(!error.contains("pass-value"), "{error}");
-    }
-
-    #[cfg(all(feature = "sqlite", not(feature = "sqlcipher")))]
-    #[tokio::test]
-    async fn sqlite_without_sqlcipher_rejects_database_password() {
-        let work_dir = crate::test_utils::unique_temp_path("sqlite_rejects_password");
-        fs::create_dir_all(&work_dir).expect("work directory");
-        let settings = config::Settings::default();
-
-        let error = match setup_database(&settings, &work_dir, Some("pass-value".to_string())).await
-        {
-            Ok(_) => panic!("a build without sqlcipher must not accept a database password"),
-            Err(error) => error.to_string(),
-        };
-
-        assert!(error.contains("requires the sqlcipher feature"), "{error}");
-        assert!(!error.contains("pass-value"), "{error}");
-        assert!(!work_dir.join("cdk-mintd.sqlite").exists());
     }
 
     #[test]
