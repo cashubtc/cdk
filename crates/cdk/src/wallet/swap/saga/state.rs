@@ -9,6 +9,7 @@ use core::fmt;
 use cdk_common::wallet::{KeysetLoadPolicy, WalletSaga};
 use uuid::Uuid;
 
+use crate::amount::SplitTarget;
 use crate::nuts::{PreSwap, Proofs, PublicKey, SpendingConditions};
 use crate::Amount;
 
@@ -33,6 +34,8 @@ pub struct Prepared {
     /// Total of the send outputs, including the redemption fee when fees are
     /// included (None means swap all)
     pub send_amount: Option<Amount>,
+    /// Denomination split used to create the send outputs
+    pub send_split_target: SplitTarget,
     /// Y values of input proofs (for cleanup)
     pub input_ys: Vec<PublicKey>,
     /// Spending conditions for output proofs
@@ -49,6 +52,7 @@ impl fmt::Debug for Prepared {
         f.debug_struct("Prepared")
             .field("operation_id", &self.operation_id)
             .field("send_amount", &self.send_amount)
+            .field("send_split_target", &self.send_split_target)
             .field("input_ys", &"[REDACTED]")
             .field("input_y_count", &self.input_ys.len())
             .field("spending_conditions", &self.spending_conditions)
@@ -173,6 +177,7 @@ mod tests {
         let prepared = Prepared {
             operation_id,
             send_amount: Some(Amount::from(1)),
+            send_split_target: Default::default(),
             input_ys: vec![input_proof.y().expect("valid proof Y")],
             spending_conditions: None,
             pre_swap: PreSwap {
