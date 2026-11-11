@@ -158,21 +158,18 @@ where
             r#"
             UPDATE saga_state
             SET state = :state, updated_at = :updated_at
-            WHERE operation_id = :operation_id
+            WHERE operation_id = :operation_id AND state = :old_state
             "#,
         )?
         .bind("state", new_state.state())
+        .bind("old_state", saga.state.state())
         .bind("updated_at", i64::try_from(current_time)?)
         .bind("operation_id", saga.operation_id.to_string())
         .execute(&self.inner)
         .await?;
 
         if affected != 1 {
-            return Err(Error::Internal(format!(
-                "Saga {} not found for state update to {}",
-                saga.operation_id,
-                new_state.state()
-            )));
+            return Err(Error::ConcurrentUpdate);
         }
 
         saga.state = new_state;

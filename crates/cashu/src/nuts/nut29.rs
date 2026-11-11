@@ -2,6 +2,9 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/29.md>
 
+#[cfg(feature = "mint")]
+use std::str::FromStr;
+
 use bitcoin::secp256k1::schnorr::Signature;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -9,6 +12,8 @@ use serde::{Deserialize, Serialize};
 use super::nut01::Error as Nut01Error;
 use super::nut20::{legacy_mint_quote_msg_to_sign, mint_quote_msg_to_sign};
 use super::{PublicKey, SecretKey};
+#[cfg(feature = "mint")]
+use crate::quote_id::{QuoteId, QuoteIdError};
 use crate::{Amount, BlindedMessage};
 
 /// Error types for batch operations
@@ -58,6 +63,21 @@ pub struct BatchCheckMintQuoteRequest<Q> {
     pub quotes: Vec<Q>,
 }
 
+#[cfg(feature = "mint")]
+impl TryFrom<BatchCheckMintQuoteRequest<String>> for BatchCheckMintQuoteRequest<QuoteId> {
+    type Error = QuoteIdError;
+
+    fn try_from(value: BatchCheckMintQuoteRequest<String>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            quotes: value
+                .quotes
+                .iter()
+                .map(|quote| QuoteId::from_str(quote))
+                .collect::<Result<_, _>>()?,
+        })
+    }
+}
+
 /// Batch mint request per NUT-29
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(bound = "Q: Serialize + DeserializeOwned")]
@@ -70,6 +90,24 @@ pub struct BatchMintRequest<Q> {
     pub outputs: Vec<BlindedMessage>,
     /// Signatures per quote (None if all quotes are unlocked)
     pub signatures: Option<Vec<Option<String>>>,
+}
+
+#[cfg(feature = "mint")]
+impl TryFrom<BatchMintRequest<String>> for BatchMintRequest<QuoteId> {
+    type Error = QuoteIdError;
+
+    fn try_from(value: BatchMintRequest<String>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            quotes: value
+                .quotes
+                .iter()
+                .map(|quote| QuoteId::from_str(quote))
+                .collect::<Result<_, _>>()?,
+            quote_amounts: value.quote_amounts,
+            outputs: value.outputs,
+            signatures: value.signatures,
+        })
+    }
 }
 
 impl<Q> BatchMintRequest<Q>

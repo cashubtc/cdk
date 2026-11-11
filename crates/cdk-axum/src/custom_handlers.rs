@@ -11,7 +11,7 @@ use axum::extract::{FromRequestParts, Json, Path, State};
 use axum::http::request::Parts;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use cdk::mint::QuoteId;
+use cdk::mint::{MintServer, QuoteId};
 use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{
     BatchCheckMintQuoteRequest, BatchMintRequest, MeltOnchainRequest, MeltQuoteBolt11Request,
@@ -20,7 +20,8 @@ use cdk::nuts::{
     MintQuoteBolt12Response, MintQuoteCustomRequest, MintQuoteOnchainRequest,
     MintQuoteOnchainResponse, MintRequest, MintResponse, PaymentMethod,
 };
-use cdk::{MeltQuoteCreateResponse, MeltQuoteResponse};
+use cdk::{MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse};
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tracing::instrument;
 
@@ -93,109 +94,6 @@ fn melt_quote_create_response_to_json(response: MeltQuoteCreateResponse<QuoteId>
     }
 }
 
-async fn validate_melt_quote_method(
-    state: &MintState,
-    method: &str,
-    quote_id: &QuoteId,
-) -> Result<(), cdk::Error> {
-    let quote_method = state.mint.get_melt_quote_method(quote_id).await?;
-    let expected_method = PaymentMethod::from(method);
-
-    if quote_method != expected_method {
-        return Err(cdk::Error::InvalidPaymentMethod);
-    }
-
-    Ok(())
-}
-
-// Validate batch bounds before any per-quote database work, including on cache hits.
-async fn validate_batch_quote_ids(
-    state: &MintState,
-    quote_ids: &[QuoteId],
-) -> Result<(), cdk::Error> {
-    if quote_ids.is_empty() {
-        return Err(cdk::Error::UnknownQuote);
-    }
-
-    if let Some(max) = state.mint.mint_info().await?.nuts.nut29.max_batch_size {
-        let max = usize::try_from(max).unwrap_or(usize::MAX);
-        if quote_ids.len() > max {
-            return Err(cdk::Error::BatchSizeExceeded {
-                actual: quote_ids.len(),
-                max,
-            });
-        }
-    }
-
-    let mut unique_ids = std::collections::HashSet::new();
-    for quote_id in quote_ids {
-        if !unique_ids.insert(quote_id) {
-            return Err(cdk::Error::DuplicateQuoteIds);
-        }
-    }
-
-    Ok(())
-}
-
-async fn validate_mint_quote_methods(
-    state: &MintState,
-    method: &str,
-    quote_ids: &[QuoteId],
-) -> Result<(), cdk::Error> {
-    let expected_method = PaymentMethod::from(method);
-
-    for quote_id in quote_ids {
-        let quote_method = state.mint.get_mint_quote_method(quote_id).await?;
-
-        if quote_method != expected_method {
-            return Err(cdk::Error::InvalidPaymentMethod);
-        }
-    }
-
-    Ok(())
-}
-
-async fn validate_mint_request_route(
-    auth: AuthHeader,
-    state: &MintState,
-    method: &str,
-    quote_ids: &[QuoteId],
-) -> Result<(), cdk::Error> {
-    state
-        .mint
-        .verify_auth(
-            auth.into(),
-            &ProtectedEndpoint::new(Method::Post, RoutePath::Mint(method.to_owned())),
-        )
-        .await?;
-
-    validate_mint_quote_methods(state, method, quote_ids).await
-}
-
-async fn process_mint_input(
-    state: &MintState,
-    input: cdk::mint::MintInput,
-) -> Result<MintResponse, cdk::Error> {
-    state.mint.process_mint_request(input).await
-}
-
-async fn validate_melt_request_route(
-    auth: AuthHeader,
-    state: &MintState,
-    method: &str,
-    quote_id: &QuoteId,
-) -> Result<(), cdk::Error> {
-    state
-        .mint
-        .verify_auth(
-            auth.into(),
-            &ProtectedEndpoint::new(Method::Post, RoutePath::Melt(method.to_owned())),
-        )
-        .await?;
-
-    validate_melt_quote_method(state, method, quote_id).await
-}
-
 /// Generic handler for custom payment method mint quotes
 ///
 /// This handler works for ANY custom payment method (e.g., paypal, venmo, cashapp, bolt11, bolt12).
@@ -227,7 +125,7 @@ pub async fn post_mint_custom_quote(
 
             let quote = state
                 .mint
-                .get_mint_quote(bolt11_request.into())
+                .post_mint_quote(bolt11_request.into())
                 .await
                 .map_err(into_response)?;
 
@@ -247,7 +145,7 @@ pub async fn post_mint_custom_quote(
 
             let quote = state
                 .mint
-                .get_mint_quote(bolt12_request.into())
+                .post_mint_quote(bolt12_request.into())
                 .await
                 .map_err(into_response)?;
 
@@ -268,7 +166,7 @@ pub async fn post_mint_custom_quote(
 
             let quote = state
                 .mint
-                .get_mint_quote(onchain_request.into())
+                .post_mint_quote(onchain_request.into())
                 .await
                 .map_err(into_response)?;
 
@@ -290,7 +188,7 @@ pub async fn post_mint_custom_quote(
 
             let response = state
                 .mint
-                .get_mint_quote(quote_request)
+                .post_mint_quote(quote_request)
                 .await
                 .map_err(into_response)?;
 
@@ -322,12 +220,8 @@ pub async fn get_check_mint_custom_quote(
 
     let quote_response = state
         .mint
-        .check_mint_quotes(&[quote_id])
+        .get_mint_quote_status(&PaymentMethod::from(method.as_str()), &quote_id)
         .await
-        .map_err(into_response)?
-        .first()
-        .cloned()
-        .ok_or(cdk::Error::UnknownQuote)
         .map_err(into_response)?;
 
     match method.as_str() {
@@ -346,26 +240,19 @@ pub async fn get_check_mint_custom_quote(
                 MintQuoteOnchainResponse::try_from(quote_response).map_err(into_response)?;
             Ok(Json(response).into_response())
         }
-        _ => {
-            // Extract and verify it's a Custom payment method
-            match quote_response {
-                cdk::mint::MintQuoteResponse::Custom {
-                    method: quote_method,
-                    response,
-                    ..
-                } => {
-                    if quote_method.to_string() != method {
-                        return Err(into_response(cdk::Error::InvalidPaymentMethod));
-                    }
-                    Ok(Json(response).into_response())
-                }
-                _ => Err(into_response(cdk::Error::InvalidPaymentMethod)),
+        _ => match quote_response {
+            cdk::mint::MintQuoteResponse::Custom { response, .. } => {
+                Ok(Json(response).into_response())
             }
-        }
+            _ => Err(into_response(cdk::Error::InvalidPaymentMethod)),
+        },
     }
 }
 
 /// Batch check mint quote status (NUT-29)
+///
+/// Runs the mint's batch bounds before the status call that follows, so an
+/// oversized batch is rejected before any per-quote database work.
 #[instrument(skip_all, fields(method = ?method))]
 pub async fn post_batch_check_mint_quote(
     auth: AuthHeader,
@@ -382,17 +269,9 @@ pub async fn post_batch_check_mint_quote(
         .await
         .map_err(into_response)?;
 
-    validate_batch_quote_ids(&state, &payload.quotes)
-        .await
-        .map_err(into_response)?;
-
-    validate_mint_quote_methods(&state, &method, &payload.quotes)
-        .await
-        .map_err(into_response)?;
-
     let responses = state
         .mint
-        .check_mint_quotes(&payload.quotes)
+        .post_batch_check_mint_quote_status(&PaymentMethod::from(method.as_str()), payload)
         .await
         .map_err(into_response)?;
 
@@ -452,74 +331,42 @@ pub async fn post_melt_custom_quote(
         .await
         .map_err(into_response)?;
 
-    let response = match method.as_str() {
-        "bolt11" => {
-            let bolt11_request: MeltQuoteBolt11Request =
-                serde_json::from_value(payload).map_err(|e| {
-                    tracing::error!("Failed to parse bolt11 melt request: {}", e);
-                    into_response(cdk::Error::InvalidPaymentMethod)
-                })?;
-
-            state
-                .mint
-                .get_melt_quote(bolt11_request.into())
-                .await
-                .map_err(into_response)?
-        }
-        "bolt12" => {
-            let bolt12_request: MeltQuoteBolt12Request =
-                serde_json::from_value(payload).map_err(|e| {
-                    tracing::error!("Failed to parse bolt12 melt request: {}", e);
-                    into_response(cdk::Error::InvalidPaymentMethod)
-                })?;
-
-            state
-                .mint
-                .get_melt_quote(bolt12_request.into())
-                .await
-                .map_err(into_response)?
-        }
-        "onchain" => {
-            let onchain_request: MeltQuoteOnchainRequest = serde_json::from_value(payload)
-                .map_err(|e| {
-                    tracing::error!("Failed to parse onchain melt request: {}", e);
-                    into_response(cdk::Error::InvalidPaymentMethod)
-                })?;
-
-            let response = state
-                .mint
-                .get_melt_quote(onchain_request.into())
-                .await
-                .map_err(into_response)?;
-
-            return match response {
-                MeltQuoteCreateResponse::Onchain(r) => Ok(Json(r).into_response()),
-                _ => Err(into_response(cdk::Error::InvalidPaymentMethod)),
-            };
-        }
-        _ => {
-            let custom_request: MeltQuoteCustomRequest =
-                serde_json::from_value(payload).map_err(|e| {
-                    tracing::error!("Failed to parse custom melt request: {}", e);
-                    into_response(cdk::Error::InvalidPaymentMethod)
-                })?;
-
-            let request_method = PaymentMethod::from(custom_request.method.as_str());
-            let route_method = PaymentMethod::from(method.as_str());
-
-            if request_method != route_method {
-                return Err(into_response(cdk::Error::InvalidPaymentMethod));
-            }
-
-            state
-                .mint
-                .get_melt_quote(custom_request.into())
-                .await
-                .map_err(into_response)?
-        }
-    };
+    let response = state
+        .mint
+        .post_melt_quote(
+            &PaymentMethod::from(method.as_str()),
+            parse_melt_quote_payload(&method, payload)?,
+        )
+        .await
+        .map_err(into_response)?;
 
     Ok(melt_quote_create_response_to_json(response))
+}
+
+/// Picks the request type the route's method implies, since a melt quote body
+/// is only self-describing for a custom method.
+#[allow(clippy::result_large_err)]
+fn parse_melt_quote_payload(method: &str, payload: Value) -> Result<MeltQuoteRequest, Response> {
+    match method {
+        "bolt11" => {
+            parse_melt_quote_body::<MeltQuoteBolt11Request>(method, payload).map(Into::into)
+        }
+        "bolt12" => {
+            parse_melt_quote_body::<MeltQuoteBolt12Request>(method, payload).map(Into::into)
+        }
+        "onchain" => {
+            parse_melt_quote_body::<MeltQuoteOnchainRequest>(method, payload).map(Into::into)
+        }
+        _ => parse_melt_quote_body::<MeltQuoteCustomRequest>(method, payload).map(Into::into),
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn parse_melt_quote_body<T: DeserializeOwned>(method: &str, payload: Value) -> Result<T, Response> {
+    serde_json::from_value(payload).map_err(|err| {
+        tracing::error!(method = %method, "failed to parse melt quote request body: {err}");
+        into_response(cdk::Error::InvalidPaymentMethod)
+    })
 }
 
 /// Get custom payment method melt quote status
@@ -538,40 +385,32 @@ pub async fn get_check_melt_custom_quote(
         .await
         .map_err(into_response)?;
 
-    validate_melt_quote_method(&state, &method, &quote_id)
-        .await
-        .map_err(into_response)?;
-
     let quote = state
         .mint
-        .check_melt_quote(&quote_id)
+        .get_melt_quote_status(&PaymentMethod::from(method.as_str()), &quote_id)
         .await
         .map_err(into_response)?;
 
     Ok(melt_quote_response_to_json(quote))
 }
 
+/// Answers either with the pending response or with the settled one, a choice
+/// only this transport can make: the `Prefer` header is an HTTP concern the
+/// request body does not carry.
 async fn process_melt_request(
     prefer: PreferHeader,
     state: &MintState,
-    method: &str,
-    payload: &cdk::nuts::MeltRequest<QuoteId>,
+    method: &PaymentMethod,
+    payload: cdk::nuts::MeltRequest<QuoteId>,
 ) -> Result<MeltQuoteResponse<QuoteId>, cdk::Error> {
-    // Check for async preference in either the Prefer header or the request body
-    // For onchain we always want to do the async flow
-    let respond_async = prefer.respond_async || payload.is_prefer_async() || method == "onchain";
+    let respond_async = prefer.respond_async || payload.is_prefer_async();
+    let pending = state.mint.post_melt(method, payload).await?;
 
-    let pending = state.mint.melt(payload).await?;
-
-    let res = if respond_async {
-        // Asynchronous processing - return immediately after setup
-        pending.into_pending_response()
+    if respond_async || pending.requires_async_response() {
+        Ok(pending.into_pending_response())
     } else {
-        // Synchronous processing - wait for completion
-        pending.await?
-    };
-
-    Ok(res)
+        pending.await
+    }
 }
 
 // ============================================================================
@@ -579,6 +418,10 @@ async fn process_melt_request(
 // ============================================================================
 
 /// Cached version of post_mint_custom for NUT-19 caching support
+///
+/// The payment method is part of the cache key, so the mint's own scoping
+/// check can run behind the cache lookup: a quote created for another method
+/// keys elsewhere and cannot reach this entry.
 #[instrument(skip_all, fields(method = ?method, quote_id = ?payload.quote))]
 pub async fn cache_post_mint_custom(
     auth: AuthHeader,
@@ -592,14 +435,16 @@ pub async fn cache_post_mint_custom(
     let method = method.0;
     let payload = payload.0;
 
-    validate_mint_request_route(
-        auth,
-        &mint_state,
-        &method,
-        std::slice::from_ref(&payload.quote),
-    )
-    .await
-    .map_err(into_response)?;
+    mint_state
+        .mint
+        .verify_auth(
+            auth.into(),
+            &ProtectedEndpoint::new(Method::Post, RoutePath::Mint(method.clone())),
+        )
+        .await
+        .map_err(into_response)?;
+
+    let payment_method = PaymentMethod::from(method.as_str());
 
     let cache_key = match mint_state
         .cache
@@ -607,7 +452,9 @@ pub async fn cache_post_mint_custom(
     {
         Some(key) => key,
         None => {
-            let result = process_mint_input(&mint_state, cdk::mint::MintInput::Single(payload))
+            let result = mint_state
+                .mint
+                .post_mint(&payment_method, payload)
                 .await
                 .map_err(into_response)?;
 
@@ -620,18 +467,23 @@ pub async fn cache_post_mint_custom(
     }
 
     let result = Json(
-        process_mint_input(&mint_state, cdk::mint::MintInput::Single(payload))
+        mint_state
+            .mint
+            .post_mint(&payment_method, payload)
             .await
             .map_err(into_response)?,
     );
 
-    // Cache the response
     mint_state.cache.set(cache_key, result.deref()).await;
 
     Ok(result)
 }
 
 /// Cached version of post_melt_custom for NUT-19 caching support
+///
+/// The cache key is computed from the parsed body alone, never from the
+/// `Prefer` header, so retrying the same melt hits the cache whichever way the
+/// client asked to be answered.
 #[instrument(skip_all, fields(method = ?method))]
 pub async fn cache_post_melt_custom(
     auth: AuthHeader,
@@ -640,16 +492,21 @@ pub async fn cache_post_melt_custom(
     method: Path<String>,
     payload: Json<Value>,
 ) -> Result<Response, Response> {
-    use std::ops::Deref;
-
-    let State(mint_state) = state.clone();
+    let State(mint_state) = state;
     let method = method.0;
     tracing::debug!(method = %method, "melt request received");
-    let parsed_payload = parse_melt_payload(&method, payload.deref().clone())?;
+    let parsed_payload = parse_melt_payload(&method, payload.0)?;
 
-    validate_melt_request_route(auth, &mint_state, &method, parsed_payload.quote())
+    mint_state
+        .mint
+        .verify_auth(
+            auth.into(),
+            &ProtectedEndpoint::new(Method::Post, RoutePath::Melt(method.clone())),
+        )
         .await
         .map_err(into_response)?;
+
+    let payment_method = PaymentMethod::from(method.as_str());
 
     let cache_key =
         match mint_state
@@ -658,9 +515,10 @@ pub async fn cache_post_melt_custom(
         {
             Some(key) => key,
             None => {
-                let result = process_melt_request(prefer, &mint_state, &method, &parsed_payload)
-                    .await
-                    .map_err(into_response)?;
+                let result =
+                    process_melt_request(prefer, &mint_state, &payment_method, parsed_payload)
+                        .await
+                        .map_err(into_response)?;
 
                 return Ok(melt_quote_response_to_json(result));
             }
@@ -674,7 +532,7 @@ pub async fn cache_post_melt_custom(
         return Ok(melt_quote_response_to_json(cached_response));
     }
 
-    let result = process_melt_request(prefer, &mint_state, &method, &parsed_payload)
+    let result = process_melt_request(prefer, &mint_state, &payment_method, parsed_payload)
         .await
         .map_err(into_response)?;
 
@@ -683,10 +541,8 @@ pub async fn cache_post_melt_custom(
     Ok(melt_quote_response_to_json(result))
 }
 
-// The `Err` variant carries an axum `Response` (a pre-built 400 with the full
-// body), which is large but matches the style used throughout this module.
-// Refactoring to a boxed/smaller error would be a cross-cutting change outside
-// the scope of this bug fix.
+/// Reads the melt request body, which only the onchain method spells
+/// differently.
 #[allow(clippy::result_large_err)]
 fn parse_melt_payload(
     method: &str,
@@ -714,6 +570,10 @@ fn parse_melt_payload(
 }
 
 /// Cached version of post_batch_mint for NUT-19 caching support
+///
+/// The payment method is part of the cache key, so the mint's own batch bounds
+/// and quote scoping can run behind the cache lookup: a batch this route
+/// should refuse keys elsewhere than one it already answered.
 #[instrument(skip_all, fields(method = ?method))]
 pub async fn cache_post_batch_mint(
     auth: AuthHeader,
@@ -736,13 +596,7 @@ pub async fn cache_post_batch_mint(
         .await
         .map_err(into_response)?;
 
-    validate_batch_quote_ids(&mint_state, &payload.quotes)
-        .await
-        .map_err(into_response)?;
-
-    validate_mint_quote_methods(&mint_state, &method, &payload.quotes)
-        .await
-        .map_err(into_response)?;
+    let payment_method = PaymentMethod::from(method.as_str());
 
     let cache_key = match mint_state
         .cache
@@ -750,7 +604,9 @@ pub async fn cache_post_batch_mint(
     {
         Some(key) => key,
         None => {
-            let result = process_mint_input(&mint_state, cdk::mint::MintInput::Batch(payload))
+            let result = mint_state
+                .mint
+                .post_batch_mint(&payment_method, payload)
                 .await
                 .map_err(into_response)?;
 
@@ -763,7 +619,9 @@ pub async fn cache_post_batch_mint(
     }
 
     let result = Json(
-        process_mint_input(&mint_state, cdk::mint::MintInput::Batch(payload))
+        mint_state
+            .mint
+            .post_batch_mint(&payment_method, payload)
             .await
             .map_err(into_response)?,
     );
@@ -952,7 +810,7 @@ mod tests {
         for _ in 0..100 {
             let check = state
                 .mint
-                .check_mint_quotes(std::slice::from_ref(&quote.quote))
+                .check_mint_quotes(std::slice::from_ref(&quote.quote), None)
                 .await
                 .unwrap();
             if let MintQuoteResponse::Bolt11(q) = &check[0] {
@@ -1052,6 +910,21 @@ mod tests {
         assert!(!result.unwrap().respond_async);
     }
 
+    /// Asserts a handler answered with exactly the NUT-00 body a given error
+    /// renders to, so a test cannot pass on the wrong error.
+    async fn assert_error_response(response: Response, expected: cdk::Error) {
+        let expected = into_response(expected);
+
+        assert_eq!(response.status(), expected.status());
+        let expected_body = axum::body::to_bytes(expected.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(body, expected_body);
+    }
+
     #[tokio::test]
     async fn cache_post_mint_custom_rejects_cached_url_method_quote_method_mismatch() {
         let state = create_test_state().await;
@@ -1079,10 +952,11 @@ mod tests {
         )
         .await;
 
-        assert!(
-            result.is_err(),
-            "cache_post_mint_custom must reject cross-method cached mint"
-        );
+        assert_error_response(
+            result.expect_err("cache_post_mint_custom must reject cross-method cached mint"),
+            cdk::Error::InvalidPaymentMethod,
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -1116,10 +990,11 @@ mod tests {
         )
         .await;
 
-        assert!(
-            result.is_err(),
-            "cache_post_batch_mint must reject cross-method cached mint"
-        );
+        assert_error_response(
+            result.expect_err("cache_post_batch_mint must reject cross-method cached mint"),
+            cdk::Error::InvalidPaymentMethod,
+        )
+        .await;
     }
 
     #[tokio::test]

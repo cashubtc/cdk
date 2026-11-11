@@ -753,30 +753,6 @@ jobs:
       - name: Run live Python FFI tests
         run: nix develop --fallback -i -L .#ffi --command just ffi-test-live-python
 
-  coverage:
-    if: github.event_name != 'pull_request'
-    name: "Code Coverage"
-    runs-on: self-hosted
-    timeout-minutes: 45
-    needs: pre-commit-checks
-    steps:
-      - name: checkout
-        uses: actions/checkout@v5
-      - uses: cachix/cachix-action@v17
-        with:
-          name: cashudevkit
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          useDaemon: false
-        continue-on-error: true
-      - name: Generate Coverage
-        run: nix develop --fallback -i -L .#coverage --command just coverage
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v6
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: lcov.info
-          fail_ci_if_error: true
-
   dart-binding-tests:
     name: "Dart binding tests"
     runs-on: self-hosted
@@ -892,7 +868,7 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [pre-commit-checks, rusqlite-compat, fuzz-check, warm-nix-cache, warm-msrv-nix-cache, quick-check, discover_ci_groups, examples, clippy-and-test, build-itest-binaries, postgres-tests, supabase-tests, redis-tests, regtest-ln-itest, regtest-onchain-itest, fake-mint-itest, pure-itest, payment-processor-itests, msrv-build, check-wasm, fake-mint-auth-itest, docs, ffi-tests, coverage, dart-binding-tests, kotlin-binding-tests, go-binding-tests, swift-binding-tests]
+    needs: [pre-commit-checks, rusqlite-compat, fuzz-check, warm-nix-cache, warm-msrv-nix-cache, quick-check, discover_ci_groups, examples, clippy-and-test, build-itest-binaries, postgres-tests, supabase-tests, redis-tests, regtest-ln-itest, regtest-onchain-itest, fake-mint-itest, pure-itest, payment-processor-itests, msrv-build, check-wasm, fake-mint-auth-itest, docs, ffi-tests, dart-binding-tests, kotlin-binding-tests, go-binding-tests, swift-binding-tests]
     steps:
       - name: Verify required jobs
         uses: actions/github-script@v8
@@ -902,7 +878,7 @@ jobs:
           script: |
             const results = JSON.parse(process.env.JOB_RESULTS);
             const fullOnly = new Set([
-              'coverage', 'kotlin-binding-tests', 'go-binding-tests', 'swift-binding-tests'
+              'kotlin-binding-tests', 'go-binding-tests', 'swift-binding-tests'
             ]);
             for (const [name, job] of Object.entries(results)) {
               if (context.eventName === 'pull_request' && fullOnly.has(name) && job.result === 'skipped') continue;
