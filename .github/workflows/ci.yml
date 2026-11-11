@@ -779,7 +779,6 @@ jobs:
         run: nix develop --fallback -L .#bindings --command just test-dart
 
   kotlin-binding-tests:
-    if: github.event_name != 'pull_request'
     name: "Kotlin binding tests"
     runs-on: self-hosted
     timeout-minutes: 30
@@ -878,7 +877,7 @@ jobs:
           script: |
             const results = JSON.parse(process.env.JOB_RESULTS);
             const fullOnly = new Set([
-              'kotlin-binding-tests', 'go-binding-tests', 'swift-binding-tests'
+              'go-binding-tests', 'swift-binding-tests'
             ]);
             for (const [name, job] of Object.entries(results)) {
               if (context.eventName === 'pull_request' && fullOnly.has(name) && job.result === 'skipped') continue;
