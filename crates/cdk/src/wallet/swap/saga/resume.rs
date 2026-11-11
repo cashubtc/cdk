@@ -577,4 +577,69 @@ mod tests {
         assert_eq!(stored[0].state, State::Spent);
         assert_eq!(stored[0].used_by_operation, None);
     }
+
+    /// Check that a stored proof is the mock mint's valid signature on its secret.
+    fn assert_valid_mock_signature(proof: &Proof) {
+        let power = proof.amount.to_u64().trailing_zeros() as u8;
+        let mint_key = NutSecretKey::from_slice(&[power + 1; 32]).unwrap();
+        crate::dhke::verify_message(&mint_key, proof.c, &proof.secret.to_bytes())
+            .expect("proof should carry a valid signature for its secret");
+    }
+
+    /// A swap sorts its outputs by amount, so they are not in counter order.
+    /// Replaying it must unblind each signature with the secret of its own output.
+    #[tokio::test]
+    async fn test_recover_swap_replay_with_outputs_out_of_counter_order() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let saga_id = uuid::Uuid::new_v4();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.enable_mint_signing();
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let keyset_id = wallet.active_keyset().await.unwrap().id;
+
+        let input = test_proof_info(test_keyset_id(), 5, mint_url.clone());
+        let input_y = input.y;
+        db.update_proofs(vec![input], vec![]).await.unwrap();
+        db.reserve_proofs(vec![input_y], &saga_id).await.unwrap();
+
+        // Counters 0 and 1 hold 4 and 1 sat; sorted by amount, counter 1 comes first
+        let mut premint_secrets =
+            PreMintSecrets::restore_batch(keyset_id, &wallet.seed, 0, 2).unwrap();
+        for (premint, amount) in premint_secrets.secrets.iter_mut().zip([4u64, 1]) {
+            premint.amount = Amount::from(amount);
+            premint.blinded_message.amount = Amount::from(amount);
+        }
+        premint_secrets.sort_secrets();
+        assert_eq!(premint_secrets.secrets[0].derivation_index, Some(1));
+
+        let saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Swap(SwapSagaState::SwapRequested),
+            Amount::from(5),
+            mint_url,
+            CurrencyUnit::Sat,
+            OperationData::Swap(SwapOperationData {
+                input_amount: Amount::from(5),
+                output_amount: Amount::from(5),
+                counter_start: Some(0),
+                counter_end: Some(2),
+                blinded_messages: Some(premint_secrets.blinded_messages()),
+            }),
+        );
+        db.add_saga(saga).await.unwrap();
+
+        let report = wallet.recover_incomplete_sagas().await.unwrap();
+        assert_eq!(report.recovered, 1);
+
+        let proofs = db
+            .get_proofs(None, None, Some(vec![State::Unspent]), None)
+            .await
+            .unwrap();
+        assert_eq!(proofs.len(), 2);
+        for proof_info in &proofs {
+            assert_valid_mock_signature(&proof_info.proof);
+        }
+    }
 }
