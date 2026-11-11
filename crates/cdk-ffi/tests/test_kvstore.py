@@ -389,7 +389,7 @@ async def test_sqlite_close_before_backup():
         await db.kv_write("backup", "test", "key", b"committed")
 
         # Multiple callers may close the same shared pool without dropping handles.
-        await asyncio.gather(db.close(), db.close())
+        await asyncio.gather(db.close_database(), db.close_database())
         try:
             await db.kv_read("backup", "test", "key")
         except cdk_ffi.FfiError as error:
@@ -403,7 +403,7 @@ async def test_sqlite_close_before_backup():
             value = await reopened.kv_read("backup", "test", "key")
             assert bytes(value) == b"committed", value
         finally:
-            await reopened.close()
+            await reopened.close_database()
 
 
 async def test_kv_in_memory_concurrent_access():
