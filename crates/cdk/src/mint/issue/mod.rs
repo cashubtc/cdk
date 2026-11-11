@@ -1088,6 +1088,7 @@ mod batch_mint_tests {
         unit: CurrencyUnit,
         confirmations: u32,
         check_count: Arc<AtomicUsize>,
+        payments: Vec<WaitPaymentResponse>,
     }
 
     #[async_trait]
@@ -1148,7 +1149,7 @@ mod batch_mint_tests {
             _payment_identifier: &PaymentIdentifier,
         ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
             self.check_count.fetch_add(1, Ordering::Relaxed);
-            Ok(Vec::new())
+            Ok(self.payments.clone())
         }
 
         async fn check_outgoing_payment(
@@ -1203,6 +1204,14 @@ mod batch_mint_tests {
         onchain_min: u64,
         onchain_max: u64,
     ) -> (Mint, Arc<AtomicUsize>) {
+        create_test_mint_with_onchain_payments(onchain_min, onchain_max, Vec::new()).await
+    }
+
+    async fn create_test_mint_with_onchain_payments(
+        onchain_min: u64,
+        onchain_max: u64,
+        payments: Vec<WaitPaymentResponse>,
+    ) -> (Mint, Arc<AtomicUsize>) {
         let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
 
         let mut mint_builder = MintBuilder::new(db.clone());
@@ -1245,6 +1254,7 @@ mod batch_mint_tests {
             unit: CurrencyUnit::Sat,
             confirmations: 1,
             check_count: onchain_check_count.clone(),
+            payments,
         };
 
         mint_builder
@@ -1344,6 +1354,69 @@ mod batch_mint_tests {
             )
             .await
             .unwrap());
+    }
+
+    #[tokio::test]
+    async fn polling_preserves_manual_credit_and_accepts_distinct_payments() {
+        for backend_amount in [50, 75, 750] {
+            let quote_id = QuoteId::new();
+            let payment_identifier = PaymentIdentifier::QuoteId(quote_id.clone());
+            let payments = [("manual", backend_amount), ("distinct", 5)]
+                .repeat(2)
+                .into_iter()
+                .map(|(id, amount)| WaitPaymentResponse {
+                    payment_identifier: payment_identifier.clone(),
+                    payment_amount: Amount::new(amount, CurrencyUnit::Sat),
+                    payment_id: id.to_owned(),
+                })
+                .collect();
+            let (mint, _) = create_test_mint_with_onchain_payments(1, 10_000, payments).await;
+            let now = cdk_common::util::unix_time();
+            let mut quote = MintQuote::new(
+                Some(quote_id.clone()),
+                "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_owned(),
+                CurrencyUnit::Sat,
+                None,
+                0,
+                payment_identifier,
+                None,
+                Amount::new(0, CurrencyUnit::Sat),
+                Amount::new(0, CurrencyUnit::Sat),
+                PaymentMethod::Known(KnownMethod::Onchain),
+                now,
+                now,
+                Vec::new(),
+                Vec::new(),
+                None,
+            );
+            let mut tx = mint.localstore().begin_transaction().await.unwrap();
+            let mut stored = tx.add_mint_quote(quote.clone()).await.unwrap();
+            stored
+                .add_payment(
+                    Amount::new(75, CurrencyUnit::Sat),
+                    "manual".to_owned(),
+                    None,
+                )
+                .unwrap();
+            tx.update_mint_quote(&mut stored).await.unwrap();
+            tx.commit().await.unwrap();
+
+            mint.check_mint_quote_paid(&mut quote).await.unwrap();
+            let persisted = mint
+                .localstore()
+                .get_mint_quote(&quote_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(persisted.amount_paid().value(), 80);
+            assert_eq!(persisted.amount_mintable().value(), 80);
+            let payments: Vec<_> = persisted
+                .payments
+                .iter()
+                .map(|payment| (payment.payment_id.as_str(), payment.amount.value()))
+                .collect();
+            assert_eq!(payments, [("manual", 75), ("distinct", 5)]);
+        }
     }
 
     async fn configure_nut29(

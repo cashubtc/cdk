@@ -60,13 +60,18 @@ message UpdateMintQuoteStateRequest {
     // ID of the mint quote to update. A quote the mint does not know fails
     // with gRPC status INVALID_ARGUMENT.
     string quote_id = 1;
-    // State to move the quote to. Only MINT_QUOTE_STATE_PAID is supported;
-    // any other value fails with gRPC status INVALID_ARGUMENT. Marking a
-    // quote paid records a payment against it as the backend would: methods
-    // taking more than one payment (bolt12, onchain) can end up paid twice,
-    // and an unpaid quote with no fixed amount has no amount to record and
-    // fails with gRPC status INTERNAL.
+    // Only MINT_QUOTE_STATE_PAID is supported; other values fail with INVALID_ARGUMENT.
     MintQuoteState state = 2;
+    // Nonzero amount in the quote's unit. BOLT11 defaults to its unpaid
+    // remainder; an explicit value must equal that remainder. Other methods
+    // require an explicit amount. Fixed-amount quotes other than reusable BOLT12
+    // offers cannot be credited beyond their requested amount.
+    // The operator's amount is authoritative; later backend reports do not adjust it.
+    optional uint64 amount = 3;
+    // Required, nonempty actual backend payment ID. An already recorded ID
+    // fails with ALREADY_EXISTS, regardless of the requested amount.
+    // Later backend reports for this ID are ignored by payment deduplication.
+    optional string payment_id = 4;
 }
 
 // The quote as it stands after the update. On failure a gRPC error status is
