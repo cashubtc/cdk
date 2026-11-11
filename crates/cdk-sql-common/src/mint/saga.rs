@@ -190,10 +190,11 @@ where
             r#"
             UPDATE saga_state
             SET state = :state, finalization_data = :finalization_data, updated_at = :updated_at
-            WHERE operation_id = :operation_id
+            WHERE operation_id = :operation_id AND state = :old_state
             "#,
         )?
         .bind("state", new_state.state())
+        .bind("old_state", saga.state.state())
         .bind(
             "finalization_data",
             finalization_data
@@ -209,11 +210,7 @@ where
         .await?;
 
         if affected != 1 {
-            return Err(Error::Internal(format!(
-                "Saga {} not found for finalization update to {}",
-                saga.operation_id,
-                new_state.state()
-            )));
+            return Err(Error::ConcurrentUpdate);
         }
 
         saga.state = new_state;
