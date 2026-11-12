@@ -398,6 +398,9 @@ pub trait QuotesTransaction {
 
     /// Claims expired or released ownership without authorizing another send.
     /// Returns the updated quote, or None while a valid owner exists.
+    ///
+    /// Returns [`Error::ConcurrentUpdate`] if the stored state, lock or lock expiry changed
+    /// between the read and the write, after which the caller must roll back the transaction.
     async fn claim_melt_quote_lease(
         &mut self,
         quote_id: &QuoteId,
