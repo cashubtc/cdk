@@ -29,6 +29,330 @@ mod tests {
 
     use crate::WalletSqliteDatabase;
 
+    /// Upgrade a populated database built from every earlier migration through
+    /// the real migration runner, then verify the stored history is unchanged.
+    #[tokio::test]
+    async fn transaction_ys_migration_upgrades_current_schema() {
+        use std::collections::HashMap;
+
+        use cdk_common::nuts::PaymentMethod;
+        use cdk_common::wallet::{Transaction, TransactionDirection, TransactionStatus};
+        use cdk_common::{Amount, CurrencyUnit, SecretKey};
+
+        const NEW_MIGRATION: &str = "20260924000000_normalize_transaction_ys.sql";
+
+        let dir =
+            std::env::temp_dir().join(format!("cdk-transaction-upgrade-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).expect("temp dir");
+        let path = dir.join("wallet.sqlite");
+        let conn = rusqlite::Connection::open(&path).expect("open sqlite");
+
+        // Build the pre-upgrade schema the way the runner would have: apply each
+        // earlier migration in order and record it under the runner's name.
+        let migrations_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../cdk-sql-common/src/wallet/migrations/sqlite");
+        let mut names = std::fs::read_dir(&migrations_dir)
+            .expect("migrations dir")
+            .map(|entry| {
+                entry
+                    .expect("migration entry")
+                    .file_name()
+                    .into_string()
+                    .expect("utf-8 name")
+            })
+            .filter(|name| name.as_str() < NEW_MIGRATION)
+            .collect::<Vec<_>>();
+        names.sort();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS migrations (
+                name TEXT PRIMARY KEY,
+                applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )",
+        )
+        .expect("migrations table");
+        for name in &names {
+            let sql = std::fs::read_to_string(migrations_dir.join(name)).expect("migration sql");
+            conn.execute_batch(&sql).expect("apply earlier migration");
+            conn.execute("INSERT INTO migrations (name) VALUES (?1)", [name])
+                .expect("record migration");
+        }
+
+        let a = SecretKey::generate().public_key();
+        let b = SecretKey::generate().public_key();
+        let base = Transaction {
+            mint_url: "https://mint.example".parse().expect("mint url"),
+            direction: TransactionDirection::Incoming,
+            amount: Amount::from(21),
+            fee: Amount::from(1),
+            unit: CurrencyUnit::Sat,
+            ys: Vec::new(),
+            timestamp: 123,
+            memo: None,
+            metadata: HashMap::new(),
+            quote_id: None,
+            payment_request: None,
+            payment_proof: None,
+            payment_method: None,
+            saga_id: None,
+            status: TransactionStatus::Completed,
+        };
+        let expected = vec![
+            // Legacy record keyed by its proof identifiers.
+            Transaction {
+                ys: vec![a, b],
+                memo: Some("legacy".to_owned()),
+                metadata: HashMap::from([("key".to_owned(), "value".to_owned())]),
+                quote_id: Some("quote".to_owned()),
+                payment_request: Some("lnbc1".to_owned()),
+                payment_method: Some(PaymentMethod::Known(KnownMethod::Bolt11)),
+                ..base.clone()
+            },
+            // Saga record with repeated points, whose order must survive.
+            Transaction {
+                direction: TransactionDirection::Outgoing,
+                ys: vec![b, a, b],
+                payment_proof: Some("preimage".to_owned()),
+                saga_id: Some(uuid::Uuid::new_v4()),
+                status: TransactionStatus::Pending,
+                ..base.clone()
+            },
+            // Saga record without points.
+            Transaction {
+                saga_id: Some(uuid::Uuid::new_v4()),
+                status: TransactionStatus::Failed,
+                ..base
+            },
+        ];
+        for transaction in &expected {
+            let ys = transaction
+                .ys
+                .iter()
+                .flat_map(|y| y.to_bytes())
+                .collect::<Vec<_>>();
+            conn.execute(
+                "INSERT INTO transactions
+                 (id, mint_url, direction, unit, amount, fee, ys, timestamp, memo, metadata,
+                  quote_id, payment_request, payment_proof, payment_method, saga_id, status)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                rusqlite::params![
+                    transaction.id().as_slice().to_vec(),
+                    transaction.mint_url.to_string(),
+                    transaction.direction.to_string(),
+                    transaction.unit.to_string(),
+                    u64::from(transaction.amount),
+                    u64::from(transaction.fee),
+                    ys,
+                    transaction.timestamp,
+                    transaction.memo,
+                    serde_json::to_string(&transaction.metadata).expect("metadata"),
+                    transaction.quote_id,
+                    transaction.payment_request,
+                    transaction.payment_proof,
+                    transaction.payment_method.as_ref().map(|pm| pm.to_string()),
+                    transaction.saga_id.map(|id| id.to_string()),
+                    transaction.status.to_string(),
+                ],
+            )
+            .expect("insert legacy transaction");
+        }
+        drop(conn);
+
+        // Opening the database runs the pending migration through the runner.
+        let db = WalletSqliteDatabase::new(&path).await.expect("open wallet");
+        for transaction in &expected {
+            let stored = db
+                .get_transaction(transaction.id())
+                .await
+                .expect("get transaction")
+                .expect("transaction exists");
+            assert_eq!(&stored, transaction);
+        }
+        let listed = db
+            .list_transactions(None, None, None)
+            .await
+            .expect("list transactions");
+        assert_eq!(listed.len(), expected.len());
+        for transaction in &expected {
+            assert!(listed.contains(transaction));
+        }
+        drop(db);
+
+        let conn = rusqlite::Connection::open(&path).expect("reopen sqlite");
+        let recorded: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM migrations WHERE name = ?1",
+                [NEW_MIGRATION],
+                |row| row.get(0),
+            )
+            .expect("migration record");
+        assert_eq!(recorded, 1);
+        assert!(conn.prepare("SELECT ys FROM transactions").is_err());
+        drop(conn);
+        std::fs::remove_dir_all(dir).expect("remove temp dir");
+    }
+
+    #[tokio::test]
+    async fn transaction_points_and_metadata_roll_back_together() {
+        use cdk_common::wallet::{Transaction, TransactionDirection, TransactionStatus};
+        use cdk_common::{Amount, CurrencyUnit, SecretKey};
+
+        let path = std::env::temp_dir().join(format!(
+            "cdk-transaction-rollback-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let db = WalletSqliteDatabase::new(&path).await.unwrap();
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let original = Transaction {
+            mint_url: "https://mint.example".parse().unwrap(),
+            direction: TransactionDirection::Incoming,
+            amount: Amount::from(1),
+            fee: Amount::ZERO,
+            unit: CurrencyUnit::Sat,
+            ys: vec![SecretKey::generate().public_key()],
+            timestamp: 123,
+            memo: Some("original".to_owned()),
+            metadata: Default::default(),
+            quote_id: None,
+            payment_request: None,
+            payment_proof: None,
+            payment_method: None,
+            saga_id: Some(uuid::Uuid::new_v4()),
+            status: TransactionStatus::Pending,
+        };
+        db.add_transaction(original.clone()).await.unwrap();
+        let mut invalid = original.clone();
+        invalid.memo = Some("must roll back".to_owned());
+        // Fail in the second insert batch after metadata and the first batch were written.
+        conn.execute_batch(
+            "CREATE TRIGGER reject_second_batch BEFORE INSERT ON transaction_ys
+             WHEN NEW.position = 300 BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
+        )
+        .unwrap();
+        invalid.ys = vec![SecretKey::generate().public_key(); 301];
+        assert!(db.add_transaction(invalid).await.is_err());
+        let stored = db.get_transaction(original.id()).await.unwrap().unwrap();
+        assert_eq!(stored.ys, original.ys);
+        assert_eq!(stored.memo, original.memo);
+        drop(conn);
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn transaction_listing_skips_malformed_transactions() {
+        use cdk_common::wallet::{Transaction, TransactionDirection, TransactionStatus};
+        use cdk_common::{Amount, CurrencyUnit, SecretKey};
+
+        let path = std::env::temp_dir().join(format!(
+            "cdk-transaction-corruption-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let db = WalletSqliteDatabase::new(&path).await.unwrap();
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let valid = Transaction {
+            mint_url: "https://mint.example".parse().unwrap(),
+            direction: TransactionDirection::Incoming,
+            amount: Amount::from(1),
+            fee: Amount::ZERO,
+            unit: CurrencyUnit::Sat,
+            ys: vec![SecretKey::generate().public_key()],
+            timestamp: 123,
+            memo: Some("original".to_owned()),
+            metadata: Default::default(),
+            quote_id: None,
+            payment_request: None,
+            payment_proof: None,
+            payment_method: None,
+            saga_id: Some(uuid::Uuid::new_v4()),
+            status: TransactionStatus::Pending,
+        };
+        db.add_transaction(valid.clone()).await.unwrap();
+        let mut bad_metadata = valid.clone();
+        bad_metadata.saga_id = Some(uuid::Uuid::new_v4());
+        db.add_transaction(bad_metadata.clone()).await.unwrap();
+        let mut bad_point = valid.clone();
+        bad_point.saga_id = Some(uuid::Uuid::new_v4());
+        bad_point.ys = vec![SecretKey::generate().public_key(); 3];
+        db.add_transaction(bad_point.clone()).await.unwrap();
+        // Simulate corruption that normal writes reject.
+        conn.execute_batch("PRAGMA ignore_check_constraints = ON;")
+            .unwrap();
+        conn.execute(
+            "UPDATE transactions SET direction = 'invalid' WHERE id = ?1",
+            [bad_metadata.id().as_slice()],
+        )
+        .unwrap();
+        // A bad middle point must discard both earlier and later joined rows.
+        conn.execute(
+            "UPDATE transaction_ys SET y = ?1 WHERE transaction_id = ?2 AND position = 1",
+            rusqlite::params![vec![0u8; 33], bad_point.id().as_slice()],
+        )
+        .unwrap();
+        assert_eq!(
+            db.list_transactions(None, None, None).await.unwrap(),
+            vec![valid]
+        );
+        assert!(db.get_transaction(bad_metadata.id()).await.is_err());
+        assert!(db.get_transaction(bad_point.id()).await.is_err());
+        drop(conn);
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn transaction_ys_migration_preserves_legacy_points() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../../../cdk-sql-common/src/wallet/migrations/sqlite/20250401120000_add_transactions_table.sql")).unwrap();
+        let first = cdk_common::SecretKey::generate().public_key().to_bytes();
+        let second = cdk_common::SecretKey::generate().public_key().to_bytes();
+        let points = [first, second, first];
+        for (id, ys) in [(vec![1u8], points.concat()), (vec![2u8], Vec::new())] {
+            conn.execute("INSERT INTO transactions (id, mint_url, direction, amount, fee, unit, ys, timestamp, memo) VALUES (?1, 'https://mint.example', 'Incoming', 1, 0, 'sat', ?2, 123, 'retained')", rusqlite::params![id, ys]).unwrap();
+        }
+        conn.execute_batch(include_str!("../../../cdk-sql-common/src/wallet/migrations/sqlite/20260924000000_normalize_transaction_ys.sql")).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT y FROM transaction_ys WHERE transaction_id = ?1 ORDER BY position")
+            .unwrap();
+        let stored = stmt
+            .query_map([vec![1u8]], |row| row.get::<_, Vec<u8>>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(stored, points);
+        let empty_count: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM transaction_ys WHERE transaction_id = ?1",
+                [vec![2u8]],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(empty_count, 0);
+        let retained: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM transactions WHERE memo = 'retained' AND timestamp = 123",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(retained, 2);
+        assert!(conn.prepare("SELECT ys FROM transactions").is_err());
+    }
+
+    #[test]
+    fn transaction_ys_migration_rejects_truncated_points_atomically() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../../../cdk-sql-common/src/wallet/migrations/sqlite/20250401120000_add_transactions_table.sql")).unwrap();
+        conn.execute("INSERT INTO transactions (id, mint_url, direction, amount, fee, unit, ys, timestamp) VALUES (?1, 'https://mint.example', 'Incoming', 1, 0, 'sat', ?2, 123)", rusqlite::params![vec![1u8], vec![2u8; 34]]).unwrap();
+        let tx = conn.transaction().unwrap();
+        assert!(tx.execute_batch(include_str!("../../../cdk-sql-common/src/wallet/migrations/sqlite/20260924000000_normalize_transaction_ys.sql")).is_err());
+        tx.rollback().unwrap();
+        let bytes: Vec<u8> = conn
+            .query_row("SELECT ys FROM transactions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(bytes, vec![2u8; 34]);
+        assert!(conn.prepare("SELECT * FROM transaction_ys").is_err());
+    }
+
     #[tokio::test]
     #[cfg(feature = "sqlcipher")]
     async fn test_sqlcipher() {

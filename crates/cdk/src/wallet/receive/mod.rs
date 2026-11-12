@@ -20,7 +20,8 @@ impl Wallet {
     /// Receive proofs using the saga pattern
     ///
     /// This is the internal implementation that uses the saga pattern
-    /// for proper crash recovery and compensation.
+    /// for proper crash recovery and compensation. Duplicate proof identifiers
+    /// are rejected before any mint requests or database writes.
     #[instrument(skip_all)]
     pub async fn receive_proofs(
         &self,
