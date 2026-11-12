@@ -68,7 +68,7 @@ impl MintPubSubSpec {
         &self,
         quote_id: &QuoteId,
     ) -> Result<Option<MeltQuoteResponse<QuoteId>>, String> {
-        let quote = match self
+        let mut quote = match self
             .db
             .get_melt_quote(quote_id)
             .await
@@ -77,6 +77,9 @@ impl MintPubSubSpec {
             Some(quote) => quote,
             None => return Ok(None),
         };
+        let pays_transaction = crate::mint::transaction::settled_melt_state(&self.db, &mut quote)
+            .await
+            .map_err(|e| e.to_string())?;
         let change = if matches!(
             quote.state,
             MeltQuoteState::Pending | MeltQuoteState::Unknown
@@ -88,7 +91,7 @@ impl MintPubSubSpec {
                 .get_blind_signatures_for_quote(quote_id)
                 .await
                 .map_err(|e| e.to_string())?;
-            (!signatures.is_empty()).then_some(signatures)
+            crate::mint::transaction::melt_change(pays_transaction, &quote, signatures)
         };
         Ok(Some(quote.into_response(change)))
     }

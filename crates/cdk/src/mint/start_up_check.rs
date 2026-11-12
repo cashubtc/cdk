@@ -970,6 +970,49 @@ impl Mint {
             .await;
         }
 
+        // A melt quote paying a NUT-XX transaction reads PENDING until the transaction settles, so
+        // finish a finalization left after the quote turned PAID, as startup recovery does.
+        if quote.state == MeltQuoteState::Paid {
+            if let (
+                cdk_common::mint::SagaStateEnum::Melt(cdk_common::mint::MeltSagaState::Finalizing),
+                Some(data),
+            ) = (&saga.state, saga.finalization_data.clone())
+            {
+                let unsettled = self
+                    .localstore
+                    .get_transaction(&quote.id)
+                    .await?
+                    .is_some_and(|record| {
+                        record.state == cdk_common::nuts::TransactionState::Pending
+                    });
+                if unsettled {
+                    let payment_response = crate::cdk_payment::MakePaymentResponse {
+                        payment_lookup_id: data.payment_lookup_id,
+                        payment_proof: data.payment_proof,
+                        status: MeltQuoteState::Paid,
+                        total_spent: data.total_spent,
+                    };
+                    // A failure leaves the quote PENDING for the next check or startup to retry.
+                    if let Err(err) = super::saga_recovery::process_melt_saga_outcome(
+                        &saga,
+                        quote,
+                        &payment_response,
+                        &self.localstore,
+                        &self.pubsub_manager,
+                        self,
+                    )
+                    .await
+                    {
+                        tracing::warn!(
+                            melt_quote_id = %quote.id,
+                            "could not finish settling the transaction: {err}"
+                        );
+                    }
+                    return Ok(());
+                }
+            }
+        }
+
         if quote.state != MeltQuoteState::Pending {
             return Ok(());
         }

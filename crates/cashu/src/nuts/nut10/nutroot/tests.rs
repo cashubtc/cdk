@@ -738,6 +738,42 @@ fn shared_mint_quote_input_vectors() {
     assert!(Transaction::from_bytes(&stripped).is_err());
 }
 
+/// NUT-XX: a mint quote paying a melt keeps the mint vector's quote input bytes.
+#[test]
+fn shared_mint_quote_to_melt_vector() {
+    let shared: Value = serde_json::from_str(include_str!("nutroot_v3_vectors.json")).unwrap();
+    let case = &shared["transcript"]["mint_quote_to_melt"];
+    let quote = &case["tx"]["mint_quote_inputs"][0];
+    let melt = &case["tx"]["melt_quote_outputs"][0];
+    let transaction = Transaction::new(
+        &[],
+        &[MintQuoteInput {
+            amount: quote["amount"].as_u64().unwrap().into(),
+            id: quote["quote_id"].as_str().unwrap().to_owned(),
+            pubkey: crate::nuts::PublicKey::from_hex(quote["lock_pubkey"].as_str().unwrap())
+                .unwrap(),
+            issued: quote["issued"].as_u64().unwrap().into(),
+        }],
+        &[],
+        &[Quote {
+            amount: melt["amount"].as_u64().unwrap().into(),
+            id: melt["quote_id"].as_str().unwrap().to_owned(),
+        }],
+    )
+    .unwrap();
+    assert_eq!(transaction.as_bytes(), bytes(&case["transcript"]));
+    assert_eq!(transaction.digest(), hash(&case["digest"]));
+    assert_eq!(transaction.input_id(0).unwrap(), hash(&case["input_id"]));
+    assert_eq!(
+        transaction.input_id(0).unwrap(),
+        hash(&shared["transcript"]["mint"]["input_id"])
+    );
+    assert_eq!(
+        transaction.input_digest(0).unwrap(),
+        hash(&case["input_digest"])
+    );
+}
+
 #[test]
 fn shared_proof_transcript_vectors() {
     let shared: Value = serde_json::from_str(include_str!("nutroot_v3_vectors.json")).unwrap();

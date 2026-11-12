@@ -15,6 +15,7 @@ pub const ENV_AUTH_MELT: &str = "CDK_MINTD_AUTH_MELT";
 pub const ENV_AUTH_GET_MELT_QUOTE: &str = "CDK_MINTD_AUTH_GET_MELT_QUOTE";
 pub const ENV_AUTH_CHECK_MELT_QUOTE: &str = "CDK_MINTD_AUTH_CHECK_MELT_QUOTE";
 pub const ENV_AUTH_SWAP: &str = "CDK_MINTD_AUTH_SWAP";
+pub const ENV_AUTH_TRANSACTION: &str = "CDK_MINTD_AUTH_TRANSACTION";
 pub const ENV_AUTH_RESTORE: &str = "CDK_MINTD_AUTH_RESTORE";
 pub const ENV_AUTH_CHECK_PROOF_STATE: &str = "CDK_MINTD_AUTH_CHECK_PROOF_STATE";
 pub const ENV_AUTH_WEBSOCKET: &str = "CDK_MINTD_AUTH_WEBSOCKET";
@@ -83,6 +84,12 @@ impl Auth {
         if let Ok(swap_str) = env::var(ENV_AUTH_SWAP) {
             if let Ok(auth_type) = swap_str.parse() {
                 self.swap = auth_type;
+            }
+        }
+
+        if let Ok(transaction_str) = env::var(ENV_AUTH_TRANSACTION) {
+            if let Ok(auth_type) = transaction_str.parse() {
+                self.transaction = auth_type;
             }
         }
 

@@ -464,6 +464,9 @@ pub enum Error {
     /// Transaction not found
     #[error("Transaction not found")]
     TransactionNotFound,
+    /// NUT-XX transaction rejected
+    #[error("Invalid transaction: {0}")]
+    InvalidTransaction(String),
     /// Invalid operation kind
     #[error("Invalid operation kind")]
     InvalidOperationKind,

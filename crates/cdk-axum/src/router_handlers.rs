@@ -7,13 +7,15 @@ use cdk::error::ErrorResponse;
 use cdk::nuts::nut21::{Method, ProtectedEndpoint, RoutePath};
 use cdk::nuts::{
     CheckStateRequest, CheckStateResponse, Id, KeysResponse, KeysetResponse, MintInfo,
-    RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
+    RestoreRequest, RestoreResponse, SwapRequest, SwapResponse, TransactionRequest,
 };
 use cdk::util::unix_time;
+use cdk_common::transaction::TransactionResponse;
 use paste::paste;
 use tracing::instrument;
 
 use crate::auth::AuthHeader;
+use crate::custom_handlers::PreferHeader;
 use crate::ws::main_websocket;
 use crate::MintState;
 
@@ -240,6 +242,48 @@ pub(crate) async fn post_restore(
     })?;
 
     Ok(Json(restore_response))
+}
+
+/// Run a NUT-XX transaction
+///
+/// Proofs and paid mint quotes in; blinded messages and one melt quote out.
+/// Responses are cached (NUT-19) under the request.
+#[instrument(skip_all)]
+pub(crate) async fn post_transaction(
+    auth: AuthHeader,
+    prefer: PreferHeader,
+    State(state): State<MintState>,
+    Json(payload): Json<TransactionRequest>,
+) -> Result<Json<TransactionResponse>, Response> {
+    state
+        .mint
+        .verify_auth(
+            auth.into(),
+            &ProtectedEndpoint::new(Method::Post, RoutePath::Transaction),
+        )
+        .await
+        .map_err(into_response)?;
+
+    let cache_key = state.cache.calculate_key(&("transaction", &payload));
+    if let Some(cache_key) = &cache_key {
+        if let Some(cached) = state.cache.get::<TransactionResponse>(cache_key).await {
+            return Ok(Json(cached));
+        }
+    }
+
+    let response = state
+        .mint
+        .process_transaction(payload, prefer.respond_async)
+        .await
+        .map_err(|err| {
+            tracing::debug!("Could not process transaction: {}", err);
+            into_response(err)
+        })?;
+
+    if let Some(cache_key) = cache_key {
+        state.cache.set(cache_key, &response).await;
+    }
+    Ok(Json(response))
 }
 
 #[cfg(feature = "info-page")]
