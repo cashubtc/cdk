@@ -35,7 +35,7 @@ use cdk::types::QuoteTTL;
 use cdk::wallet::types::{TransactionDirection, TransactionId, TransactionStatus};
 use cdk::wallet::{MintConnector, P2PKLockedProofSendMode, ReceiveOptions, SendMemo, SendOptions};
 use cdk::{Amount, StreamExt};
-use cdk_common::mint::OperationKind;
+use cdk_common::mint::{Operation, OperationKind};
 use cdk_common::payment::{
     MintPayment, OutgoingPaymentOptions, PaymentIdentifier, PaymentQuoteResponse,
 };
@@ -2428,6 +2428,251 @@ async fn test_restore_after_keyset_rotation() {
         !response.signatures.is_empty(),
         "Restore should return the stored signature from the expired keyset"
     );
+}
+
+/// Restoring into a wallet in use must not hand back the proofs of a token
+/// that was sent but not claimed yet
+#[tokio::test]
+async fn test_restore_keeps_pending_spent_proofs() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet = create_test_wallet_for_mint(mint)
+        .await
+        .expect("Failed to create test wallet");
+    fund_wallet(wallet.clone(), 100, None)
+        .await
+        .expect("Failed to fund wallet");
+
+    let _token = wallet
+        .prepare_send(Amount::from(40), SendOptions::default())
+        .await
+        .expect("Failed to prepare send")
+        .confirm(None)
+        .await
+        .expect("Failed to confirm send");
+
+    let balance_before = wallet.total_balance().await.unwrap();
+    let pending_before: HashSet<_, RandomState> = HashSet::from_iter(
+        wallet
+            .get_pending_spent_proofs()
+            .await
+            .unwrap()
+            .ys()
+            .unwrap(),
+    );
+    assert!(!pending_before.is_empty());
+
+    let restored = wallet.restore().await.expect("Restore failed");
+
+    let pending_after: HashSet<_, RandomState> = HashSet::from_iter(
+        wallet
+            .get_pending_spent_proofs()
+            .await
+            .unwrap()
+            .ys()
+            .unwrap(),
+    );
+    assert_eq!(pending_after, pending_before);
+    assert_eq!(wallet.total_balance().await.unwrap(), balance_before);
+    // Scan totals still count the proofs the wallet already stores
+    assert_eq!(restored.unspent, Amount::from(100));
+}
+
+/// Restoring while a send is prepared must leave its proofs reserved
+#[tokio::test]
+async fn test_restore_keeps_reserved_proofs() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet = create_test_wallet_for_mint(mint)
+        .await
+        .expect("Failed to create test wallet");
+    fund_wallet(wallet.clone(), 100, None)
+        .await
+        .expect("Failed to fund wallet");
+
+    let prepared = wallet
+        .prepare_send(Amount::from(40), SendOptions::default())
+        .await
+        .expect("Failed to prepare send");
+
+    let balance_before = wallet.total_balance().await.unwrap();
+    let reserved_before: HashSet<_, RandomState> =
+        HashSet::from_iter(wallet.get_reserved_proofs().await.unwrap().ys().unwrap());
+    assert!(!reserved_before.is_empty());
+
+    let restored = wallet.restore().await.expect("Restore failed");
+
+    let reserved_after: HashSet<_, RandomState> =
+        HashSet::from_iter(wallet.get_reserved_proofs().await.unwrap().ys().unwrap());
+    assert_eq!(reserved_after, reserved_before);
+    assert_eq!(wallet.total_balance().await.unwrap(), balance_before);
+    // Scan totals still count the proofs the wallet already stores
+    assert_eq!(restored.unspent, Amount::from(100));
+
+    // The send still owns its proofs, so cancelling releases them as usual
+    prepared.cancel().await.expect("Failed to cancel send");
+    assert_eq!(wallet.total_balance().await.unwrap(), Amount::from(100));
+}
+
+/// Restoring into a wallet in use still adds the proofs it is missing
+#[tokio::test]
+async fn test_restore_adds_only_missing_proofs() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet = create_test_wallet_for_mint(mint)
+        .await
+        .expect("Failed to create test wallet");
+    fund_wallet(wallet.clone(), 100, None)
+        .await
+        .expect("Failed to fund wallet");
+
+    let dropped = wallet
+        .get_unspent_proofs()
+        .await
+        .unwrap()
+        .first()
+        .cloned()
+        .expect("Wallet should hold a proof");
+    wallet
+        .localstore
+        .update_proofs(vec![], vec![dropped.y().unwrap()])
+        .await
+        .unwrap();
+    assert_eq!(
+        wallet.total_balance().await.unwrap(),
+        Amount::from(100).checked_sub(dropped.amount).unwrap()
+    );
+
+    let restored = wallet.restore().await.expect("Restore failed");
+
+    // The scan reports everything it found, not only the proof it added back
+    assert_eq!(restored.unspent, Amount::from(100));
+    assert_eq!(wallet.total_balance().await.unwrap(), Amount::from(100));
+}
+
+/// Restore stores a proof the mint reports pending as `Pending` with no
+/// operation owner. Once the mint releases it, the next restore must make it
+/// spendable again and keep its other metadata.
+#[tokio::test]
+async fn test_restore_releases_unowned_pending_proofs() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create test wallet");
+    fund_wallet(wallet.clone(), 100, None)
+        .await
+        .expect("Failed to fund wallet");
+
+    // The wallet loses a proof the mint holds as pending, as it does for the
+    // inputs of a melt in flight.
+    let proof = wallet
+        .get_unspent_proofs()
+        .await
+        .unwrap()
+        .first()
+        .cloned()
+        .expect("Wallet should hold a proof");
+    let y = proof.y().unwrap();
+    wallet
+        .localstore
+        .update_proofs(vec![], vec![y])
+        .await
+        .unwrap();
+
+    let store = mint.localstore();
+    let mut tx = store.begin_transaction().await.unwrap();
+    let mut pending = tx
+        .add_proofs(
+            vec![proof.clone()],
+            None,
+            &Operation::new_swap(Amount::ZERO, proof.amount, Amount::ZERO),
+        )
+        .await
+        .unwrap();
+    tx.update_proofs_state(&mut pending, State::Pending)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let restored = wallet.restore().await.expect("First restore failed");
+    assert_eq!(restored.pending, proof.amount);
+    let stored = wallet.localstore.get_proofs_by_ys(vec![y]).await.unwrap();
+    assert_eq!(stored[0].state, State::Pending);
+    assert_eq!(stored[0].used_by_operation, None);
+    let derivation_index = stored[0].derivation_index;
+    assert!(derivation_index.is_some());
+    assert_eq!(
+        wallet.total_balance().await.unwrap(),
+        Amount::from(100).checked_sub(proof.amount).unwrap()
+    );
+
+    // The mint releases the proof, as when the melt is rolled back
+    let mut tx = store.begin_transaction().await.unwrap();
+    tx.remove_proofs(&[y], None).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let restored = wallet.restore().await.expect("Second restore failed");
+    assert_eq!(restored.unspent, Amount::from(100));
+    let stored = wallet.localstore.get_proofs_by_ys(vec![y]).await.unwrap();
+    assert_eq!(stored[0].state, State::Unspent);
+    assert_eq!(stored[0].derivation_index, derivation_index);
+    assert_eq!(wallet.total_balance().await.unwrap(), Amount::from(100));
+}
+
+/// A pending proof owned by an operation is left to that operation's
+/// recovery, even when the mint reports it unspent
+#[tokio::test]
+async fn test_restore_keeps_operation_owned_pending_proofs() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet = create_test_wallet_for_mint(mint)
+        .await
+        .expect("Failed to create test wallet");
+    fund_wallet(wallet.clone(), 100, None)
+        .await
+        .expect("Failed to fund wallet");
+
+    let y = wallet
+        .get_unspent_proofs()
+        .await
+        .unwrap()
+        .first()
+        .expect("Wallet should hold a proof")
+        .y()
+        .unwrap();
+    let mut proof_info = wallet.localstore.get_proofs_by_ys(vec![y]).await.unwrap()[0].clone();
+    let operation_id = uuid::Uuid::new_v4();
+    proof_info.state = State::Pending;
+    proof_info.used_by_operation = Some(operation_id);
+    let amount = proof_info.proof.amount;
+    wallet
+        .localstore
+        .update_proofs(vec![proof_info], vec![])
+        .await
+        .unwrap();
+
+    let restored = wallet.restore().await.expect("Restore failed");
+
+    let stored = wallet.localstore.get_proofs_by_ys(vec![y]).await.unwrap();
+    assert_eq!(stored[0].state, State::Pending);
+    assert_eq!(stored[0].used_by_operation, Some(operation_id));
+    assert_eq!(
+        wallet.total_balance().await.unwrap(),
+        Amount::from(100).checked_sub(amount).unwrap()
+    );
+    // Scan totals still count the proofs the wallet already stores
+    assert_eq!(restored.unspent, Amount::from(100));
 }
 
 #[derive(Debug, Default)]
