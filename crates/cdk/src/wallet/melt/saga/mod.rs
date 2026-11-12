@@ -847,7 +847,10 @@ impl<'a> MeltSaga<'a, Prepared> {
     ///
     /// # Compensation
     ///
-    /// On failure, compensations revert proof states and release the quote.
+    /// On failure, compensations revert proof states and release the quote. A
+    /// refusal once the swap has gone through goes through the saga's own
+    /// reservation instead, since the swap's outputs are reserved under it and
+    /// [`MeltSaga::from_prepared`] rebuilds the saga with no compensations.
     #[instrument(skip_all)]
     pub async fn request_melt_with_options(
         mut self,
@@ -871,6 +874,8 @@ impl<'a> MeltSaga<'a, Prepared> {
             .await?
             .id;
         let mut final_proofs = self.state_data.proofs.clone();
+
+        let mut swap_committed = false;
 
         // Handle proofs_to_swap based on skip_swap option
         if !self.state_data.proofs_to_swap.is_empty() {
@@ -940,11 +945,13 @@ impl<'a> MeltSaga<'a, Prepared> {
                         None,
                         false,
                         false,
+                        operation_id,
                     )
                     .await?
                 {
                     final_proofs.extend(swapped);
                 }
+                swap_committed = true;
             }
         }
 
@@ -959,8 +966,17 @@ impl<'a> MeltSaga<'a, Prepared> {
 
         let proofs_total = final_proofs.total_amount()?;
         if proofs_total < inputs_needed_amount {
-            // Insufficient funds - execute compensations
-            self.compensate().await;
+            if swap_committed {
+                if let Err(e) = self.wallet.compensate_melt(&operation_id).await {
+                    tracing::warn!(
+                        "Failed to release melt saga {} after a post-swap refusal: {}",
+                        operation_id,
+                        e
+                    );
+                }
+            } else {
+                self.compensate().await;
+            }
             return Err(Error::InsufficientFunds);
         }
 
@@ -1567,8 +1583,9 @@ mod tests {
     use crate::nuts::{BlindSignature, PreMintSecrets};
     use crate::wallet::saga::new_compensations;
     use crate::wallet::test_utils::{
-        create_test_db, create_test_wallet_with_mock, make_inactive_keyset, test_keyset,
-        test_keyset_id, test_melt_quote, test_mint_url, test_proof_info, MockMintConnector,
+        create_test_db, create_test_wallet_with_mock, make_inactive_keyset, mint_signing_keyset,
+        test_keyset, test_keyset_id, test_melt_quote, test_mint_url, test_proof_info,
+        MockMintConnector,
     };
     use crate::wallet::MeltConfirmOptions;
     use crate::{Amount, Error};
@@ -2547,6 +2564,87 @@ mod tests {
             result.is_ok(),
             "melt refused after swap: {:?}",
             result.err()
+        );
+    }
+
+    /// Only the mint can tell that a keyset it still lists as active was
+    /// deactivated, so the swap retries on a keyset the melt never sized
+    /// against. A dearer one makes the swapped proofs cost more to melt than
+    /// they hold, and the melt is refused after the swap already settled.
+    /// Its outputs have to come back to the wallet rather than sit reserved.
+    #[tokio::test]
+    async fn melt_refused_after_its_swap_releases_the_swapped_proofs() {
+        let free = mint_signing_keyset(0);
+        let rotated = mint_signing_keyset(1000);
+        let rotated_id = rotated.id;
+
+        let db = create_test_db().await;
+        db.update_proofs(
+            vec![test_proof_info(free.id, 2048, test_mint_url())],
+            vec![],
+        )
+        .await
+        .unwrap();
+        let quote = test_melt_quote();
+        let quote_id = quote.id.clone();
+        db.add_melt_quote(quote).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.enable_mint_signing();
+        mock_client.set_mint_keys_response(Ok(vec![free.clone()]));
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client.clone()).await;
+
+        let prepared = MeltSaga::new(&wallet)
+            .prepare(&quote_id, HashMap::new())
+            .await
+            .unwrap();
+        assert_eq!(prepared.state_data.proofs_to_swap.len(), 1);
+
+        let mut deactivated = free.clone();
+        deactivated.active = Some(false);
+        mock_client.set_mint_keys_response(Ok(vec![deactivated, rotated]));
+        mock_client.push_post_swap_response(Err(Error::InactiveKeyset));
+
+        let err = prepared
+            .request_melt_with_options(MeltConfirmOptions::default())
+            .await
+            .map(|_| ())
+            .expect_err(
+                "the retry signs proofs that cost more to melt than the melt was sized for",
+            );
+        assert!(
+            matches!(err, Error::InsufficientFunds),
+            "expected InsufficientFunds, got: {err:?}"
+        );
+
+        let requests = mock_client.captured_swap_requests();
+        assert_eq!(
+            requests.len(),
+            2,
+            "the swap has to retry for this to be a test of the retry"
+        );
+        assert!(
+            requests[1]
+                .outputs()
+                .iter()
+                .all(|output| output.keyset_id == rotated_id),
+            "the retry signs on the rotated keyset, which the melt never sized against"
+        );
+
+        assert_eq!(
+            wallet.total_reserved_balance().await.unwrap(),
+            Amount::ZERO,
+            "the swapped proofs are released, not stranded"
+        );
+        assert_eq!(
+            wallet.total_balance().await.unwrap(),
+            Amount::from(2048),
+            "the free keyset charged nothing, so the whole input comes back spendable"
+        );
+        let quote = db.get_melt_quote(&quote_id).await.unwrap().unwrap();
+        assert!(
+            quote.used_by_operation.is_none(),
+            "a refused melt leaves the quote free to retry"
         );
     }
 }

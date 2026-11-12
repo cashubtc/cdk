@@ -829,10 +829,14 @@ impl<'a> SendSaga<'a, Prepared> {
     /// claim to the requested amount outranks the figure quoted to the sender.
     /// The swap can still retry onto a third keyset through
     /// `retry_on_inactive_keyset`, so the proofs it returns are checked against
-    /// the keyset they were priced on before they reach the token. A send
-    /// refused there has already swapped: its inputs are spent and the outputs
-    /// stay in the wallet, reserved, until recovery or a state sync releases
-    /// them.
+    /// the keyset they were priced on before they reach the token.
+    ///
+    /// # Errors
+    ///
+    /// A failure once the swap has gone through releases the operation's
+    /// proofs, the swap's outputs among them, since every step after the swap
+    /// is local and leaves no ambiguous mint state behind. That release is
+    /// best-effort because it only beats recovery to the same work.
     #[instrument(skip(self), err)]
     pub async fn confirm(
         mut self,
@@ -847,6 +851,8 @@ impl<'a> SendSaga<'a, Prepared> {
         let quoted_send_fee = self.state_data.send_fee;
 
         tracing::info!("Confirming prepared send for operation {}", operation_id);
+
+        let mut swap_committed = false;
 
         let logic_res = async {
             let mut send_fee = quoted_send_fee;
@@ -931,7 +937,7 @@ impl<'a> SendSaga<'a, Prepared> {
                         .await?,
                 );
 
-                if let Some(swapped_proofs) = self
+                let swapped = self
                     .wallet
                     .swap_no_reserve(
                         Some(swap_amount),
@@ -940,9 +946,12 @@ impl<'a> SendSaga<'a, Prepared> {
                         options.conditions.clone(),
                         false,
                         options.use_p2bk,
+                        operation_id,
                     )
-                    .await?
-                {
+                    .await?;
+                swap_committed = true;
+
+                if let Some(swapped_proofs) = swapped {
                     if options.include_fee {
                         for signed_on in swapped_proofs.count_by_keyset().into_keys() {
                             if signed_on == keyset_id {
@@ -1056,7 +1065,19 @@ impl<'a> SendSaga<'a, Prepared> {
                 Ok((token, send_saga))
             }
             Err(e) => {
-                if e.is_definitive_failure() {
+                if swap_committed {
+                    tracing::warn!(
+                        "Send saga confirmation failed after the swap: {}. Releasing its proofs.",
+                        e
+                    );
+                    if let Err(release_err) = self.wallet.compensate_send(&operation_id).await {
+                        tracing::warn!(
+                            "Failed to release send saga {} after a post-swap failure: {}",
+                            operation_id,
+                            release_err
+                        );
+                    }
+                } else if e.is_definitive_failure() {
                     tracing::warn!(
                         "Send saga confirmation failed (definitive): {}. Running compensations.",
                         e
@@ -1138,6 +1159,7 @@ impl<'a> SendSaga<'a, TokenCreated> {
                 None,
                 false,
                 false,
+                operation_id,
             )
             .await;
 
@@ -2095,14 +2117,21 @@ mod tests {
         );
 
         assert_eq!(
-            wallet.total_balance().await.unwrap(),
-            Amount::from(32),
-            "the swap change stays spendable"
+            wallet.total_reserved_balance().await.unwrap(),
+            Amount::ZERO,
+            "the output the token never carried is released, not stranded"
         );
         assert_eq!(
-            wallet.total_reserved_balance().await.unwrap(),
-            Amount::from(32),
-            "the output the token never carried is stranded reserved, not lost"
+            wallet.total_balance().await.unwrap(),
+            Amount::from(64),
+            "the swap change and the released output are both spendable again"
+        );
+        let sagas = wallet.localstore.get_incomplete_sagas().await.unwrap();
+        assert!(
+            !sagas
+                .iter()
+                .any(|saga| matches!(saga.state, WalletSagaState::Send(_))),
+            "a send refused after its swap leaves no send saga behind"
         );
     }
 

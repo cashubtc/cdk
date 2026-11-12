@@ -352,7 +352,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
                 false,
                 false,
                 &fee_breakdown,
-                ProofReservation::Skip,
+                ProofReservation::Skip(operation_id),
             )
             .await?;
 

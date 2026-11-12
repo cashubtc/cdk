@@ -10,6 +10,7 @@ use cdk_common::wallet::{KeysetLoadPolicy, WalletSaga};
 use uuid::Uuid;
 
 use crate::nuts::{PreSwap, Proofs, PublicKey, SpendingConditions};
+use crate::wallet::swap::ProofReservation;
 use crate::Amount;
 
 /// Initial state - operation ID assigned but no work done yet.
@@ -42,6 +43,8 @@ pub struct Prepared {
     /// Ephemeral key if P2BK was used
     /// The persisted saga for optimistic locking (contains recovery data)
     pub saga: WalletSaga,
+    /// Who owns the input reservation and the send outputs this swap produces.
+    pub proof_reservation: ProofReservation,
 }
 
 impl fmt::Debug for Prepared {
@@ -91,6 +94,7 @@ impl fmt::Debug for Prepared {
             .field("saga_id", &self.saga.id)
             .field("saga_state", &self.saga.state)
             .field("saga_version", &self.saga.version)
+            .field("proof_reservation", &self.proof_reservation)
             .finish()
     }
 }
@@ -129,6 +133,7 @@ mod tests {
     use super::{Finalized, Prepared};
     use crate::nuts::{PreMintSecrets, PreSwap, SwapRequest};
     use crate::secret::Secret;
+    use crate::wallet::swap::ProofReservation;
     use crate::wallet::test_utils::{test_keyset_id, test_mint_url, test_proof};
     use crate::Amount;
 
@@ -183,6 +188,7 @@ mod tests {
                 p2bk_secret_keys: None,
             },
             saga: swap_saga(operation_id),
+            proof_reservation: ProofReservation::Reserve,
         };
         let finalized = Finalized {
             send_proofs: Some(vec![input_proof]),

@@ -5,6 +5,7 @@
 use cdk_common::amount::FeeAndAmounts;
 use cdk_common::Id;
 use tracing::instrument;
+use uuid::Uuid;
 
 use crate::amount::SplitTarget;
 use crate::fees::ProofsFeeBreakdown;
@@ -16,18 +17,19 @@ pub(crate) mod saga;
 
 use saga::SwapSaga;
 
-/// Controls whether swap operations should reserve proofs in the database.
+/// Who owns the proofs a swap consumes and produces.
 ///
-/// When a swap is performed as a nested operation within a parent saga
-/// (send, melt, receive), the parent has already reserved the proofs.
-/// Passing [`ProofReservation::Skip`] avoids a double-reservation conflict
-/// that would otherwise fail with `ProofNotUnspent`.
+/// A nested swap inside a parent saga (send, melt, receive) must not reserve
+/// inputs the parent already holds, or the reservation fails with
+/// `ProofNotUnspent`. Its outputs have to name the parent as well: the swap
+/// deletes its own saga row on success, and `release_proofs` only reaches
+/// proofs whose `used_by_operation` matches an operation that still exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProofReservation {
     /// Reserve proofs as part of the swap (default for standalone swaps).
     Reserve,
-    /// Skip reservation because a parent saga already reserved these proofs.
-    Skip,
+    /// The parent saga that already reserved the inputs and owns the outputs.
+    Skip(Uuid),
 }
 
 impl Wallet {
@@ -57,11 +59,10 @@ impl Wallet {
         .await
     }
 
-    /// Swap proofs without reserving them first.
+    /// Swap proofs already reserved by `parent_operation_id`.
     ///
-    /// This is intended for internal use by parent sagas (send, melt, receive)
-    /// that have already reserved the proofs. Calling this on unreserved proofs
-    /// bypasses the reservation safety check.
+    /// The send outputs come back reserved under that operation, so the parent
+    /// releases them with the inputs if it goes on to fail.
     #[instrument(skip(self, input_proofs))]
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn swap_no_reserve(
@@ -72,6 +73,7 @@ impl Wallet {
         spending_conditions: Option<SpendingConditions>,
         include_fees: bool,
         use_p2bk: bool,
+        parent_operation_id: Uuid,
     ) -> Result<Option<Proofs>, Error> {
         self.swap_internal(
             amount,
@@ -80,7 +82,7 @@ impl Wallet {
             spending_conditions,
             include_fees,
             use_p2bk,
-            ProofReservation::Skip,
+            ProofReservation::Skip(parent_operation_id),
         )
         .await
     }
