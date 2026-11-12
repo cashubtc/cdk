@@ -80,8 +80,7 @@ use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut11::{enforce_sig_flag, SigFlag};
 use crate::nuts::{Proof, Proofs, State, Token};
 use crate::wallet::saga::{
-    add_compensation, execute_compensations, new_compensations, Compensations,
-    RevertProofReservation,
+    add_compensation, new_compensations, Compensations, RevertProofReservation,
 };
 use crate::wallet::util::merge_keyring_keys;
 use crate::wallet::SendKind;
@@ -833,13 +832,15 @@ impl<'a> SendSaga<'a, Prepared> {
     ///
     /// # Errors
     ///
-    /// A failure once the swap has gone through releases the operation's
-    /// proofs, the swap's outputs among them, since every step after the swap
-    /// is local and leaves no ambiguous mint state behind. That release is
+    /// A failure releases the operation's proofs, the swap's outputs among
+    /// them, unless it came out of the swap call itself and so left the mint's
+    /// state unknown, which only recovery can settle. Both the shortfall and
+    /// the keyset refusal are named before and after the swap rather than left
+    /// to its arithmetic, so neither lands in that window. The release is
     /// best-effort because it only beats recovery to the same work.
     #[instrument(skip(self), err)]
     pub async fn confirm(
-        mut self,
+        self,
         memo: Option<SendMemo>,
     ) -> Result<(Token, SendSaga<'a, TokenCreated>), Error> {
         let operation_id = self.state_data.operation_id;
@@ -852,7 +853,7 @@ impl<'a> SendSaga<'a, Prepared> {
 
         tracing::info!("Confirming prepared send for operation {}", operation_id);
 
-        let mut swap_committed = false;
+        let mut swap_outcome_unknown = false;
 
         let logic_res = async {
             let mut send_fee = quoted_send_fee;
@@ -920,6 +921,20 @@ impl<'a> SendSaga<'a, Prepared> {
                     .checked_sub(final_proofs_to_send.total_amount()?)
                     .unwrap_or(Amount::ZERO);
 
+                let swap_inputs_total = proofs_to_swap.total_amount()?;
+                let swap_cost = swap_amount
+                    .checked_add(self.wallet.get_proofs_fee(&proofs_to_swap).await?.total)
+                    .ok_or(Error::AmountOverflow)?;
+                if swap_cost > swap_inputs_total {
+                    tracing::warn!(
+                        "Keyset {} prices this send at {}, past the {} reserved to swap",
+                        keyset_id,
+                        swap_cost,
+                        swap_inputs_total
+                    );
+                    return Err(Error::InsufficientFunds);
+                }
+
                 tracing::debug!("Swapping proofs; swap_amount={:?}", swap_amount);
 
                 let keys =
@@ -937,6 +952,7 @@ impl<'a> SendSaga<'a, Prepared> {
                         .await?,
                 );
 
+                swap_outcome_unknown = true;
                 let swapped = self
                     .wallet
                     .swap_no_reserve(
@@ -949,7 +965,7 @@ impl<'a> SendSaga<'a, Prepared> {
                         operation_id,
                     )
                     .await?;
-                swap_committed = true;
+                swap_outcome_unknown = false;
 
                 if let Some(swapped_proofs) = swapped {
                     if options.include_fee {
@@ -1065,25 +1081,27 @@ impl<'a> SendSaga<'a, Prepared> {
                 Ok((token, send_saga))
             }
             Err(e) => {
-                if swap_committed {
+                if swap_outcome_unknown {
                     tracing::warn!(
-                        "Send saga confirmation failed after the swap: {}. Releasing its proofs.",
+                        "Send saga {} failed with the swap outcome unknown: {}. Leaving its proofs to recovery.",
+                        operation_id,
                         e
                     );
-                    if let Err(release_err) = self.wallet.compensate_send(&operation_id).await {
+                } else {
+                    tracing::warn!(
+                        "Send saga confirmation failed: {}. Releasing its proofs.",
+                        e
+                    );
+                    if let Err(cleanup) = self.wallet.mark_transaction_failed(operation_id).await {
                         tracing::warn!(
-                            "Failed to release send saga {} after a post-swap failure: {}",
+                            "Failed to fail the transaction of send saga {}: {}",
                             operation_id,
-                            release_err
+                            cleanup
                         );
                     }
-                } else if e.is_definitive_failure() {
-                    tracing::warn!(
-                        "Send saga confirmation failed (definitive): {}. Running compensations.",
-                        e
-                    );
-                    self.wallet.mark_transaction_failed(operation_id).await?;
-                    execute_compensations(&mut self.compensations).await?;
+                    if let Err(cleanup) = self.wallet.compensate_send(&operation_id).await {
+                        tracing::warn!("Failed to release send saga {}: {}", operation_id, cleanup);
+                    }
                 }
                 Err(e)
             }
@@ -2039,6 +2057,81 @@ mod tests {
         assert!(
             mock_client.captured_swap_requests().is_empty(),
             "a short send must not reach the mint"
+        );
+
+        assert_eq!(
+            wallet.total_reserved_balance().await.unwrap(),
+            Amount::ZERO,
+            "a send refused before its swap releases what it reserved"
+        );
+        assert_eq!(
+            wallet.total_balance().await.unwrap(),
+            Amount::from(33),
+            "nothing left the wallet, so the whole proof is spendable again"
+        );
+        let sagas = wallet.localstore.get_incomplete_sagas().await.unwrap();
+        assert!(
+            !sagas
+                .iter()
+                .any(|saga| matches!(saga.state, WalletSagaState::Send(_))),
+            "a send refused before its swap leaves no send saga behind"
+        );
+    }
+
+    /// The one failure the send cannot clean up after is the swap call itself:
+    /// the mint may or may not have spent the inputs. Releasing them on a
+    /// guess would double-spend, so they stay reserved for recovery.
+    #[tokio::test]
+    async fn test_confirm_keeps_the_reservation_when_the_swap_outcome_is_unknown() {
+        let keyset = mint_signing_keyset(0);
+
+        let db = create_test_db().await;
+        let proof_info = test_proof_info(keyset.id, 64, test_mint_url());
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.enable_mint_signing();
+        mock_client.set_mint_keys_response(Ok(vec![keyset]));
+        let wallet = create_test_wallet_with_mock(db, mock_client.clone()).await;
+
+        let prepared = SendSaga::new(&wallet)
+            .prepare(
+                Amount::from(32),
+                SendOptions {
+                    send_kind: SendKind::OnlineExact,
+                    include_fee: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("64 covers a 32 send on a free keyset");
+        let operation_id = prepared.operation_id();
+
+        mock_client.set_post_swap_response(Err(crate::Error::Timeout));
+
+        let err = prepared
+            .confirm(None)
+            .await
+            .map(|(token, _)| token)
+            .expect_err("the swap times out, so the mint may or may not have spent the inputs");
+        assert!(
+            matches!(err, crate::Error::Timeout),
+            "expected Timeout, got: {err:?}"
+        );
+
+        assert_eq!(
+            wallet.total_reserved_balance().await.unwrap(),
+            Amount::from(64),
+            "an unknown swap outcome must leave the inputs reserved, not released"
+        );
+        assert!(
+            wallet
+                .localstore
+                .get_saga(&operation_id)
+                .await
+                .unwrap()
+                .is_some(),
+            "the saga has to survive for recovery to settle it"
         );
     }
 
