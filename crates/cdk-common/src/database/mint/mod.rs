@@ -655,6 +655,9 @@ pub trait SagaTransaction {
     ) -> Result<(), Self::Err>;
 
     /// Update an acquired saga state and optional finalization metadata.
+    ///
+    /// Returns [`Error::ConcurrentUpdate`] if the stored saga no longer exists or its state no
+    /// longer matches, after which the caller must roll back the transaction.
     async fn update_acquired_saga_with_finalization_data(
         &mut self,
         saga: &mut Acquired<mint::Saga>,

@@ -232,6 +232,48 @@ where
     tx.commit().await.unwrap();
 }
 
+/// A saga kept past its transaction can't move a failed payment into `Finalizing`.
+pub async fn update_acquired_saga_with_finalization_data_refuses_stale_state<DB>(db: DB)
+where
+    DB: Database<Error>,
+{
+    let operation_id = stored_melt_saga(&db).await;
+    let mut stale = stale_saga(&db, &operation_id).await;
+    move_saga(
+        &db,
+        &operation_id,
+        SagaStateEnum::Melt(MeltSagaState::PaymentFailed),
+    )
+    .await;
+
+    let finalization_data = MeltFinalizationData {
+        total_spent: Amount::from(9_123).with_unit(CurrencyUnit::Sat),
+        payment_lookup_id: PaymentIdentifier::CustomId("lookup_123".to_string()),
+        payment_proof: Some("proof_123".to_string()),
+    };
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let err = tx
+        .update_acquired_saga_with_finalization_data(
+            &mut stale,
+            SagaStateEnum::Melt(MeltSagaState::Finalizing),
+            Some(&finalization_data),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::ConcurrentUpdate), "{err}");
+    tx.rollback().await.unwrap();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let stored = tx.get_saga(&operation_id).await.unwrap().unwrap();
+    assert_eq!(
+        stored.state,
+        SagaStateEnum::Melt(MeltSagaState::PaymentFailed)
+    );
+    assert_eq!(stored.finalization_data, None);
+    tx.commit().await.unwrap();
+}
+
 /// Test updating saga state preserves existing finalization data.
 pub async fn update_saga_preserves_finalization_data<DB>(db: DB)
 where

@@ -412,6 +412,7 @@ macro_rules! mint_db_test {
             update_saga_state,
             update_acquired_saga_refuses_stale_state,
             update_acquired_saga_with_finalization_data,
+            update_acquired_saga_with_finalization_data_refuses_stale_state,
             update_saga_preserves_finalization_data,
             delete_saga,
             get_incomplete_swap_sagas,
