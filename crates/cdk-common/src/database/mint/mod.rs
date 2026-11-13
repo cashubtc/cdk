@@ -410,6 +410,9 @@ pub trait QuotesTransaction {
 
     /// Renews an unexpired lease belonging to `lock_token`.
     /// Returns false when ownership was released, replaced, or expired.
+    ///
+    /// Returns [`Error::ConcurrentUpdate`] if the stored state, lock or lock expiry changed
+    /// between the read and the write, after which the caller must roll back the transaction.
     async fn renew_melt_quote_lease(
         &mut self,
         quote_id: &QuoteId,
