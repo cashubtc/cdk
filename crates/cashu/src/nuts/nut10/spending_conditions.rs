@@ -372,8 +372,8 @@ impl From<Conditions> for Vec<Vec<String>> {
 
         let mut tags = Vec::new();
 
-        if let Some(pubkeys) = pubkeys {
-            tags.push(Tag::PubKeys(pubkeys.into_iter().collect()).as_vec());
+        if let Some(pubkeys) = pubkeys.filter(|keys| !keys.is_empty()) {
+            tags.push(Tag::PubKeys(pubkeys).as_vec());
         }
 
         if let Some(locktime) = locktime {
@@ -558,6 +558,34 @@ mod tests {
         assert!(!tags
             .iter()
             .any(|tag| tag.first() == Some(&"refund".to_string())));
+    }
+
+    #[test]
+    fn test_empty_pubkeys_tag_is_rejected() {
+        let tags = vec![vec!["pubkeys".to_string()]];
+
+        assert!(matches!(
+            Conditions::try_from(tags),
+            Err(Error::TagValueNotFound)
+        ));
+    }
+
+    #[test]
+    fn test_empty_pubkeys_are_not_serialized() {
+        let conditions = Conditions {
+            locktime: None,
+            pubkeys: Some(vec![]),
+            refund_keys: None,
+            num_sigs: None,
+            sig_flag: crate::SigFlag::default(),
+            num_sigs_refund: None,
+        };
+
+        let tags = Vec::<Vec<String>>::from(conditions);
+
+        assert!(!tags
+            .iter()
+            .any(|tag| tag.first() == Some(&"pubkeys".to_string())));
     }
 
     #[test]

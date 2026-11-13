@@ -143,6 +143,10 @@ where
                 Ok(Self::Refund(pubkeys))
             }
             TagKind::Pubkeys => {
+                // NUT-11: a spending condition tag needs a value.
+                if tag.len() < 2 {
+                    return Err(Error::TagValueNotFound);
+                }
                 let pubkeys = tag
                     .iter()
                     .skip(1)
