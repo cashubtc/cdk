@@ -1341,6 +1341,8 @@ mod tests {
             active: None,
             keys: mint_keyset.keys.into(),
             input_fee_ppk: mint_keyset.input_fee_ppk,
+            active_from: None,
+            active_until: None,
             final_expiry: mint_keyset.final_expiry,
         }
     }
@@ -1393,6 +1395,8 @@ mod tests {
                     unit: CurrencyUnit::Auth,
                     active: true,
                     input_fee_ppk: self.keyset.input_fee_ppk,
+                    active_from: None,
+                    active_until: None,
                     final_expiry: self.keyset.final_expiry,
                 }],
             })
@@ -1894,6 +1898,8 @@ mod tests {
             active: Some(true),
             keys,
             input_fee_ppk: 0,
+            active_from: None,
+            active_until: None,
             final_expiry: None,
         };
         let premint_secrets = PreMintSecrets::restore_batch(keyset_id, &seed, 0, 2)
@@ -1970,6 +1976,8 @@ mod tests {
                     unit: active.unit.clone(),
                     active: true,
                     input_fee_ppk: 100,
+                    active_from: None,
+                    active_until: None,
                     final_expiry: None,
                 },
                 KeySetInfo {
@@ -1977,6 +1985,8 @@ mod tests {
                     unit: active.unit.clone(),
                     active: false,
                     input_fee_ppk: 1500,
+                    active_from: None,
+                    active_until: None,
                     final_expiry: None,
                 },
             ],

@@ -452,10 +452,8 @@ impl<'a> MeltSaga<'a, Initial> {
             });
         }
 
-        let active_keyset_id = all_keysets
-            .iter()
-            .filter(|keyset| keyset.active.unwrap_or(false))
-            .min_by_key(|keyset| keyset.input_fee_ppk)
+        // Must be the keyset the swap will mint on, or the fee estimate is off.
+        let active_keyset_id = crate::wallet::keysets::select_active_keyset(all_keysets)
             .ok_or(Error::NoActiveKeyset)?
             .id;
         let fee_and_amounts = keyset_fees_and_amounts

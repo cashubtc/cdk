@@ -74,6 +74,8 @@ fn test_keyset_info(keyset_id: Id, _mint_url: &MintUrl) -> KeySetInfo {
         unit: CurrencyUnit::Sat,
         active: true,
         input_fee_ppk: 0,
+        active_from: None,
+        active_until: None,
         final_expiry: None,
     }
 }
@@ -268,7 +270,9 @@ where
 {
     let mint_url = test_mint_url();
     let keyset_id = test_keyset_id();
-    let keyset_info = test_keyset_info(keyset_id, &mint_url);
+    let mut keyset_info = test_keyset_info(keyset_id, &mint_url);
+    keyset_info.active_from = Some(1);
+    keyset_info.active_until = Some(2_000_000_000);
 
     // Add mint first
     db.add_mint(mint_url.clone(), None).await.unwrap();
@@ -278,8 +282,16 @@ where
 
     // Get keyset by ID
     let retrieved = db.get_keyset_by_id(&keyset_id).await.unwrap();
-    assert!(retrieved.is_some());
-    assert_eq!(retrieved.unwrap().id, keyset_id);
+    assert_eq!(retrieved, Some(keyset_info.clone()));
+
+    // A later refresh can change the announced window
+    keyset_info.active_from = None;
+    keyset_info.active_until = Some(3_000_000_000);
+    db.add_mint_keysets(mint_url.clone(), vec![keyset_info.clone()])
+        .await
+        .unwrap();
+    let retrieved = db.get_keyset_by_id(&keyset_id).await.unwrap();
+    assert_eq!(retrieved, Some(keyset_info));
 
     // Get keysets for mint
     let keysets = db.get_mint_keysets(mint_url).await.unwrap();
@@ -320,6 +332,8 @@ where
         active: None,
         keys: keys.clone(),
         input_fee_ppk: 0,
+        active_from: None,
+        active_until: None,
         final_expiry: None,
     };
 
@@ -346,6 +360,8 @@ where
         active: None,
         keys: keys.clone(),
         input_fee_ppk: 0,
+        active_from: None,
+        active_until: None,
         final_expiry: None,
     };
 
@@ -372,6 +388,8 @@ where
         active: None,
         keys,
         input_fee_ppk: 0,
+        active_from: None,
+        active_until: None,
         final_expiry: None,
     };
 

@@ -15,6 +15,15 @@ pub struct KeySetInfo {
     pub active: bool,
     /// Input fee per thousand (ppk)
     pub input_fee_ppk: u64,
+    /// Unix time from which the mint intends to sign with this keyset
+    #[uniffi(default = None)]
+    pub active_from: Option<u64>,
+    /// Unix time until which the mint intends to keep this keyset active
+    #[uniffi(default = None)]
+    pub active_until: Option<u64>,
+    /// Optional expiry timestamp
+    #[uniffi(default = None)]
+    pub final_expiry: Option<u64>,
 }
 
 impl From<cdk::nuts::KeySetInfo> for KeySetInfo {
@@ -24,6 +33,9 @@ impl From<cdk::nuts::KeySetInfo> for KeySetInfo {
             unit: keyset.unit.into(),
             active: keyset.active,
             input_fee_ppk: keyset.input_fee_ppk,
+            active_from: keyset.active_from,
+            active_until: keyset.active_until,
+            final_expiry: keyset.final_expiry,
         }
     }
 }
@@ -39,7 +51,9 @@ impl TryFrom<KeySetInfo> for cdk::nuts::KeySetInfo {
                 .map_err(|e| FfiError::internal(format!("Invalid keyset ID: {}", e)))?,
             unit: keyset.unit.into(),
             active: keyset.active,
-            final_expiry: None,
+            active_from: keyset.active_from,
+            active_until: keyset.active_until,
+            final_expiry: keyset.final_expiry,
             input_fee_ppk: keyset.input_fee_ppk,
         })
     }
@@ -161,7 +175,14 @@ pub struct KeySet {
     pub input_fee_ppk: u64,
     /// The keys (map of amount to public key hex)
     pub keys: HashMap<u64, String>,
+    /// Unix time from which the mint intends to sign with this keyset
+    #[uniffi(default = None)]
+    pub active_from: Option<u64>,
+    /// Unix time until which the mint intends to keep this keyset active
+    #[uniffi(default = None)]
+    pub active_until: Option<u64>,
     /// Optional expiry timestamp
+    #[uniffi(default = None)]
     pub final_expiry: Option<u64>,
 }
 
@@ -173,6 +194,8 @@ impl From<cdk::nuts::KeySet> for KeySet {
             active: keyset.active,
             input_fee_ppk: keyset.input_fee_ppk,
             keys: Keys::from(keyset.keys).keys,
+            active_from: keyset.active_from,
+            active_until: keyset.active_until,
             final_expiry: keyset.final_expiry,
         }
     }
@@ -200,6 +223,8 @@ impl TryFrom<KeySet> for cdk::nuts::KeySet {
             active: keyset.active,
             input_fee_ppk: keyset.input_fee_ppk,
             keys,
+            active_from: keyset.active_from,
+            active_until: keyset.active_until,
             final_expiry: keyset.final_expiry,
         })
     }

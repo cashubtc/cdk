@@ -47,6 +47,12 @@ pub struct RotateNextKeysetCommand {
     /// Final expiry unix timestamp for the keyset
     #[arg(long)]
     final_expiry: Option<u64>,
+    /// Unix timestamp from which the keyset is active (NUT-02), not in the future
+    #[arg(long)]
+    active_from: Option<u64>,
+    /// Unix timestamp after which the keyset stops signing outputs (NUT-02)
+    #[arg(long)]
+    active_until: Option<u64>,
 }
 
 /// Executes the rotate_next_keyset command against the mint server
@@ -101,6 +107,8 @@ impl RotateNextKeysetCommand {
             use_keyset_v2,
             keyset_version: keyset_version.map(i32::from),
             final_expiry: self.final_expiry,
+            active_from: self.active_from,
+            active_until: self.active_until,
         })
     }
 }
