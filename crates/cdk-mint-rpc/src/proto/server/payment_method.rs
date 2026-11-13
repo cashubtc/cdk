@@ -193,19 +193,27 @@ impl PaymentMethodService for MintRPCServer {
     ) -> Result<Response<crate::payment_method::UpdateMintMethodResponse>, Status> {
         let request = request.into_inner();
 
+        let payment_method = PaymentMethod::from_str(&request.method);
+
         if request.options.is_some()
-            && PaymentMethod::from_str(&request.method).is_ok_and(|method| !method.is_bolt11())
+            && payment_method
+                .as_ref()
+                .is_ok_and(|method| !method.is_bolt11() && !method.is_bolt12())
         {
             return Err(Status::invalid_argument(
-                "Options can only be set on the bolt11 method".to_string(),
+                "Options can only be set on the bolt11 or bolt12 methods".to_string(),
             ));
         }
 
-        let options = request
-            .options
-            .map(|options| cdk::nuts::nut04::MintMethodOptions::Bolt11 {
-                description: options.description,
-            });
+        let options = request.options.map(|options| {
+            let description = options.description;
+            match payment_method {
+                Ok(ref method) if method.is_bolt12() => {
+                    cdk::nuts::nut04::MintMethodOptions::Bolt12 { description }
+                }
+                _ => cdk::nuts::nut04::MintMethodOptions::Bolt11 { description },
+            }
+        });
 
         let settings = self
             .set_mint_method(
@@ -321,7 +329,7 @@ mod tests {
     use cdk_common::nut00::KnownMethod;
     use tonic::Code;
 
-    use super::super::test_utils::create_test_rpc_server;
+    use super::super::test_utils::{create_test_rpc_server, create_test_rpc_server_with_bolt12};
     use super::*;
 
     #[test]
@@ -439,7 +447,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_payment_method_service_rejects_options_on_non_bolt11_method() {
+    async fn test_payment_method_service_rejects_options_on_unsupported_methods() {
         let server = create_test_rpc_server().await;
 
         let error = PaymentMethodService::update_mint_method(
@@ -454,13 +462,13 @@ mod tests {
             }),
         )
         .await
-        .expect_err("bolt11 options on an onchain method should be rejected");
+        .expect_err("options on an onchain method should be rejected");
 
         // The processor check also rejects this pair; the message shows the guard fired
         assert_eq!(error.code(), Code::InvalidArgument);
         assert_eq!(
             error.message(),
-            "Options can only be set on the bolt11 method"
+            "Options can only be set on the bolt11 or bolt12 methods"
         );
 
         let error = PaymentMethodService::update_melt_method(
@@ -481,6 +489,137 @@ mod tests {
         assert_eq!(
             error.message(),
             "Options can only be set on the bolt11 method"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_payment_method_service_update_mint_method_bolt12_description_keeps_omitted_settings(
+    ) {
+        let server = create_test_rpc_server_with_bolt12().await;
+
+        let response = PaymentMethodService::update_mint_method(
+            &server,
+            Request::new(crate::payment_method::UpdateMintMethodRequest {
+                unit: "sat".to_owned(),
+                method: "bolt12".to_owned(),
+                min_amount: Some(1),
+                max_amount: Some(1_000),
+                options: Some(crate::payment_method::Bolt11MintMethodOptions { description: true }),
+                method_name: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+
+        assert_eq!(response.unit, "sat");
+        assert_eq!(response.method, "bolt12");
+        assert_eq!(response.min_amount, Some(1));
+        assert_eq!(response.max_amount, Some(1_000));
+        assert_eq!(
+            response.options,
+            Some(crate::payment_method::Bolt11MintMethodOptions { description: true })
+        );
+
+        let settings = server
+            .mint
+            .mint_info()
+            .await
+            .unwrap()
+            .nuts
+            .nut04
+            .get_settings(
+                &CurrencyUnit::Sat,
+                &PaymentMethod::Known(KnownMethod::Bolt12),
+            )
+            .unwrap();
+        assert_eq!(settings.min_amount, Some(Amount::from(1)));
+        assert_eq!(settings.max_amount, Some(Amount::from(1_000)));
+        assert_eq!(
+            settings.options,
+            Some(cdk::nuts::nut04::MintMethodOptions::Bolt12 { description: true })
+        );
+
+        // Update other fields while omitting options; previous BOLT12 options must be preserved
+        let response = PaymentMethodService::update_mint_method(
+            &server,
+            Request::new(crate::payment_method::UpdateMintMethodRequest {
+                unit: "sat".to_owned(),
+                method: "bolt12".to_owned(),
+                min_amount: None,
+                max_amount: Some(5_000),
+                options: None,
+                method_name: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+
+        assert_eq!(response.min_amount, Some(1));
+        assert_eq!(response.max_amount, Some(5_000));
+        assert_eq!(
+            response.options,
+            Some(crate::payment_method::Bolt11MintMethodOptions { description: true })
+        );
+
+        let settings = server
+            .mint
+            .mint_info()
+            .await
+            .unwrap()
+            .nuts
+            .nut04
+            .get_settings(
+                &CurrencyUnit::Sat,
+                &PaymentMethod::Known(KnownMethod::Bolt12),
+            )
+            .unwrap();
+        assert_eq!(settings.min_amount, Some(Amount::from(1)));
+        assert_eq!(settings.max_amount, Some(Amount::from(5_000)));
+        assert_eq!(
+            settings.options,
+            Some(cdk::nuts::nut04::MintMethodOptions::Bolt12 { description: true })
+        );
+
+        // Disable BOLT12 description
+        let response = PaymentMethodService::update_mint_method(
+            &server,
+            Request::new(crate::payment_method::UpdateMintMethodRequest {
+                unit: "sat".to_owned(),
+                method: "bolt12".to_owned(),
+                min_amount: None,
+                max_amount: None,
+                options: Some(crate::payment_method::Bolt11MintMethodOptions {
+                    description: false,
+                }),
+                method_name: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+
+        assert_eq!(
+            response.options,
+            Some(crate::payment_method::Bolt11MintMethodOptions { description: false })
+        );
+
+        let settings = server
+            .mint
+            .mint_info()
+            .await
+            .unwrap()
+            .nuts
+            .nut04
+            .get_settings(
+                &CurrencyUnit::Sat,
+                &PaymentMethod::Known(KnownMethod::Bolt12),
+            )
+            .unwrap();
+        assert_eq!(
+            settings.options,
+            Some(cdk::nuts::nut04::MintMethodOptions::Bolt12 { description: false })
         );
     }
 
