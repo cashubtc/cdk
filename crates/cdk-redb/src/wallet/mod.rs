@@ -955,6 +955,11 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
                     return Err(database::Error::ConcurrentUpdate);
                 }
 
+                // An update without a payment proof keeps the stored one
+                if quote_to_save.payment_proof.is_none() {
+                    quote_to_save.payment_proof = existing_quote.payment_proof;
+                }
+
                 // Increment version for update
                 quote_to_save.version = quote.version.wrapping_add(1);
             }
