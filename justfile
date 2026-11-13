@@ -648,6 +648,7 @@ update-msrv-lock:
         cargo_update icu_normalizer --precise 2.0.1
         cargo_update icu_provider --precise 2.1.1
         cargo_update icu_locale_core --precise 2.1.1
+        cargo_update psm --precise 0.1.27
         cp "$lock_dir/Cargo.lock" Cargo.lock.msrv
         echo "Updated Cargo.lock.msrv for MSRV 1.85.0"
     '

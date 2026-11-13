@@ -12,6 +12,8 @@ use std::future::Future;
 
 use futures::{pin_mut, Stream, StreamExt};
 
+use crate::task::sleep;
+
 /// Capped exponential backoff for [`SupervisedStream`] reconnect attempts.
 ///
 /// Only consecutive connect failures grow the delay; a successful connect resets
@@ -141,7 +143,7 @@ pub trait SupervisedStream: Send {
             tokio::select! {
                 biased;
                 _ = &mut shutdown => break 'outer,
-                _ = tokio::time::sleep(wait) => {}
+                _ = sleep(wait) => {}
             }
         }
 

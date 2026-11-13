@@ -79,7 +79,6 @@ ring = { version = "0.17.14", features = ["wasm32_unknown_unknown_js"] }
 rustls = { workspace = true, optional = true }
 
 uuid = { workspace = true, features = ["js"] }
-gloo-timers = { workspace = true }
 
 [[example]]
 name = "mint-token"
