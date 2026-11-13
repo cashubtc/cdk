@@ -407,37 +407,38 @@ impl TryFrom<Vec<Vec<String>>> for Conditions {
         let mut num_sigs = None;
         let mut num_sigs_refund = None;
 
+        // NUT-11: a spending condition tag that repeats makes the secret malformed.
         for tag_vec in tags {
             let tag = Tag::try_from(tag_vec)?;
             match tag {
                 Tag::LockTime(lt) => {
-                    if locktime.is_none() {
-                        locktime = Some(lt);
+                    if locktime.replace(lt).is_some() {
+                        return Err(Error::DuplicateTag);
                     }
                 }
                 Tag::PubKeys(pks) => {
-                    if pubkeys.is_none() {
-                        pubkeys = Some(pks);
+                    if pubkeys.replace(pks).is_some() {
+                        return Err(Error::DuplicateTag);
                     }
                 }
                 Tag::Refund(keys) => {
-                    if refund_keys.is_none() {
-                        refund_keys = Some(keys);
+                    if refund_keys.replace(keys).is_some() {
+                        return Err(Error::DuplicateTag);
                     }
                 }
                 Tag::SigFlag(sf) => {
-                    if sig_flag.is_none() {
-                        sig_flag = Some(sf);
+                    if sig_flag.replace(sf).is_some() {
+                        return Err(Error::DuplicateTag);
                     }
                 }
                 Tag::NSigs(sigs) => {
-                    if num_sigs.is_none() {
-                        num_sigs = Some(sigs);
+                    if num_sigs.replace(sigs).is_some() {
+                        return Err(Error::DuplicateTag);
                     }
                 }
                 Tag::NSigsRefund(sigs) => {
-                    if num_sigs_refund.is_none() {
-                        num_sigs_refund = Some(sigs);
+                    if num_sigs_refund.replace(sigs).is_some() {
+                        return Err(Error::DuplicateTag);
                     }
                 }
                 Tag::Custom(_, _) => {}
@@ -489,37 +490,35 @@ mod tests {
     use crate::nut01::PublicKey;
 
     #[test]
-    fn test_duplicate_tags_first_match() {
+    fn test_duplicate_tags_are_rejected() {
         let pk1 = "026562efcfadc8e86d44da6a8adf80633d974302e62c850774db1fb36ff4cc7198";
         let pk2 = "02a4ed09e9b22c0563f2043593902973d040054ff03be93c990264177d65123982";
 
-        let tags = vec![
-            vec!["locktime".to_string(), "100".to_string()],
-            vec!["locktime".to_string(), "1".to_string()],
-            vec!["n_sigs".to_string(), "2".to_string()],
-            vec!["n_sigs".to_string(), "1".to_string()],
-            vec!["sigflag".to_string(), "SIG_ALL".to_string()],
-            vec!["sigflag".to_string(), "SIG_INPUTS".to_string()],
-            vec!["pubkeys".to_string(), pk1.to_string()],
-            vec!["pubkeys".to_string(), pk2.to_string()],
-            vec!["refund".to_string(), pk1.to_string()],
-            vec!["refund".to_string(), pk2.to_string()],
+        for (key, first, second) in [
+            ("locktime", "100", "1"),
+            ("n_sigs", "2", "1"),
+            ("sigflag", "SIG_ALL", "SIG_INPUTS"),
+            ("pubkeys", pk1, pk2),
+            ("refund", pk1, pk2),
+            ("n_sigs_refund", "1", "1"),
+        ] {
+            let tags = vec![
+                vec![key.to_string(), first.to_string()],
+                vec![key.to_string(), second.to_string()],
+            ];
+
+            assert!(matches!(
+                Conditions::try_from(tags),
+                Err(Error::DuplicateTag)
+            ));
+        }
+
+        // Only spending condition tags are covered.
+        let other = vec![
+            vec!["memo".to_string(), "a".to_string()],
+            vec!["memo".to_string(), "b".to_string()],
         ];
-
-        let conditions = Conditions::try_from(tags).unwrap();
-
-        // Verify first-match semantics
-        assert_eq!(conditions.locktime, Some(100));
-        assert_eq!(conditions.num_sigs, Some(2));
-        assert_eq!(conditions.sig_flag, crate::SigFlag::SigAll);
-        assert_eq!(
-            conditions.pubkeys,
-            Some(vec![PublicKey::from_str(pk1).unwrap()])
-        );
-        assert_eq!(
-            conditions.refund_keys,
-            Some(vec![PublicKey::from_str(pk1).unwrap()])
-        );
+        assert!(Conditions::try_from(other).is_ok());
     }
 
     #[test]

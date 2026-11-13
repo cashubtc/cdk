@@ -14,6 +14,9 @@ pub enum Error {
     /// Tag value not found
     #[error("Tag value not found")]
     TagValueNotFound,
+    /// A spending condition tag appears more than once
+    #[error("Duplicate spending condition tag")]
+    DuplicateTag,
     /// Incorrect secret kind
     #[error("Incorrect secret kind")]
     IncorrectSecretKind,

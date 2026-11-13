@@ -492,6 +492,29 @@ mod tests {
     }
 
     #[test]
+    fn test_duplicate_tag_proof_is_rejected() {
+        // With the first locktime read alone, this lock would be expired and open.
+        let secret = Secret::new(
+            Kind::P2PK,
+            SecretData::new(
+                SecretKey::generate().public_key().to_string(),
+                Some(vec![
+                    vec!["locktime".to_string(), "1".to_string()],
+                    vec!["locktime".to_string(), "2".to_string()],
+                ]),
+            ),
+        );
+        let mut proof = p2pk_proof_with_sig_flag(SigFlag::SigInputs);
+        proof.secret = secret.try_into().unwrap();
+
+        let request = TestSpendRequest {
+            inputs: vec![proof],
+        };
+
+        assert!(request.verify_spending_conditions().is_err());
+    }
+
+    #[test]
     fn test_secret_serialize() {
         let secret_data = SecretData::new(
             "026562efcfadc8e86d44da6a8adf80633d974302e62c850774db1fb36ff4cc7198".to_string(),
