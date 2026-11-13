@@ -1395,12 +1395,27 @@ where
         let expiry = now
             .checked_add(lease_seconds)
             .ok_or_else(|| Error::Internal("Melt lease deadline overflow".to_string()))?;
-        let affected = query("UPDATE melt_quote SET melt_lock_expires_at = :expiry WHERE id = :id AND melt_lock = :owner")?
-            .bind("expiry", i64::try_from(expiry)?)
-            .bind("id", quote_id.to_string())
-            .bind("owner", lock_token.to_string())
-            .execute(&self.inner).await?;
-        Ok(affected > 0)
+        let affected = query(
+            r#"
+            UPDATE melt_quote
+            SET melt_lock_expires_at = :expiry
+            WHERE id = :id
+                AND state = :old_state
+                AND melt_lock = :old_owner
+                AND melt_lock_expires_at = :old_expiry
+            "#,
+        )?
+        .bind("expiry", i64::try_from(expiry)?)
+        .bind("id", quote_id.to_string())
+        .bind("old_state", quote.state.to_string())
+        .bind("old_owner", quote.melt_lock.clone())
+        .bind("old_expiry", i64::try_from(quote.melt_lock_expires_at)?)
+        .execute(&self.inner)
+        .await?;
+        if affected != 1 {
+            return Err(Error::ConcurrentUpdate);
+        }
+        Ok(true)
     }
 
     async fn get_mint_quote(
