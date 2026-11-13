@@ -1198,8 +1198,6 @@ impl MintConnector for MockMintConnector {
 
 /// A blind auth keyset whose ID is derived from its own keys.
 ///
-/// The amounts are shifted off `test_keyset` so the ID differs: reusing them
-/// would make the auth keyset collide with the regular one and overwrite it.
 /// A v1 id hashes the pubkeys alone, so the pairing has to change for this
 /// keyset to get an id of its own: re-pointing the amounts would collide with
 /// [`test_keyset`] and hide an overwrite behind a single map entry.

@@ -24,6 +24,7 @@
 //! let fresh = manager.load_from_mint(&storage, &client).await?;
 //! ```
 
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::{Arc, Weak};
@@ -88,9 +89,6 @@ pub struct MintMetadata {
     /// Cryptographic keys for each keyset, indexed by keyset ID
     pub keys: HashMap<Id, Arc<Keys>>,
 
-    /// Subset of keysets that are currently active (cached for convenience)
-    pub active_keysets: Vec<Arc<KeySetInfo>>,
-
     /// Freshness tracking for regular (non-auth) mint data
     pub(crate) status: FreshnessStatus,
 
@@ -109,6 +107,30 @@ struct SnapshotVersions {
     auth: usize,
 }
 
+/// First wait a database earns by rejecting a write, doubled on each further
+/// rejection up to [`MAX_PERSIST_RETRY_DELAY`].
+const FIRST_PERSIST_RETRY_DELAY: Duration = Duration::from_secs(1);
+
+/// Longest wait between retries of a rejected persist.
+const MAX_PERSIST_RETRY_DELAY: Duration = Duration::from_secs(60);
+
+/// How long a database that rejected a write is left alone.
+///
+/// Bounds the retry `load` would otherwise make on every call for as long as a
+/// snapshot stays unpersisted. A snapshot newer than `failed` is written as
+/// soon as it exists, because what produces one is already rate limited by the
+/// TTL.
+struct Backoff {
+    /// Snapshot whose persist was rejected.
+    failed: SnapshotVersions,
+
+    /// When a persist of `failed` or older may run again.
+    next_attempt: Instant,
+
+    /// Wait this backoff was given, which the next rejection doubles.
+    delay: Duration,
+}
+
 /// What one database has been written up to, with a handle that keeps its
 /// address from being reused.
 ///
@@ -117,7 +139,26 @@ struct SnapshotVersions {
 /// which stops a later database from being allocated on top of a stale record.
 struct SyncRecord {
     storage: Weak<dyn WalletDatabase<database::Error> + Send + Sync>,
-    versions: SnapshotVersions,
+
+    /// `None` while nothing has been written to this database, which is not
+    /// the same as version zero: a snapshot read out of another database stays
+    /// at zero and still has to be persisted.
+    versions: Option<SnapshotVersions>,
+
+    /// Set while this database is being left alone after rejecting a write.
+    backoff: Option<Backoff>,
+}
+
+/// How a persist ended, which decides what its claim does on the way out.
+enum ClaimOutcome {
+    /// The caller was dropped before the persist finished.
+    Cancelled,
+
+    /// Every write succeeded.
+    Kept,
+
+    /// The database rejected at least one write.
+    Rejected,
 }
 
 /// A claimed snapshot version, given back unless the persist holding it wrote
@@ -129,16 +170,16 @@ struct SyncRecord {
 /// that point and would leave the snapshot recorded as stored.
 struct SyncClaim {
     db_sync_versions: Arc<RwLock<HashMap<usize, SyncRecord>>>,
-    storage: Weak<dyn WalletDatabase<database::Error> + Send + Sync>,
     storage_id: usize,
     claimed: SnapshotVersions,
     previous: Option<SnapshotVersions>,
-    kept: bool,
+    outcome: ClaimOutcome,
 }
 
 impl SyncClaim {
     /// Records `versions` against `storage`, or returns `None` when that
-    /// database already holds them.
+    /// database already holds them or is still inside the backoff a rejected
+    /// write earned it.
     fn take(
         db_sync_versions: Arc<RwLock<HashMap<usize, SyncRecord>>>,
         storage: &Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
@@ -151,66 +192,95 @@ impl SyncClaim {
 
             records.retain(|_, record| record.storage.strong_count() > 0);
 
-            if records
-                .get(&storage_id)
-                .is_some_and(|record| versions <= record.versions)
-            {
-                return None;
-            }
+            match records.entry(storage_id) {
+                Entry::Occupied(mut entry) => {
+                    let record = entry.get_mut();
 
-            records
-                .insert(
-                    storage_id,
-                    SyncRecord {
+                    if record.versions.is_some_and(|held| versions <= held) {
+                        return None;
+                    }
+
+                    if record.backoff.as_ref().is_some_and(|backoff| {
+                        versions <= backoff.failed && Instant::now() < backoff.next_attempt
+                    }) {
+                        return None;
+                    }
+
+                    record.versions.replace(versions)
+                }
+                Entry::Vacant(entry) => {
+                    entry.insert(SyncRecord {
                         storage: Arc::downgrade(storage),
-                        versions,
-                    },
-                )
-                .map(|record| record.versions)
+                        versions: Some(versions),
+                        backoff: None,
+                    });
+
+                    None
+                }
+            }
         };
 
         Some(Self {
             db_sync_versions,
-            storage: Arc::downgrade(storage),
             storage_id,
             claimed: versions,
             previous,
-            kept: false,
+            outcome: ClaimOutcome::Cancelled,
         })
     }
 
     /// Keeps the claim, which only a persist whose every write succeeded has
     /// earned.
     fn keep(mut self) {
-        self.kept = true;
+        self.outcome = ClaimOutcome::Kept;
+    }
+
+    /// Gives the claim back and leaves the database alone for a while, after
+    /// it rejected a write.
+    fn reject(mut self) {
+        self.outcome = ClaimOutcome::Rejected;
     }
 }
 
 impl Drop for SyncClaim {
     fn drop(&mut self) {
-        if self.kept {
-            return;
-        }
-
         let mut records = self.db_sync_versions.write();
 
-        if records.get(&self.storage_id).map(|record| record.versions) != Some(self.claimed) {
+        let Some(record) = records.get_mut(&self.storage_id) else {
+            return;
+        };
+
+        if let ClaimOutcome::Kept = self.outcome {
+            if record
+                .backoff
+                .as_ref()
+                .is_some_and(|backoff| backoff.failed <= self.claimed)
+            {
+                record.backoff = None;
+            }
+
             return;
         }
 
-        match self.previous {
-            Some(versions) => {
-                records.insert(
-                    self.storage_id,
-                    SyncRecord {
-                        storage: self.storage.clone(),
-                        versions,
-                    },
-                );
-            }
-            None => {
-                records.remove(&self.storage_id);
-            }
+        if record.versions != Some(self.claimed) {
+            return;
+        }
+
+        record.versions = self.previous;
+
+        if let ClaimOutcome::Rejected = self.outcome {
+            let delay = record
+                .backoff
+                .as_ref()
+                .map_or(FIRST_PERSIST_RETRY_DELAY, |backoff| {
+                    (backoff.delay * 2).min(MAX_PERSIST_RETRY_DELAY)
+                });
+
+            record.backoff = Some(Backoff {
+                failed: self.claimed,
+                next_attempt: Instant::now() + delay,
+                delay,
+            });
         }
     }
 }
@@ -241,18 +311,17 @@ impl MintMetadata {
         }
     }
 
-    /// Recomputes `active_keysets` from `keysets`.
+    /// Keysets the mint is currently signing with.
     ///
-    /// Derived rather than maintained: two writers merging into the same
-    /// snapshot would otherwise each clear the list and rebuild it from their
-    /// own partial view.
-    fn rebuild_active_keysets(&mut self) {
-        self.active_keysets = self
-            .keysets
+    /// Derived on call rather than stored, because two writers merging into
+    /// the same snapshot would each rebuild a stored list from their own
+    /// partial view.
+    pub fn active_keysets(&self) -> Vec<Arc<KeySetInfo>> {
+        self.keysets
             .values()
             .filter(|keyset| keyset.active)
             .cloned()
-            .collect();
+            .collect()
     }
 }
 
@@ -287,9 +356,8 @@ pub struct MintMetadataCache {
     /// What each database has been written up to, keyed by the pointer
     /// identity of its storage `Arc`.
     ///
-    /// A missing entry means that database has never been written to, which is
-    /// not the same as written up to version zero: a snapshot read out of
-    /// another database stays at version zero and still has to be persisted.
+    /// A missing entry means nothing is known about that database at all;
+    /// a record is also what carries the backoff a rejected write earns.
     db_sync_versions: Arc<RwLock<HashMap<usize, SyncRecord>>>,
 
     /// Mutex to ensure only one fetch operation runs at a time
@@ -432,7 +500,7 @@ impl MintMetadataCache {
     ///
     /// # Arguments
     ///
-    /// * `storage` - Database to persist metadata to (async background write)
+    /// * `storage` - Database the fetched metadata is written to before returning
     /// * `client` - HTTP client for fetching from mint server
     ///
     /// # Returns
@@ -561,7 +629,6 @@ impl MintMetadataCache {
                 next.keys.entry(*id).or_insert_with(|| keys.clone());
             }
 
-            next.rebuild_active_keysets();
             next.status.is_populated = next
                 .keysets
                 .values()
@@ -578,10 +645,15 @@ impl MintMetadataCache {
 
             versions.retain(|_, record| record.storage.strong_count() > 0);
 
-            versions.entry(storage_id).or_insert_with(|| SyncRecord {
+            let record = versions.entry(storage_id).or_insert_with(|| SyncRecord {
                 storage: Arc::downgrade(storage),
-                versions: SnapshotVersions::default(),
+                versions: None,
+                backoff: None,
             });
+
+            if record.versions.is_none() {
+                record.versions = Some(SnapshotVersions::default());
+            }
         }
 
         tracing::info!(
@@ -597,7 +669,7 @@ impl MintMetadataCache {
     /// Load metadata from cache or fetch if not available
     ///
     /// Returns cached metadata if available and it is still valid, otherwise fetches from the mint.
-    /// If cache is stale relative to the database, spawns a background sync task.
+    /// A database behind the cache is written before returning.
     ///
     /// This is the primary method for normal operations - it balances freshness
     /// with performance by returning cached data when available.
@@ -606,7 +678,6 @@ impl MintMetadataCache {
     ///
     /// * `storage` - Database to persist metadata to (if fetched or stale)
     /// * `client` - HTTP client for fetching from mint (only if cache empty)
-    /// * `ttl` - Optional TTL, if not provided it is assumed that any cached data is good enough
     ///
     /// # Returns
     ///
@@ -632,7 +703,7 @@ impl MintMetadataCache {
             .db_sync_versions
             .read()
             .get(&storage_id)
-            .map(|record| record.versions);
+            .and_then(|record| record.versions);
 
         if cached_metadata.status.is_populated
             && ttl
@@ -650,10 +721,14 @@ impl MintMetadataCache {
 
         // In-memory cache was empty (not just stale) — try database before network
         if !cached_metadata.status.is_populated {
-            if let Ok(metadata) = self.load_from_db(storage).await {
-                if metadata.status.is_populated {
-                    return Ok(metadata);
-                }
+            match self.load_from_db(storage).await {
+                Ok(metadata) if metadata.status.is_populated => return Ok(metadata),
+                Ok(_) => {}
+                Err(err) => tracing::debug!(
+                    "No usable database metadata for {} before fetching: {}",
+                    self.mint_url,
+                    err
+                ),
             }
         }
 
@@ -683,8 +758,6 @@ impl MintMetadataCache {
     ///
     /// * `storage` - Database to persist metadata to
     /// * `auth_client` - Auth-capable HTTP client for fetching blind auth keysets
-    /// * `ttl` - Optional TTL; if not provided, any populated cached data is
-    ///   considered fresh and no HTTP fetch is performed
     ///
     /// # Returns
     ///
@@ -702,7 +775,7 @@ impl MintMetadataCache {
             .db_sync_versions
             .read()
             .get(&storage_id)
-            .map(|record| record.versions);
+            .and_then(|record| record.versions);
 
         // Check if auth data is populated in cache and still fresh
         if cached_metadata.auth_status.is_populated
@@ -782,7 +855,9 @@ impl MintMetadataCache {
     /// when the database rejects them, so each failure is logged rather than
     /// returned. Recording an incomplete write as done is not tolerable though,
     /// so the claim is given back unless every write succeeded, including when
-    /// the caller is dropped between two of them.
+    /// the caller is dropped between two of them. A rejection also puts the
+    /// database on a growing backoff, because the claim coming back otherwise
+    /// has every later `load` retry the write.
     ///
     /// # Arguments
     ///
@@ -877,6 +952,8 @@ impl MintMetadataCache {
 
         if persisted {
             claim.keep();
+        } else {
+            claim.reject();
         }
     }
 
@@ -996,8 +1073,6 @@ impl MintMetadataCache {
                 next.keys.entry(*id).or_insert_with(|| keys.clone());
             }
 
-            next.rebuild_active_keysets();
-
             if client.is_some() {
                 next.status.is_populated = true;
                 next.status.updated_at = Instant::now();
@@ -1066,6 +1141,41 @@ mod tests {
         db
     }
 
+    fn unpersisted_snapshot(keyset: &KeySet, version: usize) -> Arc<MintMetadata> {
+        let mut snapshot = MintMetadata {
+            keysets: [(keyset.id, Arc::new(info(keyset, OLD_EXPIRY)))]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        snapshot.status.is_populated = true;
+        snapshot.status.version = version;
+
+        Arc::new(snapshot)
+    }
+
+    /// Brings a database's backoff forward to now, which stands in for waiting
+    /// it out, and returns the wait it was serving.
+    fn expire_backoff(cache: &MintMetadataCache, storage: &Storage) -> Duration {
+        let mut records = cache.db_sync_versions.write();
+        let backoff = records
+            .get_mut(&MintMetadataCache::arc_pointer_id(storage))
+            .and_then(|record| record.backoff.as_mut())
+            .expect("a rejected write should have earned a backoff");
+
+        backoff.next_attempt = Instant::now();
+
+        backoff.delay
+    }
+
+    async fn stored_keysets(storage: &Storage) -> Vec<KeySetInfo> {
+        storage
+            .get_mint_keysets(test_mint_url())
+            .await
+            .unwrap()
+            .unwrap_or_default()
+    }
+
     fn mock_auth_client() -> Arc<dyn AuthMintConnector + Send + Sync> {
         Arc::new(MockAuthMintConnector::new())
     }
@@ -1102,7 +1212,7 @@ mod tests {
                 .db_sync_versions
                 .read()
                 .get(&MintMetadataCache::arc_pointer_id(&storage))
-                .map(|record| record.versions),
+                .and_then(|record| record.versions),
             Some(SnapshotVersions::default()),
             "a database that was only read from is recorded at version zero, so a later fetch still reaches it"
         );
@@ -1170,7 +1280,7 @@ mod tests {
         let cache = MintMetadataCache::new(test_mint_url());
 
         let fetched = cache.load_from_mint(&storage, &client).await.unwrap();
-        assert_eq!(fetched.active_keysets.len(), 1);
+        assert_eq!(fetched.active_keysets().len(), 1);
 
         let mut retired = test_keyset();
         retired.final_expiry = OLD_EXPIRY;
@@ -1182,8 +1292,8 @@ mod tests {
         let refetched = cache.load_from_mint(&storage, &retiring).await.unwrap();
 
         assert!(
-            refetched.active_keysets.is_empty(),
-            "active_keysets is derived from the merged keysets, so it must drop a retired keyset"
+            refetched.active_keysets().is_empty(),
+            "active keysets are derived from the merged keysets, so a retired one drops out"
         );
     }
 
@@ -1540,18 +1650,8 @@ mod tests {
             .unwrap();
         let cache = MintMetadataCache::new(test_mint_url());
 
-        let mut snapshot = MintMetadata {
-            keysets: [(keyset.id, Arc::new(info(&keyset, OLD_EXPIRY)))]
-                .into_iter()
-                .collect(),
-            ..Default::default()
-        };
-        snapshot.status.is_populated = true;
-        snapshot.status.version = 1;
-        snapshot.rebuild_active_keysets();
-
         cache
-            .database_sync(storage.clone(), Arc::new(snapshot))
+            .database_sync(storage.clone(), unpersisted_snapshot(&keyset, 1))
             .await;
 
         assert_eq!(
@@ -1572,16 +1672,7 @@ mod tests {
         let storage = create_test_db().await;
         let cache = MintMetadataCache::new(test_mint_url());
 
-        let mut snapshot = MintMetadata {
-            keysets: [(keyset.id, Arc::new(info(&keyset, OLD_EXPIRY)))]
-                .into_iter()
-                .collect(),
-            ..Default::default()
-        };
-        snapshot.status.is_populated = true;
-        snapshot.status.version = 1;
-        snapshot.rebuild_active_keysets();
-        let snapshot = Arc::new(snapshot);
+        let snapshot = unpersisted_snapshot(&keyset, 1);
 
         cache.database_sync(storage.clone(), snapshot.clone()).await;
 
@@ -1597,19 +1688,137 @@ mod tests {
         );
 
         storage.add_mint(test_mint_url(), None).await.unwrap();
+        expire_backoff(&cache, &storage);
 
         cache.database_sync(storage.clone(), snapshot).await;
 
-        let stored = storage
-            .get_mint_keysets(test_mint_url())
-            .await
-            .unwrap()
-            .unwrap_or_default();
         assert_eq!(
-            stored.len(),
+            stored_keysets(&storage).await.len(),
             1,
             "a rejected write must not be recorded as done, so the same snapshot is \
              written again once the database can take it"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rejected_write_waits_out_its_backoff_before_being_retried() {
+        let keyset = test_keyset();
+        let storage = create_test_db().await;
+        let cache = MintMetadataCache::new(test_mint_url());
+        let snapshot = unpersisted_snapshot(&keyset, 1);
+
+        cache.database_sync(storage.clone(), snapshot.clone()).await;
+
+        storage.add_mint(test_mint_url(), None).await.unwrap();
+        cache.database_sync(storage.clone(), snapshot.clone()).await;
+
+        assert!(
+            stored_keysets(&storage).await.is_empty(),
+            "the database has just rejected this snapshot, so the next persist of it \
+             has to wait rather than run on every load"
+        );
+
+        expire_backoff(&cache, &storage);
+        cache.database_sync(storage.clone(), snapshot).await;
+
+        assert_eq!(
+            stored_keysets(&storage).await.len(),
+            1,
+            "the retry runs once the backoff has run out"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_rejection_doubles_the_backoff() {
+        let keyset = test_keyset();
+        let storage = create_test_db().await;
+        let cache = MintMetadataCache::new(test_mint_url());
+        let snapshot = unpersisted_snapshot(&keyset, 1);
+
+        cache.database_sync(storage.clone(), snapshot.clone()).await;
+        let first = expire_backoff(&cache, &storage);
+
+        cache.database_sync(storage.clone(), snapshot).await;
+        let second = expire_backoff(&cache, &storage);
+
+        assert_eq!(
+            second,
+            first * 2,
+            "a database that keeps rejecting writes is left alone for longer each time"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_database_that_took_the_write_is_not_held_off() {
+        let keyset = test_keyset();
+        let storage = create_test_db().await;
+        let storage_id = MintMetadataCache::arc_pointer_id(&storage);
+        let cache = MintMetadataCache::new(test_mint_url());
+        let snapshot = unpersisted_snapshot(&keyset, 1);
+
+        cache.database_sync(storage.clone(), snapshot.clone()).await;
+
+        storage.add_mint(test_mint_url(), None).await.unwrap();
+        expire_backoff(&cache, &storage);
+        cache.database_sync(storage.clone(), snapshot).await;
+
+        assert!(
+            cache
+                .db_sync_versions
+                .read()
+                .get(&storage_id)
+                .is_some_and(|record| record.backoff.is_none()),
+            "the backoff a rejection earned is spent once a persist succeeds"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_success_leaves_the_backoff_of_a_newer_snapshot_alone() {
+        let storage = create_test_db().await;
+        let cache = MintMetadataCache::new(test_mint_url());
+        let older = SnapshotVersions { status: 1, auth: 0 };
+        let newer = SnapshotVersions { status: 2, auth: 0 };
+
+        let first = SyncClaim::take(cache.db_sync_versions.clone(), &storage, older)
+            .expect("an untouched database gives up the first claim");
+
+        SyncClaim::take(cache.db_sync_versions.clone(), &storage, newer)
+            .expect("a newer snapshot claims over one still in flight")
+            .reject();
+
+        first.keep();
+
+        assert!(
+            cache
+                .db_sync_versions
+                .read()
+                .get(&MintMetadataCache::arc_pointer_id(&storage))
+                .is_some_and(|record| record.backoff.is_some()),
+            "an older persist succeeding says nothing about the newer snapshot the \
+             database refused"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_backoff_does_not_hold_back_a_newer_snapshot() {
+        let keyset = test_keyset();
+        let storage = create_test_db().await;
+        let cache = MintMetadataCache::new(test_mint_url());
+
+        cache
+            .database_sync(storage.clone(), unpersisted_snapshot(&keyset, 1))
+            .await;
+
+        storage.add_mint(test_mint_url(), None).await.unwrap();
+        cache
+            .database_sync(storage.clone(), unpersisted_snapshot(&keyset, 2))
+            .await;
+
+        assert_eq!(
+            stored_keysets(&storage).await.len(),
+            1,
+            "the backoff bounds retries of the snapshot that failed, not a fetch that \
+             has since produced a newer one"
         );
     }
 
@@ -1623,16 +1832,7 @@ mod tests {
         let storage_id = MintMetadataCache::arc_pointer_id(&storage);
         let cache = MintMetadataCache::new(test_mint_url());
 
-        let mut snapshot = MintMetadata {
-            keysets: [(keyset.id, Arc::new(info(&keyset, OLD_EXPIRY)))]
-                .into_iter()
-                .collect(),
-            ..Default::default()
-        };
-        snapshot.status.is_populated = true;
-        snapshot.status.version = 1;
-        snapshot.rebuild_active_keysets();
-        let snapshot = Arc::new(snapshot);
+        let snapshot = unpersisted_snapshot(&keyset, 1);
 
         let mut persist = Box::pin(cache.database_sync(storage.clone(), snapshot.clone()));
 
@@ -1646,7 +1846,7 @@ mod tests {
                 .db_sync_versions
                 .read()
                 .get(&storage_id)
-                .map(|record| record.versions),
+                .and_then(|record| record.versions),
             Some(snapshot.versions()),
             "the version is claimed before the writes, so the suspended persist holds it"
         );
@@ -1658,7 +1858,7 @@ mod tests {
                 .db_sync_versions
                 .read()
                 .get(&storage_id)
-                .map(|record| record.versions),
+                .and_then(|record| record.versions),
             None,
             "a caller dropped mid-write leaves nothing persisted, so the claim has to go \
              back with it"
@@ -1674,8 +1874,8 @@ mod tests {
         assert_eq!(
             stored.len(),
             1,
-            "the next persist of the same snapshot has to retry the writes the cancelled \
-             one never made"
+            "a cancelled persist is not a database that rejected anything, so the next \
+             persist of the same snapshot retries the writes it never made"
         );
     }
 }
