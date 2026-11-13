@@ -13,20 +13,42 @@ use crate::nuts::{
 use crate::{ensure_cdk, Amount, Error, Wallet};
 
 #[cfg(test)]
+mod expired_keyset_tests;
+#[cfg(test)]
 mod inactive_fee_tests;
 
 impl Wallet {
-    pub(crate) async fn unspent_proof_derivation_indices(
+    /// Every stored [`ProofInfo`] matching the args, expired keysets included.
+    ///
+    /// The shared read behind the mint-and-unit-scoped proof queries in this
+    /// module, of which [`Wallet::get_proofs_with`] is the one that applies
+    /// [`Wallet::expired_keyset_ids`] on top.
+    ///
+    /// Not a choke point for the expiry rule. Saga recovery, melt, transaction
+    /// lookup and the auth wallet read the proof table directly, scoped to a
+    /// saga id or to a set of `y` values, and have to keep seeing a proof whose
+    /// keyset has since expired.
+    pub(crate) async fn proof_infos_with(
         &self,
-    ) -> Result<HashMap<Proof, u32>, Error> {
+        state: Option<Vec<State>>,
+        spending_conditions: Option<Vec<SpendingConditions>>,
+    ) -> Result<Vec<ProofInfo>, Error> {
         Ok(self
             .localstore
             .get_proofs(
                 Some(self.mint_url.clone()),
                 Some(self.unit.clone()),
-                Some(vec![State::Unspent]),
-                None,
+                state,
+                spending_conditions,
             )
+            .await?)
+    }
+
+    pub(crate) async fn unspent_proof_derivation_indices(
+        &self,
+    ) -> Result<HashMap<Proof, u32>, Error> {
+        Ok(self
+            .proof_infos_with(Some(vec![State::Unspent]), None)
             .await?
             .into_iter()
             .filter_map(|proof| proof.derivation_index.map(|index| (proof.proof, index)))
@@ -66,19 +88,41 @@ impl Wallet {
     }
 
     /// Get this wallet's [Proofs] that match the args
+    ///
+    /// Proofs on expired keysets are left out: the mint rejects them as inputs,
+    /// so they cannot be spent. Use
+    /// [`get_all_proofs_with`](Self::get_all_proofs_with) to see them.
     pub async fn get_proofs_with(
         &self,
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
     ) -> Result<Proofs, Error> {
+        let expired = self.expired_keyset_ids().await?;
+
         Ok(self
-            .localstore
-            .get_proofs(
-                Some(self.mint_url.clone()),
-                Some(self.unit.clone()),
-                state,
-                spending_conditions,
-            )
+            .proof_infos_with(state, spending_conditions)
+            .await?
+            .into_iter()
+            .map(|p| p.proof)
+            .filter(|p| !expired.contains(&p.keyset_id))
+            .collect())
+    }
+
+    /// Get this wallet's [Proofs] that match the args, expired keysets included
+    ///
+    /// The mint rejects expired-keyset proofs as inputs, so they are unspendable
+    /// and are left out of [`get_proofs_with`](Self::get_proofs_with) and of
+    /// [`total_balance`](Self::total_balance), with
+    /// [`total_expired_balance`](Self::total_expired_balance) the balance that
+    /// counts them. `(None, None)` returns every proof the wallet stores for
+    /// this mint and unit.
+    pub async fn get_all_proofs_with(
+        &self,
+        state: Option<Vec<State>>,
+        spending_conditions: Option<Vec<SpendingConditions>>,
+    ) -> Result<Proofs, Error> {
+        Ok(self
+            .proof_infos_with(state, spending_conditions)
             .await?
             .into_iter()
             .map(|p| p.proof)
@@ -136,16 +180,15 @@ impl Wallet {
     /// # Returns
     ///
     /// The total amount of orphaned proofs that remain pending (not spent by the mint)
-    /// after checking.
+    /// after checking. Proofs on expired keysets are still reconciled with the
+    /// mint, but are left out of the returned amount so it agrees with
+    /// [`Wallet::total_pending_balance`].
     #[instrument(skip(self))]
     pub async fn check_all_pending_proofs(&self) -> Result<Amount, Error> {
         let mut balance = Amount::ZERO;
 
         let proofs = self
-            .localstore
-            .get_proofs(
-                Some(self.mint_url.clone()),
-                Some(self.unit.clone()),
+            .proof_infos_with(
                 Some(vec![State::Pending, State::Reserved, State::PendingSpent]),
                 None,
             )
@@ -186,7 +229,13 @@ impl Wallet {
                 .into_iter()
                 .partition(|p| pending_states.contains(&p.y));
 
-        let amount = Amount::try_sum(pending_proofs.iter().map(|p| p.proof.amount))?;
+        let expired = self.expired_keyset_ids().await?;
+        let amount = Amount::try_sum(
+            pending_proofs
+                .iter()
+                .filter(|p| !expired.contains(&p.proof.keyset_id))
+                .map(|p| p.proof.amount),
+        )?;
 
         self.localstore
             .update_proofs(

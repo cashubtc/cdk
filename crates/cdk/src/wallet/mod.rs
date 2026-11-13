@@ -1331,7 +1331,7 @@ mod tests {
             CurrencyUnit::Auth,
             path,
             0,
-            None,
+            0,
             KeySetVersion::Version00,
         );
 
@@ -1894,7 +1894,7 @@ mod tests {
             active: Some(true),
             keys,
             input_fee_ppk: 0,
-            final_expiry: None,
+            final_expiry: 0,
         };
         let premint_secrets = PreMintSecrets::restore_batch(keyset_id, &seed, 0, 2)
             .expect("restore secrets should derive");
@@ -1970,14 +1970,14 @@ mod tests {
                     unit: active.unit.clone(),
                     active: true,
                     input_fee_ppk: 100,
-                    final_expiry: None,
+                    final_expiry: 0,
                 },
                 KeySetInfo {
                     id: inactive_id,
                     unit: active.unit.clone(),
                     active: false,
                     input_fee_ppk: 1500,
-                    final_expiry: None,
+                    final_expiry: 0,
                 },
             ],
         )

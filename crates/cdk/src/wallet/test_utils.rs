@@ -5,6 +5,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Write};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bip39::Mnemonic;
@@ -15,6 +16,7 @@ use cdk_common::nuts::{
     CurrencyUnit, Id, KeySet, KeySetInfo, Keys, KeysetResponse, MeltMethodSettings, MintInfo,
     MintMethodSettings, MintVersion, MppMethodSettings, Proof,
 };
+use cdk_common::util::unix_time;
 use cdk_common::wallet::{MeltQuote, MintQuote};
 use cdk_common::{
     Amount, CheckStateRequest, CheckStateResponse, MeltQuoteCreateResponse, MeltQuoteRequest,
@@ -238,7 +240,7 @@ pub fn test_keyset() -> KeySet {
         active: Some(true),
         keys: crate::nuts::Keys::new(keys),
         input_fee_ppk: 101,
-        final_expiry: None,
+        final_expiry: 0,
     }
 }
 
@@ -400,6 +402,50 @@ pub fn make_inactive_keyset() -> KeySet {
     ks
 }
 
+/// Create an expired keyset with a properly computed ID.
+///
+/// The v2 keyset id commits to `final_expiry`, so setting it is enough to make
+/// this keyset distinct from [`test_keyset`] and [`make_inactive_keyset`].
+pub fn make_expired_keyset() -> KeySet {
+    let mut ks = test_keyset();
+    ks.final_expiry = unix_time() - 1;
+    ks.id = Id::v2_from_data(&ks.keys, &ks.unit, ks.input_fee_ppk, ks.final_expiry);
+    ks
+}
+
+/// The keys the mock signs with, as signing keys and their public half.
+fn mint_signing_keys() -> (BTreeMap<Amount, SecretKey>, Keys) {
+    let mut signing_keys = BTreeMap::new();
+    let mut public_keys = BTreeMap::new();
+    for power in 0..32u8 {
+        let amount = Amount::from(1u64 << power);
+        let secret_key =
+            SecretKey::from_slice(&[power + 1; 32]).expect("test key is a valid secret");
+        public_keys.insert(amount, secret_key.public_key());
+        signing_keys.insert(amount, secret_key);
+    }
+
+    (signing_keys, Keys::new(public_keys))
+}
+
+/// The keyset the mock signs with, at a chosen input fee.
+///
+/// Signing looks keys up by amount alone, so a test may serve this keyset at any
+/// fee and still get valid signatures back, and the v2 id keeps two fees apart.
+pub fn mint_signing_keyset(input_fee_ppk: u64) -> KeySet {
+    let (_, keys) = mint_signing_keys();
+    let unit = CurrencyUnit::Sat;
+
+    KeySet {
+        id: Id::v2_from_data(&keys, &unit, input_fee_ppk, 0),
+        unit,
+        active: Some(true),
+        keys,
+        input_fee_ppk,
+        final_expiry: 0,
+    }
+}
+
 /// Create a test melt quote
 pub fn test_melt_quote() -> MeltQuote {
     MeltQuote {
@@ -499,6 +545,9 @@ pub async fn create_test_wallet_with_mock_http_subscription(
 pub struct MockMintConnector {
     /// Mock mint keyset state
     pub keysets: Mutex<Vec<KeySet>>,
+    /// How many times the mock has served keys or the keyset list, so a test
+    /// can tell a cached read from one that went to the mint.
+    pub keyset_fetches: AtomicUsize,
     /// Mock mint info state
     pub mint_info: Mutex<MintInfo>,
     /// Response for post_check_state calls
@@ -604,6 +653,7 @@ impl MockMintConnector {
 
         Self {
             keysets: Mutex::new(vec![keyset]),
+            keyset_fetches: AtomicUsize::new(0),
             mint_info: Mutex::new(mint_info),
             check_state_response: Mutex::new(None),
             proof_states: Mutex::new(HashMap::new()),
@@ -797,16 +847,7 @@ impl MockMintConnector {
     /// keys, so that unstaged `post_mint`/`post_batch_mint` calls are
     /// answered with valid blind signatures for the requested outputs.
     pub fn enable_mint_signing(&self) {
-        let mut signing_keys = BTreeMap::new();
-        let mut public_keys = BTreeMap::new();
-        for power in 0..32u8 {
-            let amount = Amount::from(1u64 << power);
-            let secret_key =
-                SecretKey::from_slice(&[power + 1; 32]).expect("test key is a valid secret");
-            public_keys.insert(amount, secret_key.public_key());
-            signing_keys.insert(amount, secret_key);
-        }
-        let keys = Keys::new(public_keys);
+        let (signing_keys, keys) = mint_signing_keys();
 
         self.set_active_keyset(KeySet {
             id: Id::v1_from_keys(&keys),
@@ -814,7 +855,7 @@ impl MockMintConnector {
             active: Some(true),
             keys,
             input_fee_ppk: 0,
-            final_expiry: None,
+            final_expiry: 0,
         });
         *self.mint_signing_keys.lock().unwrap() = Some(signing_keys);
     }
@@ -957,6 +998,7 @@ impl MintConnector for MockMintConnector {
     }
 
     async fn get_mint_keys(&self) -> Result<Vec<crate::nuts::KeySet>, Error> {
+        self.keyset_fetches.fetch_add(1, Ordering::Relaxed);
         Ok(self.keysets.lock().unwrap().clone())
     }
 
@@ -971,6 +1013,7 @@ impl MintConnector for MockMintConnector {
     }
 
     async fn get_mint_keysets(&self) -> Result<KeysetResponse, Error> {
+        self.keyset_fetches.fetch_add(1, Ordering::Relaxed);
         let keysets = self.keysets.lock().unwrap();
 
         Ok(KeysetResponse {

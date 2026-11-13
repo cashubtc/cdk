@@ -188,6 +188,17 @@ impl Wallet {
         Ok(balance.into())
     }
 
+    /// Get total balance held on expired keysets
+    ///
+    /// The mint no longer accepts these proofs, so they are left out of
+    /// `total_balance`. It spans the unspent, pending and reserved states, so
+    /// those three balances plus this one count every stored proof in one of
+    /// them exactly once.
+    pub async fn total_expired_balance(&self) -> Result<Amount, FfiError> {
+        let balance = self.inner.total_expired_balance().await?;
+        Ok(balance.into())
+    }
+
     /// Get mint info from mint
     pub async fn fetch_mint_info(&self) -> Result<Option<MintInfo>, FfiError> {
         let info = self.inner.fetch_mint_info().await?;
@@ -743,6 +754,21 @@ impl Wallet {
         Ok(all_proofs)
     }
 
+    /// Get proofs by states, including proofs on expired keysets
+    ///
+    /// The mint rejects expired-keyset proofs as inputs, so they are left out of
+    /// `get_proofs_by_states` and of `total_balance`, and counted by
+    /// `total_expired_balance`. This returns them so a caller can show funds
+    /// that are stranded.
+    pub async fn get_all_proofs_by_states(
+        &self,
+        states: Vec<ProofState>,
+    ) -> Result<Proofs, FfiError> {
+        let states = states.into_iter().map(Into::into).collect();
+        let proofs = self.inner.get_all_proofs_with(Some(states), None).await?;
+        Ok(proofs.into_iter().map(Into::into).collect())
+    }
+
     /// Check if proofs are spent
     pub async fn check_proofs_spent(&self, proofs: Proofs) -> Result<Vec<bool>, FfiError> {
         let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
@@ -1270,6 +1296,28 @@ mod tests {
             .await
             .expect("empty quote store should mint zero");
         assert!(minted.is_zero());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn expired_keyset_proof_listing_is_available_on_wallet() {
+        let wallet = test_wallet();
+
+        let proofs = wallet
+            .get_all_proofs_by_states(vec![ProofState::Unspent, ProofState::Pending])
+            .await
+            .expect("empty proof store should list nothing");
+        assert!(proofs.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn total_expired_balance_is_available_on_wallet() {
+        let wallet = test_wallet();
+
+        let balance = wallet
+            .total_expired_balance()
+            .await
+            .expect("empty proof store should have no expired balance");
+        assert_eq!(balance.value, 0);
     }
 
     #[test]

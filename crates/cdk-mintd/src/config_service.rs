@@ -1571,7 +1571,7 @@ url = "postgresql://operator:plaintext-secret@localhost/cdk"
             cdk::nuts::CurrencyUnit::Sat,
             path.clone(),
             0,
-            None,
+            0,
             cdk_common::nut02::KeySetVersion::Version00,
         );
         vec![cdk::mint::MintKeySetInfo {
@@ -1583,7 +1583,7 @@ url = "postgresql://operator:plaintext-secret@localhost/cdk"
             derivation_path_index: Some(1),
             amounts: vec![1, 2, 4],
             input_fee_ppk: 0,
-            final_expiry: None,
+            final_expiry: 0,
             issuer_version: None,
         }]
     }
@@ -2158,7 +2158,7 @@ engine = "sqlite"
             derivation_path_index: None,
             amounts: vec![1, 2, 4],
             input_fee_ppk: 0,
-            final_expiry: None,
+            final_expiry: 0,
             issuer_version: None,
         };
         let secret = crate::test_utils::unique_temp_path("nutshell_seed");
@@ -2202,7 +2202,7 @@ engine = "sqlite"
             derivation_path_index: None,
             amounts: (0..64).map(|i| 1_u64 << i).collect(),
             input_fee_ppk: 0,
-            final_expiry: None,
+            final_expiry: 0,
             issuer_version: Some(
                 cdk_common::common::IssuerVersion::from_str("nutshell/0.20.3")
                     .expect("Nutshell version"),
@@ -2219,35 +2219,32 @@ engine = "sqlite"
             info.final_expiry,
             info.id.get_version(),
         );
-        for expiry in [None, Some(0)] {
-            info.final_expiry = expiry;
-            verify_local_keysets(seed, std::slice::from_ref(&info), &used)
-                .expect("original Nutshell seed matches legacy ID");
-            let remote = cdk_signatory::signatory::SignatoryKeysets {
-                pubkey: root_pubkey(seed).expect("public key"),
-                keysets: vec![cdk_signatory::signatory::SignatoryKeySet::from(&(
-                    info.clone(),
-                    derived.clone(),
-                ))],
-            };
-            verify_remote_keysets(&remote, std::slice::from_ref(&info), &HashSet::new(), None)
-                .expect("remote Nutshell keys match legacy ID from metadata");
-            verify_remote_keysets(&remote, &[], &used, None)
-                .expect("remote Nutshell keys match legacy ID from transaction history");
-            let mut invalid = remote.clone();
-            invalid.keysets[0].final_expiry = Some(1);
-            assert!(matches!(
-                verify_remote_keysets(&invalid, &[], &used, Some(remote.pubkey)),
-                Err(ConfigurationServiceError::HistoricalKeysetMismatch { keyset_id })
-                    if keyset_id == id
-            ));
-            assert!(matches!(
-                verify_local_keysets(&[14; 32], std::slice::from_ref(&info), &used),
-                Err(ConfigurationServiceError::HistoricalKeysetMismatch { keyset_id })
-                    if keyset_id == id
-            ));
-        }
-        info.final_expiry = Some(1);
+        verify_local_keysets(seed, std::slice::from_ref(&info), &used)
+            .expect("original Nutshell seed matches legacy ID");
+        let remote = cdk_signatory::signatory::SignatoryKeysets {
+            pubkey: root_pubkey(seed).expect("public key"),
+            keysets: vec![cdk_signatory::signatory::SignatoryKeySet::from(&(
+                info.clone(),
+                derived.clone(),
+            ))],
+        };
+        verify_remote_keysets(&remote, std::slice::from_ref(&info), &HashSet::new(), None)
+            .expect("remote Nutshell keys match legacy ID from metadata");
+        verify_remote_keysets(&remote, &[], &used, None)
+            .expect("remote Nutshell keys match legacy ID from transaction history");
+        let mut invalid = remote.clone();
+        invalid.keysets[0].final_expiry = 1;
+        assert!(matches!(
+            verify_remote_keysets(&invalid, &[], &used, Some(remote.pubkey)),
+            Err(ConfigurationServiceError::HistoricalKeysetMismatch { keyset_id })
+                if keyset_id == id
+        ));
+        assert!(matches!(
+            verify_local_keysets(&[14; 32], std::slice::from_ref(&info), &used),
+            Err(ConfigurationServiceError::HistoricalKeysetMismatch { keyset_id })
+                if keyset_id == id
+        ));
+        info.final_expiry = 1;
         assert!(matches!(
             verify_local_keysets(seed, &[info], &used),
             Err(ConfigurationServiceError::HistoricalKeysetMismatch { keyset_id })
@@ -2266,8 +2263,8 @@ engine = "sqlite"
         let mut infos = Vec::new();
         let mut remote_keys = Vec::new();
         for (version, path, fee, expiry) in [
-            (KeySetVersion::Version00, "m/0'/0'/1'", 0, None),
-            (KeySetVersion::Version01, "m/7'/3'/9'", 100, Some(1)),
+            (KeySetVersion::Version00, "m/0'/0'/1'", 0, 0),
+            (KeySetVersion::Version01, "m/7'/3'/9'", 100, 1),
         ] {
             let derivation_path = DerivationPath::from_str(path).expect("custom path");
             let keyset = MintKeySet::generate_from_xpriv(
@@ -2339,7 +2336,7 @@ engine = "sqlite"
                 let mut wrong_fee = verified_remote.clone();
                 wrong_fee.keysets[index].input_fee_ppk += 1;
                 let mut wrong_expiry = verified_remote.clone();
-                wrong_expiry.keysets[index].final_expiry = None;
+                wrong_expiry.keysets[index].final_expiry = 0;
                 invalid_snapshots.extend([wrong_unit, wrong_fee, wrong_expiry]);
             }
             for remote in invalid_snapshots {

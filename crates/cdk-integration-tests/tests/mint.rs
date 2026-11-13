@@ -82,7 +82,7 @@ async fn test_correct_keyset() {
         cdk_integration_tests::standard_keyset_amounts(32),
         0,
         true,
-        None,
+        0,
     )
     .await
     .unwrap();
@@ -102,7 +102,7 @@ async fn test_correct_keyset() {
         cdk_integration_tests::standard_keyset_amounts(32),
         0,
         true,
-        None,
+        0,
     )
     .await
     .unwrap();
@@ -356,7 +356,7 @@ async fn test_rotate_keyset_with_expiry() {
         cdk_integration_tests::standard_keyset_amounts(32),
         0,
         true,
-        Some(past_expiry),
+        past_expiry,
     )
     .await
     .unwrap();
@@ -383,7 +383,7 @@ async fn test_rotate_keyset_with_expiry() {
         cdk_integration_tests::standard_keyset_amounts(32),
         0,
         true,
-        None,
+        0,
     )
     .await
     .unwrap();
@@ -451,7 +451,7 @@ async fn test_builder_does_not_replace_all_expired_keysets() {
             cdk_integration_tests::standard_keyset_amounts(32),
             0,
             true,
-            Some(future_expiry),
+            future_expiry,
         )
         .await
         .unwrap();
@@ -470,7 +470,7 @@ async fn test_builder_does_not_replace_all_expired_keysets() {
             .into_iter()
             .find(|k| k.id == new_keyset.id)
             .expect("rotated keyset should be present in localstore");
-        info.final_expiry = Some(unix_time().saturating_sub(1));
+        info.final_expiry = unix_time().saturating_sub(1);
         tx.add_keyset_info(info).await.unwrap();
         tx.commit().await.unwrap();
     }

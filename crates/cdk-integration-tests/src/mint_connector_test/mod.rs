@@ -1,6 +1,6 @@
 //! Behavioral test suite for [`MintConnector`] implementations.
 //!
-//! Mirrors the `mint_db_test!` pattern: [`mint_connector_test!`] generates one
+//! Mirrors the `mint_db_test!` pattern: `mint_connector_test!` generates one
 //! `#[tokio::test]` per body, each fed a connector by a backend-specific
 //! factory. Every backend drives a real mint, so the bodies assert the full
 //! connector contract, including the mint -> swap -> melt write path. Run over

@@ -1232,7 +1232,8 @@ where
         (:mint_url, :id, :unit, :active, :input_fee_ppk, :final_expiry, :keyset_u32)
         ON CONFLICT(id) DO UPDATE SET
             active = excluded.active,
-            input_fee_ppk = excluded.input_fee_ppk
+            input_fee_ppk = excluded.input_fee_ppk,
+            final_expiry = excluded.final_expiry
         "#,
             )?
             .bind("mint_url", mint_url.to_string())
@@ -1242,7 +1243,9 @@ where
             .bind("input_fee_ppk", i64::try_from(keyset.input_fee_ppk)?)
             .bind(
                 "final_expiry",
-                keyset.final_expiry.map(i64::try_from).transpose()?,
+                (keyset.final_expiry != 0)
+                    .then(|| i64::try_from(keyset.final_expiry))
+                    .transpose()?,
             )
             .bind("keyset_u32", u32::from(keyset.id))
             .execute(&tx)
@@ -2096,7 +2099,7 @@ fn sql_row_to_keyset(row: Vec<Column>) -> Result<KeySetInfo, Error> {
         unit: column_as_string!(unit, CurrencyUnit::from_str),
         active: matches!(active, Column::Integer(1)),
         input_fee_ppk: column_as_nullable_number!(input_fee_ppk).unwrap_or(0),
-        final_expiry: column_as_nullable_number!(final_expiry),
+        final_expiry: column_as_nullable_number!(final_expiry).unwrap_or(0),
     })
 }
 

@@ -56,8 +56,8 @@ pub struct KeysetRotation {
     pub input_fee_ppk: u64,
     /// Whether to use keyset V2 (Version01) or V1 (Version00)
     pub use_keyset_v2: bool,
-    /// Optional expiry timestamp (unix seconds)
-    pub final_expiry: Option<u64>,
+    /// Expiry timestamp (unix seconds), zero for no expiry
+    pub final_expiry: u64,
 }
 
 /// Cashu Mint Builder
@@ -676,7 +676,7 @@ impl MintBuilder {
                         } else {
                             cdk_common::nut02::KeySetVersion::Version00
                         },
-                        final_expiry: None,
+                        final_expiry: 0,
                     })
                     .await?;
             }

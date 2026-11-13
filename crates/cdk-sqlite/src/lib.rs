@@ -2,6 +2,8 @@
 
 mod async_sqlite;
 mod common;
+#[cfg(test)]
+mod test_support;
 
 pub use common::SqliteConnectionManager;
 

@@ -9,7 +9,9 @@
 use cdk_common::common::IssuerVersion;
 use cdk_common::error::Error;
 use cdk_common::mint::MintKeySetInfo;
+use cdk_common::nuts::expiry_has_passed;
 use cdk_common::nuts::nut02::KeySetVersion;
+use cdk_common::util::unix_time;
 use cdk_common::{
     BlindSignature, BlindedMessage, CurrencyUnit, Id, KeySet, Keys, MintKeySet, Proof, PublicKey,
 };
@@ -27,8 +29,8 @@ pub struct RotateKeyArguments {
     pub input_fee_ppk: u64,
     /// KeySet Version
     pub keyset_id_type: KeySetVersion,
-    /// FinalExpiry
-    pub final_expiry: Option<u64>,
+    /// Final expiry, zero when the keyset has no final expiry
+    pub final_expiry: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -58,8 +60,9 @@ pub struct SignatoryKeySet {
     pub amounts: Vec<u64>,
     /// Input fee for the keyset (parts per thousand)
     pub input_fee_ppk: u64,
-    /// Final expiry of the keyset (unix timestamp in the future)
-    pub final_expiry: Option<u64>,
+    /// Final expiry of the keyset (unix timestamp in the future), zero when
+    /// the keyset has no final expiry
+    pub final_expiry: u64,
     /// Issuer Version
     pub issuer_version: Option<IssuerVersion>,
     /// Version is the derivation_path_index
@@ -67,10 +70,9 @@ pub struct SignatoryKeySet {
 }
 
 impl SignatoryKeySet {
-    /// Returns true if `final_expiry` is set and strictly in the past.
+    /// Returns true if `final_expiry` is non-zero and strictly in the past.
     pub fn is_expired(&self) -> bool {
-        self.final_expiry
-            .is_some_and(|expiry| expiry < cdk_common::util::unix_time())
+        expiry_has_passed(self.final_expiry, unix_time())
     }
 }
 
@@ -184,7 +186,7 @@ mod tests {
 
     use super::*;
 
-    fn dummy_signatory_keyset(final_expiry: Option<u64>) -> SignatoryKeySet {
+    fn dummy_signatory_keyset(final_expiry: u64) -> SignatoryKeySet {
         SignatoryKeySet {
             id: Id::from_str("009a1f293253e41e").unwrap(),
             unit: CurrencyUnit::Sat,
@@ -199,34 +201,23 @@ mod tests {
     }
 
     #[test]
-    fn test_is_expired_none() {
-        let ks = dummy_signatory_keyset(None);
-        assert!(!ks.is_expired());
-    }
-
-    #[test]
     fn test_is_expired_far_future() {
-        let ks = dummy_signatory_keyset(Some(unix_time() + 1_000_000));
-        assert!(!ks.is_expired());
-    }
-
-    #[test]
-    fn test_is_expired_exactly_now_is_not_expired() {
-        // strict less-than: expiry == now is not yet expired
-        let ks = dummy_signatory_keyset(Some(unix_time()));
+        let ks = dummy_signatory_keyset(unix_time() + 1_000_000);
         assert!(!ks.is_expired());
     }
 
     #[test]
     fn test_is_expired_one_second_ago() {
-        let ks = dummy_signatory_keyset(Some(unix_time() - 1));
+        let ks = dummy_signatory_keyset(unix_time() - 1);
         assert!(ks.is_expired());
     }
 
+    /// Zero means the keyset has no final expiry, not that it expired at the
+    /// epoch.
     #[test]
     fn test_is_expired_zero() {
-        let ks = dummy_signatory_keyset(Some(0));
-        assert!(ks.is_expired());
+        let ks = dummy_signatory_keyset(0);
+        assert!(!ks.is_expired());
     }
 
     #[test]
@@ -239,7 +230,7 @@ mod tests {
             CurrencyUnit::Usd,
             path.clone(),
             0,
-            Some(222),
+            222,
             KeySetVersion::Version00,
         );
 
@@ -252,7 +243,7 @@ mod tests {
             derivation_path_index: Some(1),
             amounts: vec![1, 2, 4, 8],
             input_fee_ppk: 0,
-            final_expiry: Some(111),
+            final_expiry: 111,
             issuer_version: None,
         };
 
@@ -264,8 +255,7 @@ mod tests {
             "unit must come from the keyset info, not the cached key"
         );
         assert_eq!(
-            keyset.final_expiry,
-            Some(111),
+            keyset.final_expiry, 111,
             "final_expiry must come from the keyset info, not the cached key"
         );
     }
