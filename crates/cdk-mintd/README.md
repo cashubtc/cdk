@@ -335,7 +335,10 @@ competing operational configuration:
   `CDK_MINTD_DATABASE_URL`), and related PostgreSQL bootstrap variables.
 - SQLCipher password when an invocation opens the local encrypted database.
   Encrypted SQLite startup and database commands therefore require
-  `--password <password>`; `config validate` does not open the database.
+  `--password <password>`. `config validate` and `config migrate` do not open
+  the database, so they reject `--password`. mintd also rejects it when the
+  primary database is PostgreSQL, whose credentials belong in the connection
+  URL.
 
 `config validate` parses the supplied document, resolves its secret references,
 rejects unknown fields, and verifies its signer without opening the primary
