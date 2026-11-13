@@ -750,6 +750,7 @@ async fn internal_settlement_without_lookup_id_finalizes_on_demand() {
                 unit: CurrencyUnit::Sat,
                 description: None,
                 pubkey: None,
+                expiry_seconds: None,
             }
             .into(),
         )

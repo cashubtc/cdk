@@ -45,6 +45,9 @@ pub struct MintQuoteBolt11Request {
     /// NUT-19 Pubkey
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pubkey: Option<PublicKey>,
+    /// Requested quote lifetime in seconds (NUT-23, nuts#415). Optional.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expiry_seconds: Option<u64>,
 }
 
 /// Possible states of a quote

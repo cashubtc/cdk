@@ -180,8 +180,14 @@ pub struct MintMethodSettings {
 impl From<cdk::nuts::nut04::MintMethodSettings> for MintMethodSettings {
     fn from(s: cdk::nuts::nut04::MintMethodSettings) -> Self {
         let description = match s.options {
-            Some(cdk::nuts::nut04::MintMethodOptions::Bolt11 { description }) => Some(description),
-            Some(cdk::nuts::nut04::MintMethodOptions::Bolt12 { description }) => Some(description),
+            Some(cdk::nuts::nut04::MintMethodOptions::Bolt11 {
+                description,
+                max_expiry_seconds: None,
+            }) => Some(description),
+            Some(cdk::nuts::nut04::MintMethodOptions::Bolt12 {
+                description,
+                max_expiry_seconds: None,
+            }) => Some(description),
             _ => None,
         };
         Self {
@@ -200,12 +206,20 @@ impl TryFrom<MintMethodSettings> for cdk::nuts::nut04::MintMethodSettings {
 
     fn try_from(s: MintMethodSettings) -> Result<Self, Self::Error> {
         let options = match s.method {
-            PaymentMethod::Bolt11 => s
-                .description
-                .map(|description| cdk::nuts::nut04::MintMethodOptions::Bolt11 { description }),
-            PaymentMethod::Bolt12 => s
-                .description
-                .map(|description| cdk::nuts::nut04::MintMethodOptions::Bolt12 { description }),
+            PaymentMethod::Bolt11 => {
+                s.description
+                    .map(|description| cdk::nuts::nut04::MintMethodOptions::Bolt11 {
+                        description,
+                        max_expiry_seconds: None,
+                    })
+            }
+            PaymentMethod::Bolt12 => {
+                s.description
+                    .map(|description| cdk::nuts::nut04::MintMethodOptions::Bolt12 {
+                        description,
+                        max_expiry_seconds: None,
+                    })
+            }
             PaymentMethod::Custom { .. } => Some(cdk::nuts::nut04::MintMethodOptions::Custom {}),
             _ => None,
         };
@@ -727,6 +741,7 @@ mod tests {
                     max_amount: Some(cdk::Amount::from(100000)),
                     options: Some(cdk::nuts::nut04::MintMethodOptions::Bolt11 {
                         description: true,
+                        max_expiry_seconds: None,
                     }),
                 }],
                 disabled: false,
