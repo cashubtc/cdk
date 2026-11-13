@@ -59,7 +59,6 @@ getrandom = { version = "0.4", features = ["wasm_js"] }
 tokio = { workspace = true, default-features = false, features = ["sync"] }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
-gloo-timers = { workspace = true }
 
 [dev-dependencies]
 criterion.workspace = true

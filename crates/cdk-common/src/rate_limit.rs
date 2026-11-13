@@ -36,6 +36,7 @@ use url::Url;
 use web_time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::database::{self, WalletDatabase, KVSTORE_NAMESPACE_KEY_MAX_LEN};
+use crate::task::sleep;
 use crate::{AuthToken, HttpError, RawResponse};
 
 /// Namespace under which per-host rate-limit budgets are stored.
@@ -721,18 +722,6 @@ pub fn origin_key(url: &Url) -> Option<String> {
     } else {
         Some(sanitized)
     }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-async fn sleep(duration: Duration) {
-    tokio::time::sleep(duration).await;
-}
-
-#[cfg(target_arch = "wasm32")]
-async fn sleep(duration: Duration) {
-    // `tokio::time` has no timer driver under wasm; fall back to the browser's
-    // `setTimeout` via gloo.
-    gloo_timers::future::TimeoutFuture::new(duration.as_millis() as u32).await;
 }
 
 /// A [`Transport`] decorator that paces each HTTP request through the bucket for

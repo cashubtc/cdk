@@ -26,6 +26,7 @@ pub mod bitcoin_uri;
 pub mod common;
 pub mod database;
 pub mod error;
+pub mod event;
 pub mod melt;
 #[cfg(feature = "mint")]
 pub mod mint;
