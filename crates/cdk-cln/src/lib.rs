@@ -24,11 +24,12 @@ use cdk_common::util::{hex, unix_time};
 use cdk_common::{Bolt11Invoice, QuoteId};
 use cln_rpc::model::requests::{
     DecodeRequest, FetchinvoiceRequest, InvoiceRequest, ListinvoicesRequest, ListpaysRequest,
-    OfferRequest, WaitanyinvoiceRequest, XpayRequest,
+    ListsendpaysRequest, OfferRequest, WaitanyinvoiceRequest, XpayRequest,
 };
 use cln_rpc::model::responses::{
     DecodeResponse, InvoiceResponse, ListinvoicesInvoices, ListinvoicesInvoicesStatus,
-    ListpaysPays, ListpaysPaysStatus, WaitanyinvoiceResponse, WaitanyinvoiceStatus,
+    ListpaysPays, ListpaysPaysStatus, ListsendpaysPaymentsStatus, WaitanyinvoiceResponse,
+    WaitanyinvoiceStatus,
 };
 use cln_rpc::primitives::{Amount as CLN_Amount, AmountOrAny, Sha256};
 use cln_rpc::ClnRpc;
@@ -46,6 +47,10 @@ const CLN_KV_SECONDARY_NAMESPACE: &str = "payment_indices";
 const CLN_KV_BOLT12_OUTGOING_SECONDARY_NAMESPACE: &str = "bolt12_outgoing_payments";
 const CLN_KV_BOLT12_CLEANUP_MARKER: &[u8] = b"cleanup-in-progress";
 const LAST_PAY_INDEX_KV_KEY: &str = "last_pay_index";
+/// Number of `xpay` invocations dispatched for a payment hash that have not
+/// yet returned, keyed by the hex payment hash.
+const CLN_KV_XPAY_DISPATCH_SECONDARY_NAMESPACE: &str = "xpay_dispatches";
+const XPAY_DISPATCH_UPDATE_ATTEMPTS: usize = 16;
 const XPAY_DESTINATION_PERMANENT_FAILURE_ERROR_CODE: i32 = 203;
 const XPAY_ROUTE_NOT_FOUND_ERROR_CODE: i32 = 205;
 const XPAY_ROUTE_TOO_EXPENSIVE_ERROR_CODE: i32 = 206;
@@ -429,14 +434,15 @@ impl MintPayment for Cln {
         let mut partial_amount: Option<u64> = None;
         let mut amount_msat: Option<u64> = None;
         let payment_lookup_id: PaymentIdentifier;
+        let dispatch_hash: [u8; 32];
         let mut bolt12_binding = None;
 
         let mut cln_client = self.cln_client().await?;
 
         let invoice = match &options {
             OutgoingPaymentOptions::Bolt11(bolt11_options) => {
-                let payment_identifier =
-                    PaymentIdentifier::PaymentHash(*bolt11_options.bolt11.payment_hash().as_ref());
+                dispatch_hash = *bolt11_options.bolt11.payment_hash().as_ref();
+                let payment_identifier = PaymentIdentifier::PaymentHash(dispatch_hash);
 
                 self.check_outgoing_unpaided(&payment_identifier).await?;
                 payment_lookup_id = payment_identifier;
@@ -526,6 +532,7 @@ impl MintPayment for Cln {
                 self.write_bolt12_quote_payment_hash(&quote_id, &payment_hash)
                     .await?;
                 payment_lookup_id = quote_payment_identifier;
+                dispatch_hash = payment_hash;
                 bolt12_binding = Some((quote_id, payment_hash));
 
                 cln_response.invoice
@@ -539,6 +546,11 @@ impl MintPayment for Cln {
         }
 
         tracing::debug!("Attempting payment with max fee: {:?}", max_fee_msat);
+
+        // Recorded before dispatch and released only once xpay has answered,
+        // so a later status check can tell whether any invocation for this
+        // hash may still send parts (see `settled_failure_state`).
+        self.open_xpay_dispatch(&dispatch_hash).await?;
 
         let cln_response = cln_client
             .call_typed(&XpayRequest {
@@ -555,6 +567,13 @@ impl MintPayment for Cln {
                 partial_msat: partial_amount.map(CLN_Amount::from_msat),
             })
             .await;
+
+        // A result or a coded JSON-RPC error is xpay's own answer, so the
+        // invocation has ended. An error without a code is a client-side
+        // failure: xpay may still be running, so its dispatch stays open.
+        if xpay_returned(&cln_response) {
+            self.close_xpay_dispatch(&dispatch_hash).await;
+        }
 
         let mut response = match cln_response {
             Ok(pay_response) => MakePaymentResponse {
@@ -848,17 +867,18 @@ impl MintPayment for Cln {
     #[instrument(skip(self))]
     /// Check the status of an outgoing payment.
     ///
-    /// CLN never reports `Unpaid`/`Failed` for a dispatched payment: an
-    /// `xpay` command may survive a client disconnect and keep retrying, so a
-    /// not-paid observation is not an authoritative terminal outcome and is
-    /// reported as `Unknown` to keep the mint fail-closed (see
-    /// [`MintPayment::check_outgoing_payment`]). A failed payment's BOLT12
-    /// quote binding is retained for the same reason — releasing it would
+    /// An `xpay` command may survive a client disconnect and keep retrying,
+    /// so a not-paid observation is by itself not an authoritative terminal
+    /// outcome. It is reported as `Failed` only when every `xpay` invocation
+    /// this backend dispatched for the payment hash has returned and no part
+    /// is pending or complete, since a returned invocation sends no further
+    /// part; otherwise it is reported as `Unknown` to keep the mint
+    /// fail-closed (see [`MintPayment::check_outgoing_payment`]). A failed
+    /// payment's BOLT12 quote binding is retained here — releasing it would
     /// turn a later poll's missing-binding answer into an authoritative
-    /// `Unpaid`. The one exception is a BOLT12 quote with no recorded
-    /// payment-hash binding: the binding is written before any payment is
-    /// dispatched, so its absence proves the payment was never attempted and
-    /// `Unpaid` is truthful.
+    /// `Unpaid`. A BOLT12 quote with no recorded payment-hash binding reports
+    /// `Unpaid`: the binding is written before any payment is dispatched, so
+    /// its absence proves the payment was never attempted.
     async fn check_outgoing_payment(
         &self,
         payment_identifier: &PaymentIdentifier,
@@ -910,17 +930,19 @@ impl MintPayment for Cln {
 
         match select_cln_payment(&listpays_response.pays) {
             Some(pays_response) => {
-                // A negative CLN status is not an authoritative terminal
-                // outcome for the mint; report it as Unknown so recovery
-                // cannot refund proofs while the payment may still settle.
-                // The BOLT12 quote binding is deliberately retained as well:
-                // releasing it would let a later poll observe the missing
-                // binding as authoritative `Unpaid` and compensate a payment
-                // that may still settle. Only the synchronous make_payment
-                // error path may release a binding, once it holds a
-                // definitive terminal failure.
+                // A negative CLN status is not by itself an authoritative
+                // terminal outcome for the mint: an xpay invocation may still
+                // be between attempts. It becomes one only once no invocation
+                // can send another part (see `settled_failure_state`);
+                // otherwise report Unknown so recovery cannot refund proofs
+                // while the payment may still settle. The BOLT12 quote
+                // binding is retained either way: only the synchronous
+                // make_payment error path may release a binding.
                 let status = match cln_pays_status_to_mint_state(pays_response.status) {
-                    MeltQuoteState::Unpaid | MeltQuoteState::Failed => MeltQuoteState::Unknown,
+                    MeltQuoteState::Unpaid | MeltQuoteState::Failed => {
+                        self.settled_failure_state(&mut cln_client, &payment_hash)
+                            .await?
+                    }
                     status => status,
                 };
 
@@ -935,12 +957,23 @@ impl MintPayment for Cln {
                         }),
                 })
             }
-            None => Ok(MakePaymentResponse {
-                payment_lookup_id: payment_identifier.clone(),
-                payment_proof: None,
-                status: missing_payment_state,
-                total_spent: Amount::new(0, CurrencyUnit::Msat),
-            }),
+            None => {
+                // No payment record: xpay may have returned before sending
+                // any part, or may not have sent one yet.
+                let status = match missing_payment_state {
+                    MeltQuoteState::Unknown => {
+                        self.settled_failure_state(&mut cln_client, &payment_hash)
+                            .await?
+                    }
+                    status => status,
+                };
+                Ok(MakePaymentResponse {
+                    payment_lookup_id: payment_identifier.clone(),
+                    payment_proof: None,
+                    status,
+                    total_spent: Amount::new(0, CurrencyUnit::Msat),
+                })
+            }
         }
     }
 }
@@ -948,6 +981,161 @@ impl MintPayment for Cln {
 impl Cln {
     async fn cln_client(&self) -> Result<ClnRpc, Error> {
         Ok(cln_rpc::ClnRpc::new(&self.rpc_socket).await?)
+    }
+
+    /// Status of a payment to `payment_hash` that CLN does not report as paid
+    /// or pending: `Failed` when no part of it can still settle, otherwise
+    /// `Unknown`.
+    ///
+    /// Once an `xpay` invocation has given up it sends no further part, so
+    /// when every invocation this backend dispatched for the hash has
+    /// returned, the parts already sent are all that could settle, and
+    /// `listsendpays` shows whether any of them is still pending. A hash with
+    /// no dispatch record, such as one dispatched by an earlier version or
+    /// from outside the mint, stays `Unknown`.
+    async fn settled_failure_state(
+        &self,
+        cln_client: &mut ClnRpc,
+        payment_hash: &[u8; 32],
+    ) -> Result<MeltQuoteState, Error> {
+        if self.open_xpay_dispatches(payment_hash).await? != Some(0) {
+            return Ok(MeltQuoteState::Unknown);
+        }
+
+        let parts = cln_client
+            .call_typed(&ListsendpaysRequest {
+                bolt11: None,
+                index: None,
+                limit: None,
+                payment_hash: Some(*Sha256::from_bytes_ref(payment_hash)),
+                start: None,
+                status: None,
+            })
+            .await?;
+
+        if parts
+            .payments
+            .iter()
+            .all(|part| part.status == ListsendpaysPaymentsStatus::FAILED)
+        {
+            Ok(MeltQuoteState::Failed)
+        } else {
+            Ok(MeltQuoteState::Unknown)
+        }
+    }
+
+    /// The number of `xpay` invocations dispatched for `payment_hash` that
+    /// have not returned, or `None` if none was ever recorded.
+    async fn open_xpay_dispatches(&self, payment_hash: &[u8; 32]) -> Result<Option<u64>, Error> {
+        let stored = self
+            .kv_store
+            .kv_read(
+                CLN_KV_PRIMARY_NAMESPACE,
+                CLN_KV_XPAY_DISPATCH_SECONDARY_NAMESPACE,
+                &hex::encode(payment_hash),
+            )
+            .await
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        stored.as_deref().map(parse_xpay_dispatches).transpose()
+    }
+
+    /// Records an `xpay` invocation for `payment_hash` before it is sent.
+    async fn open_xpay_dispatch(&self, payment_hash: &[u8; 32]) -> Result<(), Error> {
+        self.update_xpay_dispatches(payment_hash, |open| open.checked_add(1))
+            .await
+    }
+
+    /// Records that an `xpay` invocation for `payment_hash` returned. A
+    /// failure leaves the dispatch open, which only keeps the payment
+    /// `Unknown`.
+    async fn close_xpay_dispatch(&self, payment_hash: &[u8; 32]) {
+        if let Err(err) = self
+            .update_xpay_dispatches(payment_hash, |open| open.checked_sub(1))
+            .await
+        {
+            tracing::warn!(
+                payment_hash = %hex::encode(payment_hash),
+                "Could not record that xpay returned; the payment stays unknown until it is paid: {err}"
+            );
+        }
+    }
+
+    /// Applies `update` to the open-dispatch count with a compare-and-set, so
+    /// concurrent dispatches for the same hash are all counted.
+    async fn update_xpay_dispatches<F>(
+        &self,
+        payment_hash: &[u8; 32],
+        update: F,
+    ) -> Result<(), Error>
+    where
+        F: Fn(u64) -> Option<u64>,
+    {
+        let key = hex::encode(payment_hash);
+
+        for _ in 0..XPAY_DISPATCH_UPDATE_ATTEMPTS {
+            let mut tx = self
+                .kv_store
+                .begin_transaction()
+                .await
+                .map_err(|e| Error::Database(e.to_string()))?;
+
+            let stored = tx
+                .kv_read(
+                    CLN_KV_PRIMARY_NAMESPACE,
+                    CLN_KV_XPAY_DISPATCH_SECONDARY_NAMESPACE,
+                    &key,
+                )
+                .await
+                .map_err(|e| Error::Database(e.to_string()))?;
+            let open = stored
+                .as_deref()
+                .map(parse_xpay_dispatches)
+                .transpose()?
+                .unwrap_or(0);
+            let next = update(open)
+                .ok_or_else(|| {
+                    Error::Database(format!("xpay dispatch count {open} cannot be updated"))
+                })?
+                .to_string();
+
+            let written = match &stored {
+                None => {
+                    tx.kv_write_if_absent(
+                        CLN_KV_PRIMARY_NAMESPACE,
+                        CLN_KV_XPAY_DISPATCH_SECONDARY_NAMESPACE,
+                        &key,
+                        next.as_bytes(),
+                    )
+                    .await
+                }
+                Some(stored) => {
+                    tx.kv_write_if_equals(
+                        CLN_KV_PRIMARY_NAMESPACE,
+                        CLN_KV_XPAY_DISPATCH_SECONDARY_NAMESPACE,
+                        &key,
+                        stored,
+                        next.as_bytes(),
+                    )
+                    .await
+                }
+            }
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+            if written {
+                tx.commit()
+                    .await
+                    .map_err(|e| Error::Database(e.to_string()))?;
+                return Ok(());
+            }
+            tx.rollback()
+                .await
+                .map_err(|e| Error::Database(e.to_string()))?;
+        }
+
+        Err(Error::Database(
+            "xpay dispatch count kept changing during update".to_string(),
+        ))
     }
 
     fn bolt12_quote_payment_hash_key(quote_id: &QuoteId) -> Result<String, Error> {
@@ -1360,16 +1548,37 @@ fn xpay_error_state(
     observed_state: Option<MeltQuoteState>,
 ) -> MeltQuoteState {
     // listpays aggregates attempts by payment hash, so a negative or missing
-    // record cannot prove what happened to this specific xpay invocation. Only
-    // positive evidence (Paid/Pending) may override the RPC result. Explicit
-    // terminal xpay errors prove that this invocation cannot settle even when
-    // no send attempt was created and listpays has no row.
+    // record cannot by itself prove what happened to this xpay invocation.
+    // Positive evidence (Paid/Pending) overrides the RPC result, and so does
+    // an observed Failed, which `check_outgoing_payment` reports only once no
+    // invocation for the hash can still send a part. Explicit terminal xpay
+    // errors prove that this invocation cannot settle even when no send
+    // attempt was created and listpays has no row.
     match observed_state {
         Some(MeltQuoteState::Paid) => MeltQuoteState::Paid,
         Some(MeltQuoteState::Pending) => MeltQuoteState::Pending,
+        // An error without a code may come from the client while xpay is
+        // still running, and then cannot be settled by an observation.
+        Some(MeltQuoteState::Failed) if error.code.is_some() => MeltQuoteState::Failed,
         _ if xpay_error_is_explicit_terminal_failure(error) => MeltQuoteState::Failed,
         _ => MeltQuoteState::Unknown,
     }
+}
+
+/// Whether `response` is xpay's own answer: a result, or a JSON-RPC error
+/// from lightningd, which always carries a code.
+fn xpay_returned<T>(response: &Result<T, cln_rpc::RpcError>) -> bool {
+    match response {
+        Ok(_) => true,
+        Err(error) => error.code.is_some(),
+    }
+}
+
+fn parse_xpay_dispatches(stored: &[u8]) -> Result<u64, Error> {
+    std::str::from_utf8(stored)
+        .ok()
+        .and_then(|count| count.parse().ok())
+        .ok_or_else(|| Error::Database("malformed xpay dispatch count".to_string()))
 }
 
 fn xpay_error_is_explicit_terminal_failure(error: &cln_rpc::RpcError) -> bool {
@@ -1898,7 +2107,7 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(5), async {
                 let socket = TestRpcSocket::new();
                 let listener = UnixListener::bind(&socket.0).unwrap();
-                let mut cln = test_cln();
+                let mut cln = test_cln_with_memory_kv();
                 cln.rpc_socket = socket.0.clone();
                 let payment = cln.make_payment(
                     &CurrencyUnit::Sat,
@@ -2325,8 +2534,15 @@ mod tests {
             &already_paid_error,
             Some(MeltQuoteState::Paid)
         ));
-        assert!(should_retain_bolt12_binding_after_xpay_error(
+        // `check_outgoing_payment` reports Failed only once no invocation for
+        // the hash can still send a part, so it releases the binding after a
+        // coded xpay error, but not after a client-side one.
+        assert!(!should_retain_bolt12_binding_after_xpay_error(
             &coded_error,
+            Some(MeltQuoteState::Failed)
+        ));
+        assert!(should_retain_bolt12_binding_after_xpay_error(
+            &transport_error,
             Some(MeltQuoteState::Failed)
         ));
         assert!(should_retain_bolt12_binding_after_xpay_error(
@@ -2386,7 +2602,7 @@ mod tests {
     }
 
     #[test]
-    fn xpay_nonspecific_rpc_errors_ignore_negative_reconciliation() {
+    fn xpay_nonspecific_rpc_errors_ignore_negative_reconciliation_until_settled() {
         for code in [-1, 209] {
             assert_eq!(
                 xpay_error_state(&test_rpc_error(Some(code)), None),
@@ -2396,9 +2612,11 @@ mod tests {
                 xpay_error_state(&test_rpc_error(Some(code)), Some(MeltQuoteState::Unknown)),
                 MeltQuoteState::Unknown
             );
+            // Failed is observed only once every dispatch has returned and no
+            // part is pending or complete.
             assert_eq!(
                 xpay_error_state(&test_rpc_error(Some(code)), Some(MeltQuoteState::Failed)),
-                MeltQuoteState::Unknown
+                MeltQuoteState::Failed
             );
             assert_eq!(
                 xpay_error_state(&test_rpc_error(Some(code)), Some(MeltQuoteState::Unpaid)),
@@ -2421,6 +2639,262 @@ mod tests {
             xpay_error_state(&test_rpc_error(None), Some(MeltQuoteState::Failed)),
             MeltQuoteState::Unknown
         );
+    }
+
+    /// Answers the requests on the next connection in order, checking each
+    /// method. Each reply is the `result` or `error` member of the response.
+    async fn serve_requests(listener: &UnixListener, replies: Vec<(&str, serde_json::Value)>) {
+        let (connection, _) = listener.accept().await.unwrap();
+        let mut connection = Framed::new(connection, cln_rpc::codec::JsonCodec::default());
+        for (method, reply) in replies {
+            let request = connection.next().await.unwrap().unwrap();
+            assert_eq!(request["method"], method);
+            let mut response = serde_json::json!({"jsonrpc": "2.0", "id": request["id"]});
+            for (key, value) in reply.as_object().unwrap() {
+                response[key] = value.clone();
+            }
+            connection.send(response).await.unwrap();
+        }
+    }
+
+    fn test_sendpay(id: u64, status: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": id, "groupid": 1, "partid": id, "created_index": id, "created_at": 1,
+            "payment_hash": hex::encode(test_invoice().payment_hash().as_ref() as &[u8]),
+            "status": status, "amount_sent_msat": 10000
+        })
+    }
+
+    async fn set_open_xpay_dispatches(
+        kv_store: &MemoryKvStore,
+        payment_hash: &[u8; 32],
+        open: u64,
+    ) {
+        let mut tx = kv_store
+            .begin_transaction()
+            .await
+            .expect("transaction should begin");
+        tx.kv_write(
+            CLN_KV_PRIMARY_NAMESPACE,
+            CLN_KV_XPAY_DISPATCH_SECONDARY_NAMESPACE,
+            &hex::encode(payment_hash),
+            open.to_string().as_bytes(),
+        )
+        .await
+        .expect("dispatch count should be written");
+        tx.commit().await.expect("transaction should commit");
+    }
+
+    #[tokio::test]
+    async fn xpay_dispatch_count_tracks_open_invocations() {
+        let cln = test_cln_with_memory_kv();
+        let payment_hash = [7; 32];
+
+        assert_eq!(cln.open_xpay_dispatches(&payment_hash).await.unwrap(), None);
+        cln.open_xpay_dispatch(&payment_hash).await.unwrap();
+        cln.open_xpay_dispatch(&payment_hash).await.unwrap();
+        assert_eq!(
+            cln.open_xpay_dispatches(&payment_hash).await.unwrap(),
+            Some(2)
+        );
+        cln.close_xpay_dispatch(&payment_hash).await;
+        assert_eq!(
+            cln.open_xpay_dispatches(&payment_hash).await.unwrap(),
+            Some(1)
+        );
+        cln.close_xpay_dispatch(&payment_hash).await;
+        assert_eq!(
+            cln.open_xpay_dispatches(&payment_hash).await.unwrap(),
+            Some(0)
+        );
+        // An extra close never takes the count below zero.
+        cln.close_xpay_dispatch(&payment_hash).await;
+        assert_eq!(
+            cln.open_xpay_dispatches(&payment_hash).await.unwrap(),
+            Some(0)
+        );
+    }
+
+    /// The status `check_outgoing_payment` reports for the test invoice's
+    /// hash, with `open` recorded dispatches (or no record) and CLN answering
+    /// `replies`. The server answers only the requests listed, so an
+    /// unexpected `listsendpays` fails the check.
+    async fn outgoing_state(
+        open: Option<u64>,
+        replies: Vec<(&'static str, serde_json::Value)>,
+    ) -> MeltQuoteState {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let kv_store = Arc::new(MemoryKvStore::default());
+            let payment_hash = *test_invoice().payment_hash().as_ref();
+            if let Some(open) = open {
+                set_open_xpay_dispatches(&kv_store, &payment_hash, open).await;
+            }
+            let socket = TestRpcSocket::new();
+            let listener = UnixListener::bind(&socket.0).unwrap();
+            let mut cln = test_cln_with_kv(kv_store);
+            cln.rpc_socket = socket.0.clone();
+
+            let identifier = PaymentIdentifier::PaymentHash(payment_hash);
+            let (response, ()) = tokio::join!(
+                cln.check_outgoing_payment(&identifier),
+                serve_requests(&listener, replies)
+            );
+            response.expect("status check should succeed").status
+        })
+        .await
+        .expect("status check must complete promptly")
+    }
+
+    fn listpays_reply(pays: Vec<ListpaysPays>) -> serde_json::Value {
+        serde_json::json!({"result": {"pays": pays}})
+    }
+
+    fn listsendpays_reply(parts: Vec<serde_json::Value>) -> serde_json::Value {
+        serde_json::json!({"result": {"payments": parts}})
+    }
+
+    #[tokio::test]
+    async fn failed_payment_settles_once_every_dispatch_returned() {
+        let failed = || test_listpays_payment(1, ListpaysPaysStatus::FAILED);
+
+        // Every dispatch returned and every part failed: no part can settle.
+        assert_eq!(
+            outgoing_state(
+                Some(0),
+                vec![
+                    ("listpays", listpays_reply(vec![failed()])),
+                    (
+                        "listsendpays",
+                        listsendpays_reply(vec![
+                            test_sendpay(1, "failed"),
+                            test_sendpay(2, "failed")
+                        ])
+                    ),
+                ]
+            )
+            .await,
+            MeltQuoteState::Failed
+        );
+
+        // xpay returned without sending any part.
+        assert_eq!(
+            outgoing_state(
+                Some(0),
+                vec![
+                    ("listpays", listpays_reply(vec![])),
+                    ("listsendpays", listsendpays_reply(vec![])),
+                ]
+            )
+            .await,
+            MeltQuoteState::Failed
+        );
+
+        // A part still in flight may settle.
+        assert_eq!(
+            outgoing_state(
+                Some(0),
+                vec![
+                    ("listpays", listpays_reply(vec![failed()])),
+                    (
+                        "listsendpays",
+                        listsendpays_reply(vec![
+                            test_sendpay(1, "failed"),
+                            test_sendpay(2, "pending")
+                        ])
+                    ),
+                ]
+            )
+            .await,
+            MeltQuoteState::Unknown
+        );
+
+        // An invocation that has not returned may still send parts, and a hash
+        // with no record may have been dispatched elsewhere: listsendpays is
+        // not consulted.
+        for open in [Some(1), None] {
+            assert_eq!(
+                outgoing_state(open, vec![("listpays", listpays_reply(vec![failed()]))]).await,
+                MeltQuoteState::Unknown
+            );
+        }
+    }
+
+    /// Runs `make_payment` for the test invoice. xpay answers `xpay_reply`,
+    /// or closes the connection without answering when it is `None`; the
+    /// reconciliation that follows is answered by `reconcile`.
+    async fn failed_xpay_payment(
+        xpay_reply: Option<serde_json::Value>,
+        reconcile: Vec<(&'static str, serde_json::Value)>,
+    ) -> (MeltQuoteState, Option<u64>) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let socket = TestRpcSocket::new();
+            let listener = UnixListener::bind(&socket.0).unwrap();
+            let mut cln = test_cln_with_memory_kv();
+            cln.rpc_socket = socket.0.clone();
+            let payment = cln.make_payment(
+                &CurrencyUnit::Sat,
+                OutgoingPaymentOptions::Bolt11(Box::new(Bolt11OutgoingPaymentOptions {
+                    bolt11: test_invoice(),
+                    max_fee_amount: None,
+                    timeout_secs: None,
+                    melt_options: None,
+                    quote_id: QuoteId::new(),
+                })),
+            );
+            let server = async {
+                // make_payment opens its xpay connection before checking listpays.
+                let (connection, _) = listener.accept().await.unwrap();
+                let mut pay = Framed::new(connection, cln_rpc::codec::JsonCodec::default());
+                serve_requests(&listener, vec![("listpays", listpays_reply(vec![]))]).await;
+                let request = pay.next().await.unwrap().unwrap();
+                assert_eq!(request["method"], "xpay");
+                match xpay_reply {
+                    Some(reply) => {
+                        let mut response =
+                            serde_json::json!({"jsonrpc": "2.0", "id": request["id"]});
+                        response["error"] = reply;
+                        pay.send(response).await.unwrap();
+                    }
+                    None => drop(pay),
+                }
+                serve_requests(&listener, reconcile).await;
+            };
+            let (response, ()) = tokio::join!(payment, server);
+            let open = cln
+                .open_xpay_dispatches(test_invoice().payment_hash().as_ref())
+                .await
+                .unwrap();
+            (response.unwrap().status, open)
+        })
+        .await
+        .expect("mock payment must complete promptly")
+    }
+
+    #[tokio::test]
+    async fn xpay_failure_settles_when_no_part_can_still_settle() {
+        let failed = test_listpays_payment(1, ListpaysPaysStatus::FAILED);
+
+        // xpay gave up (209) and its only part failed.
+        let (status, open) = failed_xpay_payment(
+            Some(serde_json::json!({"code": 209, "message": "Failed after 1 attempts"})),
+            vec![
+                ("listpays", listpays_reply(vec![failed.clone()])),
+                (
+                    "listsendpays",
+                    listsendpays_reply(vec![test_sendpay(1, "failed")]),
+                ),
+            ],
+        )
+        .await;
+        assert_eq!(status, MeltQuoteState::Failed);
+        assert_eq!(open, Some(0));
+
+        // The connection dropped without an answer: xpay may still be running,
+        // so its dispatch stays open and the payment stays Unknown.
+        let (status, open) =
+            failed_xpay_payment(None, vec![("listpays", listpays_reply(vec![failed]))]).await;
+        assert_eq!(status, MeltQuoteState::Unknown);
+        assert_eq!(open, Some(1));
     }
 
     #[test]
