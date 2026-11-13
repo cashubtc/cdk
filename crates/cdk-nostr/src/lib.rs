@@ -4,6 +4,7 @@
 //!
 //! - [`keys`]: secret key generation/parsing and public key derivation.
 //! - [`nip44`]: NIP-44 v2 encryption and decryption.
+//! - [`nip87`] (feature `nip87`): Cashu mint discovery announcements.
 //! - [`inbox`]: a standing NIP-17 inbox listener that subscribes a set of
 //!   relays for gift wraps addressed to a Nostr identity and delivers the
 //!   unwrapped rumors to a [`NostrInboxListener`] callback.
@@ -20,6 +21,8 @@ pub mod error;
 pub mod inbox;
 pub mod keys;
 pub mod nip44;
+#[cfg(feature = "nip87")]
+pub mod nip87;
 #[cfg(feature = "npubcash")]
 pub mod npubcash;
 #[cfg(feature = "nwc")]

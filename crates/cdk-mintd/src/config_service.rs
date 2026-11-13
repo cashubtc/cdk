@@ -759,6 +759,11 @@ pub(crate) fn prune_inactive_configuration(settings: &mut Settings) {
 }
 
 fn validate_secret_references(settings: &Settings) -> Result<(), ConfigurationServiceError> {
+    #[cfg(feature = "mint-discovery")]
+    if let Some(discovery) = &settings.mint_discovery {
+        validate_secret_reference(&discovery.secret_key, "mint_discovery.secret_key")?;
+    }
+
     validate_optional_secret_reference(settings.info.seed.as_deref(), "info.seed")?;
     validate_optional_secret_reference(settings.info.mnemonic.as_deref(), "info.mnemonic")?;
 
@@ -835,6 +840,11 @@ fn validate_secret_reference(
 }
 
 fn resolve_secrets(settings: &mut Settings) -> Result<(), ConfigurationServiceError> {
+    #[cfg(feature = "mint-discovery")]
+    if let Some(discovery) = &mut settings.mint_discovery {
+        resolve_trimmed_secret(&mut discovery.secret_key, "mint_discovery.secret_key")?;
+    }
+
     if settings.enabled_signatory().is_none() {
         resolve_optional_secret(&mut settings.info.seed, "info.seed")?;
         resolve_optional_trimmed_secret(&mut settings.info.mnemonic, "info.mnemonic")?;
@@ -964,6 +974,43 @@ mod tests {
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
     const TEST_MNEMONIC_TWO: &str =
         "legal winner thank year wave sausage worth useful legal winner thank yellow";
+
+    #[cfg(all(feature = "mint-discovery", feature = "fakewallet"))]
+    #[test]
+    fn discovery_secret_references_are_resolved_but_not_stored() {
+        use cdk_nostr::nostr::prelude::Keys;
+
+        let mnemonic_path = crate::test_utils::unique_temp_path("discovery_mnemonic");
+        let key_path = crate::test_utils::unique_temp_path("discovery_key");
+        let key = Keys::generate().secret_key().to_secret_hex();
+        std::fs::write(&mnemonic_path, TEST_MNEMONIC_ONE).expect("mnemonic file");
+        std::fs::write(&key_path, format!("  {key}\n")).expect("key file");
+        let base = document(&format!("file:{}", mnemonic_path.display()), "discovery")
+            .replace("[info]", "[info]\nurl = \"https://mint.example\"");
+        let discovery_document = format!(
+            "{base}\n[mint_discovery]\nsecret_key = \"file:{}\"\nrelays = [\"wss://relay.example\"]\nnetwork = \"regtest\"\n",
+            key_path.display()
+        );
+        let resolved = ConfigurationService::validate_document(&discovery_document)
+            .expect("valid discovery configuration");
+        assert_eq!(resolved.document, discovery_document);
+        assert!(!resolved.document.contains(&key));
+        assert_eq!(
+            resolved
+                .settings
+                .mint_discovery
+                .expect("discovery")
+                .secret_key,
+            key
+        );
+        let literal = discovery_document.replace(&format!("file:{}", key_path.display()), &key);
+        let error =
+            ConfigurationService::validate_document(&literal).expect_err("literal secret rejected");
+        assert!(error.to_string().contains("mint_discovery.secret_key"));
+        assert!(!error.to_string().contains(&key));
+        std::fs::remove_file(mnemonic_path).expect("remove mnemonic file");
+        std::fs::remove_file(key_path).expect("remove key file");
+    }
 
     #[cfg(all(feature = "sqlite", feature = "bdk"))]
     #[tokio::test]

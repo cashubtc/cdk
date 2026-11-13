@@ -291,6 +291,23 @@ pub fn migrate_legacy_configuration(
         &mut secrets,
     )?;
 
+    #[cfg(feature = "mint-discovery")]
+    if let (Some(migrated_discovery), Some(resolved_discovery)) = (
+        migrated.mint_discovery.as_mut(),
+        resolved.mint_discovery.as_mut(),
+    ) {
+        externalize_secret(
+            &mut migrated_discovery.secret_key,
+            &mut resolved_discovery.secret_key,
+            "nostr-secret-key",
+            &[],
+            None,
+            SecretNormalization::Trim,
+            source_dir,
+            &mut secrets,
+        )?;
+    }
+
     if let (Some(migrated_postgres), Some(resolved_postgres)) = (
         migrated.database.postgres.as_mut(),
         resolved.database.postgres.as_mut(),
