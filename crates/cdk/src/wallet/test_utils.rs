@@ -5,6 +5,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Write};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bip39::Mnemonic;
@@ -544,6 +545,9 @@ pub async fn create_test_wallet_with_mock_http_subscription(
 pub struct MockMintConnector {
     /// Mock mint keyset state
     pub keysets: Mutex<Vec<KeySet>>,
+    /// How many times the mock has served keys or the keyset list, so a test
+    /// can tell a cached read from one that went to the mint.
+    pub keyset_fetches: AtomicUsize,
     /// Mock mint info state
     pub mint_info: Mutex<MintInfo>,
     /// Response for post_check_state calls
@@ -649,6 +653,7 @@ impl MockMintConnector {
 
         Self {
             keysets: Mutex::new(vec![keyset]),
+            keyset_fetches: AtomicUsize::new(0),
             mint_info: Mutex::new(mint_info),
             check_state_response: Mutex::new(None),
             proof_states: Mutex::new(HashMap::new()),
@@ -993,6 +998,7 @@ impl MintConnector for MockMintConnector {
     }
 
     async fn get_mint_keys(&self) -> Result<Vec<crate::nuts::KeySet>, Error> {
+        self.keyset_fetches.fetch_add(1, Ordering::Relaxed);
         Ok(self.keysets.lock().unwrap().clone())
     }
 
@@ -1007,6 +1013,7 @@ impl MintConnector for MockMintConnector {
     }
 
     async fn get_mint_keysets(&self) -> Result<KeysetResponse, Error> {
+        self.keyset_fetches.fetch_add(1, Ordering::Relaxed);
         let keysets = self.keysets.lock().unwrap();
 
         Ok(KeysetResponse {

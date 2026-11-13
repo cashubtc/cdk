@@ -186,9 +186,9 @@ async fn resolve_split_basis(
 /// Denominations and the fee the recipient pays to redeem `amount` in outputs
 /// the mint signs on `keyset_id`.
 ///
-/// Both the denomination count and the per-proof fee have to come from the same
-/// keyset. Preparing prices off the snapshot it already loaded, since no mint
-/// request may happen while it holds the proof selection lock.
+/// Both the denomination count and the per-proof fee come from the single
+/// snapshot `policy` loads, so a TTL lapse cannot price a split against a fee
+/// the mint published after it.
 async fn recipient_redeem_fee(
     wallet: &Wallet,
     keyset_id: Id,
@@ -199,13 +199,10 @@ async fn recipient_redeem_fee(
         .get_keyset_fees_and_amounts_by_id_with_policy(keyset_id, policy)
         .await?;
     let send_split = amount.split_with_fee(&fee_and_amounts)?;
-    let send_fee = wallet
-        .get_proofs_fee_by_count(
-            vec![(keyset_id, send_split.len() as u64)]
-                .into_iter()
-                .collect(),
-        )
-        .await?;
+    let send_fee = calculate_fee(
+        &HashMap::from([(keyset_id, send_split.len() as u64)]),
+        &HashMap::from([(keyset_id, fee_and_amounts.fee())]),
+    )?;
 
     Ok((send_split, send_fee.total))
 }
@@ -1307,7 +1304,9 @@ impl std::fmt::Debug for SendSaga<'_, Prepared> {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::sync::atomic::Ordering;
     use std::sync::Arc;
+    use std::time::Duration;
 
     use cdk_common::amount::KeysetFeeAndAmounts;
     use cdk_common::nuts::State;
@@ -1318,8 +1317,8 @@ mod tests {
     use cdk_common::{CurrencyUnit, ProofsMethods};
 
     use super::{
-        ensure_selected_proofs_cover_input_fees, resolve_split_basis, InputFeeCoverageContext,
-        SendSaga,
+        ensure_selected_proofs_cover_input_fees, recipient_redeem_fee, resolve_split_basis,
+        InputFeeCoverageContext, SendSaga,
     };
     use crate::nuts::{Id, Proof, SecretKey, SpendingConditions};
     use crate::wallet::send::SendOptions;
@@ -2225,6 +2224,42 @@ mod tests {
                 .iter()
                 .any(|saga| matches!(saga.state, WalletSagaState::Send(_))),
             "a send refused after its swap leaves no send saga behind"
+        );
+    }
+
+    /// Pricing reads one keyset snapshot. CacheOnly has to stay off the network
+    /// even once the TTL has lapsed, since the post-swap reprice runs with the
+    /// swap outputs already in hand.
+    #[tokio::test]
+    async fn test_recipient_redeem_fee_prices_off_the_cache_only_snapshot() {
+        let signed_on = mint_signing_keyset(0);
+        let db = create_test_db().await;
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.set_mint_keys_response(Ok(vec![signed_on.clone()]));
+        let wallet = create_test_wallet_with_mock(db, mock_client.clone()).await;
+
+        wallet.keysets(KeysetLoadPolicy::Refresh).await.unwrap();
+        wallet.set_metadata_cache_ttl(Some(Duration::ZERO));
+        let fetches_before = mock_client.keyset_fetches.load(Ordering::Relaxed);
+
+        let (split, fee) = recipient_redeem_fee(
+            &wallet,
+            signed_on.id,
+            Amount::from(64),
+            KeysetLoadPolicy::CacheOnly,
+        )
+        .await
+        .expect("a lapsed TTL must not take CacheOnly to the mint");
+
+        assert_eq!(
+            Amount::try_sum(split.iter().copied()).unwrap(),
+            Amount::from(64)
+        );
+        assert_eq!(fee, Amount::ZERO, "the cached keyset charges nothing");
+        assert_eq!(
+            mock_client.keyset_fetches.load(Ordering::Relaxed),
+            fetches_before,
+            "pricing a CacheOnly send asked the mint for keysets"
         );
     }
 
