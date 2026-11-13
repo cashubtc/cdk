@@ -215,12 +215,14 @@ jobs:
           ATTIC_CACHE: ${{ vars.ATTIC_CACHE }}
         run: nix shell .#attic-client --command misc/attic_push.sh "$RUNNER_TEMP/cdk-cache-paths.txt"
 
-  # Pre-build integration test binaries via Nix/Crane (published to the Attic cache)
+  # Pre-build integration test binaries via Nix/Crane (published to the run cache and Attic)
   # This builds both the test harness binaries (included in the regtest dev shell)
   # and the nextest archive containing pre-compiled test binaries.
   build-itest-binaries:
     name: "Build integration test binaries"
-    runs-on: self-hosted
+    # Rith-only 8 vCPU pool: builds here are published to the per-run cache,
+    # so itest jobs on Rith (including fork PRs) substitute instead of rebuilding.
+    runs-on: rith-cdk-large
     timeout-minutes: 30
     needs: pre-commit-checks
     steps:
@@ -240,6 +242,10 @@ jobs:
             .#cdk-payment-processor \
             .#cdk-mintd-grpc \
             --no-link --print-out-paths | tee "$RUNNER_TEMP/cdk-cache-paths.txt"
+      # Needs no secrets, so it also runs for fork PRs. Blocks until the full
+      # closure is uploaded; dependent itest jobs start only after this succeeds.
+      - name: Publish to the run cache
+        run: xargs rith-run-cache push < "$RUNNER_TEMP/cdk-cache-paths.txt"
       # Push the per-revision archive + harness binaries to the self-hosted
       # Attic cache.
       - name: Push to Attic cache
