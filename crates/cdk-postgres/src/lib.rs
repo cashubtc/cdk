@@ -770,6 +770,14 @@ mod test {
 
     wallet_db_test!(provide_wallet_db);
 
+    wallet_db_test!(
+        provide_wallet_db,
+        update_mint_url_renames_all_tables,
+        update_mint_url_merges_colliding_mint,
+        update_mint_url_unknown_mint_is_noop,
+        remove_mint_keeps_proofs,
+    );
+
     #[tokio::test]
     async fn failed_initial_connect_marks_connection_stale() {
         let stale = Arc::new(AtomicBool::new(false));
