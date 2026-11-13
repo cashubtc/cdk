@@ -11,10 +11,10 @@ on:
     types: [created]
   workflow_dispatch:
 
-# Cancel previous runs on same PR
+# Let main runs finish; cancel superseded runs on other refs and PRs.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   nutshell-integration-tests:
