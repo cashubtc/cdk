@@ -1709,19 +1709,20 @@ impl Wallet {
         let amount = amount_msat.into();
 
         // Get mint info from cache to check bolt12 support (no network call)
-        let mint_info = &self
+        let metadata = self
             .metadata_cache
             .load(&self.localstore, &self.client)
-            .await?
-            .mint_info;
+            .await?;
 
         // Check if mint supports bolt12 by looking at nut05 methods
-        let supports_bolt12 = mint_info
-            .nuts
-            .nut05
-            .methods
-            .iter()
-            .any(|m| m.method == PaymentMethod::Known(KnownMethod::Bolt12));
+        let supports_bolt12 = metadata.mint_info.as_ref().is_some_and(|mint_info| {
+            mint_info
+                .nuts
+                .nut05
+                .methods
+                .iter()
+                .any(|m| m.method == PaymentMethod::Known(KnownMethod::Bolt12))
+        });
 
         if supports_bolt12 {
             // Mint supports bolt12, try BIP353 first

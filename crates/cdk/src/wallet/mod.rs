@@ -496,12 +496,15 @@ impl Wallet {
     /// Query mint for current mint information
     #[instrument(skip(self))]
     pub async fn fetch_mint_info(&self) -> Result<Option<MintInfo>, Error> {
-        let mint_info = self
+        let Some(mint_info) = self
             .metadata_cache
             .load_from_mint(&self.localstore, &self.client)
             .await?
             .mint_info
-            .clone();
+            .clone()
+        else {
+            return Ok(None);
+        };
 
         // If mint provides time make sure it is accurate
         if let Some(mint_unix_time) = mint_info.time {
@@ -585,16 +588,19 @@ impl Wallet {
     /// This is a helper function that loads the mint info from the metadata cache
     /// using the configured TTL. Unlike `fetch_mint_info()`, this does not make
     /// a network call if the cache is fresh.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::CouldNotGetMintInfo`] when the snapshot carries none,
+    /// rather than a default one claiming the mint supports nothing.
     #[instrument(skip(self))]
     pub async fn load_mint_info(&self) -> Result<MintInfo, Error> {
-        let mint_info = self
-            .metadata_cache
+        self.metadata_cache
             .load(&self.localstore, &self.client)
             .await?
             .mint_info
-            .clone();
-
-        Ok(mint_info)
+            .clone()
+            .ok_or(Error::CouldNotGetMintInfo)
     }
 
     /// Get amounts needed to refill proof state
