@@ -95,6 +95,16 @@ async def main():
     assert len(ephemeral.nostr_wait_info.pubkey()) == 64
     roundtrip(ephemeral.payment_request)
 
+    # Cancellation is observable through the generated async API and does not
+    # require exporting or managing the ephemeral Nostr secret.
+    ephemeral.nostr_wait_info.cancel()
+    try:
+        await repo.wait_for_nostr_payment(ephemeral.nostr_wait_info, None)
+    except cdk.FfiError.PaymentRequestReceiveCancelled:
+        pass
+    else:
+        raise AssertionError("Cancelled receive must not report payment success")
+
     for transport in ("none", "http"):
         result = await repo.create_request(params(
             transport=transport, http_url="https://receiver.example.com/pay",

@@ -268,7 +268,18 @@ impl<'a> ReceiveSaga<'a, Prepared> {
     /// Stores proofs in Pending state, executes the swap, stores new proofs,
     /// and records the transaction. On failure, removes pending proofs.
     #[instrument(skip_all)]
-    pub async fn execute(mut self) -> Result<ReceiveSaga<'a, Finalized>, Error> {
+    pub async fn execute(self) -> Result<ReceiveSaga<'a, Finalized>, Error> {
+        self.execute_with_recovery_callback(|| {}).await
+    }
+
+    /// Execute, notifying the caller once durable recovery state exists.
+    pub(crate) async fn execute_with_recovery_callback<F>(
+        mut self,
+        on_recoverable: F,
+    ) -> Result<ReceiveSaga<'a, Finalized>, Error>
+    where
+        F: FnOnce() + Send,
+    {
         tracing::info!(
             "Executing receive for operation {}",
             self.state_data.operation_id
@@ -328,6 +339,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
         );
 
         self.wallet.localstore.add_saga(saga.clone()).await?;
+        on_recoverable();
 
         add_compensation(
             &mut self.compensations,

@@ -195,6 +195,7 @@ nwc = { version = "0.45.0", default-features = false }
 serde_urlencoded = { version = "0.7", default-features = false }
 ureq = { version = "3.1.0", features = ["json"] }
 tokio = { workspace = true, features = ["full"] }
+tokio-tungstenite = { workspace = true, features = ["handshake"] }
 
 
 [[bench]]

@@ -88,8 +88,24 @@ leave the ID unset. CDK builds the nprofile without needing a private key.
 The app still handles receiving payments through its existing signer/inbox;
 `nostrWaitInfo` is absent for an explicit public destination.
 
-Omitting `nostrPubkey` with Nostr transport generates an ephemeral identity
-and returns `nostrWaitInfo`. The FFI object does not expose a receive loop.
+Omitting `nostrPubkey` with Nostr transport generates a managed ephemeral identity
+and returns `nostrWaitInfo`. Pass that handle to
+`WalletRepository.waitForNostrPayment(info, options)` to connect, decrypt NIP-17
+messages, validate the payment against the original request, and redeem it into
+the wallet. Use `nil`/`null` options for ordinary payments; provide receive options
+with signing keys or preimages for P2PK/HTLC payments. Nostr transport keys remain
+inside CDK and are independent of spending keys.
+
+Call `nostrWaitInfo.cancel()` to stop listening. Only one wait may run per handle.
+Cancellation reports `PaymentRequestReceiveCancelled`; an already-started redemption
+finishes and reports its result. Once redemption starts, the handle is consumed,
+even if it returns an error. Consult wallet transactions and receive recovery before
+asking the payer to resend. Dropping an async wait also stops listening, but if
+redemption had already started its outcome may require wallet recovery.
+
+The handle is memory-only: keep it until payment completes. Pending requests do not
+survive an app restart. Apps needing durable inbox identities should use the explicit
+public-key path and their existing signer/inbox storage.
 
 `CreateRequestParams` also supports amountless requests, units, descriptions,
 mint policies, HTTP or no transport, supported methods/fees, and P2PK/multisig

@@ -553,6 +553,8 @@ pub struct MockMintConnector {
     pub post_swap_responses: Mutex<std::collections::VecDeque<Result<SwapResponse, Error>>>,
     /// Captured post_swap requests for test verification.
     pub captured_swap_requests: Mutex<Vec<SwapRequest>>,
+    /// Optional two-phase rendezvous before replying to a swap.
+    pub post_swap_barrier: Mutex<Option<Arc<tokio::sync::Barrier>>>,
     /// Response for post_melt calls
     pub post_melt_response: Mutex<Option<Result<MeltQuoteResponse<String>, Error>>>,
     /// Queue of responses for successive post_melt_quote calls.
@@ -625,6 +627,7 @@ impl MockMintConnector {
             post_swap_response: Mutex::new(None),
             post_swap_responses: Mutex::new(std::collections::VecDeque::new()),
             captured_swap_requests: Mutex::new(Vec::new()),
+            post_swap_barrier: Mutex::new(None),
             post_melt_response: Mutex::new(None),
             post_melt_quote_responses: Mutex::new(std::collections::VecDeque::new()),
             post_melt_quote_requests: Mutex::new(Vec::new()),
@@ -794,7 +797,7 @@ impl MockMintConnector {
     }
 
     /// Replace the active keyset with one backed by freshly generated secret
-    /// keys, so that unstaged `post_mint`/`post_batch_mint` calls are
+    /// keys, so that unstaged `post_mint`/`post_batch_mint`/`post_swap` calls are
     /// answered with valid blind signatures for the requested outputs.
     pub fn enable_mint_signing(&self) {
         let mut signing_keys = BTreeMap::new();
@@ -1073,22 +1076,23 @@ impl MintConnector for MockMintConnector {
     }
 
     async fn post_swap(&self, request: SwapRequest) -> Result<SwapResponse, Error> {
-        let queued = self.post_swap_responses.lock().unwrap().pop_front();
-        if let Some(response) = queued {
-            self.captured_swap_requests.lock().unwrap().push(request);
-            return response;
-        }
-        if let Some(response) = self.post_swap_response.lock().unwrap().take() {
-            self.captured_swap_requests.lock().unwrap().push(request);
-            return response;
-        }
         self.captured_swap_requests
             .lock()
             .unwrap()
             .push(request.clone());
-        self.sign_outputs(request.outputs())
-            .expect("MockMintConnector: post_swap called without configured response")
-            .map(|signatures| SwapResponse { signatures })
+        let barrier = self.post_swap_barrier.lock().unwrap().clone();
+        if let Some(barrier) = barrier {
+            barrier.wait().await;
+            barrier.wait().await;
+        }
+        let queued = self.post_swap_responses.lock().unwrap().pop_front();
+        if let Some(response) = queued.or_else(|| self.post_swap_response.lock().unwrap().take()) {
+            return response;
+        }
+        let signatures = self
+            .sign_outputs(request.outputs())
+            .expect("MockMintConnector: post_swap called without configured response")?;
+        Ok(SwapResponse { signatures })
     }
 
     async fn get_mint_info(&self) -> Result<crate::nuts::MintInfo, Error> {

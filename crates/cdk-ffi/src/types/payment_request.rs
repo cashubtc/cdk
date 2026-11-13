@@ -473,11 +473,12 @@ pub fn decode_create_request_params(json: String) -> Result<CreateRequestParams,
     Ok(serde_json::from_str(&json)?)
 }
 
-/// Information needed to wait for an incoming Nostr payment
+/// Opaque, memory-only handle for receiving a Nostr payment
 ///
 /// Returned by `create_request` for an ephemeral Nostr identity. Pass this to
-/// `wait_for_nostr_payment` to connect, subscribe, and receive the incoming
-/// payment on the specified relays.
+/// `WalletRepository.wait_for_nostr_payment` to decrypt, validate, and redeem
+/// the incoming payment. Private Nostr keys remain inside CDK. Pending requests
+/// do not survive dropping the handle or restarting the app.
 #[derive(uniffi::Object)]
 pub struct NostrWaitInfo {
     inner: cdk::wallet::payment_request::NostrWaitInfo,
@@ -485,7 +486,6 @@ pub struct NostrWaitInfo {
 
 impl NostrWaitInfo {
     /// Get inner reference
-    #[allow(dead_code)]
     pub(crate) fn inner(&self) -> &cdk::wallet::payment_request::NostrWaitInfo {
         &self.inner
     }
@@ -493,6 +493,12 @@ impl NostrWaitInfo {
 
 #[uniffi::export]
 impl NostrWaitInfo {
+    /// Permanently stop listening on this handle. Redemption already in progress
+    /// is allowed to finish. The handle cannot be reused after cancellation.
+    pub fn cancel(&self) {
+        self.inner.cancel();
+    }
+
     /// Get the Nostr relays to connect to
     pub fn relays(&self) -> Vec<String> {
         self.inner.relays.clone()
