@@ -1,0 +1,150 @@
+name: "Apple release SBOM diagnostics (no publishing)"
+
+on:
+  release:
+    types: [published]
+
+env:
+  TARGET_SET: macos-arm64
+  PRODUCT: cdk-ffi-swift
+  BUILD_PROFILE: release-ffi
+  XCODE_VERSION: '16.4'
+  RELEASE_TAG: ${{ github.event.release.tag_name }}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apple-sbom-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.configure.outputs.matrix }}
+      revision: ${{ steps.configure.outputs.revision }}
+      toolchain: ${{ steps.configure.outputs.toolchain }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Freeze the revision and select the diagnostic matrix
+        id: configure
+        run: |
+          matrix=$(python3 misc/sbom/apple_diagnostics.py matrix --target-set "$TARGET_SET" --product "$PRODUCT")
+          toolchain=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])')
+          {
+            echo "matrix=$matrix"
+            echo "revision=$(git rev-parse HEAD)"
+            echo "toolchain=$toolchain"
+          } >> "$GITHUB_OUTPUT"
+
+  diagnose:
+    name: "Apple evidence: ${{ matrix.target }}"
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    env:
+      BUILD_TARGET: ${{ matrix.target }}
+      OUT: target/sbom/apple-diagnostic
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.revision }}
+          persist-credentials: false
+      - name: Start the feedback bundle before tool installation
+        run: |
+          mkdir -p "$OUT"
+          {
+            /usr/bin/sw_vers
+            /usr/bin/uname -m
+            /usr/bin/xcode-select -p
+            /bin/df -h .
+          } 2>&1 | tee "$OUT/runner.log"
+      - name: Install the repository-pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ needs.prepare.outputs.toolchain }}
+          targets: ${{ matrix.target }}
+      - name: Record Rust locations before entering Nix
+        env:
+          PINNED_TOOLCHAIN: ${{ needs.prepare.outputs.toolchain }}
+        run: |
+          rustc_path=$(rustup which --toolchain "$PINNED_TOOLCHAIN" rustc)
+          cargo_path=$(rustup which --toolchain "$PINNED_TOOLCHAIN" cargo)
+          rust_bin=$(dirname "$rustc_path")
+          [[ "$rust_bin" == "$(dirname "$cargo_path")" && -x "$rustc_path" && -x "$cargo_path" ]]
+          {
+            echo "CDK_SBOM_RUST_BIN=$rust_bin"
+            echo "CDK_SBOM_CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}"
+            echo "CDK_SBOM_RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}"
+          } >> "$GITHUB_ENV"
+          {
+            echo "Selected Rust binary directory: $rust_bin"
+            "$rustc_path" -vV
+            "$cargo_path" --version
+          } 2>&1 | tee "$OUT/rust-setup.log"
+      - name: Install Nix for pinned SBOM tools only
+        uses: DeterminateSystems/nix-installer-action@v22
+      - name: Run the shared collector and retain additional Apple diagnostics
+        shell: bash
+        run: |
+          set -o pipefail
+          nix develop --accept-flake-config --fallback -L .#sbom-apple-tools --command \
+            python3 misc/sbom/apple_diagnostics.py launch \
+              --target "$BUILD_TARGET" --product "$PRODUCT" --profile "$BUILD_PROFILE" \
+              --xcode-version "$XCODE_VERSION" --output "$OUT/run" \
+              2>&1 | tee "$OUT/bootstrap.log"
+      - name: Package diagnostic evidence even when verification fails
+        id: package
+        if: always()
+        shell: bash
+        run: |
+          name="${PRODUCT}-${RELEASE_TAG}-${BUILD_TARGET}-${BUILD_PROFILE}-sbom-diagnostics"
+          nix develop --accept-flake-config --fallback -L .#sbom-apple-tools --command \
+            python3 misc/sbom/package_evidence.py --source "$OUT" \
+              --output target/sbom/apple-packages --name "$name" --kind diagnostics \
+              --exclude run/cargo-target
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+      - name: Upload the named diagnostic package and checksum
+        if: always() && steps.package.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.package.outputs.name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 14
+          if-no-files-found: error
+          compression-level: 0
+          path: |
+            target/sbom/apple-packages/*.tar.gz
+            target/sbom/apple-packages/*.sha256
+      - name: Retain raw diagnostics if packaging itself fails
+        if: always() && steps.package.outcome != 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.PRODUCT }}-${{ matrix.target }}-sbom-diagnostics-unpackaged-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            target/sbom/apple-diagnostic/
+            !target/sbom/apple-diagnostic/run/cargo-target/**
+      - name: Explain the diagnostic result
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## Apple release SBOM diagnostics — no publishing'
+            echo "Revision: ${{ needs.prepare.outputs.revision }}"
+            echo "Target: $BUILD_TARGET; product: $PRODUCT; profile: $BUILD_PROFILE"
+            echo 'Download the versioned sbom-diagnostics package and its SHA-256 file; share report.json and logs.'
+            echo 'An unpackaged artifact is a raw fallback when packaging itself failed; the run remains failed.'
+            echo 'Setup failures are in runner.log/bootstrap.log or the Actions job log.'
+            echo 'Apple native provenance and final XCFramework verification are still being implemented.'
+            echo 'A diagnostic artifact is not a verified release SBOM; no publishing or signing credentials are used.'
+          } >> "$GITHUB_STEP_SUMMARY"

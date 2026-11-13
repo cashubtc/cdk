@@ -108,6 +108,12 @@ wrapper crate and the appropriate build tooling.
 
 ## Building and testing
 
+For dependency inventories covering both Rust and each language's dependencies,
+see [Software bills of materials](../docs/sbom.md). `just sbom bindings` includes
+all four ecosystems; generated Go and Swift release manifests must be supplied
+with `--project`. Missing tools or dependency evidence are errors, not skipped
+coverage.
+
 Every binding builds from a clone of this monorepo; the publishing repositories
 carry artifacts only. Each language has one recipe that generates the bindings
 and builds the native library, and one that tests them.
