@@ -23,6 +23,7 @@ use crate::stmt::query;
 mod auth;
 mod completed_operations;
 mod keys;
+mod keyset_totals;
 mod keyvalue;
 mod proofs;
 mod quotes;
@@ -38,6 +39,8 @@ pub use auth::SQLMintAuthDatabase;
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::MintMetricGuard;
 use migrations::MIGRATIONS;
+
+use self::keyset_totals::PendingKeysetTotals;
 
 /// Mint SQL Database
 #[derive(Debug, Clone)]
@@ -55,6 +58,8 @@ where
     RM: DatabasePool + 'static,
 {
     pub(crate) inner: ConnectionWithTransaction<RM::Connection, PooledResource<RM>>,
+    /// Changes to `keyset_amounts`, written when the transaction commits.
+    keyset_totals: PendingKeysetTotals,
 }
 
 /// Sorted, deduplicated advisory lock keys for a batch of quotes.
@@ -87,12 +92,12 @@ where
     async fn begin_transaction_from_pool(
         pool: &Arc<Pool<RM>>,
     ) -> Result<Box<dyn database::MintTransaction<Error> + Send + Sync>, Error> {
-        let tx = SQLTransaction {
-            inner: ConnectionWithTransaction::new(
+        let tx = SQLTransaction::new(
+            ConnectionWithTransaction::new(
                 pool.get().await.map_err(|e| Error::Database(Box::new(e)))?,
             )
             .await?,
-        };
+        );
 
         Ok(Box::new(tx))
     }
@@ -110,6 +115,16 @@ impl<RM> SQLTransaction<RM>
 where
     RM: DatabasePool + 'static,
 {
+    /// Wraps an open database transaction.
+    pub(crate) fn new(
+        inner: ConnectionWithTransaction<RM::Connection, PooledResource<RM>>,
+    ) -> Self {
+        Self {
+            inner,
+            keyset_totals: PendingKeysetTotals::default(),
+        }
+    }
+
     /// Take quote advisory locks in one statement and stable key order.
     async fn take_quote_locks(&mut self, quote_ids: &[QuoteId]) -> Result<bool, Error> {
         if quote_ids.is_empty() || RM::Connection::name() != "postgres" {
@@ -153,7 +168,20 @@ where
         #[cfg(feature = "prometheus")]
         let metrics = MintMetricGuard::new("transaction_commit");
 
-        let result = self.inner.commit().await;
+        let result = match self.keyset_totals.write(&self.inner).await {
+            Ok(()) => self.inner.commit().await,
+            Err(err) => {
+                // Roll back before returning, so the caller's cleanup does not
+                // wait on this transaction's locks.
+                if let Err(rollback_err) = self.inner.rollback().await {
+                    tracing::warn!(
+                        "Failed to roll back after the keyset totals write failed: {}",
+                        rollback_err
+                    );
+                }
+                Err(err)
+            }
+        };
 
         #[cfg(feature = "prometheus")]
         {
@@ -342,7 +370,7 @@ mod tests {
             .await
             .expect("test transaction should begin");
 
-        SQLTransaction { inner }
+        SQLTransaction::new(inner)
     }
 
     fn labels_match(

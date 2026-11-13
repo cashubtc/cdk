@@ -164,14 +164,14 @@ where
         &self,
     ) -> Result<Box<dyn cdk_common::database::KVStoreTransaction<Self::Err> + Send + Sync>, Error>
     {
-        Ok(Box::new(SQLTransaction {
-            inner: ConnectionWithTransaction::new(
+        Ok(Box::new(SQLTransaction::new(
+            ConnectionWithTransaction::new(
                 self.pool
                     .get()
                     .await
                     .map_err(|e| Error::Database(Box::new(e)))?,
             )
             .await?,
-        }))
+        )))
     }
 }

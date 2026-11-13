@@ -88,8 +88,13 @@ pub(crate) fn take_fail_for(operation: &str) -> bool {
 /// }
 /// ```
 pub async fn create_test_mint() -> Result<Mint, Error> {
-    let db = Arc::new(cdk_sqlite::mint::memory::empty().await?);
+    create_test_mint_with_db(Arc::new(cdk_sqlite::mint::memory::empty().await?)).await
+}
 
+/// Creates and starts a test mint like [`create_test_mint`], on the given database.
+pub async fn create_test_mint_with_db(
+    db: Arc<cdk_sqlite::MintSqliteDatabase>,
+) -> Result<Mint, Error> {
     let mut mint_builder = MintBuilder::new(db.clone());
 
     let fee_reserve = FeeReserve {
