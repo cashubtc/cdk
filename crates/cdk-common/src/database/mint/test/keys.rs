@@ -55,8 +55,8 @@ where
         unit: CurrencyUnit::Sat,
         active: true,
         valid_from: 0,
-        active_from: None,
-        active_until: None,
+        active_from: Some(1),
+        active_until: Some(2_000_000_000),
         final_expiry: None,
         derivation_path: DerivationPath::from_str("m/0'/0'/0'").unwrap(),
         derivation_path_index: Some(0),
@@ -77,6 +77,8 @@ where
     assert_eq!(retrieved.id, keyset_info.id);
     assert_eq!(retrieved.unit, keyset_info.unit);
     assert_eq!(retrieved.active, keyset_info.active);
+    assert_eq!(retrieved.active_from, keyset_info.active_from);
+    assert_eq!(retrieved.active_until, keyset_info.active_until);
     assert_eq!(retrieved.amounts, keyset_info.amounts);
     assert_eq!(retrieved.issuer_version, keyset_info.issuer_version);
 }
