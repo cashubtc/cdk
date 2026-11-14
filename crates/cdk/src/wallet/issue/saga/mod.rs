@@ -1703,4 +1703,53 @@ mod tests {
             .expect("mint quote exists");
         assert_eq!(busy.used_by_operation, Some(other_operation.to_string()));
     }
+
+    #[tokio::test]
+    async fn prepare_batch_keyset_fetch_failure_releases_reserved_quotes() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.reset_default_mint_state();
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client.clone()).await;
+
+        let first =
+            paid_signed_mint_quote(mint_url.clone(), Amount::from(64), SecretKey::generate());
+        let second = paid_signed_mint_quote(mint_url, Amount::from(32), SecretKey::generate());
+        let quote_ids = [first.id.clone(), second.id.clone()];
+        db.add_mint_quote(first).await.expect("add mint quote");
+        db.add_mint_quote(second).await.expect("add mint quote");
+        let batch = [quote_ids[0].as_str(), quote_ids[1].as_str()];
+
+        // The keysets cannot be fetched after the quotes were reserved
+        mock_client.set_keysets_unavailable(true);
+        let result = MintSaga::new(&wallet)
+            .prepare_batch(&batch, SplitTarget::None, None, None)
+            .await;
+        assert!(
+            matches!(result, Err(Error::HttpError(Some(503), _))),
+            "{:?}",
+            result.err()
+        );
+
+        for quote_id in &quote_ids {
+            let quote = db
+                .get_mint_quote(quote_id)
+                .await
+                .expect("get mint quote")
+                .expect("mint quote exists");
+            assert!(
+                quote.used_by_operation.is_none(),
+                "failed batch prepare left {quote_id} reserved by {:?}",
+                quote.used_by_operation
+            );
+        }
+
+        // A retry can reserve the same quotes again
+        mock_client.set_keysets_unavailable(false);
+        MintSaga::new(&wallet)
+            .prepare_batch(&batch, SplitTarget::None, None, None)
+            .await
+            .expect("retry prepares the batch");
+    }
 }
