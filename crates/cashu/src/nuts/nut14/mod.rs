@@ -730,6 +730,94 @@ mod tests {
         ));
     }
 
+    /// HTLC locked to a receiver key with a refund key, whose witness carries
+    /// the valid preimage and a signature from `signer`.
+    fn htlc_with_preimage_signed_by(
+        locktime: u64,
+        refund: &SecretKey,
+        signer: &SecretKey,
+    ) -> Proof {
+        let mut proof = htlc_proof(
+            [42u8; 32],
+            Some(Conditions {
+                locktime: Some(locktime),
+                pubkeys: Some(vec![SecretKey::generate().public_key()]),
+                refund_keys: Some(vec![refund.public_key()]),
+                ..Default::default()
+            }),
+            None,
+        );
+        let signature = signer.sign(proof.secret.as_bytes()).unwrap();
+        proof.witness = Some(Witness::HTLCWitness(HTLCWitness {
+            preimage: hex::encode([42u8; 32]),
+            signatures: Some(vec![signature.to_string()]),
+        }));
+        proof
+    }
+
+    #[test]
+    fn test_verify_htlc_refund_path_with_valid_preimage() {
+        // A valid preimage does not close the refund path once the locktime
+        // has passed
+        let refund = SecretKey::generate();
+        let proof = htlc_with_preimage_signed_by(1, &refund, &refund);
+
+        assert!(proof.verify_htlc().is_ok());
+    }
+
+    #[test]
+    fn test_verify_htlc_refund_path_with_valid_preimage_requires_expiry() {
+        let refund = SecretKey::generate();
+        let proof = htlc_with_preimage_signed_by(u64::MAX, &refund, &refund);
+
+        assert!(matches!(
+            proof.verify_htlc(),
+            Err(Error::NUT11(
+                crate::nuts::nut11::Error::SpendConditionsNotMet
+            ))
+        ));
+    }
+
+    #[test]
+    fn test_verify_htlc_expired_without_refund_keys_with_valid_preimage() {
+        // Once the locktime has passed with no refund keys anyone can spend,
+        // also with a witness that carries the preimage but no receiver
+        // signature
+        let proof = htlc_proof(
+            [42u8; 32],
+            Some(Conditions {
+                locktime: Some(1),
+                pubkeys: Some(vec![SecretKey::generate().public_key()]),
+                ..Default::default()
+            }),
+            Some(Witness::HTLCWitness(HTLCWitness {
+                preimage: hex::encode([42u8; 32]),
+                signatures: None,
+            })),
+        );
+
+        assert!(proof.verify_htlc().is_ok());
+    }
+
+    #[test]
+    fn test_verify_sig_all_htlc_refund_path_with_valid_preimage() {
+        let proof = htlc_proof(
+            [42u8; 32],
+            Some(Conditions {
+                locktime: Some(1),
+                pubkeys: Some(vec![SecretKey::generate().public_key()]),
+                sig_flag: crate::nuts::SigFlag::SigAll,
+                ..Default::default()
+            }),
+            Some(Witness::HTLCWitness(HTLCWitness {
+                preimage: hex::encode([42u8; 32]),
+                signatures: None,
+            })),
+        );
+
+        assert!(verify_sig_all_htlc(&proof, "sig-all message".to_string()).is_ok());
+    }
+
     #[test]
     fn test_verify_sig_all_htlc_allows_expired_anyone_can_spend_refund_path() {
         let proof = htlc_proof(
