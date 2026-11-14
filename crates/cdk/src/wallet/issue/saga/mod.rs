@@ -717,16 +717,15 @@ impl<'a> MintSaga<'a, Initial> {
                 state_data: prepared,
             }),
             Err(e) => {
-                if e.is_definitive_failure() {
-                    tracing::warn!(
-                        "Batch mint saga prepare failed (definitive): {}. Running compensations.",
-                        e
-                    );
-                    if let Err(comp_err) = execute_compensations(&mut self.compensations).await {
-                        tracing::error!("Compensation failed during batch prepare: {}", comp_err);
-                    }
-                } else {
-                    tracing::warn!("Batch mint saga prepare failed (ambiguous): {}.", e);
+                // No mint request is sent while preparing, so even a network
+                // error here leaves nothing to recover and the quotes can be
+                // released for a retry.
+                tracing::warn!(
+                    "Batch mint saga prepare failed: {}. Running compensations.",
+                    e
+                );
+                if let Err(comp_err) = execute_compensations(&mut self.compensations).await {
+                    tracing::error!("Compensation failed during batch prepare: {}", comp_err);
                 }
                 Err(e)
             }
