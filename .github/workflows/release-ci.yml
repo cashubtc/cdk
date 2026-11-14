@@ -25,7 +25,7 @@ jobs:
             const { data: commit } = await github.rest.repos.getCommit({
               ...context.repo, ref: process.env.RELEASE_REF
             });
-            for (const workflow_id of ['ci.yml', 'nutshell_itest.yml']) {
+            for (const workflow_id of ['ci-runner-test.yml', 'nutshell_itest.yml']) {
               const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
                 ...context.repo, workflow_id, head_sha: commit.sha, per_page: 100
               });

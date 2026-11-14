@@ -1,6 +1,8 @@
 //! Rust implementation of the Cashu Protocol
 #![doc = include_str!("../README.md")]
 
+// CI cache test: this comment only changes the source hash of the itest archive.
+
 // Disallow enabling `tor` feature on wasm32 with a clear error.
 #[cfg(all(target_arch = "wasm32", feature = "tor"))]
 compile_error!("The 'tor' feature is not supported on wasm32 targets (browser). Disable the 'tor' feature or use a non-wasm32 target.");

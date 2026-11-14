@@ -824,7 +824,7 @@ release *ARGS:
   if [ "$skip_ci" = true ]; then
     echo "Skipping green-CI requirement for release commit $SOURCE_SHA (--skip-ci)."
   else
-    for workflow in ci.yml nutshell_itest.yml; do
+    for workflow in ci-runner-test.yml nutshell_itest.yml; do
       result=$(gh api --paginate --slurp \
         "repos/cashubtc/cdk/actions/workflows/$workflow/runs?head_sha=$SOURCE_SHA&per_page=100" \
         --jq '[.[].workflow_runs[] | select(.event == "workflow_dispatch" or .event == "release" or (.event == "push" and (.head_branch == "main" or ((.head_branch // "") | test("^v[0-9][^/]*[.][0-9][^/]*[.]x$")))))] | max_by(.id) | if . == null then "missing" else (.status + "/" + .conclusion) end')
