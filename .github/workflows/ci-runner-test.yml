@@ -306,7 +306,9 @@ jobs:
   # and the nextest archive containing pre-compiled test binaries.
   build-itest-binaries:
     name: "Build integration test binaries"
-    runs-on: self-hosted
+    # Rith-only 8 vCPU pool: builds here are published to the per-run cache,
+    # so itest jobs on Rith (including fork PRs) substitute instead of rebuilding.
+    runs-on: rith-cdk-large
     timeout-minutes: 30
     needs: warm-nix-cache
     steps:
@@ -331,6 +333,10 @@ jobs:
             .#cdk-payment-processor \
             .#cdk-mintd-grpc \
             --no-link --print-out-paths | tee "$RUNNER_TEMP/cdk-cache-paths.txt"
+      # Needs no secrets, so it also runs for fork PRs. Blocks until the full
+      # closure is uploaded; dependent itest jobs start only after this succeeds.
+      - name: Publish to the run cache
+        run: xargs rith-run-cache push < "$RUNNER_TEMP/cdk-cache-paths.txt"
       # Push the per-revision archive + harness binaries to the self-hosted
       # Attic cache instead of churning the 5 GB Cachix quota.
       - name: Push to Attic cache
