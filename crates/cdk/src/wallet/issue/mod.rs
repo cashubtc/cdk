@@ -72,7 +72,8 @@ pub(crate) fn apply_mint_quote_response(
         MintQuoteResponse::Bolt11(response) => {
             let state =
                 if response.amount_paid > Amount::ZERO || response.amount_issued > Amount::ZERO {
-                    match cdk_common::mint_quote::quote_state_from_amounts(
+                    match cdk_common::mint_quote::bolt11_quote_state_from_amounts(
+                        response.amount,
                         response.amount_paid,
                         response.amount_issued,
                     ) {

@@ -166,7 +166,7 @@ impl<Q> MintQuoteResponse<Q> {
         match self {
             Self::Bolt11(r) => {
                 if r.amount_paid > Amount::ZERO || r.amount_issued > Amount::ZERO {
-                    quote_state_from_amounts(r.amount_paid, r.amount_issued)
+                    bolt11_quote_state_from_amounts(r.amount, r.amount_paid, r.amount_issued)
                 } else {
                     Ok(r.state)
                 }
@@ -211,6 +211,27 @@ pub fn quote_state_from_amounts(
     }
 
     Ok(QuoteState::Paid)
+}
+
+/// Derives a BOLT11 quote's state from its counters and quoted amount.
+///
+/// A BOLT11 quote issues its quoted amount once, so it is complete as soon as
+/// that amount has been issued, even when the invoice was overpaid.
+pub fn bolt11_quote_state_from_amounts(
+    amount: Option<Amount>,
+    amount_paid: Amount,
+    amount_issued: Amount,
+) -> Result<QuoteState, MintQuoteAccountingError> {
+    let state = quote_state_from_amounts(amount_paid, amount_issued)?;
+
+    match amount {
+        Some(amount)
+            if state == QuoteState::Paid && amount > Amount::ZERO && amount_issued >= amount =>
+        {
+            Ok(QuoteState::Issued)
+        }
+        _ => Ok(state),
+    }
 }
 
 #[cfg(test)]
@@ -279,5 +300,28 @@ mod tests {
         });
 
         assert_eq!(response.state(), Some(QuoteState::Paid));
+    }
+
+    fn bolt11_response(amount_paid: u64, amount_issued: u64) -> MintQuoteResponse<String> {
+        MintQuoteResponse::Bolt11(MintQuoteBolt11Response {
+            quote: "quote".to_string(),
+            request: "lnbc-request".to_string(),
+            amount: Some(Amount::from(64)),
+            unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::Known(KnownMethod::Bolt11),
+            amount_paid: Amount::from(amount_paid),
+            amount_issued: Amount::from(amount_issued),
+            updated_at: 0,
+            state: QuoteState::Issued,
+            expiry: None,
+            pubkey: None,
+        })
+    }
+
+    #[test]
+    fn overpaid_bolt11_state_completes_at_quoted_amount() {
+        assert_eq!(bolt11_response(65, 0).state(), Some(QuoteState::Paid));
+        assert_eq!(bolt11_response(65, 64).state(), Some(QuoteState::Issued));
+        assert_eq!(bolt11_response(64, 32).state(), Some(QuoteState::Paid));
     }
 }
