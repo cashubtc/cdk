@@ -307,10 +307,33 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             })
             .collect::<Result<Vec<ProofInfo>, _>>()?;
 
-        self.wallet
+        // The wallet may already store some of these proofs, for example when
+        // it receives a token it sent itself. Keep those rows so a failed
+        // receive can put them back rather than delete proofs it still owns.
+        let replaced_proofs = self
+            .wallet
             .localstore
-            .update_proofs(proofs_info.clone(), vec![])
+            .get_proofs_by_ys(proofs_ys.clone())
             .await?;
+
+        // A pending row owned by an operation that is not resolved yet, such
+        // as an earlier receive of the same token that failed ambiguously,
+        // belongs to that operation's recovery. Overwriting it would keep the
+        // wrong row to restore here and leave the earlier operation without
+        // its proofs, so refuse until that operation is recovered.
+        for proof in &replaced_proofs {
+            if let (State::Pending, Some(operation_id)) = (proof.state, proof.used_by_operation) {
+                if self
+                    .wallet
+                    .localstore
+                    .get_saga(&operation_id)
+                    .await?
+                    .is_some()
+                {
+                    return Err(Error::TokenPending);
+                }
+            }
+        }
 
         let mut saga = WalletSaga::new(
             operation_id,
@@ -324,16 +347,25 @@ impl<'a> ReceiveSaga<'a, Prepared> {
                 counter_end: None,
                 amount: Some(self.state_data.proofs_amount),
                 blinded_messages: None,
+                replaced_proofs: replaced_proofs.clone(),
             }),
         );
 
+        // Persist the saga, and with it the replaced rows, before overwriting
+        // them, so recovery can restore them after a crash
         self.wallet.localstore.add_saga(saga.clone()).await?;
+
+        self.wallet
+            .localstore
+            .update_proofs(proofs_info.clone(), vec![])
+            .await?;
 
         add_compensation(
             &mut self.compensations,
             Box::new(RemovePendingProofs {
                 localstore: self.wallet.localstore.clone(),
                 proof_ys: proofs_info.iter().map(|p| p.y).collect(),
+                restore_proofs: replaced_proofs,
                 saga_id: operation_id,
             }),
         )
@@ -580,12 +612,15 @@ impl<S: std::fmt::Debug> std::fmt::Debug for ReceiveSaga<'_, S> {
 mod tests {
     use std::sync::Arc;
 
-    use cdk_common::wallet::{ReceiveSagaState, TransactionId, TransactionStatus, WalletSagaState};
+    use cdk_common::wallet::{
+        ProofInfo, ReceiveSagaState, TransactionId, TransactionStatus, WalletSagaState,
+    };
 
     use crate::amount::SplitTarget;
     use crate::dhke::{hash_to_curve, sign_message};
     use crate::nuts::{
-        nut00, BlindSignature, PreMintSecrets, Proof, SecretKey, State, SwapResponse,
+        nut00, BlindSignature, CheckStateResponse, PreMintSecrets, Proof, ProofState, PublicKey,
+        SecretKey, State, SwapResponse,
     };
     use crate::wallet::test_utils::{
         create_test_db, create_test_wallet_with_mock_seed, test_keyset_id, test_proof,
@@ -665,6 +700,152 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(transaction.status, TransactionStatus::Pending);
+    }
+
+    /// Store `input` the way a confirmed send leaves the proofs of a token
+    /// that has not been claimed yet
+    async fn store_as_sent_token(wallet: &Wallet, input: &Proof) -> (uuid::Uuid, PublicKey) {
+        let send_operation = uuid::Uuid::now_v7();
+        let proof_info = ProofInfo::new_with_operations(
+            input.clone(),
+            wallet.mint_url.clone(),
+            State::PendingSpent,
+            wallet.unit.clone(),
+            Some(send_operation),
+            None,
+        )
+        .unwrap();
+        let y = proof_info.y;
+        wallet
+            .localstore
+            .update_proofs(vec![proof_info], vec![])
+            .await
+            .unwrap();
+        (send_operation, y)
+    }
+
+    async fn assert_still_sent_token(wallet: &Wallet, y: PublicKey, send_operation: uuid::Uuid) {
+        let proofs = wallet.localstore.get_proofs_by_ys(vec![y]).await.unwrap();
+        assert_eq!(
+            proofs.len(),
+            1,
+            "a failed receive must not delete a proof the wallet already stored"
+        );
+        assert_eq!(proofs[0].state, State::PendingSpent);
+        assert_eq!(proofs[0].used_by_operation, Some(send_operation));
+    }
+
+    fn receive_options() -> ReceiveOptions {
+        ReceiveOptions {
+            amount_split_target: SplitTarget::Values(vec![Amount::from(2)]),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_failed_receive_keeps_proofs_the_wallet_already_stored() {
+        let (wallet, mock, input, _) = receive_fixture().await;
+        let (send_operation, y) = store_as_sent_token(&wallet, &input).await;
+
+        // A definitive rejection runs the receive compensation
+        mock.set_post_swap_response(Err(Error::TransactionUnbalanced(2, 4, 0)));
+        let result = wallet
+            .receive_proofs(vec![input.clone()], receive_options(), None, None)
+            .await;
+        assert!(
+            matches!(result, Err(Error::TransactionUnbalanced(..))),
+            "unexpected result: {result:?}"
+        );
+
+        assert_still_sent_token(&wallet, y, send_operation).await;
+        assert!(wallet
+            .localstore
+            .get_incomplete_sagas()
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_receive_recovery_keeps_proofs_the_wallet_already_stored() {
+        let (wallet, mock, input, _) = receive_fixture().await;
+        let (send_operation, y) = store_as_sent_token(&wallet, &input).await;
+
+        // An ambiguous failure leaves the saga for recovery
+        mock.set_post_swap_response(Err(Error::HttpError(Some(503), "unavailable".to_string())));
+        assert!(wallet
+            .receive_proofs(vec![input.clone()], receive_options(), None, None)
+            .await
+            .is_err());
+
+        // Recovery cannot replay the swap and the mint reports the input
+        // unspent, so the receive is compensated
+        mock.push_post_swap_response(Err(Error::HttpError(Some(400), "bad request".to_string())));
+        mock.set_check_state_response(Ok(CheckStateResponse {
+            states: vec![ProofState {
+                y,
+                state: State::Unspent,
+                witness: None,
+            }],
+        }));
+        let report = wallet.recover_incomplete_sagas().await.unwrap();
+        assert_eq!(report.compensated, 1);
+
+        assert_still_sent_token(&wallet, y, send_operation).await;
+    }
+
+    #[tokio::test]
+    async fn test_receive_retry_keeps_proofs_the_wallet_already_stored() {
+        let (wallet, mock, input, _) = receive_fixture().await;
+        let (send_operation, y) = store_as_sent_token(&wallet, &input).await;
+
+        // The first attempt fails ambiguously and is left for recovery
+        mock.set_post_swap_response(Err(Error::HttpError(Some(503), "unavailable".to_string())));
+        assert!(wallet
+            .receive_proofs(vec![input.clone()], receive_options(), None, None)
+            .await
+            .is_err());
+
+        // Retrying before that receive is resolved must not take over its
+        // proofs: it would keep the first attempt's pending row to restore
+        mock.set_post_swap_response(Err(Error::HttpError(Some(503), "unavailable".to_string())));
+        let retry = wallet
+            .receive_proofs(vec![input.clone()], receive_options(), None, None)
+            .await;
+        assert!(
+            matches!(retry, Err(Error::TokenPending)),
+            "unexpected result: {retry:?}"
+        );
+        assert_eq!(
+            wallet
+                .localstore
+                .get_incomplete_sagas()
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // Recovery cannot replay the swap and the mint reports the input
+        // unspent, so the first receive is compensated
+        mock.push_post_swap_response(Err(Error::HttpError(Some(400), "bad request".to_string())));
+        mock.set_check_state_response(Ok(CheckStateResponse {
+            states: vec![ProofState {
+                y,
+                state: State::Unspent,
+                witness: None,
+            }],
+        }));
+        let report = wallet.recover_incomplete_sagas().await.unwrap();
+        assert_eq!(report.compensated, 1);
+
+        assert_still_sent_token(&wallet, y, send_operation).await;
+        assert!(wallet
+            .localstore
+            .get_incomplete_sagas()
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
