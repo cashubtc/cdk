@@ -178,10 +178,15 @@ impl<'a> ReceiveSaga<'a, Initial> {
                             // HTLC data is a hash, not a pubkey.
                             // Add the pre-image and skip slot 0 pubkey.
                             let hashed_preimage = secret.secret_data().data();
-                            let preimage = hashed_to_preimage
-                                .get(hashed_preimage)
-                                .ok_or(Error::PreimageNotProvided)?;
-                            proof.add_preimage(preimage.to_string());
+                            match hashed_to_preimage.get(hashed_preimage) {
+                                Some(preimage) => proof.add_preimage(preimage.to_string()),
+                                // Without the preimage only the refund path can
+                                // spend it, which opens once the locktime passed
+                                None if conditions
+                                    .locktime
+                                    .is_some_and(|locktime| locktime < unix_time()) => {}
+                                None => return Err(Error::PreimageNotProvided),
+                            }
 
                             // For HTLC, there is no slot 0 pubkey. But slot index for the tags still starts at 1!
                         }
