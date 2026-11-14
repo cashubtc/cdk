@@ -145,6 +145,8 @@ pub trait Signatory {
     /// Blind sign a message.
     ///
     /// The message can be for a coin or an auth token.
+    /// Callers must validate that output keysets are active when accepting a request;
+    /// signing can happen after a keyset rotation.
     async fn blind_sign(
         &self,
         blinded_messages: Vec<BlindedMessage>,

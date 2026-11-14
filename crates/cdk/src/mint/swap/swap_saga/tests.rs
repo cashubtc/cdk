@@ -6,11 +6,11 @@
 use std::sync::Arc;
 
 use cdk_common::nuts::{Proofs, ProofsMethods};
-use cdk_common::{Amount, State};
+use cdk_common::{Amount, CurrencyUnit, MintRequest, QuoteId, State, SwapRequest};
 
 use super::SwapSaga;
 use crate::mint::swap::Mint;
-use crate::mint::Verification;
+use crate::mint::{MintInput, Verification};
 use crate::test_helpers::mint::{
     clear_fail_for, create_test_blinded_messages, create_test_mint, set_fail_for,
 };
@@ -124,6 +124,74 @@ async fn test_swap_saga_full_flow_success() {
             "Input proofs should be marked as spent"
         );
     }
+}
+
+#[tokio::test]
+async fn test_swap_signs_accepted_outputs_after_keyset_rotation() {
+    let mint = create_test_mint().await.unwrap();
+    let amount = Amount::from(64);
+    let (input_proofs, input_verification) = create_swap_inputs(&mint, amount).await;
+    let (outputs, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let keyset_id = outputs[0].keyset_id;
+
+    let saga = SwapSaga::new(&mint, mint.localstore(), mint.pubsub_manager())
+        .setup_swap(&input_proofs, &outputs, None, input_verification)
+        .await
+        .unwrap();
+
+    mint.rotate_keyset(
+        CurrencyUnit::Sat,
+        vec![1, 2, 4, 8, 16, 32, 64],
+        0,
+        true,
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(!mint.get_keyset_info(&keyset_id).unwrap().active);
+
+    let (mut mixed_outputs, _) = create_test_blinded_messages(&mint, Amount::from(1))
+        .await
+        .unwrap();
+    mixed_outputs.extend(outputs.clone());
+
+    for new_outputs in [outputs.clone(), mixed_outputs] {
+        let err = mint
+            .process_swap_request(SwapRequest::new(input_proofs.clone(), new_outputs.clone()))
+            .await
+            .expect_err("new swaps must reject inactive outputs");
+        assert!(matches!(err, cdk_common::Error::InactiveKeyset));
+
+        let err = mint
+            .process_mint_request(MintInput::Single(MintRequest {
+                quote: QuoteId::new(),
+                outputs: new_outputs,
+                signature: None,
+            }))
+            .await
+            .expect_err("new mint requests must reject inactive outputs");
+        assert!(matches!(err, cdk_common::Error::InactiveKeyset));
+    }
+
+    let response = saga
+        .sign_outputs()
+        .await
+        .expect("accepted outputs must still sign after rotation")
+        .finalize()
+        .await
+        .unwrap();
+    assert_eq!(response.signatures.len(), outputs.len());
+    assert!(response
+        .signatures
+        .iter()
+        .all(|sig| sig.keyset_id == keyset_id));
+    let states = mint
+        .localstore()
+        .get_proofs_states(&input_proofs.ys().unwrap())
+        .await
+        .unwrap();
+    assert!(states.iter().all(|state| *state == Some(State::Spent)));
+    mint.stop().await.unwrap();
 }
 
 /// Tests the Initial -> SetupComplete state transition.
