@@ -4151,3 +4151,73 @@ async fn test_p2pk_signing_keys_mixed_locked_and_unlocked_proofs() {
         "Bob should receive exactly the send amount"
     );
 }
+
+/// An HTLC whose preimage was never revealed can be reclaimed through the
+/// refund path once its locktime has passed, signed with the refund key only
+#[tokio::test]
+async fn test_receive_expired_htlc_through_refund_path() {
+    use bitcoin::hashes::sha256::Hash as Sha256Hash;
+    use bitcoin::hashes::Hash;
+
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create wallet");
+    fund_wallet(wallet.clone(), 64, None)
+        .await
+        .expect("Failed to fund wallet");
+
+    // Lock to a receiver key with an unknown preimage, refundable to us
+    let refund_key = SecretKey::generate();
+    let hash = Sha256Hash::hash(&[7u8; 32]).to_string();
+    let conditions = Conditions {
+        locktime: Some(cdk_common::util::unix_time() + 2),
+        pubkeys: Some(vec![SecretKey::generate().public_key()]),
+        refund_keys: Some(vec![refund_key.public_key()]),
+        ..Default::default()
+    };
+    let token = wallet
+        .prepare_send(
+            Amount::from(10),
+            SendOptions {
+                conditions: Some(
+                    SpendingConditions::new_htlc_hash(&hash, Some(conditions)).unwrap(),
+                ),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("prepare_send should succeed")
+        .confirm(None)
+        .await
+        .expect("confirm should succeed");
+    let balance_after_send = wallet.total_balance().await.unwrap();
+
+    let refund_options = ReceiveOptions {
+        p2pk_signing_keys: vec![refund_key],
+        ..Default::default()
+    };
+
+    // Before the locktime only the receiver path is open
+    let early = wallet
+        .receive(&token.to_string(), refund_options.clone())
+        .await;
+    assert!(
+        matches!(early, Err(cdk::Error::PreimageNotProvided)),
+        "{early:?}"
+    );
+
+    sleep(Duration::from_secs(3)).await;
+
+    let received = wallet
+        .receive(&token.to_string(), refund_options)
+        .await
+        .expect("expired HTLC should be reclaimed through the refund path");
+    assert_eq!(received, Amount::from(10));
+    assert_eq!(
+        wallet.total_balance().await.unwrap(),
+        balance_after_send + received
+    );
+}
