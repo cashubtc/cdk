@@ -1657,6 +1657,38 @@ mod tests {
     }
 
     #[test]
+    fn test_sig_all_htlc_post_locktime_with_valid_preimage() {
+        // NUT-11 test vector: a valid SwapRequest with a multisig HTLC also locked
+        // to locktime and refund keys. The witness carries the valid preimage but
+        // only the refund signatures, so it spends through the refund path.
+        let valid_swap = r#"{
+              "inputs": [
+                {
+                  "amount": 2,
+                  "id": "00bfa73302d12ffd",
+                  "secret": "[\"HTLC\",{\"nonce\":\"c9b0fabb8007c0db4bef64d5d128cdcf3c79e8bb780c3294adf4c88e96c32647\",\"data\":\"ec4916dd28fc4c10d78e287ca5d9cc51ee1ae73cbfde08c6b37324cbfaac8bc5\",\"tags\":[[\"pubkeys\",\"039e6ec7e922abb4162235b3a42965eb11510b07b7461f6b1a17478b1c9c64d100\"],[\"locktime\",\"1\"],[\"refund\",\"02ce1bbd2c9a4be8029c9a6435ad601c45677f5cde81f8a7f0ed535e0039d0eb6c\",\"03c43c00ff57f63cfa9e732f0520c342123e21331d0121139f1b636921eeec095f\"],[\"n_sigs_refund\",\"2\"],[\"sigflag\",\"SIG_ALL\"]]}]",
+                  "C": "0344b6f1471cf18a8cbae0e624018c816be5e3a9b04dcb7689f64173c1ae90a3a5",
+                  "witness": "{\"preimage\":\"0000000000000000000000000000000000000000000000000000000000000001\",\"signatures\":[\"98e21672d409cc782c720f203d8284f0af0c8713f18167499f9f101b7050c3e657fb0e57478ebd8bd561c31aa6c30f4cd20ec38c73f5755b7b4ddee693bca5a5\",\"693f40129dbf905ed9c8008081c694f72a36de354f9f4fa7a61b389cf781f62a0ae0586612fb2eb504faaf897fefb6742309186117f4743bcebcb8e350e975e2\"]}"
+                }
+              ],
+              "outputs": [
+                {
+                  "amount": 2,
+                  "id": "00bfa73302d12ffd",
+                  "B_": "038ec853d65ae1b79b5cdbc2774150b2cb288d6d26e12958a16fb33c32d9a86c39"
+                }
+              ]
+}"#;
+
+        let valid_swap: SwapRequest = serde_json::from_str(valid_swap).unwrap();
+
+        assert!(
+            valid_swap.verify_spending_conditions().is_ok(),
+            "Valid post-locktime swap with htlc should be accepted"
+        );
+    }
+
+    #[test]
     fn test_sig_all_swap_mismatched_inputs() {
         // Invalid SwapRequest - mismatched inputs with SIG_ALL
         let invalid_swap = r#"{
