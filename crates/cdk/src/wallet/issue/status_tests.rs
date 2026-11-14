@@ -227,3 +227,54 @@ async fn quote_status_propagates_reload_failures() {
         }
     }
 }
+
+#[tokio::test]
+async fn overpaid_bolt11_quote_stays_issued_after_status_refresh() {
+    use crate::nuts::nut00::ProofsMethods;
+
+    let db = create_test_db().await;
+    let client = Arc::new(MockMintConnector::new());
+    client.enable_mint_signing();
+    let wallet = create_test_wallet_with_mock(db.clone(), client.clone()).await;
+    let mut quote = test_mint_quote(test_mint_url());
+    quote.amount = Some(Amount::from(64));
+    db.add_mint_quote(quote.clone()).await.unwrap();
+
+    // The invoice was overpaid by one sat
+    let mut response = paid_response(&quote);
+    if let MintQuoteResponse::Bolt11(response) = &mut response {
+        response.amount_paid = Amount::from(65);
+    }
+    client.set_mint_quote_status_response(&quote.id, response);
+    let paid = wallet.check_mint_quote_status(&quote.id).await.unwrap();
+    assert_eq!(paid.state, MintQuoteState::Paid);
+    assert_eq!(paid.amount_mintable(), Amount::from(64));
+
+    let proofs = wallet
+        .mint(&quote.id, SplitTarget::default(), None)
+        .await
+        .unwrap();
+    assert_eq!(proofs.total_amount().unwrap(), Amount::from(64));
+
+    // The mint now reports the quote issued at its quoted amount
+    let mut response = paid_response(&quote);
+    if let MintQuoteResponse::Bolt11(response) = &mut response {
+        response.amount_paid = Amount::from(65);
+        response.amount_issued = Amount::from(64);
+        response.updated_at = 2;
+        response.state = MintQuoteState::Issued;
+    }
+    assert_eq!(response.state(), Some(MintQuoteState::Issued));
+    client.set_mint_quote_status_response(&quote.id, response);
+
+    let refreshed = wallet.check_mint_quote_status(&quote.id).await.unwrap();
+    assert_eq!(refreshed.state, MintQuoteState::Issued);
+    assert_eq!(refreshed.amount_paid, Amount::from(65));
+    assert_eq!(refreshed.amount_issued, Amount::from(64));
+    assert_eq!(refreshed.amount_mintable(), Amount::ZERO);
+    assert_eq!(
+        db.get_mint_quote(&quote.id).await.unwrap().unwrap().state,
+        MintQuoteState::Issued
+    );
+    assert_eq!(wallet.total_balance().await.unwrap(), Amount::from(64));
+}
