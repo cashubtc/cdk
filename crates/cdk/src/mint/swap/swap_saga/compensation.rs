@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use cdk_common::database::DynMintDatabase;
-use cdk_common::{Error, PublicKey};
+use cdk_common::{Error, PublicKey, State};
 use tracing::instrument;
 use uuid::Uuid;
 
@@ -20,7 +20,8 @@ pub trait CompensatingAction: Send + Sync {
 /// - Input proofs (identified by input_ys)
 /// - Saga state record
 ///
-/// This restores the database to its pre-swap state.
+/// This restores the database to its pre-swap state and publishes the inputs
+/// as unspent again.
 pub struct RemoveSwapSetup {
     /// Blinded secrets (B values) from the output blinded messages
     pub blinded_secrets: Vec<PublicKey>,
@@ -33,7 +34,7 @@ pub struct RemoveSwapSetup {
 #[async_trait]
 impl CompensatingAction for RemoveSwapSetup {
     #[instrument(skip_all)]
-    async fn execute(&self, db: &DynMintDatabase, _pubsub: &PubSubManager) -> Result<(), Error> {
+    async fn execute(&self, db: &DynMintDatabase, pubsub: &PubSubManager) -> Result<(), Error> {
         if self.blinded_secrets.is_empty() && self.input_ys.is_empty() {
             return Ok(());
         }
@@ -68,6 +69,12 @@ impl CompensatingAction for RemoveSwapSetup {
         }
 
         tx.commit().await?;
+
+        // Setup published the inputs as pending; tell subscribers they are
+        // spendable again now that the swap is rolled back
+        for y in &self.input_ys {
+            pubsub.proof_state((*y, State::Unspent));
+        }
 
         Ok(())
     }
