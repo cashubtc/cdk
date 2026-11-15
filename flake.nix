@@ -559,6 +559,7 @@
               pname = "cdk-msrv-${name}";
               cargoArtifacts = workspaceDepsMsrv;
               cargoExtraArgs = cargoArgs;
+              doInstallCargoArtifacts = false;
             }
           );
 
@@ -576,6 +577,7 @@
             buildInputs = [ ];
             # Disable tests for WASM (can't run in sandbox)
             doCheck = false;
+            doInstallCargoArtifacts = false;
           });
 
         # Doc tests check
@@ -585,6 +587,7 @@
             pname = "cdk-doc-tests";
             cargoArtifacts = workspaceDeps;
             cargoTestExtraArgs = "--doc";
+            doInstallCargoArtifacts = false;
           }
         );
 
@@ -598,6 +601,7 @@
             buildPhaseCargoCommand = "cargo clippy --profile ci --workspace --all-targets -- -D warnings";
             doCheck = false;
             installPhaseCommand = "mkdir -p $out";
+            doInstallCargoArtifacts = false;
           }
         );
 
@@ -629,6 +633,7 @@
             '';
             doCheck = false;
             installPhaseCommand = "mkdir -p $out";
+            doInstallCargoArtifacts = false;
           }
         );
 
@@ -661,6 +666,7 @@
             '';
             doCheck = false;
             installPhaseCommand = "mkdir -p $out";
+            doInstallCargoArtifacts = false;
           }
         );
 
