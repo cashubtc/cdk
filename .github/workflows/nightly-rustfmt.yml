@@ -19,12 +19,6 @@ jobs:
           ref: main
           token: ${{ secrets.BACKPORT_TOKEN }}
           persist-credentials: false
-      - uses: cachix/cachix-action@v17
-        with:
-          name: cashudevkit
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          useDaemon: false
-        continue-on-error: true
       - name: Run Nightly rustfmt
         run: |
           nix develop --fallback -i -L .#nightly --command bash -c '

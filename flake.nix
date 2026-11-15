@@ -421,7 +421,7 @@
           else
             null;
 
-        # Build ALL dependencies once - this is what gets cached by Cachix
+        # Build ALL dependencies once - published to the Attic cache by CI
         workspaceDeps = craneLib.buildDepsOnly (
           commonCraneArgs
           // {
@@ -671,7 +671,7 @@
         );
 
         # ========================================
-        # Language binding derivations (cached by Cachix)
+        # Language binding derivations
         # ========================================
 
         # Dart FFI bindings: builds cdk-ffi-dart cdylib + generates Dart source
@@ -1443,7 +1443,7 @@
           );
 
         # ========================================
-        # Integration test harness binaries (pre-built via Crane, cached by Cachix)
+        # Integration test harness binaries (pre-built via Crane, published to the Attic cache)
         # These are used by CI integration test scripts instead of cargo build/run
         # ========================================
         mkItestBinary =
