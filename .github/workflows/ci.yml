@@ -36,7 +36,7 @@ env:
 jobs:
   rusqlite-compat:
     name: "rusqlite compatibility (${{ matrix.endpoint }})"
-    runs-on: self-hosted
+    runs-on: rith-cdk
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -386,7 +386,7 @@ jobs:
 
   regtest-ln-itest:
     name: "Integration regtest LN tests"
-    runs-on: self-hosted
+    runs-on: rith-cdk
     timeout-minutes: 30
     needs: [pre-commit-checks, build-itest-binaries]
     strategy:
@@ -417,7 +417,7 @@ jobs:
 
   regtest-onchain-itest:
     name: "Integration regtest Onchain tests"
-    runs-on: self-hosted
+    runs-on: rith-cdk
     timeout-minutes: 30
     needs: [pre-commit-checks, build-itest-binaries]
     strategy:
@@ -438,7 +438,7 @@ jobs:
 
   fake-mint-itest:
     name: "Integration fake mint tests"
-    runs-on: self-hosted
+    runs-on: rith-cdk
     timeout-minutes: 30
     needs: [pre-commit-checks, build-itest-binaries]
     strategy:
@@ -459,7 +459,7 @@ jobs:
 
   pure-itest:
     name: "Integration fake wallet tests"
-    runs-on: self-hosted
+    runs-on: rith-cdk
     timeout-minutes: 30
     needs: [pre-commit-checks, build-itest-binaries]
     strategy:
@@ -490,7 +490,7 @@ jobs:
 
   payment-processor-itests:
     name: "Payment processor tests"
-    runs-on: self-hosted
+    runs-on: rith-cdk
     timeout-minutes: 30
     needs: [pre-commit-checks, build-itest-binaries]
     strategy:
@@ -511,7 +511,7 @@ jobs:
 
   msrv-build:
     name: "MSRV: ${{ matrix.check }}"
-    runs-on: self-hosted
+    runs-on: rith-cdk
     timeout-minutes: 30
     needs: [pre-commit-checks, discover_ci_groups]
     strategy:
@@ -537,7 +537,7 @@ jobs:
 
   check-wasm:
     name: "WASM: ${{ matrix.check }}"
-    runs-on: self-hosted
+    runs-on: rith-cdk
     timeout-minutes: 30
     needs: [pre-commit-checks, discover_ci_groups]
     strategy:
@@ -552,7 +552,7 @@ jobs:
 
   fake-mint-auth-itest:
     name: "Integration fake mint auth tests"
-    runs-on: self-hosted
+    runs-on: rith-cdk
     timeout-minutes: 30
     needs: [pre-commit-checks, build-itest-binaries]
     strategy:

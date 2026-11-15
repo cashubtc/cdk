@@ -1,5 +1,6 @@
 self-hosted-runner:
   labels:
+    - rith-cdk
     - rith-cdk-large
     - nix
     - fuzz-a
