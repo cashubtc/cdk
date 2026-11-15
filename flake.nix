@@ -519,37 +519,36 @@
             }
           );
 
-        # Helper function to create example checks (compile only, no network access in sandbox)
-        mkExample =
-          name:
-          craneLib.mkCargoDerivation (
-            commonCraneArgs
-            // {
-              pname = "cdk-example-${name}";
-              cargoArtifacts = workspaceDeps;
-              buildPhaseCargoCommand = "cargo build --example ${name}";
-              # Examples are compiled but not run (no network in Nix sandbox)
-              doCheck = false;
-              installPhaseCommand = "mkdir -p $out";
-            }
-          );
+        # All examples built by one cargo invocation, so the workspace crates
+        # compile once instead of once per example. The binaries run outside
+        # the sandbox in CI because they need network access.
+        examplesPackage = craneLib.mkCargoDerivation (
+          commonCraneArgs
+          // {
+            pname = "cdk-examples";
+            cargoArtifacts = workspaceDeps;
+            buildPhaseCargoCommand = "cargo build --release ${
+              lib.concatMapStringsSep " " (name: "--example ${name}") exampleChecks
+            }";
+            doCheck = false;
+            installPhaseCommand = ''
+              mkdir -p $out/bin
+              ${lib.concatMapStringsSep "\n" (
+                name: "cp target/release/examples/${name} $out/bin/"
+              ) exampleChecks}
+            '';
+            doInstallCargoArtifacts = false;
+          }
+        );
 
-        # Helper function to create example packages (outputs binary for running outside sandbox)
+        # One package per example for CI and `nix flake check`. Building the
+        # binary is the compile check, so checks and packages share it.
         mkExamplePackage =
           name:
-          craneLib.mkCargoDerivation (
-            commonCraneArgs
-            // {
-              pname = "cdk-example-${name}";
-              cargoArtifacts = workspaceDeps;
-              buildPhaseCargoCommand = "cargo build --release --example ${name}";
-              doCheck = false;
-              installPhaseCommand = ''
-                mkdir -p $out/bin
-                cp target/release/examples/${name} $out/bin/
-              '';
-            }
-          );
+          pkgs.runCommandLocal "cdk-example-${name}" { } ''
+            mkdir -p $out/bin
+            ln -s ${examplesPackage}/bin/${name} $out/bin/${name}
+          '';
 
         # Helper function to create MSRV build checks
         mkMsrvBuild =
@@ -1645,15 +1644,7 @@
             map
               (name: {
                 name = "example-${name}";
-                value = mkExample name;
-              })
-              exampleChecks
-          ))
-          // (builtins.listToAttrs (
-            map
-              (name: {
-                name = "example-${name}";
-                value = mkExample name;
+                value = mkExamplePackage name;
               })
               exampleChecks
           ))
