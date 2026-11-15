@@ -1455,15 +1455,38 @@
             }
           );
 
-        itestBinaries = {
-          start-fake-mint = mkItestBinary "start-fake-mint" "--bin start_fake_mint";
-          start-regtest-mints = mkItestBinary "start-regtest-mints" "--bin start_regtest_mints";
-          start-fake-auth-mint = mkItestBinary "start-fake-auth-mint" "--bin start_fake_auth_mint";
-          start-regtest = mkItestBinary "start-regtest" "--bin start_regtest";
-          signatory = mkItestBinary "signatory" "--bin signatory";
-          cdk-payment-processor = mkItestBinary "cdk-payment-processor" "--bin cdk-payment-processor";
-          cdk-mintd-grpc = mkItestBinary "cdk-mintd-grpc" "--bin cdk-mintd --no-default-features --features grpc-processor";
+        # Harness binaries that share the default feature set, built by one
+        # cargo invocation so the workspace crates compile once instead of
+        # once per binary. A bare `--bin` selects every workspace member, so
+        # features resolve exactly as they did for the per-binary builds.
+        itestHarnessBins = {
+          start-fake-mint = "start_fake_mint";
+          start-regtest-mints = "start_regtest_mints";
+          start-fake-auth-mint = "start_fake_auth_mint";
+          start-regtest = "start_regtest";
+          signatory = "signatory";
+          cdk-payment-processor = "cdk-payment-processor";
         };
+
+        itestHarness = mkItestBinary "harness" (
+          lib.concatMapStringsSep " " (bin: "--bin ${bin}") (builtins.attrValues itestHarnessBins)
+        );
+
+        # Keep one package per binary for the dev shells, CI and `just`.
+        itestBinaries =
+          builtins.mapAttrs
+            (
+              name: bin:
+                pkgs.runCommandLocal "cdk-itest-${name}" { } ''
+                  mkdir -p $out/bin
+                  ln -s ${itestHarness}/bin/${bin} $out/bin/${bin}
+                ''
+            )
+            itestHarnessBins
+          // {
+            # Different feature set, so it stays a separate build.
+            cdk-mintd-grpc = mkItestBinary "cdk-mintd-grpc" "--bin cdk-mintd --no-default-features --features grpc-processor";
+          };
 
         # Nextest archive for integration tests (pre-compiled test binaries)
         itestArchive = craneLib.mkCargoDerivation (
