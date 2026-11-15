@@ -151,10 +151,19 @@ repository = "https://github.com/cashubtc/cdk"
 license-file = "LICENSE.md"
 keywords = ["bitcoin", "e-cash", "cashu"]
 
+# Profile for CI's dev-style builds (clippy, unit tests, docs, the nextest
+# archive). Nix prebuilds dependencies in this profile (`.#deps-ci`), so every
+# CI derivation using `--profile ci` reuses them. Reduced debuginfo keeps the
+# cached artifacts and the integration test archive small; line tables keep
+# file:line in panic backtraces for workspace crates.
 [profile.ci]
 inherits = "dev"
 incremental = false
 lto = "off"
+debug = "line-tables-only"
+
+[profile.ci.package."*"]
+debug = false
 
 [profile.release-smaller]
 inherits = "release"

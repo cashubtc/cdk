@@ -18,7 +18,7 @@
 # Layout of the extracted dir:
 #   target/nextest/binaries-metadata.json
 #   target/nextest/cargo-metadata.json
-#   target/debug/deps/...             (test binaries)
+#   target/<profile>/deps/...         (test binaries; `ci` for the Nix build)
 #
 # Override the extraction root with CDK_NEXTEST_EXTRACT_ROOT (default:
 # ${TMPDIR:-/tmp}/cdk-nextest-extract). The directory is keyed by the archive,

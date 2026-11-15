@@ -431,6 +431,32 @@
           }
         );
 
+        # Dependencies in the `ci` Cargo profile. `workspaceDeps` uses Crane's
+        # default release profile, so dev-style CI derivations (clippy, unit
+        # tests, docs, the nextest archive) could not reuse it and rebuilt the
+        # whole dependency tree. Derivations that use this must pass
+        # `--profile ci` (`--cargo-profile ci` for nextest) to every cargo call.
+        workspaceDepsCi = craneLib.buildDepsOnly (
+          commonCraneArgs
+          // {
+            pname = "cdk-deps-ci";
+            CARGO_PROFILE = "ci";
+            cargoExtraArgs = "--workspace";
+          }
+        );
+
+        # The nextest archive selects only cdk-integration-tests, which
+        # resolves dependency features differently from `--workspace`, so it
+        # gets its own ci-profile dependency cache.
+        itestDepsCi = craneLib.buildDepsOnly (
+          commonCraneArgs
+          // {
+            pname = "cdk-itest-deps-ci";
+            CARGO_PROFILE = "ci";
+            cargoExtraArgs = "-p cdk-integration-tests";
+          }
+        );
+
         # MSRV dependencies (separate cache due to different toolchain)
         # Exclude cdk-redb (and its dependents) and cdk-cli from MSRV coverage
         workspaceDepsMsrv = craneLibMsrv.buildDepsOnly (
@@ -475,13 +501,13 @@
             commonCraneArgs
             // {
               pname = "cdk-check-${name}";
-              cargoArtifacts = workspaceDeps;
+              cargoArtifacts = workspaceDepsCi;
               buildPhaseCargoCommand = builtins.concatStringsSep "\n" (
                 builtins.map
                   (cargoArgs: ''
                     echo "Running check with args: ${cargoArgs}"
-                    cargo clippy ${cargoArgs} -- -D warnings
-                    cargo test ${if builtins.match ".*cdk-cli.*" cargoArgs != null then "--bins" else "--lib"} ${cargoArgs}
+                    cargo clippy --profile ci ${cargoArgs} -- -D warnings
+                    cargo test --profile ci ${if builtins.match ".*cdk-cli.*" cargoArgs != null then "--bins" else "--lib"} ${cargoArgs}
                   '')
                   cargoArgsList
               );
@@ -569,8 +595,8 @@
           commonCraneArgs
           // {
             pname = "cdk-workspace-clippy-all-targets";
-            cargoArtifacts = workspaceDeps;
-            buildPhaseCargoCommand = "cargo clippy --workspace --all-targets -- -D warnings";
+            cargoArtifacts = workspaceDepsCi;
+            buildPhaseCargoCommand = "cargo clippy --profile ci --workspace --all-targets -- -D warnings";
             doCheck = false;
             installPhaseCommand = "mkdir -p $out";
           }
@@ -582,10 +608,10 @@
           commonCraneArgs
           // {
             pname = "cdk-strict-docs";
-            cargoArtifacts = workspaceDeps;
+            cargoArtifacts = workspaceDepsCi;
             buildPhaseCargoCommand = ''
               export RUSTDOCFLAGS="-D warnings"
-              cargo doc --no-deps \
+              cargo doc --profile ci --no-deps \
                 -p cashu \
                 -p cdk-common \
                 -p cdk-sql-common \
@@ -1444,13 +1470,14 @@
           commonCraneArgs
           // {
             pname = "cdk-itest-archive";
-            cargoArtifacts = workspaceDeps;
+            cargoArtifacts = itestDepsCi;
             nativeBuildInputs = commonCraneArgs.nativeBuildInputs ++ [
               pkgs.cargo-nextest
             ];
             buildPhaseCargoCommand = ''
               mkdir -p $out
               cargo nextest archive \
+                --cargo-profile ci \
                 -p cdk-integration-tests \
                 --archive-file $out/itest-archive.tar.zst
             '';
@@ -1494,6 +1521,8 @@
           default = defaultPackage;
           attic-client = pkgs.attic-client;
           deps = workspaceDeps;
+          deps-ci = workspaceDepsCi;
+          itest-deps-ci = itestDepsCi;
           deps-msrv = workspaceDepsMsrv;
           # Language bindings (cached cdylib + uniffi codegen)
           dart-bindings = dartBindings;
@@ -1612,11 +1641,11 @@
               commonCraneArgs
               // {
                 pname = "cdk-pr-unit-tests";
-                cargoArtifacts = workspaceDeps;
+                cargoArtifacts = workspaceDepsCi;
                 buildPhaseCargoCommand = ''
-                  cargo test --lib --workspace --exclude cdk-postgres --exclude cdk-integration-tests
-                  cargo test --bins -p cdk-cli
-                  cargo test --lib -p cdk-nostr --all-features
+                  cargo test --profile ci --lib --workspace --exclude cdk-postgres --exclude cdk-integration-tests
+                  cargo test --profile ci --bins -p cdk-cli
+                  cargo test --profile ci --lib -p cdk-nostr --all-features
                 '';
                 doCheck = false;
                 installPhaseCommand = "mkdir -p $out";
@@ -1630,15 +1659,15 @@
               commonCraneArgs
               // {
                 pname = "cdk-pr-feature-tests";
-                cargoArtifacts = workspaceDeps;
+                cargoArtifacts = workspaceDepsCi;
                 buildPhaseCargoCommand = ''
-                  cargo test --lib -p cdk-sqlite --features sqlcipher
-                  cargo test --bins -p cdk-cli --features redb
-                  cargo check -p cdk-mintd --features redis
-                  cargo test --lib -p cdk-common --no-default-features --features wallet
-                  cargo test --lib -p cdk-common --no-default-features --features mint
-                  cargo test --lib -p cdk-sql-common --no-default-features --features wallet
-                  cargo test --lib -p cdk-sql-common --no-default-features --features mint
+                  cargo test --profile ci --lib -p cdk-sqlite --features sqlcipher
+                  cargo test --profile ci --bins -p cdk-cli --features redb
+                  cargo check --profile ci -p cdk-mintd --features redis
+                  cargo test --profile ci --lib -p cdk-common --no-default-features --features wallet
+                  cargo test --profile ci --lib -p cdk-common --no-default-features --features mint
+                  cargo test --profile ci --lib -p cdk-sql-common --no-default-features --features wallet
+                  cargo test --profile ci --lib -p cdk-sql-common --no-default-features --features mint
                 '';
                 doCheck = false;
                 installPhaseCommand = "mkdir -p $out";

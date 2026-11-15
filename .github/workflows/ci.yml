@@ -136,7 +136,7 @@ jobs:
       - name: Build shared Crane dependencies
         run: |
           set -o pipefail
-          nix build -L .#deps --no-link --print-out-paths | tee "$RUNNER_TEMP/cdk-cache-paths.txt"
+          nix build -L .#deps .#deps-ci --no-link --print-out-paths | tee "$RUNNER_TEMP/cdk-cache-paths.txt"
       # Deps change only with Cargo.lock/toolchain, so this mostly dedupes.
       - name: Push to Attic cache
         # Never push from fork PRs (secrets are withheld there anyway; belt and braces).
@@ -322,6 +322,7 @@ jobs:
         run: |
           set -o pipefail
           nix build -L \
+            .#itest-deps-ci \
             .#itest-archive \
             .#start-fake-mint \
             .#start-regtest-mints \
