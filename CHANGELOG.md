@@ -9,6 +9,8 @@
 
 ### Fixed
 
+- cdk-mintd: `[ldk_node].gossip_source_type` is now honoured. `p2p` uses P2P gossip even when `rgs_url` is set, `rgs` requires `rgs_url`, and unknown values are rejected at startup. Configurations without `gossip_source_type` are unchanged (#2848).
+- cdk-mintd: Correct the documented LDK Node fee defaults in `example.config.toml` to `fee_percent = 0.04` and `reserve_fee_min = 4` (#2848).
 - cashu: P2BK V4 tokens now encode `pe` as CBOR bytes. Wallets using CDK 0.16–0.18 must upgrade to receive these tokens. Updated wallets continue to accept legacy hex-encoded tokens (#2712).
 
 ### Removed

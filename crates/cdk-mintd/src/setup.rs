@@ -384,11 +384,145 @@ impl config::LdkNode {
             _ => bail!("Unknown LDK Node chain_source_type: {chain_source_type}"),
         }
     }
+
+    /// Resolve the gossip source from `gossip_source_type` and `rgs_url`.
+    ///
+    /// When `gossip_source_type` is unset, Rapid Gossip Sync is used if
+    /// `rgs_url` is set and P2P otherwise.
+    fn gossip_source(&self) -> anyhow::Result<cdk_ldk_node::GossipSource> {
+        use anyhow::bail;
+
+        let Some(gossip_source_type) = self.gossip_source_type.as_ref() else {
+            return Ok(match self.rgs_url.clone() {
+                Some(rgs_url) => cdk_ldk_node::GossipSource::RapidGossipSync(rgs_url),
+                None => cdk_ldk_node::GossipSource::P2P,
+            });
+        };
+
+        match gossip_source_type.to_lowercase().as_str() {
+            "p2p" => {
+                if self.rgs_url.is_some() {
+                    tracing::warn!("LDK Node rgs_url is ignored because gossip_source_type is p2p");
+                }
+                Ok(cdk_ldk_node::GossipSource::P2P)
+            }
+            "rgs" => {
+                let rgs_url = self.rgs_url.clone().ok_or_else(|| {
+                    anyhow::anyhow!("LDK Node rgs_url must be set when gossip_source_type is rgs")
+                })?;
+                Ok(cdk_ldk_node::GossipSource::RapidGossipSync(rgs_url))
+            }
+            _ => bail!("Unknown LDK Node gossip_source_type: {gossip_source_type}"),
+        }
+    }
 }
 
 #[cfg(all(test, feature = "ldk-node"))]
 mod ldk_node_tests {
     use super::*;
+
+    const RGS_URL: &str = "https://rgs.example.com/snapshot";
+
+    fn gossip_config(gossip_source_type: Option<&str>, rgs_url: Option<&str>) -> config::LdkNode {
+        config::LdkNode {
+            gossip_source_type: gossip_source_type.map(str::to_string),
+            rgs_url: rgs_url.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    fn assert_p2p(source: cdk_ldk_node::GossipSource) {
+        match source {
+            cdk_ldk_node::GossipSource::P2P => {}
+            cdk_ldk_node::GossipSource::RapidGossipSync(url) => {
+                panic!("expected P2P gossip source, got RGS with {url}")
+            }
+        }
+    }
+
+    fn assert_rgs(source: cdk_ldk_node::GossipSource) {
+        match source {
+            cdk_ldk_node::GossipSource::RapidGossipSync(url) => assert_eq!(url, RGS_URL),
+            cdk_ldk_node::GossipSource::P2P => panic!("expected RGS gossip source, got P2P"),
+        }
+    }
+
+    #[test]
+    fn unset_gossip_source_type_uses_p2p_without_rgs_url() {
+        assert_p2p(
+            gossip_config(None, None)
+                .gossip_source()
+                .expect("default gossip config should parse"),
+        );
+    }
+
+    #[test]
+    fn unset_gossip_source_type_uses_rgs_with_rgs_url() {
+        assert_rgs(
+            gossip_config(None, Some(RGS_URL))
+                .gossip_source()
+                .expect("rgs_url without gossip_source_type should parse"),
+        );
+    }
+
+    #[test]
+    fn p2p_gossip_source_type_overrides_rgs_url() {
+        assert_p2p(
+            gossip_config(Some("P2P"), Some(RGS_URL))
+                .gossip_source()
+                .expect("p2p gossip config should parse"),
+        );
+    }
+
+    #[test]
+    fn p2p_gossip_source_type_without_rgs_url() {
+        assert_p2p(
+            gossip_config(Some("p2p"), None)
+                .gossip_source()
+                .expect("p2p gossip config should parse"),
+        );
+    }
+
+    #[test]
+    fn rgs_gossip_source_type_uses_rgs_url() {
+        assert_rgs(
+            gossip_config(Some("RgS"), Some(RGS_URL))
+                .gossip_source()
+                .expect("rgs gossip config should parse"),
+        );
+    }
+
+    #[test]
+    fn rgs_gossip_source_type_requires_rgs_url() {
+        let error = gossip_config(Some("rgs"), None)
+            .gossip_source()
+            .expect_err("rgs gossip config without a URL should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "LDK Node rgs_url must be set when gossip_source_type is rgs"
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_gossip_source_type() {
+        let error = gossip_config(Some("gossip"), Some(RGS_URL))
+            .gossip_source()
+            .expect_err("unknown gossip source should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "Unknown LDK Node gossip_source_type: gossip"
+        );
+    }
+
+    #[test]
+    fn default_fee_reserve_settings() {
+        let config = config::LdkNode::default();
+
+        assert_eq!(config.fee_percent, 0.04);
+        assert_eq!(config.reserve_fee_min, 4.into());
+    }
 
     #[test]
     fn parses_electrum_chain_source() {
@@ -491,10 +625,7 @@ impl PaymentBackendSetup for config::LdkNode {
         let chain_source = self.chain_source()?;
 
         // Parse gossip source from config
-        let gossip_source = match self.rgs_url.clone() {
-            Some(rgs_url) => cdk_ldk_node::GossipSource::RapidGossipSync(rgs_url),
-            None => cdk_ldk_node::GossipSource::P2P,
-        };
+        let gossip_source = self.gossip_source()?;
 
         // Get storage directory path
         let storage_dir_path = if let Some(dir_path) = &self.storage_dir_path {

@@ -264,8 +264,8 @@ onchain_backend = "fakewallet"
 # allow_self_payment = true # Optional, defaults to true. Allow circular payments back to this LND node.
 
 # [ldk_node]
-# fee_percent = 0.02         # Optional, defaults to 2%
-# reserve_fee_min = 2        # Optional, defaults to 2 sats
+# fee_percent = 0.04         # Optional, defaults to 4%
+# reserve_fee_min = 4        # Optional, defaults to 4 sats
 # bitcoin_network = "signet"  # REQUIRED: mainnet, testnet, signet, regtest (no default)
 # chain_source_type = "esplora"  # esplora, electrum, bitcoinrpc
 # 
@@ -280,7 +280,7 @@ onchain_backend = "fakewallet"
 # 
 # # Mutinynet configuration (recommended for testing)
 # esplora_url = "https://mutinynet.com/api"
-# gossip_source_type = "rgs"  # Use RGS for better performance
+# gossip_source_type = "rgs"  # p2p or rgs (see "Gossip source configuration" below)
 # rgs_url = "https://rgs.mutinynet.com/snapshot/0"
 # storage_dir_path = "~/.cdk-ldk-node/mutinynet"
 # log_dir_path = ".cdk-ldk-node/ldk-node/ldk_node.log"
@@ -312,8 +312,10 @@ onchain_backend = "fakewallet"
 # ldk_node_port = 8090
 
 # 
-# # Gossip source configuration  
-# gossip_source_type = "p2p"  # p2p (direct peer-to-peer) or rgs (rapid gossip sync)
+# # Gossip source configuration (gossip_source_type is set above)
+# # "p2p" learns gossip directly from peers and ignores rgs_url.
+# # "rgs" uses Rapid Gossip Sync and requires rgs_url.
+# # If gossip_source_type is omitted, RGS is used when rgs_url is set, otherwise P2P.
 # 
 # # Webserver configuration for LDK node management interface
 # webserver_host = "127.0.0.1"  # Default: 127.0.0.1

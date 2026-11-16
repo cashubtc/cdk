@@ -694,8 +694,10 @@ pub struct LdkNode {
     /// LDK node announcement addresses
     pub ldk_node_announce_addresses: Option<Vec<String>>,
     /// Gossip source type (p2p or rgs)
+    ///
+    /// When unset, RGS is used if `rgs_url` is set and P2P otherwise.
     pub gossip_source_type: Option<String>,
-    /// Rapid Gossip Sync URL (when gossip_source_type = "rgs")
+    /// Rapid Gossip Sync URL (required when gossip_source_type = "rgs")
     pub rgs_url: Option<String>,
     /// Webserver host (defaults to 127.0.0.1)
     #[serde(default = "default_webserver_host")]
