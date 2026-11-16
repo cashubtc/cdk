@@ -422,6 +422,63 @@ cdk-mintd config show
 # Restart mintd to use the replacement.
 ```
 
+### Nostr mint discovery (optional)
+
+Build with `cargo build -p cdk-mintd --release --features mint-discovery` to
+enable [NIP-87](https://github.com/nostr-protocol/nips/blob/master/87.md)
+announcements. This reuses `cdk-nostr` and its existing SDK dependencies; the
+feature is excluded from default builds. Add this section to the configuration
+document, then import it using `config init` for a new configuration or
+`config apply` for an existing one and restart:
+
+```toml
+[mint_discovery]
+secret_key = "env:CDK_MINTD_NOSTR_SECRET_KEY"
+relays = ["wss://relay.example.com"]
+network = "mainnet"
+```
+
+Supply a stable, dedicated Nostr secret key (hex or `nsec`) through the referenced
+environment variable or a `file:/absolute/path` reference. It is independent of
+the Cashu signing seed and works with remote signatories. Keep the same key
+across restarts so the announcement replaces its predecessor. Set the network
+explicitly to `mainnet`, `testnet`, `signet` or `regtest`, matching the mint's
+payment backends. There are no default relays and no publication without this
+section. Builds without the feature reject the section as unsupported.
+Choose relays that accept writes without NIP-42 authentication.
+
+After startup succeeds, mintd publishes kind `38172` with `[info].url`, the
+effective `/v1/info` public key, enabled NUTs, and name/description/icon metadata.
+The first send waits one second after signing so sequential rapid restarts
+produce strictly newer timestamps rather than competing in Nostr's same-second
+event-ID tie-break. HTTP serving starts immediately during this wait.
+Relay outages do not block serving requests. Delivery waits for relay `OK`
+acknowledgements, retries only failed relays after 1, 2, 4, ... minutes (capped
+at one hour), and cancels on shutdown. Each attempt is limited to 30 seconds;
+connections close between attempts and after success. Retries reuse the same
+signed event. There is no periodic refresh after success; restart to publish
+metadata changes, including changes made through management RPC. Removing the
+section stops future publication but does not delete existing relay events.
+
+Applications embedding CDK can use `cdk_nostr::nip87::mint_announcement` with
+feature `nip87`, then sign and send through the crate's SDK re-exports.
+
+To run a full CLI-to-relay test, install `nostr-rs-relay` and `nak` on `PATH`
+(`nostr-rs-relay` is also in `nix develop .#regtest`), then run from the workspace:
+
+```bash
+cargo build -p cdk-mintd --no-default-features --features sqlite,fakewallet,mint-discovery
+python3 misc/test_mint_discovery.py --output-dir /tmp/cdk-nip87-e2e
+```
+
+Use a new output directory each time. The test uses isolated databases and
+public test keys, starts only loopback services, and stops its processes on exit.
+It verifies stored events with the independent `nak` client, compares them to
+`/v1/info`, checks replacement after config apply/restart, exercises the real
+one-minute outage retry, and checks shutdown and disabling publication. Logs,
+events, metadata and `result.json` remain in the output directory. Allow about
+two minutes; no Bitcoin or Lightning node is needed.
+
 ### Fake Wallet Custom Payment Methods
 
 The fake wallet backend can advertise custom payment methods for testing NUT-04

@@ -871,6 +871,7 @@
 
           "mintd-main" = [
             "-p cdk-mintd"
+            "-p cdk-mintd --no-default-features --features sqlite,fakewallet,mint-discovery"
             "-p cdk-mintd --features redis"
             "-p cdk-mintd --features sqlcipher"
             "-p cdk-signatory"
@@ -1635,6 +1636,7 @@
                   cargo test --lib -p cdk-sqlite --features sqlcipher
                   cargo test --bins -p cdk-cli --features redb
                   cargo check -p cdk-mintd --features redis
+                  cargo test --lib -p cdk-mintd --no-default-features --features sqlite,fakewallet,mint-discovery
                   cargo test --lib -p cdk-common --no-default-features --features wallet
                   cargo test --lib -p cdk-common --no-default-features --features mint
                   cargo test --lib -p cdk-sql-common --no-default-features --features wallet
