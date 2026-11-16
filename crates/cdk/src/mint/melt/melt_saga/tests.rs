@@ -1394,7 +1394,7 @@ async fn setup_internal_melt(
     MeltQuote,
     MeltRequest<cdk_common::QuoteId>,
     MeltSaga<crate::mint::melt::melt_saga::state::SetupComplete>,
-    Vec<cdk_common::PublicKey>,
+    Vec<cdk_common::ProofId>,
 ) {
     let proofs = mint_test_proofs(mint, Amount::from(10_000)).await.unwrap();
     let input_ys = proofs.ys().unwrap();
@@ -4944,7 +4944,7 @@ async fn assert_saga_not_exists(mint: &crate::mint::Mint, operation_id: &uuid::U
 /// Helper: Verify proofs are in expected state
 async fn assert_proofs_state(
     mint: &crate::mint::Mint,
-    ys: &[cdk_common::PublicKey],
+    ys: &[cdk_common::ProofId],
     expected_state: Option<State>,
 ) {
     let states = mint.localstore.get_proofs_states(ys).await.unwrap();

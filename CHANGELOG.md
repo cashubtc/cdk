@@ -10,12 +10,23 @@
 ### Added
 
 - cdk/cdk-mintd: Select the keyset version for new keysets explicitly with `MintBuilder::with_keyset_version` or the mintd `keyset_version` setting (`CDK_MINTD_KEYSET_VERSION`), which takes precedence over `use_keyset_v2`.
+- cashu/cdk/cdk-signatory/cdk-mintd: Add opt-in BLS12-381 v3 keysets (keyset ID version `02`). New keysets still default to v2; select v3 with `MintBuilder::with_keyset_version`, the mintd `keyset_version = "v3"` setting (`CDK_MINTD_KEYSET_VERSION`), or `cdk-mint-cli rotate-next-keyset --keyset-version v3`. Wallets without BLS support cannot use v3 keysets. See the [v0.19 migration guide](docs/migrations/v0.19.md#bls-v3-keysets).
+- cdk/cdk-ffi: Add `Wallet::verify_token_signatures`, which checks DLEQ proofs for v1/v2 keysets and BLS pairings for v3 keysets.
 
 ### Changed
 
 - cdk: **BREAKING** - `KeysetRotation::use_keyset_v2: bool` is replaced by `keyset_id_type: KeySetVersion`.
 - cdk-mintd: **BREAKING** - `Info::from_env` now returns `Result<Info, config::ConfigError>` to report invalid keyset version overrides.
 - cashu: **BREAKING** - `SecretKey` no longer implements `Deref` to `secp256k1::SecretKey`; use `as_secp256k1()` and the explicit key methods instead. See the [v0.19 migration guide](docs/migrations/v0.19.md#secretkey-no-longer-dereferences-to-secp256k1).
+- cashu: **BREAKING** - `PublicKey` and `SecretKey` remain secp256k1-only. Blind-signature points now use `DhkePoint`, mint public keys use `MintPublicKey`, blinding factors use `BlindingFactor`, and mint signing keys use `MintSecretKey`; these role-specific types support the curves required by their protocol role. `KeySetVersion` gains `Version02`. See the [v0.19 migration guide](docs/migrations/v0.19.md#bls-v3-keysets).
+- cashu: **BREAKING** - `DhkePoint` is parsed by keyset version with `from_slice_for_version`/`from_hex_for_version`; the length-based `from_slice`/`from_hex` are renamed `from_slice_any_curve`/`from_hex_any_curve`, and `FromStr`/`Deserialize` are removed. See the [v0.19 migration guide](docs/migrations/v0.19.md#rust-api-changes).
+- cashu: **BREAKING** - `AuthToken::BlindAuth` holds a `Box<BlindAuthToken>`.
+- cdk-signatory: **BREAKING** - The signatory gRPC schema version is now 4. Upgrade remote signatories and mints together.
+- cdk-sql-common: Wallet transaction history accepts 48-byte BLS proof identifiers (migration `20261116000000`).
+
+### Deprecated
+
+- cdk/cdk-ffi: `Wallet::verify_token_dleq` is deprecated in favor of `verify_token_signatures`.
 
 ### Fixed
 

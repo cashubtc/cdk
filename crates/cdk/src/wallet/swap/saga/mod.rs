@@ -618,7 +618,7 @@ mod tests {
             .map(|blinded_message| BlindSignature {
                 amount: Amount::from(1),
                 keyset_id: blinded_message.keyset_id,
-                c: Nut01SecretKey::generate().public_key(),
+                c: Nut01SecretKey::generate().public_key().into(),
                 dleq: None,
             })
             .collect();

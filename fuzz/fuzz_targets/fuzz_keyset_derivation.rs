@@ -17,7 +17,7 @@ use std::str::FromStr;
 use cashu::nuts::nut00::CurrencyUnit;
 use cashu::nuts::nut01::Keys;
 use cashu::secret::Secret as SecretString;
-use cashu::{Amount, Id, PublicKey, SecretKey};
+use cashu::{Amount, BlindingFactor, Id, MintPublicKey};
 use cdk_fuzz::pubkey_from;
 use libfuzzer_sys::arbitrary::{Arbitrary, Unstructured};
 use libfuzzer_sys::fuzz_target;
@@ -76,9 +76,9 @@ fn currency_unit_from(tag: u8, custom: &Option<String>) -> CurrencyUnit {
 
 fuzz_target!(|input: Input| {
     // Build a `Keys` map out of the fuzz entries.
-    let mut map: BTreeMap<Amount, PublicKey> = BTreeMap::new();
+    let mut map: BTreeMap<Amount, MintPublicKey> = BTreeMap::new();
     for (amt, seed) in &input.key_entries {
-        map.insert(Amount::from(*amt), pubkey_from(*seed));
+        map.insert(Amount::from(*amt), pubkey_from(*seed).into());
     }
     if map.is_empty() {
         return;
@@ -114,7 +114,7 @@ fuzz_target!(|input: Input| {
     let id_for_nut13 = if input.use_v2_id { id_v2 } else { id_v1 };
 
     let derived_secret = SecretString::from_seed(&input.seed, id_for_nut13, input.counter);
-    let derived_r = SecretKey::from_seed(&input.seed, id_for_nut13, input.counter);
+    let derived_r = BlindingFactor::from_seed(&input.seed, id_for_nut13, input.counter);
 
     // Stability check: re-deriving with identical inputs must match.
     if let Ok(ref s1) = derived_secret {
@@ -123,8 +123,8 @@ fuzz_target!(|input: Input| {
         assert_eq!(s1.as_bytes(), s2.as_bytes());
     }
     if let Ok(ref r1) = derived_r {
-        let r2 = SecretKey::from_seed(&input.seed, id_for_nut13, input.counter)
+        let r2 = BlindingFactor::from_seed(&input.seed, id_for_nut13, input.counter)
             .expect("second r derivation must succeed when first did");
-        assert_eq!(r1.as_secret_bytes(), r2.as_secret_bytes());
+        assert_eq!(r1.to_secret_bytes(), r2.to_secret_bytes());
     }
 });

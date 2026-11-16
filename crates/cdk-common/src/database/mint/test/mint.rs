@@ -507,13 +507,13 @@ where
     // the logical order returned to the client.
     let mut blinded_messages = vec![
         cashu::BlindedMessage {
-            blinded_secret: SecretKey::generate().public_key(),
+            blinded_secret: SecretKey::generate().public_key().into(),
             keyset_id,
             amount: Amount::from(100u64),
             witness: None,
         },
         cashu::BlindedMessage {
-            blinded_secret: SecretKey::generate().public_key(),
+            blinded_secret: SecretKey::generate().public_key().into(),
             keyset_id,
             amount: Amount::from(200u64),
             witness: None,
@@ -565,7 +565,7 @@ where
     let keyset_id = Id::from_str("001711afb1de20cb").unwrap();
 
     // Create a dummy blinded message
-    let blinded_secret = SecretKey::generate().public_key();
+    let blinded_secret = SecretKey::generate().public_key().into();
     let blinded_message = cashu::BlindedMessage {
         blinded_secret,
         keyset_id,
@@ -576,7 +576,7 @@ where
 
     // First, "sign" it by adding to blind_signature (simulate successful mint)
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    let c = SecretKey::generate().public_key();
+    let c = SecretKey::generate().public_key().into();
     let blind_sig = cashu::BlindSignature {
         amount: Amount::from(100u64),
         keyset_id,
@@ -621,7 +621,7 @@ where
     let keyset_id = Id::from_str("001711afb1de20cb").unwrap();
 
     // Create a dummy blinded message
-    let blinded_secret = SecretKey::generate().public_key();
+    let blinded_secret = SecretKey::generate().public_key().into();
     let blinded_message = cashu::BlindedMessage {
         blinded_secret,
         keyset_id,
@@ -735,7 +735,7 @@ where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
     let blinded_messages = vec![cashu::BlindedMessage {
-        blinded_secret: SecretKey::generate().public_key(),
+        blinded_secret: SecretKey::generate().public_key().into(),
         keyset_id: Id::from_str("001711afb1de20cb").unwrap(),
         amount: Amount::from(100u64),
         witness: None,
@@ -775,7 +775,7 @@ where
         cashu::PaymentMethod::Known(KnownMethod::Bolt11),
     );
     let blinded_message = || cashu::BlindedMessage {
-        blinded_secret: SecretKey::generate().public_key(),
+        blinded_secret: SecretKey::generate().public_key().into(),
         keyset_id,
         amount: Amount::from(100u64),
         witness: None,
@@ -798,7 +798,7 @@ where
         &[cashu::BlindSignature {
             amount: Amount::from(100u64),
             keyset_id,
-            c: SecretKey::generate().public_key(),
+            c: SecretKey::generate().public_key().into(),
             dleq: None,
         }],
         None,
@@ -832,7 +832,7 @@ pub async fn concurrent_reservation_of_output_reports_pending<F>(
     F: std::future::Future<Output = ()>,
 {
     let blinded_messages = vec![cashu::BlindedMessage {
-        blinded_secret: SecretKey::generate().public_key(),
+        blinded_secret: SecretKey::generate().public_key().into(),
         keyset_id: Id::from_str("001711afb1de20cb").unwrap(),
         amount: Amount::from(100u64),
         witness: None,
@@ -888,7 +888,7 @@ where
     let keyset_id = Id::from_str("001711afb1de20cb").unwrap();
 
     // Create dummy blinded message
-    let blinded_secret = SecretKey::generate().public_key();
+    let blinded_secret = SecretKey::generate().public_key().into();
     let blinded_message = cashu::BlindedMessage {
         blinded_secret,
         keyset_id,
@@ -1578,8 +1578,8 @@ where
     let keyset_id = Id::from_str("001711afb1de20cb").unwrap();
 
     // Create blinded messages
-    let blinded_secret1 = SecretKey::generate().public_key();
-    let blinded_secret2 = SecretKey::generate().public_key();
+    let blinded_secret1 = SecretKey::generate().public_key().into();
+    let blinded_secret2 = SecretKey::generate().public_key().into();
 
     let blinded_message1 = cashu::BlindedMessage {
         blinded_secret: blinded_secret1,
@@ -1993,12 +1993,12 @@ where
     use std::str::FromStr;
 
     let keyset_id = Id::from_str("001711afb1de20cb").unwrap();
-    let blinded_message = SecretKey::generate().public_key();
+    let blinded_message = SecretKey::generate().public_key().into();
 
     let sig = BlindSignature {
         amount: Amount::from(100u64),
         keyset_id,
-        c: SecretKey::generate().public_key(),
+        c: SecretKey::generate().public_key().into(),
         dleq: None,
     };
 

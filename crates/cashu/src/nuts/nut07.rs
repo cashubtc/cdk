@@ -8,7 +8,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use super::nut01::PublicKey;
+use super::nut01::ProofId;
 use super::Witness;
 
 /// NUT07 Error
@@ -73,7 +73,7 @@ impl FromStr for State {
 pub struct CheckStateRequest {
     /// Y's of the proofs to check
     #[serde(rename = "Ys")]
-    pub ys: Vec<PublicKey>,
+    pub ys: Vec<ProofId>,
 }
 
 /// Proof state [NUT-07]
@@ -81,15 +81,15 @@ pub struct CheckStateRequest {
 pub struct ProofState {
     /// Y of proof
     #[serde(rename = "Y")]
-    pub y: PublicKey,
+    pub y: ProofId,
     /// State of proof
     pub state: State,
     /// Witness data if it is supplied
     pub witness: Option<Witness>,
 }
 
-impl From<(PublicKey, State)> for ProofState {
-    fn from(value: (PublicKey, State)) -> Self {
+impl From<(ProofId, State)> for ProofState {
+    fn from(value: (ProofId, State)) -> Self {
         Self {
             y: value.0,
             state: value.1,

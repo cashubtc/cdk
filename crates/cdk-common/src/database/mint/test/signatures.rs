@@ -3,7 +3,7 @@
 use std::cmp::Reverse;
 use std::str::FromStr;
 
-use cashu::{Amount, BlindSignature, Id, SecretKey};
+use cashu::{Amount, BlindSignature, DhkePoint, Id, SecretKey};
 
 use crate::database::mint::{Database, Error, KeysDatabase, QuoteId};
 use crate::database::MintSignaturesDatabase;
@@ -19,23 +19,23 @@ where
     // Create blinded messages and signatures
     // Use reverse key order to verify physical lock ordering preserves the
     // request order represented by order_index.
-    let mut blinded_messages = [
-        SecretKey::generate().public_key(),
-        SecretKey::generate().public_key(),
+    let mut blinded_messages: [DhkePoint; 2] = [
+        SecretKey::generate().public_key().into(),
+        SecretKey::generate().public_key().into(),
     ];
     blinded_messages.sort_unstable_by_key(|message| Reverse(message.to_bytes()));
 
     let sig1 = BlindSignature {
         amount: Amount::from(100u64),
         keyset_id,
-        c: SecretKey::generate().public_key(),
+        c: SecretKey::generate().public_key().into(),
         dleq: None,
     };
 
     let sig2 = BlindSignature {
         amount: Amount::from(200u64),
         keyset_id,
-        c: SecretKey::generate().public_key(),
+        c: SecretKey::generate().public_key().into(),
         dleq: None,
     };
 
@@ -71,20 +71,20 @@ where
     let keyset_id2 = Id::from_str("002811afb1de20cb").unwrap();
 
     // Create signatures for keyset 1
-    let blinded_message1 = SecretKey::generate().public_key();
+    let blinded_message1 = SecretKey::generate().public_key().into();
     let sig1 = BlindSignature {
         amount: Amount::from(100u64),
         keyset_id: keyset_id1,
-        c: SecretKey::generate().public_key(),
+        c: SecretKey::generate().public_key().into(),
         dleq: None,
     };
 
     // Create signatures for keyset 2
-    let blinded_message2 = SecretKey::generate().public_key();
+    let blinded_message2 = SecretKey::generate().public_key().into();
     let sig2 = BlindSignature {
         amount: Amount::from(200u64),
         keyset_id: keyset_id2,
-        c: SecretKey::generate().public_key(),
+        c: SecretKey::generate().public_key().into(),
         dleq: None,
     };
 
@@ -125,31 +125,31 @@ where
     let quote_id2 = QuoteId::new();
 
     // Keep request order opposite to physical lock order so order_index is exercised.
-    let mut blinded_messages = [
-        SecretKey::generate().public_key(),
-        SecretKey::generate().public_key(),
+    let mut blinded_messages: [DhkePoint; 2] = [
+        SecretKey::generate().public_key().into(),
+        SecretKey::generate().public_key().into(),
     ];
     blinded_messages.sort_unstable_by_key(|message| Reverse(message.to_bytes()));
     let sig1 = BlindSignature {
         amount: Amount::from(100u64),
         keyset_id,
-        c: SecretKey::generate().public_key(),
+        c: SecretKey::generate().public_key().into(),
         dleq: None,
     };
 
     let sig2 = BlindSignature {
         amount: Amount::from(200u64),
         keyset_id,
-        c: SecretKey::generate().public_key(),
+        c: SecretKey::generate().public_key().into(),
         dleq: None,
     };
 
     // Create signature for quote 2
-    let blinded_message3 = SecretKey::generate().public_key();
+    let blinded_message3 = SecretKey::generate().public_key().into();
     let sig3 = BlindSignature {
         amount: Amount::from(300u64),
         keyset_id,
-        c: SecretKey::generate().public_key(),
+        c: SecretKey::generate().public_key().into(),
         dleq: None,
     };
 
@@ -194,28 +194,28 @@ where
     let keyset_id = Id::from_str("001711afb1de20cb").unwrap();
 
     // Create multiple signatures
-    let blinded_message1 = SecretKey::generate().public_key();
-    let blinded_message2 = SecretKey::generate().public_key();
-    let blinded_message3 = SecretKey::generate().public_key();
+    let blinded_message1 = SecretKey::generate().public_key().into();
+    let blinded_message2 = SecretKey::generate().public_key().into();
+    let blinded_message3 = SecretKey::generate().public_key().into();
 
     let sig1 = BlindSignature {
         amount: Amount::from(100u64),
         keyset_id,
-        c: SecretKey::generate().public_key(),
+        c: SecretKey::generate().public_key().into(),
         dleq: None,
     };
 
     let sig2 = BlindSignature {
         amount: Amount::from(200u64),
         keyset_id,
-        c: SecretKey::generate().public_key(),
+        c: SecretKey::generate().public_key().into(),
         dleq: None,
     };
 
     let sig3 = BlindSignature {
         amount: Amount::from(300u64),
         keyset_id,
-        c: SecretKey::generate().public_key(),
+        c: SecretKey::generate().public_key().into(),
         dleq: None,
     };
 
@@ -245,7 +245,7 @@ pub async fn get_nonexistent_blind_signatures<DB>(db: DB)
 where
     DB: Database<Error> + KeysDatabase<Err = Error> + MintSignaturesDatabase<Err = Error>,
 {
-    let blinded_message = SecretKey::generate().public_key();
+    let blinded_message = SecretKey::generate().public_key().into();
 
     // Try to retrieve non-existent signature
     let retrieved = db.get_blind_signatures(&[blinded_message]).await.unwrap();
@@ -259,12 +259,12 @@ where
     DB: Database<Error> + KeysDatabase<Err = Error> + MintSignaturesDatabase<Err = Error>,
 {
     let keyset_id = Id::from_str("001711afb1de20cb").unwrap();
-    let blinded_message = SecretKey::generate().public_key();
+    let blinded_message = SecretKey::generate().public_key().into();
 
     let sig = BlindSignature {
         amount: Amount::from(100u64),
         keyset_id,
-        c: SecretKey::generate().public_key(),
+        c: SecretKey::generate().public_key().into(),
         dleq: None,
     };
 
@@ -290,12 +290,12 @@ where
     DB: Database<Error> + KeysDatabase<Err = Error> + MintSignaturesDatabase<Err = Error>,
 {
     let keyset_id = Id::from_str("001711afb1de20cb").unwrap();
-    let blinded_message = SecretKey::generate().public_key();
+    let blinded_message = SecretKey::generate().public_key().into();
 
     let sig = BlindSignature {
         amount: Amount::from(u64::MAX),
         keyset_id,
-        c: SecretKey::generate().public_key(),
+        c: SecretKey::generate().public_key().into(),
         dleq: None,
     };
 

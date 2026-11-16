@@ -10,7 +10,7 @@ use cashu::dhke::{
 use cashu::nuts::nut00::BlindSignature;
 use cashu::nuts::nut01::Keys;
 use cashu::secret::Secret;
-use cashu::{Amount, Id, SecretKey};
+use cashu::{Amount, BlindingFactor, Id, MintSecretKey, SecretKey};
 use cdk_fuzz::arbitrary_ext::IdArb;
 use cdk_fuzz::secret_key_from;
 use libfuzzer_sys::arbitrary::{Arbitrary, Unstructured};
@@ -56,7 +56,9 @@ fuzz_target!(|input: Input| {
     let keyset_id: Id = input.keyset_id.into_inner();
     let mint_key = secret_key_from(input.mint_key);
     let wrong_key = distinct_key(input.wrong_key, &mint_key);
-    let blinding = secret_key_from(input.blinding);
+    let blinding = BlindingFactor::from(secret_key_from(input.blinding));
+    let mint_key = MintSecretKey::from(mint_key);
+    let wrong_key = MintSecretKey::from(wrong_key);
 
     let (blinded, returned_blinding) = blind_message(&input.message, Some(blinding.clone()))
         .expect("valid message and scalar must blind");

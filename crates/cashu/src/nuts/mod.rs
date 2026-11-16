@@ -46,10 +46,13 @@ pub use nut00::{
 };
 #[cfg(feature = "wallet")]
 pub use nut00::{PreMint, PreMintSecrets};
-pub use nut01::{Keys, KeysResponse, PublicKey, SecretKey};
+pub use nut01::{
+    BlindingFactor, DhkePoint, Keys, KeysResponse, MintPublicKey, MintSecretKey, ProofId,
+    PublicKey, SecretKey,
+};
 #[cfg(feature = "mint")]
 pub use nut02::MintKeySet;
-pub use nut02::{Id, KeySet, KeySetInfo, KeysetResponse};
+pub use nut02::{Id, KeySet, KeySetInfo, KeySetVersion, KeysetResponse};
 #[cfg(feature = "wallet")]
 pub use nut03::PreSwap;
 pub use nut03::{SwapRequest, SwapResponse};
@@ -69,7 +72,7 @@ pub use nut10::{
     SpendingConditions,
 };
 pub use nut11::{P2PKWitness, SigFlag};
-pub use nut12::{BlindSignatureDleq, ProofDleq};
+pub use nut12::{verify_proof_signatures, BlindSignatureDleq, LegacyDleq, ProofDleq};
 pub use nut14::HTLCWitness;
 pub use nut15::{Mpp, MppMethodSettings, Settings as NUT15Settings};
 pub use nut16::{TokenUrDecoder, TokenUrEncoder};

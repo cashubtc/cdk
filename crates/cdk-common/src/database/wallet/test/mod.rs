@@ -15,7 +15,7 @@ use cashu::{Amount, CurrencyUnit, MeltQuoteState, MintQuoteState, SecretKey};
 
 use super::*;
 use crate::mint_url::MintUrl;
-use crate::nuts::{Id, KeySetInfo, Keys, MintInfo, Proof, State};
+use crate::nuts::{Id, KeySetInfo, Keys, MintInfo, Proof, ProofId, State};
 use crate::wallet::{
     MeltQuote, MintQuote, OperationData, ProofInfo, SwapOperationData, SwapSagaState, Transaction,
     TransactionDirection, TransactionStatus, WalletSaga, WalletSagaState,
@@ -38,7 +38,7 @@ fn test_keys_with_id() -> (Keys, Id) {
     for (i, amount) in [1u64, 2, 4, 8].iter().enumerate() {
         let sk = SecretKey::from_slice(&secret_bytes[i]).expect("valid secret key");
         let pk = sk.public_key();
-        keys_map.insert(Amount::from(*amount), pk);
+        keys_map.insert(Amount::from(*amount), pk.into());
     }
 
     let keys = Keys::new(keys_map);
@@ -84,7 +84,7 @@ fn test_proof(keyset_id: Id, amount: u64) -> Proof {
         amount: Amount::from(amount),
         keyset_id,
         secret: Secret::generate(),
-        c: SecretKey::generate().public_key(),
+        c: SecretKey::generate().public_key().into(),
         witness: None,
         dleq: None,
         p2pk_e: None,
@@ -133,7 +133,7 @@ fn test_melt_quote() -> MeltQuote {
 
 /// Create a test transaction
 fn test_transaction(mint_url: MintUrl, direction: TransactionDirection) -> Transaction {
-    let ys = vec![SecretKey::generate().public_key()];
+    let ys = vec![SecretKey::generate().public_key().into()];
     Transaction {
         mint_url,
         direction,
@@ -1054,24 +1054,19 @@ where
     assert_eq!(retrieved.unwrap().id(), tx_id);
 }
 
-/// Preserve duplicates and ordering in transaction history.
+/// Preserve point kinds, duplicates and ordering in transaction history.
 pub async fn transaction_proof_identifiers<DB>(db: DB)
 where
     DB: Database<crate::database::Error>,
 {
-    let secp = SecretKey::generate().public_key();
-    let second = SecretKey::generate().public_key();
+    let secp: ProofId = SecretKey::generate().public_key().into();
+    let bls: ProofId =
+        crate::nuts::nut01::BlsG1PublicKey::hash_to_curve(b"transaction proof").into();
     // Cross multiple SQL insert batches, including a partial final batch.
     let many = (0..601)
-        .map(|index| if index % 2 == 0 { second } else { secp })
+        .map(|index| if index % 2 == 0 { bls } else { secp })
         .collect();
-    let cases = [
-        vec![],
-        vec![secp],
-        vec![second],
-        vec![second, secp, second],
-        many,
-    ];
+    let cases = [vec![], vec![secp], vec![bls], vec![bls, secp, bls], many];
     let mut expected = Vec::new();
     for ys in cases {
         let mut transaction = test_transaction(test_mint_url(), TransactionDirection::Incoming);
@@ -1097,7 +1092,7 @@ where
 
     let mut updated = expected.pop().unwrap();
     let id = updated.id();
-    updated.ys = vec![secp, second];
+    updated.ys = vec![secp, bls];
     db.add_transaction(updated.clone()).await.unwrap();
     assert_eq!(
         db.get_transaction(id).await.unwrap().unwrap().ys,

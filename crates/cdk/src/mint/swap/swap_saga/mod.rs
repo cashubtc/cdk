@@ -4,7 +4,7 @@ use std::sync::Arc;
 use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::{Operation, Saga, SwapSagaState};
 use cdk_common::nuts::BlindedMessage;
-use cdk_common::{database, Error, Proofs, ProofsMethods, PublicKey, QuoteId, State};
+use cdk_common::{database, DhkePoint, Error, Proofs, ProofsMethods, QuoteId, State};
 use tracing::instrument;
 
 use self::compensation::{CompensatingAction, RemoveSwapSetup};
@@ -225,7 +225,7 @@ impl<'a> SwapSaga<'a, Initial> {
 
         // Store data in saga struct (avoid duplication in state enum)
         let blinded_messages_vec = blinded_messages.to_vec();
-        let blinded_secrets: Vec<PublicKey> = blinded_messages_vec
+        let blinded_secrets: Vec<DhkePoint> = blinded_messages_vec
             .iter()
             .map(|bm| bm.blinded_secret)
             .collect();
@@ -355,7 +355,7 @@ impl SwapSaga<'_, Signed> {
     /// - Propagates any database errors
     #[instrument(skip_all)]
     pub async fn finalize(mut self) -> Result<cdk_common::nuts::SwapResponse, Error> {
-        let blinded_secrets: Vec<PublicKey> = self
+        let blinded_secrets: Vec<DhkePoint> = self
             .state_data
             .blinded_messages
             .iter()

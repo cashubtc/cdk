@@ -16,8 +16,9 @@ use cdk_common::wallet::{
     self, MintQuote, ProofInfo, Transaction, TransactionDirection, TransactionId, TransactionStatus,
 };
 use cdk_common::{
-    database, Amount, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, PaymentMethod, Proof,
-    ProofDleq, PublicKey, SecretKey, SpendingConditions, State,
+    database, Amount, BlindingFactor, CurrencyUnit, DhkePoint, Id, KeySet, KeySetInfo, Keys,
+    MintInfo, PaymentMethod, Proof, ProofDleq, ProofId, PublicKey, SecretKey, SpendingConditions,
+    State,
 };
 use tracing::instrument;
 use uuid::Uuid;
@@ -566,10 +567,7 @@ where
     }
 
     #[instrument(skip(self, ys))]
-    async fn get_proofs_by_ys(
-        &self,
-        ys: Vec<PublicKey>,
-    ) -> Result<Vec<ProofInfo>, database::Error> {
+    async fn get_proofs_by_ys(&self, ys: Vec<ProofId>) -> Result<Vec<ProofInfo>, database::Error> {
         let conn = self
             .pool
             .get()
@@ -767,7 +765,7 @@ where
     async fn update_proofs(
         &self,
         added: Vec<ProofInfo>,
-        removed_ys: Vec<PublicKey>,
+        removed_ys: Vec<ProofId>,
     ) -> Result<(), database::Error> {
         let conn = self
             .pool
@@ -869,7 +867,7 @@ where
     #[instrument(skip(self))]
     async fn update_proofs_state(
         &self,
-        ys: Vec<PublicKey>,
+        ys: Vec<ProofId>,
         state: State,
     ) -> Result<(), database::Error> {
         let conn = self
@@ -1655,7 +1653,7 @@ where
     #[instrument(skip(self))]
     async fn reserve_proofs(
         &self,
-        ys: Vec<PublicKey>,
+        ys: Vec<ProofId>,
         operation_id: &uuid::Uuid,
     ) -> Result<(), database::Error> {
         let conn = self
@@ -2227,7 +2225,7 @@ fn sql_row_to_proof_info(row: Vec<Column>) -> Result<ProofInfo, Error> {
         (Some(e), Some(s), Some(r)) => {
             let e_key = SecretKey::from_slice(&e)?;
             let s_key = SecretKey::from_slice(&s)?;
-            let r_key = SecretKey::from_slice(&r)?;
+            let r_key = BlindingFactor::from_slice(&r)?;
 
             Some(ProofDleq::new(e_key, s_key, r_key))
         }
@@ -2242,7 +2240,11 @@ fn sql_row_to_proof_info(row: Vec<Column>) -> Result<ProofInfo, Error> {
         witness: column_as_nullable_string!(witness, |v| { serde_json::from_str(&v).ok() }, |v| {
             serde_json::from_slice(&v).ok()
         }),
-        c: column_as_string!(c, PublicKey::from_str, PublicKey::from_slice),
+        c: column_as_string!(
+            c,
+            DhkePoint::from_hex_any_curve,
+            DhkePoint::from_slice_any_curve
+        ),
         dleq,
         p2pk_e: column_as_nullable_binary!(p2pk_e)
             .map(|bytes| PublicKey::from_slice(&bytes))
@@ -2257,7 +2259,7 @@ fn sql_row_to_proof_info(row: Vec<Column>) -> Result<ProofInfo, Error> {
 
     Ok(ProofInfo {
         proof,
-        y: column_as_string!(y, PublicKey::from_str, PublicKey::from_slice),
+        y: column_as_string!(y, ProofId::from_str, ProofId::from_slice),
         mint_url: column_as_string!(mint_url, MintUrl::from_str),
         state: column_as_string!(state, State::from_str),
         spending_condition: column_as_nullable_string!(
@@ -2366,9 +2368,9 @@ fn sql_rows_to_transactions(
             }
         };
         if let Ok(transaction) = &mut transactions[index] {
-            let point = (|| -> Result<Option<PublicKey>, Error> {
+            let point = (|| -> Result<Option<ProofId>, Error> {
                 Ok(column_as_nullable_binary!(y)
-                    .map(|bytes| PublicKey::from_slice(&bytes))
+                    .map(|bytes| ProofId::from_slice(&bytes))
                     .transpose()?)
             })();
             match point {
@@ -2391,7 +2393,7 @@ fn sql_rows_to_transactions(
         .collect()
 }
 
-fn sql_row_to_transaction(row: Vec<Column>, ys: Vec<PublicKey>) -> Result<Transaction, Error> {
+fn sql_row_to_transaction(row: Vec<Column>, ys: Vec<ProofId>) -> Result<Transaction, Error> {
     unpack_into!(
         let (
             mint_url,

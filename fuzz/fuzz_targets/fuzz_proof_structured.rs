@@ -53,7 +53,7 @@ fuzz_target!(|input: Input| {
     // Only exercise verify_dleq when a dleq is attached; the None path is
     // trivial and already covered by `fuzz_dleq_verify`.
     if proof.dleq.is_some() {
-        let _ = proof.verify_dleq(mint_pk);
+        let _ = proof.verify_dleq(mint_pk.into());
     }
 
     // ---------------------------------------------------------------------

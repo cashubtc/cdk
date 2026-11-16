@@ -7,7 +7,7 @@ use cdk_common::nut00::KnownMethod;
 use cdk_common::nuts::MeltQuoteState;
 use cdk_common::payment::OutgoingPaymentOptions;
 use cdk_common::{
-    Amount, CurrencyUnit, Error, ProofsMethods, PublicKey, QuoteId, SpendingConditionVerification,
+    Amount, CurrencyUnit, DhkePoint, Error, ProofsMethods, QuoteId, SpendingConditionVerification,
     State,
 };
 #[cfg(feature = "prometheus")]
@@ -392,7 +392,7 @@ impl MeltSaga<Initial> {
         .map_err(Mint::map_add_blinded_messages_error)?;
 
         // Get blinded secrets for compensation
-        let blinded_secrets: Vec<PublicKey> = melt_request
+        let blinded_secrets: Vec<DhkePoint> = melt_request
             .outputs()
             .as_ref()
             .unwrap_or(&Vec::new())

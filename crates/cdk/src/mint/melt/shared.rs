@@ -10,7 +10,7 @@ use cdk_common::database::mint::Acquired;
 use cdk_common::database::{self, DynMintDatabase, DynMintTransaction};
 use cdk_common::mint::{self as mint_types};
 use cdk_common::nuts::{BlindSignature, BlindedMessage, MeltQuoteState, Proofs, State};
-use cdk_common::{Amount, CurrencyUnit, Error, PublicKey, QuoteId};
+use cdk_common::{Amount, CurrencyUnit, DhkePoint, Error, ProofId, QuoteId};
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::METRICS;
 use cdk_signatory::signatory::SignatoryKeySet;
@@ -146,8 +146,8 @@ pub async fn rollback_melt_quote(
     db: &DynMintDatabase,
     pubsub: &PubSubManager,
     quote_id: &QuoteId,
-    input_ys: &[PublicKey],
-    blinded_secrets: &[PublicKey],
+    input_ys: &[ProofId],
+    blinded_secrets: &[DhkePoint],
     operation_id: &uuid::Uuid,
 ) -> Result<(), Error> {
     if input_ys.is_empty() && blinded_secrets.is_empty() {
@@ -174,8 +174,8 @@ pub(crate) async fn rollback_setup_melt_quote(
     db: &DynMintDatabase,
     pubsub: &PubSubManager,
     quote_id: &QuoteId,
-    input_ys: &[PublicKey],
-    blinded_secrets: &[PublicKey],
+    input_ys: &[ProofId],
+    blinded_secrets: &[DhkePoint],
     operation_id: &uuid::Uuid,
     lock_token: &str,
 ) -> Result<(), Error> {
@@ -203,8 +203,8 @@ pub(crate) async fn rollback_failed_melt_quote(
     db: &DynMintDatabase,
     pubsub: &PubSubManager,
     quote_id: &QuoteId,
-    input_ys: &[PublicKey],
-    blinded_secrets: &[PublicKey],
+    input_ys: &[ProofId],
+    blinded_secrets: &[DhkePoint],
     operation_id: &uuid::Uuid,
     lock_token: &str,
 ) -> Result<(), Error> {
@@ -232,8 +232,8 @@ async fn rollback_melt_quote_inner(
     mut tx: DynMintTransaction,
     pubsub: &PubSubManager,
     quote_id: &QuoteId,
-    input_ys: &[PublicKey],
-    blinded_secrets: &[PublicKey],
+    input_ys: &[ProofId],
+    blinded_secrets: &[DhkePoint],
     operation_id: &uuid::Uuid,
     lock_token: &str,
     required_saga_state: Option<mint_types::MeltSagaState>,
@@ -712,7 +712,7 @@ pub(crate) async fn finalize_melt_core(
     mut tx: Box<dyn database::MintTransaction<database::Error> + Send + Sync>,
     pubsub: &PubSubManager,
     mut quote: Acquired<MeltQuote>,
-    input_ys: &[PublicKey],
+    input_ys: &[ProofId],
     inputs_amount: Amount<CurrencyUnit>,
     inputs_fee: Amount<CurrencyUnit>,
     total_spent: Amount<CurrencyUnit>,

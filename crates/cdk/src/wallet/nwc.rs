@@ -905,7 +905,7 @@ mod tests {
             amount: Amount::from(10u64),
             fee: Amount::from(1u64),
             unit: CurrencyUnit::Sat,
-            ys: vec![SecretKey::generate().public_key()],
+            ys: vec![SecretKey::generate().public_key().into()],
             timestamp,
             memo: Some("coffee".to_string()),
             metadata: HashMap::new(),

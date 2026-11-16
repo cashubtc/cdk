@@ -12,13 +12,24 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::{serde_as, VecSkipError};
 use thiserror::Error;
 
+mod dhke_point;
+mod mint_key;
+mod proof_id;
 mod public_key;
+mod scalar;
 mod secret_key;
 
+pub use self::bls::{BlsG1PublicKey, BlsG2PublicKey, BlsSecretKey};
+pub use self::dhke_point::DhkePoint;
+pub use self::mint_key::MintPublicKey;
+pub use self::proof_id::ProofId;
 pub use self::public_key::PublicKey;
+pub use self::scalar::{BlindingFactor, MintSecretKey};
 pub use self::secret_key::SecretKey;
 use super::nut02::KeySet;
 use crate::amount::Amount;
+
+pub(crate) mod bls;
 
 /// Nut01 Error
 #[derive(Debug, Error)]
@@ -29,6 +40,9 @@ pub enum Error {
     /// Json Error
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    /// Hex Error
+    #[error(transparent)]
+    Hex(#[from] crate::util::hex::Error),
     /// Invalid Pubkey size
     #[error("Invalid public key size: expected={expected}, found={found}")]
     InvalidPublicKeySize {
@@ -37,6 +51,26 @@ pub enum Error {
         /// Actual size
         found: usize,
     },
+    /// Invalid secret key size
+    #[error("Invalid secret key size: expected={expected}, found={found}")]
+    InvalidSecretKeySize {
+        /// Expected size
+        expected: usize,
+        /// Actual size
+        found: usize,
+    },
+    /// Invalid public key
+    #[error("Invalid public key")]
+    InvalidPublicKey,
+    /// Invalid secret key
+    #[error("Invalid secret key")]
+    InvalidSecretKey,
+    /// Operating-system randomness is unavailable
+    #[error("Operating-system randomness is unavailable")]
+    RandomnessUnavailable,
+    /// Wrong key kind for operation
+    #[error("Wrong key kind for operation")]
+    WrongKeyKind,
 }
 
 /// Mint public keys per amount.
@@ -45,7 +79,7 @@ pub enum Error {
 ///
 /// See [NUT-01]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Keys(BTreeMap<Amount, PublicKey>);
+pub struct Keys(BTreeMap<Amount, MintPublicKey>);
 
 impl Serialize for Keys {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -95,7 +129,7 @@ impl<'de> Deserialize<'de> for Keys {
 }
 
 impl Deref for Keys {
-    type Target = BTreeMap<Amount, PublicKey>;
+    type Target = BTreeMap<Amount, MintPublicKey>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -116,25 +150,25 @@ impl From<MintKeys> for Keys {
 impl Keys {
     /// Create new [`Keys`]
     #[inline]
-    pub fn new(keys: BTreeMap<Amount, PublicKey>) -> Self {
+    pub fn new(keys: BTreeMap<Amount, MintPublicKey>) -> Self {
         Self(keys)
     }
 
     /// Get [`Keys`]
     #[inline]
-    pub fn keys(&self) -> &BTreeMap<Amount, PublicKey> {
+    pub fn keys(&self) -> &BTreeMap<Amount, MintPublicKey> {
         &self.0
     }
 
     /// Get [`PublicKey`] for [`Amount`]
     #[inline]
-    pub fn amount_key(&self, amount: Amount) -> Option<PublicKey> {
+    pub fn amount_key(&self, amount: Amount) -> Option<MintPublicKey> {
         self.0.get(&amount).copied()
     }
 
     /// Iterate through the (`Amount`, `PublicKey`) entries in the Map
     #[inline]
-    pub fn iter(&self) -> impl Iterator<Item = (&Amount, &PublicKey)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&Amount, &MintPublicKey)> {
         self.0.iter()
     }
 }
@@ -194,15 +228,15 @@ impl MintKeys {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct MintKeyPair {
     /// Publickey
-    pub public_key: PublicKey,
+    pub public_key: MintPublicKey,
     /// Secretkey
-    pub secret_key: SecretKey,
+    pub secret_key: MintSecretKey,
 }
 
 impl MintKeyPair {
     /// [`MintKeyPair`] from secret key
     #[inline]
-    pub fn from_secret_key(secret_key: SecretKey) -> Self {
+    pub fn from_secret_key(secret_key: MintSecretKey) -> Self {
         Self {
             public_key: secret_key.public_key(),
             secret_key,
@@ -275,11 +309,12 @@ mod tests {
         )
         .unwrap();
 
-        let keys = Keys::new(BTreeMap::from([(Amount::ONE, pubkey)]));
+        let mint_pubkey = MintPublicKey::from(pubkey);
+        let keys = Keys::new(BTreeMap::from([(Amount::ONE, mint_pubkey)]));
 
         assert_eq!(keys.deref().len(), 1);
         assert_eq!(keys.keys().len(), 1);
-        assert_eq!(keys.amount_key(Amount::ONE), Some(pubkey));
+        assert_eq!(keys.amount_key(Amount::ONE), Some(mint_pubkey));
         assert!(keys.amount_key(Amount::from(2_u64)).is_none());
     }
 
@@ -296,7 +331,7 @@ mod tests {
 
     #[test]
     fn test_mint_keys_deref_and_deref_mut_access_underlying_map() {
-        let secret_key = SecretKey::generate();
+        let secret_key = MintSecretKey::generate();
         let keypair = MintKeyPair::from_secret_key(secret_key);
         let amount = Amount::ONE;
 

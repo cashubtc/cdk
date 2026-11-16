@@ -374,7 +374,7 @@ pub(crate) fn valid_signatures(
 impl BlindedMessage {
     /// Sign [BlindedMessage]
     pub fn sign_p2pk(&mut self, secret_key: SecretKey) -> Result<(), Error> {
-        let msg: [u8; 33] = self.blinded_secret.to_bytes();
+        let msg = self.blinded_secret.to_bytes();
         let signature: Signature = secret_key.sign(&msg)?;
 
         let signatures = vec![signature.to_string()];
@@ -609,7 +609,7 @@ mod tests {
             amount: Amount::ONE,
             keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
             secret,
-            c: primary,
+            c: primary.into(),
             witness: None,
             dleq: None,
             p2pk_e: None,
@@ -689,7 +689,7 @@ mod tests {
             keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
             amount: Amount::ZERO,
             secret,
-            c: PublicKey::from_str(
+            c: crate::nuts::DhkePoint::from_hex_any_curve(
                 "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
             )
             .unwrap(),
@@ -750,6 +750,36 @@ mod tests {
     }
 
     #[test]
+    fn test_verify_p2pk_with_bls_pubkey_data_is_rejected() {
+        use crate::nuts::nut01::BlsG1PublicKey;
+
+        // A P2PK secret whose `data` is a valid compressed BLS G1 point
+        // (48 bytes / 96 hex chars) instead of a secp256k1 key must be rejected.
+        let bls_data =
+            crate::nuts::DhkePoint::from(BlsG1PublicKey::hash_to_curve(b"attacker point")).to_hex();
+        assert_eq!(bls_data.len(), 96);
+
+        let secret_data = crate::nuts::nut10::SecretData::new(bls_data, None::<Vec<Vec<String>>>);
+        let nut10_secret = crate::nuts::nut10::Secret::new(Kind::P2PK, secret_data);
+        let secret: Secret = nut10_secret.try_into().unwrap();
+
+        let proof = Proof {
+            keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
+            amount: Amount::ZERO,
+            secret,
+            c: crate::nuts::DhkePoint::from_hex_any_curve(
+                "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
+            )
+            .unwrap(),
+            witness: Some(Witness::P2PKWitness(P2PKWitness { signatures: vec![] })),
+            dleq: None,
+            p2pk_e: None,
+        };
+
+        assert!(proof.verify_p2pk().is_err());
+    }
+
+    #[test]
     fn verify_multi_sig() {
         // Proof with 2 valid signatures to satifiy the condition
         let valid_proof = r#"{"amount":0,"secret":"[\"P2PK\",{\"nonce\":\"0ed3fcb22c649dd7bbbdcca36e0c52d4f0187dd3b6a19efcc2bfbebb5f85b2a1\",\"data\":\"0249098aa8b9d2fbec49ff8598feb17b592b986e62319a4fa488a3dc36387157a7\",\"tags\":[[\"pubkeys\",\"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\",\"02142715675faf8da1ecc4d51e0b9e539fa0d52fdd96ed60dbe99adb15d6b05ad9\"],[\"n_sigs\",\"2\"],[\"sigflag\",\"SIG_INPUTS\"]]}]","C":"02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904","id":"009a1f293253e41e","witness":"{\"signatures\":[\"83564aca48c668f50d022a426ce0ed19d3a9bdcffeeaee0dc1e7ea7e98e9eff1840fcc821724f623468c94f72a8b0a7280fa9ef5a54a1b130ef3055217f467b3\",\"9a72ca2d4d5075be5b511ee48dbc5e45f259bcf4a4e8bf18587f433098a9cd61ff9737dc6e8022de57c76560214c4568377792d4c2c6432886cc7050487a1f22\"]}"}"#;
@@ -790,7 +820,7 @@ mod tests {
 
         let mut blinded_message = BlindedMessage {
             amount: Amount::ZERO,
-            blinded_secret: pubkey,
+            blinded_secret: pubkey.into(),
             keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
             witness: None,
         };
@@ -820,7 +850,7 @@ mod tests {
 
         let mut blinded_message = BlindedMessage {
             amount: Amount::ZERO,
-            blinded_secret: pubkey,
+            blinded_secret: pubkey.into(),
             keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
             witness: None,
         };
@@ -842,7 +872,7 @@ mod tests {
 
         let mut blinded_message = BlindedMessage {
             amount: Amount::ZERO,
-            blinded_secret: pubkey,
+            blinded_secret: pubkey.into(),
             keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
             witness: None,
         };
@@ -893,7 +923,7 @@ mod tests {
             keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
             amount: Amount::ZERO,
             secret,
-            c: PublicKey::from_str(
+            c: crate::nuts::DhkePoint::from_hex_any_curve(
                 "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
             )
             .unwrap(),
@@ -950,7 +980,7 @@ mod tests {
             keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
             amount: Amount::ZERO,
             secret,
-            c: PublicKey::from_str(
+            c: crate::nuts::DhkePoint::from_hex_any_curve(
                 "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
             )
             .unwrap(),
@@ -1017,7 +1047,7 @@ mod tests {
             keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
             amount: Amount::ZERO,
             secret,
-            c: PublicKey::from_str(
+            c: crate::nuts::DhkePoint::from_hex_any_curve(
                 "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
             )
             .unwrap(),
@@ -1053,7 +1083,7 @@ mod tests {
             keyset_id: Id::from_str(id).unwrap(),
             amount: Amount::ZERO,
             secret,
-            c: pubkey,
+            c: pubkey.into(),
             witness: None,
             dleq: None,
             p2pk_e: None,
@@ -1069,7 +1099,7 @@ mod tests {
     fn create_test_blinded_msg(pubkey: PublicKey) -> BlindedMessage {
         BlindedMessage {
             amount: Amount::ZERO,
-            blinded_secret: pubkey,
+            blinded_secret: pubkey.into(),
             keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
             witness: None,
         }

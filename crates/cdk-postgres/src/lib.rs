@@ -585,6 +585,33 @@ mod test {
         let tx = client.transaction().await.unwrap();
         tx.batch_execute(&migration).await.unwrap();
         tx.commit().await.unwrap();
+        let bls = cdk_common::nuts::nut01::BlsG1PublicKey::hash_to_curve(b"migration proof")
+            .to_bytes()
+            .to_vec();
+        assert!(client
+            .execute(
+                "INSERT INTO transaction_ys VALUES ($1, 3, $2)",
+                &[&vec![1u8], &bls]
+            )
+            .await
+            .is_err());
+        client.batch_execute(include_str!("../../cdk-sql-common/src/wallet/migrations/postgres/20261116000000_bls_transaction_ys.sql")).await.unwrap();
+        client
+            .execute(
+                "INSERT INTO transaction_ys VALUES ($1, 3, $2)",
+                &[&vec![1u8], &bls],
+            )
+            .await
+            .unwrap();
+        let mut points: Vec<Vec<u8>> = points.into_iter().map(|point| point.to_vec()).collect();
+        points.push(bls);
+        assert!(client
+            .execute(
+                "INSERT INTO transaction_ys VALUES ($1, 4, $2)",
+                &[&vec![1u8], &vec![0u8; 96]]
+            )
+            .await
+            .is_err());
         let rows = client
             .query(
                 "SELECT y FROM transaction_ys WHERE transaction_id = $1 ORDER BY position",
@@ -683,8 +710,8 @@ mod test {
             fee: Amount::ZERO,
             unit: CurrencyUnit::Sat,
             ys: vec![
-                SecretKey::generate().public_key(),
-                SecretKey::generate().public_key(),
+                SecretKey::generate().public_key().into(),
+                SecretKey::generate().public_key().into(),
             ],
             timestamp: 123,
             memo: None,
@@ -726,7 +753,7 @@ mod test {
             .get(0);
 
         let mut updated = original.clone();
-        updated.ys = vec![SecretKey::generate().public_key()];
+        updated.ys = vec![SecretKey::generate().public_key().into()];
         let update = tokio::spawn({
             let db = Arc::clone(&db);
             async move { db.add_transaction(updated).await }

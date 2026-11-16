@@ -31,6 +31,7 @@
 //! | `[compensated]` | Receive failed, pending input proofs removed |
 //! | `[skipped]` | Recovery deferred (mint unreachable), will retry on next recovery |
 
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
@@ -49,7 +50,10 @@ use super::ReceiveOptions;
 use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut10::Kind;
-use crate::nuts::{Conditions, Proofs, PublicKey, SecretKey, SigFlag, State};
+use crate::nuts::{
+    verify_proof_signatures, Conditions, Id, Keys, LegacyDleq, Proofs, PublicKey, SecretKey,
+    SigFlag, State,
+};
 use crate::util::hex;
 use crate::wallet::blind_signature::{
     validate_mint_response_signatures, SignatureAmountValidation,
@@ -96,7 +100,7 @@ impl<'a> ReceiveSaga<'a, Initial> {
 
     /// Prepare proofs for receiving.
     ///
-    /// Verifies DLEQ proofs, signs P2PK proofs if keys provided, and adds HTLC preimages.
+    /// Verifies proof signatures, signs P2PK proofs if keys provided, and adds HTLC preimages.
     /// No database changes are made in this step.
     #[instrument(skip_all)]
     pub async fn prepare(
@@ -139,22 +143,34 @@ impl<'a> ReceiveSaga<'a, Initial> {
         let mut p2pk_signing_keys: HashMap<XOnlyPublicKey, SecretKey> = opts
             .p2pk_signing_keys
             .iter()
-            .map(|s| (s.x_only_public_key(&SECP256K1).0, s.clone()))
-            .collect();
+            .map(|s| Ok((s.x_only_public_key(&SECP256K1).0, s.clone())))
+            .collect::<Result<_, Error>>()?;
 
-        // Process each proof: verify DLEQ, handle P2PK/HTLC
+        // Verify the mint's signatures: DLEQ proofs where present on legacy
+        // proofs, and one batched pairing check for all v3 proofs.
+        let mut keys_cache: HashMap<Id, Keys> = HashMap::new();
+        let mut signed_proofs = Vec::new();
+        for proof in proofs
+            .iter()
+            .filter(|proof| proof.requires_signature_verification(LegacyDleq::Optional))
+        {
+            let keys = match keys_cache.entry(proof.keyset_id) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(entry) => entry.insert(
+                    self.wallet
+                        .keyset_with_policy(proof.keyset_id, keyset_policy)
+                        .await?
+                        .keys,
+                ),
+            };
+            let key = keys.amount_key(proof.amount).ok_or(Error::AmountKey)?;
+            signed_proofs.push((proof, key));
+        }
+        verify_proof_signatures(signed_proofs, LegacyDleq::Optional)
+            .map_err(|_| Error::CouldNotVerifyDleq)?;
+
+        // Handle P2PK/HTLC
         for proof in &mut proofs {
-            // Verify that proof DLEQ is valid
-            if proof.dleq.is_some() {
-                let keys = self
-                    .wallet
-                    .keyset_with_policy(proof.keyset_id, keyset_policy)
-                    .await?
-                    .keys;
-                let key = keys.amount_key(proof.amount).ok_or(Error::AmountKey)?;
-                proof.verify_dleq(key)?;
-            }
-
             if let Ok(secret) =
                 <crate::secret::Secret as TryInto<crate::nuts::nut10::Secret>>::try_into(
                     proof.secret.clone(),
@@ -610,8 +626,8 @@ mod tests {
         let mint_key = mock.mint_signing_keys.lock().unwrap().as_ref().unwrap()[&amount].clone();
 
         let mut input = test_proof(keyset_id, 2);
-        input.c =
-            sign_message(&mint_key, &hash_to_curve(input.secret.as_bytes()).unwrap()).unwrap();
+        let message_point = hash_to_curve(input.secret.as_bytes()).unwrap().into();
+        input.c = sign_message(&mint_key, &message_point).unwrap();
 
         let premints = PreMintSecrets::restore_batch(keyset_id, &seed, 0, 1).unwrap();
         let blinded_message = premints.blinded_messages()[0].blinded_secret;

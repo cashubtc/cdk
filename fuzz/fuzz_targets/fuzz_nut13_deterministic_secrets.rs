@@ -6,7 +6,7 @@ use cashu::amount::{FeeAndAmounts, SplitTarget};
 use cashu::dhke::blind_message;
 use cashu::nuts::nut00::PreMintSecrets;
 use cashu::secret::Secret;
-use cashu::{Amount, SecretKey};
+use cashu::{Amount, BlindingFactor};
 use cdk_fuzz::arbitrary_ext::IdArb;
 use libfuzzer_sys::arbitrary::{Arbitrary, Unstructured};
 use libfuzzer_sys::fuzz_target;
@@ -45,9 +45,9 @@ fuzz_target!(|input: Input| {
         .expect("repeated secret derivation must succeed");
     assert_eq!(secret, secret_again, "secret derivation must be deterministic");
 
-    let blinding = SecretKey::from_seed(&input.seed, keyset_id, counter)
+    let blinding = BlindingFactor::from_seed(&input.seed, keyset_id, counter)
         .expect("bounded counter must derive a blinding factor");
-    let blinding_again = SecretKey::from_seed(&input.seed, keyset_id, counter)
+    let blinding_again = BlindingFactor::from_seed(&input.seed, keyset_id, counter)
         .expect("repeated blinding derivation must succeed");
     assert_eq!(
         blinding.to_secret_bytes(),
@@ -57,7 +57,7 @@ fuzz_target!(|input: Input| {
 
     let next_secret = Secret::from_seed(&input.seed, keyset_id, counter + 1)
         .expect("adjacent counter must derive");
-    let next_blinding = SecretKey::from_seed(&input.seed, keyset_id, counter + 1)
+    let next_blinding = BlindingFactor::from_seed(&input.seed, keyset_id, counter + 1)
         .expect("adjacent blinding counter must derive");
     assert_ne!(secret, next_secret, "adjacent counters must change the secret");
     assert_ne!(
@@ -78,7 +78,7 @@ fuzz_target!(|input: Input| {
         let expected_counter = counter + offset as u32;
         let expected_secret = Secret::from_seed(&input.seed, keyset_id, expected_counter)
             .expect("restored secret counter must derive");
-        let expected_r = SecretKey::from_seed(&input.seed, keyset_id, expected_counter)
+        let expected_r = BlindingFactor::from_seed(&input.seed, keyset_id, expected_counter)
             .expect("restored blinding counter must derive");
         let (expected_blinded, _) = blind_message(
             &expected_secret.to_bytes(),
@@ -116,7 +116,7 @@ fuzz_target!(|input: Input| {
         );
         assert_eq!(
             pre_mint.r.to_secret_bytes(),
-            SecretKey::from_seed(&input.seed, keyset_id, counter + offset as u32)
+            BlindingFactor::from_seed(&input.seed, keyset_id, counter + offset as u32)
                 .expect("premint blinding counter must derive")
                 .to_secret_bytes()
         );
