@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 use cdk_common::database::{self, MintDatabase, MintKeysDatabase};
 use cdk_common::mint::{self, MintKeySetInfo, MintQuote, Operation};
-use cdk_common::nuts::{CurrencyUnit, Id, Proofs, State};
+use cdk_common::nuts::{BlindSignature, CurrencyUnit, Id, Proofs, PublicKey, State};
 use cdk_common::MintInfo;
 
 use super::MintSqliteDatabase;
@@ -57,6 +57,33 @@ pub async fn new_with_state(
     }
 
     let operation = Operation::new_swap(Default::default(), Default::default(), Default::default());
+
+    // Every seeded proof stands for one the mint signed earlier, so record the
+    // matching issuance. Without it the seeded state would owe more than it ever
+    // issued, and marking the spent ones spent is refused by the per-keyset cap.
+    let (blinded_messages, blind_signatures): (Vec<PublicKey>, Vec<BlindSignature>) =
+        pending_proofs
+            .iter()
+            .chain(spent_proofs.iter())
+            .map(|proof| {
+                Ok((
+                    proof.y()?,
+                    BlindSignature {
+                        amount: proof.amount,
+                        keyset_id: proof.keyset_id,
+                        c: proof.c,
+                        dleq: None,
+                    },
+                ))
+            })
+            .collect::<Result<Vec<_>, database::Error>>()?
+            .into_iter()
+            .unzip();
+
+    if !blinded_messages.is_empty() {
+        tx.add_blind_signatures(&blinded_messages, &blind_signatures, None)
+            .await?;
+    }
 
     if !pending_proofs.is_empty() {
         let mut proofs = tx.add_proofs(pending_proofs, None, &operation).await?;
