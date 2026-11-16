@@ -3122,3 +3122,65 @@ async fn test_saga_deletion_failure_handling() {
     // This would require adding a TEST_FAIL_DELETE_SAGA env var check in the
     // database implementation's delete_saga method.
 }
+
+/// Tests that a rolled back swap tells proof state subscribers the inputs are
+/// spendable again.
+///
+/// Setup publishes every input as `PENDING`. When finalize fails, the
+/// compensation deletes the proofs, so a subscriber must also see them
+/// become `UNSPENT` instead of staying on the last `PENDING` event.
+#[tokio::test]
+async fn test_swap_saga_compensation_publishes_unspent_inputs() {
+    use std::time::Duration;
+
+    use cdk_common::nuts::nut17::{Kind, NotificationPayload};
+    use cdk_common::subscription::{Params, SubId};
+
+    let mint = create_test_mint().await.unwrap();
+    let amount = Amount::from(100);
+    let (input_proofs, input_verification) = create_swap_inputs(&mint, amount).await;
+    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let ys = input_proofs.ys().unwrap();
+
+    let mut subscription = mint
+        .pubsub_manager()
+        .subscribe(Params {
+            kind: Kind::ProofState,
+            filters: ys.iter().map(|y| y.to_string()).collect(),
+            id: Arc::new(SubId::from("swap-rollback")),
+        })
+        .unwrap();
+
+    let saga = SwapSaga::new(&mint, mint.localstore(), mint.pubsub_manager())
+        .setup_swap(
+            &input_proofs,
+            &output_blinded_messages,
+            None,
+            input_verification,
+        )
+        .await
+        .expect("Setup should succeed")
+        .sign_outputs()
+        .await
+        .expect("Signing should succeed");
+
+    set_fail_for("ADD_SIGNATURES");
+    let result = saga.finalize().await;
+    clear_fail_for("ADD_SIGNATURES");
+    assert!(result.is_err(), "Finalize should fail");
+
+    // Every input must end on UNSPENT after its PENDING event
+    let mut last_states = std::collections::HashMap::new();
+    while last_states.len() < ys.len() || last_states.values().any(|state| *state != State::Unspent)
+    {
+        let event = tokio::time::timeout(Duration::from_secs(5), subscription.recv())
+            .await
+            .expect("rolled back inputs must be published as unspent")
+            .expect("subscription closed");
+        let NotificationPayload::ProofState(proof_state) = event.into_inner() else {
+            panic!("expected proof state notification");
+        };
+        last_states.insert(proof_state.y, proof_state.state);
+    }
+    assert!(ys.iter().all(|y| last_states[y] == State::Unspent));
+}
