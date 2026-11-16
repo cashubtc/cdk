@@ -610,7 +610,7 @@ async fn test_melt_with_invalid_auth() {
             dleq: proof.dleq.clone(),
         };
 
-        let _auth_token = AuthToken::BlindAuth(BlindAuthToken::new(invalid_auth_proof));
+        let _auth_token = AuthToken::BlindAuth(Box::new(BlindAuthToken::new(invalid_auth_proof)));
 
         let request = MintQuoteBolt11Request {
             unit: CurrencyUnit::Sat,

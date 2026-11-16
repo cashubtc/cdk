@@ -19,7 +19,7 @@ use cdk_common::wallet::{
 use cdk_common::{Amount, PaymentMethod};
 use tracing::instrument;
 
-use crate::dhke::hash_to_curve;
+use crate::dhke::hash_to_curve_for_version;
 use crate::nuts::{MintRequest, PreMintSecrets};
 use crate::util::unix_time;
 use crate::wallet::issue::saga::compensation::ReleaseMintQuote;
@@ -197,7 +197,13 @@ impl Wallet {
         let ys = premint_secrets
             .secrets
             .iter()
-            .map(|pre_mint| hash_to_curve(pre_mint.secret.as_bytes()))
+            .map(|pre_mint| {
+                hash_to_curve_for_version(
+                    pre_mint.secret.as_bytes(),
+                    pre_mint.blinded_message.keyset_id.get_version(),
+                )
+                .map(Into::into)
+            })
             .collect::<Result<Vec<_>, _>>()?;
 
         let quote_ids = data.quote_ids();
@@ -666,6 +672,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_pending_bls_issue_transaction_uses_bls_proof_identifiers() {
+        let db = create_test_db().await;
+        let wallet =
+            create_test_wallet_with_mock(db.clone(), Arc::new(MockMintConnector::new())).await;
+        let mut id_bytes = [0u8; 33];
+        id_bytes[0] = 2;
+        let keyset_id = crate::nuts::Id::from_bytes(&id_bytes).unwrap();
+        let premint = PreMintSecrets::from_seed(
+            keyset_id,
+            0,
+            &wallet.seed,
+            Amount::from(1),
+            &SplitTarget::None,
+            &FeeAndAmounts::from((0, vec![1])),
+        )
+        .unwrap();
+        let saga_id = uuid::Uuid::new_v4();
+        let data = MintOperationData::new_single(
+            "bls-recovery-quote".to_string(),
+            Amount::from(1),
+            Some(0),
+            Some(1),
+            Some(premint.blinded_messages()),
+        );
+        wallet
+            .ensure_pending_issue_transaction(&saga_id, &data)
+            .await
+            .unwrap();
+        let transaction = db
+            .get_transaction(TransactionId::from_saga_id(saga_id))
+            .await
+            .unwrap()
+            .unwrap();
+        let expected: crate::nuts::ProofId =
+            crate::nuts::nut01::BlsG1PublicKey::hash_to_curve(premint.secrets[0].secret.as_bytes())
+                .into();
+        assert_eq!(transaction.ys, vec![expected]);
+        assert_eq!(transaction.status, TransactionStatus::Pending);
+    }
+
+    #[tokio::test]
     async fn test_recovered_batch_transaction_missing_mid_quote_keeps_offset() {
         let db = create_test_db().await;
         let mint_url = test_mint_url();
@@ -1016,7 +1063,7 @@ mod tests {
             amount: Amount::from(2),
             keyset_id,
             secret: crate::secret::Secret::from_seed(&wallet.seed, keyset_id, 0).unwrap(),
-            c: crate::nuts::SecretKey::generate().public_key(),
+            c: crate::nuts::SecretKey::generate().public_key().into(),
             witness: None,
             dleq: None,
             p2pk_e: None,

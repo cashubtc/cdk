@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use cdk_common::database::DynMintDatabase;
-use cdk_common::{Error, PublicKey, State};
+use cdk_common::{DhkePoint, Error, ProofId, State};
 use tracing::instrument;
 use uuid::Uuid;
 
@@ -24,9 +24,9 @@ pub trait CompensatingAction: Send + Sync {
 /// as unspent again.
 pub struct RemoveSwapSetup {
     /// Blinded secrets (B values) from the output blinded messages
-    pub blinded_secrets: Vec<PublicKey>,
+    pub blinded_secrets: Vec<DhkePoint>,
     /// Y values (public keys) from the input proofs
-    pub input_ys: Vec<PublicKey>,
+    pub input_ys: Vec<ProofId>,
     /// Operation ID (saga ID) to delete
     pub operation_id: Uuid,
 }

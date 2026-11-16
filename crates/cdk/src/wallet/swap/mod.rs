@@ -9,7 +9,7 @@ use tracing::instrument;
 use crate::amount::SplitTarget;
 use crate::fees::ProofsFeeBreakdown;
 use crate::nuts::nut00::ProofsMethods;
-use crate::nuts::{PreMintSecrets, PreSwap, Proofs, PublicKey, SpendingConditions, SwapRequest};
+use crate::nuts::{PreMintSecrets, PreSwap, ProofId, Proofs, SpendingConditions, SwapRequest};
 use crate::{Amount, Error, Wallet};
 
 pub(crate) mod saga;
@@ -175,7 +175,7 @@ impl Wallet {
         let proofs_total = proofs.total_amount()?;
 
         if proof_reservation == ProofReservation::Reserve {
-            let ys: Vec<PublicKey> = proofs.ys()?;
+            let ys: Vec<ProofId> = proofs.ys()?;
             self.localstore.reserve_proofs(ys, operation_id).await?;
         }
 

@@ -45,7 +45,7 @@ use tracing::instrument;
 use self::compensation::{MintCompensation, ReleaseMintQuote};
 use self::state::{Finalized, Initial, Prepared, PreparedMintRequest};
 use crate::amount::SplitTarget;
-use crate::dhke::{construct_proofs, hash_to_curve};
+use crate::dhke::{construct_proofs, hash_to_curve_for_version};
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{MintRequest, PreMintSecrets, Proofs, SpendingConditions, State};
 use crate::util::unix_time;
@@ -921,7 +921,7 @@ impl<'a> MintSaga<'a, Initial> {
 impl<'a> MintSaga<'a, Prepared> {
     /// Execute the mint operation.
     ///
-    /// Posts mint request, verifies DLEQ proofs, constructs and stores proofs,
+    /// Posts mint request, verifies mint signatures, constructs and stores proofs,
     /// updates quote state, and records transaction. On success, compensations
     /// are cleared.
     #[instrument(skip_all)]
@@ -1002,7 +1002,13 @@ impl<'a> MintSaga<'a, Prepared> {
             let transaction_ys = premint_secrets
                 .secrets
                 .iter()
-                .map(|pre_mint| hash_to_curve(pre_mint.secret.as_bytes()))
+                .map(|pre_mint| {
+                    hash_to_curve_for_version(
+                        pre_mint.secret.as_bytes(),
+                        pre_mint.blinded_message.keyset_id.get_version(),
+                    )
+                    .map(Into::into)
+                })
                 .collect::<Result<Vec<_>, _>>()?;
             let is_batch = quote_ids.len() > 1;
             let mut output_offset: usize = 0;

@@ -684,7 +684,7 @@ mod tests {
         >,
         saga_id: uuid::Uuid,
         state: SendSagaState,
-    ) -> (cdk_common::PublicKey, cdk_common::PublicKey) {
+    ) -> (cdk_common::ProofId, cdk_common::ProofId) {
         let mint_url = test_mint_url();
         let keyset_id = test_keyset_id();
 

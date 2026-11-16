@@ -80,7 +80,7 @@ pub async fn mint_info<C: MintConnector>(conn: C) {
 
 /// [NUT-07] Checking state returns one entry per requested Y.
 pub async fn check_state<C: MintConnector>(conn: C) {
-    let ys = vec![random_pubkey(), random_pubkey()];
+    let ys = vec![random_pubkey().into(), random_pubkey().into()];
     let response = conn
         .post_check_state(CheckStateRequest { ys: ys.clone() })
         .await

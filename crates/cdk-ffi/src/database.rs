@@ -538,7 +538,7 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
 
     async fn get_proofs_by_ys(
         &self,
-        ys: Vec<cdk::nuts::PublicKey>,
+        ys: Vec<cdk::nuts::ProofId>,
     ) -> Result<Vec<cdk::types::ProofInfo>, cdk::cdk_database::Error> {
         let ffi_ys: Vec<PublicKey> = ys.into_iter().map(Into::into).collect();
 
@@ -678,7 +678,7 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
     async fn update_proofs(
         &self,
         added: Vec<cdk::types::ProofInfo>,
-        removed_ys: Vec<cdk::nuts::PublicKey>,
+        removed_ys: Vec<cdk::nuts::ProofId>,
     ) -> Result<(), cdk::cdk_database::Error> {
         let ffi_added: Vec<ProofInfo> = added.into_iter().map(Into::into).collect();
         let ffi_removed_ys: Vec<PublicKey> = removed_ys.into_iter().map(Into::into).collect();
@@ -690,7 +690,7 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
 
     async fn update_proofs_state(
         &self,
-        ys: Vec<cdk::nuts::PublicKey>,
+        ys: Vec<cdk::nuts::ProofId>,
         state: cdk::nuts::State,
     ) -> Result<(), cdk::cdk_database::Error> {
         let ffi_ys: Vec<PublicKey> = ys.into_iter().map(Into::into).collect();
@@ -905,7 +905,7 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
 
     async fn reserve_proofs(
         &self,
-        ys: Vec<cdk::nuts::PublicKey>,
+        ys: Vec<cdk::nuts::ProofId>,
         operation_id: &uuid::Uuid,
     ) -> Result<(), cdk::cdk_database::Error> {
         let ffi_ys: Vec<PublicKey> = ys.into_iter().map(Into::into).collect();
@@ -1099,7 +1099,7 @@ where
     // ========== Read methods ==========
 
     async fn get_proofs_by_ys(&self, ys: Vec<PublicKey>) -> Result<Vec<ProofInfo>, FfiError> {
-        let cdk_ys: Vec<cdk::nuts::PublicKey> = ys
+        let cdk_ys: Vec<cdk::nuts::ProofId> = ys
             .into_iter()
             .map(|y| y.try_into())
             .collect::<Result<Vec<_>, FfiError>>()?;
@@ -1419,7 +1419,7 @@ where
             added.into_iter().map(TryInto::try_into).collect();
         let cdk_added = cdk_added?;
 
-        let cdk_removed_ys: Result<Vec<cdk::nuts::PublicKey>, FfiError> =
+        let cdk_removed_ys: Result<Vec<cdk::nuts::ProofId>, FfiError> =
             removed_ys.into_iter().map(|pk| pk.try_into()).collect();
         let cdk_removed_ys = cdk_removed_ys?;
 
@@ -1435,7 +1435,7 @@ where
         ys: Vec<PublicKey>,
         state: ProofState,
     ) -> Result<(), FfiError> {
-        let cdk_ys: Result<Vec<cdk::nuts::PublicKey>, FfiError> =
+        let cdk_ys: Result<Vec<cdk::nuts::ProofId>, FfiError> =
             ys.into_iter().map(|pk| pk.try_into()).collect();
         let cdk_ys = cdk_ys?;
         let cdk_state = state.into();
@@ -1661,7 +1661,7 @@ where
         operation_id: String,
     ) -> Result<(), FfiError> {
         let operation_id = uuid::Uuid::parse_str(&operation_id).map_err(FfiError::internal)?;
-        let cdk_ys: Result<Vec<cdk::nuts::PublicKey>, FfiError> =
+        let cdk_ys: Result<Vec<cdk::nuts::ProofId>, FfiError> =
             ys.into_iter().map(|pk| pk.try_into()).collect();
         let cdk_ys = cdk_ys?;
         self.inner
@@ -2273,7 +2273,7 @@ mod tests {
             amount: 42.into(),
             keyset_id: "00916bbf7ef91a36".parse().unwrap(),
             secret: "ffi-conversion-proof".parse().unwrap(),
-            c: key.public_key(),
+            c: key.public_key().into(),
             witness: Some(cdk::nuts::Witness::P2PKWitness(
                 cdk::nuts::nut11::P2PKWitness {
                     signatures: vec!["signature".to_string()],
@@ -2282,7 +2282,7 @@ mod tests {
             dleq: Some(cdk::nuts::nut12::ProofDleq::new(
                 key.clone(),
                 key.clone(),
-                key.clone(),
+                key.clone().into(),
             )),
             p2pk_e: Some(key.public_key()),
         };

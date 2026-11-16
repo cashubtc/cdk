@@ -1,6 +1,6 @@
 use cdk_common::mint::Operation;
 use cdk_common::nuts::{BlindSignature, BlindedMessage};
-use cdk_common::PublicKey;
+use cdk_common::ProofId;
 use uuid::Uuid;
 
 /// Initial state - only has operation ID.
@@ -17,7 +17,7 @@ pub struct Initial {
 /// Only the `sign_outputs` method is available.
 pub struct SetupComplete {
     pub blinded_messages: Vec<BlindedMessage>,
-    pub ys: Vec<PublicKey>,
+    pub ys: Vec<ProofId>,
     pub operation: Operation,
     pub fee_breakdown: crate::fees::ProofsFeeBreakdown,
 }
@@ -28,7 +28,7 @@ pub struct SetupComplete {
 /// Only the `finalize` method is available.
 pub struct Signed {
     pub blinded_messages: Vec<BlindedMessage>,
-    pub ys: Vec<PublicKey>,
+    pub ys: Vec<ProofId>,
     pub signatures: Vec<BlindSignature>,
     pub operation: Operation,
     pub fee_breakdown: crate::fees::ProofsFeeBreakdown,

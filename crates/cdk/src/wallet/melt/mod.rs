@@ -3499,7 +3499,7 @@ mod tests {
         http_subscription: bool,
     ) -> (
         Arc<dyn cdk_common::database::WalletDatabase<cdk_common::database::Error> + Send + Sync>,
-        crate::nuts::PublicKey,
+        crate::nuts::ProofId,
         uuid::Uuid,
         Arc<MockMintConnector>,
         PendingMelt<'static>,
@@ -3512,7 +3512,7 @@ mod tests {
         metadata: HashMap<String, String>,
     ) -> (
         Arc<dyn cdk_common::database::WalletDatabase<cdk_common::database::Error> + Send + Sync>,
-        crate::nuts::PublicKey,
+        crate::nuts::ProofId,
         uuid::Uuid,
         Arc<MockMintConnector>,
         PendingMelt<'static>,

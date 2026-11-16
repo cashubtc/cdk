@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use cdk_common::database::{self, Error, MintSignatureTransaction, MintSignaturesDatabase};
 use cdk_common::quote_id::QuoteId;
 use cdk_common::util::unix_time;
-use cdk_common::{Amount, BlindSignature, Id, PublicKey};
+use cdk_common::{Amount, BlindSignature, DhkePoint, Id};
 
 use super::proofs::sql_row_to_hashmap_amount;
 use super::{SQLMintDatabase, SQLTransaction};
@@ -27,14 +27,18 @@ pub(crate) fn sql_row_to_blind_signature(row: Vec<Column>) -> Result<BlindSignat
     Ok(BlindSignature {
         amount: Amount::from(amount),
         keyset_id: column_as_string!(keyset_id, Id::from_str, Id::from_bytes),
-        c: column_as_string!(c, PublicKey::from_hex, PublicKey::from_slice),
+        c: column_as_string!(
+            c,
+            DhkePoint::from_hex_any_curve,
+            DhkePoint::from_slice_any_curve
+        ),
         dleq: None,
     })
 }
 
 pub(crate) fn sql_row_to_blind_signature_and_secret(
     row: Vec<Column>,
-) -> Result<(BlindSignature, PublicKey), Error> {
+) -> Result<(BlindSignature, DhkePoint), Error> {
     unpack_into!(
         let (
             blinded_message, keyset_id, amount, c
@@ -47,10 +51,18 @@ pub(crate) fn sql_row_to_blind_signature_and_secret(
         BlindSignature {
             amount: Amount::from(amount),
             keyset_id: column_as_string!(keyset_id, Id::from_str, Id::from_bytes),
-            c: column_as_string!(c, PublicKey::from_hex, PublicKey::from_slice),
+            c: column_as_string!(
+                c,
+                DhkePoint::from_hex_any_curve,
+                DhkePoint::from_slice_any_curve
+            ),
             dleq: None,
         },
-        column_as_string!(blinded_message, PublicKey::from_hex, PublicKey::from_slice),
+        column_as_string!(
+            blinded_message,
+            DhkePoint::from_hex_any_curve,
+            DhkePoint::from_slice_any_curve
+        ),
     ))
 }
 
@@ -63,7 +75,7 @@ where
 
     async fn add_blind_signatures(
         &mut self,
-        blinded_messages: &[PublicKey],
+        blinded_messages: &[DhkePoint],
         blind_signatures: &[BlindSignature],
         quote_id: Option<QuoteId>,
     ) -> Result<(), Self::Err> {
@@ -97,7 +109,11 @@ where
         .into_iter()
         .map(|mut row| {
             Ok((
-                column_as_string!(&row.remove(0), PublicKey::from_hex, PublicKey::from_slice),
+                column_as_string!(
+                    &row.remove(0),
+                    DhkePoint::from_hex_any_curve,
+                    DhkePoint::from_slice_any_curve
+                ),
                 (row[0].clone()),
             ))
         })
@@ -217,7 +233,7 @@ where
 
     async fn get_blind_signatures(
         &mut self,
-        blinded_messages: &[PublicKey],
+        blinded_messages: &[DhkePoint],
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err> {
         if blinded_messages.is_empty() {
             return Ok(Vec::new());
@@ -248,8 +264,8 @@ where
             Ok((
                 column_as_string!(
                     &row.pop().ok_or(Error::InvalidDbResponse)?,
-                    PublicKey::from_hex,
-                    PublicKey::from_slice
+                    DhkePoint::from_hex_any_curve,
+                    DhkePoint::from_slice_any_curve
                 ),
                 sql_row_to_blind_signature(row)?,
             ))
@@ -271,7 +287,7 @@ where
 
     async fn get_blind_signatures(
         &self,
-        blinded_messages: &[PublicKey],
+        blinded_messages: &[DhkePoint],
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err> {
         if blinded_messages.is_empty() {
             return Ok(Vec::new());
@@ -307,8 +323,8 @@ where
             Ok((
                 column_as_string!(
                     &row.pop().ok_or(Error::InvalidDbResponse)?,
-                    PublicKey::from_hex,
-                    PublicKey::from_slice
+                    DhkePoint::from_hex_any_curve,
+                    DhkePoint::from_slice_any_curve
                 ),
                 sql_row_to_blind_signature(row)?,
             ))
@@ -385,7 +401,7 @@ where
     async fn get_blind_signatures_and_secret_for_quote(
         &self,
         quote_id: &QuoteId,
-    ) -> Result<Vec<(BlindSignature, PublicKey)>, Self::Err> {
+    ) -> Result<Vec<(BlindSignature, DhkePoint)>, Self::Err> {
         let conn = self
             .pool
             .get()
@@ -410,7 +426,7 @@ where
         .await?
         .into_iter()
         .map(sql_row_to_blind_signature_and_secret)
-        .collect::<Result<Vec<(BlindSignature, PublicKey)>, _>>()?)
+        .collect::<Result<Vec<(BlindSignature, DhkePoint)>, _>>()?)
     }
 
     /// Get total proofs redeemed by keyset id
@@ -439,7 +455,7 @@ where
     async fn get_blinded_secrets_by_operation_id(
         &self,
         operation_id: &uuid::Uuid,
-    ) -> Result<Vec<PublicKey>, Self::Err> {
+    ) -> Result<Vec<DhkePoint>, Self::Err> {
         let conn = self
             .pool
             .get()
@@ -459,11 +475,11 @@ where
         .fetch_all(&*conn)
         .await?
         .into_iter()
-        .map(|row| -> Result<PublicKey, Error> {
+        .map(|row| -> Result<DhkePoint, Error> {
             Ok(column_as_string!(
                 &row[0],
-                PublicKey::from_hex,
-                PublicKey::from_slice
+                DhkePoint::from_hex_any_curve,
+                DhkePoint::from_slice_any_curve
             ))
         })
         .collect::<Result<Vec<_>, _>>()

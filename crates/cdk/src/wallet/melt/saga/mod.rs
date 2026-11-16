@@ -2083,7 +2083,7 @@ mod tests {
         state: MeltQuoteState,
     ) -> (
         Arc<dyn cdk_common::database::WalletDatabase<cdk_common::database::Error> + Send + Sync>,
-        crate::nuts::PublicKey,
+        crate::nuts::ProofId,
         super::MeltSaga<'static, super::state::MeltRequested>,
     ) {
         let db = create_test_db().await;

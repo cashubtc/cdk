@@ -14,7 +14,7 @@
 use cdk_common::wallet::{OperationData, SwapOperationData, SwapSagaState, WalletSaga};
 use tracing::instrument;
 
-use crate::dhke::hash_to_curve;
+use crate::dhke::hash_to_curve_for_version;
 use crate::nuts::{PreMintSecrets, State};
 use crate::wallet::recovery::{RecoveryAction, RecoveryHelpers};
 use crate::wallet::saga::{CompensatingAction, RevertProofReservation};
@@ -180,11 +180,13 @@ impl Wallet {
                 if let Ok(premint_secrets) =
                     PreMintSecrets::restore_batch(keyset_id, &self.seed, start, end)
                 {
-                    // Derive Ys from secrets
-                    let ys_result: Result<Vec<crate::nuts::PublicKey>, _> = premint_secrets
+                    let ys_result: Result<Vec<crate::nuts::ProofId>, _> = premint_secrets
                         .secrets
                         .iter()
-                        .map(|p| hash_to_curve(&p.secret.to_bytes()))
+                        .map(|p| {
+                            hash_to_curve_for_version(&p.secret.to_bytes(), keyset_id.get_version())
+                                .map(Into::into)
+                        })
                         .collect();
 
                     if let Ok(ys) = ys_result {
@@ -286,7 +288,7 @@ mod tests {
     };
     use cdk_common::Amount;
 
-    use crate::nuts::{PreMintSecrets, SecretKey as NutSecretKey};
+    use crate::nuts::{MintSecretKey, PreMintSecrets, SecretKey as NutSecretKey};
     use crate::wallet::test_utils::*;
 
     #[tokio::test]
@@ -527,7 +529,7 @@ mod tests {
                     amount: Amount::from(50),
                     keyset_id,
                     secret: p.secret.clone(),
-                    c: NutSecretKey::generate().public_key(),
+                    c: NutSecretKey::generate().public_key().into(),
                     witness: None,
                     dleq: None,
                     p2pk_e: None,
@@ -581,7 +583,7 @@ mod tests {
     /// Check that a stored proof is the mock mint's valid signature on its secret.
     fn assert_valid_mock_signature(proof: &Proof) {
         let power = proof.amount.to_u64().trailing_zeros() as u8;
-        let mint_key = NutSecretKey::from_slice(&[power + 1; 32]).unwrap();
+        let mint_key = MintSecretKey::from_slice(&[power + 1; 32]).unwrap();
         crate::dhke::verify_message(&mint_key, proof.c, &proof.secret.to_bytes())
             .expect("proof should carry a valid signature for its secret");
     }

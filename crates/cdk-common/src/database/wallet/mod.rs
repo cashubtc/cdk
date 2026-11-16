@@ -10,7 +10,7 @@ use cashu::KeySet;
 use super::Error;
 use crate::mint_url::MintUrl;
 use crate::nuts::{
-    CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions, State,
+    CurrencyUnit, Id, KeySetInfo, Keys, MintInfo, ProofId, PublicKey, SpendingConditions, State,
 };
 use crate::wallet::{
     self, MintQuote as WalletMintQuote, ProofInfo, Transaction, TransactionDirection, TransactionId,
@@ -77,7 +77,7 @@ where
     ) -> Result<Vec<ProofInfo>, Err>;
 
     /// Get proofs by Y values
-    async fn get_proofs_by_ys(&self, ys: Vec<PublicKey>) -> Result<Vec<ProofInfo>, Err>;
+    async fn get_proofs_by_ys(&self, ys: Vec<ProofId>) -> Result<Vec<ProofInfo>, Err>;
 
     /// Get balance
     async fn get_balance(
@@ -106,11 +106,11 @@ where
     async fn update_proofs(
         &self,
         added: Vec<ProofInfo>,
-        removed_ys: Vec<PublicKey>,
+        removed_ys: Vec<ProofId>,
     ) -> Result<(), Err>;
 
     /// Update proofs state in storage
-    async fn update_proofs_state(&self, ys: Vec<PublicKey>, state: State) -> Result<(), Err>;
+    async fn update_proofs_state(&self, ys: Vec<ProofId>, state: State) -> Result<(), Err>;
 
     /// Add transaction to storage
     async fn add_transaction(&self, transaction: Transaction) -> Result<(), Err>;
@@ -184,11 +184,7 @@ where
     async fn get_incomplete_sagas(&self) -> Result<Vec<wallet::WalletSaga>, Err>;
 
     /// Reserve proofs for an operation
-    async fn reserve_proofs(
-        &self,
-        ys: Vec<PublicKey>,
-        operation_id: &uuid::Uuid,
-    ) -> Result<(), Err>;
+    async fn reserve_proofs(&self, ys: Vec<ProofId>, operation_id: &uuid::Uuid) -> Result<(), Err>;
 
     /// Release proofs reserved by an operation.
     ///

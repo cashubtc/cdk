@@ -2,7 +2,7 @@
 use serde::de::{DeserializeOwned, Error as DeError};
 use serde::{Deserialize, Serialize};
 
-use super::PublicKey;
+use super::ProofId;
 use crate::nut00::KnownMethod;
 use crate::nut25::MeltQuoteBolt12Response;
 use crate::nut30::{MeltQuoteOnchainResponse, MintQuoteOnchainResponse};
@@ -418,7 +418,7 @@ where
     T: Clone,
 {
     /// ProofState id is a Pubkey
-    ProofState(PublicKey),
+    ProofState(ProofId),
     /// MeltQuote id is an QuoteId
     MeltQuoteBolt11(T),
     /// MintQuote id is an QuoteId

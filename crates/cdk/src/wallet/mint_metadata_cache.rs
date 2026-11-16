@@ -735,6 +735,21 @@ impl MintMetadataCache {
         // Fetch keys for each keyset
         new_metadata.active_keysets.clear();
         for keyset_info in keysets_to_fetch {
+            // Skip a keyset that violates its version's unit rules rather than
+            // failing the whole refresh, so the mint's other keysets stay usable.
+            if let Err(err) = keyset_info
+                .id
+                .get_version()
+                .validate_unit(&keyset_info.unit)
+            {
+                tracing::warn!(
+                    "Skipping keyset {} from {}: {}",
+                    keyset_info.id,
+                    escape_log_value(&self.mint_url),
+                    escape_log_value(&err)
+                );
+                continue;
+            }
             let keyset_arc = Arc::new(keyset_info.clone());
             new_metadata
                 .keysets

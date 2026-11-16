@@ -1,9 +1,10 @@
 use std::collections::HashSet;
 
+use cdk_common::nuts::nut01;
 use cdk_common::nuts::nut17::MAX_CUSTOM_KIND_LEN;
 use cdk_common::{
-    database, Amount, BlindedMessage, CurrencyUnit, Id, PaymentMethod, Proofs, ProofsMethods,
-    PublicKey,
+    database, Amount, BlindedMessage, CurrencyUnit, DhkePoint, Id, PaymentMethod, ProofId, Proofs,
+    ProofsMethods,
 };
 use tracing::instrument;
 
@@ -42,6 +43,10 @@ pub struct Verification {
 
 impl Mint {
     /// Verify that the inputs to the transaction are unique
+    ///
+    /// Inputs are compared by their curve-specific `Y`, as spent state is. The
+    /// same secret on a secp256k1 and a BLS12-381 keyset counts as two
+    /// distinct inputs; see [`ProofId`].
     #[instrument(skip_all)]
     pub fn check_inputs_unique(inputs: &Proofs) -> Result<(), Error> {
         let proof_count = inputs.len();
@@ -49,7 +54,7 @@ impl Mint {
         if inputs
             .iter()
             .map(|i| i.y())
-            .collect::<Result<HashSet<PublicKey>, _>>()?
+            .collect::<Result<HashSet<ProofId>, _>>()?
             .len()
             .ne(&proof_count)
         {
@@ -68,7 +73,7 @@ impl Mint {
         if outputs
             .iter()
             .map(|o| &o.blinded_secret)
-            .collect::<HashSet<&PublicKey>>()
+            .collect::<HashSet<&DhkePoint>>()
             .len()
             .ne(&output_count)
         {
@@ -96,7 +101,8 @@ impl Mint {
 
     /// Verify output keyset
     ///
-    /// Checks that the outputs are all of the same unit and the keyset is active
+    /// Checks that the outputs are all of the same unit, the keyset is active,
+    /// and each blinded message is on the curve its keyset version signs over.
     #[instrument(skip_all)]
     pub fn verify_outputs_keyset(&self, outputs: &[BlindedMessage]) -> Result<CurrencyUnit, Error> {
         let mut keyset_units = HashSet::new();
@@ -129,6 +135,22 @@ impl Mint {
                     );
                     return Err(Error::UnknownKeySet);
                 }
+            }
+        }
+
+        // Only interpret the point kind after establishing that every referenced
+        // keyset exists. This keeps unknown-keyset handling independent of point
+        // validation and avoids doing version-selected crypto work prematurely.
+        for output in outputs {
+            if !output
+                .blinded_secret
+                .is_for_version(output.keyset_id.get_version())
+            {
+                tracing::debug!(
+                    "Transaction attempted with an output on the wrong curve for keyset {}.",
+                    output.keyset_id
+                );
+                return Err(Error::NUT01(nut01::Error::WrongKeyKind));
             }
         }
 
@@ -278,8 +300,8 @@ impl Mint {
             }
         }
 
-        Mint::check_inputs_unique(inputs)?;
         let unit = self.verify_inputs_keyset(inputs).await?;
+        Mint::check_inputs_unique(inputs)?;
 
         if unit == CurrencyUnit::Auth {
             return Err(Error::UnsupportedUnit);

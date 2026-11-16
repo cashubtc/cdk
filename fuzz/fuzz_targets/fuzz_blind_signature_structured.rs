@@ -55,14 +55,14 @@ fuzz_target!(|input: Input| {
     let bsig = BlindSignature {
         amount,
         keyset_id,
-        c,
+        c: c.into(),
         dleq: Some(BlindSignatureDleq { e, s }),
     };
 
     // ---------------------------------------------------------------------
     // 1. verify_dleq must not panic on arbitrary scalars/points.
     // ---------------------------------------------------------------------
-    let _ = bsig.verify_dleq(mint_pk, blinded_message);
+    let _ = bsig.verify_dleq(mint_pk.into(), blinded_message.into());
 
     // ---------------------------------------------------------------------
     // 2. JSON round-trip is lossless.

@@ -48,14 +48,14 @@ mod tests {
     use std::str::FromStr;
 
     use super::*;
-    use crate::nuts::{BlindSignature, Id, MeltQuoteState, PaymentMethod, PublicKey};
+    use crate::nuts::{BlindSignature, DhkePoint, Id, MeltQuoteState, PaymentMethod};
     use crate::CurrencyUnit;
 
     fn blind_signature(amount: u64) -> BlindSignature {
         BlindSignature {
             amount: Amount::from(amount),
             keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
-            c: PublicKey::from_hex(
+            c: DhkePoint::from_hex_any_curve(
                 "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
             )
             .unwrap(),

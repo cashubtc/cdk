@@ -1898,7 +1898,7 @@ mod tests {
 
     async fn assert_proofs_state(
         mint: &crate::mint::Mint,
-        ys: &[cdk_common::PublicKey],
+        ys: &[cdk_common::ProofId],
         expected_state: Option<State>,
     ) {
         let states = mint.localstore.get_proofs_states(ys).await.unwrap();

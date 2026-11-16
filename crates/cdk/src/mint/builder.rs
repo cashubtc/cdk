@@ -140,7 +140,8 @@ impl MintBuilder {
     /// Set the keyset version for new keysets.
     ///
     /// Takes precedence over [`Self::with_keyset_v2`]. When set, an active
-    /// keyset of a different version is rotated on startup.
+    /// keyset of a different version is rotated on startup. V3 (BLS) keysets
+    /// must be selected explicitly; wallets without BLS support cannot use them.
     pub fn with_keyset_version(mut self, keyset_version: Option<KeySetVersion>) -> Self {
         self.keyset_version = keyset_version;
         self
@@ -937,7 +938,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_keyset_version_defaults_to_v2_and_explicit_version_wins() {
+    async fn test_keyset_version_defaults_to_v2_and_v3_is_opt_in() {
         let localstore = Arc::new(memory::empty().await.unwrap());
         let builder = MintBuilder::new(localstore);
         assert_eq!(builder.explicit_keyset_version(), None);
@@ -947,12 +948,12 @@ mod tests {
         assert_eq!(builder.preferred_keyset_version(), KeySetVersion::Version00);
 
         // An explicit version takes precedence over the legacy selector.
-        let builder = builder.with_keyset_version(Some(KeySetVersion::Version01));
+        let builder = builder.with_keyset_version(Some(KeySetVersion::Version02));
         assert_eq!(
             builder.explicit_keyset_version(),
-            Some(KeySetVersion::Version01)
+            Some(KeySetVersion::Version02)
         );
-        assert_eq!(builder.preferred_keyset_version(), KeySetVersion::Version01);
+        assert_eq!(builder.preferred_keyset_version(), KeySetVersion::Version02);
     }
 
     #[tokio::test]
