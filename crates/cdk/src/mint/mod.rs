@@ -391,11 +391,11 @@ impl Mint {
         let payment_processors = Arc::new(payment_processors);
 
         Ok(Self {
-            signatory: signatory.clone(),
+            signatory: Arc::clone(&signatory),
             pubsub_manager: PubSubManager::new((
-                localstore.clone(),
-                payment_processors.clone(),
-                signatory.clone(),
+                Arc::clone(&localstore),
+                Arc::clone(&payment_processors),
+                signatory,
             )),
             localstore,
             oidc_client: computed_info.nuts.nut21.as_ref().map(|nut21| {
