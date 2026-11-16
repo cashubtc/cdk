@@ -11,34 +11,90 @@ on:
     types: [created]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 # Let main runs finish; cancel superseded runs on other refs and PRs.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
+env:
+  CDK_NEXTEST_EXTRACT_ROOT: /var/tmp/cdk-nextest-extract
+  CDK_ITEST_SUITE_TIMEOUT_SECONDS: 1500
+
 jobs:
-  nutshell-integration-tests:
-    name: Nutshell Mint Integration Tests
-    runs-on: self-hosted
+  build-nutshell-binaries:
+    name: Build Nutshell test binaries
+    runs-on: rith-cdk-large
     timeout-minutes: 30
     steps:
       - name: checkout
         uses: actions/checkout@v5
+      - name: Build nextest archive and mint daemon
+        run: |
+          set -o pipefail
+          nix build -L \
+            .#deps \
+            .#itest-deps-ci \
+            .#nutshell-archive \
+            .#nutshell-mintd \
+            --no-link --print-out-paths | tee "$RUNNER_TEMP/cdk-cache-paths.txt"
+      # Wait for the full closure upload before starting dependent jobs.
+      # This needs no secrets and also shares builds between fork PR jobs.
+      - name: Publish to the run cache
+        run: xargs rith-run-cache push < "$RUNNER_TEMP/cdk-cache-paths.txt"
+      - name: Push to Attic cache
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
+        env:
+          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
+          ATTIC_CACHE: ${{ vars.ATTIC_CACHE }}
+        run: nix shell .#attic-client --command misc/attic_push.sh "$RUNNER_TEMP/cdk-cache-paths.txt"
+      - name: Push dev shell to Attic cache
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
+        env:
+          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
+          ATTIC_CACHE: ${{ vars.ATTIC_CACHE }}
+        run: misc/attic_push_devshells.sh nutshell
+
+  nutshell-integration-tests:
+    name: Nutshell Mint Integration Tests
+    runs-on: rith-cdk
+    timeout-minutes: 30
+    needs: build-nutshell-binaries
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
       - name: Test Nutshell
-        run: nix develop --fallback -i -L .#nutshell --command just test-nutshell
+        run: |
+          CDK_ITEST_ARCHIVE="$(nix build -L .#nutshell-archive --no-link --print-out-paths)/itest-archive.tar.zst"
+          export CDK_ITEST_ARCHIVE
+          nix develop --fallback -i -L \
+            -k CDK_ITEST_ARCHIVE -k CDK_NEXTEST_EXTRACT_ROOT -k CDK_ITEST_SUITE_TIMEOUT_SECONDS \
+            .#nutshell --command misc/with_ci_tmpdir.sh just test-nutshell
       - name: Show logs if tests fail
         if: failure()
         run: docker logs nutshell
 
   nutshell-wallet-integration-tests:
     name: Nutshell Wallet Integration Tests
-    runs-on: self-hosted
+    runs-on: rith-cdk
     timeout-minutes: 30
+    needs: build-nutshell-binaries
     steps:
       - name: checkout
         uses: actions/checkout@v5
       - name: Test Nutshell Wallet
-        run: nix develop --fallback -i -L .#nutshell --command just nutshell-wallet-itest
+        run: |
+          CDK_ITEST_ARCHIVE="$(nix build -L .#nutshell-archive --no-link --print-out-paths)/itest-archive.tar.zst"
+          CDK_NUTSHELL_MINTD="$(nix build -L .#nutshell-mintd --no-link --print-out-paths)/bin/cdk-mintd"
+          export CDK_ITEST_ARCHIVE CDK_NUTSHELL_MINTD
+          nix develop --fallback -i -L \
+            -k CDK_ITEST_ARCHIVE -k CDK_NUTSHELL_MINTD \
+            -k CDK_NEXTEST_EXTRACT_ROOT -k CDK_ITEST_SUITE_TIMEOUT_SECONDS \
+            .#nutshell --command misc/with_ci_tmpdir.sh just nutshell-wallet-itest
       - name: Show Docker logs if tests fail
         if: failure()
         run: docker logs nutshell-wallet || true

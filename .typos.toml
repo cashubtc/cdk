@@ -22,3 +22,6 @@ extend-ignore-re = [
     "lnbc[A-Za-z0-9-_]+",
     "Writeable"
 ]
+
+[default.extend-words]
+rith = "rith"
