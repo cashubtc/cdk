@@ -421,13 +421,39 @@
           else
             null;
 
-        # Build ALL dependencies once - this is what gets cached by Cachix
+        # Build ALL dependencies once - published to the Attic cache by CI
         workspaceDeps = craneLib.buildDepsOnly (
           commonCraneArgs
           // {
             pname = "cdk-deps";
             # Build deps for workspace
             cargoExtraArgs = "--workspace";
+          }
+        );
+
+        # Dependencies in the `ci` Cargo profile. `workspaceDeps` uses Crane's
+        # default release profile, so dev-style CI derivations (clippy, unit
+        # tests, docs, the nextest archive) could not reuse it and rebuilt the
+        # whole dependency tree. Derivations that use this must pass
+        # `--profile ci` (`--cargo-profile ci` for nextest) to every cargo call.
+        workspaceDepsCi = craneLib.buildDepsOnly (
+          commonCraneArgs
+          // {
+            pname = "cdk-deps-ci";
+            CARGO_PROFILE = "ci";
+            cargoExtraArgs = "--workspace";
+          }
+        );
+
+        # The nextest archive selects only cdk-integration-tests, which
+        # resolves dependency features differently from `--workspace`, so it
+        # gets its own ci-profile dependency cache.
+        itestDepsCi = craneLib.buildDepsOnly (
+          commonCraneArgs
+          // {
+            pname = "cdk-itest-deps-ci";
+            CARGO_PROFILE = "ci";
+            cargoExtraArgs = "-p cdk-integration-tests";
           }
         );
 
@@ -475,13 +501,13 @@
             commonCraneArgs
             // {
               pname = "cdk-check-${name}";
-              cargoArtifacts = workspaceDeps;
+              cargoArtifacts = workspaceDepsCi;
               buildPhaseCargoCommand = builtins.concatStringsSep "\n" (
                 builtins.map
                   (cargoArgs: ''
                     echo "Running check with args: ${cargoArgs}"
-                    cargo clippy ${cargoArgs} -- -D warnings
-                    cargo test ${if builtins.match ".*cdk-cli.*" cargoArgs != null then "--bins" else "--lib"} ${cargoArgs}
+                    cargo clippy --profile ci ${cargoArgs} -- -D warnings
+                    cargo test --profile ci ${if builtins.match ".*cdk-cli.*" cargoArgs != null then "--bins" else "--lib"} ${cargoArgs}
                   '')
                   cargoArgsList
               );
@@ -493,37 +519,36 @@
             }
           );
 
-        # Helper function to create example checks (compile only, no network access in sandbox)
-        mkExample =
-          name:
-          craneLib.mkCargoDerivation (
-            commonCraneArgs
-            // {
-              pname = "cdk-example-${name}";
-              cargoArtifacts = workspaceDeps;
-              buildPhaseCargoCommand = "cargo build --example ${name}";
-              # Examples are compiled but not run (no network in Nix sandbox)
-              doCheck = false;
-              installPhaseCommand = "mkdir -p $out";
-            }
-          );
+        # All examples built by one cargo invocation, so the workspace crates
+        # compile once instead of once per example. The binaries run outside
+        # the sandbox in CI because they need network access.
+        examplesPackage = craneLib.mkCargoDerivation (
+          commonCraneArgs
+          // {
+            pname = "cdk-examples";
+            cargoArtifacts = workspaceDeps;
+            buildPhaseCargoCommand = "cargo build --release ${
+              lib.concatMapStringsSep " " (name: "--example ${name}") exampleChecks
+            }";
+            doCheck = false;
+            installPhaseCommand = ''
+              mkdir -p $out/bin
+              ${lib.concatMapStringsSep "\n" (
+                name: "cp target/release/examples/${name} $out/bin/"
+              ) exampleChecks}
+            '';
+            doInstallCargoArtifacts = false;
+          }
+        );
 
-        # Helper function to create example packages (outputs binary for running outside sandbox)
+        # One package per example for CI and `nix flake check`. Building the
+        # binary is the compile check, so checks and packages share it.
         mkExamplePackage =
           name:
-          craneLib.mkCargoDerivation (
-            commonCraneArgs
-            // {
-              pname = "cdk-example-${name}";
-              cargoArtifacts = workspaceDeps;
-              buildPhaseCargoCommand = "cargo build --release --example ${name}";
-              doCheck = false;
-              installPhaseCommand = ''
-                mkdir -p $out/bin
-                cp target/release/examples/${name} $out/bin/
-              '';
-            }
-          );
+          pkgs.runCommandLocal "cdk-example-${name}" { } ''
+            mkdir -p $out/bin
+            ln -s ${examplesPackage}/bin/${name} $out/bin/${name}
+          '';
 
         # Helper function to create MSRV build checks
         mkMsrvBuild =
@@ -534,6 +559,7 @@
               pname = "cdk-msrv-${name}";
               cargoArtifacts = workspaceDepsMsrv;
               cargoExtraArgs = cargoArgs;
+              doInstallCargoArtifacts = false;
             }
           );
 
@@ -551,6 +577,7 @@
             buildInputs = [ ];
             # Disable tests for WASM (can't run in sandbox)
             doCheck = false;
+            doInstallCargoArtifacts = false;
           });
 
         # Doc tests check
@@ -560,6 +587,7 @@
             pname = "cdk-doc-tests";
             cargoArtifacts = workspaceDeps;
             cargoTestExtraArgs = "--doc";
+            doInstallCargoArtifacts = false;
           }
         );
 
@@ -569,10 +597,11 @@
           commonCraneArgs
           // {
             pname = "cdk-workspace-clippy-all-targets";
-            cargoArtifacts = workspaceDeps;
-            buildPhaseCargoCommand = "cargo clippy --workspace --all-targets -- -D warnings";
+            cargoArtifacts = workspaceDepsCi;
+            buildPhaseCargoCommand = "cargo clippy --profile ci --workspace --all-targets -- -D warnings";
             doCheck = false;
             installPhaseCommand = "mkdir -p $out";
+            doInstallCargoArtifacts = false;
           }
         );
 
@@ -582,10 +611,10 @@
           commonCraneArgs
           // {
             pname = "cdk-strict-docs";
-            cargoArtifacts = workspaceDeps;
+            cargoArtifacts = workspaceDepsCi;
             buildPhaseCargoCommand = ''
               export RUSTDOCFLAGS="-D warnings"
-              cargo doc --no-deps \
+              cargo doc --profile ci --no-deps \
                 -p cashu \
                 -p cdk-common \
                 -p cdk-sql-common \
@@ -604,6 +633,7 @@
             '';
             doCheck = false;
             installPhaseCommand = "mkdir -p $out";
+            doInstallCargoArtifacts = false;
           }
         );
 
@@ -636,11 +666,12 @@
             '';
             doCheck = false;
             installPhaseCommand = "mkdir -p $out";
+            doInstallCargoArtifacts = false;
           }
         );
 
         # ========================================
-        # Language binding derivations (cached by Cachix)
+        # Language binding derivations
         # ========================================
 
         # Dart FFI bindings: builds cdk-ffi-dart cdylib + generates Dart source
@@ -1412,7 +1443,7 @@
           );
 
         # ========================================
-        # Integration test harness binaries (pre-built via Crane, cached by Cachix)
+        # Integration test harness binaries (pre-built via Crane, published to the Attic cache)
         # These are used by CI integration test scripts instead of cargo build/run
         # ========================================
         mkItestBinary =
@@ -1429,28 +1460,52 @@
             }
           );
 
-        itestBinaries = {
-          start-fake-mint = mkItestBinary "start-fake-mint" "--bin start_fake_mint";
-          start-regtest-mints = mkItestBinary "start-regtest-mints" "--bin start_regtest_mints";
-          start-fake-auth-mint = mkItestBinary "start-fake-auth-mint" "--bin start_fake_auth_mint";
-          start-regtest = mkItestBinary "start-regtest" "--bin start_regtest";
-          signatory = mkItestBinary "signatory" "--bin signatory";
-          cdk-payment-processor = mkItestBinary "cdk-payment-processor" "--bin cdk-payment-processor";
-          cdk-mintd-grpc = mkItestBinary "cdk-mintd-grpc" "--bin cdk-mintd --no-default-features --features grpc-processor";
+        # Harness binaries that share the default feature set, built by one
+        # cargo invocation so the workspace crates compile once instead of
+        # once per binary. A bare `--bin` selects every workspace member, so
+        # features resolve exactly as they did for the per-binary builds.
+        itestHarnessBins = {
+          start-fake-mint = "start_fake_mint";
+          start-regtest-mints = "start_regtest_mints";
+          start-fake-auth-mint = "start_fake_auth_mint";
+          start-regtest = "start_regtest";
+          signatory = "signatory";
+          cdk-payment-processor = "cdk-payment-processor";
         };
+
+        itestHarness = mkItestBinary "harness" (
+          lib.concatMapStringsSep " " (bin: "--bin ${bin}") (builtins.attrValues itestHarnessBins)
+        );
+
+        # Keep one package per binary for the dev shells, CI and `just`.
+        itestBinaries =
+          builtins.mapAttrs
+            (
+              name: bin:
+                pkgs.runCommandLocal "cdk-itest-${name}" { } ''
+                  mkdir -p $out/bin
+                  ln -s ${itestHarness}/bin/${bin} $out/bin/${bin}
+                ''
+            )
+            itestHarnessBins
+          // {
+            # Different feature set, so it stays a separate build.
+            cdk-mintd-grpc = mkItestBinary "cdk-mintd-grpc" "--bin cdk-mintd --no-default-features --features grpc-processor";
+          };
 
         # Nextest archive for integration tests (pre-compiled test binaries)
         itestArchive = craneLib.mkCargoDerivation (
           commonCraneArgs
           // {
             pname = "cdk-itest-archive";
-            cargoArtifacts = workspaceDeps;
+            cargoArtifacts = itestDepsCi;
             nativeBuildInputs = commonCraneArgs.nativeBuildInputs ++ [
               pkgs.cargo-nextest
             ];
             buildPhaseCargoCommand = ''
               mkdir -p $out
               cargo nextest archive \
+                --cargo-profile ci \
                 -p cdk-integration-tests \
                 --archive-file $out/itest-archive.tar.zst
             '';
@@ -1494,6 +1549,8 @@
           default = defaultPackage;
           attic-client = pkgs.attic-client;
           deps = workspaceDeps;
+          deps-ci = workspaceDepsCi;
+          itest-deps-ci = itestDepsCi;
           deps-msrv = workspaceDepsMsrv;
           # Language bindings (cached cdylib + uniffi codegen)
           dart-bindings = dartBindings;
@@ -1593,15 +1650,7 @@
             map
               (name: {
                 name = "example-${name}";
-                value = mkExample name;
-              })
-              exampleChecks
-          ))
-          // (builtins.listToAttrs (
-            map
-              (name: {
-                name = "example-${name}";
-                value = mkExample name;
+                value = mkExamplePackage name;
               })
               exampleChecks
           ))
@@ -1612,11 +1661,11 @@
               commonCraneArgs
               // {
                 pname = "cdk-pr-unit-tests";
-                cargoArtifacts = workspaceDeps;
+                cargoArtifacts = workspaceDepsCi;
                 buildPhaseCargoCommand = ''
-                  cargo test --lib --workspace --exclude cdk-postgres --exclude cdk-integration-tests
-                  cargo test --bins -p cdk-cli
-                  cargo test --lib -p cdk-nostr --all-features
+                  cargo test --profile ci --lib --workspace --exclude cdk-postgres --exclude cdk-integration-tests
+                  cargo test --profile ci --bins -p cdk-cli
+                  cargo test --profile ci --lib -p cdk-nostr --all-features
                 '';
                 doCheck = false;
                 installPhaseCommand = "mkdir -p $out";
@@ -1630,15 +1679,15 @@
               commonCraneArgs
               // {
                 pname = "cdk-pr-feature-tests";
-                cargoArtifacts = workspaceDeps;
+                cargoArtifacts = workspaceDepsCi;
                 buildPhaseCargoCommand = ''
-                  cargo test --lib -p cdk-sqlite --features sqlcipher
-                  cargo test --bins -p cdk-cli --features redb
-                  cargo check -p cdk-mintd --features redis
-                  cargo test --lib -p cdk-common --no-default-features --features wallet
-                  cargo test --lib -p cdk-common --no-default-features --features mint
-                  cargo test --lib -p cdk-sql-common --no-default-features --features wallet
-                  cargo test --lib -p cdk-sql-common --no-default-features --features mint
+                  cargo test --profile ci --lib -p cdk-sqlite --features sqlcipher
+                  cargo test --profile ci --bins -p cdk-cli --features redb
+                  cargo check --profile ci -p cdk-mintd --features redis
+                  cargo test --profile ci --lib -p cdk-common --no-default-features --features wallet
+                  cargo test --profile ci --lib -p cdk-common --no-default-features --features mint
+                  cargo test --profile ci --lib -p cdk-sql-common --no-default-features --features wallet
+                  cargo test --profile ci --lib -p cdk-sql-common --no-default-features --features mint
                 '';
                 doCheck = false;
                 installPhaseCommand = "mkdir -p $out";

@@ -117,6 +117,8 @@ attic-push:
   targets=(
     '.#default'
     '.#deps'
+    '.#deps-ci'
+    '.#itest-deps-ci'
     '.#deps-msrv'
     '.#itest-archive'
     '.#start-fake-mint'
