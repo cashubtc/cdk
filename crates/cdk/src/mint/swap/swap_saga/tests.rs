@@ -12,7 +12,8 @@ use super::SwapSaga;
 use crate::mint::swap::Mint;
 use crate::mint::Verification;
 use crate::test_helpers::mint::{
-    clear_fail_for, create_test_blinded_messages, create_test_mint, set_fail_for,
+    clear_fail_for, create_test_blinded_messages, create_test_mint, create_test_mint_with_db,
+    set_fail_for,
 };
 
 /// Helper to create a verification result for testing
@@ -1254,6 +1255,86 @@ async fn test_swap_saga_compensation_on_finalize_update_proofs_failure() {
         signatures.iter().all(|s| s.is_none()),
         "Signatures should not be persisted after rollback"
     );
+}
+
+/// Tests that compensation runs when finalize fails at commit.
+///
+/// The keyset totals are written inside `commit()`, so a failed totals write
+/// must release the swap's inputs and outputs like a failure in any earlier step.
+///
+/// # Success Criteria
+/// - Finalize fails
+/// - Input proofs are removed and no signatures are persisted
+/// - The same swap succeeds once the failure clears
+#[tokio::test]
+async fn test_swap_saga_compensation_on_finalize_commit_failure() {
+    let path =
+        std::env::temp_dir().join(format!("cdk-swap-commit-{}.sqlite", uuid::Uuid::new_v4()));
+    let sqlite = Arc::new(cdk_sqlite::MintSqliteDatabase::new(&path).await.unwrap());
+    let mint = create_test_mint_with_db(sqlite).await.unwrap();
+    let db = mint.localstore();
+    let amount = Amount::from(100);
+    let (input_proofs, input_verification) = create_swap_inputs(&mint, amount).await;
+    let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TRIGGER fail_keyset_totals BEFORE INSERT ON keyset_amounts
+             BEGIN SELECT RAISE(ABORT, 'keyset totals write failed'); END;",
+        )
+        .unwrap();
+
+    let saga = SwapSaga::new(&mint, db.clone(), mint.pubsub_manager())
+        .setup_swap(
+            &input_proofs,
+            &output_blinded_messages,
+            None,
+            input_verification.clone(),
+        )
+        .await
+        .expect("Setup should succeed")
+        .sign_outputs()
+        .await
+        .expect("Signing should succeed");
+
+    assert!(saga.finalize().await.is_err(), "Finalize should fail");
+
+    let ys = input_proofs.ys().unwrap();
+    let states = db.get_proofs_states(&ys).await.unwrap();
+    assert!(
+        states.iter().all(|s| s.is_none()),
+        "Proofs should be removed by compensation"
+    );
+    let blinded_secrets: Vec<_> = output_blinded_messages
+        .iter()
+        .map(|bm| bm.blinded_secret)
+        .collect();
+    let signatures = db.get_blind_signatures(&blinded_secrets).await.unwrap();
+    assert!(
+        signatures.iter().all(|s| s.is_none()),
+        "Signatures should not be persisted"
+    );
+
+    connection
+        .execute_batch("DROP TRIGGER fail_keyset_totals;")
+        .unwrap();
+
+    SwapSaga::new(&mint, db.clone(), mint.pubsub_manager())
+        .setup_swap(
+            &input_proofs,
+            &output_blinded_messages,
+            None,
+            input_verification,
+        )
+        .await
+        .expect("Retry setup should succeed")
+        .sign_outputs()
+        .await
+        .expect("Retry signing should succeed")
+        .finalize()
+        .await
+        .expect("Retry should succeed");
 }
 
 // ==================== PHASE 1: FOUNDATION TESTS ====================

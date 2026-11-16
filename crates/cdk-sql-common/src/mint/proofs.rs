@@ -192,8 +192,8 @@ where
     /// Also updates the `state` field on the [`ProofsWithState`] wrapper to reflect
     /// the new state after the database update succeeds.
     ///
-    /// When the new state is `Spent`, this method also updates the `keyset_amounts`
-    /// table to track the total redeemed amount per keyset for analytics purposes.
+    /// When the new state is `Spent`, the proofs' amounts are added to their
+    /// keysets' redeemed totals, which are written to `keyset_amounts` on commit.
     ///
     /// # Prerequisites
     ///
@@ -220,21 +220,10 @@ where
         }
 
         if new_state == State::Spent {
-            query(
-                    r#"
-                    INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
-                    SELECT keyset_id, 0, COALESCE(SUM(amount), 0)
-                    FROM proof
-                    WHERE y IN (:ys)
-                    GROUP BY keyset_id
-                    ORDER BY keyset_id
-                    ON CONFLICT (keyset_id)
-                    DO UPDATE SET total_redeemed = keyset_amounts.total_redeemed + EXCLUDED.total_redeemed
-                    "#,
-                )?
-                .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
-                .execute(&self.inner)
-                .await?;
+            for proof in proofs.iter() {
+                self.keyset_totals
+                    .add_redeemed(proof.keyset_id, proof.amount)?;
+            }
         }
 
         proofs.state = new_state;

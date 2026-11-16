@@ -106,25 +106,9 @@ where
         .execute(&self.inner)
         .await?;
 
-        // Acquire fee row locks in keyset ID order so concurrent fee updates
-        // cannot deadlock by visiting shared keysets in opposite orders.
-        let mut fees = fee_by_keyset.iter().collect::<Vec<_>>();
-        fees.sort_unstable_by_key(|(keyset_id, _)| *keyset_id);
-
-        for (keyset_id, fee) in fees {
+        for (keyset_id, fee) in fee_by_keyset {
             if fee.to_u64() > 0 {
-                query(
-                    r#"
-                    INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed, fee_collected)
-                    VALUES (:keyset_id, 0, 0, :fee)
-                    ON CONFLICT (keyset_id)
-                    DO UPDATE SET fee_collected = keyset_amounts.fee_collected + EXCLUDED.fee_collected
-                    "#,
-                )?
-                .bind("keyset_id", keyset_id.to_string())
-                .bind("fee", i64::try_from(fee.to_u64())?)
-                .execute(&self.inner)
-                .await?;
+                self.keyset_totals.add_fee_collected(*keyset_id, *fee)?;
             }
         }
 

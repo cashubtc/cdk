@@ -135,19 +135,6 @@ where
                     .bind("order_index", i64::try_from(i)?)
                     .execute(&self.inner)
                     .await?;
-
-                    query(
-                        r#"
-                        INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
-                        VALUES (:keyset_id, :amount, 0)
-                        ON CONFLICT (keyset_id)
-                        DO UPDATE SET total_issued = keyset_amounts.total_issued + EXCLUDED.total_issued
-                        "#,
-                    )?
-                    .bind("amount", i64::try_from(u64::from(signature.amount))?)
-                    .bind("keyset_id", signature.keyset_id.to_string())
-                    .execute(&self.inner)
-                    .await?;
                 }
                 Some(c) => {
                     // Blind message exists: check if c is NULL
@@ -167,19 +154,6 @@ where
                             .bind("amount", i64::try_from(u64::from(signature.amount))?)
                             .execute(&self.inner)
                             .await?;
-
-                            query(
-                                r#"
-                                INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
-                                VALUES (:keyset_id, :amount, 0)
-                                ON CONFLICT (keyset_id)
-                                DO UPDATE SET total_issued = keyset_amounts.total_issued + EXCLUDED.total_issued
-                                "#,
-                            )?
-                            .bind("amount", i64::try_from(u64::from(signature.amount))?)
-                            .bind("keyset_id", signature.keyset_id.to_string())
-                            .execute(&self.inner)
-                            .await?;
                         }
                         _ => {
                             // Blind message already has c: Error
@@ -193,6 +167,9 @@ where
                     }
                 }
             }
+
+            self.keyset_totals
+                .add_issued(signature.keyset_id, signature.amount)?;
         }
 
         debug_assert!(
