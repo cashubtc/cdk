@@ -23,8 +23,8 @@ The following crate feature flags are available:
 
 SQLite and Postgres store transaction proof identifiers in `transaction_ys`, with
 one raw curve point per row. The `(transaction_id, position)` primary key preserves
-list order and permits repeated points. Each row currently holds a 33-byte
-secp256k1 point; an empty list has no rows. Storing points separately removes the
+list order and permits repeated points. Each row holds a 33-byte secp256k1 or 48-byte BLS G1 point; an empty list has no
+rows. Storing points separately removes the
 fixed-width concatenated layout, while retaining validation of supported point
 encodings. Reads join this table with `transactions`, and writes update both
 tables in one database transaction.
@@ -34,6 +34,10 @@ and removes `transactions.ys`. Malformed trailing fragments cause the migration
 to fail and roll back. Older binaries cannot use the migrated SQL schema; retain
 a pre-upgrade database backup if downgrade is required. Redb's JSON transaction
 format is unchanged.
+
+Migration `20261116000000` extends the point-length constraint to accept BLS G1
+identifiers, preserving existing rows in databases that already ran the normalization
+migration.
 
 Updating an existing transaction replaces its proof identifiers as well as its
 metadata. Transaction listing skips malformed transactions with a warning, including the

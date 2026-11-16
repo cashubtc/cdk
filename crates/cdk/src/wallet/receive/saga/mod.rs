@@ -146,7 +146,8 @@ impl<'a> ReceiveSaga<'a, Initial> {
             .map(|s| Ok((s.x_only_public_key().0, s.clone())))
             .collect::<Result<_, Error>>()?;
 
-        // Verify the mint's signatures: DLEQ proofs where present.
+        // Verify the mint's signatures: DLEQ proofs where present on legacy
+        // proofs, and one batched pairing check for all v3 proofs.
         let mut keys_cache: HashMap<Id, Keys> = HashMap::new();
         let mut signed_proofs = Vec::new();
         for proof in proofs

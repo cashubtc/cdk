@@ -5,7 +5,7 @@ use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::{Parity, PublicKey as NormalizedPublicKey, Secp256k1, XOnlyPublicKey};
 use thiserror::Error;
 
-use crate::nuts::nut01::{BlindingFactor, DhkePoint, MintPublicKey, MintSecretKey, PublicKey};
+use crate::nuts::nut01::{bls, BlindingFactor, DhkePoint, MintPublicKey, MintSecretKey, PublicKey};
 use crate::nuts::nut02::KeySetVersion;
 use crate::nuts::nut12::ProofDleq;
 use crate::nuts::{BlindSignature, Keys, Proof, Proofs};
@@ -73,6 +73,7 @@ pub fn hash_to_curve_for_version(
 ) -> Result<DhkePoint, Error> {
     match version {
         KeySetVersion::Version00 | KeySetVersion::Version01 => Ok(hash_to_curve(message)?.into()),
+        KeySetVersion::Version02 => Ok(bls::BlsG1PublicKey::hash_to_curve(message).into()),
     }
 }
 
@@ -112,6 +113,14 @@ pub fn blind_message_for_version(
             let y: PublicKey = hash_to_curve(secret)?;
             let r = blinding_factor.unwrap_or_else(BlindingFactor::generate);
             Ok((y.combine(&r.secp_public_key()?)?.into(), r))
+        }
+        KeySetVersion::Version02 => {
+            let r = match blinding_factor {
+                Some(r) => r,
+                None => BlindingFactor::generate_bls()?,
+            };
+            let b = bls::BlsG1PublicKey::hash_to_curve(secret).mul(r.as_bls()?);
+            Ok((b.into(), r))
         }
     }
 }
@@ -165,8 +174,15 @@ pub fn construct_proofs(
             KeySetVersion::Version00 | KeySetVersion::Version01 => {
                 unblind_message(&blinded_c, &r, &a)?
             }
+            KeySetVersion::Version02 => {
+                let c = blinded_c.as_bls()?.mul(&r.as_bls()?.invert()?);
+                c.into()
+            }
         };
 
+        blinded_signature
+            .ensure_dleq_allowed()
+            .map_err(|_| Error::TokenNotVerified)?;
         let dleq = blinded_signature.dleq.map(|d| ProofDleq::new(d.e, d.s, r));
 
         let proof = Proof {
@@ -200,6 +216,7 @@ pub fn sign_message(k: &MintSecretKey, blinded_message: &DhkePoint) -> Result<Dh
                 .mul_tweak(&SECP256K1, &k)?
                 .into())
         }
+        MintSecretKey::Bls(inner) => Ok(blinded_message.as_bls()?.mul(inner).into()),
     }
 }
 
@@ -227,8 +244,10 @@ pub fn verify_message(
 /// Verify a proof's signature with the mint's secret key.
 ///
 /// The secret key lets the mint check `C == a·Y` directly, without DLEQ
-/// proofs. Any DLEQ proof attached to the proof is ignored: it carries nothing
-/// the mint needs.
+/// proofs or pairings. Any DLEQ proof attached to the proof is ignored, for
+/// every keyset version: it carries nothing the mint needs. NUT-12 only says
+/// receivers SHOULD treat a v3 proof with a DLEQ as malformed, and rejecting
+/// it would fail a valid spend.
 pub fn verify_proof_with_mint_key(
     proof: &Proof,
     mint_secret_key: &MintSecretKey,
@@ -237,7 +256,78 @@ pub fn verify_proof_with_mint_key(
         KeySetVersion::Version00 | KeySetVersion::Version01 => {
             verify_message(mint_secret_key, proof.c, proof.secret.as_bytes())
         }
+        KeySetVersion::Version02 => {
+            verify_bls_message_keyed(mint_secret_key, proof.c, proof.secret.as_bytes())
+        }
     }
+}
+
+/// Verify BLS proof using pairings.
+pub fn verify_bls_message(
+    mint_pubkey: MintPublicKey,
+    unblinded_message: DhkePoint,
+    msg: &[u8],
+) -> Result<(), Error> {
+    if bls::verify_pairing(&unblinded_message.as_bls()?, msg, &mint_pubkey.as_bls()?) {
+        return Ok(());
+    }
+
+    Err(Error::TokenNotVerified)
+}
+
+/// Verify BLS blind signature using pairings.
+pub fn verify_bls_blind_signature(
+    mint_pubkey: MintPublicKey,
+    blinded_signature: DhkePoint,
+    blinded_message: DhkePoint,
+) -> Result<(), Error> {
+    if bls::verify_blind_signature_pairing(
+        &blinded_signature.as_bls()?,
+        &blinded_message.as_bls()?,
+        &mint_pubkey.as_bls()?,
+    ) {
+        return Ok(());
+    }
+
+    Err(Error::TokenNotVerified)
+}
+
+/// Verify BLS proof using the mint secret key.
+pub fn verify_bls_message_keyed(
+    mint_secretkey: &MintSecretKey,
+    unblinded_message: DhkePoint,
+    msg: &[u8],
+) -> Result<(), Error> {
+    let y = bls::BlsG1PublicKey::hash_to_curve(msg);
+    let expected = y.mul(mint_secretkey.as_bls()?);
+
+    if unblinded_message.as_bls()? == expected {
+        return Ok(());
+    }
+
+    Err(Error::TokenNotVerified)
+}
+
+/// Batch verify BLS proofs using pairings.
+pub fn batch_verify_bls_messages(
+    mint_pubkeys: &[MintPublicKey],
+    unblinded_messages: &[DhkePoint],
+    messages: &[&[u8]],
+) -> Result<(), Error> {
+    let mint_pubkeys = mint_pubkeys
+        .iter()
+        .map(MintPublicKey::as_bls)
+        .collect::<Result<Vec<_>, _>>()?;
+    let unblinded_messages = unblinded_messages
+        .iter()
+        .map(DhkePoint::as_bls)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    if bls::batch_verify_pairing(&mint_pubkeys, &unblinded_messages, messages) {
+        return Ok(());
+    }
+
+    Err(Error::TokenNotVerified)
 }
 
 #[cfg(test)]
@@ -446,6 +536,258 @@ mod tests {
         let unblinded = unblind_message(&signed, &r, &bob_sec.public_key()).unwrap();
 
         assert!(verify_message(&bob_sec, unblinded, &message).is_ok());
+    }
+
+    #[test]
+    fn test_bls_full_dhke() {
+        use std::collections::BTreeMap;
+
+        use crate::nuts::nut02::{Id, KeySetVersion};
+        use crate::Amount;
+
+        let message = b"test message";
+        let r = BlindingFactor::bls_from_reduced_bytes(&[42u8; 32]).unwrap();
+        let mint_secret = MintSecretKey::bls_from_reduced_bytes(&[7u8; 32]).unwrap();
+
+        let keyset_id =
+            Id::from_bytes(&[vec![KeySetVersion::Version02.to_byte()], vec![1; 32]].concat())
+                .expect("valid v3 id");
+        let (blinded, returned_r) =
+            blind_message_for_version(message, Some(r.clone()), KeySetVersion::Version02)
+                .expect("blind");
+        assert_eq!(returned_r, r);
+
+        let signed = sign_message(&mint_secret, &blinded).expect("sign");
+        let mut keys = BTreeMap::new();
+        keys.insert(Amount::from(1), mint_secret.public_key());
+        let keys = Keys::new(keys);
+        let proof = construct_proofs(
+            vec![BlindSignature {
+                amount: Amount::from(1),
+                keyset_id,
+                c: signed,
+                dleq: None,
+            }],
+            vec![r],
+            vec![Secret::from_str("test message").expect("secret")],
+            &keys,
+        )
+        .expect("proof")
+        .pop()
+        .expect("one proof");
+
+        verify_bls_message(mint_secret.public_key(), proof.c, proof.secret.as_bytes())
+            .expect("valid pairing");
+        assert!(verify_bls_message(
+            MintSecretKey::bls_from_reduced_bytes(&[8u8; 32])
+                .unwrap()
+                .public_key(),
+            proof.c,
+            proof.secret.as_bytes()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn test_construct_proofs_rejects_v3_dleq() {
+        use std::collections::BTreeMap;
+
+        use crate::nuts::nut02::{Id, KeySetVersion};
+        use crate::nuts::nut12::BlindSignatureDleq;
+        use crate::Amount;
+
+        let message = b"test message";
+        let r = BlindingFactor::bls_from_reduced_bytes(&[42u8; 32]).unwrap();
+        let mint_secret = MintSecretKey::bls_from_reduced_bytes(&[7u8; 32]).unwrap();
+        let keyset_id =
+            Id::from_bytes(&[vec![KeySetVersion::Version02.to_byte()], vec![1; 32]].concat())
+                .expect("valid v3 id");
+        let (blinded, _) =
+            blind_message_for_version(message, Some(r.clone()), KeySetVersion::Version02)
+                .expect("blind");
+        let signed = sign_message(&mint_secret, &blinded).expect("sign");
+
+        let mut keys = BTreeMap::new();
+        keys.insert(Amount::from(1), mint_secret.public_key());
+        let keys = Keys::new(keys);
+
+        let result = construct_proofs(
+            vec![BlindSignature {
+                amount: Amount::from(1),
+                keyset_id,
+                c: signed,
+                dleq: Some(BlindSignatureDleq {
+                    e: SecretKey::generate(),
+                    s: SecretKey::generate(),
+                }),
+            }],
+            vec![r],
+            vec![Secret::from_str("test message").expect("secret")],
+            &keys,
+        );
+
+        assert!(matches!(result, Err(Error::TokenNotVerified)));
+    }
+
+    #[test]
+    fn test_bls_hash_to_curve_nutshell_vectors() {
+        let y = bls::BlsG1PublicKey::hash_to_curve(
+            &hex::decode("0000000000000000000000000000000000000000000000000000000000000000")
+                .expect("hex"),
+        );
+        assert_eq!(
+            DhkePoint::from(y).to_hex(),
+            "a0687086dadc17db3c73fc63d58d61569ca32752a9b92c4e543692bc6b87b293fdcb4e9c870ab6e6d08127deb9382fb9"
+        );
+
+        let y = bls::BlsG1PublicKey::hash_to_curve(
+            &hex::decode("0000000000000000000000000000000000000000000000000000000000000001")
+                .expect("hex"),
+        );
+        assert_eq!(
+            DhkePoint::from(y).to_hex(),
+            "8dbdd24f1bc6f485fda14721cb1f15ba72ba34c05f89b5ca38c2a222c07158f471011d50a371cdb365da6bc7ef4139f4"
+        );
+    }
+
+    #[test]
+    fn test_bls_dhke_nutshell_steps() {
+        let secret_msg = b"test_message";
+        let (blinded, r) =
+            blind_message_for_version(secret_msg, None, KeySetVersion::Version02).expect("blind");
+
+        let mint_secret = MintSecretKey::generate_bls().expect("OS randomness");
+        let blinded_signature = sign_message(&mint_secret, &blinded).expect("sign");
+        let unblinded_signature = blinded_signature
+            .as_bls()
+            .expect("bls g1")
+            .mul(&r.as_bls().expect("bls scalar").invert().expect("inverse"))
+            .into();
+
+        verify_bls_message_keyed(&mint_secret, unblinded_signature, secret_msg)
+            .expect("keyed verification");
+        verify_bls_message(mint_secret.public_key(), unblinded_signature, secret_msg)
+            .expect("pairing verification");
+    }
+
+    #[test]
+    fn test_bls_blind_signature_pairing_verification() {
+        let secret_msg = b"test_message";
+        let (blinded, _) =
+            blind_message_for_version(secret_msg, None, KeySetVersion::Version02).expect("blind");
+
+        let mint_secret = MintSecretKey::generate_bls().expect("OS randomness");
+        let blinded_signature = sign_message(&mint_secret, &blinded).expect("sign");
+
+        verify_bls_blind_signature(mint_secret.public_key(), blinded_signature, blinded)
+            .expect("valid blind signature pairing");
+
+        let wrong_mint_pubkey = MintSecretKey::generate_bls()
+            .expect("OS randomness")
+            .public_key();
+        assert!(verify_bls_blind_signature(wrong_mint_pubkey, blinded_signature, blinded).is_err());
+
+        let (wrong_blinded, _) =
+            blind_message_for_version(b"wrong_message", None, KeySetVersion::Version02)
+                .expect("blind");
+        assert!(verify_bls_blind_signature(
+            mint_secret.public_key(),
+            blinded_signature,
+            wrong_blinded
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn test_bls_batch_pairing_verification_nutshell() {
+        let secrets = [b"msg1".as_slice(), b"msg2".as_slice(), b"msg3".as_slice()];
+        let mint_secret_1 = MintSecretKey::generate_bls().expect("OS randomness");
+        let mint_secret_2 = MintSecretKey::generate_bls().expect("OS randomness");
+
+        let mut mint_pubkeys = Vec::new();
+        let mut signatures = Vec::new();
+
+        for (secret, mint_secret) in [
+            (secrets[0], &mint_secret_1),
+            (secrets[1], &mint_secret_1),
+            (secrets[2], &mint_secret_2),
+        ] {
+            let (blinded, r) =
+                blind_message_for_version(secret, None, KeySetVersion::Version02).expect("blind");
+            let blinded_signature = sign_message(mint_secret, &blinded).expect("sign");
+            let signature = blinded_signature
+                .as_bls()
+                .expect("bls g1")
+                .mul(&r.as_bls().expect("bls scalar").invert().expect("inverse"))
+                .into();
+            mint_pubkeys.push(mint_secret.public_key());
+            signatures.push(signature);
+        }
+
+        batch_verify_bls_messages(&mint_pubkeys, &signatures, &secrets)
+            .expect("valid batch pairing");
+
+        signatures[0] = signatures[1];
+        assert!(batch_verify_bls_messages(&mint_pubkeys, &signatures, &secrets).is_err());
+    }
+
+    #[test]
+    fn test_deterministic_bls_steps_nutshell_vectors() {
+        let secret_msg = b"test_message";
+        assert_eq!(
+            hash_to_curve_for_version(secret_msg, KeySetVersion::Version02)
+                .unwrap()
+                .to_hex(),
+            "860d58e5aeda1376185436ed96412313424cc079e056d1dab595e6db4c2c9685fec7da052c8db68d88985b75a42388ad"
+        );
+        let r = BlindingFactor::bls_from_reduced_bytes(
+            &hex::decode("0000000000000000000000000000000000000000000000000000000000000003")
+                .expect("hex")
+                .try_into()
+                .expect("32 bytes"),
+        )
+        .unwrap();
+        let mint_secret = MintSecretKey::bls_from_reduced_bytes(
+            &hex::decode("0000000000000000000000000000000000000000000000000000000000000002")
+                .expect("hex")
+                .try_into()
+                .expect("32 bytes"),
+        )
+        .unwrap();
+
+        let (blinded, returned_r) =
+            blind_message_for_version(secret_msg, Some(r.clone()), KeySetVersion::Version02)
+                .expect("blind");
+        assert_eq!(returned_r.to_secret_hex(), r.to_secret_hex());
+
+        assert_eq!(
+            mint_secret.public_key().to_hex(),
+            "aa4edef9c1ed7f729f520e47730a124fd70662a904ba1074728114d1031e1572c6c886f6b57ec72a6178288c47c335771638533957d540a9d2370f17cc7ed5863bc0b995b8825e0ee1ea1e1e4d00dbae81f14b0bf3611b78c952aacab827a053"
+        );
+        let blinded_signature = sign_message(&mint_secret, &blinded).expect("sign");
+        let unblinded_signature = blinded_signature
+            .as_bls()
+            .expect("bls g1")
+            .mul(&r.as_bls().expect("bls scalar").invert().expect("inverse"))
+            .into();
+
+        verify_bls_message_keyed(&mint_secret, unblinded_signature, secret_msg)
+            .expect("keyed verification");
+        verify_bls_message(mint_secret.public_key(), unblinded_signature, secret_msg)
+            .expect("pairing verification");
+
+        assert_eq!(
+            blinded.to_hex(),
+            "8e88c5f6a93f653784a66b033a00e52128499e18b095c2a56f080d1c2a937ffc9ef4600804a48d087bbd1f662f6b068f"
+        );
+        assert_eq!(
+            blinded_signature.to_hex(),
+            "8d52d7a6cbe5e99858d5c15c092d11a0c387c78917471211082a6e5afc2a79680dfa188fafe5d4a51c5398ce160e7a16"
+        );
+        assert_eq!(
+            unblinded_signature.to_hex(),
+            "b7a4881059133fd91a8753600d9a5e524c65d6224f6fe2d5aef9e59f1507fdad90b3b4d48ee46da5c8dfaa0b88e28b69"
+        );
     }
 
     /// Tests that `verify_message` correctly rejects verification when using an incorrect key.

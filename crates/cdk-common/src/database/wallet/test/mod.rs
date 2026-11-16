@@ -15,7 +15,7 @@ use cashu::{Amount, CurrencyUnit, MeltQuoteState, MintQuoteState, SecretKey};
 
 use super::*;
 use crate::mint_url::MintUrl;
-use crate::nuts::{Id, KeySetInfo, Keys, MintInfo, Proof, State};
+use crate::nuts::{Id, KeySetInfo, Keys, MintInfo, Proof, ProofId, State};
 use crate::wallet::{
     MeltQuote, MintQuote, OperationData, ProofInfo, SwapOperationData, SwapSagaState, Transaction,
     TransactionDirection, TransactionStatus, WalletSaga, WalletSagaState,
@@ -1105,6 +1105,61 @@ where
     assert_eq!(retrieved.unwrap().id(), tx_id);
 }
 
+/// Preserve point kinds, duplicates and ordering in transaction history.
+pub async fn transaction_proof_identifiers<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let secp: ProofId = SecretKey::generate().public_key().into();
+    let bls: ProofId =
+        crate::nuts::nut01::BlsG1PublicKey::hash_to_curve(b"transaction proof").into();
+    // Cross multiple SQL insert batches, including a partial final batch.
+    let many = (0..601)
+        .map(|index| if index % 2 == 0 { bls } else { secp })
+        .collect();
+    let cases = [vec![], vec![secp], vec![bls], vec![bls, secp, bls], many];
+    let mut expected = Vec::new();
+    for ys in cases {
+        let mut transaction = test_transaction(test_mint_url(), TransactionDirection::Incoming);
+        transaction.saga_id = Some(uuid::Uuid::new_v4());
+        transaction.ys = ys;
+        db.add_transaction(transaction.clone()).await.unwrap();
+        let stored = db.get_transaction(transaction.id()).await.unwrap().unwrap();
+        assert_eq!(stored.ys, transaction.ys);
+        expected.push(transaction);
+    }
+    let listed = db.list_transactions(None, None, None).await.unwrap();
+    assert_eq!(listed.len(), expected.len());
+    for transaction in &expected {
+        assert_eq!(
+            listed
+                .iter()
+                .find(|stored| stored.id() == transaction.id())
+                .unwrap()
+                .ys,
+            transaction.ys
+        );
+    }
+
+    let mut updated = expected.pop().unwrap();
+    let id = updated.id();
+    updated.ys = vec![secp, bls];
+    db.add_transaction(updated.clone()).await.unwrap();
+    assert_eq!(
+        db.get_transaction(id).await.unwrap().unwrap().ys,
+        updated.ys
+    );
+    updated.ys.clear();
+    db.add_transaction(updated).await.unwrap();
+    assert!(db.get_transaction(id).await.unwrap().unwrap().ys.is_empty());
+    db.remove_transaction(id).await.unwrap();
+    assert!(db.get_transaction(id).await.unwrap().is_none());
+    assert_eq!(
+        db.list_transactions(None, None, None).await.unwrap().len(),
+        expected.len()
+    );
+}
+
 /// Test updating a transaction's status through the idempotent add operation.
 pub async fn update_transaction_status<DB>(db: DB)
 where
@@ -1940,6 +1995,7 @@ macro_rules! wallet_db_test {
             reserve_derivation_index_is_atomic,
             derivation_reservation_exhaustion_preserves_counter,
             add_and_get_transaction,
+            transaction_proof_identifiers,
             update_transaction_status,
             same_proofs_in_different_sagas,
             list_transactions,

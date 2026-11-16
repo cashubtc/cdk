@@ -73,7 +73,7 @@ impl Info {
             Err(env::VarError::NotPresent) => (),
             Err(env::VarError::NotUnicode(_)) => {
                 return Err(ConfigError::Message(format!(
-                    "Invalid {ENV_KEYSET_VERSION}: expected v1 or v2 as Unicode text"
+                    "Invalid {ENV_KEYSET_VERSION}: expected v1, v2 or v3 as Unicode text"
                 )));
             }
         }

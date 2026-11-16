@@ -662,7 +662,7 @@ mod tests {
     use super::*;
     use crate::dhke::hash_to_curve;
     use crate::mint_url::MintUrl;
-    use crate::nuts::nut01::DhkePoint;
+    use crate::nuts::nut01::{BlsG1PublicKey, DhkePoint};
     use crate::nuts::nut02::KeySetVersion;
     use crate::nuts::nut10::{Conditions, SpendingConditions};
     use crate::nuts::nut11::SigFlag;
@@ -831,13 +831,13 @@ mod tests {
     fn test_token_v4_omits_empty_dleq() {
         let mint_url = MintUrl::from_str("https://example.com").unwrap();
         let keyset_id =
-            Id::from_bytes(&[vec![KeySetVersion::Version01.to_byte()], vec![1; 32]].concat())
+            Id::from_bytes(&[vec![KeySetVersion::Version02.to_byte()], vec![1; 32]].concat())
                 .expect("valid keyset id");
         let proof = Proof {
             amount: Amount::from(1),
             keyset_id,
             secret: Secret::generate(),
-            c: crate::nuts::SecretKey::generate().public_key().into(),
+            c: BlsG1PublicKey::hash_to_curve(b"signature").into(),
             witness: None,
             dleq: None,
             p2pk_e: None,
@@ -1597,5 +1597,32 @@ mod tests {
         ] {
             assert!(TokenV4::from_str(&nut28_token_with_pe(Some(pe))).is_err());
         }
+    }
+
+    #[test]
+    fn token_v4_rejects_proofs_on_the_wrong_curve() {
+        use crate::nuts::nut01::BlsG1PublicKey;
+        use crate::nuts::nut02::KeySetVersion;
+        use crate::nuts::DhkePoint;
+
+        let secp: DhkePoint = crate::nuts::SecretKey::generate().public_key().into();
+        let bls: DhkePoint = BlsG1PublicKey::hash_to_curve(b"signature").into();
+        let legacy_id = Id::from_str("009a1f293253e41e").unwrap();
+        let mut v3_id_bytes = [1u8; 33];
+        v3_id_bytes[0] = KeySetVersion::Version02.to_byte();
+        let v3_id = Id::from_bytes(&v3_id_bytes).unwrap();
+
+        let roundtrip = |keyset_id: Id, c: DhkePoint| {
+            let proof = Proof::new(Amount::from(1), keyset_id, Secret::generate(), c);
+            let token = TokenV4Token::new(keyset_id, vec![proof]);
+            let mut cbor = Vec::new();
+            ciborium::into_writer(&token, &mut cbor).expect("encode");
+            ciborium::from_reader::<TokenV4Token, _>(cbor.as_slice())
+        };
+
+        roundtrip(legacy_id, secp).expect("secp256k1 point on a legacy keyset");
+        roundtrip(v3_id, bls).expect("BLS point on a v3 keyset");
+        assert!(roundtrip(legacy_id, bls).is_err());
+        assert!(roundtrip(v3_id, secp).is_err());
     }
 }

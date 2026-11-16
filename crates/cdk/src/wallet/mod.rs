@@ -1085,7 +1085,7 @@ impl Wallet {
 
     /// Verify all proofs in token have a valid mint signature.
     ///
-    /// This verifies the DLEQ proof of every proof in the token.
+    /// This verifies DLEQ proofs for v1/v2 keysets and BLS pairings for v3 keysets.
     #[instrument(skip(self, token))]
     pub async fn verify_token_signatures(&self, token: &Token) -> Result<(), Error> {
         let token_mint_url = token.mint_url()?;
@@ -1719,6 +1719,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_verify_token_signatures_batches_v3_proofs() {
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock, test_mint_info, test_mint_url,
+            MockMintConnector,
+        };
+
+        let secret_keys: Vec<_> = [1u64, 2, 4]
+            .into_iter()
+            .map(|amount| {
+                (
+                    Amount::from(amount),
+                    crate::nuts::MintSecretKey::generate_bls().expect("OS randomness"),
+                )
+            })
+            .collect();
+        let keys = Keys::new(
+            secret_keys
+                .iter()
+                .map(|(amount, key)| (*amount, key.public_key()))
+                .collect(),
+        );
+        let keyset = KeySet {
+            id: Id::v3_from_data(&keys, &CurrencyUnit::Sat, 0),
+            unit: CurrencyUnit::Sat,
+            active: Some(true),
+            keys,
+            input_fee_ppk: 0,
+            final_expiry: None,
+        };
+
+        let db = create_test_db().await;
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.set_mint_keys_response(Ok(vec![keyset.clone()]));
+        let mut mint_info = test_mint_info();
+        mint_info.time = None;
+        mock_client.set_mint_info_response(Ok(mint_info));
+        let wallet = create_test_wallet_with_mock(db, mock_client).await;
+
+        let proofs: Vec<crate::nuts::Proof> = secret_keys
+            .iter()
+            .map(|(amount, key)| {
+                let secret = crate::secret::Secret::generate();
+                let y = crate::dhke::hash_to_curve_for_version(
+                    secret.as_bytes(),
+                    KeySetVersion::Version02,
+                )
+                .unwrap();
+                crate::nuts::Proof {
+                    amount: *amount,
+                    keyset_id: keyset.id,
+                    secret,
+                    c: crate::dhke::sign_message(key, &y).unwrap(),
+                    witness: None,
+                    dleq: None,
+                    p2pk_e: None,
+                }
+            })
+            .collect();
+
+        let token = Token::new(test_mint_url(), proofs.clone(), None, CurrencyUnit::Sat);
+        wallet
+            .verify_token_signatures(&token)
+            .await
+            .expect("valid v3 proofs should verify as a batch");
+
+        // Swapping two signatures keeps every point valid but breaks the batch.
+        let mut tampered = proofs;
+        let c0 = tampered[0].c;
+        tampered[0].c = tampered[1].c;
+        tampered[1].c = c0;
+        let token = Token::new(test_mint_url(), tampered, None, CurrencyUnit::Sat);
+        assert!(matches!(
+            wallet.verify_token_signatures(&token).await,
+            Err(Error::CouldNotVerifyDleq)
+        ));
+    }
+
+    #[tokio::test]
     async fn fetch_mint_info_does_not_create_auth_wallet_without_auth_settings() {
         use crate::wallet::test_utils::{
             create_test_db, create_test_wallet_with_mock, test_mint_info, MockMintConnector,
@@ -1744,6 +1822,53 @@ mod tests {
             "expected auth settings to remain undefined; got: {:?}",
             result
         );
+    }
+
+    #[tokio::test]
+    async fn fetch_mint_info_skips_keyset_with_invalid_v3_unit() {
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock, test_keyset, test_mint_info,
+            MockMintConnector,
+        };
+
+        let valid = test_keyset();
+        let invalid_unit = CurrencyUnit::custom("usd cents");
+        let invalid_keys = Keys::new(
+            [(
+                Amount::from(1),
+                crate::nuts::MintSecretKey::generate_bls()
+                    .expect("OS randomness")
+                    .public_key(),
+            )]
+            .into_iter()
+            .collect(),
+        );
+        let invalid = KeySet {
+            id: Id::v3_from_data(&invalid_keys, &invalid_unit, 0),
+            unit: invalid_unit,
+            active: Some(true),
+            keys: invalid_keys,
+            input_fee_ppk: 0,
+            final_expiry: None,
+        };
+
+        let db = create_test_db().await;
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.set_mint_keys_response(Ok(vec![valid.clone(), invalid.clone()]));
+        let mut mint_info = test_mint_info();
+        mint_info.time = None;
+        mock_client.set_mint_info_response(Ok(mint_info));
+        let wallet = create_test_wallet_with_mock(db, mock_client).await;
+
+        let metadata = wallet
+            .metadata_cache
+            .load_from_mint(&wallet.localstore, &wallet.client)
+            .await
+            .expect("an invalid keyset must not fail the whole refresh");
+
+        assert!(metadata.keysets.contains_key(&valid.id));
+        assert!(!metadata.keysets.contains_key(&invalid.id));
+        assert!(metadata.active_keysets.iter().all(|k| k.id != invalid.id));
     }
 
     #[tokio::test]

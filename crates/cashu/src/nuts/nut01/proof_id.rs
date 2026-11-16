@@ -4,29 +4,48 @@ use core::str::FromStr;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
-use super::{DhkePoint, Error, PublicKey};
+use super::{BlsG1PublicKey, DhkePoint, Error, PublicKey};
 
 const SECP256K1_POINT_SIZE: usize = 33;
+const BLS_G1_POINT_SIZE: usize = 48;
 
 /// Serialized `Y` identifying a proof.
 ///
 /// A proof identifier is used for equality and database lookup. Parsing it does
 /// not perform elliptic-curve or subgroup validation.
 ///
-/// `Y` is the compressed secp256k1 point `hash_to_curve(secret)` (NUT-07).
+/// `Y` is computed with the hash-to-curve function of the proof's keyset
+/// (NUT-07), so one secret has a different `ProofId` on each curve: 33 bytes on
+/// secp256k1 keysets and 48 bytes on BLS12-381 (v3) keysets. Spent state is
+/// tracked per curve. A secret signed under a keyset on each curve can be spent
+/// once on each; this is sound because each proof needed its own blind
+/// signature, and so its own paid-for output.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct ProofId {
-    bytes: [u8; SECP256K1_POINT_SIZE],
+    bytes: [u8; BLS_G1_POINT_SIZE],
+    len: u8,
 }
 
 impl ProofId {
+    fn from_supported_slice(bytes: &[u8]) -> Self {
+        let mut encoded = [0u8; BLS_G1_POINT_SIZE];
+        encoded[..bytes.len()].copy_from_slice(bytes);
+        Self {
+            bytes: encoded,
+            len: bytes.len() as u8,
+        }
+    }
+
     /// Parse a compressed proof identifier without curve validation.
     pub fn from_slice(bytes: &[u8]) -> Result<Self, Error> {
-        let bytes = bytes.try_into().map_err(|_| Error::InvalidPublicKeySize {
-            expected: SECP256K1_POINT_SIZE,
-            found: bytes.len(),
-        })?;
-        Ok(Self { bytes })
+        if !matches!(bytes.len(), SECP256K1_POINT_SIZE | BLS_G1_POINT_SIZE) {
+            return Err(Error::InvalidPublicKeySize {
+                expected: SECP256K1_POINT_SIZE,
+                found: bytes.len(),
+            });
+        }
+
+        Ok(Self::from_supported_slice(bytes))
     }
 
     /// Parse a hexadecimal proof identifier without curve validation.
@@ -39,7 +58,7 @@ impl ProofId {
 
     /// Return the compressed identifier bytes.
     pub fn as_bytes(&self) -> &[u8] {
-        &self.bytes
+        &self.bytes[..usize::from(self.len)]
     }
 
     /// Return the compressed identifier bytes.
@@ -57,15 +76,20 @@ impl From<DhkePoint> for ProofId {
     fn from(point: DhkePoint) -> Self {
         match point {
             DhkePoint::Secp256k1(point) => Self::from(point),
+            DhkePoint::Bls(point) => Self::from(point),
         }
     }
 }
 
 impl From<PublicKey> for ProofId {
     fn from(point: PublicKey) -> Self {
-        Self {
-            bytes: point.to_bytes(),
-        }
+        Self::from_supported_slice(&point.to_bytes())
+    }
+}
+
+impl From<BlsG1PublicKey> for ProofId {
+    fn from(point: BlsG1PublicKey) -> Self {
+        Self::from_supported_slice(&point.to_bytes())
     }
 }
 
@@ -133,8 +157,11 @@ mod tests {
     #[test]
     fn accepts_identifier_bytes_without_curve_validation() {
         let invalid_secp_point = [0xff; SECP256K1_POINT_SIZE];
+        let invalid_bls_point = [0xff; BLS_G1_POINT_SIZE];
 
         assert!(ProofId::from_slice(&invalid_secp_point).is_ok());
+        assert!(ProofId::from_slice(&invalid_bls_point).is_ok());
         assert!(DhkePoint::from_slice_any_curve(&invalid_secp_point).is_err());
+        assert!(DhkePoint::from_slice_any_curve(&invalid_bls_point).is_err());
     }
 }

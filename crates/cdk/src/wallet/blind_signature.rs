@@ -23,7 +23,8 @@ pub(crate) enum SignatureAmountValidation {
 /// style outputs where the wallet sends amount `0` and the mint fills in the
 /// actual change or restored amount. DLEQ proofs are optional for v0/v1
 /// compatibility, but when present they are verified after the signature
-/// metadata has been cross-checked.
+/// metadata has been cross-checked. V3/BLS signatures must not include DLEQ
+/// proof data and are verified with BLS pairings.
 pub(crate) async fn validate_mint_response_signatures<'a>(
     wallet: &Wallet,
     signatures: &[BlindSignature],

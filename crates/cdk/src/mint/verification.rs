@@ -76,7 +76,9 @@ impl Mint {
     /// Verify that the inputs to the transaction are unique
     ///
     /// Takes the precomputed Y values of the inputs (see [`ProofsMethods::ys`]).
-    /// Inputs are compared by their `Y`, as spent state is; see [`ProofId`].
+    /// Inputs are compared by their curve-specific `Y`, as spent state is. The
+    /// same secret on a secp256k1 and a BLS12-381 keyset counts as two
+    /// distinct inputs; see [`ProofId`].
     #[instrument(skip_all)]
     pub fn check_inputs_unique(ys: &[ProofId]) -> Result<(), Error> {
         if ys.iter().collect::<HashSet<_>>().len() != ys.len() {

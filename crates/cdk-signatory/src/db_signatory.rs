@@ -416,6 +416,7 @@ impl Signatory for DbSignatory {
     /// Generate new keyset
     #[tracing::instrument(skip(self))]
     async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<SignatoryKeySet, Error> {
+        args.keyset_id_type.validate_unit(&args.unit)?;
         // Serialize local rotations. The standalone signatory gRPC server
         // invokes this directly (no embedded single-runner), so without this two
         // concurrent local rotations could open nested transactions on a
@@ -606,6 +607,7 @@ mod test {
     use bitcoin::key::Secp256k1;
     use bitcoin::Network;
     use cdk_common::database::MintKeysDatabase;
+    use cdk_common::nut02::KeySetVersion;
     use cdk_common::nuts::SecretKey;
     use cdk_common::util::{hex, unix_time};
     use cdk_common::{Amount, MintKeySet, PublicKey};
@@ -673,6 +675,125 @@ mod test {
                 .is_err(),
             "signing must wait while every slot is taken"
         );
+    }
+
+    #[tokio::test]
+    async fn verify_proofs_checks_v3_bls_signatures() {
+        use std::str::FromStr;
+
+        use cdk_common::dhke::blind_message_for_version;
+        use cdk_common::nuts::nut12::ProofDleq;
+        use cdk_common::secret::Secret;
+
+        let store = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
+        let signatory = DbSignatory::new(
+            store,
+            b"bls-verify-proofs-test-seed",
+            Default::default(),
+            Default::default(),
+        )
+        .await
+        .unwrap();
+        let keyset = signatory
+            .rotate_keyset(RotateKeyArguments {
+                unit: CurrencyUnit::Sat,
+                amounts: vec![1, 2],
+                input_fee_ppk: 0,
+                keyset_id_type: KeySetVersion::Version02,
+                final_expiry: None,
+            })
+            .await
+            .unwrap();
+
+        let secret = Secret::from_str("bls verify proofs").unwrap();
+        let (blinded, r) =
+            blind_message_for_version(secret.as_bytes(), None, KeySetVersion::Version02).unwrap();
+        let signed = signatory
+            .blind_sign(
+                vec![BlindedMessage::new(Amount::from(1), keyset.id, blinded)],
+                Admission::Unbounded,
+            )
+            .await
+            .unwrap();
+        let c: cdk_common::DhkePoint = signed[0]
+            .c
+            .as_bls()
+            .unwrap()
+            .mul(&r.as_bls().unwrap().invert().unwrap())
+            .into();
+        let proof = Proof::new(Amount::from(1), keyset.id, secret, c);
+
+        signatory.verify_proofs(vec![proof.clone()]).await.unwrap();
+
+        // A signature for a different secret is rejected.
+        let mut wrong_secret = proof.clone();
+        wrong_secret.secret = Secret::from_str("other secret").unwrap();
+        assert!(signatory.verify_proofs(vec![wrong_secret]).await.is_err());
+
+        // A signature under a different amount's key is rejected.
+        let mut wrong_amount = proof.clone();
+        wrong_amount.amount = Amount::from(2);
+        assert!(signatory.verify_proofs(vec![wrong_amount]).await.is_err());
+
+        // A secp256k1 point is rejected for a V3 keyset.
+        let mut wrong_curve = proof.clone();
+        wrong_curve.c = SecretKey::generate().public_key().into();
+        assert!(signatory.verify_proofs(vec![wrong_curve]).await.is_err());
+
+        // A DLEQ proof is ignored, as for legacy keysets: the secret key makes
+        // it unnecessary, and a remote signatory never receives it.
+        let mut with_dleq = proof;
+        with_dleq.dleq = Some(ProofDleq::new(
+            SecretKey::generate(),
+            SecretKey::generate(),
+            SecretKey::generate().into(),
+        ));
+        signatory
+            .verify_proofs(vec![with_dleq])
+            .await
+            .expect("a DLEQ proof on a v3 input is ignored");
+    }
+
+    #[tokio::test]
+    async fn invalid_v3_unit_does_not_mutate_keysets() {
+        let store = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
+        let signatory = DbSignatory::new(
+            store.clone(),
+            b"unit-validation-test-seed",
+            Default::default(),
+            Default::default(),
+        )
+        .await
+        .unwrap();
+        let epoch = store.keysets_epoch().await.unwrap();
+        let result = signatory
+            .rotate_keyset(RotateKeyArguments {
+                unit: CurrencyUnit::custom("usd cents"),
+                amounts: vec![1, 2],
+                input_fee_ppk: 0,
+                keyset_id_type: KeySetVersion::Version02,
+                final_expiry: None,
+            })
+            .await;
+        assert!(matches!(
+            result,
+            Err(Error::NUT02(cdk_common::nut02::Error::InvalidUnit { .. },))
+        ));
+        assert_eq!(store.keysets_epoch().await.unwrap(), epoch);
+        assert!(signatory.keysets().await.unwrap().keysets.is_empty());
+        // V1 and V2 keep their historical unit policy.
+        for keyset_id_type in [KeySetVersion::Version00, KeySetVersion::Version01] {
+            signatory
+                .rotate_keyset(RotateKeyArguments {
+                    unit: CurrencyUnit::custom("usd cents"),
+                    amounts: vec![1, 2],
+                    input_fee_ppk: 0,
+                    keyset_id_type,
+                    final_expiry: None,
+                })
+                .await
+                .unwrap();
+        }
     }
 
     #[tokio::test]
@@ -1895,6 +2016,54 @@ mod test {
             sig.verify_dleq(mint_pk, secret)
                 .expect("valid reconstructed dleq");
         }
+
+        // Mixed restore batches retain legacy DLEQ proofs and return BLS signatures
+        // without DLEQ, even after the legacy keyset is no longer active.
+        let bls_keyset = signatory
+            .rotate_keyset(RotateKeyArguments {
+                unit: CurrencyUnit::Sat,
+                amounts: vec![1, 2, 4, 8],
+                input_fee_ppk: 0,
+                keyset_id_type: KeySetVersion::Version02,
+                final_expiry: None,
+            })
+            .await
+            .expect("rotate BLS keyset");
+        let bls_secret: cdk_common::DhkePoint =
+            cdk_common::nuts::nut01::BlsG1PublicKey::hash_to_curve(b"restore BLS").into();
+        let bls_signed = signatory
+            .blind_sign(
+                vec![BlindedMessage::new(
+                    Amount::from(1),
+                    bls_keyset.id,
+                    bls_secret,
+                )],
+                Admission::Unbounded,
+            )
+            .await
+            .expect("sign BLS");
+        let mut mixed_args = args.clone();
+        mixed_args.push(ReconstructDleqArguments {
+            blind_signature: bls_signed[0].clone(),
+            blind_secret: bls_secret,
+        });
+        let mixed = signatory
+            .reconstruct_dleq(mixed_args.clone())
+            .await
+            .expect("mixed restore");
+        assert_eq!(mixed.len(), 3);
+        for (sig, secret) in mixed.iter().zip([secret1, secret2]) {
+            sig.verify_dleq(*keyset.keys.get(&sig.amount).expect("amount key"), secret)
+                .expect("legacy DLEQ retained");
+        }
+        assert_eq!(mixed[2], bls_signed[0]);
+        assert!(mixed[2].dleq.is_none());
+        mixed_args[2].blind_secret =
+            cdk_common::nuts::nut01::BlsG1PublicKey::hash_to_curve(b"wrong BLS").into();
+        assert!(matches!(
+            signatory.reconstruct_dleq(mixed_args).await,
+            Err(Error::SignatureMissingOrInvalid)
+        ));
 
         // Mismatched blind_secret must fail with SignatureMissingOrInvalid
         let mut invalid_args = args;

@@ -2,13 +2,15 @@ use core::str::FromStr;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
-use super::{Error, MintPublicKey, SecretKey};
+use super::{BlsSecretKey, Error, MintPublicKey, SecretKey};
 
 /// A scalar used to blind a Cashu message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlindingFactor {
     /// Secp256k1 scalar used by v1 and v2 keysets.
     Secp256k1(SecretKey),
+    /// BLS12-381 scalar used by v3 keysets.
+    Bls(BlsSecretKey),
 }
 
 impl BlindingFactor {
@@ -25,15 +27,31 @@ impl BlindingFactor {
         Ok(Self::Secp256k1(SecretKey::from_hex(hex)?))
     }
 
+    /// Parse a canonical non-zero BLS scalar.
+    pub fn bls_from_slice(bytes: &[u8]) -> Result<Self, Error> {
+        Ok(Self::Bls(BlsSecretKey::from_bytes(bytes)?))
+    }
+
+    /// Derive a non-zero BLS scalar by reducing bytes.
+    pub fn bls_from_reduced_bytes(bytes: &[u8; 32]) -> Result<Self, Error> {
+        Ok(Self::Bls(BlsSecretKey::from_reduced_bytes(bytes)?))
+    }
+
     /// Generate a random secp256k1 scalar.
     pub fn generate() -> Self {
         Self::Secp256k1(SecretKey::generate())
+    }
+
+    /// Generate a random BLS scalar.
+    pub fn generate_bls() -> Result<Self, Error> {
+        Ok(Self::Bls(BlsSecretKey::generate()?))
     }
 
     /// Export the scalar bytes.
     pub fn to_secret_bytes(&self) -> [u8; 32] {
         match self {
             Self::Secp256k1(key) => key.to_secret_bytes(),
+            Self::Bls(key) => key.to_bytes(),
         }
     }
 
@@ -51,6 +69,15 @@ impl BlindingFactor {
     pub fn as_secp256k1(&self) -> Result<&SecretKey, Error> {
         match self {
             Self::Secp256k1(key) => Ok(key),
+            Self::Bls(_) => Err(Error::WrongKeyKind),
+        }
+    }
+
+    /// Return the BLS scalar.
+    pub fn as_bls(&self) -> Result<&BlsSecretKey, Error> {
+        match self {
+            Self::Bls(key) => Ok(key),
+            Self::Secp256k1(_) => Err(Error::WrongKeyKind),
         }
     }
 
@@ -72,6 +99,12 @@ impl From<bitcoin::secp256k1::SecretKey> for BlindingFactor {
     }
 }
 
+impl From<BlsSecretKey> for BlindingFactor {
+    fn from(key: BlsSecretKey) -> Self {
+        Self::Bls(key)
+    }
+}
+
 impl FromStr for BlindingFactor {
     type Err = Error;
 
@@ -86,10 +119,11 @@ impl Serialize for BlindingFactor {
     }
 }
 
-/// Deserializes a secp256k1 scalar.
+/// Deserializes a secp256k1 scalar only.
 ///
-/// The encoding has no curve tag; the only deserialized scalars are NUT-12
-/// DLEQ blinding factors.
+/// The encoding has no curve tag, and the only deserialized scalars are
+/// legacy ones (NUT-12 DLEQ blinding factors), so a BLS scalar must be
+/// rebuilt with [`Self::bls_from_slice`] using its keyset version.
 impl<'de> Deserialize<'de> for BlindingFactor {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         Ok(Self::Secp256k1(SecretKey::deserialize(deserializer)?))
@@ -101,6 +135,8 @@ impl<'de> Deserialize<'de> for BlindingFactor {
 pub enum MintSecretKey {
     /// Secp256k1 scalar used by v1 and v2 keysets.
     Secp256k1(SecretKey),
+    /// BLS12-381 scalar used by v3 keysets.
+    Bls(BlsSecretKey),
 }
 
 impl MintSecretKey {
@@ -117,15 +153,31 @@ impl MintSecretKey {
         Ok(Self::Secp256k1(SecretKey::from_hex(hex)?))
     }
 
+    /// Parse a canonical non-zero BLS scalar.
+    pub fn bls_from_slice(bytes: &[u8]) -> Result<Self, Error> {
+        Ok(Self::Bls(BlsSecretKey::from_bytes(bytes)?))
+    }
+
+    /// Derive a non-zero BLS scalar by reducing bytes.
+    pub fn bls_from_reduced_bytes(bytes: &[u8; 32]) -> Result<Self, Error> {
+        Ok(Self::Bls(BlsSecretKey::from_reduced_bytes(bytes)?))
+    }
+
     /// Generate a random secp256k1 scalar.
     pub fn generate() -> Self {
         Self::Secp256k1(SecretKey::generate())
+    }
+
+    /// Generate a random BLS scalar.
+    pub fn generate_bls() -> Result<Self, Error> {
+        Ok(Self::Bls(BlsSecretKey::generate()?))
     }
 
     /// Export the scalar bytes.
     pub fn to_secret_bytes(&self) -> [u8; 32] {
         match self {
             Self::Secp256k1(key) => key.to_secret_bytes(),
+            Self::Bls(key) => key.to_bytes(),
         }
     }
 
@@ -143,6 +195,15 @@ impl MintSecretKey {
     pub fn as_secp256k1(&self) -> Result<&SecretKey, Error> {
         match self {
             Self::Secp256k1(key) => Ok(key),
+            Self::Bls(_) => Err(Error::WrongKeyKind),
+        }
+    }
+
+    /// Return the BLS scalar.
+    pub fn as_bls(&self) -> Result<&BlsSecretKey, Error> {
+        match self {
+            Self::Bls(key) => Ok(key),
+            Self::Secp256k1(_) => Err(Error::WrongKeyKind),
         }
     }
 
@@ -150,6 +211,7 @@ impl MintSecretKey {
     pub fn public_key(&self) -> MintPublicKey {
         match self {
             Self::Secp256k1(key) => key.public_key().into(),
+            Self::Bls(key) => key.public_key_g2().into(),
         }
     }
 }
@@ -163,6 +225,12 @@ impl From<SecretKey> for MintSecretKey {
 impl From<bitcoin::secp256k1::SecretKey> for MintSecretKey {
     fn from(key: bitcoin::secp256k1::SecretKey) -> Self {
         Self::Secp256k1(key.into())
+    }
+}
+
+impl From<BlsSecretKey> for MintSecretKey {
+    fn from(key: BlsSecretKey) -> Self {
+        Self::Bls(key)
     }
 }
 
@@ -180,10 +248,11 @@ impl Serialize for MintSecretKey {
     }
 }
 
-/// Deserializes a secp256k1 scalar.
+/// Deserializes a secp256k1 scalar only.
 ///
-/// The encoding has no curve tag; the only deserialized scalars are NUT-12
-/// DLEQ blinding factors.
+/// The encoding has no curve tag, and the only deserialized scalars are
+/// legacy ones (NUT-12 DLEQ blinding factors), so a BLS scalar must be
+/// rebuilt with [`Self::bls_from_slice`] using its keyset version.
 impl<'de> Deserialize<'de> for MintSecretKey {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         Ok(Self::Secp256k1(SecretKey::deserialize(deserializer)?))
@@ -193,7 +262,8 @@ impl<'de> Deserialize<'de> for MintSecretKey {
 /// Serialize scalar bytes the way [`SecretKey`] does: hex in human-readable
 /// formats and raw bytes otherwise.
 ///
-/// The encoding carries no curve tag.
+/// The encoding carries no curve tag. Every serialized type holding a BLS
+/// scalar also carries its keyset id, which identifies the curve.
 fn serialize_scalar<S>(bytes: [u8; 32], serializer: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
@@ -209,19 +279,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn scalars_serialize_as_plain_bytes() {
+    fn scalars_serialize_as_plain_bytes_for_both_curves() {
         let secp = BlindingFactor::from_slice(&[7u8; 32]).unwrap();
+        let bls = BlindingFactor::bls_from_slice(&[7u8; 32]).unwrap();
         let expected_json = format!("\"{}\"", "07".repeat(32));
 
-        assert_eq!(serde_json::to_string(&secp).unwrap(), expected_json);
-        let mut cbor = Vec::new();
-        ciborium::into_writer(&secp, &mut cbor).unwrap();
-        let mut expected_cbor = Vec::new();
-        ciborium::into_writer(&serde_bytes::Bytes::new(&[7u8; 32]), &mut expected_cbor).unwrap();
-        assert_eq!(cbor, expected_cbor);
+        for scalar in [&secp, &bls] {
+            assert_eq!(serde_json::to_string(scalar).unwrap(), expected_json);
+            let mut cbor = Vec::new();
+            ciborium::into_writer(scalar, &mut cbor).unwrap();
+            let mut expected_cbor = Vec::new();
+            ciborium::into_writer(&serde_bytes::Bytes::new(&[7u8; 32]), &mut expected_cbor)
+                .unwrap();
+            assert_eq!(cbor, expected_cbor);
+        }
 
-        let mint = MintSecretKey::from_slice(&[7u8; 32]).unwrap();
-        assert_eq!(serde_json::to_string(&mint).unwrap(), expected_json);
+        let mint_bls = MintSecretKey::bls_from_slice(&[7u8; 32]).unwrap();
+        assert_eq!(serde_json::to_string(&mint_bls).unwrap(), expected_json);
     }
 
     #[test]
