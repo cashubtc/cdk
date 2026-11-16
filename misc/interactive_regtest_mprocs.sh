@@ -5,6 +5,19 @@
 
 set -e
 
+# All environments share RPC ports and the helper state file.
+if [ -f /tmp/cdk_regtest_env ] && (
+    source /tmp/cdk_regtest_env
+    [ -n "${CDK_REGTEST_PID:-}" ] && kill -0 "$CDK_REGTEST_PID" 2>/dev/null
+); then
+    echo "A regtest environment is already running. Stop it before starting another."
+    exit 1
+fi
+
+# Only directories created by this invocation may be deleted on exit.
+TEMP_DIR_CREATED=false
+unset CDK_ITESTS_DIR CDK_REGTEST_PID PROGRESS_PID
+
 # Function to wait for HTTP endpoint
 wait_for_endpoint() {
     local url=$1
@@ -41,15 +54,25 @@ cleanup() {
     if [ ! -z "$CDK_REGTEST_PID" ] && kill -0 $CDK_REGTEST_PID 2>/dev/null; then
         echo "Killing the cdk regtest"
         kill -2 $CDK_REGTEST_PID
-        wait $CDK_REGTEST_PID
+        wait $CDK_REGTEST_PID || true
+    fi
+
+    if [ -n "$PROGRESS_PID" ]; then
+        kill "$PROGRESS_PID" 2>/dev/null || true
+        wait "$PROGRESS_PID" 2>/dev/null || true
     fi
 
     echo "Environment terminated"
 
-    # Remove the temporary directory
-    if [ ! -z "$CDK_ITESTS_DIR" ]; then
+    # Persistent data survives shutdown; runtime synchronization files do not.
+    if [ -n "$CDK_ITESTS_DIR" ]; then
+        rm -f "$CDK_ITESTS_DIR/progress_pipe" "$CDK_ITESTS_DIR/signal_received"
+    fi
+    if [ "$TEMP_DIR_CREATED" = true ]; then
         rm -rf "$CDK_ITESTS_DIR"
         echo "Temp directory removed: $CDK_ITESTS_DIR"
+    elif [ -n "$CDK_ITESTS_DIR" ]; then
+        echo "Regtest data preserved: $CDK_ITESTS_DIR"
     fi
 
     # Unset all environment variables
@@ -96,23 +119,30 @@ fi
 # Parse command line arguments
 CDK_MINTD_DATABASE=${1:-"sqlite"}  # Default to sqlite if not specified
 
-# Create a temporary directory
-export CDK_ITESTS_DIR=$(mktemp -d)
+# An explicit path is persistent; otherwise keep the disposable default.
+if [ -n "${3:-}" ]; then
+    mkdir -p -- "$3"
+    CDK_ITESTS_DIR=$(cd -- "$3" && pwd -P)
+else
+    CDK_ITESTS_DIR=$(mktemp -d)
+    TEMP_DIR_CREATED=true
+fi
+export CDK_ITESTS_DIR
 export CDK_ITESTS_MINT_ADDR="${2:-127.0.0.1}" # Default to localhost if not specified
 export CDK_ITESTS_MINT_PORT_0=8085
 export CDK_ITESTS_MINT_PORT_1=8087
 export CDK_ITESTS_MINT_PORT_2=8089
 
-# Check if the temporary directory was created successfully
+# Check if the working directory was created successfully
 if [[ ! -d "$CDK_ITESTS_DIR" ]]; then
-    echo "Failed to create temp directory"
+    echo "Failed to create regtest directory"
     exit 1
 fi
 
 echo "=============================================="
 echo "Starting CDK Regtest with Direct Process Management"
 echo "=============================================="
-echo "Temp directory: $CDK_ITESTS_DIR"
+echo "Data directory: $CDK_ITESTS_DIR"
 echo "Database type: $CDK_MINTD_DATABASE"
 echo
 
@@ -123,13 +153,13 @@ echo "Building binaries..."
 cargo build -p cdk-integration-tests --bin start_regtest
 cargo build --bin cdk-mintd
 
+# Recreate synchronization files left behind by an interrupted run before launch.
+rm -f "$CDK_ITESTS_DIR/progress_pipe" "$CDK_ITESTS_DIR/signal_received"
+mkfifo "$CDK_ITESTS_DIR/progress_pipe"
+
 echo "Starting regtest network (Bitcoin + Lightning nodes)..."
 cargo run --bin start_regtest -- --enable-logging "$CDK_ITESTS_DIR" &
 export CDK_REGTEST_PID=$!
-
-# Create named pipe for progress tracking
-mkfifo "$CDK_ITESTS_DIR/progress_pipe"
-rm -f "$CDK_ITESTS_DIR/signal_received"
 
 # Start reading from pipe in background
 (while read line; do
@@ -141,10 +171,16 @@ rm -f "$CDK_ITESTS_DIR/signal_received"
             ;;
     esac
 done < "$CDK_ITESTS_DIR/progress_pipe") &
+PROGRESS_PID=$!
 
-# Wait for regtest setup (up to 120 seconds)
+# Allow the Rust setup timeout (300 seconds) to report its error first.
 echo "Waiting for regtest network to be ready..."
-for ((i=0; i<220; i++)); do
+for ((i=0; i<330; i++)); do
+    if ! kill -0 "$CDK_REGTEST_PID" 2>/dev/null; then
+        wait "$CDK_REGTEST_PID" || true
+        echo "❌ Regtest network exited during startup"
+        exit 1
+    fi
     if [ -f "$CDK_ITESTS_DIR/signal_received" ]; then
         break
     fi
@@ -436,48 +472,48 @@ MPROCS_CONFIG="$CDK_ITESTS_DIR/mprocs.yaml"
 cat > "$MPROCS_CONFIG" << EOF
 procs:
   cln-mint:
-    shell: "$CDK_ITESTS_DIR/start_cln_mint.sh"
+    shell: "\"$CDK_ITESTS_DIR/start_cln_mint.sh\""
     autostart: true
     env:
       CDK_ITESTS_DIR: "$CDK_ITESTS_DIR"
       CDK_MINTD_DATABASE: "$CDK_MINTD_DATABASE"
 
   lnd-mint:
-    shell: "$CDK_ITESTS_DIR/start_lnd_mint.sh"
+    shell: "\"$CDK_ITESTS_DIR/start_lnd_mint.sh\""
     autostart: true
     env:
       CDK_ITESTS_DIR: "$CDK_ITESTS_DIR"
       CDK_MINTD_DATABASE: "$CDK_MINTD_DATABASE"
 
   ldk-node-mint:
-    shell: "$CDK_ITESTS_DIR/start_ldk_node_mint.sh"
+    shell: "\"$CDK_ITESTS_DIR/start_ldk_node_mint.sh\""
     autostart: true
     env:
       CDK_ITESTS_DIR: "$CDK_ITESTS_DIR"
       CDK_MINTD_DATABASE: "$CDK_MINTD_DATABASE"
 
   bitcoind:
-    shell: "while [ ! -f $CDK_ITESTS_DIR/bitcoin/regtest/debug.log ]; do sleep 1; done && tail -f $CDK_ITESTS_DIR/bitcoin/regtest/debug.log"
+    shell: "while [ ! -f \"$CDK_ITESTS_DIR/bitcoin/regtest/debug.log\" ]; do sleep 1; done && tail -f \"$CDK_ITESTS_DIR/bitcoin/regtest/debug.log\""
     autostart: true
 
   cln-one:
-    shell: "while [ ! -f $CDK_ITESTS_DIR/cln/one/debug.log ]; do sleep 1; done && tail -f $CDK_ITESTS_DIR/cln/one/debug.log"
+    shell: "while [ ! -f \"$CDK_ITESTS_DIR/cln/one/debug.log\" ]; do sleep 1; done && tail -f \"$CDK_ITESTS_DIR/cln/one/debug.log\""
     autostart: true
 
   cln-two:
-    shell: "while [ ! -f $CDK_ITESTS_DIR/cln/two/debug.log ]; do sleep 1; done && tail -f $CDK_ITESTS_DIR/cln/two/debug.log"
+    shell: "while [ ! -f \"$CDK_ITESTS_DIR/cln/two/debug.log\" ]; do sleep 1; done && tail -f \"$CDK_ITESTS_DIR/cln/two/debug.log\""
     autostart: true
 
   lnd-one:
-    shell: "while [ ! -f $CDK_ITESTS_DIR/lnd/one/logs/bitcoin/regtest/lnd.log ]; do sleep 1; done && tail -f $CDK_ITESTS_DIR/lnd/one/logs/bitcoin/regtest/lnd.log"
+    shell: "while [ ! -f \"$CDK_ITESTS_DIR/lnd/one/logs/bitcoin/regtest/lnd.log\" ]; do sleep 1; done && tail -f \"$CDK_ITESTS_DIR/lnd/one/logs/bitcoin/regtest/lnd.log\""
     autostart: true
 
   lnd-two:
-    shell: "while [ ! -f $CDK_ITESTS_DIR/lnd/two/logs/bitcoin/regtest/lnd.log ]; do sleep 1; done && tail -f $CDK_ITESTS_DIR/lnd/two/logs/bitcoin/regtest/lnd.log"
+    shell: "while [ ! -f \"$CDK_ITESTS_DIR/lnd/two/logs/bitcoin/regtest/lnd.log\" ]; do sleep 1; done && tail -f \"$CDK_ITESTS_DIR/lnd/two/logs/bitcoin/regtest/lnd.log\""
     autostart: true
 
   ldk-node:
-    shell: "while [ ! -f $CDK_ITESTS_DIR/ldk_mint/ldk_node.log ]; do sleep 1; done && $PROJECT_ROOT/misc/scripts/filtered_ldk_node_log.sh $CDK_ITESTS_DIR/ldk_mint/ldk_node.log"
+    shell: "while [ ! -f \"$CDK_ITESTS_DIR/ldk_mint/ldk_node.log\" ]; do sleep 1; done && \"$PROJECT_ROOT/misc/scripts/filtered_ldk_node_log.sh\" \"$CDK_ITESTS_DIR/ldk_mint/ldk_node.log\""
     autostart: true
 
 settings:

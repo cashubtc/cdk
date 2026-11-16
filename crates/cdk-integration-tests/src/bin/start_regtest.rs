@@ -82,7 +82,7 @@ async fn main() -> Result<()> {
     let temp_dir_clone = temp_dir.clone();
 
     let (tx, rx) = oneshot::channel();
-    tokio::spawn(async move {
+    let regtest_task = tokio::spawn(async move {
         start_regtest_end(&temp_dir_clone, tx, shutdown_clone, Some(inner_node), false)
             .await
             .expect("Error starting regtest");
@@ -114,6 +114,8 @@ async fn main() -> Result<()> {
     };
 
     shutdown_future.await;
+    // Let the setup task drop and stop its child processes before exiting.
+    regtest_task.await?;
 
     Ok(())
 }
