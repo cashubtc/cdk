@@ -4221,3 +4221,92 @@ async fn test_receive_expired_htlc_through_refund_path() {
         balance_after_send + received
     );
 }
+
+/// An HTLC is received with its preimage: the wallet must attach it to the
+/// proofs, otherwise the mint rejects the spend
+#[tokio::test]
+async fn test_receive_htlc_with_correct_preimage() {
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create wallet");
+    fund_wallet(wallet.clone(), 64, None)
+        .await
+        .expect("Failed to fund wallet");
+
+    // 32 bytes of 0x07, hex encoded
+    let preimage = "07".repeat(32);
+    let token = wallet
+        .prepare_send(
+            Amount::from(10),
+            SendOptions {
+                conditions: Some(SpendingConditions::new_htlc(preimage.clone(), None).unwrap()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("prepare_send should succeed")
+        .confirm(None)
+        .await
+        .expect("confirm should succeed");
+    let balance_after_send = wallet.total_balance().await.unwrap();
+
+    let received = wallet
+        .receive(
+            &token.to_string(),
+            ReceiveOptions {
+                preimages: vec![preimage],
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("HTLC should be received with the correct preimage");
+    assert_eq!(received, Amount::from(10));
+    assert_eq!(
+        wallet.total_balance().await.unwrap(),
+        balance_after_send + received
+    );
+}
+
+/// Without a locktime there is no refund path, so a missing preimage must be
+/// rejected up front
+#[tokio::test]
+async fn test_receive_htlc_without_locktime_requires_preimage() {
+    use bitcoin::hashes::sha256::Hash as Sha256Hash;
+    use bitcoin::hashes::Hash;
+
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create wallet");
+    fund_wallet(wallet.clone(), 64, None)
+        .await
+        .expect("Failed to fund wallet");
+
+    let hash = Sha256Hash::hash(&[7u8; 32]).to_string();
+    let token = wallet
+        .prepare_send(
+            Amount::from(10),
+            SendOptions {
+                conditions: Some(SpendingConditions::new_htlc_hash(&hash, None).unwrap()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("prepare_send should succeed")
+        .confirm(None)
+        .await
+        .expect("confirm should succeed");
+
+    let result = wallet
+        .receive(&token.to_string(), ReceiveOptions::default())
+        .await;
+    assert!(
+        matches!(result, Err(cdk::Error::PreimageNotProvided)),
+        "{result:?}"
+    );
+}
