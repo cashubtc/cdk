@@ -673,7 +673,7 @@ async fn successful_melt_preserves_response_after_release_failure() {
     assert!(!change.is_empty());
     assert_eq!(
         change,
-        mint.check_melt_quote(&quote_id)
+        mint.check_melt_quote(&quote_id, None)
             .await
             .unwrap()
             .change()
