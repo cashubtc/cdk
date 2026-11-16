@@ -120,7 +120,7 @@
 
         # Toolchains
         # latest stable
-        stable_toolchain = pkgs.rust-bin.stable."1.99.1".default.override {
+        stable_toolchain = pkgs.rust-bin.stable."1.100.0".default.override {
           targets = [
             "wasm32-unknown-unknown"
             "aarch64-apple-ios"
@@ -166,7 +166,7 @@
         # Stable toolchain with musl target for static builds (Linux only)
         static_toolchain =
           if muslTarget != null then
-            pkgs.rust-bin.stable."1.99.1".default.override
+            pkgs.rust-bin.stable."1.100.0".default.override
               {
                 targets = [ muslTarget ];
               }
@@ -686,12 +686,12 @@
 
               LIB_EXT="${if isDarwin then "dylib" else "so"}"
 
-              # Find the cdk-ffi-dart shared library in deps (contains UniFFI metadata)
-              CDK_FFI_LIB="target/release/deps/libcdk_ffi_dart.$LIB_EXT"
+              # Use the final cdk-ffi-dart shared library (contains UniFFI metadata)
+              CDK_FFI_LIB="target/release/libcdk_ffi_dart.$LIB_EXT"
 
               if [ ! -f "$CDK_FFI_LIB" ]; then
                 echo "ERROR: Could not find $CDK_FFI_LIB"
-                ls -la target/release/deps/libcdk_ffi* || true
+                ls -la target/release/libcdk_ffi* || true
                 exit 1
               fi
 
@@ -1884,7 +1884,7 @@
                 ndkHome = "${androidSdk}/libexec/android-sdk/ndk/27.0.12077973";
                 toolchainBin = "${ndkHome}/toolchains/llvm/prebuilt/linux-x86_64/bin";
                 androidRustFlags = "-C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wl,-z,common-page-size=16384";
-                buildToolchain = pkgs.rust-bin.stable."1.99.1".default.override {
+                buildToolchain = pkgs.rust-bin.stable."1.100.0".default.override {
                   targets = [
                     "aarch64-linux-android"
                     "armv7-linux-androideabi"
