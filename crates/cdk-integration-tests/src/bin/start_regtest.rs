@@ -59,7 +59,6 @@ async fn main() -> Result<()> {
             user: "testuser".to_string(),
             password: "testpass".to_string(),
         }),
-        cdk_ldk_node::GossipSource::P2P,
         ldk_work_dir.to_string_lossy().to_string(),
         cdk_common::common::FeeReserve {
             min_fee_reserve: Amount::ZERO,

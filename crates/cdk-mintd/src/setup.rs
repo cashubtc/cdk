@@ -490,12 +490,6 @@ impl PaymentBackendSetup for config::LdkNode {
         // Parse chain source from config
         let chain_source = self.chain_source()?;
 
-        // Parse gossip source from config
-        let gossip_source = match self.rgs_url.clone() {
-            Some(rgs_url) => cdk_ldk_node::GossipSource::RapidGossipSync(rgs_url),
-            None => cdk_ldk_node::GossipSource::P2P,
-        };
-
         // Get storage directory path
         let storage_dir_path = if let Some(dir_path) = &self.storage_dir_path {
             dir_path.clone()
@@ -562,7 +556,6 @@ impl PaymentBackendSetup for config::LdkNode {
         let mut ldk_node_builder = cdk_ldk_node::CdkLdkNodeBuilder::new(
             network,
             chain_source,
-            gossip_source,
             storage_dir_path,
             fee_reserve,
             listen_address,

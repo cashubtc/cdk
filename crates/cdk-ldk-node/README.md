@@ -10,7 +10,7 @@ CDK lightning backend for ldk-node, providing Lightning Network functionality fo
 - Web management interface
 - Support for multiple Bitcoin networks (Mainnet, Testnet, Signet/Mutinynet, Regtest)
 - Esplora, Electrum, and Bitcoin Core RPC chain sources
-- RGS (Rapid Gossip Sync) and P2P gossip support
+- P2P gossip for network graph sync
 
 ## Quick Start
 
@@ -21,8 +21,6 @@ CDK lightning backend for ldk-node, providing Lightning Network functionality fo
 export CDK_MINTD_PAYMENT_BACKEND="ldk-node"
 export CDK_MINTD_LDK_NODE_BITCOIN_NETWORK="signet"
 export CDK_MINTD_LDK_NODE_ESPLORA_URL="https://mutinynet.com/api"
-export CDK_MINTD_LDK_NODE_RGS_URL="https://rgs.mutinynet.com/snapshot/0"
-export CDK_MINTD_LDK_NODE_GOSSIP_SOURCE_TYPE="rgs"
 
 cdk-mintd
 ```
@@ -70,8 +68,6 @@ backend = "ldk-node"
 bitcoin_network = "signet"  # mainnet, testnet, signet, regtest
 chain_source_type = "esplora"  # esplora, electrum, or bitcoinrpc
 esplora_url = "https://mutinynet.com/api"
-rgs_url = "https://rgs.mutinynet.com/snapshot/0"
-gossip_source_type = "rgs"  # rgs or p2p
 webserver_port = 8091
 ```
 
@@ -82,7 +78,5 @@ All options can be set with `CDK_MINTD_LDK_NODE_` prefix:
 - `CDK_MINTD_LDK_NODE_CHAIN_SOURCE_TYPE`
 - `CDK_MINTD_LDK_NODE_ESPLORA_URL`
 - `CDK_MINTD_LDK_NODE_ELECTRUM_URL`
-- `CDK_MINTD_LDK_NODE_RGS_URL`
-- `CDK_MINTD_LDK_NODE_GOSSIP_SOURCE_TYPE`
 
 **For detailed network configurations, Docker setup, production deployment, and troubleshooting, see [NETWORK_GUIDE.md](./NETWORK_GUIDE.md).**
