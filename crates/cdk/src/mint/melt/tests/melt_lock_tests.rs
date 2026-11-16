@@ -673,10 +673,10 @@ async fn successful_melt_preserves_response_after_release_failure() {
     assert!(!change.is_empty());
     assert_eq!(
         change,
-        &mint
-            .localstore()
-            .get_blind_signatures_for_quote(&quote_id)
+        mint.check_melt_quote(&quote_id)
             .await
+            .unwrap()
+            .change()
             .unwrap()
     );
     let quote = stored_quote(&mint, &quote_id).await;

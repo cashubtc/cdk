@@ -187,6 +187,39 @@ where
 
         Ok(Response::new(mint_keyset_info))
     }
+
+    #[tracing::instrument(skip_all)]
+    async fn reconstruct_dleq(
+        &self,
+        request: Request<proto::ReconstructDleqRequest>,
+    ) -> Result<Response<proto::ReconstructDleqResponse>, Status> {
+        let metadata = request.metadata();
+        let signatory = self.load_signatory(metadata).await?;
+
+        let entries = request.into_inner().entries;
+        let mut converted_entries = Vec::with_capacity(entries.len());
+        for entry in entries {
+            converted_entries.push(entry.try_into()?);
+        }
+
+        let result = match signatory.reconstruct_dleq(converted_entries).await {
+            Ok(blind_signatures) => proto::ReconstructDleqResponse {
+                sigs: Some(proto::BlindSignatures {
+                    blind_signatures: blind_signatures
+                        .into_iter()
+                        .map(|blind_sign| blind_sign.into())
+                        .collect(),
+                }),
+                ..Default::default()
+            },
+            Err(err) => proto::ReconstructDleqResponse {
+                error: Some(err.into()),
+                ..Default::default()
+            },
+        };
+
+        Ok(Response::new(result))
+    }
 }
 
 /// Trait for loading a signatory instance from gRPC metadata

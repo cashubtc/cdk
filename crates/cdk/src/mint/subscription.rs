@@ -17,6 +17,7 @@ use cdk_common::{
     MintQuoteBolt12Response, MintQuoteCustomResponse, MintQuoteOnchainResponse, MintQuoteState,
     NotificationPayload, ProofState, PublicKey, QuoteId,
 };
+use cdk_signatory::signatory::Signatory;
 
 use super::Mint;
 use crate::event::MintEvent;
@@ -27,6 +28,7 @@ use crate::event::MintEvent;
 pub struct MintPubSubSpec {
     db: DynMintDatabase,
     payment_processors: Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
+    signatory: Arc<dyn Signatory + Send + Sync>,
     // The manager owns this spec; a strong reference back would retain both forever.
     pubsub_manager: Weak<PubSubManager>,
 }
@@ -81,12 +83,9 @@ impl MintPubSubSpec {
         ) {
             None
         } else {
-            let signatures = self
-                .db
-                .get_blind_signatures_for_quote(quote_id)
+            Mint::load_quote_change_with_dleq(&self.db, &self.signatory, quote_id)
                 .await
-                .map_err(|e| e.to_string())?;
-            (!signatures.is_empty()).then_some(signatures)
+                .map_err(|e| e.to_string())?
         };
         Ok(Some(quote.into_response(change)))
     }
@@ -234,12 +233,14 @@ impl Spec for MintPubSubSpec {
     type Context = (
         DynMintDatabase,
         Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
+        Arc<dyn Signatory + Send + Sync>,
     );
 
     fn new_instance(context: Self::Context) -> Arc<Self> {
         Arc::new(Self {
             db: context.0,
             payment_processors: context.1,
+            signatory: context.2,
             pubsub_manager: Weak::new(),
         })
     }
@@ -266,12 +267,14 @@ impl PubSubManager {
         context: (
             DynMintDatabase,
             Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
+            Arc<dyn Signatory + Send + Sync>,
         ),
     ) -> Arc<Self> {
         Arc::new_cyclic(|manager| {
             Self(Pubsub::new(Arc::new(MintPubSubSpec {
                 db: context.0,
                 payment_processors: context.1,
+                signatory: context.2,
                 pubsub_manager: manager.clone(),
             })))
         })
@@ -443,6 +446,8 @@ mod tests {
     use tokio::sync::Notify;
     use tokio::time::timeout;
 
+    use crate::mint::tests::{rotated_snapshots, MockSignatory};
+
     use super::*;
 
     fn bolt11_quote(id: QuoteId, amount: u64) -> MintQuote {
@@ -491,7 +496,11 @@ mod tests {
         add_mint_quote(&db, bolt11_quote(first_quote_id.clone(), 21)).await;
         add_mint_quote(&db, bolt11_quote(second_quote_id.clone(), 34)).await;
 
-        let spec = MintPubSubSpec::new_instance((db, Arc::new(HashMap::new())));
+        let snaps = rotated_snapshots(1).await;
+        let signatory = MockSignatory::new(snaps[0].clone());
+
+        let spec =
+            MintPubSubSpec::new_instance((db, Arc::new(HashMap::new()), Arc::new(signatory)));
         let events = spec
             .get_events_from_db(&[
                 NotificationId::MintQuoteBolt11(first_quote_id.clone()),
@@ -595,9 +604,15 @@ mod tests {
         use cdk_common::nut00::KnownMethod;
         use cdk_common::PaymentMethod;
 
+        let snaps = rotated_snapshots(1).await;
+        let signatory = MockSignatory::new(snaps[0].clone());
         let db: DynMintDatabase =
             Arc::new(cdk_sqlite::mint::memory::empty().await.expect("database"));
-        let spec = MintPubSubSpec::new_instance((db.clone(), Arc::new(HashMap::new())));
+        let spec = MintPubSubSpec::new_instance((
+            db.clone(),
+            Arc::new(HashMap::new()),
+            Arc::new(signatory),
+        ));
         for method in [
             PaymentMethod::Known(KnownMethod::Bolt11),
             PaymentMethod::Known(KnownMethod::Bolt12),
@@ -644,7 +659,13 @@ mod tests {
 
         let db: DynMintDatabase =
             Arc::new(cdk_sqlite::mint::memory::empty().await.expect("database"));
-        let spec = MintPubSubSpec::new_instance((db.clone(), Arc::new(HashMap::new())));
+        let snaps = rotated_snapshots(1).await;
+        let signatory = MockSignatory::new(snaps[0].clone());
+        let spec = MintPubSubSpec::new_instance((
+            db.clone(),
+            Arc::new(HashMap::new()),
+            Arc::new(signatory),
+        ));
         for method in [
             KnownMethod::Bolt11,
             KnownMethod::Bolt12,
@@ -704,7 +725,10 @@ mod tests {
             .try_update_mint_quote_last_checked(&quote.id, cdk_common::util::unix_time(), 0)
             .await
             .expect("record payment check"));
-        let spec = MintPubSubSpec::new_instance((db, Arc::new(HashMap::new())));
+        let snaps = rotated_snapshots(1).await;
+        let signatory = MockSignatory::new(snaps[0].clone());
+        let spec =
+            MintPubSubSpec::new_instance((db, Arc::new(HashMap::new()), Arc::new(signatory)));
         let events = spec
             .get_events_from_db(&[
                 NotificationId::MintQuoteCustom(method.clone(), quote.id.clone()),
@@ -749,7 +773,12 @@ mod tests {
                 .await
                 .expect("record payment check"));
         }
-        let spec = MintPubSubSpec::new_instance((db, Arc::new(HashMap::new())));
+
+        let snaps = rotated_snapshots(1).await;
+        let signatory = MockSignatory::new(snaps[0].clone());
+
+        let spec =
+            MintPubSubSpec::new_instance((db, Arc::new(HashMap::new()), Arc::new(signatory)));
 
         let events = spec
             .get_events_from_db(&[
@@ -795,7 +824,10 @@ mod tests {
         );
         quote.extra_json = Some(serde_json::json!({"receipt": "melt-receipt"}));
         let change = add_melt_quote(&db, quote.clone(), true).await;
-        let spec = MintPubSubSpec::new_instance((db, Arc::new(HashMap::new())));
+        let snaps = rotated_snapshots(1).await;
+        let signatory = MockSignatory::new(snaps[0].clone());
+        let spec =
+            MintPubSubSpec::new_instance((db, Arc::new(HashMap::new()), Arc::new(signatory)));
         let events = spec
             .get_events_from_db(&[
                 NotificationId::MeltQuoteCustom(method.clone(), quote.id.clone()),
@@ -923,7 +955,10 @@ mod tests {
                     PaymentProcessorKey::new(CurrencyUnit::Sat, method),
                     backend.clone() as DynMintPayment,
                 )]);
-                let manager = PubSubManager::new((db.clone(), Arc::new(processors)));
+                let snaps = rotated_snapshots(1).await;
+                let signatory = MockSignatory::new(snaps[0].clone());
+                let manager =
+                    PubSubManager::new((db.clone(), Arc::new(processors), Arc::new(signatory)));
                 let params = Params {
                     kind,
                     filters: vec![quote.id.to_string()],
@@ -987,7 +1022,9 @@ mod tests {
         let db: DynMintDatabase =
             Arc::new(cdk_sqlite::mint::memory::empty().await.expect("database"));
         let db_weak = Arc::downgrade(&db);
-        let manager = PubSubManager::new((db, Arc::new(HashMap::new())));
+        let snaps = rotated_snapshots(1).await;
+        let signatory = MockSignatory::new(snaps[0].clone());
+        let manager = PubSubManager::new((db, Arc::new(HashMap::new()), Arc::new(signatory)));
         let manager_weak = Arc::downgrade(&manager);
         drop(manager);
         assert!(manager_weak.upgrade().is_none());

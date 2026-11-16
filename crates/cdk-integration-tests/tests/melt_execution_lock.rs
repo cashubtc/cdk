@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use cashu::dhke::construct_proofs;
 use cashu::nuts::{MeltRequest, MintQuoteState, PreMintSecrets, Proofs, ProofsMethods, State};
-use cashu::{Amount, Bolt11Invoice, CurrencyUnit, PaymentMethod};
+use cashu::{Amount, BlindSignature, Bolt11Invoice, CurrencyUnit, PaymentMethod};
 use cdk::amount::SplitTarget;
 use cdk::mint::{Mint, MintBuilder, MintInput, MintMeltLimits};
 use cdk::nuts::MeltQuoteState;
@@ -32,7 +32,9 @@ use cdk_common::{
 use cdk_fake_wallet::{create_fake_invoice, FakeWallet};
 use cdk_integration_tests::init_pure_tests::setup_tracing;
 use cdk_signatory::db_signatory::DbSignatory;
-use cdk_signatory::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet, SignatoryKeysets};
+use cdk_signatory::signatory::{
+    ReconstructDleqArguments, RotateKeyArguments, Signatory, SignatoryKeySet, SignatoryKeysets,
+};
 use futures::Stream;
 use tokio::sync::Notify;
 use tokio::time::{sleep, timeout};
@@ -266,6 +268,13 @@ impl Signatory for GatedSignatory {
 
     async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<SignatoryKeySet, cdk::Error> {
         self.inner.rotate_keyset(args).await
+    }
+
+    async fn reconstruct_dleq(
+        &self,
+        args: Vec<ReconstructDleqArguments>,
+    ) -> Result<Vec<BlindSignature>, cdk::Error> {
+        self.inner.reconstruct_dleq(args).await
     }
 }
 

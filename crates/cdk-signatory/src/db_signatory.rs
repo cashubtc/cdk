@@ -27,7 +27,9 @@ use tracing::instrument;
 use crate::common::{
     check_unit_string_collision, create_new_keyset, derivation_path_from_unit, init_keysets,
 };
-use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet, SignatoryKeysets};
+use crate::signatory::{
+    ReconstructDleqArguments, RotateKeyArguments, Signatory, SignatoryKeySet, SignatoryKeysets,
+};
 
 /// Immutable in-memory view of the keysets, swapped atomically on every change.
 ///
@@ -496,6 +498,39 @@ impl Signatory for DbSignatory {
         self.load_keys_from_db().await?;
 
         Ok(signatory_keyset)
+    }
+
+    async fn reconstruct_dleq(
+        &self,
+        args: Vec<ReconstructDleqArguments>,
+    ) -> Result<Vec<BlindSignature>, Error> {
+        let keysets = self.keysets.load();
+        let mut reconstructed = Vec::with_capacity(args.len());
+
+        for arg in args {
+            let (mut blind_signature, blind_secret) = (arg.blind_signature, arg.blind_secret);
+
+            let (_, key) = keysets
+                .by_id
+                .get(&blind_signature.keyset_id)
+                .ok_or(Error::UnknownKeySet)?;
+
+            let key_pair = key
+                .keys
+                .get(&blind_signature.amount)
+                .ok_or(Error::UnknownKeySet)?;
+
+            let restored_signature = sign_message(&key_pair.secret_key, &blind_secret)?;
+
+            if blind_signature.c != restored_signature {
+                return Err(Error::SignatureMissingOrInvalid);
+            }
+
+            blind_signature.add_dleq_proof(&blind_secret, &key_pair.secret_key)?;
+            reconstructed.push(blind_signature);
+        }
+
+        Ok(reconstructed)
     }
 }
 
@@ -1605,5 +1640,74 @@ mod test {
             pubkey,
             "025b6c1ca8bb741a6f2321c953266df7bf3f3f2c3be8c54c0a6e41bb00976046a4".to_string()
         );
+    }
+
+    #[tokio::test]
+    async fn reconstruct_dleq_batch_and_validation() {
+        let store = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("in-memory db"),
+        );
+        let signatory = DbSignatory::new(
+            store,
+            b"test-seed-reconstruct-dleq",
+            Default::default(),
+            Default::default(),
+        )
+        .await
+        .expect("DbSignatory::new");
+
+        let keyset = signatory
+            .rotate_keyset(RotateKeyArguments {
+                unit: CurrencyUnit::Sat,
+                amounts: vec![1, 2, 4, 8],
+                input_fee_ppk: 0,
+                keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                final_expiry: None,
+            })
+            .await
+            .expect("rotate_keyset");
+
+        let secret1 = SecretKey::generate().public_key();
+        let secret2 = SecretKey::generate().public_key();
+        let messages = vec![
+            BlindedMessage::new(Amount::from(1), keyset.id, secret1),
+            BlindedMessage::new(Amount::from(2), keyset.id, secret2),
+        ];
+
+        let signed = signatory.blind_sign(messages).await.expect("blind_sign");
+        assert_eq!(signed.len(), 2);
+
+        let args: Vec<ReconstructDleqArguments> = signed
+            .iter()
+            .zip([secret1, secret2])
+            .map(|(sig, blind_secret)| {
+                let mut stripped = sig.clone();
+                stripped.dleq = None;
+                ReconstructDleqArguments {
+                    blind_signature: stripped,
+                    blind_secret,
+                }
+            })
+            .collect();
+
+        let reconstructed = signatory
+            .reconstruct_dleq(args.clone())
+            .await
+            .expect("reconstruct_dleq");
+        assert_eq!(reconstructed.len(), 2);
+
+        for (sig, secret) in reconstructed.iter().zip([secret1, secret2]) {
+            let mint_pk = *keyset.keys.get(&sig.amount).expect("amount key");
+            sig.verify_dleq(mint_pk, secret)
+                .expect("valid reconstructed dleq");
+        }
+
+        // Mismatched blind_secret must fail with SignatureMissingOrInvalid
+        let mut invalid_args = args;
+        invalid_args[1].blind_secret = SecretKey::generate().public_key();
+        let err = signatory.reconstruct_dleq(invalid_args).await;
+        assert!(matches!(err, Err(Error::SignatureMissingOrInvalid)));
     }
 }
