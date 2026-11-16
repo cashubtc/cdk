@@ -1494,10 +1494,10 @@
           };
 
         # Nextest archive for integration tests (pre-compiled test binaries)
-        itestArchive = craneLib.mkCargoDerivation (
+        mkItestArchive = name: cargoExtraArgs: craneLib.mkCargoDerivation (
           commonCraneArgs
           // {
-            pname = "cdk-itest-archive";
+            pname = name;
             cargoArtifacts = itestDepsCi;
             nativeBuildInputs = commonCraneArgs.nativeBuildInputs ++ [
               pkgs.cargo-nextest
@@ -1506,7 +1506,7 @@
               mkdir -p $out
               cargo nextest archive \
                 --cargo-profile ci \
-                -p cdk-integration-tests \
+                ${cargoExtraArgs} \
                 --archive-file $out/itest-archive.tar.zst
             '';
             doCheck = false;
@@ -1519,6 +1519,16 @@
             doInstallCargoArtifacts = false;
           }
         );
+
+        itestArchive = mkItestArchive "cdk-itest-archive" "-p cdk-integration-tests";
+
+        # Reuse the integration dependency build without downloading and
+        # extracting every integration-test binary for the Nutshell jobs.
+        nutshellArchive = mkItestArchive "cdk-nutshell-archive" (
+          "-p cdk-integration-tests --test happy_path_mint_wallet --test nutshell_wallet --test test_fees"
+        );
+
+        nutshellMintd = mkItestBinary "nutshell-mintd" "--bin cdk-mintd";
 
         # Common arguments can be set here to avoid repeating them later
         nativeBuildInputs = [
@@ -1597,6 +1607,8 @@
         // itestBinaries
         // {
           itest-archive = itestArchive;
+          nutshell-archive = nutshellArchive;
+          nutshell-mintd = nutshellMintd;
         }
         # Example packages (binaries that can be run outside sandbox with network access)
         // (builtins.listToAttrs (
@@ -1794,9 +1806,8 @@
               buildInputs = old.buildInputs ++ [ pkgs.cargo-llvm-cov ];
             });
 
-            # Minimal shell for the Nutshell interoperability tests. These tests
-            # compile their own binaries with Cargo and do not use the pre-built
-            # integration-test harnesses from the full integration shell.
+            # Minimal shell for the Nutshell interoperability tests. CI supplies
+            # the cached archive and mintd explicitly; local runs can use Cargo.
             nutshell = pkgs.mkShell (
               {
                 shellHook = dockerShellHook + commonShellHook;

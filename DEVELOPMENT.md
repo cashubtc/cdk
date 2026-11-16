@@ -228,6 +228,19 @@ On Linux it also pushes the static-musl dependencies; that target is skipped
 automatically on macOS. Attic credentials are local publisher secrets and must
 not be committed to the repository.
 
+The Nutshell CI workflow builds and publishes `nutshell-archive` (only
+`happy_path_mint_wallet`, `nutshell_wallet`, and `test_fees`) and `nutshell-mintd`
+before running the mint and wallet jobs. These reuse the existing Crane
+dependency caches. The build job runs on `rith-cdk-large` and explicitly uploads
+the outputs to Rith's run cache before the two `rith-cdk` test jobs start. This
+also shares builds for fork PRs without Attic secrets. The run cache is scoped
+to the Nutshell workflow run; Attic publishing retains reuse across runs.
+Test jobs run the archive through `misc/itest_helpers.sh`,
+which reuses its extraction and keeps the tests serial. `just attic-push`
+also warms these outputs. Local `just test-nutshell` and
+`just nutshell-wallet-itest` runs still build from source unless
+`CDK_ITEST_ARCHIVE` and, for the wallet daemon, `CDK_NUTSHELL_MINTD` are supplied.
+
 ### Release Binaries
 
 CDK provides fully statically-linked Linux binaries built with [musl](https://musl.libc.org/). These binaries have zero runtime dependencies and run on Linux x86_64 and aarch64 systems.

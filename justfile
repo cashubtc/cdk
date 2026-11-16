@@ -121,6 +121,8 @@ attic-push:
     '.#itest-deps-ci'
     '.#deps-msrv'
     '.#itest-archive'
+    '.#nutshell-archive'
+    '.#nutshell-mintd'
     '.#start-fake-mint'
     '.#start-regtest-mints'
     '.#start-fake-auth-mint'
@@ -502,6 +504,7 @@ mutants-check CRATE:
 test-nutshell:
   #!/usr/bin/env bash
   set -euo pipefail
+  source ./misc/itest_helpers.sh
 
   # Function to cleanup docker containers
   cleanup() {
@@ -558,14 +561,14 @@ test-nutshell:
   # Nutshell's SQLite backend, which can cause transient lock-acquisition
   # failures under parallel load.
   echo "Running happy_path_mint_wallet test..."
-  if ! cargo test -p cdk-integration-tests --test happy_path_mint_wallet -- --test-threads=1; then
+  if ! run_test happy_path_mint_wallet -- --test-threads=1; then
     echo "ERROR: happy_path_mint_wallet test failed"
     test_exit_code=1
   fi
 
   # Run second test and capture exit code
   echo "Running test_fees test..."
-  if ! cargo test -p cdk-integration-tests --test test_fees -- --test-threads=1; then
+  if ! run_test test_fees -- --test-threads=1; then
     echo "ERROR: test_fees test failed"
     test_exit_code=1
   fi

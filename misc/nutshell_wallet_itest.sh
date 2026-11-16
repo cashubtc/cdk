@@ -2,6 +2,8 @@
 
 set -e
 
+source "$(dirname "$0")/itest_helpers.sh"
+
 # Configuration
 MINT_PORT=8085
 WALLET_PORT=4448
@@ -76,16 +78,21 @@ fee_percent = 0
 reserve_fee_min = 1
 EOF
 
-# Build cdk-mintd first to avoid compilation time affecting the timeout timer
-echo "Building cdk-mintd..."
-cargo build --bin cdk-mintd
+# CI supplies the Nix-built daemon. Local runs keep building from source.
+if [ -n "${CDK_NUTSHELL_MINTD:-}" ]; then
+  MINTD_COMMAND=("$CDK_NUTSHELL_MINTD")
+else
+  echo "Building cdk-mintd..."
+  cargo build --bin cdk-mintd
+  MINTD_COMMAND=(cargo run --bin cdk-mintd --)
+fi
 
 echo "Initializing mintd configuration"
-cargo run --bin cdk-mintd -- \
+"${MINTD_COMMAND[@]}" \
   --work-dir "$CDK_MINTD_WORK_DIR" config init --new-mint --file "$MINTD_CONFIG_FILE"
 
 echo "Starting fake mintd"
-cargo run --bin cdk-mintd -- --work-dir "$CDK_MINTD_WORK_DIR" &
+"${MINTD_COMMAND[@]}" --work-dir "$CDK_MINTD_WORK_DIR" &
 CDK_MINTD_PID=$!
 
 # Wait for the mint to be ready
@@ -180,13 +187,15 @@ export WALLET_URL=${WALLET_URL}
 export CDK_TEST_MINT_URL=${MINT_URL}
 
 # Build test binaries first to avoid compilation time affecting test execution
-echo "Building test binaries..."
-cargo build -p cdk-integration-tests --test nutshell_wallet --test test_fees
+if [ -z "${CDK_ITEST_ARCHIVE:-}" ]; then
+  echo "Building test binaries..."
+  cargo build -p cdk-integration-tests --test nutshell_wallet --test test_fees
+fi
 
 # Run the integration test
 echo "Running integration test..."
-cargo test -p cdk-integration-tests --test nutshell_wallet -- --test-threads 1
-cargo test -p cdk-integration-tests --test test_fees -- --test-threads 1
+run_test nutshell_wallet -- --test-threads 1
+run_test test_fees -- --test-threads 1
 TEST_STATUS=$?
 
 # Exit with the test status
