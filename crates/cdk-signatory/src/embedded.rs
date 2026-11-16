@@ -10,7 +10,6 @@ use crate::signatory::{
     ReconstructDleqArguments, RotateKeyArguments, Signatory, SignatoryKeySet, SignatoryKeysets,
 };
 
-#[allow(clippy::large_enum_variant)]
 enum Request {
     BlindSign(
         (
