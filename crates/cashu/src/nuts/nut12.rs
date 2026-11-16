@@ -10,7 +10,7 @@ use thiserror::Error;
 use super::nut00::{BlindSignature, Proof};
 use super::nut01::{BlindingFactor, DhkePoint, MintPublicKey, MintSecretKey, PublicKey, SecretKey};
 use super::nut02::{Id, KeySetVersion};
-use crate::dhke::{hash_e, hash_to_curve};
+use crate::dhke::{batch_verify_bls_messages, hash_e, hash_to_curve, verify_bls_blind_signature};
 use crate::{Amount, SECP256K1};
 
 /// NUT12 Error
@@ -28,6 +28,9 @@ pub enum Error {
     /// Could not derive deterministic DLEQ nonce
     #[error("Could not derive deterministic DLEQ nonce")]
     CouldNotDeriveDleqNonce,
+    /// DLEQ proof attached to a BLS (v3) signature
+    #[error("DLEQ proofs are not allowed for BLS (v3) keysets")]
+    UnexpectedDleqProof,
     /// DHKE error
     #[error(transparent)]
     DHKE(#[from] crate::dhke::Error),
@@ -40,6 +43,9 @@ pub enum Error {
 }
 
 /// How a legacy (secp256k1) signature without a DLEQ proof is treated.
+///
+/// BLS (v3) signatures never carry DLEQ proofs: they are always verified with
+/// pairings, and one that carries a DLEQ proof is rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LegacyDleq {
     /// Accept a legacy signature without a DLEQ proof, without verifying it.
@@ -48,14 +54,30 @@ pub enum LegacyDleq {
     Required,
 }
 
+/// Reject a DLEQ proof attached to a v3 signature.
+///
+/// NUT-12 applies only to secp256k1 keysets; receivers treat a v3 signature
+/// or proof that carries a DLEQ proof as malformed.
+fn ensure_dleq_allowed(keyset_id: Id, has_dleq: bool) -> Result<(), Error> {
+    match (keyset_id.get_version(), has_dleq) {
+        (KeySetVersion::Version02, true) => Err(Error::UnexpectedDleqProof),
+        _ => Ok(()),
+    }
+}
+
 /// Verify the mint's signatures on proofs using only its public keys.
 ///
 /// Legacy proofs are checked with their DLEQ proofs according to
-/// `legacy_dleq`.
+/// `legacy_dleq`. V3 proofs are checked together with one batched pairing
+/// check.
 pub fn verify_proof_signatures<'a, I>(proofs: I, legacy_dleq: LegacyDleq) -> Result<(), Error>
 where
     I: IntoIterator<Item = (&'a Proof, MintPublicKey)>,
 {
+    let mut bls_mint_pubkeys = Vec::new();
+    let mut bls_signatures = Vec::new();
+    let mut bls_secrets: Vec<&[u8]> = Vec::new();
+
     for (proof, mint_pubkey) in proofs {
         match proof.keyset_id.get_version() {
             KeySetVersion::Version00 | KeySetVersion::Version01 => {
@@ -64,10 +86,20 @@ where
                     result => result?,
                 }
             }
+            KeySetVersion::Version02 => {
+                proof.ensure_dleq_allowed()?;
+                bls_mint_pubkeys.push(mint_pubkey);
+                bls_signatures.push(proof.c);
+                bls_secrets.push(proof.secret.as_bytes());
+            }
         }
     }
 
-    Ok(())
+    Ok(batch_verify_bls_messages(
+        &bls_mint_pubkeys,
+        &bls_signatures,
+        &bls_secrets,
+    )?)
 }
 
 /// Blinded Signature on Dleq
@@ -231,15 +263,21 @@ impl Proof {
 }
 
 impl Proof {
+    /// Reject a DLEQ proof attached to a v3 proof.
+    pub fn ensure_dleq_allowed(&self) -> Result<(), Error> {
+        ensure_dleq_allowed(self.keyset_id, self.dleq.is_some())
+    }
+
     /// Whether [`verify_proof_signatures`] checks this proof under `legacy_dleq`.
     ///
-    /// Legacy proofs are checked when they carry a DLEQ proof or when one is
-    /// required.
+    /// V3 proofs are always checked. Legacy proofs are checked when they carry
+    /// a DLEQ proof or when one is required.
     pub fn requires_signature_verification(&self, legacy_dleq: LegacyDleq) -> bool {
         match self.keyset_id.get_version() {
             KeySetVersion::Version00 | KeySetVersion::Version01 => {
                 self.dleq.is_some() || legacy_dleq == LegacyDleq::Required
             }
+            KeySetVersion::Version02 => true,
         }
     }
 
@@ -275,10 +313,16 @@ impl BlindSignature {
         Ok(blind_signature)
     }
 
+    /// Reject a DLEQ proof attached to a v3 blind signature.
+    pub fn ensure_dleq_allowed(&self) -> Result<(), Error> {
+        ensure_dleq_allowed(self.keyset_id, self.dleq.is_some())
+    }
+
     /// Verify that the mint signed `blinded_message`, using only its public key.
     ///
     /// Legacy signatures are checked with their DLEQ proof according to
-    /// `legacy_dleq`.
+    /// `legacy_dleq`. V3 signatures are checked with a pairing and must not
+    /// carry a DLEQ proof.
     pub fn verify_signature(
         &self,
         mint_pubkey: MintPublicKey,
@@ -291,6 +335,14 @@ impl BlindSignature {
                     Err(Error::MissingDleqProof) if legacy_dleq == LegacyDleq::Optional => Ok(()),
                     result => result,
                 }
+            }
+            KeySetVersion::Version02 => {
+                self.ensure_dleq_allowed()?;
+                Ok(verify_bls_blind_signature(
+                    mint_pubkey,
+                    self.c,
+                    blinded_message,
+                )?)
             }
         }
     }
@@ -316,7 +368,8 @@ impl BlindSignature {
 
     /// Attach the DLEQ proof required for this signature's keyset version.
     ///
-    /// Legacy signatures get a DLEQ proof.
+    /// Legacy signatures get a DLEQ proof. V3 signatures never carry one, so
+    /// any existing proof is removed.
     /*
     r = HMAC-SHA256(key=a, data="Cashu_DLEQ_R_v1" || A || B' || C' || ctr)
     R1 = r*G
@@ -335,6 +388,7 @@ impl BlindSignature {
                 &blinded_message.as_secp256k1()?,
                 mint_secretkey,
             )?),
+            KeySetVersion::Version02 => None,
         };
         Ok(())
     }
@@ -582,6 +636,37 @@ mod tests {
             .is_ok());
     }
 
+    #[test]
+    fn test_v3_blind_signature_omits_dleq() {
+        use crate::nuts::nut02::{Id, KeySetVersion};
+
+        let keyset_id =
+            Id::from_bytes(&[vec![KeySetVersion::Version02.to_byte()], vec![1; 32]].concat())
+                .expect("valid v3 keyset id");
+        let blinded_message =
+            crate::nuts::nut01::BlsG1PublicKey::hash_to_curve(b"blinded message").into();
+        let mint_secretkey = MintSecretKey::bls_from_reduced_bytes(&[7u8; 32]).unwrap();
+        let blinded_signature = crate::dhke::sign_message(&mint_secretkey, &blinded_message)
+            .expect("sign blinded message");
+
+        let blind_sig = BlindSignature::new(
+            Amount::from(1),
+            blinded_signature,
+            keyset_id,
+            &blinded_message,
+            &mint_secretkey,
+        )
+        .expect("blind signature");
+
+        assert!(blind_sig.dleq.is_none());
+    }
+
+    fn v3_keyset_id() -> Id {
+        let mut bytes = [0u8; 33];
+        bytes[0] = KeySetVersion::Version02.to_byte();
+        Id::from_bytes(&bytes).expect("v3 id")
+    }
+
     /// Sign `message` with `mint_key` through the full blind-sign-unblind flow,
     /// returning the blind signature, its blinded message and the final proof.
     fn signed(
@@ -613,6 +698,52 @@ mod tests {
         (blind_signature, blinded, proof)
     }
 
+    fn some_dleq() -> ProofDleq {
+        ProofDleq::new(
+            SecretKey::generate(),
+            SecretKey::generate(),
+            SecretKey::generate().into(),
+        )
+    }
+
+    #[test]
+    fn verify_proof_signatures_checks_legacy_and_batched_v3_proofs() {
+        let legacy_key = MintSecretKey::generate();
+        let bls_key = MintSecretKey::generate_bls().expect("randomness");
+        let legacy_id = Id::from_str("009a1f293253e41e").unwrap();
+        let (_, _, legacy) = signed(&legacy_key, legacy_id, "legacy");
+        let (_, _, v3_a) = signed(&bls_key, v3_keyset_id(), "v3 a");
+        let (_, _, v3_b) = signed(&bls_key, v3_keyset_id(), "v3 b");
+        assert!(legacy.dleq.is_some());
+
+        let keys = [
+            legacy_key.public_key(),
+            bls_key.public_key(),
+            bls_key.public_key(),
+        ];
+        for policy in [LegacyDleq::Optional, LegacyDleq::Required] {
+            verify_proof_signatures([&legacy, &v3_a, &v3_b].into_iter().zip(keys), policy)
+                .expect("valid mixed proofs");
+        }
+
+        // Swapping two v3 signatures keeps every point valid but breaks the batch.
+        let (mut swapped_a, mut swapped_b) = (v3_a.clone(), v3_b.clone());
+        core::mem::swap(&mut swapped_a.c, &mut swapped_b.c);
+        assert!(verify_proof_signatures(
+            [&legacy, &swapped_a, &swapped_b].into_iter().zip(keys),
+            LegacyDleq::Optional
+        )
+        .is_err());
+
+        // A v3 proof under the wrong mint key is rejected.
+        let other_key = MintSecretKey::generate_bls()
+            .expect("randomness")
+            .public_key();
+        assert!(v3_a
+            .verify_signature(other_key, LegacyDleq::Optional)
+            .is_err());
+    }
+
     #[test]
     fn legacy_dleq_policy_controls_missing_legacy_dleq() {
         let key = MintSecretKey::generate();
@@ -631,6 +762,40 @@ mod tests {
             proof.verify_signature(key.public_key(), LegacyDleq::Required),
             Err(Error::MissingDleqProof)
         ));
+    }
+
+    #[test]
+    fn v3_signatures_and_proofs_reject_dleq() {
+        let key = MintSecretKey::generate_bls().expect("randomness");
+        let (mut blind_signature, blinded, mut proof) = signed(&key, v3_keyset_id(), "v3");
+        assert!(blind_signature.dleq.is_none());
+        assert!(proof.dleq.is_none());
+        for policy in [LegacyDleq::Optional, LegacyDleq::Required] {
+            assert!(proof.requires_signature_verification(policy));
+            blind_signature
+                .verify_signature(key.public_key(), blinded, policy)
+                .expect("valid v3 blind signature");
+        }
+
+        proof.dleq = Some(some_dleq());
+        assert!(matches!(
+            proof.verify_signature(key.public_key(), LegacyDleq::Optional),
+            Err(Error::UnexpectedDleqProof)
+        ));
+
+        let dleq = some_dleq();
+        blind_signature.dleq = Some(BlindSignatureDleq {
+            e: dleq.e,
+            s: dleq.s,
+        });
+        assert!(matches!(
+            blind_signature.verify_signature(key.public_key(), blinded, LegacyDleq::Optional),
+            Err(Error::UnexpectedDleqProof)
+        ));
+
+        // Attaching the version's DLEQ removes a stray one from a v3 signature.
+        blind_signature.add_dleq_proof(&blinded, &key).unwrap();
+        assert!(blind_signature.dleq.is_none());
     }
 
     #[test]

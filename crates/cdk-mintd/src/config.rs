@@ -18,6 +18,8 @@ pub enum KeysetVersion {
     V1,
     /// V2 keyset (Version01)
     V2,
+    /// V3 BLS12-381 keyset (Version02)
+    V3,
 }
 
 impl std::str::FromStr for KeysetVersion {
@@ -27,16 +29,20 @@ impl std::str::FromStr for KeysetVersion {
         match s.to_lowercase().as_str() {
             "v1" => Ok(Self::V1),
             "v2" => Ok(Self::V2),
-            _ => Err(format!("Unknown keyset version: {s} (expected v1 or v2)")),
+            "v3" => Ok(Self::V3),
+            _ => Err(format!(
+                "Unknown keyset version: {s} (expected v1, v2 or v3)"
+            )),
         }
     }
 }
 
-impl From<KeysetVersion> for cdk::nuts::nut02::KeySetVersion {
+impl From<KeysetVersion> for cdk::nuts::KeySetVersion {
     fn from(version: KeysetVersion) -> Self {
         match version {
             KeysetVersion::V1 => Self::Version00,
             KeysetVersion::V2 => Self::Version01,
+            KeysetVersion::V3 => Self::Version02,
         }
     }
 }
@@ -91,8 +97,8 @@ pub struct Info {
     pub input_fee_ppk: Option<u64>,
     /// Use keyset v2
     pub use_keyset_v2: Option<bool>,
-    /// Keyset version for new keysets: "v1" or "v2".
-    /// Takes precedence over `use_keyset_v2`.
+    /// Keyset version for new keysets: "v1", "v2" or "v3".
+    /// Takes precedence over `use_keyset_v2`. V3 (BLS) is opt-in.
     pub keyset_version: Option<KeysetVersion>,
     /// How often, in milliseconds, the embedded signatory reloads keysets from
     /// the database. Unset or `0` disables it; set an interval only when several
@@ -829,7 +835,7 @@ pub struct FakeWalletKeysetRotation {
     /// Input fee in parts per thousand
     #[serde(default)]
     pub input_fee_ppk: u64,
-    /// Keyset version: "v1" (Version00) or "v2" (Version01)
+    /// Keyset version: "v1" (Version00), "v2" (Version01), or "v3" (Version02)
     #[serde(default = "default_keyset_version")]
     pub version: String,
     /// If true, the keyset will be created with a past expiry (expired)
@@ -1452,19 +1458,20 @@ mod tests {
 
     #[test]
     fn keyset_version_parses_from_toml_and_env_strings() {
-        let info: Info = toml::from_str(r#"keyset_version = "v2""#).expect("info");
-        assert_eq!(info.keyset_version, Some(KeysetVersion::V2));
+        let info: Info = toml::from_str(r#"keyset_version = "v3""#).expect("info");
+        assert_eq!(info.keyset_version, Some(KeysetVersion::V3));
         assert_eq!(Info::default().keyset_version, None);
         assert!(toml::from_str::<Info>(r#"keyset_version = "v4""#).is_err());
 
         for (input, expected) in [
-            ("v1", cdk::nuts::nut02::KeySetVersion::Version00),
-            ("V2", cdk::nuts::nut02::KeySetVersion::Version01),
+            ("v1", cdk::nuts::KeySetVersion::Version00),
+            ("V2", cdk::nuts::KeySetVersion::Version01),
+            ("v3", cdk::nuts::KeySetVersion::Version02),
         ] {
             let version: KeysetVersion = input.parse().expect("version");
-            assert_eq!(cdk::nuts::nut02::KeySetVersion::from(version), expected);
+            assert_eq!(cdk::nuts::KeySetVersion::from(version), expected);
         }
-        assert!("01".parse::<KeysetVersion>().is_err());
+        assert!("02".parse::<KeysetVersion>().is_err());
     }
 
     #[test]

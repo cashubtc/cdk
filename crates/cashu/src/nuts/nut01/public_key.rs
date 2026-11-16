@@ -168,6 +168,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rejects_bls_point_lengths_before_curve_parsing() {
+        assert!(matches!(
+            PublicKey::from_hex("00".repeat(48)),
+            Err(Error::InvalidPublicKeySize { found: 48, .. })
+        ));
+        assert!(matches!(
+            PublicKey::from_hex("00".repeat(96)),
+            Err(Error::InvalidPublicKeySize { found: 96, .. })
+        ));
+    }
+
+    #[test]
     fn test_public_key_from_hex() {
         // Compressed
         let key = PublicKey::from_hex(

@@ -4,13 +4,15 @@ use core::str::FromStr;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
-use super::{Error, PublicKey};
+use super::{BlsG2PublicKey, Error, PublicKey};
 
 /// A mint public key.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum MintPublicKey {
     /// Secp256k1 mint key used by v1 and v2 keysets.
     Secp256k1(PublicKey),
+    /// BLS12-381 G2 mint key used by v3 keysets.
+    Bls(BlsG2PublicKey),
 }
 
 impl MintPublicKey {
@@ -18,6 +20,7 @@ impl MintPublicKey {
     pub fn from_slice(bytes: &[u8]) -> Result<Self, Error> {
         match bytes.len() {
             33 | 65 => Ok(Self::Secp256k1(PublicKey::from_slice(bytes)?)),
+            96 => Ok(Self::Bls(BlsG2PublicKey::from_bytes(bytes)?)),
             found => Err(Error::InvalidPublicKeySize {
                 expected: 33,
                 found,
@@ -44,6 +47,7 @@ impl MintPublicKey {
     pub fn to_bytes(&self) -> Vec<u8> {
         match self {
             Self::Secp256k1(key) => key.to_bytes().to_vec(),
+            Self::Bls(key) => key.to_bytes().to_vec(),
         }
     }
 
@@ -56,6 +60,15 @@ impl MintPublicKey {
     pub fn as_secp256k1(&self) -> Result<PublicKey, Error> {
         match self {
             Self::Secp256k1(key) => Ok(*key),
+            Self::Bls(_) => Err(Error::WrongKeyKind),
+        }
+    }
+
+    /// Return the BLS12-381 G2 key.
+    pub fn as_bls(&self) -> Result<BlsG2PublicKey, Error> {
+        match self {
+            Self::Bls(key) => Ok(*key),
+            Self::Secp256k1(_) => Err(Error::WrongKeyKind),
         }
     }
 }
@@ -76,6 +89,7 @@ impl Hash for MintPublicKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
         match self {
             Self::Secp256k1(key) => key.to_bytes().as_slice().hash(state),
+            Self::Bls(key) => key.to_bytes().as_slice().hash(state),
         }
     }
 }
@@ -92,7 +106,20 @@ impl Ord for MintPublicKey {
             (Self::Secp256k1(left), Self::Secp256k1(right)) => {
                 left.to_bytes().cmp(&right.to_bytes())
             }
+            (Self::Bls(left), Self::Bls(right)) => left.to_bytes().cmp(&right.to_bytes()),
+            (Self::Secp256k1(left), Self::Bls(right)) => {
+                left.to_bytes().as_slice().cmp(right.to_bytes().as_slice())
+            }
+            (Self::Bls(left), Self::Secp256k1(right)) => {
+                left.to_bytes().as_slice().cmp(right.to_bytes().as_slice())
+            }
         }
+    }
+}
+
+impl From<BlsG2PublicKey> for MintPublicKey {
+    fn from(key: BlsG2PublicKey) -> Self {
+        Self::Bls(key)
     }
 }
 

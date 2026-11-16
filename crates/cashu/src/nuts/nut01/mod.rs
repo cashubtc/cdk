@@ -18,6 +18,7 @@ mod public_key;
 mod scalar;
 mod secret_key;
 
+pub use self::bls::{BlsG1PublicKey, BlsG2PublicKey, BlsSecretKey};
 pub use self::dhke_point::DhkePoint;
 pub use self::mint_key::MintPublicKey;
 pub use self::proof_id::ProofId;
@@ -27,6 +28,8 @@ pub use self::secret_key::SecretKey;
 use super::nut02::KeySet;
 use crate::amount::Amount;
 use crate::util::serde_helpers::deserialize_vec_skip_invalid;
+
+pub(crate) mod bls;
 
 /// Nut01 Error
 #[derive(Debug, Error)]

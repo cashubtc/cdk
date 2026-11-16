@@ -2879,6 +2879,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn verify_outputs_keyset_rejects_output_on_wrong_curve() {
+        use cdk_common::nuts::{nut01, SecretKey};
+
+        let mut supported_units = HashMap::new();
+        let amounts: Vec<u64> = (0..8).map(|i| 2u64.pow(i)).collect();
+        supported_units.insert(CurrencyUnit::default(), (0, amounts));
+
+        let config = MintConfig::<'_> {
+            supported_units,
+            ..Default::default()
+        };
+        let mint = create_mint(config).await;
+
+        let keyset_id = mint.keysets.load()[0].id;
+        assert_ne!(keyset_id.get_version(), KeySetVersion::Version02);
+
+        // A BLS G1 point is a valid blinded message for a v3 keyset, but not
+        // for this secp256k1 keyset.
+        let bls_blinded_secret =
+            cdk_common::dhke::hash_to_curve_for_version(b"output", KeySetVersion::Version02)
+                .expect("hash to G1");
+        let output = BlindedMessage::new(Amount::from(1), keyset_id, bls_blinded_secret);
+
+        let result = mint.verify_outputs_keyset(&[output]);
+        assert!(
+            matches!(result, Err(Error::NUT01(nut01::Error::WrongKeyKind))),
+            "expected WrongKeyKind, got: {:?}",
+            result
+        );
+
+        let secp_output = BlindedMessage::new(
+            Amount::from(1),
+            keyset_id,
+            SecretKey::generate().public_key(),
+        );
+        assert!(mint.verify_outputs_keyset(&[secp_output]).is_ok());
+    }
+
+    #[tokio::test]
     async fn verify_inputs_keyset_rejects_expired_keyset() {
         use cdk_common::nuts::{Proof, SecretKey};
         use cdk_common::secret::Secret;

@@ -509,7 +509,8 @@ impl Proof {
 
     /// Get y from proof
     ///
-    /// Where y is the keyset curve's `hash_to_curve(secret)`.
+    /// Where y is `hash_to_curve(secret)` for secp256k1 keysets and BLS G1
+    /// hash-to-curve for v3 keysets.
     pub fn y(&self) -> Result<ProofId, Error> {
         Ok(hash_to_curve_for_version(self.secret.as_bytes(), self.keyset_id.get_version())?.into())
     }
@@ -1539,7 +1540,7 @@ mod tests {
             KeySetVersion::Version00 => {
                 Id::from_bytes(&[vec![version.to_byte()], vec![1; 7]].concat())
             }
-            KeySetVersion::Version01 => {
+            KeySetVersion::Version01 | KeySetVersion::Version02 => {
                 Id::from_bytes(&[vec![version.to_byte()], vec![1; 32]].concat())
             }
         }
@@ -1550,6 +1551,8 @@ mod tests {
     fn proof_y_matches_keyset_version() {
         let secret = Secret::from_str("test proof secret").expect("secret");
         let secp_c = crate::nuts::SecretKey::generate().public_key();
+        let bls_c: DhkePoint =
+            crate::nuts::nut01::BlsG1PublicKey::hash_to_curve(b"signature").into();
 
         let v0_y = Proof::new(
             Amount::from(1),
@@ -1562,14 +1565,23 @@ mod tests {
         let v1_y = Proof::new(
             Amount::from(1),
             keyset_id(KeySetVersion::Version01),
-            secret,
+            secret.clone(),
             secp_c,
         )
         .y()
         .expect("v1 y");
+        let v2_y = Proof::new(
+            Amount::from(1),
+            keyset_id(KeySetVersion::Version02),
+            secret,
+            bls_c,
+        )
+        .y()
+        .expect("v2 y");
 
         assert_eq!(v0_y.as_bytes().len(), 33);
         assert_eq!(v1_y.as_bytes().len(), 33);
+        assert_eq!(v2_y.as_bytes().len(), 48);
     }
 
     #[test]

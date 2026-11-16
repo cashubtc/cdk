@@ -11,6 +11,7 @@ use crate::keyset::{KeysetVersion, RotateNextKeysetRequest};
 enum CliKeysetVersion {
     V1,
     V2,
+    V3,
 }
 
 impl From<CliKeysetVersion> for KeysetVersion {
@@ -18,6 +19,7 @@ impl From<CliKeysetVersion> for KeysetVersion {
         match version {
             CliKeysetVersion::V1 => Self::V1,
             CliKeysetVersion::V2 => Self::V2,
+            CliKeysetVersion::V3 => Self::V3,
         }
     }
 }
@@ -90,9 +92,13 @@ impl RotateNextKeysetCommand {
         };
 
         let keyset_version = self.keyset_version.map(KeysetVersion::from);
-        // Send the effective legacy selector too, so older servers honor the choice.
+        // Send the legacy selector for v1/v2 so older servers honor the choice.
         let use_keyset_v2 = keyset_version
-            .map(|version| version == KeysetVersion::V2)
+            .and_then(|version| match version {
+                KeysetVersion::V1 => Some(false),
+                KeysetVersion::V2 => Some(true),
+                _ => None,
+            })
             .or(self.use_keyset_v2);
         Ok(RotateNextKeysetRequest {
             unit: self.unit.clone(),
@@ -125,6 +131,7 @@ mod tests {
             (vec!["--use-keyset-v2", "true"], Some(true)),
             (vec!["--keyset-version", "v1"], Some(false)),
             (vec!["--keyset-version", "v2"], Some(true)),
+            (vec!["--keyset-version", "v3"], None),
         ] {
             let matches = Cli::command()
                 .try_get_matches_from(std::iter::once("test").chain(args))
@@ -135,6 +142,7 @@ mod tests {
             let expected_version = match command.rotation.keyset_version {
                 Some(CliKeysetVersion::V1) => Some(KeysetVersion::V1 as i32),
                 Some(CliKeysetVersion::V2) => Some(KeysetVersion::V2 as i32),
+                Some(CliKeysetVersion::V3) => Some(KeysetVersion::V3 as i32),
                 None => None,
             };
             assert_eq!(request.keyset_version, expected_version);
@@ -143,7 +151,7 @@ mod tests {
 
     #[test]
     fn version_selectors_cannot_be_combined() {
-        for version in ["v1", "v2"] {
+        for version in ["v1", "v2", "v3"] {
             for legacy in ["true", "false"] {
                 for args in [
                     ["--keyset-version", version, "--use-keyset-v2", legacy],
@@ -160,7 +168,7 @@ mod tests {
 
     #[test]
     fn unsupported_versions_are_rejected_by_cli() {
-        for version in ["00", "01", "v3", "02", "unknown", ""] {
+        for version in ["00", "01", "v4", "02", "unknown", ""] {
             assert!(Cli::try_parse_from(["test", "--keyset-version", version]).is_err());
         }
     }
