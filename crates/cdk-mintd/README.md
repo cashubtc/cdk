@@ -476,6 +476,7 @@ The mint supports rotating keysets to newer versions (e.g., migrating from V1 to
 **Policy Configuration:**
 By default, the mint will use V2 (Version01) for *new* keysets but will preserve existing V1 (Version00) keysets to avoid unnecessary rotation. You can force a specific policy in an initialization or apply document:
 
+- `keyset_version = "v1" | "v2"` (env `CDK_MINTD_KEYSET_VERSION`): Forces that version; an active keyset of another version is rotated on startup. Takes precedence over `use_keyset_v2`. Invalid values in either the file or environment cause configuration loading to fail.
 - `use_keyset_v2 = true`: Forces V2. If the current active keyset is V1, it will be rotated to V2 on startup.
 - `use_keyset_v2 = false`: Forces V1. If the current active keyset is V2, it will be rotated to V1 on startup.
 - **Unset (Default)**: Preserves the current keyset version. If no keyset exists, V2 is created.

@@ -1184,7 +1184,9 @@ fn configure_basic_info(settings: &config::Settings, mint_builder: MintBuilder) 
         }
     }
 
-    builder = builder.with_keyset_v2(settings.info.use_keyset_v2);
+    builder = builder
+        .with_keyset_v2(settings.info.use_keyset_v2)
+        .with_keyset_version(settings.info.keyset_version.map(Into::into));
 
     builder = builder.with_keyset_refresh_interval(
         settings
@@ -1380,7 +1382,7 @@ async fn configure_payment_backends(
         let fake_wallet = settings.fake_wallet.as_ref().ok_or_else(|| {
             anyhow!("Fake wallet backend selected but [fake_wallet] config section is missing")
         })?;
-        mint_builder = configure_fake_wallet_keyset_rotations_once(mint_builder, fake_wallet);
+        mint_builder = configure_fake_wallet_keyset_rotations_once(mint_builder, fake_wallet)?;
     }
 
     Ok(mint_builder)
@@ -1390,9 +1392,10 @@ async fn configure_payment_backends(
 fn configure_fake_wallet_keyset_rotations_once(
     mut mint_builder: MintBuilder,
     fake_wallet: &config::FakeWallet,
-) -> MintBuilder {
+) -> Result<MintBuilder> {
     for rotation_cfg in &fake_wallet.keyset_rotations {
         use cdk::mint::KeysetRotation;
+        use cdk_common::nut02::KeySetVersion;
 
         let amounts = cdk::mint::UnitConfig::default().amounts;
         let final_expiry = if rotation_cfg.expired {
@@ -1400,17 +1403,23 @@ fn configure_fake_wallet_keyset_rotations_once(
         } else {
             None
         };
+        // Reject unknown versions instead of silently creating a V1 keyset.
+        let keyset_id_type: KeySetVersion = rotation_cfg
+            .version
+            .parse::<config::KeysetVersion>()
+            .map_err(|err| anyhow!("Unsupported fake wallet keyset rotation version: {err}"))?
+            .into();
 
         mint_builder = mint_builder.with_keyset_rotation(KeysetRotation {
             unit: rotation_cfg.unit.clone(),
             amounts,
             input_fee_ppk: rotation_cfg.input_fee_ppk,
-            use_keyset_v2: rotation_cfg.version == "v2",
+            keyset_id_type,
             final_expiry,
         });
     }
 
-    mint_builder
+    Ok(mint_builder)
 }
 
 /// Configures Onchain backend based on the specified backend type
@@ -4389,6 +4398,8 @@ backend = "fakewallet"
             "CDK_MINTD_POSTGRES_CONNECTION_TIMEOUT_SECONDS",
             "CDK_MINTD_SEED",
             "CDK_MINTD_MNEMONIC",
+            "CDK_MINTD_KEYSET_VERSION",
+            "CDK_MINTD_USE_KEYSET_V2",
             "CDK_MINTD_SIGNATORY_ENABLED",
             "CDK_MINTD_SIGNATORY_ADDRESS",
             "CDK_MINTD_SIGNATORY_PORT",
@@ -5216,6 +5227,62 @@ openid_client_id = "mintd"
         let _ = fs::remove_dir_all(&temp_dir);
         clear_mintd_env();
         result
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn keyset_version_env_is_validated_before_startup() {
+        let config = format!(
+            r#"
+[info]
+mnemonic = "{TEST_MNEMONIC}"
+keyset_version = "v2"
+use_keyset_v2 = true
+
+[database]
+engine = "sqlite"
+
+[payment_backend]
+backend = "fakewallet"
+"#
+        );
+
+        for invalid in ["1", "v1 ", "v3", ""] {
+            let error = load_settings_with_env("cdk_mintd_invalid_keyset_version", &config, || {
+                std::env::set_var(crate::env_vars::ENV_KEYSET_VERSION, invalid);
+            })
+            .expect_err("invalid version must not fall back to configured selectors");
+            let message = error.to_string();
+            assert!(message.contains("CDK_MINTD_KEYSET_VERSION"), "{message}");
+            assert!(message.contains("expected v1 or v2"), "{message}");
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+
+            let error =
+                load_settings_with_env("cdk_mintd_nonunicode_keyset_version", &config, || {
+                    std::env::set_var(
+                        crate::env_vars::ENV_KEYSET_VERSION,
+                        std::ffi::OsString::from_vec(vec![0xff]),
+                    );
+                })
+                .expect_err("non-Unicode version must fail configuration loading");
+            assert!(error.to_string().contains("CDK_MINTD_KEYSET_VERSION"));
+        }
+
+        for (value, expected) in [
+            ("v1", config::KeysetVersion::V1),
+            ("V2", config::KeysetVersion::V2),
+        ] {
+            let settings =
+                load_settings_with_env("cdk_mintd_valid_keyset_version", &config, || {
+                    std::env::set_var(crate::env_vars::ENV_KEYSET_VERSION, value);
+                })
+                .expect("valid environment version should override the file");
+            assert_eq!(settings.info.keyset_version, Some(expected));
+        }
     }
 
     #[cfg(feature = "fakewallet")]

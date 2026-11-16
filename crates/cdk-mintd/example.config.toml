@@ -17,6 +17,9 @@ mnemonic = "env:CDK_MINTD_MNEMONIC"
 # If unset (default), existing keysets are preserved, but new ones use V2.
 # use_keyset_v2 = true
 
+# Explicit keyset version: "v1" or "v2". Takes precedence over use_keyset_v2.
+# keyset_version = "v2"
+
 # How often, in milliseconds, the embedded signatory reloads keysets from the
 # database. Off by default: a single mint owns its database and needs no
 # polling. Set it only when several mints or signatories share one database, so
@@ -332,7 +335,7 @@ max_delay_time = 3
 # Optional keyset rotations to create inactive/expired test keysets
 # Each rotation creates a keyset that gets rotated out during mint build
 # unit: currency unit (e.g. "sat", "usd")
-# version: "v1" (Version00) or "v2" (Version01)
+# version: "v1" (Version00, default) or "v2" (Version01); other values are rejected
 # input_fee_ppk: input fee in parts per thousand (default: 0)
 # expired: if true, keyset is created with a past expiry timestamp (default: false)
 #
