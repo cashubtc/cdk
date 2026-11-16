@@ -2,10 +2,12 @@
 //!
 //! This module provides functionality for receiving ecash tokens and proofs.
 
+use std::collections::HashSet;
 use std::str::FromStr;
 
 use tracing::instrument;
 
+use crate::nuts::nut00::{self, ProofsMethods};
 use crate::nuts::{Proofs, Token};
 use crate::{ensure_cdk, Amount, Error, Wallet};
 
@@ -27,6 +29,12 @@ impl Wallet {
         memo: Option<String>,
         token: Option<String>,
     ) -> Result<Amount, Error> {
+        let ys = proofs.ys()?;
+        ensure_cdk!(
+            ys.iter().collect::<HashSet<_>>().len() == ys.len(),
+            nut00::Error::DuplicateProofs.into()
+        );
+
         self.retry_on_inactive_keyset(|| async {
             let saga = ReceiveSaga::new(self);
             let saga = saga
