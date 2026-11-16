@@ -8,10 +8,13 @@ use tokio_util::sync::CancellationToken;
 use crate::error::Error;
 
 #[cfg(feature = "bitcoin-rpc")]
+/// Bitcoin Core RPC synchronization, broadcasting, and fee estimation.
 pub mod bitcoin_rpc;
 #[cfg(feature = "electrum")]
+/// Electrum synchronization, broadcasting, and fee estimation.
 pub mod electrum;
 #[cfg(feature = "esplora")]
+/// Esplora synchronization, broadcasting, and fee estimation.
 pub mod esplora;
 
 /// Configuration for connecting to Bitcoin RPC
@@ -176,6 +179,7 @@ impl ChainSource {
         }
     }
 
+    /// Synchronize the wallet with this chain source until completion or cancellation.
     pub async fn sync_wallet(
         &self,
         cdk_bdk: &crate::CdkBdk,
@@ -215,6 +219,7 @@ impl ChainSource {
         }
     }
 
+    /// Estimate the fee rate in sat/vB for confirmation within `target_blocks` blocks.
     pub async fn fetch_fee_rate(&self, target_blocks: u16) -> Result<f64, Error> {
         match self {
             #[cfg(feature = "esplora")]

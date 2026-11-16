@@ -46,6 +46,7 @@ pub use crate::types::{
     DEFAULT_TARGET_BLOCK_TIME_SECS,
 };
 
+/// Blockchain data sources and connection settings.
 pub mod chain;
 pub mod error;
 pub(crate) mod fee;
@@ -54,6 +55,7 @@ pub(crate) mod recovery;
 pub mod send;
 pub mod storage;
 pub(crate) mod sync;
+/// Configuration and payment types for the onchain backend.
 pub mod types;
 pub(crate) mod util;
 pub mod wallet_info;
@@ -208,6 +210,15 @@ pub struct CdkBdk {
     pub(crate) sync_config: SyncConfig,
     /// Cache for fee rate estimation: Tier -> (sat_per_vb, timestamp)
     pub(crate) fee_rate_cache: Arc<Mutex<std::collections::HashMap<PaymentTier, (f64, u64)>>>,
+}
+
+impl fmt::Debug for CdkBdk {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CdkBdk")
+            .field("network", &self.network)
+            .field("fee_reserve", &self.fee_reserve)
+            .finish_non_exhaustive()
+    }
 }
 
 impl CdkBdk {

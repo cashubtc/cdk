@@ -126,7 +126,6 @@ tonic-prost = "0.14.2"
 tonic-prost-build = "0.14.2"
 prost = "0.14"
 rustls = { version = "0.23.27", default-features = false, features = ["ring"] }
-prometheus = { version = "0.14", features = ["process"], default-features = false }
 nostr-sdk = { version = "0.45.2", default-features = false }
 nostr = { version = "0.45.3", default-features = false, features = [
     "nip04",
