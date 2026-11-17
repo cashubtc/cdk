@@ -246,7 +246,7 @@ async fn subscribe(
     println!("Starting quote polling...");
     println!("Press Ctrl+C to stop.\n");
 
-    // Run polling and wait for Ctrl+C
+    // Run polling until a shutdown signal arrives
     let mut stream =
         wallet.npubcash_proof_stream(SplitTarget::default(), None, Duration::from_secs(5));
 
@@ -276,7 +276,8 @@ async fn subscribe(
                 }
             }
         } => {}
-        _ = tokio::signal::ctrl_c() => {
+        result = crate::shutdown::shutdown_signal() => {
+            result?;
             println!("\nStopping quote polling...");
         }
     }

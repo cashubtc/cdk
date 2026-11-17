@@ -22,6 +22,7 @@ use tracing_subscriber::EnvFilter;
 use url::Url;
 
 mod nostr_storage;
+mod shutdown;
 mod sub_commands;
 mod terminal;
 mod token_storage;
