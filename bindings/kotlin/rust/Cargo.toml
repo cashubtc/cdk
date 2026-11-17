@@ -20,8 +20,5 @@ path = "uniffi-bindgen.rs"
 cdk-ffi = { workspace = true, default-features = false, features = ["npubcash", "nwc", "bip353"] }
 uniffi = { workspace = true, features = ["cli"] }
 
-[build-dependencies]
-uniffi = { workspace = true, features = ["build"] }
-
 [lints]
 workspace = true

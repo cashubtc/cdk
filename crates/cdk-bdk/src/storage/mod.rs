@@ -1,5 +1,6 @@
 //! BDK storage operations using KV store
 
+use std::fmt;
 use std::sync::Arc;
 
 use cdk_common::database::KVStore;
@@ -11,7 +12,9 @@ use crate::receive::receive_intent::record::ReceiveIntentRecord;
 use crate::send::batch_transaction::record::SendBatchRecord;
 use crate::send::payment_intent::record::SendIntentRecord;
 
+/// Storage operations for incoming payments and their indexes.
 pub mod receive;
+/// Storage operations for outgoing payments, batches, and their indexes.
 pub mod send;
 mod types;
 
@@ -90,9 +93,12 @@ fn outpoint_to_key(outpoint: &str) -> String {
     outpoint.replace(':', "-")
 }
 
+/// A serializable record stored under a key in a BDK secondary namespace.
 pub trait KvRecord: Serialize + DeserializeOwned + Sized {
+    /// Secondary namespace within the BDK namespace.
     const NAMESPACE: &'static str;
 
+    /// Return the record's key within its secondary namespace.
     fn key(&self) -> String;
 }
 
@@ -104,6 +110,12 @@ pub(crate) trait ReplaceState<S>: KvRecord {
 #[derive(Clone)]
 pub struct BdkStorage {
     pub(crate) kv_store: Arc<dyn KVStore<Err = cdk_common::database::Error> + Send + Sync>,
+}
+
+impl fmt::Debug for BdkStorage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BdkStorage").finish_non_exhaustive()
+    }
 }
 
 impl BdkStorage {
