@@ -154,11 +154,11 @@ where
                     match c {
                         Column::Null => {
                             // Blind message with no c: Update with missing columns c
-                            query(
+                            let affected = query(
                                 r#"
                                 UPDATE blind_signature
                                 SET c = :c, signed_time = :signed_time, amount = :amount
-                                WHERE blinded_message = :blinded_message
+                                WHERE blinded_message = :blinded_message AND c IS NULL
                                 "#,
                             )?
                             .bind("c", signature.c.to_bytes().to_vec())
@@ -167,6 +167,10 @@ where
                             .bind("amount", i64::try_from(u64::from(signature.amount))?)
                             .execute(&self.inner)
                             .await?;
+
+                            if affected != 1 {
+                                return Err(Error::ConcurrentUpdate);
+                            }
 
                             query(
                                 r#"

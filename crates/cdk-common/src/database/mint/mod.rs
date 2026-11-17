@@ -577,6 +577,9 @@ pub trait SignaturesTransaction {
     type Err: Into<Error> + From<Error>;
 
     /// Add [`BlindSignature`]
+    ///
+    /// Returns [`Error::ConcurrentUpdate`] if a blinded message read as unsigned was signed
+    /// between the read and the write, after which the caller must roll back the transaction.
     async fn add_blind_signatures(
         &mut self,
         blinded_messages: &[PublicKey],
