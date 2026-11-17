@@ -446,9 +446,8 @@ mod tests {
     use tokio::sync::Notify;
     use tokio::time::timeout;
 
-    use crate::mint::tests::{rotated_snapshots, MockSignatory};
-
     use super::*;
+    use crate::mint::tests::{rotated_snapshots, MockSignatory};
 
     fn bolt11_quote(id: QuoteId, amount: u64) -> MintQuote {
         MintQuote::new(
