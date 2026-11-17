@@ -94,17 +94,26 @@ pub struct MintMetadata {
 
     /// Freshness tracking for blind auth keysets
     auth_status: FreshnessStatus,
+
+    /// How many database reads have merged data this snapshot did not already
+    /// hold, which is what tells a second database the snapshot is newer than
+    /// what it holds even though no fetch happened.
+    local_reads: usize,
 }
 
-/// Snapshot versions a database has been written up to, one per data kind.
+/// What a database has been written up to, one counter per source of change.
 ///
-/// Compared as a pair because a persist writes the whole snapshot, so a single
-/// counter cannot say what a database holds. Neither component ever decreases,
-/// so the derived lexicographic order agrees with "at least as new as".
+/// Compared as a tuple because a persist writes the whole snapshot, so a single
+/// counter cannot say what a database holds. No component ever decreases, so
+/// the derived lexicographic order agrees with "at least as new as".
+///
+/// `local` counts database reads that added something, so a snapshot assembled
+/// out of one database still counts as newer than what another database holds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 struct SnapshotVersions {
     status: usize,
     auth: usize,
+    local: usize,
 }
 
 /// First wait a database earns by rejecting a write, doubled on each further
@@ -303,11 +312,12 @@ impl MintMetadata {
         crate::fees::calculate_fee(proofs_per_keyset, &fee_rates)
     }
 
-    /// Both freshness counters, for comparing against what a database holds.
+    /// Every freshness counter, for comparing against what a database holds.
     fn versions(&self) -> SnapshotVersions {
         SnapshotVersions {
             status: self.status.version,
             auth: self.auth_status.version,
+            local: self.local_reads,
         }
     }
 
@@ -569,11 +579,17 @@ impl MintMetadataCache {
     ///
     /// Leaves `status.version` and `updated_at` untouched, because data out of a
     /// database is not a new version and claiming it was made a concurrent
-    /// fetch look already persisted. The database read from is recorded at
-    /// version zero instead, so the snapshot it supplied is not written
-    /// straight back to it on the next load, which would cost a round trip per
-    /// keyset and could undo a fresher write by another wallet on the same
-    /// database. Any later fetch rises above zero and so still reaches it.
+    /// fetch look already persisted. A read that added something counts in
+    /// `local` instead, and the database read from is recorded there, so the
+    /// snapshot it supplied is not written straight back to it on the next
+    /// load, which would cost a round trip per keyset and could undo a fresher
+    /// write by another wallet on the same database. A database that supplied
+    /// nothing, or only part of what the snapshot ends up holding, stays below
+    /// that count and is still written. The count comes from the snapshot this
+    /// read merged rather than from a later load, so a concurrent read of
+    /// another database cannot make this one look caught up. Any later fetch
+    /// rises above status version zero and so reaches every database either
+    /// way.
     ///
     /// Blind auth keysets do not populate the regular status: a database
     /// holding only those would otherwise make `load` serve a snapshot with no
@@ -612,21 +628,35 @@ impl MintMetadataCache {
             }
         }
 
+        let mut merged = None;
+
         self.metadata.rcu(|current| {
             let mut next = (**current).clone();
+            let mut supplied = false;
 
             if let Some(mint_info) = mint_info.clone() {
-                next.mint_info = Some(mint_info);
+                if next.mint_info.as_ref() != Some(&mint_info) {
+                    next.mint_info = Some(mint_info);
+                    supplied = true;
+                }
             }
 
             for keyset_info in &stored {
-                next.keysets
-                    .entry(keyset_info.id)
-                    .or_insert_with(|| Arc::new(keyset_info.clone()));
+                if let Entry::Vacant(entry) = next.keysets.entry(keyset_info.id) {
+                    entry.insert(Arc::new(keyset_info.clone()));
+                    supplied = true;
+                }
             }
 
             for (id, keys) in &stored_keys {
-                next.keys.entry(*id).or_insert_with(|| keys.clone());
+                if let Entry::Vacant(entry) = next.keys.entry(*id) {
+                    entry.insert(keys.clone());
+                    supplied = true;
+                }
+            }
+
+            if supplied {
+                next.local_reads += 1;
             }
 
             next.status.is_populated = next
@@ -634,10 +664,13 @@ impl MintMetadataCache {
                 .values()
                 .any(|keyset| keyset.unit != CurrencyUnit::Auth);
 
-            Arc::new(next)
+            let next = Arc::new(next);
+            merged = Some(next.clone());
+
+            next
         });
 
-        let metadata = self.metadata.load().clone();
+        let metadata = merged.unwrap_or_else(|| self.metadata.load().clone());
 
         {
             let storage_id = Self::arc_pointer_id(storage);
@@ -651,9 +684,18 @@ impl MintMetadataCache {
                 backoff: None,
             });
 
-            if record.versions.is_none() {
-                record.versions = Some(SnapshotVersions::default());
-            }
+            let local = metadata.local_reads;
+
+            record.versions = Some(match record.versions {
+                Some(held) => SnapshotVersions {
+                    local: held.local.max(local),
+                    ..held
+                },
+                None => SnapshotVersions {
+                    local,
+                    ..Default::default()
+                },
+            });
         }
 
         tracing::info!(
@@ -840,8 +882,8 @@ impl MintMetadataCache {
     /// been persisted. The version is claimed before the writes start, so a
     /// concurrent persist of the same snapshot does not duplicate them. A
     /// database with no record of its own is always written to, because a
-    /// snapshot read out of another database never leaves version zero; the
-    /// database it was read from records that zero itself.
+    /// snapshot read out of another database leaves the status version at
+    /// zero; what records the read is the database it was read from.
     ///
     /// A snapshot carrying no regular data is not written at all, because the
     /// mint row its keysets need may not exist yet and the first regular
@@ -1207,14 +1249,89 @@ mod tests {
             metadata.status.version, before,
             "reading a database is not a new version of the snapshot"
         );
+        let recorded = cache
+            .db_sync_versions
+            .read()
+            .get(&MintMetadataCache::arc_pointer_id(&storage))
+            .and_then(|record| record.versions)
+            .expect("the database that was read should be recorded");
         assert_eq!(
-            cache
-                .db_sync_versions
-                .read()
-                .get(&MintMetadataCache::arc_pointer_id(&storage))
-                .and_then(|record| record.versions),
-            Some(SnapshotVersions::default()),
-            "a database that was only read from is recorded at version zero, so a later fetch still reaches it"
+            (recorded.status, recorded.auth),
+            (0, 0),
+            "a database that was only read from stays at status version zero, so a later fetch still reaches it"
+        );
+        assert_eq!(
+            recorded.local, 1,
+            "the read that supplied the snapshot is what the database is recorded at"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_database_read_while_empty_still_receives_the_snapshot() {
+        let keyset = test_keyset();
+        let source = storage_with(vec![info(&keyset, OLD_EXPIRY)]).await;
+        source.add_keys(keyset.clone()).await.unwrap();
+        let target = storage_with(vec![]).await;
+        let cache = MintMetadataCache::new(test_mint_url());
+
+        assert!(
+            cache.load_cached(&target).await.is_err(),
+            "the second database holds nothing yet"
+        );
+
+        cache.load_from_db(&source).await.unwrap();
+        cache.load(&target, &mock_client(NEW_EXPIRY)).await.unwrap();
+
+        let stored = stored_keysets(&target).await;
+        assert_eq!(
+            stored.len(),
+            1,
+            "a database read while it was empty must still receive what another one supplied"
+        );
+        assert_eq!(
+            stored[0].final_expiry, OLD_EXPIRY,
+            "the keyset came from the first database, so no fetch was needed"
+        );
+        assert!(
+            target.get_keys(&keyset.id).await.unwrap().is_some(),
+            "the keys should have reached it too"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_database_that_supplied_part_of_the_snapshot_is_still_written() {
+        let keyset = test_keyset();
+        let target = storage_with(vec![info(&keyset, OLD_EXPIRY)]).await;
+
+        let source = create_test_db().await;
+        source
+            .add_mint(test_mint_url(), Some(test_mint_info()))
+            .await
+            .unwrap();
+        source
+            .add_mint_keysets(test_mint_url(), vec![info(&keyset, OLD_EXPIRY)])
+            .await
+            .unwrap();
+        source.add_keys(keyset.clone()).await.unwrap();
+
+        let cache = MintMetadataCache::new(test_mint_url());
+
+        cache.load_from_db(&target).await.unwrap();
+        cache.load_from_db(&source).await.unwrap();
+        cache.load(&target, &mock_client(NEW_EXPIRY)).await.unwrap();
+
+        assert!(
+            target.get_keys(&keyset.id).await.unwrap().is_some(),
+            "a database that supplied only the keyset must still receive the keys"
+        );
+        assert_eq!(
+            target
+                .get_mint(test_mint_url())
+                .await
+                .unwrap()
+                .and_then(|stored| stored.name),
+            test_mint_info().name,
+            "mint info the second database supplied should reach the first"
         );
     }
 
@@ -1776,8 +1893,14 @@ mod tests {
     async fn a_success_leaves_the_backoff_of_a_newer_snapshot_alone() {
         let storage = create_test_db().await;
         let cache = MintMetadataCache::new(test_mint_url());
-        let older = SnapshotVersions { status: 1, auth: 0 };
-        let newer = SnapshotVersions { status: 2, auth: 0 };
+        let older = SnapshotVersions {
+            status: 1,
+            ..Default::default()
+        };
+        let newer = SnapshotVersions {
+            status: 2,
+            ..Default::default()
+        };
 
         let first = SyncClaim::take(cache.db_sync_versions.clone(), &storage, older)
             .expect("an untouched database gives up the first claim");
