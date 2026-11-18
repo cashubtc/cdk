@@ -24,9 +24,8 @@ use cashu::mint_url::MintUrl;
 use cashu::nuts::nut10::Conditions;
 use cashu::nuts::SigFlag;
 use cashu::{
-    BlindSignature, BlindedMessage, CurrencyUnit, Id, KeySet, KeySetInfo, MeltRequest,
-    NotificationPayload, PaymentMethod, PreMintSecrets, ProofState, SecretKey, SpendingConditions,
-    State, SwapRequest,
+    BlindedMessage, CurrencyUnit, Id, KeySet, KeySetInfo, MeltRequest, NotificationPayload,
+    PaymentMethod, PreMintSecrets, ProofState, SecretKey, SpendingConditions, State, SwapRequest,
 };
 use cdk::mint::Mint;
 use cdk::nuts::nut00::ProofsMethods;
@@ -2322,7 +2321,6 @@ async fn test_p2bk_multi_key_receive() {
 /// 3. Mints more tokens under the new active keyset
 /// 4. Creates a new wallet with the same seed but empty storage
 /// 5. Restores and verifies that proofs from BOTH keysets are recovered
-/// 6. Creates an expired-keyset fixture and verifies its stored signature can be restored
 #[tokio::test]
 async fn test_restore_after_keyset_rotation() {
     setup_tracing();
@@ -2379,43 +2377,57 @@ async fn test_restore_after_keyset_rotation() {
         Amount::from(total),
         "Restore should recover proofs from both active and inactive keysets"
     );
+}
 
-    // A fixed past timestamp makes the third keyset expired without waiting.
-    let third_keyset = mint
-        .rotate_keyset(CurrencyUnit::Sat, amounts, 0, true, Some(1))
+#[tokio::test]
+async fn test_restore_from_expired_keyset() {
+    use cdk::mint::MintBuilder;
+    use cdk_common::database::{MintDatabase, MintKeysDatabase};
+
+    let store = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
+    let mint = MintBuilder::new(store.clone())
+        .build_with_seed(store.clone(), b"restore-expired-keyset-test")
+        .await
+        .unwrap();
+
+    // A legacy keyset ID does not commit to expiry, so the fixture can expire it
+    // after signing without changing its identity or waiting on the clock.
+    let mut keyset = mint
+        .rotate_keyset(CurrencyUnit::Sat, vec![1], 0, false, None)
         .await
         .expect("Failed to rotate keyset");
 
-    assert!(mint
-        .get_keyset_info(&third_keyset.id)
-        .expect("Third keyset should be known to the mint")
-        .is_expired());
-
-    // Restore retrieves stored records, so a synthetic signature is sufficient.
     let output = BlindedMessage::new(
         Amount::from(1),
-        third_keyset.id,
+        keyset.id,
         SecretKey::generate().public_key(),
     );
-    let signature = BlindSignature {
-        amount: Amount::from(1),
-        keyset_id: third_keyset.id,
-        c: SecretKey::generate().public_key(),
-        dleq: None,
-    };
+    let signatures = mint.blind_sign(vec![output.clone()]).await.unwrap();
+    assert!(signatures[0].dleq.is_some());
 
-    let store = mint.localstore();
-    let mut tx = store.begin_transaction().await.unwrap();
-
-    tx.add_blind_signatures(
-        &[output.blinded_secret],
-        std::slice::from_ref(&signature),
-        None,
-    )
-    .await
-    .unwrap();
-
+    let mut tx = MintDatabase::begin_transaction(store.as_ref())
+        .await
+        .unwrap();
+    tx.add_blind_signatures(&[output.blinded_secret], &signatures, None)
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
+
+    let mut tx = MintKeysDatabase::begin_transaction(store.as_ref())
+        .await
+        .unwrap();
+    keyset.final_expiry = Some(1);
+    tx.add_keyset_info(keyset.clone()).await.unwrap();
+    tx.commit().await.unwrap();
+
+    // Rotation reloads the updated keyset info in both the signatory and mint.
+    mint.rotate_keyset(CurrencyUnit::Sat, vec![1], 0, true, None)
+        .await
+        .unwrap();
+    assert!(mint
+        .get_keyset_info(&keyset.id)
+        .expect("Expired keyset should be known to the mint")
+        .is_expired());
 
     let response = mint
         .restore(cashu::RestoreRequest {
@@ -2424,10 +2436,8 @@ async fn test_restore_after_keyset_rotation() {
         .await
         .expect("Mint restore failed for expired keyset");
 
-    assert!(
-        !response.signatures.is_empty(),
-        "Restore should return the stored signature from the expired keyset"
-    );
+    assert_eq!(response.outputs, vec![output]);
+    assert_eq!(response.signatures, signatures);
 }
 
 /// Restoring into a wallet in use must not hand back the proofs of a token

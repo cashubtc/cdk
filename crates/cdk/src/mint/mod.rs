@@ -1380,9 +1380,9 @@ impl Mint {
     ///
     /// Signatures are returned for every known blinded secret, expired keysets
     /// included, so a recovering wallet can still account for what it was
-    /// issued. DLEQ proofs are no longer stored, so they are rebuilt here; the
-    /// proof is optional in a restore response, so a keyset the signatory can
-    /// no longer sign with yields the stored signature without one.
+    /// issued. DLEQ proofs are rebuilt here. If the signatory or its keys are
+    /// unavailable, the stored signatures are returned without DLEQ proofs.
+    /// A stored signature that fails validation is rejected.
     #[instrument(skip_all)]
     pub async fn restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error> {
         #[cfg(feature = "prometheus")]
@@ -1447,13 +1447,19 @@ impl Mint {
                     .map(|a| a.blind_signature.clone())
                     .collect();
 
-                self.signatory
-                    .reconstruct_dleq(dleq_args)
-                    .await
-                    .unwrap_or_else(|err| {
+                match self.signatory.reconstruct_dleq(dleq_args).await {
+                    Ok(signatures) => signatures,
+                    Err(Error::SignatureMissingOrInvalid) => {
+                        tracing::error!(
+                            "Stored signature failed DLEQ reconstruction during restore"
+                        );
+                        return Err(Error::SignatureMissingOrInvalid);
+                    }
+                    Err(err) => {
                         tracing::warn!("Failed to reconstruct DLEQ proofs on restore: {err}");
                         fallback
-                    })
+                    }
+                }
             };
 
             Ok(RestoreResponse {
@@ -1538,7 +1544,9 @@ mod tests {
 
     use super::*;
     use crate::mint::melt::melt_saga::{MeltSaga, PaymentOutcome};
-    use crate::test_helpers::mint::{create_test_mint, mint_test_proofs};
+    use crate::test_helpers::mint::{
+        create_test_blinded_messages, create_test_mint, mint_test_proofs,
+    };
 
     #[derive(Default)]
     struct MintConfig<'a> {
@@ -1559,12 +1567,16 @@ mod tests {
     /// isolation from `DbSignatory`'s rotation logic.
     pub struct MockSignatory {
         updates: watch::Sender<SignatoryKeysets>,
+        reconstruct_error: Option<fn() -> Error>,
     }
 
     impl MockSignatory {
         pub fn new(initial: SignatoryKeysets) -> Self {
             let (updates, _) = watch::channel(initial);
-            Self { updates }
+            Self {
+                updates,
+                reconstruct_error: None,
+            }
         }
 
         /// Inject a new keyset snapshot through the subscription.
@@ -1606,7 +1618,10 @@ mod tests {
             &self,
             args: Vec<ReconstructDleqArguments>,
         ) -> Result<Vec<BlindSignature>, Error> {
-            Ok(args.into_iter().map(|a| a.blind_signature).collect())
+            match self.reconstruct_error {
+                Some(error) => Err(error()),
+                None => Ok(args.into_iter().map(|a| a.blind_signature).collect()),
+            }
         }
     }
 
@@ -2281,54 +2296,121 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn restore_with_empty_keyset_cache() {
-        let mock = Arc::new(MockSignatory::new(SignatoryKeysets {
-            pubkey: SecretKey::generate().public_key(),
-            keysets: Vec::new(),
-        }));
-        let mint = create_mint_with_signatory(mock).await;
+    async fn restore_reconstructs_original_dleq() {
+        let mint = create_test_mint().await.unwrap();
+        let (mut outputs, _) = create_test_blinded_messages(&mint, Amount::from(3))
+            .await
+            .unwrap();
+        outputs.reverse();
+        let signatures = mint.blind_sign(outputs.clone()).await.unwrap();
+        assert!(signatures.iter().all(|signature| signature.dleq.is_some()));
 
-        let keyset_id = Id::from_str("001711afb1de20cb").unwrap();
-        let output = BlindedMessage::new(
-            Amount::from(1),
-            keyset_id,
-            SecretKey::generate().public_key(),
-        );
-        let signature = BlindSignature {
-            amount: Amount::from(1),
-            keyset_id,
-            c: SecretKey::generate().public_key(),
-            dleq: None,
-        };
-
+        let blinded_secrets: Vec<_> = outputs.iter().map(|output| output.blinded_secret).collect();
         let mut tx = mint.localstore.begin_transaction().await.unwrap();
-        tx.add_blind_signatures(
-            &[output.blinded_secret],
-            std::slice::from_ref(&signature),
-            None,
-        )
-        .await
-        .unwrap();
+        tx.add_blind_signatures(&blinded_secrets, &signatures, None)
+            .await
+            .unwrap();
         tx.commit().await.unwrap();
 
-        mint.start()
+        let stored = mint
+            .localstore
+            .get_blind_signatures(&blinded_secrets)
             .await
-            .expect("mint should start without keysets");
-        assert!(mint.keysets.load().is_empty());
+            .unwrap();
+        assert!(stored
+            .iter()
+            .all(|signature| signature.as_ref().unwrap().dleq.is_none()));
 
+        // Recovery requests do not need to know the originally signed amounts.
+        for output in &mut outputs {
+            output.amount = Amount::ZERO;
+        }
         let response = mint
             .restore(RestoreRequest {
-                outputs: vec![output.clone()],
+                outputs: outputs.clone(),
             })
             .await
-            .expect("restore should succeed without cached keysets");
+            .unwrap();
+        assert_eq!(response.outputs, outputs);
+        assert_eq!(response.signatures, signatures);
+        mint.stop().await.unwrap();
+    }
 
-        mint.stop().await.expect("mint should stop");
+    #[tokio::test]
+    async fn restore_rejects_invalid_stored_signature() {
+        let mint = create_test_mint().await.unwrap();
+        let (outputs, _) = create_test_blinded_messages(&mint, Amount::from(3))
+            .await
+            .unwrap();
+        let mut signatures = mint.blind_sign(outputs.clone()).await.unwrap();
+        signatures[1].c = SecretKey::generate().public_key();
 
-        assert!(
-            !response.signatures.is_empty(),
-            "Restore should return stored signatures without cached keysets"
-        );
+        let blinded_secrets: Vec<_> = outputs.iter().map(|output| output.blinded_secret).collect();
+        let mut tx = mint.localstore.begin_transaction().await.unwrap();
+        tx.add_blind_signatures(&blinded_secrets, &signatures, None)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let result = mint.restore(RestoreRequest { outputs }).await;
+        assert!(matches!(result, Err(Error::SignatureMissingOrInvalid)));
+        mint.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn restore_without_dleq_when_signatory_unavailable() {
+        let errors: [fn() -> Error; 2] = [
+            || Error::UnknownKeySet,
+            || Error::SendError("signatory unavailable".to_string()),
+        ];
+        for error in errors {
+            let mut mock = MockSignatory::new(SignatoryKeysets {
+                pubkey: SecretKey::generate().public_key(),
+                keysets: Vec::new(),
+            });
+            mock.reconstruct_error = Some(error);
+            let mint = create_mint_with_signatory(Arc::new(mock)).await;
+
+            let keyset_id = Id::from_str("001711afb1de20cb").unwrap();
+            let output = BlindedMessage::new(
+                Amount::from(1),
+                keyset_id,
+                SecretKey::generate().public_key(),
+            );
+            let signature = BlindSignature {
+                amount: Amount::from(1),
+                keyset_id,
+                c: SecretKey::generate().public_key(),
+                dleq: None,
+            };
+
+            let mut tx = mint.localstore.begin_transaction().await.unwrap();
+            tx.add_blind_signatures(
+                &[output.blinded_secret],
+                std::slice::from_ref(&signature),
+                None,
+            )
+            .await
+            .unwrap();
+            tx.commit().await.unwrap();
+
+            mint.start()
+                .await
+                .expect("mint should start without keysets");
+            assert!(mint.keysets.load().is_empty());
+
+            let response = mint
+                .restore(RestoreRequest {
+                    outputs: vec![output.clone()],
+                })
+                .await
+                .expect("restore should succeed without cached keysets");
+
+            mint.stop().await.expect("mint should stop");
+
+            assert_eq!(response.outputs, vec![output]);
+            assert_eq!(response.signatures, vec![signature]);
+        }
     }
 
     #[tokio::test]
