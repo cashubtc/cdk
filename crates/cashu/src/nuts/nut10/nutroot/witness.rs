@@ -12,6 +12,10 @@
 //! ```
 //!
 //! A witness without `leaf` is a key-path witness.
+//!
+//! NUT-00 gives witnesses no rule for unknown fields. CDK rejects them, as
+//! for leaves: a verifier that ignored a field a newer NUT defines could
+//! accept a spend that a newer verifier evaluates differently.
 
 use std::fmt;
 use std::str::FromStr;
@@ -27,6 +31,7 @@ use crate::util::hex;
 
 /// A nutroot witness
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NutrootWitness {
     /// BIP-340 signatures over the input digest
     #[serde(with = "signatures_hex")]
@@ -48,6 +53,7 @@ pub struct NutrootWitness {
 
 /// The control block of a script-path witness
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Control {
     /// The internal key
     #[serde(rename = "K")]
@@ -229,6 +235,19 @@ mod tests {
             format!(r#"{{"signatures":["{SIG}"],"preimage":"zz"}}"#),
         ] {
             assert!(NutrootWitness::from_str(&json).is_err(), "accepted {json}");
+        }
+    }
+
+    #[test]
+    fn unknown_fields_are_rejected() {
+        for json in [
+            format!(r#"{{"signatures":["{SIG}"],"template":"00"}}"#),
+            format!(
+                r#"{{"signatures":["{SIG}"],"leaf":"0001","control":{{"K":"03a3e12cc077e5605f36441046f50c114fcc883b079a34028bed66732e3a419e51","path":[],"extra":1}}}}"#
+            ),
+        ] {
+            assert!(NutrootWitness::from_str(&json).is_err(), "accepted {json}");
+            assert!(NutrootWitness::from_quote_signature(&json).is_err());
         }
     }
 }
