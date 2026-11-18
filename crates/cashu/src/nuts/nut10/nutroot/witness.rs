@@ -93,6 +93,73 @@ impl NutrootWitness {
     }
 }
 
+/// A nutroot witness as received: its serialized JSON, checked to parse
+///
+/// Witnesses have no canonical encoding, so the mint keeps and echoes the
+/// exact string it was sent (NUT-07).
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct RawNutrootWitness(String);
+
+impl RawNutrootWitness {
+    /// Wrap a serialized witness, rejecting one that does not parse
+    pub fn new(raw: String) -> Result<Self, Error> {
+        NutrootWitness::from_str(&raw)?;
+        Ok(Self(raw))
+    }
+
+    /// The serialized witness
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Parse the witness
+    pub fn parse(&self) -> Result<NutrootWitness, Error> {
+        NutrootWitness::from_str(&self.0)
+    }
+}
+
+impl From<&NutrootWitness> for RawNutrootWitness {
+    fn from(witness: &NutrootWitness) -> Self {
+        Self(witness.to_string())
+    }
+}
+
+impl From<NutrootWitness> for RawNutrootWitness {
+    fn from(witness: NutrootWitness) -> Self {
+        Self::from(&witness)
+    }
+}
+
+impl fmt::Debug for RawNutrootWitness {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "RawNutrootWitness({})", self.0)
+    }
+}
+
+impl fmt::Display for RawNutrootWitness {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl Serialize for RawNutrootWitness {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for RawNutrootWitness {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::new(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+
 impl FromStr for NutrootWitness {
     type Err = Error;
 

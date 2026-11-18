@@ -51,6 +51,28 @@ pub enum Error {
     /// Input index out of range
     #[error("No transaction input at index {0}")]
     InputIndex(usize),
+    /// A v3 batch mint needs `quote_amounts`
+    #[error("A v3 batch mint needs quote_amounts")]
+    MissingQuoteAmounts,
+    /// Quotes and their states or amounts differ in number
+    #[error("{quotes} quotes but {states} quote states or amounts")]
+    QuoteCountMismatch {
+        /// Number of quotes
+        quotes: usize,
+        /// Number of states or amounts
+        states: usize,
+    },
+    /// Amount overflow
+    #[error("Amount overflow")]
+    AmountOverflow,
+    /// Proofs and their `Y`s differ in number
+    #[error("{proofs} proofs but {ys} Ys")]
+    YCountMismatch {
+        /// Number of proofs
+        proofs: usize,
+        /// Number of `Y`s
+        ys: usize,
+    },
     /// TLV encoding error
     #[error(transparent)]
     Tlv(#[from] tlv::Error),
@@ -211,6 +233,46 @@ impl TransactionOutput {
         }
         Ok(fields)
     }
+}
+
+/// Proof inputs for `proofs`, computing each `Y`
+pub fn proof_inputs(proofs: &[Proof]) -> Result<Vec<TransactionInput>, Error> {
+    proofs.iter().map(TransactionInput::from_proof).collect()
+}
+
+/// Proof inputs for `proofs` whose `Y`s are already known, in the same order
+pub fn proof_inputs_with_ys(
+    proofs: &[Proof],
+    ys: &[ProofId],
+) -> Result<Vec<TransactionInput>, Error> {
+    if proofs.len() != ys.len() {
+        return Err(Error::YCountMismatch {
+            proofs: proofs.len(),
+            ys: ys.len(),
+        });
+    }
+    Ok(proofs
+        .iter()
+        .zip(ys)
+        .map(|(proof, y)| TransactionInput::from_proof_with_y(proof, *y))
+        .collect())
+}
+
+/// Blinded message outputs, exactly as they appear in the request
+pub fn blinded_outputs(outputs: &[BlindedMessage]) -> Vec<TransactionOutput> {
+    outputs
+        .iter()
+        .map(TransactionOutput::from_blinded_message)
+        .collect()
+}
+
+/// A mint quote's state as the mint reads it when accepting a transaction
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MintQuoteState {
+    /// The quote's lock key (its `pubkey`)
+    pub lock_key: PublicKey,
+    /// The quote's `amount_issued`
+    pub issued: Amount,
 }
 
 /// A transaction with its transcript and digest
@@ -846,6 +908,42 @@ mod tests {
         );
     }
 
+    #[test]
+    fn melt_fee_index_vectors() {
+        use crate::nuts::nut05::MeltRequest;
+
+        // tests/00-tests.md "Melt with fee options": the index is committed
+        // as field 03, index zero included.
+        for (index, transcript, digest, input_digest) in [
+            (
+                0,
+                "11008e01000108020021022546ab0a2dee9f79510f4e20a4e3d9e894a97361047c594902573a7e64f9d70103003090f53b3088936b80ecfcc065a0746c5c1843ffd4527dbe3b9aba5a6109aed338ddc0f109511e9dfd37342aa99dd816d8040030a33dd4de26ea950060ae5c45bdc408d72aaf51ba9f4ccdeee4a040df067ca87c799a406fec88c2a328b75b290e27f7b62200190100010802000f71756f74652d6d656c742d30303033030000",
+                "ce3fff2131053b7a062c0edd1c3f8b0f63d32b272802b4926e148aa1c811c938",
+                "ff335ab70d725a2c0120bcb5ac0cf123bae1782d33945c4e9f2740fc9f1caa98",
+            ),
+            (
+                1,
+                "11008e01000108020021022546ab0a2dee9f79510f4e20a4e3d9e894a97361047c594902573a7e64f9d70103003090f53b3088936b80ecfcc065a0746c5c1843ffd4527dbe3b9aba5a6109aed338ddc0f109511e9dfd37342aa99dd816d8040030a33dd4de26ea950060ae5c45bdc408d72aaf51ba9f4ccdeee4a040df067ca87c799a406fec88c2a328b75b290e27f7b622001a0100010802000f71756f74652d6d656c742d3030303303000101",
+                "333e212a256868bca7624df989a90a55e812b173269dd5e42ab9845b11179f9f",
+                "645620b705612d2164dec1a1f4d36777acd247288f63e19dc07de30846855575",
+            ),
+        ] {
+            let request = MeltRequest::new("quote-melt-0003".to_string(), vec![swap_proof()], None)
+                .fee_index(index);
+            let transaction = request.transaction(Amount::from(8)).unwrap();
+            assert_eq!(hex::encode(transaction.transcript()), transcript);
+            assert_eq!(hex::encode(transaction.digest()), digest);
+            assert_eq!(
+                hex::encode(transaction.input_id(0).unwrap()),
+                "194bd20817e5806bbe198206e63938c8f0ad38a0d89af2179bb517e24caf1db2"
+            );
+            assert_eq!(
+                hex::encode(transaction.input_digest(0).unwrap()),
+                input_digest
+            );
+        }
+    }
+
     /// tests/00-tests.md "Melt with change"
     #[test]
     fn melt_with_change_vector() {
@@ -880,6 +978,139 @@ mod tests {
             SECRET0,
             tx.input_digest(0).unwrap(),
             "8129d244fa8d370a70c511f934788f2327f35739b8a60dac4545f190882a72774a947323ef6399d3e5e16e8687810549c19dcaab054f700caf05cbcd2e9c457b",
+        );
+    }
+
+    fn blinded(amount: u64, b: &str) -> BlindedMessage {
+        serde_json::from_value(serde_json::json!({"amount": amount, "id": KEYSET, "B_": b}))
+            .unwrap()
+    }
+
+    fn swap_proof() -> Proof {
+        proof(
+            8,
+            SECRET0,
+            "a33dd4de26ea950060ae5c45bdc408d72aaf51ba9f4ccdeee4a040df067ca87c799a406fec88c2a328b75b290e27f7b6",
+        )
+    }
+
+    /// The request builders reproduce the vectors
+    #[test]
+    fn request_builders() {
+        use crate::nuts::nut03::SwapRequest;
+        use crate::nuts::nut04::MintRequest;
+        use crate::nuts::nut05::MeltRequest;
+        use crate::nuts::nut29::BatchMintRequest;
+
+        let swap = SwapRequest::new(vec![swap_proof()], vec![blinded(4, B1), blinded(4, B2)]);
+        assert_eq!(
+            hex::encode(swap.transaction().unwrap().digest()),
+            "e88d16feadb0abc0cf4a08a7f5929a3a7c5e595f8d4e659d9ba66086aead402e"
+        );
+
+        let melt = MeltRequest::new(
+            "quote-melt-0002".to_string(),
+            vec![swap_proof()],
+            Some(vec![blinded(0, B1), blinded(0, B2)]),
+        );
+        assert_eq!(
+            hex::encode(melt.transaction(Amount::from(8)).unwrap().digest()),
+            "6649c7b016115b0d7f94fecef9af59ed616a32bb3e9f0313222427d29d087b80"
+        );
+        let melt = MeltRequest::new("quote-melt-0001".to_string(), vec![swap_proof()], None);
+        assert_eq!(
+            hex::encode(melt.transaction(Amount::from(8)).unwrap().digest()),
+            "f2fd9eaf27d572e47d776bd09856f760b3bb18338a9b497bee18b5ebec804048"
+        );
+
+        let state = |lock: &str, issued: u64| MintQuoteState {
+            lock_key: PublicKey::from_hex(lock).unwrap(),
+            issued: Amount::from(issued),
+        };
+        let mint = MintRequest {
+            quote: "quote-mint-0004".to_string(),
+            outputs: vec![blinded(4, B1)],
+            signature: None,
+        };
+        assert_eq!(
+            hex::encode(mint.transaction(&state(LOCK0, 3)).unwrap().digest()),
+            "90d943e1f02938e5d50a7ead9f04ec1a633bc207bf7976f54569632db62d8d4d"
+        );
+
+        let mut batch = BatchMintRequest {
+            quotes: vec!["quote-mint-0002".to_string(), "quote-mint-0003".to_string()],
+            quote_amounts: None,
+            outputs: vec![blinded(8, B1)],
+            signatures: None,
+        };
+        let states = [state(LOCK0, 0), state(LOCK1, 0)];
+        assert!(matches!(
+            batch.transaction(&states),
+            Err(Error::MissingQuoteAmounts)
+        ));
+        batch.quote_amounts = Some(vec![Amount::from(5), Amount::from(3)]);
+        assert_eq!(
+            hex::encode(batch.transaction(&states).unwrap().digest()),
+            "8203006b339dd16a3f6293c0f300bebb3c9ad620755477b1372c0fa479540c72"
+        );
+        assert!(matches!(
+            batch.transaction(&states[..1]),
+            Err(Error::QuoteCountMismatch {
+                quotes: 2,
+                states: 1
+            })
+        ));
+    }
+
+    /// tests/29-tests.md "Batch mint rejects duplicate quote IDs": every
+    /// field decodes, so the duplicate id is what refuses the transcript
+    #[test]
+    fn batch_duplicate_quote_fixture() {
+        use crate::nuts::nut29::BatchMintRequest;
+
+        let batch: BatchMintRequest<String> = serde_json::from_str(
+            r#"{
+                "quotes": ["quote-mint-0002", "quote-mint-0002"],
+                "quote_amounts": [5, 3],
+                "outputs": [
+                    {
+                        "amount": 8,
+                        "id": "022546ab0a2dee9f79510f4e20a4e3d9e894a97361047c594902573a7e64f9d701",
+                        "B_": "b42a0bcc39598db1dca617aeea6bc367f2566636826dc961a54faae15b3b8d10afc1cb0206e70ab3b0e12c2b9478cd55"
+                    }
+                ],
+                "signatures": [
+                    "6313ffe3264db058cb7c16046a71c6ee8b7bcaee5bbf86085b432eb6e6450e3f8fd055d8a5926cd268230eb258773e709d2ea3606d075ac3ea2f49886909502a",
+                    "406b11f00bd0b82b8967b76220a631f42d1a4869f6f4f5e77c5b106a598a3f0a4b3b4ccd3f45fa6bb9724cff8833d215f328327be247cd6401fd6e5cb6813591"
+                ]
+            }"#,
+        )
+        .unwrap();
+        let state = MintQuoteState {
+            lock_key: PublicKey::from_hex(LOCK0).unwrap(),
+            issued: Amount::ZERO,
+        };
+        assert!(matches!(
+            batch.transaction(&[state.clone(), state]),
+            Err(Error::DuplicateQuote)
+        ));
+    }
+
+    #[test]
+    fn ys_must_match_proofs() {
+        assert!(matches!(
+            proof_inputs_with_ys(&[swap_proof()], &[]),
+            Err(Error::YCountMismatch { proofs: 1, ys: 0 })
+        ));
+        let y = crate::dhke::hash_secret_to_curve(
+            &swap_proof().secret,
+            crate::nuts::nut02::KeySetVersion::Version02,
+        )
+        .unwrap()
+        .into();
+        assert_eq!(
+            proof_inputs_with_ys(&[swap_proof()], &[y]).unwrap(),
+            proof_inputs(&[swap_proof()]).unwrap()
         );
     }
 }
