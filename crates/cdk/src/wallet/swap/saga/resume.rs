@@ -14,7 +14,7 @@
 use cdk_common::wallet::{OperationData, SwapOperationData, SwapSagaState, WalletSaga};
 use tracing::instrument;
 
-use crate::dhke::hash_to_curve_for_version;
+use crate::dhke::hash_secret_to_curve;
 use crate::nuts::{PreMintSecrets, State};
 use crate::wallet::recovery::{RecoveryAction, RecoveryHelpers};
 use crate::wallet::saga::{CompensatingAction, RevertProofReservation};
@@ -184,8 +184,7 @@ impl Wallet {
                         .secrets
                         .iter()
                         .map(|p| {
-                            hash_to_curve_for_version(&p.secret.to_bytes(), keyset_id.get_version())
-                                .map(Into::into)
+                            hash_secret_to_curve(&p.secret, keyset_id.get_version()).map(Into::into)
                         })
                         .collect();
 

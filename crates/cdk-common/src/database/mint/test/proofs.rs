@@ -186,10 +186,11 @@ where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
     let keyset_id = setup_bls_keyset(&db).await;
+    let (secret, _) = Secret::generate_v3();
     let proof = Proof {
         amount: Amount::from(100),
         keyset_id,
-        secret: Secret::from_str("bls proof secret").unwrap(),
+        secret,
         c: BlsG1PublicKey::hash_to_curve(b"bls proof signature").into(),
         witness: None,
         dleq: None,

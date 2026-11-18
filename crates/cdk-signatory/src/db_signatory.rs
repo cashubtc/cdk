@@ -705,9 +705,14 @@ mod test {
             .await
             .unwrap();
 
-        let secret = Secret::from_str("bls verify proofs").unwrap();
-        let (blinded, r) =
-            blind_message_for_version(secret.as_bytes(), None, KeySetVersion::Version02).unwrap();
+        // v3 secrets are compressed points; the 33 decoded bytes are blinded.
+        let (secret, _) = Secret::generate_v3();
+        let (blinded, r) = blind_message_for_version(
+            &secret.hash_input(KeySetVersion::Version02).unwrap(),
+            None,
+            KeySetVersion::Version02,
+        )
+        .unwrap();
         let signed = signatory
             .blind_sign(
                 vec![BlindedMessage::new(Amount::from(1), keyset.id, blinded)],
@@ -727,8 +732,19 @@ mod test {
 
         // A signature for a different secret is rejected.
         let mut wrong_secret = proof.clone();
-        wrong_secret.secret = Secret::from_str("other secret").unwrap();
+        wrong_secret.secret = Secret::generate_v3().0;
         assert!(signatory.verify_proofs(vec![wrong_secret]).await.is_err());
+
+        // A secret that is not a lowercase compressed point is rejected on a
+        // V3 keyset, including the uppercase spelling of the signed point.
+        for secret in [
+            Secret::from_str("bls verify proofs").unwrap(),
+            Secret::new(proof.secret.to_string().to_uppercase()),
+        ] {
+            let mut not_a_point = proof.clone();
+            not_a_point.secret = secret;
+            assert!(signatory.verify_proofs(vec![not_a_point]).await.is_err());
+        }
 
         // A signature under a different amount's key is rejected.
         let mut wrong_amount = proof.clone();

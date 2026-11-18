@@ -24,8 +24,8 @@ use crate::amount::FeeAndAmounts;
 #[cfg(feature = "wallet")]
 use crate::amount::SplitTarget;
 #[cfg(feature = "wallet")]
-use crate::dhke::blind_message_for_version;
-use crate::dhke::hash_to_curve_for_version;
+use crate::dhke::blind_secret;
+use crate::dhke::hash_secret_to_curve;
 #[cfg(feature = "wallet")]
 use crate::nuts::nut01::BlindingFactor;
 use crate::nuts::nut01::{DhkePoint, ProofId, PublicKey};
@@ -512,7 +512,7 @@ impl Proof {
     /// Where y is `hash_to_curve(secret)` for secp256k1 keysets and BLS G1
     /// hash-to-curve for v3 keysets.
     pub fn y(&self) -> Result<ProofId, Error> {
-        Ok(hash_to_curve_for_version(self.secret.as_bytes(), self.keyset_id.get_version())?.into())
+        Ok(hash_secret_to_curve(&self.secret, self.keyset_id.get_version())?.into())
     }
 }
 
@@ -1224,9 +1224,10 @@ impl PreMintSecrets {
         let mut output = Vec::with_capacity(amount_split.len());
 
         for amount in amount_split {
-            let secret = Secret::generate();
-            let (blinded, r) =
-                blind_message_for_version(&secret.to_bytes(), None, keyset_id.get_version())?;
+            // The secret key of a random v3 secret is not kept: these outputs
+            // are for callers that track spend keys themselves.
+            let (secret, _secret_key) = Secret::generate_for_version(keyset_id.get_version());
+            let (blinded, r) = blind_secret(&secret, None, keyset_id.get_version())?;
 
             let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
 
@@ -1254,8 +1255,7 @@ impl PreMintSecrets {
         let mut output = Vec::with_capacity(secrets.len());
 
         for (secret, amount) in secrets.into_iter().zip(amounts) {
-            let (blinded, r) =
-                blind_message_for_version(&secret.to_bytes(), None, keyset_id.get_version())?;
+            let (blinded, r) = blind_secret(&secret, None, keyset_id.get_version())?;
 
             let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
 
@@ -1281,9 +1281,10 @@ impl PreMintSecrets {
         let mut output = Vec::with_capacity(count as usize);
 
         for _i in 0..count {
-            let secret = Secret::generate();
-            let (blinded, r) =
-                blind_message_for_version(&secret.to_bytes(), None, keyset_id.get_version())?;
+            // The secret key of a random v3 secret is not kept: these outputs
+            // are for callers that track spend keys themselves.
+            let (secret, _secret_key) = Secret::generate_for_version(keyset_id.get_version());
+            let (blinded, r) = blind_secret(&secret, None, keyset_id.get_version())?;
 
             let blinded_message = BlindedMessage::new(Amount::ZERO, keyset_id, blinded);
 
@@ -1379,8 +1380,7 @@ impl PreMintSecrets {
 
             let secret: crate::nuts::nut10::Secret = p2pk_conditions.try_into()?;
             let secret: Secret = secret.try_into()?;
-            let (blinded, rs) =
-                blind_message_for_version(&secret.to_bytes(), None, keyset_id.get_version())?;
+            let (blinded, rs) = blind_secret(&secret, None, keyset_id.get_version())?;
 
             let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
 
@@ -1415,8 +1415,7 @@ impl PreMintSecrets {
             let secret: nut10::Secret = conditions.clone().try_into()?;
 
             let secret: Secret = secret.try_into()?;
-            let (blinded, r) =
-                blind_message_for_version(&secret.to_bytes(), None, keyset_id.get_version())?;
+            let (blinded, r) = blind_secret(&secret, None, keyset_id.get_version())?;
 
             let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
 
@@ -1550,6 +1549,7 @@ mod tests {
     #[test]
     fn proof_y_matches_keyset_version() {
         let secret = Secret::from_str("test proof secret").expect("secret");
+        let (point_secret, _) = Secret::generate_v3();
         let secp_c = crate::nuts::SecretKey::generate().public_key();
         let bls_c: DhkePoint =
             crate::nuts::nut01::BlsG1PublicKey::hash_to_curve(b"signature").into();
@@ -1573,7 +1573,7 @@ mod tests {
         let v2_y = Proof::new(
             Amount::from(1),
             keyset_id(KeySetVersion::Version02),
-            secret,
+            point_secret.clone(),
             bls_c,
         )
         .y()
@@ -1582,6 +1582,25 @@ mod tests {
         assert_eq!(v0_y.as_bytes().len(), 33);
         assert_eq!(v1_y.as_bytes().len(), 33);
         assert_eq!(v2_y.as_bytes().len(), 48);
+
+        // v3 hashes the 33 decoded point bytes, not the hex string.
+        let point = point_secret.v3_point().expect("point");
+        assert_eq!(
+            v2_y.as_bytes(),
+            crate::nuts::nut01::BlsG1PublicKey::hash_to_curve(&point.to_bytes())
+                .to_bytes()
+                .as_slice()
+        );
+
+        // A v3 proof whose secret is not a point has no Y.
+        assert!(Proof::new(
+            Amount::from(1),
+            keyset_id(KeySetVersion::Version02),
+            secret,
+            bls_c,
+        )
+        .y()
+        .is_err());
     }
 
     #[test]

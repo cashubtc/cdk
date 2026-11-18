@@ -30,6 +30,9 @@ pub enum Error {
     /// Key error
     #[error(transparent)]
     Key(#[from] crate::nuts::nut01::Error),
+    /// Secret error
+    #[error(transparent)]
+    Secret(#[from] crate::secret::Error),
     // TODO: Remove use anyhow
     /// Custom Error
     #[error("`{0}`")]
@@ -75,6 +78,24 @@ pub fn hash_to_curve_for_version(
         KeySetVersion::Version00 | KeySetVersion::Version01 => Ok(hash_to_curve(message)?.into()),
         KeySetVersion::Version02 => Ok(bls::BlsG1PublicKey::hash_to_curve(message).into()),
     }
+}
+
+/// Hash a proof secret to the curve of a keyset version
+///
+/// v3 secrets hash their 33 decoded point bytes; see [`Secret::hash_input`].
+pub fn hash_secret_to_curve(secret: &Secret, version: KeySetVersion) -> Result<DhkePoint, Error> {
+    hash_to_curve_for_version(&secret.hash_input(version)?, version)
+}
+
+/// Blind a proof secret for a keyset version
+///
+/// v3 secrets blind their 33 decoded point bytes; see [`Secret::hash_input`].
+pub fn blind_secret(
+    secret: &Secret,
+    blinding_factor: Option<BlindingFactor>,
+    version: KeySetVersion,
+) -> Result<(DhkePoint, BlindingFactor), Error> {
+    blind_message_for_version(&secret.hash_input(version)?, blinding_factor, version)
 }
 
 /// Convert iterator of [`PublicKey`] to byte array
@@ -256,9 +277,11 @@ pub fn verify_proof_with_mint_key(
         KeySetVersion::Version00 | KeySetVersion::Version01 => {
             verify_message(mint_secret_key, proof.c, proof.secret.as_bytes())
         }
-        KeySetVersion::Version02 => {
-            verify_bls_message_keyed(mint_secret_key, proof.c, proof.secret.as_bytes())
-        }
+        KeySetVersion::Version02 => verify_bls_message_keyed(
+            mint_secret_key,
+            proof.c,
+            &proof.secret.hash_input(KeySetVersion::Version02)?,
+        ),
     }
 }
 
