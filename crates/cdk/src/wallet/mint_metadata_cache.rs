@@ -1146,6 +1146,24 @@ impl MintMetadataCache {
     pub fn mint_url(&self) -> &MintUrl {
         &self.mint_url
     }
+
+    /// Snapshot a database read produces when it finds keysets and no mint
+    /// info, which is what a redb wallet whose mint row was removed loads.
+    #[cfg(test)]
+    pub(crate) fn seed_keysets_without_mint_info(&self, keysets: Vec<KeySetInfo>) {
+        self.metadata.rcu(|current| {
+            let mut next = (**current).clone();
+
+            next.mint_info = None;
+            for keyset_info in &keysets {
+                next.keysets
+                    .insert(keyset_info.id, Arc::new(keyset_info.clone()));
+            }
+            next.status.is_populated = true;
+
+            Arc::new(next)
+        });
+    }
 }
 
 #[cfg(test)]
