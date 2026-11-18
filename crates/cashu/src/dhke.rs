@@ -214,6 +214,7 @@ pub fn construct_proofs(
             witness: None,
             dleq,
             p2pk_e: None,
+            spend_info: None,
         };
 
         proofs.push(proof);

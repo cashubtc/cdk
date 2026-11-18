@@ -37,9 +37,11 @@ use crate::nuts::{Id, ProofDleq};
 use crate::secret::Secret;
 use crate::Amount;
 
+pub mod spend_info;
 pub mod tlv;
 pub mod token;
 pub mod transaction;
+pub use spend_info::SpendInfo;
 pub use token::{Token, TokenV3, TokenV4};
 pub use transaction::{Transaction, TransactionInput, TransactionOutput};
 
@@ -65,6 +67,10 @@ pub trait ProofsMethods {
 
     /// Create a copy of proofs without P2BK nonce
     fn without_p2pk_e(&self) -> Proofs;
+
+    /// Create a copy of proofs without spend info, which is for tokens only
+    /// and never goes to the mint
+    fn without_spend_info(&self) -> Proofs;
 }
 
 impl ProofsMethods for Proofs {
@@ -103,6 +109,16 @@ impl ProofsMethods for Proofs {
             })
             .collect()
     }
+
+    fn without_spend_info(&self) -> Proofs {
+        self.iter()
+            .map(|p| {
+                let mut p = p.clone();
+                p.spend_info = None;
+                p
+            })
+            .collect()
+    }
 }
 
 impl ProofsMethods for HashSet<Proof> {
@@ -137,6 +153,16 @@ impl ProofsMethods for HashSet<Proof> {
             .map(|p| {
                 let mut p = p.clone();
                 p.p2pk_e = None;
+                p
+            })
+            .collect()
+    }
+
+    fn without_spend_info(&self) -> Proofs {
+        self.iter()
+            .map(|p| {
+                let mut p = p.clone();
+                p.spend_info = None;
                 p
             })
             .collect()
@@ -511,6 +537,9 @@ pub struct Proof {
     /// Used for Pay-to-Blinded-Key privacy feature
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub p2pk_e: Option<PublicKey>,
+    /// Spend info of a v3 proof, carried in tokens (NUT-00)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spend_info: Option<SpendInfo>,
 }
 
 impl<'de> Deserialize<'de> for Proof {
@@ -532,6 +561,8 @@ impl<'de> Deserialize<'de> for Proof {
             dleq: Option<ProofDleq>,
             #[serde(default)]
             p2pk_e: Option<PublicKey>,
+            #[serde(default)]
+            spend_info: Option<SpendInfo>,
         }
 
         let encoded = EncodedProof::deserialize(deserializer)?;
@@ -552,6 +583,7 @@ impl<'de> Deserialize<'de> for Proof {
             witness,
             dleq: encoded.dleq,
             p2pk_e: encoded.p2pk_e,
+            spend_info: encoded.spend_info,
         })
     }
 }
@@ -570,6 +602,7 @@ impl Proof {
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         }
     }
 
@@ -643,6 +676,14 @@ pub struct ProofV4 {
         deserialize_with = "deserialize_v4_pubkey_option"
     )]
     pub p2pk_e: Option<PublicKey>,
+    /// Spend info of a v3 proof (NUT-00)
+    #[serde(
+        rename = "si",
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "spend_info::serde_v4"
+    )]
+    pub spend_info: Option<SpendInfo>,
 }
 
 impl ProofV4 {
@@ -656,6 +697,7 @@ impl ProofV4 {
             witness: self.witness.clone(),
             dleq: self.dleq.clone(),
             p2pk_e: self.p2pk_e,
+            spend_info: self.spend_info.clone(),
         }
     }
 }
@@ -675,6 +717,7 @@ impl From<Proof> for ProofV4 {
             witness,
             dleq,
             p2pk_e,
+            spend_info,
             ..
         } = proof;
         ProofV4 {
@@ -684,6 +727,7 @@ impl From<Proof> for ProofV4 {
             witness,
             dleq,
             p2pk_e,
+            spend_info,
         }
     }
 }
@@ -697,6 +741,7 @@ impl From<ProofV3> for ProofV4 {
             witness: proof.witness,
             dleq: proof.dleq,
             p2pk_e: None,
+            spend_info: proof.spend_info,
         }
     }
 }
@@ -720,6 +765,9 @@ pub struct ProofV3 {
     /// DLEQ Proof
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dleq: Option<ProofDleq>,
+    /// Spend info of a v3 proof (NUT-00)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spend_info: Option<SpendInfo>,
 }
 
 impl<'de> Deserialize<'de> for ProofV3 {
@@ -736,21 +784,35 @@ impl<'de> Deserialize<'de> for ProofV3 {
             #[serde(rename = "C")]
             c: String,
             #[serde(default)]
-            witness: Option<Witness>,
+            witness: Option<serde_json::Value>,
             #[serde(default)]
             dleq: Option<ProofDleq>,
+            #[serde(default)]
+            spend_info: Option<SpendInfo>,
         }
 
         let encoded = EncodedProofV3::deserialize(deserializer)?;
-        let c = DhkePoint::from_hex_for_version(encoded.c, encoded.keyset_id.get_version())
+        let version = encoded.keyset_id.get_version();
+        let c = DhkePoint::from_hex_for_version(encoded.c, version)
             .map_err(serde::de::Error::custom)?;
+        // ProofV3 only appears in tokens, where v3 proofs carry no witness.
+        let witness = match version {
+            KeySetVersion::Version02 => None,
+            _ => encoded
+                .witness
+                .filter(|value| !value.is_null())
+                .map(|value| Witness::from_value_for_version(value, version))
+                .transpose()
+                .map_err(serde::de::Error::custom)?,
+        };
         Ok(Self {
             amount: encoded.amount,
             keyset_id: encoded.keyset_id,
             secret: encoded.secret,
             c,
-            witness: encoded.witness,
+            witness,
             dleq: encoded.dleq,
+            spend_info: encoded.spend_info,
         })
     }
 }
@@ -766,6 +828,7 @@ impl ProofV3 {
             witness: self.witness.clone(),
             dleq: self.dleq.clone(),
             p2pk_e: None,
+            spend_info: self.spend_info.clone(),
         }
     }
 }
@@ -779,15 +842,21 @@ impl From<Proof> for ProofV3 {
             c,
             witness,
             dleq,
+            spend_info,
             ..
         } = proof;
         ProofV3 {
             amount,
             secret,
             c,
-            witness,
+            // v3 proofs in tokens never carry a witness (NUT-00).
+            witness: match keyset_id.get_version() {
+                KeySetVersion::Version02 => None,
+                _ => witness,
+            },
             dleq,
             keyset_id: keyset_id.into(),
+            spend_info,
         }
     }
 }

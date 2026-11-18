@@ -2898,6 +2898,7 @@ impl TryInto<ProofInfo> for ProofTable {
                     .map(|s| PublicKey::from_hex(&s))
                     .transpose()
                     .map_err(|_| DatabaseError::Internal("Invalid p2pk_e".into()))?,
+                spend_info: None,
             },
             used_by_operation: self
                 .used_by_operation

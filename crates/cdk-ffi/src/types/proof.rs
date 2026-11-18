@@ -115,6 +115,7 @@ impl TryFrom<Proof> for cdk::nuts::Proof {
                 .map(|p| cdk::nuts::PublicKey::from_str(&p))
                 .transpose()
                 .map_err(|e| FfiError::internal(format!("Invalid p2pk_e: {}", e)))?,
+            spend_info: None,
         })
     }
 }

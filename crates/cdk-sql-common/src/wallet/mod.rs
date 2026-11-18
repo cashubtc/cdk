@@ -2249,6 +2249,7 @@ fn sql_row_to_proof_info(row: Vec<Column>) -> Result<ProofInfo, Error> {
         p2pk_e: column_as_nullable_binary!(p2pk_e)
             .map(|bytes| PublicKey::from_slice(&bytes))
             .transpose()?,
+        spend_info: None,
     };
 
     let used_by_operation =
