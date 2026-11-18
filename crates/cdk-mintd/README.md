@@ -794,8 +794,13 @@ claim separate batches with `FOR UPDATE SKIP LOCKED`; SQLite serializes writers.
 Auth proofs use a separate schema without shared accounting counters and require
 no accounting migration or worker.
 
-Stop all mint workers before upgrading. Existing totals are preserved. Before
-downgrading, stop request processing and drain accounting until
-`flush_keyset_accounting` returns zero; older versions cannot read journal events.
+Stop all mint workers before upgrading. Existing totals are preserved.
+
+Before downgrading, stop request processing and all accounting workers on every
+instance. Wait for in-flight requests, accounting transactions, and connection
+cleanup to finish. Drain accounting with `flush_keyset_accounting`, then verify
+`SELECT COUNT(*) FROM keyset_accounting` returns zero in the mint database.
+A flush returning zero can have skipped locked events and does not establish
+that the journal is empty. Older versions cannot read remaining journal events.
 Restore a configuration document compatible with the target version as part of
 the downgrade.

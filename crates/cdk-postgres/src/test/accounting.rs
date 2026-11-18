@@ -97,6 +97,8 @@ async fn workers_skip_claimed_events_and_preserve_live_totals() {
         2
     );
     assert_eq!(count(&client, "keyset_accounting").await, 1);
+    assert_eq!(db.flush_keyset_accounting(10).await.unwrap(), 0);
+    assert_eq!(count(&client, "keyset_accounting").await, 1);
     let id = signature().1.keyset_id;
     assert_eq!(db.get_total_issued().await.unwrap()[&id], Amount::from(384));
     client.batch_execute("ROLLBACK").await.unwrap();
