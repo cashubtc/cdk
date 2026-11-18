@@ -347,6 +347,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "fuzz_nutroot_witness"
+path = "fuzz_targets/fuzz_nutroot_witness.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "fuzz_tlv"
 path = "fuzz_targets/fuzz_tlv.rs"
 test = false

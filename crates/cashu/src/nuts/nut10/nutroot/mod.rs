@@ -16,6 +16,7 @@
 
 use thiserror::Error;
 
+pub mod inputs;
 pub mod internal_key;
 pub mod leaf;
 pub mod tree;
@@ -23,12 +24,15 @@ pub mod tweak;
 pub mod verify;
 pub mod witness;
 
+pub use self::inputs::{
+    sign_input_key_path, sign_proofs_key_path, verify_proof_input, verify_quote_input,
+};
 pub use self::internal_key::{nums_internal_key, NUMS_H};
 pub use self::leaf::{Leaf, LeafBytes, LeafType, ParsedLeaf};
 pub use self::tree::{merkle_path, merkle_root, MAX_LEAVES, MAX_PATH_LEN};
 pub use self::tweak::{tweak, tweaked_key, tweaked_secret_key, Tweak};
 pub use self::verify::{sign_digest, verify_witness};
-pub use self::witness::{Control, NutrootWitness};
+pub use self::witness::{Control, NutrootWitness, RawNutrootWitness};
 
 /// Nutroot error
 #[derive(Debug, Error)]
@@ -88,6 +92,21 @@ pub enum Error {
     /// The key-path signature is invalid
     #[error("Invalid nutroot key-path signature")]
     InvalidSignature,
+    /// The input is not a v3 proof
+    #[error("Not a v3 input")]
+    NotV3,
+    /// A v3 input carries no nutroot witness
+    #[error("Missing nutroot witness")]
+    MissingWitness,
+    /// The transaction input does not match the proof or quote
+    #[error("Transaction input {0} does not match")]
+    InputMismatch(usize),
+    /// Secret error
+    #[error(transparent)]
+    Secret(#[from] crate::secret::Error),
+    /// Transaction error
+    #[error(transparent)]
+    Transaction(#[from] crate::nuts::nut00::transaction::Error),
     /// JSON error
     #[error(transparent)]
     Json(#[from] serde_json::Error),

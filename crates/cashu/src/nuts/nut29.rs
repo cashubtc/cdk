@@ -14,6 +14,9 @@ use super::nut20::{legacy_mint_quote_msg_to_sign, mint_quote_msg_to_sign};
 #[cfg(test)]
 use super::DhkePoint;
 use super::{PublicKey, SecretKey};
+use crate::nuts::nut00::transaction::{
+    blinded_outputs, Error as TransactionError, MintQuoteState, Transaction, TransactionInput,
+};
 #[cfg(feature = "mint")]
 use crate::quote_id::{QuoteId, QuoteIdError};
 use crate::{Amount, BlindedMessage};
@@ -116,6 +119,40 @@ impl<Q> BatchMintRequest<Q>
 where
     Q: ToString,
 {
+    /// The batch's transaction: one quote input per quote, in request
+    /// order, to the shared outputs
+    ///
+    /// Each quote issues its `quote_amounts` entry, which a v3 batch
+    /// requires. `states` holds each quote's state, read from the mint, in
+    /// request order.
+    pub fn transaction(&self, states: &[MintQuoteState]) -> Result<Transaction, TransactionError> {
+        let amounts = self
+            .quote_amounts
+            .as_ref()
+            .ok_or(TransactionError::MissingQuoteAmounts)?;
+        for len in [amounts.len(), states.len()] {
+            if len != self.quotes.len() {
+                return Err(TransactionError::QuoteCountMismatch {
+                    quotes: self.quotes.len(),
+                    states: len,
+                });
+            }
+        }
+        let inputs = self
+            .quotes
+            .iter()
+            .zip(amounts)
+            .zip(states)
+            .map(|((quote, amount), state)| TransactionInput::MintQuote {
+                amount: *amount,
+                quote_id: quote.to_string(),
+                lock_key: state.lock_key,
+                issued: state.issued,
+            })
+            .collect();
+        Transaction::new(inputs, blinded_outputs(&self.outputs))
+    }
+
     /// Constructs the message to be signed according to NUT-20 for a quote.
     ///
     /// The message is domain-separated and length-prefixed, committing to the

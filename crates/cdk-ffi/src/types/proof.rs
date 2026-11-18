@@ -108,7 +108,7 @@ impl TryFrom<Proof> for cdk::nuts::Proof {
             c: cdk::nuts::DhkePoint::from_hex_for_version(&proof.c, keyset_id.get_version())
                 .map_err(|e| FfiError::internal(format!("Invalid DHKE point: {}", e)))?,
             keyset_id,
-            witness: proof.witness.map(|w| w.into()),
+            witness: proof.witness.map(TryInto::try_into).transpose()?,
             dleq: proof.dleq.map(TryInto::try_into).transpose()?,
             p2pk_e: proof
                 .p2pk_e
@@ -422,6 +422,11 @@ pub enum Witness {
         /// Optional signatures
         signatures: Option<Vec<String>>,
     },
+    /// Nutroot witness of a v3 proof
+    Nutroot {
+        /// The serialized witness JSON
+        witness: String,
+    },
 }
 
 impl fmt::Debug for Witness {
@@ -439,6 +444,10 @@ impl fmt::Debug for Witness {
                 .field("preimage", &"[REDACTED]")
                 .field("signatures", signatures)
                 .finish(),
+            Self::Nutroot { .. } => f
+                .debug_struct("Nutroot")
+                .field("witness", &"[REDACTED]")
+                .finish(),
         }
     }
 }
@@ -453,13 +462,18 @@ impl From<cdk::nuts::Witness> for Witness {
                 preimage: htlc.preimage,
                 signatures: htlc.signatures,
             },
+            cdk::nuts::Witness::Nutroot(witness) => Self::Nutroot {
+                witness: witness.to_string(),
+            },
         }
     }
 }
 
-impl From<Witness> for cdk::nuts::Witness {
-    fn from(witness: Witness) -> Self {
-        match witness {
+impl TryFrom<Witness> for cdk::nuts::Witness {
+    type Error = FfiError;
+
+    fn try_from(witness: Witness) -> Result<Self, Self::Error> {
+        Ok(match witness {
             Witness::P2PK { signatures } => {
                 Self::P2PKWitness(cdk::nuts::nut11::P2PKWitness { signatures })
             }
@@ -470,7 +484,11 @@ impl From<Witness> for cdk::nuts::Witness {
                 preimage,
                 signatures,
             }),
-        }
+            Witness::Nutroot { witness } => Self::Nutroot(
+                cdk::nuts::nut10::nutroot::RawNutrootWitness::new(witness)
+                    .map_err(|e| FfiError::internal(format!("Invalid nutroot witness: {e}")))?,
+            ),
+        })
     }
 }
 
