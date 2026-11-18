@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::nut21::ProtectedEndpoint;
-use crate::dhke::hash_to_curve_for_version;
+use crate::dhke::hash_secret_to_curve;
 use crate::nuts::nut01::{DhkePoint, ProofId};
 use crate::secret::Secret;
 use crate::util::hex;
@@ -193,7 +193,7 @@ impl<'de> Deserialize<'de> for AuthProof {
 impl AuthProof {
     /// Y of AuthProof
     pub fn y(&self) -> Result<ProofId, Error> {
-        Ok(hash_to_curve_for_version(self.secret.as_bytes(), self.keyset_id.get_version())?.into())
+        Ok(hash_secret_to_curve(&self.secret, self.keyset_id.get_version())?.into())
     }
 }
 

@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use cdk_common::dhke::{blind_message_for_version, construct_proofs};
+use cdk_common::dhke::{blind_secret, construct_proofs};
 use cdk_common::nuts::nut02::KeySetVersion;
 use cdk_common::nuts::{BlindedMessage, CurrencyUnit, Proof, Proofs, ProofsMethods, SwapRequest};
 use cdk_common::secret::Secret;
@@ -33,8 +33,7 @@ async fn sign_secret(mint: &Arc<Mint>, inputs: Proofs, secret: &Secret) -> Proof
 
     let amount = inputs.total_amount().expect("input total");
     let (blinded_secret, r) =
-        blind_message_for_version(secret.as_bytes(), None, keyset_id.get_version())
-            .expect("blind secret");
+        blind_secret(secret, None, keyset_id.get_version()).expect("blind secret");
     let output = BlindedMessage::new(amount, keyset_id, blinded_secret);
 
     let response = mint
@@ -50,15 +49,14 @@ async fn sign_secret(mint: &Arc<Mint>, inputs: Proofs, secret: &Secret) -> Proof
 
 /// Swap `inputs` into a fresh random output.
 async fn spend(mint: &Arc<Mint>, inputs: Proofs) -> Result<(), Error> {
-    let fresh = Secret::generate();
     let keyset_id = *mint
         .get_active_keysets()
         .get(&CurrencyUnit::Sat)
         .expect("active sat keyset");
+    let (fresh, _) = Secret::generate_for_version(keyset_id.get_version());
     let amount = inputs.total_amount().expect("input total");
     let (blinded_secret, _) =
-        blind_message_for_version(fresh.as_bytes(), None, keyset_id.get_version())
-            .expect("blind secret");
+        blind_secret(&fresh, None, keyset_id.get_version()).expect("blind secret");
     let output = BlindedMessage::new(amount, keyset_id, blinded_secret);
 
     mint.process_swap_request(SwapRequest::new(inputs, vec![output]))
@@ -69,7 +67,8 @@ async fn spend(mint: &Arc<Mint>, inputs: Proofs) -> Result<(), Error> {
 #[tokio::test]
 async fn one_secret_is_spendable_once_per_curve() {
     let mint = create_test_mint().await.expect("test mint");
-    let secret = Secret::generate();
+    // A v3 secret must be a point; its hex string is also a valid pre-v3 secret.
+    let (secret, _) = Secret::generate_v3();
 
     // Sign the secret under the default secp256k1 keyset.
     let legacy_inputs = mint_test_proofs(&mint, Amount::from(1))
