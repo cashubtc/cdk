@@ -380,7 +380,8 @@ where
         .collect::<Result<Vec<BlindSignature>, _>>()?)
     }
 
-    /// Get [`BlindSignature`]s and blinded secret as [`PublicKey`] for quote
+    /// Get stored [`BlindSignature`]s and their corresponding blinded secrets (B′)
+    /// for a quote, ordered by output index.
     async fn get_blind_signatures_and_secret_for_quote(
         &self,
         quote_id: &QuoteId,

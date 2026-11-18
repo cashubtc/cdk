@@ -618,7 +618,8 @@ pub trait SignaturesDatabase {
         quote_id: &QuoteId,
     ) -> Result<Vec<BlindSignature>, Self::Err>;
 
-    /// Get [`BlindSignature`]s and [`BlindedMessage`] for quote
+    /// Get stored [`BlindSignature`]s and their corresponding blinded secrets (B′)
+    /// for a quote, ordered by output index.
     async fn get_blind_signatures_and_secret_for_quote(
         &self,
         quote_id: &QuoteId,
