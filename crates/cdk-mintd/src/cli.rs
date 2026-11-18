@@ -47,6 +47,32 @@ pub struct CLIArgs {
     pub command: Option<Commands>,
 }
 
+impl CLIArgs {
+    /// Whether the command opens the mint database.
+    ///
+    /// `config validate` and `config migrate` read and write only configuration documents.
+    pub fn opens_database(&self) -> bool {
+        match &self.command {
+            Some(Commands::Config(config)) => !matches!(
+                &config.command,
+                ConfigCommands::Validate(_) | ConfigCommands::Migrate(_)
+            ),
+            None => true,
+        }
+    }
+
+    /// The database password, rejected for a command that opens no database.
+    #[cfg(feature = "sqlcipher")]
+    pub fn database_password(&self) -> anyhow::Result<Option<String>> {
+        match (self.opens_database(), &self.password) {
+            (false, Some(_)) => {
+                anyhow::bail!("--password applies only to commands that open the database")
+            }
+            (_, password) => Ok(password.clone()),
+        }
+    }
+}
+
 /// Commands exposed by the `cdk-mintd` binary.
 #[derive(Debug, Subcommand)]
 pub enum Commands {
@@ -312,6 +338,53 @@ mod tests {
                 }),
             }))
         ));
+    }
+
+    #[cfg(feature = "sqlcipher")]
+    #[test]
+    fn commands_without_a_database_reject_password() {
+        for command in [
+            &["config", "validate", "--file", "/tmp/mint.toml"][..],
+            &[
+                "config",
+                "migrate",
+                "--file",
+                "/tmp/legacy.toml",
+                "--output",
+                "/tmp/migrated.toml",
+            ][..],
+        ] {
+            let args = CLIArgs::try_parse_from(
+                ["cdk-mintd", "--password", "pass-value"]
+                    .into_iter()
+                    .chain(command.iter().copied()),
+            )
+            .expect("arguments should parse");
+
+            let error = args
+                .database_password()
+                .expect_err("the command opens no database");
+            assert!(!error.to_string().contains("pass-value"), "{error}");
+        }
+    }
+
+    #[cfg(feature = "sqlcipher")]
+    #[test]
+    fn commands_with_a_database_accept_password() {
+        for command in [&[][..], &["config", "show"][..]] {
+            let args = CLIArgs::try_parse_from(
+                ["cdk-mintd", "--password", "pass-value"]
+                    .into_iter()
+                    .chain(command.iter().copied()),
+            )
+            .expect("arguments should parse");
+
+            assert_eq!(
+                args.database_password()
+                    .expect("the command opens the database"),
+                Some("pass-value".to_string())
+            );
+        }
     }
 
     #[test]

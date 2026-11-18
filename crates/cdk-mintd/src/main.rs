@@ -26,24 +26,15 @@ fn main() -> Result<()> {
                 "--config and --seed-file are no longer startup inputs; migrate a legacy document with `cdk-mintd config migrate --file <old> --output <new>`, import one with `cdk-mintd config init --existing-mint --file <path>`, initialize a new mint with `cdk-mintd config init --new-mint --file <path>`, or replace it with `cdk-mintd config apply --file <path>`"
             );
         }
-        let work_dir = if matches!(
-            &args.command,
-            Some(Commands::Config(config))
-                if matches!(
-                    &config.command,
-                    ConfigCommands::Validate(_) | ConfigCommands::Migrate(_)
-                )
-        ) {
-            None
-        } else {
-            Some(get_work_directory(&args).await?)
-        };
-
         #[cfg(feature = "sqlcipher")]
-        let password = args.password.clone();
-
+        let password = args.database_password()?;
         #[cfg(not(feature = "sqlcipher"))]
         let password = None;
+
+        let work_dir = match args.opens_database() {
+            true => Some(get_work_directory(&args).await?),
+            false => None,
+        };
         let legacy_seed_file = args.seed_file.clone();
 
         match args.command {

@@ -3,8 +3,8 @@
 //! This logic is in this file to be excluded for wasm
 use std::path::PathBuf;
 
-use anyhow::{bail, Result};
-use clap::Parser;
+use anyhow::Result;
+use clap::{Parser, ValueEnum};
 #[cfg(feature = "sqlite")]
 use {
     anyhow::anyhow,
@@ -65,6 +65,13 @@ const DEFAULT_WORK_DIR: &str = ".cdk-signatory";
 #[cfg(feature = "sqlite")]
 const ENV_MNEMONIC: &str = "CDK_MINTD_MNEMONIC";
 
+/// Database engine for the signatory key store
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum Engine {
+    /// SQLite
+    Sqlite,
+}
+
 /// Simple CLI application to interact with cashu
 #[derive(Parser)]
 #[command(name = "cashu-signatory")]
@@ -75,12 +82,13 @@ struct Cli {
     #[command(flatten)]
     common: CommonArgs,
 
-    /// Database engine to use (sqlite/redb)
-    #[arg(short, long, default_value = "sqlite")]
-    engine: String,
+    /// Database engine to use
+    #[arg(short, long, value_enum, default_value_t = Engine::Sqlite)]
+    engine: Engine,
     /// Database password for sqlcipher
+    #[cfg(feature = "sqlcipher")]
     #[arg(long)]
-    password: Option<String>,
+    password: String,
     /// Path to working dir
     #[arg(short, long)]
     work_dir: Option<PathBuf>,
@@ -105,7 +113,7 @@ struct Cli {
 /// Main function for the signatory standalone binary
 #[cfg(not(feature = "sqlite"))]
 pub async fn cli_main() -> Result<()> {
-    bail!("No database feature enabled. Enable the 'sqlite' feature to use this binary.");
+    anyhow::bail!("No database feature enabled. Enable the 'sqlite' feature to use this binary.");
 }
 
 /// Main function for the signatory standalone binary
@@ -127,22 +135,16 @@ pub async fn cli_main() -> Result<()> {
     fs::create_dir_all(&work_dir)?;
 
     let localstore: Arc<dyn MintKeysDatabase<Err = cdk_common::database::Error> + Send + Sync> =
-        match args.engine.as_str() {
-            "sqlite" => {
+        match args.engine {
+            Engine::Sqlite => {
                 let sql_path = work_dir.join("cdk-cli.sqlite");
                 #[cfg(not(feature = "sqlcipher"))]
                 let db = MintSqliteDatabase::new(&sql_path).await?;
                 #[cfg(feature = "sqlcipher")]
-                let db = {
-                    match args.password {
-                        Some(pass) => MintSqliteDatabase::new((sql_path.clone(), pass)).await?,
-                        None => bail!("Missing database password"),
-                    }
-                };
+                let db = MintSqliteDatabase::new((sql_path, args.password)).await?;
 
                 Arc::new(db)
             }
-            _ => bail!("Unknown DB engine"),
         };
 
     let supported_units = args
@@ -212,4 +214,51 @@ pub async fn cli_main() -> Result<()> {
     start_grpc_server(signatory, socket_addr, certs).await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_an_engine_that_is_not_compiled_in() {
+        let error = Cli::try_parse_from(["cashu-signatory", "--engine", "redb"])
+            .err()
+            .expect("redb is not a signatory engine");
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
+    }
+
+    #[cfg(not(feature = "sqlcipher"))]
+    #[test]
+    fn build_without_sqlcipher_rejects_password() {
+        let error = Cli::try_parse_from(["cashu-signatory", "--password", "pass-value"])
+            .err()
+            .expect("a build without sqlcipher cannot use the password");
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+
+    #[cfg(feature = "sqlcipher")]
+    #[test]
+    fn sqlcipher_build_requires_password() {
+        let error = Cli::try_parse_from(["cashu-signatory"])
+            .err()
+            .expect("a sqlcipher build cannot open the database without the password");
+
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+    }
+
+    #[cfg(feature = "sqlcipher")]
+    #[test]
+    fn sqlcipher_build_accepts_password() {
+        let cli = Cli::try_parse_from(["cashu-signatory", "--password", "pass-value"])
+            .expect("sqlite uses the password");
+
+        assert_eq!(cli.engine, Engine::Sqlite);
+        assert_eq!(cli.password, "pass-value");
+    }
 }
