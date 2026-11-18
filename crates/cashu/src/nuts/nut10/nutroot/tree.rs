@@ -202,4 +202,63 @@ mod tests {
             Err(Error::PathTooLong(4))
         ));
     }
+
+    /// Threshold 1-of-1 leaves for keys `1..=count`
+    fn key_leaves(count: u8) -> Vec<LeafBytes> {
+        use crate::nuts::nut01::SecretKey;
+        use crate::nuts::nut10::nutroot::Leaf;
+
+        (1..=count)
+            .map(|i| {
+                let key = SecretKey::from_slice(&[[0u8; 31].as_slice(), &[i]].concat()).unwrap();
+                Leaf::Threshold {
+                    n: 1,
+                    keys: vec![key.public_key()],
+                }
+                .to_leaf_bytes()
+                .unwrap()
+            })
+            .collect()
+    }
+
+    /// NUT-10 leaves open whether levels after the first are re-sorted.
+    /// The readings agree up to four leaves and differ for these trees.
+    /// CDK follows cashu-ts and sorts once; these roots pin that choice.
+    ///
+    /// Re-sorting every level would give, for five leaves,
+    /// `9c081ee9fa920ad4c477db4177fd47d0519ae99e4f861b074652b6ea9ecd4f04`
+    /// and, for eight,
+    /// `401d16737ee814655155dc5548e0027aeb3a3ba75691bd298fb69eafd6c59cd4`.
+    #[test]
+    fn fold_sorts_once() {
+        for (count, root) in [
+            (
+                5,
+                "3c5af4e8879ed6860a7f646627548268153516c8941b4f7d53235d6013b22268",
+            ),
+            (
+                6,
+                "ecad9e7142ffea3f6512e91aef3996761ebf617537e53888e13d406155d279db",
+            ),
+            (
+                7,
+                "2dadc8d26dd4e14dd5e0c205771c3c9f02481864865f5e56a91a68eb3b859680",
+            ),
+            (
+                8,
+                "a766a7f2a4ac22eecd073f7f11147bb87d8e0208b81181c041ae6378a0bb5d05",
+            ),
+        ] {
+            let leaves = key_leaves(count);
+            let computed = merkle_root(&leaves).unwrap();
+            assert_eq!(hex::encode(computed), root, "{count} leaves");
+            for index in 0..leaves.len() {
+                let path = merkle_path(&leaves, index).unwrap();
+                assert_eq!(
+                    root_from_path(&leaves[index].hash(), &path).unwrap(),
+                    computed
+                );
+            }
+        }
+    }
 }
