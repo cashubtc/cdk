@@ -18,7 +18,7 @@ use crate::nut00::KnownMethod;
 use crate::quote_id::QuoteId;
 #[cfg(feature = "mint")]
 use crate::quote_id::QuoteIdError;
-use crate::util::serde_helpers::deserialize_empty_string_as_none;
+use crate::util::serde_helpers::{deserialize_empty_map_as_null, deserialize_empty_string_as_none};
 use crate::{Amount, PublicKey};
 
 /// NUT04 Error
@@ -424,7 +424,12 @@ pub struct MintQuoteCustomRequest {
     /// custom payment methods to include additional data (e.g., ehash share).
     /// This enables proper validation layering: the mint verifies well-defined
     /// fields while passing extra through to the payment processor.
-    #[serde(flatten, default, skip_serializing_if = "serde_json::Value::is_null")]
+    #[serde(
+        flatten,
+        default,
+        skip_serializing_if = "serde_json::Value::is_null",
+        deserialize_with = "deserialize_empty_map_as_null"
+    )]
     pub extra: serde_json::Value,
 }
 
@@ -486,7 +491,12 @@ pub struct MintQuoteCustomResponse<Q> {
     ///
     /// These fields are flattened into the JSON representation, allowing
     /// custom payment methods to include additional data without nesting.
-    #[serde(flatten, default, skip_serializing_if = "serde_json::Value::is_null")]
+    #[serde(
+        flatten,
+        default,
+        skip_serializing_if = "serde_json::Value::is_null",
+        deserialize_with = "deserialize_empty_map_as_null"
+    )]
     pub extra: serde_json::Value,
 }
 
@@ -1385,5 +1395,71 @@ mod tests {
             settings.remove_settings(&CurrencyUnit::Sat, &PaymentMethod::BOLT11),
             None
         );
+    }
+
+    #[test]
+    fn custom_mint_quote_extra_round_trips_as_null_when_absent() {
+        let request = MintQuoteCustomRequest {
+            amount: Some(Amount::from(100)),
+            unit: CurrencyUnit::Sat,
+            description: None,
+            pubkey: None,
+            extra: serde_json::Value::Null,
+        };
+
+        let decoded: MintQuoteCustomRequest =
+            from_str(&to_string(&request).expect("serializes")).expect("parses");
+        assert_eq!(decoded, request);
+
+        let response = MintQuoteCustomResponse {
+            quote: "q1".to_string(),
+            request: "pay://abc".to_string(),
+            method: PaymentMethod::Custom("paypal".to_string()),
+            amount: Some(Amount::from(100)),
+            amount_paid: Amount::ZERO,
+            amount_issued: Amount::ZERO,
+            updated_at: 0,
+            unit: Some(CurrencyUnit::Sat),
+            expiry: Some(9999),
+            pubkey: None,
+            extra: serde_json::Value::Null,
+        };
+
+        let decoded: MintQuoteCustomResponse<String> =
+            from_str(&to_string(&response).expect("serializes")).expect("parses");
+        assert_eq!(decoded, response);
+    }
+
+    #[test]
+    fn custom_mint_quote_extra_round_trips_when_populated() {
+        let request = MintQuoteCustomRequest {
+            amount: Some(Amount::from(100)),
+            unit: CurrencyUnit::Sat,
+            description: None,
+            pubkey: None,
+            extra: json!({"ehash_share": "abc", "ref": 42}),
+        };
+
+        let decoded: MintQuoteCustomRequest =
+            from_str(&to_string(&request).expect("serializes")).expect("parses");
+        assert_eq!(decoded, request);
+
+        let response = MintQuoteCustomResponse {
+            quote: "q1".to_string(),
+            request: "pay://abc".to_string(),
+            method: PaymentMethod::Custom("paypal".to_string()),
+            amount: Some(Amount::from(100)),
+            amount_paid: Amount::ZERO,
+            amount_issued: Amount::ZERO,
+            updated_at: 0,
+            unit: Some(CurrencyUnit::Sat),
+            expiry: Some(9999),
+            pubkey: None,
+            extra: json!({"payment_url": "https://example.com", "ref": 42}),
+        };
+
+        let decoded: MintQuoteCustomResponse<String> =
+            from_str(&to_string(&response).expect("serializes")).expect("parses");
+        assert_eq!(decoded, response);
     }
 }

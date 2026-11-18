@@ -22,6 +22,23 @@ where
     }
 }
 
+/// Deserializes a flattened `extra` map, treating an empty map as `Value::Null`.
+///
+/// A flattened `serde_json::Value` always captures the leftover entries as an
+/// object, so without this an absent `extra` would come back as `{}` and fail to
+/// compare equal to the `Null` it was serialized from.
+pub fn deserialize_empty_map_as_null<'de, D>(deserializer: D) -> Result<serde_json::Value, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+
+    Ok(match value {
+        serde_json::Value::Object(map) if map.is_empty() => serde_json::Value::Null,
+        other => other,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use serde::Deserialize;
@@ -62,5 +79,24 @@ mod tests {
             r#"{"pubkey": "02194603ffa36356f4a56b7df9371fc3192472351453ec7398b8da8117e7c3e104"}"#;
         let result: TestStruct = serde_json::from_str(json).unwrap();
         assert!(result.pubkey.is_some());
+    }
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Flattened {
+        name: String,
+        #[serde(flatten, default, deserialize_with = "deserialize_empty_map_as_null")]
+        extra: serde_json::Value,
+    }
+
+    #[test]
+    fn test_absent_extra_fields_become_null() {
+        let parsed: Flattened = serde_json::from_str(r#"{"name": "a"}"#).unwrap();
+        assert_eq!(parsed.extra, serde_json::Value::Null);
+    }
+
+    #[test]
+    fn test_present_extra_fields_are_kept() {
+        let parsed: Flattened = serde_json::from_str(r#"{"name": "a", "ref": 42}"#).unwrap();
+        assert_eq!(parsed.extra, serde_json::json!({"ref": 42}));
     }
 }
