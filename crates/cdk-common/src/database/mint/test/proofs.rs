@@ -30,6 +30,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
         Proof {
             amount: Amount::from(200),
@@ -39,6 +40,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
     ];
 
@@ -90,6 +92,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
         Proof {
             amount: Amount::from(200),
@@ -99,6 +102,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
     ];
 
@@ -142,6 +146,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
         Proof {
             amount: Amount::from(200),
@@ -151,6 +156,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
     ];
 
@@ -195,6 +201,7 @@ where
         witness: None,
         dleq: None,
         p2pk_e: None,
+        spend_info: None,
     };
     let y = proof.y().unwrap();
 
@@ -241,6 +248,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
         Proof {
             amount: Amount::from(200),
@@ -250,6 +258,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
     ];
 
@@ -315,6 +324,7 @@ where
         witness: None,
         dleq: None,
         p2pk_e: None,
+        spend_info: None,
     }];
     let ys: Vec<_> = proofs.iter().map(|p| p.y().unwrap()).collect();
 
@@ -365,6 +375,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
         Proof {
             amount: Amount::from(200),
@@ -374,6 +385,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
     ];
     let ys: Vec<_> = proofs.iter().map(|p| p.y().unwrap()).collect();
@@ -428,6 +440,7 @@ where
         witness: None,
         dleq: None,
         p2pk_e: None,
+        spend_info: None,
     }];
 
     let ys: Vec<_> = proofs.iter().map(|p| p.y().unwrap()).collect();
@@ -488,6 +501,7 @@ pub async fn concurrent_multi_keyset_spends_use_consistent_lock_order(db: DynMin
         witness: None,
         dleq: None,
         p2pk_e: None,
+        spend_info: None,
     };
 
     // The transactions use disjoint proof rows but update the same two
@@ -567,6 +581,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
         Proof {
             amount: Amount::from(200),
@@ -576,6 +591,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
     ];
 
@@ -628,6 +644,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
         Proof {
             amount: Amount::from(200),
@@ -637,6 +654,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
         Proof {
             amount: Amount::from(300),
@@ -646,6 +664,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
     ];
 
@@ -706,6 +725,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
         Proof {
             amount: Amount::from(200),
@@ -715,6 +735,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
     ];
 
@@ -726,6 +747,7 @@ where
         witness: None,
         dleq: None,
         p2pk_e: None,
+        spend_info: None,
     }];
 
     let expected_ys1: Vec<_> = proofs1.iter().map(|p| p.y().unwrap()).collect();
@@ -780,6 +802,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
         Proof {
             amount: Amount::from(200),
@@ -789,6 +812,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
     ];
 
@@ -870,6 +894,7 @@ where
         witness: None,
         dleq: None,
         p2pk_e: None,
+        spend_info: None,
     };
 
     let y = proof.y().unwrap();
@@ -914,6 +939,7 @@ where
         witness: None,
         dleq: None,
         p2pk_e: None,
+        spend_info: None,
     };
 
     let y = proof.y().unwrap();
@@ -951,6 +977,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         })
         .collect();
 
@@ -998,6 +1025,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
         Proof {
             amount: Amount::from(200),
@@ -1007,6 +1035,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
     ];
 
@@ -1123,6 +1152,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
         Proof {
             amount: Amount::from(200),
@@ -1132,6 +1162,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
         Proof {
             amount: Amount::from(300),
@@ -1141,6 +1172,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
     ];
 
@@ -1218,6 +1250,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
         Proof {
             amount: Amount::from(200),
@@ -1227,6 +1260,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
     ];
 
@@ -1239,6 +1273,7 @@ where
         witness: None,
         dleq: None,
         p2pk_e: None,
+        spend_info: None,
     };
 
     let stored_ys: Vec<_> = stored_proofs.iter().map(|p| p.y().unwrap()).collect();

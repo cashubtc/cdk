@@ -2910,6 +2910,8 @@ impl TryInto<ProofInfo> for ProofTable {
             ProofId::from_hex(&self.y).map_err(|_| DatabaseError::Internal("Invalid y".into()))?;
         let c = DhkePoint::from_hex_any_curve(&self.c)
             .map_err(|_| DatabaseError::Internal("Invalid c".into()))?;
+        let keyset_id =
+            Id::from_str(&self.keyset_id).map_err(|_| DatabaseError::InvalidKeysetId)?;
         Ok(ProofInfo {
             y,
             mint_url: MintUrl::from_str(&self.mint_url)
@@ -2930,15 +2932,14 @@ impl TryInto<ProofInfo> for ProofTable {
                 .map_err(|_| DatabaseError::Internal("Invalid derivation index".to_owned()))?,
             proof: cdk_common::Proof {
                 amount: cdk_common::Amount::from(self.amount as u64),
-                keyset_id: Id::from_str(&self.keyset_id)
-                    .map_err(|_| DatabaseError::InvalidKeysetId)?,
+                keyset_id,
                 secret: Secret::from_str(&self.secret)
                     .map_err(|_| DatabaseError::Internal("Invalid secret".into()))?,
                 c,
                 witness: self
                     .witness
                     .filter(|w| !w.trim().is_empty())
-                    .map(|w| serde_json::from_str(&w))
+                    .map(|w| cdk_common::Witness::from_stored_json(&w, &keyset_id))
                     .transpose()?,
                 dleq: match (self.dleq_e, self.dleq_s, self.dleq_r) {
                     (Some(e), Some(s), Some(r)) => Some(cdk_common::ProofDleq {
@@ -2956,6 +2957,7 @@ impl TryInto<ProofInfo> for ProofTable {
                     .map(|s| PublicKey::from_hex(&s))
                     .transpose()
                     .map_err(|_| DatabaseError::Internal("Invalid p2pk_e".into()))?,
+                spend_info: None,
             },
             used_by_operation: self
                 .used_by_operation

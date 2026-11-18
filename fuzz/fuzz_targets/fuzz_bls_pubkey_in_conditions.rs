@@ -216,6 +216,7 @@ fuzz_target!(|input: Input| {
         witness: Some(witness),
         dleq: None,
         p2pk_e: None,
+        spend_info: None,
     };
 
     // Neither pipeline may panic, and neither may accept a BLS-keyed lock.

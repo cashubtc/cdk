@@ -119,6 +119,7 @@ fuzz_target!(|input: Input| {
             witness: None,
             dleq: Some(ProofDleq::new(blind_dleq.e, blind_dleq.s, r)),
             p2pk_e: None,
+            spend_info: None,
         };
         assert!(
             proof.verify_dleq(mint_pubkey).is_ok(),
@@ -173,6 +174,7 @@ fuzz_target!(|input: Input| {
         witness: None,
         dleq: Some(dleq_proof),
         p2pk_e: None,
+        spend_info: None,
     };
     let _ = proof.verify_dleq(mint_pubkey.into());
 });
