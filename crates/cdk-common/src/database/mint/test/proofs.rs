@@ -445,9 +445,8 @@ pub async fn concurrent_multi_keyset_spends_use_consistent_lock_order(db: DynMin
         p2pk_e: None,
     };
 
-    // The transactions use disjoint proof rows but update the same two
-    // keyset_amounts rows. Reverse the proof/keyset order so only the explicit
-    // keyset ordering in the upsert can guarantee a common lock order.
+    // The transactions use disjoint proofs from the same two keysets. Reverse
+    // their proof/keyset order to exercise accounting across shared keysets.
     let first_proofs = vec![create_proof(first_keyset), create_proof(second_keyset)];
     let second_proofs = vec![create_proof(second_keyset), create_proof(first_keyset)];
     let first_ys: Vec<_> = first_proofs

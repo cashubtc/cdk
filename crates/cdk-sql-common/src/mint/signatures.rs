@@ -1,6 +1,6 @@
 //! Signatures database implementation
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
 
 use async_trait::async_trait;
@@ -112,6 +112,8 @@ where
             left.to_bytes().cmp(&right.to_bytes())
         });
 
+        let mut issued = BTreeMap::<String, i64>::new();
+
         // Mutate rows in blinded-message order while retaining the request order index.
         for (i, (message, signature)) in ordered_signatures {
             match existing_rows.remove(message) {
@@ -133,19 +135,6 @@ where
                     .bind("created_time", i64::try_from(current_time)?)
                     .bind("signed_time", i64::try_from(current_time)?)
                     .bind("order_index", i64::try_from(i)?)
-                    .execute(&self.inner)
-                    .await?;
-
-                    query(
-                        r#"
-                        INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
-                        VALUES (:keyset_id, :amount, 0)
-                        ON CONFLICT (keyset_id)
-                        DO UPDATE SET total_issued = keyset_amounts.total_issued + EXCLUDED.total_issued
-                        "#,
-                    )?
-                    .bind("amount", i64::try_from(u64::from(signature.amount))?)
-                    .bind("keyset_id", signature.keyset_id.to_string())
                     .execute(&self.inner)
                     .await?;
                 }
@@ -171,19 +160,6 @@ where
                             if affected != 1 {
                                 return Err(Error::ConcurrentUpdate);
                             }
-
-                            query(
-                                r#"
-                                INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
-                                VALUES (:keyset_id, :amount, 0)
-                                ON CONFLICT (keyset_id)
-                                DO UPDATE SET total_issued = keyset_amounts.total_issued + EXCLUDED.total_issued
-                                "#,
-                            )?
-                            .bind("amount", i64::try_from(u64::from(signature.amount))?)
-                            .bind("keyset_id", signature.keyset_id.to_string())
-                            .execute(&self.inner)
-                            .await?;
                         }
                         _ => {
                             // Blind message already has c: Error
@@ -197,6 +173,13 @@ where
                     }
                 }
             }
+            let total = issued.entry(signature.keyset_id.to_string()).or_default();
+            *total = total
+                .checked_add(i64::try_from(signature.amount.to_u64())?)
+                .ok_or_else(|| Error::Internal("Keyset accounting overflow".to_owned()))?;
+        }
+        for (keyset_id, amount) in issued {
+            self.journal_accounting(keyset_id, amount, 0, 0).await?;
         }
 
         debug_assert!(
@@ -425,7 +408,7 @@ where
                 keyset_id,
                 total_issued as amount
             FROM
-                keyset_amounts
+                keyset_accounting_totals
         "#,
         )?
         .fetch_all(&*conn)

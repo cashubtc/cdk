@@ -198,3 +198,6 @@ mod test {
         let _ = remove_file(&file);
     }
 }
+
+#[cfg(test)]
+mod accounting_tests;

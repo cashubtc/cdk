@@ -192,8 +192,8 @@ where
     /// Also updates the `state` field on the [`ProofsWithState`] wrapper to reflect
     /// the new state after the database update succeeds.
     ///
-    /// When the new state is `Spent`, this method also updates the `keyset_amounts`
-    /// table to track the total redeemed amount per keyset for analytics purposes.
+    /// When the new state is `Spent`, this method also journals the redeemed
+    /// amount per keyset in the same transaction.
     ///
     /// # Prerequisites
     ///
@@ -221,20 +221,19 @@ where
 
         if new_state == State::Spent {
             query(
-                    r#"
-                    INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
-                    SELECT keyset_id, 0, COALESCE(SUM(amount), 0)
+                r#"
+                    INSERT INTO keyset_accounting (event_id, keyset_id, total_redeemed)
+                    SELECT :event_id || ':' || keyset_id, keyset_id, COALESCE(SUM(amount), 0)
                     FROM proof
                     WHERE y IN (:ys)
                     GROUP BY keyset_id
                     ORDER BY keyset_id
-                    ON CONFLICT (keyset_id)
-                    DO UPDATE SET total_redeemed = keyset_amounts.total_redeemed + EXCLUDED.total_redeemed
                     "#,
-                )?
-                .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
-                .execute(&self.inner)
-                .await?;
+            )?
+            .bind("event_id", uuid::Uuid::new_v4().to_string())
+            .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
+            .execute(&self.inner)
+            .await?;
         }
 
         proofs.state = new_state;
@@ -567,7 +566,7 @@ where
                 keyset_id,
                 total_redeemed as amount
             FROM
-                keyset_amounts
+                keyset_accounting_totals
         "#,
         )?
         .fetch_all(&*conn)

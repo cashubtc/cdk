@@ -30,6 +30,7 @@ use crate::fees::calculate_fee;
 use crate::nuts::*;
 use crate::{Amount, OidcClient};
 
+mod accounting;
 pub(crate) mod auth;
 mod builder;
 mod check_spendable;
@@ -45,6 +46,7 @@ mod subscription;
 mod swap;
 mod verification;
 
+pub use accounting::KeysetAccountingConfig;
 pub use builder::{KeysetRotation, MintBuilder, MintMeltLimits, UnitConfig};
 pub use cdk_common::mint::{MeltQuote, MintKeySetInfo, MintQuote};
 pub use cdk_common::mint_quote::{MintQuoteRequest, MintQuoteResponse};
@@ -99,6 +101,8 @@ pub struct Mint {
     max_inputs: usize,
     /// Maximum number of outputs allowed per transaction
     max_outputs: usize,
+    /// Background accounting aggregation configuration.
+    keyset_accounting: KeysetAccountingConfig,
 }
 
 impl std::fmt::Debug for Mint {
@@ -116,6 +120,9 @@ struct TaskState {
     supervisor_handle: Option<JoinHandle<Result<(), Error>>>,
     /// Handle to the keyset drain task
     keyset_drain_handle: Option<JoinHandle<()>>,
+    /// Handle and buffered shutdown signal for accounting aggregation.
+    accounting_handle: Option<JoinHandle<()>>,
+    accounting_shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     /// Keyset subscription retained from construction, drained once by the first
     /// `start()`. `None` after it has been taken; a restart re-subscribes.
     keyset_updates: Option<watch::Receiver<SignatoryKeysets>>,
@@ -415,7 +422,18 @@ impl Mint {
             })),
             max_inputs,
             max_outputs,
+            keyset_accounting: KeysetAccountingConfig::default(),
         })
+    }
+
+    /// Configure keyset accounting aggregation before starting the mint.
+    ///
+    /// Returns an error for a zero interval, zero batch size, or a batch size
+    /// that does not fit in i64.
+    pub fn with_keyset_accounting(mut self, config: KeysetAccountingConfig) -> Result<Self, Error> {
+        config.validate()?;
+        self.keyset_accounting = config;
+        Ok(self)
     }
 
     /// Start the mint's background services and operations
@@ -433,6 +451,7 @@ impl Mint {
     /// Currently manages:
     /// - Payment processor initialization and startup
     /// - Invoice payment monitoring across all configured payment processors
+    /// - Durable keyset accounting aggregation
     pub async fn start(&self) -> Result<(), Error> {
         // Recover from incomplete swap sagas
         // This cleans up incomplete swap operations using persisted saga state
@@ -577,6 +596,14 @@ impl Mint {
             None
         };
 
+        let (accounting_shutdown, accounting_stop) = tokio::sync::oneshot::channel();
+        task_state.accounting_handle = Some(tokio::spawn(accounting::run(
+            self.localstore.clone(),
+            self.keyset_accounting,
+            accounting_stop,
+        )));
+        task_state.accounting_shutdown = Some(accounting_shutdown);
+
         // Store the handles
         task_state.shutdown_notify = Some(shutdown_notify);
         task_state.supervisor_handle = Some(supervisor_handle);
@@ -605,6 +632,10 @@ impl Mint {
         let shutdown_notify = task_state.shutdown_notify.take();
         let supervisor_handle = task_state.supervisor_handle.take();
         let keyset_drain_handle = task_state.keyset_drain_handle.take();
+        let accounting_handle = task_state.accounting_handle.take();
+        if let Some(shutdown) = task_state.accounting_shutdown.take() {
+            let _ = shutdown.send(());
+        }
 
         // If nothing to stop, return early
         let (shutdown_notify, supervisor_handle) = match (shutdown_notify, supervisor_handle) {
@@ -640,6 +671,12 @@ impl Mint {
         if let Some(handle) = keyset_drain_handle {
             if let Err(join_error) = handle.await {
                 tracing::error!("Keyset drain task panicked: {:?}", join_error);
+            }
+        }
+
+        if let Some(handle) = accounting_handle {
+            if let Err(err) = handle.await {
+                tracing::error!("Keyset accounting task panicked: {}", err);
             }
         }
 

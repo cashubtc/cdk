@@ -1731,6 +1731,32 @@ url = "postgresql://operator:plaintext-secret@localhost/cdk"
 
     #[cfg(feature = "fakewallet")]
     #[test]
+    fn accounting_configuration_is_validated_in_import_documents() {
+        let secret_path = crate::test_utils::unique_temp_path("accounting_config_secret");
+        std::fs::write(&secret_path, TEST_MNEMONIC_ONE).expect("signing secret");
+        let base = document(&format!("file:{}", secret_path.display()), "accounting");
+        for field in [
+            "keyset_accounting_interval_ms",
+            "keyset_accounting_batch_size",
+        ] {
+            let invalid = base.replace("[info]", &format!("[info]\n{field} = 0"));
+            let err = ConfigurationService::validate_document(&invalid)
+                .expect_err("zero must be rejected before importing");
+            assert!(err.to_string().contains("keyset accounting"));
+        }
+        let configured = base.replace(
+            "[info]",
+            "[info]\nkeyset_accounting_interval_ms = 250\nkeyset_accounting_batch_size = 50",
+        );
+        let resolved =
+            ConfigurationService::validate_document(&configured).expect("valid accounting config");
+        assert_eq!(resolved.settings.info.keyset_accounting_interval_ms, 250);
+        assert_eq!(resolved.settings.info.keyset_accounting_batch_size, 50);
+        std::fs::remove_file(secret_path).expect("remove signing secret");
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
     fn startup_document_ignores_general_operational_environment_overrides() {
         let _env_lock = crate::test_utils::env_lock();
         let secret_path = crate::test_utils::unique_temp_path("startup_config_secret");

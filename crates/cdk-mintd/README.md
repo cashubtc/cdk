@@ -772,3 +772,30 @@ For complete configuration options, see the [example configuration file](./examp
 ## License
 
 This project is licensed under the [MIT License](../../LICENSE).
+
+### Keyset accounting
+
+SQL mint operations commit durable accounting events alongside signatures, spent
+proofs, and operation fees. `Mint::start()` starts aggregation immediately, then
+runs every second in batches of 1000 events, draining full batches immediately.
+`Mint::stop()` stops and joins the worker. Failed or cancelled batches remain
+available for retry, including after a restart. Embedders should use this lifecycle
+or call `MintDatabase::flush_keyset_accounting` themselves.
+
+Configure `[info].keyset_accounting_interval_ms` and
+`[info].keyset_accounting_batch_size` through the configuration document and
+`config apply`, then restart the daemon. Both values must be positive. Embedders
+can use `KeysetAccountingConfig` with `MintBuilder::with_keyset_accounting`.
+
+`keyset_amounts` contains eventually consistent materialized totals. Use the
+`keyset_accounting_totals` view for SQL reporting; CDK's issued/redeemed APIs include
+all committed unapplied events in the same database snapshot. PostgreSQL workers
+claim separate batches with `FOR UPDATE SKIP LOCKED`; SQLite serializes writers.
+Auth proofs use a separate schema without shared accounting counters and require
+no accounting migration or worker.
+
+Stop all mint workers before upgrading. Existing totals are preserved. Before
+downgrading, stop request processing and drain accounting until
+`flush_keyset_accounting` returns zero; older versions cannot read journal events.
+Restore a configuration document compatible with the target version as part of
+the downgrade.

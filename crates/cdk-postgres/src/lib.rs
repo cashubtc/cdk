@@ -799,3 +799,6 @@ mod test {
         );
     }
 }
+
+#[cfg(all(test, feature = "mint"))]
+mod accounting_tests;
