@@ -280,7 +280,6 @@ bitcoind_rpc_password = "env:CDK_REGTEST_BITCOIND_RPC_PASSWORD"
 storage_dir_path = "$CDK_ITESTS_DIR/ldk_mint"
 ldk_node_host = "127.0.0.1"
 ldk_node_port = 8090
-gossip_source_type = "p2p"
 fee_percent = 0.02
 reserve_fee_min = 2
 

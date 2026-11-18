@@ -19,8 +19,6 @@ pub const LDK_NODE_STORAGE_DIR_PATH_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_STORAGE_
 pub const LDK_NODE_LOG_DIR_PATH_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_LOG_DIR_PATH";
 pub const LDK_NODE_LDK_NODE_HOST_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_LDK_NODE_HOST";
 pub const LDK_NODE_LDK_NODE_PORT_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_LDK_NODE_PORT";
-pub const LDK_NODE_GOSSIP_SOURCE_TYPE_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_GOSSIP_SOURCE_TYPE";
-pub const LDK_NODE_RGS_URL_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_RGS_URL";
 pub const LDK_NODE_WEBSERVER_HOST_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_WEBSERVER_HOST";
 pub const LDK_NODE_WEBSERVER_PORT_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_WEBSERVER_PORT";
 pub const LDK_NODE_MNEMONIC_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_MNEMONIC";
@@ -89,14 +87,6 @@ impl LdkNode {
             if let Ok(ldk_node_port) = ldk_node_port.parse::<u16>() {
                 self.ldk_node_port = Some(ldk_node_port);
             }
-        }
-
-        if let Ok(gossip_source_type) = env::var(LDK_NODE_GOSSIP_SOURCE_TYPE_ENV_VAR) {
-            self.gossip_source_type = Some(gossip_source_type);
-        }
-
-        if let Ok(rgs_url) = env::var(LDK_NODE_RGS_URL_ENV_VAR) {
-            self.rgs_url = Some(rgs_url);
         }
 
         if let Ok(webserver_host) = env::var(LDK_NODE_WEBSERVER_HOST_ENV_VAR) {

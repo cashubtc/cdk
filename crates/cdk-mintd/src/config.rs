@@ -693,10 +693,6 @@ pub struct LdkNode {
     pub ldk_node_port: Option<u16>,
     /// LDK node announcement addresses
     pub ldk_node_announce_addresses: Option<Vec<String>>,
-    /// Gossip source type (p2p or rgs)
-    pub gossip_source_type: Option<String>,
-    /// Rapid Gossip Sync URL (when gossip_source_type = "rgs")
-    pub rgs_url: Option<String>,
     /// Webserver host (defaults to 127.0.0.1)
     #[serde(default = "default_webserver_host")]
     pub webserver_host: Option<String>,
@@ -727,8 +723,6 @@ impl Default for LdkNode {
             ldk_node_host: None,
             log_dir_path: None,
             ldk_node_port: None,
-            gossip_source_type: None,
-            rgs_url: None,
             webserver_host: default_webserver_host(),
             webserver_port: default_webserver_port(),
             ldk_node_mnemonic: None,
@@ -764,8 +758,6 @@ impl fmt::Debug for LdkNode {
                 "ldk_node_announce_addresses",
                 &self.ldk_node_announce_addresses,
             )
-            .field("gossip_source_type", &self.gossip_source_type)
-            .field("rgs_url", &self.rgs_url.as_deref().map(url_for_logs))
             .field("webserver_host", &self.webserver_host)
             .field("webserver_port", &self.webserver_port)
             .field("ldk_node_mnemonic", &"[REDACTED]")
@@ -1242,6 +1234,14 @@ pub struct MintManagementRpc {
     pub allow_mint_quote_payment_override: bool,
 }
 
+/// Fields that were removed from the configuration but are still accepted
+/// (and ignored) so stored or imported documents that set them keep loading.
+const REMOVED_IGNORED_FIELDS: &[&str] = &[
+    // LDK Node always uses P2P gossip; Rapid Gossip Sync is no longer supported.
+    "ldk_node.gossip_source_type",
+    "ldk_node.rgs_url",
+];
+
 impl Settings {
     /// Parses settings from an in-memory TOML import document.
     pub fn try_from_toml(document: &str) -> Result<Self, ConfigError> {
@@ -1269,7 +1269,9 @@ impl Settings {
         let mut unknown_fields = Vec::new();
         let settings = serde_ignored::deserialize(configuration, |path| {
             let path = path.to_string().replace(".?.", ".");
-            if !allowed_unknown_fields.contains(&path.as_str()) {
+            if REMOVED_IGNORED_FIELDS.contains(&path.as_str()) {
+                tracing::warn!("Ignoring removed configuration field `{}`", path);
+            } else if !allowed_unknown_fields.contains(&path.as_str()) {
                 unknown_fields.push(path);
             }
         })?;
@@ -1557,6 +1559,19 @@ listen_por = 8085
         assert!(!message.contains("info.signatory_url"));
     }
 
+    #[cfg(feature = "ldk-node")]
+    #[test]
+    fn removed_ldk_node_gossip_fields_are_ignored() {
+        Settings::try_from_toml(
+            r#"
+[ldk_node]
+gossip_source_type = "rgs"
+rgs_url = "https://rgs.example.com/snapshot"
+"#,
+        )
+        .expect("removed gossip fields must still parse");
+    }
+
     #[test]
     fn keyset_refresh_interval_is_off_by_default() {
         assert_eq!(Info::default().keyset_refresh_interval_ms, None);
@@ -1717,7 +1732,6 @@ keyset_refresh_interval_ms = 5000
             ),
             electrum_url: Some("ssl://electrum-user:electrum-secret@example.com:50002".to_string()),
             bitcoind_rpc_password: Some("rpc-password-secret".to_string()),
-            rgs_url: Some("https://rgs-user:rgs-secret@example.com/snapshot".to_string()),
             ldk_node_mnemonic: Some("mnemonic-secret-words".to_string()),
             ..Default::default()
         };
@@ -1727,14 +1741,11 @@ keyset_refresh_interval_ms = 5000
         assert!(debug.contains("regtest"));
         assert!(debug.contains("https://example.com/esplora"));
         assert!(debug.contains("ssl://example.com:50002"));
-        assert!(debug.contains("https://example.com/snapshot"));
         assert!(debug.contains("[REDACTED]"));
         assert!(!debug.contains("esplora-user"));
         assert!(!debug.contains("esplora-secret"));
         assert!(!debug.contains("electrum-user"));
         assert!(!debug.contains("electrum-secret"));
-        assert!(!debug.contains("rgs-user"));
-        assert!(!debug.contains("rgs-secret"));
         assert!(!debug.contains("rpc-password-secret"));
         assert!(!debug.contains("mnemonic-secret-words"));
     }

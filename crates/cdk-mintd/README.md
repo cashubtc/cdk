@@ -503,8 +503,6 @@ backend = "ldk-node"
 bitcoin_network = "signet"  # Use "mainnet" for production
 chain_source_type = "esplora"  # esplora, electrum, or bitcoinrpc
 esplora_url = "https://mutinynet.com/api"
-rgs_url = "https://rgs.mutinynet.com/snapshot/0"
-gossip_source_type = "rgs"
 storage_dir_path = "/var/lib/cdk-mintd/ldk-node"
 ldk_node_mnemonic = "env:CDK_MINTD_LDK_NODE_MNEMONIC"
 ```

@@ -279,8 +279,6 @@ async fn start_ldk_mint(
         storage_dir_path: Some(ldk_work_dir.to_string_lossy().to_string()),
         ldk_node_host: Some("127.0.0.1".to_string()),
         ldk_node_port: Some(ldk_node_p2p_port),
-        gossip_source_type: None,
-        rgs_url: None,
         webserver_host: Some("127.0.0.1".to_string()),
         webserver_port: Some(port + 1), // Use next port for web interface
         ldk_node_mnemonic: Some(mnemonics.ldk_node.to_string()),
@@ -740,7 +738,6 @@ fn main() -> Result<()> {
                 user: "testuser".to_string(),
                 password: "testpass".to_string(),
             }),
-            cdk_ldk_node::GossipSource::P2P,
             ldk_work_dir.to_string_lossy().to_string(),
             cdk_common::common::FeeReserve {
                 min_fee_reserve: Amount::ZERO,
@@ -774,7 +771,6 @@ fn main() -> Result<()> {
                         user: "testuser".to_string(),
                         password: "testpass".to_string(),
                     }),
-                    cdk_ldk_node::GossipSource::P2P,
                     ldk_work_dir.to_string_lossy().to_string(),
                     cdk_common::common::FeeReserve {
                         min_fee_reserve: Amount::ZERO,

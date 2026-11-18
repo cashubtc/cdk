@@ -210,38 +210,10 @@ impl fmt::Debug for ChainSource {
     }
 }
 
-/// Source of Lightning network gossip data
-///
-/// Specifies how the node should learn about the Lightning Network topology
-/// and routing information.
-#[derive(Clone)]
-pub enum GossipSource {
-    /// Learn gossip through peer-to-peer connections
-    ///
-    /// The node will connect to other Lightning nodes and exchange gossip data directly
-    P2P,
-    /// Use Rapid Gossip Sync for efficient gossip updates
-    ///
-    /// Contains the URL of the RGS server for compressed gossip data
-    RapidGossipSync(String),
-}
-
-impl fmt::Debug for GossipSource {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::P2P => f.write_str("P2P"),
-            Self::RapidGossipSync(url) => f
-                .debug_tuple("RapidGossipSync")
-                .field(&url_for_logs(url))
-                .finish(),
-        }
-    }
-}
 /// A builder for an [`CdkLdkNode`] instance.
 pub struct CdkLdkNodeBuilder {
     network: Network,
     chain_source: ChainSource,
-    gossip_source: GossipSource,
     log_dir_path: Option<String>,
     storage_dir_path: String,
     fee_reserve: FeeReserve,
@@ -256,7 +228,6 @@ impl std::fmt::Debug for CdkLdkNodeBuilder {
         f.debug_struct("CdkLdkNodeBuilder")
             .field("network", &self.network)
             .field("chain_source", &self.chain_source)
-            .field("gossip_source", &self.gossip_source)
             .field("log_dir_path", &self.log_dir_path)
             .field("storage_dir_path", &self.storage_dir_path)
             .field("fee_reserve", &self.fee_reserve)
@@ -271,7 +242,6 @@ impl CdkLdkNodeBuilder {
     pub fn new(
         network: Network,
         chain_source: ChainSource,
-        gossip_source: GossipSource,
         storage_dir_path: String,
         fee_reserve: FeeReserve,
         listening_addresses: Vec<SocketAddress>,
@@ -280,7 +250,6 @@ impl CdkLdkNodeBuilder {
         Self {
             network,
             chain_source,
-            gossip_source,
             storage_dir_path,
             fee_reserve,
             kv_store,
@@ -334,14 +303,8 @@ impl CdkLdkNodeBuilder {
             }
         }
 
-        match self.gossip_source {
-            GossipSource::P2P => {
-                ldk.set_gossip_source_p2p();
-            }
-            GossipSource::RapidGossipSync(rgs_url) => {
-                ldk.set_gossip_source_rgs(rgs_url);
-            }
-        }
+        // The mint is an always-on node, so it learns the network graph via P2P gossip.
+        ldk.set_gossip_source_p2p();
 
         ldk.set_listening_addresses(self.listening_addresses)?;
         if self.log_dir_path.is_some() {
@@ -1710,19 +1673,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn gossip_source_debug_redacts_url_credentials() {
-        let source = GossipSource::RapidGossipSync(
-            "https://rgs-user:rgs-secret@example.com/snapshot".to_string(),
-        );
-
-        let debug = format!("{source:?}");
-
-        assert!(debug.contains("https://example.com/snapshot"));
-        assert!(!debug.contains("rgs-user"));
-        assert!(!debug.contains("rgs-secret"));
-    }
-
     fn test_payment_details(status: PaymentStatus, amount_msat: Option<u64>) -> PaymentDetails {
         PaymentDetails {
             id: PaymentId([2; 32]),
@@ -1787,7 +1737,6 @@ mod tests {
         let node = CdkLdkNodeBuilder::new(
             Network::Regtest,
             ChainSource::Esplora("http://127.0.0.1:1".to_owned()),
-            GossipSource::P2P,
             storage.to_str().unwrap().to_owned(),
             FeeReserve {
                 min_fee_reserve: Amount::ZERO,
@@ -2102,7 +2051,6 @@ mod tests {
         let node = CdkLdkNodeBuilder::new(
             Network::Regtest,
             ChainSource::Esplora("http://127.0.0.1:1".to_string()),
-            GossipSource::P2P,
             storage.path().to_str().unwrap().to_string(),
             FeeReserve {
                 min_fee_reserve: 0.into(),
