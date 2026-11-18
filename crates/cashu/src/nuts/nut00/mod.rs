@@ -16,9 +16,10 @@ use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 use unicode_normalization::UnicodeNormalization;
 
-use super::nut02::ShortKeysetId;
+use super::nut02::{KeySetVersion, ShortKeysetId};
 #[cfg(feature = "wallet")]
 use super::nut10;
+use super::nut10::nutroot::{NutrootWitness, RawNutrootWitness};
 #[cfg(feature = "wallet")]
 use crate::amount::FeeAndAmounts;
 #[cfg(feature = "wallet")]
@@ -365,6 +366,11 @@ impl PartialOrd for BlindSignature {
 }
 
 /// Witness
+///
+/// Pre-v3 witnesses deserialize by shape. A v3 (nutroot) key-path witness
+/// has the same shape as a P2PK witness, so generic deserialization never
+/// yields [`Witness::Nutroot`]: parse by keyset version with
+/// [`Witness::from_value_for_version`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Witness {
@@ -374,6 +380,15 @@ pub enum Witness {
     /// P2PK Witness
     #[serde(with = "serde_p2pk_witness")]
     P2PKWitness(P2PKWitness),
+    /// Nutroot witness of a v3 proof, kept as received
+    #[serde(skip_deserializing)]
+    Nutroot(RawNutrootWitness),
+}
+
+impl From<NutrootWitness> for Witness {
+    fn from(witness: NutrootWitness) -> Self {
+        Self::Nutroot(witness.into())
+    }
 }
 
 impl From<P2PKWitness> for Witness {
@@ -389,7 +404,33 @@ impl From<HTLCWitness> for Witness {
 }
 
 impl Witness {
+    /// Parse a proof's `witness` value by its keyset version
+    ///
+    /// A v3 witness is a string holding a serialized [`NutrootWitness`];
+    /// pre-v3 witnesses parse as P2PK or HTLC witnesses.
+    pub fn from_value_for_version(
+        value: serde_json::Value,
+        version: KeySetVersion,
+    ) -> Result<Self, serde_json::Error> {
+        match version {
+            KeySetVersion::Version00 | KeySetVersion::Version01 => serde_json::from_value(value),
+            KeySetVersion::Version02 => Ok(Self::Nutroot(serde_json::from_value(value)?)),
+        }
+    }
+
+    /// Parse a witness serialized with `serde_json::to_string(&witness)`
+    /// (a JSON string) by its keyset version
+    pub fn from_json_for_version(
+        json: &str,
+        version: KeySetVersion,
+    ) -> Result<Self, serde_json::Error> {
+        Self::from_value_for_version(serde_json::from_str(json)?, version)
+    }
+
     /// Add signatures to [`Witness`]
+    ///
+    /// Not supported for nutroot witnesses, whose signatures are typed:
+    /// build a [`NutrootWitness`] instead.
     pub fn add_signatures(&mut self, signatures: Vec<String>) {
         match self {
             Self::P2PKWitness(p2pk_witness) => p2pk_witness.signatures.extend(signatures),
@@ -397,6 +438,9 @@ impl Witness {
                 Some(sigs) => sigs.extend(signatures),
                 None => htlc_witness.signatures = Some(signatures),
             },
+            Self::Nutroot(_) => {
+                tracing::warn!("Cannot add untyped signatures to a nutroot witness");
+            }
         }
     }
 
@@ -405,6 +449,10 @@ impl Witness {
         match self {
             Self::P2PKWitness(witness) => Some(witness.signatures.clone()),
             Self::HTLCWitness(witness) => witness.signatures.clone(),
+            Self::Nutroot(witness) => witness
+                .parse()
+                .ok()
+                .map(|witness| witness.signatures.iter().map(ToString::to_string).collect()),
         }
     }
 
@@ -413,6 +461,19 @@ impl Witness {
         match self {
             Self::P2PKWitness(_witness) => None,
             Self::HTLCWitness(witness) => Some(witness.preimage.clone()),
+            Self::Nutroot(witness) => witness
+                .parse()
+                .ok()
+                .and_then(|witness| witness.preimage)
+                .map(crate::util::hex::encode),
+        }
+    }
+
+    /// The nutroot witness, if this is one
+    pub fn as_nutroot(&self) -> Option<&RawNutrootWitness> {
+        match self {
+            Self::Nutroot(witness) => Some(witness),
+            _ => None,
         }
     }
 }
@@ -466,7 +527,7 @@ impl<'de> Deserialize<'de> for Proof {
             #[serde(rename = "C")]
             c: String,
             #[serde(default)]
-            witness: Option<Witness>,
+            witness: Option<serde_json::Value>,
             #[serde(default)]
             dleq: Option<ProofDleq>,
             #[serde(default)]
@@ -474,14 +535,21 @@ impl<'de> Deserialize<'de> for Proof {
         }
 
         let encoded = EncodedProof::deserialize(deserializer)?;
-        let c = DhkePoint::from_hex_for_version(encoded.c, encoded.keyset_id.get_version())
+        let version = encoded.keyset_id.get_version();
+        let c = DhkePoint::from_hex_for_version(encoded.c, version)
+            .map_err(serde::de::Error::custom)?;
+        let witness = encoded
+            .witness
+            .filter(|value| !value.is_null())
+            .map(|value| Witness::from_value_for_version(value, version))
+            .transpose()
             .map_err(serde::de::Error::custom)?;
         Ok(Self {
             amount: encoded.amount,
             keyset_id: encoded.keyset_id,
             secret: encoded.secret,
             c,
-            witness: encoded.witness,
+            witness,
             dleq: encoded.dleq,
             p2pk_e: encoded.p2pk_e,
         })
@@ -1535,7 +1603,6 @@ mod tests {
     use std::str::FromStr;
 
     use super::*;
-    use crate::nuts::nut02::KeySetVersion;
 
     fn keyset_id(version: KeySetVersion) -> Id {
         match version {
@@ -1604,6 +1671,77 @@ mod tests {
         )
         .y()
         .is_err());
+    }
+
+    /// v3 witnesses parse by keyset version, kept as received
+    #[test]
+    fn witness_parses_by_keyset_version() {
+        let sig = "3c2ce5dc36aea01a9b9f44287ef12e67a7fb0e0113720c3a000b5942835426e6635b09c087dbd30bde77ddf03b43b87858b3d2bf29d4b3ca7895f73e4839d3c2";
+        let raw = format!(r#"{{"signatures":["{sig}"]}}"#);
+        let proof_json = |id: &str, c: &str, witness: serde_json::Value| {
+            serde_json::json!({
+                "amount": 8, "id": id,
+                "secret": "0240c186f3e19f6f8cd00db81c5266d5c74ddca48ff848efd0e3e125b2846f30d9",
+                "C": c, "witness": witness,
+            })
+        };
+        let v3 = "022546ab0a2dee9f79510f4e20a4e3d9e894a97361047c594902573a7e64f9d701";
+        let bls_c = "a33dd4de26ea950060ae5c45bdc408d72aaf51ba9f4ccdeee4a040df067ca87c799a406fec88c2a328b75b290e27f7b6";
+        let v0 = "009a1f293253e41e";
+        let secp_c = "02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea";
+
+        let proof: Proof =
+            serde_json::from_value(proof_json(v3, bls_c, serde_json::json!(raw))).unwrap();
+        let Some(Witness::Nutroot(witness)) = &proof.witness else {
+            panic!("expected a nutroot witness");
+        };
+        assert_eq!(witness.as_str(), raw);
+        // Serialized back exactly as received.
+        assert_eq!(
+            serde_json::to_value(&proof).unwrap()["witness"],
+            serde_json::json!(raw)
+        );
+
+        // The same shape on a pre-v3 keyset is a P2PK witness.
+        let proof: Proof =
+            serde_json::from_value(proof_json(v0, secp_c, serde_json::json!(raw))).unwrap();
+        assert!(matches!(proof.witness, Some(Witness::P2PKWitness(_))));
+
+        // Null is no witness.
+        let proof: Proof =
+            serde_json::from_value(proof_json(v3, bls_c, serde_json::Value::Null)).unwrap();
+        assert!(proof.witness.is_none());
+
+        // A v3 witness must be a string holding a valid witness.
+        for bad in [
+            serde_json::json!({"signatures": [sig]}),
+            serde_json::json!(r#"{"signatures":["00"]}"#),
+            serde_json::json!(format!(r#"{{"signatures":["{sig}"],"extra":1}}"#)),
+            serde_json::json!(r#"{"signatures":["00"],"preimage":"00"}"#),
+        ] {
+            assert!(
+                serde_json::from_value::<Proof>(proof_json(v3, bls_c, bad.clone())).is_err(),
+                "accepted {bad}"
+            );
+        }
+
+        // Stored witnesses re-parse by version.
+        let stored = serde_json::to_string(
+            &Witness::from_json_for_version(
+                &serde_json::to_string(&raw).unwrap(),
+                KeySetVersion::Version02,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            Witness::from_json_for_version(&stored, KeySetVersion::Version02),
+            Ok(Witness::Nutroot(_))
+        ));
+        assert!(matches!(
+            Witness::from_json_for_version(&stored, KeySetVersion::Version00),
+            Ok(Witness::P2PKWitness(_))
+        ));
     }
 
     #[test]

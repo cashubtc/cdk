@@ -5,6 +5,9 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use super::nut00::transaction::{
+    blinded_outputs, proof_inputs, Error as TransactionError, Transaction,
+};
 #[cfg(feature = "wallet")]
 use super::nut00::PreMintSecrets;
 use super::nut00::{BlindSignature, BlindedMessage, Proofs};
@@ -74,6 +77,11 @@ impl SwapRequest {
     /// Get mutable reference to outputs (blinded messages)
     pub fn outputs_mut(&mut self) -> &mut Vec<BlindedMessage> {
         &mut self.outputs
+    }
+
+    /// The swap's transaction: proof inputs to blinded outputs
+    pub fn transaction(&self) -> Result<Transaction, TransactionError> {
+        Transaction::new(proof_inputs(&self.inputs)?, blinded_outputs(&self.outputs))
     }
 
     /// Total value of proofs in [`SwapRequest`]
