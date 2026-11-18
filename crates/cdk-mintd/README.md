@@ -17,6 +17,20 @@ Cashu mint daemon implementation for the Cashu Development Kit (CDK). This binar
 - **Management RPC**: gRPC interface for mint management
 - **Docker Support**: Ready-to-use Docker configurations
 
+## PostgreSQL proof coordination
+
+Proof reservations use the full nullifier `Y` as a unique primary key. Inserts
+and row locks are ordered by `Y`, so unrelated proofs proceed concurrently and
+batches containing the same proofs coordinate regardless of their input order.
+A competing insert waits for an uncommitted reservation: commit rejects the
+competing reservation, and rollback lets it proceed. Finalization and release
+lock the same proof rows until their transaction commits or rolls back.
+
+Reservations remain in the database while payments are processed outside these
+transactions. Mint and auth proof tables coordinate independently. Quote locks
+and melt execution leases also apply. These guarantees use PostgreSQL row locks
+and unique constraints; no per-proof advisory lock configuration is needed.
+
 ## Payment Backend Documentation
 
 For detailed configuration of each payment backend, see:
