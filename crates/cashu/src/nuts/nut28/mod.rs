@@ -66,6 +66,9 @@ pub enum Error {
     /// NUT-01 error
     #[error(transparent)]
     NUT01(#[from] crate::nuts::nut01::Error),
+    /// A v3 secret enumerates more slots than one index byte holds
+    #[error("{0} slots exceed the 256 one index byte allows")]
+    TooManySlots(usize),
 }
 
 /// Perform ECDH and get blinding factor r
@@ -198,6 +201,8 @@ pub fn derive_signing_key_bip340(
         false => Ok(privkey.negate().add_tweak(&r.as_scalar())?),
     }
 }
+
+pub mod slot_map;
 
 #[cfg(feature = "wallet")]
 #[cfg(test)]

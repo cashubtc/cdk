@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{Error, Proof, ProofV3, ProofV4, Proofs};
 use crate::mint_url::MintUrl;
-use crate::nut02::ShortKeysetId;
+use crate::nut02::{KeySetVersion, ShortKeysetId};
 use crate::nuts::nut10::SpendingConditions;
 use crate::nuts::{CurrencyUnit, Id, Kind, PublicKey};
 use crate::{ensure_cdk, Amount, KeySetInfo};
@@ -414,6 +414,7 @@ impl From<TokenV4> for TokenV3 {
                     c: p.c,
                     witness: p.witness,
                     dleq: p.dleq,
+                    spend_info: p.spend_info,
                 })
             })
             .collect();
@@ -617,9 +618,14 @@ impl<'de> Deserialize<'de> for TokenV4Token {
                 "proof signature is not on the curve for keyset version {version}"
             )));
         }
+        let mut proofs = encoded.proofs;
+        if version == KeySetVersion::Version02 {
+            // v3 proofs in tokens never carry a witness (NUT-00).
+            proofs.iter_mut().for_each(|proof| proof.witness = None);
+        }
         Ok(Self {
             keyset_id: encoded.keyset_id,
-            proofs: encoded.proofs,
+            proofs,
         })
     }
 }
@@ -644,9 +650,20 @@ impl TokenV4Token {
     pub fn new(keyset_id: Id, proofs: Proofs) -> Self {
         // Create a short keyset id from id
         let short_id = ShortKeysetId::from(keyset_id);
+        let v3 = keyset_id.get_version() == KeySetVersion::Version02;
         Self {
             keyset_id: short_id,
-            proofs: proofs.into_iter().map(Into::into).collect(),
+            proofs: proofs
+                .into_iter()
+                .map(|proof| {
+                    let mut proof = ProofV4::from(proof);
+                    if v3 {
+                        // v3 proofs in tokens never carry a witness (NUT-00).
+                        proof.witness = None;
+                    }
+                    proof
+                })
+                .collect(),
         }
     }
 }
@@ -663,7 +680,6 @@ mod tests {
     use crate::dhke::hash_to_curve;
     use crate::mint_url::MintUrl;
     use crate::nuts::nut01::{BlsG1PublicKey, DhkePoint};
-    use crate::nuts::nut02::KeySetVersion;
     use crate::nuts::nut10::{Conditions, SpendingConditions};
     use crate::nuts::nut11::SigFlag;
     use crate::secret::Secret;
@@ -841,6 +857,7 @@ mod tests {
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         };
 
         let token = Token::new(
@@ -935,6 +952,7 @@ mod tests {
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         };
 
         let proof2 = proof1.clone(); // Duplicate proof
@@ -978,6 +996,7 @@ mod tests {
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         };
 
         let proofs = vec![proof1, proof3].into_iter().collect();
@@ -1602,7 +1621,6 @@ mod tests {
     #[test]
     fn token_v4_rejects_proofs_on_the_wrong_curve() {
         use crate::nuts::nut01::BlsG1PublicKey;
-        use crate::nuts::nut02::KeySetVersion;
         use crate::nuts::DhkePoint;
 
         let secp: DhkePoint = crate::nuts::SecretKey::generate().public_key().into();
@@ -1624,5 +1642,173 @@ mod tests {
         roundtrip(v3_id, bls).expect("BLS point on a v3 keyset");
         assert!(roundtrip(legacy_id, bls).is_err());
         assert!(roundtrip(v3_id, secp).is_err());
+    }
+
+    /// tests/00-tests.md "V4 tokens with spend info": each shape decodes to
+    /// its spend info and re-encodes to the same string
+    #[test]
+    fn spend_info_token_vectors() {
+        use crate::nuts::nut00::SpendInfo;
+
+        let keyset =
+            Id::from_str("022546ab0a2dee9f79510f4e20a4e3d9e894a97361047c594902573a7e64f9d701")
+                .unwrap();
+        let keysets = [KeySetInfo {
+            id: keyset,
+            unit: CurrencyUnit::Sat,
+            active: true,
+            input_fee_ppk: 0,
+            final_expiry: None,
+        }];
+        let leaf = "00020200010104002102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1306000468a3be80";
+        let e = "022f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4";
+        let vectors = [
+            (
+                "0240c186f3e19f6f8cd00db81c5266d5c74ddca48ff848efd0e3e125b2846f30d9",
+                serde_json::json!({"k": "930c88ad9dc8531c147862d4ef9c0981200ff1f510c0a9e1c024db725a1d56c6"}),
+                "cashuBo2FtcWh0dHBzOi8vbWludC50ZXN0YXVjc2F0YXSBomFpSAIlRqsKLe6fYXCBpGFhCGFzeEIwMjQwYzE4NmYzZTE5ZjZmOGNkMDBkYjgxYzUyNjZkNWM3NGRkY2E0OGZmODQ4ZWZkMGUzZTEyNWIyODQ2ZjMwZDlhY1gwoz3U3ibqlQBgrlxFvcQI1yqvUbqfTM3u5KBA3wZ8qHx5mkBv7IjCoyi3WykOJ_e2YnNpoWFrWCCTDIitnchTHBR4YtTvnAmBIA_x9RDAqeHAJNtyWh1Wxg",
+            ),
+            (
+                "03a3e12cc077e5605f36441046f50c114fcc883b079a34028bed66732e3a419e51",
+                serde_json::json!({"E": e}),
+                "cashuBo2FtcWh0dHBzOi8vbWludC50ZXN0YXVjc2F0YXSBomFpSAIlRqsKLe6fYXCBpGFhCGFzeEIwM2EzZTEyY2MwNzdlNTYwNWYzNjQ0MTA0NmY1MGMxMTRmY2M4ODNiMDc5YTM0MDI4YmVkNjY3MzJlM2E0MTllNTFhY1gwjrtGJEBKPqUq4u7SdMKZetbGmFBcrPIBHlIckVxZaQmBw2waLLhFPjfefUzliyM2YnNpoWFlWCECL4veTRoHIJNVtKclClxRKOiLhL3cYZq3y6jVabJA7-Q",
+            ),
+            (
+                "02d310a4d661e3158e7d360617e739d6bacbf015431b24a43168db0ab99ef8f828",
+                serde_json::json!({"E": e, "tree": [leaf]}),
+                "cashuBo2FtcWh0dHBzOi8vbWludC50ZXN0YXVjc2F0YXSBomFpSAIlRqsKLe6fYXCBpGFhCGFzeEIwMmQzMTBhNGQ2NjFlMzE1OGU3ZDM2MDYxN2U3MzlkNmJhY2JmMDE1NDMxYjI0YTQzMTY4ZGIwYWI5OWVmOGY4MjhhY1gwhNoQKw8TlXu-pKkmZcMb_2Sox6XACGfD9U2uFXmtfGQbqHw13lTbCGiTSguWbj1MYnNpomFlWCECL4veTRoHIJNVtKclClxRKOiLhL3cYZq3y6jVabJA7-RhdIFYMQACAgABAQQAIQLkk9vxwQ2A81geSQSTCxQEzGwTkA7gdYR0-pSr6MTNEwYABGijvoA",
+            ),
+            (
+                "02d310a4d661e3158e7d360617e739d6bacbf015431b24a43168db0ab99ef8f828",
+                serde_json::json!({"K": "03a3e12cc077e5605f36441046f50c114fcc883b079a34028bed66732e3a419e51", "tree": [leaf]}),
+                "cashuBo2FtcWh0dHBzOi8vbWludC50ZXN0YXVjc2F0YXSBomFpSAIlRqsKLe6fYXCBpGFhCGFzeEIwMmQzMTBhNGQ2NjFlMzE1OGU3ZDM2MDYxN2U3MzlkNmJhY2JmMDE1NDMxYjI0YTQzMTY4ZGIwYWI5OWVmOGY4MjhhY1gwhNoQKw8TlXu-pKkmZcMb_2Sox6XACGfD9U2uFXmtfGQbqHw13lTbCGiTSguWbj1MYnNpomFpWCEDo-EswHflYF82RBBG9QwRT8yIOweaNAKL7WZzLjpBnlFhdIFYMQACAgABAQQAIQLkk9vxwQ2A81geSQSTCxQEzGwTkA7gdYR0-pSr6MTNEwYABGijvoA",
+            ),
+            (
+                "035f02db4e3b429de04669e8fba1e786719de8336cedeff3048e944ebcfaf08e23",
+                serde_json::json!({
+                    "K": "031ed5e2846820073c39cca136f69aa3509b88b8f7f0e9f30159dea1178fa725f5",
+                    "u": "c4b697b346799e55a80ba7a0b6f7670a7f62a985c97de685dc693e87dc6d137a",
+                    "tree": [leaf],
+                }),
+                "cashuBo2FtcWh0dHBzOi8vbWludC50ZXN0YXVjc2F0YXSBomFpSAIlRqsKLe6fYXCBpGFhCGFzeEIwMzVmMDJkYjRlM2I0MjlkZTA0NjY5ZThmYmExZTc4NjcxOWRlODMzNmNlZGVmZjMwNDhlOTQ0ZWJjZmFmMDhlMjNhY1gwlqAOdfsAbh676uhg4KCVPJ2hrvRrpGFmEcmRkaMalu3yqAnPNl3kpP68JkE8uRTPYnNpo2FpWCEDHtXihGggBzw5zKE29pqjUJuIuPfw6fMBWd6hF4-nJfVhdVggxLaXs0Z5nlWoC6egtvdnCn9iqYXJfeaF3Gk-h9xtE3phdIFYMQACAgABAQQAIQLkk9vxwQ2A81geSQSTCxQEzGwTkA7gdYR0-pSr6MTNEwYABGijvoA",
+            ),
+        ];
+        for (secret, spend_info, token) in vectors {
+            let decoded = TokenV4::from_str(token).unwrap();
+            let proofs = decoded.proofs(&keysets).unwrap();
+            assert_eq!(proofs.len(), 1);
+            assert_eq!(proofs[0].secret.to_string(), secret);
+            let expected: SpendInfo = serde_json::from_value(spend_info).unwrap();
+            assert_eq!(proofs[0].spend_info.as_ref(), Some(&expected));
+            // Re-encoding gives the same string, from the decoded token and
+            // from its proofs. CDK pads base64 and the vectors do not; NUT-00
+            // makes padding optional, so compare without it.
+            assert_eq!(decoded.to_string().trim_end_matches('='), token);
+            let rebuilt = TokenV4 {
+                mint_url: decoded.mint_url.clone(),
+                unit: decoded.unit.clone(),
+                memo: None,
+                token: vec![TokenV4Token::new(keyset, proofs)],
+            };
+            assert_eq!(rebuilt.to_string().trim_end_matches('='), token);
+        }
+    }
+
+    /// v3 proofs drop a witness on encode and on decode; unknown spend
+    /// info fields survive a V4 round trip
+    #[test]
+    fn v3_token_witness_and_unknown_spend_info() {
+        use crate::nuts::nut00::Witness;
+        use crate::nuts::nut10::nutroot::NutrootWitness;
+
+        let keyset =
+            Id::from_str("022546ab0a2dee9f79510f4e20a4e3d9e894a97361047c594902573a7e64f9d701")
+                .unwrap();
+        let mut proof: Proof = serde_json::from_value(serde_json::json!({
+            "amount": 8,
+            "id": "022546ab0a2dee9f79510f4e20a4e3d9e894a97361047c594902573a7e64f9d701",
+            "secret": "0240c186f3e19f6f8cd00db81c5266d5c74ddca48ff848efd0e3e125b2846f30d9",
+            "C": "a33dd4de26ea950060ae5c45bdc408d72aaf51ba9f4ccdeee4a040df067ca87c799a406fec88c2a328b75b290e27f7b6",
+        }))
+        .unwrap();
+        proof.witness = Some(Witness::from(
+            NutrootWitness::from_str(r#"{"signatures":["3c2ce5dc36aea01a9b9f44287ef12e67a7fb0e0113720c3a000b5942835426e6635b09c087dbd30bde77ddf03b43b87858b3d2bf29d4b3ca7895f73e4839d3c2"]}"#).unwrap(),
+        ));
+        let token = TokenV4Token::new(keyset, vec![proof.clone()]);
+        assert!(token.proofs[0].witness.is_none());
+        let v3: ProofV3 = proof.into();
+        assert!(v3.witness.is_none());
+
+        // A V4 entry carrying a witness and an unknown si field.
+        let mut entry = ciborium::Value::Map(vec![
+            (ciborium::Value::Text("a".into()), ciborium::Value::Integer(8.into())),
+            (
+                ciborium::Value::Text("s".into()),
+                ciborium::Value::Text(
+                    "0240c186f3e19f6f8cd00db81c5266d5c74ddca48ff848efd0e3e125b2846f30d9".into(),
+                ),
+            ),
+            (
+                ciborium::Value::Text("c".into()),
+                ciborium::Value::Bytes(hex::decode("a33dd4de26ea950060ae5c45bdc408d72aaf51ba9f4ccdeee4a040df067ca87c799a406fec88c2a328b75b290e27f7b6").unwrap()),
+            ),
+            (
+                ciborium::Value::Text("witness".into()),
+                ciborium::Value::Text(r#"{"signatures":[]}"#.into()),
+            ),
+            (
+                ciborium::Value::Text("si".into()),
+                ciborium::Value::Map(vec![
+                    (
+                        ciborium::Value::Text("k".into()),
+                        ciborium::Value::Bytes(hex::decode("930c88ad9dc8531c147862d4ef9c0981200ff1f510c0a9e1c024db725a1d56c6").unwrap()),
+                    ),
+                    (
+                        ciborium::Value::Text("zz".into()),
+                        ciborium::Value::Integer(1.into()),
+                    ),
+                ]),
+            ),
+        ]);
+        let token = ciborium::Value::Map(vec![
+            (
+                ciborium::Value::Text("m".into()),
+                ciborium::Value::Text("https://mint.test".into()),
+            ),
+            (
+                ciborium::Value::Text("u".into()),
+                ciborium::Value::Text("sat".into()),
+            ),
+            (
+                ciborium::Value::Text("t".into()),
+                ciborium::Value::Array(vec![ciborium::Value::Map(vec![
+                    (
+                        ciborium::Value::Text("i".into()),
+                        ciborium::Value::Bytes(hex::decode("022546ab0a2dee9f").unwrap()),
+                    ),
+                    (
+                        ciborium::Value::Text("p".into()),
+                        ciborium::Value::Array(vec![std::mem::replace(
+                            &mut entry,
+                            ciborium::Value::Null,
+                        )]),
+                    ),
+                ])]),
+            ),
+        ]);
+        let mut bytes = Vec::new();
+        ciborium::ser::into_writer(&token, &mut bytes).unwrap();
+        let decoded: TokenV4 = ciborium::de::from_reader(bytes.as_slice()).unwrap();
+        let proof = &decoded.token[0].proofs[0];
+        assert!(proof.witness.is_none());
+        let spend_info = proof.spend_info.as_ref().unwrap();
+        assert!(spend_info.has_unknown_fields());
+        let mut again = Vec::new();
+        ciborium::ser::into_writer(&decoded, &mut again).unwrap();
+        let reparsed: TokenV4 = ciborium::de::from_reader(again.as_slice()).unwrap();
+        assert_eq!(
+            reparsed.token[0].proofs[0].spend_info.as_ref(),
+            Some(spend_info)
+        );
     }
 }

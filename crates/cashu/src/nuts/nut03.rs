@@ -54,7 +54,7 @@ impl SwapRequest {
     /// Create new [`SwapRequest`]
     pub fn new(inputs: Proofs, outputs: Vec<BlindedMessage>) -> Self {
         Self {
-            inputs: inputs.without_dleqs(),
+            inputs: inputs.without_dleqs().without_spend_info(),
             outputs,
         }
     }
