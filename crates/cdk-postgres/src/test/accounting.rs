@@ -292,3 +292,25 @@ async fn completed_operation_fees_are_live_before_and_after_aggregation() {
         .get(0);
     assert_eq!(fees, 1);
 }
+
+#[tokio::test]
+async fn accounting_batch_exceeds_postgres_parameter_limit() {
+    const EVENTS: usize = 65_536;
+
+    let (db, client, _) = setup().await;
+    client
+        .execute(
+            "INSERT INTO keyset_accounting (event_id, keyset_id, total_issued)
+        SELECT n::TEXT, '00916bbf7ef91a36', 1 FROM generate_series(1, $1::INTEGER) AS n",
+            &[&(EVENTS as i32)],
+        )
+        .await
+        .unwrap();
+    assert_eq!(db.flush_keyset_accounting(EVENTS).await.unwrap(), EVENTS);
+    assert_eq!(count(&client, "keyset_accounting").await, 0);
+    assert_eq!(
+        db.get_total_issued().await.unwrap()[&signature().1.keyset_id],
+        Amount::from(EVENTS as u64)
+    );
+    assert_eq!(db.flush_keyset_accounting(EVENTS).await.unwrap(), 0);
+}

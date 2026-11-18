@@ -10,6 +10,8 @@ use crate::pool::DatabasePool;
 use crate::stmt::query;
 use crate::{column_as_number, column_as_string, unpack_into};
 
+const DELETE_BATCH_SIZE: usize = 1000;
+
 impl<RM> SQLTransaction<RM>
 where
     RM: DatabasePool + 'static,
@@ -111,12 +113,13 @@ where
             }
         }
         let count = ids.len();
-        if count > 0 {
+        // Bound statement parameters independently of the configured event batch.
+        for chunk in ids.chunks(DELETE_BATCH_SIZE) {
             let deleted = query("DELETE FROM keyset_accounting WHERE event_id IN (:ids)")?
-                .bind_vec("ids", ids)?
+                .bind_vec("ids", chunk.to_vec())?
                 .execute(&tx)
                 .await?;
-            if deleted != count {
+            if deleted != chunk.len() {
                 return Err(Error::ConcurrentUpdate);
             }
         }

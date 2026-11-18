@@ -95,3 +95,88 @@ async fn accounting_upgrade_restart_and_overflow_retry() {
     pool.close().await.unwrap();
     std::fs::remove_file(path).unwrap();
 }
+
+#[tokio::test]
+async fn accounting_batch_exceeds_sqlite_parameter_limit() {
+    const EVENTS: usize = 32_767;
+
+    let path = std::env::temp_dir().join(format!(
+        "cdk-accounting-large-batch-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    #[cfg(not(feature = "sqlcipher"))]
+    let config: Config = (&path).into();
+    #[cfg(feature = "sqlcipher")]
+    let config: Config = (path.clone(), "test".to_owned()).into();
+    let db = MintSqliteDatabase::new(config.clone()).await.unwrap();
+    let pool = Pool::<SqliteConnectionManager>::new(config);
+    let conn = pool.get().await.unwrap();
+    query(
+        "WITH RECURSIVE events(n) AS (
+        SELECT 1 UNION ALL SELECT n + 1 FROM events WHERE n < :events
+    ) INSERT INTO keyset_accounting (event_id, keyset_id, total_issued)
+      SELECT CAST(n AS TEXT), '00916bbf7ef91a36', 1 FROM events",
+    )
+    .unwrap()
+    .bind("events", i64::try_from(EVENTS).unwrap())
+    .execute(&*conn)
+    .await
+    .unwrap();
+
+    // Fail late in the ordered event batch, after earlier deletes can succeed.
+    query(
+        "CREATE TRIGGER reject_accounting_delete BEFORE DELETE ON keyset_accounting
+        WHEN OLD.event_id = '999' BEGIN SELECT RAISE(ABORT, 'accounting deletion failed'); END",
+    )
+    .unwrap()
+    .batch(&*conn)
+    .await
+    .unwrap();
+    let error = db
+        .flush_keyset_accounting(EVENTS)
+        .await
+        .expect_err("deletion must fail");
+    assert!(error.to_string().contains("accounting deletion failed"));
+    // This write waits for rollback of every earlier delete and totals update.
+    query("DROP TRIGGER reject_accounting_delete")
+        .unwrap()
+        .execute(&*conn)
+        .await
+        .unwrap();
+    assert_eq!(
+        query("SELECT COUNT(*) FROM keyset_accounting")
+            .unwrap()
+            .pluck(&*conn)
+            .await
+            .unwrap(),
+        Some(Column::Integer(EVENTS as i64))
+    );
+    assert_eq!(
+        query("SELECT COUNT(*) FROM keyset_amounts")
+            .unwrap()
+            .pluck(&*conn)
+            .await
+            .unwrap(),
+        Some(Column::Integer(0))
+    );
+
+    assert_eq!(db.flush_keyset_accounting(EVENTS).await.unwrap(), EVENTS);
+    assert_eq!(
+        query("SELECT COUNT(*) FROM keyset_accounting")
+            .unwrap()
+            .pluck(&*conn)
+            .await
+            .unwrap(),
+        Some(Column::Integer(0))
+    );
+    assert_eq!(
+        db.get_total_issued().await.unwrap()[&Id::from_str("00916bbf7ef91a36").unwrap()],
+        Amount::from(EVENTS as u64)
+    );
+    assert_eq!(db.flush_keyset_accounting(EVENTS).await.unwrap(), 0);
+
+    db.close().await.unwrap();
+    drop(conn);
+    pool.close().await.unwrap();
+    std::fs::remove_file(path).unwrap();
+}
