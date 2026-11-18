@@ -88,6 +88,7 @@ fn test_proof(keyset_id: Id, amount: u64) -> Proof {
         witness: None,
         dleq: None,
         p2pk_e: None,
+        spend_info: None,
     }
 }
 
@@ -734,6 +735,45 @@ where
         .unwrap();
     let proofs = db.get_proofs_by_ys(vec![proof_info.y]).await.unwrap();
     assert_eq!(proofs[0].derivation_index, Some(42));
+}
+
+/// A v3 proof's stored nutroot witness reads back as a nutroot witness
+pub async fn v3_proof_witness_round_trips<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let keyset_id = Id::from_bytes(
+        &[
+            vec![cashu::nuts::nut02::KeySetVersion::Version02.to_byte()],
+            vec![2; 32],
+        ]
+        .concat(),
+    )
+    .unwrap();
+    let witness = cashu::Witness::Nutroot(
+        cashu::nut10::nutroot::RawNutrootWitness::new(r#"{"signatures":[]}"#.to_owned()).unwrap(),
+    );
+    let proof = Proof {
+        amount: Amount::from(8),
+        keyset_id,
+        secret: Secret::from_point(&SecretKey::generate().public_key()),
+        c: cashu::nuts::nut01::BlsG1PublicKey::hash_to_curve(b"v3 wallet proof").into(),
+        witness: Some(witness.clone()),
+        dleq: None,
+        p2pk_e: None,
+        spend_info: None,
+    };
+    let proof_info =
+        ProofInfo::new(proof, test_mint_url(), State::Pending, CurrencyUnit::Sat).unwrap();
+
+    db.update_proofs(vec![proof_info.clone()], vec![])
+        .await
+        .unwrap();
+
+    let proofs = db.get_proofs_by_ys(vec![proof_info.y]).await.unwrap();
+    assert_eq!(proofs.len(), 1);
+    assert_eq!(proofs[0].proof.witness, Some(witness));
+    assert_eq!(proofs[0], proof_info);
 }
 
 /// Test getting proofs in transaction
@@ -1980,6 +2020,7 @@ macro_rules! wallet_db_test {
             add_melt_quote_optimistic_locking,
             add_melt_quote_keeps_payment_proof,
             add_and_get_proofs,
+            v3_proof_witness_round_trips,
             get_proofs_in_transaction,
             update_proofs,
             update_proofs_state,

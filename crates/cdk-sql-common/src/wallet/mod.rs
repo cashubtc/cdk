@@ -18,7 +18,7 @@ use cdk_common::wallet::{
 use cdk_common::{
     database, Amount, BlindingFactor, CurrencyUnit, DhkePoint, Id, KeySet, KeySetInfo, Keys,
     MintInfo, PaymentMethod, Proof, ProofDleq, ProofId, PublicKey, SecretKey, SpendingConditions,
-    State,
+    State, Witness,
 };
 use tracing::instrument;
 use uuid::Uuid;
@@ -2271,13 +2271,13 @@ fn sql_row_to_proof_info(row: Vec<Column>) -> Result<ProofInfo, Error> {
     };
 
     let amount: u64 = column_as_number!(amount);
+    let keyset_id = column_as_string!(keyset_id, Id::from_str);
     let proof = Proof {
         amount: Amount::from(amount),
-        keyset_id: column_as_string!(keyset_id, Id::from_str),
+        keyset_id,
         secret: column_as_string!(secret, Secret::from_str),
-        witness: column_as_nullable_string!(witness, |v| { serde_json::from_str(&v).ok() }, |v| {
-            serde_json::from_slice(&v).ok()
-        }),
+        witness: column_as_nullable_string!(witness)
+            .and_then(|w| Witness::from_stored_json(&w, &keyset_id).ok()),
         c: column_as_string!(
             c,
             DhkePoint::from_hex_any_curve,
@@ -2287,6 +2287,7 @@ fn sql_row_to_proof_info(row: Vec<Column>) -> Result<ProofInfo, Error> {
         p2pk_e: column_as_nullable_binary!(p2pk_e)
             .map(|bytes| PublicKey::from_slice(&bytes))
             .transpose()?,
+        spend_info: None,
     };
 
     let used_by_operation =

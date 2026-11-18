@@ -219,6 +219,7 @@ impl TryInto<cdk_common::Proof> for Proof {
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         })
     }
 }
