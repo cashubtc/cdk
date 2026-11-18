@@ -76,7 +76,7 @@ where
 {
     let mut bls_mint_pubkeys = Vec::new();
     let mut bls_signatures = Vec::new();
-    let mut bls_secrets: Vec<&[u8]> = Vec::new();
+    let mut bls_secrets: Vec<Vec<u8>> = Vec::new();
 
     for (proof, mint_pubkey) in proofs {
         match proof.keyset_id.get_version() {
@@ -90,7 +90,13 @@ where
                 proof.ensure_dleq_allowed()?;
                 bls_mint_pubkeys.push(mint_pubkey);
                 bls_signatures.push(proof.c);
-                bls_secrets.push(proof.secret.as_bytes());
+                bls_secrets.push(
+                    proof
+                        .secret
+                        .hash_input(KeySetVersion::Version02)
+                        .map_err(crate::dhke::Error::from)?
+                        .into_owned(),
+                );
             }
         }
     }
@@ -98,7 +104,7 @@ where
     Ok(batch_verify_bls_messages(
         &bls_mint_pubkeys,
         &bls_signatures,
-        &bls_secrets,
+        &bls_secrets.iter().map(Vec::as_slice).collect::<Vec<_>>(),
     )?)
 }
 
@@ -667,8 +673,11 @@ mod tests {
         Id::from_bytes(&bytes).expect("v3 id")
     }
 
-    /// Sign `message` with `mint_key` through the full blind-sign-unblind flow,
+    /// Sign a secret with `mint_key` through the full blind-sign-unblind flow,
     /// returning the blind signature, its blinded message and the final proof.
+    ///
+    /// Pre-v3 keysets sign `message` as the secret; v3 keysets sign a fresh
+    /// point secret, as v3 secrets must be points.
     fn signed(
         mint_key: &MintSecretKey,
         keyset_id: Id,
@@ -676,25 +685,22 @@ mod tests {
     ) -> (BlindSignature, DhkePoint, Proof) {
         use std::collections::BTreeMap;
 
-        use crate::dhke::{blind_message_for_version, construct_proofs, sign_message};
+        use crate::dhke::{blind_secret, construct_proofs, sign_message};
         use crate::nuts::Keys;
         use crate::secret::Secret;
 
-        let (blinded, r) =
-            blind_message_for_version(message.as_bytes(), None, keyset_id.get_version())
-                .expect("blind");
+        let secret = match keyset_id.get_version() {
+            KeySetVersion::Version02 => Secret::generate_v3().0,
+            _ => Secret::new(message),
+        };
+        let (blinded, r) = blind_secret(&secret, None, keyset_id.get_version()).expect("blind");
         let c_ = sign_message(mint_key, &blinded).expect("sign");
         let blind_signature =
             BlindSignature::new(Amount::ONE, c_, keyset_id, &blinded, mint_key).expect("sign");
         let keys = Keys::new(BTreeMap::from([(Amount::ONE, mint_key.public_key())]));
-        let proof = construct_proofs(
-            vec![blind_signature.clone()],
-            vec![r],
-            vec![Secret::new(message)],
-            &keys,
-        )
-        .expect("construct")
-        .remove(0);
+        let proof = construct_proofs(vec![blind_signature.clone()], vec![r], vec![secret], &keys)
+            .expect("construct")
+            .remove(0);
         (blind_signature, blinded, proof)
     }
 

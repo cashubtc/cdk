@@ -45,7 +45,7 @@ use tracing::instrument;
 use self::compensation::{MintCompensation, ReleaseMintQuote};
 use self::state::{Finalized, Initial, Prepared, PreparedMintRequest};
 use crate::amount::SplitTarget;
-use crate::dhke::{construct_proofs, hash_to_curve_for_version};
+use crate::dhke::{construct_proofs, hash_secret_to_curve};
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{MintRequest, PreMintSecrets, Proofs, SpendingConditions, State};
 use crate::util::unix_time;
@@ -1003,8 +1003,8 @@ impl<'a> MintSaga<'a, Prepared> {
                 .secrets
                 .iter()
                 .map(|pre_mint| {
-                    hash_to_curve_for_version(
-                        pre_mint.secret.as_bytes(),
+                    hash_secret_to_curve(
+                        &pre_mint.secret,
                         pre_mint.blinded_message.keyset_id.get_version(),
                     )
                     .map(Into::into)

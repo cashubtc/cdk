@@ -19,7 +19,7 @@ use cdk_common::wallet::{
 use cdk_common::{Amount, PaymentMethod};
 use tracing::instrument;
 
-use crate::dhke::hash_to_curve_for_version;
+use crate::dhke::hash_secret_to_curve;
 use crate::nuts::{MintRequest, PreMintSecrets};
 use crate::util::unix_time;
 use crate::wallet::issue::saga::compensation::ReleaseMintQuote;
@@ -198,8 +198,8 @@ impl Wallet {
             .secrets
             .iter()
             .map(|pre_mint| {
-                hash_to_curve_for_version(
-                    pre_mint.secret.as_bytes(),
+                hash_secret_to_curve(
+                    &pre_mint.secret,
                     pre_mint.blinded_message.keyset_id.get_version(),
                 )
                 .map(Into::into)
@@ -705,9 +705,12 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        let expected: crate::nuts::ProofId =
-            crate::nuts::nut01::BlsG1PublicKey::hash_to_curve(premint.secrets[0].secret.as_bytes())
-                .into();
+        let expected: crate::nuts::ProofId = crate::dhke::hash_secret_to_curve(
+            &premint.secrets[0].secret,
+            crate::nuts::nut02::KeySetVersion::Version02,
+        )
+        .unwrap()
+        .into();
         assert_eq!(transaction.ys, vec![expected]);
         assert_eq!(transaction.status, TransactionStatus::Pending);
     }
