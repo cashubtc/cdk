@@ -36,8 +36,11 @@ use crate::nuts::{Id, ProofDleq};
 use crate::secret::Secret;
 use crate::Amount;
 
+pub mod tlv;
 pub mod token;
+pub mod transaction;
 pub use token::{Token, TokenV3, TokenV4};
+pub use transaction::{Transaction, TransactionInput, TransactionOutput};
 
 /// List of [Proof]
 pub type Proofs = Vec<Proof>;

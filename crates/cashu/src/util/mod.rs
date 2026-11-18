@@ -2,6 +2,7 @@
 
 pub mod hex;
 pub mod serde_helpers;
+pub mod tagged_hash;
 
 use std::sync::LazyLock;
 
