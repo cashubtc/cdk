@@ -1,0 +1,340 @@
+//! The leaf tree
+//!
+//! ```text
+//! leaf_hash = tagged_hash("Cashu_NutrootLeaf", serialized_leaf)
+//! branch    = tagged_hash("Cashu_NutrootBranch", min(h1, h2) || max(h1, h2))
+//! ```
+//!
+//! The root of one leaf is its leaf hash. For more, the leaf hashes are
+//! sorted ascending once, then folded pairwise per level, an unpaired last
+//! hash promoted unchanged, until one remains. Duplicates are kept.
+//!
+//! NUT-10 specifies this: sort once, then keep each later level's order. A
+//! per-level re-sort differs from five leaves up, which the five-leaf test
+//! vector pins.
+
+use super::leaf::LeafBytes;
+use super::Error;
+use crate::util::tagged_hash::{tagged_hash, tagged_hash_parts};
+
+/// Tag of a leaf hash
+pub const LEAF_TAG: &str = "Cashu_NutrootLeaf";
+/// Tag of a branch hash
+pub const BRANCH_TAG: &str = "Cashu_NutrootBranch";
+/// Most leaves a tree may hold
+pub const MAX_LEAVES: usize = 8;
+/// Most sibling hashes a merkle path may hold
+pub const MAX_PATH_LEN: usize = 3;
+
+/// A 32-byte node hash
+pub type NodeHash = [u8; 32];
+
+/// `tagged_hash("Cashu_NutrootLeaf", leaf)`
+pub fn leaf_hash(leaf: &[u8]) -> NodeHash {
+    tagged_hash(LEAF_TAG, leaf)
+}
+
+/// `tagged_hash("Cashu_NutrootBranch", min(a, b) || max(a, b))`
+pub fn branch_hash(a: &NodeHash, b: &NodeHash) -> NodeHash {
+    let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+    tagged_hash_parts(BRANCH_TAG, &[lo, hi])
+}
+
+fn check_count(count: usize) -> Result<(), Error> {
+    match count {
+        0 => Err(Error::EmptyTree),
+        n if n > MAX_LEAVES => Err(Error::TooManyLeaves(n)),
+        _ => Ok(()),
+    }
+}
+
+/// Leaf hashes sorted ascending, each with its index in `leaves`
+fn sorted_hashes(leaves: &[LeafBytes]) -> Vec<(NodeHash, usize)> {
+    let mut hashes: Vec<(NodeHash, usize)> = leaves
+        .iter()
+        .enumerate()
+        .map(|(index, leaf)| (leaf.hash(), index))
+        .collect();
+    hashes.sort();
+    hashes
+}
+
+fn fold_level(level: &[NodeHash]) -> Vec<NodeHash> {
+    let mut next = Vec::with_capacity(level.len().div_ceil(2));
+    let mut hashes = level.iter();
+    while let Some(a) = hashes.next() {
+        next.push(match hashes.next() {
+            Some(b) => branch_hash(a, b),
+            None => *a,
+        });
+    }
+    next
+}
+
+/// The merkle root of a tree of 1 to 8 leaves, in any order
+pub fn merkle_root(leaves: &[LeafBytes]) -> Result<NodeHash, Error> {
+    check_count(leaves.len())?;
+    let mut level: Vec<NodeHash> = sorted_hashes(leaves).into_iter().map(|(h, _)| h).collect();
+    while level.len() > 1 {
+        level = fold_level(&level);
+    }
+    Ok(level[0])
+}
+
+/// The sibling hashes from `leaves[index]` to the root
+pub fn merkle_path(leaves: &[LeafBytes], index: usize) -> Result<Vec<NodeHash>, Error> {
+    check_count(leaves.len())?;
+    let sorted = sorted_hashes(leaves);
+    let mut position = sorted
+        .iter()
+        .position(|(_, i)| *i == index)
+        .ok_or(Error::LeafIndex(index))?;
+    let mut level: Vec<NodeHash> = sorted.into_iter().map(|(h, _)| h).collect();
+    let mut path = Vec::new();
+    while level.len() > 1 {
+        if let Some(sibling) = level.get(position ^ 1) {
+            path.push(*sibling);
+        }
+        level = fold_level(&level);
+        position /= 2;
+    }
+    Ok(path)
+}
+
+/// Recompute the root from a leaf hash and its merkle path
+pub fn root_from_path(leaf_hash: &NodeHash, path: &[NodeHash]) -> Result<NodeHash, Error> {
+    if path.len() > MAX_PATH_LEN {
+        return Err(Error::PathTooLong(path.len()));
+    }
+    Ok(path
+        .iter()
+        .fold(*leaf_hash, |node, sibling| branch_hash(&node, sibling)))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use super::*;
+    use crate::util::hex;
+
+    const THRESHOLD_1OF1_KEY3: &str =
+        "00010200010104002102f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9";
+    const AFTER_1OF1_KEY4: &str = "00020200010104002102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1306000468a3be80";
+    const HASHLOCK_1OF1_KEY3: &str = "00030200010104002102f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9080020a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
+
+    fn leaf(hex: &str) -> LeafBytes {
+        LeafBytes::from_str(hex).unwrap()
+    }
+
+    /// tests/10-tests.md "The tree fold": three leaves, odd hash promoted
+    #[test]
+    fn three_leaf_vector() {
+        let leaves = [
+            leaf(THRESHOLD_1OF1_KEY3),
+            leaf(AFTER_1OF1_KEY4),
+            leaf(HASHLOCK_1OF1_KEY3),
+        ];
+        let root = merkle_root(&leaves).unwrap();
+        assert_eq!(
+            hex::encode(root),
+            "3d4fbecf46f5c716d7cebd48863f3c4ab89e675e3beb4b3a28f3bd13b49d43ad"
+        );
+        let path = merkle_path(&leaves, 2).unwrap();
+        assert_eq!(
+            path.iter().map(hex::encode).collect::<Vec<_>>(),
+            vec![
+                "23e8ff1693496ecad495b7ed3cdd7f8595c52a3adc0b92475835b0fb839116cb",
+                "9ed9c0b8907f7af4fce51cbeac218907bbf80ba40f3342df2406bce30616589a",
+            ]
+        );
+        // Every leaf's path reaches the root, in any transmitted order.
+        for index in 0..leaves.len() {
+            let path = merkle_path(&leaves, index).unwrap();
+            assert_eq!(root_from_path(&leaves[index].hash(), &path).unwrap(), root);
+        }
+        let mut permuted = leaves.clone();
+        permuted.reverse();
+        assert_eq!(merkle_root(&permuted).unwrap(), root);
+    }
+
+    /// tests/10-tests.md: two copies of one leaf are not deduplicated
+    #[test]
+    fn duplicate_leaf_vector() {
+        let leaves = [leaf(THRESHOLD_1OF1_KEY3), leaf(THRESHOLD_1OF1_KEY3)];
+        let h = leaves[0].hash();
+        assert_eq!(
+            hex::encode(h),
+            "23e8ff1693496ecad495b7ed3cdd7f8595c52a3adc0b92475835b0fb839116cb"
+        );
+        let root = merkle_root(&leaves).unwrap();
+        assert_eq!(
+            hex::encode(root),
+            "1eaf291448e2f3c3a4fc00bfd591917bbb807e63af0fb905d054002bddd2cbc6"
+        );
+        assert_eq!(root, branch_hash(&h, &h));
+        for index in 0..2 {
+            assert_eq!(merkle_path(&leaves, index).unwrap(), vec![h]);
+        }
+
+        // Under internal key 6 the pair commits to the vector's secret.
+        use crate::nuts::nut01::SecretKey;
+        use crate::nuts::nut10::nutroot::tweak::{tweak, tweaked_key};
+        let internal = SecretKey::from_slice(&[[0u8; 31].as_slice(), &[6]].concat())
+            .unwrap()
+            .public_key();
+        assert_eq!(
+            internal.to_hex(),
+            "03fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a1460297556"
+        );
+        assert_eq!(
+            tweaked_key(&internal, &tweak(&internal, Some(&root)))
+                .unwrap()
+                .to_hex(),
+            "03dd2f11ab23b670222ada50325b5d49cd07e1d7a721d9b52fa2039df1f1b0dbfd"
+        );
+    }
+
+    /// tests/10-tests.md: five `commit` leaves, sorted once. `h2` is
+    /// promoted twice, so its path is one sibling.
+    #[test]
+    fn five_leaf_vector() {
+        let leaves: Vec<LeafBytes> = (0u8..5)
+            .map(|i| {
+                let mut bytes = hex::decode("0004080020").unwrap();
+                bytes.extend_from_slice(&[[0u8; 31].as_slice(), &[i]].concat());
+                LeafBytes::from_str(&hex::encode(bytes)).unwrap()
+            })
+            .collect();
+        let leaf_hashes = [
+            "05b902a6c6e5377ac3a3b93e3462fce75f814c3e408f89145f3cf322a003eb0f",
+            "286e16e868323f95501543ee9aae0da89e34c1dfa167ebcb8e746e9babcaf886",
+            "562fc5b49cf68d9f3d8d9d7ddc3e1f52b4df5cae5258def2bdecc1155b01b4b8",
+            "4c780cd9c644de1942c0704a1b5cff776243a6f088c6f688511e2d94004e86ce",
+            "4a1354e62955e17a4b4bda00ee145acb2088b81f4253acf4d8d274b2282cfa86",
+        ];
+        for (leaf, expected) in leaves.iter().zip(leaf_hashes) {
+            assert_eq!(hex::encode(leaf.hash()), expected);
+        }
+
+        let root = merkle_root(&leaves).unwrap();
+        assert_eq!(
+            hex::encode(root),
+            "08ded689dfa100f1ef1ad68c4e5696e99670bb5a7d0225f34f2f85f3053cde53"
+        );
+
+        let paths: [&[&str]; 5] = [
+            &[
+                "286e16e868323f95501543ee9aae0da89e34c1dfa167ebcb8e746e9babcaf886",
+                "3b9477ce1bb3e0588966ad6d26ac290bf9838abb32915928f9b1d7317fa7d59a",
+                "562fc5b49cf68d9f3d8d9d7ddc3e1f52b4df5cae5258def2bdecc1155b01b4b8",
+            ],
+            &[
+                "05b902a6c6e5377ac3a3b93e3462fce75f814c3e408f89145f3cf322a003eb0f",
+                "3b9477ce1bb3e0588966ad6d26ac290bf9838abb32915928f9b1d7317fa7d59a",
+                "562fc5b49cf68d9f3d8d9d7ddc3e1f52b4df5cae5258def2bdecc1155b01b4b8",
+            ],
+            &["9226021183059036a870b19486aa04579b406f4eddf11f8ba432cf92b7d13aa8"],
+            &[
+                "4a1354e62955e17a4b4bda00ee145acb2088b81f4253acf4d8d274b2282cfa86",
+                "99cac68e791a8c74dcd723f39db7cda19170be30ecfa065d803436c1426349f0",
+                "562fc5b49cf68d9f3d8d9d7ddc3e1f52b4df5cae5258def2bdecc1155b01b4b8",
+            ],
+            &[
+                "4c780cd9c644de1942c0704a1b5cff776243a6f088c6f688511e2d94004e86ce",
+                "99cac68e791a8c74dcd723f39db7cda19170be30ecfa065d803436c1426349f0",
+                "562fc5b49cf68d9f3d8d9d7ddc3e1f52b4df5cae5258def2bdecc1155b01b4b8",
+            ],
+        ];
+        for (index, expected) in paths.iter().enumerate() {
+            let path = merkle_path(&leaves, index).unwrap();
+            assert_eq!(path.iter().map(hex::encode).collect::<Vec<_>>(), *expected);
+            assert_eq!(root_from_path(&leaves[index].hash(), &path).unwrap(), root);
+        }
+    }
+
+    #[test]
+    fn single_leaf_root_is_leaf_hash() {
+        let leaves = [leaf(AFTER_1OF1_KEY4)];
+        assert_eq!(
+            hex::encode(merkle_root(&leaves).unwrap()),
+            "9ed9c0b8907f7af4fce51cbeac218907bbf80ba40f3342df2406bce30616589a"
+        );
+        assert!(merkle_path(&leaves, 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn tree_limits() {
+        assert!(matches!(merkle_root(&[]), Err(Error::EmptyTree)));
+        let nine = vec![leaf(THRESHOLD_1OF1_KEY3); 9];
+        assert!(matches!(merkle_root(&nine), Err(Error::TooManyLeaves(9))));
+        let eight = vec![leaf(THRESHOLD_1OF1_KEY3); 8];
+        for index in 0..8 {
+            assert_eq!(merkle_path(&eight, index).unwrap().len(), MAX_PATH_LEN);
+        }
+        assert!(matches!(merkle_path(&eight, 8), Err(Error::LeafIndex(8))));
+        assert!(matches!(
+            root_from_path(&[0; 32], &[[0; 32]; 4]),
+            Err(Error::PathTooLong(4))
+        ));
+    }
+
+    /// Threshold 1-of-1 leaves for keys `1..=count`
+    fn key_leaves(count: u8) -> Vec<LeafBytes> {
+        use crate::nuts::nut01::SecretKey;
+        use crate::nuts::nut10::nutroot::Leaf;
+
+        (1..=count)
+            .map(|i| {
+                let key = SecretKey::from_slice(&[[0u8; 31].as_slice(), &[i]].concat()).unwrap();
+                Leaf::Threshold {
+                    n: 1,
+                    keys: vec![key.public_key()],
+                }
+                .to_leaf_bytes()
+                .unwrap()
+            })
+            .collect()
+    }
+
+    /// NUT-10 sorts the leaf hashes once and keeps that order on every
+    /// level. Re-sorting each level agrees up to four leaves and differs for
+    /// these trees; these roots pin sort-once beyond the five-leaf vector.
+    ///
+    /// Re-sorting every level would give, for five leaves,
+    /// `9c081ee9fa920ad4c477db4177fd47d0519ae99e4f861b074652b6ea9ecd4f04`
+    /// and, for eight,
+    /// `401d16737ee814655155dc5548e0027aeb3a3ba75691bd298fb69eafd6c59cd4`.
+    #[test]
+    fn fold_sorts_once() {
+        for (count, root) in [
+            (
+                5,
+                "3c5af4e8879ed6860a7f646627548268153516c8941b4f7d53235d6013b22268",
+            ),
+            (
+                6,
+                "ecad9e7142ffea3f6512e91aef3996761ebf617537e53888e13d406155d279db",
+            ),
+            (
+                7,
+                "2dadc8d26dd4e14dd5e0c205771c3c9f02481864865f5e56a91a68eb3b859680",
+            ),
+            (
+                8,
+                "a766a7f2a4ac22eecd073f7f11147bb87d8e0208b81181c041ae6378a0bb5d05",
+            ),
+        ] {
+            let leaves = key_leaves(count);
+            let computed = merkle_root(&leaves).unwrap();
+            assert_eq!(hex::encode(computed), root, "{count} leaves");
+            for index in 0..leaves.len() {
+                let path = merkle_path(&leaves, index).unwrap();
+                assert_eq!(
+                    root_from_path(&leaves[index].hash(), &path).unwrap(),
+                    computed
+                );
+            }
+        }
+    }
+}

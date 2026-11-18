@@ -19,6 +19,7 @@ pub use secret::Secret;
 pub mod error;
 pub use error::Error;
 
+pub mod nutroot;
 pub mod tag;
 pub use tag::{Tag, TagKind};
 
