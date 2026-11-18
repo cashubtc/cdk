@@ -23,7 +23,9 @@ use thiserror::Error;
 
 use crate::nuts::nut01::{PublicKey, SecretKey};
 use crate::nuts::nut10::nutroot::internal_key::nums_h;
-use crate::nuts::nut10::nutroot::{self, merkle_root, tweak, tweaked_key, tweaked_secret_key};
+use crate::nuts::nut10::nutroot::{
+    self, merkle_root, nums_internal_key, tweak, tweaked_key, tweaked_secret_key,
+};
 use crate::nuts::nut10::nutroot::{Leaf, LeafBytes, ParsedLeaf, MAX_LEAVES};
 use crate::nuts::nut28::slot_map::derive_slot_key;
 use crate::util::hex;
@@ -137,6 +139,8 @@ pub enum KeySource {
     ReceiverKeyed,
     /// `K` disclosed as is
     Disclosed,
+    /// `H + u*G` from a NUMS offset `u`: script-only
+    Nums,
 }
 
 impl SpendInfo {
@@ -206,10 +210,21 @@ impl SpendInfo {
     ) -> Result<Reconstruction, Error> {
         self.validate()?;
 
-        // The internal key, by precedence: bearer, receiver-keyed, disclosed.
-        let (internal_key, source, internal_secret) = match (&self.k, &self.e) {
-            (Some(k), _) => (k.public_key(), KeySource::Bearer, Some(k.clone())),
-            (None, Some(e)) => {
+        // The internal key, by precedence: NUMS, bearer, receiver-keyed,
+        // disclosed. NUT-00 lists no NUMS route, so read literally it
+        // derives slot 0 from E even when E only blinded leaf keys (NUT-18).
+        // A NUMS internal key is H + u*G: E then serves slots 1.. only.
+        let (internal_key, source, internal_secret) = match (&self.u, &self.k, &self.e) {
+            (Some(u), None, _) => {
+                let nums = nums_internal_key(u)?;
+                if self.internal_key.is_some_and(|k| k != nums) {
+                    return Err(Error::NotNums);
+                }
+                (nums, KeySource::Nums, None)
+            }
+            (Some(_), Some(_), _) => return Err(Error::Malformed("bearer k with a NUMS u")),
+            (None, Some(k), _) => (k.public_key(), KeySource::Bearer, Some(k.clone())),
+            (None, None, Some(e)) => {
                 let receiver_key = receiver_key.ok_or(Error::NoReceiverKey)?;
                 let derived = derive_slot_key(receiver_key, e, 0)?;
                 let derived_key = derived.public_key();
@@ -218,7 +233,7 @@ impl SpendInfo {
                 }
                 (derived_key, KeySource::ReceiverKeyed, Some(derived))
             }
-            (None, None) => match self.internal_key {
+            (None, None, None) => match self.internal_key {
                 Some(k) => (k, KeySource::Disclosed, None),
                 None => return Err(Error::Malformed("no internal key source")),
             },
@@ -731,5 +746,40 @@ mod tests {
                 .reconstruct(&secret, None)
                 .unwrap();
         }
+    }
+
+    /// tests/18-tests.md NUMS request with `b`: the spend info carries E
+    /// (it blinded the leaf key) beside K = H + u*G. Read literally, NUT-00
+    /// would derive slot 0 from E and reject; the NUMS route accepts it,
+    /// with or without the disclosed K.
+    #[test]
+    fn check_1_nums_with_ephemeral() {
+        let secret = point("02fb23814e330739413a6e3982a21916002962002bc101ac105a28e0cf3bcb46d1");
+        let blinded_leaf = "000202000101040021039ca57991c48db95252bff61e02c31cf9b1e9ec2ef27d9dee33db6f0324e6ca8106000468a3be80";
+        let full = serde_json::json!({
+            "E": E5,
+            "K": "028edfebd6fdea3e1d89359af20868a2e76315b36cdb1a79de497a1757ca7bd407",
+            "u": "0000000000000000000000000000000000000000000000000000000000000007",
+            "tree": [blinded_leaf],
+        });
+        for receiver in [None, Some(key(3))] {
+            let r = info(full.clone())
+                .reconstruct(&secret, receiver.as_ref())
+                .unwrap();
+            assert_eq!(r.source, KeySource::Nums);
+            assert!(r.script_only);
+            assert!(r.key_path_key.is_none());
+        }
+        let mut without_k = full.clone();
+        without_k.as_object_mut().unwrap().remove("K");
+        info(without_k).reconstruct(&secret, None).unwrap();
+
+        // A disclosed K other than H + u*G rejects.
+        let mut wrong_k = full;
+        wrong_k["K"] = serde_json::json!(WORKED_K);
+        assert!(matches!(
+            info(wrong_k).reconstruct(&secret, None),
+            Err(Error::NotNums)
+        ));
     }
 }
