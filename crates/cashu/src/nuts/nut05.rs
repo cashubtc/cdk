@@ -11,6 +11,9 @@ use serde::ser::{SerializeStruct, Serializer};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use super::nut00::transaction::{
+    blinded_outputs, proof_inputs, Error as TransactionError, Transaction, TransactionOutput,
+};
 use super::nut00::{BlindSignature, BlindedMessage, CurrencyUnit, PaymentMethod, Proofs};
 use super::ProofsMethods;
 use crate::nut00::KnownMethod;
@@ -134,6 +137,25 @@ impl<Q> MeltRequest<Q> {
     /// Get outputs (blinded messages for change)
     pub fn outputs(&self) -> &Option<Vec<BlindedMessage>> {
         &self.outputs
+    }
+}
+
+impl<Q> MeltRequest<Q>
+where
+    Q: fmt::Display,
+{
+    /// The melt's transaction: proof inputs to the melt quote and any blank
+    /// change outputs
+    ///
+    /// `quote_amount` is the quote's amount plus the fee reserve the request
+    /// selects, read from the mint's quote state.
+    pub fn transaction(&self, quote_amount: Amount) -> Result<Transaction, TransactionError> {
+        let mut outputs = vec![TransactionOutput::MeltQuote {
+            amount: quote_amount,
+            quote_id: self.quote.to_string(),
+        }];
+        outputs.extend(blinded_outputs(self.outputs.as_deref().unwrap_or_default()));
+        Transaction::new(proof_inputs(&self.inputs)?, outputs)
     }
 }
 

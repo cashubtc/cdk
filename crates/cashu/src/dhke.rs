@@ -979,4 +979,29 @@ mod tests {
         .unwrap();
         assert_eq!(y, expected_y);
     }
+
+    /// tests/00-tests.md transcript vectors: the mint's blind signatures
+    /// under keyset 022546ab... (scalars 7, 13, 29, 71 for 1, 2, 4, 8)
+    #[test]
+    fn test_v3_transcript_vector_blind_signatures() {
+        let scalar =
+            |n: u8| MintSecretKey::bls_from_slice(&[[0u8; 31].as_slice(), &[n]].concat()).unwrap();
+        let b = |hex: &str| DhkePoint::from_hex_for_version(hex, KeySetVersion::Version02).unwrap();
+        let b1 = b("b42a0bcc39598db1dca617aeea6bc367f2566636826dc961a54faae15b3b8d10afc1cb0206e70ab3b0e12c2b9478cd55");
+        let b2 = b("a14669f181e074cc466e2a165c47ab7db5b3939e42b349f1201874033943ef279f36476e627ab1c937e8ea6a76448fc2");
+        // Partial mint: 4 sat on the first B_
+        assert_eq!(
+            sign_message(&scalar(29), &b1).unwrap().to_hex(),
+            "98a471f36a34323f96a1b5783bd98829f9fc69687a9c4f6774c23d89b8f0f2c93e8510992c7942e1980746138c90ae26"
+        );
+        // Melt change: 1 and 2 sat on the blank outputs, in order
+        assert_eq!(
+            sign_message(&scalar(7), &b1).unwrap().to_hex(),
+            "b8323ba04c279ce45cfd572020ceedd2925f5112769fdc97f8669f9b0e9080d78cc28c1846d59157f8fa6e329c90ad3d"
+        );
+        assert_eq!(
+            sign_message(&scalar(13), &b2).unwrap().to_hex(),
+            "a5845c6eff7c6eb2a1b17e7579ed880c1b335e137f1527c143b82c7e606f366bee79d7f9937799fb9941f1e9a060c752"
+        );
+    }
 }
