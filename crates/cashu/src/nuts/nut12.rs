@@ -2,8 +2,6 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/12.md>
 
-use core::ops::Deref;
-
 use bitcoin::secp256k1::hashes::{hmac, sha256, Hash, HashEngine, HmacEngine};
 use bitcoin::secp256k1::{self, Scalar};
 use serde::{Deserialize, Serialize};
@@ -91,7 +89,7 @@ fn verify_dleq(
     let r1: PublicKey = s.public_key().combine(&a)?.into(); // s*G + (-a)
 
     // b = s*B'
-    let s: Scalar = Scalar::from(s.deref().to_owned());
+    let s: Scalar = s.as_scalar();
     let b: PublicKey = blinded_message.mul_tweak(&SECP256K1, &s)?.into();
 
     // c = e*C'
@@ -160,10 +158,10 @@ fn calculate_dleq(
     let e_sk: SecretKey = SecretKey::from_slice(&e)?;
 
     // s1 = e*a
-    let s1: SecretKey = e_sk.mul_tweak(&mint_secret_key.as_scalar())?.into();
+    let s1: SecretKey = e_sk.mul_tweak(&mint_secret_key.as_scalar())?;
 
     // s = r + s1
-    let s: SecretKey = r.add_tweak(&s1.to_scalar())?.into();
+    let s: SecretKey = r.add_tweak(&s1.to_scalar())?;
 
     Ok(BlindSignatureDleq { e: e_sk, s })
 }

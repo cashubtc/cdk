@@ -15,6 +15,7 @@
 
 - cdk: **BREAKING** - `KeysetRotation::use_keyset_v2: bool` is replaced by `keyset_id_type: KeySetVersion`.
 - cdk-mintd: **BREAKING** - `Info::from_env` now returns `Result<Info, config::ConfigError>` to report invalid keyset version overrides.
+- cashu: **BREAKING** - `SecretKey` no longer implements `Deref` to `secp256k1::SecretKey`; use `as_secp256k1()` and the explicit key methods instead. See the [v0.19 migration guide](docs/migrations/v0.19.md#secretkey-no-longer-dereferences-to-secp256k1).
 
 ### Fixed
 

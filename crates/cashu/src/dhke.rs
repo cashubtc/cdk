@@ -1,7 +1,5 @@
 //! Diffie-Hellmann key exchange
 
-use std::ops::Deref;
-
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::{
@@ -103,7 +101,7 @@ pub fn unblind_message(
     // K
     mint_pubkey: &PublicKey,
 ) -> Result<PublicKey, Error> {
-    let r: Scalar = Scalar::from(r.deref().to_owned());
+    let r: Scalar = r.as_scalar();
 
     // a = r * K
     let a: PublicKey = mint_pubkey.mul_tweak(&SECP256K1, &r)?.into();
@@ -165,7 +163,7 @@ pub fn construct_proofs(
 /// * `B_` is the blinded message
 #[inline]
 pub fn sign_message(k: &SecretKey, blinded_message: &PublicKey) -> Result<PublicKey, Error> {
-    let k: Scalar = Scalar::from(k.deref().to_owned());
+    let k: Scalar = k.as_scalar();
     Ok(blinded_message.mul_tweak(&SECP256K1, &k)?.into())
 }
 
@@ -179,9 +177,8 @@ pub fn verify_message(
     let y: PublicKey = hash_to_curve(msg)?;
 
     // Compute the expected unblinded message
-    let expected_unblinded_message: PublicKey = y
-        .mul_tweak(&Secp256k1::new(), &Scalar::from(*a.deref()))?
-        .into();
+    let expected_unblinded_message: PublicKey =
+        y.mul_tweak(&Secp256k1::new(), &a.as_scalar())?.into();
 
     // Compare the unblinded_message with the expected value
     if unblinded_message == expected_unblinded_message {
