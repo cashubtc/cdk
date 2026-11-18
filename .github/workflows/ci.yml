@@ -36,8 +36,9 @@ env:
 jobs:
   rusqlite-compat:
     name: "rusqlite compatibility (${{ matrix.endpoint }})"
-    runs-on: rith-cdk
+    runs-on: self-hosted
     timeout-minutes: 30
+    needs: pre-commit-checks
     strategy:
       fail-fast: false
       matrix:
