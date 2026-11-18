@@ -1024,12 +1024,14 @@ mod test {
         }
     "#;
 
-    const BLS_V3_KEYSET_VECTOR_1_KEYS: &str = r#"{
-  "1": "8d0273f6bf31ed37c3b8d68083ec3d8e20b5f2cc170fa24b9b5be35b34ed013f9a921f1cad1644d4bdb14674247234c8049cd1dbb2d2c3581e54c088135fef36505a6823d61b859437bfc79b617030dc8b40e32bad1fa85b9c0f368af6d38d3c",
-  "2": "8bf78a97086750eb166986ed8e428ca1d23ae3bbf8b2ee67451d7dd84445311e8bc8ab558b0bc008199f577195fc39b7152110e866f1a6e8c5348f6e005dbd93de671b7d0fbfa04d6614bcdd27a3cb2a70f0deacb3608ba95226268481a0be7c"
-}"#;
+    const BLS_V3_KEYSET_VECTOR_1_KEYS: &str = BLS_V3_KEYSET_VECTOR_2_KEYS;
     const BLS_V3_KEYSET_VECTOR_1_ID: &str =
-        "02b7e077d020fabed456a6be138a8e20e9ef40b44d873fa12c005b656eb0cf99f6";
+        "022546ab0a2dee9f79510f4e20a4e3d9e894a97361047c594902573a7e64f9d701";
+    const BLS_V3_KEYSET_VECTOR_4_KEYS: &str = r#"{
+  "1": "8d0273f6bf31ed37c3b8d68083ec3d8e20b5f2cc170fa24b9b5be35b34ed013f9a921f1cad1644d4bdb14674247234c8049cd1dbb2d2c3581e54c088135fef36505a6823d61b859437bfc79b617030dc8b40e32bad1fa85b9c0f368af6d38d3c"
+}"#;
+    const BLS_V3_KEYSET_VECTOR_4_ID: &str =
+        "0245806e75095be59688cdbedb9493988f011dd767ed52f4add9bc845bdebb6574";
     const BLS_V3_KEYSET_VECTOR_2_KEYS: &str = r#"{
   "1": "8d0273f6bf31ed37c3b8d68083ec3d8e20b5f2cc170fa24b9b5be35b34ed013f9a921f1cad1644d4bdb14674247234c8049cd1dbb2d2c3581e54c088135fef36505a6823d61b859437bfc79b617030dc8b40e32bad1fa85b9c0f368af6d38d3c",
   "2": "8bf78a97086750eb166986ed8e428ca1d23ae3bbf8b2ee67451d7dd84445311e8bc8ab558b0bc008199f577195fc39b7152110e866f1a6e8c5348f6e005dbd93de671b7d0fbfa04d6614bcdd27a3cb2a70f0deacb3608ba95226268481a0be7c",
@@ -1092,22 +1094,43 @@ mod test {
         assert_eq!(id, id_from_str);
     }
 
-    // https://github.com/robwoodgate/nuts/blob/4fa6698229fd52396604cb7ff4ca9c0fb54aaf57/tests/02-tests.md#version-3
+    // https://github.com/cashubtc/nuts/blob/d9928f06dfcfefdfe6e3b169e18af25c5211fb1f/tests/02-tests.md#version-3
     #[test]
     fn test_v3_deserialization_and_id_generation() {
-        for (json, expected, fee) in [
-            (BLS_V3_KEYSET_VECTOR_1_KEYS, BLS_V3_KEYSET_VECTOR_1_ID, 0),
-            (BLS_V3_KEYSET_VECTOR_2_KEYS, BLS_V3_KEYSET_VECTOR_2_ID, 100),
-            (BLS_V3_KEYSET_VECTOR_3_KEYS, BLS_V3_KEYSET_VECTOR_3_ID, 0),
+        for (json, expected, unit, fee) in [
+            (
+                BLS_V3_KEYSET_VECTOR_1_KEYS,
+                BLS_V3_KEYSET_VECTOR_1_ID,
+                CurrencyUnit::Sat,
+                0,
+            ),
+            (
+                BLS_V3_KEYSET_VECTOR_2_KEYS,
+                BLS_V3_KEYSET_VECTOR_2_ID,
+                CurrencyUnit::Sat,
+                100,
+            ),
+            (
+                BLS_V3_KEYSET_VECTOR_3_KEYS,
+                BLS_V3_KEYSET_VECTOR_3_ID,
+                CurrencyUnit::Sat,
+                0,
+            ),
+            (
+                BLS_V3_KEYSET_VECTOR_4_KEYS,
+                BLS_V3_KEYSET_VECTOR_4_ID,
+                CurrencyUnit::Auth,
+                0,
+            ),
         ] {
             let keys: Keys = serde_json::from_str(json).unwrap();
             let expected = Id::from_str(expected).unwrap();
             for expiry in [None, Some(0), Some(2_000_000_000)] {
-                let id = Id::v3_from_data(&keys, &CurrencyUnit::Sat, fee, expiry);
+                let id = Id::v3_from_data(&keys, &unit, fee, expiry);
                 assert_eq!(id, expected);
                 super::KeySet {
                     id,
-                    unit: CurrencyUnit::Sat,
+                    unit: unit.clone(),
                     active: Some(true),
                     keys: keys.clone(),
                     input_fee_ppk: fee,
