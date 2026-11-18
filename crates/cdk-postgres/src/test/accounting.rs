@@ -20,7 +20,7 @@ async fn setup() -> (Arc<MintPgDatabase>, Client, String) {
                 .to_owned()
         });
     let schema = format!("accounting_{}", uuid::Uuid::new_v4().simple());
-    let config = format!("{url} application_name={schema} schema={schema}");
+    let config = format!("{url} schema={schema}");
     let db = MintPgDatabase::new(config.as_str()).await.unwrap();
     let (client, connection) = tokio_postgres::connect(&url, NoTls).await.unwrap();
     tokio::spawn(connection);
@@ -206,7 +206,7 @@ async fn cancelled_flush_releases_claims_for_retry() {
     });
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            let waiting: i64 = client.query_one("SELECT COUNT(*) FROM pg_stat_activity WHERE application_name = current_schema() AND wait_event_type = 'Lock' AND query LIKE '%INSERT INTO keyset_amounts%'", &[]).await.unwrap().get(0);
+            let waiting: i64 = client.query_one("SELECT COUNT(*) FROM pg_stat_activity WHERE pg_backend_pid() = ANY(pg_blocking_pids(pid)) AND wait_event_type = 'Lock' AND query LIKE '%INSERT INTO keyset_amounts%'", &[]).await.unwrap().get(0);
             if waiting > 0 { break; }
             tokio::task::yield_now().await;
         }
@@ -241,7 +241,7 @@ async fn upgrade_preserves_populated_totals_and_restart_keeps_journal() {
         )
         .await
         .unwrap();
-    client.batch_execute(include_str!("../../cdk-sql-common/src/mint/migrations/postgres/20261118000000_add_keyset_accounting.sql")).await.unwrap();
+    client.batch_execute(include_str!("../../../cdk-sql-common/src/mint/migrations/postgres/20261118000000_add_keyset_accounting.sql")).await.unwrap();
     issue(&db).await;
     db.close().await.unwrap();
     let reopened = MintPgDatabase::new(config.as_str()).await.unwrap();

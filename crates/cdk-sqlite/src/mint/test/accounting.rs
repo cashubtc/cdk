@@ -29,7 +29,7 @@ async fn accounting_upgrade_restart_and_overflow_retry() {
     .batch(&*conn)
     .await
     .unwrap();
-    query(include_str!("../../../cdk-sql-common/src/mint/migrations/sqlite/20261118000000_add_keyset_accounting.sql"))
+    query(include_str!("../../../../cdk-sql-common/src/mint/migrations/sqlite/20261118000000_add_keyset_accounting.sql"))
         .unwrap().batch(&*conn).await.unwrap();
     let id = Id::from_str("00916bbf7ef91a36").unwrap();
     let mut tx = db.begin_transaction().await.unwrap();
