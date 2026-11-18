@@ -1777,12 +1777,9 @@ mod tests {
         let proofs: Vec<crate::nuts::Proof> = secret_keys
             .iter()
             .map(|(amount, key)| {
-                let secret = crate::secret::Secret::generate();
-                let y = crate::dhke::hash_to_curve_for_version(
-                    secret.as_bytes(),
-                    KeySetVersion::Version02,
-                )
-                .unwrap();
+                let (secret, _) = crate::secret::Secret::generate_v3();
+                let y =
+                    crate::dhke::hash_secret_to_curve(&secret, KeySetVersion::Version02).unwrap();
                 crate::nuts::Proof {
                     amount: *amount,
                     keyset_id: keyset.id,
