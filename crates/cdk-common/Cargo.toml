@@ -56,13 +56,21 @@ tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-t
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 uuid = { workspace = true, features = ["js"], optional = true }
 getrandom = { version = "0.4", features = ["wasm_js"] }
+# jsonwebtoken pulls getrandom 0.2, which refuses to build for wasm32 until
+# something enables `js`. The cdk crate does that through ring, but this crate
+# has to build on its own too.
+getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }
 tokio = { workspace = true, default-features = false, features = ["sync"] }
-wasm-bindgen = "0.2"
+wasm-bindgen.workspace = true
 wasm-bindgen-futures = "0.4"
-gloo-timers = { workspace = true }
 
-[dev-dependencies]
+# criterion pulls rayon, which refuses to build for wasm32, and the benches it
+# drives are native-only anyway.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
 
 [[bench]]
 name = "transaction_id_benchmark"
