@@ -336,7 +336,7 @@ async fn display_animated_qr(token: &cdk::nuts::Token) -> Result<()> {
             Ok::<(), anyhow::Error>(())
         } => result,
         _ = quit_key_pressed() => Ok(()),
-        _ = tokio::signal::ctrl_c() => Ok(()),
+        result = crate::shutdown::shutdown_signal() => result.map_err(Into::into),
     };
 
     crossterm::terminal::disable_raw_mode()?;

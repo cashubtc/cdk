@@ -2482,9 +2482,28 @@ async fn start_services_with_shutdown(
 }
 
 async fn shutdown_signal() {
-    tokio::signal::ctrl_c()
-        .await
-        .expect("failed to install CTRL+C handler");
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install CTRL+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
     tracing::info!("Shutdown signal received");
 }
 
@@ -2839,6 +2858,60 @@ mod tests {
 
     const TEST_MNEMONIC: &str =
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+    #[cfg(unix)]
+    #[test]
+    fn shutdown_signal_handles_sigint_and_sigterm() {
+        const SIGNAL_ENV: &str = "CDK_MINTD_TEST_SHUTDOWN_SIGNAL";
+
+        // Signal handlers are process-wide, so exercise each signal in its own child.
+        if let Ok(signal) = std::env::var(SIGNAL_ENV) {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime should start")
+                .block_on(async {
+                    let mut shutdown = std::pin::pin!(shutdown_signal());
+                    // Poll once to install both handlers before sending the signal.
+                    std::future::poll_fn(|cx| {
+                        assert!(std::future::Future::poll(shutdown.as_mut(), cx).is_pending());
+                        std::task::Poll::Ready(())
+                    })
+                    .await;
+
+                    let status = std::process::Command::new("kill")
+                        .arg(format!("-{signal}"))
+                        .arg(std::process::id().to_string())
+                        .status()
+                        .expect("signal should be sent");
+                    assert!(status.success());
+
+                    tokio::time::timeout(std::time::Duration::from_secs(5), shutdown)
+                        .await
+                        .expect("signal should trigger graceful shutdown");
+                });
+            return;
+        }
+
+        for signal in ["INT", "TERM"] {
+            let output = std::process::Command::new(
+                std::env::current_exe().expect("test executable should exist"),
+            )
+            .args([
+                "--exact",
+                "tests::shutdown_signal_handles_sigint_and_sigterm",
+            ])
+            .env(SIGNAL_ENV, signal)
+            .output()
+            .expect("child should start");
+            assert!(
+                output.status.success(),
+                "{signal} shutdown failed: {}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+        }
+    }
 
     fn temp_seed_file(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("cdk_mintd_{name}_{}", std::process::id()))
