@@ -1,13 +1,21 @@
 name: Publish Docker Images
 
+# Images are built from the static binaries attached to the GitHub release
+# rather than compiled again, so each image ships the exact binary listed in
+# the release's SHA256SUMS.
 on:
-  release:
-    types: [published]
+  workflow_run:
+    workflows: ["Publish Static Binaries"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to build and publish'
+        description: 'Release tag to publish (its static binaries must already be attached)'
         required: true
+      floating_tags:
+        description: 'Also update the major.minor and latest tags when the release qualifies'
+        type: boolean
+        default: false
 
 env:
   REGISTRY: docker.io
@@ -18,36 +26,99 @@ permissions:
   actions: read
 
 jobs:
+  resolve:
+    # Only follow successful runs started by a published release. A static
+    # build that was dispatched by hand needs a manual run of this workflow.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.event == 'release' &&
+       github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+      major_minor: ${{ steps.tag.outputs.major_minor }}
+      is_stable: ${{ steps.tag.outputs.is_stable }}
+      is_latest: ${{ steps.tag.outputs.is_latest }}
+    steps:
+      - name: Determine tag
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          RUN_TAG: ${{ github.event.workflow_run.head_branch }}
+          FLOATING_INPUT: ${{ inputs.floating_tags }}
+        run: |
+          if [[ "$EVENT_NAME" == "workflow_run" ]]; then
+            TAG="$RUN_TAG"
+            FLOATING=true
+          else
+            TAG="${INPUT_TAG#refs/tags/}"
+            FLOATING="$FLOATING_INPUT"
+          fi
+
+          if ! PRERELEASE=$(gh release view "$TAG" --json isPrerelease --jq .isPrerelease); then
+            echo "::error::No GitHub release found for tag '${TAG}'"
+            exit 1
+          fi
+
+          VERSION="${TAG#v}"
+          MAJOR="${VERSION%%.*}"
+          MINOR="${VERSION#*.}"
+          MINOR="${MINOR%%.*}"
+
+          IS_STABLE=false
+          IS_LATEST=false
+          if [[ "$FLOATING" == "true" && "$PRERELEASE" == "false" && "$TAG" != *rc* ]]; then
+            IS_STABLE=true
+            # A patch on an older line must not move :latest backwards, so
+            # follow GitHub's own latest-release marker (highest semver).
+            LATEST_TAG=$(gh api "repos/${GH_REPO}/releases/latest" --jq .tag_name)
+            if [[ "$TAG" == "$LATEST_TAG" ]]; then
+              IS_LATEST=true
+            fi
+          fi
+
+          {
+            echo "tag=${TAG}"
+            echo "version=${VERSION}"
+            echo "major_minor=${MAJOR}.${MINOR}"
+            echo "is_stable=${IS_STABLE}"
+            echo "is_latest=${IS_LATEST}"
+          } >> "$GITHUB_OUTPUT"
+
   release-ci:
+    needs: resolve
     uses: ./.github/workflows/release-ci.yml
     with:
-      ref: ${{ inputs.tag || github.ref }}
+      ref: ${{ needs.resolve.outputs.tag }}
 
   build:
-    needs: release-ci
+    needs: [resolve, release-ci]
     strategy:
       fail-fast: false
       matrix:
         arch:
           - name: x86_64
-            runner: self-hosted
+            runner: ubuntu-24.04
             docker_platform: linux/amd64
             docker_arch: amd64
-            install_nix: false
           - name: aarch64
             runner: ubuntu-24.04-arm
             docker_platform: linux/arm64
             docker_arch: arm64
-            install_nix: true
         variant:
           - name: standard
-            nix_target: cdk-mintd-static
+            binary: cdk-mintd
             tag_suffix: ""
           - name: ldk-node
-            nix_target: cdk-mintd-ldk-static
+            binary: cdk-mintd-ldk
             tag_suffix: "-ldk-node"
     runs-on: ${{ matrix.arch.runner }}
-    timeout-minutes: 120
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: write
@@ -56,32 +127,33 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ needs.resolve.outputs.tag }}
 
-      - name: Install Nix
-        if: ${{ matrix.arch.install_nix }}
-        uses: DeterminateSystems/nix-installer-action@v22
-
-      - name: Set up Cachix
-        uses: cachix/cachix-action@v17
-        with:
-          name: cashudevkit
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          useDaemon: false
-          installCommand: ${{ matrix.arch.install_nix && '' || 'nix profile install nixpkgs#cachix' }}
-        continue-on-error: true
-
-      - name: Build static binary
+      - name: Download and verify release binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          ASSET: ${{ matrix.variant.binary }}-${{ needs.resolve.outputs.version }}-${{ matrix.arch.name }}
         run: |
-          nix build .#${{ matrix.variant.nix_target }} -L
-          mkdir -p ./docker-build
-          cp -f ./result/bin/* ./docker-build/cdk-mintd
+          mkdir -p ./release-assets ./docker-build
+          gh release download "$TAG" --dir ./release-assets \
+            --pattern "$ASSET" --pattern SHA256SUMS
+
+          cd ./release-assets
+          awk -v f="$ASSET" '$2 == f' SHA256SUMS > expected.sha256
+          if [[ ! -s expected.sha256 ]]; then
+            echo "::error::${ASSET} is not listed in SHA256SUMS for ${TAG}"
+            exit 1
+          fi
+          sha256sum --check --strict expected.sha256
+          cd ..
+
+          install -m 0755 "./release-assets/${ASSET}" ./docker-build/cdk-mintd
           cp Dockerfile.static ./docker-build/Dockerfile
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
-        with:
-          driver-opts: network=host
 
       - name: Login to Docker Hub
         uses: docker/login-action@v4
@@ -89,33 +161,17 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Determine tag
-        id: tag
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-          INPUT_TAG: ${{ github.event.inputs.tag }}
-        run: |
-          if [[ "$EVENT_NAME" == "release" ]]; then
-            RAW_VERSION="$RELEASE_TAG"
-          else
-            RAW_VERSION="$INPUT_TAG"
-          fi
-          echo "raw_version=${RAW_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "version=${RAW_VERSION#v}" >> "$GITHUB_OUTPUT"
-
       - name: Build and push Docker image
         uses: docker/build-push-action@v7
         with:
           context: ./docker-build
           push: true
+          pull: true
           platforms: ${{ matrix.arch.docker_platform }}
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.version }}${{ matrix.variant.tag_suffix }}-${{ matrix.arch.docker_arch }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.resolve.outputs.version }}${{ matrix.variant.tag_suffix }}-${{ matrix.arch.docker_arch }}
 
   manifest:
-    needs: build
+    needs: [resolve, build]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -136,50 +192,9 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Determine tag
-        id: tag
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-          INPUT_TAG: ${{ github.event.inputs.tag }}
-          IS_STABLE: ${{ !github.event.release.prerelease && !contains(github.event.release.tag_name, 'rc') }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if [[ "$EVENT_NAME" == "release" ]]; then
-            RAW_VERSION="$RELEASE_TAG"
-            echo "is_stable=$IS_STABLE" >> "$GITHUB_OUTPUT"
-            # A patch on an older line must not move :latest backwards, so
-            # follow GitHub's own latest-release marker (highest semver).
-            LATEST_TAG=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)
-            if [[ "$IS_STABLE" == "true" && "$RELEASE_TAG" == "$LATEST_TAG" ]]; then
-              echo "is_latest=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "is_latest=false" >> "$GITHUB_OUTPUT"
-            fi
-          else
-            RAW_VERSION="$INPUT_TAG"
-            echo "is_stable=false" >> "$GITHUB_OUTPUT"
-            echo "is_latest=false" >> "$GITHUB_OUTPUT"
-          fi
-          echo "raw_version=${RAW_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "version=${RAW_VERSION#v}" >> "$GITHUB_OUTPUT"
-
-      - name: Extract semver components
-        id: semver
-        env:
-          VERSION_INPUT: ${{ steps.tag.outputs.version }}
-        run: |
-          VERSION="$VERSION_INPUT"
-          # Strip leading 'v' if present
-          VERSION="${VERSION#v}"
-          MAJOR="${VERSION%%.*}"
-          MINOR="${VERSION#*.}"
-          MINOR="${MINOR%%.*}"
-          echo "major_minor=${MAJOR}.${MINOR}" >> "$GITHUB_OUTPUT"
-
       - name: Create versioned manifest
         env:
-          VERSION: ${{ steps.tag.outputs.version }}
+          VERSION: ${{ needs.resolve.outputs.version }}
         run: |
           docker buildx imagetools create \
             -t "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION}${{ matrix.variant.tag_suffix }}" \
@@ -187,10 +202,10 @@ jobs:
             "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION}${{ matrix.variant.tag_suffix }}-arm64"
 
       - name: Create major.minor manifest
-        if: ${{ steps.tag.outputs.is_stable == 'true' }}
+        if: ${{ needs.resolve.outputs.is_stable == 'true' }}
         env:
-          MAJOR_MINOR: ${{ steps.semver.outputs.major_minor }}
-          VERSION: ${{ steps.tag.outputs.version }}
+          MAJOR_MINOR: ${{ needs.resolve.outputs.major_minor }}
+          VERSION: ${{ needs.resolve.outputs.version }}
         run: |
           docker buildx imagetools create \
             -t "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${MAJOR_MINOR}${{ matrix.variant.tag_suffix }}" \
@@ -198,9 +213,9 @@ jobs:
             "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION}${{ matrix.variant.tag_suffix }}-arm64"
 
       - name: Create latest manifest
-        if: ${{ steps.tag.outputs.is_latest == 'true' }}
+        if: ${{ needs.resolve.outputs.is_latest == 'true' }}
         env:
-          VERSION: ${{ steps.tag.outputs.version }}
+          VERSION: ${{ needs.resolve.outputs.version }}
         run: |
           docker buildx imagetools create \
             -t "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest${{ matrix.variant.tag_suffix }}" \
