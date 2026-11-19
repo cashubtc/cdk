@@ -126,11 +126,17 @@ pub struct LockedMeltQuotes {
 /// KeysDatabaseWriter
 #[async_trait]
 pub trait KeysDatabaseTransaction<'a, Error>: DbTransactionFinalizer<Err = Error> {
-    /// Add Active Keyset
-    async fn set_active_keyset(&mut self, unit: CurrencyUnit, id: Id) -> Result<(), Error>;
+    /// Make one keyset active per unit.
+    ///
+    /// Takes a slice so startup, which activates every supported unit, advances
+    /// [`KeysDatabaseTransaction::keysets_epoch`] once rather than once per unit.
+    async fn set_active_keysets(&mut self, active: Vec<(CurrencyUnit, Id)>) -> Result<(), Error>;
 
-    /// Add [`MintKeySetInfo`]
-    async fn add_keyset_info(&mut self, keyset: MintKeySetInfo) -> Result<(), Error>;
+    /// Add [`MintKeySetInfo`]s, replacing any already stored under the same id.
+    ///
+    /// Takes a slice for the same reason as [`KeysDatabaseTransaction::set_active_keysets`]. A
+    /// repeated id keeps its last occurrence, since one statement cannot upsert a row twice.
+    async fn add_keyset_infos(&mut self, keysets: Vec<MintKeySetInfo>) -> Result<(), Error>;
 
     /// Allocate the next derivation-path index for a unit.
     ///
@@ -262,35 +268,37 @@ pub trait QuotesTransaction {
         quote: MintMintQuote,
     ) -> Result<Acquired<MintMintQuote>, Self::Err>;
 
-    /// Persists any pending changes made to the mint quote.
+    /// Persists any pending changes made to these mint quotes.
     ///
-    /// This method extracts changes accumulated in the quote (via [`mint::MintQuote::take_changes`])
-    /// and persists them to the database. Changes may include new payments received or new
-    /// issuances recorded against the quote.
+    /// This method extracts changes accumulated in each quote (via
+    /// [`mint::MintQuote::take_changes`]) and persists them to the database. Changes may include
+    /// new payments received or new issuances recorded against a quote. Quotes with no pending
+    /// changes are skipped, so a slice of unchanged quotes performs no database operations.
     ///
-    /// If no changes are pending, this method returns successfully without performing
-    /// any database operations.
+    /// Takes a slice because a batch mint issues against every quote of one request, letting an
+    /// implementation write all of their child rows together.
     ///
     /// # Arguments
     ///
-    /// * `quote` - A mutable reference to an acquired (row-locked) mint quote. The quote
-    ///   must be locked to ensure transactional consistency when persisting changes.
+    /// * `quotes` - Acquired (row-locked) mint quotes. They must be locked to ensure
+    ///   transactional consistency when persisting changes.
     ///
     /// # Implementation Notes
     ///
     /// Implementations should call [`mint::MintQuote::take_changes`] to retrieve pending
-    /// changes, then persist each payment and issuance record, and finally update the
-    /// quote's aggregate counters (`amount_paid`, `amount_issued`) in the database.
+    /// changes, then persist each payment and issuance record, and finally update each quote's
+    /// aggregate counters (`amount_paid`, `amount_issued`) in the database.
     ///
-    /// The counters must only be updated if the stored row still holds the values the quote
+    /// A quote's counters must only be updated if its stored row still holds the values the quote
     /// had before these changes. Otherwise return [`Error::ConcurrentUpdate`], after which the
     /// caller must roll back the transaction.
     ///
-    /// The pending changes are consumed even if this fails, so a caller that retries must reload
-    /// the quote first. Calling this again with the same quote writes nothing and returns `Ok`.
-    async fn update_mint_quote(
+    /// The pending changes are consumed from every quote even if this fails, so a caller that
+    /// retries must reload them first. Calling this again with the same quotes writes nothing and
+    /// returns `Ok`.
+    async fn update_mint_quotes(
         &mut self,
-        quote: &mut Acquired<mint::MintQuote>,
+        quotes: &mut [Acquired<mint::MintQuote>],
     ) -> Result<(), Self::Err>;
 
     /// Get [`mint::MeltQuote`] and lock it for update in this transaction

@@ -1019,6 +1019,8 @@ impl Mint {
             // them by ID, so reversed batch requests cannot deadlock each other.
             let locked_quotes = tx.get_mint_quotes_by_ids(&quote_ids).await?;
             let mut issuance_events = Vec::with_capacity(quote_ids.len());
+            let mut issued_quotes = Vec::with_capacity(quote_ids.len());
+            let mut operations = Vec::with_capacity(quote_ids.len());
 
             // For batch minting, outputs are shared across all quotes and should be persisted once.
             if input.is_batch() {
@@ -1079,14 +1081,22 @@ impl Mint {
                 }
 
                 mint_quote.add_issuance(amount_issued)?;
-                tx.update_mint_quote(&mut mint_quote).await?;
-                issuance_events.push(mint_quote.clone());
+                issued_quotes.push(mint_quote);
+                operations.push(operation);
+            }
 
-                // Mint operations have no input fees
-                // Only persist operation for non-batch mints (batch operations are persisted above)
-                if !input.is_batch() {
-                    let fee_by_keyset = std::collections::HashMap::new();
-                    tx.add_completed_operation(&operation, &fee_by_keyset)
+            // One call writes every quote's payment and issuance rows together.
+            tx.update_mint_quotes(&mut issued_quotes).await?;
+
+            // Read the quotes only after the write, so the events carry the stored updated_at.
+            issuance_events.extend(issued_quotes.iter().map(|quote| (**quote).clone()));
+
+            // Mint operations have no input fees
+            // Only persist operation for non-batch mints (batch operations are persisted above)
+            if !input.is_batch() {
+                let fee_by_keyset = std::collections::HashMap::new();
+                for operation in &operations {
+                    tx.add_completed_operation(operation, &fee_by_keyset)
                         .await?;
                 }
             }
@@ -1484,7 +1494,9 @@ mod batch_mint_tests {
                 None,
             )
             .unwrap();
-        tx.update_mint_quote(&mut quote).await.unwrap();
+        tx.update_mint_quotes(std::slice::from_mut(&mut quote))
+            .await
+            .unwrap();
         tx.commit().await.unwrap();
 
         quote_id

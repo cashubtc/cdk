@@ -10,7 +10,8 @@ use cdk_common::{mint, Amount, PaymentMethod};
 
 use super::{SQLMintDatabase, SQLTransaction};
 use crate::pool::DatabasePool;
-use crate::stmt::{query, Column};
+use crate::stmt::{execute_rows, query, Column};
+use crate::value::Value;
 use crate::{
     column_as_nullable_number, column_as_nullable_string, column_as_number, column_as_string,
     unpack_into,
@@ -111,22 +112,31 @@ where
         let mut fees = fee_by_keyset.iter().collect::<Vec<_>>();
         fees.sort_unstable_by_key(|(keyset_id, _)| *keyset_id);
 
-        for (keyset_id, fee) in fees {
-            if fee.to_u64() > 0 {
-                query(
-                    r#"
-                    INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed, fee_collected)
-                    VALUES (:keyset_id, 0, 0, :fee)
-                    ON CONFLICT (keyset_id)
-                    DO UPDATE SET fee_collected = keyset_amounts.fee_collected + EXCLUDED.fee_collected
-                    "#,
-                )?
-                .bind("keyset_id", keyset_id.to_string())
-                .bind("fee", i64::try_from(fee.to_u64())?)
-                .execute(&self.inner)
-                .await?;
-            }
-        }
+        let rows = fees
+            .into_iter()
+            .filter(|(_, fee)| fee.to_u64() > 0)
+            .map(|(keyset_id, fee)| {
+                Ok(vec![
+                    Value::from(keyset_id.to_string()),
+                    Value::from(0_i64),
+                    Value::from(0_i64),
+                    Value::from(i64::try_from(fee.to_u64())?),
+                ])
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+
+        execute_rows(
+            &self.inner,
+            r#"
+            INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed, fee_collected)
+            VALUES :rows
+            ON CONFLICT (keyset_id)
+            DO UPDATE SET fee_collected = keyset_amounts.fee_collected + EXCLUDED.fee_collected
+            "#,
+            "rows",
+            rows,
+        )
+        .await?;
 
         Ok(())
     }

@@ -13,7 +13,8 @@ use cdk_common::{CurrencyUnit, Id};
 use super::{SQLMintDatabase, SQLTransaction};
 use crate::database::{ConnectionWithTransaction, DatabaseExecutor};
 use crate::pool::DatabasePool;
-use crate::stmt::{query, Column};
+use crate::stmt::{execute_rows, query, Column};
+use crate::value::Value;
 use crate::{
     column_as_nullable_number, column_as_nullable_string, column_as_number, column_as_string,
     unpack_into,
@@ -136,18 +137,52 @@ impl<RM> MintKeyDatabaseTransaction<'_, Error> for SQLTransaction<RM>
 where
     RM: DatabasePool + 'static,
 {
-    async fn add_keyset_info(&mut self, keyset: MintKeySetInfo) -> Result<(), Error> {
-        query(
+    async fn add_keyset_infos(&mut self, keysets: Vec<MintKeySetInfo>) -> Result<(), Error> {
+        if keysets.is_empty() {
+            return Ok(());
+        }
+
+        // One statement cannot upsert the same row twice, so a repeated id keeps its last
+        // occurrence, matching what sequential single-keyset writes used to leave behind.
+        let mut deduped: Vec<MintKeySetInfo> = Vec::with_capacity(keysets.len());
+
+        for keyset in keysets {
+            if let Some(existing) = deduped.iter_mut().find(|held| held.id == keyset.id) {
+                *existing = keyset;
+            } else {
+                deduped.push(keyset);
+            }
+        }
+
+        deduped.sort_unstable_by_key(|keyset| keyset.id);
+
+        let rows = deduped
+            .into_iter()
+            .map(|keyset| {
+                Ok(vec![
+                    Value::from(keyset.id.to_string()),
+                    Value::from(keyset.unit.to_string()),
+                    Value::from(keyset.active),
+                    Value::from(i64::try_from(keyset.valid_from)?),
+                    Value::from(keyset.final_expiry.map(i64::try_from).transpose()?),
+                    Value::from(keyset.derivation_path.to_string()),
+                    Value::from(serde_json::to_string(&keyset.amounts).ok()),
+                    Value::from(i64::try_from(keyset.input_fee_ppk)?),
+                    Value::from(keyset.derivation_path_index),
+                    Value::from(keyset.issuer_version.map(|v| v.to_string())),
+                ])
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+
+        execute_rows(
+            &self.inner,
             r#"
         INSERT INTO
             keyset (
                 id, unit, active, valid_from, valid_to, derivation_path,
                 amounts, input_fee_ppk, derivation_path_index, issuer_version
             )
-        VALUES (
-            :id, :unit, :active, :valid_from, :valid_to, :derivation_path,
-            :amounts, :input_fee_ppk, :derivation_path_index, :issuer_version
-        )
+        VALUES :rows
         ON CONFLICT(id) DO UPDATE SET
             unit = excluded.unit,
             active = excluded.active,
@@ -159,24 +194,9 @@ where
             derivation_path_index = excluded.derivation_path_index,
             issuer_version = excluded.issuer_version
         "#,
-        )?
-        .bind("id", keyset.id.to_string())
-        .bind("unit", keyset.unit.to_string())
-        .bind("active", keyset.active)
-        .bind("valid_from", i64::try_from(keyset.valid_from)?)
-        .bind(
-            "valid_to",
-            keyset.final_expiry.map(i64::try_from).transpose()?,
+            "rows",
+            rows,
         )
-        .bind("derivation_path", keyset.derivation_path.to_string())
-        .bind("amounts", serde_json::to_string(&keyset.amounts).ok())
-        .bind("input_fee_ppk", i64::try_from(keyset.input_fee_ppk)?)
-        .bind("derivation_path_index", keyset.derivation_path_index)
-        .bind(
-            "issuer_version",
-            keyset.issuer_version.map(|v| v.to_string()),
-        )
-        .execute(&self.inner)
         .await?;
 
         self.bump_keyset_epoch().await?;
@@ -184,17 +204,29 @@ where
         Ok(())
     }
 
-    async fn set_active_keyset(&mut self, unit: CurrencyUnit, id: Id) -> Result<(), Error> {
-        query(r#"UPDATE keyset SET active=FALSE WHERE unit = :unit"#)?
-            .bind("unit", unit.to_string())
+    async fn set_active_keysets(&mut self, active: Vec<(CurrencyUnit, Id)>) -> Result<(), Error> {
+        if active.is_empty() {
+            return Ok(());
+        }
+
+        let mut active = active;
+        active.sort_unstable_by_key(|(unit, _)| unit.to_string());
+
+        query(r#"UPDATE keyset SET active=FALSE WHERE unit IN (:units)"#)?
+            .bind_vec(
+                "units",
+                active.iter().map(|(unit, _)| unit.to_string()).collect(),
+            )?
             .execute(&self.inner)
             .await?;
 
-        query(r#"UPDATE keyset SET active=TRUE WHERE unit = :unit AND id = :id"#)?
-            .bind("unit", unit.to_string())
-            .bind("id", id.to_string())
-            .execute(&self.inner)
-            .await?;
+        for (unit, id) in active {
+            query(r#"UPDATE keyset SET active=TRUE WHERE unit = :unit AND id = :id"#)?
+                .bind("unit", unit.to_string())
+                .bind("id", id.to_string())
+                .execute(&self.inner)
+                .await?;
+        }
 
         self.bump_keyset_epoch().await?;
 

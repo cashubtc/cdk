@@ -36,14 +36,9 @@ pub async fn new_with_state(
     let db = empty().await?;
     let mut tx = MintKeysDatabase::begin_transaction(&db).await?;
 
-    for active_keyset in active_keysets {
-        tx.set_active_keyset(active_keyset.0, active_keyset.1)
-            .await?;
-    }
-
-    for keyset in keysets {
-        tx.add_keyset_info(keyset).await?;
-    }
+    tx.set_active_keysets(active_keysets.into_iter().collect())
+        .await?;
+    tx.add_keyset_infos(keysets).await?;
     tx.commit().await?;
 
     let mut tx = MintDatabase::begin_transaction(&db).await?;

@@ -16,7 +16,8 @@ use cdk_common::{Amount, Id, Proof, Proofs, PublicKey, State};
 use super::{SQLMintDatabase, SQLTransaction};
 use crate::database::DatabaseExecutor;
 use crate::pool::DatabasePool;
-use crate::stmt::{query, Column};
+use crate::stmt::{execute_rows, query, Column};
+use crate::value::Value;
 use crate::{column_as_nullable_string, column_as_number, column_as_string, unpack_into};
 
 pub(super) async fn get_current_states<C>(
@@ -157,32 +158,42 @@ where
             None => Ok(()), // no previous record
         }?;
 
-        for (y, proof) in ordered_proofs {
-            query(
-                r#"
-                  INSERT INTO proof
-                  (y, amount, keyset_id, secret, c, witness, state, quote_id, created_time, operation_kind, operation_id)
-                  VALUES
-                  (:y, :amount, :keyset_id, :secret, :c, :witness, :state, :quote_id, :created_time, :operation_kind, :operation_id)
-                  "#,
-            )?
-            .bind("y", y)
-            .bind("amount", i64::try_from(proof.amount.to_u64())?)
-            .bind("keyset_id", proof.keyset_id.to_string())
-            .bind("secret", proof.secret.to_string())
-            .bind("c", proof.c.to_bytes().to_vec())
-            .bind(
-                "witness",
-                proof.witness.clone().and_then(|w| serde_json::to_string(&w).inspect_err(|e| tracing::error!("Failed to serialize witness: {:?}", e)).ok()),
-            )
-            .bind("state", "UNSPENT".to_string())
-            .bind("quote_id", quote_id.clone().map(|q| q.to_string()))
-            .bind("created_time", i64::try_from(current_time)?)
-            .bind("operation_kind", operation.kind().to_string())
-            .bind("operation_id", operation.id().to_string())
-            .execute(&self.inner)
-            .await?;
-        }
+        let rows = ordered_proofs
+            .into_iter()
+            .map(|(y, proof)| {
+                Ok(vec![
+                    Value::from(y),
+                    Value::from(i64::try_from(proof.amount.to_u64())?),
+                    Value::from(proof.keyset_id.to_string()),
+                    Value::from(proof.secret.to_string()),
+                    Value::from(proof.c.to_bytes().to_vec()),
+                    Value::from(proof.witness.clone().and_then(|w| {
+                        serde_json::to_string(&w)
+                            .inspect_err(|e| {
+                                tracing::error!("Failed to serialize witness: {:?}", e)
+                            })
+                            .ok()
+                    })),
+                    Value::from("UNSPENT".to_string()),
+                    Value::from(quote_id.clone().map(|q| q.to_string())),
+                    Value::from(i64::try_from(current_time)?),
+                    Value::from(operation.kind().to_string()),
+                    Value::from(operation.id().to_string()),
+                ])
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+
+        execute_rows(
+            &self.inner,
+            r#"
+              INSERT INTO proof
+              (y, amount, keyset_id, secret, c, witness, state, quote_id, created_time, operation_kind, operation_id)
+              VALUES :rows
+              "#,
+            "rows",
+            rows,
+        )
+        .await?;
 
         Ok(ProofsWithState::new(proofs, State::Unspent).into())
     }

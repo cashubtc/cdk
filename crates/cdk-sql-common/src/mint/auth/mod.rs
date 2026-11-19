@@ -21,7 +21,8 @@ use crate::mint::keys::sql_row_to_keyset_info;
 use crate::mint::signatures::sql_row_to_blind_signature;
 use crate::mint::Error;
 use crate::pool::{DatabasePool, Pool, PooledResource};
-use crate::stmt::query;
+use crate::stmt::{execute_rows, query};
+use crate::value::Value;
 
 /// Mint SQL Database
 #[derive(Debug, Clone)]
@@ -151,49 +152,41 @@ where
         Ok(())
     }
 
-    async fn update_proof_state(
-        &mut self,
-        y: &PublicKey,
-        proofs_state: State,
-    ) -> Result<Option<State>, Self::Err> {
-        let current_state = query(r#"SELECT state FROM proof WHERE y = :y FOR UPDATE"#)?
-            .bind("y", y.to_bytes().to_vec())
-            .pluck(&self.inner)
-            .await?
-            .map(|state| Ok::<_, Error>(column_as_string!(state, State::from_str)))
-            .transpose()?;
-
-        query(r#"UPDATE proof SET state = :new_state WHERE  y = :y"#)?
-            .bind("y", y.to_bytes().to_vec())
-            .bind("new_state", proofs_state.to_string())
-            .execute(&self.inner)
-            .await?;
-
-        Ok(current_state)
-    }
-
     async fn add_blind_signatures(
         &mut self,
         blinded_messages: &[PublicKey],
         blind_signatures: &[BlindSignature],
     ) -> Result<(), database::Error> {
-        for (message, signature) in blinded_messages.iter().zip(blind_signatures) {
-            query(
-                r#"
-                       INSERT
-                       INTO blind_signature
-                       (blinded_message, amount, keyset_id, c)
-                       VALUES
-                       (:blinded_message, :amount, :keyset_id, :c)
-                   "#,
-            )?
-            .bind("blinded_message", message.to_bytes().to_vec())
-            .bind("amount", i64::try_from(u64::from(signature.amount))?)
-            .bind("keyset_id", signature.keyset_id.to_string())
-            .bind("c", signature.c.to_bytes().to_vec())
-            .execute(&self.inner)
-            .await?;
-        }
+        let mut ordered = blinded_messages
+            .iter()
+            .zip(blind_signatures)
+            .collect::<Vec<_>>();
+        ordered.sort_unstable_by_key(|(message, _)| message.to_bytes());
+
+        let rows = ordered
+            .into_iter()
+            .map(|(message, signature)| {
+                Ok(vec![
+                    Value::from(message.to_bytes().to_vec()),
+                    Value::from(i64::try_from(u64::from(signature.amount))?),
+                    Value::from(signature.keyset_id.to_string()),
+                    Value::from(signature.c.to_bytes().to_vec()),
+                ])
+            })
+            .collect::<Result<Vec<_>, database::Error>>()?;
+
+        execute_rows(
+            &self.inner,
+            r#"
+                   INSERT
+                   INTO blind_signature
+                   (blinded_message, amount, keyset_id, c)
+                   VALUES :rows
+               "#,
+            "rows",
+            rows,
+        )
+        .await?;
 
         Ok(())
     }
@@ -202,27 +195,37 @@ where
         &mut self,
         protected_endpoints: HashMap<ProtectedEndpoint, AuthRequired>,
     ) -> Result<(), database::Error> {
-        for (endpoint, auth) in protected_endpoints.iter() {
-            if let Err(err) = query(
-                r#"
-                 INSERT INTO protected_endpoints
-                 (endpoint, auth)
-                 VALUES (:endpoint, :auth)
-                 ON CONFLICT (endpoint) DO UPDATE SET
-                 auth = EXCLUDED.auth;
-                 "#,
-            )?
-            .bind("endpoint", serde_json::to_string(endpoint)?)
-            .bind("auth", serde_json::to_string(auth)?)
-            .execute(&self.inner)
-            .await
-            {
-                tracing::debug!(
-                    "Attempting to add protected endpoint. Skipping.... {:?}",
-                    err
-                );
-            }
-        }
+        // Sorted by endpoint so concurrent writers take row locks in the same order, which
+        // HashMap iteration order cannot guarantee.
+        let mut encoded = protected_endpoints
+            .iter()
+            .map(|(endpoint, auth)| {
+                Ok((
+                    serde_json::to_string(endpoint)?,
+                    serde_json::to_string(auth)?,
+                ))
+            })
+            .collect::<Result<Vec<(String, String)>, database::Error>>()?;
+        encoded.sort_unstable();
+
+        let rows = encoded
+            .into_iter()
+            .map(|(endpoint, auth)| vec![Value::from(endpoint), Value::from(auth)])
+            .collect::<Vec<_>>();
+
+        execute_rows(
+            &self.inner,
+            r#"
+             INSERT INTO protected_endpoints
+             (endpoint, auth)
+             VALUES :rows
+             ON CONFLICT (endpoint) DO UPDATE SET
+             auth = EXCLUDED.auth
+             "#,
+            "rows",
+            rows,
+        )
+        .await?;
 
         Ok(())
     }
