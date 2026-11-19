@@ -1771,6 +1771,7 @@ dependencies = [
  "postgres-native-tls",
  "tokio",
  "tokio-postgres",
+ "tracing",
  "uuid",
 ]
 

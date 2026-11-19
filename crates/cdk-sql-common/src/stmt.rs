@@ -242,18 +242,24 @@ impl Statement {
         }
     }
 
+    /// A `Set` placeholder expands to one `$n` slot per element, so the rendered SQL differs
+    /// from call to call and cannot key a prepared-statement cache.
+    pub fn is_cacheable(&self) -> bool {
+        !self.parts.iter().any(|part| {
+            matches!(
+                part,
+                SqlPart::Placeholder(_, Some(PlaceholderValue::Set(_)))
+            )
+        })
+    }
+
     /// Convert Statement into a SQL statement and the list of placeholders
     ///
     /// By default it converts the statement into placeholder using $1..$n placeholders which seems
     /// to be more widely supported, although it can be reimplemented with other formats since part
     /// is public
     pub fn to_sql(self) -> Result<(String, Vec<Value>), Error> {
-        let has_set_placeholder = self.parts.iter().any(|part| {
-            matches!(
-                part,
-                SqlPart::Placeholder(_, Some(PlaceholderValue::Set(_)))
-            )
-        });
+        let has_set_placeholder = !self.is_cacheable();
 
         if let (false, Some(cached_sql)) = (has_set_placeholder, self.cached_sql) {
             let sql = cached_sql.to_string();
@@ -446,6 +452,44 @@ mod tests {
 
         assert_eq!(sql, "SELECT (ord - 1)::int AS matched WHERE id = $1");
         assert_eq!(values.len(), 1);
+    }
+
+    #[test]
+    fn is_cacheable_only_for_fixed_arity_statements() {
+        let fixed = query("SELECT * FROM proof WHERE y = :y")
+            .unwrap()
+            .bind("y", vec![1u8]);
+        assert!(fixed.is_cacheable());
+
+        let variable = query("SELECT * FROM proof WHERE y IN (:ys)")
+            .unwrap()
+            .bind_vec("ys", vec![vec![1u8], vec![2u8]])
+            .unwrap();
+        assert!(!variable.is_cacheable());
+    }
+
+    #[test]
+    fn is_cacheable_tracks_the_sql_to_sql_can_memoize() {
+        let raw_sql = "SELECT * FROM is_cacheable_agreement WHERE id IN (:ids)";
+
+        let single = query(raw_sql).unwrap().bind("ids", 1_i64);
+        assert!(single.is_cacheable());
+        let (sql, _) = single.to_sql().unwrap();
+        assert_eq!(
+            sql,
+            "SELECT * FROM is_cacheable_agreement WHERE id IN ( $1 )"
+        );
+
+        let many = query(raw_sql)
+            .unwrap()
+            .bind_vec("ids", vec![1_i64, 2])
+            .unwrap();
+        assert!(!many.is_cacheable());
+        let (sql, _) = many.to_sql().unwrap();
+        assert_eq!(
+            sql,
+            "SELECT * FROM is_cacheable_agreement WHERE id IN ( $1, $2 )"
+        );
     }
 
     #[test]

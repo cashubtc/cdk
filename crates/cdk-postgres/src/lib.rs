@@ -11,12 +11,15 @@ use cdk_sql_common::mint::SQLMintAuthDatabase;
 use cdk_sql_common::pool::{DatabaseConfig, DatabasePool};
 use cdk_sql_common::stmt::{Column, Statement};
 use cdk_sql_common::{SQLMintDatabase, SQLWalletDatabase};
-use db::{pg_batch, pg_execute, pg_fetch_all, pg_fetch_one, pg_pluck};
+use db::{pg_batch, pg_execute, pg_fetch_all, pg_fetch_one, pg_pluck, PgSession};
 use tokio::sync::{Mutex, Notify};
 use tokio::time::timeout;
 use tokio_postgres::{Client, Error as PgError, NoTls};
 
+use crate::statement_cache::StatementCache;
+
 mod db;
+mod statement_cache;
 mod tls;
 mod value;
 
@@ -180,6 +183,7 @@ pub struct PostgresConnection {
     error: Arc<Mutex<Option<cdk_common::database::Error>>>,
     result: Arc<OnceLock<Client>>,
     notify: Arc<Notify>,
+    statements: StatementCache,
 }
 
 impl PostgresConnection {
@@ -283,14 +287,15 @@ impl PostgresConnection {
             timeout,
             result,
             notify,
+            statements: StatementCache::default(),
         }
     }
 
     /// Gets the wrapped instance or the connection error. The connection is returned as reference,
     /// and the actual error is returned once, next times a generic error would be returned
-    async fn inner(&self) -> Result<&Client, cdk_common::database::Error> {
+    async fn inner(&self) -> Result<PgSession<'_>, cdk_common::database::Error> {
         if let Some(client) = self.result.get() {
-            return Ok(client);
+            return Ok(PgSession::new(client, &self.statements));
         }
 
         if let Some(error) = self.error.lock().await.take() {
@@ -303,7 +308,7 @@ impl PostgresConnection {
 
         // Check result again
         if let Some(client) = self.result.get() {
-            Ok(client)
+            Ok(PgSession::new(client, &self.statements))
         } else if let Some(error) = self.error.lock().await.take() {
             Err(error)
         } else {
@@ -364,6 +369,8 @@ pub async fn new_wallet_pg_database(conn_str: &str) -> Result<WalletPgDatabase, 
 #[cfg(test)]
 mod test {
     use cdk_common::{mint_db_test, wallet_db_test, QuoteId};
+    use cdk_sql_common::stmt::query;
+    use cdk_sql_common::value::Value;
 
     use super::*;
 
@@ -383,6 +390,112 @@ mod test {
     }
 
     mint_db_test!(provide_mint_db);
+
+    /// Matches on the probe literal, which only the probe statement carries.
+    async fn cached_statements_like(conn: &PostgresConnection, pattern: &str) -> i64 {
+        let count = query(
+            "SELECT count(*) FROM pg_prepared_statements
+             WHERE statement LIKE :pattern AND from_sql = false",
+        )
+        .expect("count statement")
+        .bind("pattern", pattern)
+        .pluck(conn)
+        .await
+        .expect("count cached statements");
+
+        match count {
+            Some(Value::Integer(count)) => count,
+            other => panic!("expected a count, got {other:?}"),
+        }
+    }
+
+    fn probe_connection() -> PostgresConnection {
+        let db_url = std::env::var("CDK_MINTD_DATABASE_URL")
+            .or_else(|_| std::env::var("PG_DB_URL"))
+            .unwrap_or(
+                "host=localhost user=cdk_user password=cdk_password dbname=cdk_mint port=5432"
+                    .to_owned(),
+            );
+
+        PostgresConnection::new(
+            PgConfig::from(db_url.as_str()),
+            Duration::from_secs(10),
+            Arc::new(AtomicBool::new(false)),
+        )
+    }
+
+    #[tokio::test]
+    async fn repeated_statement_is_parsed_once() {
+        let conn = probe_connection();
+
+        for _ in 0..3 {
+            query("SELECT :probe WHERE 'reuse_probe' = 'reuse_probe'")
+                .expect("probe statement")
+                .bind("probe", "probe")
+                .fetch_one(&conn)
+                .await
+                .expect("probe query");
+        }
+
+        assert_eq!(
+            cached_statements_like(&conn, "%reuse_probe%").await,
+            1,
+            "three executions should leave exactly one parsed statement on the connection"
+        );
+    }
+
+    #[tokio::test]
+    async fn cached_statement_outlives_a_rolled_back_transaction() {
+        let conn = probe_connection();
+
+        query("START TRANSACTION")
+            .expect("begin")
+            .execute(&conn)
+            .await
+            .expect("begin transaction");
+        query("SELECT :probe WHERE 'rollback_probe' = 'rollback_probe'")
+            .expect("probe statement")
+            .bind("probe", "probe")
+            .fetch_one(&conn)
+            .await
+            .expect("probe query inside the transaction");
+        query("ROLLBACK")
+            .expect("rollback")
+            .execute(&conn)
+            .await
+            .expect("rollback transaction");
+
+        query("SELECT :probe WHERE 'rollback_probe' = 'rollback_probe'")
+            .expect("probe statement")
+            .bind("probe", "probe")
+            .fetch_one(&conn)
+            .await
+            .expect("statement first parsed inside a rolled back transaction stays usable");
+    }
+
+    #[tokio::test]
+    async fn variable_arity_statement_is_not_cached() {
+        let conn = probe_connection();
+
+        for arity in 1..=3_i64 {
+            query(
+                "SELECT count(*) FROM unnest(ARRAY[:ids]::BIGINT[]) AS t(id)
+                 WHERE 'arity_probe' = 'arity_probe'",
+            )
+            .expect("arity statement")
+            .bind_vec("ids", (1..=arity).collect::<Vec<_>>())
+            .expect("bind ids")
+            .pluck(&conn)
+            .await
+            .expect("arity query");
+        }
+
+        assert_eq!(
+            cached_statements_like(&conn, "%arity_probe%").await,
+            0,
+            "a set placeholder renders different SQL per call and must not be cached"
+        );
+    }
 
     #[tokio::test]
     async fn mint_pool_accepts_single_connection_configuration() {
