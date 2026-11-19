@@ -6,6 +6,7 @@
 // Module declarations
 pub mod amount;
 pub mod bip321;
+mod codec;
 pub mod invoice;
 pub mod keys;
 pub mod mint;
