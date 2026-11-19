@@ -4,6 +4,7 @@ mod async_sqlite;
 mod backend;
 mod common;
 mod connection;
+mod manager;
 
 pub use self::backend::SqliteBackend;
 pub use self::common::Config;

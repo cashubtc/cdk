@@ -6,11 +6,11 @@ use cdk_sql_common::database::{
     CleanupOutcome, ConnectionMetrics, DatabaseExecutor, SqlConnection, SqlTransaction,
 };
 use cdk_sql_common::stmt::{Column, Statement};
-use deadpool_sqlite::Object;
 use tokio::sync::{oneshot, Mutex};
 
 use super::async_sqlite;
 use super::backend::{database_error, BackendInner};
+use super::manager::{InteractError, Object};
 
 #[derive(Debug, thiserror::Error)]
 enum ConnectionError {
@@ -42,7 +42,6 @@ impl Lease {
 impl Drop for Lease {
     fn drop(&mut self) {
         if !self.dirty {
-            let _entered = self.owner.runtime.enter();
             drop(self.object.take());
             return;
         }
@@ -110,7 +109,6 @@ impl Drop for Cleanup {
     fn drop(&mut self) {
         if let Some(object) = self.object.take() {
             self.outcome.record("sqlite");
-            let _entered = self.owner.runtime.enter();
             self.owner.discard_memory();
             drop(Object::take(object));
         }
@@ -161,8 +159,8 @@ impl SqliteConnection {
         lease.pending = None;
         let result = result.map_err(|error| {
             database_error(match error {
-                deadpool_sqlite::InteractError::Panic(_) => ConnectionError::WorkerPanic,
-                deadpool_sqlite::InteractError::Aborted => ConnectionError::WorkerAborted,
+                InteractError::Panic => ConnectionError::WorkerPanic,
+                InteractError::Aborted => ConnectionError::WorkerAborted,
             })
         })?;
         lease.dirty = self.in_transaction;

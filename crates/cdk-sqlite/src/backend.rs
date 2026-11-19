@@ -5,10 +5,12 @@ use std::time::Duration;
 
 use cdk_common::database::Error;
 use cdk_sql_common::database::SqlBackend;
-use deadpool_sqlite::{Hook, HookError, Pool, PoolError, Runtime, TimeoutType, Timeouts};
+use deadpool::managed::{Hook, HookError, TimeoutType, Timeouts};
+use deadpool::Runtime;
 
 use super::common::Config;
 use super::connection::{SqliteConnection, SqliteTransaction};
+use super::manager::{Manager, OpenConnections, Pool, PoolError, SqliteHandle};
 
 pub(crate) fn database_error<E>(error: E) -> Error
 where
@@ -25,32 +27,20 @@ pub struct SqliteBackend {
 
 #[derive(Debug)]
 pub(crate) struct BackendInner {
-    pool: Option<Pool>,
-    pub(crate) runtime: tokio::runtime::Handle,
+    pool: Pool,
+    open: Arc<OpenConnections>,
     in_memory: bool,
     initialized: Arc<AtomicBool>,
 }
 
 impl BackendInner {
     pub(crate) fn pool(&self) -> &Pool {
-        self.pool
-            .as_ref()
-            .expect("backend owns its library pool until drop")
+        &self.pool
     }
     pub(crate) fn discard_memory(&self) {
         if self.in_memory {
-            self.pool().close();
+            self.pool.close();
         }
-    }
-}
-
-impl Drop for BackendInner {
-    fn drop(&mut self) {
-        // deadpool-sqlite 0.8 uses spawn_blocking when dropping connections.
-        // Enter the owning runtime even if the last database handle is dropped
-        // by a synchronous FFI caller, or after runtime shutdown.
-        let _entered = self.runtime.enter();
-        drop(self.pool.take());
     }
 }
 
@@ -74,18 +64,22 @@ impl SqlBackend for SqliteBackend {
         let in_memory = config.path.is_none();
         let initialized = Arc::new(AtomicBool::new(false));
         let init_hook = initialized.clone();
-        let driver = deadpool_sqlite::Config::new(config.path.as_deref().unwrap_or(":memory:"));
+        let open = Arc::new(OpenConnections::default());
+        let manager = Manager::new(
+            config.path.unwrap_or_else(|| ":memory:".to_owned()),
+            runtime,
+            open.clone(),
+        );
         let password = config.password;
-        let pool = driver
-            .builder(Runtime::Tokio1)
-            .map_err(database_error)?
+        let pool = Pool::builder(manager)
+            .runtime(Runtime::Tokio1)
             .max_size(if in_memory { 1 } else { 20 })
             .timeouts(Timeouts {
                 wait: Some(Duration::from_secs(5)),
                 create: Some(Duration::from_secs(10)),
                 recycle: Some(Duration::from_secs(10)),
             })
-            .post_create(Hook::async_fn(move |conn, _| {
+            .post_create(Hook::async_fn(move |conn: &mut SqliteHandle, _| {
                 let password = password.clone();
                 let initialized = init_hook.clone();
                 Box::pin(async move {
@@ -122,8 +116,8 @@ impl SqlBackend for SqliteBackend {
             .map_err(database_error)?;
         Ok(Self {
             inner: Arc::new(BackendInner {
-                pool: Some(pool),
-                runtime,
+                pool,
+                open,
                 in_memory,
                 initialized,
             }),
@@ -146,12 +140,11 @@ impl SqlBackend for SqliteBackend {
     }
 
     async fn close(&self) -> Result<(), Error> {
-        let pool = self.inner.pool();
-        pool.close();
-        // Checked-out connections are dropped, not recycled, once returned.
-        while pool.status().size > 0 {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        self.inner.pool.close();
+        // Returned connections are closed rather than recycled. Also wait for
+        // connections detached after failed cleanup, which close once their
+        // pending operation finishes.
+        self.inner.open.wait_closed().await;
         Ok(())
     }
 }

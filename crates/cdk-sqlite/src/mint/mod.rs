@@ -62,7 +62,7 @@ mod test {
         let result = pool
             .inner
             .pool()
-            .timeout_get(&deadpool_sqlite::Timeouts {
+            .timeout_get(&deadpool::managed::Timeouts {
                 wait: Some(Duration::from_millis(10)),
                 ..Default::default()
             })
@@ -70,7 +70,7 @@ mod test {
 
         assert!(matches!(
             result,
-            Err(deadpool_sqlite::PoolError::Timeout(_))
+            Err(deadpool::managed::PoolError::Timeout(_))
         ));
     }
 

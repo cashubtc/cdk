@@ -66,9 +66,11 @@ This project is licensed under the [MIT License](../../LICENSE).
 
 ## Connection pooling and cancellation
 
-SQLite connections are managed by `deadpool-sqlite` 0.8.1, retaining rusqlite
-0.31 and SQLCipher compatibility. File databases use up to 20 connections;
-in-memory databases keep one connection and never evict it while healthy.
+SQLite connections are pooled by Deadpool through a small rusqlite manager in
+this crate, so the supported rusqlite range and SQLCipher compatibility are
+unchanged. File databases use up to 20 connections; in-memory databases keep
+one connection and never evict it while healthy. Returning a connection does
+not run a health query, so a cancelled checkout cannot discard it.
 The acquisition wait timeout remains five seconds. Opening hooks, SQL, row
 conversion, and transaction commands run through `interact()` on blocking
 workers. The encryption key is applied before database pragmas access contents.
@@ -85,9 +87,14 @@ Normal constructors and path/password arguments are unchanged. Low-level users
 should migrate to `SqliteBackend` and the shared `SqlBackend`, `SqlConnection`,
 and `SqlTransaction` traits; see the
 [low-level API migration guide](../cdk-postgres/README.md#low-level-api-migration).
-Create the backend inside a Tokio runtime. Backend handles retain the runtime
-handle needed to safely dispose of blocking connections, including when dropped
-by synchronous FFI callers. They do not create or own another runtime.
+Create the backend inside a Tokio runtime. Blocking work runs on the caller's
+runtime; backend handles retain the creating runtime's handle as a fallback for
+disposing of connections when dropped by synchronous FFI callers. They do not
+create or own another runtime.
+
+`close()` rejects new checkouts and waits until every connection, including one
+detached after failed cleanup, has finished closing. Await it before copying a
+database file.
 
 Cleanup diagnostics use the same outcome/disposal counters and structured warning
 fields as PostgreSQL; see [cleanup metrics](../cdk-postgres/README.md#cancellation-and-errors).

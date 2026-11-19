@@ -355,3 +355,191 @@ fn cleanup_count(reason: &str) -> f64 {
         .map(|metric| metric.get_counter().value())
         .sum()
 }
+
+struct TestDirectory(std::path::PathBuf);
+
+impl TestDirectory {
+    fn new() -> Self {
+        let path = std::env::temp_dir().join(format!("cdk-sqlite-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&path).unwrap();
+        Self(path)
+    }
+
+    fn file(&self, name: &str) -> String {
+        self.0.join(name).to_str().unwrap().to_owned()
+    }
+}
+
+impl Drop for TestDirectory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn config_for(path: &str) -> Config {
+    #[cfg(not(feature = "sqlcipher"))]
+    let config: Config = path.into();
+    #[cfg(feature = "sqlcipher")]
+    let config: Config = (path, "test").into();
+    config
+}
+
+/// Runs `writers` write transactions at once, each keeping the write lock for
+/// `statements` inserts plus an optional suspension.
+async fn write_burst(
+    writers: usize,
+    statements: usize,
+    hold: Option<std::time::Duration>,
+) -> Vec<Result<(), Error>> {
+    let directory = TestDirectory::new();
+    let backend = SqliteBackend::new(config_for(&directory.file("write-burst.sqlite"))).unwrap();
+    backend
+        .acquire()
+        .await
+        .unwrap()
+        .execute(query("CREATE TABLE t (v INTEGER)").unwrap())
+        .await
+        .unwrap();
+
+    let mut burst = tokio::task::JoinSet::new();
+    for _ in 0..writers {
+        let backend = backend.clone();
+        burst.spawn(async move {
+            let tx = backend.begin_transaction().await?;
+            if let Some(hold) = hold {
+                tokio::time::sleep(hold).await;
+            }
+            for v in 0..statements {
+                query("INSERT INTO t (v) VALUES (:v)")?
+                    .bind("v", i64::try_from(v).expect("fits in i64"))
+                    .execute(&tx)
+                    .await?;
+            }
+            tx.commit().await
+        });
+    }
+
+    let mut results = Vec::with_capacity(writers);
+    while let Some(joined) = burst.join_next().await {
+        results.push(joined.expect("writer task"));
+    }
+    backend.close().await.unwrap();
+    results
+}
+
+fn assert_burst_is_clean(results: &[Result<(), Error>], elapsed: std::time::Duration) {
+    assert!(
+        results.iter().all(Result::is_ok),
+        "writers failed: {results:?}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "burst took {elapsed:?}, the write lock was not released promptly"
+    );
+}
+
+/// Writers queueing for the write lock must not stop its holder from
+/// committing, with a transaction long enough to be suspended part way.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_writers_do_not_starve_a_long_transaction() {
+    let start = std::time::Instant::now();
+    let results = write_burst(16, 130, None).await;
+    assert_burst_is_clean(&results, start.elapsed());
+}
+
+/// The same guarantee when the holder is suspended for another reason, with
+/// fewer runtime workers than writers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_writers_do_not_starve_a_suspended_transaction() {
+    let start = std::time::Instant::now();
+    let results = write_burst(4, 4, Some(std::time::Duration::from_millis(1))).await;
+    assert_burst_is_clean(&results, start.elapsed());
+}
+
+/// Explicit close finishes checkpointing off async workers before a file copy.
+#[test]
+fn closing_backend_completes_checkpoint_before_file_backup() {
+    let directory = TestDirectory::new();
+    let path = directory.file("close-before-backup.sqlite");
+    let backup = directory.file("closed-backup.sqlite");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .max_blocking_threads(1)
+        .build()
+        .unwrap();
+
+    let values = runtime.block_on(async {
+        let backend = SqliteBackend::new(config_for(&path)).unwrap();
+        let conn = backend.acquire().await.unwrap();
+        conn.execute(query("CREATE TABLE data (id INTEGER)").unwrap())
+            .await
+            .unwrap();
+        conn.fetch_all(query("PRAGMA wal_checkpoint(TRUNCATE)").unwrap())
+            .await
+            .unwrap();
+        conn.execute(query("INSERT INTO data VALUES (42)").unwrap())
+            .await
+            .unwrap();
+        drop(conn);
+
+        // Closing must yield even when the blocking worker is occupied.
+        let (release, wait) = mpsc::channel::<()>();
+        let (started, entered) = tokio::sync::oneshot::channel();
+        let worker = tokio::task::spawn_blocking(move || {
+            started.send(()).unwrap();
+            wait.recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+        });
+        entered.await.unwrap();
+        let mut closing = Box::pin(backend.close());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut closing)
+                .await
+                .is_err()
+        );
+        release.send(()).unwrap();
+        worker.await.unwrap();
+        closing.await.unwrap();
+        // Closing applies to every clone, independently of reference counts.
+        assert!(backend.clone().acquire().await.is_err());
+        std::fs::copy(&path, &backup).unwrap();
+
+        let conn = rusqlite::Connection::open(&backup).unwrap();
+        #[cfg(feature = "sqlcipher")]
+        conn.pragma_update(None, "key", "test").unwrap();
+        let values: Vec<i64> = conn
+            .prepare("SELECT id FROM data")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        values
+    });
+
+    drop(runtime);
+    assert_eq!(values, vec![42]);
+}
+
+/// A connection outliving its runtime must not hold up that runtime's shutdown.
+#[test]
+fn dropping_a_runtime_does_not_hang_on_a_live_connection() {
+    let (done, is_done) = mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let backend: &'static SqliteBackend = Box::leak(Box::new(database().await));
+            let conn: &'static SqliteConnection =
+                Box::leak(Box::new(backend.acquire().await.unwrap()));
+            conn.pluck(query("SELECT 1").unwrap()).await.unwrap();
+        });
+        drop(runtime);
+        done.send(()).unwrap();
+    });
+    is_done
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the runtime shut down while a connection was still alive");
+}
