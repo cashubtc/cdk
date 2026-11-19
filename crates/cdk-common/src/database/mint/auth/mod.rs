@@ -22,6 +22,9 @@ pub trait MintAuthTransaction<Error>: DbTransactionFinalizer<Err = Error> {
 
     /// Atomically add a spent [`AuthProof`]
     ///
+    /// Singular, unlike the mint's `add_proofs`, because NUT-22 spends exactly one blind auth
+    /// token per request.
+    ///
     /// Returns [`Error::Duplicate`](crate::database::Error::Duplicate) if the proof has already
     /// been added.
     async fn add_proof(&mut self, proof: AuthProof) -> Result<(), Error>;

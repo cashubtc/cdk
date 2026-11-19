@@ -29,6 +29,9 @@ pub async fn init_keysets(
     let mut units: Vec<_> = supported_units.iter().collect();
     units.sort_by(|a, b| a.0.cmp(b.0));
 
+    let mut reactivated_infos = Vec::new();
+    let mut reactivated_active = Vec::new();
+
     for (unit, (input_fee_ppk, amounts)) in units {
         let mut keysets = tx.get_keyset_infos_by_unit(unit).await?;
         keysets.sort_by_key(|b| std::cmp::Reverse(b.derivation_path_index));
@@ -59,10 +62,14 @@ pub async fn init_keysets(
 
             let mut keyset_info = highest_index_keyset.clone();
             keyset_info.active = true;
-            tx.add_keyset_info(keyset_info).await?;
-            tx.set_active_keyset(unit.clone(), id).await?;
+            reactivated_infos.push(keyset_info);
+            reactivated_active.push((unit.clone(), id));
         }
     }
+
+    // Flushed once so startup advances the keyset epoch a single time.
+    tx.add_keyset_infos(reactivated_infos).await?;
+    tx.set_active_keysets(reactivated_active).await?;
 
     tx.commit().await?;
 

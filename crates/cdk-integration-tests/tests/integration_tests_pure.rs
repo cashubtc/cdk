@@ -2475,7 +2475,7 @@ async fn test_restore_from_expired_keyset() {
         .await
         .unwrap();
     keyset.final_expiry = Some(1);
-    tx.add_keyset_info(keyset.clone()).await.unwrap();
+    tx.add_keyset_infos(vec![keyset.clone()]).await.unwrap();
     tx.commit().await.unwrap();
 
     // Rotation reloads the updated keyset info in both the signatory and mint.

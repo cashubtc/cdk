@@ -310,3 +310,94 @@ where
     let retrieved = db.get_blind_signatures(&[blinded_message]).await.unwrap();
     assert!(retrieved[0].is_none());
 }
+
+/// Sign more unknown messages than fit one multi-row insert statement
+pub async fn add_blind_signatures_crosses_insert_batches<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error> + MintSignaturesDatabase<Err = Error>,
+{
+    let keyset_id = Id::from_str("001711afb1de20cb").unwrap();
+
+    let blinded_messages = (0..601)
+        .map(|_| SecretKey::generate().public_key())
+        .collect::<Vec<_>>();
+    let signatures = blinded_messages
+        .iter()
+        .map(|_| BlindSignature {
+            amount: Amount::from(2u64),
+            keyset_id,
+            c: SecretKey::generate().public_key(),
+            dleq: None,
+        })
+        .collect::<Vec<_>>();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_blind_signatures(&blinded_messages, &signatures, None)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let retrieved = db.get_blind_signatures(&blinded_messages).await.unwrap();
+    assert_eq!(retrieved.len(), blinded_messages.len());
+    assert!(retrieved.iter().all(|signature| signature.is_some()));
+    assert_eq!(
+        retrieved
+            .into_iter()
+            .map(|signature| signature.unwrap().c)
+            .collect::<Vec<_>>(),
+        signatures
+            .iter()
+            .map(|signature| signature.c)
+            .collect::<Vec<_>>()
+    );
+
+    // The aggregated keyset_amounts upsert must count each row exactly once.
+    let totals = db.get_total_issued().await.unwrap();
+    assert_eq!(
+        totals.get(&keyset_id).copied().unwrap_or(Amount::ZERO),
+        Amount::from(2 * blinded_messages.len() as u64)
+    );
+}
+
+/// Reject a batch holding one already signed message, writing nothing
+pub async fn add_blind_signatures_refuses_signed_row_in_batch<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error> + MintSignaturesDatabase<Err = Error>,
+{
+    let keyset_id = Id::from_str("001711afb1de20cb").unwrap();
+    let signature = |amount: u64| BlindSignature {
+        amount: Amount::from(amount),
+        keyset_id,
+        c: SecretKey::generate().public_key(),
+        dleq: None,
+    };
+
+    let signed = SecretKey::generate().public_key();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_blind_signatures(&[signed], &[signature(8)], None)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let fresh = (0..3)
+        .map(|_| SecretKey::generate().public_key())
+        .collect::<Vec<_>>();
+    let mut messages = fresh.clone();
+    messages.push(signed);
+    let signatures = messages.iter().map(|_| signature(4)).collect::<Vec<_>>();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let result = tx.add_blind_signatures(&messages, &signatures, None).await;
+    assert!(matches!(result.unwrap_err(), Error::Duplicate));
+    tx.rollback().await.unwrap();
+
+    let retrieved = db.get_blind_signatures(&fresh).await.unwrap();
+    assert!(retrieved.iter().all(|signature| signature.is_none()));
+
+    let totals = db.get_total_issued().await.unwrap();
+    assert_eq!(
+        totals.get(&keyset_id).copied().unwrap_or(Amount::ZERO),
+        Amount::from(8)
+    );
+}

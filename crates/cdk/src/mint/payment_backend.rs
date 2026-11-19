@@ -131,7 +131,6 @@ impl Mint {
 
                 match new_quote.add_payment(amount_paid, payment.payment_id.clone(), None) {
                     Ok(()) => {
-                        tx.update_mint_quote(&mut new_quote).await?;
                         should_notify = true;
                         recorded_payment_count += 1;
                     }
@@ -146,6 +145,10 @@ impl Mint {
                 }
             }
         }
+
+        // The quote accumulates every payment above, so one write persists them all.
+        tx.update_mint_quotes(std::slice::from_mut(&mut new_quote))
+            .await?;
 
         tx.commit().await?;
 

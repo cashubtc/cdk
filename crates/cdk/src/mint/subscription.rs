@@ -477,7 +477,7 @@ mod tests {
         quote
             .add_payment(payment_amount, payment_id, Some(0))
             .expect("add payment");
-        tx.update_mint_quote(&mut quote)
+        tx.update_mint_quotes(std::slice::from_mut(&mut quote))
             .await
             .expect("update mint quote");
         tx.commit().await.expect("commit transaction");
