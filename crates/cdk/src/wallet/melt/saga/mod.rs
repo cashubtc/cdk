@@ -1167,7 +1167,7 @@ impl<'a> MeltSaga<'a, MeltRequested> {
     /// Execute the melt request with async support.
     #[instrument(skip_all)]
     pub async fn execute_async(
-        self,
+        mut self,
         metadata: HashMap<String, String>,
     ) -> Result<MeltSagaResult<'a>, Error> {
         let operation_id = self.state_data.operation_id;
@@ -1190,11 +1190,36 @@ impl<'a> MeltSaga<'a, MeltRequested> {
         )
         .prefer_async(true);
 
-        let request = if quote_info.payment_method == PaymentMethod::Known(KnownMethod::Onchain) {
+        let mut request = if quote_info.payment_method == PaymentMethod::Known(KnownMethod::Onchain)
+        {
             request.fee_index(quote_info.fee_index.ok_or(Error::InvalidPaymentRequest)?)
         } else {
             request
         };
+
+        // v3 inputs sign the melt transcript, whose melt quote output binds
+        // the quote amount plus the selected fee reserve.
+        if request
+            .inputs()
+            .iter()
+            .any(|p| p.keyset_id.get_version() == cdk_common::nuts::nut02::KeySetVersion::Version02)
+        {
+            let signed = async {
+                let keys = self.wallet.own_v3_keys(request.inputs()).await?;
+                let quote_amount = quote_info
+                    .amount
+                    .checked_add(quote_info.fee_reserve)
+                    .ok_or(Error::AmountOverflow)?;
+                let transaction = request.transaction(quote_amount)?;
+                Wallet::sign_v3_inputs(&transaction, request.inputs_mut(), &keys)
+            }
+            .await;
+            if let Err(err) = signed {
+                tracing::error!("Failed to sign v3 melt inputs: {}", err);
+                execute_compensations(&mut self.compensations).await?;
+                return Err(err);
+            }
+        }
 
         let melt_result = self
             .wallet
