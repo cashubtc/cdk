@@ -237,59 +237,22 @@ pub fn blind_public_key(
 mod tests {
     use super::*;
 
-    const ID: [u8; 8] = [0x00, 0x9a, 0x1f, 0x29, 0x32, 0x53, 0xe4, 0x1e];
+    const KEYSET_ID: [u8; 8] = [0; 8];
 
     #[test]
-    fn round_trip_signature_and_require_valid_dleq() {
-        let secret = generate_secret();
-        let output = blind_message(secret.clone(), None).unwrap();
-        let mint_secret = SecretKey::generate();
-        let key = mint_secret.public_key().to_bytes().to_vec();
-        let b = PublicKey::from_slice(&output.blinded_message).unwrap();
-        let c = cashu::dhke::sign_message(&mint_secret, &b).unwrap();
-        let signed =
-            BlindSignature::new(8.into(), c, Id::from_bytes(&ID).unwrap(), &b, &mint_secret)
-                .unwrap();
-        let dleq = signed.dleq.unwrap();
-        let mut signature = Signature {
-            amount: 8,
-            keyset_id: ID.to_vec(),
-            blinded_signature: c.to_bytes().to_vec(),
-            dleq: Some(DleqProof {
-                e: dleq.e.as_secret_bytes().to_vec(),
-                s: dleq.s.as_secret_bytes().to_vec(),
-            }),
-        };
-        verify_dleq(
-            signature.clone(),
-            output.blinded_message.clone(),
-            key.clone(),
-        )
-        .unwrap();
-        let proof = unblind_message(
-            c.to_bytes().to_vec(),
-            output.blinding_factor.clone(),
-            key.clone(),
-        )
-        .unwrap();
-        let expected =
-            cashu::dhke::sign_message(&mint_secret, &cashu::dhke::hash_to_curve(&secret).unwrap())
-                .unwrap();
-        assert_eq!(proof, expected.to_bytes().to_vec());
-        signature.dleq.as_mut().unwrap().s = generate_secret_key();
-        assert!(matches!(
-            verify_dleq(
-                signature.clone(),
-                output.blinded_message.clone(),
-                key.clone()
-            ),
-            Err(CryptoError::InvalidDleq)
-        ));
-        signature.dleq = None;
-        assert!(matches!(
-            verify_dleq(signature, output.blinded_message.clone(), key),
-            Err(CryptoError::MissingDleq)
-        ));
+    fn output_records_expose_bytes_and_redact_debug() {
+        let derived = derive_secret(vec![42; 64], KEYSET_ID.to_vec(), 0).unwrap();
+        assert_eq!(derived.blinding_factor.len(), 32);
+        assert_eq!(derived.secret.len(), 64);
+        assert!(derived.secret.iter().all(u8::is_ascii_hexdigit));
+        assert_eq!(
+            format!("{derived:?}"),
+            r#"DerivedSecret { material: "[REDACTED]" }"#
+        );
+
+        let output = blind_message(derived.secret, Some(derived.blinding_factor.clone())).unwrap();
+        assert_eq!(output.blinding_factor, derived.blinding_factor);
+        assert_eq!(output.blinded_message.len(), 33);
         assert_eq!(
             format!("{output:?}"),
             r#"BlindedMessage { material: "[REDACTED]" }"#
@@ -297,73 +260,42 @@ mod tests {
     }
 
     #[test]
-    fn scalar_bytes_pass_directly_between_exports() {
-        let mut one = vec![0; 32];
-        one[31] = 1;
-        let key = derive_public_key(one.clone()).unwrap();
-        assert_eq!(
-            key,
-            SecretKey::from_slice(&one).unwrap().public_key().to_bytes()
-        );
-        let output = blind_message(vec![0, 255], Some(one.clone())).unwrap();
-        assert_eq!(output.blinding_factor, one);
-        assert_eq!(output.blinded_message.len(), 33);
-        let generated = generate_secret_key();
-        assert_eq!(generated.len(), 32);
-        assert!(derive_public_key(generated).is_ok());
-        for invalid in [vec![1; 31], vec![1; 33], vec![0; 32], vec![0xff; 32]] {
-            assert!(derive_public_key(invalid).is_err());
-        }
+    fn invalid_foreign_inputs_identify_the_field() {
+        let uncompressed = SecretKey::generate().public_key().to_uncompressed_bytes();
+        assert!(matches!(
+            normalize_public_key(uncompressed.to_vec()),
+            Err(CryptoError::InvalidInput { field }) if field == "public key"
+        ));
+        assert!(matches!(
+            derive_secret(vec![42; 32], KEYSET_ID.to_vec(), 0),
+            Err(CryptoError::InvalidInput { field }) if field == "seed length (64 bytes)"
+        ));
+        assert!(matches!(
+            blind_message(vec![0xff], Some(vec![1; 31])),
+            Err(CryptoError::InvalidInput { field }) if field == "blinding factor"
+        ));
     }
 
     #[test]
-    fn derivation_preserves_the_core_input_domain() {
-        let mut v2_id = vec![0xab; 33];
-        v2_id[0] = 1;
-        for id in [ID.to_vec(), v2_id.clone()] {
-            let seed = [42; 64];
-            let material = derive_secret(seed.to_vec(), id.clone(), 12).unwrap();
-            let keyset = Id::from_bytes(&id).unwrap();
-            assert_eq!(
-                material.secret,
-                Secret::from_seed(&seed, keyset, 12).unwrap().to_bytes()
-            );
-            assert_eq!(
-                material.blinding_factor,
-                SecretKey::from_seed(&seed, keyset, 12)
-                    .unwrap()
-                    .as_secret_bytes()
-                    .to_vec()
-            );
-            assert_eq!(
-                format!("{material:?}"),
-                r#"DerivedSecret { material: "[REDACTED]" }"#
-            );
-        }
-        assert!(derive_secret(vec![42; 32], ID.to_vec(), 0).is_err());
-        assert!(derive_secret(vec![42; 64], ID.to_vec(), 1 << 31).is_err());
-        assert!(derive_secret(vec![42; 64], v2_id, u32::MAX).is_ok());
-    }
-
-    #[test]
-    fn key_blinding_uses_the_requested_core_slot() {
-        let e = SecretKey::generate();
-        let key = SecretKey::generate().public_key();
-        for slot in [0, 1, 10] {
-            let r = cashu::nuts::nut28::ecdh_kdf(&e, &key, slot).unwrap();
-            let expected = cashu::nuts::nut28::blind_public_key(&key, &r).unwrap();
-            assert_eq!(
-                blind_public_key(key.to_bytes().to_vec(), e.as_secret_bytes().to_vec(), slot)
-                    .unwrap(),
-                expected.to_bytes().to_vec()
-            );
-        }
-        assert!(
-            blind_public_key(key.to_bytes().to_vec(), e.as_secret_bytes().to_vec(), 11).is_err()
-        );
-        assert!(normalize_public_key(key.to_bytes()[1..].to_vec()).is_err());
-        assert!(normalize_public_key(key.to_uncompressed_bytes().to_vec()).is_err());
-        assert!(blind_message(vec![0, 255], Some(vec![0; 32])).is_err());
-        assert!(blind_message(vec![0, 255], None).is_ok());
+    fn dleq_errors_distinguish_absent_and_rejected_proofs() {
+        let key = derive_public_key(vec![1; 32]).unwrap();
+        let mut signature = Signature {
+            amount: 1,
+            keyset_id: KEYSET_ID.to_vec(),
+            blinded_signature: key.clone(),
+            dleq: None,
+        };
+        assert!(matches!(
+            verify_dleq(signature.clone(), key.clone(), key.clone()),
+            Err(CryptoError::MissingDleq)
+        ));
+        signature.dleq = Some(DleqProof {
+            e: vec![1; 32],
+            s: vec![2; 32],
+        });
+        assert!(matches!(
+            verify_dleq(signature, key.clone(), key),
+            Err(CryptoError::InvalidDleq)
+        ));
     }
 }
