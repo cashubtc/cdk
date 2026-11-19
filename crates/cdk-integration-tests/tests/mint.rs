@@ -403,8 +403,6 @@ async fn test_rotate_keyset_with_expiry() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_builder_does_not_replace_all_expired_keysets() {
-    use cdk_common::database::mint::KeysDatabase;
-
     let mnemonic = Mnemonic::generate(12).unwrap();
     let fee_reserve = FeeReserve {
         min_fee_reserve: 1.into(),
@@ -444,36 +442,21 @@ async fn test_builder_does_not_replace_all_expired_keysets() {
 
     assert_eq!(mint.keysets().keysets.len(), 1);
 
-    let future_expiry = unix_time() + 1_000_000;
-    let new_keyset = mint
-        .rotate_keyset(
-            CurrencyUnit::Sat,
-            cdk_integration_tests::standard_keyset_amounts(32),
-            0,
-            true,
-            Some(future_expiry),
-        )
-        .await
-        .unwrap();
+    // Include the expired timestamp when deriving the v2 keyset ID.
+    mint.rotate_keyset(
+        CurrencyUnit::Sat,
+        cdk_integration_tests::standard_keyset_amounts(32),
+        0,
+        true,
+        Some(unix_time().saturating_sub(1)),
+    )
+    .await
+    .unwrap();
 
     let count_before_rebuild = mint.keysets().keysets.len();
     assert_eq!(count_before_rebuild, 2);
 
-    // Mutate final_expiry to be in the past via localstore upsert.
     drop(mint);
-    {
-        let mut tx = KeysDatabase::begin_transaction(&*localstore).await.unwrap();
-        let mut info = tx
-            .get_keyset_infos()
-            .await
-            .unwrap()
-            .into_iter()
-            .find(|k| k.id == new_keyset.id)
-            .expect("rotated keyset should be present in localstore");
-        info.final_expiry = Some(unix_time().saturating_sub(1));
-        tx.add_keyset_info(info).await.unwrap();
-        tx.commit().await.unwrap();
-    }
 
     let fake_wallet2 = FakeWallet::new(
         fee_reserve,

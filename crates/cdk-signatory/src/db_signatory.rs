@@ -25,7 +25,8 @@ use tokio::sync::{watch, Mutex};
 use tracing::instrument;
 
 use crate::common::{
-    check_unit_string_collision, create_new_keyset, derivation_path_from_unit, init_keysets,
+    check_unit_string_collision, create_new_keyset, derivation_path_from_unit, derive_keyset,
+    init_keysets,
 };
 use crate::signatory::{
     ReconstructDleqArguments, RotateKeyArguments, Signatory, SignatoryKeySet, SignatoryKeysets,
@@ -235,8 +236,7 @@ impl DbSignatory {
         let db_active_keysets = tx.get_active_keysets().await?;
         let db_infos = tx.get_keyset_infos().await?;
 
-        self.publish_snapshot(epoch, db_active_keysets, db_infos);
-        Ok(())
+        self.publish_snapshot(epoch, db_active_keysets, db_infos)
     }
 
     /// Build a keyset snapshot for `epoch` and publish it, reusing keys already
@@ -256,7 +256,7 @@ impl DbSignatory {
         epoch: u64,
         db_active_keysets: HashMap<CurrencyUnit, Id>,
         db_infos: Vec<MintKeySetInfo>,
-    ) {
+    ) -> Result<(), Error> {
         let current = self.keysets.load();
         let mut by_id = HashMap::with_capacity(db_infos.len());
         let mut active_by_unit = HashMap::new();
@@ -268,7 +268,7 @@ impl DbSignatory {
             }
             let keyset = match current.by_id.get(&id) {
                 Some((_, keyset)) => keyset.clone(),
-                None => self.generate_keyset(&info),
+                None => self.generate_keyset(&info)?,
             };
             by_id.insert(id, (info, keyset));
         }
@@ -283,7 +283,7 @@ impl DbSignatory {
             let current = self.keysets.load();
             if current.epoch.is_some_and(|cur| epoch <= cur) {
                 // A concurrent reload already published an equal-or-newer view.
-                return;
+                return Ok(());
             }
             let prev = self.keysets.compare_and_swap(&current, snapshot.clone());
             if Arc::ptr_eq(&prev, &current) {
@@ -293,6 +293,7 @@ impl DbSignatory {
             // and CAS. Retry to re-check its epoch against ours.
         }
         self.publish_latest();
+        Ok(())
     }
 
     /// Publish the latest stored keyset snapshot to watch subscribers.
@@ -310,17 +311,8 @@ impl DbSignatory {
         });
     }
 
-    fn generate_keyset(&self, keyset_info: &MintKeySetInfo) -> MintKeySet {
-        MintKeySet::generate_from_xpriv(
-            &self.secp_ctx,
-            self.xpriv,
-            &keyset_info.amounts,
-            keyset_info.unit.clone(),
-            keyset_info.derivation_path.clone(),
-            keyset_info.input_fee_ppk,
-            keyset_info.final_expiry,
-            keyset_info.id.get_version(),
-        )
+    fn generate_keyset(&self, keyset_info: &MintKeySetInfo) -> Result<MintKeySet, Error> {
+        derive_keyset(&self.secp_ctx, self.xpriv, keyset_info)
     }
 
     /// Snapshot the current keysets from memory (lock-free).
@@ -804,7 +796,9 @@ mod test {
 
         let new_expiry = Some(unix_time() + 9_000);
         info.final_expiry = new_expiry;
-        signatory.publish_snapshot(epoch + 1, active, vec![info]);
+        signatory
+            .publish_snapshot(epoch + 1, active, vec![info])
+            .expect("keyset derives to its id");
 
         let published = signatory
             .keysets_snapshot()
@@ -816,6 +810,61 @@ mod test {
         assert_eq!(
             published.final_expiry, new_expiry,
             "published keyset must carry the info's final_expiry, not the cached key's"
+        );
+    }
+
+    /// Stored keysets must derive to their ids, so a seed or derivation change
+    /// fails loudly instead of serving different keys under the stored id.
+    #[tokio::test]
+    async fn load_rejects_keyset_that_derives_to_a_different_id() {
+        let store = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("in-memory db"),
+        );
+        let signatory = DbSignatory::new(
+            store.clone(),
+            b"test-seed-keyset-id-check",
+            Default::default(),
+            Default::default(),
+        )
+        .await
+        .expect("DbSignatory::new");
+        signatory
+            .rotate_keyset(RotateKeyArguments {
+                unit: CurrencyUnit::Sat,
+                amounts: vec![1, 2, 4, 8],
+                input_fee_ppk: 0,
+                keyset_id_type: cdk_common::nut02::KeySetVersion::Version01,
+                final_expiry: None,
+            })
+            .await
+            .expect("rotate_keyset");
+        drop(signatory);
+
+        DbSignatory::new(
+            store.clone(),
+            b"test-seed-keyset-id-check",
+            Default::default(),
+            Default::default(),
+        )
+        .await
+        .expect("the same seed derives the stored ids");
+
+        let result = DbSignatory::new(
+            store,
+            b"a-different-seed",
+            Default::default(),
+            Default::default(),
+        )
+        .await;
+        assert!(
+            matches!(
+                result,
+                Err(Error::NUT02(cdk_common::nut02::Error::IncorrectKeysetId))
+            ),
+            "expected IncorrectKeysetId, got: {:?}",
+            result.map(|_| ())
         );
     }
 

@@ -7,7 +7,7 @@ use bitcoin::secp256k1::{self, All, Secp256k1};
 use cdk_common::common::IssuerVersion;
 use cdk_common::error::Error;
 use cdk_common::mint::MintKeySetInfo;
-use cdk_common::nuts::{CurrencyUnit, MintKeySet};
+use cdk_common::nuts::{CurrencyUnit, KeySet, MintKeySet};
 use cdk_common::util::unix_time;
 use cdk_common::{database, nut02};
 
@@ -54,17 +54,8 @@ pub async fn init_keysets(
             );
             let id = highest_index_keyset.id;
 
-            // Validate we can generate it (sanity check)
-            let _ = MintKeySet::generate_from_xpriv(
-                secp_ctx,
-                xpriv,
-                &highest_index_keyset.amounts,
-                highest_index_keyset.unit.clone(),
-                highest_index_keyset.derivation_path.clone(),
-                highest_index_keyset.input_fee_ppk,
-                highest_index_keyset.final_expiry,
-                highest_index_keyset.id.get_version(),
-            );
+            // Sanity check: the seed must still derive the keys behind this id.
+            derive_keyset(secp_ctx, xpriv, highest_index_keyset)?;
 
             let mut keyset_info = highest_index_keyset.clone();
             keyset_info.active = true;
@@ -76,6 +67,46 @@ pub async fn init_keysets(
     tx.commit().await?;
 
     Ok(())
+}
+
+/// Derive the keys for a stored keyset and check that they hash to its id.
+///
+/// Catches a seed or key-derivation change that would otherwise serve different
+/// keys under the stored id. Legacy Nutshell v2 ids, which hash an explicit zero
+/// expiry, are accepted.
+pub fn derive_keyset<C: secp256k1::Signing>(
+    secp: &secp256k1::Secp256k1<C>,
+    xpriv: Xpriv,
+    info: &MintKeySetInfo,
+) -> Result<MintKeySet, Error> {
+    let keyset = MintKeySet::generate_from_xpriv(
+        secp,
+        xpriv,
+        &info.amounts,
+        info.unit.clone(),
+        info.derivation_path.clone(),
+        info.input_fee_ppk,
+        info.final_expiry,
+        info.id.get_version(),
+    );
+
+    KeySet {
+        id: info.id,
+        unit: info.unit.clone(),
+        active: Some(info.active),
+        keys: keyset.keys.clone().into(),
+        input_fee_ppk: info.input_fee_ppk,
+        final_expiry: info.final_expiry,
+    }
+    .verify_id_for_legacy_nutshell_migration()
+    .inspect_err(|_| {
+        tracing::error!(
+            "Keys derived for keyset {} do not match its id; refusing to load it",
+            info.id
+        );
+    })?;
+
+    Ok(keyset)
 }
 
 /// Generate new [`MintKeySetInfo`] from path
