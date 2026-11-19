@@ -452,7 +452,13 @@ impl<'a> SendSaga<'a, Initial> {
             }
         }
 
-        let mut force_swap = false;
+        // A nutroot send locks fresh secrets, so it always swaps (online).
+        let mut force_swap = opts.nutroot.is_some();
+        if force_swap && opts.send_kind.is_offline() {
+            return Err(Error::Custom(
+                "A nutroot-locked send needs a swap and cannot be offline".to_string(),
+            ));
+        }
         let available_sum = available_proofs.total_amount()?;
         if available_sum < amount {
             if opts.conditions.is_none() || opts.send_kind.is_offline() {
@@ -867,6 +873,7 @@ impl<'a> SendSaga<'a, Prepared> {
                         options.conditions.clone(),
                         false,
                         options.use_p2bk,
+                        options.nutroot.clone(),
                     )
                     .await?
                 {
@@ -1046,6 +1053,7 @@ impl<'a> SendSaga<'a, TokenCreated> {
                 None,
                 false,
                 false,
+                None,
             )
             .await;
 

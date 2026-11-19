@@ -714,6 +714,7 @@ impl<'a> Arbitrary<'a> for PaymentRequestArb {
             description,
             transports,
             nut10,
+            nutroot: None,
         }))
     }
 }

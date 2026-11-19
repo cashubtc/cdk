@@ -139,3 +139,85 @@ async fn v3_restore_recovers_point_secrets() {
         .expect("send");
     assert!(token.value().unwrap() >= Amount::from(5));
 }
+
+#[tokio::test]
+async fn v3_nutroot_payment_request_flow() {
+    use cdk::nuts::nut10::nutroot::Leaf;
+    use cdk::nuts::nut18::NutrootOption;
+    use cdk::nuts::SecretKey;
+
+    setup_tracing();
+    let mint = create_and_start_v3_test_mint().await.expect("v3 mint");
+    let alice = create_test_wallet_for_mint(mint.clone()).await.unwrap();
+    let carol = create_test_wallet_for_mint(mint.clone()).await.unwrap();
+    fund_wallet(alice.clone(), 64, None).await.expect("fund");
+
+    // Carol requests receiver-keyed outputs with a refund leaf for a
+    // co-signer, whose key is tagged blind-me.
+    let carol_key = SecretKey::generate();
+    let cosigner = SecretKey::generate().public_key();
+    let refund = Leaf::After {
+        n: 1,
+        keys: vec![cosigner],
+        time: cdk::util::unix_time() + 30 * 24 * 3600,
+    }
+    .to_leaf_bytes()
+    .unwrap();
+    let request = NutrootOption {
+        k: carol_key.public_key(),
+        l: Some(vec![refund]),
+        b: Some(vec![cosigner]),
+    };
+
+    // Alice pays: the send swaps into secrets built from the request.
+    let token = alice
+        .prepare_send(
+            Amount::from(16),
+            SendOptions {
+                nutroot: Some(request.clone()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("prepare nutroot send")
+        .confirm(None)
+        .await
+        .expect("nutroot send");
+    let token_str = token.to_string();
+
+    // A receiver without Carol's key, or with another request, refuses it.
+    let wrong_request = NutrootOption {
+        b: None,
+        ..request.clone()
+    };
+    assert!(carol
+        .receive(
+            &token_str,
+            ReceiveOptions {
+                p2pk_signing_keys: vec![carol_key.clone()],
+                v3_payment_request: Some(wrong_request),
+                ..Default::default()
+            },
+        )
+        .await
+        .is_err());
+    assert!(carol
+        .receive(&token_str, ReceiveOptions::default())
+        .await
+        .is_err());
+
+    // Carol accepts it against her request and sweeps it with the key
+    // derived from E (slot 0) and the tweak.
+    let received = carol
+        .receive(
+            &token_str,
+            ReceiveOptions {
+                p2pk_signing_keys: vec![carol_key],
+                v3_payment_request: Some(request),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("receive nutroot payment");
+    assert_eq!(received, Amount::from(16));
+}
