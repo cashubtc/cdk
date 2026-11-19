@@ -108,6 +108,21 @@ pub async fn blind_auth_request_context(req: Request, next: Next) -> Response {
         return next.run(req).await;
     }
 
+    // NUT-22 hashes the body "after any content-coding", but leaves open
+    // whether a coded body may be used at all; a proxy that decodes or
+    // re-encodes it would break the witness. Refuse coded bodies.
+    if req
+        .headers()
+        .get(axum::http::header::CONTENT_ENCODING)
+        .is_some_and(|coding| coding.as_bytes() != b"identity")
+    {
+        return (
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "Blind-auth requests must not use a content-coding".to_string(),
+        )
+            .into_response();
+    }
+
     let (mut parts, body) = req.into_parts();
     let bytes = match axum::body::to_bytes(body, MAX_AUTHORIZED_BODY_LEN).await {
         Ok(bytes) => bytes,
@@ -283,5 +298,23 @@ mod tests {
             .await
             .expect("body");
         assert_eq!(bytes.as_ref(), b"no token");
+    }
+
+    #[tokio::test]
+    async fn blind_auth_request_with_content_coding_is_refused() {
+        let router = Router::new()
+            .route("/v1/swap", post(|| async { "ok" }))
+            .layer(axum::middleware::from_fn(blind_auth_request_context));
+        let response = router
+            .oneshot(
+                HttpRequest::post("/v1/swap")
+                    .header(BLIND_AUTH_KEY, v3_token().to_string())
+                    .header("Content-Encoding", "gzip")
+                    .body(Body::from(vec![0x1f, 0x8b]))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
     }
 }
