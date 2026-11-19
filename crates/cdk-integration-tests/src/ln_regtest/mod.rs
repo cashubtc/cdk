@@ -5,6 +5,7 @@ pub mod hex;
 pub mod lnd;
 
 pub mod ln_client;
+mod process;
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub enum InvoiceStatus {

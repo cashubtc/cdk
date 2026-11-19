@@ -7,6 +7,8 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, Result};
 
+use super::process::stop_child;
+
 /// Lnd
 pub struct Lnd {
     addr: PathBuf,
@@ -102,7 +104,7 @@ impl Lnd {
 
         match child {
             Some(mut child) => {
-                child.kill()?;
+                stop_child(&mut child)?;
             }
             None => bail!("No child to kill"),
         }

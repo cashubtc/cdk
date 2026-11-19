@@ -8,6 +8,8 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, Result};
 
+use super::process::stop_child;
+
 fn prefixed_path_arg(prefix: &str, path: &Path) -> OsString {
     let mut argument = OsString::from(prefix);
     argument.push(path);
@@ -97,7 +99,7 @@ impl Bitcoind {
 
         match child {
             Some(mut child) => {
-                child.kill()?;
+                stop_child(&mut child)?;
             }
             None => bail!("No child to kill"),
         }
