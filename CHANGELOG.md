@@ -11,6 +11,8 @@
 
 - cdk/cdk-mintd: Select the keyset version for new keysets explicitly with `MintBuilder::with_keyset_version` or the mintd `keyset_version` setting (`CDK_MINTD_KEYSET_VERSION`), which takes precedence over `use_keyset_v2`.
 - cashu/cdk/cdk-signatory/cdk-mintd: Add opt-in BLS12-381 v3 keysets (keyset ID version `02`). New keysets still default to v2; select v3 with `MintBuilder::with_keyset_version`, the mintd `keyset_version = "v3"` setting (`CDK_MINTD_KEYSET_VERSION`), or `cdk-mint-cli rotate-next-keyset --keyset-version v3`. Wallets without BLS support cannot use v3 keysets. See the [v0.19 migration guide](docs/migrations/v0.19.md#bls-v3-keysets).
+- cashu/cdk/cdk-axum/cdk-ffi: Implement cashubtc/nuts#443 for v3 keysets: point secrets, transaction transcripts with per-input witnesses, nutroot spending conditions (leaves, tree, NUMS keys), spend info in tokens, locked v3 mint quotes with NUT-13 type `0x04` keys, NUT-07 `input_digest`, the NUT-18 `nutroot` request option (NUT-26 tag `0x0b`) and v3 blind auth tokens signing their request. See the [v0.19 migration guide](docs/migrations/v0.19.md#nutroot-secrets-and-transactions).
+- cdk-cli: `create-request --nutroot` sets a NUT-18 nutroot option.
 - cdk/cdk-ffi: Add `Wallet::verify_token_signatures`, which checks DLEQ proofs for v1/v2 keysets and BLS pairings for v3 keysets.
 
 ### Changed
@@ -23,6 +25,11 @@
 - cashu: **BREAKING** - `AuthToken::BlindAuth` holds a `Box<BlindAuthToken>`.
 - cdk-signatory: **BREAKING** - The signatory gRPC schema version is now 4. Upgrade remote signatories and mints together.
 - cdk-sql-common: Wallet transaction history accepts 48-byte BLS proof identifiers (migration `20261116000000`).
+- cashu: **BREAKING** - v3 secrets must be compressed points and v3 `Y` is hashed over their decoded bytes; the NUT-13 v3 derivation changes. v3 keysets created with earlier builds must be rotated.
+- cashu/cdk: **BREAKING** - `Witness` gains `Nutroot`; `Proof`, `ProofV3`, `ProofV4`, `ProofState`, `AuthProof`, `BlindAuthToken`, `PaymentRequest`, `SendOptions`, `ReceiveOptions` and `CreateRequestParams` gain fields; the NUT-10 mint setting becomes `Nut10Settings`.
+- cdk: **BREAKING** - v3 keysets require the mint's NUT-06 `pubkey`, and minting onto them requires a locked quote. New quotes on mints with a pubkey use NUT-13 type `0x04` lock keys.
+- cdk-common: **BREAKING** - The mint proof database traits gain `add_input_digests` and `get_input_digests`.
+- cdk-sql-common: Mint proofs gain `input_digest` and wallet proofs gain `spend_info` (migrations `20261119000000`). cdk-supabase: schema version 11.
 
 ### Deprecated
 
