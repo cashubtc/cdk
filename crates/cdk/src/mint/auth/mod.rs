@@ -59,6 +59,16 @@ impl Mint {
             return Err(Error::ExpiredKeyset);
         }
 
+        // A v3 BAT signs the request it authorizes (NUT-22); the server
+        // attaches the request as it arrived.
+        if token.auth_proof.keyset_id.get_version() == cdk_common::nut02::KeySetVersion::Version02 {
+            let request = token.request.as_ref().ok_or(Error::BlindAuthFailed)?;
+            token.auth_proof.verify_request(request).map_err(|err| {
+                tracing::debug!("v3 blind auth witness rejected: {err}");
+                Error::BlindAuthFailed
+            })?;
+        }
+
         self.signatory
             .verify_proofs(vec![token.auth_proof.clone().into()])
             .await
@@ -419,6 +429,7 @@ mod tests {
             secret: Secret::generate(),
             c: SecretKey::generate().public_key().into(),
             dleq: None,
+            witness: None,
         };
         let y = proof.y().expect("proof y");
 

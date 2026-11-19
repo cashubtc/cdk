@@ -334,7 +334,7 @@ impl AuthWallet {
     /// Get Auth Token
     #[instrument(skip(self))]
     pub async fn get_blind_auth_token(&self) -> Result<Option<BlindAuthToken>, Error> {
-        let auth_proof = match self
+        match self
             .localstore
             .get_proofs(
                 Some(self.mint_url.clone()),
@@ -349,12 +349,19 @@ impl AuthWallet {
                 self.localstore
                     .update_proofs(vec![], vec![proof.proof.y()?])
                     .await?;
-                proof.proof.try_into()?
+                // A v3 BAT keeps its key as bearer spend info until used.
+                let signing_key = proof
+                    .proof
+                    .spend_info
+                    .as_ref()
+                    .and_then(|info| info.k.clone());
+                let auth_proof: crate::nuts::AuthProof = proof.proof.try_into()?;
+                let mut token = BlindAuthToken::new(auth_proof);
+                token.signing_key = signing_key;
+                Ok(Some(token))
             }
-            None => return Ok(None),
-        };
-
-        Ok(Some(BlindAuthToken { auth_proof }))
+            None => Ok(None),
+        }
     }
 
     /// Auth for request
@@ -447,12 +454,30 @@ impl AuthWallet {
         )
             .into();
 
-        let premint_secrets = PreMintSecrets::random(
-            active_keyset_id,
-            amount,
-            &SplitTarget::Value(1.into()),
-            &fee_and_amounts,
-        )?;
+        // A v3 BAT's secret is the point of a fresh keypair; its key signs
+        // the request the BAT authorizes (NUT-22), so it is kept.
+        let mut bat_keys = std::collections::HashMap::new();
+        let premint_secrets = match active_keyset_id.get_version() {
+            crate::nuts::nut02::KeySetVersion::Version02 => {
+                let amounts =
+                    amount.split_targeted(&SplitTarget::Value(1.into()), &fee_and_amounts)?;
+                let secrets = amounts
+                    .iter()
+                    .map(|_| {
+                        let (secret, key) = crate::secret::Secret::generate_v3();
+                        bat_keys.insert(secret.clone(), key);
+                        secret
+                    })
+                    .collect();
+                PreMintSecrets::from_secrets(active_keyset_id, amounts, secrets)?
+            }
+            _ => PreMintSecrets::random(
+                active_keyset_id,
+                amount,
+                &SplitTarget::Value(1.into()),
+                &fee_and_amounts,
+            )?,
+        };
 
         let request = MintAuthRequest {
             outputs: premint_secrets.blinded_messages(),
@@ -513,7 +538,10 @@ impl AuthWallet {
         let proof_infos = proofs
             .clone()
             .into_iter()
-            .map(|proof| {
+            .map(|mut proof| {
+                if let Some(key) = bat_keys.get(&proof.secret) {
+                    proof.spend_info = Some(cdk_common::nut00::SpendInfo::bearer(key.clone()));
+                }
                 ProofInfo::new(
                     proof,
                     self.mint_url.clone(),

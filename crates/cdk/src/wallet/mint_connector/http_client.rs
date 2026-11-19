@@ -205,6 +205,7 @@ where
     where
         R: DeserializeOwned,
     {
+        let auth = authorize_request(&self.mint_url, auth, "GET", &url, &[])?;
         self.transport
             .http_get(url, auth)
             .await
@@ -222,6 +223,7 @@ where
         P: Serialize + Send + Sync,
         R: DeserializeOwned,
     {
+        let auth = authorize_post(&self.mint_url, auth, &url, payload)?;
         self.transport
             .http_post(url, auth, payload)
             .await
@@ -345,8 +347,8 @@ where
 
         let transport = self.transport.clone();
         let mut retry_delay = HTTP_RETRY_INITIAL_BACKOFF;
-        loop {
-            let url = match &path {
+        let request_url = |path: &nut19::Path| -> Result<Url, Error> {
+            Ok(match path {
                 nut19::Path::Swap => self.mint_url.join_paths(&["v1", "swap"])?,
                 nut19::Path::Custom(custom_path) => {
                     // Custom paths should be in the format "/v1/mint/{method}" or "/v1/melt/{method}"
@@ -355,7 +357,20 @@ where
                     let parts: Vec<&str> = path_str.split('/').collect();
                     self.mint_url.join_paths(&parts)?
                 }
-            };
+            })
+        };
+        // A v3 BAT signs the request once; a replay sends the same bytes.
+        let auth_token = {
+            let url = request_url(&path)?;
+            match method {
+                nut19::Method::Get => {
+                    authorize_request(&self.mint_url, auth_token, "GET", &url, &[])?
+                }
+                nut19::Method::Post => authorize_post(&self.mint_url, auth_token, &url, payload)?,
+            }
+        };
+        loop {
+            let url = request_url(&path)?;
 
             let request = async {
                 match method {
@@ -407,6 +422,71 @@ where
                 }
             }
         }
+    }
+}
+
+/// The target a v3 BAT signs: the path relative to the mint URL plus any
+/// query, as sent (NUT-22)
+fn request_target(mint_url: &MintUrl, url: &Url) -> Result<String, Error> {
+    let base = mint_url.join_paths(&[])?;
+    let base_path = base.path().trim_end_matches('/');
+    let path = url.path();
+    let relative = path.strip_prefix(base_path).unwrap_or(path);
+    let mut target = match relative.starts_with('/') {
+        true => relative.to_string(),
+        false => format!("/{relative}"),
+    };
+    if let Some(query) = url.query() {
+        target.push('?');
+        target.push_str(query);
+    }
+    Ok(target)
+}
+
+/// Sign a v3 BAT over the request it is sent with
+///
+/// `body` must be the exact bytes the transport sends. Other tokens pass
+/// through unchanged.
+fn authorize_request(
+    mint_url: &MintUrl,
+    auth: Option<AuthToken>,
+    method: &str,
+    url: &Url,
+    body: &[u8],
+) -> Result<Option<AuthToken>, Error> {
+    match auth {
+        Some(AuthToken::BlindAuth(mut token)) if token.signing_key.is_some() => {
+            let request = cdk_common::nuts::nut22::AuthorizedRequest::new(
+                method,
+                &request_target(mint_url, url)?,
+                body,
+            );
+            token
+                .authorize(&request)
+                .map_err(|e| Error::Custom(format!("Could not sign blind auth: {e}")))?;
+            Ok(Some(AuthToken::BlindAuth(token)))
+        }
+        other => Ok(other),
+    }
+}
+
+/// [`authorize_request`] for a JSON POST. Transports send exactly
+/// `serde_json::to_vec(payload)`, which is what the BAT signs.
+fn authorize_post<P>(
+    mint_url: &MintUrl,
+    auth: Option<AuthToken>,
+    url: &Url,
+    payload: &P,
+) -> Result<Option<AuthToken>, Error>
+where
+    P: Serialize,
+{
+    match &auth {
+        Some(AuthToken::BlindAuth(token)) if token.signing_key.is_some() => {
+            let body = serde_json::to_vec(payload)?;
+            authorize_request(mint_url, auth, "POST", url, &body)
+        }
+        _ => Ok(auth),
     }
 }
 
@@ -1247,6 +1327,42 @@ where
         let url = self.mint_url.join_paths(&["v1", "auth", "blind", "mint"])?;
         self.transport_http_post(url, Some(self.cat.read().await.clone()), &request)
             .await
+    }
+}
+
+#[cfg(test)]
+mod request_target_tests {
+    use std::str::FromStr;
+
+    use super::*;
+
+    /// tests/22-tests.md: a mint served under a path signs the target
+    /// relative to its mint URL
+    #[test]
+    fn target_is_relative_to_the_mint_url() {
+        for (mint, url, target) in [
+            (
+                "https://mint.example",
+                "https://mint.example/v1/swap",
+                "/v1/swap",
+            ),
+            (
+                "https://mint.example/Bitcoin",
+                "https://mint.example/Bitcoin/v1/swap",
+                "/v1/swap",
+            ),
+            (
+                "https://mint.example",
+                "https://mint.example/v1/mint/quote/bolt11/quote123?b=2&a=1&q=a%20b",
+                "/v1/mint/quote/bolt11/quote123?b=2&a=1&q=a%20b",
+            ),
+        ] {
+            let mint_url = MintUrl::from_str(mint).unwrap();
+            assert_eq!(
+                request_target(&mint_url, &Url::parse(url).unwrap()).unwrap(),
+                target
+            );
+        }
     }
 }
 
