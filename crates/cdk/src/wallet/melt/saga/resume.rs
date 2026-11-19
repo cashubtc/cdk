@@ -507,7 +507,7 @@ impl Wallet {
     }
 
     /// Compensate a melt saga by releasing proofs and the melt quote.
-    async fn compensate_melt(&self, saga_id: &uuid::Uuid) -> Result<(), Error> {
+    pub(crate) async fn compensate_melt(&self, saga_id: &uuid::Uuid) -> Result<(), Error> {
         self.mark_transaction_failed(*saga_id).await?;
 
         // Release melt quote (best-effort, continue on error)

@@ -72,11 +72,11 @@ impl Wallet {
 
     /// Proofs that make up the token of a send saga.
     ///
-    /// Once the token is created the saga records its proofs. When the send
-    /// had to swap first, those are new proofs that are not linked to the
-    /// operation, and the proofs reserved by the operation are the swap inputs,
-    /// which the swap already spent. Only fall back to the reserved proofs when
-    /// the saga has no token proofs recorded.
+    /// Once the token is created the saga records its proofs. When the send had
+    /// to swap first, the proofs the operation reserved also include the swap
+    /// inputs, which the swap already spent, so the recorded token proofs are
+    /// the authority. Only fall back to the reserved proofs when the saga has
+    /// no token proofs recorded.
     async fn send_token_proofs(
         &self,
         saga_id: &uuid::Uuid,
@@ -217,7 +217,7 @@ impl Wallet {
     }
 
     /// Compensate a send saga by releasing reserved proofs.
-    async fn compensate_send(&self, saga_id: &uuid::Uuid) -> Result<(), Error> {
+    pub(crate) async fn compensate_send(&self, saga_id: &uuid::Uuid) -> Result<(), Error> {
         let reserved_proofs = self.localstore.get_reserved_proofs(saga_id).await?;
         let proof_ys = reserved_proofs.iter().map(|p| p.y).collect();
 
@@ -738,6 +738,70 @@ mod tests {
         .unwrap();
 
         (input_y, token_y)
+    }
+
+    /// A send that swapped and then failed before creating its token leaves
+    /// the saga in `ProofsReserved`. The swap's outputs are reserved under the
+    /// operation, so recovery releases them even though the inputs it also
+    /// reserved are already spent.
+    #[tokio::test]
+    async fn test_recover_send_proofs_reserved_releases_the_swap_outputs() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let saga_id = uuid::Uuid::new_v4();
+
+        let input = test_proof_info(keyset_id, 64, mint_url.clone(), State::Unspent);
+        let input_y = input.y;
+        let output = test_proof_info(keyset_id, 32, mint_url.clone(), State::Unspent);
+        let output_y = output.y;
+        db.update_proofs(vec![input, output], vec![]).await.unwrap();
+
+        db.reserve_proofs(vec![input_y, output_y], &saga_id)
+            .await
+            .unwrap();
+        db.update_proofs_state(vec![input_y], State::Spent)
+            .await
+            .unwrap();
+
+        let saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Send(SendSagaState::ProofsReserved),
+            Amount::from(32),
+            mint_url,
+            CurrencyUnit::Sat,
+            OperationData::Send(SendOperationData {
+                amount: Amount::from(32),
+                memo: None,
+                counter_start: Some(0),
+                counter_end: Some(2),
+                token: None,
+                proofs: None,
+            }),
+        );
+        db.add_saga(saga).await.unwrap();
+
+        let wallet =
+            create_test_wallet_with_mock(db.clone(), Arc::new(MockMintConnector::new())).await;
+        let report = wallet.recover_incomplete_sagas().await.unwrap();
+
+        assert_eq!(report.compensated, 1);
+
+        let stored = db.get_proofs_by_ys(vec![output_y]).await.unwrap();
+        assert_eq!(stored[0].state, State::Unspent, "the output is spendable");
+        assert_eq!(
+            stored[0].used_by_operation, None,
+            "the released output is owned by nobody"
+        );
+
+        let stored = db.get_proofs_by_ys(vec![input_y]).await.unwrap();
+        assert_eq!(
+            stored[0].state,
+            State::Spent,
+            "the swap spent the input and recovery must not resurrect it"
+        );
+
+        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
     }
 
     #[tokio::test]
