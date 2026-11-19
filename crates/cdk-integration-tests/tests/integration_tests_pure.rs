@@ -247,6 +247,84 @@ async fn test_send_to_same_wallet_preserves_transaction_history() {
     assert_ne!(incoming.id(), outgoing_id);
 }
 
+/// Revoking a send whose token was only partly spent takes back the proofs
+/// that are still unspent instead of leaving them pending.
+#[tokio::test]
+async fn test_revoke_partially_claimed_send_reclaims_unspent_proofs() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let alice = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create test wallet");
+    let bob = create_test_wallet_for_mint(mint)
+        .await
+        .expect("Failed to create test wallet");
+
+    fund_wallet(alice.clone(), 64, None)
+        .await
+        .expect("Failed to fund wallet");
+
+    let prepared_send = alice
+        .prepare_send(Amount::from(40), SendOptions::default())
+        .await
+        .expect("Failed to prepare send");
+    let operation_id = prepared_send.operation_id();
+    let token = prepared_send
+        .confirm(None)
+        .await
+        .expect("Failed to send token");
+    let keysets_info = to_keyset_infos(&alice.keysets(Default::default()).await.unwrap());
+    let token_proofs = token.proofs(&keysets_info).unwrap();
+    assert!(token_proofs.len() > 1);
+    assert_eq!(token_proofs.total_amount().unwrap(), Amount::from(40));
+    let balance_after_send = alice.total_balance().await.expect("Failed to get balance");
+    assert_eq!(balance_after_send, Amount::from(24));
+
+    // Bob spends only the first proof of the token.
+    let claimed_proof = token_proofs[0].clone();
+    let claimed = bob
+        .receive_proofs(
+            vec![claimed_proof.clone()],
+            ReceiveOptions::default(),
+            None,
+            None,
+        )
+        .await
+        .expect("Failed to receive part of the token");
+    assert_eq!(claimed, claimed_proof.amount);
+
+    let unclaimed = Amount::from(40)
+        .checked_sub(claimed_proof.amount)
+        .expect("claimed part is smaller than the token");
+    let revoked = alice
+        .revoke_send(operation_id)
+        .await
+        .expect("Revoking the unspent part of the token should succeed");
+    assert_eq!(revoked, unclaimed);
+
+    assert_eq!(
+        alice.total_balance().await.expect("Failed to get balance"),
+        balance_after_send
+            .checked_add(unclaimed)
+            .expect("balance overflow")
+    );
+    let stuck = alice
+        .get_proofs_with(
+            Some(vec![State::Pending, State::Reserved, State::PendingSpent]),
+            None,
+        )
+        .await
+        .expect("Failed to list proofs");
+    assert!(stuck.is_empty(), "proofs left pending: {stuck:?}");
+    assert!(alice
+        .get_pending_sends()
+        .await
+        .expect("Failed to list pending sends")
+        .is_empty());
+}
+
 /// Tests the NUT-06 functionality (mint discovery):
 /// 1. Alice gets funded with 64 sats
 /// 2. Verifies the initial mint URL is in the mint info
