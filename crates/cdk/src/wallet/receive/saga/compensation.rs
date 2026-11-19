@@ -43,7 +43,19 @@ impl CompensatingAction for RemovePendingProofs {
             self.proof_ys.len()
         );
 
-        let restored_ys: HashSet<PublicKey> = self.restore_proofs.iter().map(|p| p.y).collect();
+        // Only rows this receive still holds are written back. A saved row
+        // whose proof is no longer held was never overwritten, or has moved on
+        // since (for example the send that owned it finished), so restoring it
+        // would bring back a stale state.
+        let held_ys: HashSet<PublicKey> = self.proof_ys.iter().copied().collect();
+        let restore_proofs: Vec<ProofInfo> = self
+            .restore_proofs
+            .iter()
+            .filter(|p| held_ys.contains(&p.y))
+            .cloned()
+            .collect();
+
+        let restored_ys: HashSet<PublicKey> = restore_proofs.iter().map(|p| p.y).collect();
         let removed_ys = self
             .proof_ys
             .iter()
@@ -52,7 +64,7 @@ impl CompensatingAction for RemovePendingProofs {
             .collect();
 
         self.localstore
-            .update_proofs(self.restore_proofs.clone(), removed_ys)
+            .update_proofs(restore_proofs, removed_ys)
             .await
             .map_err(Error::Database)?;
 
