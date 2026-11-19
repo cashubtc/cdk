@@ -1265,11 +1265,17 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         mint_url: Option<MintUrl>,
         unit: Option<CurrencyUnit>,
         state: Option<Vec<State>>,
+        exclude_keyset_ids: Option<Vec<Id>>,
     ) -> Result<u64, DatabaseError> {
         // Note: Ideally this would use a server-side SUM aggregation, but PostgREST
         // doesn't support aggregate functions directly. We fetch all proofs and sum locally.
+        let excluded = exclude_keyset_ids.unwrap_or_default();
         let proofs = self.get_proofs(mint_url, unit, state, None).await?;
-        Ok(proofs.iter().map(|p| p.proof.amount.to_u64()).sum())
+        Ok(proofs
+            .iter()
+            .filter(|p| !excluded.contains(&p.proof.keyset_id))
+            .map(|p| p.proof.amount.to_u64())
+            .sum())
     }
 
     async fn get_transaction(

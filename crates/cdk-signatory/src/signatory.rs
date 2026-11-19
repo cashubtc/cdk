@@ -9,6 +9,7 @@
 use cdk_common::common::IssuerVersion;
 use cdk_common::error::Error;
 use cdk_common::mint::MintKeySetInfo;
+use cdk_common::nuts::expiry_has_passed;
 use cdk_common::nuts::nut02::KeySetVersion;
 use cdk_common::{
     BlindSignature, BlindedMessage, CurrencyUnit, Id, KeySet, Keys, MintKeySet, Proof, PublicKey,
@@ -78,10 +79,9 @@ pub struct SignatoryKeySet {
 }
 
 impl SignatoryKeySet {
-    /// Returns true if `final_expiry` is set and strictly in the past.
+    /// Returns true if `final_expiry` is set, non-zero and strictly in the past.
     pub fn is_expired(&self) -> bool {
-        self.final_expiry
-            .is_some_and(|expiry| expiry < cdk_common::util::unix_time())
+        expiry_has_passed(self.final_expiry, cdk_common::util::unix_time())
     }
 }
 
@@ -242,10 +242,12 @@ mod tests {
         assert!(ks.is_expired());
     }
 
+    /// Zero is how a keyset with no final expiry reaches this type, so it can
+    /// never be an expiry in the past.
     #[test]
     fn test_is_expired_zero() {
         let ks = dummy_signatory_keyset(Some(0));
-        assert!(ks.is_expired());
+        assert!(!ks.is_expired());
     }
 
     #[test]

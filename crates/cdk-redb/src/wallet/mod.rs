@@ -458,11 +458,17 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
         mint_url: Option<MintUrl>,
         unit: Option<CurrencyUnit>,
         state: Option<Vec<State>>,
+        exclude_keyset_ids: Option<Vec<Id>>,
     ) -> Result<u64, database::Error> {
         // For redb, we still need to fetch all proofs and sum them
         // since redb doesn't have SQL aggregation
+        let excluded = exclude_keyset_ids.unwrap_or_default();
         let proofs = self.get_proofs(mint_url, unit, state, None).await?;
-        Ok(proofs.iter().map(|p| u64::from(p.proof.amount)).sum())
+        Ok(proofs
+            .iter()
+            .filter(|p| !excluded.contains(&p.proof.keyset_id))
+            .map(|p| u64::from(p.proof.amount))
+            .sum())
     }
 
     #[instrument(skip(self))]
@@ -873,6 +879,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
 
                     existing_keyset.active = keyset.active;
                     existing_keyset.input_fee_ppk = keyset.input_fee_ppk;
+                    existing_keyset.final_expiry = keyset.final_expiry;
 
                     existing_keyset
                 } else {

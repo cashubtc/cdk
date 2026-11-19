@@ -612,6 +612,7 @@ where
         mint_url: Option<MintUrl>,
         unit: Option<CurrencyUnit>,
         states: Option<Vec<State>>,
+        exclude_keyset_ids: Option<Vec<Id>>,
     ) -> Result<u64, database::Error> {
         let conn = self
             .pool
@@ -627,6 +628,11 @@ where
             .into_iter()
             .map(|x| x.to_string())
             .collect::<Vec<_>>();
+        let excluded_keysets = exclude_keyset_ids
+            .unwrap_or_default()
+            .into_iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>();
 
         if mint_url.is_some() {
             where_clauses.push("mint_url = :mint_url");
@@ -636,6 +642,9 @@ where
         }
         if !states.is_empty() {
             where_clauses.push("state IN (:states)");
+        }
+        if !excluded_keysets.is_empty() {
+            where_clauses.push("keyset_id NOT IN (:excluded_keysets)");
         }
 
         if !where_clauses.is_empty() {
@@ -654,6 +663,10 @@ where
 
         if !states.is_empty() {
             q = q.bind_vec("states", states)?;
+        }
+
+        if !excluded_keysets.is_empty() {
+            q = q.bind_vec("excluded_keysets", excluded_keysets)?;
         }
 
         let balance = q
@@ -1270,7 +1283,8 @@ where
         (:mint_url, :id, :unit, :active, :input_fee_ppk, :final_expiry, :keyset_u32)
         ON CONFLICT(id) DO UPDATE SET
             active = excluded.active,
-            input_fee_ppk = excluded.input_fee_ppk
+            input_fee_ppk = excluded.input_fee_ppk,
+            final_expiry = excluded.final_expiry
         "#,
             )?
             .bind("mint_url", mint_url.to_string())

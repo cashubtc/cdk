@@ -79,12 +79,18 @@ where
     /// Get proofs by Y values
     async fn get_proofs_by_ys(&self, ys: Vec<PublicKey>) -> Result<Vec<ProofInfo>, Err>;
 
-    /// Get balance
+    /// Get balance, leaving out every proof on a keyset in
+    /// `exclude_keyset_ids`
+    ///
+    /// The exclusion is a parameter so a caller that hides unspendable proofs
+    /// still gets one aggregate, instead of loading every row to filter the
+    /// sum itself.
     async fn get_balance(
         &self,
         mint_url: Option<MintUrl>,
         unit: Option<CurrencyUnit>,
         state: Option<Vec<State>>,
+        exclude_keyset_ids: Option<Vec<Id>>,
     ) -> Result<u64, Err>;
 
     /// Get transaction from storage

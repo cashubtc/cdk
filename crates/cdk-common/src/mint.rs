@@ -5,6 +5,7 @@ use std::ops::Deref;
 use std::str::FromStr;
 
 use bitcoin::bip32::DerivationPath;
+use cashu::nuts::expiry_has_passed;
 use cashu::nuts::nut30::MeltQuoteOnchainFeeOption;
 use cashu::quote_id::QuoteId;
 use cashu::util::unix_time;
@@ -1304,9 +1305,9 @@ pub struct MintKeySetInfo {
 }
 
 impl MintKeySetInfo {
-    /// Returns true if `final_expiry` is set and strictly in the past.
+    /// Returns true if `final_expiry` is set, non-zero and strictly in the past.
     pub fn is_expired(&self) -> bool {
-        self.final_expiry.is_some_and(|expiry| expiry < unix_time())
+        expiry_has_passed(self.final_expiry, unix_time())
     }
 }
 
@@ -1881,10 +1882,13 @@ mod tests {
         assert!(info.is_expired());
     }
 
+    /// Nutshell announces a zero expiry for a keyset that never expires, and
+    /// NUT-02 leaves zero out of the keyset ID for the same reason. Read as an
+    /// epoch timestamp, it stranded every proof on such a keyset.
     #[test]
     fn test_is_expired_zero() {
         let info = dummy_mint_keyset_info(Some(0));
-        assert!(info.is_expired());
+        assert!(!info.is_expired());
     }
 
     #[test]
