@@ -88,9 +88,9 @@ impl<'a> SwapSaga<'a, Initial> {
     /// # Compensation
     ///
     /// On failure, reverts proof reservation and deletes the saga.
-    /// When `proof_reservation` is [`ProofReservation::Skip`], the swap does
-    /// not own the proof reservation and skips both the reservation call and
-    /// the corresponding compensation registration.
+    /// Under [`ProofReservation::Skip`] the parent saga owns the proof
+    /// lifecycle, so both the reservation call and the matching compensation
+    /// are skipped and the send outputs are stored against the parent.
     #[instrument(skip_all)]
     #[allow(clippy::too_many_arguments)]
     pub async fn prepare(
@@ -203,6 +203,7 @@ impl<'a> SwapSaga<'a, Initial> {
                 spending_conditions,
                 pre_swap,
                 saga,
+                proof_reservation,
             },
         })
     }
@@ -327,11 +328,22 @@ impl<'a> SwapSaga<'a, Prepared> {
                     }
                 }
 
+                let owner = match self.state_data.proof_reservation {
+                    ProofReservation::Reserve => None,
+                    ProofReservation::Skip(parent) => Some(parent),
+                };
                 let send_proofs_info = proofs_to_send
                     .clone()
                     .into_iter()
                     .map(|proof| {
-                        ProofInfo::new(proof, mint_url.clone(), State::Reserved, unit.clone())
+                        ProofInfo::new_with_operations(
+                            proof,
+                            mint_url.clone(),
+                            State::Reserved,
+                            unit.clone(),
+                            owner,
+                            None,
+                        )
                     })
                     .collect::<Result<Vec<ProofInfo>, _>>()?;
                 added_proofs = send_proofs_info;
@@ -562,7 +574,7 @@ mod tests {
                 None,
                 false,
                 false,
-                ProofReservation::Skip,
+                ProofReservation::Skip(parent_op_id),
             )
             .await
             .unwrap();
@@ -657,7 +669,8 @@ mod tests {
         amount_split_target: SplitTarget,
         input_fee_ppk: u64,
         include_fees: bool,
-    ) -> Proofs {
+        proof_reservation: ProofReservation,
+    ) -> (Wallet, Proofs) {
         let (wallet, mock_client) = wallet_with_16_sat_proof(input_fee_ppk).await;
 
         let input_proofs = wallet.get_unspent_proofs().await.unwrap();
@@ -669,7 +682,7 @@ mod tests {
                 None,
                 false,
                 include_fees,
-                ProofReservation::Reserve,
+                proof_reservation,
             )
             .await
             .expect("prepare swap saga");
@@ -697,18 +710,26 @@ mod tests {
         };
         mock_client.set_post_swap_response(Ok(SwapResponse { signatures }));
 
-        prepared
+        let send_proofs = prepared
             .execute()
             .await
             .expect("execute swap saga")
             .into_send_proofs()
-            .expect("swap with an amount returns send proofs")
+            .expect("swap with an amount returns send proofs");
+
+        (wallet, send_proofs)
     }
 
     #[tokio::test]
     async fn test_swap_with_split_target_sends_requested_amount() {
-        let send_proofs =
-            swap_16_sat_proof(10, SplitTarget::Value(Amount::from(1)), 0, false).await;
+        let (_wallet, send_proofs) = swap_16_sat_proof(
+            10,
+            SplitTarget::Value(Amount::from(1)),
+            0,
+            false,
+            ProofReservation::Reserve,
+        )
+        .await;
 
         assert_eq!(send_proofs.total_amount().unwrap(), Amount::from(10));
     }
@@ -717,10 +738,60 @@ mod tests {
     async fn test_swap_with_include_fees_sends_redemption_fee() {
         // 1 sat per input: 10 sat splits into [8, 2], so the receiver needs 2 sat
         // on top of the amount to redeem the send proofs.
-        let send_proofs = swap_16_sat_proof(10, SplitTarget::default(), 1000, true).await;
+        let (_wallet, send_proofs) = swap_16_sat_proof(
+            10,
+            SplitTarget::default(),
+            1000,
+            true,
+            ProofReservation::Reserve,
+        )
+        .await;
 
         assert_eq!(send_proofs.total_amount().unwrap(), Amount::from(12));
         assert_eq!(send_proofs.len(), 2);
+    }
+
+    /// The swap deletes its own saga row on success, so outputs it leaves
+    /// unowned can never be released. A nested swap hands them to the parent
+    /// that asked for them, whose `release_proofs` is the only thing that can
+    /// still reach them.
+    #[tokio::test]
+    async fn test_nested_swap_stores_send_outputs_against_the_parent() {
+        let parent_op_id = uuid::Uuid::new_v4();
+        let (wallet, send_proofs) = swap_16_sat_proof(
+            10,
+            SplitTarget::default(),
+            0,
+            false,
+            ProofReservation::Skip(parent_op_id),
+        )
+        .await;
+
+        let stored = wallet
+            .localstore
+            .get_proofs_by_ys(send_proofs.ys().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(stored.len(), send_proofs.len());
+        for proof_info in &stored {
+            assert_eq!(proof_info.state, State::Reserved);
+            assert_eq!(
+                proof_info.used_by_operation,
+                Some(parent_op_id),
+                "the parent saga has to own what its swap produced"
+            );
+        }
+
+        wallet
+            .localstore
+            .release_proofs(&parent_op_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            wallet.total_reserved_balance().await.unwrap(),
+            Amount::ZERO,
+            "the parent can release the outputs it owns"
+        );
     }
 
     #[tokio::test]
