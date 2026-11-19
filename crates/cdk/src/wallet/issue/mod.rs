@@ -428,6 +428,46 @@ impl Wallet {
             .ok_or(Error::UnknownQuote)
     }
 
+    /// Refresh the accounting of a mint quote reserved by `operation_id`
+    ///
+    /// Applies the mint's current quote state without resuming sagas or
+    /// releasing reservations, so a saga can refresh a quote it reserved
+    /// before the saga itself is persisted. Fails if the quote is no longer
+    /// reserved by `operation_id`.
+    #[instrument(skip_all)]
+    pub(crate) async fn refresh_reserved_mint_quote_accounting(
+        &self,
+        quote_id: &str,
+        operation_id: &uuid::Uuid,
+    ) -> Result<MintQuote, Error> {
+        let operation = operation_id.to_string();
+        let mut mint_quote = self
+            .localstore
+            .get_mint_quote(quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+        let response = self
+            .client
+            .get_mint_quote_status(mint_quote.payment_method.clone(), quote_id)
+            .await?;
+        validate_mint_quote_response_id(quote_id, &response)?;
+        if mint_quote.used_by_operation.as_deref() != Some(operation.as_str()) {
+            return Err(Error::ConcurrentUpdate);
+        }
+
+        apply_mint_quote_response(&mut mint_quote, &response);
+        self.localstore.add_mint_quote(mint_quote).await?;
+        let mint_quote = self
+            .localstore
+            .get_mint_quote(quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+        match mint_quote.used_by_operation.as_deref() == Some(operation.as_str()) {
+            true => Ok(mint_quote),
+            false => Err(Error::ConcurrentUpdate),
+        }
+    }
+
     /// Check the status of a single mint quote from the mint.
     ///
     /// Calls `GET /v1/mint/quote/{method}/{quote_id}` per NUT-04.

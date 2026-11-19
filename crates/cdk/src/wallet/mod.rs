@@ -57,6 +57,7 @@ mod mint_connector;
 mod mint_metadata_cache;
 #[cfg(feature = "npubcash")]
 mod npubcash;
+pub(crate) mod nutroot;
 #[cfg(feature = "nwc")]
 pub mod nwc;
 mod p2pk;

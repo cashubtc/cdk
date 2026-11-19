@@ -916,9 +916,16 @@ impl<'a> SendSaga<'a, Prepared> {
                 })
                 .await?;
 
+            // v3 proofs travel with their spend info: the wallet's own
+            // proofs hand over their key as a bearer `k` (NUT-00).
+            let token_proofs = self
+                .wallet
+                .with_bearer_spend_info(&final_proofs_to_send)
+                .await?;
+
             let token = Token::new(
                 self.wallet.mint_url.clone(),
-                final_proofs_to_send.clone(),
+                token_proofs,
                 token_memo,
                 self.wallet.unit.clone(),
             );

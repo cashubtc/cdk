@@ -224,6 +224,17 @@ impl<'a> SwapSaga<'a, Prepared> {
         let unit = &self.wallet.unit;
         let operation_id = self.state_data.operation_id;
 
+        let mut swap_request = self.state_data.pre_swap.swap_request.clone();
+        if let Err(err) = self
+            .wallet
+            .sign_v3_swap(&mut swap_request, &Default::default())
+            .await
+        {
+            tracing::error!("Failed to sign v3 swap inputs: {}", err);
+            execute_compensations(&mut self.compensations).await?;
+            return Err(err);
+        }
+
         let mut saga = self.state_data.saga.clone();
         saga.update_state(WalletSagaState::Swap(SwapSagaState::SwapRequested));
         if let OperationData::Swap(ref mut data) = saga.data {
@@ -234,12 +245,7 @@ impl<'a> SwapSaga<'a, Prepared> {
             return Err(Error::ConcurrentUpdate);
         }
 
-        let swap_response = match self
-            .wallet
-            .client
-            .post_swap(self.state_data.pre_swap.swap_request.clone())
-            .await
-        {
+        let swap_response = match self.wallet.client.post_swap(swap_request).await {
             Ok(response) => response,
             Err(err) => {
                 if err.is_definitive_failure() {
