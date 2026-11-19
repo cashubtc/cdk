@@ -711,6 +711,7 @@ mod tests {
                     signatures: Some(vec!["public-signature".to_string()]),
                 },
             )),
+            input_digest: None,
         };
 
         let update: ProofStateUpdate = proof_state.into();

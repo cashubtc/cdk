@@ -303,7 +303,11 @@ pub trait SpendingConditionVerification {
                 if has_sig_all {
                     return Ok(true);
                 }
-            } else if proof.witness.is_some() {
+            } else if proof.witness.is_some()
+                && proof.keyset_id.get_version() != crate::nuts::nut02::KeySetVersion::Version02
+            {
+                // A v3 input's witness is a nutroot witness, verified by the
+                // NUT-00 signing rule rather than here.
                 return Err(Error::NUT11(nut11::Error::IncorrectWitnessKind));
             }
         }

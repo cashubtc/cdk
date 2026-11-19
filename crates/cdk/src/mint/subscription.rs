@@ -19,6 +19,7 @@ use cdk_common::{
 };
 use cdk_signatory::signatory::Signatory;
 
+use super::check_spendable::{assemble_proof_states, exposes_witness};
 use super::Mint;
 use crate::event::MintEvent;
 
@@ -206,15 +207,23 @@ impl MintPubSubSpec {
         }
 
         if !public_keys.is_empty() {
+            // Proofs the mint has never seen have no state to backfill.
+            let states: Vec<(ProofId, cdk_common::State)> = public_keys
+                .iter()
+                .zip(
+                    self.db
+                        .get_proofs_states(public_keys.as_slice())
+                        .await
+                        .map_err(|e| e.to_string())?,
+                )
+                .filter_map(|(y, state)| state.map(|state| (*y, state)))
+                .collect();
             to_return.extend(
-                self.db
-                    .get_proofs_states(public_keys.as_slice())
+                assemble_proof_states(&self.db, &states)
                     .await
                     .map_err(|e| e.to_string())?
                     .into_iter()
-                    .enumerate()
-                    .filter_map(|(idx, state)| state.map(|state| (public_keys[idx], state).into()))
-                    .map(|state: ProofState| state.into()),
+                    .map(MintEvent::from),
             );
         }
 
@@ -259,7 +268,7 @@ impl Spec for MintPubSubSpec {
 
 /// PubsubManager
 #[allow(missing_debug_implementations)]
-pub struct PubSubManager(Pubsub<MintPubSubSpec>);
+pub struct PubSubManager(Pubsub<MintPubSubSpec>, DynMintDatabase);
 
 impl PubSubManager {
     /// Create a new instance
@@ -271,18 +280,52 @@ impl PubSubManager {
         ),
     ) -> Arc<Self> {
         Arc::new_cyclic(|manager| {
-            Self(Pubsub::new(Arc::new(MintPubSubSpec {
-                db: context.0,
-                payment_processors: context.1,
-                signatory: context.2,
-                pubsub_manager: manager.clone(),
-            })))
+            Self(
+                Pubsub::new(Arc::new(MintPubSubSpec {
+                    db: context.0.clone(),
+                    payment_processors: context.1,
+                    signatory: context.2,
+                    pubsub_manager: manager.clone(),
+                })),
+                context.0,
+            )
         })
     }
 
     /// Helper function to emit a ProofState status
     pub fn proof_state<E: Into<ProofState>>(&self, event: E) {
         self.publish(event.into());
+    }
+
+    /// Emit the state of proofs that just became pending or spent
+    ///
+    /// Each state carries the witness and input digest it exposes, read from
+    /// the store as HTTP check-state reports them (NUT-07, NUT-17).
+    ///
+    /// If that read fails, the states that would need it are not published:
+    /// an event without its witness would be indistinguishable from a
+    /// complete one. The error is logged, and subscribers still learn the
+    /// state from check-state or on resubscribing.
+    pub async fn proof_states_with_witnesses(&self, ys: &[ProofId], state: cdk_common::State) {
+        let states: Vec<(ProofId, cdk_common::State)> = ys.iter().map(|y| (*y, state)).collect();
+        match assemble_proof_states(&self.1, &states).await {
+            Ok(proof_states) => {
+                for proof_state in proof_states {
+                    self.publish(proof_state);
+                }
+            }
+            Err(err) => {
+                tracing::error!(
+                    "Could not load proof witnesses for {} {} notifications: {}",
+                    ys.len(),
+                    state,
+                    err
+                );
+                for y in ys.iter().filter(|y| !exposes_witness(y, state)) {
+                    self.publish(ProofState::from((*y, state)));
+                }
+            }
+        }
     }
 
     /// Helper function to publish even of a mint quote being paid

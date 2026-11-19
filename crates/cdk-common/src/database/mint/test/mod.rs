@@ -376,6 +376,7 @@ macro_rules! mint_db_test {
             add_and_find_proofs,
             add_duplicate_proofs,
             bls_g1_proofs_can_be_stored_queried_and_spent,
+            input_digests_batch_requires_every_proof,
             kvstore_functionality,
             kvstore_write_if_absent,
             kvstore_write_if_equals,

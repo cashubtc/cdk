@@ -2,9 +2,12 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use cdk_common::database::DynMintDatabase;
-use cdk_common::mint::{MeltFinalizationData, MeltSagaState, Operation, Saga, SagaStateEnum};
+use cdk_common::mint::{
+    MeltFinalizationData, MeltQuote, MeltSagaState, Operation, Saga, SagaStateEnum,
+};
+use cdk_common::nut00::transaction::Digest;
 use cdk_common::nut00::KnownMethod;
-use cdk_common::nuts::MeltQuoteState;
+use cdk_common::nuts::{MeltQuoteState, ProofId};
 use cdk_common::payment::OutgoingPaymentOptions;
 use cdk_common::{
     Amount, CurrencyUnit, DhkePoint, Error, QuoteId, SpendingConditionVerification, State,
@@ -19,6 +22,7 @@ use self::state::{Initial, PaymentConfirmed, SettlementDecision, SetupComplete};
 use crate::cdk_payment::MakePaymentResponse;
 use crate::mint::melt::lease::{check_melt_lease, MELT_LEASE_SECONDS};
 use crate::mint::melt::shared;
+use crate::mint::nutroot::has_v3_inputs;
 use crate::mint::subscription::PubSubManager;
 use crate::mint::verification::Verification;
 use crate::mint::MeltRequest;
@@ -150,6 +154,24 @@ pub struct MeltSaga<S> {
     state_data: S,
 }
 
+/// What the v3 inputs' witnesses were verified against, and their digests
+///
+/// The melt quote output of the transcript binds the quote's amount plus fee
+/// reserve and its selected fee index.
+struct VerifiedV3Inputs {
+    amount: Amount<CurrencyUnit>,
+    fee_index: Option<u32>,
+    digests: Vec<(ProofId, Digest)>,
+}
+
+/// The amount and fee index `quote` binds in a v3 melt transcript
+fn v3_quote_binding(quote: &MeltQuote) -> Result<(Amount<CurrencyUnit>, Option<u32>), Error> {
+    Ok((
+        quote.amount().checked_add(&quote.fee_reserve())?,
+        quote.selected_fee_index,
+    ))
+}
+
 impl MeltSaga<Initial> {
     pub fn new(mint: Arc<super::Mint>, db: DynMintDatabase, pubsub: Arc<PubSubManager>) -> Self {
         #[cfg(feature = "prometheus")]
@@ -167,6 +189,44 @@ impl MeltSaga<Initial> {
             metrics,
             state_data: Initial { operation_id },
         }
+    }
+
+    /// Verify the v3 inputs' witnesses against an unlocked read of the quote
+    ///
+    /// The fee option the request selects is applied to that read as
+    /// `setup_melt` applies it under the lock, so both bind the same
+    /// transcript unless the quote changes in between.
+    async fn verify_v3_inputs(
+        &self,
+        melt_request: &MeltRequest<QuoteId>,
+        payment_method: &cdk_common::PaymentMethod,
+    ) -> Result<VerifiedV3Inputs, Error> {
+        let mut quote = self
+            .db
+            .get_melt_quote(melt_request.quote())
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+
+        if *payment_method == cdk_common::PaymentMethod::Known(KnownMethod::Onchain) {
+            let fee_index = melt_request
+                .selected_fee_index()
+                .ok_or(Error::InvalidPaymentRequest)?;
+            quote.select_onchain_fee_option(fee_index)?;
+        }
+
+        let (amount, fee_index) = v3_quote_binding(&quote)?;
+        let transaction =
+            melt_request.transaction_with_fee_index(amount.clone().into(), fee_index)?;
+        let digests = self
+            .mint
+            .verify_v3_proof_inputs(transaction, melt_request.inputs().clone())
+            .await?;
+
+        Ok(VerifiedV3Inputs {
+            amount,
+            fee_index,
+            digests,
+        })
     }
 
     /// Sets up the melt by atomically verifying and reserving inputs/outputs.
@@ -221,6 +281,13 @@ impl MeltSaga<Initial> {
         // Verify spending conditions (NUT-10/NUT-11/NUT-14), i.e. P2PK
         // and HTLC (including SIGALL)
         melt_request.verify_spending_conditions()?;
+
+        // Verify the v3 inputs' witnesses (NUT-00 signing rule) before any
+        // lock is taken: the work is expensive and runs on the work pool.
+        let verified_v3 = match has_v3_inputs(melt_request.inputs()) {
+            true => Some(self.verify_v3_inputs(melt_request, &payment_method).await?),
+            false => None,
+        };
 
         let mut tx = self.db.begin_transaction().await?;
 
@@ -323,6 +390,29 @@ impl MeltSaga<Initial> {
             }
         }
 
+        // The v3 witnesses were verified against an unlocked read of the
+        // quote. Record their digests only if the locked quote still binds
+        // the same amount and fee index.
+        if let Some(verified) = verified_v3 {
+            let unchanged = v3_quote_binding(&quote)
+                .map(|(amount, fee_index)| {
+                    amount == verified.amount && fee_index == verified.fee_index
+                })
+                .unwrap_or(false);
+            if !unchanged {
+                tracing::warn!(
+                    quote_id = %quote.id,
+                    "v3 melt rejected: quote changed after its witnesses were verified",
+                );
+                tx.rollback().await?;
+                return Err(Error::SignatureMissingOrInvalid);
+            }
+            if let Err(err) = tx.add_input_digests(&verified.digests).await {
+                tx.rollback().await?;
+                return Err(Error::Database(err));
+            }
+        }
+
         // Arm the melt execution lock in the same transaction that moves the
         // quote to Pending, so any consistent read of a Pending quote also
         // shows the executor that owns its outcome.
@@ -421,9 +511,9 @@ impl MeltSaga<Initial> {
         );
 
         // Publish proof state changes
-        for pk in input_ys.iter() {
-            self.pubsub.proof_state((*pk, State::Pending));
-        }
+        self.pubsub
+            .proof_states_with_witnesses(&input_ys, State::Pending)
+            .await;
 
         // Publish melt quote status change AFTER transaction commits
         self.pubsub

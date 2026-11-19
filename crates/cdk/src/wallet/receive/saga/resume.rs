@@ -418,6 +418,7 @@ mod tests {
                 y: proof_y,
                 state: State::Unspent, // Not spent yet
                 witness: None,
+                input_digest: None,
             }],
         }));
         mock_client.set_post_swap_response(Ok(crate::nuts::SwapResponse { signatures: vec![] }));
@@ -483,6 +484,7 @@ mod tests {
                 y: proof_y,
                 state: State::Spent, // Spent at mint
                 witness: None,
+                input_digest: None,
             }],
         }));
         mock_client._set_restore_response(Ok(RestoreResponse {

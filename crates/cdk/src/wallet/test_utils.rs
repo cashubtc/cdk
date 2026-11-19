@@ -1136,6 +1136,7 @@ impl MintConnector for MockMintConnector {
                     y,
                     state: proof_states.get(&y).copied().unwrap_or(State::Unspent),
                     witness: None,
+                    input_digest: None,
                 })
                 .collect(),
         })
