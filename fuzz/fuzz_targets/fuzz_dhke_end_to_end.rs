@@ -4,9 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use cashu::dhke::{
-    blind_message, construct_proofs, sign_message, unblind_message, verify_message,
-};
+use cashu::dhke::{blind_message, construct_proofs, sign_message, unblind_message, verify_message};
 use cashu::nuts::nut00::BlindSignature;
 use cashu::nuts::nut01::Keys;
 use cashu::secret::Secret;
@@ -95,13 +93,8 @@ fuzz_target!(|input: Input| {
     key_map.insert(amount, mint_key.public_key());
     let keys = Keys::new(key_map);
     let secret = Secret::new(cashu::util::hex::encode(&input.message));
-    let proofs = construct_proofs(
-        vec![promise.clone()],
-        vec![blinding],
-        vec![secret],
-        &keys,
-    )
-    .expect("matching promise inputs and amount key must construct a proof");
+    let proofs = construct_proofs(vec![promise.clone()], vec![blinding], vec![secret], &keys)
+        .expect("matching promise inputs and amount key must construct a proof");
     assert_eq!(proofs.len(), 1);
     assert_eq!(proofs[0].c, unblinded);
 

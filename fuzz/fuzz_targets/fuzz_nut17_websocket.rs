@@ -8,8 +8,7 @@ use libfuzzer_sys::arbitrary::{Arbitrary, Unstructured};
 use libfuzzer_sys::fuzz_target;
 use serde_json::{json, Value};
 
-const PUBLIC_KEY: &str =
-    "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac";
+const PUBLIC_KEY: &str = "03d56ce4e446a85bbdaa547b4ec2b073d40ff802831352b8272b7dd7a4de5a7cac";
 
 #[derive(Debug)]
 struct Input {
@@ -185,9 +184,7 @@ fn variant_matches(kind: &Kind, payload: &NotificationPayload<String>) -> bool {
 }
 
 fuzz_target!(|input: Input| {
-    if let Ok(parsed) =
-        serde_json::from_str::<RawWsMessageOrResponse<String>>(&input.raw_message)
-    {
+    if let Ok(parsed) = serde_json::from_str::<RawWsMessageOrResponse<String>>(&input.raw_message) {
         let value = serde_json::to_value(&parsed).expect("parsed message must serialize");
         let reparsed: RawWsMessageOrResponse<String> =
             serde_json::from_value(value.clone()).expect("serialized message must reparse");
@@ -207,9 +204,8 @@ fuzz_target!(|input: Input| {
     );
 
     let encoded = serde_json::to_value(&decoded).expect("decoded payload must serialize");
-    let decoded_again =
-        deserialize_payload_for_kind::<String, serde_json::Error>(&kind, encoded)
-            .expect("serialized payload must decode for the same kind");
+    let decoded_again = deserialize_payload_for_kind::<String, serde_json::Error>(&kind, encoded)
+        .expect("serialized payload must decode for the same kind");
     assert_eq!(decoded_again, decoded, "payload round-trip mismatch");
 
     if !matches!(kind, Kind::ProofState) {
