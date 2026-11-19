@@ -1404,7 +1404,6 @@ dependencies = [
  "lightning",
  "lightning-invoice",
  "parking_lot",
- "paste",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
