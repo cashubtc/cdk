@@ -7,6 +7,7 @@ use bitcoin::bip32::DerivationPath;
 use cdk_common::database::{DynMintAuthDatabase, DynMintDatabase, MintKeysDatabase};
 use cdk_common::error::Error;
 use cdk_common::nut00::KnownMethod;
+use cdk_common::nut02::KeySetVersion;
 use cdk_common::nut04::MintMethodOptions;
 use cdk_common::nut05::MeltMethodOptions;
 use cdk_common::payment::DynMintPayment;
@@ -54,8 +55,8 @@ pub struct KeysetRotation {
     pub amounts: Vec<u64>,
     /// Input fee
     pub input_fee_ppk: u64,
-    /// Whether to use keyset V2 (Version01) or V1 (Version00)
-    pub use_keyset_v2: bool,
+    /// Keyset version to create.
+    pub keyset_id_type: KeySetVersion,
     /// Optional expiry timestamp (unix seconds)
     pub final_expiry: Option<u64>,
 }
@@ -72,6 +73,7 @@ pub struct MintBuilder {
     supported_units: HashMap<CurrencyUnit, (u64, Vec<u64>)>,
     custom_paths: HashMap<CurrencyUnit, DerivationPath>,
     use_keyset_v2: Option<bool>,
+    keyset_version: Option<KeySetVersion>,
     keyset_rotations: Vec<KeysetRotation>,
     max_inputs: usize,
     max_outputs: usize,
@@ -120,6 +122,7 @@ impl MintBuilder {
             supported_units: HashMap::new(),
             custom_paths: HashMap::new(),
             use_keyset_v2: None,
+            keyset_version: None,
             keyset_rotations: Vec::new(),
             max_inputs: 1000,
             max_outputs: 1000,
@@ -132,6 +135,29 @@ impl MintBuilder {
     pub fn with_keyset_v2(mut self, use_keyset_v2: Option<bool>) -> Self {
         self.use_keyset_v2 = use_keyset_v2;
         self
+    }
+
+    /// Set the keyset version for new keysets.
+    ///
+    /// Takes precedence over [`Self::with_keyset_v2`]. When set, an active
+    /// keyset of a different version is rotated on startup.
+    pub fn with_keyset_version(mut self, keyset_version: Option<KeySetVersion>) -> Self {
+        self.keyset_version = keyset_version;
+        self
+    }
+
+    /// Keyset version explicitly requested by the operator, if any.
+    fn explicit_keyset_version(&self) -> Option<KeySetVersion> {
+        self.keyset_version
+            .or(self.use_keyset_v2.map(|use_v2| match use_v2 {
+                true => KeySetVersion::Version01,
+                false => KeySetVersion::Version00,
+            }))
+    }
+
+    fn preferred_keyset_version(&self) -> KeySetVersion {
+        self.explicit_keyset_version()
+            .unwrap_or(KeySetVersion::Version01)
     }
 
     /// Set how often the built signatory reloads keysets from the shared
@@ -648,14 +674,14 @@ impl MintBuilder {
                 }
 
                 // Check if version matches explicit preference
-                if let Some(want_v2) = self.use_keyset_v2 {
-                    let is_v2 =
-                        keyset.id.get_version() == cdk_common::nut02::KeySetVersion::Version01;
-                    if want_v2 && !is_v2 {
-                        tracing::info!("Rotating keyset for unit {} due to explicit V2 preference (current is V1)", unit);
-                        rotate = true;
-                    } else if !want_v2 && is_v2 {
-                        tracing::info!("Rotating keyset for unit {} due to explicit V1 preference (current is V2)", unit);
+                if let Some(desired_version) = self.explicit_keyset_version() {
+                    if keyset.id.get_version() != desired_version {
+                        tracing::info!(
+                            "Rotating keyset for unit {} due to explicit {} preference (current is {})",
+                            unit,
+                            desired_version,
+                            keyset.id.get_version()
+                        );
                         rotate = true;
                     }
                 }
@@ -671,11 +697,7 @@ impl MintBuilder {
                         unit: unit.clone(),
                         amounts: amounts.clone(),
                         input_fee_ppk: *fee,
-                        keyset_id_type: if self.use_keyset_v2.unwrap_or(true) {
-                            cdk_common::nut02::KeySetVersion::Version01
-                        } else {
-                            cdk_common::nut02::KeySetVersion::Version00
-                        },
+                        keyset_id_type: self.preferred_keyset_version(),
                         final_expiry: None,
                     })
                     .await?;
@@ -689,11 +711,7 @@ impl MintBuilder {
                     unit: rotation.unit.clone(),
                     amounts: rotation.amounts.clone(),
                     input_fee_ppk: rotation.input_fee_ppk,
-                    keyset_id_type: if rotation.use_keyset_v2 {
-                        cdk_common::nut02::KeySetVersion::Version01
-                    } else {
-                        cdk_common::nut02::KeySetVersion::Version00
-                    },
+                    keyset_id_type: rotation.keyset_id_type,
                     final_expiry: rotation.final_expiry,
                 })
                 .await?;
@@ -916,6 +934,25 @@ mod tests {
             .expect("mnemonic")
             .to_seed_normalized("")
             .to_vec()
+    }
+
+    #[tokio::test]
+    async fn test_keyset_version_defaults_to_v2_and_explicit_version_wins() {
+        let localstore = Arc::new(memory::empty().await.unwrap());
+        let builder = MintBuilder::new(localstore);
+        assert_eq!(builder.explicit_keyset_version(), None);
+        assert_eq!(builder.preferred_keyset_version(), KeySetVersion::Version01);
+
+        let builder = builder.with_keyset_v2(Some(false));
+        assert_eq!(builder.preferred_keyset_version(), KeySetVersion::Version00);
+
+        // An explicit version takes precedence over the legacy selector.
+        let builder = builder.with_keyset_version(Some(KeySetVersion::Version01));
+        assert_eq!(
+            builder.explicit_keyset_version(),
+            Some(KeySetVersion::Version01)
+        );
+        assert_eq!(builder.preferred_keyset_version(), KeySetVersion::Version01);
     }
 
     #[tokio::test]

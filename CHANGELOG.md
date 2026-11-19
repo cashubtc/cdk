@@ -7,8 +7,19 @@
 
 ## [Unreleased]
 
+### Added
+
+- cdk/cdk-mintd: Select the keyset version for new keysets explicitly with `MintBuilder::with_keyset_version` or the mintd `keyset_version` setting (`CDK_MINTD_KEYSET_VERSION`), which takes precedence over `use_keyset_v2`.
+
+### Changed
+
+- cdk: **BREAKING** - `KeysetRotation::use_keyset_v2: bool` is replaced by `keyset_id_type: KeySetVersion`.
+- cdk-mintd: **BREAKING** - `Info::from_env` now returns `Result<Info, config::ConfigError>` to report invalid keyset version overrides.
+
 ### Fixed
 
+- cdk-mintd: Reject invalid `CDK_MINTD_KEYSET_VERSION` values during configuration loading instead of falling back to another keyset version selector.
+- cdk-mintd: Fake-wallet `keyset_rotations` reject unknown `version` values instead of silently creating a V1 keyset.
 - cashu: P2BK V4 tokens now encode `pe` as CBOR bytes. Wallets using CDK 0.16–0.18 must upgrade to receive these tokens. Updated wallets continue to accept legacy hex-encoded tokens (#2712).
 
 ### Removed

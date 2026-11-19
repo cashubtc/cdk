@@ -10,6 +10,37 @@ use cdk_common::redact::url_for_logs;
 use config::{Config, ConfigError, File, FileFormat};
 use serde::{Deserialize, Serialize};
 
+/// Keyset version selector used in mintd configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum KeysetVersion {
+    /// V1 keyset (Version00)
+    V1,
+    /// V2 keyset (Version01)
+    V2,
+}
+
+impl std::str::FromStr for KeysetVersion {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "v1" => Ok(Self::V1),
+            "v2" => Ok(Self::V2),
+            _ => Err(format!("Unknown keyset version: {s} (expected v1 or v2)")),
+        }
+    }
+}
+
+impl From<KeysetVersion> for cdk::nuts::nut02::KeySetVersion {
+    fn from(version: KeysetVersion) -> Self {
+        match version {
+            KeysetVersion::V1 => Self::Version00,
+            KeysetVersion::V2 => Self::Version01,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum LoggingOutput {
@@ -60,6 +91,9 @@ pub struct Info {
     pub input_fee_ppk: Option<u64>,
     /// Use keyset v2
     pub use_keyset_v2: Option<bool>,
+    /// Keyset version for new keysets: "v1" or "v2".
+    /// Takes precedence over `use_keyset_v2`.
+    pub keyset_version: Option<KeysetVersion>,
     /// How often, in milliseconds, the embedded signatory reloads keysets from
     /// the database. Unset or `0` disables it; set an interval only when several
     /// mints or signatories share one database.
@@ -94,6 +128,7 @@ impl Default for Info {
             mnemonic: None,
             input_fee_ppk: None,
             use_keyset_v2: None,
+            keyset_version: None,
             keyset_refresh_interval_ms: None,
             http_cache: cache::Config::default(),
             enable_info_page: Some(true),
@@ -122,6 +157,7 @@ impl std::fmt::Debug for Info {
             .field("mnemonic", &mnemonic_display)
             .field("input_fee_ppk", &self.input_fee_ppk)
             .field("use_keyset_v2", &self.use_keyset_v2)
+            .field("keyset_version", &self.keyset_version)
             .field(
                 "keyset_refresh_interval_ms",
                 &self.keyset_refresh_interval_ms,
@@ -1415,6 +1451,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn keyset_version_parses_from_toml_and_env_strings() {
+        let info: Info = toml::from_str(r#"keyset_version = "v2""#).expect("info");
+        assert_eq!(info.keyset_version, Some(KeysetVersion::V2));
+        assert_eq!(Info::default().keyset_version, None);
+        assert!(toml::from_str::<Info>(r#"keyset_version = "v4""#).is_err());
+
+        for (input, expected) in [
+            ("v1", cdk::nuts::nut02::KeySetVersion::Version00),
+            ("V2", cdk::nuts::nut02::KeySetVersion::Version01),
+        ] {
+            let version: KeysetVersion = input.parse().expect("version");
+            assert_eq!(cdk::nuts::nut02::KeySetVersion::from(version), expected);
+        }
+        assert!("01".parse::<KeysetVersion>().is_err());
+    }
+
+    #[test]
     fn postgres_tls_defaults_preserve_connection_url_policy() {
         let input = r#"url = "postgres://localhost/db?sslmode=verify-full""#;
         let postgres: PostgresConfig = toml::from_str(input).expect("PostgreSQL config");
@@ -1598,7 +1651,10 @@ keyset_refresh_interval_ms = 5000
 
         std::env::set_var(crate::env_vars::ENV_KEYSET_REFRESH_INTERVAL_MS, "2500");
         assert_eq!(
-            Info::default().from_env().keyset_refresh_interval_ms,
+            Info::default()
+                .from_env()
+                .expect("valid environment")
+                .keyset_refresh_interval_ms,
             Some(2500)
         );
 
@@ -1610,7 +1666,13 @@ keyset_refresh_interval_ms = 5000
             keyset_refresh_interval_ms: Some(2500),
             ..Default::default()
         };
-        assert_eq!(configured.from_env().keyset_refresh_interval_ms, Some(2500));
+        assert_eq!(
+            configured
+                .from_env()
+                .expect("valid environment")
+                .keyset_refresh_interval_ms,
+            Some(2500)
+        );
 
         std::env::remove_var(crate::env_vars::ENV_KEYSET_REFRESH_INTERVAL_MS);
     }

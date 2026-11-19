@@ -4,12 +4,13 @@ use std::env;
 use std::str::FromStr;
 
 use cdk_common::common::QuoteTTL;
+use config::ConfigError;
 
 use super::common::*;
 use crate::config::{Info, LoggingOutput};
 
 impl Info {
-    pub fn from_env(mut self) -> Self {
+    pub fn from_env(mut self) -> Result<Self, ConfigError> {
         // Required fields
         if let Ok(url) = env::var(ENV_URL) {
             self.url = url;
@@ -60,6 +61,20 @@ impl Info {
         if let Ok(use_keyset_v2_str) = env::var(ENV_USE_KEYSET_V2) {
             if let Ok(use_keyset_v2) = use_keyset_v2_str.parse() {
                 self.use_keyset_v2 = Some(use_keyset_v2);
+            }
+        }
+
+        match env::var(ENV_KEYSET_VERSION) {
+            Ok(version) => {
+                self.keyset_version = Some(version.parse().map_err(|err| {
+                    ConfigError::Message(format!("Invalid {ENV_KEYSET_VERSION}: {err}"))
+                })?);
+            }
+            Err(env::VarError::NotPresent) => (),
+            Err(env::VarError::NotUnicode(_)) => {
+                return Err(ConfigError::Message(format!(
+                    "Invalid {ENV_KEYSET_VERSION}: expected v1 or v2 as Unicode text"
+                )));
             }
         }
 
@@ -115,6 +130,6 @@ impl Info {
             });
         }
 
-        self
+        Ok(self)
     }
 }
