@@ -119,6 +119,15 @@ pub enum Error {
     /// The wallet holds no key to spend a v3 proof
     #[error("No key to spend this v3 proof")]
     V3ProofNotSpendable,
+    /// Nutroot outputs require a v3 keyset
+    #[error("Nutroot payments require a v3 keyset")]
+    NutrootRequiresV3Keyset,
+    /// The mint does not advertise a leaf needed by a script-only lock
+    #[error("Mint does not advertise nutroot leaf {leaf}")]
+    UnsupportedNutrootLeaf {
+        /// Leaf version and type as lowercase hex
+        leaf: String,
+    },
     /// A received v3 proof discloses a leaf the acceptance policy refuses
     #[error("A disclosed condition leaf is not acceptable")]
     V3LeafPolicy,
@@ -792,6 +801,8 @@ impl Error {
         match self {
             // Logic/Validation Errors (Safe to revert)
             Self::AmountKey
+            | Self::NutrootRequiresV3Keyset
+            | Self::UnsupportedNutrootLeaf { .. }
             | Self::KeysetUnknown(_)
             | Self::UnsupportedUnit
             | Self::InvoiceAmountUndefined

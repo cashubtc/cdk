@@ -415,6 +415,11 @@ impl<'a> SendSaga<'a, Initial> {
             .ok_or(Error::NoActiveKeyset)?;
 
         let active_keyset_id = active_keyset.id;
+        if let Some(request) = &opts.nutroot {
+            self.wallet
+                .validate_nutroot_lock(active_keyset_id, request)
+                .await?;
+        }
         let fee_and_amounts = keyset_fees
             .get(&active_keyset_id)
             .cloned()

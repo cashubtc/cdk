@@ -177,6 +177,11 @@ impl Wallet {
     ) -> Result<PreSwap, Error> {
         tracing::info!("Creating swap");
 
+        if let Some(nutroot) = nutroot {
+            self.validate_nutroot_lock(active_keyset_id, nutroot)
+                .await?;
+        }
+
         // Desired amount is either amount passed or value of all proof
         let proofs_total = proofs.total_amount()?;
 

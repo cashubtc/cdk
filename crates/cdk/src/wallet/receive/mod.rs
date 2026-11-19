@@ -48,6 +48,10 @@ impl Wallet {
     }
 
     /// Receive
+    ///
+    /// For a requested v3 payment, set `ReceiveOptions::v3_payment_request`
+    /// to check the exact nutroot tree. Script-only payments use the supplied
+    /// signing keys and hashlock preimages to sweep a satisfiable leaf.
     /// # Synopsis
     /// ```rust, no_run
     ///  use std::sync::Arc;

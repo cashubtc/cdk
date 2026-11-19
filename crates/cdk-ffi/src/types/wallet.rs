@@ -385,7 +385,7 @@ pub struct ReceiveOptions {
     /// P2PK signing keys
     #[serde(default)]
     pub p2pk_signing_keys: Vec<SecretKey>,
-    /// Preimages for HTLC conditions
+    /// Preimages for HTLC conditions and requested v3 hashlock leaves
     pub preimages: Vec<String>,
     /// Metadata
     pub metadata: HashMap<String, String>,
@@ -394,7 +394,8 @@ pub struct ReceiveOptions {
     #[serde(default)]
     pub v3_min_refund_horizon: Option<u64>,
     /// The NUT-18 `nutroot` option these proofs pay, as JSON; when set,
-    /// v3 proofs must match it exactly
+    /// v3 proofs must match it exactly. Script-only payments use the supplied
+    /// signing keys and preimages to sweep a satisfiable leaf.
     #[serde(default)]
     pub v3_payment_request: Option<String>,
 }
