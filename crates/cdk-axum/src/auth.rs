@@ -108,6 +108,21 @@ pub async fn blind_auth_request_context(req: Request, next: Next) -> Response {
         return next.run(req).await;
     }
 
+    // NUT-22 hashes the body with any content-coding removed. Accepting only
+    // identity coding makes the raw bytes that body, and keeps a decoding or
+    // re-encoding proxy from changing what is hashed. Refuse coded bodies.
+    if req
+        .headers()
+        .get(axum::http::header::CONTENT_ENCODING)
+        .is_some_and(|coding| coding.as_bytes() != b"identity")
+    {
+        return (
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "Blind-auth requests must not use a content-coding".to_string(),
+        )
+            .into_response();
+    }
+
     let (mut parts, body) = req.into_parts();
     let bytes = match axum::body::to_bytes(body, MAX_AUTHORIZED_BODY_LEN).await {
         Ok(bytes) => bytes,
@@ -283,5 +298,58 @@ mod tests {
             .await
             .expect("body");
         assert_eq!(bytes.as_ref(), b"no token");
+    }
+
+    /// The websocket handshake is recorded as `GET /v1/ws` with an empty
+    /// body, the request the wallet signs for it
+    #[tokio::test]
+    async fn blind_auth_context_records_the_ws_handshake() {
+        let router = Router::new()
+            .route(
+                "/v1/ws",
+                get(|auth: AuthHeader| async move {
+                    let AuthHeader::Blind(token) = auth else {
+                        return "no token".to_string();
+                    };
+                    let request = token.request.expect("request context");
+                    match request == AuthorizedRequest::new("GET", "/v1/ws", b"") {
+                        true => "ok".to_string(),
+                        false => "mismatch".to_string(),
+                    }
+                }),
+            )
+            .layer(axum::middleware::from_fn(blind_auth_request_context));
+
+        let response = router
+            .oneshot(
+                HttpRequest::get("/v1/ws")
+                    .header(BLIND_AUTH_KEY, v3_token().to_string())
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        assert_eq!(bytes.as_ref(), b"ok");
+    }
+
+    #[tokio::test]
+    async fn blind_auth_request_with_content_coding_is_refused() {
+        let router = Router::new()
+            .route("/v1/swap", post(|| async { "ok" }))
+            .layer(axum::middleware::from_fn(blind_auth_request_context));
+        let response = router
+            .oneshot(
+                HttpRequest::post("/v1/swap")
+                    .header(BLIND_AUTH_KEY, v3_token().to_string())
+                    .header("Content-Encoding", "gzip")
+                    .body(Body::from(vec![0x1f, 0x8b]))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
     }
 }
