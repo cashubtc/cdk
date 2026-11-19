@@ -32,7 +32,8 @@
 //! | `[skipped]` | Recovery deferred (mint unreachable), will retry on next recovery |
 
 use cdk_common::wallet::{
-    OperationData, ProofInfo, SwapOperationData, SwapSagaState, WalletSaga, WalletSagaState,
+    OperationData, ProofInfo, SwapOperationData, SwapOutput, SwapSagaState, WalletSaga,
+    WalletSagaState,
 };
 use tracing::instrument;
 
@@ -201,6 +202,25 @@ impl<'a> SwapSaga<'a, Initial> {
                 counter_start: Some(counter_start),
                 counter_end: Some(counter_end),
                 blinded_messages: None,
+                input_ys: input_ys.clone(),
+                pending_outputs: (!pre_swap.nutroot_spend_info.is_empty()).then(|| {
+                    pre_swap
+                        .pre_mint_secrets
+                        .secrets
+                        .iter()
+                        .map(|premint| SwapOutput {
+                            blinded_message: premint.blinded_message.clone(),
+                            secret: premint.secret.clone(),
+                            r: premint.r.clone(),
+                            derivation_index: premint.derivation_index,
+                            spend_info: pre_swap
+                                .nutroot_spend_info
+                                .iter()
+                                .find(|(secret, _)| *secret == premint.secret)
+                                .map(|(_, info)| info.clone()),
+                        })
+                        .collect()
+                }),
             }),
         );
 

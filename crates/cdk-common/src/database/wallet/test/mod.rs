@@ -168,6 +168,8 @@ fn test_wallet_saga(mint_url: MintUrl) -> WalletSaga {
             counter_start: Some(0),
             counter_end: Some(10),
             blinded_messages: None,
+            pending_outputs: None,
+            input_ys: vec![],
         }),
     )
 }

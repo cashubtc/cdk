@@ -1863,6 +1863,23 @@ pub struct NostrWaitInfo {
     pub mints: Vec<MintUrl>,
     /// Whether the original request's mint list is preferred instead of strict
     pub mint_preferred: Option<bool>,
+    receive_options: ReceiveOptions,
+}
+
+#[cfg(feature = "nostr")]
+impl NostrWaitInfo {
+    /// Supply signing keys, preimages and receive policy for this request.
+    /// The original request's Nutroot option remains authoritative.
+    pub fn with_receive_options(mut self, mut options: ReceiveOptions) -> Self {
+        options.v3_payment_request = self.receive_options.v3_payment_request.clone();
+        self.receive_options = options;
+        self
+    }
+
+    /// Nutroot option retained from the original request.
+    pub fn nutroot_option(&self) -> Option<&crate::nuts::nut18::NutrootOption> {
+        self.receive_options.v3_payment_request.as_ref()
+    }
 }
 
 impl WalletRepository {
@@ -2223,6 +2240,10 @@ impl WalletRepository {
                         pubkey: nprofile.public_key,
                         mints: mints.clone(),
                         mint_preferred: params.mint_preferred,
+                        receive_options: ReceiveOptions {
+                            v3_payment_request: params.nutroot.clone(),
+                            ..Default::default()
+                        },
                     }),
                 )
             }
@@ -2351,7 +2372,7 @@ impl WalletRepository {
 
     /// Wait for a Nostr payment for the previously constructed PaymentRequest and receive it into the wallet.
     #[cfg(all(feature = "nostr", not(target_arch = "wasm32")))]
-    pub async fn wait_for_nostr_payment(&self, info: NostrWaitInfo) -> Result<Amount> {
+    pub async fn wait_for_nostr_payment(&self, info: NostrWaitInfo) -> Result<Amount, Error> {
         use crate::wallet::streams::nostr::NostrPaymentEventStream;
 
         let NostrWaitInfo {
@@ -2360,6 +2381,7 @@ impl WalletRepository {
             pubkey,
             mints,
             mint_preferred,
+            receive_options,
         } = info;
 
         let mut stream = NostrPaymentEventStream::new(keys, relays, pubkey);
@@ -2395,9 +2417,7 @@ impl WalletRepository {
 
                     // Receive using the individual wallet
                     let token_str = token.to_string();
-                    let received = wallet
-                        .receive(&token_str, ReceiveOptions::default())
-                        .await?;
+                    let received = wallet.receive(&token_str, receive_options.clone()).await?;
 
                     // Stop after first successful receipt
                     cancel.cancel();
@@ -2418,13 +2438,14 @@ impl WalletRepository {
     ///
     /// wasm32 fallback: Streams are not available; we await the first matching notification and process it.
     #[cfg(all(feature = "nostr", target_arch = "wasm32"))]
-    pub async fn wait_for_nostr_payment(&self, info: NostrWaitInfo) -> Result<Amount> {
+    pub async fn wait_for_nostr_payment(&self, info: NostrWaitInfo) -> Result<Amount, Error> {
         let NostrWaitInfo {
             keys,
             relays,
             pubkey,
             mints,
             mint_preferred,
+            receive_options,
         } = info;
 
         let client = NostrClient::builder()
@@ -2483,9 +2504,8 @@ impl WalletRepository {
 
                                 // Receive using the individual wallet
                                 let token_str = token.to_string();
-                                let received = wallet
-                                    .receive(&token_str, ReceiveOptions::default())
-                                    .await?;
+                                let received =
+                                    wallet.receive(&token_str, receive_options.clone()).await?;
 
                                 return Ok(received);
                             }

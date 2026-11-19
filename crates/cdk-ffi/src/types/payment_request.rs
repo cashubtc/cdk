@@ -380,6 +380,7 @@ pub struct CreateRequestParams {
     pub nostr_pubkey: Option<String>,
     /// NUT-18 `nutroot` option for payments from v3 keysets, as JSON
     #[serde(default)]
+    #[uniffi(default = None)]
     pub nutroot: Option<String>,
 }
 
@@ -505,6 +506,21 @@ impl NostrWaitInfo {
 
 #[uniffi::export]
 impl NostrWaitInfo {
+    /// Supply signing keys and preimages while retaining the original request.
+    pub fn with_receive_options(
+        &self,
+        options: crate::types::ReceiveOptions,
+    ) -> Result<Arc<Self>, FfiError> {
+        Ok(Arc::new(Self {
+            inner: self.inner.clone().with_receive_options(options.try_into()?),
+        }))
+    }
+
+    /// Nutroot option retained from the original request, as JSON.
+    pub fn nutroot_option(&self) -> Option<String> {
+        crate::types::proof::to_json_field(self.inner.nutroot_option())
+    }
+
     /// Get the Nostr relays to connect to
     pub fn relays(&self) -> Vec<String> {
         self.inner.relays.clone()
