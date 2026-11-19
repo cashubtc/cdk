@@ -1023,6 +1023,148 @@ mod tests {
         let proofs1 = token1.unwrap().proofs(&keysets_info);
         assert!(proofs1.is_err());
     }
+
+    fn v4_proof_maps(token: &str) -> Vec<Vec<(ciborium::Value, ciborium::Value)>> {
+        let bytes = general_purpose::URL_SAFE_NO_PAD
+            .decode(token["cashuB".len()..].trim_end_matches('='))
+            .unwrap();
+        let token: ciborium::Value = ciborium::from_reader(bytes.as_slice()).unwrap();
+        let entries = token
+            .as_map()
+            .unwrap()
+            .iter()
+            .find(|(key, _)| key.as_text() == Some("t"))
+            .unwrap()
+            .1
+            .as_array()
+            .unwrap();
+        entries
+            .iter()
+            .flat_map(|entry| {
+                entry
+                    .as_map()
+                    .unwrap()
+                    .iter()
+                    .find(|(key, _)| key.as_text() == Some("p"))
+                    .unwrap()
+                    .1
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|proof| proof.as_map().unwrap().clone())
+            })
+            .collect()
+    }
+
+    fn v4_token_from_proof_maps(
+        token: &str,
+        rewrite: impl Fn(&mut Vec<(ciborium::Value, ciborium::Value)>),
+    ) -> String {
+        let bytes = general_purpose::URL_SAFE_NO_PAD
+            .decode(token["cashuB".len()..].trim_end_matches('='))
+            .unwrap();
+        let mut token: ciborium::Value = ciborium::from_reader(bytes.as_slice()).unwrap();
+        for entry in token
+            .as_map_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|(key, _)| key.as_text() == Some("t"))
+            .unwrap()
+            .1
+            .as_array_mut()
+            .unwrap()
+        {
+            for proof in entry
+                .as_map_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|(key, _)| key.as_text() == Some("p"))
+                .unwrap()
+                .1
+                .as_array_mut()
+                .unwrap()
+            {
+                rewrite(proof.as_map_mut().unwrap());
+            }
+        }
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&token, &mut bytes).unwrap();
+        format!("cashuB{}", general_purpose::URL_SAFE_NO_PAD.encode(bytes))
+    }
+
+    fn token_v4_with_witness() -> (Token, crate::nuts::Witness) {
+        let mint_url = MintUrl::from_str("https://example.com").unwrap();
+        let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
+        let witness = crate::nuts::Witness::P2PKWitness(crate::nuts::nut11::P2PKWitness {
+            signatures: vec!["60f3c9b766770b46caac1d27e1ae6b77c8866ebaeba0b9489fe6a15a837eaa6fcd6eaa825499c72ac342983983fd3ba3a8a41f56677cc99ffd73da68b59e1383".to_string()],
+        });
+        let mut proof = Proof::new(
+            Amount::from(1),
+            keyset_id,
+            Secret::generate(),
+            crate::nuts::SecretKey::generate().public_key(),
+        );
+        proof.witness = Some(witness.clone());
+        let token = Token::new(
+            mint_url,
+            vec![proof].into_iter().collect(),
+            None,
+            CurrencyUnit::Sat,
+        );
+        (token, witness)
+    }
+
+    #[test]
+    fn test_token_v4_witness_uses_spec_key() {
+        let (token, witness) = token_v4_with_witness();
+        let encoded = token.to_string();
+        assert!(encoded.starts_with("cashuB"));
+
+        let proofs = v4_proof_maps(&encoded);
+        assert_eq!(proofs.len(), 1);
+        let keys: Vec<_> = proofs[0].iter().filter_map(|(k, _)| k.as_text()).collect();
+        assert!(keys.contains(&"w"), "keys: {keys:?}");
+        assert!(!keys.contains(&"witness"), "keys: {keys:?}");
+
+        // NUT-00 encodes the witness as a string.
+        let value = &proofs[0]
+            .iter()
+            .find(|(k, _)| k.as_text() == Some("w"))
+            .unwrap()
+            .1;
+        let parsed: crate::nuts::nut11::P2PKWitness =
+            serde_json::from_str(value.as_text().unwrap()).unwrap();
+        assert_eq!(crate::nuts::Witness::P2PKWitness(parsed), witness);
+
+        let decoded = TokenV4::from_str(&encoded).unwrap();
+        assert_eq!(decoded.token[0].proofs[0].witness, Some(witness));
+    }
+
+    #[test]
+    fn test_token_v4_decodes_witness_from_spec_and_legacy_keys() {
+        let (token, witness) = token_v4_with_witness();
+        let encoded = token.to_string();
+
+        for key in ["w", "witness"] {
+            let rewritten = v4_token_from_proof_maps(&encoded, |fields| {
+                let value = fields
+                    .iter()
+                    .find(|(k, _)| matches!(k.as_text(), Some("w") | Some("witness")))
+                    .unwrap()
+                    .1
+                    .clone();
+                fields.retain(|(k, _)| !matches!(k.as_text(), Some("w") | Some("witness")));
+                fields.push((ciborium::Value::Text(key.to_string()), value));
+            });
+            let decoded = TokenV4::from_str(&rewritten).unwrap();
+            assert_eq!(
+                decoded.token[0].proofs[0].witness,
+                Some(witness.clone()),
+                "key {key}"
+            );
+        }
+    }
+
     #[test]
     fn test_token_spending_condition_helpers_p2pk_htlc_v4() {
         let mint_url = MintUrl::from_str("https://example.com").unwrap();
