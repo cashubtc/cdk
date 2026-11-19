@@ -42,7 +42,8 @@ impl WalletRepository {
         &self,
         params: CreateRequestParams,
     ) -> Result<CreateRequestResult, FfiError> {
-        let (payment_request, nostr_wait_info) = self.inner.create_request(params.into()).await?;
+        let (payment_request, nostr_wait_info) =
+            self.inner.create_request(params.try_into()?).await?;
         Ok(CreateRequestResult::from_inner(
             payment_request,
             nostr_wait_info,
