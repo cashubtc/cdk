@@ -61,6 +61,9 @@ pub struct Proof {
     pub dleq: Option<ProofDleq>,
     /// Optional P2BK Ephemeral Public Key (NUT-28)
     pub p2pk_e: Option<String>,
+    /// Spend info of a v3 proof, as NUT-00 JSON (`k`, `E`, `K`, `tree`, `u`)
+    #[serde(default)]
+    pub spend_info: Option<String>,
 }
 
 impl fmt::Debug for Proof {
@@ -73,6 +76,10 @@ impl fmt::Debug for Proof {
             .field("witness", &self.witness)
             .field("dleq", &self.dleq)
             .field("p2pk_e", &self.p2pk_e)
+            .field(
+                "spend_info",
+                &self.spend_info.as_ref().map(|_| "[REDACTED]"),
+            )
             .finish()
     }
 }
@@ -87,6 +94,7 @@ impl From<cdk::nuts::Proof> for Proof {
             witness: proof.witness.map(|w| w.into()),
             dleq: proof.dleq.map(|d| d.into()),
             p2pk_e: proof.p2pk_e.map(|p| p.to_string()),
+            spend_info: to_json_field(proof.spend_info.as_ref()),
         }
     }
 }
@@ -115,9 +123,28 @@ impl TryFrom<Proof> for cdk::nuts::Proof {
                 .map(|p| cdk::nuts::PublicKey::from_str(&p))
                 .transpose()
                 .map_err(|e| FfiError::internal(format!("Invalid p2pk_e: {}", e)))?,
-            spend_info: None,
+            spend_info: parse_json_field(proof.spend_info, "spend_info")?,
         })
     }
+}
+
+/// Parse a JSON value passed across the FFI, naming the field on error
+pub(crate) fn parse_json_field<T>(json: Option<String>, field: &str) -> Result<Option<T>, FfiError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    json.map(|json| {
+        serde_json::from_str(&json).map_err(|e| FfiError::internal(format!("Invalid {field}: {e}")))
+    })
+    .transpose()
+}
+
+/// Serialize a value as JSON for the FFI
+pub(crate) fn to_json_field<T>(value: Option<&T>) -> Option<String>
+where
+    T: Serialize,
+{
+    value.and_then(|value| serde_json::to_string(value).ok())
 }
 
 /// Get the Y value (hash_to_curve of secret) for a proof
@@ -747,6 +774,7 @@ mod tests {
                 r: "secret-blinding-factor".to_string(),
             }),
             p2pk_e: None,
+            spend_info: None,
         };
 
         let debug = format!("{proof:?}");
@@ -757,5 +785,29 @@ mod tests {
         assert!(!debug.contains("dleq-e-scalar"));
         assert!(!debug.contains("dleq-s-scalar"));
         assert!(!debug.contains("secret-blinding-factor"));
+    }
+
+    #[test]
+    fn spend_info_round_trips_as_json() {
+        let json = r#"{"k":"930c88ad9dc8531c147862d4ef9c0981200ff1f510c0a9e1c024db725a1d56c6"}"#;
+        let proof = cdk::nuts::Proof {
+            amount: 8.into(),
+            keyset_id: cdk::nuts::Id::from_bytes(&[[2u8].as_slice(), &[1; 32]].concat()).unwrap(),
+            secret: cdk::secret::Secret::new(
+                "0240c186f3e19f6f8cd00db81c5266d5c74ddca48ff848efd0e3e125b2846f30d9",
+            ),
+            c: cdk::nuts::nut01::BlsG1PublicKey::hash_to_curve(b"c").into(),
+            witness: None,
+            dleq: None,
+            p2pk_e: None,
+            spend_info: Some(serde_json::from_str(json).unwrap()),
+        };
+        let ffi = Proof::from(proof.clone());
+        assert_eq!(ffi.spend_info.as_deref(), Some(json));
+        assert_eq!(cdk::nuts::Proof::try_from(ffi.clone()).unwrap(), proof);
+
+        let mut bad = ffi;
+        bad.spend_info = Some("{\"k\":\"00\"}".to_string());
+        assert!(cdk::nuts::Proof::try_from(bad).is_err());
     }
 }
