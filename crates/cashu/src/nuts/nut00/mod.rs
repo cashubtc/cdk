@@ -211,6 +211,12 @@ pub enum Error {
     /// Duplicate proofs in token
     #[error("Duplicate proofs in token")]
     DuplicateProofs,
+    /// Random or blank outputs requested on a v3 keyset
+    ///
+    /// A v3 secret is a point whose private key spends the proof; these
+    /// constructors keep no key, so their outputs would be unspendable.
+    #[error("Random outputs are not supported on v3 keyset {0}")]
+    RandomOutputsOnV3Keyset(Id),
     /// Serde Json error
     #[error(transparent)]
     SerdeJsonError(#[from] serde_json::Error),
@@ -1362,21 +1368,25 @@ impl PreMintSecrets {
         }
     }
 
-    /// Outputs for speceifed amount with random secret
+    /// Outputs for specified amount with random secrets
+    ///
+    /// Pre-v3 keysets only: a v3 keyset is refused with
+    /// [`Error::RandomOutputsOnV3Keyset`], since no secret key would be kept
+    /// to spend the outputs. Use deterministic (NUT-13) or
+    /// [`PreMintSecrets::from_secrets`] outputs for v3 keysets.
     pub fn random(
         keyset_id: Id,
         amount: Amount,
         amount_split_target: &SplitTarget,
         fee_and_amounts: &FeeAndAmounts,
     ) -> Result<Self, Error> {
+        Self::refuse_v3(keyset_id)?;
         let amount_split = amount.split_targeted(amount_split_target, fee_and_amounts)?;
 
         let mut output = Vec::with_capacity(amount_split.len());
 
         for amount in amount_split {
-            // The secret key of a random v3 secret is not kept: these outputs
-            // are for callers that track spend keys themselves.
-            let (secret, _secret_key) = Secret::generate_for_version(keyset_id.get_version());
+            let (secret, _) = Secret::generate_for_version(keyset_id.get_version());
             let (blinded, r) = blind_secret(&secret, None, keyset_id.get_version())?;
 
             let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
@@ -1424,16 +1434,27 @@ impl PreMintSecrets {
         })
     }
 
+    /// Refuse a v3 keyset for constructors that keep no secret keys
+    fn refuse_v3(keyset_id: Id) -> Result<(), Error> {
+        match keyset_id.get_version() {
+            KeySetVersion::Version02 => Err(Error::RandomOutputsOnV3Keyset(keyset_id)),
+            _ => Ok(()),
+        }
+    }
+
     /// Blank Outputs used for NUT-08 change
+    ///
+    /// Pre-v3 keysets only: a v3 keyset is refused with
+    /// [`Error::RandomOutputsOnV3Keyset`], since no secret key would be kept
+    /// to spend the change.
     pub fn blank(keyset_id: Id, fee_reserve: Amount) -> Result<Self, Error> {
+        Self::refuse_v3(keyset_id)?;
         let count = ((u64::from(fee_reserve) as f64).log2().ceil() as u64).max(1);
 
         let mut output = Vec::with_capacity(count as usize);
 
         for _i in 0..count {
-            // The secret key of a random v3 secret is not kept: these outputs
-            // are for callers that track spend keys themselves.
-            let (secret, _secret_key) = Secret::generate_for_version(keyset_id.get_version());
+            let (secret, _) = Secret::generate_for_version(keyset_id.get_version());
             let (blinded, r) = blind_secret(&secret, None, keyset_id.get_version())?;
 
             let blinded_message = BlindedMessage::new(Amount::ZERO, keyset_id, blinded);
@@ -1849,6 +1870,37 @@ mod tests {
         let b = PreMintSecrets::blank(Id::from_str("009a1f293253e41e").unwrap(), Amount::from(1))
             .unwrap();
         assert_eq!(b.len(), 1);
+    }
+
+    /// Random and blank outputs keep no secret keys, so v3 keysets refuse them
+    #[test]
+    #[cfg(feature = "wallet")]
+    fn random_and_blank_refuse_v3_keysets() {
+        let fee_and_amounts: FeeAndAmounts = (0, vec![1, 2, 4, 8]).into();
+        let v3 = Id::from_str("022546ab0a2dee9f79510f4e20a4e3d9e894a97361047c594902573a7e64f9d701")
+            .unwrap();
+        assert!(matches!(
+            PreMintSecrets::random(v3, Amount::from(8), &SplitTarget::None, &fee_and_amounts),
+            Err(Error::RandomOutputsOnV3Keyset(id)) if id == v3
+        ));
+        assert!(matches!(
+            PreMintSecrets::blank(v3, Amount::from(8)),
+            Err(Error::RandomOutputsOnV3Keyset(id)) if id == v3
+        ));
+
+        // Pre-v3 keysets are unaffected.
+        let v2 = Id::from_str("015ba18a8adcd02e715a58358eb618da4a4b3791151a4bee5e968bb88406ccf76a")
+            .unwrap();
+        for keyset_id in [Id::from_str("009a1f293253e41e").unwrap(), v2] {
+            PreMintSecrets::random(
+                keyset_id,
+                Amount::from(8),
+                &SplitTarget::None,
+                &fee_and_amounts,
+            )
+            .unwrap();
+            PreMintSecrets::blank(keyset_id, Amount::from(8)).unwrap();
+        }
     }
 
     #[test]

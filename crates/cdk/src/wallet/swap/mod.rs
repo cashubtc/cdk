@@ -53,7 +53,7 @@ impl Wallet {
             include_fees,
             use_p2bk,
             None,
-            ProofReservation::Reserve,
+            None,
         )
         .await
     }
@@ -63,10 +63,14 @@ impl Wallet {
     /// This is intended for internal use by parent sagas (send, melt, receive)
     /// that have already reserved the proofs. Calling this on unreserved proofs
     /// bypasses the reservation safety check.
+    ///
+    /// `parent_operation_id` is the operation holding the reservation. Swap
+    /// recovery replays only inputs held by the swap or by that parent.
     #[instrument(skip(self, input_proofs))]
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn swap_no_reserve(
         &self,
+        parent_operation_id: uuid::Uuid,
         amount: Option<Amount>,
         amount_split_target: SplitTarget,
         input_proofs: Proofs,
@@ -83,12 +87,15 @@ impl Wallet {
             include_fees,
             use_p2bk,
             nutroot,
-            ProofReservation::Skip,
+            Some(parent_operation_id),
         )
         .await
     }
 
-    /// Internal swap implementation with explicit proof reservation control.
+    /// Internal swap implementation
+    ///
+    /// Without a parent the swap reserves its inputs; with one, the parent
+    /// already holds the reservation.
     #[allow(clippy::too_many_arguments)]
     async fn swap_internal(
         &self,
@@ -99,12 +106,19 @@ impl Wallet {
         include_fees: bool,
         use_p2bk: bool,
         nutroot: Option<crate::nuts::nut18::NutrootOption>,
-        proof_reservation: ProofReservation,
+        parent_operation_id: Option<uuid::Uuid>,
     ) -> Result<Option<Proofs>, Error> {
         tracing::info!("Swapping");
 
+        let proof_reservation = match parent_operation_id {
+            Some(_) => ProofReservation::Skip,
+            None => ProofReservation::Reserve,
+        };
         self.retry_on_inactive_keyset(|| async {
-            let saga = SwapSaga::new(self);
+            let saga = match parent_operation_id {
+                Some(parent) => SwapSaga::new(self).with_parent_operation(parent),
+                None => SwapSaga::new(self),
+            };
             let saga = saga
                 .prepare_with_nutroot(
                     amount,
@@ -176,6 +190,11 @@ impl Wallet {
         nutroot: Option<&crate::nuts::nut18::NutrootOption>,
     ) -> Result<PreSwap, Error> {
         tracing::info!("Creating swap");
+
+        if let Some(nutroot) = nutroot {
+            self.validate_nutroot_lock(active_keyset_id, nutroot)
+                .await?;
+        }
 
         // Desired amount is either amount passed or value of all proof
         let proofs_total = proofs.total_amount()?;

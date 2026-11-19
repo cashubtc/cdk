@@ -210,11 +210,14 @@ pub mod test_utils {
             mint_url,
             CurrencyUnit::Sat,
             OperationData::Swap(SwapOperationData {
+                parent_operation_id: None,
                 input_amount: Amount::from(1000),
                 output_amount: Amount::from(990),
                 counter_start: Some(0),
                 counter_end: Some(10),
                 blinded_messages: None,
+                pending_outputs: None,
+                input_ys: vec![],
             }),
         )
     }

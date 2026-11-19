@@ -37,6 +37,7 @@ use std::collections::HashMap;
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
 use bitcoin::XOnlyPublicKey;
+use cdk_common::amount::FeeAndAmounts;
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{
     OperationData, ProofInfo, ReceiveOperationData, ReceiveSagaState, Transaction,
@@ -48,11 +49,12 @@ use self::compensation::RemovePendingProofs;
 use self::state::{Finalized, Initial, Prepared};
 use super::ReceiveOptions;
 use crate::dhke::construct_proofs;
+use crate::fees::ProofsFeeBreakdown;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut10::Kind;
 use crate::nuts::{
-    verify_proof_signatures, Conditions, Id, Keys, LegacyDleq, Proofs, PublicKey, SecretKey,
-    SigFlag, State,
+    verify_proof_signatures, Conditions, Id, Keys, LegacyDleq, PreSwap, Proofs, PublicKey,
+    SecretKey, SigFlag, State,
 };
 use crate::util::hex;
 use crate::wallet::blind_signature::{
@@ -172,7 +174,7 @@ impl<'a> ReceiveSaga<'a, Initial> {
         // Receive checks 1 and 2 for v3 proofs: rebuild each secret from its
         // spend info, require a key the wallet holds and apply the leaf
         // policy. The keys sign the swap's inputs.
-        let mut v3_keys = crate::wallet::nutroot::V3Keys::new();
+        let mut v3_keys = crate::wallet::nutroot::V3Spends::new();
         for proof in proofs.iter().filter(|proof| {
             proof.keyset_id.get_version() == cdk_common::nuts::nut02::KeySetVersion::Version02
         }) {
@@ -181,6 +183,7 @@ impl<'a> ReceiveSaga<'a, Initial> {
                     proof,
                     request,
                     &opts.p2pk_signing_keys,
+                    &opts.preimages,
                 )?,
                 None => crate::wallet::nutroot::check_received_v3_proof(
                     proof,
@@ -337,7 +340,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
 
         let operation_id = self.state_data.operation_id;
 
-        let proofs_info = proofs
+        let mut proofs_info = proofs
             .clone()
             .into_iter()
             .map(|p| {
@@ -384,35 +387,26 @@ impl<'a> ReceiveSaga<'a, Prepared> {
         )
         .await;
 
-        let mut pre_swap = self
-            .wallet
-            .create_swap(
-                &operation_id,
-                self.state_data.active_keyset_id,
+        // Nothing has been sent to the mint yet, so a failure here is
+        // definitive: release the pending inputs.
+        let pre_swap = match self
+            .build_swap_request(
+                operation_id,
                 &fee_and_amounts,
-                None,
-                self.state_data.options.amount_split_target.clone(),
                 proofs,
-                None,
-                false,
-                false,
                 &fee_breakdown,
-                ProofReservation::Skip,
-                None,
+                &mut proofs_info,
             )
-            .await?;
-
-        // Determine if SigAll signing is needed
-        let sig_flag = self.determine_sig_flag()?;
-        if sig_flag == SigFlag::SigAll {
-            for blinded_message in pre_swap.swap_request.outputs_mut() {
-                for signing_key in self.state_data.p2pk_signing_keys.values() {
-                    // Sign the outputs of the swap using standard P2PK since output
-                    // P2BK requires ephemeral keys which is handled at creation.
-                    blinded_message.sign_p2pk(signing_key.to_owned().clone())?
-                }
+            .await
+        {
+            Ok(pre_swap) => pre_swap,
+            Err(err) => {
+                tracing::error!("Failed to build receive swap request: {}", err);
+                execute_compensations(&mut self.compensations).await?;
+                return Err(err);
             }
-        }
+        };
+        let swap_request = pre_swap.swap_request;
 
         // Get counter range for recovery (before the swap request is sent)
         let counter_end = self
@@ -429,7 +423,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
         if let OperationData::Receive(ref mut data) = saga.data {
             data.counter_start = Some(counter_start);
             data.counter_end = Some(counter_end);
-            data.blinded_messages = Some(pre_swap.swap_request.outputs().clone());
+            data.blinded_messages = Some(swap_request.outputs().clone());
         }
 
         // Update saga state - if this fails due to version conflict, another instance
@@ -463,10 +457,6 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             })
             .await?;
 
-        let mut swap_request = pre_swap.swap_request;
-        self.wallet
-            .sign_v3_swap(&mut swap_request, &self.state_data.v3_keys)
-            .await?;
         let swap_response = match self.wallet.client.post_swap(swap_request).await {
             Ok(response) => response,
             Err(err) => {
@@ -581,6 +571,74 @@ impl<'a> ReceiveSaga<'a, Prepared> {
                 amount: total_amount,
             },
         })
+    }
+
+    /// Build the swap request and sign its inputs
+    ///
+    /// Persists the signed v3 witnesses so restart recovery can replay the
+    /// same request.
+    async fn build_swap_request(
+        &mut self,
+        operation_id: uuid::Uuid,
+        fee_and_amounts: &FeeAndAmounts,
+        proofs: Proofs,
+        fee_breakdown: &ProofsFeeBreakdown,
+        proofs_info: &mut [ProofInfo],
+    ) -> Result<PreSwap, Error> {
+        let mut pre_swap = self
+            .wallet
+            .create_swap(
+                &operation_id,
+                self.state_data.active_keyset_id,
+                fee_and_amounts,
+                None,
+                self.state_data.options.amount_split_target.clone(),
+                proofs,
+                None,
+                false,
+                false,
+                fee_breakdown,
+                ProofReservation::Skip,
+                None,
+            )
+            .await?;
+
+        // Determine if SigAll signing is needed
+        let sig_flag = self.determine_sig_flag()?;
+        if sig_flag == SigFlag::SigAll {
+            for blinded_message in pre_swap.swap_request.outputs_mut() {
+                for signing_key in self.state_data.p2pk_signing_keys.values() {
+                    // Sign the outputs of the swap using standard P2PK since output
+                    // P2BK requires ephemeral keys which is handled at creation.
+                    blinded_message.sign_p2pk(signing_key.to_owned().clone())?
+                }
+            }
+        }
+
+        let mut swap_request = pre_swap.swap_request;
+        self.wallet
+            .sign_v3_swap(&mut swap_request, &self.state_data.v3_keys)
+            .await?;
+        if !self.state_data.v3_keys.is_empty() {
+            // Keep the authorization before dispatch so restart recovery can
+            // replay the same transaction without the receiver's private keys.
+            for info in proofs_info.iter_mut() {
+                if let Some(signed) = swap_request
+                    .inputs()
+                    .iter()
+                    .find(|proof| proof.secret == info.proof.secret)
+                {
+                    info.proof.witness = signed.witness.clone();
+                }
+            }
+            self.wallet
+                .localstore
+                .update_proofs(proofs_info.to_vec(), vec![])
+                .await?;
+        }
+
+        pre_swap.swap_request = swap_request;
+        Ok(pre_swap)
     }
 
     /// Determine the signature flag based on the proofs
