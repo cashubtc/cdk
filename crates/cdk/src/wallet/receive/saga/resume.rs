@@ -332,6 +332,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_recover_receive_proofs_pending_keeps_rows_it_never_took_over() {
+        // The receive saved the send's row and crashed before overwriting it.
+        // The send then finished and marked the proof spent. Recovery must not
+        // write the old pending row back.
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = test_keyset_id();
+        let saga_id = uuid::Uuid::new_v4();
+        let send_saga_id = uuid::Uuid::new_v4();
+
+        let mut saved_row = test_proof_info(keyset_id, 100, mint_url.clone(), State::PendingSpent);
+        saved_row.used_by_operation = Some(send_saga_id);
+        let proof_y = saved_row.y;
+
+        let mut spent_row = saved_row.clone();
+        spent_row.state = State::Spent;
+        spent_row.used_by_operation = None;
+        db.update_proofs(vec![spent_row], vec![]).await.unwrap();
+
+        let saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Receive(ReceiveSagaState::ProofsPending),
+            Amount::from(100),
+            mint_url.clone(),
+            CurrencyUnit::Sat,
+            OperationData::Receive(ReceiveOperationData {
+                token: Some("test_token".to_string()),
+                counter_start: None,
+                counter_end: None,
+                amount: Some(Amount::from(100)),
+                blinded_messages: None,
+                replaced_proofs: vec![saved_row],
+            }),
+        );
+        db.add_saga(saga).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let result = wallet
+            .resume_receive_saga(&db.get_saga(&saga_id).await.unwrap().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(result, RecoveryAction::Compensated);
+
+        let proofs = db.get_proofs(None, None, None, None).await.unwrap();
+        assert_eq!(proofs.len(), 1);
+        assert_eq!(proofs[0].y, proof_y);
+        assert_eq!(proofs[0].state, State::Spent);
+        assert_eq!(proofs[0].used_by_operation, None);
+        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
     async fn failed_receive_transaction_stays_failed_during_orphan_cleanup() {
         let db = create_test_db().await;
         let mint_url = test_mint_url();
