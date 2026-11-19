@@ -223,7 +223,17 @@ impl SpendInfo {
                 (nums, KeySource::Nums, None)
             }
             (Some(_), Some(_), _) => return Err(Error::Malformed("bearer k with a NUMS u")),
-            (None, Some(k), _) => (k.public_key(), KeySource::Bearer, Some(k.clone())),
+            (None, Some(k), _) => {
+                // NUT-00 defines the conflict only for E; a disclosed K that
+                // differs from k*G is just as contradictory.
+                if self
+                    .internal_key
+                    .is_some_and(|disclosed| disclosed != k.public_key())
+                {
+                    return Err(Error::InternalKeyMismatch);
+                }
+                (k.public_key(), KeySource::Bearer, Some(k.clone()))
+            }
             (None, None, Some(e)) => {
                 let receiver_key = receiver_key.ok_or(Error::NoReceiverKey)?;
                 let derived = derive_slot_key(receiver_key, e, 0)?;
@@ -780,6 +790,17 @@ mod tests {
         assert!(matches!(
             info(wrong_k).reconstruct(&secret, None),
             Err(Error::NotNums)
+        ));
+    }
+
+    #[test]
+    fn check_1_bearer_k_disagreeing_with_k() {
+        let ok = info(serde_json::json!({"k": K0, "K": SECRET_K0}));
+        ok.reconstruct(&point(SECRET_K0), None).unwrap();
+        let conflict = info(serde_json::json!({"k": K0, "K": WORKED_K}));
+        assert!(matches!(
+            conflict.reconstruct(&point(SECRET_K0), None),
+            Err(Error::InternalKeyMismatch)
         ));
     }
 }
