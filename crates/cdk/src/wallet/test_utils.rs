@@ -577,6 +577,8 @@ pub struct MockMintConnector {
     /// `MintConnector` default, so a test paying an HTTP-only payment request
     /// has to opt in.
     pub payment_request_deliverability: Mutex<PaymentRequestDeliverability>,
+    /// Fail keyset and key requests as if the mint were unreachable
+    pub keysets_unavailable: Mutex<bool>,
 }
 
 /// What a [`MockMintConnector`] reports for a NUT-18 receiver URL.
@@ -634,6 +636,7 @@ impl MockMintConnector {
             #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
             dns_txt_response: Mutex::new(None),
             payment_request_deliverability: Mutex::new(PaymentRequestDeliverability::Unsupported),
+            keysets_unavailable: Mutex::new(false),
         }
     }
 
@@ -691,6 +694,18 @@ impl MockMintConnector {
             Ok(mint_info) => *self.mint_info.lock().unwrap() = mint_info,
             Err(_) => unimplemented!("error responses for mint info state are not supported"),
         }
+    }
+
+    /// Make keyset and key requests fail with a network error.
+    pub fn set_keysets_unavailable(&self, unavailable: bool) {
+        *self.keysets_unavailable.lock().unwrap() = unavailable;
+    }
+
+    fn check_keysets_available(&self) -> Result<(), Error> {
+        if *self.keysets_unavailable.lock().unwrap() {
+            return Err(Error::HttpError(Some(503), "unavailable".to_string()));
+        }
+        Ok(())
     }
 
     pub fn set_active_keyset(&self, keyset: KeySet) {
@@ -957,10 +972,12 @@ impl MintConnector for MockMintConnector {
     }
 
     async fn get_mint_keys(&self) -> Result<Vec<crate::nuts::KeySet>, Error> {
+        self.check_keysets_available()?;
         Ok(self.keysets.lock().unwrap().clone())
     }
 
     async fn get_mint_keyset(&self, keyset_id: Id) -> Result<crate::nuts::KeySet, Error> {
+        self.check_keysets_available()?;
         self.keysets
             .lock()
             .unwrap()
@@ -971,6 +988,7 @@ impl MintConnector for MockMintConnector {
     }
 
     async fn get_mint_keysets(&self) -> Result<KeysetResponse, Error> {
+        self.check_keysets_available()?;
         let keysets = self.keysets.lock().unwrap();
 
         Ok(KeysetResponse {
