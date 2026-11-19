@@ -957,6 +957,7 @@ impl<'a> MeltSaga<'a, Prepared> {
                 if let Some(swapped) = self
                     .wallet
                     .swap_no_reserve(
+                        self.state_data.operation_id,
                         Some(target_swap_amount),
                         SplitTarget::None,
                         self.state_data.proofs_to_swap.clone(),

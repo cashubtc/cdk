@@ -5,13 +5,18 @@
 //! counter. Received proofs carry spend info, from which receive check 1
 //! rebuilds the key.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
+use bitcoin::hashes::{sha256, Hash};
 use cdk_common::nut00::spend_info::Reconstruction;
 use cdk_common::nut00::transaction::Transaction;
 use cdk_common::nuts::nut02::KeySetVersion;
-use cdk_common::nuts::nut10::nutroot::{sign_proofs_key_path, Leaf};
+use cdk_common::nuts::nut10::nutroot::{
+    merkle_path, sign_digest, sign_proofs_key_path, verify_proof_input, Control, Leaf,
+    NutrootWitness,
+};
 use cdk_common::nuts::nut13::derive_v3_secret_key;
+use cdk_common::nuts::nut28::slot_map::match_leaf_slots;
 use cdk_common::util::unix_time;
 use cdk_common::{Proof, Proofs, ProofsMethods, PublicKey, SecretKey};
 
@@ -19,6 +24,17 @@ use crate::{Error, Wallet};
 
 /// Spend keys of v3 inputs, by secret point
 pub(crate) type V3Keys = HashMap<PublicKey, SecretKey>;
+
+/// Signing material selected after verifying a received proof's spend info.
+pub(crate) enum V3Spend {
+    KeyPath(SecretKey),
+    ScriptPath {
+        witness: NutrootWitness,
+        keys: Vec<SecretKey>,
+    },
+}
+
+pub(crate) type V3Spends = HashMap<PublicKey, V3Spend>;
 
 /// Default minimum time, in seconds, before an `after` leaf's refund opens
 /// for a received v3 payment to count as received
@@ -34,6 +50,28 @@ fn is_v3(proof: &Proof) -> bool {
 }
 
 impl Wallet {
+    /// Check lock construction requirements before reserving any inputs.
+    pub(crate) async fn validate_nutroot_lock(
+        &self,
+        keyset_id: cdk_common::Id,
+        request: &cdk_common::nuts::nut18::NutrootOption,
+    ) -> Result<(), Error> {
+        if keyset_id.get_version() != KeySetVersion::Version02 {
+            return Err(Error::NutrootRequiresV3Keyset);
+        }
+        request.validate()?;
+        if request.is_nums() {
+            let info = self.load_mint_info().await?;
+            for leaf in request.l.iter().flatten() {
+                let signal = leaf.parse_known()?.leaf_type().signal();
+                if !info.nuts.nut10.supports_leaf(&signal) {
+                    return Err(Error::UnsupportedNutrootLeaf { leaf: signal });
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Spend keys for the wallet's own v3 proofs (no spend info)
     ///
     /// Each secret is re-derived from the seed at the counter it was minted
@@ -117,27 +155,53 @@ impl Wallet {
     pub(crate) async fn sign_v3_swap(
         &self,
         request: &mut cdk_common::SwapRequest,
-        received: &V3Keys,
+        received: &V3Spends,
     ) -> Result<(), Error> {
         if !request.inputs().iter().any(is_v3) {
             return Ok(());
         }
+        let transaction = request.transaction()?;
+        // Recovery replays the same outputs. A persisted witness can be reused
+        // only if it verifies against this exact transaction.
+        let replayed: HashSet<PublicKey> = request
+            .inputs()
+            .iter()
+            .enumerate()
+            .filter(|(index, proof)| {
+                is_v3(proof) && verify_proof_input(&transaction, *index, proof, unix_time()).is_ok()
+            })
+            .map(|(_, proof)| proof.secret.v3_point())
+            .collect::<Result<_, _>>()?;
         // Received proofs are keyed by receive check 1; the request has
         // dropped their spend info, so only the rest are the wallet's own.
         let own: Proofs = request
             .inputs()
             .iter()
             .filter(|proof| {
-                proof
-                    .secret
-                    .v3_point()
-                    .map_or(true, |point| !received.contains_key(&point))
+                proof.secret.v3_point().map_or(true, |point| {
+                    !received.contains_key(&point) && !replayed.contains(&point)
+                })
             })
             .cloned()
             .collect();
         let mut keys = self.own_v3_keys(&own).await?;
-        keys.extend(received.iter().map(|(k, v)| (*k, v.clone())));
-        let transaction = request.transaction()?;
+        keys.extend(received.iter().filter_map(|(point, spend)| match spend {
+            V3Spend::KeyPath(key) => Some((*point, key.clone())),
+            V3Spend::ScriptPath { .. } => None,
+        }));
+        for (index, proof) in request.inputs_mut().iter_mut().enumerate() {
+            if !is_v3(proof) {
+                continue;
+            }
+            if let Some(V3Spend::ScriptPath { witness, keys }) =
+                received.get(&proof.secret.v3_point()?)
+            {
+                let mut witness = witness.clone();
+                let digest = transaction.input_digest(index)?;
+                witness.signatures = keys.iter().map(|key| sign_digest(key, &digest)).collect();
+                proof.witness = Some(witness.into());
+            }
+        }
         Self::sign_v3_inputs(&transaction, request.inputs_mut(), &keys)
     }
 
@@ -153,6 +217,9 @@ impl Wallet {
             .any(|proof| is_v3(proof) && proof.witness.is_none())
         {
             return Err(Error::V3ProofNotSpendable);
+        }
+        for (index, proof) in proofs.iter().enumerate().filter(|(_, proof)| is_v3(proof)) {
+            verify_proof_input(transaction, index, proof, unix_time())?;
         }
         Ok(())
     }
@@ -201,7 +268,7 @@ pub(crate) fn check_received_v3_proof(
     proof: &Proof,
     receiver_keys: &[SecretKey],
     min_refund_horizon: u64,
-) -> Result<SecretKey, Error> {
+) -> Result<V3Spend, Error> {
     let secret = proof.secret.v3_point()?;
     let spend_info = proof
         .spend_info
@@ -229,6 +296,7 @@ pub(crate) fn check_received_v3_proof(
     check_leaf_policy(&reconstruction.leaves, unix_time(), min_refund_horizon)?;
     reconstruction
         .key_path_key
+        .map(V3Spend::KeyPath)
         .ok_or(Error::V3ProofNotSpendable)
 }
 
@@ -236,14 +304,14 @@ pub(crate) fn check_received_v3_proof(
 ///
 /// The spend info must reconstruct the secret, carry `E` exactly when the
 /// request blinds something and `u` exactly for a NUMS `k`, and disclose
-/// exactly the requested tree. The wallet must hold a key-path key: a
-/// script-only (NUMS) payment is accepted only through its leaves, which
-/// this wallet does not sweep yet.
+/// exactly the requested tree. A script-only payment requires a satisfiable
+/// leaf, using the supplied signing keys and hashlock preimages.
 pub(crate) fn check_requested_v3_proof(
     proof: &Proof,
     request: &cdk_common::nuts::nut18::NutrootOption,
     receiver_keys: &[SecretKey],
-) -> Result<SecretKey, Error> {
+    preimages: &[String],
+) -> Result<V3Spend, Error> {
     let secret = proof.secret.v3_point()?;
     let spend_info = proof
         .spend_info
@@ -263,14 +331,95 @@ pub(crate) fn check_requested_v3_proof(
     for receiver in candidates {
         match request.verify_payment(&secret, spend_info, receiver) {
             Ok(reconstruction) => {
-                return reconstruction
-                    .key_path_key
-                    .ok_or(Error::V3ProofNotSpendable)
+                return match reconstruction.key_path_key {
+                    Some(key) => Ok(V3Spend::KeyPath(key)),
+                    None => {
+                        script_path_spend(spend_info, &reconstruction, receiver_keys, preimages)
+                    }
+                }
             }
             Err(err) => last_err = Error::NUT18(err),
         }
     }
     Err(last_err)
+}
+
+/// Select a satisfiable disclosed leaf after the request's exact-tree check.
+fn script_path_spend(
+    spend_info: &cdk_common::nut00::SpendInfo,
+    reconstruction: &Reconstruction,
+    receiver_keys: &[SecretKey],
+    preimages: &[String],
+) -> Result<V3Spend, Error> {
+    let tree = spend_info.tree.as_ref().ok_or(Error::V3ProofNotSpendable)?;
+    let mut available = receiver_keys.to_vec();
+    if let Some(ephemeral) = &spend_info.e {
+        for key in receiver_keys {
+            available.extend(
+                match_leaf_slots(key, ephemeral, tree)
+                    .map_err(cdk_common::nut00::spend_info::Error::from)?
+                    .into_iter()
+                    .map(|(_, key)| key),
+            );
+        }
+    }
+    let preimages = preimages
+        .iter()
+        .map(cdk_common::util::hex::decode)
+        .collect::<Result<Vec<_>, _>>()?;
+    let now = unix_time();
+    // An `after` leaf that opened only moments ago on the wallet's clock may
+    // not have opened yet on the mint's; such a leaf is used only when no
+    // other leaf is satisfiable.
+    let mut recently_opened = None;
+    for (index, leaf) in reconstruction.leaves.iter().enumerate() {
+        let (preimage, near_open) = match leaf {
+            Leaf::Commit { .. } => continue,
+            Leaf::After { time, .. } if now < *time => continue,
+            Leaf::After { time, .. } => (None, now < time.saturating_add(AFTER_LEAF_CLOCK_MARGIN)),
+            Leaf::Hashlock { hash, .. } => match preimages.iter().find(|preimage| {
+                preimage.len() == 32 && sha256::Hash::hash(preimage).to_byte_array() == *hash
+            }) {
+                Some(preimage) => (Some(preimage.clone()), false),
+                None => continue,
+            },
+            Leaf::Threshold { .. } => (None, false),
+        };
+        let required = usize::from(leaf.threshold().ok_or(Error::V3ProofNotSpendable)?);
+        let keys: Vec<SecretKey> = leaf
+            .keys()
+            .iter()
+            .filter_map(|point| {
+                available
+                    .iter()
+                    .find(|key| key.public_key().x_only_public_key() == point.x_only_public_key())
+                    .cloned()
+            })
+            .take(required)
+            .collect();
+        if keys.len() != required {
+            continue;
+        }
+        let spend = V3Spend::ScriptPath {
+            witness: NutrootWitness {
+                signatures: vec![],
+                leaf: Some(tree[index].clone()),
+                control: Some(Control {
+                    internal_key: reconstruction.internal_key,
+                    path: merkle_path(tree, index)?,
+                }),
+                preimage,
+            },
+            keys,
+        };
+        match near_open {
+            true => {
+                recently_opened.get_or_insert(spend);
+            }
+            false => return Ok(spend),
+        }
+    }
+    recently_opened.ok_or(Error::V3ProofNotSpendable)
 }
 
 /// Every disclosed leaf against the wallet's acceptance policy
@@ -325,5 +474,342 @@ mod tests {
             check_leaf_policy(&[threshold], now, 3600),
             Err(Error::V3LeafPolicy)
         ));
+    }
+
+    #[test]
+    fn requested_script_paths_require_satisfied_time_and_threshold() {
+        use cdk_common::nuts::nut10::nutroot::internal_key::nums_h;
+        use cdk_common::nuts::nut18::NutrootOption;
+
+        let alice = SecretKey::generate();
+        let bob = SecretKey::generate();
+        let spend = |leaf: Leaf, keys: &[SecretKey]| {
+            let request = NutrootOption {
+                k: nums_h(),
+                l: Some(vec![leaf.to_leaf_bytes().unwrap()]),
+                b: None,
+            };
+            let payment = request
+                .pay(&SecretKey::generate(), &SecretKey::generate())
+                .unwrap();
+            let reconstruction = request
+                .verify_payment(&payment.secret, &payment.spend_info, None)
+                .unwrap();
+            script_path_spend(&payment.spend_info, &reconstruction, keys, &[])
+        };
+        let threshold = Leaf::Threshold {
+            n: 2,
+            keys: vec![alice.public_key(), bob.public_key()],
+        };
+        assert!(spend(threshold.clone(), std::slice::from_ref(&alice)).is_err());
+        assert!(spend(threshold, &[alice.clone(), bob]).is_ok());
+        assert!(spend(
+            Leaf::After {
+                n: 1,
+                keys: vec![alice.public_key()],
+                time: unix_time() + 3600,
+            },
+            std::slice::from_ref(&alice),
+        )
+        .is_err());
+        assert!(spend(
+            Leaf::After {
+                n: 1,
+                keys: vec![alice.public_key()],
+                time: 0,
+            },
+            &[alice],
+        )
+        .is_ok());
+    }
+
+    fn v3_proof(secret: PublicKey, spend_info: cdk_common::nut00::SpendInfo) -> Proof {
+        use cdk_common::nuts::nut01::BlsG1PublicKey;
+        use cdk_common::secret::Secret;
+
+        let id: cdk_common::Id =
+            "022546ab0a2dee9f79510f4e20a4e3d9e894a97361047c594902573a7e64f9d701"
+                .parse()
+                .unwrap();
+        let mut proof = Proof::new(
+            crate::Amount::from(1),
+            id,
+            Secret::from_point(&secret),
+            BlsG1PublicKey::hash_to_curve(b"proof"),
+        );
+        proof.spend_info = Some(spend_info);
+        proof
+    }
+
+    /// A receiver-keyed payment is accepted only against the request whose
+    /// `k` it pays, even when the wallet holds the keys of several requests
+    /// with the same tree.
+    #[test]
+    fn requested_payment_binds_the_request_receiver_key() {
+        use cdk_common::nuts::nut18::NutrootOption;
+
+        let first_key = SecretKey::generate();
+        let second_key = SecretKey::generate();
+        let leaves = Some(vec![after(unix_time() + 30 * 24 * 3600)
+            .to_leaf_bytes()
+            .unwrap()]);
+        let first = NutrootOption {
+            k: first_key.public_key(),
+            l: leaves.clone(),
+            b: None,
+        };
+        let second = NutrootOption {
+            k: second_key.public_key(),
+            l: leaves,
+            b: None,
+        };
+        let payment = first
+            .pay(&SecretKey::generate(), &SecretKey::generate())
+            .unwrap();
+        let proof = v3_proof(payment.secret, payment.spend_info);
+        let held = [second_key.clone(), first_key.clone()];
+
+        assert!(matches!(
+            check_requested_v3_proof(&proof, &first, &held, &[]),
+            Ok(V3Spend::KeyPath(_))
+        ));
+        assert!(check_requested_v3_proof(&proof, &second, &held, &[]).is_err());
+        assert!(check_requested_v3_proof(&proof, &first, &[second_key], &[]).is_err());
+    }
+
+    /// An `after` leaf that has only just opened on the wallet's clock is
+    /// used only when no other leaf is satisfiable.
+    #[test]
+    fn recently_opened_after_leaf_is_a_fallback() {
+        use cdk_common::nuts::nut10::nutroot::internal_key::nums_h;
+        use cdk_common::nuts::nut18::NutrootOption;
+
+        let alice = SecretKey::generate();
+        let just_opened = Leaf::After {
+            n: 1,
+            keys: vec![alice.public_key()],
+            time: unix_time() - AFTER_LEAF_CLOCK_MARGIN / 2,
+        };
+        let threshold = Leaf::Threshold {
+            n: 1,
+            keys: vec![alice.public_key()],
+        };
+        let spent_leaf = |leaves: &[&Leaf]| {
+            let request = NutrootOption {
+                k: nums_h(),
+                l: Some(
+                    leaves
+                        .iter()
+                        .map(|leaf| leaf.to_leaf_bytes().unwrap())
+                        .collect(),
+                ),
+                b: None,
+            };
+            let payment = request
+                .pay(&SecretKey::generate(), &SecretKey::generate())
+                .unwrap();
+            let reconstruction = request
+                .verify_payment(&payment.secret, &payment.spend_info, None)
+                .unwrap();
+            match script_path_spend(
+                &payment.spend_info,
+                &reconstruction,
+                std::slice::from_ref(&alice),
+                &[],
+            )
+            .unwrap()
+            {
+                V3Spend::ScriptPath { witness, .. } => witness.leaf.unwrap().parse_known().unwrap(),
+                V3Spend::KeyPath(_) => panic!("script-only payment"),
+            }
+        };
+
+        assert_eq!(spent_leaf(&[&just_opened, &threshold]), threshold);
+        assert_eq!(spent_leaf(&[&just_opened]), just_opened);
+        let long_open = Leaf::After {
+            n: 1,
+            keys: vec![alice.public_key()],
+            time: unix_time() - 10 * AFTER_LEAF_CLOCK_MARGIN,
+        };
+        assert_eq!(spent_leaf(&[&long_open, &threshold]), long_open);
+    }
+
+    /// Melt inputs from a token are keyed from their spend info; one whose
+    /// key the wallet cannot recover is refused.
+    #[tokio::test]
+    async fn v3_input_keys_from_spend_info() {
+        use std::sync::Arc;
+
+        use cdk_common::nut00::SpendInfo;
+        use cdk_common::nuts::nut18::NutrootOption;
+
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock, MockMintConnector,
+        };
+
+        let wallet = create_test_wallet_with_mock(
+            create_test_db().await,
+            Arc::new(MockMintConnector::new()),
+        )
+        .await;
+
+        let bearer = SecretKey::generate();
+        let mut proofs = vec![v3_proof(
+            bearer.public_key(),
+            SpendInfo::bearer(bearer.clone()),
+        )];
+        bearer_v3_inputs(&mut proofs, &[]).unwrap();
+        let keys = wallet.v3_input_keys(&proofs).await.unwrap();
+        assert_eq!(keys.get(&bearer.public_key()), Some(&bearer));
+
+        // A receiver-keyed proof needs its receiver key, after which it is
+        // keyed like a bearer proof.
+        let receiver = SecretKey::generate();
+        let payment = NutrootOption {
+            k: receiver.public_key(),
+            l: None,
+            b: None,
+        }
+        .pay(&SecretKey::generate(), &SecretKey::generate())
+        .unwrap();
+        let keyed = vec![v3_proof(payment.secret, payment.spend_info)];
+        assert!(wallet.v3_input_keys(&keyed).await.is_err());
+        assert!(matches!(
+            bearer_v3_inputs(&mut keyed.clone(), &[]),
+            Err(Error::V3ProofNotSpendable)
+        ));
+        let mut keyed = keyed;
+        bearer_v3_inputs(&mut keyed, std::slice::from_ref(&receiver)).unwrap();
+        let keys = wallet.v3_input_keys(&keyed).await.unwrap();
+        assert_eq!(
+            keys.get(&payment.secret).map(SecretKey::public_key),
+            Some(payment.secret)
+        );
+    }
+
+    #[tokio::test]
+    async fn persisted_script_witness_replays_only_its_original_outputs() {
+        use std::sync::Arc;
+
+        use cdk_common::nuts::nut01::BlsG1PublicKey;
+        use cdk_common::nuts::nut10::nutroot::internal_key::nums_h;
+        use cdk_common::nuts::nut18::NutrootOption;
+        use cdk_common::nuts::{Id, PreMintSecrets};
+        use cdk_common::secret::Secret;
+
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock, MockMintConnector,
+        };
+
+        let wallet = create_test_wallet_with_mock(
+            create_test_db().await,
+            Arc::new(MockMintConnector::new()),
+        )
+        .await;
+        let key = SecretKey::generate();
+        let request = NutrootOption {
+            k: nums_h(),
+            l: Some(vec![Leaf::Threshold {
+                n: 1,
+                keys: vec![key.public_key()],
+            }
+            .to_leaf_bytes()
+            .unwrap()]),
+            b: None,
+        };
+        let payment = request
+            .pay(&SecretKey::generate(), &SecretKey::generate())
+            .unwrap();
+        let reconstruction = request
+            .verify_payment(&payment.secret, &payment.spend_info, None)
+            .unwrap();
+        let spend = script_path_spend(&payment.spend_info, &reconstruction, &[key], &[]).unwrap();
+        let id: Id = "022546ab0a2dee9f79510f4e20a4e3d9e894a97361047c594902573a7e64f9d701"
+            .parse()
+            .unwrap();
+        let proof = Proof::new(
+            crate::Amount::from(1),
+            id,
+            Secret::from_point(&payment.secret),
+            BlsG1PublicKey::hash_to_curve(b"proof"),
+        );
+        // Only the outputs' blinded messages matter here: their keys are not kept.
+        let outputs = || {
+            PreMintSecrets::from_secrets(
+                id,
+                vec![crate::Amount::from(1)],
+                vec![Secret::generate_v3().0],
+            )
+            .unwrap()
+            .blinded_messages()
+        };
+        let mut swap = cdk_common::SwapRequest::new(vec![proof], outputs());
+        wallet
+            .sign_v3_swap(&mut swap, &HashMap::from([(payment.secret, spend)]))
+            .await
+            .unwrap();
+        let witness = swap.inputs()[0].witness.clone();
+        wallet
+            .sign_v3_swap(&mut swap, &Default::default())
+            .await
+            .unwrap();
+        assert_eq!(swap.inputs()[0].witness, witness);
+        *swap.outputs_mut() = outputs();
+        assert!(wallet
+            .sign_v3_swap(&mut swap, &Default::default())
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn nums_lock_requires_advertised_leaf_support() {
+        use std::sync::Arc;
+
+        use cdk_common::nuts::nut10::nutroot::internal_key::nums_h;
+        use cdk_common::nuts::nut18::NutrootOption;
+        use cdk_common::nuts::Id;
+
+        use crate::wallet::swap::ProofReservation;
+        use crate::wallet::test_utils::{
+            create_test_db, create_test_wallet_with_mock, MockMintConnector,
+        };
+
+        let client = Arc::new(MockMintConnector::new());
+        client.mint_info.lock().unwrap().nuts.nut10.leaves.clear();
+        let wallet = create_test_wallet_with_mock(create_test_db().await, client.clone()).await;
+        let id: Id = "022546ab0a2dee9f79510f4e20a4e3d9e894a97361047c594902573a7e64f9d701"
+            .parse()
+            .unwrap();
+        let request = NutrootOption {
+            k: nums_h(),
+            l: Some(vec![Leaf::Threshold {
+                n: 1,
+                keys: vec![SecretKey::generate().public_key()],
+            }
+            .to_leaf_bytes()
+            .unwrap()]),
+            b: None,
+        };
+        let result = wallet
+            .create_swap(
+                &uuid::Uuid::new_v4(),
+                id,
+                &(0, vec![1]).into(),
+                Some(crate::Amount::from(1)),
+                Default::default(),
+                vec![],
+                None,
+                false,
+                false,
+                &crate::fees::ProofsFeeBreakdown {
+                    total: crate::Amount::ZERO,
+                    per_keyset: HashMap::new(),
+                },
+                ProofReservation::Skip,
+                Some(&request),
+            )
+            .await;
+        assert!(matches!(result, Err(Error::UnsupportedNutrootLeaf { leaf }) if leaf == "0001"));
+        assert!(client.captured_swap_requests().is_empty());
     }
 }
