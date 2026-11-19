@@ -126,7 +126,20 @@ Do not issue manual transaction-control SQL through `DatabaseExecutor`.
 
 The normal `MintPgDatabase`, `MintPgAuthDatabase`, `WalletPgDatabase`, SQLite
 aliases, `new_wallet_pg_database`, `PgConfig::new`, and FFI constructors remain
-available. No wallet API or FFI wallet method changes are needed.
+available, and high-level wallet APIs are unchanged. Custom `WalletDatabase`
+implementations, including foreign FFI database callbacks, must add the new
+atomic `reserve_derivation_index` method; see the
+[v0.18 migration guide](../../docs/migrations/v0.18.md#atomic-wallet-derivation-reservations).
+
+The `close()` method on mint, auth, and wallet databases closes the pool shared
+by every clone, waiting for outstanding connections. Await it after stopping all
+users of the database.
+
+If the configured `schema` value is quoted or escaped, earlier releases used the
+quotes and escape characters as part of the schema name. CDK now decodes the
+value like other libpq parameters. To avoid starting against a new, empty schema,
+migrations refuse to run while a schema with the old literal name exists; rename
+it to the decoded name (or drop it if unused) before upgrading.
 
 ## Testing
 

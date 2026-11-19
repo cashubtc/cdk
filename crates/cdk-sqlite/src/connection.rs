@@ -136,6 +136,12 @@ impl SqliteConnection {
         }
     }
 
+    /// Run `operation` on a blocking worker with this checkout's connection.
+    ///
+    /// This must be async: SQLite calls block (on I/O and on busy waits up to
+    /// the busy timeout), so running them inline would stall a Tokio worker
+    /// and every task scheduled on it. Awaiting also serializes operations on
+    /// this connection and lets a cancelled caller hand the checkout to cleanup.
     async fn run<T, F>(&self, operation: F) -> Result<T, Error>
     where
         T: Send + 'static,
