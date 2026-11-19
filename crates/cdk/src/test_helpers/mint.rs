@@ -119,7 +119,8 @@ pub async fn create_test_mint() -> Result<Mint, Error> {
     mint_builder = mint_builder
         .with_name("test mint".to_string())
         .with_description("test mint for unit tests".to_string())
-        .with_urls(vec!["https://test-mint".to_string()]);
+        .with_urls(vec!["https://test-mint".to_string()])
+        .with_pubkey(crate::nuts::SecretKey::generate().public_key());
 
     let quote_ttl = QuoteTTL::new(10000, 10000);
 
@@ -264,4 +265,117 @@ pub(crate) async fn expire_melt_leases(mint: &Mint) {
             tx.commit().await.unwrap();
         }
     }
+}
+
+/// Spend keys of v3 proofs, by secret point
+pub type V3Keys = HashMap<cdk_common::PublicKey, cdk_common::SecretKey>;
+
+/// Mint v3 proofs on the active sat keyset (which must be v3), keeping
+/// each proof's spend key
+///
+/// Minting onto a v3 keyset is a transaction: the quote is locked to a
+/// fresh key that signs the quote input's digest.
+pub async fn mint_v3_test_proofs(mint: &Mint, amount: Amount) -> Result<(Proofs, V3Keys), Error> {
+    use cdk_common::nut00::transaction::MintQuoteState as QuoteInputState;
+    use cdk_common::nuts::nut10::nutroot::sign_input_key_path;
+    use cdk_common::secret::Secret;
+
+    let lock_key = cdk_common::SecretKey::generate();
+    let mint_quote: MintQuoteBolt11Response<_> = mint
+        .get_mint_quote(
+            MintQuoteBolt11Request {
+                amount,
+                unit: CurrencyUnit::Sat,
+                description: None,
+                pubkey: Some(lock_key.public_key()),
+            }
+            .into(),
+        )
+        .await?
+        .into();
+    let quote_id = cdk_common::QuoteId::from_str(&mint_quote.quote).unwrap();
+
+    loop {
+        let check: MintQuoteBolt11Response<_> = mint
+            .check_mint_quotes(std::slice::from_ref(&quote_id), None)
+            .await
+            .unwrap()
+            .first()
+            .unwrap()
+            .clone()
+            .into();
+        if check.state == MintQuoteState::Paid {
+            break;
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    let keyset_id = *mint.get_active_keysets().get(&CurrencyUnit::Sat).unwrap();
+    assert_eq!(
+        keyset_id.get_version(),
+        cdk_common::nut02::KeySetVersion::Version02,
+        "the active sat keyset must be v3"
+    );
+    let keys = mint
+        .keyset_pubkeys(&keyset_id)?
+        .keysets
+        .first()
+        .unwrap()
+        .keys
+        .clone();
+    let fees: (u64, Vec<u64>) = (0, keys.iter().map(|a| a.0.to_u64()).collect::<Vec<_>>());
+    let amounts = amount.split_targeted(&SplitTarget::None, &fees.into())?;
+
+    let mut spend_keys = V3Keys::new();
+    let secrets = amounts
+        .iter()
+        .map(|_| {
+            let (secret, key) = Secret::generate_v3();
+            spend_keys.insert(key.public_key(), key);
+            secret
+        })
+        .collect();
+    let premint_secrets = PreMintSecrets::from_secrets(keyset_id, amounts, secrets)?;
+
+    let mut request = MintRequest {
+        quote: quote_id.clone(),
+        outputs: premint_secrets.blinded_messages(),
+        signature: None,
+    };
+    let issued = mint
+        .localstore()
+        .get_mint_quote(&quote_id)
+        .await?
+        .unwrap()
+        .amount_issued()
+        .into();
+    let transaction = request.transaction(&QuoteInputState {
+        lock_key: lock_key.public_key(),
+        issued,
+    })?;
+    request.signature = Some(sign_input_key_path(&transaction, 0, &lock_key)?.to_string());
+
+    let mint_res = mint
+        .process_mint_request(crate::mint::MintInput::Single(request))
+        .await?;
+
+    let proofs = construct_proofs(
+        mint_res.signatures,
+        premint_secrets.rs(),
+        premint_secrets.secrets(),
+        &keys,
+    )?;
+    Ok((proofs, spend_keys))
+}
+
+/// Sign every v3 input of `transaction` by the key path with its kept key
+pub fn sign_v3_inputs(
+    transaction: &cdk_common::nut00::transaction::Transaction,
+    proofs: &mut Proofs,
+    keys: &V3Keys,
+) -> Result<(), Error> {
+    cdk_common::nuts::nut10::nutroot::sign_proofs_key_path(transaction, proofs, |point| {
+        keys.get(point).cloned()
+    })?;
+    Ok(())
 }

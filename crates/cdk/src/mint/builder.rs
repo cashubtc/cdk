@@ -633,6 +633,14 @@ impl MintBuilder {
         #[allow(unused_mut)] mut self,
         signatory: Arc<dyn Signatory + Send + Sync>,
     ) -> Result<Mint, Error> {
+        // Wallets derive v3 quote lock keys from the mint's identity pubkey
+        // (NUT-13 type 0x04), so NUT-06 makes it mandatory with v3 keysets.
+        if self.preferred_keyset_version() == KeySetVersion::Version02
+            && self.mint_info.pubkey.is_none()
+        {
+            return Err(Error::V3KeysetRequiresMintPubkey);
+        }
+
         // Check active keysets and rotate if necessary
         let active_keysets = signatory.keysets().await?;
 

@@ -11,7 +11,7 @@ use cdk_common::nut00::ProofsMethods;
 use cdk_common::quote_id::QuoteId;
 use cdk_common::secret::Secret;
 use cdk_common::util::unix_time;
-use cdk_common::{Amount, DhkePoint, Id, Proof, ProofId, Proofs, State};
+use cdk_common::{Amount, DhkePoint, Id, Proof, ProofId, Proofs, State, Witness};
 
 use super::{SQLMintDatabase, SQLTransaction};
 use crate::database::DatabaseExecutor;
@@ -46,6 +46,12 @@ where
     .collect::<Result<HashMap<_, _>, _>>()
 }
 
+/// Parse a stored witness by its proof's keyset version: a v3 key-path
+/// witness has the shape of a P2PK witness
+fn parse_stored_witness(witness: Option<String>, keyset_id: &Id) -> Option<Witness> {
+    witness.and_then(|w| Witness::from_json_for_version(&w, keyset_id.get_version()).ok())
+}
+
 pub(super) fn sql_row_to_proof(row: Vec<Column>) -> Result<Proof, Error> {
     unpack_into!(
         let (
@@ -58,16 +64,17 @@ pub(super) fn sql_row_to_proof(row: Vec<Column>) -> Result<Proof, Error> {
     );
 
     let amount: u64 = column_as_number!(amount);
+    let keyset_id = column_as_string!(keyset_id, Id::from_str);
     Ok(Proof {
         amount: Amount::from(amount),
-        keyset_id: column_as_string!(keyset_id, Id::from_str),
+        keyset_id,
         secret: column_as_string!(secret, Secret::from_str),
         c: column_as_string!(
             c,
             DhkePoint::from_hex_any_curve,
             DhkePoint::from_slice_any_curve
         ),
-        witness: column_as_nullable_string!(witness).and_then(|w| serde_json::from_str(&w).ok()),
+        witness: parse_stored_witness(column_as_nullable_string!(witness), &keyset_id),
         dleq: None,
         p2pk_e: None,
         spend_info: None,
@@ -86,18 +93,18 @@ pub(super) fn sql_row_to_proof_with_state(row: Vec<Column>) -> Result<(Proof, St
         .and_then(|s| State::from_str(&s).ok())
         .unwrap_or(State::Pending);
 
+    let keyset_id = column_as_string!(keyset_id, Id::from_str, Id::from_bytes);
     Ok((
         Proof {
             amount: Amount::from(amount),
-            keyset_id: column_as_string!(keyset_id, Id::from_str, Id::from_bytes),
+            keyset_id,
             secret: column_as_string!(secret, Secret::from_str),
             c: column_as_string!(
                 c,
                 DhkePoint::from_hex_any_curve,
                 DhkePoint::from_slice_any_curve
             ),
-            witness: column_as_nullable_string!(witness)
-                .and_then(|w| serde_json::from_str(&w).ok()),
+            witness: parse_stored_witness(column_as_nullable_string!(witness), &keyset_id),
             dleq: None,
             p2pk_e: None,
             spend_info: None,
@@ -249,6 +256,26 @@ where
 
         proofs.state = new_state;
 
+        Ok(())
+    }
+
+    async fn add_input_digests(
+        &mut self,
+        digests: &[(ProofId, [u8; 32])],
+    ) -> Result<(), Self::Err> {
+        for (y, digest) in digests {
+            let updated = query(r#"UPDATE proof SET input_digest = :digest WHERE y = :y"#)?
+                .bind("digest", cdk_common::util::hex::encode(digest))
+                .bind("y", y.to_bytes().to_vec())
+                .execute(&self.inner)
+                .await?;
+            if updated != 1 {
+                return Err(Error::Internal(format!(
+                    "No stored proof to record an input digest for: {}",
+                    y.to_hex()
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -511,6 +538,41 @@ where
         .map(sql_row_to_proof)
         .collect::<Result<Vec<Proof>, _>>()?
         .ys()?)
+    }
+
+    async fn get_input_digests(
+        &self,
+        ys: &[ProofId],
+    ) -> Result<HashMap<ProofId, [u8; 32]>, Self::Err> {
+        if ys.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT y, input_digest
+            FROM proof
+            WHERE y IN (:ys) AND input_digest IS NOT NULL
+            "#,
+        )?
+        .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(|row| {
+            let y = column_as_string!(&row[0], ProofId::from_hex, ProofId::from_slice);
+            let digest = column_as_string!(&row[1]);
+            let digest = cdk_common::util::hex::decode(&digest)
+                .ok()
+                .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+                .ok_or_else(|| Error::Internal("Invalid stored input digest".to_string()))?;
+            Ok((y, digest))
+        })
+        .collect()
     }
 
     async fn get_proofs_states(&self, ys: &[ProofId]) -> Result<Vec<Option<State>>, Self::Err> {

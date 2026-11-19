@@ -824,9 +824,9 @@ pub(crate) async fn finalize_melt_core(
     tx.commit().await?;
 
     // Publish proof state changes
-    for pk in input_ys.iter() {
-        pubsub.proof_state((*pk, State::Spent));
-    }
+    pubsub
+        .proof_states_with_witnesses(input_ys, State::Spent)
+        .await;
 
     // Clone the proofs out of the Acquired wrapper so that no database
     // row locks are held after this function returns.

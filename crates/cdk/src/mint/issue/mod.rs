@@ -2,6 +2,9 @@ use std::sync::Arc;
 
 use cdk_common::database::mint::Acquired;
 use cdk_common::mint::{MintQuote, Operation};
+use cdk_common::nut00::transaction::MintQuoteState as QuoteInputState;
+use cdk_common::nuts::nut02::KeySetVersion;
+use cdk_common::nuts::nut10::nutroot::verify_quote_input;
 use cdk_common::payment::{
     Bolt11IncomingPaymentOptions, Bolt12IncomingPaymentOptions, CustomIncomingPaymentOptions,
     IncomingPaymentOptions, OnchainIncomingPaymentOptions, WaitPaymentResponse,
@@ -133,6 +136,59 @@ impl MintInput {
 /// Ordered empty, over-size, duplicate to match the order the HTTP routes have
 /// always rejected in, so consolidating the check does not change which error a
 /// request that violates two bounds at once gets back.
+/// Whether a mint request's outputs are v3; all must share one version
+fn v3_output_request(outputs: &[BlindedMessage]) -> Result<bool, Error> {
+    let mut versions = outputs
+        .iter()
+        .map(|output| output.keyset_id.get_version() == KeySetVersion::Version02);
+    let Some(first) = versions.next() else {
+        return Ok(false);
+    };
+    if versions.any(|v3| v3 != first) {
+        return Err(Error::MixedOutputVersions);
+    }
+    Ok(first)
+}
+
+/// Verify each quote input of a v3 mint transaction against its locked
+/// quote: the transcript binds the quote's lock key and `amount_issued` as
+/// read under the lock, and each quote's witness signs its input digest.
+fn verify_v3_quote_inputs(
+    input: &MintInput,
+    entries: &[QuoteEntry],
+    locked_quotes: &[Option<Acquired<MintQuote>>],
+) -> Result<(), Error> {
+    let states = locked_quotes
+        .iter()
+        .map(|quote| {
+            let quote = quote.as_ref().ok_or(Error::UnknownQuote)?;
+            Ok(QuoteInputState {
+                lock_key: quote.pubkey.ok_or(Error::PubkeyRequired)?,
+                issued: quote.amount_issued().into(),
+            })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    let transaction = match input {
+        MintInput::Single(request) => {
+            request.transaction(states.first().ok_or(Error::UnknownQuote)?)?
+        }
+        MintInput::Batch(request) => request.transaction(&states)?,
+    };
+    let now = unix_time();
+    for (index, entry) in entries.iter().enumerate() {
+        verify_quote_input(&transaction, index, entry.signature.as_deref(), now).map_err(
+            |err| {
+                tracing::debug!(
+                    "v3 mint quote {} failed the signing rule: {err}",
+                    entry.quote_id
+                );
+                Error::SignatureMissingOrInvalid
+            },
+        )?;
+    }
+    Ok(())
+}
+
 fn check_batch_ids(quote_ids: &[QuoteId], max_batch_size: Option<u64>) -> Result<(), Error> {
     if quote_ids.is_empty() {
         return Err(Error::UnknownQuote);
@@ -797,6 +853,11 @@ impl Mint {
                 })?
                 .amount;
 
+            // A request's outputs are all v3 or all pre-v3 (NUT-04). v3
+            // outputs mint as a transaction: each quote input signs its
+            // input digest.
+            let v3_outputs = v3_output_request(input.outputs())?;
+
             // Fetch all quotes
             let mut quote_map = std::collections::HashMap::new();
             for quote_id in &quote_ids {
@@ -918,8 +979,14 @@ impl Mint {
                     return Err(Error::SignatureMissingOrInvalid);
                 }
 
-                // Verify NUT-20 signature
-                if let Some(ref pubkey) = mint_quote.pubkey {
+                // v3 outputs need a locked quote; its witness is verified
+                // inside the database transaction, against the locked quote
+                // state the transcript binds.
+                if v3_outputs {
+                    if mint_quote.pubkey.is_none() {
+                        return Err(Error::PubkeyRequired);
+                    }
+                } else if let Some(ref pubkey) = mint_quote.pubkey {
                     match &input {
                         MintInput::Single(request) => request
                             .verify_signature(*pubkey)
@@ -1019,6 +1086,13 @@ impl Mint {
             // them by ID, so reversed batch requests cannot deadlock each other.
             let locked_quotes = tx.get_mint_quotes_by_ids(&quote_ids).await?;
             let mut issuance_events = Vec::with_capacity(quote_ids.len());
+
+            if v3_outputs {
+                if let Err(err) = verify_v3_quote_inputs(&input, &quote_entries, &locked_quotes) {
+                    tx.rollback().await?;
+                    return Err(err);
+                }
+            }
 
             // For batch minting, outputs are shared across all quotes and should be persisted once.
             if input.is_batch() {
@@ -1244,6 +1318,33 @@ mod batch_mint_tests {
 
     async fn create_test_mint() -> Mint {
         create_test_mint_with_onchain_limits(1, 10_000).await
+    }
+
+    #[test]
+    fn mint_outputs_must_share_one_version() {
+        use cdk_common::dhke::blind_secret;
+        use cdk_common::nuts::nut02::KeySetVersion;
+        use cdk_common::secret::Secret;
+
+        use super::v3_output_request;
+
+        let output = |version: KeySetVersion| {
+            let id =
+                cdk_common::Id::from_bytes(&[[version.to_byte()].as_slice(), &[1; 32]].concat())
+                    .unwrap();
+            let (secret, _) = Secret::generate_for_version(version);
+            let (blinded, _) = blind_secret(&secret, None, version).unwrap();
+            BlindedMessage::new(Amount::from(1), id, blinded)
+        };
+        let v3 = output(KeySetVersion::Version02);
+        let v2 = output(KeySetVersion::Version01);
+        assert!(!v3_output_request(&[]).unwrap());
+        assert!(!v3_output_request(std::slice::from_ref(&v2)).unwrap());
+        assert!(v3_output_request(&[v3.clone(), v3.clone()]).unwrap());
+        assert!(matches!(
+            v3_output_request(&[v3, v2]),
+            Err(Error::MixedOutputVersions)
+        ));
     }
 
     #[tokio::test]
