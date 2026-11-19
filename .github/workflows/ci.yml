@@ -569,7 +569,7 @@ jobs:
       - name: Start Keycloak with Backup
         run: |
           docker compose -f misc/keycloak/docker-compose-recover.yml up -d
-          until docker logs $(docker ps -q --filter "ancestor=quay.io/keycloak/keycloak:25.0.6") | grep "Keycloak 25.0.6 on JVM (powered by Quarkus 3.8.5) started"; do sleep 1; done
+          until docker logs $(docker ps -q --filter "ancestor=quay.io/keycloak/keycloak:26.8.2-3") | grep "Keycloak 26.8.2 on JVM"; do sleep 1; done
       - name: Verify Keycloak Import
         run: |
           # Wait a bit more for import to complete
@@ -580,7 +580,7 @@ jobs:
             exit 1
           fi
           # Check if the realm endpoint is accessible (better verification than log grep)
-          "$curl_bin" -fsS http://127.0.0.1:8080/realms/cdk-test-realm/.well-known/openid-configuration > /dev/null && echo "Keycloak realm successfully imported" || (docker logs $(docker ps -q --filter "ancestor=quay.io/keycloak/keycloak:25.0.6") && exit 1)
+          "$curl_bin" -fsS http://127.0.0.1:8080/realms/cdk-test-realm/.well-known/openid-configuration > /dev/null && echo "Keycloak realm successfully imported" || (docker logs $(docker ps -q --filter "ancestor=quay.io/keycloak/keycloak:26.8.2-3") && exit 1)
       - name: Test fake auth mint
         run: |
           export CDK_ITEST_ARCHIVE='${{ steps.archive.outputs.path }}'
