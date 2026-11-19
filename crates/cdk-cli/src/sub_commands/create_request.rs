@@ -84,6 +84,10 @@ pub struct CreateRequestSubCommand {
     /// Use bech32 encoding (CREQ-B)
     #[arg(short, long)]
     bech32: bool,
+    /// NUT-18 nutroot option for payments from v3 keysets, as JSON, eg
+    /// '{"k":"<receiver key hex>","l":["<leaf hex>"],"b":["<key hex>"]}'
+    #[arg(long)]
+    nutroot: Option<String>,
 }
 
 pub async fn create_request(
@@ -106,6 +110,11 @@ pub async fn create_request(
         mints: sub_command_args.mints.clone(),
         mint_preferred: sub_command_args.mint_preferred.then_some(true),
         supported_methods: sub_command_args.supported_methods.clone(),
+        nutroot: sub_command_args
+            .nutroot
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()?,
         ..Default::default()
     };
 
