@@ -24,13 +24,20 @@ use cdk_common::{
     MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse, MintQuoteRequest,
     MintQuoteResponse,
 };
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
+
+struct SwapResponseLoss {
+    armed: bool,
+    replay_cached: bool,
+    cached: Option<SwapResponse>,
+}
 
 /// A [`MintConnector`] that talks to a [`Mint`] in-process instead of over HTTP.
 pub struct DirectMintConnection {
     /// The wrapped mint.
     pub mint: Mint,
     auth_wallet: Arc<RwLock<Option<AuthWallet>>>,
+    swap_response_loss: Option<Mutex<SwapResponseLoss>>,
 }
 
 impl DirectMintConnection {
@@ -39,7 +46,18 @@ impl DirectMintConnection {
         Self {
             mint,
             auth_wallet: Arc::new(RwLock::new(None)),
+            swap_response_loss: None,
         }
+    }
+
+    /// Lose the next successful swap response; optionally cache it for replay.
+    pub fn with_swap_response_loss(mut self, replay_cached: bool) -> Self {
+        self.swap_response_loss = Some(Mutex::new(SwapResponseLoss {
+            armed: true,
+            replay_cached,
+            cached: None,
+        }));
+        self
     }
 }
 
@@ -170,6 +188,20 @@ impl MintConnector for DirectMintConnection {
     }
 
     async fn post_swap(&self, request: SwapRequest) -> Result<SwapResponse, Error> {
+        if let Some(loss) = &self.swap_response_loss {
+            let mut loss = loss.lock().await;
+            if let Some(response) = loss.cached.take() {
+                return Ok(response);
+            }
+            if loss.armed {
+                let response = self.mint.post_swap(request).await?;
+                loss.armed = false;
+                if loss.replay_cached {
+                    loss.cached = Some(response);
+                }
+                return Err(Error::Custom("Simulated lost swap response".to_owned()));
+            }
+        }
         self.mint.post_swap(request).await
     }
 

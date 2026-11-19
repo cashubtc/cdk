@@ -15,7 +15,7 @@ use cdk_common::wallet::{OperationData, SwapOperationData, SwapSagaState, Wallet
 use tracing::instrument;
 
 use crate::dhke::hash_secret_to_curve;
-use crate::nuts::{PreMintSecrets, State};
+use crate::nuts::State;
 use crate::wallet::recovery::{RecoveryAction, RecoveryHelpers};
 use crate::wallet::saga::{CompensatingAction, RevertProofReservation};
 use crate::wallet::util::escape_log_value;
@@ -92,7 +92,13 @@ impl Wallet {
             return Ok(RecoveryAction::Recovered);
         }
 
-        let reserved_proofs = self.localstore.get_reserved_proofs(saga_id).await?;
+        let reserved_proofs = if data.input_ys.is_empty() {
+            self.localstore.get_reserved_proofs(saga_id).await?
+        } else {
+            self.localstore
+                .get_proofs_by_ys(data.input_ys.clone())
+                .await?
+        };
 
         // 2. Replay Path: Try to replay if we have inputs
         // We can only replay if we have the inputs to construct the request
@@ -178,10 +184,9 @@ impl Wallet {
                 let keyset_id = blinded_messages[0].keyset_id;
                 // Attempt to restore secrets to derive expected Ys
                 if let Ok(premint_secrets) =
-                    PreMintSecrets::restore_batch(keyset_id, &self.seed, start, end)
+                    self.recovery_outputs(saga_id, keyset_id, start, end).await
                 {
                     let ys_result: Result<Vec<crate::nuts::ProofId>, _> = premint_secrets
-                        .secrets
                         .iter()
                         .map(|p| {
                             hash_secret_to_curve(&p.secret, keyset_id.get_version()).map(Into::into)
@@ -189,14 +194,19 @@ impl Wallet {
                         .collect();
 
                     if let Ok(ys) = ys_result {
+                        let expected_count = ys.len();
                         // Check if these Ys exist in the DB
                         if let Ok(existing_proofs) = self.localstore.get_proofs_by_ys(ys).await {
-                            // If we find any proofs, it means the swap succeeded and we saved them
-                            if !existing_proofs.is_empty() {
+                            if expected_count > 0 && existing_proofs.len() == expected_count {
                                 tracing::info!(
                                     "Swap saga {} - new proofs found in DB, cleaning up",
                                     saga_id
                                 );
+                                if !data.input_ys.is_empty() {
+                                    self.localstore
+                                        .update_proofs_state(data.input_ys.clone(), State::Spent)
+                                        .await?;
+                                }
                                 let mut reserved_proofs =
                                     self.localstore.get_reserved_proofs(saga_id).await?;
                                 for proof in reserved_proofs.iter_mut() {
@@ -245,6 +255,12 @@ impl Wallet {
                 self.localstore.update_proofs(proofs, input_ys).await?;
             }
             None => {
+                if data.pending_outputs.is_some() {
+                    return Err(Error::Custom(
+                        "Pending swap outputs are unavailable; retaining the saga for retry"
+                            .to_owned(),
+                    ));
+                }
                 tracing::warn!(
                     "Swap saga {} - couldn't restore outputs, marking inputs as spent. \
                      Run wallet.restore() to recover any missing proofs.",
@@ -319,6 +335,8 @@ mod tests {
                 counter_start: Some(0),
                 counter_end: Some(10),
                 blinded_messages: None,
+                pending_outputs: None,
+                input_ys: vec![],
             }),
         );
         db.add_saga(saga).await.unwrap();
@@ -371,6 +389,8 @@ mod tests {
                 counter_start: Some(0),
                 counter_end: Some(10),
                 blinded_messages: None,
+                pending_outputs: None,
+                input_ys: vec![],
             }),
         );
         db.add_saga(saga).await.unwrap();
@@ -430,6 +450,8 @@ mod tests {
                 counter_start: Some(0),
                 counter_end: Some(10),
                 blinded_messages: None,
+                pending_outputs: None,
+                input_ys: vec![],
             }),
         );
         db.add_saga(saga).await.unwrap();
@@ -475,6 +497,8 @@ mod tests {
                 counter_start: Some(0),
                 counter_end: Some(10),
                 blinded_messages: None,
+                pending_outputs: None,
+                input_ys: vec![],
             }),
         );
         db.add_saga(saga).await.unwrap();
@@ -557,6 +581,8 @@ mod tests {
                 counter_start: Some(counter_start),
                 counter_end: Some(counter_end),
                 blinded_messages: Some(blinded_messages),
+                pending_outputs: None,
+                input_ys: vec![],
             }),
         );
         db.add_saga(saga).await.unwrap();
@@ -629,6 +655,8 @@ mod tests {
                 counter_start: Some(0),
                 counter_end: Some(2),
                 blinded_messages: Some(premint_secrets.blinded_messages()),
+                pending_outputs: None,
+                input_ys: vec![],
             }),
         );
         db.add_saga(saga).await.unwrap();

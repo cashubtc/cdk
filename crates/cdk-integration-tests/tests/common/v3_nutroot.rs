@@ -14,6 +14,282 @@ use cdk_fake_wallet::create_fake_invoice;
 use cdk_integration_tests::init_pure_tests::*;
 
 #[tokio::test]
+async fn v3_nutroot_send_recovers_after_restart() {
+    use std::sync::Arc;
+
+    use cdk::nuts::nut18::NutrootOption;
+    use cdk::nuts::{CurrencyUnit, SecretKey, Token};
+    use cdk::wallet::WalletBuilder;
+    use cdk_common::wallet::OperationData;
+
+    for replay_cached in [false, true] {
+        let mint = create_and_start_v3_test_mint().await.unwrap();
+        let mint_url = mint.mint_info().await.unwrap().urls.unwrap()[0]
+            .parse()
+            .unwrap();
+        let path =
+            std::env::temp_dir().join(format!("nutroot-recovery-{}.db", uuid::Uuid::new_v4()));
+        let db = Arc::new(cdk_sqlite::WalletSqliteDatabase::new(&path).await.unwrap());
+        let connector = Arc::new(
+            DirectMintConnection::new(mint.clone()).with_swap_response_loss(replay_cached),
+        );
+        let seed = [83; 64];
+        let wallet = WalletBuilder::new()
+            .mint_url(mint_url)
+            .unit(CurrencyUnit::Sat)
+            .seed(seed)
+            .localstore(db.clone())
+            .shared_client(connector.clone())
+            .use_http_subscription()
+            .build()
+            .unwrap();
+        fund_wallet(
+            wallet.clone(),
+            64,
+            Some(cdk::amount::SplitTarget::Values(vec![Amount::from(64)])),
+        )
+        .await
+        .unwrap();
+        let receiver = SecretKey::generate();
+        let request = NutrootOption {
+            k: receiver.public_key(),
+            l: None,
+            b: None,
+        };
+        assert!(wallet
+            .prepare_send(
+                Amount::from(16),
+                SendOptions {
+                    nutroot: Some(request.clone()),
+                    ..Default::default()
+                }
+            )
+            .await
+            .unwrap()
+            .confirm(None)
+            .await
+            .is_err());
+
+        let sagas = wallet.localstore.get_incomplete_sagas().await.unwrap();
+        let data = sagas
+            .iter()
+            .find_map(|s| match &s.data {
+                OperationData::Swap(data) => Some(data),
+                _ => None,
+            })
+            .unwrap();
+        let outputs = data.pending_outputs.as_ref().unwrap();
+        assert!(outputs.iter().any(|o| o.spend_info.is_some()));
+        assert!(outputs.iter().any(|o| o.spend_info.is_none()));
+        assert!(!data.input_ys.is_empty());
+        let mint_url = wallet.mint_url.clone();
+        drop(wallet);
+        drop(db);
+
+        let db = Arc::new(cdk_sqlite::WalletSqliteDatabase::new(&path).await.unwrap());
+        let wallet = WalletBuilder::new()
+            .mint_url(mint_url.clone())
+            .unit(CurrencyUnit::Sat)
+            .seed(seed)
+            .localstore(db.clone())
+            .shared_client(connector)
+            .use_http_subscription()
+            .build()
+            .unwrap();
+        let report = wallet.recover_incomplete_sagas().await.unwrap();
+        assert_eq!(report.failed, 0);
+        assert!(report.recovered >= 1);
+        assert_eq!(wallet.total_balance().await.unwrap(), Amount::from(48));
+        let proofs = wallet
+            .localstore
+            .get_proofs(None, None, Some(vec![State::Reserved]), None)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|p| p.proof)
+            .collect::<Vec<_>>();
+        assert_eq!(proofs.total_amount().unwrap(), Amount::from(16));
+        assert!(proofs.iter().all(|p| p.spend_info.is_some()));
+        let token = Token::new(mint_url, proofs, None, CurrencyUnit::Sat);
+        let payee = create_test_wallet_for_mint(mint).await.unwrap();
+        assert_eq!(
+            payee
+                .receive(
+                    &token.to_string(),
+                    ReceiveOptions {
+                        p2pk_signing_keys: vec![receiver],
+                        v3_payment_request: Some(request),
+                        ..Default::default()
+                    }
+                )
+                .await
+                .unwrap(),
+            Amount::from(16)
+        );
+        assert!(wallet.recover_incomplete_sagas().await.unwrap().is_empty());
+        drop(wallet);
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn v3_nostr_wait_receives_requested_payments() {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use bitcoin::hashes::Hash as _;
+    use cdk::nuts::nut10::nutroot::{Leaf, NUMS_H};
+    use cdk::nuts::nut18::NutrootOption;
+    use cdk::nuts::{CurrencyUnit, SecretKey};
+    use cdk::wallet::payment_request::CreateRequestParams;
+    use cdk::wallet::wallet_repository::{WalletConfig, WalletRepositoryBuilder};
+    use futures::{SinkExt, StreamExt};
+    use nostr::prelude::{FinalizeEvent, Keys, PrivateDirectMessageBuilder};
+    use tokio_tungstenite::tungstenite::Message;
+
+    let mint = create_and_start_v3_test_mint().await.unwrap();
+    let payer = create_test_wallet_for_mint(mint.clone()).await.unwrap();
+    fund_wallet(payer.clone(), 128, None).await.unwrap();
+    for (seed, nums, wrong_tree) in [(41, false, false), (42, true, false), (43, true, true)] {
+        let receiver = SecretKey::generate();
+        let preimage = [9; 32];
+        let leaf = Leaf::Hashlock {
+            n: 1,
+            keys: vec![receiver.public_key()],
+            hash: bitcoin::hashes::sha256::Hash::hash(&preimage).to_byte_array(),
+        }
+        .to_leaf_bytes()
+        .unwrap();
+        let request = NutrootOption {
+            k: if nums {
+                cashu::PublicKey::from_hex(NUMS_H).unwrap()
+            } else {
+                receiver.public_key()
+            },
+            l: Some(vec![leaf]),
+            b: Some(vec![receiver.public_key()]),
+        };
+        let mut paid_request = request.clone();
+        if wrong_tree {
+            paid_request
+                .l
+                .as_mut()
+                .unwrap()
+                .push(Leaf::Commit { hash: [7; 32] }.to_leaf_bytes().unwrap());
+        }
+        let db = Arc::new(cdk_sqlite::wallet::memory::empty().await.unwrap());
+        let repository = WalletRepositoryBuilder::new()
+            .seed([seed; 64])
+            .localstore(db)
+            .with_rate_limiting_disabled()
+            .build()
+            .await
+            .unwrap();
+        repository
+            .get_or_create_wallet(
+                payer.mint_url.clone(),
+                CurrencyUnit::Sat,
+                Some(
+                    WalletConfig::new()
+                        .with_mint_connector(Arc::new(DirectMintConnection::new(mint.clone()))),
+                ),
+            )
+            .await
+            .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let relay_url = format!("ws://{}", listener.local_addr().unwrap());
+        let (_, info) = repository
+            .create_request(CreateRequestParams {
+                transport: "nostr".to_owned(),
+                nostr_relays: Some(vec![relay_url]),
+                nutroot: Some(request.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let info = info.unwrap().with_receive_options(ReceiveOptions {
+            p2pk_signing_keys: vec![receiver],
+            preimages: vec![cdk::util::hex::encode(preimage)],
+            v3_payment_request: Some(paid_request.clone()),
+            ..Default::default()
+        });
+        assert_eq!(info.nutroot_option(), Some(&request));
+        let token = payer
+            .prepare_send(
+                Amount::from(16),
+                SendOptions {
+                    nutroot: Some(paid_request),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .confirm(None)
+            .await
+            .unwrap();
+        let keysets: Vec<cdk::nuts::KeySetInfo> = payer
+            .keysets(Default::default())
+            .await
+            .unwrap()
+            .iter()
+            .map(|ks| cdk::nuts::KeySetInfo {
+                id: ks.id,
+                unit: ks.unit.clone(),
+                active: ks.active.unwrap_or(true),
+                input_fee_ppk: ks.input_fee_ppk,
+                final_expiry: ks.final_expiry,
+            })
+            .collect();
+        let payload = cdk_common::PaymentRequestPayload {
+            id: None,
+            memo: None,
+            mint: payer.mint_url.clone(),
+            unit: CurrencyUnit::Sat,
+            proofs: token.proofs(&keysets).unwrap(),
+        };
+        let event =
+            PrivateDirectMessageBuilder::new(info.pubkey, serde_json::to_string(&payload).unwrap())
+                .finalize(&Keys::generate())
+                .unwrap();
+        let relay = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            while let Some(Ok(message)) = ws.next().await {
+                if let Message::Text(text) = message {
+                    let message: serde_json::Value = serde_json::from_str(&text).unwrap();
+                    if message[0] == "REQ" {
+                        ws.send(Message::text(
+                            serde_json::json!(["EVENT", message[1], event]).to_string(),
+                        ))
+                        .await
+                        .unwrap();
+                        ws.send(Message::text(
+                            serde_json::json!(["EOSE", message[1]]).to_string(),
+                        ))
+                        .await
+                        .unwrap();
+                    }
+                }
+            }
+        });
+        let received = tokio::time::timeout(
+            Duration::from_secs(20),
+            repository.wait_for_nostr_payment(info),
+        )
+        .await
+        .unwrap();
+        if wrong_tree {
+            assert!(received.is_err());
+        } else {
+            assert_eq!(received.unwrap(), Amount::from(16));
+        }
+        relay.abort();
+        let _ = relay.await;
+    }
+}
+
+#[tokio::test]
 async fn v3_mint_send_receive_and_melt() {
     setup_tracing();
     let mint = create_and_start_v3_test_mint().await.expect("v3 mint");

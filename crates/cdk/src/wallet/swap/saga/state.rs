@@ -147,6 +147,8 @@ mod tests {
                 counter_start: Some(0),
                 counter_end: Some(1),
                 blinded_messages: None,
+                pending_outputs: None,
+                input_ys: vec![],
             }),
         )
     }

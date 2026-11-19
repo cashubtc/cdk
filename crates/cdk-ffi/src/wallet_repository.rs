@@ -35,6 +35,18 @@ pub struct WalletRepository {
 
 #[uniffi::export(async_runtime = "tokio")]
 impl WalletRepository {
+    /// Wait for a Nostr request payment and receive it with the wait info's options.
+    pub async fn wait_for_nostr_payment(
+        &self,
+        info: Arc<NostrWaitInfo>,
+    ) -> Result<Amount, FfiError> {
+        Ok(self
+            .inner
+            .wait_for_nostr_payment(info.inner().clone())
+            .await?
+            .into())
+    }
+
     /// Create receive requests using CDK's NUT-18 builder.
     /// With nostr_pubkey, the app receives using its own identity and no wait info is returned.
     /// Without it, Nostr transport generates an ephemeral identity.

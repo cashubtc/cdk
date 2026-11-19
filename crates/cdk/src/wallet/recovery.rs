@@ -17,7 +17,7 @@
 use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
-use cdk_common::wallet::{ProofInfo, WalletSagaState};
+use cdk_common::wallet::{OperationData, ProofInfo, SwapOutput, WalletSagaState};
 use cdk_common::BlindedMessage;
 use tracing::instrument;
 
@@ -294,14 +294,40 @@ impl RecoveryHelpers for Wallet {
 }
 
 impl Wallet {
+    /// Load pending swap outputs, or derive outputs from an older saga's counters.
+    pub(crate) async fn recovery_outputs(
+        &self,
+        saga_id: &uuid::Uuid,
+        keyset_id: crate::nuts::Id,
+        counter_start: u32,
+        counter_end: u32,
+    ) -> Result<Vec<SwapOutput>, Error> {
+        if let Some(saga) = self.localstore.get_saga(saga_id).await? {
+            if let OperationData::Swap(data) = saga.data {
+                if let Some(outputs) = data.pending_outputs {
+                    return Ok(outputs);
+                }
+            }
+        }
+        Ok(
+            PreMintSecrets::restore_batch(keyset_id, &self.seed, counter_start, counter_end)?
+                .secrets
+                .into_iter()
+                .map(|premint| SwapOutput {
+                    blinded_message: premint.blinded_message,
+                    secret: premint.secret,
+                    r: premint.r,
+                    derivation_index: premint.derivation_index,
+                    spend_info: None,
+                })
+                .collect(),
+        )
+    }
+
     /// Construct the proofs for the signatures of a replayed request.
     ///
-    /// The secrets are re-derived from the stored counter range, which yields
-    /// them in counter order. The outputs don't have to be in that order (a
-    /// swap sorts its outputs by amount), and outputs with spending conditions
-    /// use random secrets that no counter derives. Each output is therefore
-    /// matched to its secret by `B_`, so a signature is only unblinded with the
-    /// secret and blinding factor of its own output.
+    /// Loads pending output material, falling back to counter derivation for
+    /// older records. Outputs are matched by `B_`, independently of their order.
     ///
     /// Returns `Ok(None)` if an output has no secret in the range, so the caller
     /// can fall back to `/restore`, which matches outputs the same way.
@@ -316,11 +342,11 @@ impl Wallet {
     ) -> Result<Option<Vec<ProofInfo>>, Error> {
         let keyset_id = blinded_messages[0].keyset_id;
 
-        let premint_secrets =
-            PreMintSecrets::restore_batch(keyset_id, &self.seed, counter_start, counter_end)?;
+        let premint_secrets = self
+            .recovery_outputs(saga_id, keyset_id, counter_start, counter_end)
+            .await?;
 
         let premints_by_blinded_secret = premint_secrets
-            .secrets
             .iter()
             .map(|premint| (premint.blinded_message.blinded_secret, premint))
             .collect::<HashMap<_, _>>();
@@ -368,13 +394,15 @@ impl Wallet {
         proofs
             .into_iter()
             .zip(premints)
-            .map(|(proof, premint)| {
-                let proof_info = ProofInfo::new(
-                    proof,
-                    self.mint_url.clone(),
-                    State::Unspent,
-                    self.unit.clone(),
-                )?;
+            .map(|(mut proof, premint)| {
+                proof.spend_info = premint.spend_info.clone();
+                let state = if proof.spend_info.is_some() {
+                    State::Reserved
+                } else {
+                    State::Unspent
+                };
+                let proof_info =
+                    ProofInfo::new(proof, self.mint_url.clone(), state, self.unit.clone())?;
                 Ok(match premint.derivation_index {
                     Some(index) => proof_info.with_derivation_index(index),
                     None => proof_info,
@@ -639,15 +667,11 @@ impl Wallet {
         // Get keyset ID from the first blinded message
         let keyset_id = params.blinded_messages[0].keyset_id;
 
-        let premint_secrets = PreMintSecrets::restore_batch(
-            keyset_id,
-            &self.seed,
-            params.counter_start,
-            params.counter_end,
-        )?;
+        let premint_secrets = self
+            .recovery_outputs(saga_id, keyset_id, params.counter_start, params.counter_end)
+            .await?;
 
         let premints_by_blinded_secret = premint_secrets
-            .secrets
             .iter()
             .map(|premint| (premint.blinded_message.blinded_secret, premint))
             .collect::<HashMap<_, _>>();
@@ -712,9 +736,15 @@ impl Wallet {
         let proof_infos: Vec<ProofInfo> = proofs
             .into_iter()
             .zip(matched)
-            .map(|(p, (premint, _))| {
+            .map(|(mut p, (premint, _))| {
+                p.spend_info = premint.spend_info.clone();
+                let state = if p.spend_info.is_some() {
+                    State::Reserved
+                } else {
+                    State::Unspent
+                };
                 let proof_info =
-                    ProofInfo::new(p, self.mint_url.clone(), State::Unspent, self.unit.clone())?;
+                    ProofInfo::new(p, self.mint_url.clone(), state, self.unit.clone())?;
                 Ok::<_, Error>(match premint.derivation_index {
                     Some(index) => proof_info.with_derivation_index(index),
                     None => proof_info,
@@ -1104,6 +1134,8 @@ mod tests {
                         counter_start: Some(0),
                         counter_end: Some(output_count as u32),
                         blinded_messages: Some(outputs.clone()),
+                        pending_outputs: None,
+                        input_ys: vec![],
                     }),
                 ),
             };
