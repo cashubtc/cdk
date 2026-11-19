@@ -1,5 +1,7 @@
 # Docker Compose configuration for CDK Mint with PostgreSQL
 # Usage: docker-compose -f docker-compose.postgres.yaml up
+# Set POSTGRES_PASSWORD and CDK_MINTD_POSTGRES_URL as described in
+# crates/cdk-mintd/README.md (PostgreSQL with Docker Compose).
 # Before a new mint's first start, export CDK_MINTD_INIT_MODE=new and
 # CDK_MINTD_MNEMONIC with a stable BIP39 mnemonic. Existing-mint upgrades must
 # preserve the database and use CDK_MINTD_INIT_MODE=existing.
@@ -16,7 +18,7 @@ services:
     environment:
       CDK_MINTD_DATABASE: postgres
       CDK_MINTD_INIT_MODE: "${CDK_MINTD_INIT_MODE:-}"
-      CDK_MINTD_POSTGRES_URL: "${CDK_MINTD_POSTGRES_URL:-postgresql://cdk_user:cdk_password@postgres:5432/cdk_mint}"
+      CDK_MINTD_POSTGRES_URL: "${CDK_MINTD_POSTGRES_URL:?Set CDK_MINTD_POSTGRES_URL with the configured PostgreSQL credentials}"
       CDK_MINTD_MNEMONIC: "${CDK_MINTD_MNEMONIC:?Set CDK_MINTD_MNEMONIC to a stable BIP39 mnemonic}"
     volumes:
       - ./misc/docker-configs/fakewallet-postgres.toml:/etc/cdk-mintd/config.toml:ro
@@ -34,11 +36,9 @@ services:
     restart: unless-stopped
     environment:
       - POSTGRES_USER=cdk_user
-      - POSTGRES_PASSWORD=cdk_password
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD to a strong unique password}
       - POSTGRES_DB=cdk_mint
       - POSTGRES_INITDB_ARGS=--encoding=UTF-8 --lc-collate=C --lc-ctype=C
-    ports:
-      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
