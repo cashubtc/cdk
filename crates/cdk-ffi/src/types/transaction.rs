@@ -348,6 +348,7 @@ impl TryFrom<AuthProof> for cdk::nuts::AuthProof {
             c: cdk::nuts::DhkePoint::from_hex_for_version(&auth_proof.c, keyset_id.get_version())
                 .map_err(|e| FfiError::internal(format!("Invalid DHKE point: {}", e)))?,
             dleq: None, // FFI doesn't expose DLEQ proofs for simplicity
+            witness: None,
         })
     }
 }

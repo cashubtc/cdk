@@ -23,12 +23,13 @@ use cdk_common::pub_sub::remote_consumer::{
 use cdk_common::pub_sub::{Error as PubsubError, Spec, Subscriber};
 use cdk_common::subscription::WalletParams;
 use cdk_common::ws_client::WsError;
-use cdk_common::{CheckStateRequest, Method, PaymentMethod, RoutePath};
+use cdk_common::{AuthToken, CheckStateRequest, Method, PaymentMethod, RoutePath};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::event::MintEvent;
 use crate::mint_url::MintUrl;
+use crate::wallet::mint_connector::http_client::authorize_request;
 use crate::wallet::util::escape_log_value;
 use crate::wallet::MintConnector;
 
@@ -473,6 +474,24 @@ fn new_subscription_id() -> String {
     Uuid::now_v7().to_string()
 }
 
+/// The auth header for the websocket handshake to `url`
+///
+/// A v3 BAT signs the handshake as the mint records it (NUT-22): `GET`, the
+/// path relative to the mint URL, and an empty body.
+fn ws_auth_header(
+    mint_url: &MintUrl,
+    url: &url::Url,
+    auth_token: AuthToken,
+) -> Result<(&'static str, String), crate::Error> {
+    let auth_token = authorize_request(mint_url, Some(auth_token), "GET", url, &[])?
+        .ok_or_else(|| crate::Error::Custom("Authorization dropped the auth token".to_string()))?;
+    let header_key = match &auth_token {
+        AuthToken::ClearAuth(_) => "Clear-auth",
+        AuthToken::BlindAuth(_) => "Blind-auth",
+    };
+    Ok((header_key, auth_token.to_string()))
+}
+
 async fn stream_client(
     client: &SubscriptionClient,
     mut ctrl: mpsc::Receiver<StreamCtrl<MintSubTopics>>,
@@ -512,13 +531,11 @@ async fn stream_client(
         };
 
         if let Some(auth_token) = token {
-            let header_key = match &auth_token {
-                cdk_common::AuthToken::ClearAuth(_) => "Clear-auth",
-                cdk_common::AuthToken::BlindAuth(_) => "Blind-auth",
-            };
-
-            let header_value = auth_token.to_string();
-            headers.push((header_key, header_value));
+            let header = ws_auth_header(&client.mint_url, &url, auth_token).map_err(|err| {
+                tracing::error!("Could not authorize websocket request: {err}");
+                PubsubError::InternalStr(err.to_string())
+            })?;
+            headers.push(header);
         }
     }
 
@@ -770,6 +787,56 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    /// A v3 BAT on the websocket handshake signs the request the mint
+    /// records for it: `GET /v1/ws` relative to the mint URL, empty body
+    #[test]
+    fn ws_handshake_signs_v3_blind_auth() {
+        use std::str::FromStr;
+
+        use cdk_common::nuts::nut01::BlsG1PublicKey;
+        use cdk_common::nuts::nut22::AuthorizedRequest;
+        use cdk_common::{AuthProof, BlindAuthToken, Id};
+
+        for mint in ["https://mint.example", "https://mint.example/Bitcoin"] {
+            let mint_url = MintUrl::from_str(mint).expect("mint url");
+            let mut url = mint_url.join_paths(&["v1", "ws"]).expect("ws url");
+            url.set_scheme("wss").expect("scheme");
+
+            let (secret, key) = crate::secret::Secret::generate_v3();
+            let mut token = BlindAuthToken::new(AuthProof {
+                keyset_id: Id::from_bytes(&[[2u8].as_slice(), &[1; 32]].concat()).expect("v3 id"),
+                secret,
+                c: BlsG1PublicKey::hash_to_curve(b"c").into(),
+                dleq: None,
+                witness: None,
+            });
+            token.signing_key = Some(key);
+
+            let (header_key, header_value) =
+                ws_auth_header(&mint_url, &url, AuthToken::BlindAuth(Box::new(token)))
+                    .expect("authorized");
+            assert_eq!(header_key, "Blind-auth");
+
+            let sent = BlindAuthToken::from_str(&header_value).expect("token");
+            sent.auth_proof
+                .verify_request(&AuthorizedRequest::new("GET", "/v1/ws", b""))
+                .expect("witness signs the handshake the mint records");
+            assert!(sent
+                .auth_proof
+                .verify_request(&AuthorizedRequest::new("POST", "/v1/ws", b""))
+                .is_err());
+        }
+
+        // Clear auth passes through unchanged.
+        let mint_url = MintUrl::from_str("https://mint.example").expect("mint url");
+        let url = mint_url.join_paths(&["v1", "ws"]).expect("ws url");
+        assert_eq!(
+            ws_auth_header(&mint_url, &url, AuthToken::ClearAuth("cat".to_string()))
+                .expect("clear auth"),
+            ("Clear-auth", "cat".to_string())
+        );
+    }
 
     #[test]
     fn nut17_subscription_ids_use_uuid_v7() {
