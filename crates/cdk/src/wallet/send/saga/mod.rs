@@ -61,7 +61,7 @@
 //! | `[compensated]` | Send cancelled before token created, reserved proofs released |
 //! | `[skipped]` | Recovery deferred (mint unreachable), will retry on next recovery |
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use cdk_common::amount::KeysetFeeAndAmounts;
 use cdk_common::util::unix_time;
@@ -78,7 +78,7 @@ use crate::amount::SplitTarget;
 use crate::fees::calculate_fee;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut11::{enforce_sig_flag, SigFlag};
-use crate::nuts::{Proof, Proofs, State, Token};
+use crate::nuts::{Proof, Proofs, PublicKey, State, Token};
 use crate::wallet::saga::{
     add_compensation, execute_compensations, new_compensations, Compensations,
     RevertProofReservation,
@@ -1009,7 +1009,23 @@ impl<'a> SendSaga<'a, TokenCreated> {
             .check_proofs_spent(self.state_data.proofs.clone())
             .await?;
 
-        if states.iter().any(|s| s.state == State::Spent) {
+        let spent_ys: HashSet<PublicKey> = states
+            .iter()
+            .filter(|s| s.state == State::Spent)
+            .map(|s| s.y)
+            .collect();
+
+        // The holder of the token may have spent only some of its proofs. The
+        // rest are still ours to take back; giving up on them here would leave
+        // them pending with no saga to resolve them.
+        let mut proofs_to_revoke = Proofs::new();
+        for proof in &self.state_data.proofs {
+            if !spent_ys.contains(&proof.y()?) {
+                proofs_to_revoke.push(proof.clone());
+            }
+        }
+
+        if proofs_to_revoke.is_empty() {
             // Already spent by recipient
             tracing::info!("Cannot revoke: token already claimed by recipient");
             // We should finalize the saga as "Spent"
@@ -1017,12 +1033,20 @@ impl<'a> SendSaga<'a, TokenCreated> {
             return Err(Error::Custom("Token already claimed".to_string()));
         }
 
+        let partially_claimed = !spent_ys.is_empty();
+        if partially_claimed {
+            tracing::info!(
+                "Token partially claimed by recipient, revoking the {} unspent proofs",
+                proofs_to_revoke.len()
+            );
+        }
+
         // Lock saga in RollingBack state to prevent proof watcher from treating swap as recipient claim
         let operation_id = self.state_data.operation_id;
         let mut saga = self.state_data.saga.clone();
         saga.update_state(WalletSagaState::Send(SendSagaState::RollingBack));
         if let OperationData::Send(ref mut data) = saga.data {
-            data.proofs = Some(self.state_data.proofs.clone());
+            data.proofs = Some(proofs_to_revoke.clone());
         }
 
         if !self.wallet.localstore.update_saga(saga).await? {
@@ -1035,7 +1059,7 @@ impl<'a> SendSaga<'a, TokenCreated> {
             .swap_no_reserve(
                 None, // Swap all
                 SplitTarget::default(),
-                self.state_data.proofs.clone(),
+                proofs_to_revoke.clone(),
                 None,
                 false,
                 false,
@@ -1048,17 +1072,19 @@ impl<'a> SendSaga<'a, TokenCreated> {
                     Some(proofs) => proofs.total_amount()?,
                     None => {
                         // All proofs kept (refreshed). Recovered amount is input minus fees.
-                        let input_amount = self.state_data.proofs.total_amount()?;
-                        let fee = self
-                            .wallet
-                            .get_proofs_fee(&self.state_data.proofs)
-                            .await?
-                            .total;
+                        let input_amount = proofs_to_revoke.total_amount()?;
+                        let fee = self.wallet.get_proofs_fee(&proofs_to_revoke).await?.total;
                         input_amount.checked_sub(fee).unwrap_or(Amount::ZERO)
                     }
                 };
 
-                self.finalize(TransactionStatus::Failed).await?;
+                // Part of the token reached the recipient, so the send did happen.
+                let status = if partially_claimed {
+                    TransactionStatus::Completed
+                } else {
+                    TransactionStatus::Failed
+                };
+                self.finalize(status).await?;
 
                 Ok(amount_recovered)
             }
@@ -1081,7 +1107,7 @@ impl<'a> SendSaga<'a, TokenCreated> {
 
                 self.wallet
                     .localstore
-                    .update_proofs_state(self.state_data.proofs.ys()?, State::PendingSpent)
+                    .update_proofs_state(proofs_to_revoke.ys()?, State::PendingSpent)
                     .await?;
 
                 Err(e)
