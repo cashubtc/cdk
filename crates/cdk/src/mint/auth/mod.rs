@@ -280,13 +280,20 @@ mod tests {
 
         let mnemonic = Mnemonic::generate(12).expect("mnemonic");
         let mint = mint_builder
+            .with_pubkey(SecretKey::generate().public_key())
             .with_auth(
                 auth_db,
                 "https://example.com/.well-known/openid-configuration".to_string(),
                 "test-client".to_string(),
                 vec![],
             )
-            .with_blind_auth(50, vec![])
+            .with_blind_auth(
+                50,
+                vec![ProtectedEndpoint::new(
+                    super::super::nut21::Method::Post,
+                    super::super::nut21::RoutePath::Swap,
+                )],
+            )
             .build_with_seed(db, &mnemonic.to_seed_normalized(""))
             .await
             .expect("mint");
@@ -308,6 +315,82 @@ mod tests {
         .blinded_messages()
         .pop()
         .expect("blinded message")
+    }
+
+    /// A real v3 blind signature authorizes the exact request once. Failed
+    /// request verification must leave the BAT available for its intended use.
+    #[tokio::test]
+    async fn v3_blind_auth_binds_request_and_rejects_replay() {
+        use cdk_common::dhke::construct_proofs;
+        use cdk_common::nuts::nut21::{Method, RoutePath};
+        use cdk_common::nuts::nut22::AuthorizedRequest;
+        use cdk_common::nuts::KeySetVersion;
+
+        let mint = create_auth_enabled_mint().await;
+        mint.rotate_keyset_by_version(
+            CurrencyUnit::Auth,
+            vec![1],
+            0,
+            KeySetVersion::Version02,
+            None,
+        )
+        .await
+        .unwrap();
+        let keyset = mint.auth_pubkeys().unwrap().keysets.remove(0);
+        let key = SecretKey::generate();
+        let premint = PreMintSecrets::from_secrets(
+            keyset.id,
+            vec![Amount::from(1)],
+            vec![Secret::from_point(&key.public_key())],
+        )
+        .unwrap();
+        let promise = mint
+            .auth_blind_sign(&premint.blinded_messages()[0])
+            .await
+            .unwrap();
+        let proof = construct_proofs(vec![promise], premint.rs(), premint.secrets(), &keyset.keys)
+            .unwrap()
+            .remove(0);
+        let mut token = BlindAuthToken::new(AuthProof {
+            keyset_id: proof.keyset_id,
+            secret: proof.secret,
+            c: proof.c,
+            dleq: None,
+            witness: None,
+        });
+        let request = AuthorizedRequest::new("POST", "/v1/swap?b=2&a=1", b"{ \"inputs\": [] }");
+        token.signing_key = Some(key);
+        token.authorize(&request).unwrap();
+        // Wire round-trip drops local context; the HTTP layer supplies it.
+        let token: BlindAuthToken = token.to_string().parse().unwrap();
+        let endpoint = ProtectedEndpoint::new(Method::Post, RoutePath::Swap);
+        for changed in [
+            AuthorizedRequest::new("GET", &request.target, b"{ \"inputs\": [] }"),
+            AuthorizedRequest::new("POST", "/v1/swap?a=1&b=2", b"{ \"inputs\": [] }"),
+            AuthorizedRequest::new("POST", &request.target, b"{\"inputs\":[]}"),
+        ] {
+            let mut invalid = token.clone();
+            invalid.request = Some(changed);
+            assert!(matches!(
+                mint.verify_auth(Some(AuthToken::BlindAuth(Box::new(invalid))), &endpoint)
+                    .await,
+                Err(Error::BlindAuthFailed)
+            ));
+        }
+        let mut valid = token;
+        valid.request = Some(request);
+        mint.verify_auth(
+            Some(AuthToken::BlindAuth(Box::new(valid.clone()))),
+            &endpoint,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            mint.verify_auth(Some(AuthToken::BlindAuth(Box::new(valid))), &endpoint)
+                .await,
+            Err(Error::TokenAlreadySpent)
+        ));
+        mint.stop().await.unwrap();
     }
 
     #[tokio::test]

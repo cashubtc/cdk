@@ -53,7 +53,7 @@ pub struct Prepared {
     /// P2PK signing keys (from options + wallet database lookups)
     pub p2pk_signing_keys: HashMap<XOnlyPublicKey, SecretKey>,
     /// Spend keys of received v3 proofs, from receive check 1
-    pub v3_keys: crate::wallet::nutroot::V3Keys,
+    pub v3_keys: crate::wallet::nutroot::V3Spends,
 }
 
 impl fmt::Debug for Prepared {

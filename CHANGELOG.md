@@ -13,6 +13,8 @@
 - cashu/cdk/cdk-signatory/cdk-mintd: Add opt-in BLS12-381 v3 keysets (keyset ID version `02`). New keysets still default to v2; select v3 with `MintBuilder::with_keyset_version`, the mintd `keyset_version = "v3"` setting (`CDK_MINTD_KEYSET_VERSION`), or `cdk-mint-cli rotate-next-keyset --keyset-version v3`. Wallets without BLS support cannot use v3 keysets. See the [v0.19 migration guide](docs/migrations/v0.19.md#bls-v3-keysets).
 - cashu/cdk/cdk-axum/cdk-ffi: Implement cashubtc/nuts#443 for v3 keysets: point secrets, transaction transcripts with per-input witnesses, nutroot spending conditions (leaves, tree, NUMS keys), spend info in tokens, locked v3 mint quotes with NUT-13 type `0x04` keys, NUT-07 `input_digest`, the NUT-18 `nutroot` request option (NUT-26 tag `0x0b`) and v3 blind auth tokens signing their request. See the [v0.19 migration guide](docs/migrations/v0.19.md#nutroot-secrets-and-transactions).
 - cdk-cli: `create-request --nutroot` sets a NUT-18 nutroot option.
+- cdk/cdk-ffi: Sweep requested NUMS payments through threshold, open timelock or hashlock leaves, including blinded leaf keys.
+- cdk-cli: `receive --payment-request` checks a v3 payment against the original request's nutroot tree.
 - cdk/cdk-ffi: Add `Wallet::verify_token_signatures`, which checks DLEQ proofs for v1/v2 keysets and BLS pairings for v3 keysets.
 
 ### Changed

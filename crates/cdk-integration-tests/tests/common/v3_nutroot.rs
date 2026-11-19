@@ -221,3 +221,98 @@ async fn v3_nutroot_payment_request_flow() {
         .expect("receive nutroot payment");
     assert_eq!(received, Amount::from(16));
 }
+
+/// A NUMS lock can only be swept by revealing a leaf. Exercise both plain
+/// and NUT-28 blinded leaf keys, and refuse a hashlock without its preimage.
+#[tokio::test]
+async fn v3_nums_payment_sweeps_threshold_and_hashlock_leaves() {
+    use bitcoin::hashes::{sha256, Hash};
+    use cdk::nuts::nut10::nutroot::{Leaf, NUMS_H};
+    use cdk::nuts::nut18::NutrootOption;
+    use cdk::nuts::SecretKey;
+
+    let mint = create_and_start_v3_test_mint().await.unwrap();
+    let alice = create_test_wallet_for_mint(mint.clone()).await.unwrap();
+    let carol = create_test_wallet_for_mint(mint.clone()).await.unwrap();
+    fund_wallet(alice.clone(), 64, None).await.unwrap();
+
+    let receiver = SecretKey::generate();
+    let preimage = [42u8; 32];
+    for blinded in [false, true] {
+        let leaf = match blinded {
+            false => Leaf::Threshold {
+                n: 1,
+                keys: vec![receiver.public_key()],
+            },
+            true => Leaf::Hashlock {
+                n: 1,
+                keys: vec![receiver.public_key()],
+                hash: sha256::Hash::hash(&preimage).to_byte_array(),
+            },
+        };
+        let request = NutrootOption {
+            k: cashu::PublicKey::from_hex(NUMS_H).unwrap(),
+            l: Some(vec![leaf.to_leaf_bytes().unwrap()]),
+            b: blinded.then(|| vec![receiver.public_key()]),
+        };
+        let token = alice
+            .prepare_send(
+                Amount::from(16),
+                SendOptions {
+                    nutroot: Some(request.clone()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .confirm(None)
+            .await
+            .unwrap();
+        let mut options = ReceiveOptions {
+            p2pk_signing_keys: vec![receiver.clone()],
+            v3_payment_request: Some(request),
+            ..Default::default()
+        };
+        if blinded {
+            assert!(carol
+                .receive(&token.to_string(), options.clone())
+                .await
+                .is_err());
+            options.preimages = vec![cashu::util::hex::encode(preimage)];
+        }
+        assert_eq!(
+            carol.receive(&token.to_string(), options).await.unwrap(),
+            Amount::from(16)
+        );
+    }
+    assert_eq!(carol.total_balance().await.unwrap(), Amount::from(32));
+    mint.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn v3_nutroot_rejects_legacy_keysets() {
+    use cdk::nuts::nut18::NutrootOption;
+    use cdk::nuts::SecretKey;
+
+    let mint = create_and_start_test_mint().await.unwrap();
+    let wallet = create_test_wallet_for_mint(mint.clone()).await.unwrap();
+    fund_wallet(wallet.clone(), 32, None).await.unwrap();
+    let error = wallet
+        .prepare_send(
+            Amount::from(16),
+            SendOptions {
+                nutroot: Some(NutrootOption {
+                    k: SecretKey::generate().public_key(),
+                    l: None,
+                    b: None,
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("legacy keysets are rejected before reservation");
+    assert!(matches!(error, cdk::Error::NutrootRequiresV3Keyset));
+    assert_eq!(wallet.total_balance().await.unwrap(), Amount::from(32));
+    assert!(wallet.get_reserved_proofs().await.unwrap().is_empty());
+    mint.stop().await.unwrap();
+}

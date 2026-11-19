@@ -172,7 +172,7 @@ impl<'a> ReceiveSaga<'a, Initial> {
         // Receive checks 1 and 2 for v3 proofs: rebuild each secret from its
         // spend info, require a key the wallet holds and apply the leaf
         // policy. The keys sign the swap's inputs.
-        let mut v3_keys = crate::wallet::nutroot::V3Keys::new();
+        let mut v3_keys = crate::wallet::nutroot::V3Spends::new();
         for proof in proofs.iter().filter(|proof| {
             proof.keyset_id.get_version() == cdk_common::nuts::nut02::KeySetVersion::Version02
         }) {
@@ -181,6 +181,7 @@ impl<'a> ReceiveSaga<'a, Initial> {
                     proof,
                     request,
                     &opts.p2pk_signing_keys,
+                    &opts.preimages,
                 )?,
                 None => crate::wallet::nutroot::check_received_v3_proof(
                     proof,
@@ -337,7 +338,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
 
         let operation_id = self.state_data.operation_id;
 
-        let proofs_info = proofs
+        let mut proofs_info = proofs
             .clone()
             .into_iter()
             .map(|p| {
@@ -414,6 +415,28 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             }
         }
 
+        let mut swap_request = pre_swap.swap_request;
+        self.wallet
+            .sign_v3_swap(&mut swap_request, &self.state_data.v3_keys)
+            .await?;
+        if !self.state_data.v3_keys.is_empty() {
+            // Keep the authorization before dispatch so restart recovery can
+            // replay the same transaction without the receiver's private keys.
+            for info in &mut proofs_info {
+                if let Some(signed) = swap_request
+                    .inputs()
+                    .iter()
+                    .find(|proof| proof.secret == info.proof.secret)
+                {
+                    info.proof.witness = signed.witness.clone();
+                }
+            }
+            self.wallet
+                .localstore
+                .update_proofs(proofs_info.clone(), vec![])
+                .await?;
+        }
+
         // Get counter range for recovery (before the swap request is sent)
         let counter_end = self
             .wallet
@@ -429,7 +452,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
         if let OperationData::Receive(ref mut data) = saga.data {
             data.counter_start = Some(counter_start);
             data.counter_end = Some(counter_end);
-            data.blinded_messages = Some(pre_swap.swap_request.outputs().clone());
+            data.blinded_messages = Some(swap_request.outputs().clone());
         }
 
         // Update saga state - if this fails due to version conflict, another instance
@@ -463,10 +486,6 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             })
             .await?;
 
-        let mut swap_request = pre_swap.swap_request;
-        self.wallet
-            .sign_v3_swap(&mut swap_request, &self.state_data.v3_keys)
-            .await?;
         let swap_response = match self.wallet.client.post_swap(swap_request).await {
             Ok(response) => response,
             Err(err) => {
