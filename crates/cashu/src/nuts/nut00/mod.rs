@@ -448,7 +448,15 @@ pub struct ProofV4 {
     )]
     pub c: PublicKey,
     /// Witness
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ///
+    /// NUT-00 names this field `w`. Earlier versions wrote `witness`, which is
+    /// still accepted when decoding.
+    #[serde(
+        rename = "w",
+        alias = "witness",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub witness: Option<Witness>,
     /// DLEQ Proof
     #[serde(rename = "d")]
