@@ -6,9 +6,14 @@ strategy. It can be built as a shared library, static library, or Rust library.
 
 The interface covers random secret generation, message blinding/unblinding,
 DLEQ verification, deterministic derivation, and explicit-slot public-key
-blinding. Public keys and scalars use hex; secrets use bytes. Secret-bearing
-records redact their `Debug` output. Returned secret material is visible to the
-calling language; this is not a keystore.
+blinding.
+
+Cryptographic values cross the interface as byte buffers. Scalars are 32-byte
+big-endian values, points use 33-byte compressed secp256k1 encoding, and full
+keyset IDs include the version byte. Messages are blinded byte for byte.
+Generated and derived Cashu secrets contain the UTF-8 bytes of the core's
+secret text. The caller receives the secret material directly. Secret-bearing
+records redact their Rust `Debug` output.
 
 The core's contracts are preserved:
 
