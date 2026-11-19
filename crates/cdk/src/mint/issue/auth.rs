@@ -36,6 +36,10 @@ impl Mint {
             ));
         }
 
+        if !mint_auth_request.outputs.is_empty() {
+            self.verify_outputs_keyset(&mint_auth_request.outputs)?;
+        }
+
         let mut blind_signatures = Vec::with_capacity(mint_auth_request.outputs.len());
 
         for blinded_message in mint_auth_request.outputs.iter() {
