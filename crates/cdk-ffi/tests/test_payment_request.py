@@ -4,6 +4,7 @@
 import asyncio
 import base64
 import hashlib
+import json
 import os
 from pathlib import Path
 import sys
@@ -127,6 +128,23 @@ async def main():
         pass
     else:
         raise AssertionError("Expected FFI validation error for an invalid spending key")
+    # The optional new field may be omitted, or supplied through both encodings.
+    option = {"k": P2PK}
+    result = await repo.create_request(params(nutroot=json.dumps(option)))
+    roundtrip(result.payment_request)
+    for wire in (result.payment_request.to_string_encoded(), result.payment_request.to_bech32_string()):
+        assert json.loads(cdk.decode_payment_request(wire).nutroot_option()) == option
+
+    result = await repo.create_request(params(
+        transport="nostr", nostr_relays=[RELAY], nutroot=json.dumps(option),
+    ))
+    wait = result.nostr_wait_info.with_receive_options(cdk.ReceiveOptions(
+        amount_split_target=cdk.SplitTarget.NONE(), p2pk_signing_keys=[],
+        preimages=[], metadata={}, v3_min_refund_horizon=None,
+        v3_payment_request=json.dumps({"k": "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"}),
+    ))
+    assert json.loads(wait.nutroot_option()) == option
+    assert hasattr(repo, "wait_for_nostr_payment")
     print("Payment request binding tests passed")
 
 
