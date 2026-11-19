@@ -169,6 +169,22 @@ impl<'a> ReceiveSaga<'a, Initial> {
         verify_proof_signatures(signed_proofs, LegacyDleq::Optional)
             .map_err(|_| Error::CouldNotVerifyDleq)?;
 
+        // Receive checks 1 and 2 for v3 proofs: rebuild each secret from its
+        // spend info, require a key the wallet holds and apply the leaf
+        // policy. The keys sign the swap's inputs.
+        let mut v3_keys = crate::wallet::nutroot::V3Keys::new();
+        for proof in proofs.iter().filter(|proof| {
+            proof.keyset_id.get_version() == cdk_common::nuts::nut02::KeySetVersion::Version02
+        }) {
+            let key = crate::wallet::nutroot::check_received_v3_proof(
+                proof,
+                &opts.p2pk_signing_keys,
+                opts.v3_min_refund_horizon
+                    .unwrap_or(crate::wallet::nutroot::DEFAULT_MIN_REFUND_HORIZON),
+            )?;
+            v3_keys.insert(proof.secret.v3_point()?, key);
+        }
+
         // Handle P2PK/HTLC
         for proof in &mut proofs {
             if let Ok(secret) =
@@ -278,6 +294,7 @@ impl<'a> ReceiveSaga<'a, Initial> {
                 proofs_amount,
                 active_keyset_id,
                 p2pk_signing_keys,
+                v3_keys,
             },
         })
     }
@@ -438,7 +455,11 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             })
             .await?;
 
-        let swap_response = match self.wallet.client.post_swap(pre_swap.swap_request).await {
+        let mut swap_request = pre_swap.swap_request;
+        self.wallet
+            .sign_v3_swap(&mut swap_request, &self.state_data.v3_keys)
+            .await?;
+        let swap_response = match self.wallet.client.post_swap(swap_request).await {
             Ok(response) => response,
             Err(err) => {
                 if err.is_definitive_failure() {

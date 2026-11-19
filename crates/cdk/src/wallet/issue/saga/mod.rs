@@ -32,6 +32,9 @@
 //! | `[completed]` | Minting succeeded, new proofs saved to wallet |
 //! | `[compensated]` | Minting failed or rolled back, quote released |
 
+use cdk_common::nut00::transaction::MintQuoteState as QuoteInputState;
+use cdk_common::nuts::nut02::KeySetVersion;
+use cdk_common::nuts::nut10::nutroot::sign_input_key_path;
 use std::collections::HashMap;
 
 use cdk_common::nut00::KnownMethod;
@@ -115,6 +118,13 @@ async fn post_unsigned_mint_fallback(
     }
 }
 
+/// v3 mint requests sign a transcript; the legacy NUT-20 retry never applies
+fn v3_outputs(outputs: &[crate::nuts::BlindedMessage]) -> bool {
+    outputs
+        .iter()
+        .any(|output| output.keyset_id.get_version() == KeySetVersion::Version02)
+}
+
 async fn post_mint_request_with_legacy_fallback(
     wallet: &Wallet,
     payment_method: &PaymentMethod,
@@ -131,7 +141,10 @@ async fn post_mint_request_with_legacy_fallback(
             .await
         {
             Ok(response) => Ok(response),
-            Err(error) if should_retry_with_legacy_quote_signature(&error) => {
+            Err(error)
+                if should_retry_with_legacy_quote_signature(&error)
+                    && !v3_outputs(&request.outputs) =>
+            {
                 let secret_key = match wallet.mint_quote_signing_key(quote_info).await {
                     Ok(Some(secret_key)) => secret_key,
                     Ok(None) => return Err(error),
@@ -191,7 +204,10 @@ async fn post_mint_request_with_legacy_fallback(
                 .await
             {
                 Ok(response) => Ok(response),
-                Err(error) if should_retry_with_legacy_quote_signature(&error) => {
+                Err(error)
+                    if should_retry_with_legacy_quote_signature(&error)
+                        && !v3_outputs(&request.outputs) =>
+                {
                     let legacy_signatures = match legacy_batch_signatures(
                         wallet,
                         request,
@@ -449,7 +465,22 @@ impl<'a> MintSaga<'a, Initial> {
             signature: None,
         };
 
-        if let Some(secret_key) = self.wallet.mint_quote_signing_key(quote_info).await? {
+        if active_keyset_id.get_version() == KeySetVersion::Version02 {
+            // Minting onto v3 is a transaction: the locked quote signs its
+            // input digest, which binds the quote's current amount_issued.
+            let secret_key = self
+                .wallet
+                .mint_quote_signing_key(quote_info)
+                .await?
+                .ok_or(Error::PubkeyRequired)?;
+            let fresh = self.wallet.check_mint_quote_status(quote_id).await?;
+            let transaction = request.transaction(&QuoteInputState {
+                lock_key: secret_key.public_key(),
+                issued: fresh.amount_issued,
+            })?;
+            request.signature =
+                Some(sign_input_key_path(&transaction, 0, &secret_key)?.to_string());
+        } else if let Some(secret_key) = self.wallet.mint_quote_signing_key(quote_info).await? {
             request.sign(&secret_key)?;
         } else if quote_info.payment_method.is_bolt12() {
             // Bolt12 requires signature
@@ -826,7 +857,38 @@ impl<'a> MintSaga<'a, Initial> {
         // Build signatures for each quote (NUT-20)
         let mut signatures: Vec<Option<String>> = Vec::new();
 
-        for quote in &quote_infos {
+        if active_keyset_id.get_version() == KeySetVersion::Version02 {
+            // A v3 batch is one transaction: every quote is locked and signs
+            // its own input digest over the batch transcript.
+            let mut keys = Vec::with_capacity(quote_infos.len());
+            let mut states = Vec::with_capacity(quote_infos.len());
+            for quote in &quote_infos {
+                let secret_key = match self.wallet.mint_quote_signing_key(quote).await? {
+                    Some(secret_key) => secret_key,
+                    None => external_keys
+                        .and_then(|keys| keys.get(&quote.id))
+                        .cloned()
+                        .ok_or(Error::PubkeyRequired)?,
+                };
+                let fresh = self.wallet.check_mint_quote_status(&quote.id).await?;
+                states.push(QuoteInputState {
+                    lock_key: secret_key.public_key(),
+                    issued: fresh.amount_issued,
+                });
+                keys.push(secret_key);
+            }
+            let transaction = batch_request.transaction(&states)?;
+            for (index, key) in keys.iter().enumerate() {
+                signatures.push(Some(
+                    sign_input_key_path(&transaction, index, key)?.to_string(),
+                ));
+            }
+        }
+
+        for quote in quote_infos
+            .iter()
+            .filter(|_| active_keyset_id.get_version() != KeySetVersion::Version02)
+        {
             let secret_key = match self.wallet.mint_quote_signing_key(quote).await? {
                 Some(secret_key) => Some(secret_key),
                 None => external_keys.and_then(|keys| keys.get(&quote.id)).cloned(),

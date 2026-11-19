@@ -52,6 +52,8 @@ pub struct Prepared {
     pub active_keyset_id: Id,
     /// P2PK signing keys (from options + wallet database lookups)
     pub p2pk_signing_keys: HashMap<XOnlyPublicKey, SecretKey>,
+    /// Spend keys of received v3 proofs, from receive check 1
+    pub v3_keys: crate::wallet::nutroot::V3Keys,
 }
 
 impl fmt::Debug for Prepared {
@@ -119,6 +121,7 @@ mod tests {
             proofs_amount: Amount::from(1),
             active_keyset_id: keyset_id,
             p2pk_signing_keys: HashMap::new(),
+            v3_keys: Default::default(),
         };
 
         let debug_output = format!("{state:?}");

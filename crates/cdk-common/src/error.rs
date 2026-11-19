@@ -116,6 +116,15 @@ pub enum Error {
     /// A v3 keyset needs the mint's NUT-06 identity pubkey
     #[error("v3 keysets need the mint's NUT-06 identity pubkey to be set")]
     V3KeysetRequiresMintPubkey,
+    /// The wallet holds no key to spend a v3 proof
+    #[error("No key to spend this v3 proof")]
+    V3ProofNotSpendable,
+    /// A received v3 proof discloses a leaf the acceptance policy refuses
+    #[error("A disclosed condition leaf is not acceptable")]
+    V3LeafPolicy,
+    /// Spend info error
+    #[error(transparent)]
+    SpendInfo(#[from] crate::nuts::nut00::spend_info::Error),
     /// A mint request mixes v3 and pre-v3 outputs
     #[error("A mint request's outputs must all be v3 or all pre-v3")]
     MixedOutputVersions,
@@ -919,6 +928,7 @@ impl Error {
             Self::DHKE(_) => true, // Crypto errors
             Self::NUT00(_) => true,
             Self::Transaction(_) => true,
+            Self::SpendInfo(_) => true,
             Self::Nutroot(_) => true,
             Self::NUT01(_) => true,
             Self::NUT02(_) => true,

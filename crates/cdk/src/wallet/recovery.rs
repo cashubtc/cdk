@@ -248,8 +248,10 @@ impl RecoveryHelpers for Wallet {
             return Ok(None);
         }
 
-        // Reconstruct the swap request
-        let swap_request = SwapRequest::new(inputs, blinded_messages.to_vec());
+        // Reconstruct the swap request; v3 inputs sign it again
+        let mut swap_request = SwapRequest::new(inputs, blinded_messages.to_vec());
+        self.sign_v3_swap(&mut swap_request, &Default::default())
+            .await?;
 
         tracing::info!(
             "{} saga {} - attempting replay of post_swap request",
