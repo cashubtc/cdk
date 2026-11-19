@@ -1,13 +1,15 @@
 use std::collections::HashSet;
 
 use cdk_common::nuts::nut01;
+use cdk_common::nuts::nut02::KeySetVersion;
 use cdk_common::nuts::nut17::MAX_CUSTOM_KIND_LEN;
 use cdk_common::{
     database, Amount, BlindedMessage, CurrencyUnit, DhkePoint, Id, PaymentMethod, ProofId, Proofs,
-    ProofsMethods,
+    ProofsMethods, Witness,
 };
 use tracing::instrument;
 
+use super::nutroot::MAX_V3_WITNESS_LEN;
 use super::{Error, Mint};
 
 /// Maximum allowed length in bytes for proof secret or witness content
@@ -20,6 +22,32 @@ pub(crate) const MAX_REQUEST_FIELD_LEN: usize = 1024;
 const CUSTOM_QUOTE_KIND_SUFFIX_LEN: usize = "_mint_quote".len();
 pub(crate) const MAX_CUSTOM_PAYMENT_METHOD_LEN: usize =
     MAX_CUSTOM_KIND_LEN - CUSTOM_QUOTE_KIND_SUFFIX_LEN;
+
+/// Check a proof witness against the bound for its keyset version
+///
+/// A v3 witness is measured as received, against [`MAX_V3_WITNESS_LEN`];
+/// any other witness is measured serialized, against
+/// [`MAX_PROOF_CONTENT_LEN`].
+fn check_witness_len(keyset_id: Id, witness: &Witness) -> Result<(), Error> {
+    let (witness_len, max) = match witness.as_nutroot() {
+        Some(raw) if keyset_id.get_version() == KeySetVersion::Version02 => {
+            (raw.as_str().len(), MAX_V3_WITNESS_LEN)
+        }
+        _ => (serde_json::to_string(witness)?.len(), MAX_PROOF_CONTENT_LEN),
+    };
+    if witness_len > max {
+        tracing::warn!(
+            "Proof witness exceeds max content length: {} > {}",
+            witness_len,
+            max
+        );
+        return Err(Error::ProofContentTooLarge {
+            actual: witness_len,
+            max,
+        });
+    }
+    Ok(())
+}
 
 pub(crate) fn validate_custom_payment_method(method: &PaymentMethod) -> Result<(), Error> {
     match method {
@@ -312,19 +340,7 @@ impl Mint {
             }
 
             if let Some(witness) = &proof.witness {
-                let witness_str = serde_json::to_string(witness)?;
-                let witness_len = witness_str.len();
-                if witness_len > MAX_PROOF_CONTENT_LEN {
-                    tracing::warn!(
-                        "Proof witness exceeds max content length: {} > {}",
-                        witness_len,
-                        MAX_PROOF_CONTENT_LEN
-                    );
-                    return Err(Error::ProofContentTooLarge {
-                        actual: witness_len,
-                        max: MAX_PROOF_CONTENT_LEN,
-                    });
-                }
+                check_witness_len(proof.keyset_id, witness)?;
             }
         }
 
