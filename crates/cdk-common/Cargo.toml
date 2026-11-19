@@ -45,7 +45,6 @@ anyhow.workspace = true
 serde_json.workspace = true
 web-time.workspace = true
 parking_lot = "0.12.5"
-paste.workspace = true
 jsonwebtoken = { workspace = true, optional = true }
 tonic = { workspace = true, optional = true }
 cdk-http-client = { workspace = true, default-features = false, optional = true }

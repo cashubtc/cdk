@@ -199,11 +199,19 @@
         # ========================================
         # Crane setup for cached builds
         # ========================================
-        craneLib = (crane.mkLib pkgs).overrideToolchain stable_toolchain;
+        # Keep usage lints enabled for real sources, but disable checks whose
+        # inputs Crane intentionally removes from dependency-cache sources.
+        craneLibBase = (crane.mkLib pkgs).overrideScope (_final: prev: {
+          mkDummySrc = prev.mkDummySrc.override {
+            cleanCargoToml = import ./nix/crane-dummy-manifest.nix prev.cleanCargoToml;
+          };
+        });
+        craneLib = craneLibBase.overrideToolchain stable_toolchain;
+        # Cargo 1.85 predates these lints and warns about [lints.cargo] itself.
         craneLibMsrv = (crane.mkLib pkgs).overrideToolchain msrv_toolchain;
         craneLibStatic =
-          if static_toolchain != null then (crane.mkLib pkgs).overrideToolchain static_toolchain else null;
-        craneLibNightly = (crane.mkLib pkgs).overrideToolchain nightly_toolchain;
+          if static_toolchain != null then craneLibBase.overrideToolchain static_toolchain else null;
+        craneLibNightly = craneLibBase.overrideToolchain nightly_toolchain;
 
         # Include only checked-in fuzzing inputs. Using ./fuzz directly would also
         # copy generated directories such as fuzz/target, corpus, and artifacts.
