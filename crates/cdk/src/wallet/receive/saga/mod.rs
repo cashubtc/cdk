@@ -176,12 +176,19 @@ impl<'a> ReceiveSaga<'a, Initial> {
         for proof in proofs.iter().filter(|proof| {
             proof.keyset_id.get_version() == cdk_common::nuts::nut02::KeySetVersion::Version02
         }) {
-            let key = crate::wallet::nutroot::check_received_v3_proof(
-                proof,
-                &opts.p2pk_signing_keys,
-                opts.v3_min_refund_horizon
-                    .unwrap_or(crate::wallet::nutroot::DEFAULT_MIN_REFUND_HORIZON),
-            )?;
+            let key = match &opts.v3_payment_request {
+                Some(request) => crate::wallet::nutroot::check_requested_v3_proof(
+                    proof,
+                    request,
+                    &opts.p2pk_signing_keys,
+                )?,
+                None => crate::wallet::nutroot::check_received_v3_proof(
+                    proof,
+                    &opts.p2pk_signing_keys,
+                    opts.v3_min_refund_horizon
+                        .unwrap_or(crate::wallet::nutroot::DEFAULT_MIN_REFUND_HORIZON),
+                )?,
+            };
             v3_keys.insert(proof.secret.v3_point()?, key);
         }
 
@@ -391,6 +398,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
                 false,
                 &fee_breakdown,
                 ProofReservation::Skip,
+                None,
             )
             .await?;
 

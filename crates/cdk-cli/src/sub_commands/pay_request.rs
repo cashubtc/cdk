@@ -164,6 +164,7 @@ mod tests {
             description: None,
             transports: vec![],
             nut10: None,
+            nutroot: None,
         };
         let sub_command_args = PayRequestSubCommand {
             payment_request,

@@ -172,6 +172,41 @@ pub(crate) fn check_received_v3_proof(
         .ok_or(Error::V3ProofNotSpendable)
 }
 
+/// The NUT-18 payee checks for a v3 proof paying `request`
+///
+/// The spend info must reconstruct the secret, carry `E` exactly when the
+/// request blinds something and `u` exactly for a NUMS `k`, and disclose
+/// exactly the requested tree. The wallet must hold a key-path key: a
+/// script-only (NUMS) payment is accepted only through its leaves, which
+/// this wallet does not sweep yet.
+pub(crate) fn check_requested_v3_proof(
+    proof: &Proof,
+    request: &cdk_common::nuts::nut18::NutrootOption,
+    receiver_keys: &[SecretKey],
+) -> Result<SecretKey, Error> {
+    let secret = proof.secret.v3_point()?;
+    let spend_info = proof
+        .spend_info
+        .as_ref()
+        .ok_or(Error::V3ProofNotSpendable)?;
+    let mut last_err = Error::V3ProofNotSpendable;
+    let candidates: Vec<Option<&SecretKey>> = match spend_info.e {
+        Some(_) => receiver_keys.iter().map(Some).collect(),
+        None => vec![None],
+    };
+    for receiver in candidates {
+        match request.verify_payment(&secret, spend_info, receiver) {
+            Ok(reconstruction) => {
+                return reconstruction
+                    .key_path_key
+                    .ok_or(Error::V3ProofNotSpendable)
+            }
+            Err(err) => last_err = Error::NUT18(err),
+        }
+    }
+    Err(last_err)
+}
+
 /// Every disclosed leaf against the wallet's acceptance policy
 ///
 /// A `commit` leaf adds no spend path. An `after` leaf (eg the sender's

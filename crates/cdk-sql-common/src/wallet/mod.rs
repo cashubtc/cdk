@@ -547,7 +547,8 @@ where
                 used_by_operation,
                 created_by_operation,
                 derivation_index,
-                p2pk_e
+                p2pk_e,
+                spend_info
             FROM proof
             "#,
         )?
@@ -592,7 +593,8 @@ where
                 used_by_operation,
                 created_by_operation,
                 derivation_index,
-                p2pk_e
+                p2pk_e,
+                spend_info
             FROM proof
             WHERE y IN (:ys)
         "#,
@@ -778,9 +780,9 @@ where
             query(
                 r#"
     INSERT INTO proof
-    (y, mint_url, state, spending_condition, unit, amount, keyset_id, secret, c, witness, dleq_e, dleq_s, dleq_r, used_by_operation, created_by_operation, derivation_index, p2pk_e)
+    (y, mint_url, state, spending_condition, unit, amount, keyset_id, secret, c, witness, dleq_e, dleq_s, dleq_r, used_by_operation, created_by_operation, derivation_index, p2pk_e, spend_info)
     VALUES
-    (:y, :mint_url, :state, :spending_condition, :unit, :amount, :keyset_id, :secret, :c, :witness, :dleq_e, :dleq_s, :dleq_r, :used_by_operation, :created_by_operation, :derivation_index, :p2pk_e)
+    (:y, :mint_url, :state, :spending_condition, :unit, :amount, :keyset_id, :secret, :c, :witness, :dleq_e, :dleq_s, :dleq_r, :used_by_operation, :created_by_operation, :derivation_index, :p2pk_e, :spend_info)
     ON CONFLICT(y) DO UPDATE SET
         mint_url = excluded.mint_url,
         state = excluded.state,
@@ -797,7 +799,8 @@ where
         used_by_operation = excluded.used_by_operation,
         created_by_operation = excluded.created_by_operation,
         derivation_index = COALESCE(excluded.derivation_index, proof.derivation_index),
-        p2pk_e = excluded.p2pk_e
+        p2pk_e = excluded.p2pk_e,
+        spend_info = excluded.spend_info
     ;
             "#,
             )?
@@ -844,6 +847,14 @@ where
                     .p2pk_e
                     .as_ref()
                     .map(|pk| pk.to_bytes().to_vec()),
+            )
+            .bind(
+                "spend_info",
+                proof
+                    .proof
+                    .spend_info
+                    .as_ref()
+                    .and_then(|info| serde_json::to_string(info).ok()),
             )
             .execute(&tx)
             .await?;
@@ -1746,7 +1757,8 @@ where
                 used_by_operation,
                 created_by_operation,
                 derivation_index,
-                p2pk_e
+                p2pk_e,
+                spend_info
             FROM proof
             WHERE used_by_operation = :operation_id
             "#,
@@ -2213,7 +2225,8 @@ fn sql_row_to_proof_info(row: Vec<Column>) -> Result<ProofInfo, Error> {
             used_by_operation,
             created_by_operation,
             derivation_index,
-            p2pk_e
+            p2pk_e,
+            spend_info
         ) = row
     );
 
@@ -2249,7 +2262,8 @@ fn sql_row_to_proof_info(row: Vec<Column>) -> Result<ProofInfo, Error> {
         p2pk_e: column_as_nullable_binary!(p2pk_e)
             .map(|bytes| PublicKey::from_slice(&bytes))
             .transpose()?,
-        spend_info: None,
+        spend_info: column_as_nullable_string!(spend_info)
+            .and_then(|info| serde_json::from_str(&info).ok()),
     };
 
     let used_by_operation =

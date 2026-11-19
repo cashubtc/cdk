@@ -425,6 +425,7 @@ impl From<CreateRequestParams> for cdk::wallet::payment_request::CreateRequestPa
                 .into_iter()
                 .map(Into::into)
                 .collect(),
+            nutroot: None,
         }
     }
 }
