@@ -32,6 +32,9 @@
 //! | `[completed]` | Minting succeeded, new proofs saved to wallet |
 //! | `[compensated]` | Minting failed or rolled back, quote released |
 
+use cdk_common::nut00::transaction::MintQuoteState as QuoteInputState;
+use cdk_common::nuts::nut02::KeySetVersion;
+use cdk_common::nuts::nut10::nutroot::sign_input_key_path;
 use std::collections::HashMap;
 
 use cdk_common::nut00::KnownMethod;
@@ -115,6 +118,13 @@ async fn post_unsigned_mint_fallback(
     }
 }
 
+/// v3 mint requests sign a transcript; the legacy NUT-20 retry never applies
+fn v3_outputs(outputs: &[crate::nuts::BlindedMessage]) -> bool {
+    outputs
+        .iter()
+        .any(|output| output.keyset_id.get_version() == KeySetVersion::Version02)
+}
+
 async fn post_mint_request_with_legacy_fallback(
     wallet: &Wallet,
     payment_method: &PaymentMethod,
@@ -131,7 +141,10 @@ async fn post_mint_request_with_legacy_fallback(
             .await
         {
             Ok(response) => Ok(response),
-            Err(error) if should_retry_with_legacy_quote_signature(&error) => {
+            Err(error)
+                if should_retry_with_legacy_quote_signature(&error)
+                    && !v3_outputs(&request.outputs) =>
+            {
                 let secret_key = match wallet.mint_quote_signing_key(quote_info).await {
                     Ok(Some(secret_key)) => secret_key,
                     Ok(None) => return Err(error),
@@ -191,7 +204,10 @@ async fn post_mint_request_with_legacy_fallback(
                 .await
             {
                 Ok(response) => Ok(response),
-                Err(error) if should_retry_with_legacy_quote_signature(&error) => {
+                Err(error)
+                    if should_retry_with_legacy_quote_signature(&error)
+                        && !v3_outputs(&request.outputs) =>
+                {
                     let legacy_signatures = match legacy_batch_signatures(
                         wallet,
                         request,
@@ -449,7 +465,25 @@ impl<'a> MintSaga<'a, Initial> {
             signature: None,
         };
 
-        if let Some(secret_key) = self.wallet.mint_quote_signing_key(quote_info).await? {
+        if active_keyset_id.get_version() == KeySetVersion::Version02 {
+            // Minting onto v3 is a transaction: the locked quote signs its
+            // input digest, which binds the quote's current amount_issued.
+            let secret_key = self
+                .wallet
+                .mint_quote_signing_key(quote_info)
+                .await?
+                .ok_or(Error::PubkeyRequired)?;
+            let fresh = self
+                .wallet
+                .refresh_reserved_mint_quote_accounting(quote_id, &self.state_data.operation_id)
+                .await?;
+            let transaction = request.transaction(&QuoteInputState {
+                lock_key: secret_key.public_key(),
+                issued: fresh.amount_issued,
+            })?;
+            request.signature =
+                Some(sign_input_key_path(&transaction, 0, &secret_key)?.to_string());
+        } else if let Some(secret_key) = self.wallet.mint_quote_signing_key(quote_info).await? {
             request.sign(&secret_key)?;
         } else if quote_info.payment_method.is_bolt12() {
             // Bolt12 requires signature
@@ -826,7 +860,44 @@ impl<'a> MintSaga<'a, Initial> {
         // Build signatures for each quote (NUT-20)
         let mut signatures: Vec<Option<String>> = Vec::new();
 
-        for quote in &quote_infos {
+        if active_keyset_id.get_version() == KeySetVersion::Version02 {
+            // A v3 batch is one transaction: every quote is locked and signs
+            // its own input digest over the batch transcript.
+            let mut keys = Vec::with_capacity(quote_infos.len());
+            let mut states = Vec::with_capacity(quote_infos.len());
+            for quote in &quote_infos {
+                let secret_key = match self.wallet.mint_quote_signing_key(quote).await? {
+                    Some(secret_key) => secret_key,
+                    None => external_keys
+                        .and_then(|keys| keys.get(&quote.id))
+                        .cloned()
+                        .ok_or(Error::PubkeyRequired)?,
+                };
+                let fresh = self
+                    .wallet
+                    .refresh_reserved_mint_quote_accounting(
+                        &quote.id,
+                        &self.state_data.operation_id,
+                    )
+                    .await?;
+                states.push(QuoteInputState {
+                    lock_key: secret_key.public_key(),
+                    issued: fresh.amount_issued,
+                });
+                keys.push(secret_key);
+            }
+            let transaction = batch_request.transaction(&states)?;
+            for (index, key) in keys.iter().enumerate() {
+                signatures.push(Some(
+                    sign_input_key_path(&transaction, index, key)?.to_string(),
+                ));
+            }
+        }
+
+        for quote in quote_infos
+            .iter()
+            .filter(|_| active_keyset_id.get_version() != KeySetVersion::Version02)
+        {
             let secret_key = match self.wallet.mint_quote_signing_key(quote).await? {
                 Some(secret_key) => Some(secret_key),
                 None => external_keys.and_then(|keys| keys.get(&quote.id)).cloned(),
@@ -1237,9 +1308,13 @@ mod tests {
 
     use bitcoin::secp256k1::schnorr::Signature;
     use cdk_common::nuts::MintQuoteState;
+    use cdk_common::MintQuoteResponse;
 
     use super::*;
-    use crate::nuts::{BatchMintRequest, BlindSignature, BlindedMessage, MintResponse};
+
+    use crate::nuts::{
+        BatchMintRequest, BlindSignature, BlindedMessage, CurrencyUnit, Keys, MintResponse,
+    };
     use crate::wallet::test_utils::{
         create_test_db, create_test_wallet_with_mock, test_mint_quote, test_mint_url,
         MockMintConnector,
@@ -1602,6 +1677,138 @@ mod tests {
             "npub.cash fallback goes out unsigned"
         );
         assert_eq!(requests[0].1.outputs, requests[2].1.outputs);
+    }
+
+    type TestDb =
+        Arc<dyn cdk_common::database::WalletDatabase<cdk_common::database::Error> + Send + Sync>;
+
+    /// A v3 wallet whose mock reports each quote paid with `amount_issued`
+    async fn v3_issue_fixture(quotes: &[MintQuote], amount_issued: Amount) -> (Wallet, TestDb) {
+        let keys = Keys::new(
+            (0..8u32)
+                .map(|power| {
+                    (
+                        Amount::from(1u64 << power),
+                        crate::nuts::MintSecretKey::generate_bls()
+                            .expect("OS randomness")
+                            .public_key(),
+                    )
+                })
+                .collect(),
+        );
+        let keyset = crate::nuts::KeySet {
+            id: cdk_common::nut02::Id::v3_from_data(&keys, &CurrencyUnit::Sat, 0),
+            unit: CurrencyUnit::Sat,
+            active: Some(true),
+            keys,
+            input_fee_ppk: 0,
+            final_expiry: None,
+        };
+
+        let db = create_test_db().await;
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.set_active_keyset(keyset);
+        for quote in quotes {
+            mock_client.set_mint_quote_status_response(
+                &quote.id,
+                MintQuoteResponse::Bolt11(cdk_common::nut23::MintQuoteBolt11Response {
+                    quote: quote.id.clone(),
+                    request: quote.request.clone(),
+                    amount: quote.amount,
+                    unit: Some(CurrencyUnit::Sat),
+                    method: quote.payment_method.clone(),
+                    amount_paid: quote.amount_paid,
+                    amount_issued,
+                    updated_at: 1,
+                    state: cdk_common::nut23::QuoteState::Paid,
+                    expiry: Some(quote.expiry),
+                    pubkey: quote.secret_key.as_ref().map(SecretKey::public_key),
+                }),
+            );
+            db.add_mint_quote(quote.clone())
+                .await
+                .expect("add mint quote");
+        }
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        (wallet, db)
+    }
+
+    async fn assert_quote_owned_by(db: &TestDb, quote_id: &str, operation_id: uuid::Uuid) {
+        let quote = db
+            .get_mint_quote(quote_id)
+            .await
+            .expect("get mint quote")
+            .expect("mint quote exists");
+        assert_eq!(
+            quote.used_by_operation,
+            Some(operation_id.to_string()),
+            "quote {quote_id} lost its reservation"
+        );
+    }
+
+    #[tokio::test]
+    async fn v3_prepare_keeps_quote_reservation_while_refreshing_accounting() {
+        let quote =
+            paid_signed_mint_quote(test_mint_url(), Amount::from(64), SecretKey::generate());
+        let (wallet, db) = v3_issue_fixture(std::slice::from_ref(&quote), Amount::from(8)).await;
+
+        let prepared = MintSaga::new(&wallet)
+            .prepare(&quote.id, SplitTarget::Values(vec![Amount::from(64)]), None)
+            .await
+            .expect("prepare v3 mint saga");
+        let operation_id = prepared.state_data.operation_id;
+
+        assert_quote_owned_by(&db, &quote.id, operation_id).await;
+        assert!(db
+            .get_saga(&operation_id)
+            .await
+            .expect("get saga")
+            .is_some());
+        match &prepared.state_data.mint_request {
+            PreparedMintRequest::Single { quote_info, .. } => {
+                assert_eq!(quote_info.amount_issued, Amount::from(8));
+                assert_eq!(quote_info.used_by_operation, Some(operation_id.to_string()));
+            }
+            PreparedMintRequest::Batch { .. } => panic!("expected single mint request"),
+        }
+    }
+
+    #[tokio::test]
+    async fn v3_prepare_batch_keeps_quote_reservations_while_refreshing_accounting() {
+        let quotes = [
+            paid_signed_mint_quote(test_mint_url(), Amount::from(64), SecretKey::generate()),
+            paid_signed_mint_quote(test_mint_url(), Amount::from(32), SecretKey::generate()),
+        ];
+        let (wallet, db) = v3_issue_fixture(&quotes, Amount::from(4)).await;
+
+        let prepared = MintSaga::new(&wallet)
+            .prepare_batch(
+                &[quotes[0].id.as_str(), quotes[1].id.as_str()],
+                SplitTarget::None,
+                None,
+                None,
+            )
+            .await
+            .expect("prepare v3 batch mint saga");
+        let operation_id = prepared.state_data.operation_id;
+
+        for quote in &quotes {
+            assert_quote_owned_by(&db, &quote.id, operation_id).await;
+        }
+        assert!(db
+            .get_saga(&operation_id)
+            .await
+            .expect("get saga")
+            .is_some());
+        match &prepared.state_data.mint_request {
+            PreparedMintRequest::Batch { quote_infos, .. } => {
+                for quote_info in quote_infos {
+                    assert_eq!(quote_info.amount_issued, Amount::from(4));
+                    assert_eq!(quote_info.used_by_operation, Some(operation_id.to_string()));
+                }
+            }
+            PreparedMintRequest::Single { .. } => panic!("expected batch mint request"),
+        }
     }
 
     #[tokio::test]

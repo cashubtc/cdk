@@ -537,6 +537,10 @@ pub struct ReceiveOptions {
     pub preimages: Vec<String>,
     /// Metadata
     pub metadata: HashMap<String, String>,
+    /// Minimum seconds before a received v3 proof's `after` leaf (eg the
+    /// sender's refund) may open for the payment to count as received.
+    /// `None` uses the wallet default of one hour.
+    pub v3_min_refund_horizon: Option<u64>,
 }
 
 impl fmt::Debug for ReceiveOptions {
@@ -546,6 +550,7 @@ impl fmt::Debug for ReceiveOptions {
             .field("p2pk_signing_keys", &"[redacted]")
             .field("preimages", &"[redacted]")
             .field("metadata", &self.metadata)
+            .field("v3_min_refund_horizon", &self.v3_min_refund_horizon)
             .finish()
     }
 }

@@ -247,6 +247,7 @@ mod tests {
             p2pk_signing_keys: vec![secret_key],
             preimages: vec!["preimage1".to_string(), "preimage2".to_string()],
             metadata,
+            v3_min_refund_horizon: None,
         };
 
         assert!(matches!(
@@ -267,6 +268,7 @@ mod tests {
             }],
             preimages: Vec::new(),
             metadata: Default::default(),
+            v3_min_refund_horizon: None,
         };
 
         let result: Result<cdk::wallet::ReceiveOptions, _> = options.try_into();

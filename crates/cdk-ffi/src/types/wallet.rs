@@ -384,6 +384,10 @@ pub struct ReceiveOptions {
     pub preimages: Vec<String>,
     /// Metadata
     pub metadata: HashMap<String, String>,
+    /// Minimum seconds before a received v3 proof's refund leaf may open
+    /// (default one hour)
+    #[serde(default)]
+    pub v3_min_refund_horizon: Option<u64>,
 }
 
 impl fmt::Debug for ReceiveOptions {
@@ -418,6 +422,7 @@ impl TryFrom<ReceiveOptions> for cdk::wallet::ReceiveOptions {
             p2pk_signing_keys,
             preimages: opts.preimages,
             metadata: opts.metadata,
+            v3_min_refund_horizon: opts.v3_min_refund_horizon,
         })
     }
 }
@@ -429,6 +434,7 @@ impl From<cdk::wallet::ReceiveOptions> for ReceiveOptions {
             p2pk_signing_keys: opts.p2pk_signing_keys.into_iter().map(Into::into).collect(),
             preimages: opts.preimages,
             metadata: opts.metadata,
+            v3_min_refund_horizon: opts.v3_min_refund_horizon,
         }
     }
 }
