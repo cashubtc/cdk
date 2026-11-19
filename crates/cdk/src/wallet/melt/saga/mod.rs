@@ -355,10 +355,16 @@ impl<'a> MeltSaga<'a, Initial> {
 
         let keyset_policy = self.state_data.keyset_policy;
 
+        let signable_keyset_id = self
+            .wallet
+            .active_keyset_with_policy(keyset_policy)
+            .await
+            .map(|keyset| keyset.id);
+
         let all_keysets = self.wallet.keysets(keyset_policy).await?;
         let active_keyset_ids = all_keysets
             .iter()
-            .filter(|k| k.active.unwrap_or(false))
+            .filter(|k| k.active.unwrap_or(false) && !k.is_expired())
             .map(|k| k.id)
             .collect();
         let keyset_fees_and_amounts = self
@@ -452,12 +458,7 @@ impl<'a> MeltSaga<'a, Initial> {
             });
         }
 
-        let active_keyset_id = all_keysets
-            .iter()
-            .filter(|keyset| keyset.active.unwrap_or(false))
-            .min_by_key(|keyset| keyset.input_fee_ppk)
-            .ok_or(Error::NoActiveKeyset)?
-            .id;
+        let active_keyset_id = signable_keyset_id?;
         let fee_and_amounts = keyset_fees_and_amounts
             .get(&active_keyset_id)
             .ok_or(Error::UnknownKeySet)?;
@@ -865,12 +866,9 @@ impl<'a> MeltSaga<'a, Prepared> {
         );
 
         let keyset_policy = self.state_data.keyset_policy;
-        let active_keyset_id = self
-            .wallet
-            .active_keyset_with_policy(keyset_policy)
-            .await?
-            .id;
         let mut final_proofs = self.state_data.proofs.clone();
+
+        let mut swap_keyset_id = None;
 
         // Handle proofs_to_swap based on skip_swap option
         if !self.state_data.proofs_to_swap.is_empty() {
@@ -898,6 +896,12 @@ impl<'a> MeltSaga<'a, Prepared> {
                     .ok_or(Error::AmountOverflow)?;
                 let mut target_swap_amount =
                     needed.checked_add(input_fee).ok_or(Error::AmountOverflow)?;
+                let active_keyset_id = self
+                    .wallet
+                    .active_keyset_with_policy(keyset_policy)
+                    .await?
+                    .id;
+                swap_keyset_id = Some(active_keyset_id);
                 let swap_output_fees = self
                     .wallet
                     .get_keyset_fees_and_amounts_by_id_with_policy(active_keyset_id, keyset_policy)
@@ -964,6 +968,19 @@ impl<'a> MeltSaga<'a, Prepared> {
             return Err(Error::InsufficientFunds);
         }
 
+        let change_amount = proofs_total - quote_info.amount - actual_input_fee;
+
+        let output_keyset_id = match swap_keyset_id {
+            Some(id) => id,
+            None if change_amount > Amount::ZERO => {
+                self.wallet
+                    .active_keyset_with_policy(keyset_policy)
+                    .await?
+                    .id
+            }
+            None => self.wallet.split_basis_keyset(keyset_policy).await?.id,
+        };
+
         // Set proofs to Pending state before making melt request
         let final_proof_ys = final_proofs.ys()?;
         let existing_proofs = self
@@ -1008,11 +1025,8 @@ impl<'a> MeltSaga<'a, Prepared> {
         )
         .await;
 
-        // Calculate change accounting for input fees
-        let change_amount = proofs_total - quote_info.amount - actual_input_fee;
-
         let premint_secrets = if change_amount <= Amount::ZERO {
-            PreMintSecrets::new(active_keyset_id)
+            PreMintSecrets::new(output_keyset_id)
         } else {
             let num_secrets =
                 ((u64::from(change_amount) as f64).log2().ceil() as u64).max(1) as u32;
@@ -1020,13 +1034,13 @@ impl<'a> MeltSaga<'a, Prepared> {
             let new_counter = self
                 .wallet
                 .localstore
-                .increment_keyset_counter(&active_keyset_id, num_secrets)
+                .increment_keyset_counter(&output_keyset_id, num_secrets)
                 .await?;
 
             let count = new_counter - num_secrets;
 
             PreMintSecrets::from_seed_blank(
-                active_keyset_id,
+                output_keyset_id,
                 count,
                 &self.wallet.seed,
                 change_amount,
@@ -1037,7 +1051,7 @@ impl<'a> MeltSaga<'a, Prepared> {
         let counter_end = self
             .wallet
             .localstore
-            .increment_keyset_counter(&active_keyset_id, 0)
+            .increment_keyset_counter(&output_keyset_id, 0)
             .await?;
         let counter_start = counter_end.saturating_sub(premint_secrets.secrets.len() as u32);
 
@@ -1567,8 +1581,9 @@ mod tests {
     use crate::nuts::{BlindSignature, PreMintSecrets};
     use crate::wallet::saga::new_compensations;
     use crate::wallet::test_utils::{
-        create_test_db, create_test_wallet_with_mock, test_keyset_id, test_melt_quote,
-        test_mint_url, test_proof_info, MockMintConnector,
+        create_test_db, create_test_wallet_with_mock, make_expired_keyset, make_inactive_keyset,
+        mint_signing_keyset, test_keyset, test_keyset_id, test_melt_quote, test_mint_url,
+        test_proof_info, MockMintConnector,
     };
     use crate::wallet::MeltConfirmOptions;
     use crate::{Amount, Error};
@@ -1638,6 +1653,96 @@ mod tests {
             assert!(reserved_ys.insert(reserved[0].y));
         }
         assert_eq!(wallet.total_balance().await.unwrap(), Amount::ZERO);
+    }
+
+    /// A melt that has to swap needs a keyset the mint would sign outputs on,
+    /// and the cached verdict that none exists is not final: the mint does not
+    /// rotate an expired keyset itself, so an operator rotates behind it.
+    #[tokio::test]
+    async fn prepare_melt_requiring_a_swap_refreshes_a_stale_expired_active_keyset() {
+        let mut expired = make_expired_keyset();
+        expired.active = Some(true);
+        let spendable = make_inactive_keyset();
+
+        let db = create_test_db().await;
+        db.add_mint(test_mint_url(), None).await.unwrap();
+        db.update_proofs(
+            vec![test_proof_info(spendable.id, 8, test_mint_url())],
+            vec![],
+        )
+        .await
+        .unwrap();
+
+        let mut quote = test_melt_quote();
+        quote.amount = Amount::from(3);
+        quote.fee_reserve = Amount::ZERO;
+        let quote_id = quote.id.clone();
+        db.add_melt_quote(quote).await.unwrap();
+
+        let mock = Arc::new(MockMintConnector::new());
+        mock.set_mint_keys_response(Ok(vec![expired.clone(), spendable.clone()]));
+        let wallet = create_test_wallet_with_mock(db, mock.clone()).await;
+        wallet.set_metadata_cache_ttl(None);
+        wallet
+            .keysets(KeysetLoadPolicy::CacheThenNetwork)
+            .await
+            .unwrap();
+
+        let rotated = test_keyset();
+        let mut deactivated = expired;
+        deactivated.active = Some(false);
+        mock.set_mint_keys_response(Ok(vec![deactivated, spendable, rotated.clone()]));
+
+        let cached = wallet
+            .keysets(KeysetLoadPolicy::CacheThenNetwork)
+            .await
+            .unwrap();
+        assert!(
+            cached.iter().all(|k| k.id != rotated.id),
+            "the cache has to still be stale for this to test anything"
+        );
+
+        let prepared = MeltSaga::new(&wallet)
+            .prepare(&quote_id, HashMap::new())
+            .await
+            .expect("the rotation the mint published is reachable");
+
+        assert!(!prepared.state_data.proofs_to_swap.is_empty());
+    }
+
+    /// A mint that really has only an expired active keyset is reported as
+    /// such, not as a wallet that holds no keys for an active one.
+    #[tokio::test]
+    async fn prepare_melt_requiring_a_swap_reports_expiry_when_the_mint_confirms_it() {
+        let mut expired = make_expired_keyset();
+        expired.active = Some(true);
+        let spendable = make_inactive_keyset();
+
+        let db = create_test_db().await;
+        db.add_mint(test_mint_url(), None).await.unwrap();
+        db.update_proofs(
+            vec![test_proof_info(spendable.id, 8, test_mint_url())],
+            vec![],
+        )
+        .await
+        .unwrap();
+
+        let mut quote = test_melt_quote();
+        quote.amount = Amount::from(3);
+        quote.fee_reserve = Amount::ZERO;
+        let quote_id = quote.id.clone();
+        db.add_melt_quote(quote).await.unwrap();
+
+        let mock = Arc::new(MockMintConnector::new());
+        mock.set_mint_keys_response(Ok(vec![expired, spendable]));
+        let wallet = create_test_wallet_with_mock(db, mock).await;
+
+        assert!(matches!(
+            MeltSaga::new(&wallet)
+                .prepare(&quote_id, HashMap::new())
+                .await,
+            Err(Error::ExpiredKeyset)
+        ));
     }
 
     #[tokio::test]
@@ -2488,5 +2593,83 @@ mod tests {
             "melt refused after swap: {:?}",
             result.err()
         );
+    }
+
+    /// A melt whose inputs cover the quote exactly leaves no change, so it
+    /// builds no outputs and needs no keyset the mint would sign on.
+    #[tokio::test]
+    async fn exact_melt_without_change_does_not_need_a_signable_keyset() {
+        let mut free = mint_signing_keyset(0);
+        free.active = Some(false);
+        let mut expired = make_expired_keyset();
+        expired.active = Some(true);
+
+        let db = create_test_db().await;
+        db.update_proofs(vec![test_proof_info(free.id, 64, test_mint_url())], vec![])
+            .await
+            .unwrap();
+
+        let mut quote = test_melt_quote();
+        quote.amount = Amount::from(64);
+        quote.fee_reserve = Amount::ZERO;
+        let quote_id = quote.id.clone();
+        db.add_melt_quote(quote).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.enable_mint_signing();
+        mock_client.set_mint_keys_response(Ok(vec![expired, free]));
+        let wallet = create_test_wallet_with_mock(db, mock_client).await;
+
+        let prepared = MeltSaga::new(&wallet)
+            .prepare(&quote_id, HashMap::new())
+            .await
+            .unwrap();
+        assert!(prepared.state_data.proofs_to_swap.is_empty());
+
+        let requested = prepared
+            .request_melt_with_options(MeltConfirmOptions::default())
+            .await
+            .expect("a melt that signs nothing must not need a signable keyset");
+
+        assert!(requested.state_data.premint_secrets.is_empty());
+    }
+
+    /// Change does have to be signed, so the same wallet is refused once the
+    /// melt leaves a fee reserve to return.
+    #[tokio::test]
+    async fn melt_with_change_is_refused_when_no_keyset_can_sign_it() {
+        let mut free = mint_signing_keyset(0);
+        free.active = Some(false);
+        let mut expired = make_expired_keyset();
+        expired.active = Some(true);
+
+        let db = create_test_db().await;
+        db.update_proofs(vec![test_proof_info(free.id, 74, test_mint_url())], vec![])
+            .await
+            .unwrap();
+
+        let mut quote = test_melt_quote();
+        quote.amount = Amount::from(64);
+        quote.fee_reserve = Amount::from(10);
+        let quote_id = quote.id.clone();
+        db.add_melt_quote(quote).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.enable_mint_signing();
+        mock_client.set_mint_keys_response(Ok(vec![expired, free]));
+        let wallet = create_test_wallet_with_mock(db, mock_client).await;
+
+        let prepared = MeltSaga::new(&wallet)
+            .prepare(&quote_id, HashMap::new())
+            .await
+            .unwrap();
+        assert!(prepared.state_data.proofs_to_swap.is_empty());
+
+        let err = prepared
+            .request_melt_with_options(MeltConfirmOptions::default())
+            .await
+            .map(|_| ())
+            .expect_err("the mint has no keyset left to sign change on");
+        assert!(matches!(err, Error::ExpiredKeyset), "got: {err:?}");
     }
 }
