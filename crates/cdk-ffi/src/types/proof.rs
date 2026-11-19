@@ -61,6 +61,9 @@ pub struct Proof {
     pub dleq: Option<ProofDleq>,
     /// Optional P2BK Ephemeral Public Key (NUT-28)
     pub p2pk_e: Option<String>,
+    /// Spend info of a v3 proof, as NUT-00 JSON (`k`, `E`, `K`, `tree`, `u`)
+    #[serde(default)]
+    pub spend_info: Option<String>,
 }
 
 impl fmt::Debug for Proof {
@@ -73,6 +76,10 @@ impl fmt::Debug for Proof {
             .field("witness", &self.witness)
             .field("dleq", &self.dleq)
             .field("p2pk_e", &self.p2pk_e)
+            .field(
+                "spend_info",
+                &self.spend_info.as_ref().map(|_| "[REDACTED]"),
+            )
             .finish()
     }
 }
@@ -87,6 +94,7 @@ impl From<cdk::nuts::Proof> for Proof {
             witness: proof.witness.map(|w| w.into()),
             dleq: proof.dleq.map(|d| d.into()),
             p2pk_e: proof.p2pk_e.map(|p| p.to_string()),
+            spend_info: to_json_field(proof.spend_info.as_ref()),
         }
     }
 }
@@ -115,9 +123,28 @@ impl TryFrom<Proof> for cdk::nuts::Proof {
                 .map(|p| cdk::nuts::PublicKey::from_str(&p))
                 .transpose()
                 .map_err(|e| FfiError::internal(format!("Invalid p2pk_e: {}", e)))?,
-            spend_info: None,
+            spend_info: parse_json_field(proof.spend_info, "spend_info")?,
         })
     }
+}
+
+/// Parse a JSON value passed across the FFI, naming the field on error
+pub(crate) fn parse_json_field<T>(json: Option<String>, field: &str) -> Result<Option<T>, FfiError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    json.map(|json| {
+        serde_json::from_str(&json).map_err(|e| FfiError::internal(format!("Invalid {field}: {e}")))
+    })
+    .transpose()
+}
+
+/// Serialize a value as JSON for the FFI
+pub(crate) fn to_json_field<T>(value: Option<&T>) -> Option<String>
+where
+    T: Serialize,
+{
+    value.and_then(|value| serde_json::to_string(value).ok())
 }
 
 /// Get the Y value (hash_to_curve of secret) for a proof
@@ -649,6 +676,10 @@ pub struct ProofStateUpdate {
     pub state: ProofState,
     /// Optional witness data
     pub witness: Option<Witness>,
+    /// Input digest the witness signed, as hex (v3 proofs only)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[uniffi(default = None)]
+    pub input_digest: Option<String>,
 }
 
 impl From<cdk::nuts::nut07::ProofState> for ProofStateUpdate {
@@ -657,6 +688,7 @@ impl From<cdk::nuts::nut07::ProofState> for ProofStateUpdate {
             y: proof_state.y.to_string(),
             state: proof_state.state.into(),
             witness: proof_state.witness.map(Into::into),
+            input_digest: proof_state.input_digest.map(cdk::util::hex::encode),
         }
     }
 }
@@ -734,6 +766,47 @@ mod tests {
     }
 
     #[test]
+    fn proof_state_update_keeps_v3_witness_and_input_digest() {
+        let raw = cdk::nuts::nut10::nutroot::NutrootWitness::key_path(
+            cdk::nuts::nut10::nutroot::sign_digest(&cdk::nuts::SecretKey::generate(), &[1u8; 32]),
+        )
+        .to_string();
+        let digest = [7u8; 32];
+        let proof_state = cdk::nuts::nut07::ProofState {
+            y: cdk::nuts::nut01::BlsG1PublicKey::hash_to_curve(b"y").into(),
+            state: CdkState::Spent,
+            witness: Some(cdk::nuts::Witness::Nutroot(
+                cdk::nuts::nut10::nutroot::RawNutrootWitness::new(raw.clone()).expect("witness"),
+            )),
+            input_digest: Some(digest),
+        };
+
+        let update: ProofStateUpdate = proof_state.into();
+        assert_eq!(
+            update.input_digest.as_deref(),
+            Some(cdk::util::hex::encode(digest).as_str())
+        );
+        match update.witness.as_ref() {
+            Some(Witness::Nutroot { witness }) => assert_eq!(witness, &raw),
+            witness => panic!("expected nutroot witness, got {witness:?}"),
+        }
+
+        let json = encode_proof_state_update(update.clone()).expect("encode");
+        assert!(json.contains("input_digest"));
+        let decoded = decode_proof_state_update(json).expect("decode");
+        assert_eq!(decoded.input_digest, update.input_digest);
+        match decoded.witness {
+            Some(Witness::Nutroot { witness }) => assert_eq!(witness, raw),
+            witness => panic!("expected nutroot witness, got {witness:?}"),
+        }
+
+        // JSON from before the digest was exported still decodes.
+        let legacy = r#"{"y":"02","state":"Unspent","witness":null}"#;
+        let decoded = decode_proof_state_update(legacy.to_string()).expect("decode legacy");
+        assert!(decoded.input_digest.is_none());
+    }
+
+    #[test]
     fn proof_debug_redacts_spending_secret_and_dleq_scalars() {
         let proof = Proof {
             amount: Amount::new(1),
@@ -747,6 +820,7 @@ mod tests {
                 r: "secret-blinding-factor".to_string(),
             }),
             p2pk_e: None,
+            spend_info: None,
         };
 
         let debug = format!("{proof:?}");
@@ -757,5 +831,29 @@ mod tests {
         assert!(!debug.contains("dleq-e-scalar"));
         assert!(!debug.contains("dleq-s-scalar"));
         assert!(!debug.contains("secret-blinding-factor"));
+    }
+
+    #[test]
+    fn spend_info_round_trips_as_json() {
+        let json = r#"{"k":"930c88ad9dc8531c147862d4ef9c0981200ff1f510c0a9e1c024db725a1d56c6"}"#;
+        let proof = cdk::nuts::Proof {
+            amount: 8.into(),
+            keyset_id: cdk::nuts::Id::from_bytes(&[[2u8].as_slice(), &[1; 32]].concat()).unwrap(),
+            secret: cdk::secret::Secret::new(
+                "0240c186f3e19f6f8cd00db81c5266d5c74ddca48ff848efd0e3e125b2846f30d9",
+            ),
+            c: cdk::nuts::nut01::BlsG1PublicKey::hash_to_curve(b"c").into(),
+            witness: None,
+            dleq: None,
+            p2pk_e: None,
+            spend_info: Some(serde_json::from_str(json).unwrap()),
+        };
+        let ffi = Proof::from(proof.clone());
+        assert_eq!(ffi.spend_info.as_deref(), Some(json));
+        assert_eq!(cdk::nuts::Proof::try_from(ffi.clone()).unwrap(), proof);
+
+        let mut bad = ffi;
+        bad.spend_info = Some("{\"k\":\"00\"}".to_string());
+        assert!(cdk::nuts::Proof::try_from(bad).is_err());
     }
 }

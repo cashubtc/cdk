@@ -215,6 +215,7 @@ mod tests {
             use_p2bk: false,
             p2pk_signing_keys: Vec::new(),
             p2pk_locked_proof_send_mode: P2PKLockedProofSendMode::Swap,
+            nutroot: None,
         };
 
         assert!(options.memo.is_some());
@@ -248,6 +249,7 @@ mod tests {
             preimages: vec!["preimage1".to_string(), "preimage2".to_string()],
             metadata,
             v3_min_refund_horizon: None,
+            v3_payment_request: None,
         };
 
         assert!(matches!(
@@ -269,6 +271,7 @@ mod tests {
             preimages: Vec::new(),
             metadata: Default::default(),
             v3_min_refund_horizon: None,
+            v3_payment_request: None,
         };
 
         let result: Result<cdk::wallet::ReceiveOptions, _> = options.try_into();
@@ -426,6 +429,7 @@ mod tests {
                 r: "b".repeat(64),
             }),
             p2pk_e: None,
+            spend_info: None,
         };
 
         let result: Result<cdk::nuts::Proof, _> = proof.try_into();

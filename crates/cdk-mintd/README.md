@@ -476,7 +476,7 @@ The mint supports rotating keysets to newer versions (e.g., migrating from V1/V2
 **Policy Configuration:**
 By default, the mint will use V2 (Version01) for *new* keysets but will preserve existing active keysets to avoid unnecessary rotation. V3 (Version02, BLS12-381) keysets are opt-in: wallets without BLS support cannot use them. You can force a policy in an initialization or apply document:
 
-- `keyset_version = "v3"` (env `CDK_MINTD_KEYSET_VERSION`): Forces V3. Accepts `"v1"`, `"v2"` or `"v3"`; an active keyset of another version is rotated on startup. Takes precedence over `use_keyset_v2`. Invalid values in either the file or environment cause configuration loading to fail.
+- `keyset_version = "v3"` (env `CDK_MINTD_KEYSET_VERSION`): Forces V3. Accepts `"v1"`, `"v2"` or `"v3"`; an active keyset of another version is rotated on startup. Takes precedence over `use_keyset_v2`. Invalid values in either the file or environment cause configuration loading to fail. V3 keysets require `mint_info.pubkey` (the NUT-06 identity key): without it the mint refuses to start.
 - `use_keyset_v2 = true`: Forces V2. If the current active keyset is V1 or V3, it will be rotated to V2 on startup.
 - `use_keyset_v2 = false`: Forces V1. If the current active keyset is V2 or V3, it will be rotated to V1 on startup.
 - **Unset (Default)**: Preserves the current keyset version. If no keyset exists, V2 is created.

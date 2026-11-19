@@ -314,6 +314,7 @@ async def test_wallet_proofs_by_ys():
                 witness=None,
                 dleq=None,
                 p2pk_e=None,
+                spend_info=None,
             )
 
             # Calculate Y from the proof

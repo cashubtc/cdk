@@ -4,6 +4,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
+use cdk::nuts::nut18::{NutrootOption, PaymentRequest};
 use cdk::nuts::{CurrencyUnit, SecretKey, Token};
 use cdk::util::unix_time;
 use cdk::wallet::{ReceiveOptions, WalletRepository};
@@ -40,6 +41,9 @@ pub struct ReceiveSubCommand {
     /// Allow receiving from untrusted mints (mints not already in the wallet)
     #[arg(long, default_value = "false")]
     allow_untrusted: bool,
+    /// Original CREQ-A or CREQ-B request, for exact-tree verification of v3 payments
+    #[arg(long)]
+    payment_request: Option<String>,
 }
 
 pub async fn receive(
@@ -49,6 +53,17 @@ pub async fn receive(
     unit: &CurrencyUnit,
 ) -> Result<()> {
     let mut signing_keys = Vec::new();
+    let nutroot = sub_command_args
+        .payment_request
+        .as_deref()
+        .map(PaymentRequest::from_str)
+        .transpose()?
+        .map(|request| {
+            request
+                .nutroot
+                .ok_or_else(|| anyhow!("Payment request has no nutroot option"))
+        })
+        .transpose()?;
 
     if !sub_command_args.signing_key.is_empty() {
         let mut s_keys: Vec<SecretKey> = sub_command_args
@@ -76,6 +91,7 @@ pub async fn receive(
                 &sub_command_args.preimage,
                 sub_command_args.allow_untrusted,
                 unit,
+                nutroot.as_ref(),
             )
             .await?
         }
@@ -118,6 +134,7 @@ pub async fn receive(
                     &sub_command_args.preimage,
                     sub_command_args.allow_untrusted,
                     unit,
+                    nutroot.as_ref(),
                 )
                 .await
                 {
@@ -148,6 +165,7 @@ async fn receive_token(
     preimage: &[String],
     allow_untrusted: bool,
     unit: &CurrencyUnit,
+    nutroot: Option<&NutrootOption>,
 ) -> Result<Amount> {
     let token: Token = Token::from_str(token_str)?;
 
@@ -173,6 +191,7 @@ async fn receive_token(
     let receive_options = ReceiveOptions {
         p2pk_signing_keys: signing_keys.to_vec(),
         preimages: preimage.to_vec(),
+        v3_payment_request: nutroot.cloned(),
         ..Default::default()
     };
 
