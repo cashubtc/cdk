@@ -1,3 +1,4 @@
+use crate::mint::nutroot::{has_v3_inputs, verify_v3_proof_inputs};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
@@ -328,6 +329,31 @@ impl MeltSaga<Initial> {
             }
         }
 
+        // Verify the v3 inputs' witnesses (NUT-00 signing rule). The melt
+        // quote output binds the quote's amount plus the selected fee
+        // reserve, read from the stored quote.
+        if has_v3_inputs(melt_request.inputs()) {
+            let verified = quote
+                .amount()
+                .checked_add(&quote.fee_reserve())
+                .map_err(Error::from)
+                .and_then(|amount| Ok(melt_request.transaction(amount.into())?))
+                .and_then(|transaction| {
+                    verify_v3_proof_inputs(&transaction, melt_request.inputs())
+                });
+            let digests = match verified {
+                Ok(digests) => digests,
+                Err(err) => {
+                    tx.rollback().await?;
+                    return Err(err);
+                }
+            };
+            if let Err(err) = tx.add_input_digests(&digests).await {
+                tx.rollback().await?;
+                return Err(Error::Database(err));
+            }
+        }
+
         // Arm the melt execution lock in the same transaction that moves the
         // quote to Pending, so any consistent read of a Pending quote also
         // shows the executor that owns its outcome.
@@ -426,9 +452,9 @@ impl MeltSaga<Initial> {
         );
 
         // Publish proof state changes
-        for pk in input_ys.iter() {
-            self.pubsub.proof_state((*pk, State::Pending));
-        }
+        self.pubsub
+            .proof_states_with_witnesses(&input_ys, State::Pending)
+            .await;
 
         // Publish melt quote status change AFTER transaction commits
         self.pubsub

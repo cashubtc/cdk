@@ -113,6 +113,12 @@ pub enum Error {
     /// Witness missing or invalid
     #[error("Signature missing or invalid")]
     SignatureMissingOrInvalid,
+    /// A v3 keyset needs the mint's NUT-06 identity pubkey
+    #[error("v3 keysets need the mint's NUT-06 identity pubkey to be set")]
+    V3KeysetRequiresMintPubkey,
+    /// A mint request mixes v3 and pre-v3 outputs
+    #[error("A mint request's outputs must all be v3 or all pre-v3")]
+    MixedOutputVersions,
     /// Amountless Invoice Not supported
     #[error("Amount Less Invoice is not allowed")]
     AmountLessNotAllowed,
@@ -581,6 +587,12 @@ pub enum Error {
     /// NUT00 Error
     #[error(transparent)]
     NUT00(#[from] crate::nuts::nut00::Error),
+    /// v3 transaction transcript error
+    #[error(transparent)]
+    Transaction(#[from] crate::nuts::nut00::transaction::Error),
+    /// Nutroot (NUT-10, v3) error
+    #[error(transparent)]
+    Nutroot(#[from] crate::nuts::nut10::nutroot::Error),
     /// Nut01 error
     #[error(transparent)]
     NUT01(#[from] crate::nuts::nut01::Error),
@@ -906,6 +918,8 @@ impl Error {
             Self::AmountError(_) => true,
             Self::DHKE(_) => true, // Crypto errors
             Self::NUT00(_) => true,
+            Self::Transaction(_) => true,
+            Self::Nutroot(_) => true,
             Self::NUT01(_) => true,
             Self::NUT02(_) => true,
             Self::NUT03(_) => true,
@@ -1173,6 +1187,10 @@ impl From<Error> for ErrorResponse {
                 detail: err.to_string(),
             },
             Error::SignatureMissingOrInvalid => ErrorResponse {
+                code: ErrorCode::WitnessMissingOrInvalid,
+                detail: err.to_string(),
+            },
+            Error::Nutroot(_) => ErrorResponse {
                 code: ErrorCode::WitnessMissingOrInvalid,
                 detail: err.to_string(),
             },

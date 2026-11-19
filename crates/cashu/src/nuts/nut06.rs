@@ -305,7 +305,7 @@ pub struct Nuts {
     /// NUT10 Settings
     #[serde(rename = "10")]
     #[serde(default)]
-    pub nut10: SupportedSettings,
+    pub nut10: Nut10Settings,
     /// NUT11 Settings
     #[serde(rename = "11")]
     #[serde(default)]
@@ -399,7 +399,10 @@ impl Nuts {
     /// Nut10 settings
     pub fn nut10(self, supported: bool) -> Self {
         Self {
-            nut10: SupportedSettings { supported },
+            nut10: Nut10Settings {
+                supported,
+                ..self.nut10
+            },
             ..self
         }
     }
@@ -501,6 +504,30 @@ impl Nuts {
 pub struct SupportedSettings {
     /// Setting supported
     pub supported: bool,
+}
+
+/// NUT-10 settings
+///
+/// `leaves` lists the nutroot leaf types the mint understands, as
+/// `leaf_version || leaf_type` hex, the core leaves always included (v3
+/// keysets). It is omitted when empty, so a mint without v3 keysets
+/// advertises exactly what it did before.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Nut10Settings {
+    /// Setting supported
+    pub supported: bool,
+    /// Nutroot leaf types understood
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub leaves: Vec<String>,
+}
+
+impl Nut10Settings {
+    /// Whether the mint lists a leaf type
+    pub fn supports_leaf(&self, signal: &str) -> bool {
+        self.leaves
+            .iter()
+            .any(|leaf| leaf.eq_ignore_ascii_case(signal))
+    }
 }
 
 /// Contact Info

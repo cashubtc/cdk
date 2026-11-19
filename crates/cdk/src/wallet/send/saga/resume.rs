@@ -462,6 +462,7 @@ mod tests {
                 y: proof_y,
                 state: State::Spent,
                 witness: None,
+                input_digest: None,
             }],
         }));
 
@@ -520,6 +521,7 @@ mod tests {
                 y: proof_y,
                 state: State::Unspent,
                 witness: None,
+                input_digest: None,
             }],
         }));
 
@@ -597,6 +599,7 @@ mod tests {
                 y: proof_y,
                 state: State::Spent,
                 witness: None,
+                input_digest: None,
             }],
         }));
 
@@ -654,6 +657,7 @@ mod tests {
                 y: proof_y,
                 state: State::Unspent,
                 witness: None,
+                input_digest: None,
             }],
         }));
 

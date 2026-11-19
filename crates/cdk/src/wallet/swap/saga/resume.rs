@@ -382,6 +382,7 @@ mod tests {
                 y: proof_y,
                 state: State::Unspent, // NOT spent - swap failed
                 witness: None,
+                input_digest: None,
             }],
         }));
 

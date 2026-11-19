@@ -5357,3 +5357,82 @@ async fn test_different_lookup_ids_allow_concurrent_pending() {
 
     // SUCCESS: Different lookup_ids allow concurrent pending!
 }
+
+/// v3 inputs melt only with witnesses over the melt transcript, whose melt
+/// quote output binds the quote amount plus the fee reserve
+#[tokio::test]
+async fn test_v3_melt_requires_witnesses_over_the_quote_and_reserve() {
+    use cdk_common::nuts::nut02::KeySetVersion;
+    use cdk_common::nuts::CheckStateRequest;
+
+    use crate::test_helpers::mint::{mint_v3_test_proofs, sign_v3_inputs};
+
+    let mint = create_test_mint().await.unwrap();
+    mint.rotate_keyset_by_version(
+        CurrencyUnit::Sat,
+        (0..32).map(|i| 2u64.pow(i)).collect(),
+        0,
+        KeySetVersion::Version02,
+        None,
+    )
+    .await
+    .unwrap();
+    let (proofs, keys) = mint_v3_test_proofs(&mint, Amount::from(16)).await.unwrap();
+    let quote = create_test_melt_quote(&mint, Amount::from(4_000)).await;
+    let quote_amount: Amount = quote
+        .amount()
+        .checked_add(&quote.fee_reserve())
+        .unwrap()
+        .into();
+    assert!(quote.fee_reserve().value() > 0);
+
+    // Unsigned.
+    let unsigned = create_test_melt_request(&proofs, &quote);
+    let result = mint.melt(&unsigned).await;
+    assert!(
+        matches!(result, Err(cdk_common::Error::SignatureMissingOrInvalid)),
+        "{:?}",
+        result.err()
+    );
+
+    // Signed over the quote amount without the reserve.
+    let mut short = create_test_melt_request(&proofs, &quote);
+    let transaction = short.transaction(quote.amount().into()).unwrap();
+    sign_v3_inputs(&transaction, short.inputs_mut(), &keys).unwrap();
+    let result = mint.melt(&short).await;
+    assert!(
+        matches!(result, Err(cdk_common::Error::SignatureMissingOrInvalid)),
+        "{:?}",
+        result.err()
+    );
+
+    // Neither attempt left the inputs pending.
+    let ys = proofs.ys().unwrap();
+    let states = mint
+        .check_state(&CheckStateRequest { ys: ys.clone() })
+        .await
+        .unwrap()
+        .states;
+    assert!(states.iter().all(|s| s.state == State::Unspent));
+
+    // Signed over amount + fee reserve: the melt proceeds.
+    let mut request = create_test_melt_request(&proofs, &quote);
+    let transaction = request.transaction(quote_amount).unwrap();
+    sign_v3_inputs(&transaction, request.inputs_mut(), &keys).unwrap();
+    let pending = mint.melt(&request).await.unwrap();
+    let _ = pending.into_pending_response();
+
+    let states = mint
+        .check_state(&CheckStateRequest { ys })
+        .await
+        .unwrap()
+        .states;
+    for (index, state) in states.iter().enumerate() {
+        assert!(matches!(state.state, State::Pending | State::Spent));
+        assert!(state.witness.is_some());
+        assert_eq!(
+            state.input_digest,
+            Some(transaction.input_digest(index).unwrap())
+        );
+    }
+}

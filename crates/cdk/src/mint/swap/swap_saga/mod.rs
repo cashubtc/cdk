@@ -141,13 +141,35 @@ impl<'a> SwapSaga<'a, Initial> {
     /// - `DuplicateOutputs`: The request contains the same output more than once
     /// - `BlindedMessageAlreadySigned`: Output blinded messages were signed for an earlier request
     /// - `OutputsPending`: Output blinded messages are reserved by a request that has not signed them yet
+    #[cfg(test)]
     #[instrument(skip_all)]
     pub async fn setup_swap(
+        self,
+        input_proofs: &Proofs,
+        blinded_messages: &[BlindedMessage],
+        quote_id: Option<QuoteId>,
+        input_verification: crate::mint::Verification,
+    ) -> Result<SwapSaga<'a, SetupComplete>, Error> {
+        self.setup_swap_with_digests(
+            input_proofs,
+            blinded_messages,
+            quote_id,
+            input_verification,
+            &[],
+        )
+        .await
+    }
+
+    /// [`Self::setup_swap`], also recording the input digest each v3 input's
+    /// witness signed (NUT-07)
+    #[instrument(skip_all)]
+    pub async fn setup_swap_with_digests(
         mut self,
         input_proofs: &Proofs,
         blinded_messages: &[BlindedMessage],
         quote_id: Option<QuoteId>,
         input_verification: crate::mint::Verification,
+        input_digests: &[(cdk_common::ProofId, [u8; 32])],
     ) -> Result<SwapSaga<'a, SetupComplete>, Error> {
         let output_verification = self.mint.verify_outputs(blinded_messages).map_err(|err| {
             tracing::debug!("Output verification failed: {:?}", err);
@@ -199,6 +221,13 @@ impl<'a> SwapSaga<'a, Initial> {
             }
         };
 
+        if !input_digests.is_empty() {
+            if let Err(err) = tx.add_input_digests(input_digests).await {
+                tx.rollback().await?;
+                return Err(Error::Database(err));
+            }
+        }
+
         let ys = match input_proofs.ys() {
             Ok(ys) => ys,
             Err(err) => return Err(Error::NUT00(err)),
@@ -240,9 +269,9 @@ impl<'a> SwapSaga<'a, Initial> {
 
         tx.commit().await?;
         // Publish proof state changes
-        for pk in &ys {
-            self.pubsub.proof_state((*pk, State::Pending));
-        }
+        self.pubsub
+            .proof_states_with_witnesses(&ys, State::Pending)
+            .await;
         // Register compensation (uses LIFO via push_front)
         self.compensations.push_front(Box::new(RemoveSwapSetup {
             blinded_secrets: blinded_secrets.clone(),
@@ -441,9 +470,9 @@ impl SwapSaga<'_, Signed> {
 
         tx.commit().await?;
         // Publish proof state changes
-        for pk in &self.state_data.ys {
-            self.pubsub.proof_state((*pk, State::Spent));
-        }
+        self.pubsub
+            .proof_states_with_witnesses(&self.state_data.ys, State::Spent)
+            .await;
         // Clear compensations - swap is complete
         self.compensations.clear();
 

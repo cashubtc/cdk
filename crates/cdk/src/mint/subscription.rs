@@ -259,7 +259,7 @@ impl Spec for MintPubSubSpec {
 
 /// PubsubManager
 #[allow(missing_debug_implementations)]
-pub struct PubSubManager(Pubsub<MintPubSubSpec>);
+pub struct PubSubManager(Pubsub<MintPubSubSpec>, DynMintDatabase);
 
 impl PubSubManager {
     /// Create a new instance
@@ -271,18 +271,63 @@ impl PubSubManager {
         ),
     ) -> Arc<Self> {
         Arc::new_cyclic(|manager| {
-            Self(Pubsub::new(Arc::new(MintPubSubSpec {
-                db: context.0,
-                payment_processors: context.1,
-                signatory: context.2,
-                pubsub_manager: manager.clone(),
-            })))
+            Self(
+                Pubsub::new(Arc::new(MintPubSubSpec {
+                    db: context.0.clone(),
+                    payment_processors: context.1,
+                    signatory: context.2,
+                    pubsub_manager: manager.clone(),
+                })),
+                context.0,
+            )
         })
     }
 
     /// Helper function to emit a ProofState status
     pub fn proof_state<E: Into<ProofState>>(&self, event: E) {
         self.publish(event.into());
+    }
+
+    /// Emit the state of proofs that just became pending or spent
+    ///
+    /// v3 proofs (48-byte `Y`) carry their witness and input digest, read
+    /// from the store, as NUT-07 and NUT-17 require. Pre-v3 proofs are
+    /// emitted as before, without a witness.
+    pub async fn proof_states_with_witnesses(&self, ys: &[ProofId], state: cdk_common::State) {
+        let v3: Vec<ProofId> = ys
+            .iter()
+            .filter(|y| y.as_bytes().len() == 48)
+            .copied()
+            .collect();
+        let (witnesses, digests) = match v3.is_empty() {
+            true => (HashMap::new(), HashMap::new()),
+            false => {
+                let witnesses = match self.1.get_proofs_by_ys(&v3).await {
+                    Ok(proofs) => proofs
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|p| p.y().ok().map(|y| (y, p.witness)))
+                        .collect(),
+                    Err(err) => {
+                        tracing::warn!("Could not load v3 witnesses for notifications: {err}");
+                        HashMap::new()
+                    }
+                };
+                let digests = self.1.get_input_digests(&v3).await.unwrap_or_else(|err| {
+                    tracing::warn!("Could not load v3 input digests for notifications: {err}");
+                    HashMap::new()
+                });
+                (witnesses, digests)
+            }
+        };
+        for y in ys {
+            self.publish(ProofState {
+                y: *y,
+                state,
+                witness: witnesses.get(y).cloned().flatten(),
+                input_digest: digests.get(y).copied(),
+            });
+        }
     }
 
     /// Helper function to publish even of a mint quote being paid

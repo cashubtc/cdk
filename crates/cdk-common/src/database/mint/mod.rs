@@ -533,6 +533,13 @@ pub trait ProofsTransaction {
         &mut self,
         operation_id: &uuid::Uuid,
     ) -> Result<Vec<ProofId>, Self::Err>;
+
+    /// Record the input digest each v3 proof's witness signed (NUT-07)
+    ///
+    /// The proofs must already be stored. Removing a proof removes its
+    /// digest with it.
+    async fn add_input_digests(&mut self, digests: &[(ProofId, [u8; 32])])
+        -> Result<(), Self::Err>;
 }
 
 /// Mint Proof Database trait
@@ -543,6 +550,12 @@ pub trait ProofsDatabase {
 
     /// Get [`Proofs`] by ys
     async fn get_proofs_by_ys(&self, ys: &[ProofId]) -> Result<Vec<Option<Proof>>, Self::Err>;
+
+    /// Get the recorded input digests of v3 proofs, by y
+    async fn get_input_digests(
+        &self,
+        ys: &[ProofId],
+    ) -> Result<HashMap<ProofId, [u8; 32]>, Self::Err>;
     /// Get ys by quote id
     async fn get_proof_ys_by_quote_id(&self, quote_id: &QuoteId)
         -> Result<Vec<ProofId>, Self::Err>;

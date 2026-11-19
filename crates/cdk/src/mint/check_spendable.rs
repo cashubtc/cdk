@@ -40,29 +40,39 @@ impl Mint {
             return Err(Error::UnknownPaymentState);
         }
 
-        // Collect ys that need witness fetching (only spent proofs expose witnesses)
+        // Spent proofs expose their witness. A v3 proof (48-byte G1 `Y`)
+        // also exposes it, with the input digest it signed, while pending
+        // (NUT-07).
         let ys_needing_witness: Vec<_> = check_state
             .ys
             .iter()
             .zip(states.iter())
             .filter_map(|(y, state)| match state {
                 Some(State::Spent) => Some(*y),
+                Some(State::Pending) if y.as_bytes().len() == 48 => Some(*y),
                 _ => None,
             })
             .collect();
 
-        // Build a lookup map for witnesses (only query if there are ys to fetch)
-        let witness_map: HashMap<_, _> = if ys_needing_witness.is_empty() {
-            HashMap::new()
-        } else {
-            self.localstore
-                .get_proofs_by_ys(&ys_needing_witness)
-                .await?
-                .into_iter()
-                .flatten()
-                .filter_map(|p| p.y().ok().map(|y| (y, p.witness)))
-                .collect()
-        };
+        // Build lookup maps (only query if there are ys to fetch)
+        let (witness_map, digest_map): (HashMap<_, _>, HashMap<_, _>) =
+            if ys_needing_witness.is_empty() {
+                (HashMap::new(), HashMap::new())
+            } else {
+                let witnesses = self
+                    .localstore
+                    .get_proofs_by_ys(&ys_needing_witness)
+                    .await?
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|p| p.y().ok().map(|y| (y, p.witness)))
+                    .collect();
+                let digests = self
+                    .localstore
+                    .get_input_digests(&ys_needing_witness)
+                    .await?;
+                (witnesses, digests)
+            };
 
         // Construct response without additional queries
         let proof_states = check_state
@@ -73,6 +83,7 @@ impl Mint {
                 y: *y,
                 state: state.unwrap_or(State::Unspent),
                 witness: witness_map.get(y).cloned().flatten(),
+                input_digest: digest_map.get(y).copied(),
             })
             .collect();
 
