@@ -1,5 +1,8 @@
 
 [info]
+# Background keyset accounting (both values must be positive).
+# keyset_accounting_interval_ms = 1000
+# keyset_accounting_batch_size = 1000
 url = "https://mint.thesimplekid.dev/"
 listen_host = "127.0.0.1"
 listen_port = 8085

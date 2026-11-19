@@ -783,6 +783,18 @@ pub trait Database<Error>:
         Ok(())
     }
 
+    /// Apply at most `batch_size` durable keyset accounting events atomically.
+    ///
+    /// Returns the number applied. Reads must include committed events that have
+    /// not yet been applied. Synchronous backends have nothing to flush.
+    ///
+    /// Backends may skip events locked by other transactions, so zero does not
+    /// guarantee an empty journal. Before downgrading, stop producers and workers,
+    /// wait for their transactions to finish, and verify the journal is empty.
+    async fn flush_keyset_accounting(&self, _batch_size: usize) -> Result<usize, Error> {
+        Ok(0)
+    }
+
     /// Begins a transaction
     async fn begin_transaction(&self) -> Result<Box<dyn Transaction<Error> + Send + Sync>, Error>;
 }

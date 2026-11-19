@@ -475,6 +475,7 @@ fn create_ldk_settings(
             http_cache: cdk_axum::cache::Config::default(),
             enable_info_page: None,
             logging: LoggingConfig::default(),
+            ..Default::default()
         },
         mint_info: cdk_mintd::config::MintInfo::default(),
         limits: cdk_mintd::config::Limits::default(),
@@ -577,6 +578,7 @@ fn create_onchain_settings(port: u16, mint_mnemonic: &Mnemonic) -> cdk_mintd::co
             http_cache: cdk_axum::cache::Config::default(),
             enable_info_page: None,
             logging: LoggingConfig::default(),
+            ..Default::default()
         },
         mint_info: cdk_mintd::config::MintInfo::default(),
         limits: cdk_mintd::config::Limits::default(),

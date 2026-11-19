@@ -64,6 +64,10 @@ pub struct Info {
     /// the database. Unset or `0` disables it; set an interval only when several
     /// mints or signatories share one database.
     pub keyset_refresh_interval_ms: Option<u64>,
+    /// Delay between keyset accounting passes, in milliseconds. Must be positive.
+    pub keyset_accounting_interval_ms: u64,
+    /// Maximum accounting events applied per transaction. Must be positive.
+    pub keyset_accounting_batch_size: usize,
 
     pub http_cache: cache::Config,
 
@@ -95,6 +99,8 @@ impl Default for Info {
             input_fee_ppk: None,
             use_keyset_v2: None,
             keyset_refresh_interval_ms: None,
+            keyset_accounting_interval_ms: 1000,
+            keyset_accounting_batch_size: 1000,
             http_cache: cache::Config::default(),
             enable_info_page: Some(true),
             logging: LoggingConfig::default(),
@@ -1570,6 +1576,19 @@ rgs_url = "https://rgs.example.com/snapshot"
 "#,
         )
         .expect("removed gossip fields must still parse");
+    }
+
+    #[test]
+    fn keyset_accounting_configuration() {
+        let defaults = Info::default();
+        assert_eq!(defaults.keyset_accounting_interval_ms, 1000);
+        assert_eq!(defaults.keyset_accounting_batch_size, 1000);
+        let settings = Settings::try_from_toml(
+            "[info]\nkeyset_accounting_interval_ms = 250\nkeyset_accounting_batch_size = 50",
+        )
+        .unwrap();
+        assert_eq!(settings.info.keyset_accounting_interval_ms, 250);
+        assert_eq!(settings.info.keyset_accounting_batch_size, 50);
     }
 
     #[test]

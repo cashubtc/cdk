@@ -20,6 +20,7 @@ use crate::database::{ConnectionWithTransaction, DatabaseExecutor};
 use crate::pool::{DatabasePool, Pool, PooledResource};
 use crate::stmt::query;
 
+mod accounting;
 mod auth;
 mod completed_operations;
 mod keys;
@@ -182,6 +183,10 @@ impl<RM> MintDatabase<Error> for SQLMintDatabase<RM>
 where
     RM: DatabasePool + 'static,
 {
+    async fn flush_keyset_accounting(&self, batch_size: usize) -> Result<usize, Error> {
+        self.flush_accounting(batch_size).await
+    }
+
     async fn close(&self) -> Result<(), Error> {
         self.pool
             .close()

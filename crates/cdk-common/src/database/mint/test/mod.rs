@@ -14,12 +14,14 @@ use crate::common::IssuerVersion;
 use crate::database::{KVStoreCompareAndSwap, KVStoreDatabase};
 use crate::mint::MintKeySetInfo;
 
+mod accounting;
 mod keys;
 mod mint;
 mod proofs;
 mod saga;
 mod signatures;
 
+pub use self::accounting::*;
 pub use self::keys::*;
 pub use self::mint::*;
 pub use self::proofs::*;
@@ -390,6 +392,7 @@ macro_rules! mint_db_test {
             get_blind_signatures_for_keyset,
             get_blind_signatures_for_quote,
             get_total_issued,
+            accounting_survives_flush_and_rollback,
             get_nonexistent_blind_signatures,
             add_duplicate_blind_signatures,
             reject_blind_signature_amount_over_i64_max,

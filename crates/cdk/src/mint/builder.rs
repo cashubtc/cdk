@@ -16,7 +16,7 @@ use cdk_signatory::signatory::{RotateKeyArguments, Signatory};
 use super::nut17::SupportedMethods;
 use super::nut19::{self, CachedEndpoint};
 use super::verification::validate_custom_payment_method;
-use super::Nuts;
+use super::{KeysetAccountingConfig, Nuts};
 use crate::amount::Amount;
 use crate::cdk_database;
 use crate::mint::Mint;
@@ -75,6 +75,7 @@ pub struct MintBuilder {
     keyset_rotations: Vec<KeysetRotation>,
     max_inputs: usize,
     max_outputs: usize,
+    keyset_accounting: KeysetAccountingConfig,
     max_batch_size: Option<u64>,
     /// Interval at which the built signatory reloads keysets from the shared
     /// database. `None` (the default) disables the reload for a single-instance
@@ -123,9 +124,16 @@ impl MintBuilder {
             keyset_rotations: Vec::new(),
             max_inputs: 1000,
             max_outputs: 1000,
+            keyset_accounting: KeysetAccountingConfig::default(),
             max_batch_size: None,
             keyset_refresh_interval: None,
         }
+    }
+
+    /// Configure background keyset accounting. Validated when building the mint.
+    pub fn with_keyset_accounting(mut self, config: KeysetAccountingConfig) -> Self {
+        self.keyset_accounting = config;
+        self
     }
 
     /// Set use keyset v2
@@ -606,6 +614,7 @@ impl MintBuilder {
         #[allow(unused_mut)] mut self,
         signatory: Arc<dyn Signatory + Send + Sync>,
     ) -> Result<Mint, Error> {
+        self.keyset_accounting.validate()?;
         // Check active keysets and rotate if necessary
         let active_keysets = signatory.keysets().await?;
 
@@ -732,7 +741,8 @@ impl MintBuilder {
                 self.max_inputs,
                 self.max_outputs,
             )
-            .await;
+            .await?
+            .with_keyset_accounting(self.keyset_accounting);
         }
         Mint::new(
             self.mint_info,
@@ -742,7 +752,8 @@ impl MintBuilder {
             self.max_inputs,
             self.max_outputs,
         )
-        .await
+        .await?
+        .with_keyset_accounting(self.keyset_accounting)
     }
 
     /// Build the mint with the provided keystore and seed
@@ -751,6 +762,7 @@ impl MintBuilder {
         keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
         seed: &[u8],
     ) -> Result<Mint, Error> {
+        self.keyset_accounting.validate()?;
         let in_memory_signatory = Arc::new(
             cdk_signatory::db_signatory::DbSignatory::new(
                 keystore,

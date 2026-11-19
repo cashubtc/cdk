@@ -573,6 +573,12 @@ pub(crate) fn validate_settings(settings: &config::Settings) -> Result<()> {
     validate_auth_config(settings)?;
     validate_management_rpc_config(settings)?;
     validate_prometheus_config(settings)?;
+    cdk::mint::KeysetAccountingConfig {
+        interval: Duration::from_millis(settings.info.keyset_accounting_interval_ms),
+        batch_size: settings.info.keyset_accounting_batch_size,
+    }
+    .validate()
+    .map_err(|err| anyhow!("Invalid keyset accounting configuration: {err}"))?;
 
     Ok(())
 }
@@ -1185,6 +1191,10 @@ fn configure_basic_info(settings: &config::Settings, mint_builder: MintBuilder) 
     }
 
     builder = builder.with_keyset_v2(settings.info.use_keyset_v2);
+    builder = builder.with_keyset_accounting(cdk::mint::KeysetAccountingConfig {
+        interval: Duration::from_millis(settings.info.keyset_accounting_interval_ms),
+        batch_size: settings.info.keyset_accounting_batch_size,
+    });
 
     builder = builder.with_keyset_refresh_interval(
         settings

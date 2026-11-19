@@ -15,6 +15,8 @@ pub type MintSqliteAuthDatabase = SQLMintAuthDatabase<SqliteConnectionManager>;
 
 #[cfg(test)]
 mod test {
+    mod accounting;
+
     use std::fs::remove_file;
     use std::str::FromStr;
     use std::sync::Arc;

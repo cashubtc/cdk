@@ -363,6 +363,9 @@ pub async fn new_wallet_pg_database(conn_str: &str) -> Result<WalletPgDatabase, 
 
 #[cfg(test)]
 mod test {
+    #[cfg(feature = "mint")]
+    mod accounting;
+
     use cdk_common::{mint_db_test, wallet_db_test, QuoteId};
 
     use super::*;
