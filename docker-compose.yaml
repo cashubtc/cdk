@@ -57,33 +57,9 @@ services:
       - grafana
     networks:
       - cdk
-    # Uncomment when using PostgreSQL:
-    # depends_on:
-    #   - postgres
 
-
-  # PostgreSQL database service
-  # Enable with: docker-compose --profile postgres up
-  # postgres:
-  #   image: postgres:16-alpine
-  #   container_name: mint_postgres
-  #   restart: unless-stopped
-  #   profiles:
-  #     - postgres
-  #   environment:
-  #     - POSTGRES_USER=cdk_user
-  #     - POSTGRES_PASSWORD=cdk_password
-  #     - POSTGRES_DB=cdk_mint
-  #     - POSTGRES_INITDB_ARGS=--encoding=UTF-8 --lc-collate=C --lc-ctype=C
-  #   ports:
-  #     - "5432:5432"
-  #   volumes:
-  #     - postgres_data:/var/lib/postgresql/data
-  #   healthcheck:
-  #     test: ["CMD-SHELL", "pg_isready -U cdk_user -d cdk_mint"]
-  #     interval: 10s
-  #     timeout: 5s
-  #     retries: 5
+  # For PostgreSQL, use docker-compose.postgres.yaml and follow the setup
+  # instructions in crates/cdk-mintd/README.md.
 
   # Redis cache service (optional)
   # Enable with: docker-compose --profile redis up
@@ -106,8 +82,6 @@ services:
 
 volumes:
   mintd_data:
-    driver: local
-  postgres_data:
     driver: local
   ldk_node_data:
     driver: local

@@ -71,6 +71,8 @@ services:
 
   # PostgreSQL database service
   # Enable with: docker-compose --profile postgres up
+  # Set POSTGRES_PASSWORD before enabling this profile. See the PostgreSQL
+  # setup instructions in crates/cdk-mintd/README.md.
   postgres:
     image: postgres:16-alpine
     container_name: mint_postgres
@@ -79,11 +81,9 @@ services:
       - postgres
     environment:
       - POSTGRES_USER=cdk_user
-      - POSTGRES_PASSWORD=cdk_password
+      - POSTGRES_PASSWORD
       - POSTGRES_DB=cdk_mint
       - POSTGRES_INITDB_ARGS=--encoding=UTF-8 --lc-collate=C --lc-ctype=C
-    ports:
-      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:

@@ -761,6 +761,22 @@ mnemonic override.
 
 For complete configuration options, see the [example configuration file](./example.config.toml).
 
+## PostgreSQL with Docker Compose
+
+For a new development mint with the fake payment backend, run from the repository root:
+
+```bash
+export POSTGRES_PASSWORD="$(openssl rand -hex 32)"
+export CDK_MINTD_POSTGRES_URL="postgresql://cdk_user:${POSTGRES_PASSWORD}@postgres:5432/cdk_mint"
+export CDK_MINTD_INIT_MODE=new
+export CDK_MINTD_MNEMONIC='your stable BIP39 mnemonic'
+docker compose -f docker-compose.postgres.yaml up -d
+```
+
+Save the password and mnemonic securely and reuse them on subsequent starts.
+If supplying your own password, percent-encode reserved characters in the URL.
+PostgreSQL is reachable at `postgres:5432` inside the Compose network only.
+
 ## Documentation
 
 - **[Configuration Examples](./example.config.toml)** - Complete configuration reference
