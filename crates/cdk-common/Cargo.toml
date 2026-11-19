@@ -21,7 +21,7 @@ prometheus = ["cdk-prometheus/default"]
 # `http` selects the default `bitreq` backend so any crate enabling HTTP support
 # gets a working client. Add `cdk-http-client/reqwest` to override (it takes
 # precedence; the backends are additive).
-http = ["dep:cdk-http-client", "cdk-http-client/bitreq"]
+http = ["dep:cdk-http-client", "cdk-http-client/bitreq", "dep:jsonwebtoken"]
 grpc = ["dep:tonic"]
 # Keep cdk-common's bip353 in lockstep with the http client's, so the
 # `Transport::resolve_dns_txt` gate (and the rate limiter's decorator of it)
@@ -46,7 +46,7 @@ serde_json.workspace = true
 web-time.workspace = true
 parking_lot = "0.12.5"
 paste.workspace = true
-jsonwebtoken.workspace = true
+jsonwebtoken = { workspace = true, optional = true }
 tonic = { workspace = true, optional = true }
 cdk-http-client = { workspace = true, default-features = false, optional = true }
 
@@ -56,7 +56,8 @@ tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-t
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 uuid = { workspace = true, features = ["js"], optional = true }
 getrandom = { version = "0.4", features = ["wasm_js"] }
-# jsonwebtoken pulls getrandom 0.2, which refuses to build for wasm32 until
+# bitcoin's `rand-std` feature (secp256k1 -> rand 0.8) and, with `http`,
+# jsonwebtoken pull getrandom 0.2, which refuses to build for wasm32 until
 # something enables `js`. The cdk crate does that through ring, but this crate
 # has to build on its own too.
 getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }
