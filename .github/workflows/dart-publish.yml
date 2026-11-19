@@ -289,6 +289,37 @@ jobs:
     runs-on: ubuntu-latest
     needs: [dart-sync-sources, dart-build-native]
     steps:
+      # Release tooling follows the workflow revision, not the older source tag
+      # whose artifacts are being built.
+      - name: Checkout release tooling
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: release-tools
+          persist-credentials: false
+
+      - name: Generate CDK release notes
+        env:
+          GH_TOKEN: ${{ secrets.FFI_DEPLOY_KEY }}
+          BINDING_REPO: ${{ vars.CDK_DART_REPO }}
+          NIGHTLY: ${{ inputs.nightly }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          NOTES_OPTIONS=()
+          if [[ "${NIGHTLY}" == "true" ]]; then
+            NOTES_OPTIONS+=(--nightly)
+          fi
+          if [[ "${PRERELEASE}" == "true" ]]; then
+            NOTES_OPTIONS+=(--prerelease)
+          fi
+          python3 release-tools/.github/scripts/ffi-release-notes.py \
+            --binding-repo "${BINDING_REPO}" \
+            --source-repo "${GITHUB_REPOSITORY}" \
+            --tag "${TAG}" \
+            --source-ref "${CDK_REF}" \
+            --output "${GITHUB_WORKSPACE}/release-notes.md" \
+            "${NOTES_OPTIONS[@]}"
+
       - name: Clone cdk-dart
         env:
           FFI_DEPLOY_KEY: ${{ secrets.FFI_DEPLOY_KEY }}
@@ -403,12 +434,11 @@ jobs:
           GH_TOKEN: ${{ secrets.FFI_DEPLOY_KEY }}
         run: |
           COMMIT_SHA=$(git -C cdk-dart rev-parse HEAD)
-          RELEASE_OPTIONS=(--generate-notes)
+          RELEASE_OPTIONS=(--notes-file "${GITHUB_WORKSPACE}/release-notes.md")
           if [[ "${{ inputs.nightly }}" == "true" ]]; then
             RELEASE_OPTIONS+=(
               --prerelease
               --latest=false
-              --notes "Nightly bindings built from CDK commit ${CDK_REF}: https://github.com/${GITHUB_REPOSITORY}/commit/${CDK_REF}"
             )
           elif [[ "${{ inputs.prerelease }}" == "true" ]]; then
             RELEASE_OPTIONS+=(--prerelease)
@@ -434,9 +464,10 @@ jobs:
 
           DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')
           echo "DEFAULT_BRANCH=${DEFAULT_BRANCH}" >> "$GITHUB_ENV"
-          git checkout "${DEFAULT_BRANCH}"
-          git merge "${RELEASE_BRANCH}" --squash
-          git commit -m "release: ${TAG}"
+          git -c "http.extraheader=$(auth_header)" fetch origin "${DEFAULT_BRANCH}"
+          git checkout -B "${DEFAULT_BRANCH}" "origin/${DEFAULT_BRANCH}"
+          # Keep the tagged release commit in the default branch's ancestry.
+          git merge --no-ff "${RELEASE_BRANCH}" -m "release: ${TAG}"
           git -c "http.extraheader=$(auth_header)" push origin "${DEFAULT_BRANCH}"
 
       - name: Clean up release branch
