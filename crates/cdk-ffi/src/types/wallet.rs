@@ -269,6 +269,7 @@ impl TryFrom<SendOptions> for cdk::wallet::SendOptions {
             use_p2bk: opts.use_p2bk,
             p2pk_signing_keys,
             p2pk_locked_proof_send_mode: opts.p2pk_locked_proof_send_mode.into(),
+            nutroot: None,
         })
     }
 }
@@ -423,6 +424,7 @@ impl TryFrom<ReceiveOptions> for cdk::wallet::ReceiveOptions {
             preimages: opts.preimages,
             metadata: opts.metadata,
             v3_min_refund_horizon: opts.v3_min_refund_horizon,
+            v3_payment_request: None,
         })
     }
 }

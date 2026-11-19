@@ -244,7 +244,7 @@ impl SupabaseWalletDatabase {
     /// This must match the latest `schema_version` value set in the migration files.
     /// When adding new migrations, update this constant and set the same value
     /// in the new migration's `INSERT INTO schema_info` statement.
-    pub const REQUIRED_SCHEMA_VERSION: u32 = 11;
+    pub const REQUIRED_SCHEMA_VERSION: u32 = 12;
 
     /// Get the full database schema SQL
     ///
@@ -2898,6 +2898,8 @@ struct ProofTable {
     created_by_operation: Option<String>,
     #[serde(default)]
     p2pk_e: Option<String>,
+    #[serde(default)]
+    spend_info: Option<String>,
     /// Extra fields from other applications (captured during deserialization, ignored during serialization)
     #[serde(default, skip_serializing, flatten)]
     _extra: serde_json::Map<String, serde_json::Value>,
@@ -2957,7 +2959,11 @@ impl TryInto<ProofInfo> for ProofTable {
                     .map(|s| PublicKey::from_hex(&s))
                     .transpose()
                     .map_err(|_| DatabaseError::Internal("Invalid p2pk_e".into()))?,
-                spend_info: None,
+                spend_info: self
+                    .spend_info
+                    .filter(|s| !s.trim().is_empty())
+                    .map(|s| serde_json::from_str(&s))
+                    .transpose()?,
             },
             used_by_operation: self
                 .used_by_operation
@@ -3013,6 +3019,11 @@ impl TryFrom<ProofInfo> for ProofTable {
             used_by_operation: p.used_by_operation.map(|u| u.to_string()),
             created_by_operation: p.created_by_operation.map(|u| u.to_string()),
             p2pk_e: p.proof.p2pk_e.map(|e| hex::encode(e.to_bytes())),
+            spend_info: p
+                .proof
+                .spend_info
+                .as_ref()
+                .and_then(|info| serde_json::to_string(info).ok()),
             _extra: Default::default(),
         })
     }
@@ -3505,6 +3516,7 @@ mod tests {
         assert!(schema_sql
             .contains("ALTER TABLE proof ADD COLUMN IF NOT EXISTS derivation_index INTEGER"));
         assert!(schema_sql.contains("ALTER TABLE proof ADD COLUMN IF NOT EXISTS p2pk_e TEXT"));
+        assert!(schema_sql.contains("ALTER TABLE proof ADD COLUMN IF NOT EXISTS spend_info TEXT"));
         assert!(schema_sql.contains(
             "derivation_index = COALESCE(\n                EXCLUDED.derivation_index,\n                existing.derivation_index"
         ));

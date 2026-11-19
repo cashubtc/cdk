@@ -181,6 +181,7 @@ mod tests {
                 derived_secret_count: 1,
                 fee: Amount::from(0),
                 p2bk_secret_keys: None,
+                nutroot_spend_info: vec![],
             },
             saga: swap_saga(operation_id),
         };
