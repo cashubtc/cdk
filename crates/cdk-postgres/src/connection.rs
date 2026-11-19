@@ -12,6 +12,7 @@ use tokio::sync::Mutex;
 use tokio_postgres::Client;
 
 use super::backend::database_error;
+use super::config::ConfigError;
 use super::db::{pg_batch, pg_execute, pg_fetch_all, pg_fetch_one, pg_pluck};
 
 #[derive(Debug, thiserror::Error)]
@@ -128,7 +129,15 @@ impl PostgresConnection {
         Ok(())
     }
 
-    async fn begin(mut self, migration: bool) -> Result<PostgresTransaction, Error> {
+    /// Begin a transaction, bootstrapping the schema first for migrations.
+    ///
+    /// `legacy_schema` is the name earlier releases derived from the same
+    /// configuration, when it differs from the decoded schema.
+    async fn begin(
+        mut self,
+        migration: bool,
+        legacy_schema: Option<&str>,
+    ) -> Result<PostgresTransaction, Error> {
         {
             let slot = self.lease.get_mut();
             let lease = slot
@@ -147,6 +156,22 @@ impl PostgresConnection {
                     "SELECT pg_advisory_xact_lock(hashtextextended('cdk:migrations:' || current_database() || ':' || COALESCE($1::text, current_schema()), 0))",
                     &[&self.schema],
                 ).await.map_err(database_error)?;
+                if let Some(legacy) = legacy_schema {
+                    // Never start against a new, empty schema while existing
+                    // data remains under the name earlier releases used.
+                    let exists: bool = lease
+                        .client()
+                        .query_one(
+                            "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1)",
+                            &[&legacy],
+                        )
+                        .await
+                        .map_err(database_error)?
+                        .get(0);
+                    if exists {
+                        return Err(database_error(ConfigError::LegacySchema));
+                    }
+                }
                 if let Some(schema) = self.schema.as_ref() {
                     let identifier = schema.replace('"', "\"\"");
                     lease
@@ -162,8 +187,11 @@ impl PostgresConnection {
         Ok(PostgresTransaction(self))
     }
 
-    pub(crate) async fn begin_migration(self) -> Result<PostgresTransaction, Error> {
-        self.begin(true).await
+    pub(crate) async fn begin_migration(
+        self,
+        legacy_schema: Option<&str>,
+    ) -> Result<PostgresTransaction, Error> {
+        self.begin(true, legacy_schema).await
     }
 
     async fn run<T, F>(&self, operation: F) -> Result<T, Error>
@@ -216,7 +244,7 @@ impl PostgresConnection {
 impl SqlConnection for PostgresConnection {
     type Transaction = PostgresTransaction;
     async fn begin_transaction(self) -> Result<Self::Transaction, Error> {
-        self.begin(false).await
+        self.begin(false, None).await
     }
 }
 

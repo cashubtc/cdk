@@ -94,3 +94,23 @@ fn keyword_password_decoding_matches_the_driver_at_boundaries() {
         );
     }
 }
+
+#[test]
+fn quoted_or_escaped_schema_records_the_legacy_literal_name() {
+    for (input, schema, legacy) in [
+        ("host=localhost schema=mint", "mint", None),
+        ("host=localhost schema='mint'", "mint", Some("'mint'")),
+        (r"host=localhost schema=mi\nt", "mint", Some(r"mi\nt")),
+        (
+            "postgres://localhost/db schema='mint'",
+            "mint",
+            Some("'mint'"),
+        ),
+        // Earlier releases rejected schema query parameters, so no legacy name.
+        ("postgres://localhost/db?schema=%27mint%27", "'mint'", None),
+    ] {
+        let config = PgConfig::from(input);
+        assert_eq!(config.schema.as_deref(), Some(schema), "{input}");
+        assert_eq!(config.legacy_schema.as_deref(), legacy, "{input}");
+    }
+}

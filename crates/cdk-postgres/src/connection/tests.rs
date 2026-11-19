@@ -597,3 +597,57 @@ fn cleanup_count(reason: &str) -> f64 {
         .map(|metric| metric.get_counter().value())
         .sum()
 }
+
+#[tokio::test]
+async fn migration_refuses_a_quoted_schema_whose_legacy_literal_exists() {
+    let name = format!("legacy_{}", uuid::Uuid::new_v4().simple());
+    let literal = format!("'{name}'");
+    let (client, connection) = tokio_postgres::connect(&url(), tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    tokio::spawn(connection);
+    let identifier = literal.replace('"', "\"\"");
+    client
+        .batch_execute(&format!("CREATE SCHEMA \"{identifier}\""))
+        .await
+        .unwrap();
+
+    let config = PgConfig::from(format!("{} schema='{name}'", url()).as_str());
+    assert_eq!(config.legacy_schema.as_deref(), Some(literal.as_str()));
+    let error = PostgresBackend::new(config)
+        .unwrap()
+        .begin_migration()
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("literal name"), "{error}");
+
+    // The decoded schema must not have been created as an empty replacement.
+    let created: bool = client
+        .query_one(
+            "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1)",
+            &[&name],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert!(!created);
+
+    // Without the legacy schema, the quoted configuration starts normally.
+    client
+        .batch_execute(&format!("DROP SCHEMA \"{identifier}\""))
+        .await
+        .unwrap();
+    let config = PgConfig::from(format!("{} schema='{name}'", url()).as_str());
+    PostgresBackend::new(config)
+        .unwrap()
+        .begin_migration()
+        .await
+        .unwrap()
+        .commit()
+        .await
+        .unwrap();
+    client
+        .batch_execute(&format!("DROP SCHEMA \"{name}\""))
+        .await
+        .unwrap();
+}

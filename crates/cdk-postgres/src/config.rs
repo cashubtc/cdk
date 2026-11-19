@@ -10,6 +10,7 @@ mod connection_string;
 pub struct PgConfig {
     pub(crate) url: String,
     pub(crate) schema: Option<String>,
+    pub(crate) legacy_schema: Option<String>,
     tls_mode: Option<String>,
     inferred_tls_mode: Option<String>,
     invalid_connection_string: bool,
@@ -40,6 +41,12 @@ pub(crate) enum ConfigError {
     Schema,
     #[error("Invalid PostgreSQL connection string")]
     ConnectionString,
+    #[error(
+        "The configured PostgreSQL schema name contains quotes or escapes, and a schema \
+         with that literal name exists. Earlier versions used the literal name; rename \
+         that schema to the unquoted name, or drop it if unused, before starting"
+    )]
+    LegacySchema,
 }
 
 // Retain the driver cause for programmatic inspection without printing a
@@ -67,11 +74,12 @@ impl PgConfig {
     ) -> Self {
         let parsed = connection_string::parse(conn_str);
         let invalid_connection_string = parsed.is_err();
-        let (url, schema, inferred_tls_mode) = parsed.unwrap_or_default();
+        let parsed = parsed.unwrap_or_default();
         Self {
-            url,
-            schema,
-            inferred_tls_mode,
+            url: parsed.url,
+            schema: parsed.schema,
+            legacy_schema: parsed.legacy_schema,
+            inferred_tls_mode: parsed.tls_mode,
             invalid_connection_string,
             tls_mode: tls_mode.map(str::to_lowercase),
             max_connections: max_connections.unwrap_or(20),

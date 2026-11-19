@@ -82,6 +82,7 @@ impl SqlBackend for PostgresBackend {
     async fn begin_migration(&self) -> Result<Self::Transaction, Error> {
         let conn = self.acquire().await?;
         // Bootstrap before selecting a schema that may not exist yet.
-        conn.begin_migration().await
+        conn.begin_migration(self.config.legacy_schema.as_deref())
+            .await
     }
 }

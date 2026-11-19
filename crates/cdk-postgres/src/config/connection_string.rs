@@ -4,7 +4,21 @@
 //! strings resembling option names inside passwords must never be normalized.
 use super::ConfigError;
 
-type Parsed = (String, Option<String>, Option<String>);
+/// Connection string with CDK extensions removed.
+#[derive(Debug, Default)]
+pub(super) struct Parsed {
+    /// Driver connection string.
+    pub(super) url: String,
+    /// Decoded schema name.
+    pub(super) schema: Option<String>,
+    /// The schema name as earlier releases used it, when decoding changed it.
+    ///
+    /// Earlier releases took the text after `schema=` literally, so quotes and
+    /// escapes became part of the name.
+    pub(super) legacy_schema: Option<String>,
+    /// TLS mode from `sslmode`.
+    pub(super) tls_mode: Option<String>,
+}
 
 fn driver_tls_mode(mode: &str) -> Result<&str, ConfigError> {
     match mode.to_ascii_lowercase().as_str() {
@@ -23,12 +37,19 @@ pub(super) fn parse(input: &str) -> Result<Parsed, ConfigError> {
         // Preserve the existing `postgres://... schema=...` constructor syntax.
         // Whitespace inside a URI itself must be percent-encoded.
         let (uri, suffix) = input.split_once(char::is_whitespace).unwrap_or((input, ""));
-        let (remaining, suffix_schema, suffix_tls) = keywords(suffix)?;
-        if !remaining.trim().is_empty() || suffix_tls.is_some() {
+        let suffix = keywords(suffix)?;
+        if !suffix.url.trim().is_empty() || suffix.tls_mode.is_some() {
             return Err(ConfigError::ConnectionString);
         }
-        let (url, schema, tls) = uri_parameters(uri)?;
-        Ok((url, suffix_schema.or(schema), tls))
+        let parsed = uri_parameters(uri)?;
+        match suffix.schema {
+            Some(schema) => Ok(Parsed {
+                schema: Some(schema),
+                legacy_schema: suffix.legacy_schema,
+                ..parsed
+            }),
+            None => Ok(parsed),
+        }
     } else {
         keywords(input)
     }
@@ -36,7 +57,10 @@ pub(super) fn parse(input: &str) -> Result<Parsed, ConfigError> {
 
 fn uri_parameters(uri: &str) -> Result<Parsed, ConfigError> {
     let Some((base, query)) = uri.split_once('?') else {
-        return Ok((uri.to_owned(), None, None));
+        return Ok(Parsed {
+            url: uri.to_owned(),
+            ..Default::default()
+        });
     };
     let mut schema = None;
     let mut tls = None;
@@ -65,12 +89,20 @@ fn uri_parameters(uri: &str) -> Result<Parsed, ConfigError> {
         true => base.to_owned(),
         false => format!("{base}?{}", parameters.join("&")),
     };
-    Ok((url, schema, tls))
+    // Earlier releases did not recognize URI query parameters, so there is
+    // no legacy interpretation to preserve here.
+    Ok(Parsed {
+        url,
+        schema,
+        legacy_schema: None,
+        tls_mode: tls,
+    })
 }
 
 fn keywords(mut input: &str) -> Result<Parsed, ConfigError> {
     let mut output = String::new();
     let mut schema = None;
+    let mut legacy_schema = None;
     let mut tls = None;
     while !input.trim_start().is_empty() {
         input = input.trim_start();
@@ -112,6 +144,7 @@ fn keywords(mut input: &str) -> Result<Parsed, ConfigError> {
                     .ok_or(ConfigError::ConnectionString)?
                     .to_owned();
                 if key == "schema" {
+                    legacy_schema = (raw_value != decoded).then(|| raw_value.to_owned());
                     schema = Some(decoded);
                 } else {
                     if !output.is_empty() {
@@ -130,5 +163,10 @@ fn keywords(mut input: &str) -> Result<Parsed, ConfigError> {
         }
         input = &input[token_end..];
     }
-    Ok((output, schema, tls))
+    Ok(Parsed {
+        url: output,
+        schema,
+        legacy_schema,
+        tls_mode: tls,
+    })
 }
