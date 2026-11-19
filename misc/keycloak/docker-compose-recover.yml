@@ -11,7 +11,7 @@ services:
       - keycloak_network
 
   keycloak:
-    image: quay.io/keycloak/keycloak:25.0.6
+    image: quay.io/keycloak/keycloak:26.8.2-3
     command: start --import-realm
     volumes:
       - ./keycloak-export:/opt/keycloak/data/import
@@ -22,8 +22,7 @@ services:
       KC_HTTP_ENABLED: true
       KC_HOSTNAME_STRICT_HTTPS: false
       KC_HEALTH_ENABLED: true
-      KEYCLOAK_ADMIN: admin
-      KEYCLOAK_ADMIN_PASSWORD: admin
+      JAVA_OPTS_APPEND: "-XX:-UseBASE64Intrinsics"
       KC_DB: postgres
       KC_DB_URL: jdbc:postgresql://postgres/cashu
       KC_DB_USERNAME: cashu
