@@ -932,7 +932,9 @@ impl Mint {
                     MeltQuoteResponse::Onchain(response)
                 }
                 _ => {
-                    let custom_response: MeltQuoteCustomResponse<QuoteId> = quote.clone().into();
+                    let mut custom_response: MeltQuoteCustomResponse<QuoteId> =
+                        quote.clone().into();
+                    custom_response.change = change;
                     MeltQuoteResponse::Custom((quote.payment_method.clone(), custom_response))
                 }
             };
