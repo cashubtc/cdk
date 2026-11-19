@@ -121,6 +121,10 @@ pub struct PaymentRequest {
     /// Optional NUT-10 locking condition requested for the payment proofs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nut10: Option<Nut10SecretRequest>,
+    /// Optional nutroot locking condition for proofs on v3 keysets. A
+    /// request without it cannot be paid from a v3 keyset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nutroot: Option<super::NutrootOption>,
 }
 
 impl PaymentRequest {
@@ -193,6 +197,7 @@ pub struct PaymentRequestBuilder {
     description: Option<String>,
     transports: Vec<Transport>,
     nut10: Option<Nut10SecretRequest>,
+    nutroot: Option<super::NutrootOption>,
 }
 
 impl PaymentRequestBuilder {
@@ -290,6 +295,12 @@ impl PaymentRequestBuilder {
         self
     }
 
+    /// Set the nutroot locking option, for payments from v3 keysets
+    pub fn nutroot(mut self, nutroot: super::NutrootOption) -> Self {
+        self.nutroot = Some(nutroot);
+        self
+    }
+
     /// Build the PaymentRequest
     pub fn build(self) -> PaymentRequest {
         PaymentRequest {
@@ -303,6 +314,7 @@ impl PaymentRequestBuilder {
             description: self.description,
             transports: self.transports,
             nut10: self.nut10,
+            nutroot: self.nutroot,
         }
     }
 }
@@ -372,6 +384,7 @@ mod tests {
             description: None,
             transports: vec![transport.clone()],
             nut10: None,
+            nutroot: None,
         };
 
         let request_str = request.to_string();
@@ -987,6 +1000,7 @@ mod tests {
             description: Some("Test both formats".to_string()),
             transports: vec![],
             nut10: None,
+            nutroot: None,
         };
 
         // Test CBOR format (CREQ-A) - from Display trait

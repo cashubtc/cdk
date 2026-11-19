@@ -310,11 +310,29 @@ impl Wallet {
         // ecash, we need full NUT-10 secrets, so we:
         //   1. Convert `Nut10SecretRequest` -> `Nut10Secret` (adds nonce, keeps tags)
         //   2. Convert `Nut10Secret` -> `SpendingConditions` (NUT-11 helper)
-        let conditions = if let Some(nut10_request) = &payment_request.nut10 {
-            let secret: Nut10Secret = nut10_request.clone().into();
-            Some(SpendingConditions::try_from(secret)?)
-        } else {
-            None
+        //
+        // Each proof follows the option for its keyset (NUT-18): proofs from a
+        // v3 keyset are locked by the `nutroot` option, and a request without
+        // one cannot be paid from a v3 keyset.
+        let v3 = self.active_keyset().await?.id.get_version()
+            == crate::nuts::nut02::KeySetVersion::Version02;
+        let (conditions, nutroot) = match v3 {
+            true => match &payment_request.nutroot {
+                Some(nutroot) => (None, Some(nutroot.clone())),
+                None if payment_request.nut10.is_some() => {
+                    return Err(Error::Custom(
+                        "The payment request has no nutroot option for v3 keysets".to_string(),
+                    ))
+                }
+                None => (None, None),
+            },
+            false => match &payment_request.nut10 {
+                Some(nut10_request) => {
+                    let secret: Nut10Secret = nut10_request.clone().into();
+                    (Some(SpendingConditions::try_from(secret)?), None)
+                }
+                None => (None, None),
+            },
         };
 
         // Prefer Nostr to avoid revealing the payer's IP address, then fall back
@@ -332,6 +350,7 @@ impl Wallet {
                 payment_amount,
                 SendOptions {
                     conditions,
+                    nutroot,
                     include_fee: true,
                     ..Default::default()
                 },
@@ -1323,6 +1342,7 @@ mod tests {
             description: None,
             transports: vec![],
             nut10: None,
+            nutroot: None,
         }
     }
 
@@ -1345,6 +1365,7 @@ mod tests {
                 tags: vec![],
             }],
             nut10: None,
+            nutroot: None,
         }
     }
 
@@ -1774,6 +1795,9 @@ pub struct CreateRequestParams {
     /// Public Nostr receiving key (hex or npub). None generates ephemeral keys.
     /// Used with nostr_relays; no private key is required or returned for this destination.
     pub nostr_pubkey: Option<String>,
+    /// NUT-18 `nutroot` option, for payments from v3 keysets: the receiver
+    /// key `k` (or the NUMS point), requested leaves and blind-me keys
+    pub nutroot: Option<crate::nuts::nut18::NutrootOption>,
 }
 
 impl fmt::Debug for CreateRequestParams {
@@ -1816,6 +1840,7 @@ impl Default for CreateRequestParams {
             mints: None,
             mint_preferred: None,
             supported_methods: vec![],
+            nutroot: None,
         }
     }
 }
@@ -2240,6 +2265,7 @@ impl WalletRepository {
             description: params.description,
             transports,
             nut10,
+            nutroot: params.nutroot,
         };
 
         Ok((req, nostr_info))
@@ -2317,6 +2343,7 @@ impl WalletRepository {
             description: params.description,
             transports,
             nut10,
+            nutroot: params.nutroot,
         };
 
         Ok(req)

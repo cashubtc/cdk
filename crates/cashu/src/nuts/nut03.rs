@@ -39,6 +39,8 @@ pub struct PreSwap {
     pub fee: Amount,
     /// Ephemeral secret keys used for p2bk
     pub p2bk_secret_keys: Option<Vec<crate::nuts::nut01::SecretKey>>,
+    /// Spend info of each output locked to a NUT-18 `nutroot` option, by secret
+    pub nutroot_spend_info: Vec<(crate::secret::Secret, super::nut00::SpendInfo)>,
 }
 
 /// Swap Request [NUT-03]
