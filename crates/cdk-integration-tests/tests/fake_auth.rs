@@ -608,6 +608,7 @@ async fn test_melt_with_invalid_auth() {
             secret: proof.secret.clone(),
             c: proof.c,
             dleq: proof.dleq.clone(),
+            witness: None,
         };
 
         let _auth_token = AuthToken::BlindAuth(Box::new(BlindAuthToken::new(invalid_auth_proof)));

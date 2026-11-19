@@ -1,11 +1,15 @@
 use std::str::FromStr;
 
+use axum::body::Body;
+use axum::extract::Request;
 use axum::extract::{FromRequestParts, State};
 use axum::http::request::Parts;
 use axum::http::StatusCode;
+use axum::middleware::Next;
 use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use cdk::nuts::nut22::AuthorizedRequest;
 use cdk::nuts::{
     AuthToken, BlindAuthToken, KeysResponse, KeysetResponse, MintAuthRequest, MintResponse,
 };
@@ -55,12 +59,15 @@ where
                 })?
                 .to_string();
 
-            let token = BlindAuthToken::from_str(&token).map_err(|_| {
+            let mut token = BlindAuthToken::from_str(&token).map_err(|_| {
                 (
                     StatusCode::BAD_REQUEST,
                     "Invalid Blind-auth header value".to_string(),
                 )
             })?;
+            // A v3 BAT signs the request as it arrived (NUT-22), recorded by
+            // `blind_auth_request_context`.
+            token.request = parts.extensions.get::<AuthorizedRequest>().cloned();
 
             return Ok(AuthHeader::Blind(Box::new(token)));
         }
@@ -82,6 +89,45 @@ where
         // No authentication headers found - this is now valid
         Ok(AuthHeader::None)
     }
+}
+
+/// Largest request body hashed for a blind-auth request
+const MAX_AUTHORIZED_BODY_LEN: usize = 2 * 1024 * 1024;
+
+/// Record the request a blind-auth token arrives with (NUT-22)
+///
+/// A v3 BAT signs the method, the target (the path relative to the mint URL
+/// plus the query, as sent) and `SHA256` of the body bytes as sent. This
+/// middleware runs on the mint router, where paths are relative to the mint
+/// URL, buffers the body (bounded), hashes it and hands the request on with
+/// the same bytes.
+pub async fn blind_auth_request_context(req: Request, next: Next) -> Response {
+    use axum::response::IntoResponse;
+
+    if !req.headers().contains_key(BLIND_AUTH_KEY) {
+        return next.run(req).await;
+    }
+
+    let (mut parts, body) = req.into_parts();
+    let bytes = match axum::body::to_bytes(body, MAX_AUTHORIZED_BODY_LEN).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "Request body too large for blind auth".to_string(),
+            )
+                .into_response()
+        }
+    };
+    let target = parts
+        .uri
+        .path_and_query()
+        .map(|pq| pq.as_str())
+        .unwrap_or_else(|| parts.uri.path());
+    let context = AuthorizedRequest::new(parts.method.as_str(), target, &bytes);
+    parts.extensions.insert(context);
+    next.run(Request::from_parts(parts, Body::from(bytes)))
+        .await
 }
 
 /// Get all active keyset IDs of the mint
@@ -155,4 +201,87 @@ pub fn create_auth_router(state: MintState) -> Router<MintState> {
                 .route("/mint", post(post_mint_auth)),
         )
         .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::Request as HttpRequest;
+    use axum::routing::post;
+    use tower::ServiceExt;
+
+    use super::*;
+
+    fn v3_token() -> BlindAuthToken {
+        let key = cdk::nuts::SecretKey::generate();
+        BlindAuthToken::new(cdk::nuts::AuthProof {
+            keyset_id: cdk::nuts::Id::from_bytes(&[[2u8].as_slice(), &[1; 32]].concat())
+                .expect("v3 id"),
+            secret: cdk::secret::Secret::from_point(&key.public_key()),
+            c: cdk::nuts::nut01::BlsG1PublicKey::hash_to_curve(b"c").into(),
+            dleq: None,
+            witness: None,
+        })
+    }
+
+    /// The request a BAT arrives with is recorded as sent: method, path and
+    /// query untouched, body hashed byte for byte
+    #[tokio::test]
+    async fn blind_auth_context_records_the_request_as_sent() {
+        let router = Router::new()
+            .route(
+                "/v1/swap",
+                post(|auth: AuthHeader, body: String| async move {
+                    let AuthHeader::Blind(token) = auth else {
+                        return "no token".to_string();
+                    };
+                    let request = token.request.expect("request context");
+                    format!(
+                        "{}|{}|{}|{}",
+                        request.method,
+                        request.target,
+                        cdk::util::hex::encode(request.body_hash),
+                        body
+                    )
+                }),
+            )
+            .layer(axum::middleware::from_fn(blind_auth_request_context));
+
+        let body = r#"{ "inputs" : [], "outputs":[] }"#;
+        let response = router
+            .clone()
+            .oneshot(
+                HttpRequest::post("/v1/swap?b=2&a=1&q=a%20b")
+                    .header(BLIND_AUTH_KEY, v3_token().to_string())
+                    .body(Body::from(body))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let expected = AuthorizedRequest::new("POST", "/v1/swap?b=2&a=1&q=a%20b", body.as_bytes());
+        assert_eq!(
+            String::from_utf8(bytes.to_vec()).expect("utf8"),
+            format!(
+                "POST|/v1/swap?b=2&a=1&q=a%20b|{}|{}",
+                cdk::util::hex::encode(expected.body_hash),
+                body
+            )
+        );
+
+        // Without a Blind-auth header the request passes untouched.
+        let response = router
+            .oneshot(
+                HttpRequest::post("/v1/swap")
+                    .body(Body::from(body))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        assert_eq!(bytes.as_ref(), b"no token");
+    }
 }

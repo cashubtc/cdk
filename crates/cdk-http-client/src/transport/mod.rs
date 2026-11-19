@@ -75,6 +75,9 @@ pub trait Transport: Send + Sync + Debug + Clone {
     /// The caller decides what the status and body mean: mint calls decode with
     /// [`RawResponse::json_or_status_error`], while NUT-18 delivery only checks
     /// the status, since an empty or non-JSON success body is still a delivery.
+    ///
+    /// The body sent **must** be exactly `serde_json::to_vec(payload)`, with
+    /// no content-coding: a v3 blind auth token signs those bytes (NUT-22).
     async fn http_post<P>(
         &self,
         url: Url,
