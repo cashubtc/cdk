@@ -1,0 +1,38 @@
+name: "FFI - Release tooling checks"
+
+on:
+  pull_request:
+    paths:
+      - "scripts/bindings/**"
+      - "bindings/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "flake.nix"
+      - "flake.lock"
+      - "rust-toolchain.toml"
+      - "nix/bindings-release.nix"
+      - ".github/workflows/ffi-candidate.yml"
+      - ".github/workflows/ffi-release-tools.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - name: Check release tooling
+        run: |
+          nix develop --no-update-lock-file .#bindings-release-checks --command bash -euc '
+            ruff check scripts/bindings
+            ruff format --check scripts/bindings
+            shellcheck scripts/bindings/release scripts/bindings/lock-dependencies
+            actionlint .github/workflows/ffi-candidate.yml .github/workflows/ffi-release-tools.yml
+            python3 -m unittest discover -s scripts/bindings/tests -v
+          '
+      - run: scripts/bindings/release groups
