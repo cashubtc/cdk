@@ -40,6 +40,7 @@ rustls.workspace = true
 
 
 [dev-dependencies]
+cdk-postgres = { workspace = true }
 cdk-sqlite = { workspace = true }
 cdk-fake-wallet = { workspace = true }
 bip39.workspace = true
