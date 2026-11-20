@@ -74,7 +74,7 @@ async fn test_swap_to_send() {
         .expect("Failed to create test wallet");
 
     // Alice gets 64 sats
-    fund_wallet(wallet_alice.clone(), 64, None)
+    fund_wallet(&wallet_alice, 64, None)
         .await
         .expect("Failed to fund wallet");
     let balance_alice = wallet_alice
@@ -200,7 +200,7 @@ async fn test_send_to_same_wallet_preserves_transaction_history() {
         .await
         .expect("Failed to create test wallet");
 
-    fund_wallet(wallet.clone(), 64, None)
+    fund_wallet(&wallet, 64, None)
         .await
         .expect("Failed to fund wallet");
 
@@ -263,7 +263,7 @@ async fn test_mint_nut06() {
         .expect("Failed to create test wallet");
 
     // Alice gets 64 sats
-    fund_wallet(wallet_alice.clone(), 64, None)
+    fund_wallet(&wallet_alice, 64, None)
         .await
         .expect("Failed to fund wallet");
     let balance_alice = wallet_alice
@@ -336,7 +336,7 @@ async fn test_mint_double_spend() {
         .expect("Failed to create test wallet");
 
     // Alice gets 64 sats
-    fund_wallet(wallet_alice.clone(), 64, None)
+    fund_wallet(&wallet_alice, 64, None)
         .await
         .expect("Failed to fund wallet");
 
@@ -394,7 +394,7 @@ async fn test_attempt_to_swap_by_overflowing() {
         .expect("Failed to create test wallet");
 
     // Alice gets 64 sats
-    fund_wallet(wallet_alice.clone(), 64, None)
+    fund_wallet(&wallet_alice, 64, None)
         .await
         .expect("Failed to fund wallet");
 
@@ -462,7 +462,7 @@ async fn test_swap_unbalanced() {
         .expect("Failed to create test wallet");
 
     // Alice gets 100 sats
-    fund_wallet(wallet_alice.clone(), 100, None)
+    fund_wallet(&wallet_alice, 100, None)
         .await
         .expect("Failed to fund wallet");
 
@@ -525,7 +525,7 @@ pub async fn test_p2pk_swap() {
         .expect("Failed to create test wallet");
 
     // Alice gets 100 sats
-    fund_wallet(wallet_alice.clone(), 100, None)
+    fund_wallet(&wallet_alice, 100, None)
         .await
         .expect("Failed to fund wallet");
 
@@ -666,7 +666,7 @@ async fn test_swap_overpay_underpay_fee() {
         .expect("Failed to create test wallet");
 
     // Alice gets 100 sats
-    fund_wallet(wallet_alice.clone(), 1000, None)
+    fund_wallet(&wallet_alice, 1000, None)
         .await
         .expect("Failed to fund wallet");
 
@@ -746,13 +746,9 @@ async fn test_mint_enforce_fee() {
         .expect("Failed to create test wallet");
 
     // Alice gets 100 sats
-    fund_wallet(
-        wallet_alice.clone(),
-        1010,
-        Some(SplitTarget::Value(Amount::ONE)),
-    )
-    .await
-    .expect("Failed to fund wallet");
+    fund_wallet(&wallet_alice, 1010, Some(SplitTarget::Value(Amount::ONE)))
+        .await
+        .expect("Failed to fund wallet");
 
     let mut proofs = wallet_alice
         .get_unspent_proofs()
@@ -852,12 +848,7 @@ async fn test_mint_max_outputs_exceeded_mint() {
 
     // Alice tries to mint 10 sats with split target 1 (requesting 10 outputs)
     // This should fail because max_outputs is 5
-    let result = fund_wallet(
-        wallet_alice.clone(),
-        10,
-        Some(SplitTarget::Value(Amount::ONE)),
-    )
-    .await;
+    let result = fund_wallet(&wallet_alice, 10, Some(SplitTarget::Value(Amount::ONE))).await;
 
     match result {
         Ok(_) => panic!("Mint allowed exceeding max outputs"),
@@ -888,13 +879,9 @@ async fn test_mint_max_inputs_exceeded_melt() {
         .expect("Failed to create test wallet");
 
     // Alice gets 10 sats with small outputs to have enough proofs
-    fund_wallet(
-        wallet_alice.clone(),
-        10,
-        Some(SplitTarget::Value(Amount::ONE)),
-    )
-    .await
-    .expect("Failed to fund wallet");
+    fund_wallet(&wallet_alice, 10, Some(SplitTarget::Value(Amount::ONE)))
+        .await
+        .expect("Failed to fund wallet");
 
     let proofs = wallet_alice
         .get_unspent_proofs()
@@ -938,7 +925,7 @@ async fn test_mint_max_outputs_exceeded_melt() {
         .expect("Failed to create test wallet");
 
     // Alice gets 100 sats
-    fund_wallet(wallet_alice.clone(), 100, None)
+    fund_wallet(&wallet_alice, 100, None)
         .await
         .expect("Failed to fund wallet");
 
@@ -1000,13 +987,9 @@ async fn test_mint_max_inputs_exceeded() {
         .expect("Failed to create test wallet");
 
     // Alice gets 100 sats with small outputs to have enough proofs
-    fund_wallet(
-        wallet_alice.clone(),
-        100,
-        Some(SplitTarget::Value(Amount::ONE)),
-    )
-    .await
-    .expect("Failed to fund wallet");
+    fund_wallet(&wallet_alice, 100, Some(SplitTarget::Value(Amount::ONE)))
+        .await
+        .expect("Failed to fund wallet");
 
     let proofs = wallet_alice
         .get_unspent_proofs()
@@ -1056,7 +1039,7 @@ async fn test_mint_max_outputs_exceeded() {
         .expect("Failed to create test wallet");
 
     // Alice gets 50 sats
-    fund_wallet(wallet_alice.clone(), 50, None)
+    fund_wallet(&wallet_alice, 50, None)
         .await
         .expect("Failed to fund wallet");
 
@@ -1123,13 +1106,9 @@ async fn test_mint_change_with_fee_melt() {
         .expect("Failed to create test wallet");
 
     // Alice gets 100 sats
-    fund_wallet(
-        wallet_alice.clone(),
-        100,
-        Some(SplitTarget::Value(Amount::ONE)),
-    )
-    .await
-    .expect("Failed to fund wallet");
+    fund_wallet(&wallet_alice, 100, Some(SplitTarget::Value(Amount::ONE)))
+        .await
+        .expect("Failed to fund wallet");
 
     let keyset_id = mint_bob.pubkeys().keysets.first().unwrap().id;
 
@@ -1209,7 +1188,7 @@ async fn test_concurrent_double_spend_swap() {
         .expect("Failed to create test wallet");
 
     // Alice gets 100 sats
-    fund_wallet(wallet_alice.clone(), 100, None)
+    fund_wallet(&wallet_alice, 100, None)
         .await
         .expect("Failed to fund wallet");
 
@@ -1316,7 +1295,7 @@ async fn test_concurrent_double_spend_melt() {
         .expect("Failed to create test wallet");
 
     // Alice gets 100 sats
-    fund_wallet(wallet_alice.clone(), 100, None)
+    fund_wallet(&wallet_alice, 100, None)
         .await
         .expect("Failed to fund wallet");
 
@@ -1433,7 +1412,7 @@ async fn test_p2pk_send_force_swap_with_fees() {
         .expect("Failed to create test wallet");
 
     // Fund wallet with 64 sats (normal proofs, no P2PK conditions)
-    fund_wallet(wallet.clone(), 64, None)
+    fund_wallet(&wallet, 64, None)
         .await
         .expect("Failed to fund wallet");
     assert_eq!(
@@ -1522,7 +1501,7 @@ async fn test_p2pk_send_force_swap_with_fees_include_fee() {
         .expect("Failed to create receiver wallet");
 
     // Fund sender with 64 sats
-    fund_wallet(wallet_sender.clone(), 64, None)
+    fund_wallet(&wallet_sender, 64, None)
         .await
         .expect("Failed to fund wallet");
 
@@ -2260,7 +2239,7 @@ async fn test_p2bk_send_and_receive() {
         .expect("Failed to create receiver wallet");
 
     // Fund sender with 64 sats
-    fund_wallet(wallet_sender.clone(), 64, None)
+    fund_wallet(&wallet_sender, 64, None)
         .await
         .expect("Failed to fund wallet");
 
@@ -2335,7 +2314,7 @@ async fn test_p2bk_multi_key_receive() {
         .expect("Failed to create receiver wallet");
 
     // Fund sender with 64 sats
-    fund_wallet(wallet_sender.clone(), 64, None)
+    fund_wallet(&wallet_sender, 64, None)
         .await
         .expect("Failed to fund wallet");
 
@@ -2416,7 +2395,7 @@ async fn test_restore_after_keyset_rotation() {
 
     // Mint 100 sats under the initial keyset
     let amount_before_rotation = 100;
-    fund_wallet(wallet.clone(), amount_before_rotation, None)
+    fund_wallet(&wallet, amount_before_rotation, None)
         .await
         .expect("Failed to fund wallet before rotation");
 
@@ -2434,7 +2413,7 @@ async fn test_restore_after_keyset_rotation() {
 
     // Mint 50 sats under the new active keyset
     let amount_after_rotation = 50;
-    fund_wallet(wallet.clone(), amount_after_rotation, None)
+    fund_wallet(&wallet, amount_after_rotation, None)
         .await
         .expect("Failed to fund wallet after rotation");
 
@@ -2530,7 +2509,7 @@ async fn test_restore_keeps_pending_spent_proofs() {
     let wallet = create_test_wallet_for_mint(mint)
         .await
         .expect("Failed to create test wallet");
-    fund_wallet(wallet.clone(), 100, None)
+    fund_wallet(&wallet, 100, None)
         .await
         .expect("Failed to fund wallet");
 
@@ -2579,7 +2558,7 @@ async fn test_restore_keeps_reserved_proofs() {
     let wallet = create_test_wallet_for_mint(mint)
         .await
         .expect("Failed to create test wallet");
-    fund_wallet(wallet.clone(), 100, None)
+    fund_wallet(&wallet, 100, None)
         .await
         .expect("Failed to fund wallet");
 
@@ -2617,7 +2596,7 @@ async fn test_restore_adds_only_missing_proofs() {
     let wallet = create_test_wallet_for_mint(mint)
         .await
         .expect("Failed to create test wallet");
-    fund_wallet(wallet.clone(), 100, None)
+    fund_wallet(&wallet, 100, None)
         .await
         .expect("Failed to fund wallet");
 
@@ -2657,7 +2636,7 @@ async fn test_restore_releases_unowned_pending_proofs() {
     let wallet = create_test_wallet_for_mint(mint.clone())
         .await
         .expect("Failed to create test wallet");
-    fund_wallet(wallet.clone(), 100, None)
+    fund_wallet(&wallet, 100, None)
         .await
         .expect("Failed to fund wallet");
 
@@ -2728,7 +2707,7 @@ async fn test_restore_keeps_operation_owned_pending_proofs() {
     let wallet = create_test_wallet_for_mint(mint)
         .await
         .expect("Failed to create test wallet");
-    fund_wallet(wallet.clone(), 100, None)
+    fund_wallet(&wallet, 100, None)
         .await
         .expect("Failed to fund wallet");
 
@@ -3126,7 +3105,7 @@ async fn test_p2pk_send_options_signing_keys() {
         .expect("Failed to create bob wallet");
 
     // Fund alice with 64 sats (plain proofs)
-    fund_wallet(wallet_alice.clone(), 64, None)
+    fund_wallet(&wallet_alice, 64, None)
         .await
         .expect("Failed to fund alice");
 
@@ -3243,7 +3222,7 @@ async fn test_p2pk_signing_keys_exact_denomination_short_circuit() {
         .expect("Failed to create bob wallet");
 
     // Fund alice with 8 sats (plain proofs)
-    fund_wallet(wallet_alice.clone(), 8, None)
+    fund_wallet(&wallet_alice, 8, None)
         .await
         .expect("Failed to fund alice");
 
@@ -3355,7 +3334,7 @@ async fn test_p2pk_locked_proof_sign_and_send_passthrough() {
         .expect("Failed to create bob wallet");
 
     // Fund alice with 8 sats (plain proofs)
-    fund_wallet(wallet_alice.clone(), 8, None)
+    fund_wallet(&wallet_alice, 8, None)
         .await
         .expect("Failed to fund alice");
 
@@ -3457,7 +3436,7 @@ async fn test_p2pk_locked_proof_sign_and_send_rejects_sig_all() {
         .await
         .expect("Failed to create alice wallet");
 
-    fund_wallet(wallet_alice.clone(), 8, None)
+    fund_wallet(&wallet_alice, 8, None)
         .await
         .expect("Failed to fund alice");
 
@@ -3567,7 +3546,7 @@ async fn test_p2pk_send_keyring_auto_detection() {
     let spending_conditions = SpendingConditions::new_p2pk(alice_pubkey, None);
 
     // Fund alice with plain proofs, then swap them for P2PK-locked proofs.
-    fund_wallet(wallet_alice.clone(), 64, None)
+    fund_wallet(&wallet_alice, 64, None)
         .await
         .expect("Failed to fund alice");
 
@@ -3666,7 +3645,7 @@ async fn test_p2pk_unsignable_proof_falls_back_to_bearer() {
         .expect("Failed to create bob wallet");
 
     // Fund alice with 64 sats of plain bearer proofs.
-    fund_wallet(wallet_alice.clone(), 64, None)
+    fund_wallet(&wallet_alice, 64, None)
         .await
         .expect("Failed to fund alice");
 
@@ -3761,7 +3740,7 @@ async fn test_malformed_p2pk_proof_falls_back_to_bearer() {
         .await
         .expect("Failed to create bob wallet");
 
-    fund_wallet(wallet_alice.clone(), 64, None)
+    fund_wallet(&wallet_alice, 64, None)
         .await
         .expect("Failed to fund alice");
 
@@ -3854,7 +3833,7 @@ async fn test_p2pk_unsignable_proof_only_gives_insufficient_funds() {
         .expect("Failed to create alice wallet");
 
     // Fund alice with 64 sats, then swap all of them for proofs locked to an unknown key.
-    fund_wallet(wallet_alice.clone(), 64, None)
+    fund_wallet(&wallet_alice, 64, None)
         .await
         .expect("Failed to fund alice");
 
@@ -3951,7 +3930,7 @@ async fn test_p2pk_partially_signable_proof_only_gives_insufficient_funds() {
     .unwrap();
     let spending_conditions = SpendingConditions::new_p2pk(alice_pubkey, Some(conditions));
 
-    fund_wallet(wallet_alice.clone(), 8, None)
+    fund_wallet(&wallet_alice, 8, None)
         .await
         .expect("Failed to fund alice");
 
@@ -4026,7 +4005,7 @@ async fn test_p2pk_locked_proof_sign_and_send_rejects_partial_signatures() {
         .await
         .expect("Failed to create alice wallet");
 
-    fund_wallet(wallet_alice.clone(), 8, None)
+    fund_wallet(&wallet_alice, 8, None)
         .await
         .expect("Failed to fund alice");
 
@@ -4136,7 +4115,7 @@ async fn test_p2pk_signing_keys_mixed_locked_and_unlocked_proofs() {
         .expect("Failed to create bob wallet");
 
     // Fund alice with 64 sats of plain (unlocked) proofs.
-    fund_wallet(wallet_alice.clone(), 64, None)
+    fund_wallet(&wallet_alice, 64, None)
         .await
         .expect("Failed to fund alice");
 
@@ -4254,7 +4233,7 @@ async fn test_receive_expired_htlc_through_refund_path() {
     let wallet = create_test_wallet_for_mint(mint.clone())
         .await
         .expect("Failed to create wallet");
-    fund_wallet(wallet.clone(), 64, None)
+    fund_wallet(&wallet, 64, None)
         .await
         .expect("Failed to fund wallet");
 

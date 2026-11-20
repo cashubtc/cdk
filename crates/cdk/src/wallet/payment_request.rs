@@ -61,7 +61,7 @@ pub struct PayRequestOptions {
 /// to release the proofs reserved during preparation.
 #[must_use = "must be confirmed or canceled to release reserved proofs"]
 pub struct PreparedPaymentRequest {
-    wallet: Wallet,
+    wallet: Arc<Wallet>,
     payment_request: PaymentRequest,
     transport: Transport,
     operation_id: uuid::Uuid,
@@ -265,7 +265,7 @@ impl Wallet {
     /// payer with a pending send to revoke.
     #[instrument(skip_all)]
     pub async fn prepare_pay_request(
-        &self,
+        self: &Arc<Self>,
         payment_request: PaymentRequest,
         custom_amount: Option<Amount>,
     ) -> Result<PreparedPaymentRequest, Error> {
@@ -1102,7 +1102,7 @@ mod tests {
         .expect("store proof");
         let mock = MockMintConnector::new();
         mock.set_payment_request_deliverability(PaymentRequestDeliverability::Deliverable);
-        let wallet = create_test_wallet_with_mock(db, Arc::new(mock)).await;
+        let wallet = Arc::new(create_test_wallet_with_mock(db, Arc::new(mock)).await);
         let request = payment_request_with_http_transport(Amount::from(100), Amount::from(500));
 
         let prepared = wallet
@@ -1150,7 +1150,8 @@ mod tests {
         )
         .await
         .expect("store proof");
-        let wallet = create_test_wallet_with_mock(db, Arc::new(MockMintConnector::new())).await;
+        let wallet =
+            Arc::new(create_test_wallet_with_mock(db, Arc::new(MockMintConnector::new())).await);
         let request = payment_request_with_http_transport(Amount::from(100), Amount::from(500));
 
         let error = wallet
@@ -1196,7 +1197,7 @@ mod tests {
         .expect("store proof");
         let mock = MockMintConnector::new();
         mock.set_payment_request_deliverability(PaymentRequestDeliverability::UnverifiedTls);
-        let wallet = create_test_wallet_with_mock(db, Arc::new(mock)).await;
+        let wallet = Arc::new(create_test_wallet_with_mock(db, Arc::new(mock)).await);
         let request = payment_request_with_http_transport(Amount::from(100), Amount::from(500));
 
         let error = wallet
@@ -1239,7 +1240,7 @@ mod tests {
         .expect("store proof");
         let mock = MockMintConnector::new();
         mock.set_payment_request_deliverability(PaymentRequestDeliverability::Deliverable);
-        let wallet = create_test_wallet_with_mock(db, Arc::new(mock)).await;
+        let wallet = Arc::new(create_test_wallet_with_mock(db, Arc::new(mock)).await);
         let request = payment_request_with_http_transport(Amount::from(100), Amount::from(500));
 
         let prepared = wallet
@@ -1278,7 +1279,7 @@ mod tests {
 
         let mock = MockMintConnector::new();
         mock.set_mint_keys_response(Ok(vec![keyset]));
-        let wallet = create_test_wallet_with_mock(db, Arc::new(mock)).await;
+        let wallet = Arc::new(create_test_wallet_with_mock(db, Arc::new(mock)).await);
 
         let token = crate::nuts::Token::new(
             mint_url,
@@ -1988,16 +1989,16 @@ impl WalletRepository {
                 if mint_is_listed {
                     if *balance > best_preferred_balance {
                         best_preferred_balance = *balance;
-                        best_preferred_wallet = Some(Arc::new(wallet));
+                        best_preferred_wallet = Some(wallet);
                     }
                 } else if *balance > best_fallback_balance {
                     best_fallback_balance = *balance;
-                    best_fallback_wallet = Some(Arc::new(wallet));
+                    best_fallback_wallet = Some(wallet);
                 }
             }
 
             match best_preferred_wallet.or(best_fallback_wallet) {
-                Some(wallet) => (*wallet).clone(),
+                Some(wallet) => wallet,
                 None => return Err(delivery_refusal.unwrap_or(Error::InsufficientFunds)),
             }
         };

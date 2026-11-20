@@ -29,12 +29,10 @@ async fn get_wallet_for_mint(
         .get_wallet(&mint_url, &CurrencyUnit::Sat)
         .await
     {
-        Ok(wallet) => Ok(Arc::new(wallet)),
-        Err(_) => Ok(Arc::new(
-            wallet_repository
-                .create_wallet(mint_url, CurrencyUnit::Sat, None)
-                .await?,
-        )),
+        Ok(wallet) => Ok(wallet),
+        Err(_) => Ok(wallet_repository
+            .create_wallet(mint_url, CurrencyUnit::Sat, None)
+            .await?),
     }
 }
 
@@ -47,12 +45,10 @@ async fn get_wallet_for_mint_without_probe(
         .get_wallet(&mint_url, &CurrencyUnit::Sat)
         .await
     {
-        Ok(wallet) => Ok(Arc::new(wallet)),
-        Err(_) => Ok(Arc::new(
-            wallet_repository
-                .create_wallet(mint_url, CurrencyUnit::Sat, None)
-                .await?,
-        )),
+        Ok(wallet) => Ok(wallet),
+        Err(_) => Ok(wallet_repository
+            .create_wallet(mint_url, CurrencyUnit::Sat, None)
+            .await?),
     }
 }
 

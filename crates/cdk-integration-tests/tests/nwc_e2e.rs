@@ -175,9 +175,7 @@ async fn nwc_e2e_full_flow() {
         .await
         .expect("wallet");
 
-    fund_wallet(wallet.clone(), 1000, None)
-        .await
-        .expect("fund wallet");
+    fund_wallet(&wallet, 1000, None).await.expect("fund wallet");
 
     let wallet = Arc::new(wallet);
 
