@@ -714,7 +714,7 @@ mod tests {
         mint.start().await.unwrap();
 
         MintState {
-            mint: Arc::new(mint),
+            mint,
             cache: Arc::new(HttpCache::default()),
         }
     }
@@ -766,7 +766,7 @@ mod tests {
         mint.start().await.unwrap();
 
         MintState {
-            mint: Arc::new(mint),
+            mint,
             cache: Arc::new(HttpCache::default()),
         }
     }

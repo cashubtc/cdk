@@ -72,7 +72,7 @@ pub(super) async fn create_test_rpc_server_with_payment_delay(payment_delay: u64
 
     MintRPCServer {
         socket_addr: "127.0.0.1:0".parse().unwrap(),
-        mint: Arc::new(mint),
+        mint,
         mutation_guard: None,
         allow_mint_quote_payment_override: false,
         wallet_info_provider: None,

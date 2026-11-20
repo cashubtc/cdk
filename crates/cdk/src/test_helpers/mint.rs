@@ -87,7 +87,7 @@ pub(crate) fn take_fail_for(operation: &str) -> bool {
 ///     // Use the mint for testing
 /// }
 /// ```
-pub async fn create_test_mint() -> Result<Mint, Error> {
+pub async fn create_test_mint() -> Result<Arc<Mint>, Error> {
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await?);
 
     let mut mint_builder = MintBuilder::new(db.clone());

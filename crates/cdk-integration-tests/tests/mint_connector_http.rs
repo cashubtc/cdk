@@ -3,8 +3,6 @@
 //! sanity check that the transport and the mint server speak the same language,
 //! the same way `mint_db_test!` sanity-checks a database backend.
 
-use std::sync::Arc;
-
 use cdk::wallet::HttpClient;
 use cdk_integration_tests::mint_connector_test;
 
@@ -17,7 +15,7 @@ use cdk_integration_tests::mint_connector_test;
 /// the `Arc<Mint>`) for the lifetime of the `#[tokio::test]` runtime, which
 /// tears it down when the test ends.
 async fn make_http(_test_name: &str) -> HttpClient {
-    let mint = Arc::new(mint_connector_test::build_test_mint().await);
+    let mint = mint_connector_test::build_test_mint().await;
 
     let router =
         cdk_axum::create_mint_router(mint, vec!["bolt11".to_string(), "paypal".to_string()])

@@ -631,7 +631,7 @@ impl MintBuilder {
     pub async fn build_with_signatory(
         #[allow(unused_mut)] mut self,
         signatory: Arc<dyn Signatory + Send + Sync>,
-    ) -> Result<Mint, Error> {
+    ) -> Result<Arc<Mint>, Error> {
         // Check active keysets and rotate if necessary
         let active_keysets = signatory.keysets().await?;
 
@@ -750,7 +750,8 @@ impl MintBuilder {
                 self.max_inputs,
                 self.max_outputs,
             )
-            .await;
+            .await
+            .map(Arc::new);
         }
         Mint::new(
             self.mint_info,
@@ -761,6 +762,7 @@ impl MintBuilder {
             self.max_outputs,
         )
         .await
+        .map(Arc::new)
     }
 
     /// Build the mint with the provided keystore and seed
@@ -768,7 +770,7 @@ impl MintBuilder {
         self,
         keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
         seed: &[u8],
-    ) -> Result<Mint, Error> {
+    ) -> Result<Arc<Mint>, Error> {
         let in_memory_signatory = Arc::new(
             cdk_signatory::db_signatory::DbSignatory::new(
                 keystore,
