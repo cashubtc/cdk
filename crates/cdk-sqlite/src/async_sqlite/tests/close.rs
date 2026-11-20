@@ -69,7 +69,7 @@ async fn close_waits_for_sql_detached_by_cancellation() {
         .unwrap()
         .unwrap();
 
-    let connection = rusqlite::Connection::open(&fixture.config.path).unwrap();
+    let connection = sqlite_thin::Connection::open(&fixture.config.path).unwrap();
     let value: i64 = connection
         .query_row("SELECT id FROM data", [], |row| row.get(0))
         .unwrap();
@@ -125,7 +125,7 @@ async fn stale_disposal_yields_and_close_waits_for_it() {
         .await
         .unwrap()
         .unwrap();
-    let connection = rusqlite::Connection::open(&fixture.config.path).unwrap();
+    let connection = sqlite_thin::Connection::open(&fixture.config.path).unwrap();
     let count: i64 = connection
         .query_row("SELECT COUNT(*) FROM data", [], |row| row.get(0))
         .unwrap();

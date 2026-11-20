@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use cdk_sql_common::pool::{self, DatabasePool};
 use cdk_sql_common::value::Value;
-use rusqlite::{ffi, Connection, OptionalExtension};
+use sqlite_thin::{ffi, Connection, OptionalExtension, SqliteError};
 
 use crate::async_sqlite;
 use crate::sqlcipher_key::SqlcipherKey;
@@ -63,7 +63,7 @@ impl DatabasePool for SqliteConnectionManager {
 
     type Connection = async_sqlite::AsyncSqlite;
 
-    type Error = rusqlite::Error;
+    type Error = sqlite_thin::Error;
 
     fn drop(resource: Self::Connection) {
         resource.close();
@@ -79,8 +79,8 @@ impl DatabasePool for SqliteConnectionManager {
             // Handing out a fresh, empty database would silently drop every
             // previous write, so make all later operations fail instead.
             tracing::error!("In-memory SQLite connection was discarded; its database is lost");
-            return Err(pool::Error::Resource(rusqlite::Error::SqliteFailure(
-                ffi::Error::new(ffi::SQLITE_CANTOPEN),
+            return Err(pool::Error::Resource(sqlite_thin::Error::SqliteFailure(
+                SqliteError::new(ffi::SQLITE_CANTOPEN),
                 Some("in-memory database was lost after its connection was discarded".to_owned()),
             )));
         }
@@ -90,7 +90,7 @@ impl DatabasePool for SqliteConnectionManager {
             let path_buf = PathBuf::from(path);
             if let Some(parent) = path_buf.parent() {
                 if !parent.to_str().unwrap_or_default().is_empty() && !parent.exists() {
-                    return Err(pool::Error::Resource(rusqlite::Error::InvalidPath(
+                    return Err(pool::Error::Resource(sqlite_thin::Error::InvalidPath(
                         path_buf.clone(),
                     )));
                 }
@@ -106,8 +106,8 @@ impl DatabasePool for SqliteConnectionManager {
                 .pragma_update_and_check(None, "key", password.as_str(), |row| row.get(0))
                 .optional()?;
             let Some("ok") = accepted.as_deref() else {
-                return Err(pool::Error::Resource(rusqlite::Error::SqliteFailure(
-                    ffi::Error::new(ffi::SQLITE_ERROR),
+                return Err(pool::Error::Resource(sqlite_thin::Error::SqliteFailure(
+                    SqliteError::new(ffi::SQLITE_ERROR),
                     Some("SQLCipher did not accept the database key".to_owned()),
                 )));
             };
@@ -178,27 +178,27 @@ impl From<(&str, SqlcipherKey)> for Config {
     }
 }
 
-/// Convert cdk_sql_common::value::Value to rusqlite Value
+/// Convert cdk_sql_common::value::Value to a SQLite value
 #[inline(always)]
-pub fn to_sqlite(v: Value) -> rusqlite::types::Value {
+pub fn to_sqlite(v: Value) -> sqlite_thin::types::Value {
     match v {
-        Value::Blob(blob) => rusqlite::types::Value::Blob(blob),
-        Value::Integer(i) => rusqlite::types::Value::Integer(i),
-        Value::Null => rusqlite::types::Value::Null,
-        Value::Text(t) => rusqlite::types::Value::Text(t),
-        Value::Real(r) => rusqlite::types::Value::Real(r),
+        Value::Blob(blob) => sqlite_thin::types::Value::Blob(blob),
+        Value::Integer(i) => sqlite_thin::types::Value::Integer(i),
+        Value::Null => sqlite_thin::types::Value::Null,
+        Value::Text(t) => sqlite_thin::types::Value::Text(t),
+        Value::Real(r) => sqlite_thin::types::Value::Real(r),
     }
 }
 
-/// Convert from rusqlite Valute to cdk_sql_common::value::Value
+/// Convert a SQLite value to cdk_sql_common::value::Value
 #[inline(always)]
-pub fn from_sqlite(v: rusqlite::types::Value) -> Value {
+pub fn from_sqlite(v: sqlite_thin::types::Value) -> Value {
     match v {
-        rusqlite::types::Value::Blob(blob) => Value::Blob(blob),
-        rusqlite::types::Value::Integer(i) => Value::Integer(i),
-        rusqlite::types::Value::Null => Value::Null,
-        rusqlite::types::Value::Text(t) => Value::Text(t),
-        rusqlite::types::Value::Real(r) => Value::Real(r),
+        sqlite_thin::types::Value::Blob(blob) => Value::Blob(blob),
+        sqlite_thin::types::Value::Integer(i) => Value::Integer(i),
+        sqlite_thin::types::Value::Null => Value::Null,
+        sqlite_thin::types::Value::Text(t) => Value::Text(t),
+        sqlite_thin::types::Value::Real(r) => Value::Real(r),
     }
 }
 
@@ -227,7 +227,7 @@ mod tests {
         );
 
         match result {
-            Err(pool::Error::Resource(rusqlite::Error::SqliteFailure(_, Some(message)))) => {
+            Err(pool::Error::Resource(sqlite_thin::Error::SqliteFailure(_, Some(message)))) => {
                 assert!(
                     message.contains("did not accept the database key"),
                     "{message}"

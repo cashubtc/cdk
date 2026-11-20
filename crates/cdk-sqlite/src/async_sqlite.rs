@@ -6,7 +6,7 @@ use cdk_common::database::Error;
 use cdk_sql_common::database::{DatabaseConnector, DatabaseExecutor, DatabaseTransaction};
 use cdk_sql_common::run_db_operation_sync;
 use cdk_sql_common::stmt::{query, Column, SqlPart, Statement};
-use rusqlite::{ffi, CachedStatement, Connection, Error as SqliteError, ErrorCode};
+use sqlite_thin::{ffi, CachedStatement, Connection, Error as SqliteError, ErrorCode};
 use tokio::sync::Mutex;
 
 use crate::common::{from_sqlite, to_sqlite};
@@ -125,8 +125,8 @@ impl Drop for PanicGuard {
 #[inline(always)]
 fn to_sqlite_error(err: SqliteError) -> Error {
     tracing::error!("Failed query with error {:?}", err);
-    if let rusqlite::Error::SqliteFailure(
-        ffi::Error {
+    if let sqlite_thin::Error::SqliteFailure(
+        sqlite_thin::SqliteError {
             code,
             extended_code,
         },

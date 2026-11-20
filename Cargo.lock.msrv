@@ -1273,11 +1273,11 @@ dependencies = [
  "nwc",
  "rand 0.9.5",
  "ring 0.17.14",
- "rusqlite",
  "rustls",
  "serde",
  "serde_json",
  "serde_urlencoded",
+ "sqlite-thin",
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
@@ -1847,8 +1847,8 @@ dependencies = [
  "cdk-common",
  "cdk-prometheus",
  "cdk-sql-common",
- "rusqlite",
  "serde_json",
+ "sqlite-thin",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
@@ -7286,6 +7286,14 @@ checksum = "d91ed6c858b01f942cd56b37a94b3e0a1798290327d1236e4d9cf4eaca44d29d"
 dependencies = [
  "base64ct",
  "der",
+]
+
+[[package]]
+name = "sqlite-thin"
+version = "0.1.0"
+source = "git+https://git.rust-bitcoin.org/thesimplekid/sqlite-thin?rev=e2c1b8d47bc3d328661c05c18e87b750d5b42f8c#e2c1b8d47bc3d328661c05c18e87b750d5b42f8c"
+dependencies = [
+ "libsqlite3-sys",
 ]
 
 [[package]]
