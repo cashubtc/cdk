@@ -75,6 +75,7 @@ impl NostrPaymentEventStream {
         }
     }
 
+    #[cfg(test)]
     pub fn cancel_token(&self) -> CancellationToken {
         self.cancel.clone()
     }
@@ -107,13 +108,13 @@ async fn pump_notifications<S>(
                 match UnwrappedGift::from_gift_wrap(&keys, &event) {
                     Ok(unwrapped) => {
                         serde_json::from_str::<PaymentRequestPayload>(&unwrapped.rumor.content)
-                            .map_err(|e| Error::Custom(format!("Invalid payload JSON: {e}")))
+                            .map_err(|_| Error::InvalidPaymentRequest)
                     }
-                    Err(e) => Err(Error::Custom(format!("Unwrap gift wrap failed: {e}"))),
+                    Err(_) => Err(Error::InvalidPaymentRequest),
                 }
             }
             Some(_) => continue,
-            None => Err(Error::Custom("Notification stream closed".to_string())),
+            None => Err(Error::PaymentRequestReceiveClosed),
         };
 
         // Every result observes receiver closure and cancellation, including

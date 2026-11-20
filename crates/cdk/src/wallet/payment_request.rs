@@ -12,19 +12,13 @@ use anyhow::Result;
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use cdk_common::{Amount, PaymentRequest, PaymentRequestPayload, SupportedMethod, TransportType};
 #[cfg(feature = "nostr")]
-use futures::StreamExt;
-#[cfg(feature = "nostr")]
 use nostr::prelude::nip19::Nip19Profile;
 #[cfg(all(feature = "nostr", test))]
 use nostr::prelude::EventId;
-#[cfg(all(feature = "nostr", target_arch = "wasm32"))]
-use nostr::prelude::{Filter, Kind, UnwrappedGift};
 #[cfg(feature = "nostr")]
 use nostr::prelude::{
     FinalizeEvent, FromBech32, Keys, PrivateDirectMessageBuilder, PublicKey, RelayUrl, ToBech32,
 };
-#[cfg(all(feature = "nostr", target_arch = "wasm32"))]
-use nostr_sdk::prelude::ClientNotification;
 #[cfg(feature = "nostr")]
 use nostr_sdk::prelude::{
     Client as NostrClient, RelayCapabilities, SendEventOutput, SignerAuthenticator,
@@ -1820,25 +1814,10 @@ impl Default for CreateRequestParams {
     }
 }
 
-/// Extra information needed to wait for an incoming Nostr payment
-///
-/// Returned by `create_request` for an ephemeral Nostr identity. Pass this to
-/// `wait_for_nostr_payment` to connect, subscribe, and receive the incoming
-/// payment on the specified relays.
 #[cfg(feature = "nostr")]
-#[derive(Debug, Clone)]
-pub struct NostrWaitInfo {
-    /// Ephemeral keys used to connect to relays and unwrap the gift-wrapped event
-    pub keys: Keys,
-    /// Nostr relays to read from while waiting for the payment
-    pub relays: Vec<String>,
-    /// The recipient public key to subscribe to for incoming events
-    pub pubkey: PublicKey,
-    /// Mint URLs accepted or preferred by the original payment request
-    pub mints: Vec<MintUrl>,
-    /// Whether the original request's mint list is preferred instead of strict
-    pub mint_preferred: Option<bool>,
-}
+mod receive;
+#[cfg(feature = "nostr")]
+pub use self::receive::NostrWaitInfo;
 
 impl WalletRepository {
     /// Select a wallet and prepare a NUT-18 payment request for review.
@@ -2149,9 +2128,7 @@ impl WalletRepository {
 
         // Transports
         let transport_type = params.transport.to_lowercase();
-        let (transports, nostr_info): (Vec<Transport>, Option<NostrWaitInfo>) = match transport_type
-            .as_str()
-        {
+        let (transports, nostr_identity) = match transport_type.as_str() {
             "nostr" => {
                 let (pubkey, keys) = match &params.nostr_pubkey {
                     Some(public_key) => (
@@ -2190,16 +2167,7 @@ impl WalletRepository {
                     tags: vec![vec!["n".to_string(), "17".to_string()]],
                 };
 
-                (
-                    vec![nostr_transport],
-                    keys.map(|keys| NostrWaitInfo {
-                        keys,
-                        relays,
-                        pubkey: nprofile.public_key,
-                        mints: mints.clone(),
-                        mint_preferred: params.mint_preferred,
-                    }),
-                )
+                (vec![nostr_transport], keys.map(|keys| (keys, relays)))
             }
             "http" => {
                 if let Some(url) = &params.http_url {
@@ -2242,6 +2210,8 @@ impl WalletRepository {
             nut10,
         };
 
+        let nostr_info =
+            nostr_identity.map(|(keys, relays)| NostrWaitInfo::new(keys, relays, req.clone()));
         Ok((req, nostr_info))
     }
 
@@ -2322,160 +2292,34 @@ impl WalletRepository {
         Ok(req)
     }
 
-    /// Wait for a Nostr payment for the previously constructed PaymentRequest and receive it into the wallet.
-    #[cfg(all(feature = "nostr", not(target_arch = "wasm32")))]
+    /// Wait for a Nostr payment, validate it against the original request, and redeem it.
+    ///
+    /// For locked proofs, use `wait_for_nostr_payment_with_options` to supply
+    /// signing keys or HTLC preimages. Cancel listening with `NostrWaitInfo::cancel`.
+    #[cfg(feature = "nostr")]
+    #[instrument(skip_all)]
     pub async fn wait_for_nostr_payment(&self, info: NostrWaitInfo) -> Result<Amount> {
-        use crate::wallet::streams::nostr::NostrPaymentEventStream;
-
-        let NostrWaitInfo {
-            keys,
-            relays,
-            pubkey,
-            mints,
-            mint_preferred,
-        } = info;
-
-        let mut stream = NostrPaymentEventStream::new(keys, relays, pubkey);
-        let cancel = stream.cancel_token();
-
-        // Optional: you may expose cancel to caller, or use a timeout here.
-        // tokio::spawn(async move { tokio::time::sleep(Duration::from_secs(120)).await; cancel.cancel(); });
-
-        while let Some(item) = stream.next().await {
-            match item {
-                Ok(payload) => {
-                    if !payment_request_mint_policy_accepts_mint(
-                        &mints,
-                        mint_preferred,
-                        &payload.mint,
-                    ) {
-                        continue;
-                    }
-
-                    let token = crate::nuts::Token::new(
-                        payload.mint.clone(),
-                        payload.proofs,
-                        payload.memo,
-                        payload.unit.clone(),
-                    );
-
-                    // Get or create wallet for the token's mint
-                    let unit = payload.unit.clone();
-                    let wallet = match self.get_wallet(&payload.mint, &unit).await {
-                        Ok(w) => w,
-                        Err(_) => self.create_wallet(payload.mint.clone(), unit, None).await?,
-                    };
-
-                    // Receive using the individual wallet
-                    let token_str = token.to_string();
-                    let received = wallet
-                        .receive(&token_str, ReceiveOptions::default())
-                        .await?;
-
-                    // Stop after first successful receipt
-                    cancel.cancel();
-                    return Ok(received);
-                }
-                Err(_) => {
-                    // Keep listening on parse errors; if you prefer fail-fast, return the error
-                    continue;
-                }
-            }
-        }
-
-        // If stream ended without receiving a payment, return zero.
-        Ok(Amount::ZERO)
+        Ok(self
+            .wait_for_nostr_payment_with_options(info, ReceiveOptions::default())
+            .await?)
     }
 
-    /// Wait for a Nostr payment for the previously constructed PaymentRequest and receive it into the wallet.
+    /// Receive a managed Nostr request with signing keys, preimages, or metadata.
     ///
-    /// wasm32 fallback: Streams are not available; we await the first matching notification and process it.
-    #[cfg(all(feature = "nostr", target_arch = "wasm32"))]
-    pub async fn wait_for_nostr_payment(&self, info: NostrWaitInfo) -> Result<Amount> {
-        let NostrWaitInfo {
-            keys,
-            relays,
-            pubkey,
-            mints,
-            mint_preferred,
-        } = info;
-
-        let client = NostrClient::builder()
-            .authenticator(SignerAuthenticator::new(keys.clone()))
-            .build();
-
-        for r in &relays {
-            client
-                .add_relay(r.clone())
-                .capabilities(RelayCapabilities::READ)
-                .await
-                .map_err(|e| crate::error::Error::Custom(format!("Add relay {r}: {e}")))?;
-        }
-
-        client.connect().await;
-
-        // Subscribe to events addressed to `pubkey`
-        let filter = Filter::new().pubkey(pubkey).kind(Kind::GiftWrap);
-        let mut notifications = client.notifications();
-        client
-            .subscribe(filter)
-            .await
-            .map_err(|e| crate::error::Error::Custom(format!("Subscribe: {e}")))?;
-
-        // Await notifications until we successfully parse a payment payload and receive it
-        while let Some(notification) = notifications.next().await {
-            if let ClientNotification::Event { event, .. } = notification {
-                match UnwrappedGift::from_gift_wrap(&keys, &event) {
-                    Ok(unwrapped) => {
-                        let rumor = unwrapped.rumor;
-                        match serde_json::from_str::<PaymentRequestPayload>(&rumor.content) {
-                            Ok(payload) => {
-                                if !payment_request_mint_policy_accepts_mint(
-                                    &mints,
-                                    mint_preferred,
-                                    &payload.mint,
-                                ) {
-                                    continue;
-                                }
-
-                                let token = crate::nuts::Token::new(
-                                    payload.mint.clone(),
-                                    payload.proofs,
-                                    payload.memo,
-                                    payload.unit.clone(),
-                                );
-
-                                // Get or create wallet for the token's mint
-                                let unit = payload.unit.clone();
-                                let wallet = match self.get_wallet(&payload.mint, &unit).await {
-                                    Ok(w) => w,
-                                    Err(_) => {
-                                        self.create_wallet(payload.mint.clone(), unit, None).await?
-                                    }
-                                };
-
-                                // Receive using the individual wallet
-                                let token_str = token.to_string();
-                                let received = wallet
-                                    .receive(&token_str, ReceiveOptions::default())
-                                    .await?;
-
-                                return Ok(received);
-                            }
-                            Err(_) => {
-                                // Ignore malformed payloads and continue listening
-                                continue;
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        // Ignore unwrap errors and continue listening
-                        continue;
-                    }
-                }
-            }
-        }
-
-        Ok(Amount::ZERO)
+    /// Only one caller may wait on a handle at a time. Cancellation stops listening
+    /// and validation, but does not interrupt redemption once it has started.
+    /// Invalid DLEQ proofs are discarded while listening for a replacement payment.
+    /// Retryable preparation failures retain the payment so a clone of the handle
+    /// can retry with corrected options. Once durable recovery state exists, the handle is
+    /// consumed even if the mint returns an error; consult wallet transactions and
+    /// recovery before requesting payment again.
+    #[cfg(feature = "nostr")]
+    #[instrument(skip_all)]
+    pub async fn wait_for_nostr_payment_with_options(
+        &self,
+        info: NostrWaitInfo,
+        options: ReceiveOptions,
+    ) -> Result<Amount, Error> {
+        info.receive(self, options).await
     }
 }

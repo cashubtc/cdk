@@ -49,6 +49,27 @@ impl WalletRepository {
         ))
     }
 
+    /// Wait for a managed Nostr request, decrypt its payload, validate it, and redeem it.
+    ///
+    /// Pass the wait info returned by `create_request`. No Nostr private key is
+    /// needed. Optional receive options supply P2PK signing keys or HTLC preimages.
+    /// Call `info.cancel()` to stop listening. Redemption already in progress
+    /// finishes normally. Keep the handle alive; pending requests are memory-only.
+    pub async fn wait_for_nostr_payment(
+        &self,
+        info: Arc<NostrWaitInfo>,
+        options: Option<ReceiveOptions>,
+    ) -> Result<Amount, FfiError> {
+        Ok(self
+            .inner
+            .wait_for_nostr_payment_with_options(
+                info.inner().clone(),
+                options.unwrap_or_default().try_into()?,
+            )
+            .await?
+            .into())
+    }
+
     /// Create a new WalletRepository from locally persisted wallet state.
     ///
     /// Construction does not make network requests to configured mints.
