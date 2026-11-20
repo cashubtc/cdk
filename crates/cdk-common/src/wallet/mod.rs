@@ -12,7 +12,7 @@ use cashu::{nut00, PaymentMethod, Proof, Proofs, PublicKey};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::mint_quote::quote_state_from_amounts;
+use crate::mint_quote::{bolt11_quote_state_from_amounts, quote_state_from_amounts};
 use crate::mint_url::MintUrl;
 use crate::nuts::{
     CurrencyUnit, MeltQuoteState, MintQuoteState, SecretKey, SpendingConditions, State,
@@ -349,7 +349,13 @@ impl MintQuote {
 
     /// Derive quote state from the tracked payment and issuance counters.
     pub fn state_from_amounts(&self) -> MintQuoteState {
-        quote_state_from_amounts(self.amount_paid, self.amount_issued).unwrap_or(self.state)
+        let state = if self.payment_method == PaymentMethod::BOLT11 {
+            bolt11_quote_state_from_amounts(self.amount, self.amount_paid, self.amount_issued)
+        } else {
+            quote_state_from_amounts(self.amount_paid, self.amount_issued)
+        };
+
+        state.unwrap_or(self.state)
     }
 
     /// Update quote state from the tracked payment and issuance counters.
