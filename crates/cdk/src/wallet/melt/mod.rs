@@ -1569,13 +1569,27 @@ impl Wallet {
         Ok(())
     }
 
+    /// Whether a stored melt quote belongs to this wallet's mint and unit.
+    ///
+    /// Wallets for different mints can share one database. Quotes stored
+    /// before melt quotes recorded their mint have no mint url and are kept.
+    fn is_own_melt_quote(&self, quote: &MeltQuote) -> bool {
+        quote.unit == self.unit
+            && quote
+                .mint_url
+                .as_ref()
+                .is_none_or(|mint_url| mint_url == &self.mint_url)
+    }
+
     /// Get all active melt quotes from the wallet
+    ///
+    /// Only quotes for this wallet's mint and unit are returned.
     pub async fn get_active_melt_quotes(&self) -> Result<Vec<MeltQuote>, Error> {
         let quotes = self.localstore.get_melt_quotes().await?;
         Ok(quotes
             .into_iter()
             .filter(|q| {
-                q.unit == self.unit
+                self.is_own_melt_quote(q)
                     && (q.state == MeltQuoteState::Pending
                         || (q.state == MeltQuoteState::Unpaid && q.expiry > unix_time()))
             })
@@ -1583,11 +1597,13 @@ impl Wallet {
     }
 
     /// Get pending melt quotes
+    ///
+    /// Only quotes for this wallet's mint and unit are returned.
     pub async fn get_pending_melt_quotes(&self) -> Result<Vec<MeltQuote>, Error> {
         let quotes = self.localstore.get_melt_quotes().await?;
         Ok(quotes
             .into_iter()
-            .filter(|q| q.unit == self.unit && q.state == MeltQuoteState::Pending)
+            .filter(|q| self.is_own_melt_quote(q) && q.state == MeltQuoteState::Pending)
             .collect())
     }
 
@@ -2122,6 +2138,65 @@ mod tests {
         make_inactive_keyset, test_keyset, test_melt_quote, test_mint_info, test_proof,
         MockMintConnector,
     };
+
+    /// Wallets for different mints can share a database; each one must only
+    /// list its own melt quotes, keeping legacy quotes that have no mint url
+    #[tokio::test]
+    async fn active_and_pending_melt_quotes_are_scoped_to_the_wallet_mint() {
+        let db = create_test_db().await;
+        let wallet =
+            create_test_wallet_with_mock(db.clone(), Arc::new(MockMintConnector::new())).await;
+        let other_mint =
+            crate::mint_url::MintUrl::from_str("https://other-mint.example.com").unwrap();
+
+        let quote = |mint_url: Option<crate::mint_url::MintUrl>, state: MeltQuoteState| {
+            let mut quote = test_melt_quote();
+            quote.mint_url = mint_url;
+            quote.state = state;
+            quote
+        };
+        let own_pending = quote(Some(test_mint_url()), MeltQuoteState::Pending);
+        let own_unpaid = quote(Some(test_mint_url()), MeltQuoteState::Unpaid);
+        let legacy_pending = quote(None, MeltQuoteState::Pending);
+        let other_pending = quote(Some(other_mint.clone()), MeltQuoteState::Pending);
+        let other_unpaid = quote(Some(other_mint), MeltQuoteState::Unpaid);
+        let mut other_unit = quote(Some(test_mint_url()), MeltQuoteState::Pending);
+        other_unit.unit = CurrencyUnit::Usd;
+
+        for quote in [
+            &own_pending,
+            &own_unpaid,
+            &legacy_pending,
+            &other_pending,
+            &other_unpaid,
+            &other_unit,
+        ] {
+            db.add_melt_quote(quote.clone()).await.unwrap();
+        }
+
+        let ids = |quotes: Vec<MeltQuote>| {
+            let mut ids: Vec<String> = quotes.into_iter().map(|quote| quote.id).collect();
+            ids.sort();
+            ids
+        };
+        let sorted = |mut ids: Vec<String>| {
+            ids.sort();
+            ids
+        };
+
+        assert_eq!(
+            ids(wallet.get_active_melt_quotes().await.unwrap()),
+            sorted(vec![
+                own_pending.id.clone(),
+                own_unpaid.id.clone(),
+                legacy_pending.id.clone(),
+            ])
+        );
+        assert_eq!(
+            ids(wallet.get_pending_melt_quotes().await.unwrap()),
+            sorted(vec![own_pending.id.clone(), legacy_pending.id.clone()])
+        );
+    }
 
     #[tokio::test]
     async fn quote_status_returns_persisted_melt_quote() {
