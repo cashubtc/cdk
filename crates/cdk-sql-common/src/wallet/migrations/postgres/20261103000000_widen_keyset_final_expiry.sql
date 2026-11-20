@@ -1,0 +1,1 @@
+ALTER TABLE keyset ALTER COLUMN final_expiry TYPE BIGINT;

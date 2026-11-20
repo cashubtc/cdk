@@ -287,6 +287,64 @@ where
     assert!(!keysets.unwrap().is_empty());
 }
 
+/// A mint can set an expiry on a keyset it already announced, and a v1 keyset
+/// id does not change when it does, so the upsert has to refresh the field.
+pub async fn keyset_upsert_refreshes_final_expiry<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mint_url = test_mint_url();
+    let keyset_id = test_keyset_id();
+    let mut keyset_info = test_keyset_info(keyset_id, &mint_url);
+
+    db.add_mint(mint_url.clone(), None).await.unwrap();
+    db.add_mint_keysets(mint_url.clone(), vec![keyset_info.clone()])
+        .await
+        .unwrap();
+    assert_eq!(
+        db.get_keyset_by_id(&keyset_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .final_expiry,
+        None
+    );
+
+    keyset_info.final_expiry = Some(1_900_000_000);
+    db.add_mint_keysets(mint_url.clone(), vec![keyset_info.clone()])
+        .await
+        .unwrap();
+    assert_eq!(
+        db.get_keyset_by_id(&keyset_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .final_expiry,
+        Some(1_900_000_000)
+    );
+
+    let keysets = db
+        .get_mint_keysets(mint_url.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(keysets.len(), 1);
+    assert_eq!(keysets[0].final_expiry, Some(1_900_000_000));
+
+    keyset_info.final_expiry = None;
+    db.add_mint_keysets(mint_url, vec![keyset_info])
+        .await
+        .unwrap();
+    assert_eq!(
+        db.get_keyset_by_id(&keyset_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .final_expiry,
+        None
+    );
+}
+
 /// Test getting keyset by ID in transaction
 pub async fn get_keyset_by_id_in_transaction<DB>(db: DB)
 where
@@ -1919,6 +1977,7 @@ macro_rules! wallet_db_test {
             remove_mint,
             update_mint_url,
             add_and_get_keysets,
+            keyset_upsert_refreshes_final_expiry,
             get_keyset_by_id_in_transaction,
             add_and_get_keys,
             get_keys_in_transaction,
