@@ -51,16 +51,24 @@ pub fn calculate_fee(
     // BTreeMap ensures deterministic iteration order (sorted by keyset ID)
     let mut per_keyset = HashMap::new();
     let mut distributed_fee: u64 = 0;
-    let keyset_count = fee_per_keyset_raw.len();
+    // The rounding remainder goes to the last keyset that charges a fee, so a
+    // keyset with no input fee is never booked as having collected one.
+    let remainder_keyset = fee_per_keyset_raw
+        .iter()
+        .filter(|(_, raw_fee)| **raw_fee > 0)
+        .map(|(keyset_id, _)| *keyset_id)
+        .next_back();
 
-    for (i, (keyset_id, raw_fee)) in fee_per_keyset_raw.iter().enumerate() {
+    for (keyset_id, raw_fee) in fee_per_keyset_raw.iter() {
         if sum_fee == 0 {
             continue;
         }
 
         // Calculate proportional fee, rounding down
-        let keyset_fee = if i == keyset_count - 1 {
-            // Last keyset gets the remainder to ensure total matches
+        let keyset_fee = if Some(*keyset_id) == remainder_keyset {
+            // Last charging keyset gets the remainder to ensure total matches.
+            // Keysets after it charge nothing, so everything else is already
+            // distributed.
             total_fee.saturating_sub(distributed_fee)
         } else {
             (raw_fee.checked_mul(total_fee))
@@ -351,6 +359,32 @@ mod tests {
         assert_eq!(breakdown.per_keyset[&keyset_id_1], 0.into());
         assert_eq!(breakdown.per_keyset[&keyset_id_2], 0.into());
         assert_eq!(breakdown.per_keyset[&keyset_id_3], 1.into());
+    }
+
+    #[test]
+    fn test_per_keyset_fee_remainder_skips_keysets_without_fee() {
+        // The keyset without an input fee sorts last.
+        let keyset_id_1 = Id::from_str("00aaaaaaaaaaaaa1").unwrap();
+        let keyset_id_2 = Id::from_str("00aaaaaaaaaaaaa2").unwrap();
+        let free_keyset_id = Id::from_str("00aaaaaaaaaaaaa3").unwrap();
+
+        let mut keyset_fees = HashMap::new();
+        keyset_fees.insert(keyset_id_1, 300);
+        keyset_fees.insert(keyset_id_2, 300);
+        keyset_fees.insert(free_keyset_id, 0);
+
+        let mut proofs_count = HashMap::new();
+        proofs_count.insert(keyset_id_1, 1);
+        proofs_count.insert(keyset_id_2, 1);
+        proofs_count.insert(free_keyset_id, 4);
+
+        // 600 ppk rounds up to 1 sat, all of it charged by the first two keysets.
+        let breakdown = calculate_fee(&proofs_count, &keyset_fees).unwrap();
+
+        assert_eq!(breakdown.total, 1.into());
+        assert_eq!(breakdown.per_keyset[&keyset_id_1], 0.into());
+        assert_eq!(breakdown.per_keyset[&keyset_id_2], 1.into());
+        assert_eq!(breakdown.per_keyset[&free_keyset_id], 0.into());
     }
 
     #[test]
