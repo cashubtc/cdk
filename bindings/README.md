@@ -42,6 +42,11 @@ Maven Central, so a nightly would otherwise deliver nothing at all.
 
 ## Architecture
 
+[`cashu-ffi`](../crates/cashu-ffi/README.md) separately exposes the existing
+`cashu` cryptographic primitives. It preserves the core's input contracts and
+does not load the CDK wallet. Consumer-specific compatibility belongs in an
+adapter rather than in this generic binding crate or in `cashu`.
+
 The bindings follow a two-tier architecture:
 
 ```
