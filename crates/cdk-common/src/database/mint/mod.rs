@@ -284,7 +284,8 @@ pub trait QuotesTransaction {
     ///
     /// The counters must only be updated if the stored row still holds the values the quote
     /// had before these changes. Otherwise return [`Error::ConcurrentUpdate`], after which the
-    /// caller must roll back the transaction.
+    /// caller must not commit the transaction: the payment and issuance records may already be
+    /// written.
     ///
     /// The pending changes are consumed even if this fails, so a caller that retries must reload
     /// the quote first. Calling this again with the same quote writes nothing and returns `Ok`.
@@ -356,7 +357,7 @@ pub trait QuotesTransaction {
     ///
     /// Requires an [`Acquired`] melt quote to ensure the row is locked before modification.
     /// Returns [`Error::ConcurrentUpdate`] if the stored state no longer matches the quote,
-    /// after which the caller must roll back the transaction.
+    /// after which the caller must not commit the transaction.
     async fn update_melt_quote_request_lookup_id(
         &mut self,
         quote: &mut Acquired<mint::MeltQuote>,
@@ -367,7 +368,7 @@ pub trait QuotesTransaction {
     ///
     /// Requires an [`Acquired`] melt quote to ensure the row is locked before modification.
     /// Returns the previous state, or [`Error::ConcurrentUpdate`] if the stored state no longer
-    /// matches the quote, after which the caller must roll back the transaction.
+    /// matches the quote, after which the caller must not commit the transaction.
     async fn update_melt_quote_state(
         &mut self,
         quote: &mut Acquired<mint::MeltQuote>,
@@ -400,7 +401,7 @@ pub trait QuotesTransaction {
     /// Returns the updated quote, or None while a valid owner exists.
     ///
     /// Returns [`Error::ConcurrentUpdate`] if the stored state, lock or lock expiry changed
-    /// between the read and the write, after which the caller must roll back the transaction.
+    /// between the read and the write, after which the caller must not commit the transaction.
     async fn claim_melt_quote_lease(
         &mut self,
         quote_id: &QuoteId,
@@ -412,7 +413,7 @@ pub trait QuotesTransaction {
     /// Returns false when ownership was released, replaced, or expired.
     ///
     /// Returns [`Error::ConcurrentUpdate`] if the stored state, lock or lock expiry changed
-    /// between the read and the write, after which the caller must roll back the transaction.
+    /// between the read and the write, after which the caller must not commit the transaction.
     async fn renew_melt_quote_lease(
         &mut self,
         quote_id: &QuoteId,
@@ -505,7 +506,8 @@ pub trait ProofsTransaction {
     /// the new state after the database update succeeds.
     ///
     /// Returns [`Error::ConcurrentUpdate`] if any stored proof is no longer in the wrapper's
-    /// state, after which the caller must roll back the transaction.
+    /// state, after which the caller must not commit the transaction: the proofs that were still
+    /// in that state may already be updated.
     async fn update_proofs_state(
         &mut self,
         proofs: &mut Acquired<ProofsWithState>,
@@ -579,7 +581,8 @@ pub trait SignaturesTransaction {
     /// Add [`BlindSignature`]
     ///
     /// Returns [`Error::ConcurrentUpdate`] if a blinded message read as unsigned was signed
-    /// between the read and the write, after which the caller must roll back the transaction.
+    /// between the read and the write, after which the caller must not commit the transaction:
+    /// earlier messages in the batch and their keyset totals may already be written.
     async fn add_blind_signatures(
         &mut self,
         blinded_messages: &[PublicKey],
@@ -663,7 +666,7 @@ pub trait SagaTransaction {
     /// Update the state of an acquired saga.
     ///
     /// Returns [`Error::ConcurrentUpdate`] if the stored saga no longer exists or its state no
-    /// longer matches, after which the caller must roll back the transaction.
+    /// longer matches, after which the caller must not commit the transaction.
     async fn update_acquired_saga(
         &mut self,
         saga: &mut Acquired<mint::Saga>,
@@ -673,7 +676,7 @@ pub trait SagaTransaction {
     /// Update an acquired saga state and optional finalization metadata.
     ///
     /// Returns [`Error::ConcurrentUpdate`] if the stored saga no longer exists or its state no
-    /// longer matches, after which the caller must roll back the transaction.
+    /// longer matches, after which the caller must not commit the transaction.
     async fn update_acquired_saga_with_finalization_data(
         &mut self,
         saga: &mut Acquired<mint::Saga>,
