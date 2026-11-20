@@ -186,6 +186,20 @@ pub trait WalletDatabase: Send + Sync {
         count: u32,
     ) -> Result<u32, FfiError>;
 
+    /// Atomically reserve and return an unused derivation index at least `minimum_index`.
+    ///
+    /// In one atomic operation, advance the namespaced counter to
+    /// `max(counter, minimum_index) + 1` and return `max(counter, minimum_index)`.
+    /// If that next value cannot be represented as a `u32`, return an error
+    /// without modifying the counter. A read followed by a separate increment
+    /// does not satisfy this contract, because concurrent callers can observe
+    /// the same counter.
+    async fn reserve_derivation_index(
+        &self,
+        namespace: String,
+        minimum_index: u32,
+    ) -> Result<u32, FfiError>;
+
     /// Add Mint to storage
     async fn add_mint(
         &self,
@@ -744,6 +758,17 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
     ) -> Result<u32, cdk::cdk_database::Error> {
         self.ffi_db
             .increment_derivation_counter(namespace.to_owned(), count)
+            .await
+            .map_err(into_database_error)
+    }
+
+    async fn reserve_derivation_index(
+        &self,
+        namespace: &str,
+        minimum_index: u32,
+    ) -> Result<u32, cdk::cdk_database::Error> {
+        self.ffi_db
+            .reserve_derivation_index(namespace.to_owned(), minimum_index)
             .await
             .map_err(into_database_error)
     }
@@ -1500,6 +1525,18 @@ where
             .map_err(FfiError::internal)
     }
 
+    async fn reserve_derivation_index(
+        &self,
+        namespace: String,
+        minimum_index: u32,
+    ) -> Result<u32, FfiError> {
+        self.inner
+            .reserve_derivation_index(&namespace, minimum_index)
+            .compat()
+            .await
+            .map_err(FfiError::internal)
+    }
+
     async fn add_mint(
         &self,
         mint_url: MintUrl,
@@ -1951,6 +1988,16 @@ macro_rules! impl_ffi_wallet_database {
             ) -> Result<u32, FfiError> {
                 self.inner
                     .increment_derivation_counter(namespace, count)
+                    .await
+            }
+
+            async fn reserve_derivation_index(
+                &self,
+                namespace: String,
+                minimum_index: u32,
+            ) -> Result<u32, FfiError> {
+                self.inner
+                    .reserve_derivation_index(namespace, minimum_index)
                     .await
             }
 
