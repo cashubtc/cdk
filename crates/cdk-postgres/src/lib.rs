@@ -20,6 +20,9 @@ mod db;
 mod tls;
 mod value;
 
+#[cfg(all(test, feature = "mint"))]
+mod proof_coordination_tests;
+
 #[derive(Debug)]
 /// Postgres connection pool
 pub struct PgConnectionPool;
