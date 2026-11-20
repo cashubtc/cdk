@@ -7,10 +7,10 @@ use crate::common::SqliteConnectionManager;
 
 pub mod memory;
 
-/// Mint SQLite implementation with rusqlite
+/// Mint SQLite implementation
 pub type MintSqliteDatabase = SQLMintDatabase<SqliteConnectionManager>;
 
-/// Mint Auth database with rusqlite
+/// Mint Auth database
 pub type MintSqliteAuthDatabase = SQLMintAuthDatabase<SqliteConnectionManager>;
 
 #[cfg(test)]
@@ -182,7 +182,7 @@ mod test {
 
             query(include_str!("../../tests/legacy-sqlx.sql"))
                 .expect("query")
-                .execute(&*conn)
+                .batch(&*conn)
                 .await
                 .expect("create former db failed");
         }

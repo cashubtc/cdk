@@ -1,8 +1,10 @@
 # Downstream rusqlite compatibility
 
 This independent workspace lets an application choose a rusqlite version while
-using cdk-sqlite. The root workspace includes LDK Node 0.7, which constrains
-rusqlite to 0.31 even when only cdk-sqlite is selected for testing.
+using cdk-sqlite. cdk-sqlite uses sqlite-thin, which accepts any
+libsqlite3-sys version, so it adopts the version the application's rusqlite
+selects. The root workspace includes LDK Node 0.7, which constrains rusqlite
+to 0.31 even when only cdk-sqlite is selected for testing.
 
 The fixture runs the shared mint and wallet database test suites and checks that
 a wallet database can be reopened and read with the application's rusqlite.
@@ -26,7 +28,7 @@ nix develop .#msrv --command cargo test --locked --manifest-path tests/rusqlite-
 ```
 
 When changing the supported range, update the endpoint versions in flake.nix,
-the requirements in both Cargo.toml files, and both fixture lockfiles. From
+the rusqlite requirement in this Cargo.toml, and both fixture lockfiles. From
 tests/rusqlite-compat, generate lockfiles with Rust 1.85 and
 CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback,
 then select each endpoint with cargo update -p rusqlite --precise VERSION.

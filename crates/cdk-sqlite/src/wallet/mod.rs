@@ -6,7 +6,7 @@ use crate::common::SqliteConnectionManager;
 
 pub mod memory;
 
-/// Mint SQLite implementation with rusqlite
+/// Mint SQLite implementation
 pub type WalletSqliteDatabase = SQLWalletDatabase<SqliteConnectionManager>;
 
 #[cfg(test)]
@@ -45,7 +45,7 @@ mod tests {
             std::env::temp_dir().join(format!("cdk-transaction-upgrade-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&dir).expect("temp dir");
         let path = dir.join("wallet.sqlite");
-        let conn = rusqlite::Connection::open(&path).expect("open sqlite");
+        let conn = sqlite_thin::Connection::open(&path).expect("open sqlite");
 
         // Build the pre-upgrade schema the way the runner would have: apply each
         // earlier migration in order and record it under the runner's name.
@@ -134,7 +134,7 @@ mod tests {
                  (id, mint_url, direction, unit, amount, fee, ys, timestamp, memo, metadata,
                   quote_id, payment_request, payment_proof, payment_method, saga_id, status)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
-                rusqlite::params![
+                sqlite_thin::params![
                     transaction.id().as_slice().to_vec(),
                     transaction.mint_url.to_string(),
                     transaction.direction.to_string(),
@@ -177,7 +177,7 @@ mod tests {
         }
         drop(db);
 
-        let conn = rusqlite::Connection::open(&path).expect("reopen sqlite");
+        let conn = sqlite_thin::Connection::open(&path).expect("reopen sqlite");
         let recorded: i64 = conn
             .query_row(
                 "SELECT count(*) FROM migrations WHERE name = ?1",
@@ -201,7 +201,7 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let db = WalletSqliteDatabase::new(&path).await.unwrap();
-        let conn = rusqlite::Connection::open(&path).unwrap();
+        let conn = sqlite_thin::Connection::open(&path).unwrap();
         let original = Transaction {
             mint_url: "https://mint.example".parse().unwrap(),
             direction: TransactionDirection::Incoming,
@@ -248,7 +248,7 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let db = WalletSqliteDatabase::new(&path).await.unwrap();
-        let conn = rusqlite::Connection::open(&path).unwrap();
+        let conn = sqlite_thin::Connection::open(&path).unwrap();
         let valid = Transaction {
             mint_url: "https://mint.example".parse().unwrap(),
             direction: TransactionDirection::Incoming,
@@ -285,7 +285,7 @@ mod tests {
         // A bad middle point must discard both earlier and later joined rows.
         conn.execute(
             "UPDATE transaction_ys SET y = ?1 WHERE transaction_id = ?2 AND position = 1",
-            rusqlite::params![vec![0u8; 33], bad_point.id().as_slice()],
+            sqlite_thin::params![vec![0u8; 33], bad_point.id().as_slice()],
         )
         .unwrap();
         assert_eq!(
@@ -301,13 +301,13 @@ mod tests {
 
     #[test]
     fn transaction_ys_migration_preserves_legacy_points() {
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let conn = sqlite_thin::Connection::open_in_memory().unwrap();
         conn.execute_batch(include_str!("../../../cdk-sql-common/src/wallet/migrations/sqlite/20250401120000_add_transactions_table.sql")).unwrap();
         let first = cdk_common::SecretKey::generate().public_key().to_bytes();
         let second = cdk_common::SecretKey::generate().public_key().to_bytes();
         let points = [first, second, first];
         for (id, ys) in [(vec![1u8], points.concat()), (vec![2u8], Vec::new())] {
-            conn.execute("INSERT INTO transactions (id, mint_url, direction, amount, fee, unit, ys, timestamp, memo) VALUES (?1, 'https://mint.example', 'Incoming', 1, 0, 'sat', ?2, 123, 'retained')", rusqlite::params![id, ys]).unwrap();
+            conn.execute("INSERT INTO transactions (id, mint_url, direction, amount, fee, unit, ys, timestamp, memo) VALUES (?1, 'https://mint.example', 'Incoming', 1, 0, 'sat', ?2, 123, 'retained')", sqlite_thin::params![id, ys]).unwrap();
         }
         conn.execute_batch(include_str!("../../../cdk-sql-common/src/wallet/migrations/sqlite/20260924000000_normalize_transaction_ys.sql")).unwrap();
         let mut stmt = conn
@@ -340,9 +340,9 @@ mod tests {
 
     #[test]
     fn transaction_ys_migration_rejects_truncated_points_atomically() {
-        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        let mut conn = sqlite_thin::Connection::open_in_memory().unwrap();
         conn.execute_batch(include_str!("../../../cdk-sql-common/src/wallet/migrations/sqlite/20250401120000_add_transactions_table.sql")).unwrap();
-        conn.execute("INSERT INTO transactions (id, mint_url, direction, amount, fee, unit, ys, timestamp) VALUES (?1, 'https://mint.example', 'Incoming', 1, 0, 'sat', ?2, 123)", rusqlite::params![vec![1u8], vec![2u8; 34]]).unwrap();
+        conn.execute("INSERT INTO transactions (id, mint_url, direction, amount, fee, unit, ys, timestamp) VALUES (?1, 'https://mint.example', 'Incoming', 1, 0, 'sat', ?2, 123)", sqlite_thin::params![vec![1u8], vec![2u8; 34]]).unwrap();
         let tx = conn.transaction().unwrap();
         assert!(tx.execute_batch(include_str!("../../../cdk-sql-common/src/wallet/migrations/sqlite/20260924000000_normalize_transaction_ys.sql")).is_err());
         tx.rollback().unwrap();

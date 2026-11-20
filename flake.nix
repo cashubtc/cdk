@@ -327,7 +327,7 @@
         };
 
         # Independent downstream resolution avoids LDK Node 0.7's rusqlite pin.
-        # Keep these endpoints in sync with crates/cdk-sqlite/Cargo.toml.
+        # Keep these endpoints in sync with tests/rusqlite-compat/Cargo.toml.
         rusqliteCompatChecks = lib.mapAttrs
           (endpoint: config:
             let

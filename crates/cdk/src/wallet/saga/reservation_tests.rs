@@ -59,7 +59,7 @@ struct Manager;
 impl DatabasePool for Manager {
     type Config = Config;
     type Connection = Connection;
-    type Error = rusqlite::Error;
+    type Error = sqlite_thin::Error;
 
     fn new_resource(
         config: &Config,
