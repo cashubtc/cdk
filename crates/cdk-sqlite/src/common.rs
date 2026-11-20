@@ -53,6 +53,10 @@ impl pool::DatabaseConfig for Config {
     }
 }
 
+/// Holds every statement the mint or wallet issues, since rusqlite defaults to 16 and the
+/// shared SQL layer has an order of magnitude more than that.
+const STATEMENT_CACHE_CAPACITY: usize = 256;
+
 /// Sqlite connection manager
 #[derive(Debug)]
 pub struct SqliteConnectionManager;
@@ -113,6 +117,8 @@ impl DatabasePool for SqliteConnectionManager {
             pragma cache = shared;
             "#,
         )?;
+
+        conn.set_prepared_statement_cache_capacity(STATEMENT_CACHE_CAPACITY);
 
         conn.busy_timeout(Duration::from_secs(10))?;
 

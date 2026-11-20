@@ -20,6 +20,7 @@ async-trait.workspace = true
 cdk-common.workspace = true
 cdk-sql-common = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
+tracing.workspace = true
 uuid.workspace = true
 tokio-postgres = "0.7.13"
 futures-util = "0.3.31"
