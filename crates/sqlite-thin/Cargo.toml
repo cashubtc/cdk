@@ -1,0 +1,50 @@
+[package]
+name = "sqlite-thin"
+version = "0.1.0"
+edition.workspace = true
+authors = ["CDK Developers"]
+description = "A small, safe SQLite wrapper that accepts a wide libsqlite3-sys version range"
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+keywords = ["sqlite", "database"]
+categories = ["database"]
+
+[features]
+default = []
+# Compile SQLite from source instead of linking the system library.
+bundled = ["libsqlite3-sys/bundled"]
+# Compile SQLCipher from source; enables `PRAGMA key`.
+bundled-sqlcipher = ["bundled", "libsqlite3-sys/bundled-sqlcipher"]
+
+[dependencies]
+# Used only to build and link SQLite; the C functions are declared in
+# src/sys.rs. libsqlite3-sys declares `links = "sqlite3"`, so a build holds one
+# version of it, and accepting any version means this crate never constrains
+# which one. Only its `bundled` and `bundled-sqlcipher` feature names matter.
+libsqlite3-sys = ">=0.28.0"
+
+[dev-dependencies]
+libsqlite3-sys = { version = ">=0.28.0", features = ["bundled"] }
+tempfile = "3"
+
+# Mirrors the workspace lints, except that unsafe code is denied rather than
+# forbidden so that the `raw` module, and only that module, can opt in.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+missing_docs = "warn"
+
+[lints.clippy]
+unwrap_used = "deny"
+missing_panics_doc = "warn"
+missing_safety_doc = "warn"
+undocumented_unsafe_blocks = "deny"
+use_debug = "warn"
+large_enum_variant = "warn"
+
+[lints.rustdoc]
+bare_urls = "warn"

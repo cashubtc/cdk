@@ -144,7 +144,7 @@ struct TestManager;
 impl DatabasePool for TestManager {
     type Config = TestConfig;
     type Connection = AsyncSqlite;
-    type Error = rusqlite::Error;
+    type Error = sqlite_thin::Error;
 
     fn drop(resource: Self::Connection) {
         SqliteConnectionManager::drop(resource);
