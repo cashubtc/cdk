@@ -496,12 +496,15 @@ impl Wallet {
     /// Query mint for current mint information
     #[instrument(skip(self))]
     pub async fn fetch_mint_info(&self) -> Result<Option<MintInfo>, Error> {
-        let mint_info = self
+        let Some(mint_info) = self
             .metadata_cache
             .load_from_mint(&self.localstore, &self.client)
             .await?
             .mint_info
-            .clone();
+            .clone()
+        else {
+            return Ok(None);
+        };
 
         // If mint provides time make sure it is accurate
         if let Some(mint_unix_time) = mint_info.time {
@@ -585,16 +588,35 @@ impl Wallet {
     /// This is a helper function that loads the mint info from the metadata cache
     /// using the configured TTL. Unlike `fetch_mint_info()`, this does not make
     /// a network call if the cache is fresh.
+    ///
+    /// A snapshot counts as loaded on its keysets alone, so one assembled out
+    /// of a database holding keysets but no mint info is refreshed here rather
+    /// than failing every caller until the TTL expires, which with the TTL off
+    /// would be never.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::CouldNotGetMintInfo`] when neither the snapshot nor the
+    /// refresh carries any, rather than a default one claiming the mint
+    /// supports nothing.
     #[instrument(skip(self))]
     pub async fn load_mint_info(&self) -> Result<MintInfo, Error> {
-        let mint_info = self
+        if let Some(mint_info) = self
             .metadata_cache
             .load(&self.localstore, &self.client)
             .await?
             .mint_info
-            .clone();
+            .clone()
+        {
+            return Ok(mint_info);
+        }
 
-        Ok(mint_info)
+        self.metadata_cache
+            .load_from_mint(&self.localstore, &self.client)
+            .await?
+            .mint_info
+            .clone()
+            .ok_or(Error::CouldNotGetMintInfo)
     }
 
     /// Get amounts needed to refill proof state
@@ -1254,7 +1276,9 @@ mod tests {
     use super::*;
     use crate::nuts::{AuthToken, BlindSignature, BlindedMessage, PreMint, PreMintSecrets};
     use crate::secret::Secret;
-    use crate::wallet::test_utils::{MockMintConnector, TraceWriter};
+    use crate::wallet::test_utils::{
+        create_test_wallet_with_mock, test_keyset, test_mint_url, MockMintConnector, TraceWriter,
+    };
 
     async fn test_wallet() -> Wallet {
         let store = Arc::new(cdk_sqlite::wallet::memory::empty().await.unwrap());
@@ -1318,6 +1342,76 @@ mod tests {
         assert!(trace.contains("mint_quote"));
         assert!(trace.contains(description));
         assert!(!trace.contains(extra));
+    }
+
+    fn named_mint_info(name: &str) -> MintInfo {
+        MintInfo {
+            name: Some(name.to_string()),
+            ..Default::default()
+        }
+    }
+
+    fn test_keyset_info() -> KeySetInfo {
+        let keyset = test_keyset();
+        KeySetInfo {
+            id: keyset.id,
+            unit: keyset.unit.clone(),
+            active: true,
+            input_fee_ppk: keyset.input_fee_ppk,
+            final_expiry: keyset.final_expiry,
+        }
+    }
+
+    /// Wallet over a database holding the mint row, with `stored` as its mint
+    /// info, against a mint answering `served` and a cache that never expires.
+    async fn wallet_over(stored: Option<MintInfo>, served: MintInfo) -> Wallet {
+        let store: Arc<dyn WalletDatabase<database::Error> + Send + Sync> =
+            Arc::new(cdk_sqlite::wallet::memory::empty().await.unwrap());
+        store.add_mint(test_mint_url(), stored).await.unwrap();
+        store
+            .add_mint_keysets(test_mint_url(), vec![test_keyset_info()])
+            .await
+            .unwrap();
+
+        let connector = Arc::new(MockMintConnector::new());
+        connector.set_mint_info_response(Ok(served));
+        let wallet = create_test_wallet_with_mock(store, connector).await;
+        wallet.metadata_cache.set_ttl(None);
+
+        wallet
+    }
+
+    #[tokio::test]
+    async fn mint_info_missing_from_the_snapshot_is_fetched() {
+        let wallet = wallet_over(None, named_mint_info("from-the-mint")).await;
+        wallet
+            .metadata_cache
+            .seed_keysets_without_mint_info(vec![test_keyset_info()]);
+
+        let mint_info = wallet.load_mint_info().await.unwrap();
+
+        assert_eq!(
+            mint_info.name.as_deref(),
+            Some("from-the-mint"),
+            "keysets alone make the snapshot look loaded, so the mint info has to be fetched rather than failing for as long as the snapshot stands"
+        );
+    }
+
+    #[tokio::test]
+    async fn mint_info_in_the_snapshot_is_not_fetched() {
+        let wallet = wallet_over(
+            Some(named_mint_info("from-the-database")),
+            named_mint_info("from-the-mint"),
+        )
+        .await;
+
+        let mint_info = wallet.load_mint_info().await.unwrap();
+
+        assert_eq!(
+            mint_info.name.as_deref(),
+            Some("from-the-database"),
+            "a snapshot carrying mint info is served without a fetch"
+        );
     }
 
     fn build_test_auth_keyset(seed_byte: u8) -> KeySet {
