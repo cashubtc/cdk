@@ -314,6 +314,11 @@ cashu  (protocol types, crypto, NUT specs)
 
 Conventional commits: `feat:`, `fix:`, `docs:`, `chore:`, `refactor:`, `test:`.
 
+## Changelog
+
+Put the changelog entry in the pull request description. Do not edit `CHANGELOG.md`
+as part of the pull request.
+
 ## Docs & References
 
 **If you are reviewing PRs or code changes, always read the [CDK Code Review Guidelines](docs/code-review.md) for project-specific feedback standards.**
