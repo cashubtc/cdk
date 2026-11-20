@@ -63,3 +63,38 @@ cargo update -p reqwest --precise 0.12.4
 ## License
 
 This project is licensed under the [MIT License](../../LICENSE).
+
+## Connection pooling and cancellation
+
+SQLite connections are pooled by Deadpool through a small rusqlite manager in
+this crate, so the supported rusqlite range and SQLCipher compatibility are
+unchanged. File databases use up to 20 connections; in-memory databases keep
+one connection and never evict it while healthy. Returning a connection does
+not run a health query, so a cancelled checkout cannot discard it.
+The acquisition wait timeout remains five seconds. Opening hooks, SQL, row
+conversion, and transaction commands run through `interact()` on blocking
+workers. The encryption key is applied before database pragmas access contents.
+WAL, full durability, a ten-second busy timeout, and `BEGIN IMMEDIATE` are retained.
+
+Cancelling a query does not cancel its running blocking closure. The checkout
+stays unavailable until that work finishes and rollback succeeds. Cleanup has a
+ten-second deadline including the outstanding work; failure detaches the
+connection. If an initialized in-memory connection is lost, the backend closes
+and returns errors instead of creating a new empty database. Explicitly opening
+a new backend is required to start a new in-memory database.
+
+Normal constructors and path/password arguments are unchanged. Low-level users
+should migrate to `SqliteBackend` and the shared `SqlBackend`, `SqlConnection`,
+and `SqlTransaction` traits; see the
+[low-level API migration guide](../cdk-postgres/README.md#low-level-api-migration).
+Create the backend inside a Tokio runtime. Blocking work runs on the caller's
+runtime; backend handles retain the creating runtime's handle as a fallback for
+disposing of connections when dropped by synchronous FFI callers. They do not
+create or own another runtime.
+
+`close()` rejects new checkouts and waits until every connection, including one
+detached after failed cleanup, has finished closing. Await it before copying a
+database file.
+
+Cleanup diagnostics use the same outcome/disposal counters and structured warning
+fields as PostgreSQL; see [cleanup metrics](../cdk-postgres/README.md#cancellation-and-errors).

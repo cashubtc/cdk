@@ -4,13 +4,12 @@ use async_trait::async_trait;
 use cdk_common::database::Error;
 
 use super::{SQLMintDatabase, SQLTransaction};
-use crate::database::ConnectionWithTransaction;
-use crate::pool::DatabasePool;
+use crate::database::SqlBackend;
 
 #[async_trait]
 impl<RM> cdk_common::database::KVStoreTransaction<Error> for SQLTransaction<RM>
 where
-    RM: DatabasePool + 'static,
+    RM: SqlBackend + 'static,
 {
     async fn kv_read(
         &mut self,
@@ -108,7 +107,7 @@ where
 #[async_trait]
 impl<RM> cdk_common::database::KVStoreDatabase for SQLMintDatabase<RM>
 where
-    RM: DatabasePool + 'static,
+    RM: SqlBackend + 'static,
 {
     type Err = Error;
 
@@ -133,7 +132,7 @@ where
 #[async_trait]
 impl<RM> cdk_common::database::KVStoreCompareAndSwap for SQLMintDatabase<RM>
 where
-    RM: DatabasePool + 'static,
+    RM: SqlBackend + 'static,
 {
     async fn kv_compare_and_swap(
         &self,
@@ -158,20 +157,14 @@ where
 #[async_trait]
 impl<RM> cdk_common::database::KVStore for SQLMintDatabase<RM>
 where
-    RM: DatabasePool + 'static,
+    RM: SqlBackend + 'static,
 {
     async fn begin_transaction(
         &self,
     ) -> Result<Box<dyn cdk_common::database::KVStoreTransaction<Self::Err> + Send + Sync>, Error>
     {
-        Ok(Box::new(SQLTransaction {
-            inner: ConnectionWithTransaction::new(
-                self.pool
-                    .get()
-                    .await
-                    .map_err(|e| Error::Database(Box::new(e)))?,
-            )
-            .await?,
+        Ok(Box::new(SQLTransaction::<RM> {
+            inner: self.pool.begin_transaction().await?,
         }))
     }
 }

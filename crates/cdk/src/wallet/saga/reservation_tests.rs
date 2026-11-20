@@ -7,11 +7,10 @@ use std::time::Duration;
 
 use cdk_common::database::{Error, WalletDatabase};
 use cdk_common::wallet::KeysetLoadPolicy;
-use cdk_sql_common::database::{DatabaseConnector, DatabaseExecutor, DatabaseTransaction};
-use cdk_sql_common::pool::{self, DatabaseConfig, DatabasePool};
+use cdk_sql_common::database::{DatabaseExecutor, SqlBackend, SqlConnection, SqlTransaction};
 use cdk_sql_common::stmt::{Column, Statement};
 use cdk_sql_common::SQLWalletDatabase;
-use cdk_sqlite::SqliteConnectionManager;
+use cdk_sqlite::{Config as SqliteConfig, SqliteBackend, SqliteConnection, SqliteTransaction};
 use tokio::sync::oneshot;
 
 use crate::wallet::test_utils::{
@@ -19,10 +18,6 @@ use crate::wallet::test_utils::{
     test_proof_info, MockMintConnector,
 };
 use crate::Amount;
-
-type Sqlite = <SqliteConnectionManager as DatabasePool>::Connection;
-type SqliteConfig = <SqliteConnectionManager as DatabasePool>::Config;
-type SqliteTransaction = <Sqlite as DatabaseConnector>::Transaction;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Boundary {
@@ -37,139 +32,164 @@ struct Gate {
     entered: oneshot::Sender<()>,
 }
 
-#[derive(Debug, Clone)]
-struct Config {
-    sqlite: Arc<SqliteConfig>,
-    gate: Arc<Mutex<Option<Gate>>>,
+type SharedGate = Arc<Mutex<Option<Gate>>>;
+
+async fn pause(gate: &SharedGate, boundary: Boundary) {
+    let gate = {
+        let mut gate = gate.lock().unwrap();
+        match gate.as_ref() {
+            Some(armed) if armed.boundary == boundary => gate.take(),
+            _ => None,
+        }
+    };
+    if let Some(gate) = gate {
+        gate.entered.send(()).unwrap();
+        std::future::pending::<()>().await;
+    }
 }
 
-impl DatabaseConfig for Config {
-    fn max_size(&self) -> usize {
-        1
+#[derive(Debug, Clone)]
+struct Config {
+    sqlite: SqliteConfig,
+    gate: SharedGate,
+}
+
+/// SQLite backend that can suspend at chosen proof-reservation boundaries.
+#[derive(Debug, Clone)]
+struct GatedBackend {
+    inner: SqliteBackend,
+    gate: SharedGate,
+}
+
+#[async_trait::async_trait]
+impl SqlBackend for GatedBackend {
+    type Config = Config;
+    type Connection = Connection;
+    type Transaction = Transaction;
+
+    fn new(config: Config) -> Result<Self, Error> {
+        Ok(Self {
+            inner: SqliteBackend::new(config.sqlite)?,
+            gate: config.gate,
+        })
     }
 
-    fn default_timeout(&self) -> Duration {
-        Duration::from_secs(5)
+    async fn acquire(&self) -> Result<Connection, Error> {
+        Ok(Connection {
+            inner: self.inner.acquire().await?,
+            gate: self.gate.clone(),
+        })
+    }
+
+    async fn close(&self) -> Result<(), Error> {
+        self.inner.close().await
     }
 }
 
 #[derive(Debug)]
-struct Manager;
+struct Connection {
+    inner: SqliteConnection,
+    gate: SharedGate,
+}
 
-impl DatabasePool for Manager {
-    type Config = Config;
-    type Connection = Connection;
-    type Error = rusqlite::Error;
+#[async_trait::async_trait]
+impl SqlConnection for Connection {
+    type Transaction = Transaction;
 
-    fn new_resource(
-        config: &Config,
-        stale: Arc<AtomicBool>,
-        timeout: Duration,
-    ) -> Result<Connection, pool::Error<Self::Error>> {
-        Ok(Connection {
-            inner: SqliteConnectionManager::new_resource(&config.sqlite, stale, timeout)?,
-            gate: config.gate.clone(),
+    async fn begin_transaction(self) -> Result<Transaction, Error> {
+        Ok(Transaction {
+            inner: self.inner.begin_transaction().await?,
+            gate: self.gate,
             writes_proofs: AtomicBool::new(false),
         })
     }
 }
 
 #[derive(Debug)]
-struct Connection {
-    inner: Sqlite,
-    gate: Arc<Mutex<Option<Gate>>>,
+struct Transaction {
+    inner: SqliteTransaction,
+    gate: SharedGate,
     writes_proofs: AtomicBool,
 }
 
-impl Connection {
-    async fn pause(&self, boundary: Boundary) {
-        let gate = {
-            let mut gate = self.gate.lock().unwrap();
-            match gate.as_ref() {
-                Some(armed) if armed.boundary == boundary => gate.take(),
-                _ => None,
-            }
-        };
-        if let Some(gate) = gate {
-            gate.entered.send(()).unwrap();
-            std::future::pending::<()>().await;
-        }
-    }
-}
-
-impl DatabaseConnector for Connection {
-    type Transaction = Self;
-}
-
 #[async_trait::async_trait]
-impl DatabaseTransaction<Self> for Connection {
-    async fn begin(conn: &mut Self) -> Result<(), Error> {
-        conn.writes_proofs.store(false, Ordering::SeqCst);
-        SqliteTransaction::begin(&mut conn.inner).await
-    }
-
-    async fn commit(conn: &mut Self) -> Result<(), Error> {
-        let writes_proofs = conn.writes_proofs.load(Ordering::SeqCst);
+impl SqlTransaction for Transaction {
+    async fn commit(self) -> Result<(), Error> {
+        let writes_proofs = self.writes_proofs.load(Ordering::SeqCst);
         if writes_proofs {
-            conn.pause(Boundary::BeforeCommit).await;
+            pause(&self.gate, Boundary::BeforeCommit).await;
         }
-        SqliteTransaction::commit(&mut conn.inner).await?;
+        let gate = self.gate.clone();
+        self.inner.commit().await?;
         if writes_proofs {
             // Withhold the acknowledgement after the actual SQLite COMMIT.
             // Cancellation must not rely on rolling this write back.
-            conn.pause(Boundary::AfterCommit).await;
+            pause(&gate, Boundary::AfterCommit).await;
         }
         Ok(())
     }
 
-    async fn rollback(conn: &mut Self) -> Result<(), Error> {
-        SqliteTransaction::rollback(&mut conn.inner).await
+    async fn rollback(self) -> Result<(), Error> {
+        self.inner.rollback().await
     }
 }
 
-#[async_trait::async_trait]
-impl DatabaseExecutor for Connection {
-    fn name() -> &'static str {
-        Sqlite::name()
-    }
-
-    async fn execute(&self, statement: Statement) -> Result<usize, Error> {
-        let mut copy = Statement::default();
-        copy.parts = statement.parts.clone();
-        let sql = copy
-            .to_sql()?
-            .0
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
-        if sql.starts_with("UPDATE proof SET state = 'RESERVED'")
-            || sql.starts_with("INSERT INTO proof ")
-        {
-            self.writes_proofs.store(true, Ordering::SeqCst);
-        }
-        let result = self.inner.execute(statement).await?;
-        if sql.starts_with("INSERT INTO wallet_sagas ") {
-            self.pause(Boundary::SagaSaved).await;
-        }
-        Ok(result)
-    }
-
-    async fn fetch_one(&self, statement: Statement) -> Result<Option<Vec<Column>>, Error> {
-        self.inner.fetch_one(statement).await
-    }
-
-    async fn fetch_all(&self, statement: Statement) -> Result<Vec<Vec<Column>>, Error> {
-        self.inner.fetch_all(statement).await
-    }
-
-    async fn pluck(&self, statement: Statement) -> Result<Option<Column>, Error> {
-        self.inner.pluck(statement).await
-    }
-
-    async fn batch(&self, statement: Statement) -> Result<(), Error> {
-        self.inner.batch(statement).await
-    }
+fn normalized_sql(statement: &Statement) -> Result<String, Error> {
+    let mut copy = Statement::default();
+    copy.parts = statement.parts.clone();
+    Ok(copy
+        .to_sql()?
+        .0
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" "))
 }
+
+macro_rules! gated_executor {
+    ($type:ty, $writes_proofs:expr) => {
+        #[async_trait::async_trait]
+        impl DatabaseExecutor for $type {
+            fn name() -> &'static str {
+                SqliteConnection::name()
+            }
+
+            async fn execute(&self, statement: Statement) -> Result<usize, Error> {
+                let sql = normalized_sql(&statement)?;
+                if sql.starts_with("UPDATE proof SET state = 'RESERVED'")
+                    || sql.starts_with("INSERT INTO proof ")
+                {
+                    ($writes_proofs)(self);
+                }
+                let result = self.inner.execute(statement).await?;
+                if sql.starts_with("INSERT INTO wallet_sagas ") {
+                    pause(&self.gate, Boundary::SagaSaved).await;
+                }
+                Ok(result)
+            }
+
+            async fn fetch_one(&self, statement: Statement) -> Result<Option<Vec<Column>>, Error> {
+                self.inner.fetch_one(statement).await
+            }
+
+            async fn fetch_all(&self, statement: Statement) -> Result<Vec<Vec<Column>>, Error> {
+                self.inner.fetch_all(statement).await
+            }
+
+            async fn pluck(&self, statement: Statement) -> Result<Option<Column>, Error> {
+                self.inner.pluck(statement).await
+            }
+
+            async fn batch(&self, statement: Statement) -> Result<(), Error> {
+                self.inner.batch(statement).await
+            }
+        }
+    };
+}
+
+gated_executor!(Connection, |_: &Connection| ());
+gated_executor!(Transaction, |tx: &Transaction| tx
+    .writes_proofs
+    .store(true, Ordering::SeqCst));
 
 #[derive(Debug, Clone, Copy)]
 enum Preparation {
@@ -186,8 +206,8 @@ async fn check_cancellation(preparation: Preparation, proof_amount: u64) {
     ] {
         let gate = Arc::new(Mutex::new(None));
         let db = Arc::new(
-            SQLWalletDatabase::<Manager>::new(Config {
-                sqlite: Arc::new(SqliteConfig::from(":memory:")),
+            SQLWalletDatabase::<GatedBackend>::new(Config {
+                sqlite: SqliteConfig::from(":memory:"),
                 gate: gate.clone(),
             })
             .await
