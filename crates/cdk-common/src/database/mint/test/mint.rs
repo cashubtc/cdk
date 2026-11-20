@@ -114,7 +114,9 @@ where
             None,
         )
         .unwrap();
-    tx.update_mint_quote(&mut mint_quote).await.unwrap();
+    tx.update_mint_quotes(std::slice::from_mut(&mut mint_quote))
+        .await
+        .unwrap();
 
     assert_eq!(mint_quote.amount_paid().value(), 100);
 
@@ -125,7 +127,9 @@ where
             None,
         )
         .unwrap();
-    tx.update_mint_quote(&mut mint_quote).await.unwrap();
+    tx.update_mint_quotes(std::slice::from_mut(&mut mint_quote))
+        .await
+        .unwrap();
 
     assert_eq!(mint_quote.amount_paid().value(), 350);
 
@@ -185,7 +189,9 @@ where
             None,
         )
         .unwrap();
-    tx.update_mint_quote(&mut mint_quote).await.unwrap();
+    tx.update_mint_quotes(std::slice::from_mut(&mut mint_quote))
+        .await
+        .unwrap();
 
     assert_eq!(mint_quote.amount_paid().value(), 100);
 
@@ -196,7 +202,9 @@ where
             None,
         )
         .unwrap();
-    tx.update_mint_quote(&mut mint_quote).await.unwrap();
+    tx.update_mint_quotes(std::slice::from_mut(&mut mint_quote))
+        .await
+        .unwrap();
     assert_eq!(mint_quote.amount_paid().value(), 350);
     tx.commit().await.unwrap();
 
@@ -261,7 +269,9 @@ where
             None,
         )
         .unwrap();
-    tx.update_mint_quote(&mut mint_quote).await.unwrap();
+    tx.update_mint_quotes(std::slice::from_mut(&mut mint_quote))
+        .await
+        .unwrap();
 
     // Duplicate payment should fail
     assert!(mint_quote
@@ -312,7 +322,9 @@ where
             None,
         )
         .unwrap();
-    tx.update_mint_quote(&mut mint_quote).await.unwrap();
+    tx.update_mint_quotes(std::slice::from_mut(&mut mint_quote))
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
@@ -439,7 +451,9 @@ where
             None,
         )
         .unwrap();
-    tx.update_mint_quote(&mut mint_quote).await.unwrap();
+    tx.update_mint_quotes(std::slice::from_mut(&mut mint_quote))
+        .await
+        .unwrap();
     // Trying to issue more than paid should fail (over-issue)
     assert!(mint_quote
         .add_issuance(Amount::from(101).with_unit(CurrencyUnit::Sat))
@@ -480,7 +494,9 @@ where
             None,
         )
         .unwrap();
-    tx.update_mint_quote(&mut mint_quote).await.unwrap();
+    tx.update_mint_quotes(std::slice::from_mut(&mut mint_quote))
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
@@ -1687,7 +1703,9 @@ where
             Some(100),
         )
         .unwrap();
-    tx.update_mint_quote(&mut mint_quote).await.unwrap();
+    tx.update_mint_quotes(std::slice::from_mut(&mut mint_quote))
+        .await
+        .unwrap();
     assert_eq!(mint_quote.amount_paid().value(), 300);
     let first_updated_at = mint_quote.updated_at();
     assert!(first_updated_at > 0);
@@ -1707,7 +1725,9 @@ where
             Some(100),
         )
         .unwrap();
-    tx.update_mint_quote(&mut mint_quote).await.unwrap();
+    tx.update_mint_quotes(std::slice::from_mut(&mut mint_quote))
+        .await
+        .unwrap();
     assert_eq!(mint_quote.amount_paid().value(), 500);
     let second_updated_at = mint_quote.updated_at();
     assert!(second_updated_at > first_updated_at);
@@ -1734,7 +1754,9 @@ where
             Some(100),
         )
         .unwrap();
-    tx.update_mint_quote(&mut mint_quote).await.unwrap();
+    tx.update_mint_quotes(std::slice::from_mut(&mut mint_quote))
+        .await
+        .unwrap();
     assert_eq!(mint_quote.amount_paid().value(), 600);
     let stale_update_updated_at = mint_quote.updated_at();
     assert!(stale_update_updated_at > second_updated_at);
@@ -1787,7 +1809,9 @@ where
             None,
         )
         .unwrap();
-    tx.update_mint_quote(&mut mint_quote).await.unwrap();
+    tx.update_mint_quotes(std::slice::from_mut(&mut mint_quote))
+        .await
+        .unwrap();
     let paid_updated_at = mint_quote.updated_at();
     tx.commit().await.unwrap();
 
@@ -1801,7 +1825,9 @@ where
     mint_quote
         .add_issuance(Amount::from(400).with_unit(CurrencyUnit::Sat))
         .unwrap();
-    tx.update_mint_quote(&mut mint_quote).await.unwrap();
+    tx.update_mint_quotes(std::slice::from_mut(&mut mint_quote))
+        .await
+        .unwrap();
     assert_eq!(mint_quote.amount_issued().value(), 400);
     let first_issuance_updated_at = mint_quote.updated_at();
     assert!(first_issuance_updated_at > paid_updated_at);
@@ -1817,7 +1843,9 @@ where
     mint_quote
         .add_issuance(Amount::from(300).with_unit(CurrencyUnit::Sat))
         .unwrap();
-    tx.update_mint_quote(&mut mint_quote).await.unwrap();
+    tx.update_mint_quotes(std::slice::from_mut(&mut mint_quote))
+        .await
+        .unwrap();
     assert_eq!(mint_quote.amount_issued().value(), 700);
     let second_issuance_updated_at = mint_quote.updated_at();
     assert!(second_issuance_updated_at > first_issuance_updated_at);
@@ -2205,7 +2233,9 @@ where
             None,
         )
         .unwrap();
-    tx.update_mint_quote(&mut mint_quote).await.unwrap();
+    tx.update_mint_quotes(std::slice::from_mut(&mut mint_quote))
+        .await
+        .unwrap();
     assert_eq!(mint_quote.amount_paid().value(), 300);
     tx.commit().await.unwrap();
 
@@ -2248,7 +2278,9 @@ where
             None,
         )
         .unwrap();
-    tx.update_mint_quote(&mut mint_quote).await.unwrap();
+    tx.update_mint_quotes(std::slice::from_mut(&mut mint_quote))
+        .await
+        .unwrap();
 
     assert_eq!(mint_quote.amount_paid().value(), 500);
     tx.commit().await.unwrap();
@@ -2303,7 +2335,9 @@ where
             None,
         )
         .unwrap();
-    let result = tx.update_mint_quote(&mut loaded_quote).await;
+    let result = tx
+        .update_mint_quotes(std::slice::from_mut(&mut loaded_quote))
+        .await;
 
     assert!(
         result.is_ok(),
@@ -2449,7 +2483,9 @@ where
             None,
         )
         .unwrap();
-    tx.update_mint_quote(&mut current).await.unwrap();
+    tx.update_mint_quotes(std::slice::from_mut(&mut current))
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
 
     stale
@@ -2460,7 +2496,10 @@ where
         )
         .unwrap();
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    let err = tx.update_mint_quote(&mut stale).await.unwrap_err();
+    let err = tx
+        .update_mint_quotes(std::slice::from_mut(&mut stale))
+        .await
+        .unwrap_err();
     assert!(matches!(err, Error::ConcurrentUpdate), "{err}");
     tx.rollback().await.unwrap();
 
@@ -2485,7 +2524,9 @@ where
             None,
         )
         .unwrap();
-    tx.update_mint_quote(&mut quote).await.unwrap();
+    tx.update_mint_quotes(std::slice::from_mut(&mut quote))
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
@@ -2497,14 +2538,19 @@ where
     current
         .add_issuance(Amount::from(40).with_unit(CurrencyUnit::Sat))
         .unwrap();
-    tx.update_mint_quote(&mut current).await.unwrap();
+    tx.update_mint_quotes(std::slice::from_mut(&mut current))
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
 
     stale
         .add_issuance(Amount::from(10).with_unit(CurrencyUnit::Sat))
         .unwrap();
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    let err = tx.update_mint_quote(&mut stale).await.unwrap_err();
+    let err = tx
+        .update_mint_quotes(std::slice::from_mut(&mut stale))
+        .await
+        .unwrap_err();
     assert!(matches!(err, Error::ConcurrentUpdate), "{err}");
     tx.rollback().await.unwrap();
 
@@ -2561,7 +2607,10 @@ pub async fn stale_mint_quote_write_waits_for_lock_then_is_refused(db: DynMintDa
             None,
         )
         .unwrap();
-    holder.update_mint_quote(&mut current).await.unwrap();
+    holder
+        .update_mint_quotes(std::slice::from_mut(&mut current))
+        .await
+        .unwrap();
 
     let writer = tokio::spawn({
         let db = db.clone();
@@ -2574,7 +2623,9 @@ pub async fn stale_mint_quote_write_waits_for_lock_then_is_refused(db: DynMintDa
                 )
                 .unwrap();
             let mut tx = db.begin_transaction().await.unwrap();
-            let result = tx.update_mint_quote(&mut stale).await;
+            let result = tx
+                .update_mint_quotes(std::slice::from_mut(&mut stale))
+                .await;
             tx.rollback().await.unwrap();
             result
         }
@@ -2679,4 +2730,367 @@ pub async fn concurrent_mint_quote_batches_use_consistent_lock_order(db: DynMint
     assert_eq!(first_quotes[1].as_ref().unwrap().id, quote2.id);
     assert_eq!(second_quotes[0].as_ref().unwrap().id, quote2.id);
     assert_eq!(second_quotes[1].as_ref().unwrap().id, quote1.id);
+}
+
+/// Reserve more blinded messages than fit one multi-row insert statement
+pub async fn add_blinded_messages_crosses_insert_batches<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    let keyset_id = Id::from_str("001711afb1de20cb").unwrap();
+    let operation = Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO);
+
+    let messages = (0..601)
+        .map(|_| cashu::BlindedMessage {
+            blinded_secret: SecretKey::generate().public_key(),
+            keyset_id,
+            amount: Amount::from(2u64),
+            witness: None,
+        })
+        .collect::<Vec<_>>();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_blinded_messages(None, &messages, &operation)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    // A single already reserved output, placed past the first chunk, must still be reported.
+    let mut retry = (0..601)
+        .map(|_| cashu::BlindedMessage {
+            blinded_secret: SecretKey::generate().public_key(),
+            keyset_id,
+            amount: Amount::from(2u64),
+            witness: None,
+        })
+        .collect::<Vec<_>>();
+    retry[600] = messages[0].clone();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let result = tx.add_blinded_messages(None, &retry, &operation).await;
+    assert!(matches!(result.unwrap_err(), Error::BlindedMessagePending));
+    tx.rollback().await.unwrap();
+}
+
+/// Reject a batch that repeats the same blinded secret
+pub async fn add_blinded_messages_rejects_duplicate_inside_one_batch<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    let keyset_id = Id::from_str("001711afb1de20cb").unwrap();
+    let message = cashu::BlindedMessage {
+        blinded_secret: SecretKey::generate().public_key(),
+        keyset_id,
+        amount: Amount::from(2u64),
+        witness: None,
+    };
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let result = tx
+        .add_blinded_messages(
+            None,
+            &[message.clone(), message],
+            &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+        )
+        .await;
+    assert!(matches!(result.unwrap_err(), Error::BlindedMessagePending));
+    tx.rollback().await.unwrap();
+}
+
+/// Sign a batch mixing reserved rows and unknown messages across chunk boundaries
+pub async fn add_blind_signatures_mixes_reserved_and_unknown<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error> + MintSignaturesDatabase<Err = Error>,
+{
+    let keyset_id = Id::from_str("001711afb1de20cb").unwrap();
+
+    let reserved = (0..301)
+        .map(|_| cashu::BlindedMessage {
+            blinded_secret: SecretKey::generate().public_key(),
+            keyset_id,
+            amount: Amount::from(2u64),
+            witness: None,
+        })
+        .collect::<Vec<_>>();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_blinded_messages(
+        None,
+        &reserved,
+        &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    // Interleave so both groups straddle every chunk boundary.
+    let mut messages = Vec::new();
+    for message in &reserved {
+        messages.push(message.blinded_secret);
+        messages.push(SecretKey::generate().public_key());
+    }
+
+    let signatures = messages
+        .iter()
+        .map(|_| BlindSignature {
+            amount: Amount::from(2u64),
+            keyset_id,
+            c: SecretKey::generate().public_key(),
+            dleq: None,
+        })
+        .collect::<Vec<_>>();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_blind_signatures(&messages, &signatures, None)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let retrieved = db.get_blind_signatures(&messages).await.unwrap();
+    assert_eq!(retrieved.len(), messages.len());
+    assert!(retrieved.iter().all(|signature| signature.is_some()));
+    assert_eq!(
+        retrieved
+            .into_iter()
+            .map(|signature| signature.unwrap().c)
+            .collect::<Vec<_>>(),
+        signatures
+            .iter()
+            .map(|signature| signature.c)
+            .collect::<Vec<_>>()
+    );
+
+    // A reserved row carries an amount already, so it must not be counted twice.
+    let totals = db.get_total_issued().await.unwrap();
+    assert_eq!(
+        totals.get(&keyset_id).copied().unwrap_or(Amount::ZERO),
+        Amount::from(2 * messages.len() as u64)
+    );
+}
+
+/// Sign more reserved rows than fit one batched update statement
+pub async fn add_blind_signatures_crosses_update_batches<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error> + MintSignaturesDatabase<Err = Error>,
+{
+    let keyset_id = Id::from_str("001711afb1de20cb").unwrap();
+
+    let reserved = (0..601)
+        .map(|_| cashu::BlindedMessage {
+            blinded_secret: SecretKey::generate().public_key(),
+            keyset_id,
+            amount: Amount::from(2u64),
+            witness: None,
+        })
+        .collect::<Vec<_>>();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_blinded_messages(
+        None,
+        &reserved,
+        &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let messages = reserved
+        .iter()
+        .map(|message| message.blinded_secret)
+        .collect::<Vec<_>>();
+    let signatures = messages
+        .iter()
+        .map(|_| BlindSignature {
+            amount: Amount::from(2u64),
+            keyset_id,
+            c: SecretKey::generate().public_key(),
+            dleq: None,
+        })
+        .collect::<Vec<_>>();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_blind_signatures(&messages, &signatures, None)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let retrieved = db.get_blind_signatures(&messages).await.unwrap();
+    assert_eq!(retrieved.len(), messages.len());
+    assert_eq!(
+        retrieved
+            .into_iter()
+            .map(|signature| signature.unwrap().c)
+            .collect::<Vec<_>>(),
+        signatures
+            .iter()
+            .map(|signature| signature.c)
+            .collect::<Vec<_>>()
+    );
+
+    let totals = db.get_total_issued().await.unwrap();
+    assert_eq!(
+        totals.get(&keyset_id).copied().unwrap_or(Amount::ZERO),
+        Amount::from(2 * messages.len() as u64)
+    );
+}
+
+/// Persist payments and issuances for many quotes in one call
+pub async fn update_mint_quotes_persists_many_quotes<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    let quote_ids = {
+        let mut ids = Vec::new();
+        for _ in 0..50 {
+            ids.push(stored_mint_quote(&db).await.id);
+        }
+        ids
+    };
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut quotes = tx
+        .get_mint_quotes_by_ids(&quote_ids)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|quote| quote.unwrap())
+        .collect::<Vec<_>>();
+
+    for quote in quotes.iter_mut() {
+        quote
+            .add_payment(
+                Amount::from(60).with_unit(CurrencyUnit::Sat),
+                unique_string(),
+                None,
+            )
+            .unwrap();
+        quote
+            .add_payment(
+                Amount::from(40).with_unit(CurrencyUnit::Sat),
+                unique_string(),
+                None,
+            )
+            .unwrap();
+        quote
+            .add_issuance(Amount::from(30).with_unit(CurrencyUnit::Sat))
+            .unwrap();
+    }
+
+    tx.update_mint_quotes(&mut quotes).await.unwrap();
+    tx.commit().await.unwrap();
+
+    for quote_id in &quote_ids {
+        let stored = db.get_mint_quote(quote_id).await.unwrap().unwrap();
+        assert_eq!(stored.amount_paid().value(), 100);
+        assert_eq!(stored.amount_issued().value(), 30);
+        assert_eq!(stored.payments.len(), 2);
+        assert_eq!(stored.issuance.len(), 1);
+    }
+}
+
+/// Record more payments on one quote than fit a single insert statement
+pub async fn update_mint_quotes_crosses_payment_batches<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    let quote_id = stored_mint_quote(&db).await.id;
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut quote = tx.get_mint_quote(&quote_id).await.unwrap().unwrap();
+    for _ in 0..601 {
+        quote
+            .add_payment(
+                Amount::from(1).with_unit(CurrencyUnit::Sat),
+                unique_string(),
+                None,
+            )
+            .unwrap();
+    }
+    tx.update_mint_quotes(std::slice::from_mut(&mut quote))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let stored = db.get_mint_quote(&quote_id).await.unwrap().unwrap();
+    assert_eq!(stored.amount_paid().value(), 601);
+    assert_eq!(stored.payments.len(), 601);
+}
+
+/// One stale quote fails the batch and leaves every quote in it untouched
+pub async fn update_mint_quotes_refuses_stale_quote_in_batch<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    let quote_ids = [
+        stored_mint_quote(&db).await.id,
+        stored_mint_quote(&db).await.id,
+        stored_mint_quote(&db).await.id,
+    ];
+
+    // Read the middle quote, then move it on behind this copy's back.
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let stale = tx.get_mint_quote(&quote_ids[1]).await.unwrap().unwrap();
+    tx.commit().await.unwrap();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut current = tx.get_mint_quote(&quote_ids[1]).await.unwrap().unwrap();
+    current
+        .add_payment(
+            Amount::from(100).with_unit(CurrencyUnit::Sat),
+            unique_string(),
+            None,
+        )
+        .unwrap();
+    tx.update_mint_quotes(std::slice::from_mut(&mut current))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let first = tx.get_mint_quote(&quote_ids[0]).await.unwrap().unwrap();
+    let last = tx.get_mint_quote(&quote_ids[2]).await.unwrap().unwrap();
+
+    let mut batch = vec![first, stale, last];
+    for quote in batch.iter_mut() {
+        quote
+            .add_payment(
+                Amount::from(7).with_unit(CurrencyUnit::Sat),
+                unique_string(),
+                None,
+            )
+            .unwrap();
+    }
+
+    let err = tx.update_mint_quotes(&mut batch).await.unwrap_err();
+    assert!(matches!(err, Error::ConcurrentUpdate), "{err}");
+    tx.rollback().await.unwrap();
+
+    // The rollback must leave none of the batch advanced.
+    assert_eq!(
+        db.get_mint_quote(&quote_ids[0])
+            .await
+            .unwrap()
+            .unwrap()
+            .amount_paid()
+            .value(),
+        0
+    );
+    assert_eq!(
+        db.get_mint_quote(&quote_ids[1])
+            .await
+            .unwrap()
+            .unwrap()
+            .amount_paid()
+            .value(),
+        100
+    );
+    assert_eq!(
+        db.get_mint_quote(&quote_ids[2])
+            .await
+            .unwrap()
+            .unwrap()
+            .amount_paid()
+            .value(),
+        0
+    );
 }

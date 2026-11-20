@@ -470,8 +470,8 @@ impl Signatory for DbSignatory {
 
         let id = info.id;
 
-        tx.add_keyset_info(info.clone()).await?;
-        tx.set_active_keyset(args.unit.clone(), id).await?;
+        tx.add_keyset_infos(vec![info.clone()]).await?;
+        tx.set_active_keysets(vec![(args.unit.clone(), id)]).await?;
         tx.commit().await?;
 
         let mut info = info;
@@ -588,7 +588,7 @@ mod test {
         let mut tx = MintKeysDatabase::begin_transaction(&*store)
             .await
             .expect("begin tx");
-        tx.set_active_keyset(CurrencyUnit::Sat, first.id)
+        tx.set_active_keysets(vec![(CurrencyUnit::Sat, first.id)])
             .await
             .expect("set active");
         tx.commit().await.expect("commit");

@@ -51,7 +51,7 @@ where
         issuer_version: IssuerVersion::from_str("cdk/0.1.0").ok(),
     };
     let mut writer = db.begin_transaction().await.expect("db.begin()");
-    writer.add_keyset_info(keyset_info).await.unwrap();
+    writer.add_keyset_infos(vec![keyset_info]).await.unwrap();
     writer.commit().await.expect("commit()");
     keyset_id
 }
@@ -442,6 +442,21 @@ macro_rules! mint_db_test {
             get_mint_quotes_by_ids,
             get_melt_quotes_by_request_lookup_id,
             lock_melt_quote_and_related,
+            add_proofs_crosses_insert_batches,
+            add_proofs_rejects_duplicate_inside_one_batch,
+            add_blind_signatures_crosses_insert_batches,
+            add_blind_signatures_refuses_signed_row_in_batch,
+            add_blind_signatures_mixes_reserved_and_unknown,
+            add_blind_signatures_crosses_update_batches,
+            update_mint_quotes_persists_many_quotes,
+            update_mint_quotes_crosses_payment_batches,
+            update_mint_quotes_refuses_stale_quote_in_batch,
+            add_keyset_infos_batch,
+            add_keyset_infos_dedupes_within_batch,
+            set_active_keysets_batch,
+            keyset_epoch_changes_once_per_batch,
+            add_blinded_messages_crosses_insert_batches,
+            add_blinded_messages_rejects_duplicate_inside_one_batch,
         );
     };
     ($make_db_fn:ident, $($name:ident),+ $(,)?) => {

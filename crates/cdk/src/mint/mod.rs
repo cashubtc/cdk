@@ -1252,7 +1252,8 @@ impl Mint {
                     None,
                 ) {
                     Ok(()) => {
-                        tx.update_mint_quote(mint_quote).await?;
+                        tx.update_mint_quotes(std::slice::from_mut(mint_quote))
+                            .await?;
                         return Ok(true);
                     }
                     Err(Error::DuplicatePaymentId) => {

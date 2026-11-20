@@ -33,6 +33,8 @@ pub enum PlaceholderValue {
     Value(Value),
     /// Set
     Set(Vec<Value>),
+    /// A `VALUES` row list for a multi-row `INSERT`, rendered as `($1, $2), ($3, $4)`
+    Rows(Vec<Vec<Value>>),
 }
 
 impl From<Value> for PlaceholderValue {
@@ -248,14 +250,17 @@ impl Statement {
     /// to be more widely supported, although it can be reimplemented with other formats since part
     /// is public
     pub fn to_sql(self) -> Result<(String, Vec<Value>), Error> {
-        let has_set_placeholder = self.parts.iter().any(|part| {
+        let has_expanded_placeholder = self.parts.iter().any(|part| {
             matches!(
                 part,
-                SqlPart::Placeholder(_, Some(PlaceholderValue::Set(_)))
+                SqlPart::Placeholder(
+                    _,
+                    Some(PlaceholderValue::Set(_) | PlaceholderValue::Rows(_))
+                )
             )
         });
 
-        if let (false, Some(cached_sql)) = (has_set_placeholder, self.cached_sql) {
+        if let (false, Some(cached_sql)) = (has_expanded_placeholder, self.cached_sql) {
             let sql = cached_sql.to_string();
             let values = self
                 .parts
@@ -265,6 +270,9 @@ impl Statement {
                         match value.ok_or(Error::MissingPlaceholder(name.to_string()))? {
                             PlaceholderValue::Value(value) => Ok(vec![value]),
                             PlaceholderValue::Set(values) => Ok(values),
+                            PlaceholderValue::Rows(rows) => {
+                                Ok(rows.into_iter().flatten().collect())
+                            }
                         }
                     }
                     SqlPart::Raw(_) => Ok(vec![]),
@@ -297,6 +305,22 @@ impl Statement {
                                 .collect::<Vec<_>>()
                                 .join(", ");
                             Ok(placeholders)
+                        }
+                        PlaceholderValue::Rows(rows) => {
+                            can_be_cached = false;
+                            let mut tuples = Vec::with_capacity(rows.len());
+                            for row in rows {
+                                let start_size = placeholder_values.len();
+                                placeholder_values.extend(row);
+                                tuples.push(format!(
+                                    "({})",
+                                    (start_size + 1..=placeholder_values.len())
+                                        .map(|i| format!("${i}"))
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                ));
+                            }
+                            Ok(tuples.join(", "))
                         }
                     }
                 }
@@ -375,6 +399,55 @@ impl Statement {
         Ok(self)
     }
 
+    /// Binds a placeholder to a `VALUES` row list for a multi-row `INSERT`.
+    ///
+    /// `INSERT INTO t (a, b) VALUES :rows` with two rows renders as
+    /// `INSERT INTO t (a, b) VALUES ($1, $2), ($3, $4)`.
+    ///
+    /// Returns [`Error::EmptyInClause`] for no rows, since an empty `VALUES` list is invalid SQL,
+    /// and [`Error::Internal`] for rows of differing width, which would otherwise reach the
+    /// database as a column-count mismatch.
+    #[inline]
+    pub fn bind_rows<C, V>(mut self, name: C, rows: Vec<Vec<V>>) -> Result<Self, Error>
+    where
+        C: ToString,
+        V: Into<Value>,
+    {
+        let name = name.to_string();
+
+        let rows = rows
+            .into_iter()
+            .map(|row| {
+                row.into_iter()
+                    .map(|value| value.into())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        let Some(width) = rows.first().map(|row| row.len()) else {
+            return Err(Error::EmptyInClause(name));
+        };
+
+        if let Some(bad) = rows.iter().find(|row| row.len() != width) {
+            return Err(Error::Internal(format!(
+                "row list {name} mixes widths {width} and {}",
+                bad.len()
+            )));
+        }
+
+        let value = PlaceholderValue::Rows(rows);
+
+        for part in self.parts.iter_mut() {
+            if let SqlPart::Placeholder(part_name, part_value) = part {
+                if **part_name == *name.as_str() {
+                    *part_value = Some(value.clone());
+                }
+            }
+        }
+
+        Ok(self)
+    }
+
     /// Executes a query and returns the affected rows
     pub async fn pluck<C>(self, conn: &C) -> Result<Option<Value>, Error>
     where
@@ -414,6 +487,49 @@ impl Statement {
     {
         conn.fetch_all(self).await
     }
+}
+
+/// Maximum bound parameters allowed in a single statement.
+///
+/// SQLite's `SQLITE_MAX_VARIABLE_NUMBER` defaults to 32766 since 3.32 but to 999 in older builds,
+/// and this crate cannot know how a backend's SQLite was compiled, so the legacy limit binds.
+/// PostgreSQL's wire protocol caps parameters at 65535, well above it. The headroom below 999
+/// leaves room for scalar placeholders bound alongside a row list.
+pub const MAX_SQL_PARAMETERS: usize = 900;
+
+/// How many rows of `columns_per_row` parameters fit in one statement, at least one.
+pub fn max_rows_per_statement(columns_per_row: usize) -> usize {
+    (MAX_SQL_PARAMETERS / columns_per_row.max(1)).max(1)
+}
+
+/// Executes `sql` once per parameter-safe chunk of `rows`, binding each chunk to `placeholder`,
+/// and returns the total number of affected rows.
+///
+/// Chunks are submitted in order, so a caller that sorted `rows` by primary key keeps the lock
+/// ordering that avoids deadlocks between concurrent writers.
+pub async fn execute_rows<C>(
+    conn: &C,
+    sql: &str,
+    placeholder: &str,
+    rows: Vec<Vec<Value>>,
+) -> Result<usize, Error>
+where
+    C: DatabaseExecutor,
+{
+    let Some(width) = rows.first().map(|row| row.len()) else {
+        return Ok(0);
+    };
+
+    let mut affected = 0;
+
+    for chunk in rows.chunks(max_rows_per_statement(width)) {
+        affected += query(sql)?
+            .bind_rows(placeholder, chunk.to_vec())?
+            .execute(conn)
+            .await?;
+    }
+
+    Ok(affected)
 }
 
 /// Creates a new query statement
@@ -466,5 +582,85 @@ mod tests {
 
         assert!(sql.contains("$1, $2, $3"));
         assert_eq!(values.len(), 3);
+    }
+
+    #[test]
+    fn bind_rows_renders_value_tuples() {
+        let (sql, values) = query("INSERT INTO foo (a, b) VALUES :rows")
+            .unwrap()
+            .bind_rows("rows", vec![vec![1_i64, 2], vec![3, 4], vec![5, 6]])
+            .unwrap()
+            .to_sql()
+            .unwrap();
+
+        assert_eq!(
+            sql,
+            "INSERT INTO foo (a, b) VALUES ($1, $2), ($3, $4), ($5, $6)"
+        );
+        assert_eq!(values.len(), 6);
+        assert_eq!(values[5], Value::Integer(6));
+    }
+
+    #[test]
+    fn bind_rows_numbers_after_scalar_binds() {
+        let (sql, values) = query("INSERT INTO foo (a, b) VALUES :rows ON CONFLICT DO NOTHING")
+            .unwrap()
+            .bind("ignored", 9_i64)
+            .bind_rows("rows", vec![vec![1_i64, 2]])
+            .unwrap()
+            .to_sql()
+            .unwrap();
+
+        assert!(sql.contains("($1, $2)"));
+        assert_eq!(values.len(), 2);
+    }
+
+    #[test]
+    fn bind_rows_errors_on_no_rows() {
+        let result = query("INSERT INTO foo (a) VALUES :rows")
+            .unwrap()
+            .bind_rows("rows", Vec::<Vec<i64>>::new());
+
+        assert!(matches!(result.unwrap_err(), Error::EmptyInClause(name) if name == "rows"));
+    }
+
+    #[test]
+    fn bind_rows_errors_on_ragged_rows() {
+        let result = query("INSERT INTO foo (a, b) VALUES :rows")
+            .unwrap()
+            .bind_rows("rows", vec![vec![1_i64, 2], vec![3]]);
+
+        assert!(matches!(result.unwrap_err(), Error::Internal(_)));
+    }
+
+    #[test]
+    fn bind_rows_ignores_cached_sql_for_same_query_string() {
+        let raw_sql = "INSERT INTO cached_sql_rows (a) VALUES :rows";
+
+        let (cached_sql, _) = query(raw_sql)
+            .unwrap()
+            .bind("rows", 1_i64)
+            .to_sql()
+            .unwrap();
+        assert!(cached_sql.ends_with("$1"));
+
+        let (sql, values) = query(raw_sql)
+            .unwrap()
+            .bind_rows("rows", vec![vec![1_i64], vec![2]])
+            .unwrap()
+            .to_sql()
+            .unwrap();
+
+        assert!(sql.ends_with("($1), ($2)"));
+        assert_eq!(values.len(), 2);
+    }
+
+    #[test]
+    fn max_rows_per_statement_fits_the_parameter_budget() {
+        assert_eq!(max_rows_per_statement(11), 81);
+        assert_eq!(max_rows_per_statement(2), 450);
+        assert!(max_rows_per_statement(11) * 11 <= MAX_SQL_PARAMETERS);
+        assert_eq!(max_rows_per_statement(0), MAX_SQL_PARAMETERS);
+        assert_eq!(max_rows_per_statement(MAX_SQL_PARAMETERS * 2), 1);
     }
 }
