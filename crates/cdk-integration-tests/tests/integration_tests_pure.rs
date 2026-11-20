@@ -1922,6 +1922,85 @@ async fn test_fake_wallet_custom_mint_and_melt_flow() {
     assert_eq!(Some("paypal:merchant-request"), finalized.payment_proof());
 }
 
+/// A paid custom-method melt quote reports its change when its status is
+/// checked, like bolt11, bolt12 and onchain quotes do.
+#[tokio::test]
+async fn test_fake_wallet_custom_melt_quote_status_includes_change() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create test wallet");
+    let method = PaymentMethod::Custom("paypal".to_string());
+
+    let mint_quote = wallet
+        .mint_quote(method.clone(), Some(Amount::from(64)), None, None)
+        .await
+        .expect("Failed to create custom mint quote");
+    wallet
+        .wait_and_mint_quote(
+            mint_quote,
+            SplitTarget::default(),
+            None,
+            Duration::from_secs(10),
+        )
+        .await
+        .expect("Failed to mint custom quote");
+
+    let melt_quote = wallet
+        .melt_quote(
+            method.clone(),
+            "paypal:merchant-request",
+            None,
+            Some(r#"{"amount":20}"#.to_string()),
+        )
+        .await
+        .expect("Failed to create custom melt quote");
+    let quote_id = cdk_common::QuoteId::from_str(&melt_quote.id).expect("valid quote id");
+
+    // Melt with all 64 sat and blank outputs so the mint owes change.
+    let proofs = wallet
+        .get_unspent_proofs()
+        .await
+        .expect("Could not get proofs");
+    assert_eq!(proofs.total_amount().unwrap(), Amount::from(64));
+    let keyset_id = mint.pubkeys().keysets.first().unwrap().id;
+    let blank_outputs = PreMintSecrets::blank(keyset_id, Amount::from(64))
+        .expect("Failed to create blank outputs")
+        .blinded_messages();
+    let melt_request = MeltRequest::new(quote_id.clone(), proofs, Some(blank_outputs));
+
+    let melt_response = mint
+        .melt(&melt_request)
+        .await
+        .expect("Failed to start melt")
+        .await
+        .expect("Failed to melt");
+    assert_eq!(
+        cdk_common::nuts::MeltQuoteState::Paid,
+        melt_response.state()
+    );
+    let melt_change = melt_response
+        .change()
+        .expect("the melt response should carry change")
+        .clone();
+    assert!(!melt_change.is_empty());
+
+    let status = mint
+        .check_melt_quote(&quote_id, Some(&method))
+        .await
+        .expect("Failed to check custom melt quote");
+
+    assert_eq!(cdk_common::nuts::MeltQuoteState::Paid, status.state());
+    assert_eq!(
+        status.change(),
+        Some(&melt_change),
+        "a paid custom melt quote should report the change it was settled with"
+    );
+}
+
 #[tokio::test]
 async fn test_batch_mint_unknown_quote() {
     setup_tracing();
