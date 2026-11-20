@@ -761,6 +761,33 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
     }
 
     #[instrument(skip(self))]
+    async fn reserve_derivation_index(
+        &self,
+        namespace: &str,
+        minimum_index: u32,
+    ) -> Result<u32, database::Error> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+        let index = {
+            let mut table = write_txn
+                .open_table(DERIVATION_COUNTER)
+                .map_err(Error::from)?;
+            let current = table
+                .get(namespace)
+                .map_err(Error::from)?
+                .map(|value| value.value())
+                .unwrap_or_default();
+            let index = current.max(minimum_index);
+            let next = index
+                .checked_add(1)
+                .ok_or(database::Error::AmountOverflow)?;
+            table.insert(namespace, next).map_err(Error::from)?;
+            index
+        };
+        write_txn.commit().map_err(Error::from)?;
+        Ok(index)
+    }
+
+    #[instrument(skip(self))]
     async fn add_mint(
         &self,
         mint_url: MintUrl,
