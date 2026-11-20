@@ -1,6 +1,7 @@
 //! HTTP transport trait and implementations
 
 use std::fmt::Debug;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use cashu::nuts::nut22::AuthToken;
@@ -54,6 +55,19 @@ pub trait Transport: Send + Sync + Debug + Clone {
     /// built.
     fn tls_verification_disabled(&self) -> bool {
         false
+    }
+
+    /// How long client-side pacing would hold back a request to `url` that
+    /// was sent now.
+    ///
+    /// Transports that do not pace keep the default of zero. A pacing
+    /// decorator reports the wait its next request to that host would see, so
+    /// a caller whose deadline should start when the request leaves the client
+    /// (the NUT-19 replay window) can start its clock then, rather than while
+    /// the request is still queued. The value is a lower bound: requests issued
+    /// concurrently can take the next slots first.
+    fn pacing_delay(&self, _url: &Url) -> Duration {
+        Duration::ZERO
     }
 
     /// DNS resolver to get TXT records from a domain name.
