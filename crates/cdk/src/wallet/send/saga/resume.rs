@@ -264,6 +264,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
+    use cdk_common::database::WalletDatabase;
     use cdk_common::nuts::{
         CheckStateResponse, CurrencyUnit, ProofState, Proofs, PublicKey, State,
     };
@@ -630,6 +631,111 @@ mod tests {
         assert!(db.get_saga(&saga_id).await.unwrap().is_none());
         let transactions = db.list_transactions(None, None, None).await.unwrap();
         assert_eq!(transactions[0].status, TransactionStatus::Failed);
+    }
+
+    /// Add a RollingBack send saga for a token the recipient partly claimed,
+    /// with its pending transaction.
+    async fn add_partially_claimed_rolling_back_send(
+        db: &Arc<dyn WalletDatabase<cdk_common::database::Error> + Send + Sync>,
+        saga_id: uuid::Uuid,
+        proofs: Option<Proofs>,
+        ys: Vec<PublicKey>,
+    ) {
+        let mint_url = test_mint_url();
+        let saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Send(SendSagaState::RollingBack),
+            Amount::from(100),
+            mint_url.clone(),
+            CurrencyUnit::Sat,
+            OperationData::Send(SendOperationData {
+                amount: Amount::from(100),
+                memo: None,
+                counter_start: None,
+                counter_end: None,
+                token: Some("cashuA...".to_string()),
+                proofs,
+                partially_claimed: true,
+            }),
+        );
+        db.add_saga(saga).await.unwrap();
+        db.add_transaction(Transaction {
+            mint_url,
+            direction: TransactionDirection::Outgoing,
+            amount: Amount::from(100),
+            fee: Amount::ZERO,
+            unit: CurrencyUnit::Sat,
+            ys,
+            timestamp: 42,
+            memo: None,
+            metadata: HashMap::new(),
+            quote_id: None,
+            payment_request: None,
+            payment_proof: None,
+            payment_method: None,
+            saga_id: Some(saga_id),
+            status: TransactionStatus::Pending,
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_recover_partially_claimed_revoke_after_swap_completes_send() {
+        // Crash after the revoke swap: the revoked proofs are gone locally.
+        let db = create_test_db().await;
+        let saga_id = uuid::Uuid::new_v4();
+        let proof_info = test_proof_info(test_keyset_id(), 64, test_mint_url(), State::Unspent);
+        let proof_y = proof_info.y;
+        add_partially_claimed_rolling_back_send(
+            &db,
+            saga_id,
+            Some(vec![proof_info.proof]),
+            vec![proof_y],
+        )
+        .await;
+
+        let wallet =
+            create_test_wallet_with_mock(db.clone(), Arc::new(MockMintConnector::new())).await;
+        let report = wallet.recover_incomplete_sagas().await.unwrap();
+
+        assert_eq!(report.recovered, 1);
+        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+        let transactions = db.list_transactions(None, None, None).await.unwrap();
+        assert_eq!(transactions[0].status, TransactionStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn test_recover_partially_claimed_revoke_with_spent_proofs_completes_send() {
+        let db = create_test_db().await;
+        let saga_id = uuid::Uuid::new_v4();
+        let proof_info = test_proof_info(test_keyset_id(), 64, test_mint_url(), State::Unspent);
+        let proof_y = proof_info.y;
+        let proof = proof_info.proof.clone();
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+        db.reserve_proofs(vec![proof_y], &saga_id).await.unwrap();
+        db.update_proofs_state(vec![proof_y], State::PendingSpent)
+            .await
+            .unwrap();
+        add_partially_claimed_rolling_back_send(&db, saga_id, Some(vec![proof]), vec![proof_y])
+            .await;
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.set_check_state_response(Ok(CheckStateResponse {
+            states: vec![ProofState {
+                y: proof_y,
+                state: State::Spent,
+                witness: None,
+            }],
+        }));
+
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let report = wallet.recover_incomplete_sagas().await.unwrap();
+
+        assert_eq!(report.recovered, 1);
+        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+        let transactions = db.list_transactions(None, None, None).await.unwrap();
+        assert_eq!(transactions[0].status, TransactionStatus::Completed);
     }
 
     #[tokio::test]
