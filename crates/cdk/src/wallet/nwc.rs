@@ -90,8 +90,8 @@ impl Wallet {
     ///
     /// `max_payment_msat` optionally caps the amount of any single `pay_invoice`
     /// request (in millisatoshis); pass `None` for no cap.
-    pub fn nwc_handler(&self, max_payment_msat: Option<u64>) -> WalletNwcHandler {
-        WalletNwcHandler::new(Arc::new(self.clone()), max_payment_msat)
+    pub fn nwc_handler(self: &Arc<Self>, max_payment_msat: Option<u64>) -> WalletNwcHandler {
+        WalletNwcHandler::new(Arc::clone(self), max_payment_msat)
     }
 }
 
