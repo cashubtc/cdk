@@ -477,7 +477,7 @@ impl Signatory for DbSignatory {
             args.input_fee_ppk,
             args.final_expiry,
             args.keyset_id_type,
-        );
+        )?;
 
         let keysets = self.keysets_snapshot();
         check_unit_string_collision(keysets.keysets, &info)?;
@@ -1485,7 +1485,8 @@ mod test {
             0,
             None,
             cdk_common::nut02::KeySetVersion::Version01,
-        );
+        )
+        .unwrap();
 
         assert_eq!(keyset.unit, CurrencyUnit::Sat);
         assert_eq!(keyset.keys.len(), 2);
@@ -1535,7 +1536,8 @@ mod test {
             0,
             None,
             cdk_common::nut02::KeySetVersion::Version00,
-        );
+        )
+        .unwrap();
 
         assert_eq!(keyset.unit, CurrencyUnit::Sat);
         assert_eq!(keyset.keys.len(), 2);
@@ -1650,7 +1652,8 @@ mod test {
             0,
             None,
             cdk_common::nut02::KeySetVersion::Version00,
-        );
+        )
+        .unwrap();
 
         assert_eq!(keyset.unit, CurrencyUnit::Sat);
         assert_eq!(keyset.keys.len(), 64);
@@ -1947,7 +1950,8 @@ mod test {
             0,
             None,
             cdk_common::nut02::KeySetVersion::Version00,
-        );
+        )
+        .unwrap();
 
         assert_eq!(keyset.unit, CurrencyUnit::Auth);
         assert_eq!(keyset.keys.len(), 1);

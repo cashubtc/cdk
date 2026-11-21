@@ -28,8 +28,8 @@ use crate::mint_url::MintUrl;
 use crate::nuts::nut00::token::Token;
 use crate::nuts::nut17::Kind;
 use crate::nuts::{
-    nut10, verify_proof_signatures, CurrencyUnit, Id, Keys, LegacyDleq, MintInfo, MintQuoteState,
-    PreMintSecrets, Proofs, RestoreRequest, SpendingConditions, State,
+    nut10, CurrencyUnit, Id, LegacyDleq, MintInfo, MintQuoteState, PreMintSecrets, Proofs,
+    RestoreRequest, SpendingConditions, State,
 };
 use crate::wallet::blind_signature::{
     validate_mint_response_signatures, SignatureAmountValidation,
@@ -105,6 +105,7 @@ pub use nwc::{derive_nwc_secret_key_from_seed, WalletNwcHandler};
 #[cfg(feature = "nostr")]
 pub use payment_request::NostrWaitInfo;
 pub use payment_request::{CreateRequestParams, PayRequestOptions, PreparedPaymentRequest};
+pub use receive::{decode_payment_request_payload, decode_received_token, MAX_RECEIVE_PROOFS};
 pub use recovery::RecoveryReport;
 pub use send::PreparedSend;
 #[cfg(all(feature = "npubcash", not(target_arch = "wasm32")))]
@@ -1089,6 +1090,7 @@ impl Wallet {
     /// This verifies DLEQ proofs for v1/v2 keysets and BLS pairings for v3 keysets.
     #[instrument(skip(self, token))]
     pub async fn verify_token_signatures(&self, token: &Token) -> Result<(), Error> {
+        receive::check_proof_count(token.proof_count(), MAX_RECEIVE_PROOFS)?;
         let token_mint_url = token.mint_url()?;
         if token_mint_url != self.mint_url {
             return Err(Error::IncorrectWallet(format!(
@@ -1099,27 +1101,8 @@ impl Wallet {
 
         // We need the keysets information to properly convert from token proof to proof
         let proofs = self.token_proofs(token).await?;
-        let mut keys_cache: HashMap<Id, Keys> = HashMap::new();
-        let mut signed_proofs = Vec::with_capacity(proofs.len());
-        for proof in &proofs {
-            let mint_pubkey = match keys_cache.get(&proof.keyset_id) {
-                Some(keys) => keys.amount_key(proof.amount),
-                None => {
-                    let keys = self.keyset(proof.keyset_id).await?.keys;
-
-                    let key = keys.amount_key(proof.amount);
-                    keys_cache.insert(proof.keyset_id, keys);
-
-                    key
-                }
-            }
-            .ok_or(Error::AmountKey)?;
-            signed_proofs.push((proof, mint_pubkey));
-        }
-
-        verify_proof_signatures(signed_proofs, LegacyDleq::Required)
-            .map_err(|_| Error::CouldNotVerifyDleq)?;
-
+        self.verify_received_signatures(proofs, KeysetLoadPolicy::default(), LegacyDleq::Required)
+            .await?;
         Ok(())
     }
 
@@ -1243,7 +1226,7 @@ mod tests {
     use bitcoin::secp256k1::Secp256k1;
     use cdk_common::nut00::KnownMethod;
     use cdk_common::nut02::KeySetVersion;
-    use cdk_common::nuts::{KeySet, KeySetInfo, KeysetResponse, MintKeySet, PaymentMethod};
+    use cdk_common::nuts::{KeySet, KeySetInfo, Keys, KeysetResponse, MintKeySet, PaymentMethod};
 
     use super::*;
     use crate::nuts::{AuthToken, BlindSignature, BlindedMessage, PreMint, PreMintSecrets};
@@ -1327,7 +1310,8 @@ mod tests {
             0,
             None,
             KeySetVersion::Version00,
-        );
+        )
+        .unwrap();
 
         KeySet {
             id: mint_keyset.id,

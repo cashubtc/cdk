@@ -250,6 +250,7 @@ mod tests {
             metadata,
             v3_min_refund_horizon: None,
             v3_payment_request: None,
+            v3_script_path: false,
         };
 
         assert!(matches!(
@@ -272,6 +273,7 @@ mod tests {
             metadata: Default::default(),
             v3_min_refund_horizon: None,
             v3_payment_request: None,
+            v3_script_path: false,
         };
 
         let result: Result<cdk::wallet::ReceiveOptions, _> = options.try_into();

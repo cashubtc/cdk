@@ -626,7 +626,8 @@ fn verify_local_keysets(
             info.input_fee_ppk,
             info.final_expiry,
             info.id.get_version(),
-        );
+        )
+        .map_err(|_| ConfigurationServiceError::HistoricalKeysetMismatch { keyset_id: info.id })?;
         cdk::nuts::KeySet {
             id: info.id,
             unit: info.unit.clone(),
@@ -1573,7 +1574,8 @@ url = "postgresql://operator:plaintext-secret@localhost/cdk"
             0,
             None,
             cdk_common::nut02::KeySetVersion::Version00,
-        );
+        )
+        .unwrap();
         vec![cdk::mint::MintKeySetInfo {
             id: keyset.id,
             unit: cdk::nuts::CurrencyUnit::Sat,
@@ -2218,7 +2220,8 @@ engine = "sqlite"
             info.input_fee_ppk,
             info.final_expiry,
             info.id.get_version(),
-        );
+        )
+        .unwrap();
         for expiry in [None, Some(0)] {
             info.final_expiry = expiry;
             verify_local_keysets(seed, std::slice::from_ref(&info), &used)
@@ -2279,7 +2282,8 @@ engine = "sqlite"
                 fee,
                 expiry,
                 version,
-            );
+            )
+            .unwrap();
             infos.push(cdk::mint::MintKeySetInfo {
                 id: keyset.id,
                 unit: CurrencyUnit::Sat,

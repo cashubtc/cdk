@@ -627,7 +627,8 @@ mod tests {
             0,
             None,
             KeySetVersion::Version00,
-        );
+        )
+        .unwrap();
 
         KeySet {
             id: mint_keyset.id,

@@ -742,6 +742,12 @@ impl Mint {
         self.max_inputs
     }
 
+    /// Get the maximum number of outputs allowed per transaction
+    #[inline]
+    pub fn max_outputs(&self) -> usize {
+        self.max_outputs
+    }
+
     /// Pub Sub manager
     #[inline]
     pub fn pubsub_manager(&self) -> Arc<PubSubManager> {

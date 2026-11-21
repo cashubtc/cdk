@@ -2557,7 +2557,7 @@ impl WalletRepository {
                 match UnwrappedGift::from_gift_wrap(&keys, &event) {
                     Ok(unwrapped) => {
                         let rumor = unwrapped.rumor;
-                        match serde_json::from_str::<PaymentRequestPayload>(&rumor.content) {
+                        match crate::wallet::decode_payment_request_payload(rumor.content).await {
                             Ok(payload) => {
                                 if !payment_request_mint_policy_accepts_mint(
                                     &mints,

@@ -142,6 +142,7 @@ async def main():
         amount_split_target=cdk.SplitTarget.NONE(), p2pk_signing_keys=[],
         preimages=[], metadata={}, v3_min_refund_horizon=None,
         v3_payment_request=json.dumps({"k": "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"}),
+        v3_script_path=False,
     ))
     assert json.loads(wait.nutroot_option()) == option
     assert hasattr(repo, "wait_for_nostr_payment")
