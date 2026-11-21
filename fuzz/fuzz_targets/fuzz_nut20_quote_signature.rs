@@ -48,9 +48,9 @@ fn distinct_key(candidate: [u8; 32], signing_key: &SecretKey) -> SecretKey {
 }
 
 fn replacement_output(input: &Input, original: Option<&BlindedMessage>) -> BlindedMessage {
-    let mut blinded_secret = pubkey_from(input.replacement_key);
+    let mut blinded_secret: cashu::DhkePoint = pubkey_from(input.replacement_key).into();
     if original.is_some_and(|output| output.blinded_secret == blinded_secret) {
-        blinded_secret = secret_key_from([4; 32]).public_key();
+        blinded_secret = secret_key_from([4; 32]).public_key().into();
     }
     BlindedMessage::new(
         original

@@ -99,14 +99,15 @@ impl TryFrom<Proof> for cdk::nuts::Proof {
 
         use cdk::nuts::Id;
 
+        let keyset_id = Id::from_str(&proof.keyset_id)
+            .map_err(|e| FfiError::internal(format!("Invalid keyset ID: {}", e)))?;
         Ok(Self {
             amount: proof.amount.into(),
             secret: cdk::secret::Secret::from_str(&proof.secret)
                 .map_err(|e| FfiError::internal(format!("Invalid secret: {}", e)))?,
-            c: cdk::nuts::PublicKey::from_str(&proof.c)
-                .map_err(|e| FfiError::internal(format!("Invalid public key: {}", e)))?,
-            keyset_id: Id::from_str(&proof.keyset_id)
-                .map_err(|e| FfiError::internal(format!("Invalid keyset ID: {}", e)))?,
+            c: cdk::nuts::DhkePoint::from_hex_for_version(&proof.c, keyset_id.get_version())
+                .map_err(|e| FfiError::internal(format!("Invalid DHKE point: {}", e)))?,
+            keyset_id,
             witness: proof.witness.map(|w| w.into()),
             dleq: proof.dleq.map(TryInto::try_into).transpose()?,
             p2pk_e: proof
@@ -163,7 +164,7 @@ pub fn proof_verify_dleq(
     mint_pubkey: super::keys::PublicKey,
 ) -> Result<(), FfiError> {
     let cdk_proof: cdk::nuts::Proof = proof.clone().try_into()?;
-    let cdk_pubkey: cdk::nuts::PublicKey = mint_pubkey.try_into()?;
+    let cdk_pubkey: cdk::nuts::MintPublicKey = mint_pubkey.try_into()?;
     cdk_proof
         .verify_dleq(cdk_pubkey)
         .map_err(FfiError::internal)
@@ -253,7 +254,7 @@ impl TryFrom<ProofDleq> for cdk::nuts::ProofDleq {
                 .map_err(|e| FfiError::internal(format!("Invalid dleq e: {}", e)))?,
             s: cdk::nuts::SecretKey::from_hex(&dleq.s)
                 .map_err(|e| FfiError::internal(format!("Invalid dleq s: {}", e)))?,
-            r: cdk::nuts::SecretKey::from_hex(&dleq.r)
+            r: cdk::nuts::BlindingFactor::from_hex(&dleq.r)
                 .map_err(|e| FfiError::internal(format!("Invalid dleq r: {}", e)))?,
         })
     }
@@ -683,7 +684,7 @@ mod tests {
     fn proof_state_update_debug_redacts_htlc_preimage() {
         let secret = "htlc-preimage-that-authorizes-spending";
         let proof_state = cdk::nuts::nut07::ProofState {
-            y: cdk::nuts::SecretKey::generate().public_key(),
+            y: cdk::nuts::SecretKey::generate().public_key().into(),
             state: CdkState::Spent,
             witness: Some(cdk::nuts::Witness::HTLCWitness(
                 cdk::nuts::nut14::HTLCWitness {

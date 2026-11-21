@@ -6,8 +6,8 @@ use std::sync::Arc;
 use cashu::nut17::{
     self, Kind, NotificationId, MAX_CUSTOM_KIND_LEN, MAX_FILTER_LEN, MAX_SUBSCRIPTION_ID_LEN,
 };
+use cashu::nuts::nut01::ProofId;
 use cashu::quote_id::QuoteId;
-use cashu::PublicKey;
 use serde::de::Error as DeError;
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -39,7 +39,7 @@ impl SubscriptionRequest for Params {
                 Kind::Bolt11MintQuote => QuoteId::from_str(filter)
                     .map(NotificationId::MintQuoteBolt11)
                     .map_err(|_| Error::ParsingError(filter.to_owned())),
-                Kind::ProofState => PublicKey::from_str(filter)
+                Kind::ProofState => ProofId::from_str(filter)
                     .map(NotificationId::ProofState)
                     .map_err(|_| Error::ParsingError(filter.to_owned())),
 
@@ -97,7 +97,7 @@ impl SubscriptionRequest for WalletParams {
                 Ok(match self.kind {
                     Kind::Bolt11MeltQuote => NotificationId::MeltQuoteBolt11(filter.to_owned()),
                     Kind::Bolt11MintQuote => NotificationId::MintQuoteBolt11(filter.to_owned()),
-                    Kind::ProofState => PublicKey::from_str(filter)
+                    Kind::ProofState => ProofId::from_str(filter)
                         .map(NotificationId::ProofState)
                         .map_err(|_| Error::ParsingError(filter.to_owned()))?,
 

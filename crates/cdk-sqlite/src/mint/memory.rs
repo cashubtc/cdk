@@ -97,7 +97,7 @@ mod tests {
             amount: Amount::from(amount),
             keyset_id,
             secret: Secret::generate(),
-            c: SecretKey::generate().public_key(),
+            c: SecretKey::generate().public_key().into(),
             witness: None,
             dleq: None,
             p2pk_e: None,

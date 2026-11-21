@@ -106,7 +106,7 @@ impl TryFrom<Transaction> for cdk::wallet::types::Transaction {
     type Error = FfiError;
 
     fn try_from(tx: Transaction) -> Result<Self, Self::Error> {
-        let cdk_ys: Result<Vec<cdk::nuts::PublicKey>, _> =
+        let cdk_ys: Result<Vec<cdk::nuts::ProofId>, _> =
             tx.ys.into_iter().map(|pk| pk.try_into()).collect();
         let cdk_ys = cdk_ys?;
 
@@ -336,16 +336,17 @@ impl TryFrom<AuthProof> for cdk::nuts::AuthProof {
 
     fn try_from(auth_proof: AuthProof) -> Result<Self, Self::Error> {
         use std::str::FromStr;
+        let keyset_id = cdk::nuts::Id::from_str(&auth_proof.keyset_id)
+            .map_err(|e| FfiError::internal(format!("Invalid keyset ID: {}", e)))?;
         Ok(Self {
-            keyset_id: cdk::nuts::Id::from_str(&auth_proof.keyset_id)
-                .map_err(|e| FfiError::internal(format!("Invalid keyset ID: {}", e)))?,
+            keyset_id,
             secret: {
                 use std::str::FromStr;
                 cdk::secret::Secret::from_str(&auth_proof.secret)
                     .map_err(|e| FfiError::internal(format!("Invalid secret: {}", e)))?
             },
-            c: cdk::nuts::PublicKey::from_str(&auth_proof.c)
-                .map_err(|e| FfiError::internal(format!("Invalid public key: {}", e)))?,
+            c: cdk::nuts::DhkePoint::from_hex_for_version(&auth_proof.c, keyset_id.get_version())
+                .map_err(|e| FfiError::internal(format!("Invalid DHKE point: {}", e)))?,
             dleq: None, // FFI doesn't expose DLEQ proofs for simplicity
         })
     }

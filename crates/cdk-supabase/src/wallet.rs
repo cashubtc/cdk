@@ -16,7 +16,8 @@ use cdk_common::database::wallet::Database;
 use cdk_common::database::{Error as DatabaseError, KVStoreDatabase};
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::{
-    CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions, State,
+    BlindingFactor, CurrencyUnit, DhkePoint, Id, KeySet, KeySetInfo, Keys, MintInfo, ProofId,
+    PublicKey, SpendingConditions, State,
 };
 use cdk_common::redact::url_for_logs;
 use cdk_common::secret::Secret;
@@ -1229,7 +1230,7 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         Ok(result)
     }
 
-    async fn get_proofs_by_ys(&self, ys: Vec<PublicKey>) -> Result<Vec<ProofInfo>, DatabaseError> {
+    async fn get_proofs_by_ys(&self, ys: Vec<ProofId>) -> Result<Vec<ProofInfo>, DatabaseError> {
         if ys.is_empty() {
             return Ok(Vec::new());
         }
@@ -1336,7 +1337,7 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
     async fn update_proofs(
         &self,
         added: Vec<ProofInfo>,
-        removed_ys: Vec<PublicKey>,
+        removed_ys: Vec<ProofId>,
     ) -> Result<(), DatabaseError> {
         // If nothing to do, return early
         if added.is_empty() && removed_ys.is_empty() {
@@ -1421,7 +1422,7 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
 
     async fn update_proofs_state(
         &self,
-        ys: Vec<PublicKey>,
+        ys: Vec<ProofId>,
         state: State,
     ) -> Result<(), DatabaseError> {
         if ys.is_empty() {
@@ -2073,7 +2074,7 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
 
     async fn reserve_proofs(
         &self,
-        ys: Vec<PublicKey>,
+        ys: Vec<ProofId>,
         operation_id: &uuid::Uuid,
     ) -> Result<(), DatabaseError> {
         if ys.is_empty() {
@@ -2847,9 +2848,9 @@ struct ProofTable {
 impl TryInto<ProofInfo> for ProofTable {
     type Error = DatabaseError;
     fn try_into(self) -> Result<ProofInfo, Self::Error> {
-        let y = PublicKey::from_hex(&self.y)
-            .map_err(|_| DatabaseError::Internal("Invalid y".into()))?;
-        let c = PublicKey::from_hex(&self.c)
+        let y =
+            ProofId::from_hex(&self.y).map_err(|_| DatabaseError::Internal("Invalid y".into()))?;
+        let c = DhkePoint::from_hex_any_curve(&self.c)
             .map_err(|_| DatabaseError::Internal("Invalid c".into()))?;
         Ok(ProofInfo {
             y,
@@ -2887,7 +2888,7 @@ impl TryInto<ProofInfo> for ProofTable {
                             .map_err(|_| DatabaseError::Internal("Invalid dleq_e".into()))?,
                         s: cdk_common::SecretKey::from_hex(&s)
                             .map_err(|_| DatabaseError::Internal("Invalid dleq_s".into()))?,
-                        r: cdk_common::SecretKey::from_hex(&r)
+                        r: BlindingFactor::from_hex(&r)
                             .map_err(|_| DatabaseError::Internal("Invalid dleq_r".into()))?,
                     }),
                     _ => None,
@@ -2995,7 +2996,7 @@ impl TryInto<Transaction> for TransactionTable {
             Some(strs) => strs
                 .into_iter()
                 .map(|s| {
-                    PublicKey::from_hex(&s)
+                    ProofId::from_hex(&s)
                         .map_err(|_| DatabaseError::Internal("Invalid y hex".into()))
                 })
                 .collect::<Result<Vec<_>, _>>()?,

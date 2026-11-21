@@ -108,7 +108,7 @@ async fn create_mint_with_check_error(
 struct PendingMeltSetup {
     quote: MeltQuote,
     melt_request: MeltRequest<QuoteId>,
-    input_ys: Vec<cdk_common::PublicKey>,
+    input_ys: Vec<cdk_common::ProofId>,
     operation_id: uuid::Uuid,
 }
 
@@ -188,7 +188,7 @@ async fn stored_quote(mint: &Mint, quote_id: &QuoteId) -> MeltQuote {
         .expect("quote should exist")
 }
 
-async fn proofs_state(mint: &Mint, ys: &[cdk_common::PublicKey]) -> Vec<Option<State>> {
+async fn proofs_state(mint: &Mint, ys: &[cdk_common::ProofId]) -> Vec<Option<State>> {
     mint.localstore().get_proofs_states(ys).await.unwrap()
 }
 

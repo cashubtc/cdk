@@ -1,10 +1,11 @@
 #![cfg(test)]
 //! Shared test helpers for spending condition tests (P2PK, HTLC, etc.)
 
-use cdk_common::dhke::blind_message;
+use cdk_common::dhke::blind_message_for_version;
 use cdk_common::nuts::nut10::Secret as Nut10Secret;
 use cdk_common::nuts::{
-    BlindedMessage, CurrencyUnit, Id, Keys, PublicKey, SecretKey, SpendingConditions,
+    BlindedMessage, BlindingFactor, CurrencyUnit, Id, Keys, PublicKey, SecretKey,
+    SpendingConditions,
 };
 use cdk_common::Amount;
 
@@ -102,13 +103,18 @@ impl TestMintHelper {
         &self,
         amount: Amount,
         spending_conditions: &SpendingConditions,
-    ) -> (BlindedMessage, SecretKey, Secret) {
+    ) -> (BlindedMessage, BlindingFactor, Secret) {
         let nut10_secret: Nut10Secret = spending_conditions
             .clone()
             .try_into()
             .expect("test spending conditions must be valid");
         let secret: Secret = nut10_secret.try_into().unwrap();
-        let (blinded_point, blinding_factor) = blind_message(&secret.to_bytes(), None).unwrap();
+        let (blinded_point, blinding_factor) = blind_message_for_version(
+            &secret.to_bytes(),
+            None,
+            self.active_sat_keyset_id.get_version(),
+        )
+        .unwrap();
         let blinded_msg = BlindedMessage::new(amount, self.active_sat_keyset_id, blinded_point);
         (blinded_msg, blinding_factor, secret)
     }

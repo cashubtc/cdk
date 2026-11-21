@@ -6,7 +6,7 @@ use cdk_common::common::IssuerVersion;
 use cdk_common::nut02::KeySetVersion;
 use cdk_common::secret::Secret;
 use cdk_common::util::hex;
-use cdk_common::{Amount, Id, PublicKey};
+use cdk_common::{Amount, DhkePoint, Id, MintPublicKey, PublicKey};
 use tonic::Status;
 
 use super::*;
@@ -51,7 +51,7 @@ impl TryInto<crate::signatory::SignatoryKeySet> for KeySet {
             .ok_or(cdk_common::Error::Custom(INTERNAL_ERROR.to_owned()))?
             .keys
             .into_iter()
-            .map(|(amount, pk)| PublicKey::from_slice(&pk).map(|pk| (amount.into(), pk)))
+            .map(|(amount, pk)| MintPublicKey::from_slice(&pk).map(|pk| (amount.into(), pk)))
             .collect::<Result<BTreeMap<Amount, _>, _>>()?;
 
         Ok(crate::signatory::SignatoryKeySet {
@@ -190,12 +190,13 @@ impl TryInto<cdk_common::Proof> for Proof {
             hex::encode(&self.secret)
         };
 
+        let keyset_id =
+            Id::from_bytes(&self.keyset_id).map_err(|e| Status::from_error(Box::new(e)))?;
         Ok(cdk_common::Proof {
             amount: self.amount.into(),
-            keyset_id: Id::from_bytes(&self.keyset_id)
-                .map_err(|e| Status::from_error(Box::new(e)))?,
+            keyset_id,
             secret: Secret::new(secret),
-            c: cdk_common::PublicKey::from_slice(&self.c)
+            c: DhkePoint::from_slice_for_version(&self.c, keyset_id.get_version())
                 .map_err(|e| Status::from_error(Box::new(e)))?,
             witness: None,
             dleq: None,
@@ -208,10 +209,11 @@ impl TryInto<cdk_common::BlindSignature> for BlindSignature {
     type Error = cdk_common::error::Error;
 
     fn try_into(self) -> Result<cdk_common::BlindSignature, Self::Error> {
+        let keyset_id = Id::from_bytes(&self.keyset_id)?;
         Ok(cdk_common::BlindSignature {
             amount: self.amount.into(),
-            c: cdk_common::PublicKey::from_slice(&self.blinded_secret)?,
-            keyset_id: Id::from_bytes(&self.keyset_id)?,
+            c: DhkePoint::from_slice_for_version(&self.blinded_secret, keyset_id.get_version())?,
+            keyset_id,
             dleq: self.dleq.map(|dleq| dleq.try_into()).transpose()?,
         })
     }
@@ -230,12 +232,16 @@ impl From<cdk_common::BlindedMessage> for BlindedMessage {
 impl TryInto<cdk_common::BlindedMessage> for BlindedMessage {
     type Error = Status;
     fn try_into(self) -> Result<cdk_common::BlindedMessage, Self::Error> {
+        let keyset_id =
+            Id::from_bytes(&self.keyset_id).map_err(|e| Status::from_error(Box::new(e)))?;
         Ok(cdk_common::BlindedMessage {
             amount: self.amount.into(),
-            keyset_id: Id::from_bytes(&self.keyset_id)
-                .map_err(|e| Status::from_error(Box::new(e)))?,
-            blinded_secret: cdk_common::PublicKey::from_slice(&self.blinded_secret)
-                .map_err(|e| Status::from_error(Box::new(e)))?,
+            keyset_id,
+            blinded_secret: DhkePoint::from_slice_for_version(
+                &self.blinded_secret,
+                keyset_id.get_version(),
+            )
+            .map_err(|e| Status::from_error(Box::new(e)))?,
             witness: None,
         })
     }
@@ -335,8 +341,8 @@ impl TryInto<cdk_common::KeySet> for KeySet {
                     .ok_or(cdk_common::error::Error::Custom(INTERNAL_ERROR.to_owned()))?
                     .keys
                     .into_iter()
-                    .map(|(k, v)| cdk_common::PublicKey::from_slice(&v).map(|pk| (k.into(), pk)))
-                    .collect::<Result<BTreeMap<cdk_common::Amount, cdk_common::PublicKey>, _>>()?,
+                    .map(|(k, v)| MintPublicKey::from_slice(&v).map(|pk| (k.into(), pk)))
+                    .collect::<Result<BTreeMap<cdk_common::Amount, MintPublicKey>, _>>()?,
             ),
             input_fee_ppk: self.input_fee_ppk,
             final_expiry: self.final_expiry,
@@ -420,24 +426,163 @@ impl TryInto<crate::signatory::ReconstructDleqArguments> for ReconstructDleqEntr
     type Error = Status;
 
     fn try_into(self) -> Result<crate::signatory::ReconstructDleqArguments, Self::Error> {
+        let blind_signature: cdk_common::BlindSignature = self
+            .blind_signature
+            .ok_or(Status::invalid_argument("blind_signature not set"))?
+            .try_into()
+            .map_err(|err: cdk_common::error::Error| Status::invalid_argument(err.to_string()))?;
+        let blind_secret = DhkePoint::from_slice_for_version(
+            &self.blind_secret,
+            blind_signature.keyset_id.get_version(),
+        )
+        .map_err(|err| Status::invalid_argument(err.to_string()))?;
         Ok(crate::signatory::ReconstructDleqArguments {
-            blind_signature: self
-                .blind_signature
-                .ok_or(Status::invalid_argument("blind_signature not set"))?
-                .try_into()
-                .map_err(|err: cdk_common::error::Error| {
-                    Status::invalid_argument(err.to_string())
-                })?,
-            blind_secret: PublicKey::from_slice(&self.blind_secret).map_err(
-                |err: cdk_common::nut01::Error| Status::invalid_argument(err.to_string()),
-            )?,
+            blind_signature,
+            blind_secret,
         })
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use prost::Message;
+
     use super::*;
+
+    #[test]
+    fn points_are_parsed_by_keyset_version() {
+        use cdk_common::nuts::nut01::BlsG1PublicKey;
+
+        let secp = cdk_common::SecretKey::generate()
+            .public_key()
+            .to_bytes()
+            .to_vec();
+        let bls = BlsG1PublicKey::hash_to_curve(b"point").to_bytes().to_vec();
+        let legacy_id = Id::from_str("009a1f293253e41e").unwrap().to_bytes();
+        let mut v3_id = vec![1u8; 33];
+        v3_id[0] = KeySetVersion::Version02.to_byte();
+
+        let message = |keyset_id: &[u8], point: &[u8]| BlindedMessage {
+            amount: 1,
+            keyset_id: keyset_id.to_vec(),
+            blinded_secret: point.to_vec(),
+        };
+        let parse = |message: BlindedMessage| -> Result<cdk_common::BlindedMessage, Status> {
+            message.try_into()
+        };
+        assert!(parse(message(&legacy_id, &secp)).is_ok());
+        assert!(parse(message(&v3_id, &bls)).is_ok());
+        assert!(parse(message(&legacy_id, &bls)).is_err());
+        assert!(parse(message(&v3_id, &secp)).is_err());
+
+        let proof = |keyset_id: &[u8], c: &[u8]| -> Result<cdk_common::Proof, Status> {
+            Proof {
+                amount: 1,
+                keyset_id: keyset_id.to_vec(),
+                secret: b"secret".to_vec(),
+                c: c.to_vec(),
+            }
+            .try_into()
+        };
+        assert!(proof(&v3_id, &bls).is_ok());
+        assert!(proof(&v3_id, &secp).is_err());
+        assert!(proof(&legacy_id, &bls).is_err());
+    }
+
+    #[test]
+    fn rotation_versions_roundtrip_through_protobuf() {
+        for (version, wire_version) in [
+            (KeySetVersion::Version00, KeysetVersion::V1),
+            (KeySetVersion::Version01, KeysetVersion::V2),
+            (KeySetVersion::Version02, KeysetVersion::V3),
+        ] {
+            let args = crate::signatory::RotateKeyArguments {
+                unit: cdk_common::CurrencyUnit::Sat,
+                amounts: vec![1, 2, 4],
+                input_fee_ppk: 100,
+                keyset_id_type: version,
+                final_expiry: None,
+            };
+            let request: RotationRequest = args.into();
+            let decoded = RotationRequest::decode(request.encode_to_vec().as_slice()).unwrap();
+            assert_eq!(decoded.keyset_id_type(), wire_version);
+            let restored: crate::signatory::RotateKeyArguments = decoded.try_into().unwrap();
+            assert_eq!(restored.keyset_id_type, version);
+            assert_eq!(restored.amounts, vec![1, 2, 4]);
+            assert_eq!(restored.input_fee_ppk, 100);
+        }
+    }
+
+    #[test]
+    fn signatory_schema_rejects_pre_bls_peers() {
+        use cdk_common::grpc::{
+            create_version_check_interceptor, VersionInterceptor, VERSION_SIGNATORY_HEADER,
+        };
+        use tonic::service::Interceptor;
+
+        let current = (Constants::SchemaVersion as i32).to_string();
+        let expected = Box::leak(current.clone().into_boxed_str());
+        let check = create_version_check_interceptor(VERSION_SIGNATORY_HEADER, expected);
+        for version in ["1", "2"] {
+            let request = VersionInterceptor::new(VERSION_SIGNATORY_HEADER, version)
+                .call(tonic::Request::new(()))
+                .unwrap();
+            assert_eq!(
+                check(request).unwrap_err().code(),
+                tonic::Code::FailedPrecondition
+            );
+        }
+        let request = VersionInterceptor::new(VERSION_SIGNATORY_HEADER, current)
+            .call(tonic::Request::new(()))
+            .unwrap();
+        assert!(check(request).is_ok());
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn v3_rotation_through_rpc_handler_returns_bls_keyset() {
+        use std::sync::Arc;
+
+        use super::super::signatory_server::Signatory;
+        use crate::db_signatory::DbSignatory;
+        use crate::proto::server::CdkSignatoryServer;
+
+        let store = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
+        let signatory = Arc::new(
+            DbSignatory::new(
+                store,
+                b"v3-rpc-rotation-test",
+                Default::default(),
+                Default::default(),
+            )
+            .await
+            .unwrap(),
+        );
+        let server = CdkSignatoryServer::new(signatory);
+        let request = RotationRequest {
+            unit: Some(cdk_common::CurrencyUnit::Sat.into()),
+            amounts: vec![1, 2, 4],
+            input_fee_ppk: 100,
+            keyset_id_type: KeysetVersion::V3 as i32,
+            final_expiry: None,
+        };
+        let decoded = RotationRequest::decode(request.encode_to_vec().as_slice()).unwrap();
+        let response = server
+            .rotate_keyset(tonic::Request::new(decoded))
+            .await
+            .unwrap()
+            .into_inner();
+        let decoded = KeyRotationResponse::decode(response.encode_to_vec().as_slice()).unwrap();
+        assert!(decoded.error.is_none());
+        let keyset: crate::signatory::SignatoryKeySet = decoded.keyset.unwrap().try_into().unwrap();
+        assert_eq!(keyset.id.get_version(), KeySetVersion::Version02);
+        assert!(keyset
+            .keys
+            .values()
+            .all(|key| matches!(key, MintPublicKey::Bls(_))));
+        let public_keyset: cdk_common::KeySet = keyset.into();
+        public_keyset.verify_id().unwrap();
+    }
 
     #[test]
     fn custom_currency_unit_is_lowercase_across_proto_boundary() {

@@ -13,6 +13,7 @@ enum KeysetVersion {
     KEYSET_VERSION_UNSPECIFIED = 0;
     KEYSET_VERSION_V1 = 1;
     KEYSET_VERSION_V2 = 2;
+    KEYSET_VERSION_V3 = 3;
 }
 
 message RotateNextKeysetRequest {
@@ -35,8 +36,8 @@ message RotateNextKeysetRequest {
     // Absolute expiry as seconds since the UNIX epoch. Omit for a keyset
     // that never expires.
     optional uint64 final_expiry = 5;
-    // Version selector: v1 or v2. Defaults to v2 when
-    // neither version selector is supplied. Conflicting selectors are rejected.
+    // Version selector: v1, v2, or v3. Defaults to v2 when
+    // neither version selector is supplied; v3 (BLS) is opt-in. Conflicting selectors are rejected.
     // Explicit UNSPECIFIED and unknown enum values are rejected.
     optional KeysetVersion keyset_version = 6;
 }

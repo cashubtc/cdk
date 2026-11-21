@@ -19,7 +19,8 @@ service Signatory {
 enum Constants {
   CONSTANTS_UNSPECIFIED = 0;
   // this constant should be sent on the header of the grpc code for verification
-  CONSTANTS_SCHEMA_VERSION = 3;
+  // Version 4 adds BLS keysets; older peers must not negotiate this schema.
+  CONSTANTS_SCHEMA_VERSION = 4;
 }
 
 message BlindSignResponse {
@@ -77,6 +78,7 @@ enum KeysetVersion {
   KEYSET_VERSION_UNSPECIFIED = 0;
   KEYSET_VERSION_V1 = 1;
   KEYSET_VERSION_V2 = 2;
+  KEYSET_VERSION_V3 = 3;
 }
 message RotationRequest {
   CurrencyUnit unit = 1;

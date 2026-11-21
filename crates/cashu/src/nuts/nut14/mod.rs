@@ -392,7 +392,7 @@ mod tests {
     fn sign_refund_proof(proof: &mut Proof, key: &SecretKey) {
         let digest = Sha256Hash::hash(proof.secret.as_bytes());
         let message = Message::from_digest(digest.to_byte_array());
-        let keypair = Keypair::from_secret_key(&crate::SECP256K1, key);
+        let keypair = Keypair::from_secret_key(&crate::SECP256K1, key.as_secp256k1());
         let signature = crate::SECP256K1.sign_schnorr_no_aux_rand(&message, &keypair);
         proof.witness = Some(Witness::P2PKWitness(crate::nuts::nut11::P2PKWitness {
             signatures: vec![signature.to_string()],
@@ -422,7 +422,7 @@ mod tests {
             amount: crate::Amount::from(1),
             keyset_id: crate::nuts::nut02::Id::from_str("00deadbeef123456").unwrap(),
             secret,
-            c: crate::nuts::nut01::PublicKey::from_hex(
+            c: crate::nuts::DhkePoint::from_hex_any_curve(
                 "02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2",
             )
             .unwrap(),
@@ -516,7 +516,7 @@ mod tests {
             amount: crate::Amount::ONE,
             keyset_id: crate::nuts::nut02::Id::from_str("00deadbeef123456").unwrap(),
             secret,
-            c: crate::nuts::nut01::PublicKey::from_hex(
+            c: crate::nuts::DhkePoint::from_hex_any_curve(
                 "02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2",
             )
             .unwrap(),
@@ -555,7 +555,7 @@ mod tests {
             amount: crate::Amount::from(1),
             keyset_id: crate::nuts::nut02::Id::from_str("00deadbeef123456").unwrap(),
             secret,
-            c: crate::nuts::nut01::PublicKey::from_hex(
+            c: crate::nuts::DhkePoint::from_hex_any_curve(
                 "02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2",
             )
             .unwrap(),
@@ -640,7 +640,7 @@ mod tests {
             amount: crate::Amount::from(1),
             keyset_id: crate::nuts::nut02::Id::from_str("00deadbeef123456").unwrap(),
             secret,
-            c: crate::nuts::nut01::PublicKey::from_hex(
+            c: crate::nuts::DhkePoint::from_hex_any_curve(
                 "02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2",
             )
             .unwrap(),
@@ -864,7 +864,7 @@ mod tests {
             amount: crate::Amount::from(1),
             keyset_id: crate::nuts::nut02::Id::from_str("00deadbeef123456").unwrap(),
             secret,
-            c: crate::nuts::nut01::PublicKey::from_hex(
+            c: crate::nuts::DhkePoint::from_hex_any_curve(
                 "02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2",
             )
             .unwrap(),
@@ -961,7 +961,7 @@ mod tests {
             amount: crate::Amount::from(1),
             keyset_id: crate::nuts::nut02::Id::from_str("00deadbeef123456").unwrap(),
             secret,
-            c: crate::nuts::nut01::PublicKey::from_hex(
+            c: crate::nuts::DhkePoint::from_hex_any_curve(
                 "02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2",
             )
             .unwrap(),
@@ -1001,7 +1001,7 @@ mod tests {
             amount: crate::Amount::from(1),
             keyset_id: crate::nuts::nut02::Id::from_str("00deadbeef123456").unwrap(),
             secret,
-            c: crate::nuts::nut01::PublicKey::from_hex(
+            c: crate::nuts::DhkePoint::from_hex_any_curve(
                 "02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2",
             )
             .unwrap(),
@@ -1080,7 +1080,7 @@ mod tests {
             amount: crate::Amount::from(1),
             keyset_id: crate::nuts::nut02::Id::from_str("00deadbeef123456").unwrap(),
             secret,
-            c: crate::nuts::nut01::PublicKey::from_hex(
+            c: crate::nuts::DhkePoint::from_hex_any_curve(
                 "02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2",
             )
             .unwrap(),
@@ -1131,7 +1131,7 @@ mod tests {
             amount: crate::Amount::from(1),
             keyset_id: crate::nuts::nut02::Id::from_str("00deadbeef123456").unwrap(),
             secret,
-            c: crate::nuts::nut01::PublicKey::from_hex(
+            c: crate::nuts::DhkePoint::from_hex_any_curve(
                 "02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2",
             )
             .unwrap(),
@@ -1166,7 +1166,7 @@ mod tests {
             amount: crate::Amount::from(1),
             keyset_id: crate::nuts::nut02::Id::from_str("00deadbeef123456").unwrap(),
             secret,
-            c: crate::nuts::nut01::PublicKey::from_hex(
+            c: crate::nuts::DhkePoint::from_hex_any_curve(
                 "02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2",
             )
             .unwrap(),

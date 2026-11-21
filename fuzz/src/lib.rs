@@ -8,6 +8,7 @@
 
 pub mod arbitrary_ext;
 
+use cashu::nuts::nut01::{BlsG1PublicKey, BlsG2PublicKey, BlsSecretKey};
 use cashu::nuts::nut10::{Kind, SecretData};
 use cashu::nuts::SpendingConditions;
 use cashu::{Nut10Secret, PublicKey, SecretKey};
@@ -42,4 +43,26 @@ pub fn secret_key_from(bytes: [u8; 32]) -> SecretKey {
 /// Derive a `PublicKey` from 32 fuzz bytes via `secret_key_from`.
 pub fn pubkey_from(bytes: [u8; 32]) -> PublicKey {
     secret_key_from(bytes).public_key()
+}
+
+/// A valid BLS12-381 G1 point (compressed 48 bytes) from fuzz bytes.
+///
+/// `hash_to_curve` always yields a canonical, subgroup-correct, non-identity
+/// point, which random byte strings would essentially never decode to.
+pub fn bls_g1_point_from(bytes: &[u8]) -> BlsG1PublicKey {
+    BlsG1PublicKey::hash_to_curve(bytes)
+}
+
+/// A valid non-zero BLS12-381 scalar from 32 fuzz bytes.
+///
+/// Falls back to `0x01..01` when the bytes are zero or not canonical.
+pub fn bls_secret_key_from(bytes: [u8; 32]) -> BlsSecretKey {
+    BlsSecretKey::from_bytes(&bytes).unwrap_or_else(|_| {
+        BlsSecretKey::from_bytes(&[1u8; 32]).expect("0x01..01 is a valid BLS scalar")
+    })
+}
+
+/// A valid BLS12-381 G2 mint key (compressed 96 bytes) from 32 fuzz bytes.
+pub fn bls_g2_key_from(bytes: [u8; 32]) -> BlsG2PublicKey {
+    bls_secret_key_from(bytes).public_key_g2()
 }

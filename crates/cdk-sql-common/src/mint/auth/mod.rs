@@ -8,7 +8,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use cdk_common::database::{self, MintAuthDatabase, MintAuthTransaction};
 use cdk_common::mint::MintKeySetInfo;
-use cdk_common::nuts::{AuthProof, BlindSignature, Id, PublicKey, State};
+use cdk_common::nuts::{AuthProof, BlindSignature, DhkePoint, Id, ProofId, State};
 use cdk_common::{AuthRequired, ProtectedEndpoint};
 use migrations::MIGRATIONS;
 use tracing::instrument;
@@ -153,7 +153,7 @@ where
 
     async fn update_proof_state(
         &mut self,
-        y: &PublicKey,
+        y: &ProofId,
         proofs_state: State,
     ) -> Result<Option<State>, Self::Err> {
         let current_state = query(r#"SELECT state FROM proof WHERE y = :y FOR UPDATE"#)?
@@ -174,7 +174,7 @@ where
 
     async fn add_blind_signatures(
         &mut self,
-        blinded_messages: &[PublicKey],
+        blinded_messages: &[DhkePoint],
         blind_signatures: &[BlindSignature],
     ) -> Result<(), database::Error> {
         for (message, signature) in blinded_messages.iter().zip(blind_signatures) {
@@ -352,7 +352,7 @@ where
         .collect::<Result<Vec<_>, _>>()?)
     }
 
-    async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err> {
+    async fn get_proofs_states(&self, ys: &[ProofId]) -> Result<Vec<Option<State>>, Self::Err> {
         let conn = self
             .pool
             .get()
@@ -365,7 +365,7 @@ where
             .into_iter()
             .map(|row| {
                 Ok((
-                    column_as_string!(&row[0], PublicKey::from_hex, PublicKey::from_slice),
+                    column_as_string!(&row[0], ProofId::from_hex, ProofId::from_slice),
                     column_as_string!(&row[1], State::from_str),
                 ))
             })
@@ -376,7 +376,7 @@ where
 
     async fn get_blind_signatures(
         &self,
-        blinded_messages: &[PublicKey],
+        blinded_messages: &[DhkePoint],
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err> {
         let conn = self
             .pool
@@ -408,8 +408,8 @@ where
             Ok((
                 column_as_string!(
                     &row.pop().ok_or(Error::InvalidDbResponse)?,
-                    PublicKey::from_hex,
-                    PublicKey::from_slice
+                    DhkePoint::from_hex_any_curve,
+                    DhkePoint::from_slice_any_curve
                 ),
                 sql_row_to_blind_signature(row)?,
             ))

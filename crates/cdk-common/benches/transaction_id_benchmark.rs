@@ -1,12 +1,12 @@
 #![allow(missing_docs)]
 use cashu::nuts::nut01::SecretKey;
-use cashu::PublicKey;
+use cashu::ProofId;
 use cdk_common::wallet::TransactionId;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
-fn generate_public_keys(count: usize) -> Vec<PublicKey> {
+fn generate_public_keys(count: usize) -> Vec<ProofId> {
     (0..count)
-        .map(|_| SecretKey::generate().public_key())
+        .map(|_| SecretKey::generate().public_key().into())
         .collect()
 }
 

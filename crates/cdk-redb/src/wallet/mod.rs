@@ -15,7 +15,7 @@ use cdk_common::wallet::{
     self, MintQuote, ProofInfo, Transaction, TransactionDirection, TransactionId,
 };
 use cdk_common::{
-    database, Amount, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, PublicKey,
+    database, Amount, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, ProofId, PublicKey,
     SpendingConditions, State,
 };
 use redb::{Database, MultimapTableDefinition, ReadableDatabase, ReadableTable, TableDefinition};
@@ -429,10 +429,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
     }
 
     #[instrument(skip(self, ys))]
-    async fn get_proofs_by_ys(
-        &self,
-        ys: Vec<PublicKey>,
-    ) -> Result<Vec<ProofInfo>, database::Error> {
+    async fn get_proofs_by_ys(&self, ys: Vec<ProofId>) -> Result<Vec<ProofInfo>, database::Error> {
         if ys.is_empty() {
             return Ok(Vec::new());
         }
@@ -519,7 +516,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
     async fn update_proofs(
         &self,
         added: Vec<ProofInfo>,
-        removed_ys: Vec<PublicKey>,
+        removed_ys: Vec<ProofId>,
     ) -> Result<(), database::Error> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
         {
@@ -560,7 +557,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
 
     async fn update_proofs_state(
         &self,
-        ys: Vec<PublicKey>,
+        ys: Vec<ProofId>,
         state: State,
     ) -> Result<(), database::Error> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
@@ -1181,7 +1178,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
     #[instrument(skip(self))]
     async fn reserve_proofs(
         &self,
-        ys: Vec<PublicKey>,
+        ys: Vec<ProofId>,
         operation_id: &uuid::Uuid,
     ) -> Result<(), database::Error> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
@@ -1640,7 +1637,6 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
 
 #[cfg(test)]
 mod test {
-    use std::path::PathBuf;
     use std::str::FromStr;
 
     use cdk_common::database::{self, WalletDatabase};
@@ -1649,7 +1645,7 @@ mod test {
     use super::WalletRedbDatabase;
 
     async fn provide_db(test_id: String) -> WalletRedbDatabase {
-        let path = PathBuf::from(format!("/tmp/cdk-test-{}.redb", test_id));
+        let path = std::env::temp_dir().join(format!("cdk-test-{}.redb", test_id));
         WalletRedbDatabase::new(&path).expect("database")
     }
 

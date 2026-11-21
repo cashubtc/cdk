@@ -14,11 +14,12 @@ mnemonic = "env:CDK_MINTD_MNEMONIC"
 # Set keyset version preference.
 # true = Force upgrade to V2 (Version01).
 # false = Force downgrade to V1 (Version00).
-# If unset (default), existing keysets are preserved, but new ones use V2.
+# If unset (default), existing keysets are preserved, but new ones use V2 (Version01).
 # use_keyset_v2 = true
 
-# Explicit keyset version: "v1" or "v2". Takes precedence over use_keyset_v2.
-# keyset_version = "v2"
+# Explicit keyset version: "v1", "v2" or "v3" (BLS12-381, opt-in).
+# Takes precedence over use_keyset_v2. Wallets without BLS support cannot use V3.
+# keyset_version = "v3"
 
 # How often, in milliseconds, the embedded signatory reloads keysets from the
 # database. Off by default: a single mint owns its database and needs no
@@ -335,7 +336,7 @@ max_delay_time = 3
 # Optional keyset rotations to create inactive/expired test keysets
 # Each rotation creates a keyset that gets rotated out during mint build
 # unit: currency unit (e.g. "sat", "usd")
-# version: "v1" (Version00, default) or "v2" (Version01); other values are rejected
+# version: "v1" (Version00, default), "v2" (Version01), or "v3" (Version02); other values are rejected
 # input_fee_ppk: input fee in parts per thousand (default: 0)
 # expired: if true, keyset is created with a past expiry timestamp (default: false)
 #

@@ -9,9 +9,9 @@ use cdk_common::payment::{
 use cdk_common::quote_id::QuoteId;
 use cdk_common::util::unix_time;
 use cdk_common::{
-    database, ensure_cdk, Amount, BatchMintRequest, BlindedMessage, CurrencyUnit, Error,
+    database, ensure_cdk, Amount, BatchMintRequest, BlindedMessage, CurrencyUnit, DhkePoint, Error,
     MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteOnchainResponse, MintQuoteState,
-    MintRequest, MintResponse, NotificationPayload, PaymentMethod, PublicKey,
+    MintRequest, MintResponse, NotificationPayload, PaymentMethod,
 };
 use tracing::instrument;
 
@@ -1009,7 +1009,7 @@ impl Mint {
                 .outputs()
                 .iter()
                 .map(|p| p.blinded_secret)
-                .collect::<Vec<PublicKey>>();
+                .collect::<Vec<DhkePoint>>();
 
             // Phase 5: Atomic database transaction
             let mut tx = self.localstore.begin_transaction().await?;
