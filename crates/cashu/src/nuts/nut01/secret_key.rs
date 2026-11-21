@@ -6,7 +6,7 @@ use bitcoin::hashes::Hash;
 use bitcoin::secp256k1;
 use bitcoin::secp256k1::rand::rngs::OsRng;
 use bitcoin::secp256k1::schnorr::Signature;
-use bitcoin::secp256k1::{Keypair, Message, Scalar, Secp256k1, XOnlyPublicKey};
+use bitcoin::secp256k1::{Keypair, Message, Scalar, XOnlyPublicKey};
 use serde::de::Visitor;
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -80,11 +80,6 @@ impl SecretKey {
         self.inner.secret_bytes()
     }
 
-    /// Alias for compatibility with `bitcoin::secp256k1::SecretKey`.
-    pub fn secret_bytes(&self) -> [u8; 32] {
-        self.to_secret_bytes()
-    }
-
     /// Schnorr Signature on Message.
     pub fn sign(&self, msg: &[u8]) -> Result<Signature, Error> {
         let hash: Sha256Hash = Sha256Hash::hash(msg);
@@ -98,11 +93,8 @@ impl SecretKey {
     }
 
     /// Return secp256k1 x-only public key and parity.
-    pub fn x_only_public_key<C>(&self, secp: &Secp256k1<C>) -> (XOnlyPublicKey, secp256k1::Parity)
-    where
-        C: secp256k1::Signing,
-    {
-        self.inner.x_only_public_key(secp)
+    pub fn x_only_public_key(&self) -> (XOnlyPublicKey, secp256k1::Parity) {
+        self.inner.x_only_public_key(&SECP256K1)
     }
 
     /// [`SecretKey`] to secp256k1 [`Scalar`].
@@ -118,12 +110,12 @@ impl SecretKey {
     }
 
     /// Tweak-multiply a secp256k1 secret key.
-    pub fn mul_tweak(&self, tweak: &Scalar) -> Result<Self, secp256k1::Error> {
+    pub fn mul_tweak(&self, tweak: &Scalar) -> Result<Self, Error> {
         Ok(self.inner.mul_tweak(tweak)?.into())
     }
 
     /// Tweak-add a secp256k1 secret key.
-    pub fn add_tweak(&self, tweak: &Scalar) -> Result<Self, secp256k1::Error> {
+    pub fn add_tweak(&self, tweak: &Scalar) -> Result<Self, Error> {
         Ok(self.inner.add_tweak(tweak)?.into())
     }
 

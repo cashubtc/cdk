@@ -397,7 +397,7 @@ mod tests {
             let secret_key = SecretKey::from_seed(&seed, keyset_id, i as u32).unwrap();
 
             // Verify the secret key is valid (32 bytes)
-            let secret_bytes = secret_key.secret_bytes();
+            let secret_bytes = secret_key.to_secret_bytes();
             assert_eq!(secret_bytes.len(), 32);
 
             // Test deterministic derivation
@@ -504,7 +504,7 @@ mod tests {
 
         // Verify outputs are valid hex strings of correct length
         assert_eq!(secret.to_string().len(), 64); // 32 bytes as hex
-        assert_eq!(secret_key.secret_bytes().len(), 32);
+        assert_eq!(secret_key.to_secret_bytes().len(), 32);
     }
 
     #[test]
