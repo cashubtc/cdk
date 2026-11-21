@@ -29,7 +29,7 @@ pub struct RemovePendingProofs {
     /// Rows the wallet stored for these proofs before the receive. They are
     /// written back unchanged instead of being removed.
     pub restore_proofs: Vec<ProofInfo>,
-    /// Saga ID for cleanup
+    /// Saga ID, which is also the operation that owns the pending proofs
     pub saga_id: uuid::Uuid,
 }
 
@@ -43,19 +43,11 @@ impl CompensatingAction for RemovePendingProofs {
             self.proof_ys.len()
         );
 
-        // Only rows this receive still holds are written back. A saved row
-        // whose proof is no longer held was never overwritten, or has moved on
-        // since (for example the send that owned it finished), so restoring it
-        // would bring back a stale state.
-        let held_ys: HashSet<PublicKey> = self.proof_ys.iter().copied().collect();
-        let restore_proofs: Vec<ProofInfo> = self
-            .restore_proofs
-            .iter()
-            .filter(|p| held_ys.contains(&p.y))
-            .cloned()
-            .collect();
-
-        let restored_ys: HashSet<PublicKey> = restore_proofs.iter().map(|p| p.y).collect();
+        // The database only writes rows this receive still holds as pending.
+        // A saved row whose proof was never overwritten, or has moved on since
+        // (for example the send that owned it finished and removed it), is
+        // left alone rather than brought back in a stale state.
+        let restored_ys: HashSet<PublicKey> = self.restore_proofs.iter().map(|p| p.y).collect();
         let removed_ys = self
             .proof_ys
             .iter()
@@ -64,7 +56,7 @@ impl CompensatingAction for RemovePendingProofs {
             .collect();
 
         self.localstore
-            .update_proofs(restore_proofs, removed_ys)
+            .restore_pending_proofs(&self.saga_id, self.restore_proofs.clone(), removed_ys)
             .await
             .map_err(Error::Database)?;
 
@@ -116,19 +108,31 @@ mod tests {
         )
     }
 
+    /// A proof the receive holds, as it writes it before the swap
+    fn pending_proof_info(
+        keyset_id: cdk_common::nuts::Id,
+        amount: u64,
+        mint_url: cdk_common::mint_url::MintUrl,
+        saga_id: uuid::Uuid,
+    ) -> ProofInfo {
+        let mut proof_info = test_proof_info(keyset_id, amount, mint_url, State::Pending);
+        proof_info.used_by_operation = Some(saga_id);
+        proof_info
+    }
+
     #[tokio::test]
     async fn test_remove_pending_proofs_is_idempotent() {
         let db = create_test_db().await;
         let mint_url = test_mint_url();
         let keyset_id = test_keyset_id();
 
-        let proof_info = test_proof_info(keyset_id, 100, mint_url.clone(), State::Pending);
-        let proof_y = proof_info.y;
-        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
-
-        let saga = test_receive_saga(mint_url);
+        let saga = test_receive_saga(mint_url.clone());
         let saga_id = saga.id;
         db.add_saga(saga).await.unwrap();
+
+        let proof_info = pending_proof_info(keyset_id, 100, mint_url, saga_id);
+        let proof_y = proof_info.y;
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
 
         let compensation = RemovePendingProofs {
             localstore: db.clone(),
@@ -152,12 +156,12 @@ mod tests {
         let mint_url = test_mint_url();
         let keyset_id = test_keyset_id();
 
-        let proof_info = test_proof_info(keyset_id, 100, mint_url.clone(), State::Pending);
-        let proof_y = proof_info.y;
-        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
-
         // Use a saga_id that doesn't exist
         let saga_id = uuid::Uuid::new_v4();
+
+        let proof_info = pending_proof_info(keyset_id, 100, mint_url, saga_id);
+        let proof_y = proof_info.y;
+        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
 
         let compensation = RemovePendingProofs {
             localstore: db.clone(),
@@ -180,18 +184,18 @@ mod tests {
         let mint_url = test_mint_url();
         let keyset_id = test_keyset_id();
 
+        let saga = test_receive_saga(mint_url.clone());
+        let saga_id = saga.id;
+        db.add_saga(saga).await.unwrap();
+
         // Create two pending proofs
-        let proof_info_1 = test_proof_info(keyset_id, 100, mint_url.clone(), State::Pending);
-        let proof_info_2 = test_proof_info(keyset_id, 200, mint_url.clone(), State::Pending);
+        let proof_info_1 = pending_proof_info(keyset_id, 100, mint_url.clone(), saga_id);
+        let proof_info_2 = pending_proof_info(keyset_id, 200, mint_url, saga_id);
         let proof_y_1 = proof_info_1.y;
         let proof_y_2 = proof_info_2.y;
         db.update_proofs(vec![proof_info_1, proof_info_2], vec![])
             .await
             .unwrap();
-
-        let saga = test_receive_saga(mint_url);
-        let saga_id = saga.id;
-        db.add_saga(saga).await.unwrap();
 
         // Only remove the first proof
         let compensation = RemovePendingProofs {

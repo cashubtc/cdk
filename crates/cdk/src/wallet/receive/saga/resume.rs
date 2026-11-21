@@ -287,11 +287,10 @@ mod tests {
         let keyset_id = test_keyset_id();
         let saga_id = uuid::Uuid::new_v4();
 
-        // Create proofs in Unspent state and reserve them
-        let proof_info = test_proof_info(keyset_id, 100, mint_url.clone(), State::Unspent);
-        let proof_y = proof_info.y;
+        // Store the input as the receive does before the swap
+        let mut proof_info = test_proof_info(keyset_id, 100, mint_url.clone(), State::Pending);
+        proof_info.used_by_operation = Some(saga_id);
         db.update_proofs(vec![proof_info], vec![]).await.unwrap();
-        db.reserve_proofs(vec![proof_y], &saga_id).await.unwrap();
 
         // Create saga in ProofsPending state
         let saga = WalletSaga::new(
@@ -448,11 +447,11 @@ mod tests {
         let keyset_id = test_keyset_id();
         let saga_id = uuid::Uuid::new_v4();
 
-        // Create proofs in Unspent state and reserve them
-        let proof_info = test_proof_info(keyset_id, 100, mint_url.clone(), State::Unspent);
+        // Store the input as the receive does before the swap
+        let mut proof_info = test_proof_info(keyset_id, 100, mint_url.clone(), State::Pending);
+        proof_info.used_by_operation = Some(saga_id);
         let proof_y = proof_info.y;
         db.update_proofs(vec![proof_info], vec![]).await.unwrap();
-        db.reserve_proofs(vec![proof_y], &saga_id).await.unwrap();
 
         // Create saga in SwapRequested state
         let saga = WalletSaga::new(
@@ -514,11 +513,11 @@ mod tests {
         let keyset_id = test_keyset_id();
         let saga_id = uuid::Uuid::new_v4();
 
-        // Create proofs in Unspent state and reserve them
-        let proof_info = test_proof_info(keyset_id, 100, mint_url.clone(), State::Unspent);
+        // Store the input as the receive does before the swap
+        let mut proof_info = test_proof_info(keyset_id, 100, mint_url.clone(), State::Pending);
+        proof_info.used_by_operation = Some(saga_id);
         let proof_y = proof_info.y;
         db.update_proofs(vec![proof_info], vec![]).await.unwrap();
-        db.reserve_proofs(vec![proof_y], &saga_id).await.unwrap();
 
         // Create saga in SwapRequested state
         let saga = WalletSaga::new(
