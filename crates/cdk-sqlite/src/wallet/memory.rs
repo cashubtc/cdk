@@ -10,7 +10,12 @@ pub async fn empty() -> Result<WalletSqliteDatabase, Error> {
     let path = ":memory:";
 
     #[cfg(feature = "sqlcipher")]
-    let path = (":memory:", "memory");
+    let path = (
+        ":memory:",
+        "memory"
+            .parse::<crate::SqlcipherKey>()
+            .map_err(|e| Error::Database(Box::new(e)))?,
+    );
 
     WalletSqliteDatabase::new(path).await
 }

@@ -78,7 +78,7 @@ impl PrimaryDatabase {
 #[derive(Clone)]
 pub(crate) struct SqliteKey {
     #[cfg(feature = "sqlcipher")]
-    sqlcipher: String,
+    sqlcipher: cdk_sqlite::SqlcipherKey,
 }
 
 #[cfg(feature = "sqlite")]
@@ -86,7 +86,9 @@ impl SqliteKey {
     #[cfg(feature = "sqlcipher")]
     fn new(password: Option<String>) -> Result<Self> {
         match password {
-            Some(sqlcipher) => Ok(Self { sqlcipher }),
+            Some(password) => Ok(Self {
+                sqlcipher: password.parse()?,
+            }),
             None => bail!("Password required when sqlcipher feature is enabled"),
         }
     }
@@ -104,7 +106,7 @@ impl SqliteKey {
 
     /// The database at `path` with this key, in the form that cdk-sqlite opens.
     #[cfg(feature = "sqlcipher")]
-    pub(crate) fn database(&self, path: PathBuf) -> (PathBuf, String) {
+    pub(crate) fn database(&self, path: PathBuf) -> (PathBuf, cdk_sqlite::SqlcipherKey) {
         (path, self.sqlcipher.clone())
     }
 
@@ -168,6 +170,14 @@ mod tests {
         let error = selection_error(&Database::default(), None);
 
         assert!(error.contains("Password required"), "{error}");
+    }
+
+    #[cfg(feature = "sqlcipher")]
+    #[test]
+    fn sqlcipher_build_rejects_empty_database_password() {
+        let error = selection_error(&Database::default(), Some(""));
+
+        assert!(error.contains("must not be empty"), "{error}");
     }
 
     #[cfg(feature = "sqlcipher")]
