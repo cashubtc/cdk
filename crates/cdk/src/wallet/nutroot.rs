@@ -54,6 +54,7 @@ impl Wallet {
         if keyset_id.get_version() != KeySetVersion::Version02 {
             return Err(Error::NutrootRequiresV3Keyset);
         }
+        request.check_spend_path()?;
         if request.is_nums() {
             let info = self.load_mint_info().await?;
             for leaf in request.l.iter().flatten() {

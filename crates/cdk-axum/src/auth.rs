@@ -108,9 +108,9 @@ pub async fn blind_auth_request_context(req: Request, next: Next) -> Response {
         return next.run(req).await;
     }
 
-    // NUT-22 hashes the body "after any content-coding", but leaves open
-    // whether a coded body may be used at all; a proxy that decodes or
-    // re-encodes it would break the witness. Refuse coded bodies.
+    // NUT-22 hashes the body with any content-coding removed. Accepting only
+    // identity coding makes the raw bytes that body, and keeps a decoding or
+    // re-encoding proxy from changing what is hashed. Refuse coded bodies.
     if req
         .headers()
         .get(axum::http::header::CONTENT_ENCODING)

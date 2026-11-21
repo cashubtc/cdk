@@ -20,9 +20,9 @@ pub enum Error {
     /// A requested nutroot leaf cannot be reproduced byte for byte
     #[error("A requested nutroot leaf cannot be reproduced")]
     NutrootLeaf,
-    /// A NUMS request without leaves locks funds nobody can spend
-    #[error("A script-only (NUMS) request must list leaves")]
-    NutrootNoLeaves,
+    /// A NUMS request without a spendable leaf locks funds nobody can spend
+    #[error("A script-only (NUMS) request must list a spendable leaf")]
+    NutrootNoSpendableLeaf,
     /// A received proof does not match the nutroot request
     #[error("Payment does not match the nutroot request: {0}")]
     NutrootMismatch(&'static str),

@@ -68,6 +68,22 @@ impl NutrootOption {
             .collect()
     }
 
+    /// Refuse a request whose outputs nobody could spend
+    ///
+    /// A NUMS `k` has no key path, so `l` must hold at least one spendable
+    /// leaf (NUT-18). Every spendable leaf names a key; a `commit` leaf
+    /// names none and adds no spend path (NUT-10).
+    pub fn check_spend_path(&self) -> Result<(), Error> {
+        self.ensure_spend_path(&self.requested_leaves()?)
+    }
+
+    fn ensure_spend_path(&self, requested: &[Leaf]) -> Result<(), Error> {
+        match self.is_nums() && requested.iter().all(|leaf| leaf.keys().is_empty()) {
+            true => Err(Error::NutrootNoSpendableLeaf),
+            false => Ok(()),
+        }
+    }
+
     /// Build one output's lock
     ///
     /// `ephemeral` is a fresh keypair for this output and `u` a fresh NUMS
@@ -76,10 +92,7 @@ impl NutrootOption {
     pub fn pay(&self, ephemeral: &SecretKey, u: &SecretKey) -> Result<NutrootPayment, Error> {
         let nums = self.is_nums();
         let requested = self.requested_leaves()?;
-        if nums && requested.is_empty() {
-            // A script-only proof with no leaves can never be spent.
-            return Err(Error::NutrootNoLeaves);
-        }
+        self.ensure_spend_path(&requested)?;
 
         let internal_key = match nums {
             true => nums_internal_key(u).map_err(|_| Error::NutrootLeaf)?,
@@ -312,9 +325,55 @@ mod tests {
             b: None,
         };
         assert!(matches!(
-            option.pay(&key(5), &key(9)),
-            Err(Error::NutrootNoLeaves)
+            option.check_spend_path(),
+            Err(Error::NutrootNoSpendableLeaf)
         ));
+        assert!(matches!(
+            option.pay(&key(5), &key(9)),
+            Err(Error::NutrootNoSpendableLeaf)
+        ));
+    }
+
+    /// tests/18-tests.md: a NUMS request whose leaves are all `commit` has
+    /// no spend path, and the payer refuses it
+    #[test]
+    fn nums_with_only_commit_leaves_is_refused() {
+        let option: NutrootOption = serde_json::from_str(
+            r#"{
+                "k": "0250929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0",
+                "l": [
+                    "000408002064451ff981aa92887b070762e97302df00a0ab97a853c323394b0a9cfaf46fae"
+                ]
+            }"#,
+        )
+        .unwrap();
+        assert!(option.is_nums());
+        assert!(matches!(
+            option.check_spend_path(),
+            Err(Error::NutrootNoSpendableLeaf)
+        ));
+        assert!(matches!(
+            option.pay(&key(5), &key(9)),
+            Err(Error::NutrootNoSpendableLeaf)
+        ));
+
+        // A spendable leaf beside the commit leaf gives a spend path.
+        let mut with_spend_path = option.clone();
+        with_spend_path
+            .l
+            .get_or_insert_with(Vec::new)
+            .push(LeafBytes::from_str(AFTER_LEAF).unwrap());
+        with_spend_path.check_spend_path().unwrap();
+        with_spend_path.pay(&key(5), &key(9)).unwrap();
+
+        // A receiver-keyed `k` keeps its key path, so commit leaves alone are
+        // fine.
+        let receiver_keyed = NutrootOption {
+            k: key(3).public_key(),
+            ..option
+        };
+        receiver_keyed.check_spend_path().unwrap();
+        receiver_keyed.pay(&key(5), &key(9)).unwrap();
     }
 
     #[test]

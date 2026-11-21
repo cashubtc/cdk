@@ -210,10 +210,11 @@ impl SpendInfo {
     ) -> Result<Reconstruction, Error> {
         self.validate()?;
 
-        // The internal key, by precedence: NUMS, bearer, receiver-keyed,
-        // disclosed. NUT-00 lists no NUMS route, so read literally it
-        // derives slot 0 from E even when E only blinded leaf keys (NUT-18).
-        // A NUMS internal key is H + u*G: E then serves slots 1.. only.
+        // The internal key, by NUT-00's precedence: bearer, NUMS,
+        // receiver-keyed, disclosed. A NUMS internal key is H + u*G, and E
+        // then serves slots 1.. only. `u` marks a key nobody holds, so it
+        // cannot accompany a bearer `k`: that pair is rejected rather than
+        // ordered.
         let (internal_key, source, internal_secret) = match (&self.u, &self.k, &self.e) {
             (Some(u), None, _) => {
                 let nums = nums_internal_key(u)?;

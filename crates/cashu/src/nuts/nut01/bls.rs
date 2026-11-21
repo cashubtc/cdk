@@ -483,6 +483,71 @@ mod tests {
         assert!(batch_verify_pairing(&mint_pubkeys, &signatures, &messages));
     }
 
+    /// NUT-00 batch verification over two v3 point secrets. Each secret
+    /// enters the challenge as its 33 decoded bytes, taken here through the
+    /// same `hash_input` the proof verifier uses. `weight_1` accepts at
+    /// `ctr = 0` and `weight_2` at `ctr = 2`.
+    #[test]
+    fn test_batch_weight_derivation_nut00_v3_secret_vector() {
+        use std::str::FromStr;
+
+        use crate::nuts::nut02::KeySetVersion;
+        use crate::secret::Secret;
+
+        let k = hex_to_g2(
+            "aa4edef9c1ed7f729f520e47730a124fd70662a904ba1074728114d1031e1572c6c886f6b57ec72a6178288c47c335771638533957d540a9d2370f17cc7ed5863bc0b995b8825e0ee1ea1e1e4d00dbae81f14b0bf3611b78c952aacab827a053",
+        );
+        let c1 = hex_to_g1(
+            "a34dbfad742c0f97cd4b6ca0249b3353a8a0eb4cbdb4d8cf83fe8b22d39b1a6205623ca819b4985238968ad0328caeba",
+        );
+        let c2 = hex_to_g1(
+            "a2bf34cf329d2cffca9442224279c261c6d47f1236d4b6aafd4ddcade73c25f719a55d747b0935c9fc182343067514b7",
+        );
+        let secrets = [
+            "0240c186f3e19f6f8cd00db81c5266d5c74ddca48ff848efd0e3e125b2846f30d9",
+            "03a3e12cc077e5605f36441046f50c114fcc883b079a34028bed66732e3a419e51",
+        ]
+        .map(|hex| Secret::from_str(hex).unwrap());
+        let inputs = secrets
+            .iter()
+            .map(|secret| secret.hash_input(KeySetVersion::Version02).unwrap())
+            .collect::<Vec<_>>();
+        assert!(inputs.iter().all(|input| input.len() == 33));
+
+        let mint_pubkeys = [k, k];
+        let signatures = [c1, c2];
+        let messages: [&[u8]; 2] = [&inputs[0], &inputs[1]];
+
+        assert_eq!(
+            crate::util::hex::encode(derive_batch_challenge(
+                &mint_pubkeys,
+                &signatures,
+                &messages
+            )),
+            "c8eac68470172516ac2290ccf3b345fca136e2e5d74adaf16b05d6389e3867c9"
+        );
+        let weights = derive_batch_weights(&mint_pubkeys, &signatures, &messages)
+            .expect("batch weights should be derivable");
+        assert_eq!(
+            crate::util::hex::encode(weights[0].to_bytes()),
+            "5b3c830c6690f9494e1b8a3b9e4a75aa21af4d55eb158444aa5e0a4118187851"
+        );
+        assert_eq!(
+            crate::util::hex::encode(weights[1].to_bytes()),
+            "26cf70a127f195374a3d0b0086e809592c2624cee02312bdf095a2fed775fa13"
+        );
+        assert!(batch_verify_pairing(&mint_pubkeys, &signatures, &messages));
+
+        // Taking each secret as its 66 hex characters signs different
+        // messages, so the batch no longer verifies.
+        let hex_messages: [&[u8]; 2] = [secrets[0].as_bytes(), secrets[1].as_bytes()];
+        assert!(!batch_verify_pairing(
+            &mint_pubkeys,
+            &signatures,
+            &hex_messages
+        ));
+    }
+
     #[test]
     fn test_batch_pairing_single_and_mixed_keys() {
         let first_key = BlsSecretKey {

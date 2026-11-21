@@ -177,6 +177,64 @@ mod tests {
         }
     }
 
+    /// tests/10-tests.md: five `commit` leaves, sorted once. `h2` is
+    /// promoted twice, so its path is one sibling.
+    #[test]
+    fn five_leaf_vector() {
+        let leaves: Vec<LeafBytes> = (0u8..5)
+            .map(|i| {
+                let mut bytes = hex::decode("0004080020").unwrap();
+                bytes.extend_from_slice(&[[0u8; 31].as_slice(), &[i]].concat());
+                LeafBytes::from_str(&hex::encode(bytes)).unwrap()
+            })
+            .collect();
+        let leaf_hashes = [
+            "05b902a6c6e5377ac3a3b93e3462fce75f814c3e408f89145f3cf322a003eb0f",
+            "286e16e868323f95501543ee9aae0da89e34c1dfa167ebcb8e746e9babcaf886",
+            "562fc5b49cf68d9f3d8d9d7ddc3e1f52b4df5cae5258def2bdecc1155b01b4b8",
+            "4c780cd9c644de1942c0704a1b5cff776243a6f088c6f688511e2d94004e86ce",
+            "4a1354e62955e17a4b4bda00ee145acb2088b81f4253acf4d8d274b2282cfa86",
+        ];
+        for (leaf, expected) in leaves.iter().zip(leaf_hashes) {
+            assert_eq!(hex::encode(leaf.hash()), expected);
+        }
+
+        let root = merkle_root(&leaves).unwrap();
+        assert_eq!(
+            hex::encode(root),
+            "08ded689dfa100f1ef1ad68c4e5696e99670bb5a7d0225f34f2f85f3053cde53"
+        );
+
+        let paths: [&[&str]; 5] = [
+            &[
+                "286e16e868323f95501543ee9aae0da89e34c1dfa167ebcb8e746e9babcaf886",
+                "3b9477ce1bb3e0588966ad6d26ac290bf9838abb32915928f9b1d7317fa7d59a",
+                "562fc5b49cf68d9f3d8d9d7ddc3e1f52b4df5cae5258def2bdecc1155b01b4b8",
+            ],
+            &[
+                "05b902a6c6e5377ac3a3b93e3462fce75f814c3e408f89145f3cf322a003eb0f",
+                "3b9477ce1bb3e0588966ad6d26ac290bf9838abb32915928f9b1d7317fa7d59a",
+                "562fc5b49cf68d9f3d8d9d7ddc3e1f52b4df5cae5258def2bdecc1155b01b4b8",
+            ],
+            &["9226021183059036a870b19486aa04579b406f4eddf11f8ba432cf92b7d13aa8"],
+            &[
+                "4a1354e62955e17a4b4bda00ee145acb2088b81f4253acf4d8d274b2282cfa86",
+                "99cac68e791a8c74dcd723f39db7cda19170be30ecfa065d803436c1426349f0",
+                "562fc5b49cf68d9f3d8d9d7ddc3e1f52b4df5cae5258def2bdecc1155b01b4b8",
+            ],
+            &[
+                "4c780cd9c644de1942c0704a1b5cff776243a6f088c6f688511e2d94004e86ce",
+                "99cac68e791a8c74dcd723f39db7cda19170be30ecfa065d803436c1426349f0",
+                "562fc5b49cf68d9f3d8d9d7ddc3e1f52b4df5cae5258def2bdecc1155b01b4b8",
+            ],
+        ];
+        for (index, expected) in paths.iter().enumerate() {
+            let path = merkle_path(&leaves, index).unwrap();
+            assert_eq!(path.iter().map(hex::encode).collect::<Vec<_>>(), *expected);
+            assert_eq!(root_from_path(&leaves[index].hash(), &path).unwrap(), root);
+        }
+    }
+
     #[test]
     fn single_leaf_root_is_leaf_hash() {
         let leaves = [leaf(AFTER_1OF1_KEY4)];
@@ -221,9 +279,9 @@ mod tests {
             .collect()
     }
 
-    /// NUT-10 leaves open whether levels after the first are re-sorted.
-    /// The readings agree up to four leaves and differ for these trees.
-    /// CDK follows cashu-ts and sorts once; these roots pin that choice.
+    /// NUT-10 sorts the leaf hashes once and keeps that order on every
+    /// level. Re-sorting each level agrees up to four leaves and differs for
+    /// these trees; these roots pin sort-once beyond the five-leaf vector.
     ///
     /// Re-sorting every level would give, for five leaves,
     /// `9c081ee9fa920ad4c477db4177fd47d0519ae99e4f861b074652b6ea9ecd4f04`
