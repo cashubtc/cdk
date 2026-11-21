@@ -58,6 +58,8 @@ jobs:
         uses: actions/checkout@v5
       - name: Cargo fmt
         run: nix develop --fallback -i -L .#stable --command cargo fmt --check
+      - name: Fuzz targets fmt
+        run: nix develop --fallback -i -L .#stable --command cargo fmt --manifest-path fuzz/Cargo.toml -- --check
       - name: Compatibility fixture fmt
         run: nix develop --fallback -i -L .#stable --command cargo fmt --manifest-path tests/rusqlite-compat/Cargo.toml -- --check
       - name: Nix fmt

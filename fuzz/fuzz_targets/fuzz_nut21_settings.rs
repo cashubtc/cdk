@@ -6,9 +6,8 @@
 //! `matching_route_paths`, so adversarial JSON with wildcard strings
 //! exercises both the serde layer and the route-path parser.
 
-use libfuzzer_sys::fuzz_target;
-
 use cashu::nuts::ClearAuthSettings;
+use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &str| {
     // Fuzz ClearAuthSettings JSON deserialization (custom impl with

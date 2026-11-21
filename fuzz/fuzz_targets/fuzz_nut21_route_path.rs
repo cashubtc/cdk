@@ -8,9 +8,8 @@
 
 use std::str::FromStr;
 
-use libfuzzer_sys::fuzz_target;
-
 use cashu::nuts::nut21::{matching_route_paths, RoutePath};
+use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &str| {
     // Fuzz RoutePath FromStr (prefix stripping, wildcard, normalization)

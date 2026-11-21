@@ -2,9 +2,8 @@
 
 use std::str::FromStr;
 
-use libfuzzer_sys::fuzz_target;
-
 use cashu::MintUrl;
+use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &str| {
     let _ = MintUrl::from_str(data);

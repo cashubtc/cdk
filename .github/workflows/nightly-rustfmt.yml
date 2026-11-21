@@ -22,9 +22,11 @@ jobs:
       - name: Run Nightly rustfmt
         run: |
           nix develop --fallback -i -L .#nightly --command bash -c '
+            set -e
             # Force use of Nix-provided rustfmt
             export RUSTFMT=$(command -v rustfmt)
             cargo fmt
+            cargo fmt --manifest-path fuzz/Cargo.toml
           '
           # Manually remove trailing whitespace
           find . -name '*.rs' -type f -exec sed -E -i 's/[[:space:]]+$//' {} +
