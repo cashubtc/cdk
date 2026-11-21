@@ -205,6 +205,23 @@ impl WalletRedbDatabase {
     }
 }
 
+/// Read the stored row for `y` if it is still pending and owned by
+/// `operation_id`.
+fn held_pending_proof(
+    table: &impl ReadableTable<&'static [u8], &'static str>,
+    y: &PublicKey,
+    operation_id: &uuid::Uuid,
+) -> Result<Option<ProofInfo>, database::Error> {
+    let Some(stored) = table.get(y.to_bytes().as_slice()).map_err(Error::from)? else {
+        return Ok(None);
+    };
+    let proof: ProofInfo = serde_json::from_str(stored.value()).map_err(Error::from)?;
+    Ok(
+        (proof.state == State::Pending && proof.used_by_operation == Some(*operation_id))
+            .then_some(proof),
+    )
+}
+
 #[async_trait]
 impl WalletDatabase<database::Error> for WalletRedbDatabase {
     #[instrument(skip(self))]
@@ -1253,6 +1270,48 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
                     table
                         .insert(y_bytes.as_slice(), updated_json.as_str())
                         .map_err(Error::from)?;
+                }
+            }
+        }
+
+        write_txn.commit().map_err(Error::from)?;
+        Ok(())
+    }
+
+    #[instrument(skip(self, restored, removed_ys))]
+    async fn restore_pending_proofs(
+        &self,
+        operation_id: &uuid::Uuid,
+        restored: Vec<ProofInfo>,
+        removed_ys: Vec<PublicKey>,
+    ) -> Result<(), database::Error> {
+        let write_txn = self.db.begin_write().map_err(Error::from)?;
+
+        {
+            let mut table = write_txn.open_table(PROOFS_TABLE).map_err(Error::from)?;
+
+            // Each row is checked inside the same write transaction that
+            // changes it, so a row another operation has changed is kept.
+            for mut proof_info in restored {
+                let Some(current) = held_pending_proof(&table, &proof_info.y, operation_id)? else {
+                    continue;
+                };
+                if proof_info.derivation_index.is_none() {
+                    proof_info.derivation_index = current.derivation_index;
+                }
+                table
+                    .insert(
+                        proof_info.y.to_bytes().as_slice(),
+                        serde_json::to_string(&proof_info)
+                            .map_err(Error::from)?
+                            .as_str(),
+                    )
+                    .map_err(Error::from)?;
+            }
+
+            for y in removed_ys.iter() {
+                if held_pending_proof(&table, y, operation_id)?.is_some() {
+                    table.remove(y.to_bytes().as_slice()).map_err(Error::from)?;
                 }
             }
         }

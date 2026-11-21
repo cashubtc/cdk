@@ -2142,6 +2142,69 @@ impl Database<DatabaseError> for SupabaseWalletDatabase {
         Ok(())
     }
 
+    async fn restore_pending_proofs(
+        &self,
+        operation_id: &uuid::Uuid,
+        restored: Vec<ProofInfo>,
+        removed_ys: Vec<PublicKey>,
+    ) -> Result<(), DatabaseError> {
+        let op_id_str = operation_id.to_string();
+        // Every write filters on the row still being pending and owned by this
+        // operation, so PostgREST checks it in the same statement as the change
+        // and a row another operation has changed is left alone.
+        let held_filter = format!(
+            "state=eq.{}&used_by_operation=eq.{}",
+            url_encode(&State::Pending.to_string()),
+            url_encode(&op_id_str)
+        );
+
+        for p in restored {
+            let y_hex = hex::encode(p.y.to_bytes());
+            let mut table: ProofTable = p.try_into()?;
+
+            let encrypted = self.encrypt(table.secret.as_bytes()).await?;
+            table.secret = hex::encode(encrypted);
+            if let Ok(c_bytes) = hex::decode(&table.c) {
+                let encrypted_c = self.encrypt(&c_bytes).await?;
+                table.c = hex::encode(encrypted_c);
+            }
+
+            let mut update = serde_json::to_value(&table).map_err(DatabaseError::from)?;
+            // Keep the stored derivation index when the saved row has none
+            if table.derivation_index.is_none() {
+                if let Some(fields) = update.as_object_mut() {
+                    fields.remove("derivation_index");
+                }
+            }
+
+            let path = format!("rest/v1/proof?y=eq.{}&{}", y_hex, held_filter);
+            let (status, response_text) = self.patch_request(&path, &update).await?;
+            if !status.is_success() {
+                return Err(DatabaseError::Internal(format!(
+                    "restore_pending_proofs: update failed: HTTP {} - {}",
+                    status, response_text
+                )));
+            }
+        }
+
+        if !removed_ys.is_empty() {
+            let y_list: Vec<String> = removed_ys
+                .iter()
+                .map(|y| hex::encode(y.to_bytes()))
+                .collect();
+            let path = format!("rest/v1/proof?y=in.({})&{}", y_list.join(","), held_filter);
+            let (status, response_text) = self.delete_request(&path).await?;
+            if !status.is_success() {
+                return Err(DatabaseError::Internal(format!(
+                    "restore_pending_proofs: delete failed: HTTP {} - {}",
+                    status, response_text
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
     async fn get_reserved_proofs(
         &self,
         operation_id: &uuid::Uuid,
