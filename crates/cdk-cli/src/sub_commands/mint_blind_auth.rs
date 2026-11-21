@@ -35,10 +35,15 @@ pub async fn mint_blind_auth(
         wallet_repository.add_wallet(mint_url.clone()).await?;
     }
 
-    wallet_repository.fetch_mint_info(&mint_url).await?;
-
     // Get a wallet for this mint
     let wallet = get_or_create_wallet(wallet_repository, &mint_url, unit).await?;
+
+    // Fetching through the wallet (rather than the repository) is what creates
+    // or updates the auth wallet from the mint's advertised auth settings.
+    let mint_info = wallet
+        .fetch_mint_info()
+        .await?
+        .ok_or_else(|| anyhow!("Mint info not available"))?;
 
     // Try to get the token from the provided argument or from the stored file
     let cat = match &sub_command_args.cat {
@@ -73,8 +78,7 @@ pub async fn mint_blind_auth(
         if let Ok(Some(token_data)) = token_storage::get_token_for_mint(work_dir, &mint_url).await {
             println!("Attempting to refresh the access token...");
 
-            // Get the mint info to access OIDC configuration
-            let mint_info = wallet_repository.fetch_mint_info(&mint_url).await?;
+            // The mint info fetched above contains the OIDC configuration.
             match refresh_access_token(&wallet, &mint_info, &token_data.refresh_token).await {
                 Ok((new_access_token, new_refresh_token)) => {
                     println!("Successfully refreshed access token");
@@ -125,12 +129,9 @@ pub async fn mint_blind_auth(
 
     let amount = match sub_command_args.amount {
         Some(amount) => amount,
-        None => {
-            let mint_info = wallet_repository.fetch_mint_info(&mint_url).await?;
-            mint_info
-                .bat_max_mint()
-                .ok_or(anyhow!("Unknown max bat mint"))?
-        }
+        None => mint_info
+            .bat_max_mint()
+            .ok_or(anyhow!("Unknown max bat mint"))?,
     };
 
     let proofs = wallet.mint_blind_auth(Amount::from(amount)).await?;
