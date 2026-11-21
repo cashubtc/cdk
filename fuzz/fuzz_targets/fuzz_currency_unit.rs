@@ -2,9 +2,8 @@
 
 use std::str::FromStr;
 
-use libfuzzer_sys::fuzz_target;
-
 use cashu::nuts::CurrencyUnit;
+use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &str| {
     // Fuzz CurrencyUnit string parsing

@@ -1,8 +1,7 @@
 #![no_main]
 
-use libfuzzer_sys::fuzz_target;
-
 use cashu::nuts::nut11::P2PKWitness;
+use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &str| {
     // Fuzz P2PKWitness JSON deserialization

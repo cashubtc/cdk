@@ -1,8 +1,7 @@
 #![no_main]
 
-use libfuzzer_sys::fuzz_target;
-
 use cashu::nuts::nut05::MeltRequest;
+use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &str| {
     // Fuzz MeltRequest JSON deserialization

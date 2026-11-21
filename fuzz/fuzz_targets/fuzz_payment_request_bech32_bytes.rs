@@ -1,9 +1,8 @@
 #![no_main]
 
-use libfuzzer_sys::fuzz_target;
-
 use bitcoin::bech32::{Bech32m, Hrp};
 use cashu::PaymentRequest;
+use libfuzzer_sys::fuzz_target;
 
 // Fuzz the NUT-26 TLV parser by constructing valid bech32m encoding
 // around arbitrary bytes. This bypasses bech32 charset validation to

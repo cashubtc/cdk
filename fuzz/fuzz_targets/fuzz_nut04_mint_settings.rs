@@ -6,9 +6,8 @@
 //! `options` merging with top-level fields, and detects duplicates.
 //! This fuzz target feeds arbitrary JSON strings to that code path.
 
-use libfuzzer_sys::fuzz_target;
-
 use cashu::nuts::MintMethodSettings;
+use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &str| {
     // Fuzz MintMethodSettings JSON deserialization (custom Visitor)

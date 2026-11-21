@@ -2,10 +2,9 @@
 
 use std::str::FromStr;
 
-use libfuzzer_sys::fuzz_target;
-
 use cashu::nuts::nut10::Secret as Nut10Secret;
 use cashu::secret::Secret;
+use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &str| {
     // Fuzz the NUT-10 secret JSON parsing (complex structured data)

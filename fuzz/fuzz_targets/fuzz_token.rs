@@ -2,9 +2,8 @@
 
 use std::str::FromStr;
 
-use libfuzzer_sys::fuzz_target;
-
 use cashu::Token;
+use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &str| {
     let _ = Token::from_str(data);
