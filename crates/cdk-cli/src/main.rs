@@ -56,7 +56,7 @@ struct Cli {
     /// Database password for sqlcipher (sqlite engine only)
     #[cfg(feature = "sqlcipher")]
     #[arg(long)]
-    password: Option<String>,
+    password: Option<cdk_sqlite::SqlcipherKey>,
     /// Path to working dir
     #[arg(short, long)]
     work_dir: Option<PathBuf>,
@@ -95,7 +95,7 @@ enum WalletStore {
     Sqlite,
     /// SQLite, encrypted with SQLCipher
     #[cfg(feature = "sqlcipher")]
-    Sqlcipher(String),
+    Sqlcipher(cdk_sqlite::SqlcipherKey),
     /// redb
     #[cfg(feature = "redb")]
     Redb,
@@ -501,10 +501,17 @@ mod tests {
     fn sqlite_engine_uses_password() {
         let cli = Cli::parse_from(["cdk-cli", "--password", "pass-value", "balance"]);
 
-        assert!(matches!(
-            cli.wallet_store(),
-            Ok(WalletStore::Sqlcipher(password)) if password == "pass-value"
-        ));
+        assert!(matches!(cli.wallet_store(), Ok(WalletStore::Sqlcipher(_))));
+    }
+
+    #[cfg(feature = "sqlcipher")]
+    #[test]
+    fn empty_password_is_rejected() {
+        let Err(error) = Cli::try_parse_from(["cdk-cli", "--password", "", "balance"]) else {
+            panic!("an empty password must not open the wallet");
+        };
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
     }
 
     #[cfg(feature = "sqlcipher")]

@@ -131,7 +131,7 @@ mod test {
         );
         #[cfg(feature = "sqlcipher")]
         let db = Arc::new(
-            MintSqliteAuthDatabase::new((path.clone(), "test".to_owned()))
+            MintSqliteAuthDatabase::new((path.clone(), "test".parse().expect("non-empty key")))
                 .await
                 .expect("auth database"),
         );
@@ -174,7 +174,7 @@ mod test {
             #[cfg(not(feature = "sqlcipher"))]
             let config: Config = file.as_str().into();
             #[cfg(feature = "sqlcipher")]
-            let config: Config = (file.as_str(), "test").into();
+            let config: Config = (file.as_str(), "test".parse().expect("non-empty key")).into();
 
             let pool = Pool::<SqliteConnectionManager>::new(config);
 
@@ -191,7 +191,8 @@ mod test {
         let conn = MintSqliteDatabase::new(file.as_str()).await;
 
         #[cfg(feature = "sqlcipher")]
-        let conn = MintSqliteDatabase::new((file.as_str(), "test")).await;
+        let conn =
+            MintSqliteDatabase::new((file.as_str(), "test".parse().expect("non-empty key"))).await;
 
         assert!(conn.is_ok(), "Failed with {:?}", conn.unwrap_err());
 

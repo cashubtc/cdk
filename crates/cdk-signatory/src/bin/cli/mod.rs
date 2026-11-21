@@ -88,7 +88,7 @@ struct Cli {
     /// Database password for sqlcipher
     #[cfg(feature = "sqlcipher")]
     #[arg(long)]
-    password: String,
+    password: cdk_sqlite::SqlcipherKey,
     /// Path to working dir
     #[arg(short, long)]
     work_dir: Option<PathBuf>,
@@ -259,6 +259,15 @@ mod tests {
             .expect("sqlite uses the password");
 
         assert_eq!(cli.engine, Engine::Sqlite);
-        assert_eq!(cli.password, "pass-value");
+    }
+
+    #[cfg(feature = "sqlcipher")]
+    #[test]
+    fn sqlcipher_build_rejects_empty_password() {
+        let error = Cli::try_parse_from(["cashu-signatory", "--password", ""])
+            .err()
+            .expect("an empty password must not open the database");
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
     }
 }
