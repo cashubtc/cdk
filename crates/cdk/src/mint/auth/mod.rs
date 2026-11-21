@@ -209,8 +209,13 @@ impl Mint {
             return Err(Error::BlindAuthFailed);
         }
 
+        // Blind auth tokens are signed before anything is stored, so an
+        // overloaded signatory may refuse and the client retries.
         self.signatory
-            .blind_sign(vec![blinded_message.to_owned()])
+            .blind_sign(
+                vec![blinded_message.to_owned()],
+                cdk_common::work_pool::Admission::Bounded,
+            )
             .await?
             .pop()
             .ok_or(Error::Internal)
@@ -368,8 +373,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn mint_blind_auth_rejects_inactive_keysets() {
+    async fn mint_with_test_cat() -> (Arc<Mint>, AuthToken) {
         // Signed by a disposable test key, with an expiry in 2100.
         let cat = "eyJhbGciOiJSUzI1NiIsImtpZCI6InRlc3QifQ.eyJpc3MiOiJodHRwczovL2V4YW1wbGUuY29tIiwiY2xpZW50X2lkIjoidGVzdC1jbGllbnQiLCJleHAiOjQxMDI0NDQ4MDB9.cKzTzB8Y-tnvoYhRY5SrUGQtzTgw_Cvhc_MOB6c23cv6FWafEK5hUuDPHF89lvc8HOfPZ9L519-S2bR_ibF6PW4_ntG5olPhfQj_YiOmek-mtHg8aiXtRRH1G077WEH_FvW9wxwkoL-MpupZSoqN3RHftLdO9O3kxJm6sa9ylHuvepC2CNkHnqrIwHoI90xMzzV8lyf1d3ybnXtG-Vcso58vlh-DbNIfUyRNHJ-hz18q1OuSNuvRh8wb5thX3So971hs-eVNt2dfuuYd3Kk3eIGhmLwZbjmgATt3NltRp3h-iCyuP2zRsxhrlxP23MCiHSjTewHDnTCA1gBdbo5m0Q";
         let mut mint = build_auth_enabled_mint().await;
@@ -380,12 +384,50 @@ mod tests {
             Some("test-client".to_string()),
             Arc::new(TestOidcTransport),
         ));
+        (mint, AuthToken::ClearAuth(cat.to_string()))
+    }
+
+    #[tokio::test]
+    async fn mint_blind_auth_validates_before_requesting_one_bounded_batch() {
+        use crate::mint::tests::MockSignatory;
+        use crate::mint::Admission;
+
+        let (mut mint, cat) = mint_with_test_cat().await;
+        let mut signatory = MockSignatory::new(mint.signatory.keysets().await.unwrap());
+        let (sender, mut requests) = tokio::sync::mpsc::unbounded_channel();
+        signatory.signing_requests = Some(sender);
+        Arc::get_mut(&mut mint).unwrap().signatory = Arc::new(signatory);
+
+        let keysets = mint.get_active_keysets();
+        let auth = keysets[&CurrencyUnit::Auth];
+        let outputs = vec![output_for_keyset(auth), output_for_keyset(auth)];
+        let issue = |outputs| mint.mint_blind_auth(cat.clone(), MintAuthRequest { outputs });
+        assert!(issue(Vec::new()).await.unwrap().signatures.is_empty());
+
+        let mut invalid_amount = outputs.clone();
+        invalid_amount[1].amount = Amount::from(2);
+        assert!(matches!(issue(invalid_amount).await, Err(Error::AmountKey)));
+        let sat = output_for_keyset(keysets[&CurrencyUnit::Sat]);
+        assert!(matches!(
+            issue(vec![sat]).await,
+            Err(Error::BlindAuthFailed)
+        ));
+        assert!(requests.is_empty());
+
+        assert!(matches!(issue(outputs.clone()).await, Err(Error::Busy)));
+        assert_eq!(requests.try_recv().unwrap(), (outputs, Admission::Bounded));
+        assert!(requests.is_empty());
+    }
+
+    #[tokio::test]
+    async fn mint_blind_auth_rejects_inactive_keysets() {
+        let (mint, cat) = mint_with_test_cat().await;
         mint.start().await.expect("start mint");
         let keyset_id = mint.get_active_keysets()[&CurrencyUnit::Auth];
         let output = output_for_keyset(keyset_id);
 
         mint.mint_blind_auth(
-            AuthToken::ClearAuth(cat.to_string()),
+            cat.clone(),
             MintAuthRequest {
                 outputs: vec![output.clone()],
             },
@@ -403,7 +445,7 @@ mod tests {
 
         let err = mint
             .mint_blind_auth(
-                AuthToken::ClearAuth(cat.to_string()),
+                cat,
                 MintAuthRequest {
                     outputs: vec![output],
                 },

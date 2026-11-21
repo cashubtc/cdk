@@ -563,9 +563,13 @@ pub(super) async fn process_melt_change(
         blinded_messages_to_sign.push(blinded_message);
     }
 
-    // External call: sign change outputs (no DB transaction held)
+    // External call: sign change outputs (no DB transaction held). The melt is
+    // already paid, so wait for the signatory rather than be refused.
     let change_sigs = mint
-        .blind_sign(blinded_messages_to_sign.clone())
+        .blind_sign(
+            blinded_messages_to_sign.clone(),
+            cdk_common::work_pool::Admission::Unbounded,
+        )
         .await
         .inspect_err(|err| {
             tracing::error!(

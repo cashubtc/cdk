@@ -13,6 +13,24 @@ use super::*;
 
 const INTERNAL_ERROR: &str = "Missing property";
 
+impl From<cdk_common::work_pool::Admission> for Admission {
+    fn from(admission: cdk_common::work_pool::Admission) -> Self {
+        match admission {
+            cdk_common::work_pool::Admission::Bounded => Self::Bounded,
+            cdk_common::work_pool::Admission::Unbounded => Self::Unbounded,
+        }
+    }
+}
+
+impl From<Admission> for cdk_common::work_pool::Admission {
+    fn from(admission: Admission) -> Self {
+        match admission {
+            Admission::Bounded => Self::Bounded,
+            Admission::Unbounded => Self::Unbounded,
+        }
+    }
+}
+
 impl From<crate::signatory::SignatoryKeysets> for SignatoryKeysets {
     fn from(keyset: crate::signatory::SignatoryKeysets) -> Self {
         Self {
