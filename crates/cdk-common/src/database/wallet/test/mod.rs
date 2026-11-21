@@ -1879,6 +1879,108 @@ where
     assert_eq!(unspent[0].y, proof_info_2.y);
 }
 
+/// Test that restoring an operation's pending proofs only changes rows the
+/// operation still holds as pending
+pub async fn restore_pending_proofs<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mint_url = test_mint_url();
+    let keyset_id = test_keyset_id();
+    let operation_id = uuid::Uuid::new_v4();
+    let other_operation_id = uuid::Uuid::new_v4();
+
+    let pending = |proof_info: &ProofInfo, owner: uuid::Uuid| {
+        let mut row = proof_info.clone();
+        row.state = State::Pending;
+        row.used_by_operation = Some(owner);
+        row
+    };
+
+    // Held by the operation and restored to the row saved before it
+    let restored = test_proof_info(keyset_id, 1, mint_url.clone());
+    let mut restored_saved = pending(&restored, other_operation_id);
+    restored_saved.state = State::PendingSpent;
+    // Held by the operation and removed
+    let removed = test_proof_info(keyset_id, 2, mint_url.clone());
+    // Finished by another operation meanwhile
+    let mut spent = test_proof_info(keyset_id, 4, mint_url.clone());
+    spent.state = State::Spent;
+    let spent_saved = pending(&spent, other_operation_id);
+    // Pending, but owned by another operation
+    let other_owner = pending(
+        &test_proof_info(keyset_id, 8, mint_url.clone()),
+        other_operation_id,
+    );
+    // Owned by the operation, but not pending
+    let mut reserved = test_proof_info(keyset_id, 16, mint_url.clone());
+    reserved.state = State::Reserved;
+    reserved.used_by_operation = Some(operation_id);
+    // No longer stored at all
+    let missing_saved = pending(
+        &test_proof_info(keyset_id, 32, mint_url.clone()),
+        other_operation_id,
+    );
+
+    db.update_proofs(
+        vec![
+            pending(&restored, operation_id),
+            pending(&removed, operation_id),
+            spent.clone(),
+            other_owner.clone(),
+            reserved.clone(),
+        ],
+        vec![],
+    )
+    .await
+    .unwrap();
+
+    let mut other_owner_saved = other_owner.clone();
+    other_owner_saved.state = State::Unspent;
+    other_owner_saved.used_by_operation = None;
+
+    db.restore_pending_proofs(
+        &operation_id,
+        vec![
+            restored_saved.clone(),
+            spent_saved,
+            other_owner_saved,
+            missing_saved.clone(),
+        ],
+        vec![removed.y, other_owner.y, reserved.y],
+    )
+    .await
+    .unwrap();
+
+    let stored: HashMap<_, _> = db
+        .get_proofs(None, None, None, None)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|p| (p.y, p))
+        .collect();
+    assert_eq!(stored.len(), 4);
+
+    let row = &stored[&restored.y];
+    assert_eq!(row.state, State::PendingSpent);
+    assert_eq!(row.used_by_operation, Some(other_operation_id));
+
+    assert!(!stored.contains_key(&removed.y));
+    assert!(!stored.contains_key(&missing_saved.y));
+
+    let row = &stored[&spent.y];
+    assert_eq!(row.state, State::Spent);
+    assert_eq!(row.used_by_operation, None);
+
+    let row = &stored[&other_owner.y];
+    assert_eq!(row.state, State::Pending);
+    assert_eq!(row.used_by_operation, Some(other_operation_id));
+
+    let row = &stored[&reserved.y];
+    assert_eq!(row.state, State::Reserved);
+    assert_eq!(row.used_by_operation, Some(operation_id));
+}
+
 /// Unit test that is expected to be passed for a correct wallet database implementation
 #[macro_export]
 macro_rules! wallet_db_test {
@@ -1937,7 +2039,8 @@ macro_rules! wallet_db_test {
             release_proofs_preserves_spent,
             get_reserved_proofs,
             reserve_proofs_already_reserved,
-            reserve_proofs_is_atomic
+            reserve_proofs_is_atomic,
+            restore_pending_proofs
         );
     };
     ($make_db_fn:ident, $($name:ident),+ $(,)?) => {

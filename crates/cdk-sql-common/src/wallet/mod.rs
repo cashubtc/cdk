@@ -1718,6 +1718,133 @@ where
         Ok(())
     }
 
+    #[instrument(skip(self, restored, removed_ys))]
+    async fn restore_pending_proofs(
+        &self,
+        operation_id: &uuid::Uuid,
+        restored: Vec<ProofInfo>,
+        removed_ys: Vec<PublicKey>,
+    ) -> Result<(), database::Error> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        let tx = ConnectionWithTransaction::new(conn).await?;
+
+        // Each write only matches a row this operation still holds as
+        // pending, so a row another operation has changed meanwhile is kept.
+        for proof in restored {
+            query(
+                r#"
+    UPDATE proof SET
+        mint_url = :mint_url,
+        state = :state,
+        spending_condition = :spending_condition,
+        unit = :unit,
+        amount = :amount,
+        keyset_id = :keyset_id,
+        secret = :secret,
+        c = :c,
+        witness = :witness,
+        dleq_e = :dleq_e,
+        dleq_s = :dleq_s,
+        dleq_r = :dleq_r,
+        used_by_operation = :used_by_operation,
+        created_by_operation = :created_by_operation,
+        derivation_index = COALESCE(:derivation_index, derivation_index),
+        p2pk_e = :p2pk_e
+    WHERE y = :y
+      AND state = 'PENDING'
+      AND used_by_operation = :operation_id
+            "#,
+            )?
+            .bind("y", proof.y.to_bytes().to_vec())
+            .bind("mint_url", proof.mint_url.to_string())
+            .bind("state", proof.state.to_string())
+            .bind(
+                "spending_condition",
+                proof
+                    .spending_condition
+                    .map(|s| serde_json::to_string(&s).ok()),
+            )
+            .bind("unit", proof.unit.to_string())
+            .bind("amount", i64::try_from(u64::from(proof.proof.amount))?)
+            .bind("keyset_id", proof.proof.keyset_id.to_string())
+            .bind("secret", proof.proof.secret.to_string())
+            .bind("c", proof.proof.c.to_bytes().to_vec())
+            .bind(
+                "witness",
+                proof
+                    .proof
+                    .witness
+                    .and_then(|w| serde_json::to_string(&w).ok()),
+            )
+            .bind(
+                "dleq_e",
+                proof
+                    .proof
+                    .dleq
+                    .as_ref()
+                    .map(|dleq| dleq.e.to_secret_bytes().to_vec()),
+            )
+            .bind(
+                "dleq_s",
+                proof
+                    .proof
+                    .dleq
+                    .as_ref()
+                    .map(|dleq| dleq.s.to_secret_bytes().to_vec()),
+            )
+            .bind(
+                "dleq_r",
+                proof
+                    .proof
+                    .dleq
+                    .as_ref()
+                    .map(|dleq| dleq.r.to_secret_bytes().to_vec()),
+            )
+            .bind(
+                "used_by_operation",
+                proof.used_by_operation.map(|id| id.to_string()),
+            )
+            .bind(
+                "created_by_operation",
+                proof.created_by_operation.map(|id| id.to_string()),
+            )
+            .bind("derivation_index", proof.derivation_index.map(i64::from))
+            .bind(
+                "p2pk_e",
+                proof.proof.p2pk_e.as_ref().map(|pk| pk.to_bytes().to_vec()),
+            )
+            .bind("operation_id", operation_id.to_string())
+            .execute(&tx)
+            .await?;
+        }
+
+        if !removed_ys.is_empty() {
+            query(
+                r#"
+                DELETE FROM proof
+                WHERE y IN (:ys)
+                  AND state = 'PENDING'
+                  AND used_by_operation = :operation_id
+                "#,
+            )?
+            .bind_vec(
+                "ys",
+                removed_ys.iter().map(|y| y.to_bytes().to_vec()).collect(),
+            )?
+            .bind("operation_id", operation_id.to_string())
+            .execute(&tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+
+        Ok(())
+    }
+
     #[instrument(skip(self))]
     async fn get_reserved_proofs(
         &self,
