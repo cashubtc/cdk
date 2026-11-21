@@ -15,6 +15,7 @@
 //! that is the one place the representation changes.
 
 use std::slice;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use cdk_common::{
@@ -118,11 +119,11 @@ pub trait MintServer: Send + Sync {
     async fn post_restore(&self, request: RestoreRequest) -> Result<RestoreResponse, Error>;
 }
 
-/// Implements [`MintServer`] for a [`Mint`], which already works in
+/// Implements [`MintServer`] for a shared [`Mint`], which already works in
 /// [`QuoteId`], so each method adds only the scoping the caller-supplied
 /// `method` calls for.
 #[async_trait]
-impl MintServer for Mint {
+impl MintServer for Arc<Mint> {
     async fn get_mint_keys(&self) -> Result<Vec<KeySet>, Error> {
         Ok(self.pubkeys().keysets)
     }

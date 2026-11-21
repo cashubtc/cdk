@@ -1100,7 +1100,7 @@ mod tests {
                 let request = MeltRequest::new(quote_id.clone(), proofs.clone(), None);
                 let verification = mint.verify_inputs(request.inputs()).await.unwrap();
                 let setup = MeltSaga::new(
-                    std::sync::Arc::new(mint.clone()),
+                    std::sync::Arc::clone(&mint),
                     db.clone(),
                     mint.pubsub_manager(),
                 )

@@ -1242,7 +1242,7 @@ mod batch_mint_tests {
         }
     }
 
-    async fn create_test_mint() -> Mint {
+    async fn create_test_mint() -> Arc<Mint> {
         create_test_mint_with_onchain_limits(1, 10_000).await
     }
 
@@ -1276,7 +1276,7 @@ mod batch_mint_tests {
         ));
     }
 
-    async fn create_test_mint_with_onchain_limits(onchain_min: u64, onchain_max: u64) -> Mint {
+    async fn create_test_mint_with_onchain_limits(onchain_min: u64, onchain_max: u64) -> Arc<Mint> {
         create_test_mint_with_onchain_limits_and_counter(onchain_min, onchain_max)
             .await
             .0
@@ -1285,7 +1285,7 @@ mod batch_mint_tests {
     async fn create_test_mint_with_onchain_limits_and_counter(
         onchain_min: u64,
         onchain_max: u64,
-    ) -> (Mint, Arc<AtomicUsize>) {
+    ) -> (Arc<Mint>, Arc<AtomicUsize>) {
         let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
 
         let mut mint_builder = MintBuilder::new(db.clone());

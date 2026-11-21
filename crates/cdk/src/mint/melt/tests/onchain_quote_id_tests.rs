@@ -170,7 +170,7 @@ impl MintPayment for OnchainQuoteMock {
     }
 }
 
-async fn create_onchain_test_mint(echo: EchoBehavior) -> Result<Mint, Error> {
+async fn create_onchain_test_mint(echo: EchoBehavior) -> Result<Arc<Mint>, Error> {
     create_onchain_test_mint_with_fee_options(
         echo,
         FeeOptionsBehavior::Explicit(vec![MeltQuoteOnchainFeeOption {
@@ -185,7 +185,7 @@ async fn create_onchain_test_mint(echo: EchoBehavior) -> Result<Mint, Error> {
 async fn create_onchain_test_mint_with_fee_options(
     echo: EchoBehavior,
     fee_options: FeeOptionsBehavior,
-) -> Result<Mint, Error> {
+) -> Result<Arc<Mint>, Error> {
     let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> =
         Arc::new(OnchainQuoteMock::with_fee_options(echo, fee_options));
 
