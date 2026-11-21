@@ -56,6 +56,10 @@ pub struct SendOperationData {
     pub token: Option<String>,
     /// Proofs being sent
     pub proofs: Option<Proofs>,
+    /// Set when a revoke found part of the token already claimed by the
+    /// recipient, so the send is finalized as completed.
+    #[serde(default)]
+    pub partially_claimed: bool,
 }
 
 impl fmt::Debug for SendOperationData {
@@ -67,6 +71,7 @@ impl fmt::Debug for SendOperationData {
             .field("counter_end", &self.counter_end)
             .field("token", &self.token.as_ref().map(|_| "[redacted]"))
             .field("proofs", &self.proofs.as_ref().map(|_| "[redacted]"))
+            .field("partially_claimed", &self.partially_claimed)
             .finish()
     }
 }
@@ -101,6 +106,7 @@ mod tests {
             counter_end: None,
             token: Some(TOKEN_MARKER.to_string()),
             proofs: Some(vec![proof]),
+            partially_claimed: false,
         };
 
         let debug_output = format!("{data:?}");

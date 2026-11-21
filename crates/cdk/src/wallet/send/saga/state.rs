@@ -133,6 +133,7 @@ mod tests {
                 counter_end: None,
                 token: Some(SECRET_MARKER.to_string()),
                 proofs,
+                partially_claimed: false,
             }),
         )
     }
