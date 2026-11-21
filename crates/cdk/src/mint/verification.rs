@@ -34,25 +34,50 @@ pub(crate) fn validate_custom_payment_method(method: &PaymentMethod) -> Result<(
 }
 
 /// Verification result with typed amount
+///
+/// Input verifications also carry the Y (`hash_to_curve(secret)`) of each
+/// input proof. The Ys can only be set from the proofs themselves, via
+/// [`Mint::verify_inputs`] or [`Verification::new`], so they are always in
+/// input order.
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct Verification {
     /// Verified amount with unit
     pub amount: Amount<CurrencyUnit>,
+    ys: Vec<PublicKey>,
+}
+
+impl Verification {
+    /// Create an input verification, computing each input's Y in input order
+    pub fn new(amount: Amount<CurrencyUnit>, inputs: &Proofs) -> Result<Self, Error> {
+        Ok(Self {
+            amount,
+            ys: inputs.ys()?,
+        })
+    }
+
+    /// Y values of the verified inputs, in input order. Empty for outputs.
+    pub fn ys(&self) -> &[PublicKey] {
+        &self.ys
+    }
+
+    /// Build from Ys the caller has already computed from the inputs, in order
+    pub(crate) fn from_parts(amount: Amount<CurrencyUnit>, ys: Vec<PublicKey>) -> Self {
+        Self { amount, ys }
+    }
+
+    /// Split into the amount and the input Ys
+    pub(crate) fn into_parts(self) -> (Amount<CurrencyUnit>, Vec<PublicKey>) {
+        (self.amount, self.ys)
+    }
 }
 
 impl Mint {
     /// Verify that the inputs to the transaction are unique
+    ///
+    /// Takes the precomputed Y values of the inputs (see [`ProofsMethods::ys`]).
     #[instrument(skip_all)]
-    pub fn check_inputs_unique(inputs: &Proofs) -> Result<(), Error> {
-        let proof_count = inputs.len();
-
-        if inputs
-            .iter()
-            .map(|i| i.y())
-            .collect::<Result<HashSet<PublicKey>, _>>()?
-            .len()
-            .ne(&proof_count)
-        {
+    pub fn check_inputs_unique(ys: &[PublicKey]) -> Result<(), Error> {
+        if ys.iter().collect::<HashSet<_>>().len() != ys.len() {
             tracing::debug!("Transaction attempted with duplicate inputs");
             return Err(Error::DuplicateInputs);
         }
@@ -223,12 +248,13 @@ impl Mint {
 
         let amount = Amount::try_sum(outputs.iter().map(|o| o.amount))?.with_unit(unit);
 
-        Ok(Verification { amount })
+        Ok(Verification::from_parts(amount, Vec::new()))
     }
 
     /// Verifies inputs
     ///
     /// Checks that inputs are unique and of the same unit.
+    /// The returned [`Verification::ys`] holds each input's Y in input order.
     /// **NOTE: This does not check if inputs have been spent
     #[instrument(skip_all)]
     pub async fn verify_inputs(&self, inputs: &Proofs) -> Result<Verification, Error> {
@@ -278,7 +304,8 @@ impl Mint {
             }
         }
 
-        Mint::check_inputs_unique(inputs)?;
+        let ys = inputs.ys()?;
+        Mint::check_inputs_unique(&ys)?;
         let unit = self.verify_inputs_keyset(inputs).await?;
 
         if unit == CurrencyUnit::Auth {
@@ -289,7 +316,7 @@ impl Mint {
 
         self.verify_proofs(inputs.clone()).await?;
 
-        Ok(Verification { amount })
+        Ok(Verification::from_parts(amount, ys))
     }
 
     /// Verify that inputs and outputs are valid and balanced
@@ -300,28 +327,40 @@ impl Mint {
         output_verification: Verification,
         inputs: &Proofs,
     ) -> Result<(), Error> {
+        self.verify_amounts_balanced(
+            &input_verification.amount,
+            &output_verification.amount,
+            inputs,
+        )
+        .await
+    }
+
+    pub(super) async fn verify_amounts_balanced(
+        &self,
+        input_amount: &Amount<CurrencyUnit>,
+        output_amount: &Amount<CurrencyUnit>,
+        inputs: &Proofs,
+    ) -> Result<(), Error> {
         let fee_breakdown = self.get_proofs_fee(inputs).await?;
 
         // Units are now embedded in the typed amounts - check they match
-        if output_verification.amount.unit() != input_verification.amount.unit() {
+        if output_amount.unit() != input_amount.unit() {
             tracing::debug!(
                 "Output unit {:?} does not match input unit {:?}",
-                output_verification.amount.unit(),
-                input_verification.amount.unit()
+                output_amount.unit(),
+                input_amount.unit()
             );
             return Err(Error::UnitMismatch);
         }
 
         // Check amounts are balanced (inputs = outputs + fee)
-        let fee_typed = fee_breakdown
-            .total
-            .with_unit(input_verification.amount.unit().clone());
-        let expected_output = input_verification.amount.checked_sub(&fee_typed)?;
+        let fee_typed = fee_breakdown.total.with_unit(input_amount.unit().clone());
+        let expected_output = input_amount.checked_sub(&fee_typed)?;
 
-        if output_verification.amount != expected_output {
+        if output_amount != &expected_output {
             return Err(Error::TransactionUnbalanced(
-                input_verification.amount.value(),
-                output_verification.amount.value(),
+                input_amount.value(),
+                output_amount.value(),
                 fee_breakdown.total.into(),
             ));
         }

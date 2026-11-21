@@ -16,10 +16,12 @@ use crate::test_helpers::mint::{
 };
 
 /// Helper to create a verification result for testing
-fn create_verification(amount: Amount) -> Verification {
-    Verification {
-        amount: amount.with_unit(cdk_common::nuts::CurrencyUnit::Sat),
-    }
+fn create_verification(proofs: &Proofs, amount: Amount) -> Verification {
+    Verification::new(
+        amount.with_unit(cdk_common::nuts::CurrencyUnit::Sat),
+        proofs,
+    )
+    .expect("proof ys")
 }
 
 /// Helper to create test proofs for swapping using the mint's process
@@ -28,7 +30,7 @@ async fn create_swap_inputs(mint: &Mint, amount: Amount) -> (Proofs, Verificatio
         .await
         .expect("Failed to create test proofs");
 
-    let verification = create_verification(amount);
+    let verification = create_verification(&proofs, amount);
 
     (proofs, verification)
 }
@@ -335,9 +337,10 @@ async fn test_swap_saga_duplicate_inputs() {
     let mint = create_test_mint().await.unwrap();
 
     let amount = Amount::from(100);
-    let (mut input_proofs, input_verification) = create_swap_inputs(&mint, amount).await;
+    let (mut input_proofs, _) = create_swap_inputs(&mint, amount).await;
 
     input_proofs.push(input_proofs[0].clone());
+    let input_verification = create_verification(&input_proofs, amount);
 
     let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
 
@@ -636,7 +639,7 @@ async fn test_swap_saga_empty_inputs() {
     let empty_proofs = Proofs::new();
     let (output_blinded_messages, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
     // Verification must match the actual input amount (zero for empty proofs)
-    let verification = create_verification(Amount::from(0));
+    let verification = create_verification(&empty_proofs, Amount::from(0));
 
     let db = mint.localstore();
     let pubsub = mint.pubsub_manager();
@@ -701,7 +704,7 @@ async fn test_swap_saga_both_empty() {
 
     let empty_proofs = Proofs::new();
     let empty_blinded_messages = vec![];
-    let verification = create_verification(Amount::from(0));
+    let verification = create_verification(&empty_proofs, Amount::from(0));
 
     let db = mint.localstore();
     let pubsub = mint.pubsub_manager();
@@ -2214,7 +2217,7 @@ async fn test_operation_id_uniqueness_and_tracking() {
 
     // Verify each set of proofs can now be used in new swaps
     let (new_outputs_1, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
-    let verification = create_verification(amount);
+    let verification = create_verification(&proofs_1, amount);
 
     let pubsub = mint.pubsub_manager();
     let new_saga = SwapSaga::new(&mint, db, pubsub);

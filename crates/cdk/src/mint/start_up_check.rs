@@ -1164,9 +1164,11 @@ mod tests {
         let amount = Amount::from(100);
         let input_proofs = mint_test_proofs(&mint, amount).await.unwrap();
         let input_ys = input_proofs.ys().unwrap();
-        let input_verification = crate::mint::Verification {
-            amount: amount.with_unit(cdk_common::nuts::CurrencyUnit::Sat),
-        };
+        let input_verification = crate::mint::Verification::new(
+            amount.with_unit(cdk_common::nuts::CurrencyUnit::Sat),
+            &input_proofs,
+        )
+        .unwrap();
         let (output_blinded_messages, _) =
             create_test_blinded_messages(&mint, amount).await.unwrap();
         let blinded_secrets: Vec<_> = output_blinded_messages
