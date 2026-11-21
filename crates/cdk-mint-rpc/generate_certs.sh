@@ -20,7 +20,9 @@ openssl genrsa -out client.key 4096
 openssl req -new -key client.key -out client.csr -subj "/C=US/ST=State/L=City/O=Organization/OU=Unit/CN=client"
 
 # Generate Client certificate
-openssl x509 -req -days 365 -in client.csr -CA ca.pem -CAkey ca.key -CAcreateserial -out client.pem
+# The extension makes this an X.509 v3 certificate even on OpenSSL < 3.2,
+# which otherwise issues v1 certificates here; rustls rejects v1 certificates.
+openssl x509 -req -days 365 -in client.csr -CA ca.pem -CAkey ca.key -CAcreateserial -out client.pem -extfile <(printf "extendedKeyUsage=clientAuth")
 
 # Verify the certificates
 echo "Verifying Server Certificate:"
