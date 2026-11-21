@@ -100,12 +100,20 @@ impl Wallet {
     ) -> Result<RecoveryAction, Error> {
         let token_proofs = self.send_token_proofs(saga_id, data).await?;
 
+        // Same terminal status the live revoke uses: a send whose token was
+        // partly claimed did happen, even though the rest was taken back.
+        let revoked_status = if data.partially_claimed {
+            TransactionStatus::Completed
+        } else {
+            TransactionStatus::Failed
+        };
+
         if token_proofs.is_empty() {
             tracing::warn!(
                 "No token proofs found for rolling back send saga {} - assuming swap success",
                 saga_id
             );
-            self.update_transaction_status_by_saga_id(*saga_id, TransactionStatus::Failed)
+            self.update_transaction_status_by_saga_id(*saga_id, revoked_status)
                 .await?;
             self.localstore.delete_saga(saga_id).await?;
             return Ok(RecoveryAction::Recovered);
@@ -121,7 +129,7 @@ impl Wallet {
                 self.localstore
                     .update_proofs_state(proof_ys, State::Spent)
                     .await?;
-                self.update_transaction_status_by_saga_id(*saga_id, TransactionStatus::Failed)
+                self.update_transaction_status_by_saga_id(*saga_id, revoked_status)
                     .await?;
                 self.localstore.delete_saga(saga_id).await?;
                 Ok(RecoveryAction::Recovered)
@@ -256,7 +264,9 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use cdk_common::nuts::{CheckStateResponse, CurrencyUnit, ProofState, State};
+    use cdk_common::nuts::{
+        CheckStateResponse, CurrencyUnit, ProofState, Proofs, PublicKey, State,
+    };
     use cdk_common::wallet::{
         OperationData, SendOperationData, SendSagaState, Transaction, TransactionDirection,
         TransactionStatus, WalletSaga, WalletSagaState,
@@ -296,6 +306,7 @@ mod tests {
                 counter_end: None,
                 token: None,
                 proofs: None,
+                partially_claimed: false,
             }),
         );
         db.add_saga(saga).await.unwrap();
@@ -343,6 +354,7 @@ mod tests {
                 counter_end: None,
                 token: None,
                 proofs: None,
+                partially_claimed: false,
             }),
         );
         db.add_saga(saga).await.unwrap();
@@ -387,6 +399,7 @@ mod tests {
                 counter_end: None,
                 token: None,
                 proofs: None,
+                partially_claimed: false,
             }),
         );
         db.add_saga(saga).await.unwrap();
@@ -433,6 +446,7 @@ mod tests {
                 counter_end: None,
                 token: Some("cashuA...".to_string()),
                 proofs: None,
+                partially_claimed: false,
             }),
         );
         db.add_saga(saga).await.unwrap();
@@ -510,6 +524,7 @@ mod tests {
                 counter_end: None,
                 token: Some("cashuA...".to_string()),
                 proofs: None,
+                partially_claimed: false,
             }),
         );
         db.add_saga(saga).await.unwrap();
@@ -567,6 +582,7 @@ mod tests {
                 counter_end: None,
                 token: Some("cashuA...".to_string()),
                 proofs: None,
+                partially_claimed: false,
             }),
         );
         db.add_saga(saga).await.unwrap();
@@ -644,6 +660,7 @@ mod tests {
                 counter_end: None,
                 token: Some("cashuA...".to_string()),
                 proofs: None,
+                partially_claimed: false,
             }),
         );
         db.add_saga(saga).await.unwrap();
@@ -714,6 +731,7 @@ mod tests {
                 counter_end: Some(4),
                 token: Some("cashuB...".to_string()),
                 proofs: Some(proofs),
+                partially_claimed: false,
             }),
         );
         db.add_saga(saga).await.unwrap();

@@ -655,6 +655,7 @@ impl<'a> SendSaga<'a, Initial> {
                 counter_end: None,
                 token: None,
                 proofs: None,
+                partially_claimed: false,
             }),
         );
 
@@ -931,6 +932,7 @@ impl<'a> SendSaga<'a, Prepared> {
                 counter_end,
                 token: Some(token.to_string()),
                 proofs: Some(final_proofs_to_send.clone()),
+                partially_claimed: false,
             });
             saga.update_state(WalletSagaState::Send(SendSagaState::TokenCreated));
 
@@ -1033,7 +1035,13 @@ impl<'a> SendSaga<'a, TokenCreated> {
             return Err(Error::Custom("Token already claimed".to_string()));
         }
 
-        let partially_claimed = !spent_ys.is_empty();
+        // A revoke that failed earlier may already have narrowed the saga to
+        // the unclaimed proofs, so keep what it recorded.
+        let already_partially_claimed = match &self.state_data.saga.data {
+            OperationData::Send(data) => data.partially_claimed,
+            _ => false,
+        };
+        let partially_claimed = already_partially_claimed || !spent_ys.is_empty();
         if partially_claimed {
             tracing::info!(
                 "Token partially claimed by recipient, revoking the {} unspent proofs",
@@ -1047,6 +1055,7 @@ impl<'a> SendSaga<'a, TokenCreated> {
         saga.update_state(WalletSagaState::Send(SendSagaState::RollingBack));
         if let OperationData::Send(ref mut data) = saga.data {
             data.proofs = Some(proofs_to_revoke.clone());
+            data.partially_claimed = partially_claimed;
         }
 
         if !self.wallet.localstore.update_saga(saga).await? {
@@ -1400,6 +1409,7 @@ mod tests {
                 counter_end: None,
                 token: Some("cashuA...".to_string()),
                 proofs: Some(vec![proof.clone()]),
+                partially_claimed: false,
             }),
         );
         db.add_saga(saga_record).await.unwrap();
@@ -1442,6 +1452,7 @@ mod tests {
                 counter_end: None,
                 token: None,
                 proofs: None,
+                partially_claimed: false,
             }),
         );
         db.add_saga(saga_record.clone()).await.unwrap();
