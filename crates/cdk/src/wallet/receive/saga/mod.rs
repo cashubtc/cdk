@@ -767,6 +767,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_failed_receive_keeps_rows_changed_while_swapping() {
+        for removed in [true, false] {
+            let (wallet, mock, input, _) = receive_fixture().await;
+            let (_, y) = store_as_sent_token(&wallet, &input).await;
+
+            let gate = mock.pause_post_swap();
+            mock.set_post_swap_response(Err(Error::TransactionUnbalanced(2, 4, 0)));
+
+            // While the receive waits for the mint, a send-status check finds
+            // the input spent and finishes the send, removing the proof or
+            // marking it spent. The definitive rejection that follows must not
+            // bring back the send's pending row.
+            let (result, _) = tokio::join!(
+                wallet.receive_proofs(vec![input.clone()], receive_options(), None, None),
+                async {
+                    gate.reached.notified().await;
+                    if removed {
+                        wallet
+                            .localstore
+                            .update_proofs(vec![], vec![y])
+                            .await
+                            .unwrap();
+                    } else {
+                        wallet
+                            .localstore
+                            .update_proofs_state(vec![y], State::Spent)
+                            .await
+                            .unwrap();
+                    }
+                    gate.release.notify_one();
+                }
+            );
+            assert!(
+                matches!(result, Err(Error::TransactionUnbalanced(..))),
+                "unexpected result: {result:?}"
+            );
+
+            let proofs = wallet.localstore.get_proofs_by_ys(vec![y]).await.unwrap();
+            if removed {
+                assert!(proofs.is_empty(), "removed proof was recreated: {proofs:?}");
+            } else {
+                assert_eq!(proofs.len(), 1);
+                assert_eq!(proofs[0].state, State::Spent);
+            }
+            assert!(wallet
+                .localstore
+                .get_incomplete_sagas()
+                .await
+                .unwrap()
+                .is_empty());
+        }
+    }
+
+    #[tokio::test]
     async fn test_receive_recovery_keeps_proofs_the_wallet_already_stored() {
         let (wallet, mock, input, _) = receive_fixture().await;
         let (send_operation, y) = store_as_sent_token(&wallet, &input).await;
