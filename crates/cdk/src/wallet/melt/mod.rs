@@ -3075,6 +3075,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_prepare_melt_proofs_rejects_stored_spent_proof() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let keyset_id = crate::wallet::test_utils::test_keyset_id();
+
+        let unspent = test_proof_info(keyset_id, 600, mint_url.clone(), State::Unspent);
+        let spent = test_proof_info(keyset_id, 600, mint_url.clone(), State::Spent);
+        let unspent_y = unspent.y;
+        let spent_y = spent.y;
+        let proofs = vec![unspent.proof.clone(), spent.proof.clone()];
+        db.update_proofs(vec![unspent, spent], vec![])
+            .await
+            .unwrap();
+
+        let quote = test_melt_quote();
+        let quote_id = quote.id.clone();
+        db.add_melt_quote(quote).await.unwrap();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let balance_before = wallet.total_balance().await.unwrap();
+
+        let result = wallet
+            .prepare_melt_proofs(&quote_id, proofs, HashMap::new())
+            .await;
+        assert!(result.is_err());
+
+        // Nothing is reserved: the spent proof stays spent and the unspent
+        // one is not left reserved by a partial reservation.
+        let stored = db.get_proofs_by_ys(vec![unspent_y, spent_y]).await.unwrap();
+        let proof_for = |y| stored.iter().find(|proof| proof.y == y).unwrap();
+        assert_eq!(proof_for(unspent_y).state, State::Unspent);
+        assert_eq!(proof_for(unspent_y).used_by_operation, None);
+        assert_eq!(proof_for(spent_y).state, State::Spent);
+        assert_eq!(proof_for(spent_y).used_by_operation, None);
+        assert_eq!(wallet.total_balance().await.unwrap(), balance_before);
+
+        assert!(db.get_incomplete_sagas().await.unwrap().is_empty());
+        let quote = db.get_melt_quote(&quote_id).await.unwrap().unwrap();
+        assert_eq!(quote.used_by_operation, None);
+    }
+
+    #[tokio::test]
+    async fn test_prepare_melt_proofs_rejects_proofs_owned_by_another_operation() {
+        for state in [State::Reserved, State::PendingSpent, State::Pending] {
+            let db = create_test_db().await;
+            let mint_url = test_mint_url();
+            let keyset_id = crate::wallet::test_utils::test_keyset_id();
+            let other_operation = uuid::Uuid::new_v4();
+
+            let mut proof_info = test_proof_info(keyset_id, 1200, mint_url.clone(), state);
+            proof_info.used_by_operation = Some(other_operation);
+            let proof_y = proof_info.y;
+            let proof = proof_info.proof.clone();
+            db.update_proofs(vec![proof_info], vec![]).await.unwrap();
+
+            let quote = test_melt_quote();
+            let quote_id = quote.id.clone();
+            db.add_melt_quote(quote).await.unwrap();
+
+            let mock_client = Arc::new(MockMintConnector::new());
+            let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+
+            let result = wallet
+                .prepare_melt_proofs(&quote_id, vec![proof], HashMap::new())
+                .await;
+            assert!(result.is_err(), "prepare must fail for a {state} proof");
+
+            let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
+            assert_eq!(stored.len(), 1);
+            assert_eq!(stored[0].state, state);
+            assert_eq!(stored[0].used_by_operation, Some(other_operation));
+
+            assert!(db.get_incomplete_sagas().await.unwrap().is_empty());
+            let quote = db.get_melt_quote(&quote_id).await.unwrap().unwrap();
+            assert_eq!(quote.used_by_operation, None);
+        }
+    }
+
+    #[tokio::test]
     async fn test_add_transaction_for_pending_melt_uses_only_operation_pending_proofs() {
         let db = create_test_db().await;
         let mint_url = test_mint_url();
