@@ -530,15 +530,7 @@ mod tests {
 
         let result = Conditions::try_from(tags);
 
-        assert!(matches!(
-            result,
-            Err(Error::NUT11(
-                crate::nut11::Error::ImpossibleRefundMultisigConfiguration {
-                    required: 1,
-                    available: 0
-                }
-            ))
-        ));
+        assert!(matches!(result, Err(Error::TagValueNotFound)));
     }
 
     #[test]
@@ -559,14 +551,28 @@ mod tests {
             .any(|tag| tag.first() == Some(&"refund".to_string())));
     }
 
+    /// NUT-11: a key-only spending condition tag makes the secret malformed
     #[test]
-    fn test_empty_pubkeys_tag_is_rejected() {
-        let tags = vec![vec!["pubkeys".to_string()]];
+    fn test_key_only_spending_condition_tags_are_rejected() {
+        for key in [
+            "pubkeys",
+            "refund",
+            "locktime",
+            "n_sigs",
+            "n_sigs_refund",
+            "sigflag",
+        ] {
+            let tags = vec![vec![key.to_string()]];
 
-        assert!(matches!(
-            Conditions::try_from(tags),
-            Err(Error::TagValueNotFound)
-        ));
+            assert!(
+                matches!(Conditions::try_from(tags), Err(Error::TagValueNotFound)),
+                "{key}"
+            );
+        }
+
+        // Other NUT-10 tags are not spending conditions and are ignored.
+        let other = vec![vec!["memo".to_string()]];
+        assert!(Conditions::try_from(other).is_ok());
     }
 
     #[test]
