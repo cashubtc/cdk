@@ -765,6 +765,12 @@ impl MintBuilder {
         .map(Arc::new)
     }
 
+    /// Units configured so far, with their input fee and denominations
+    #[cfg(test)]
+    pub(crate) fn supported_units(&self) -> &HashMap<CurrencyUnit, (u64, Vec<u64>)> {
+        &self.supported_units
+    }
+
     /// Build the mint with the provided keystore and seed
     pub async fn build_with_seed(
         self,
