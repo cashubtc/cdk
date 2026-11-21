@@ -36,7 +36,6 @@ url.workspace = true
 serde_json.workspace = true
 serde_with.workspace = true
 nostr = { workspace = true, optional = true }
-sha2.workspace = true
 sha2_09.workspace = true
 zeroize = "1"
 web-time.workspace = true

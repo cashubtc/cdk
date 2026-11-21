@@ -1758,7 +1758,7 @@ mod tests {
                 .collect(),
         );
         let keyset = KeySet {
-            id: Id::v3_from_data(&keys, &CurrencyUnit::Sat, 0, None),
+            id: Id::v3_from_data(&keys, &CurrencyUnit::Sat, 0),
             unit: CurrencyUnit::Sat,
             active: Some(true),
             keys,
@@ -1861,7 +1861,7 @@ mod tests {
             .collect(),
         );
         let invalid = KeySet {
-            id: Id::v3_from_data(&invalid_keys, &invalid_unit, 0, None),
+            id: Id::v3_from_data(&invalid_keys, &invalid_unit, 0),
             unit: invalid_unit,
             active: Some(true),
             keys: invalid_keys,

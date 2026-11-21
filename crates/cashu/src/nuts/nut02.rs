@@ -278,13 +278,9 @@ impl Id {
     /// Create a v3 keyset ID from length-prefixed binary public data.
     ///
     /// Amounts and fees use minimal big-endian encoding; public keys are
-    /// compressed G2 bytes. Expiry is metadata and is not committed by v3 IDs.
-    pub fn v3_from_data(
-        map: &Keys,
-        unit: &CurrencyUnit,
-        input_fee_ppk: u64,
-        _expiry: Option<u64>,
-    ) -> Self {
+    /// compressed G2 bytes. Unlike v2, v3 IDs do not commit the final expiry,
+    /// so it is not an input.
+    pub fn v3_from_data(map: &Keys, unit: &CurrencyUnit, input_fee_ppk: u64) -> Self {
         fn append_frame(target: &mut Vec<u8>, bytes: &[u8]) {
             target.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
             target.extend_from_slice(bytes);
@@ -631,12 +627,10 @@ impl KeySet {
                 self.input_fee_ppk,
                 self.final_expiry,
             ),
-            KeySetVersion::Version02 => Id::v3_from_data(
-                &self.keys,
-                &self.unit,
-                self.input_fee_ppk,
-                self.final_expiry,
-            ),
+            // v3 IDs do not commit the final expiry.
+            KeySetVersion::Version02 => {
+                Id::v3_from_data(&self.keys, &self.unit, self.input_fee_ppk)
+            }
         };
 
         ensure_cdk!(keys_id == self.id, Error::IncorrectKeysetId);
@@ -826,8 +820,9 @@ impl MintKeySet {
             KeySetVersion::Version01 => {
                 Id::v2_from_data(&keys.clone().into(), &unit, input_fee_ppk, final_expiry)
             }
+            // v3 IDs do not commit the final expiry.
             KeySetVersion::Version02 => {
-                Id::v3_from_data(&keys.clone().into(), &unit, input_fee_ppk, final_expiry)
+                Id::v3_from_data(&keys.clone().into(), &unit, input_fee_ppk)
             }
         };
         Self {
@@ -913,12 +908,8 @@ impl From<MintKeySet> for Id {
                 keyset.input_fee_ppk,
                 keyset.final_expiry,
             ),
-            KeySetVersion::Version02 => Id::v3_from_data(
-                &keys,
-                &keyset.unit,
-                keyset.input_fee_ppk,
-                keyset.final_expiry,
-            ),
+            // v3 IDs do not commit the final expiry.
+            KeySetVersion::Version02 => Id::v3_from_data(&keys, &keyset.unit, keyset.input_fee_ppk),
         }
     }
 }
@@ -1102,9 +1093,10 @@ mod test {
         ] {
             let keys: Keys = serde_json::from_str(json).unwrap();
             let expected = Id::from_str(expected).unwrap();
+            let id = Id::v3_from_data(&keys, &CurrencyUnit::Sat, fee);
+            assert_eq!(id, expected);
+            // The final expiry is not committed, so any expiry verifies.
             for expiry in [None, Some(0), Some(2_000_000_000)] {
-                let id = Id::v3_from_data(&keys, &CurrencyUnit::Sat, fee, expiry);
-                assert_eq!(id, expected);
                 super::KeySet {
                     id,
                     unit: CurrencyUnit::Sat,
@@ -1151,7 +1143,7 @@ mod test {
             .unwrap();
             let id = match version {
                 KeySetVersion::Version01 => Id::v2_from_data(&keys, &unit, 0, None),
-                _ => Id::v3_from_data(&keys, &unit, 0, None),
+                _ => Id::v3_from_data(&keys, &unit, 0),
             };
             let keyset = super::KeySet {
                 id,
@@ -1169,7 +1161,7 @@ mod test {
         }
         let keys: Keys = serde_json::from_str(SHORT_KEYSET).unwrap();
         let keyset = super::KeySet {
-            id: Id::v3_from_data(&keys, &CurrencyUnit::Sat, 0, None),
+            id: Id::v3_from_data(&keys, &CurrencyUnit::Sat, 0),
             unit: CurrencyUnit::Sat,
             active: Some(true),
             keys,
@@ -1188,7 +1180,7 @@ mod test {
         let key = keys.amount_key(crate::Amount::from(1)).unwrap();
         let keys = Keys::new([(crate::Amount::from(256), key)].into_iter().collect());
         assert_eq!(
-            Id::v3_from_data(&keys, &CurrencyUnit::Sat, 256, None).to_string(),
+            Id::v3_from_data(&keys, &CurrencyUnit::Sat, 256).to_string(),
             "02943fd6ddb5c3c07916b545c4bc4ceb6d3dba67b356e9fa12204581ee8c26205b",
         );
     }
