@@ -14,6 +14,7 @@ use paste::paste;
 use tracing::instrument;
 
 use crate::auth::AuthHeader;
+use crate::point_request::{decode, PointBatch, PointJson};
 use crate::ws::main_websocket;
 use crate::MintState;
 
@@ -86,6 +87,14 @@ macro_rules! post_cache_wrapper_with_prefer {
 }
 
 post_cache_wrapper!(post_swap, SwapRequest, SwapResponse);
+
+pub(crate) async fn admitted_swap(
+    auth: AuthHeader,
+    state: State<MintState>,
+    PointJson(request): PointJson<SwapRequest, true>,
+) -> Result<Json<SwapResponse>, Response> {
+    cache_post_swap(auth, state, Json(request)).await
+}
 
 /// Get the public keys of the newest mint keyset
 ///
@@ -207,12 +216,19 @@ pub(crate) async fn post_swap(
 }
 
 /// Restores blind signature for a set of outputs.
-#[instrument(skip_all, fields(outputs_count = ?payload.outputs.len()))]
+#[instrument(skip_all)]
 pub(crate) async fn post_restore(
     auth: AuthHeader,
     State(state): State<MintState>,
-    Json(payload): Json<RestoreRequest>,
+    Json(raw): Json<Box<serde_json::value::RawValue>>,
 ) -> Result<Json<RestoreResponse>, Response> {
+    let payload: RestoreRequest = decode(
+        &state,
+        raw,
+        PointBatch::Restore,
+        IntoResponse::into_response,
+    )
+    .await?;
     state
         .mint
         .verify_auth(

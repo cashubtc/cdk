@@ -184,12 +184,21 @@ impl Wallet {
             })
             .cloned()
             .collect();
-        let mut keys = self.own_v3_keys(&own).await?;
+        let keys = self.own_v3_keys(&own).await?;
+        Self::sign_v3_swap_inputs(&transaction, request.inputs_mut(), keys, received)
+    }
+
+    pub(super) fn sign_v3_swap_inputs(
+        transaction: &Transaction,
+        inputs: &mut Proofs,
+        mut keys: V3Keys,
+        received: &V3Spends,
+    ) -> Result<(), Error> {
         keys.extend(received.iter().filter_map(|(point, spend)| match spend {
             V3Spend::KeyPath(key) => Some((*point, key.clone())),
             V3Spend::ScriptPath { .. } => None,
         }));
-        for (index, proof) in request.inputs_mut().iter_mut().enumerate() {
+        for (index, proof) in inputs.iter_mut().enumerate() {
             if !is_v3(proof) {
                 continue;
             }
@@ -202,7 +211,7 @@ impl Wallet {
                 proof.witness = Some(witness.into());
             }
         }
-        Self::sign_v3_inputs(&transaction, request.inputs_mut(), &keys)
+        Self::sign_v3_inputs(transaction, inputs, &keys)
     }
 
     /// Sign every v3 input of `transaction` by the key path
@@ -262,12 +271,19 @@ pub(crate) fn bearer_v3_inputs(
 /// Receive checks 1 and 2 for a received v3 proof
 ///
 /// Rebuilds the secret from the spend info (trying the wallet's receiver
-/// keys for a receiver-keyed proof), requires a key-path key the wallet
-/// holds, and evaluates every disclosed leaf against the acceptance policy.
+/// keys for a receiver-keyed proof). A proof whose key path the wallet holds
+/// has every disclosed leaf evaluated against the acceptance policy.
+///
+/// Without a key-path key the proof is refused, unless `script_path` carries
+/// the caller's hashlock preimages: the wallet is then a leaf party and must
+/// satisfy a disclosed leaf with its receiver keys. The leaf policy does not
+/// apply there, since it guards a key-path receive against other parties'
+/// leaves.
 pub(crate) fn check_received_v3_proof(
     proof: &Proof,
     receiver_keys: &[SecretKey],
     min_refund_horizon: u64,
+    script_path: Option<&[String]>,
 ) -> Result<V3Spend, Error> {
     let secret = proof.secret.v3_point()?;
     let spend_info = proof
@@ -275,29 +291,39 @@ pub(crate) fn check_received_v3_proof(
         .as_ref()
         .ok_or(Error::V3ProofNotSpendable)?;
 
-    let reconstruction: Reconstruction = match spend_info.e {
-        None => spend_info.reconstruct(&secret, None)?,
+    let key_path: Result<Reconstruction, Error> = match spend_info.e {
+        None => spend_info.reconstruct(&secret, None).map_err(Error::from),
         Some(_) => {
-            let mut last_err = Error::V3ProofNotSpendable;
-            let mut found = None;
+            let mut result = Err(Error::V3ProofNotSpendable);
             for receiver in receiver_keys {
-                match spend_info.reconstruct(&secret, Some(receiver)) {
-                    Ok(reconstruction) => {
-                        found = Some(reconstruction);
-                        break;
-                    }
-                    Err(err) => last_err = err.into(),
+                result = spend_info
+                    .reconstruct(&secret, Some(receiver))
+                    .map_err(Error::from);
+                if result.is_ok() {
+                    break;
                 }
             }
-            found.ok_or(last_err)?
+            result
         }
     };
 
-    check_leaf_policy(&reconstruction.leaves, unix_time(), min_refund_horizon)?;
-    reconstruction
-        .key_path_key
-        .map(V3Spend::KeyPath)
-        .ok_or(Error::V3ProofNotSpendable)
+    match (key_path, script_path) {
+        (Ok(reconstruction), _) if reconstruction.key_path_key.is_some() => {
+            check_leaf_policy(&reconstruction.leaves, unix_time(), min_refund_horizon)?;
+            reconstruction
+                .key_path_key
+                .map(V3Spend::KeyPath)
+                .ok_or(Error::V3ProofNotSpendable)
+        }
+        (Ok(_), None) => Err(Error::V3ProofNotSpendable),
+        (Err(err), None) => Err(err),
+        // Not the slot-0 receiver, or no key path exists: take the internal
+        // key as disclosed and spend through a leaf.
+        (_, Some(preimages)) => {
+            let reconstruction = spend_info.reconstruct_without_key_path(&secret)?;
+            script_path_spend(spend_info, &reconstruction, receiver_keys, preimages)
+        }
+    }
 }
 
 /// The NUT-18 payee checks for a v3 proof paying `request`
@@ -344,7 +370,7 @@ pub(crate) fn check_requested_v3_proof(
     Err(last_err)
 }
 
-/// Select a satisfiable disclosed leaf after the request's exact-tree check.
+/// Select a disclosed leaf the supplied keys and preimages satisfy.
 fn script_path_spend(
     spend_info: &cdk_common::nut00::SpendInfo,
     reconstruction: &Reconstruction,
@@ -575,6 +601,54 @@ mod tests {
         ));
         assert!(check_requested_v3_proof(&proof, &second, &held, &[]).is_err());
         assert!(check_requested_v3_proof(&proof, &first, &[second_key], &[]).is_err());
+    }
+
+    /// A wallet holding only a leaf key is not the slot-0 receiver. It is
+    /// refused by default and, when the caller opts in, takes the disclosed
+    /// internal key and spends through the leaf its key satisfies.
+    #[test]
+    fn leaf_party_receives_by_script_path_only_when_opted_in() {
+        use cdk_common::nuts::nut18::NutrootOption;
+
+        let payee = SecretKey::generate();
+        let refund = SecretKey::generate();
+        for blinded in [false, true] {
+            let request = NutrootOption {
+                k: payee.public_key(),
+                l: Some(vec![Leaf::After {
+                    n: 1,
+                    keys: vec![refund.public_key()],
+                    time: unix_time() - 2 * AFTER_LEAF_CLOCK_MARGIN,
+                }
+                .to_leaf_bytes()
+                .unwrap()]),
+                b: blinded.then(|| vec![refund.public_key()]),
+            };
+            let payment = request
+                .pay(&SecretKey::generate(), &SecretKey::generate())
+                .unwrap();
+            let proof = v3_proof(payment.secret, payment.spend_info);
+            let held = std::slice::from_ref(&refund);
+
+            assert!(check_received_v3_proof(&proof, held, 3600, None).is_err());
+            match check_received_v3_proof(&proof, held, 3600, Some(&[])).unwrap() {
+                V3Spend::ScriptPath { witness, keys } => {
+                    assert_eq!(keys.len(), 1);
+                    assert!(witness.leaf.is_some());
+                }
+                V3Spend::KeyPath(_) => panic!("a leaf party holds no key path"),
+            }
+            // A key in no leaf satisfies nothing.
+            assert!(
+                check_received_v3_proof(&proof, &[SecretKey::generate()], 3600, Some(&[])).is_err()
+            );
+            // The payee still receives by the key path, under the leaf
+            // policy: this refund is already open.
+            assert!(matches!(
+                check_received_v3_proof(&proof, std::slice::from_ref(&payee), 3600, Some(&[])),
+                Err(Error::V3LeafPolicy)
+            ));
+        }
     }
 
     /// An `after` leaf that has only just opened on the wallet's clock is

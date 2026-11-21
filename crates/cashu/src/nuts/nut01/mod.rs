@@ -34,6 +34,9 @@ pub(crate) mod bls;
 /// Nut01 Error
 #[derive(Debug, Error)]
 pub enum Error {
+    /// Imported public and secret mint keys do not correspond.
+    #[error("Mint public and secret keys do not match")]
+    MismatchedKeyPair,
     /// Secp256k1 Error
     #[error(transparent)]
     Secp256k1(#[from] secp256k1::Error),
@@ -228,11 +231,37 @@ impl MintKeys {
 /// assert_serialize::<cashu::nuts::nut01::MintKeyPair>();
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "EncodedMintKeyPair")]
 pub struct MintKeyPair {
     /// Publickey
     pub public_key: MintPublicKey,
     /// Secretkey
     pub secret_key: MintSecretKey,
+}
+
+#[derive(Deserialize)]
+struct EncodedMintKeyPair {
+    public_key: MintPublicKey,
+    // Every canonical BLS scalar also fits the legacy 32-byte scalar encoding.
+    secret_key: SecretKey,
+}
+
+impl TryFrom<EncodedMintKeyPair> for MintKeyPair {
+    type Error = Error;
+
+    fn try_from(encoded: EncodedMintKeyPair) -> Result<Self, Error> {
+        let secret_key = match encoded.public_key {
+            MintPublicKey::Secp256k1(_) => encoded.secret_key.into(),
+            MintPublicKey::Bls(_) => {
+                MintSecretKey::bls_from_slice(encoded.secret_key.as_secret_bytes())?
+            }
+        };
+        let pair = Self::from_secret_key(secret_key);
+        if pair.public_key != encoded.public_key {
+            return Err(Error::MismatchedKeyPair);
+        }
+        Ok(pair)
+    }
 }
 
 impl MintKeyPair {
@@ -263,6 +292,37 @@ mod tests {
         let pubkey_str = "04918dfc36c93e7db6cc0d60f37e1522f1c36b64d3f4b424c532d7c595febbc5";
         let pubkey = PublicKey::from_hex(pubkey_str.to_string()).unwrap();
         assert_eq!(pubkey_str, pubkey.to_hex())*/
+    }
+
+    #[test]
+    fn import_mint_key_pair_uses_public_key_curve() {
+        for key in [
+            MintSecretKey::generate(),
+            MintSecretKey::generate_bls().unwrap(),
+        ] {
+            let mut encoded = serde_json::json!({
+                "secret_key": key,
+                "public_key": key.public_key(),
+            });
+            let pair: MintKeyPair = serde_json::from_value(encoded.clone()).unwrap();
+            assert_eq!(pair.secret_key, key);
+
+            let wire = ciborium::Value::Map(vec![
+                (
+                    "secret_key".into(),
+                    ciborium::Value::Bytes(key.to_secret_bytes().to_vec()),
+                ),
+                ("public_key".into(), key.public_key().to_hex().into()),
+            ]);
+            let mut bytes = Vec::new();
+            ciborium::into_writer(&wire, &mut bytes).unwrap();
+            let binary_pair: MintKeyPair = ciborium::from_reader(bytes.as_slice()).unwrap();
+            assert_eq!(binary_pair, pair);
+
+            encoded["secret_key"] =
+                serde_json::to_value(MintSecretKey::generate_bls().unwrap()).unwrap();
+            assert!(serde_json::from_value::<MintKeyPair>(encoded).is_err());
+        }
     }
 
     #[test]

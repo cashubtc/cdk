@@ -22,10 +22,12 @@ use cdk::nuts::{
 };
 use cdk::{MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse};
 use serde::de::DeserializeOwned;
+use serde_json::value::RawValue;
 use serde_json::Value;
 use tracing::instrument;
 
 use crate::auth::AuthHeader;
+use crate::point_request::{decode, PointBatch, PointJson};
 use crate::router_handlers::into_response;
 use crate::MintState;
 
@@ -427,13 +429,12 @@ pub async fn cache_post_mint_custom(
     auth: AuthHeader,
     state: State<MintState>,
     method: Path<String>,
-    payload: Json<MintRequest<QuoteId>>,
+    PointJson(payload): PointJson<MintRequest<QuoteId>>,
 ) -> Result<Json<MintResponse>, Response> {
     use std::ops::Deref;
 
     let State(mint_state) = state;
     let method = method.0;
-    let payload = payload.0;
 
     mint_state
         .mint
@@ -490,12 +491,25 @@ pub async fn cache_post_melt_custom(
     prefer: PreferHeader,
     state: State<MintState>,
     method: Path<String>,
-    payload: Json<Value>,
+    Json(payload): Json<Box<RawValue>>,
 ) -> Result<Response, Response> {
     let State(mint_state) = state;
     let method = method.0;
     tracing::debug!(method = %method, "melt request received");
-    let parsed_payload = parse_melt_payload(&method, payload.0)?;
+    let invalid_melt = |_| into_response(cdk::Error::InvalidPaymentRequest);
+    let parsed_payload = if method == "onchain" {
+        decode::<MeltOnchainRequest<QuoteId>>(&mint_state, payload, PointBatch::Spend, invalid_melt)
+            .await?
+            .into()
+    } else {
+        decode::<cdk::nuts::MeltRequest<QuoteId>>(
+            &mint_state,
+            payload,
+            PointBatch::Spend,
+            invalid_melt,
+        )
+        .await?
+    };
 
     mint_state
         .mint
@@ -541,34 +555,6 @@ pub async fn cache_post_melt_custom(
     Ok(melt_quote_response_to_json(result))
 }
 
-/// Reads the melt request body, which only the onchain method spells
-/// differently.
-#[allow(clippy::result_large_err)]
-fn parse_melt_payload(
-    method: &str,
-    payload: Value,
-) -> Result<cdk::nuts::MeltRequest<QuoteId>, Response> {
-    if method == "onchain" {
-        let request: MeltOnchainRequest<QuoteId> =
-            serde_json::from_value(payload).map_err(|e| {
-                tracing::warn!(
-                    method = %method,
-                    "failed to parse onchain melt request body: {e}",
-                );
-                into_response(cdk::Error::InvalidPaymentRequest)
-            })?;
-        Ok(request.into())
-    } else {
-        serde_json::from_value(payload).map_err(|e| {
-            tracing::warn!(
-                method = %method,
-                "failed to parse melt request body: {e}",
-            );
-            into_response(cdk::Error::InvalidPaymentRequest)
-        })
-    }
-}
-
 /// Cached version of post_batch_mint for NUT-19 caching support
 ///
 /// The payment method is part of the cache key, so the mint's own batch bounds
@@ -579,13 +565,12 @@ pub async fn cache_post_batch_mint(
     auth: AuthHeader,
     state: State<MintState>,
     method: Path<String>,
-    payload: Json<BatchMintRequest<QuoteId>>,
+    PointJson(payload): PointJson<BatchMintRequest<QuoteId>>,
 ) -> Result<Json<MintResponse>, Response> {
     use std::ops::Deref;
 
     let State(mint_state) = state;
     let method = method.0;
-    let payload = payload.0;
 
     mint_state
         .mint
@@ -680,8 +665,13 @@ mod tests {
     }
 
     async fn create_test_state() -> MintState {
+        create_test_state_with_limits(2000, 2000).await
+    }
+
+    async fn create_test_state_with_limits(inputs: usize, outputs: usize) -> MintState {
         let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
         let mut builder = MintBuilder::new(db.clone())
+            .with_limits(inputs, outputs)
             .with_batch_minting(Some(10), Some(vec![KnownMethod::Bolt11.to_string()]));
         let fake = FakeWallet::new(
             FeeReserve {
@@ -925,6 +915,107 @@ mod tests {
         assert_eq!(body, expected_body);
     }
 
+    async fn post_json(router: &axum::Router, uri: &str, payload: Value) -> Response {
+        use tower::ServiceExt;
+
+        router
+            .clone()
+            .oneshot(
+                Request::post(uri)
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn point_admission_precedes_typed_decoding_on_http_routes() {
+        let state = create_test_state_with_limits(1, 2).await;
+        let router = crate::create_mint_router(state.mint.clone(), vec!["bolt11".to_owned()])
+            .await
+            .unwrap();
+        let item = serde_json::json!({"id": format!("02{}", "00".repeat(32))});
+        let inputs = serde_json::json!({"inputs": [&item, &item], "outputs": []});
+        for uri in ["/v1/swap", "/v1/melt/bolt11", "/v1/melt/onchain"] {
+            assert_error_response(
+                post_json(&router, uri, inputs.clone()).await,
+                cdk::Error::MaxInputsExceeded { actual: 2, max: 1 },
+            )
+            .await;
+            assert_error_response(
+                post_json(
+                    &router,
+                    uri,
+                    serde_json::json!({"inputs": [&item], "outputs": []}),
+                )
+                .await,
+                cdk::Error::UnknownKeySet,
+            )
+            .await;
+        }
+        let outputs = serde_json::json!({"outputs": [&item, &item, &item]});
+        for uri in [
+            "/v1/mint/bolt11",
+            "/v1/mint/bolt11/batch",
+            "/v1/restore",
+            "/v1/auth/blind/mint",
+        ] {
+            assert_error_response(
+                post_json(&router, uri, outputs.clone()).await,
+                cdk::Error::MaxOutputsExceeded { actual: 3, max: 2 },
+            )
+            .await;
+        }
+        state.mint.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn restore_preserves_matches_among_unknown_keysets() {
+        let state = create_test_state().await;
+        let quote = create_paid_bolt11_quote(&state).await;
+        let outputs = outputs_for_amount(&state, 2);
+        let signatures = state
+            .mint
+            .post_mint(
+                &PaymentMethod::Known(KnownMethod::Bolt11),
+                MintRequest {
+                    quote,
+                    outputs: outputs.clone(),
+                    signature: None,
+                },
+            )
+            .await
+            .unwrap()
+            .signatures;
+
+        let router = crate::create_mint_router(state.mint.clone(), vec![])
+            .await
+            .unwrap();
+        let unknown = serde_json::json!({
+            "id": format!("02{}", "00".repeat(32)),
+            "amount": 0,
+            "B_": cdk::util::hex::encode(cdk::nuts::nut01::BlsG1PublicKey::hash_to_curve(b"restore").to_bytes())
+        });
+        let response = post_json(
+            &router,
+            "/v1/restore",
+            serde_json::json!({
+                "outputs": [unknown, outputs[0]],
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 16_384)
+            .await
+            .unwrap();
+        let restored: cdk::nuts::RestoreResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(restored.outputs, outputs);
+        assert_eq!(restored.signatures, signatures);
+        state.mint.stop().await.unwrap();
+    }
+
     #[tokio::test]
     async fn cache_post_mint_custom_rejects_cached_url_method_quote_method_mismatch() {
         let state = create_test_state().await;
@@ -939,7 +1030,7 @@ mod tests {
             AuthHeader::None,
             State(state.clone()),
             Path("bolt11".to_string()),
-            Json(mint_request.clone()),
+            PointJson(mint_request.clone()),
         )
         .await;
         assert!(result.is_ok(), "bolt11 mint should populate the cache");
@@ -948,7 +1039,7 @@ mod tests {
             AuthHeader::None,
             State(state),
             Path("bolt12".to_string()),
-            Json(mint_request),
+            PointJson(mint_request),
         )
         .await;
 
@@ -974,7 +1065,7 @@ mod tests {
             AuthHeader::None,
             State(state.clone()),
             Path("bolt11".to_string()),
-            Json(batch_request.clone()),
+            PointJson(batch_request.clone()),
         )
         .await;
         assert!(
@@ -986,7 +1077,7 @@ mod tests {
             AuthHeader::None,
             State(state),
             Path("bolt12".to_string()),
-            Json(batch_request),
+            PointJson(batch_request),
         )
         .await;
 
@@ -1029,7 +1120,7 @@ mod tests {
                 AuthHeader::None,
                 State(state.clone()),
                 Path("bolt11".to_string()),
-                Json(BatchMintRequest {
+                PointJson(BatchMintRequest {
                     quotes,
                     outputs: vec![],
                     quote_amounts: None,

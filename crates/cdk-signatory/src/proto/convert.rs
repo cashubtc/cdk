@@ -72,12 +72,13 @@ impl TryInto<crate::signatory::SignatoryKeySet> for KeySet {
             .map(|(amount, pk)| MintPublicKey::from_slice(&pk).map(|pk| (amount.into(), pk)))
             .collect::<Result<BTreeMap<Amount, _>, _>>()?;
 
+        let id = Id::from_bytes(&self.id)?;
         Ok(crate::signatory::SignatoryKeySet {
-            id: Id::from_bytes(&self.id)?,
+            id,
             unit: self
                 .unit
                 .ok_or(cdk_common::Error::Custom(INTERNAL_ERROR.to_owned()))?
-                .try_into()
+                .for_keyset_version(id.get_version())
                 .map_err(|_| cdk_common::Error::Custom("Invalid currency unit".to_owned()))?,
             active: self.active,
             input_fee_ppk: self.input_fee_ppk,
@@ -318,6 +319,24 @@ impl From<cdk_common::CurrencyUnit> for CurrencyUnit {
     }
 }
 
+impl CurrencyUnit {
+    fn for_keyset_version(
+        self,
+        version: KeySetVersion,
+    ) -> Result<cdk_common::CurrencyUnit, Status> {
+        if let Some(currency_unit::CurrencyUnit::CustomUnit(name)) = &self.currency_unit {
+            version
+                .validate_unit_str(name)
+                .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        }
+        let unit = self.try_into()?;
+        version
+            .validate_unit(&unit)
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        Ok(unit)
+    }
+}
+
 impl TryInto<cdk_common::CurrencyUnit> for CurrencyUnit {
     type Error = Status;
 
@@ -347,12 +366,13 @@ impl TryInto<cdk_common::CurrencyUnit> for CurrencyUnit {
 impl TryInto<cdk_common::KeySet> for KeySet {
     type Error = cdk_common::error::Error;
     fn try_into(self) -> Result<cdk_common::KeySet, Self::Error> {
+        let id = Id::from_bytes(&self.id)?;
         Ok(cdk_common::KeySet {
-            id: Id::from_bytes(&self.id)?,
+            id,
             unit: self
                 .unit
                 .ok_or(cdk_common::error::Error::Custom(INTERNAL_ERROR.to_owned()))?
-                .try_into()
+                .for_keyset_version(id.get_version())
                 .map_err(|_| cdk_common::Error::Custom("Invalid unit encoding".to_owned()))?,
             active: Some(self.active),
             keys: cdk_common::Keys::new(
@@ -385,16 +405,17 @@ impl TryInto<crate::signatory::RotateKeyArguments> for RotationRequest {
     type Error = Status;
 
     fn try_into(self) -> Result<crate::signatory::RotateKeyArguments, Self::Error> {
+        let keyset_id_type = KeySetVersion::from_proto_i32(self.keyset_id_type)
+            .map_err(|err| Status::invalid_argument(err.to_string()))?;
         Ok(crate::signatory::RotateKeyArguments {
             unit: self
                 .unit
                 .ok_or(Status::invalid_argument("unit not set"))?
-                .try_into()?,
+                .for_keyset_version(keyset_id_type)?,
             amounts: self.amounts,
             input_fee_ppk: self.input_fee_ppk,
             final_expiry: self.final_expiry,
-            keyset_id_type: KeySetVersion::from_proto_i32(self.keyset_id_type)
-                .map_err(|err| Status::invalid_argument(err.to_string()))?,
+            keyset_id_type,
         })
     }
 }
@@ -418,12 +439,13 @@ impl TryInto<cdk_common::KeySetInfo> for KeySet {
     type Error = cdk_common::Error;
 
     fn try_into(self) -> Result<cdk_common::KeySetInfo, Self::Error> {
+        let id = Id::from_bytes(&self.id)?;
         Ok(cdk_common::KeySetInfo {
-            id: Id::from_bytes(&self.id)?,
+            id,
             unit: self
                 .unit
                 .ok_or(cdk_common::Error::Custom(INTERNAL_ERROR.to_owned()))?
-                .try_into()
+                .for_keyset_version(id.get_version())
                 .map_err(|_| cdk_common::Error::Custom("Invalid unit encoding".to_owned()))?,
             active: self.active,
             input_fee_ppk: self.input_fee_ppk,
@@ -601,6 +623,25 @@ mod tests {
             .all(|key| matches!(key, MintPublicKey::Bls(_))));
         let public_keyset: cdk_common::KeySet = keyset.into();
         public_keyset.verify_id().unwrap();
+    }
+
+    #[test]
+    fn keyset_rpc_checks_the_original_v3_unit() {
+        let mut encoded = KeySet {
+            id: vec![0; 33],
+            unit: Some(CurrencyUnit {
+                currency_unit: Some(currency_unit::CurrencyUnit::CustomUnit(
+                    "US-cent".to_string(),
+                )),
+            }),
+            ..Default::default()
+        };
+        encoded.id[0] = 2;
+        let info: Result<cdk_common::KeySetInfo, _> = encoded.clone().try_into();
+        assert!(info.is_err());
+        encoded.id[0] = 1;
+        let info: cdk_common::KeySetInfo = encoded.try_into().unwrap();
+        assert_eq!(info.unit, cdk_common::CurrencyUnit::custom("us-cent"));
     }
 
     #[test]

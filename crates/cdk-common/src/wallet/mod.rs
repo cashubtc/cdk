@@ -548,6 +548,12 @@ pub struct ReceiveOptions {
     /// proof must match it exactly (NUT-18 payee checks), and the requested
     /// tree replaces the generic leaf policy.
     pub v3_payment_request: Option<crate::nuts::nut18::NutrootOption>,
+    /// Accept v3 proofs the wallet can spend only through a disclosed leaf
+    /// (eg a refund, hashlock or multisig party claiming a token), using
+    /// `p2pk_signing_keys` and `preimages`. Off by default: whoever holds the
+    /// key path, or another leaf, can spend such a proof first, so it is
+    /// received only if the swap succeeds.
+    pub v3_script_path: bool,
 }
 
 impl fmt::Debug for ReceiveOptions {
@@ -559,6 +565,7 @@ impl fmt::Debug for ReceiveOptions {
             .field("metadata", &self.metadata)
             .field("v3_min_refund_horizon", &self.v3_min_refund_horizon)
             .field("v3_payment_request", &self.v3_payment_request)
+            .field("v3_script_path", &self.v3_script_path)
             .finish()
     }
 }

@@ -599,6 +599,63 @@ async fn v3_nutroot_payment_request_flow() {
     assert_eq!(received, Amount::from(16));
 }
 
+/// A token locked to a payee with a refund leaf: once the refund has opened,
+/// the refund key's holder claims the token through that leaf, without the
+/// payee's key and without a payment request.
+#[tokio::test]
+async fn v3_leaf_party_claims_a_token_by_script_path() {
+    use cdk::nuts::nut10::nutroot::Leaf;
+    use cdk::nuts::nut18::NutrootOption;
+    use cdk::nuts::SecretKey;
+
+    let mint = create_and_start_v3_test_mint().await.unwrap();
+    let alice = create_test_wallet_for_mint(mint.clone()).await.unwrap();
+    let bob = create_test_wallet_for_mint(mint.clone()).await.unwrap();
+    fund_wallet(&alice, 64, None).await.unwrap();
+
+    let payee = SecretKey::generate().public_key();
+    let refund_key = SecretKey::generate();
+    let refund = Leaf::After {
+        n: 1,
+        keys: vec![refund_key.public_key()],
+        time: cdk::util::unix_time() - 3600,
+    }
+    .to_leaf_bytes()
+    .unwrap();
+    let token = alice
+        .prepare_send(
+            Amount::from(16),
+            SendOptions {
+                nutroot: Some(NutrootOption {
+                    k: payee,
+                    l: Some(vec![refund]),
+                    b: Some(vec![refund_key.public_key()]),
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .confirm(None)
+        .await
+        .unwrap()
+        .to_string();
+
+    // Refused unless the caller accepts a script-path receive.
+    let mut options = ReceiveOptions {
+        p2pk_signing_keys: vec![refund_key],
+        ..Default::default()
+    };
+    assert!(bob.receive(&token, options.clone()).await.is_err());
+    options.v3_script_path = true;
+    assert_eq!(
+        bob.receive(&token, options).await.unwrap(),
+        Amount::from(16)
+    );
+    assert_eq!(bob.total_balance().await.unwrap(), Amount::from(16));
+    mint.stop().await.unwrap();
+}
+
 /// A NUMS lock can only be swept by revealing a leaf. Exercise both plain
 /// and NUT-28 blinded leaf keys, and refuse a hashlock without its preimage.
 #[tokio::test]

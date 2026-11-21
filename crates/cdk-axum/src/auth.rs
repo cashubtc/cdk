@@ -1,8 +1,7 @@
 use std::str::FromStr;
 
 use axum::body::Body;
-use axum::extract::Request;
-use axum::extract::{FromRequestParts, State};
+use axum::extract::{FromRequestParts, Request, State};
 use axum::http::request::Parts;
 use axum::http::StatusCode;
 use axum::middleware::Next;
@@ -15,6 +14,7 @@ use cdk::nuts::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::point_request::PointJson;
 use crate::{get_keyset_pubkeys, into_response, MintState};
 
 const CLEAR_AUTH_KEY: &str = "Clear-auth";
@@ -176,7 +176,7 @@ pub async fn get_blind_auth_keys(
 pub async fn post_mint_auth(
     auth: AuthHeader,
     State(state): State<MintState>,
-    Json(payload): Json<MintAuthRequest>,
+    PointJson(payload): PointJson<MintAuthRequest>,
 ) -> Result<Json<MintResponse>, Response> {
     let auth_token = match auth {
         AuthHeader::Clear(cat) => {

@@ -5,7 +5,6 @@ use anyhow::Result;
 use cdk::mint_url::MintUrl;
 use cdk::nuts::Token;
 use cdk::wallet::{ReceiveOptions, WalletRepository};
-use cdk_common::PaymentRequestPayload;
 use nostr::prelude::{Filter, Keys, Kind, PublicKey, SecretKey, UnwrappedGift};
 use nostr_sdk::prelude::{Client, SignerAuthenticator};
 
@@ -66,7 +65,8 @@ pub async fn check_requests(wallet_repository: &WalletRepository) -> Result<()> 
                 for event in events {
                     if let Ok(unwrapped) = UnwrappedGift::from_gift_wrap(&keys, &event) {
                         if let Ok(payload) =
-                            serde_json::from_str::<PaymentRequestPayload>(&unwrapped.rumor.content)
+                            cdk::wallet::decode_payment_request_payload(unwrapped.rumor.content)
+                                .await
                         {
                             if !info.accepts_mint(&payload.mint) {
                                 tracing::warn!("{}", unaccepted_mint_warning(&key, &payload.mint));

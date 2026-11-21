@@ -398,6 +398,10 @@ pub struct ReceiveOptions {
     /// signing keys and preimages to sweep a satisfiable leaf.
     #[serde(default)]
     pub v3_payment_request: Option<String>,
+    /// Accept v3 proofs the wallet can spend only through a disclosed leaf,
+    /// using the supplied signing keys and preimages (default off)
+    #[serde(default)]
+    pub v3_script_path: bool,
 }
 
 impl fmt::Debug for ReceiveOptions {
@@ -437,6 +441,7 @@ impl TryFrom<ReceiveOptions> for cdk::wallet::ReceiveOptions {
                 opts.v3_payment_request,
                 "v3_payment_request",
             )?,
+            v3_script_path: opts.v3_script_path,
         })
     }
 }
@@ -452,6 +457,7 @@ impl From<cdk::wallet::ReceiveOptions> for ReceiveOptions {
             v3_payment_request: crate::types::proof::to_json_field(
                 opts.v3_payment_request.as_ref(),
             ),
+            v3_script_path: opts.v3_script_path,
         }
     }
 }

@@ -254,11 +254,8 @@ impl Serialize for MintSecretKey {
     }
 }
 
-/// Deserializes a secp256k1 scalar only.
-///
-/// The encoding has no curve tag, and the only deserialized scalars are
-/// legacy ones (NUT-12 DLEQ blinding factors), so a BLS scalar must be
-/// rebuilt with [`Self::bls_from_slice`] using its keyset version.
+/// Deserialize an untagged standalone scalar using the legacy curve.
+/// Mint key pairs select the curve from the accompanying public key.
 impl<'de> Deserialize<'de> for MintSecretKey {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         Ok(Self::Secp256k1(SecretKey::deserialize(deserializer)?))

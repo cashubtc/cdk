@@ -208,6 +208,14 @@ pub enum Error {
     /// Unsupported token
     #[error("Unsupported payment method")]
     UnsupportedPaymentMethod,
+    /// More proofs than the receiver accepts
+    #[error("Token contains {actual} proofs, maximum {max}")]
+    TooManyProofs {
+        /// Number of proofs across all groups
+        actual: usize,
+        /// Receiver limit
+        max: usize,
+    },
     /// Duplicate proofs in token
     #[error("Duplicate proofs in token")]
     DuplicateProofs,

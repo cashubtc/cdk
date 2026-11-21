@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use cdk::nuts::nut18::{NutrootOption, PaymentRequest};
-use cdk::nuts::{CurrencyUnit, SecretKey, Token};
+use cdk::nuts::{CurrencyUnit, SecretKey};
 use cdk::util::unix_time;
 use cdk::wallet::{ReceiveOptions, WalletRepository};
 use cdk::Amount;
@@ -167,7 +167,7 @@ async fn receive_token(
     unit: &CurrencyUnit,
     nutroot: Option<&NutrootOption>,
 ) -> Result<Amount> {
-    let token: Token = Token::from_str(token_str)?;
+    let token = cdk::wallet::decode_received_token(token_str).await?;
 
     let mint_url = token.mint_url()?;
 

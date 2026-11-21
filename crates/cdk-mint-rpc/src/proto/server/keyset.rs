@@ -43,9 +43,6 @@ impl KeysetService for MintRPCServer {
     ) -> Result<Response<crate::keyset::RotateNextKeysetResponse>, Status> {
         let request = request.into_inner();
 
-        let unit = CurrencyUnit::from_str(&request.unit)
-            .map_err(|_| Status::invalid_argument("Invalid unit".to_string()))?;
-
         let requested = request
             .keyset_version
             .map(|raw| match KeysetVersion::try_from(raw) {
@@ -73,6 +70,12 @@ impl KeysetService for MintRPCServer {
             // V3 (BLS) is opt-in; an unspecified version keeps creating V2.
             Some(true) | None => KeySetVersion::Version01,
         });
+
+        keyset_version
+            .validate_unit_str(&request.unit)
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        let unit = CurrencyUnit::from_str(&request.unit)
+            .map_err(|_| Status::invalid_argument("Invalid unit".to_string()))?;
 
         let keyset_info = self
             .rotate_keyset(
@@ -193,6 +196,25 @@ mod tests {
             );
             assert_eq!(server.mint.pubkeys(), before);
         }
+    }
+
+    #[tokio::test]
+    async fn v3_rotation_checks_the_original_unit() {
+        let server = create_test_rpc_server().await;
+        let before = server.mint.pubkeys();
+        let error = KeysetService::rotate_next_keyset(
+            &server,
+            Request::new(crate::keyset::RotateNextKeysetRequest {
+                unit: "SAT".to_string(),
+                amounts: vec![1, 2, 4],
+                keyset_version: Some(KeysetVersion::V3 as i32),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code(), tonic::Code::InvalidArgument);
+        assert_eq!(server.mint.pubkeys(), before);
     }
 
     #[tokio::test]

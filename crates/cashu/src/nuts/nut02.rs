@@ -57,6 +57,12 @@ pub enum Error {
         /// Invalid unit string
         unit: String,
     },
+    /// A custom unit used a name reserved for a built-in unit
+    #[error("Custom keyset unit duplicates the built-in unit {unit}")]
+    BuiltInUnitAlias {
+        /// Reserved unit name
+        unit: String,
+    },
     /// Public key curve does not match the keyset version
     #[error("Public key curve does not match keyset version {version}")]
     InvalidPublicKeyVersion {
@@ -85,17 +91,46 @@ impl KeySetVersion {
     /// V3 units must match `[a-z0-9_-]+`. V1 and V2 units retain their
     /// historical behavior so existing keysets remain loadable.
     pub fn validate_unit(&self, unit: &CurrencyUnit) -> Result<(), Error> {
+        if let (Self::Version02, CurrencyUnit::Custom(name)) = (self, unit) {
+            self.validate_unit_str(name)?;
+            if !matches!(name.parse(), Ok(CurrencyUnit::Custom(_))) {
+                return Err(Error::BuiltInUnitAlias {
+                    unit: name.to_string(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Validate the original wire spelling before parsing normalizes the unit.
+    pub fn validate_unit_str(&self, unit: &str) -> Result<(), Error> {
         if matches!(self, Self::Version00 | Self::Version01) {
             return Ok(());
         }
-        let unit = unit.to_string();
         if unit.is_empty()
             || !unit.bytes().all(|byte| {
                 byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'-')
             })
         {
-            return Err(Error::InvalidUnit { unit });
+            return Err(Error::InvalidUnit {
+                unit: unit.to_owned(),
+            });
         }
+        Ok(())
+    }
+
+    /// Parse the unit at a keyset boundary, where its version is known.
+    fn parse_unit(self, unit: String) -> Result<CurrencyUnit, Error> {
+        self.validate_unit_str(&unit)?;
+        unit.parse().map_err(|_| Error::InvalidUnit { unit })
+    }
+
+    fn validate_public_key(self, key: &MintPublicKey) -> Result<(), Error> {
+        let valid = match self {
+            Self::Version00 | Self::Version01 => matches!(key, MintPublicKey::Secp256k1(_)),
+            Self::Version02 => matches!(key, MintPublicKey::Bls(_)),
+        };
+        ensure_cdk!(valid, Error::InvalidPublicKeyVersion { version: self });
         Ok(())
     }
 
@@ -279,7 +314,8 @@ impl Id {
     ///
     /// Amounts and fees use minimal big-endian encoding; public keys are
     /// compressed G2 bytes. Unlike v2, v3 IDs do not commit the final expiry,
-    /// so it is not an input.
+    /// so it is not an input. This computes the hash of the supplied metadata.
+    /// Use [`KeySet::verify_id`] to validate a received keyset.
     pub fn v3_from_data(map: &Keys, unit: &CurrencyUnit, input_fee_ppk: u64) -> Self {
         fn append_frame(target: &mut Vec<u8>, bytes: &[u8]) {
             target.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
@@ -582,7 +618,7 @@ pub struct KeysetResponse {
 }
 
 /// Keyset
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct KeySet {
     /// Keyset [`Id`]
     pub id: Id,
@@ -604,22 +640,48 @@ pub struct KeySet {
     pub final_expiry: Option<u64>,
 }
 
+impl<'de> Deserialize<'de> for KeySet {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename = "KeySet")]
+        struct EncodedKeySet {
+            id: Id,
+            unit: String,
+            active: Option<bool>,
+            keys: Keys,
+            #[serde(
+                deserialize_with = "deserialize_input_fee_ppk",
+                default = "default_input_fee_ppk"
+            )]
+            input_fee_ppk: u64,
+            final_expiry: Option<u64>,
+        }
+
+        let encoded = EncodedKeySet::deserialize(deserializer)?;
+        Ok(Self {
+            id: encoded.id,
+            unit: encoded
+                .id
+                .get_version()
+                .parse_unit(encoded.unit)
+                .map_err(serde::de::Error::custom)?,
+            active: encoded.active,
+            keys: encoded.keys,
+            input_fee_ppk: encoded.input_fee_ppk,
+            final_expiry: encoded.final_expiry,
+        })
+    }
+}
+
 impl KeySet {
     /// Verify the keyset ID canonically matches its keys and metadata.
     pub fn verify_id(&self) -> Result<(), Error> {
         self.id.version.validate_unit(&self.unit)?;
-        for (_, key) in self.keys.iter() {
-            let matches_version = match self.id.version {
-                KeySetVersion::Version00 | KeySetVersion::Version01 => {
-                    matches!(key, MintPublicKey::Secp256k1(_))
-                }
-                KeySetVersion::Version02 => matches!(key, MintPublicKey::Bls(_)),
-            };
-            if !matches_version {
-                return Err(Error::InvalidPublicKeyVersion {
-                    version: self.id.version,
-                });
-            }
+        for key in self.keys.values() {
+            self.id.version.validate_public_key(key)?;
         }
         let keys_id = match self.id.version {
             KeySetVersion::Version00 => Id::v1_from_keys(&self.keys),
@@ -668,7 +730,7 @@ impl KeySet {
 }
 
 /// KeySetInfo
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize)]
 pub struct KeySetInfo {
     /// Keyset [`Id`]
     pub id: Id,
@@ -678,14 +740,44 @@ pub struct KeySetInfo {
     /// Mint will only sign from an active keyset
     pub active: bool,
     /// Input Fee PPK
-    #[serde(
-        deserialize_with = "deserialize_input_fee_ppk",
-        default = "default_input_fee_ppk"
-    )]
     pub input_fee_ppk: u64,
     /// Expiry of the keyset
     #[serde(skip_serializing_if = "Option::is_none")]
     pub final_expiry: Option<u64>,
+}
+
+impl<'de> Deserialize<'de> for KeySetInfo {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename = "KeySetInfo")]
+        struct EncodedKeySetInfo {
+            id: Id,
+            unit: String,
+            active: bool,
+            #[serde(
+                deserialize_with = "deserialize_input_fee_ppk",
+                default = "default_input_fee_ppk"
+            )]
+            input_fee_ppk: u64,
+            final_expiry: Option<u64>,
+        }
+
+        let encoded = EncodedKeySetInfo::deserialize(deserializer)?;
+        Ok(Self {
+            id: encoded.id,
+            unit: encoded
+                .id
+                .get_version()
+                .parse_unit(encoded.unit)
+                .map_err(serde::de::Error::custom)?,
+            active: encoded.active,
+            input_fee_ppk: encoded.input_fee_ppk,
+            final_expiry: encoded.final_expiry,
+        })
+    }
 }
 
 /// List of [KeySetInfo]
@@ -733,7 +825,7 @@ fn default_input_fee_ppk() -> u64 {
 /// fn assert_serialize<T: serde::Serialize>() {}
 /// assert_serialize::<cashu::nuts::nut02::MintKeySet>();
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MintKeySet {
     /// Keyset [`Id`]
     pub id: Id,
@@ -742,10 +834,45 @@ pub struct MintKeySet {
     /// Keyset [`MintKeys`]
     pub keys: MintKeys,
     /// Input Fee PPK
-    #[serde(default)]
     pub input_fee_ppk: u64,
     /// Expiry [`Option<u64>`]
     pub final_expiry: Option<u64>,
+}
+
+#[cfg(feature = "mint")]
+impl<'de> Deserialize<'de> for MintKeySet {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename = "MintKeySet")]
+        struct EncodedMintKeySet {
+            id: Id,
+            unit: String,
+            keys: MintKeys,
+            #[serde(default)]
+            input_fee_ppk: u64,
+            final_expiry: Option<u64>,
+        }
+
+        let encoded = EncodedMintKeySet::deserialize(deserializer)?;
+        let version = encoded.id.get_version();
+        for pair in encoded.keys.values() {
+            version
+                .validate_public_key(&pair.public_key)
+                .map_err(serde::de::Error::custom)?;
+        }
+        Ok(Self {
+            id: encoded.id,
+            unit: version
+                .parse_unit(encoded.unit)
+                .map_err(serde::de::Error::custom)?,
+            keys: encoded.keys,
+            input_fee_ppk: encoded.input_fee_ppk,
+            final_expiry: encoded.final_expiry,
+        })
+    }
 }
 
 #[cfg(feature = "mint")]
@@ -764,7 +891,8 @@ impl MintKeySet {
         input_fee_ppk: u64,
         final_expiry: Option<u64>,
         version: KeySetVersion,
-    ) -> Self {
+    ) -> Result<Self, Error> {
+        version.validate_unit(&unit)?;
         let mut map = BTreeMap::new();
         for (i, amount) in amounts.iter().enumerate() {
             let mint_key_pair = match version {
@@ -827,13 +955,13 @@ impl MintKeySet {
                 Id::v3_from_data(&keys.clone().into(), &unit, input_fee_ppk)
             }
         };
-        Self {
+        Ok(Self {
             id,
             unit,
             keys,
             input_fee_ppk,
             final_expiry,
-        }
+        })
     }
 
     /// Generate new [`MintKeySet`] from seed
@@ -852,7 +980,7 @@ impl MintKeySet {
         input_fee_ppk: u64,
         final_expiry: Option<u64>,
         version: KeySetVersion,
-    ) -> Self {
+    ) -> Result<Self, Error> {
         let xpriv = Xpriv::new_master(bitcoin::Network::Bitcoin, seed).expect("RNG busted");
         Self::generate(
             secp,
@@ -883,7 +1011,7 @@ impl MintKeySet {
         input_fee_ppk: u64,
         final_expiry: Option<u64>,
         version: KeySetVersion,
-    ) -> Self {
+    ) -> Result<Self, Error> {
         Self::generate(
             secp,
             xpriv
@@ -1088,7 +1216,7 @@ mod test {
         assert_eq!(id, id_from_str);
     }
 
-    // https://github.com/cashubtc/nuts/blob/d9928f06dfcfefdfe6e3b169e18af25c5211fb1f/tests/02-tests.md#version-3
+    // https://github.com/cashubtc/nuts/blob/cb1190af47ea42d7e28e0b3575d4e0da5bb1808d/tests/02-tests.md#version-3
     #[test]
     fn test_v3_deserialization_and_id_generation() {
         for (json, expected, unit, fee) in [
@@ -1139,7 +1267,15 @@ mod test {
 
     #[test]
     fn test_keyset_unit_rules_are_version_specific() {
-        for unit in ["", "usd cents", "usd:cent", "éuro", "usd/cent"] {
+        for unit in [
+            "",
+            "usd cents",
+            "usd:cent",
+            "éuro",
+            "usd/cent",
+            "USD",
+            " x ",
+        ] {
             let unit = CurrencyUnit::Custom(unit.into());
             assert!(matches!(
                 KeySetVersion::Version02.validate_unit(&unit),
@@ -1149,13 +1285,96 @@ mod test {
             KeySetVersion::Version00.validate_unit(&unit).unwrap();
             KeySetVersion::Version01.validate_unit(&unit).unwrap();
         }
-        for unit in [
-            CurrencyUnit::Sat,
-            CurrencyUnit::custom("usd-cent_2"),
-            CurrencyUnit::Custom("USD".into()),
-        ] {
+        assert!(matches!(
+            KeySetVersion::Version02.validate_unit(&CurrencyUnit::custom("sat")),
+            Err(Error::BuiltInUnitAlias { .. })
+        ));
+        for unit in [CurrencyUnit::Sat, CurrencyUnit::custom("usd-cent_2")] {
             KeySetVersion::Version02.validate_unit(&unit).unwrap();
         }
+    }
+
+    #[test]
+    fn keyset_wire_unit_is_checked_before_normalization() {
+        let keys: serde_json::Value = serde_json::from_str(BLS_V3_KEYSET_VECTOR_1_KEYS).unwrap();
+        for raw in ["SAT", " sat ", "usd/cent", ""] {
+            let mut object = serde_json::json!({
+                "unit": raw,
+                "id": BLS_V3_KEYSET_VECTOR_1_ID,
+                "active": true,
+                "keys": keys
+            });
+            assert!(serde_json::from_value::<super::KeySetInfo>(object.clone()).is_err());
+            assert!(serde_json::from_value::<super::KeySet>(object.clone()).is_err());
+            #[cfg(feature = "mint")]
+            {
+                let private = serde_json::json!({
+                    "unit": raw, "id": BLS_V3_KEYSET_VECTOR_1_ID, "keys": {}
+                });
+                assert!(serde_json::from_value::<super::MintKeySet>(private).is_err());
+            }
+
+            object["id"] = serde_json::json!("0000000000000000");
+            let info: super::KeySetInfo = serde_json::from_value(object.clone()).unwrap();
+            let keyset: super::KeySet = serde_json::from_value(object).unwrap();
+            assert_eq!(info.unit, raw.parse::<CurrencyUnit>().unwrap());
+            assert_eq!(info.unit, keyset.unit);
+        }
+        let valid: super::KeySetInfo = serde_json::from_value(serde_json::json!({
+            "unit": "usd-cent_2", "id": BLS_V3_KEYSET_VECTOR_1_ID, "active": true,
+            "input_fee_ppk": null
+        }))
+        .unwrap();
+        assert_eq!(valid.unit, CurrencyUnit::custom("usd-cent_2"));
+        assert_eq!(valid.input_fee_ppk, 0);
+    }
+
+    #[cfg(feature = "mint")]
+    #[test]
+    fn mint_keyset_import_requires_keys_on_the_advertised_curve() {
+        use crate::nuts::nut01::MintSecretKey;
+        let legacy = MintSecretKey::generate();
+        let bls = MintSecretKey::generate_bls().unwrap();
+        for (id, valid, invalid) in [
+            ("009a1f293253e41e", &legacy, &bls),
+            (BLS_V3_KEYSET_VECTOR_1_ID, &bls, &legacy),
+        ] {
+            let encoded = |key: &MintSecretKey| {
+                serde_json::json!({
+                    "id": id, "unit": "sat",
+                    "keys": { "1": { "public_key": key.public_key(), "secret_key": key } }
+                })
+            };
+            assert!(serde_json::from_value::<super::MintKeySet>(encoded(valid)).is_ok());
+            let error = serde_json::from_value::<super::MintKeySet>(encoded(invalid)).unwrap_err();
+            assert!(error.to_string().contains("Public key curve"));
+        }
+    }
+
+    #[cfg(feature = "mint")]
+    #[test]
+    fn mint_keyset_generation_validates_v3_units() {
+        use bitcoin::bip32::DerivationPath;
+
+        use crate::SECP256K1;
+
+        let generate = |version| {
+            super::MintKeySet::generate_from_seed(
+                &SECP256K1,
+                &[1; 32],
+                &[1],
+                CurrencyUnit::custom("usd/cent"),
+                DerivationPath::master(),
+                0,
+                None,
+                version,
+            )
+        };
+        assert!(matches!(
+            generate(KeySetVersion::Version02),
+            Err(Error::InvalidUnit { .. })
+        ));
+        assert!(generate(KeySetVersion::Version01).is_ok());
     }
 
     #[test]
@@ -1230,7 +1449,8 @@ mod test {
             0,
             None,
             KeySetVersion::Version02,
-        );
+        )
+        .unwrap();
 
         let xpriv = Xpriv::new_master(bitcoin::Network::Bitcoin, &seed)
             .unwrap()
@@ -1463,6 +1683,22 @@ mod test {
 
         let id_from_uppercase = Id::from_str(&SHORT_KEYSET_ID.to_uppercase());
         assert!(id_from_uppercase.is_ok());
+
+        // NUT-02: a v3 keyset has version byte 02 exactly; later bytes are
+        // not v3 and MUST NOT be used.
+        let v3 = "022546ab0a2dee9f79510f4e20a4e3d9e894a97361047c594902573a7e64f9d701";
+        assert_eq!(
+            Id::from_str(v3).unwrap().get_version(),
+            KeySetVersion::Version02
+        );
+        for version in ["03", "04", "ff"] {
+            let id = format!("{version}{}", &v3[2..]);
+            assert!(matches!(Id::from_str(&id), Err(Error::UnknownVersion)));
+            assert!(matches!(
+                ShortKeysetId::from_str(&id[..16]),
+                Err(Error::UnknownVersion)
+            ));
+        }
     }
 
     #[test]

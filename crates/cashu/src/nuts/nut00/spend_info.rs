@@ -276,6 +276,30 @@ impl SpendInfo {
         self.reconstruct_from(secret, internal_key, source, internal_secret)
     }
 
+    /// Receive check 1 for a wallet that holds no key path
+    ///
+    /// A wallet that is not the slot-0 receiver of a receiver-keyed proof
+    /// takes the disclosed `K` as given, and `E` then serves its leaf keys
+    /// only (NUT-28 slots `1..`). The commitment to `secret` is checked as in
+    /// [`Self::reconstruct`], and the result never carries a key-path key.
+    /// Any other shape reconstructs as it does there without a receiver key.
+    pub fn reconstruct_without_key_path(
+        &self,
+        secret: &PublicKey,
+    ) -> Result<Reconstruction, Error> {
+        self.validate()?;
+        match (&self.u, &self.k, &self.e, self.internal_key) {
+            (None, None, Some(_), Some(disclosed)) => {
+                self.reconstruct_from(secret, disclosed, KeySource::Disclosed, None)
+            }
+            _ => {
+                let mut reconstruction = self.reconstruct(secret, None)?;
+                reconstruction.key_path_key = None;
+                Ok(reconstruction)
+            }
+        }
+    }
+
     /// Rebuild `secret` from an established internal key
     fn reconstruct_from(
         &self,
@@ -722,6 +746,43 @@ mod tests {
                 .reconstruct(&point(WORKED_SECRET), Some(&receiver)),
             Err(Error::InternalKeyMismatch)
         ));
+    }
+
+    /// A leaf signer is not the slot-0 receiver: it takes the disclosed K.
+    #[test]
+    fn check_1_without_key_path_takes_the_disclosed_key() {
+        let leaf_signer = key(9);
+        let spend_info = info(serde_json::json!({"E": E5, "K": WORKED_K, "tree": [AFTER_LEAF]}));
+        assert!(matches!(
+            spend_info.reconstruct(&point(WORKED_SECRET), Some(&leaf_signer)),
+            Err(Error::InternalKeyMismatch)
+        ));
+        let r = spend_info
+            .reconstruct_without_key_path(&point(WORKED_SECRET))
+            .unwrap();
+        assert_eq!(r.internal_key, point(WORKED_K));
+        assert_eq!(r.source, KeySource::Disclosed);
+        assert!(r.key_path_key.is_none());
+        assert_eq!(r.leaves.len(), 1);
+
+        // The disclosed K must still commit to the secret.
+        assert!(matches!(
+            info(serde_json::json!({"E": E5, "K": SECRET_K0, "tree": [AFTER_LEAF]}))
+                .reconstruct_without_key_path(&point(WORKED_SECRET)),
+            Err(Error::Mismatch)
+        ));
+        // Without a disclosed K there is nothing to take.
+        assert!(matches!(
+            info(serde_json::json!({"E": E5, "tree": [AFTER_LEAF]}))
+                .reconstruct_without_key_path(&point(WORKED_SECRET)),
+            Err(Error::NoReceiverKey)
+        ));
+        // A bearer k never yields a key-path key here.
+        let bearer = SpendInfo::bearer(key(3));
+        let r = bearer
+            .reconstruct_without_key_path(&key(3).public_key())
+            .unwrap();
+        assert!(r.key_path_key.is_none());
     }
 
     /// tests/00 script-only shape: K = H + u*G

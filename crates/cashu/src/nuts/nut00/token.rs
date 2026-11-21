@@ -18,6 +18,25 @@ use crate::nuts::nut10::SpendingConditions;
 use crate::nuts::{CurrencyUnit, Id, Kind, PublicKey};
 use crate::{ensure_cdk, Amount, KeySetInfo};
 
+fn token_value<'a>(
+    proofs: impl Iterator<Item = (KeySetVersion, &'a crate::secret::Secret, Amount)>,
+) -> Result<Amount, Error> {
+    let mut seen = HashSet::new();
+    let mut total = Some(Amount::ZERO);
+    for (version, secret, amount) in proofs {
+        // The two legacy keyset versions share the same hash-to-curve function.
+        let bls = match version {
+            KeySetVersion::Version00 | KeySetVersion::Version01 => false,
+            KeySetVersion::Version02 => true,
+        };
+        if !seen.insert((bls, secret)) {
+            return Err(Error::DuplicateProofs);
+        }
+        total = total.and_then(|sum| sum.checked_add(amount));
+    }
+    total.ok_or(crate::amount::Error::AmountOverflow.into())
+}
+
 /// Token Enum
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -220,6 +239,17 @@ impl FromStr for Token {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::decode(s, None)
+    }
+}
+
+impl Token {
+    /// Decode a token, checking its total proof count before decoding curve points.
+    pub fn from_str_with_proof_limit(s: &str, max: usize) -> Result<Self, Error> {
+        Self::decode(s, Some(max))
+    }
+
+    fn decode(s: &str, max: Option<usize>) -> Result<Self, Error> {
         let (is_v3, s) = match (s.strip_prefix("cashuA"), s.strip_prefix("cashuB")) {
             (Some(s), None) => (true, s),
             (None, Some(s)) => (false, s),
@@ -230,16 +260,81 @@ impl FromStr for Token {
             .with_decode_padding_mode(bitcoin::base64::engine::DecodePaddingMode::Indifferent);
         let decoded = GeneralPurpose::new(&alphabet::URL_SAFE, decode_config).decode(s)?;
 
-        match is_v3 {
-            true => {
-                let decoded_str = String::from_utf8(decoded)?;
-                let token: TokenV3 = serde_json::from_str(&decoded_str)?;
-                Ok(Token::TokenV3(token))
+        if is_v3 {
+            if let Some(max) = max {
+                #[derive(Deserialize)]
+                struct Envelope {
+                    token: Vec<Group>,
+                    #[serde(default, rename = "memo")]
+                    _memo: Option<serde::de::IgnoredAny>,
+                    #[serde(default, rename = "unit")]
+                    _unit: Option<serde::de::IgnoredAny>,
+                }
+                #[derive(Deserialize)]
+                struct Group {
+                    #[serde(rename = "mint")]
+                    _mint: serde::de::IgnoredAny,
+                    proofs: Vec<serde::de::IgnoredAny>,
+                }
+
+                let envelope: Envelope = serde_json::from_slice(&decoded)?;
+                Self::check_proof_count(envelope.token.iter().map(|g| g.proofs.len()).sum(), max)?;
             }
-            false => {
-                let token: TokenV4 = ciborium::from_reader(&decoded[..])?;
-                Ok(Token::TokenV4(token))
+            let decoded_str = String::from_utf8(decoded)?;
+            Ok(Self::TokenV3(serde_json::from_str(&decoded_str)?))
+        } else {
+            Self::decode_cbor(&decoded, max)
+        }
+    }
+
+    fn check_proof_count(actual: usize, max: usize) -> Result<(), Error> {
+        if actual > max {
+            return Err(Error::TooManyProofs { actual, max });
+        }
+        Ok(())
+    }
+
+    fn decode_cbor(bytes: &[u8], max: Option<usize>) -> Result<Self, Error> {
+        if let Some(max) = max {
+            // Match the wire structs' field order for positional CBOR as well as maps.
+            #[derive(Deserialize)]
+            struct Envelope {
+                #[serde(rename = "m")]
+                _mint: serde::de::IgnoredAny,
+                #[serde(rename = "u")]
+                _unit: serde::de::IgnoredAny,
+                #[serde(rename = "d", default)]
+                _memo: Option<serde::de::IgnoredAny>,
+                t: Vec<Group>,
             }
+            #[derive(Deserialize)]
+            struct Group {
+                #[serde(rename = "i")]
+                _id: serde::de::IgnoredAny,
+                p: Vec<serde::de::IgnoredAny>,
+            }
+
+            let envelope: Envelope = ciborium::from_reader(bytes)?;
+            Self::check_proof_count(envelope.t.iter().map(|g| g.p.len()).sum(), max)?;
+        }
+        Ok(Self::TokenV4(ciborium::from_reader(bytes)?))
+    }
+
+    /// Decode a raw binary token with a limit across all keyset groups.
+    pub fn from_raw_with_proof_limit(bytes: &[u8], max: usize) -> Result<Self, Error> {
+        Self::decode_cbor(
+            bytes
+                .strip_prefix(b"crawB")
+                .ok_or(Error::UnsupportedToken)?,
+            Some(max),
+        )
+    }
+
+    /// Number of proofs across all mint or keyset groups.
+    pub fn proof_count(&self) -> usize {
+        match self {
+            Self::TokenV3(t) => t.token.iter().map(|g| g.proofs.len()).sum(),
+            Self::TokenV4(t) => t.token.iter().map(|g| g.proofs.len()).sum(),
         }
     }
 }
@@ -249,16 +344,9 @@ impl TryFrom<&Vec<u8>> for Token {
 
     fn try_from(bytes: &Vec<u8>) -> Result<Self, Self::Error> {
         ensure_cdk!(bytes.len() >= 5, Error::UnsupportedToken);
-
         let prefix = String::from_utf8(bytes[..5].to_vec())?;
-
-        match prefix.as_str() {
-            "crawB" => {
-                let token: TokenV4 = ciborium::from_reader(&bytes[5..])?;
-                Ok(Token::TokenV4(token))
-            }
-            _ => Err(Error::UnsupportedToken),
-        }
+        ensure_cdk!(prefix == "crawB", Error::UnsupportedToken);
+        Self::decode_cbor(&bytes[5..], None)
     }
 }
 
@@ -326,25 +414,12 @@ impl TokenV3 {
     /// Value - errors if duplicate proofs are found
     #[inline]
     pub fn value(&self) -> Result<Amount, Error> {
-        let proof_count = self.token.iter().map(|t| t.proofs.len()).sum::<usize>();
-        let unique_count = self
-            .token
-            .iter()
-            .flat_map(|t| t.proofs.iter().map(|p| &p.secret))
-            .collect::<std::collections::HashSet<_>>()
-            .len();
-
-        // Check if there are any duplicate proofs
-        if unique_count != proof_count {
-            return Err(Error::DuplicateProofs);
-        }
-
-        Ok(Amount::try_sum(
-            self.token
+        token_value(self.token.iter().flat_map(|group| {
+            group
+                .proofs
                 .iter()
-                .map(|t| Amount::try_sum(t.proofs.iter().map(|p| p.amount)))
-                .collect::<Result<Vec<Amount>, _>>()?,
-        )?)
+                .map(|p| (p.keyset_id.get_version(), &p.secret, p.amount))
+        }))
     }
 
     /// Memo
@@ -467,25 +542,12 @@ impl TokenV4 {
     /// Value - errors if duplicate proofs are found
     #[inline]
     pub fn value(&self) -> Result<Amount, Error> {
-        let proof_count = self.token.iter().map(|t| t.proofs.len()).sum::<usize>();
-        let unique_count = self
-            .token
-            .iter()
-            .flat_map(|t| t.proofs.iter().map(|p| &p.secret))
-            .collect::<std::collections::HashSet<_>>()
-            .len();
-
-        // Check if there are any duplicate proofs
-        if unique_count != proof_count {
-            return Err(Error::DuplicateProofs);
-        }
-
-        Ok(Amount::try_sum(
-            self.token
+        token_value(self.token.iter().flat_map(|group| {
+            group
+                .proofs
                 .iter()
-                .map(|t| Amount::try_sum(t.proofs.iter().map(|p| p.amount)))
-                .collect::<Result<Vec<Amount>, _>>()?,
-        )?)
+                .map(|p| (group.keyset_id.get_version(), &p.secret, p.amount))
+        }))
     }
 
     /// Memo
@@ -694,6 +756,35 @@ mod tests {
     use crate::util::hex;
 
     #[test]
+    fn token_proof_limits_cover_all_groups_before_point_decoding() {
+        // Placeholders are intentionally not decodable as proofs.
+        let v3 = serde_json::json!({"token": [
+            {"mint": "https://mint.test", "proofs": [null]},
+            {"mint": "https://mint.test", "proofs": [null]}
+        ]});
+        let encoded = format!("cashuA{}", general_purpose::URL_SAFE.encode(v3.to_string()));
+        assert!(matches!(
+            Token::from_str_with_proof_limit(&encoded, 1),
+            Err(Error::TooManyProofs { actual: 2, max: 1 })
+        ));
+        let v4 = serde_json::json!({"m": "https://mint.test", "u": "sat", "t": [
+            {"i": [], "p": [null]}, {"i": [], "p": [null]}
+        ]});
+        let mut raw = b"crawB".to_vec();
+        ciborium::into_writer(&v4, &mut raw).unwrap();
+        let encoded = format!("cashuB{}", general_purpose::URL_SAFE.encode(&raw[5..]));
+        for result in [
+            Token::from_raw_with_proof_limit(&raw, 1),
+            Token::from_str_with_proof_limit(&encoded, 1),
+        ] {
+            assert!(matches!(
+                result,
+                Err(Error::TooManyProofs { actual: 2, max: 1 })
+            ));
+        }
+    }
+
+    #[test]
     fn test_token_padding() {
         let token_str_with_padding = "cashuAeyJ0b2tlbiI6W3sibWludCI6Imh0dHBzOi8vODMzMy5zcGFjZTozMzM4IiwicHJvb2ZzIjpbeyJhbW91bnQiOjIsImlkIjoiMDA5YTFmMjkzMjUzZTQxZSIsInNlY3JldCI6IjQwNzkxNWJjMjEyYmU2MWE3N2UzZTZkMmFlYjRjNzI3OTgwYmRhNTFjZDA2YTZhZmMyOWUyODYxNzY4YTc4MzciLCJDIjoiMDJiYzkwOTc5OTdkODFhZmIyY2M3MzQ2YjVlNDM0NWE5MzQ2YmQyYTUwNmViNzk1ODU5OGE3MmYwY2Y4NTE2M2VhIn0seyJhbW91bnQiOjgsImlkIjoiMDA5YTFmMjkzMjUzZTQxZSIsInNlY3JldCI6ImZlMTUxMDkzMTRlNjFkNzc1NmIwZjhlZTBmMjNhNjI0YWNhYTNmNGUwNDJmNjE0MzNjNzI4YzcwNTdiOTMxYmUiLCJDIjoiMDI5ZThlNTA1MGI4OTBhN2Q2YzA5NjhkYjE2YmMxZDVkNWZhMDQwZWExZGUyODRmNmVjNjlkNjEyOTlmNjcxMDU5In1dfV0sInVuaXQiOiJzYXQiLCJtZW1vIjoiVGhhbmsgeW91IHZlcnkgbXVjaC4ifQ==";
 
@@ -704,6 +795,10 @@ mod tests {
         let token_without = TokenV3::from_str(token_str_without_padding).unwrap();
 
         assert_eq!(token, token_without);
+        assert_eq!(
+            Token::from_str_with_proof_limit(token_str_with_padding, 2).unwrap(),
+            Token::TokenV3(token)
+        );
     }
 
     #[test]
@@ -813,7 +908,7 @@ mod tests {
     fn test_token_v4_multi_keyset() {
         let token_str_multi_keysets = "cashuBo2F0gqJhaUgA_9SLj17PgGFwgaNhYQFhc3hAYWNjMTI0MzVlN2I4NDg0YzNjZjE4NTAxNDkyMThhZjkwZjcxNmE1MmJmNGE1ZWQzNDdlNDhlY2MxM2Y3NzM4OGFjWCECRFODGd5IXVW-07KaZCvuWHk3WrnnpiDhHki6SCQh88-iYWlIAK0mjE0fWCZhcIKjYWECYXN4QDEzMjNkM2Q0NzA3YTU4YWQyZTIzYWRhNGU5ZjFmNDlmNWE1YjRhYzdiNzA4ZWIwZDYxZjczOGY0ODMwN2U4ZWVhY1ghAjRWqhENhLSsdHrr2Cw7AFrKUL9Ffr1XN6RBT6w659lNo2FhAWFzeEA1NmJjYmNiYjdjYzY0MDZiM2ZhNWQ1N2QyMTc0ZjRlZmY4YjQ0MDJiMTc2OTI2ZDNhNTdkM2MzZGNiYjU5ZDU3YWNYIQJzEpxXGeWZN5qXSmJjY8MzxWyvwObQGr5G1YCCgHicY2FtdWh0dHA6Ly9sb2NhbGhvc3Q6MzMzOGF1Y3NhdA==";
 
-        let token = Token::from_str(token_str_multi_keysets).unwrap();
+        let token = Token::from_str_with_proof_limit(token_str_multi_keysets, 3).unwrap();
         let amount = token.value().expect("valid amount");
 
         assert_eq!(amount, Amount::from(4));
@@ -1014,6 +1109,45 @@ mod tests {
         let result = token.value();
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Amount::from(20));
+    }
+
+    #[test]
+    fn token_value_tracks_secrets_per_curve() {
+        let mint = MintUrl::from_str("https://example.com").unwrap();
+        let (secret, _) = Secret::generate_v3();
+        let legacy = Proof {
+            amount: Amount::from(1),
+            keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
+            secret: secret.clone(),
+            c: crate::dhke::hash_to_curve(secret.as_bytes())
+                .unwrap()
+                .into(),
+            witness: None,
+            dleq: None,
+            p2pk_e: None,
+            spend_info: None,
+        };
+        for (version, duplicate) in [("01", true), ("02", false)] {
+            let id = format!("{version}{}", "ab".repeat(32))
+                .parse::<Id>()
+                .unwrap();
+            let other = Proof {
+                keyset_id: id,
+                c: crate::dhke::hash_secret_to_curve(&secret, id.get_version()).unwrap(),
+                ..legacy.clone()
+            };
+            let proofs = vec![legacy.clone(), other];
+            let v3 =
+                TokenV3::new(mint.clone(), proofs.clone(), None, Some(CurrencyUnit::Sat)).unwrap();
+            let v4 = Token::new(mint.clone(), proofs, None, CurrencyUnit::Sat);
+            for value in [v3.value(), v4.value()] {
+                if duplicate {
+                    assert!(matches!(value, Err(Error::DuplicateProofs)));
+                } else {
+                    assert_eq!(value.unwrap(), Amount::from(2));
+                }
+            }
+        }
     }
 
     #[test]
