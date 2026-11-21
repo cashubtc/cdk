@@ -1068,4 +1068,134 @@ mod tests {
         assert_eq!(stored[0].state, State::Spent);
         assert_eq!(stored[0].proof.c, earlier_c);
     }
+
+    /// Recovering an interrupted mint must hand the quote back, like a
+    /// normal finalize does, so a reusable quote can be minted again.
+    #[tokio::test]
+    async fn test_recover_issue_replay_releases_mint_quote() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let saga_id = uuid::Uuid::new_v4();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.enable_mint_signing();
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let keyset_id = wallet.active_keyset().await.unwrap().id;
+        let fee_and_amounts = FeeAndAmounts::from((0, vec![1, 2, 4, 8]));
+        let premint_secrets = PreMintSecrets::from_seed(
+            keyset_id,
+            0,
+            &wallet.seed,
+            Amount::from(8),
+            &SplitTarget::None,
+            &fee_and_amounts,
+        )
+        .unwrap();
+
+        let mut mint_quote = test_mint_quote(mint_url.clone());
+        mint_quote.used_by_operation = Some(saga_id.to_string());
+        let quote_id = mint_quote.id.clone();
+        db.add_mint_quote(mint_quote).await.unwrap();
+
+        let saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Issue(IssueSagaState::MintRequested),
+            Amount::from(8),
+            mint_url,
+            CurrencyUnit::Sat,
+            OperationData::Mint(MintOperationData::new_single(
+                quote_id.clone(),
+                Amount::from(8),
+                Some(0),
+                Some(1),
+                Some(premint_secrets.blinded_messages()),
+            )),
+        );
+        db.add_saga(saga).await.unwrap();
+
+        let action = wallet
+            .resume_issue_saga(&db.get_saga(&saga_id).await.unwrap().unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(action, RecoveryAction::Recovered);
+        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+        let proofs = db.get_proofs(None, None, None, None).await.unwrap();
+        assert_eq!(proofs.len(), 1);
+
+        let mint_quote = db.get_mint_quote(&quote_id).await.unwrap().unwrap();
+        assert!(mint_quote.used_by_operation.is_none());
+    }
+
+    /// Same as above when the outputs come back through `/restore`.
+    #[tokio::test]
+    async fn test_recover_issue_restore_releases_mint_quote() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let saga_id = uuid::Uuid::new_v4();
+
+        let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.enable_mint_signing();
+        mock_client.push_post_mint_response(Err(crate::Error::Custom("Mint failed".to_string())));
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client.clone()).await;
+        let keyset_id = wallet.active_keyset().await.unwrap().id;
+        let fee_and_amounts = FeeAndAmounts::from((0, vec![1, 2, 4, 8]));
+        let premint_secrets = PreMintSecrets::from_seed(
+            keyset_id,
+            0,
+            &wallet.seed,
+            Amount::from(8),
+            &SplitTarget::None,
+            &fee_and_amounts,
+        )
+        .unwrap();
+        let outputs = premint_secrets.blinded_messages();
+
+        // The mock mint signs amount 2^n with the key [n + 1; 32]
+        let key = crate::nuts::SecretKey::from_slice(&[4; 32]).unwrap();
+        let signature = cdk_common::BlindSignature {
+            amount: Amount::from(8),
+            keyset_id,
+            c: crate::dhke::sign_message(&key, &outputs[0].blinded_secret).unwrap(),
+            dleq: None,
+        };
+        mock_client._set_restore_response(Ok(RestoreResponse {
+            outputs: outputs.clone(),
+            signatures: vec![signature],
+        }));
+
+        let mut mint_quote = test_mint_quote(mint_url.clone());
+        mint_quote.used_by_operation = Some(saga_id.to_string());
+        let quote_id = mint_quote.id.clone();
+        db.add_mint_quote(mint_quote).await.unwrap();
+
+        let saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Issue(IssueSagaState::MintRequested),
+            Amount::from(8),
+            mint_url,
+            CurrencyUnit::Sat,
+            OperationData::Mint(MintOperationData::new_single(
+                quote_id.clone(),
+                Amount::from(8),
+                Some(0),
+                Some(1),
+                Some(outputs),
+            )),
+        );
+        db.add_saga(saga).await.unwrap();
+
+        let action = wallet
+            .resume_issue_saga(&db.get_saga(&saga_id).await.unwrap().unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(action, RecoveryAction::Recovered);
+        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+        let proofs = db.get_proofs(None, None, None, None).await.unwrap();
+        assert_eq!(proofs.len(), 1);
+
+        let mint_quote = db.get_mint_quote(&quote_id).await.unwrap().unwrap();
+        assert!(mint_quote.used_by_operation.is_none());
+    }
 }
