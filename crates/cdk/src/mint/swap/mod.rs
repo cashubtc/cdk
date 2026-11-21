@@ -2,6 +2,7 @@ use cdk_common::SpendingConditionVerification;
 use swap_saga::SwapSaga;
 use tracing::instrument;
 
+use super::nutroot::{has_v3_inputs, verify_v3_proof_inputs};
 use super::{Mint, SwapRequest, SwapResponse};
 use crate::Error;
 
@@ -44,17 +45,25 @@ impl Mint {
             // and HTLC (including SIGALL)
             swap_request.verify_spending_conditions()?;
 
+            // Verify the v3 inputs' witnesses over their input digests
+            // (NUT-00 signing rule)
+            let input_digests = match has_v3_inputs(input_proofs) {
+                true => verify_v3_proof_inputs(&swap_request.transaction()?, input_proofs)?,
+                false => Vec::new(),
+            };
+
             // Step 1: Initialize the swap saga
             let init_saga =
                 SwapSaga::new(self, self.localstore.clone(), self.pubsub_manager.clone());
 
             // Step 2: TX1 - Setup swap (verify balance + add inputs as pending + add output blinded messages)
             let setup_saga = init_saga
-                .setup_swap(
+                .setup_swap_with_digests(
                     swap_request.inputs(),
                     swap_request.outputs(),
                     None,
                     input_verification,
+                    &input_digests,
                 )
                 .await?;
 

@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::nut01::ProofId;
+use super::nut02::KeySetVersion;
 use super::Witness;
 
 /// NUT07 Error
@@ -77,15 +78,27 @@ pub struct CheckStateRequest {
 }
 
 /// Proof state [NUT-07]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// A v3 proof's state (its `Y` is a 48-byte G1 point) also carries the
+/// `input_digest` its witness signed, both present while it is pending or
+/// spent. Pre-v3 states serialize exactly as before, without the field.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProofState {
     /// Y of proof
-    #[serde(rename = "Y")]
     pub y: ProofId,
     /// State of proof
     pub state: State,
     /// Witness data if it is supplied
     pub witness: Option<Witness>,
+    /// Input digest the witness signed (v3 only)
+    pub input_digest: Option<[u8; 32]>,
+}
+
+impl ProofState {
+    /// Whether this is the state of a v3 proof
+    pub fn is_v3(&self) -> bool {
+        self.y.as_bytes().len() == 48
+    }
 }
 
 impl From<(ProofId, State)> for ProofState {
@@ -94,7 +107,77 @@ impl From<(ProofId, State)> for ProofState {
             y: value.0,
             state: value.1,
             witness: None,
+            input_digest: None,
         }
+    }
+}
+
+impl Serialize for ProofState {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+
+        let v3 = self.is_v3();
+        let mut state = serializer.serialize_struct("ProofState", 3 + usize::from(v3))?;
+        state.serialize_field("Y", &self.y)?;
+        state.serialize_field("state", &self.state)?;
+        state.serialize_field("witness", &self.witness)?;
+        if v3 {
+            state.serialize_field(
+                "input_digest",
+                &self.input_digest.map(crate::util::hex::encode),
+            )?;
+        }
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for ProofState {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error as _;
+
+        #[derive(Deserialize)]
+        struct Encoded {
+            #[serde(rename = "Y")]
+            y: ProofId,
+            state: State,
+            #[serde(default)]
+            witness: Option<serde_json::Value>,
+            #[serde(default)]
+            input_digest: Option<String>,
+        }
+
+        let encoded = Encoded::deserialize(deserializer)?;
+        let version = match encoded.y.as_bytes().len() {
+            48 => KeySetVersion::Version02,
+            _ => KeySetVersion::Version00,
+        };
+        let witness = encoded
+            .witness
+            .filter(|value| !value.is_null())
+            .map(|value| Witness::from_value_for_version(value, version))
+            .transpose()
+            .map_err(D::Error::custom)?;
+        let input_digest = encoded
+            .input_digest
+            .map(|hex| {
+                crate::util::hex::decode(&hex)
+                    .ok()
+                    .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+                    .ok_or_else(|| D::Error::custom("input_digest must be 32 bytes of hex"))
+            })
+            .transpose()?;
+        Ok(Self {
+            y: encoded.y,
+            state: encoded.state,
+            witness,
+            input_digest,
+        })
     }
 }
 

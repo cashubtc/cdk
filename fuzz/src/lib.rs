@@ -35,9 +35,8 @@ pub fn nut10_secret_unchecked(conditions: SpendingConditions) -> Nut10Secret {
 /// Falls back to `[1u8; 32]` when the bytes are out of curve order so we
 /// never panic in the corpus.
 pub fn secret_key_from(bytes: [u8; 32]) -> SecretKey {
-    SecretKey::from_slice(&bytes).unwrap_or_else(|_| {
-        SecretKey::from_slice(&[1u8; 32]).expect("0x01..01 is a valid scalar")
-    })
+    SecretKey::from_slice(&bytes)
+        .unwrap_or_else(|_| SecretKey::from_slice(&[1u8; 32]).expect("0x01..01 is a valid scalar"))
 }
 
 /// Derive a `PublicKey` from 32 fuzz bytes via `secret_key_from`.

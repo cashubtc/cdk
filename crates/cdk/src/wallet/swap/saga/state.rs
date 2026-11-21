@@ -147,6 +147,8 @@ mod tests {
                 counter_start: Some(0),
                 counter_end: Some(1),
                 blinded_messages: None,
+                pending_outputs: None,
+                input_ys: vec![],
             }),
         )
     }
@@ -181,6 +183,7 @@ mod tests {
                 derived_secret_count: 1,
                 fee: Amount::from(0),
                 p2bk_secret_keys: None,
+                nutroot_spend_info: vec![],
             },
             saga: swap_saga(operation_id),
         };

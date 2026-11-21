@@ -88,6 +88,7 @@ fn test_proof(keyset_id: Id, amount: u64) -> Proof {
         witness: None,
         dleq: None,
         p2pk_e: None,
+        spend_info: None,
     }
 }
 
@@ -167,6 +168,8 @@ fn test_wallet_saga(mint_url: MintUrl) -> WalletSaga {
             counter_start: Some(0),
             counter_end: Some(10),
             blinded_messages: None,
+            pending_outputs: None,
+            input_ys: vec![],
         }),
     )
 }

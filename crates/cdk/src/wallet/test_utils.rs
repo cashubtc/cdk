@@ -372,6 +372,7 @@ pub fn test_proof(keyset_id: Id, amount: u64) -> Proof {
         witness: None,
         dleq: None,
         p2pk_e: None,
+        spend_info: None,
     }
 }
 
@@ -1135,6 +1136,7 @@ impl MintConnector for MockMintConnector {
                     y,
                     state: proof_states.get(&y).copied().unwrap_or(State::Unspent),
                     witness: None,
+                    input_digest: None,
                 })
                 .collect(),
         })

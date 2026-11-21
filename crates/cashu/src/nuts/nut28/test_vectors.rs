@@ -29,8 +29,7 @@ fn test_p2bk_test_vectors() {
     // let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
 
     // Expected shared secret from test vectors
-    let _expected_shared_secret =
-        "40d6ba4430a6dfa915bb441579b0f4dee032307434e9957a092bbca73151df8b";
+    let expected_shared_secret = "40d6ba4430a6dfa915bb441579b0f4dee032307434e9957a092bbca73151df8b";
 
     // Expected blinding scalars from official NUT-28 spec
     let expected_blinding_scalars = [
@@ -62,20 +61,40 @@ fn test_p2bk_test_vectors() {
         "032371fc0eef6885062581a3852494e2eab8f384b7dd196281b85b77f94770fac5", // P'10
     ];
 
-    // Expected derived secret keys from NUT-28 spec - reference only, not used in tests
-    let _expected_std_secret_keys = [
-        "8d5ad08f4a3cb3fee9bcb5e16cd214e240a2e9ad3c1dc791c4c6e51654698c9a", // sk0
-        "7b64cff5ecac0abf96eeff910f57ab0dd6e53c3c2f1ce9038be25a7ba40e5a3a", // sk1
-        "5f2cb5d0ac13e491ed5cd0fba44eeefea8dd0e2e17a3cf7d2d5f6a0d863d1e5",  // sk2
-        "a16dc61e45c4b4ef2d9b4d7f1dabf07a41a4fb1be45ea4c2b60eefc9c46a0f0f", // sk3
-        "40ec3c26a1bc3e5c7f16b0a6bc3bc7a2d6fa40a7a0bb4b0e47bf9dc9d8c0f0b0b", // sk4
-        "e6c0c82f40ee3efbc6b29cd7a7aee9d4e71c9bfbe6e7eeed1e6b8c8d8e0e0e0e", // sk5
-        "741f89b0d8e7f8a9c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8", // sk6 (placeholder)
-        "8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8", // sk7 (placeholder)
-        "9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d", // sk8 (placeholder)
-        "aeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeae", // sk9 (placeholder)
-        "bfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbf", // sk10 (placeholder)
+    let expected_std_secret_keys = [
+        "a174e77b25459f4809a187415af14065b49140c1408860f543444ed59261a605",
+        "f78fcf5891dbd772cd68146ae9d740107f96b43ea7d3f34850ee7d71faa6084f",
+        "81e0a0f6f9f36eebb3d7ffd733630270967150344203a2d2fb66bfd0466fe1a8",
+        "9a23dcdcfbd2987c6884519f95a747a1fc4dc289ce6a58f79d7675dc291818f3",
+        "0c7abd0fc2d50af9a357c9841f727acfa683c35dac002389f034e62d6794d9b3",
+        "5629b27f0e9607d62fc9cf9aa0e13d78a50432324ce094d462db7889402ee2e7",
+        "70d78ce74872d3ffe5cbf0f910634e224d81d189fcef27b9c4f62c097ac3ebd9",
+        "5eb552fd116f7765771bb322557e9fecead9e19839731118b1828d030cedb67e",
+        "fa82e10a7a9703afd82a7f72d280ec0f3565679a0f120b5bdf6fc70c9723b2e9",
+        "7b68faf4c2a000e5c23b25f413bc5c9a2ec9f48b4990deba0dfb8904cac76f2c",
+        "4b1b39beae2f21825295b3193b172ecc2e123bc2a4f76adf73da4daf9b54826f",
     ];
+    let expected_neg_secret_keys = [
+        "47051623754422cb04bc24c0cfe2c1ddc8db1fcc18f0aa4b477df4aca2adc20e",
+        "9d1ffe00e1da5af5c882b1ea5ec8c18893e09349803c3c9e552823490af22458",
+        "2770cf9f49f1f26eaef29d56a85483e8aabb2f3f1a6bec28ffa065a756bbfdb1",
+        "3fb40b854bd11bff639eef1f0a98c91a1097a194a6d2a24da1b01bb3396434fc",
+        "b20aebb812d38e7c9e7267039463fc46757c7f4f33b10d1bb440ea91481736fd",
+        "fbb9e1275e948b592ae46d1a15d2beef73fcee23d4917e6626e77ced20b14031",
+        "1667bb8f98715782e0e68e788554cf9a61cbb094d557710fc92fd1e08b1007e2",
+        "044581a5616dfae8723650a1ca702164ff23c0a311db5a6eb5bc32da1d39d287",
+        "a0130fb2ca958732d3451cf247726d8749af46a4e77a54b1e3a96ce3a76fcef2",
+        "20f9299d129e8468bd55c37388adde124313d39621f9281012352edbdb138b35",
+        "f0ab6866fe2da5054db05098b008b042fd0af7b42ca8547137e652137bd6dfb9",
+    ];
+
+    let shared = receiver_public_key
+        .mul_tweak(&crate::SECP256K1, &ephemeral_secret_key.as_scalar())
+        .unwrap();
+    assert_eq!(
+        hex::encode(shared.x_only_public_key().serialize()),
+        expected_shared_secret
+    );
 
     let mut fail = false;
 
@@ -128,11 +147,21 @@ fn test_p2bk_test_vectors() {
 
         let blinded = blind_public_key(&receiver_public_key, &r).unwrap();
 
-        // Try standard derivation first
+        let standard = receiver_secret_key.add_tweak(&r.as_scalar()).unwrap();
+        assert_eq!(
+            hex::encode(standard.to_secret_bytes()),
+            expected_std_secret_keys[slot as usize]
+        );
+
+        // The advertised receiver key has opposite parity to its natural key.
         let derived_key = derive_signing_key_bip340(&receiver_secret_key, &r, &blinded);
 
         match derived_key {
             Ok(key) => {
+                assert_eq!(
+                    hex::encode(key.to_secret_bytes()),
+                    expected_neg_secret_keys[slot as usize]
+                );
                 let derived_pubkey = key.public_key();
                 let expected_pubkey =
                     PublicKey::from_hex(expected_blinded_pubkeys[slot as usize]).unwrap();

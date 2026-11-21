@@ -29,7 +29,6 @@ pub mod nut25;
 pub mod nut26;
 #[cfg(all(feature = "wallet", feature = "nostr"))]
 pub mod nut27;
-#[cfg(feature = "wallet")]
 pub mod nut28;
 pub mod nut29;
 pub mod nut30;
@@ -64,7 +63,7 @@ pub use nut05::{
     MeltMethodSettings, MeltQuoteCustomRequest, MeltQuoteCustomResponse, MeltRequest,
     QuoteState as MeltQuoteState, Settings as NUT05Settings,
 };
-pub use nut06::{ContactInfo, MintInfo, MintVersion, Nuts};
+pub use nut06::{ContactInfo, MintInfo, MintVersion, Nut10Settings, Nuts};
 pub use nut07::{CheckStateRequest, CheckStateResponse, ProofState, State};
 pub use nut09::{RestoreRequest, RestoreResponse};
 pub use nut10::{

@@ -113,6 +113,30 @@ pub enum Error {
     /// Witness missing or invalid
     #[error("Signature missing or invalid")]
     SignatureMissingOrInvalid,
+    /// A v3 keyset needs the mint's NUT-06 identity pubkey
+    #[error("v3 keysets need the mint's NUT-06 identity pubkey to be set")]
+    V3KeysetRequiresMintPubkey,
+    /// The wallet holds no key to spend a v3 proof
+    #[error("No key to spend this v3 proof")]
+    V3ProofNotSpendable,
+    /// Nutroot outputs require a v3 keyset
+    #[error("Nutroot payments require a v3 keyset")]
+    NutrootRequiresV3Keyset,
+    /// The mint does not advertise a leaf needed by a script-only lock
+    #[error("Mint does not advertise nutroot leaf {leaf}")]
+    UnsupportedNutrootLeaf {
+        /// Leaf version and type as lowercase hex
+        leaf: String,
+    },
+    /// A received v3 proof discloses a leaf the acceptance policy refuses
+    #[error("A disclosed condition leaf is not acceptable")]
+    V3LeafPolicy,
+    /// Spend info error
+    #[error(transparent)]
+    SpendInfo(#[from] crate::nuts::nut00::spend_info::Error),
+    /// A mint request mixes v3 and pre-v3 outputs
+    #[error("A mint request's outputs must all be v3 or all pre-v3")]
+    MixedOutputVersions,
     /// Amountless Invoice Not supported
     #[error("Amount Less Invoice is not allowed")]
     AmountLessNotAllowed,
@@ -581,6 +605,12 @@ pub enum Error {
     /// NUT00 Error
     #[error(transparent)]
     NUT00(#[from] crate::nuts::nut00::Error),
+    /// v3 transaction transcript error
+    #[error(transparent)]
+    Transaction(#[from] crate::nuts::nut00::transaction::Error),
+    /// Nutroot (NUT-10, v3) error
+    #[error(transparent)]
+    Nutroot(#[from] crate::nuts::nut10::nutroot::Error),
     /// Nut01 error
     #[error(transparent)]
     NUT01(#[from] crate::nuts::nut01::Error),
@@ -771,6 +801,8 @@ impl Error {
         match self {
             // Logic/Validation Errors (Safe to revert)
             Self::AmountKey
+            | Self::NutrootRequiresV3Keyset
+            | Self::UnsupportedNutrootLeaf { .. }
             | Self::KeysetUnknown(_)
             | Self::UnsupportedUnit
             | Self::InvoiceAmountUndefined
@@ -906,6 +938,9 @@ impl Error {
             Self::AmountError(_) => true,
             Self::DHKE(_) => true, // Crypto errors
             Self::NUT00(_) => true,
+            Self::Transaction(_) => true,
+            Self::SpendInfo(_) => true,
+            Self::Nutroot(_) => true,
             Self::NUT01(_) => true,
             Self::NUT02(_) => true,
             Self::NUT03(_) => true,
@@ -1173,6 +1208,10 @@ impl From<Error> for ErrorResponse {
                 detail: err.to_string(),
             },
             Error::SignatureMissingOrInvalid => ErrorResponse {
+                code: ErrorCode::WitnessMissingOrInvalid,
+                detail: err.to_string(),
+            },
+            Error::Nutroot(_) => ErrorResponse {
                 code: ErrorCode::WitnessMissingOrInvalid,
                 detail: err.to_string(),
             },

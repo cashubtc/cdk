@@ -25,7 +25,7 @@ pub mod saga;
 pub use saga::{
     IssueSagaState, MeltOperationData, MeltSagaState, MintOperationData, OperationData,
     ReceiveOperationData, ReceiveSagaState, SendOperationData, SendSagaState, SwapOperationData,
-    SwapSagaState, WalletSaga, WalletSagaState,
+    SwapOutput, SwapSagaState, WalletSaga, WalletSagaState,
 };
 
 /// Wallet Key
@@ -475,6 +475,9 @@ pub struct SendOptions {
     pub p2pk_signing_keys: Vec<SecretKey>,
     /// How P2PK-locked input proofs should be handled during send
     pub p2pk_locked_proof_send_mode: P2PKLockedProofSendMode,
+    /// Lock the sent v3 proofs to a NUT-18 `nutroot` option; the send swaps
+    /// into the payer-built secrets and carries their spend info
+    pub nutroot: Option<crate::nuts::nut18::NutrootOption>,
 }
 
 impl fmt::Debug for SendOptions {
@@ -537,6 +540,14 @@ pub struct ReceiveOptions {
     pub preimages: Vec<String>,
     /// Metadata
     pub metadata: HashMap<String, String>,
+    /// Minimum seconds before a received v3 proof's `after` leaf (eg the
+    /// sender's refund) may open for the payment to count as received.
+    /// `None` uses the wallet default of one hour.
+    pub v3_min_refund_horizon: Option<u64>,
+    /// The NUT-18 `nutroot` option these proofs pay. When set, every v3
+    /// proof must match it exactly (NUT-18 payee checks), and the requested
+    /// tree replaces the generic leaf policy.
+    pub v3_payment_request: Option<crate::nuts::nut18::NutrootOption>,
 }
 
 impl fmt::Debug for ReceiveOptions {
@@ -546,6 +557,8 @@ impl fmt::Debug for ReceiveOptions {
             .field("p2pk_signing_keys", &"[redacted]")
             .field("preimages", &"[redacted]")
             .field("metadata", &self.metadata)
+            .field("v3_min_refund_horizon", &self.v3_min_refund_horizon)
+            .field("v3_payment_request", &self.v3_payment_request)
             .finish()
     }
 }

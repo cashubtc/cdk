@@ -47,6 +47,12 @@ pub async fn create_mint_with_fee(fee_ppk: u64) -> Result<Mint> {
     build_and_start_mint(env_localstore().await?, None, Some(fee_ppk)).await
 }
 
+/// Build and start a test mint whose sat keyset is v3 (BLS12-381, nutroot
+/// secrets), with the NUT-06 identity pubkey v3 keysets need
+pub async fn create_and_start_v3_test_mint() -> Result<Mint> {
+    build_and_start_mint_with(env_localstore().await?, None, None, true).await
+}
+
 pub async fn create_mint_with_limits(limits: Option<(usize, usize)>) -> Result<Mint> {
     build_and_start_mint(env_localstore().await?, limits, None).await
 }
@@ -90,6 +96,15 @@ async fn build_and_start_mint(
     localstore: Arc<cdk_sqlite::MintSqliteDatabase>,
     limits: Option<(usize, usize)>,
     fee: Option<u64>,
+) -> Result<Mint> {
+    build_and_start_mint_with(localstore, limits, fee, false).await
+}
+
+async fn build_and_start_mint_with(
+    localstore: Arc<cdk_sqlite::MintSqliteDatabase>,
+    limits: Option<(usize, usize)>,
+    fee: Option<u64>,
+    v3: bool,
 ) -> Result<Mint> {
     let mut mint_builder = MintBuilder::new(localstore.clone());
 
@@ -147,6 +162,11 @@ async fn build_and_start_mint(
         .with_urls(vec!["https://aaa".to_string()])
         .with_limits(max_inputs, max_outputs)
         .with_batch_minting(Some(100), Some(vec!["bolt11".to_string()]));
+    if v3 {
+        mint_builder = mint_builder
+            .with_pubkey(cdk::nuts::SecretKey::generate().public_key())
+            .with_keyset_version(Some(cdk::nuts::KeySetVersion::Version02));
+    }
 
     let quote_ttl = QuoteTTL::new(10000, 10000);
 

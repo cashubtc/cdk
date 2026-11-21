@@ -179,6 +179,7 @@ pub mod test_utils {
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         }
     }
 
@@ -214,6 +215,8 @@ pub mod test_utils {
                 counter_start: Some(0),
                 counter_end: Some(10),
                 blinded_messages: None,
+                pending_outputs: None,
+                input_ys: vec![],
             }),
         )
     }

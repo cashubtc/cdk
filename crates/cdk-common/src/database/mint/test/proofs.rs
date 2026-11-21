@@ -30,6 +30,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
         Proof {
             amount: Amount::from(200),
@@ -39,6 +40,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
     ];
 
@@ -90,6 +92,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
         Proof {
             amount: Amount::from(200),
@@ -99,6 +102,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
     ];
 
@@ -142,6 +146,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
         Proof {
             amount: Amount::from(200),
@@ -151,6 +156,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
     ];
 
@@ -186,14 +192,18 @@ where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
     let keyset_id = setup_bls_keyset(&db).await;
+    let raw_witness = "{ \"signatures\": [] }".to_owned();
     let proof = Proof {
         amount: Amount::from(100),
         keyset_id,
-        secret: Secret::from_str("bls proof secret").unwrap(),
+        secret: Secret::from_point(&SecretKey::generate().public_key()),
         c: BlsG1PublicKey::hash_to_curve(b"bls proof signature").into(),
-        witness: None,
+        witness: Some(cashu::Witness::Nutroot(
+            cashu::nut10::nutroot::RawNutrootWitness::new(raw_witness).unwrap(),
+        )),
         dleq: None,
         p2pk_e: None,
+        spend_info: None,
     };
     let y = proof.y().unwrap();
 
@@ -212,6 +222,57 @@ where
     let retrieved = db.get_proofs_by_ys(&[y]).await.unwrap();
     assert_eq!(retrieved, vec![Some(proof.clone())]);
 
+    let digest = [7; 32];
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_input_digests(&[(y, digest)]).await.unwrap();
+    tx.rollback().await.unwrap();
+    assert!(db.get_input_digests(&[y]).await.unwrap().is_empty());
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut acquired = tx.get_proofs(&[y]).await.unwrap();
+    tx.add_input_digests(&[(y, digest)]).await.unwrap();
+    tx.update_proofs_state(&mut acquired, State::Pending)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(
+        db.get_input_digests(&[y]).await.unwrap().get(&y),
+        Some(&digest)
+    );
+    assert_eq!(
+        db.get_proofs_states(&[y]).await.unwrap(),
+        vec![Some(State::Pending)]
+    );
+    assert_eq!(
+        db.get_proofs_by_ys(&[y]).await.unwrap(),
+        vec![Some(proof.clone())]
+    );
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.remove_proofs(&[y], None).await.unwrap();
+    tx.rollback().await.unwrap();
+    assert_eq!(
+        db.get_input_digests(&[y]).await.unwrap().get(&y),
+        Some(&digest)
+    );
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.remove_proofs(&[y], None).await.unwrap();
+    tx.commit().await.unwrap();
+    assert!(db.get_input_digests(&[y]).await.unwrap().is_empty());
+    assert_eq!(db.get_proofs_by_ys(&[y]).await.unwrap(), vec![None]);
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_proofs(
+        vec![proof.clone()],
+        None,
+        &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+    )
+    .await
+    .unwrap();
+    tx.add_input_digests(&[(y, digest)]).await.unwrap();
+    tx.commit().await.unwrap();
+
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     let mut acquired = tx.get_proofs(&[y]).await.unwrap();
     tx.update_proofs_state(&mut acquired, State::Spent)
@@ -221,6 +282,11 @@ where
 
     let states = db.get_proofs_states(&[y]).await.unwrap();
     assert_eq!(states, vec![Some(State::Spent)]);
+    assert_eq!(
+        db.get_input_digests(&[y]).await.unwrap().get(&y),
+        Some(&digest)
+    );
+    assert_eq!(db.get_proofs_by_ys(&[y]).await.unwrap(), vec![Some(proof)]);
 }
 
 /// Test updating proofs states
@@ -240,6 +306,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
         Proof {
             amount: Amount::from(200),
@@ -249,6 +316,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
     ];
 
@@ -314,6 +382,7 @@ where
         witness: None,
         dleq: None,
         p2pk_e: None,
+        spend_info: None,
     }];
     let ys: Vec<_> = proofs.iter().map(|p| p.y().unwrap()).collect();
 
@@ -364,6 +433,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
         Proof {
             amount: Amount::from(200),
@@ -373,6 +443,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
     ];
     let ys: Vec<_> = proofs.iter().map(|p| p.y().unwrap()).collect();
@@ -427,6 +498,7 @@ where
         witness: None,
         dleq: None,
         p2pk_e: None,
+        spend_info: None,
     }];
 
     let ys: Vec<_> = proofs.iter().map(|p| p.y().unwrap()).collect();
@@ -487,6 +559,7 @@ pub async fn concurrent_multi_keyset_spends_use_consistent_lock_order(db: DynMin
         witness: None,
         dleq: None,
         p2pk_e: None,
+        spend_info: None,
     };
 
     // The transactions use disjoint proof rows but update the same two
@@ -566,6 +639,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
         Proof {
             amount: Amount::from(200),
@@ -575,6 +649,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
     ];
 
@@ -627,6 +702,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
         Proof {
             amount: Amount::from(200),
@@ -636,6 +712,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
         Proof {
             amount: Amount::from(300),
@@ -645,6 +722,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
     ];
 
@@ -705,6 +783,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
         Proof {
             amount: Amount::from(200),
@@ -714,6 +793,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
     ];
 
@@ -725,6 +805,7 @@ where
         witness: None,
         dleq: None,
         p2pk_e: None,
+        spend_info: None,
     }];
 
     let expected_ys1: Vec<_> = proofs1.iter().map(|p| p.y().unwrap()).collect();
@@ -779,6 +860,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
         Proof {
             amount: Amount::from(200),
@@ -788,6 +870,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
     ];
 
@@ -869,6 +952,7 @@ where
         witness: None,
         dleq: None,
         p2pk_e: None,
+        spend_info: None,
     };
 
     let y = proof.y().unwrap();
@@ -913,6 +997,7 @@ where
         witness: None,
         dleq: None,
         p2pk_e: None,
+        spend_info: None,
     };
 
     let y = proof.y().unwrap();
@@ -950,6 +1035,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         })
         .collect();
 
@@ -997,6 +1083,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
         Proof {
             amount: Amount::from(200),
@@ -1006,6 +1093,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
     ];
 
@@ -1122,6 +1210,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
         Proof {
             amount: Amount::from(200),
@@ -1131,6 +1220,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
         Proof {
             amount: Amount::from(300),
@@ -1140,6 +1230,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
     ];
 
@@ -1217,6 +1308,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
         Proof {
             amount: Amount::from(200),
@@ -1226,6 +1318,7 @@ where
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         },
     ];
 
@@ -1238,6 +1331,7 @@ where
         witness: None,
         dleq: None,
         p2pk_e: None,
+        spend_info: None,
     };
 
     let stored_ys: Vec<_> = stored_proofs.iter().map(|p| p.y().unwrap()).collect();

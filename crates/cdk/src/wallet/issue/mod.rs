@@ -196,14 +196,37 @@ fn mint_quote_response_amount(response: &MintQuoteResponse<String>) -> Option<Am
 }
 
 impl Wallet {
+    /// Derive the lock key for a new mint quote
+    ///
+    /// With the mint's NUT-06 identity pubkey, keys come from NUT-13 type
+    /// `0x04` and a quote counter per mint; new quotes must not use the
+    /// BIP32 path then. Mints without a pubkey keep the BIP32 NUT-20 keys.
     async fn next_mint_quote_signing_key(&self) -> Result<SecretKey, Error> {
-        let counter = self
-            .reserve_derivation_index(DerivationCounterNamespace::Nut20Quote, 0)
-            .await?;
-
-        Ok(crate::nuts::nut20::derive_quote_locking_key(
-            &self.seed, counter,
-        )?)
+        let mint_pubkey = self
+            .load_mint_info()
+            .await
+            .ok()
+            .and_then(|info| info.pubkey);
+        match mint_pubkey {
+            Some(mint_pubkey) => {
+                let counter = self
+                    .reserve_derivation_index(DerivationCounterNamespace::QuoteLock(mint_pubkey), 0)
+                    .await?;
+                Ok(crate::nuts::nut13::derive_v3_quote_lock_key(
+                    &self.seed,
+                    &mint_pubkey,
+                    counter,
+                )?)
+            }
+            None => {
+                let counter = self
+                    .reserve_derivation_index(DerivationCounterNamespace::Nut20Quote, 0)
+                    .await?;
+                Ok(crate::nuts::nut20::derive_quote_locking_key(
+                    &self.seed, counter,
+                )?)
+            }
+        }
     }
 
     /// Resolve the NUT-20 signing key for a mint quote
@@ -886,7 +909,39 @@ impl Wallet {
                 MintQuoteResponse::Onchain(r) => Some(r.pubkey),
                 MintQuoteResponse::Custom { response: r, .. } => r.pubkey,
             };
-            if let Some(pubkey) = pubkey {
+            let mint_pubkey = self
+                .load_mint_info()
+                .await
+                .ok()
+                .and_then(|info| info.pubkey);
+            if let (Some(pubkey), Some(mint_pubkey)) = (pubkey, mint_pubkey) {
+                let namespace = DerivationCounterNamespace::QuoteLock(mint_pubkey).as_str();
+                for counter in 0..key_search_limit.min(1 << 31) {
+                    let key = crate::nuts::nut13::derive_v3_quote_lock_key(
+                        &self.seed,
+                        &mint_pubkey,
+                        counter,
+                    )?;
+                    if key.public_key() == pubkey {
+                        let current = self
+                            .localstore
+                            .increment_derivation_counter(&namespace, 0)
+                            .await?;
+                        self.localstore
+                            .increment_derivation_counter(
+                                &namespace,
+                                (counter + 1).saturating_sub(current),
+                            )
+                            .await?;
+                        quote.secret_key = Some(key);
+                        break;
+                    }
+                    if counter % 100 == 99 {
+                        tokio::task::yield_now().await;
+                    }
+                }
+            }
+            if let (Some(pubkey), None) = (pubkey, &quote.secret_key) {
                 let counters = 0..key_search_limit.min(1 << 31);
                 let keys =
                     crate::nuts::nut20::derive_quote_locking_keys(&self.seed, counters.clone())?;
@@ -896,11 +951,11 @@ impl Wallet {
                         let namespace = DerivationCounterNamespace::Nut20Quote.as_str();
                         let current = self
                             .localstore
-                            .increment_derivation_counter(namespace, 0)
+                            .increment_derivation_counter(&namespace, 0)
                             .await?;
                         self.localstore
                             .increment_derivation_counter(
-                                namespace,
+                                &namespace,
                                 (counter + 1).saturating_sub(current),
                             )
                             .await?;
@@ -1148,11 +1203,23 @@ mod tests {
         assert_eq!(quote.state, MintQuoteState::Paid);
         assert_eq!(quote.amount, None);
         assert_eq!(db.get_mint_quote("lost-quote").await.unwrap(), Some(quote));
-        let next_key = wallet.next_mint_quote_signing_key().await.unwrap();
+        // The recovered BIP32 key advanced its counter past index 3.
         assert_eq!(
-            next_key,
-            crate::nuts::nut20::derive_quote_locking_key(&seed, 4).unwrap()
+            db.increment_derivation_counter("nut20_quote", 0)
+                .await
+                .unwrap(),
+            4
         );
+        // New quotes on a mint with an identity pubkey use NUT-13 type 0x04
+        // keys, never the BIP32 path (NUT-20).
+        let next_key = wallet.next_mint_quote_signing_key().await.unwrap();
+        let expected = match wallet.load_mint_info().await.unwrap().pubkey {
+            Some(mint_pubkey) => {
+                crate::nuts::nut13::derive_v3_quote_lock_key(&seed, &mint_pubkey, 0).unwrap()
+            }
+            None => crate::nuts::nut20::derive_quote_locking_key(&seed, 4).unwrap(),
+        };
+        assert_eq!(next_key, expected);
 
         // Existing keys survive even with recovery disabled, and fetching does
         // not consume another derivation index.
@@ -1165,7 +1232,7 @@ mod tests {
             db.increment_derivation_counter("nut20_quote", 0)
                 .await
                 .unwrap(),
-            5
+            4
         );
 
         // Claiming uses the recovered key to sign the mint request.

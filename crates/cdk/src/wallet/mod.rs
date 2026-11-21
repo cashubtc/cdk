@@ -57,6 +57,7 @@ mod mint_connector;
 mod mint_metadata_cache;
 #[cfg(feature = "npubcash")]
 mod npubcash;
+pub(crate) mod nutroot;
 #[cfg(feature = "nwc")]
 pub mod nwc;
 mod p2pk;
@@ -116,14 +117,18 @@ use crate::nuts::nut00::ProofsMethods;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum DerivationCounterNamespace {
     P2pk,
+    /// BIP32 NUT-20 quote keys, for mints without an identity pubkey
     Nut20Quote,
+    /// NUT-13 type `0x04` quote lock keys: one counter per mint identity
+    QuoteLock(PublicKey),
 }
 
 impl DerivationCounterNamespace {
-    const fn as_str(self) -> &'static str {
+    fn as_str(self) -> String {
         match self {
-            Self::P2pk => "p2pk",
-            Self::Nut20Quote => "nut20_quote",
+            Self::P2pk => "p2pk".to_string(),
+            Self::Nut20Quote => "nut20_quote".to_string(),
+            Self::QuoteLock(mint_pubkey) => format!("nut13_quote:{}", mint_pubkey.to_hex()),
         }
     }
 }
@@ -1183,6 +1188,7 @@ impl Wallet {
         minimum_index: u32,
     ) -> Result<u32, Error> {
         let namespace = namespace.as_str();
+        let namespace = namespace.as_str();
         let current_counter = self
             .localstore
             .increment_derivation_counter(namespace, 0)
@@ -1777,12 +1783,9 @@ mod tests {
         let proofs: Vec<crate::nuts::Proof> = secret_keys
             .iter()
             .map(|(amount, key)| {
-                let secret = crate::secret::Secret::generate();
-                let y = crate::dhke::hash_to_curve_for_version(
-                    secret.as_bytes(),
-                    KeySetVersion::Version02,
-                )
-                .unwrap();
+                let (secret, _) = crate::secret::Secret::generate_v3();
+                let y =
+                    crate::dhke::hash_secret_to_curve(&secret, KeySetVersion::Version02).unwrap();
                 crate::nuts::Proof {
                     amount: *amount,
                     keyset_id: keyset.id,
@@ -1791,6 +1794,7 @@ mod tests {
                     witness: None,
                     dleq: None,
                     p2pk_e: None,
+                    spend_info: None,
                 }
             })
             .collect();

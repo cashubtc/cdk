@@ -61,6 +61,9 @@ pub struct Proof {
     pub dleq: Option<ProofDleq>,
     /// Optional P2BK Ephemeral Public Key (NUT-28)
     pub p2pk_e: Option<String>,
+    /// Spend info of a v3 proof, as NUT-00 JSON (`k`, `E`, `K`, `tree`, `u`)
+    #[serde(default)]
+    pub spend_info: Option<String>,
 }
 
 impl fmt::Debug for Proof {
@@ -73,6 +76,10 @@ impl fmt::Debug for Proof {
             .field("witness", &self.witness)
             .field("dleq", &self.dleq)
             .field("p2pk_e", &self.p2pk_e)
+            .field(
+                "spend_info",
+                &self.spend_info.as_ref().map(|_| "[REDACTED]"),
+            )
             .finish()
     }
 }
@@ -87,6 +94,7 @@ impl From<cdk::nuts::Proof> for Proof {
             witness: proof.witness.map(|w| w.into()),
             dleq: proof.dleq.map(|d| d.into()),
             p2pk_e: proof.p2pk_e.map(|p| p.to_string()),
+            spend_info: to_json_field(proof.spend_info.as_ref()),
         }
     }
 }
@@ -108,15 +116,35 @@ impl TryFrom<Proof> for cdk::nuts::Proof {
             c: cdk::nuts::DhkePoint::from_hex_for_version(&proof.c, keyset_id.get_version())
                 .map_err(|e| FfiError::internal(format!("Invalid DHKE point: {}", e)))?,
             keyset_id,
-            witness: proof.witness.map(|w| w.into()),
+            witness: proof.witness.map(TryInto::try_into).transpose()?,
             dleq: proof.dleq.map(TryInto::try_into).transpose()?,
             p2pk_e: proof
                 .p2pk_e
                 .map(|p| cdk::nuts::PublicKey::from_str(&p))
                 .transpose()
                 .map_err(|e| FfiError::internal(format!("Invalid p2pk_e: {}", e)))?,
+            spend_info: parse_json_field(proof.spend_info, "spend_info")?,
         })
     }
+}
+
+/// Parse a JSON value passed across the FFI, naming the field on error
+pub(crate) fn parse_json_field<T>(json: Option<String>, field: &str) -> Result<Option<T>, FfiError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    json.map(|json| {
+        serde_json::from_str(&json).map_err(|e| FfiError::internal(format!("Invalid {field}: {e}")))
+    })
+    .transpose()
+}
+
+/// Serialize a value as JSON for the FFI
+pub(crate) fn to_json_field<T>(value: Option<&T>) -> Option<String>
+where
+    T: Serialize,
+{
+    value.and_then(|value| serde_json::to_string(value).ok())
 }
 
 /// Get the Y value (hash_to_curve of secret) for a proof
@@ -422,6 +450,11 @@ pub enum Witness {
         /// Optional signatures
         signatures: Option<Vec<String>>,
     },
+    /// Nutroot witness of a v3 proof
+    Nutroot {
+        /// The serialized witness JSON
+        witness: String,
+    },
 }
 
 impl fmt::Debug for Witness {
@@ -439,6 +472,10 @@ impl fmt::Debug for Witness {
                 .field("preimage", &"[REDACTED]")
                 .field("signatures", signatures)
                 .finish(),
+            Self::Nutroot { .. } => f
+                .debug_struct("Nutroot")
+                .field("witness", &"[REDACTED]")
+                .finish(),
         }
     }
 }
@@ -453,13 +490,18 @@ impl From<cdk::nuts::Witness> for Witness {
                 preimage: htlc.preimage,
                 signatures: htlc.signatures,
             },
+            cdk::nuts::Witness::Nutroot(witness) => Self::Nutroot {
+                witness: witness.to_string(),
+            },
         }
     }
 }
 
-impl From<Witness> for cdk::nuts::Witness {
-    fn from(witness: Witness) -> Self {
-        match witness {
+impl TryFrom<Witness> for cdk::nuts::Witness {
+    type Error = FfiError;
+
+    fn try_from(witness: Witness) -> Result<Self, Self::Error> {
+        Ok(match witness {
             Witness::P2PK { signatures } => {
                 Self::P2PKWitness(cdk::nuts::nut11::P2PKWitness { signatures })
             }
@@ -470,7 +512,11 @@ impl From<Witness> for cdk::nuts::Witness {
                 preimage,
                 signatures,
             }),
-        }
+            Witness::Nutroot { witness } => Self::Nutroot(
+                cdk::nuts::nut10::nutroot::RawNutrootWitness::new(witness)
+                    .map_err(|e| FfiError::internal(format!("Invalid nutroot witness: {e}")))?,
+            ),
+        })
     }
 }
 
@@ -692,6 +738,7 @@ mod tests {
                     signatures: Some(vec!["public-signature".to_string()]),
                 },
             )),
+            input_digest: None,
         };
 
         let update: ProofStateUpdate = proof_state.into();
@@ -727,6 +774,7 @@ mod tests {
                 r: "secret-blinding-factor".to_string(),
             }),
             p2pk_e: None,
+            spend_info: None,
         };
 
         let debug = format!("{proof:?}");
@@ -737,5 +785,29 @@ mod tests {
         assert!(!debug.contains("dleq-e-scalar"));
         assert!(!debug.contains("dleq-s-scalar"));
         assert!(!debug.contains("secret-blinding-factor"));
+    }
+
+    #[test]
+    fn spend_info_round_trips_as_json() {
+        let json = r#"{"k":"930c88ad9dc8531c147862d4ef9c0981200ff1f510c0a9e1c024db725a1d56c6"}"#;
+        let proof = cdk::nuts::Proof {
+            amount: 8.into(),
+            keyset_id: cdk::nuts::Id::from_bytes(&[[2u8].as_slice(), &[1; 32]].concat()).unwrap(),
+            secret: cdk::secret::Secret::new(
+                "0240c186f3e19f6f8cd00db81c5266d5c74ddca48ff848efd0e3e125b2846f30d9",
+            ),
+            c: cdk::nuts::nut01::BlsG1PublicKey::hash_to_curve(b"c").into(),
+            witness: None,
+            dleq: None,
+            p2pk_e: None,
+            spend_info: Some(serde_json::from_str(json).unwrap()),
+        };
+        let ffi = Proof::from(proof.clone());
+        assert_eq!(ffi.spend_info.as_deref(), Some(json));
+        assert_eq!(cdk::nuts::Proof::try_from(ffi.clone()).unwrap(), proof);
+
+        let mut bad = ffi;
+        bad.spend_info = Some("{\"k\":\"00\"}".to_string());
+        assert!(cdk::nuts::Proof::try_from(bad).is_err());
     }
 }

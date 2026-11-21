@@ -43,7 +43,10 @@ fuzz_target!(|input: Input| {
         .expect("bounded counter must derive a deterministic secret");
     let secret_again = Secret::from_seed(&input.seed, keyset_id, counter)
         .expect("repeated secret derivation must succeed");
-    assert_eq!(secret, secret_again, "secret derivation must be deterministic");
+    assert_eq!(
+        secret, secret_again,
+        "secret derivation must be deterministic"
+    );
 
     let blinding = BlindingFactor::from_seed(&input.seed, keyset_id, counter)
         .expect("bounded counter must derive a blinding factor");
@@ -59,20 +62,19 @@ fuzz_target!(|input: Input| {
         .expect("adjacent counter must derive");
     let next_blinding = BlindingFactor::from_seed(&input.seed, keyset_id, counter + 1)
         .expect("adjacent blinding counter must derive");
-    assert_ne!(secret, next_secret, "adjacent counters must change the secret");
+    assert_ne!(
+        secret, next_secret,
+        "adjacent counters must change the secret"
+    );
     assert_ne!(
         blinding.to_secret_bytes(),
         next_blinding.to_secret_bytes(),
         "adjacent counters must change the blinding factor"
     );
 
-    let restored = PreMintSecrets::restore_batch(
-        keyset_id,
-        &input.seed,
-        counter,
-        counter + batch_len,
-    )
-    .expect("bounded restore batch must derive");
+    let restored =
+        PreMintSecrets::restore_batch(keyset_id, &input.seed, counter, counter + batch_len)
+            .expect("bounded restore batch must derive");
     assert_eq!(restored.len(), batch_len as usize);
     for (offset, pre_mint) in restored.iter().enumerate() {
         let expected_counter = counter + offset as u32;
@@ -80,11 +82,9 @@ fuzz_target!(|input: Input| {
             .expect("restored secret counter must derive");
         let expected_r = BlindingFactor::from_seed(&input.seed, keyset_id, expected_counter)
             .expect("restored blinding counter must derive");
-        let (expected_blinded, _) = blind_message(
-            &expected_secret.to_bytes(),
-            Some(expected_r.clone()),
-        )
-        .expect("derived secret and scalar must blind");
+        let (expected_blinded, _) =
+            blind_message(&expected_secret.to_bytes(), Some(expected_r.clone()))
+                .expect("derived secret and scalar must blind");
         assert_eq!(pre_mint.secret, expected_secret);
         assert_eq!(pre_mint.r.to_secret_bytes(), expected_r.to_secret_bytes());
         assert_eq!(pre_mint.blinded_message.blinded_secret, expected_blinded);

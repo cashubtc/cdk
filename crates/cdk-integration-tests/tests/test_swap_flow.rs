@@ -24,6 +24,113 @@ use cdk::Amount;
 use cdk_fake_wallet::create_fake_invoice;
 use cdk_integration_tests::init_pure_tests::*;
 
+/// A script-path witness commits to the outputs, and a rejected mutation
+/// leaves both the proofs and the originally authorized swap usable.
+#[tokio::test]
+async fn test_v3_script_path_swap_binds_outputs() {
+    use cashu::nuts::nut10::nutroot::{merkle_path, sign_digest, Control, Leaf, NutrootWitness};
+    use cashu::nuts::nut18::NutrootOption;
+    use cdk::wallet::SendOptions;
+
+    let mint = create_and_start_v3_test_mint().await.unwrap();
+    let wallet = create_test_wallet_for_mint(mint.clone()).await.unwrap();
+    fund_wallet(wallet.clone(), 32, None).await.unwrap();
+    let receiver = SecretKey::generate();
+    let request = NutrootOption {
+        k: SecretKey::generate().public_key(),
+        l: Some(vec![Leaf::Threshold {
+            n: 1,
+            keys: vec![receiver.public_key()],
+        }
+        .to_leaf_bytes()
+        .unwrap()]),
+        b: None,
+    };
+    let token = wallet
+        .prepare_send(
+            Amount::from(16),
+            SendOptions {
+                nutroot: Some(request),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .confirm(None)
+        .await
+        .unwrap();
+    let keyset = mint.pubkeys().keysets.first().unwrap().clone();
+    let infos = vec![cashu::KeySetInfo {
+        id: keyset.id,
+        unit: keyset.unit,
+        active: true,
+        input_fee_ppk: keyset.input_fee_ppk,
+        final_expiry: keyset.final_expiry,
+    }];
+    let proofs = token.proofs(&infos).unwrap();
+    let spend_info: Vec<_> = proofs
+        .iter()
+        .map(|proof| proof.spend_info.clone().unwrap())
+        .collect();
+    let outputs = PreMintSecrets::random(
+        keyset.id,
+        Amount::from(16),
+        &SplitTarget::default(),
+        &(0, (0..32).map(|i| 1u64 << i).collect::<Vec<_>>()).into(),
+    )
+    .unwrap();
+    let mut swap = SwapRequest::new(proofs, outputs.blinded_messages());
+    let transaction = swap.transaction().unwrap();
+    for (index, proof) in swap.inputs_mut().iter_mut().enumerate() {
+        let info = &spend_info[index];
+        let tree = info.tree.as_ref().unwrap();
+        let witness = NutrootWitness {
+            signatures: vec![sign_digest(
+                &receiver,
+                &transaction.input_digest(index).unwrap(),
+            )],
+            leaf: Some(tree[0].clone()),
+            control: Some(Control {
+                internal_key: info.internal_key.unwrap(),
+                path: merkle_path(tree, 0).unwrap(),
+            }),
+            preimage: None,
+        };
+        proof.witness = Some(witness.into());
+    }
+    let mut changed = swap.clone();
+    let other = PreMintSecrets::random(
+        keyset.id,
+        Amount::from(16),
+        &SplitTarget::default(),
+        &(0, (0..32).map(|i| 1u64 << i).collect::<Vec<_>>()).into(),
+    )
+    .unwrap();
+    // Retain the authorized witnesses while replacing the output commitments.
+    changed = SwapRequest::new(changed.inputs().clone(), other.blinded_messages());
+    assert!(matches!(
+        mint.process_swap_request(changed).await,
+        Err(cdk_common::Error::SignatureMissingOrInvalid)
+    ));
+    let response = mint.process_swap_request(swap.clone()).await.unwrap();
+    assert_eq!(response.signatures.len(), outputs.blinded_messages().len());
+    let states = mint
+        .check_state(&cashu::CheckStateRequest {
+            ys: swap.inputs().ys().unwrap(),
+        })
+        .await
+        .unwrap();
+    for (index, state) in states.states.iter().enumerate() {
+        assert_eq!(state.state, State::Spent);
+        assert_eq!(
+            state.input_digest,
+            Some(transaction.input_digest(index).unwrap())
+        );
+        assert_eq!(state.witness, swap.inputs()[index].witness);
+    }
+    mint.stop().await.unwrap();
+}
+
 /// Helper to get the active keyset ID from a mint
 async fn get_keyset_id(mint: &Mint) -> Id {
     let keys = mint.pubkeys().keysets.first().unwrap().clone();

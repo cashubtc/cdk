@@ -121,6 +121,10 @@ pub struct PaymentRequest {
     /// Optional NUT-10 locking condition requested for the payment proofs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nut10: Option<Nut10SecretRequest>,
+    /// Optional nutroot locking condition for proofs on v3 keysets. A
+    /// request without it cannot be paid from a v3 keyset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nutroot: Option<super::NutrootOption>,
 }
 
 impl PaymentRequest {
@@ -193,6 +197,7 @@ pub struct PaymentRequestBuilder {
     description: Option<String>,
     transports: Vec<Transport>,
     nut10: Option<Nut10SecretRequest>,
+    nutroot: Option<super::NutrootOption>,
 }
 
 impl PaymentRequestBuilder {
@@ -290,6 +295,12 @@ impl PaymentRequestBuilder {
         self
     }
 
+    /// Set the nutroot locking option, for payments from v3 keysets
+    pub fn nutroot(mut self, nutroot: super::NutrootOption) -> Self {
+        self.nutroot = Some(nutroot);
+        self
+    }
+
     /// Build the PaymentRequest
     pub fn build(self) -> PaymentRequest {
         PaymentRequest {
@@ -303,6 +314,7 @@ impl PaymentRequestBuilder {
             description: self.description,
             transports: self.transports,
             nut10: self.nut10,
+            nutroot: self.nutroot,
         }
     }
 }
@@ -372,6 +384,7 @@ mod tests {
             description: None,
             transports: vec![transport.clone()],
             nut10: None,
+            nutroot: None,
         };
 
         let request_str = request.to_string();
@@ -724,7 +737,8 @@ mod tests {
     #[test]
     fn test_complete_payment_request() {
         // Complete payment request with all optional fields included
-        let expected_encoded = "creqAqGF0gaNhdGRwb3N0YWF4G2h0dHBzOi8vYXBpLmV4YW1wbGUuY29tL3BheWFn92FpaDQ4NDBmNTFlYWEZA-hhdWNzYXRhbYF4GGh0dHBzOi8vbWludC5leGFtcGxlLmNvbWFkcFByb2R1Y3QgcHVyY2hhc2Vhc_VlbnV0MTCjYWtkUDJQS2FkeEIwM2JhZjBjM2FjMjIwMzY2YzJjMzk3YmY5MzA1NzljNDE2MzQzNTU4NGY1NzNiMTA5MTA5ODdjNTQ0YzU5ZTYxZjFhdIGCZ3B1cnBvc2Vnb2ZmbGluZQ==";
+        // tests/18-tests.md as regenerated in nuts#475: the transport omits `g`.
+        let expected_encoded = "creqAqGF0gaJhdGRwb3N0YWF4G2h0dHBzOi8vYXBpLmV4YW1wbGUuY29tL3BheWFpaDQ4NDBmNTFlYWEZA-hhdWNzYXRhbYF4GGh0dHBzOi8vbWludC5leGFtcGxlLmNvbWFkcFByb2R1Y3QgcHVyY2hhc2Vhc_VlbnV0MTCjYWtkUDJQS2FkeEIwM2JhZjBjM2FjMjIwMzY2YzJjMzk3YmY5MzA1NzljNDE2MzQzNTU4NGY1NzNiMTA5MTA5ODdjNTQ0YzU5ZTYxZjFhdIGCZ3B1cnBvc2Vnb2ZmbGluZQ==";
         let legacy_encoded = "creqAqGF0gaNhdGRwb3N0YWF4G2h0dHBzOi8vYXBpLmV4YW1wbGUuY29tL3BheWFn92FpaDQ4NDBmNTFlYWEZA+hhdWNzYXRhbYF4GGh0dHBzOi8vbWludC5leGFtcGxlLmNvbWFkcFByb2R1Y3QgcHVyY2hhc2Vhc/VlbnV0MTCjYWtkUDJQS2FkeEIwM2JhZjBjM2FjMjIwMzY2YzJjMzk3YmY5MzA1NzljNDE2MzQzNTU4NGY1NzNiMTA5MTA5ODdjNTQ0YzU5ZTYxZjFhdIGCZ3B1cnBvc2Vnb2ZmbGluZQ==";
 
         let decoded_from_spec = check_payment_request_encoding(expected_encoded, legacy_encoded);
@@ -766,7 +780,8 @@ mod tests {
     #[test]
     fn test_http_transport_payment_request() {
         // HTTP POST transport payment request
-        let expected_encoded = "creqApWF0gaNhdGRwb3N0YWF4H2h0dHBzOi8vYXBpLmV4YW1wbGUuY29tL3JlY2VpdmVhZ_dhaWhhMmMxMmY0NWFhGDJhdWNzYXRhbYF4GWh0dHBzOi8vY2FzaHUuZXhhbXBsZS5jb20=";
+        // tests/18-tests.md as regenerated in nuts#475: the transport omits `g`.
+        let expected_encoded = "creqApWF0gaJhdGRwb3N0YWF4H2h0dHBzOi8vYXBpLmV4YW1wbGUuY29tL3JlY2VpdmVhaWhhMmMxMmY0NWFhGDJhdWNzYXRhbYF4GWh0dHBzOi8vY2FzaHUuZXhhbXBsZS5jb20=";
         let legacy_encoded = "creqApWF0gaNhdGRwb3N0YWF4H2h0dHBzOi8vYXBpLmV4YW1wbGUuY29tL3JlY2VpdmVhZ/dhaWhhMmMxMmY0NWFhGDJhdWNzYXRhbYF4GWh0dHBzOi8vY2FzaHUuZXhhbXBsZS5jb20=";
 
         let decoded_from_spec = check_payment_request_encoding(expected_encoded, legacy_encoded);
@@ -987,6 +1002,7 @@ mod tests {
             description: Some("Test both formats".to_string()),
             transports: vec![],
             nut10: None,
+            nutroot: None,
         };
 
         // Test CBOR format (CREQ-A) - from Display trait

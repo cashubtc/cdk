@@ -78,7 +78,11 @@ fuzz_target!(|input: Input| {
         signature: None,
     };
     let message = request.msg_to_sign();
-    assert_eq!(message, request.msg_to_sign(), "signing message must be deterministic");
+    assert_eq!(
+        message,
+        request.msg_to_sign(),
+        "signing message must be deterministic"
+    );
     request
         .sign(&signing_key)
         .expect("valid key must sign a mint request");
@@ -101,7 +105,9 @@ fuzz_target!(|input: Input| {
     let mut changed_outputs = request.clone();
     match changed_outputs.outputs.first_mut() {
         Some(first) => *first = replacement_output(&input, Some(first)),
-        None => changed_outputs.outputs.push(replacement_output(&input, None)),
+        None => changed_outputs
+            .outputs
+            .push(replacement_output(&input, None)),
     }
     assert!(
         changed_outputs.verify_signature(signing_pubkey).is_err(),
@@ -110,7 +116,9 @@ fuzz_target!(|input: Input| {
 
     let mut malformed_signature = request.clone();
     malformed_signature.signature = Some("00".to_string());
-    assert!(malformed_signature.verify_signature(signing_pubkey).is_err());
+    assert!(malformed_signature
+        .verify_signature(signing_pubkey)
+        .is_err());
 
     let mut legacy = MintRequest {
         quote: input.quote.clone(),
@@ -139,11 +147,7 @@ fuzz_target!(|input: Input| {
     );
     assert!(
         batch
-            .verify_quote_signature(
-                &format!("{}#", input.quote),
-                &signature,
-                &signing_pubkey,
-            )
+            .verify_quote_signature(&format!("{}#", input.quote), &signature, &signing_pubkey,)
             .is_err(),
         "batch signature must commit to its quote id"
     );

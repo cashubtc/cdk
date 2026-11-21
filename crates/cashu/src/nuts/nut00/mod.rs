@@ -16,16 +16,17 @@ use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 use unicode_normalization::UnicodeNormalization;
 
-use super::nut02::ShortKeysetId;
+use super::nut02::{KeySetVersion, ShortKeysetId};
 #[cfg(feature = "wallet")]
 use super::nut10;
+use super::nut10::nutroot::{NutrootWitness, RawNutrootWitness};
 #[cfg(feature = "wallet")]
 use crate::amount::FeeAndAmounts;
 #[cfg(feature = "wallet")]
 use crate::amount::SplitTarget;
 #[cfg(feature = "wallet")]
-use crate::dhke::blind_message_for_version;
-use crate::dhke::hash_to_curve_for_version;
+use crate::dhke::blind_secret;
+use crate::dhke::hash_secret_to_curve;
 #[cfg(feature = "wallet")]
 use crate::nuts::nut01::BlindingFactor;
 use crate::nuts::nut01::{DhkePoint, ProofId, PublicKey};
@@ -36,8 +37,13 @@ use crate::nuts::{Id, ProofDleq};
 use crate::secret::Secret;
 use crate::Amount;
 
+pub mod spend_info;
+pub mod tlv;
 pub mod token;
+pub mod transaction;
+pub use spend_info::SpendInfo;
 pub use token::{Token, TokenV3, TokenV4};
+pub use transaction::{Transaction, TransactionInput, TransactionOutput};
 
 /// List of [Proof]
 pub type Proofs = Vec<Proof>;
@@ -61,6 +67,10 @@ pub trait ProofsMethods {
 
     /// Create a copy of proofs without P2BK nonce
     fn without_p2pk_e(&self) -> Proofs;
+
+    /// Create a copy of proofs without spend info, which is for tokens only
+    /// and never goes to the mint
+    fn without_spend_info(&self) -> Proofs;
 }
 
 impl ProofsMethods for Proofs {
@@ -99,6 +109,16 @@ impl ProofsMethods for Proofs {
             })
             .collect()
     }
+
+    fn without_spend_info(&self) -> Proofs {
+        self.iter()
+            .map(|p| {
+                let mut p = p.clone();
+                p.spend_info = None;
+                p
+            })
+            .collect()
+    }
 }
 
 impl ProofsMethods for HashSet<Proof> {
@@ -133,6 +153,16 @@ impl ProofsMethods for HashSet<Proof> {
             .map(|p| {
                 let mut p = p.clone();
                 p.p2pk_e = None;
+                p
+            })
+            .collect()
+    }
+
+    fn without_spend_info(&self) -> Proofs {
+        self.iter()
+            .map(|p| {
+                let mut p = p.clone();
+                p.spend_info = None;
                 p
             })
             .collect()
@@ -362,6 +392,11 @@ impl PartialOrd for BlindSignature {
 }
 
 /// Witness
+///
+/// Pre-v3 witnesses deserialize by shape. A v3 (nutroot) key-path witness
+/// has the same shape as a P2PK witness, so generic deserialization never
+/// yields [`Witness::Nutroot`]: parse by keyset version with
+/// [`Witness::from_value_for_version`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Witness {
@@ -371,6 +406,15 @@ pub enum Witness {
     /// P2PK Witness
     #[serde(with = "serde_p2pk_witness")]
     P2PKWitness(P2PKWitness),
+    /// Nutroot witness of a v3 proof, kept as received
+    #[serde(skip_deserializing)]
+    Nutroot(RawNutrootWitness),
+}
+
+impl From<NutrootWitness> for Witness {
+    fn from(witness: NutrootWitness) -> Self {
+        Self::Nutroot(witness.into())
+    }
 }
 
 impl From<P2PKWitness> for Witness {
@@ -386,7 +430,33 @@ impl From<HTLCWitness> for Witness {
 }
 
 impl Witness {
+    /// Parse a proof's `witness` value by its keyset version
+    ///
+    /// A v3 witness is a string holding a serialized [`NutrootWitness`];
+    /// pre-v3 witnesses parse as P2PK or HTLC witnesses.
+    pub fn from_value_for_version(
+        value: serde_json::Value,
+        version: KeySetVersion,
+    ) -> Result<Self, serde_json::Error> {
+        match version {
+            KeySetVersion::Version00 | KeySetVersion::Version01 => serde_json::from_value(value),
+            KeySetVersion::Version02 => Ok(Self::Nutroot(serde_json::from_value(value)?)),
+        }
+    }
+
+    /// Parse a witness serialized with `serde_json::to_string(&witness)`
+    /// (a JSON string) by its keyset version
+    pub fn from_json_for_version(
+        json: &str,
+        version: KeySetVersion,
+    ) -> Result<Self, serde_json::Error> {
+        Self::from_value_for_version(serde_json::from_str(json)?, version)
+    }
+
     /// Add signatures to [`Witness`]
+    ///
+    /// Not supported for nutroot witnesses, whose signatures are typed:
+    /// build a [`NutrootWitness`] instead.
     pub fn add_signatures(&mut self, signatures: Vec<String>) {
         match self {
             Self::P2PKWitness(p2pk_witness) => p2pk_witness.signatures.extend(signatures),
@@ -394,6 +464,9 @@ impl Witness {
                 Some(sigs) => sigs.extend(signatures),
                 None => htlc_witness.signatures = Some(signatures),
             },
+            Self::Nutroot(_) => {
+                tracing::warn!("Cannot add untyped signatures to a nutroot witness");
+            }
         }
     }
 
@@ -402,6 +475,10 @@ impl Witness {
         match self {
             Self::P2PKWitness(witness) => Some(witness.signatures.clone()),
             Self::HTLCWitness(witness) => witness.signatures.clone(),
+            Self::Nutroot(witness) => witness
+                .parse()
+                .ok()
+                .map(|witness| witness.signatures.iter().map(ToString::to_string).collect()),
         }
     }
 
@@ -410,6 +487,19 @@ impl Witness {
         match self {
             Self::P2PKWitness(_witness) => None,
             Self::HTLCWitness(witness) => Some(witness.preimage.clone()),
+            Self::Nutroot(witness) => witness
+                .parse()
+                .ok()
+                .and_then(|witness| witness.preimage)
+                .map(crate::util::hex::encode),
+        }
+    }
+
+    /// The nutroot witness, if this is one
+    pub fn as_nutroot(&self) -> Option<&RawNutrootWitness> {
+        match self {
+            Self::Nutroot(witness) => Some(witness),
+            _ => None,
         }
     }
 }
@@ -447,6 +537,9 @@ pub struct Proof {
     /// Used for Pay-to-Blinded-Key privacy feature
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub p2pk_e: Option<PublicKey>,
+    /// Spend info of a v3 proof, carried in tokens (NUT-00)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spend_info: Option<SpendInfo>,
 }
 
 impl<'de> Deserialize<'de> for Proof {
@@ -463,24 +556,34 @@ impl<'de> Deserialize<'de> for Proof {
             #[serde(rename = "C")]
             c: String,
             #[serde(default)]
-            witness: Option<Witness>,
+            witness: Option<serde_json::Value>,
             #[serde(default)]
             dleq: Option<ProofDleq>,
             #[serde(default)]
             p2pk_e: Option<PublicKey>,
+            #[serde(default)]
+            spend_info: Option<SpendInfo>,
         }
 
         let encoded = EncodedProof::deserialize(deserializer)?;
-        let c = DhkePoint::from_hex_for_version(encoded.c, encoded.keyset_id.get_version())
+        let version = encoded.keyset_id.get_version();
+        let c = DhkePoint::from_hex_for_version(encoded.c, version)
+            .map_err(serde::de::Error::custom)?;
+        let witness = encoded
+            .witness
+            .filter(|value| !value.is_null())
+            .map(|value| Witness::from_value_for_version(value, version))
+            .transpose()
             .map_err(serde::de::Error::custom)?;
         Ok(Self {
             amount: encoded.amount,
             keyset_id: encoded.keyset_id,
             secret: encoded.secret,
             c,
-            witness: encoded.witness,
+            witness,
             dleq: encoded.dleq,
             p2pk_e: encoded.p2pk_e,
+            spend_info: encoded.spend_info,
         })
     }
 }
@@ -499,6 +602,7 @@ impl Proof {
             witness: None,
             dleq: None,
             p2pk_e: None,
+            spend_info: None,
         }
     }
 
@@ -512,7 +616,7 @@ impl Proof {
     /// Where y is `hash_to_curve(secret)` for secp256k1 keysets and BLS G1
     /// hash-to-curve for v3 keysets.
     pub fn y(&self) -> Result<ProofId, Error> {
-        Ok(hash_to_curve_for_version(self.secret.as_bytes(), self.keyset_id.get_version())?.into())
+        Ok(hash_secret_to_curve(&self.secret, self.keyset_id.get_version())?.into())
     }
 }
 
@@ -572,6 +676,14 @@ pub struct ProofV4 {
         deserialize_with = "deserialize_v4_pubkey_option"
     )]
     pub p2pk_e: Option<PublicKey>,
+    /// Spend info of a v3 proof (NUT-00)
+    #[serde(
+        rename = "si",
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "spend_info::serde_v4"
+    )]
+    pub spend_info: Option<SpendInfo>,
 }
 
 impl ProofV4 {
@@ -585,6 +697,7 @@ impl ProofV4 {
             witness: self.witness.clone(),
             dleq: self.dleq.clone(),
             p2pk_e: self.p2pk_e,
+            spend_info: self.spend_info.clone(),
         }
     }
 }
@@ -604,6 +717,7 @@ impl From<Proof> for ProofV4 {
             witness,
             dleq,
             p2pk_e,
+            spend_info,
             ..
         } = proof;
         ProofV4 {
@@ -613,6 +727,7 @@ impl From<Proof> for ProofV4 {
             witness,
             dleq,
             p2pk_e,
+            spend_info,
         }
     }
 }
@@ -626,6 +741,7 @@ impl From<ProofV3> for ProofV4 {
             witness: proof.witness,
             dleq: proof.dleq,
             p2pk_e: None,
+            spend_info: proof.spend_info,
         }
     }
 }
@@ -649,6 +765,9 @@ pub struct ProofV3 {
     /// DLEQ Proof
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dleq: Option<ProofDleq>,
+    /// Spend info of a v3 proof (NUT-00)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spend_info: Option<SpendInfo>,
 }
 
 impl<'de> Deserialize<'de> for ProofV3 {
@@ -665,21 +784,35 @@ impl<'de> Deserialize<'de> for ProofV3 {
             #[serde(rename = "C")]
             c: String,
             #[serde(default)]
-            witness: Option<Witness>,
+            witness: Option<serde_json::Value>,
             #[serde(default)]
             dleq: Option<ProofDleq>,
+            #[serde(default)]
+            spend_info: Option<SpendInfo>,
         }
 
         let encoded = EncodedProofV3::deserialize(deserializer)?;
-        let c = DhkePoint::from_hex_for_version(encoded.c, encoded.keyset_id.get_version())
+        let version = encoded.keyset_id.get_version();
+        let c = DhkePoint::from_hex_for_version(encoded.c, version)
             .map_err(serde::de::Error::custom)?;
+        // ProofV3 only appears in tokens, where v3 proofs carry no witness.
+        let witness = match version {
+            KeySetVersion::Version02 => None,
+            _ => encoded
+                .witness
+                .filter(|value| !value.is_null())
+                .map(|value| Witness::from_value_for_version(value, version))
+                .transpose()
+                .map_err(serde::de::Error::custom)?,
+        };
         Ok(Self {
             amount: encoded.amount,
             keyset_id: encoded.keyset_id,
             secret: encoded.secret,
             c,
-            witness: encoded.witness,
+            witness,
             dleq: encoded.dleq,
+            spend_info: encoded.spend_info,
         })
     }
 }
@@ -695,6 +828,7 @@ impl ProofV3 {
             witness: self.witness.clone(),
             dleq: self.dleq.clone(),
             p2pk_e: None,
+            spend_info: self.spend_info.clone(),
         }
     }
 }
@@ -708,15 +842,21 @@ impl From<Proof> for ProofV3 {
             c,
             witness,
             dleq,
+            spend_info,
             ..
         } = proof;
         ProofV3 {
             amount,
             secret,
             c,
-            witness,
+            // v3 proofs in tokens never carry a witness (NUT-00).
+            witness: match keyset_id.get_version() {
+                KeySetVersion::Version02 => None,
+                _ => witness,
+            },
             dleq,
             keyset_id: keyset_id.into(),
+            spend_info,
         }
     }
 }
@@ -1224,9 +1364,10 @@ impl PreMintSecrets {
         let mut output = Vec::with_capacity(amount_split.len());
 
         for amount in amount_split {
-            let secret = Secret::generate();
-            let (blinded, r) =
-                blind_message_for_version(&secret.to_bytes(), None, keyset_id.get_version())?;
+            // The secret key of a random v3 secret is not kept: these outputs
+            // are for callers that track spend keys themselves.
+            let (secret, _secret_key) = Secret::generate_for_version(keyset_id.get_version());
+            let (blinded, r) = blind_secret(&secret, None, keyset_id.get_version())?;
 
             let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
 
@@ -1254,8 +1395,7 @@ impl PreMintSecrets {
         let mut output = Vec::with_capacity(secrets.len());
 
         for (secret, amount) in secrets.into_iter().zip(amounts) {
-            let (blinded, r) =
-                blind_message_for_version(&secret.to_bytes(), None, keyset_id.get_version())?;
+            let (blinded, r) = blind_secret(&secret, None, keyset_id.get_version())?;
 
             let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
 
@@ -1281,9 +1421,10 @@ impl PreMintSecrets {
         let mut output = Vec::with_capacity(count as usize);
 
         for _i in 0..count {
-            let secret = Secret::generate();
-            let (blinded, r) =
-                blind_message_for_version(&secret.to_bytes(), None, keyset_id.get_version())?;
+            // The secret key of a random v3 secret is not kept: these outputs
+            // are for callers that track spend keys themselves.
+            let (secret, _secret_key) = Secret::generate_for_version(keyset_id.get_version());
+            let (blinded, r) = blind_secret(&secret, None, keyset_id.get_version())?;
 
             let blinded_message = BlindedMessage::new(Amount::ZERO, keyset_id, blinded);
 
@@ -1379,8 +1520,7 @@ impl PreMintSecrets {
 
             let secret: crate::nuts::nut10::Secret = p2pk_conditions.try_into()?;
             let secret: Secret = secret.try_into()?;
-            let (blinded, rs) =
-                blind_message_for_version(&secret.to_bytes(), None, keyset_id.get_version())?;
+            let (blinded, rs) = blind_secret(&secret, None, keyset_id.get_version())?;
 
             let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
 
@@ -1415,8 +1555,7 @@ impl PreMintSecrets {
             let secret: nut10::Secret = conditions.clone().try_into()?;
 
             let secret: Secret = secret.try_into()?;
-            let (blinded, r) =
-                blind_message_for_version(&secret.to_bytes(), None, keyset_id.get_version())?;
+            let (blinded, r) = blind_secret(&secret, None, keyset_id.get_version())?;
 
             let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
 
@@ -1533,7 +1672,6 @@ mod tests {
     use std::str::FromStr;
 
     use super::*;
-    use crate::nuts::nut02::KeySetVersion;
 
     fn keyset_id(version: KeySetVersion) -> Id {
         match version {
@@ -1550,6 +1688,7 @@ mod tests {
     #[test]
     fn proof_y_matches_keyset_version() {
         let secret = Secret::from_str("test proof secret").expect("secret");
+        let (point_secret, _) = Secret::generate_v3();
         let secp_c = crate::nuts::SecretKey::generate().public_key();
         let bls_c: DhkePoint =
             crate::nuts::nut01::BlsG1PublicKey::hash_to_curve(b"signature").into();
@@ -1573,7 +1712,7 @@ mod tests {
         let v2_y = Proof::new(
             Amount::from(1),
             keyset_id(KeySetVersion::Version02),
-            secret,
+            point_secret.clone(),
             bls_c,
         )
         .y()
@@ -1582,6 +1721,96 @@ mod tests {
         assert_eq!(v0_y.as_bytes().len(), 33);
         assert_eq!(v1_y.as_bytes().len(), 33);
         assert_eq!(v2_y.as_bytes().len(), 48);
+
+        // v3 hashes the 33 decoded point bytes, not the hex string.
+        let point = point_secret.v3_point().expect("point");
+        assert_eq!(
+            v2_y.as_bytes(),
+            crate::nuts::nut01::BlsG1PublicKey::hash_to_curve(&point.to_bytes())
+                .to_bytes()
+                .as_slice()
+        );
+
+        // A v3 proof whose secret is not a point has no Y.
+        assert!(Proof::new(
+            Amount::from(1),
+            keyset_id(KeySetVersion::Version02),
+            secret,
+            bls_c,
+        )
+        .y()
+        .is_err());
+    }
+
+    /// v3 witnesses parse by keyset version, kept as received
+    #[test]
+    fn witness_parses_by_keyset_version() {
+        let sig = "3c2ce5dc36aea01a9b9f44287ef12e67a7fb0e0113720c3a000b5942835426e6635b09c087dbd30bde77ddf03b43b87858b3d2bf29d4b3ca7895f73e4839d3c2";
+        let raw = format!(r#"{{"signatures":["{sig}"]}}"#);
+        let proof_json = |id: &str, c: &str, witness: serde_json::Value| {
+            serde_json::json!({
+                "amount": 8, "id": id,
+                "secret": "0240c186f3e19f6f8cd00db81c5266d5c74ddca48ff848efd0e3e125b2846f30d9",
+                "C": c, "witness": witness,
+            })
+        };
+        let v3 = "022546ab0a2dee9f79510f4e20a4e3d9e894a97361047c594902573a7e64f9d701";
+        let bls_c = "a33dd4de26ea950060ae5c45bdc408d72aaf51ba9f4ccdeee4a040df067ca87c799a406fec88c2a328b75b290e27f7b6";
+        let v0 = "009a1f293253e41e";
+        let secp_c = "02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea";
+
+        let proof: Proof =
+            serde_json::from_value(proof_json(v3, bls_c, serde_json::json!(raw))).unwrap();
+        let Some(Witness::Nutroot(witness)) = &proof.witness else {
+            panic!("expected a nutroot witness");
+        };
+        assert_eq!(witness.as_str(), raw);
+        // Serialized back exactly as received.
+        assert_eq!(
+            serde_json::to_value(&proof).unwrap()["witness"],
+            serde_json::json!(raw)
+        );
+
+        // The same shape on a pre-v3 keyset is a P2PK witness.
+        let proof: Proof =
+            serde_json::from_value(proof_json(v0, secp_c, serde_json::json!(raw))).unwrap();
+        assert!(matches!(proof.witness, Some(Witness::P2PKWitness(_))));
+
+        // Null is no witness.
+        let proof: Proof =
+            serde_json::from_value(proof_json(v3, bls_c, serde_json::Value::Null)).unwrap();
+        assert!(proof.witness.is_none());
+
+        // A v3 witness must be a string holding a valid witness.
+        for bad in [
+            serde_json::json!({"signatures": [sig]}),
+            serde_json::json!(r#"{"signatures":["00"]}"#),
+            serde_json::json!(format!(r#"{{"signatures":["{sig}"],"extra":1}}"#)),
+            serde_json::json!(r#"{"signatures":["00"],"preimage":"00"}"#),
+        ] {
+            assert!(
+                serde_json::from_value::<Proof>(proof_json(v3, bls_c, bad.clone())).is_err(),
+                "accepted {bad}"
+            );
+        }
+
+        // Stored witnesses re-parse by version.
+        let stored = serde_json::to_string(
+            &Witness::from_json_for_version(
+                &serde_json::to_string(&raw).unwrap(),
+                KeySetVersion::Version02,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            Witness::from_json_for_version(&stored, KeySetVersion::Version02),
+            Ok(Witness::Nutroot(_))
+        ));
+        assert!(matches!(
+            Witness::from_json_for_version(&stored, KeySetVersion::Version00),
+            Ok(Witness::P2PKWitness(_))
+        ));
     }
 
     #[test]

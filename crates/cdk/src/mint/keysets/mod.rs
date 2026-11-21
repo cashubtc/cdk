@@ -99,6 +99,12 @@ impl Mint {
         keyset_id_type: cdk_common::nut02::KeySetVersion,
         final_expiry: Option<u64>,
     ) -> Result<MintKeySetInfo, Error> {
+        if keyset_id_type == cdk_common::nut02::KeySetVersion::Version02
+            && self.mint_info().await?.pubkey.is_none()
+        {
+            return Err(Error::V3KeysetRequiresMintPubkey);
+        }
+
         let result = self
             .signatory
             .rotate_keyset(RotateKeyArguments {

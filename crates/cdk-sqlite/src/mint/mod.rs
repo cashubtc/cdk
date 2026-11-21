@@ -141,6 +141,7 @@ mod test {
             secret: Secret::generate(),
             c: SecretKey::generate().public_key().into(),
             dleq: None,
+            witness: None,
         };
         let y = proof.y().expect("proof y");
 

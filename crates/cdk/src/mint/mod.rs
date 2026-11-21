@@ -36,6 +36,7 @@ mod check_spendable;
 mod issue;
 mod keysets;
 mod melt;
+mod nutroot;
 mod payment_backend;
 mod proofs;
 mod saga_recovery;
@@ -794,6 +795,24 @@ impl Mint {
         // the endpoints actually enforce. One figure for both, so a wallet respecting it trips
         // neither cap.
         mint_info.max_array_length = Some(self.max_inputs.min(self.max_outputs) as u64);
+
+        // A mint with v3 keysets implements nutroot secrets with every core
+        // leaf and lists them (NUT-10). Without v3 keysets the setting is
+        // left as configured.
+        if self
+            .keysets
+            .load()
+            .iter()
+            .any(|keyset| keyset.id.get_version() == cdk_common::nut02::KeySetVersion::Version02)
+        {
+            mint_info.nuts.nut10.supported = true;
+            for leaf in cdk_common::nuts::nut10::nutroot::LeafType::CORE {
+                let signal = leaf.signal();
+                if !mint_info.nuts.nut10.supports_leaf(&signal) {
+                    mint_info.nuts.nut10.leaves.push(signal);
+                }
+            }
+        }
 
         Ok(mint_info)
     }
