@@ -7,9 +7,9 @@ use std::time::Duration;
 
 use bitcoin::hashes::{sha256, Hash};
 use bitcoin::hex::prelude::FromHex;
-use bitcoin::secp256k1::Secp256k1;
+use bitcoin::secp256k1::{Secp256k1, SecretKey};
 use cdk::error::Error;
-use cdk::nuts::{CurrencyUnit, PaymentMethod, SecretKey};
+use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use cdk::wallet::{MeltOutcome, Wallet};
 use cdk::Amount;
 use cdk_sqlite::wallet::memory;

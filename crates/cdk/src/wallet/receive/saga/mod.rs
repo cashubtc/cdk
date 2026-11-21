@@ -59,7 +59,7 @@ use crate::wallet::saga::{
 };
 use crate::wallet::swap::ProofReservation;
 use crate::wallet::util::{escape_log_value, p2bk_slot};
-use crate::{Amount, Error, Wallet, SECP256K1};
+use crate::{Amount, Error, Wallet};
 
 pub(crate) mod compensation;
 pub(crate) mod resume;
@@ -139,7 +139,7 @@ impl<'a> ReceiveSaga<'a, Initial> {
         let mut p2pk_signing_keys: HashMap<XOnlyPublicKey, SecretKey> = opts
             .p2pk_signing_keys
             .iter()
-            .map(|s| (s.x_only_public_key(&SECP256K1).0, s.clone()))
+            .map(|s| (s.x_only_public_key().0, s.clone()))
             .collect();
 
         // Process each proof: verify DLEQ, handle P2PK/HTLC

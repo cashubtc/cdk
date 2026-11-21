@@ -14,7 +14,7 @@ use crate::nuts::nut10::Kind;
 use crate::nuts::{Conditions, Proof, Proofs, PublicKey, SecretKey};
 use crate::util::hex;
 use crate::wallet::Wallet;
-use crate::{Error, SECP256K1};
+use crate::Error;
 
 /// Render a value without allowing terminal controls to reach a log sink.
 pub(crate) fn escape_log_value<T>(value: &T) -> String
@@ -105,7 +105,7 @@ pub(crate) fn sign_proofs(
 
     let key_map: HashMap<XOnlyPublicKey, &SecretKey> = p2pk_signing_keys
         .iter()
-        .map(|s| (s.x_only_public_key(&SECP256K1).0, s))
+        .map(|s| (s.x_only_public_key().0, s))
         .collect();
 
     for proof in proofs.iter_mut() {
@@ -240,10 +240,7 @@ pub(crate) async fn merge_keyring_keys(
     explicit_keys: &[SecretKey],
 ) -> Result<Vec<SecretKey>, Error> {
     let mut keys = explicit_keys.to_vec();
-    let covered: HashSet<XOnlyPublicKey> = keys
-        .iter()
-        .map(|k| k.x_only_public_key(&SECP256K1).0)
-        .collect();
+    let covered: HashSet<XOnlyPublicKey> = keys.iter().map(|k| k.x_only_public_key().0).collect();
 
     let pubkeys = collect_p2pk_pubkeys(proofs)?;
     for pubkey in pubkeys {
