@@ -3300,13 +3300,14 @@ impl Signatory for BlindSignGate {
     async fn blind_sign(
         &self,
         blinded_messages: Vec<BlindedMessage>,
+        admission: cdk_common::work_pool::Admission,
     ) -> Result<Vec<BlindSignature>, cdk_common::Error> {
         let gate = self.gate.lock().await.take();
         if let Some(gate) = gate {
             let _ = gate.reached.send(());
             let _ = gate.release.await;
         }
-        self.inner.blind_sign(blinded_messages).await
+        self.inner.blind_sign(blinded_messages, admission).await
     }
 
     async fn verify_proofs(&self, proofs: Proofs) -> Result<(), cdk_common::Error> {

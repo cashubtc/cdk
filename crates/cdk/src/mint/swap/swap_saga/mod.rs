@@ -286,7 +286,11 @@ impl<'a> SwapSaga<'a, SetupComplete> {
     pub async fn sign_outputs(self) -> Result<SwapSaga<'a, Signed>, Error> {
         match self
             .mint
-            .blind_sign(self.state_data.blinded_messages.clone())
+            // Inputs are already reserved by `setup_swap`, so wait for the signatory.
+            .blind_sign(
+                self.state_data.blinded_messages.clone(),
+                cdk_common::work_pool::Admission::Unbounded,
+            )
             .await
         {
             Ok(signatures) => {

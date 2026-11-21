@@ -2460,7 +2460,13 @@ async fn test_restore_from_expired_keyset() {
         keyset.id,
         SecretKey::generate().public_key(),
     );
-    let signatures = mint.blind_sign(vec![output.clone()]).await.unwrap();
+    let signatures = mint
+        .blind_sign(
+            vec![output.clone()],
+            cdk_common::work_pool::Admission::Unbounded,
+        )
+        .await
+        .unwrap();
     assert!(signatures[0].dleq.is_some());
 
     let mut tx = MintDatabase::begin_transaction(store.as_ref())

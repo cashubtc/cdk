@@ -209,8 +209,13 @@ impl Mint {
             return Err(Error::BlindAuthFailed);
         }
 
+        // Blind auth tokens are signed before anything is stored, so an
+        // overloaded signatory may refuse and the client retries.
         self.signatory
-            .blind_sign(vec![blinded_message.to_owned()])
+            .blind_sign(
+                vec![blinded_message.to_owned()],
+                cdk_common::work_pool::Admission::Bounded,
+            )
             .await?
             .pop()
             .ok_or(Error::Internal)

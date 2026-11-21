@@ -190,6 +190,9 @@ pub enum Error {
     /// Operation timeout
     #[error("Operation timeout")]
     Timeout,
+    /// The mint has no capacity left for costly cryptographic work; retry later
+    #[error("Mint is busy, retry later")]
+    Busy,
     /// Onchain backend returned a `request_lookup_id` that does not match the
     /// mint-supplied `quote_id` (or omitted it entirely).
     ///
@@ -744,6 +747,15 @@ mod tests {
         assert_eq!(ErrorResponse::from(decoded).code, ErrorCode::OutputsPending);
     }
 
+    #[test]
+    fn busy_is_a_generic_error_response() {
+        // No NUT defines a code for a mint at capacity, so it is reported like
+        // any other error (NUT-00: HTTP 400 with a JSON body).
+        let response = ErrorResponse::from(Error::Busy);
+        assert_eq!(response.code, ErrorCode::Unknown(50000));
+        assert_eq!(response.detail, Error::Busy.to_string());
+    }
+
     #[cfg(feature = "mint")]
     #[test]
     fn payment_backend_error_response_redacts_backend_detail() {
@@ -852,6 +864,7 @@ impl Error {
 
             // Ambiguous Errors (Unsafe to revert)
             Self::Timeout
+            | Self::Busy
             | Self::Internal
             | Self::UnknownPaymentState
             | Self::PendingQuote

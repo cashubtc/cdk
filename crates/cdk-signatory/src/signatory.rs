@@ -10,6 +10,7 @@ use cdk_common::common::IssuerVersion;
 use cdk_common::error::Error;
 use cdk_common::mint::MintKeySetInfo;
 use cdk_common::nuts::nut02::KeySetVersion;
+use cdk_common::work_pool::Admission;
 use cdk_common::{
     BlindSignature, BlindedMessage, CurrencyUnit, Id, KeySet, Keys, MintKeySet, Proof, PublicKey,
 };
@@ -158,9 +159,16 @@ pub trait Signatory {
     /// The message can be for a coin or an auth token.
     /// Callers must validate that output keysets are active when accepting a request;
     /// signing can happen after a keyset rotation.
+    ///
+    /// `admission` says whether the signatory may refuse the request with
+    /// [`Error::Busy`] when it is overloaded. Pass [`Admission::Bounded`] when
+    /// nothing has been reserved yet and the request can be retried, and
+    /// [`Admission::Unbounded`] when signing follows a state change that a
+    /// refusal would have to unwind.
     async fn blind_sign(
         &self,
         blinded_messages: Vec<BlindedMessage>,
+        admission: Admission,
     ) -> Result<Vec<BlindSignature>, Error>;
 
     /// Verify [`Proof`] meets conditions and is signed by the mint (ignores P2PK/HTLC signatures"
@@ -184,6 +192,9 @@ pub trait Signatory {
     async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<SignatoryKeySet, Error>;
 
     /// Reconstruct DLEQ proofs
+    ///
+    /// Reconstruction only reads, so an overloaded signatory may refuse it
+    /// with [`Error::Busy`].
     async fn reconstruct_dleq(
         &self,
         args: Vec<ReconstructDleqArguments>,

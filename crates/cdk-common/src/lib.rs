@@ -48,6 +48,8 @@ pub mod stream;
 pub mod subscription;
 #[cfg(feature = "wallet")]
 pub mod wallet;
+#[cfg(feature = "mint")]
+pub mod work_pool;
 pub mod ws;
 
 // re-exporting external crates

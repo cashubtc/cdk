@@ -29,6 +29,17 @@ message BlindSignResponse {
 
 message BlindedMessages {
   repeated BlindedMessage blinded_messages = 1;
+  // whether the signatory may refuse the request when it is overloaded;
+  // clients that leave it unset get the old, never-refused behaviour
+  Admission admission = 2;
+}
+
+// What a signing request does when the signatory is overloaded
+enum Admission {
+  // wait for as long as it takes; the caller has already changed state
+  ADMISSION_UNBOUNDED = 0;
+  // wait briefly, then fail with RESOURCE_EXHAUSTED; the caller can retry
+  ADMISSION_BOUNDED = 1;
 }
 
 // Represents a blinded message
