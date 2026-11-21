@@ -566,7 +566,7 @@
             // {
               pname = "cdk-msrv-${name}";
               cargoArtifacts = workspaceDepsMsrv;
-              cargoExtraArgs = cargoArgs;
+              cargoExtraArgs = "--locked ${cargoArgs}";
               doInstallCargoArtifacts = false;
             }
           );
