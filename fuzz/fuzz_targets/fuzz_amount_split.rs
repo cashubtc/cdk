@@ -73,8 +73,10 @@ fuzz_target!(|input: Input| {
     // instead of reaching the division in the greedy splitting loop.
     if input.mode % 8 == 0 {
         denominations.insert(0);
-        let fee_and_amounts = FeeAndAmounts::from((u64::from(input.fee),
-            denominations.iter().copied().collect()));
+        let fee_and_amounts = FeeAndAmounts::from((
+            u64::from(input.fee),
+            denominations.iter().copied().collect(),
+        ));
         assert!(amount.split(&fee_and_amounts).is_err());
         return;
     }
@@ -86,8 +88,7 @@ fuzz_target!(|input: Input| {
     let denominations = denominations.into_iter().collect::<Vec<_>>();
     // Bound fee to keep split_with_fee's recursion converging.  With fee
     // ppk >= 1000/len(denominations) the recursion diverges (stack overflow).
-    let fee_and_amounts = FeeAndAmounts::from((u64::from(input.fee % 11),
-        denominations.clone()));
+    let fee_and_amounts = FeeAndAmounts::from((u64::from(input.fee % 11), denominations.clone()));
 
     let split = amount
         .split(&fee_and_amounts)
@@ -108,9 +109,7 @@ fuzz_target!(|input: Input| {
             input
                 .explicit_values
                 .into_iter()
-                .map(|value| {
-                    Amount::from(denominations[usize::from(value) % denominations.len()])
-                })
+                .map(|value| Amount::from(denominations[usize::from(value) % denominations.len()]))
                 .collect(),
         ),
     };
@@ -121,9 +120,7 @@ fuzz_target!(|input: Input| {
     if let Ok(with_fee) = amount.split_with_fee(&fee_and_amounts) {
         let total = Amount::try_sum(with_fee.iter().copied())
             .expect("bounded fee-adjusted split cannot overflow");
-        let fee = Amount::from(
-            (with_fee.len() as u64 * fee_and_amounts.fee()).div_ceil(1000),
-        );
+        let fee = Amount::from((with_fee.len() as u64 * fee_and_amounts.fee()).div_ceil(1000));
         assert!(
             total.checked_sub(fee).is_some_and(|net| net >= amount),
             "fee-adjusted split must cover the requested net amount"
