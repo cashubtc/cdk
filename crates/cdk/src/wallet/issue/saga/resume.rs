@@ -120,7 +120,7 @@ impl Wallet {
             self.update_transaction_status_by_saga_id(*saga_id, TransactionStatus::Completed)
                 .await?;
 
-            self.localstore.delete_saga(saga_id).await?;
+            self.release_quote_and_delete_saga(saga_id).await?;
             return Ok(RecoveryAction::Recovered);
         }
 
@@ -148,7 +148,7 @@ impl Wallet {
                 self.update_transaction_status_by_saga_id(*saga_id, TransactionStatus::Completed)
                     .await?;
 
-                self.localstore.delete_saga(saga_id).await?;
+                self.release_quote_and_delete_saga(saga_id).await?;
                 Ok(RecoveryAction::Recovered)
             }
             OutputRecoveryResult::EmptyResponse => {
@@ -159,7 +159,7 @@ impl Wallet {
                 );
                 self.update_transaction_status_by_saga_id(*saga_id, TransactionStatus::Failed)
                     .await?;
-                self.localstore.delete_saga(saga_id).await?;
+                self.compensate_issue(saga_id).await?;
                 Ok(RecoveryAction::Compensated)
             }
             OutputRecoveryResult::Unavailable => {
@@ -611,6 +611,14 @@ impl Wallet {
 
     /// Compensate an issue saga by releasing the quote and deleting the saga.
     async fn compensate_issue(&self, saga_id: &uuid::Uuid) -> Result<(), Error> {
+        self.release_quote_and_delete_saga(saga_id).await
+    }
+
+    /// Release the saga's mint quote reservation and delete the saga.
+    ///
+    /// Used whenever recovery ends an issue saga, whether its outputs were
+    /// recovered or not, so the quote can be minted again.
+    async fn release_quote_and_delete_saga(&self, saga_id: &uuid::Uuid) -> Result<(), Error> {
         // Release the mint quote reservation (best-effort, continue on error)
         if let Err(e) = (ReleaseMintQuote {
             localstore: self.localstore.clone(),
