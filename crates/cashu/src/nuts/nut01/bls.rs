@@ -19,6 +19,14 @@ use super::Error;
 const BLS_DST: &[u8] = b"CASHU_BLS12_381_G1_XMD:SHA-256_SSWU_RO_";
 const BLS_BATCH_DST: &[u8] = b"Cashu_BLS_Batch_v1";
 
+/// Decode the hex of a BLS12-381 point, which NUT-00 requires in lowercase.
+pub(super) fn decode_point_hex(hex: &str) -> Result<Vec<u8>, Error> {
+    if hex.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        return Err(Error::NonLowercaseHex);
+    }
+    Ok(crate::util::hex::decode(hex)?)
+}
+
 /// The G2 generator in Miller-loop form, prepared once and shared by every check.
 static G2_GENERATOR_PREPARED: LazyLock<G2Prepared> =
     LazyLock::new(|| G2Prepared::from(G2Affine::generator()));
@@ -52,7 +60,10 @@ impl BlsSecretKey {
 
     /// Derive a non-zero scalar by reducing 32-byte input modulo the BLS12-381 scalar field.
     /// Returns an error if the reduced scalar is zero.
-    pub fn from_reduced_bytes(bytes: &[u8; 32]) -> Result<Self, Error> {
+    ///
+    /// Test-only: reduction is biased; derived scalars use rejection sampling.
+    #[cfg(test)]
+    pub(crate) fn from_reduced_bytes(bytes: &[u8; 32]) -> Result<Self, Error> {
         let mut wide = [0u8; 64];
         for (dst, src) in wide.iter_mut().zip(bytes.iter().rev()) {
             *dst = *src;
@@ -631,5 +642,159 @@ mod tests {
     fn test_reject_g2_identity_point() {
         let identity = G2Projective::identity().to_affine().to_compressed();
         assert!(BlsG2PublicKey::from_bytes(&identity).is_err());
+    }
+
+    /// The BLS12-381 base field modulus `p`, big-endian.
+    const FP_MODULUS: [u8; 48] = [
+        0x1a, 0x01, 0x11, 0xea, 0x39, 0x7f, 0xe6, 0x9a, 0x4b, 0x1b, 0xa7, 0xb6, 0x43, 0x4b, 0xac,
+        0xd7, 0x64, 0x77, 0x4b, 0x84, 0xf3, 0x85, 0x12, 0xbf, 0x67, 0x30, 0xd2, 0xa0, 0xf6, 0xb0,
+        0xf6, 0x24, 0x1e, 0xab, 0xff, 0xfe, 0xb1, 0x53, 0xff, 0xff, 0xb9, 0xfe, 0xff, 0xff, 0xff,
+        0xff, 0xaa, 0xab,
+    ];
+
+    /// Add `p` to a big-endian field element, returning the carry-out.
+    fn add_modulus(element: &mut [u8]) -> bool {
+        let mut carry = 0u16;
+        for (byte, modulus) in element.iter_mut().rev().zip(FP_MODULUS.iter().rev()) {
+            let sum = u16::from(*byte) + u16::from(*modulus) + carry;
+            *byte = (sum & 0xff) as u8;
+            carry = sum >> 8;
+        }
+        carry != 0
+    }
+
+    /// Point validation (NUT-00): every invalid G1 encoding is refused.
+    #[test]
+    fn test_reject_invalid_g1_encodings() {
+        let generator = G1Affine::generator().to_compressed();
+        assert!(BlsG1PublicKey::from_bytes(&generator).is_ok());
+
+        // Compression flag cleared.
+        let mut uncompressed_flag = generator;
+        uncompressed_flag[0] &= 0x7f;
+        assert!(BlsG1PublicKey::from_bytes(&uncompressed_flag).is_err());
+
+        // Infinity flag with a non-zero x.
+        let mut infinity_with_x = [0u8; 48];
+        infinity_with_x[0] = 0xc0;
+        infinity_with_x[47] = 1;
+        assert!(BlsG1PublicKey::from_bytes(&infinity_with_x).is_err());
+
+        // Identity with the sort flag set.
+        let mut sorted_identity = [0u8; 48];
+        sorted_identity[0] = 0xe0;
+        assert!(BlsG1PublicKey::from_bytes(&sorted_identity).is_err());
+
+        // Uncompressed width.
+        assert!(BlsG1PublicKey::from_bytes(&G1Affine::generator().to_uncompressed()).is_err());
+
+        // Non-canonical x: a subgroup point's x + p, which still fits beside
+        // the flag bits. Search multiples of g1 for an x small enough.
+        let canonical = (1u64..)
+            .map(|k| (G1Projective::generator() * Scalar::from(k)).to_affine())
+            .map(|point| point.to_compressed())
+            .find(|bytes| bytes[0] & 0x1f < 0x05)
+            .expect("a multiple of g1 with a small x");
+        assert!(BlsG1PublicKey::from_bytes(&canonical).is_ok());
+        let flags = canonical[0] & 0xe0;
+        let mut non_canonical = canonical;
+        non_canonical[0] &= 0x1f;
+        assert!(!add_modulus(&mut non_canonical));
+        assert_eq!(non_canonical[0] & 0xe0, 0, "x + p must fit in 381 bits");
+        non_canonical[0] |= flags;
+        assert!(BlsG1PublicKey::from_bytes(&non_canonical).is_err());
+
+        // On the curve but outside the prime-order subgroup.
+        let off_subgroup = (1u8..=u8::MAX)
+            .map(|x| {
+                let mut bytes = [0u8; 48];
+                bytes[0] = 0x80;
+                bytes[47] = x;
+                bytes
+            })
+            .find(|bytes| {
+                bool::from(G1Affine::from_compressed_unchecked(bytes).is_some())
+                    && bool::from(G1Affine::from_compressed(bytes).is_none())
+            })
+            .expect("a small x on the curve outside the subgroup");
+        assert!(BlsG1PublicKey::from_bytes(&off_subgroup).is_err());
+    }
+
+    /// Point validation (NUT-00): every invalid G2 encoding is refused.
+    #[test]
+    fn test_reject_invalid_g2_encodings() {
+        let generator = G2Affine::generator().to_compressed();
+        assert!(BlsG2PublicKey::from_bytes(&generator).is_ok());
+
+        // Compression flag cleared.
+        let mut uncompressed_flag = generator;
+        uncompressed_flag[0] &= 0x7f;
+        assert!(BlsG2PublicKey::from_bytes(&uncompressed_flag).is_err());
+
+        // Infinity flag with a non-zero x.
+        let mut infinity_with_x = [0u8; 96];
+        infinity_with_x[0] = 0xc0;
+        infinity_with_x[95] = 1;
+        assert!(BlsG2PublicKey::from_bytes(&infinity_with_x).is_err());
+
+        // Identity with the sort flag set.
+        let mut sorted_identity = [0u8; 96];
+        sorted_identity[0] = 0xe0;
+        assert!(BlsG2PublicKey::from_bytes(&sorted_identity).is_err());
+
+        // Uncompressed width.
+        assert!(BlsG2PublicKey::from_bytes(&G2Affine::generator().to_uncompressed()).is_err());
+
+        // Non-canonical x: g2 with p added to x's c0 half, which has no flags.
+        let mut non_canonical = generator;
+        assert!(!add_modulus(&mut non_canonical[48..]));
+        assert!(BlsG2PublicKey::from_bytes(&non_canonical).is_err());
+
+        // On the curve but outside the prime-order subgroup.
+        let off_subgroup = (1u8..=u8::MAX)
+            .map(|x| {
+                let mut bytes = [0u8; 96];
+                bytes[0] = 0x80;
+                bytes[95] = x;
+                bytes
+            })
+            .find(|bytes| {
+                bool::from(G2Affine::from_compressed_unchecked(bytes).is_some())
+                    && bool::from(G2Affine::from_compressed(bytes).is_none())
+            })
+            .expect("a small x on the curve outside the subgroup");
+        assert!(BlsG2PublicKey::from_bytes(&off_subgroup).is_err());
+    }
+
+    /// NUT-00: hex for v3 points is lowercase; legacy points keep accepting either case.
+    #[test]
+    fn test_v3_point_hex_must_be_lowercase() {
+        use crate::nuts::nut02::KeySetVersion;
+        use crate::nuts::{DhkePoint, MintPublicKey};
+
+        let g1_hex = crate::util::hex::encode(BlsG1PublicKey::hash_to_curve(b"case").to_bytes());
+        assert!(DhkePoint::from_hex_for_version(&g1_hex, KeySetVersion::Version02).is_ok());
+        assert!(matches!(
+            DhkePoint::from_hex_for_version(g1_hex.to_uppercase(), KeySetVersion::Version02),
+            Err(Error::NonLowercaseHex)
+        ));
+
+        let g2_hex = crate::util::hex::encode(
+            BlsSecretKey::from_bytes(&[1; 32])
+                .unwrap()
+                .public_key_g2()
+                .to_bytes(),
+        );
+        assert!(MintPublicKey::from_hex(&g2_hex).is_ok());
+        assert!(matches!(
+            MintPublicKey::from_hex(g2_hex.to_uppercase()),
+            Err(Error::NonLowercaseHex)
+        ));
+
+        let secp_hex = crate::nuts::SecretKey::generate().public_key().to_hex();
+        for hex in [secp_hex.clone(), secp_hex.to_uppercase()] {
+            assert!(DhkePoint::from_hex_for_version(&hex, KeySetVersion::Version00).is_ok());
+            assert!(MintPublicKey::from_hex(&hex).is_ok());
+        }
     }
 }

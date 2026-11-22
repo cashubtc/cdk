@@ -3,7 +3,7 @@ use core::hash::{Hash, Hasher};
 
 use serde::Serialize;
 
-use super::{BlsG1PublicKey, Error, PublicKey};
+use super::{bls, BlsG1PublicKey, Error, PublicKey};
 use crate::nuts::nut02::KeySetVersion;
 
 /// A point used by Cashu's blind-signature protocol.
@@ -43,11 +43,19 @@ impl DhkePoint {
     }
 
     /// Parse a hexadecimal point using the curve selected by a keyset version.
+    ///
+    /// A v3 (BLS12-381) point must be lowercase hex (NUT-00).
     pub fn from_hex_for_version<S>(hex: S, version: KeySetVersion) -> Result<Self, Error>
     where
         S: AsRef<str>,
     {
-        Self::from_slice_for_version(&crate::util::hex::decode(hex.as_ref())?, version)
+        let bytes = match version {
+            KeySetVersion::Version00 | KeySetVersion::Version01 => {
+                crate::util::hex::decode(hex.as_ref())?
+            }
+            KeySetVersion::Version02 => bls::decode_point_hex(hex.as_ref())?,
+        };
+        Self::from_slice_for_version(&bytes, version)
     }
 
     /// Whether this point is on the curve used by `version`.

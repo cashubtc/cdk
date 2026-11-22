@@ -71,6 +71,9 @@ pub enum Error {
     /// Wrong key kind for operation
     #[error("Wrong key kind for operation")]
     WrongKeyKind,
+    /// BLS12-381 point hex is not lowercase (NUT-00)
+    #[error("BLS12-381 point hex must be lowercase")]
+    NonLowercaseHex,
 }
 
 /// Mint public keys per amount.
