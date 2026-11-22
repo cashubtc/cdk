@@ -15,7 +15,7 @@ use cdk_common::{
     Amount, BlindSignature, CurrencyUnit, MeltQuoteBolt11Response, MeltQuoteBolt12Response,
     MeltQuoteOnchainResponse, MeltQuoteResponse, MeltQuoteState, MintQuoteBolt11Response,
     MintQuoteBolt12Response, MintQuoteCustomResponse, MintQuoteOnchainResponse, MintQuoteState,
-    NotificationPayload, ProofState, PublicKey, QuoteId,
+    NotificationPayload, ProofState, PublicKey, QuoteId, State,
 };
 use cdk_signatory::signatory::Signatory;
 
@@ -213,8 +213,13 @@ impl MintPubSubSpec {
                     .map_err(|e| e.to_string())?
                     .into_iter()
                     .enumerate()
-                    .filter_map(|(idx, state)| state.map(|state| (public_keys[idx], state).into()))
-                    .map(|state: ProofState| state.into()),
+                    // A Y with no row is unspent, as in `check_state`; NUT-17 requires the
+                    // current state to be sent first, so it must not be dropped.
+                    .map(|(idx, state)| {
+                        let state: ProofState =
+                            (public_keys[idx], state.unwrap_or(State::Unspent)).into();
+                        state.into()
+                    }),
             );
         }
 
@@ -708,6 +713,36 @@ mod tests {
                 assert_eq!(change, &expected);
             }
         }
+    }
+
+    #[tokio::test]
+    async fn get_events_from_db_reports_unseen_proof_as_unspent() {
+        let db: DynMintDatabase =
+            Arc::new(cdk_sqlite::mint::memory::empty().await.expect("database"));
+        let snaps = rotated_snapshots(1).await;
+        let signatory = MockSignatory::new(snaps[0].clone());
+        let spec =
+            MintPubSubSpec::new_instance((db, Arc::new(HashMap::new()), Arc::new(signatory)));
+        let first = cdk_common::nuts::SecretKey::generate().public_key();
+        let second = cdk_common::nuts::SecretKey::generate().public_key();
+        let events = spec
+            .get_events_from_db(&[
+                NotificationId::ProofState(first),
+                NotificationId::ProofState(second),
+            ])
+            .await
+            .expect("backfill");
+        let states = events
+            .into_iter()
+            .map(|event| match event.into_inner() {
+                NotificationPayload::ProofState(state) => (state.y, state.state),
+                payload => panic!("unexpected payload: {payload:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            states,
+            vec![(first, State::Unspent), (second, State::Unspent)]
+        );
     }
 
     #[tokio::test]
