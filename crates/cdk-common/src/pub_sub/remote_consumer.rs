@@ -755,11 +755,25 @@ mod tests {
         }
 
         // Send an event that matches Foo(7)
-        events_tx.send(Message { foo: 7, bar: 1 }).await.unwrap();
+        events_tx
+            .send(Message {
+                foo: 7,
+                bar: 1,
+                done: false,
+            })
+            .await
+            .unwrap();
         let got = recv_next::<TestTransport>(&mut sub, 1000)
             .await
             .expect("got event");
-        assert_eq!(got, Message { foo: 7, bar: 1 });
+        assert_eq!(
+            got,
+            Message {
+                foo: 7,
+                bar: 1,
+                done: false
+            }
+        );
 
         // Dropping the RemoteActiveConsumer should trigger an Unsubscribe(name)
         drop(sub);
@@ -802,11 +816,25 @@ mod tests {
         }
 
         // Send an event that matches Foo(7)
-        events_tx.send(Message { foo: 7, bar: 1 }).await.unwrap();
+        events_tx
+            .send(Message {
+                foo: 7,
+                bar: 1,
+                done: false,
+            })
+            .await
+            .unwrap();
         let got = recv_next::<TestTransport>(&mut sub_1, 1000)
             .await
             .expect("got event");
-        assert_eq!(got, Message { foo: 7, bar: 1 });
+        assert_eq!(
+            got,
+            Message {
+                foo: 7,
+                bar: 1,
+                done: false
+            }
+        );
 
         // Subscribe to Foo(7), should receive the latest message and future messages
         let mut sub_2 = consumer
@@ -816,7 +844,14 @@ mod tests {
         let got = recv_next::<TestTransport>(&mut sub_2, 1000)
             .await
             .expect("got event");
-        assert_eq!(got, Message { foo: 7, bar: 1 });
+        assert_eq!(
+            got,
+            Message {
+                foo: 7,
+                bar: 1,
+                done: false
+            }
+        );
 
         // Dropping the RemoteActiveConsumer but not unsubscribe, since sub_2 is still active
         drop(sub_1);
@@ -830,21 +865,49 @@ mod tests {
         let got = recv_next::<TestTransport>(&mut sub_3, 1000)
             .await
             .expect("got event");
-        assert_eq!(got, Message { foo: 7, bar: 1 });
+        assert_eq!(
+            got,
+            Message {
+                foo: 7,
+                bar: 1,
+                done: false
+            }
+        );
 
         // Send an event that matches Foo(7)
-        events_tx.send(Message { foo: 7, bar: 2 }).await.unwrap();
+        events_tx
+            .send(Message {
+                foo: 7,
+                bar: 2,
+                done: false,
+            })
+            .await
+            .unwrap();
 
         // receive new message
         let got = recv_next::<TestTransport>(&mut sub_2, 1000)
             .await
             .expect("got event");
-        assert_eq!(got, Message { foo: 7, bar: 2 });
+        assert_eq!(
+            got,
+            Message {
+                foo: 7,
+                bar: 2,
+                done: false
+            }
+        );
 
         let got = recv_next::<TestTransport>(&mut sub_3, 1000)
             .await
             .expect("got event");
-        assert_eq!(got, Message { foo: 7, bar: 2 });
+        assert_eq!(
+            got,
+            Message {
+                foo: 7,
+                bar: 2,
+                done: false
+            }
+        );
 
         drop(sub_2);
         drop(sub_3);
@@ -883,7 +946,14 @@ mod tests {
         })
         .await;
 
-        events_tx.send(Message { foo: 7, bar: 99 }).await.unwrap();
+        events_tx
+            .send(Message {
+                foo: 7,
+                bar: 99,
+                done: false,
+            })
+            .await
+            .unwrap();
         let _ = recv_next::<TestTransport>(&mut sub, 1000)
             .await
             .expect("got event");
@@ -916,11 +986,25 @@ mod tests {
             .expect("subscribe ok");
 
         // Inject an event; the poll path should relay it on the first poll iteration
-        events_tx.send(Message { foo: 9, bar: 5 }).await.unwrap();
+        events_tx
+            .send(Message {
+                foo: 9,
+                bar: 5,
+                done: false,
+            })
+            .await
+            .unwrap();
         let got = recv_next::<TestTransport>(&mut sub, 1500)
             .await
             .expect("event relayed via polling");
-        assert_eq!(got, Message { foo: 9, bar: 5 });
+        assert_eq!(
+            got,
+            Message {
+                foo: 9,
+                bar: 5,
+                done: false
+            }
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -990,15 +1074,36 @@ mod tests {
         }
 
         // Send one event and ensure BOTH local subscribers receive it.
-        events_tx.send(Message { foo: 1, bar: 42 }).await.unwrap();
+        events_tx
+            .send(Message {
+                foo: 1,
+                bar: 42,
+                done: false,
+            })
+            .await
+            .unwrap();
         let got_a = recv_next::<TestTransport>(&mut a, 1000)
             .await
             .expect("A got");
         let got_b = recv_next::<TestTransport>(&mut b, 1000)
             .await
             .expect("B got");
-        assert_eq!(got_a, Message { foo: 1, bar: 42 });
-        assert_eq!(got_b, Message { foo: 1, bar: 42 });
+        assert_eq!(
+            got_a,
+            Message {
+                foo: 1,
+                bar: 42,
+                done: false
+            }
+        );
+        assert_eq!(
+            got_b,
+            Message {
+                foo: 1,
+                bar: 42,
+                done: false
+            }
+        );
 
         // Drop B: no Unsubscribe should be sent yet (still one local subscriber).
         drop(b);

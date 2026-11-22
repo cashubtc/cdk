@@ -67,18 +67,19 @@ where
         let index_storage = listeners_index.read();
 
         let mut sent = HashSet::new();
-        for topic in event.get_topics() {
+        let topics = event.get_topics();
+        for topic in &topics {
             for ((subscription_index, unique_id), sender) in
                 index_storage.range((topic.clone(), 0)..)
             {
-                if subscription_index.cmp(&topic) != Ordering::Equal {
+                if subscription_index.cmp(topic) != Ordering::Equal {
                     break;
                 }
                 if sent.contains(&unique_id) {
                     continue;
                 }
                 sent.insert(unique_id);
-                sender.send(event.clone());
+                sender.send_live(&topics, event.clone());
             }
         }
 
@@ -129,6 +130,7 @@ where
         let subscription_name = request.subscription_name();
         let subscribed_to = request.try_get_topics()?;
         let sender = Subscriber::new(subscription_name.clone(), sender);
+        sender.start_backfill(&subscribed_to);
         let mut index_storage = self.listeners_topics.write();
         let subscription_internal_id = self
             .unique_subscription_counter
@@ -146,8 +148,10 @@ where
         let subscribed_to_for_spawn = subscribed_to.clone();
 
         spawn(async move {
-            // TODO: Ignore topics broadcasted from fetch_events _if_ any real time has been broadcasted already.
-            inner.fetch_events(subscribed_to_for_spawn, sender).await;
+            inner
+                .fetch_events(subscribed_to_for_spawn, sender.clone())
+                .await;
+            sender.finish_backfill();
         });
 
         Ok(ActiveSubscription::new(

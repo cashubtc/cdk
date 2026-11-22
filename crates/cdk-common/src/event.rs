@@ -7,6 +7,7 @@ use serde::de::DeserializeOwned;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::nut07::State;
 use crate::nut17::{deserialize_payload_for_kind, Kind, NotificationId};
 use crate::pub_sub::Event;
 use crate::{
@@ -215,6 +216,10 @@ where
             NotificationPayload::ProofState(p) => vec![NotificationId::ProofState(p.y.to_owned())],
         }
     }
+
+    fn is_final(&self) -> bool {
+        matches!(&self.0, NotificationPayload::ProofState(p) if p.state == State::Spent)
+    }
 }
 
 #[cfg(test)]
@@ -224,7 +229,6 @@ mod tests {
     use super::*;
     use crate::nut00::{CurrencyUnit, KnownMethod, PaymentMethod};
     use crate::nut05::QuoteState;
-    use crate::nut07::State;
     use crate::nut30::MeltQuoteOnchainFeeOption;
     use crate::nuts::{MeltQuoteState, MintQuoteState};
     use crate::{Amount, MeltQuoteCustomResponse, MintQuoteCustomResponse, PublicKey};
@@ -379,6 +383,32 @@ mod tests {
 
             assert_eq!(decoded, event);
             assert_eq!(decoded.get_topics(), event.get_topics());
+        }
+    }
+
+    #[test]
+    fn only_spent_proof_state_is_final() {
+        let proof_state = |state| {
+            MintEvent::<String>::new(NotificationPayload::ProofState(ProofState {
+                y: pubkey(),
+                state,
+                witness: None,
+            }))
+        };
+
+        assert!(proof_state(State::Spent).is_final());
+        for state in [
+            State::Unspent,
+            State::Pending,
+            State::Reserved,
+            State::PendingSpent,
+        ] {
+            assert!(!proof_state(state).is_final());
+        }
+        for event in sample_events() {
+            if !matches!(&*event, NotificationPayload::ProofState(_)) {
+                assert!(!event.is_final());
+            }
         }
     }
 

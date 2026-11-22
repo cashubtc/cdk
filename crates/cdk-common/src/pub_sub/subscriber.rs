@@ -1,12 +1,14 @@
 //! Active subscription
-use std::fmt::Debug;
+use std::collections::HashSet;
+use std::fmt;
 use std::sync::atomic::AtomicUsize;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
+use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
 use super::pubsub::{SubReceiver, TopicTree};
-use super::{Error, Spec};
+use super::{Error, Event, Spec};
 
 /// Subscription request
 pub trait SubscriptionRequest {
@@ -101,14 +103,30 @@ where
 ///
 /// You usually do not construct a `Subscriber` directly — it is provided to you in
 /// the [`Spec::fetch_events`] callback so you can backfill a new subscription.
-#[derive(Debug)]
 pub struct Subscriber<S>
 where
     S: Spec + 'static,
 {
     subscription: Arc<S::SubscriptionId>,
     inner: mpsc::Sender<(Arc<S::SubscriptionId>, S::Event)>,
-    latest: Arc<Mutex<Option<S::Event>>>,
+    delivery: Arc<Mutex<DeliveryState<S>>>,
+}
+
+struct DeliveryState<S: Spec> {
+    latest: Option<S::Event>,
+    snapshot_topics: Option<HashSet<S::Topic>>,
+}
+
+impl<S> fmt::Debug for Subscriber<S>
+where
+    S: Spec + 'static,
+    S::SubscriptionId: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Subscriber")
+            .field("subscription", &self.subscription)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<S> Clone for Subscriber<S>
@@ -119,7 +137,7 @@ where
         Self {
             subscription: self.subscription.clone(),
             inner: self.inner.clone(),
-            latest: self.latest.clone(),
+            delivery: self.delivery.clone(),
         }
     }
 }
@@ -136,25 +154,66 @@ where
         Self {
             inner: inner.clone(),
             subscription,
-            latest: Arc::new(Mutex::new(None)),
+            delivery: Arc::new(Mutex::new(DeliveryState {
+                latest: None,
+                snapshot_topics: None,
+            })),
         }
     }
 
     /// Send a message
     pub fn send(&self, event: S::Event) {
-        let mut latest = if let Ok(reader) = self.latest.lock() {
-            reader
-        } else {
-            let _ = self.inner.try_send((self.subscription.to_owned(), event));
-            return;
-        };
+        self.enqueue(&mut self.delivery.lock(), event);
+    }
 
-        if let Some(last_event) = latest.replace(event.clone()) {
-            if last_event == event {
+    /// Queue a backfill snapshot unless it has been superseded.
+    ///
+    /// While the subscription is backfilling, the snapshot is dropped when a final live event
+    /// (see [`Event::is_final`]) has already been queued for every subscribed topic it covers,
+    /// so a stale read cannot follow a state that nothing can supersede.
+    pub fn send_snapshot(&self, event: S::Event) {
+        let mut delivery = self.delivery.lock();
+        if let Some(pending) = &delivery.snapshot_topics {
+            if !event
+                .get_topics()
+                .iter()
+                .any(|topic| pending.contains(topic))
+            {
                 return;
             }
         }
+        self.enqueue(&mut delivery, event);
+    }
 
-        let _ = self.inner.try_send((self.subscription.to_owned(), event));
+    pub(super) fn start_backfill(&self, topics: &[S::Topic]) {
+        self.delivery.lock().snapshot_topics = Some(topics.iter().cloned().collect());
+    }
+
+    pub(super) fn finish_backfill(&self) {
+        self.delivery.lock().snapshot_topics = None;
+    }
+
+    pub(super) fn send_live(&self, topics: &[S::Topic], event: S::Event) {
+        let mut delivery = self.delivery.lock();
+        let is_final = event.is_final();
+        if self.enqueue(&mut delivery, event) && is_final {
+            if let Some(snapshot_topics) = &mut delivery.snapshot_topics {
+                for topic in topics {
+                    snapshot_topics.remove(topic);
+                }
+            }
+        }
+    }
+
+    fn enqueue(&self, delivery: &mut DeliveryState<S>, event: S::Event) -> bool {
+        if delivery.latest.as_ref() == Some(&event) {
+            return false;
+        }
+        let Ok(permit) = self.inner.try_reserve() else {
+            return false;
+        };
+        delivery.latest = Some(event.clone());
+        permit.send((self.subscription.clone(), event));
+        true
     }
 }
