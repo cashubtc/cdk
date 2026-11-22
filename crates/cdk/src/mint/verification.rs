@@ -295,6 +295,9 @@ impl Mint {
 
         // Check proof content lengths (secret and witness) are within limits
         for proof in inputs {
+            // NUT-00: a v3 proof carrying a DLEQ proof is malformed.
+            proof.ensure_dleq_allowed()?;
+
             let secret_len = proof.secret.len();
             if secret_len > MAX_PROOF_CONTENT_LEN {
                 tracing::warn!(

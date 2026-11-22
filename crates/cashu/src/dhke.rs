@@ -167,6 +167,12 @@ pub fn unblind_message(
 }
 
 /// Construct Proof
+///
+/// Unblinds each promise into a [`Proof`]. This does not verify the mint's
+/// signatures: callers **must** verify every promise against the blinded
+/// message they sent first, with [`BlindSignature::verify_signature`] (a
+/// pairing check for v3 keysets, which NUT-00 requires of wallets). Proofs
+/// built from unverified promises may be worthless.
 pub fn construct_proofs(
     promises: Vec<BlindSignature>,
     rs: Vec<BlindingFactor>,
@@ -265,10 +271,10 @@ pub fn verify_message(
 /// Verify a proof's signature with the mint's secret key.
 ///
 /// The secret key lets the mint check `C == a·Y` directly, without DLEQ
-/// proofs or pairings. Any DLEQ proof attached to the proof is ignored, for
-/// every keyset version: it carries nothing the mint needs. NUT-12 only says
-/// receivers SHOULD treat a v3 proof with a DLEQ as malformed, and rejecting
-/// it would fail a valid spend.
+/// proofs or pairings. This function ignores any DLEQ proof attached to the
+/// proof: a legacy DLEQ carries nothing the mint needs, and the mint refuses a
+/// v3 input that carries one (NUT-00) in `Mint::verify_inputs`, before it
+/// reaches this check.
 pub fn verify_proof_with_mint_key(
     proof: &Proof,
     mint_secret_key: &MintSecretKey,

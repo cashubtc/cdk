@@ -4,7 +4,7 @@ use core::str::FromStr;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
-use super::{BlsG2PublicKey, Error, PublicKey};
+use super::{bls, BlsG2PublicKey, Error, PublicKey};
 
 /// A mint public key.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -29,11 +29,17 @@ impl MintPublicKey {
     }
 
     /// Parse a mint key from hex.
+    ///
+    /// A BLS12-381 G2 key (192 hex characters) must be lowercase (NUT-00).
     pub fn from_hex<S>(hex: S) -> Result<Self, Error>
     where
         S: AsRef<str>,
     {
-        let bytes = crate::util::hex::decode(hex.as_ref())?;
+        let hex = hex.as_ref();
+        let bytes = match hex.len() {
+            192 => bls::decode_point_hex(hex)?,
+            _ => crate::util::hex::decode(hex)?,
+        };
         if bytes.len() == 65 {
             return Err(Error::InvalidPublicKeySize {
                 expected: 33,

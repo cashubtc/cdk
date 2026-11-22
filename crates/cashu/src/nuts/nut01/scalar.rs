@@ -33,7 +33,10 @@ impl BlindingFactor {
     }
 
     /// Derive a non-zero BLS scalar by reducing bytes.
-    pub fn bls_from_reduced_bytes(bytes: &[u8; 32]) -> Result<Self, Error> {
+    ///
+    /// Test-only: reduction is biased; derived scalars use rejection sampling.
+    #[cfg(test)]
+    pub(crate) fn bls_from_reduced_bytes(bytes: &[u8; 32]) -> Result<Self, Error> {
         Ok(Self::Bls(BlsSecretKey::from_reduced_bytes(bytes)?))
     }
 
@@ -159,7 +162,10 @@ impl MintSecretKey {
     }
 
     /// Derive a non-zero BLS scalar by reducing bytes.
-    pub fn bls_from_reduced_bytes(bytes: &[u8; 32]) -> Result<Self, Error> {
+    ///
+    /// Test-only: reduction is biased; derived scalars use rejection sampling.
+    #[cfg(test)]
+    pub(crate) fn bls_from_reduced_bytes(bytes: &[u8; 32]) -> Result<Self, Error> {
         Ok(Self::Bls(BlsSecretKey::from_reduced_bytes(bytes)?))
     }
 
