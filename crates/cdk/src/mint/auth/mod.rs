@@ -467,7 +467,7 @@ mod tests {
         let proof = AuthProof {
             keyset_id,
             secret: Secret::generate(),
-            c: SecretKey::generate().public_key(),
+            c: SecretKey::generate().public_key().into(),
             dleq: None,
         };
         let y = proof.y().expect("proof y");

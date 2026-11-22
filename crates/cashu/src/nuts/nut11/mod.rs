@@ -374,7 +374,7 @@ pub(crate) fn valid_signatures(
 impl BlindedMessage {
     /// Sign [BlindedMessage]
     pub fn sign_p2pk(&mut self, secret_key: SecretKey) -> Result<(), Error> {
-        let msg: [u8; 33] = self.blinded_secret.to_bytes();
+        let msg = self.blinded_secret.to_bytes();
         let signature: Signature = secret_key.sign(&msg)?;
 
         let signatures = vec![signature.to_string()];
@@ -609,7 +609,7 @@ mod tests {
             amount: Amount::ONE,
             keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
             secret,
-            c: primary,
+            c: primary.into(),
             witness: None,
             dleq: None,
             p2pk_e: None,
@@ -689,7 +689,7 @@ mod tests {
             keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
             amount: Amount::ZERO,
             secret,
-            c: PublicKey::from_str(
+            c: crate::nuts::DhkePoint::from_hex_any_curve(
                 "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
             )
             .unwrap(),
@@ -790,7 +790,7 @@ mod tests {
 
         let mut blinded_message = BlindedMessage {
             amount: Amount::ZERO,
-            blinded_secret: pubkey,
+            blinded_secret: pubkey.into(),
             keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
             witness: None,
         };
@@ -820,7 +820,7 @@ mod tests {
 
         let mut blinded_message = BlindedMessage {
             amount: Amount::ZERO,
-            blinded_secret: pubkey,
+            blinded_secret: pubkey.into(),
             keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
             witness: None,
         };
@@ -842,7 +842,7 @@ mod tests {
 
         let mut blinded_message = BlindedMessage {
             amount: Amount::ZERO,
-            blinded_secret: pubkey,
+            blinded_secret: pubkey.into(),
             keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
             witness: None,
         };
@@ -893,7 +893,7 @@ mod tests {
             keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
             amount: Amount::ZERO,
             secret,
-            c: PublicKey::from_str(
+            c: crate::nuts::DhkePoint::from_hex_any_curve(
                 "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
             )
             .unwrap(),
@@ -950,7 +950,7 @@ mod tests {
             keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
             amount: Amount::ZERO,
             secret,
-            c: PublicKey::from_str(
+            c: crate::nuts::DhkePoint::from_hex_any_curve(
                 "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
             )
             .unwrap(),
@@ -1017,7 +1017,7 @@ mod tests {
             keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
             amount: Amount::ZERO,
             secret,
-            c: PublicKey::from_str(
+            c: crate::nuts::DhkePoint::from_hex_any_curve(
                 "02698c4e2b5f9534cd0687d87513c759790cf829aa5739184a3e3735471fbda904",
             )
             .unwrap(),
@@ -1053,7 +1053,7 @@ mod tests {
             keyset_id: Id::from_str(id).unwrap(),
             amount: Amount::ZERO,
             secret,
-            c: pubkey,
+            c: pubkey.into(),
             witness: None,
             dleq: None,
             p2pk_e: None,
@@ -1069,7 +1069,7 @@ mod tests {
     fn create_test_blinded_msg(pubkey: PublicKey) -> BlindedMessage {
         BlindedMessage {
             amount: Amount::ZERO,
-            blinded_secret: pubkey,
+            blinded_secret: pubkey.into(),
             keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
             witness: None,
         }

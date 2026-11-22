@@ -17,7 +17,7 @@ use arc_swap::ArcSwap;
 use bitcoin::bip32::{DerivationPath, Xpriv};
 use bitcoin::secp256k1::{self, Secp256k1};
 use cdk_common::database::MintKeyDatabaseTransaction;
-use cdk_common::dhke::{sign_message, verify_message};
+use cdk_common::dhke::{sign_message, verify_proof_with_mint_key};
 use cdk_common::mint::MintKeySetInfo;
 use cdk_common::nuts::{BlindSignature, BlindedMessage, CurrencyUnit, Id, MintKeySet, Proof};
 use cdk_common::work_pool::{Admission, WorkPool};
@@ -594,7 +594,7 @@ fn verify_proofs_with(keysets: &KeysetSnapshot, proofs: &[Proof]) -> Result<(), 
             .get(&proof.keyset_id)
             .ok_or(Error::UnknownKeySet)?;
         let key_pair = key.keys.get(&proof.amount).ok_or(Error::UnknownKeySet)?;
-        verify_message(&key_pair.secret_key, proof.c, proof.secret.as_bytes())?;
+        verify_proof_with_mint_key(proof, &key_pair.secret_key)?;
         Ok(())
     })
 }
@@ -633,12 +633,8 @@ mod test {
         let signatory = Arc::new(signatory);
 
         let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
-        let proof = Proof::new(
-            Amount::from(1),
-            keyset_id,
-            Secret::generate(),
-            SecretKey::generate().public_key(),
-        );
+        let point: cdk_common::DhkePoint = SecretKey::generate().public_key().into();
+        let proof = Proof::new(Amount::from(1), keyset_id, Secret::generate(), point);
 
         // Verification is refused rather than queued.
         assert!(matches!(
@@ -646,11 +642,7 @@ mod test {
             Err(Error::Busy)
         ));
 
-        let output = BlindedMessage::new(
-            Amount::from(1),
-            keyset_id,
-            SecretKey::generate().public_key(),
-        );
+        let output = BlindedMessage::new(Amount::from(1), keyset_id, point);
 
         // So is signing that has not reserved anything.
         assert!(matches!(
@@ -1361,26 +1353,28 @@ mod test {
         assert_eq!(keyset.unit, CurrencyUnit::Sat);
         assert_eq!(keyset.keys.len(), 2);
 
-        let expected_amounts_and_pubkeys: HashSet<(Amount, PublicKey)> = vec![
+        let expected_amounts_and_pubkeys: HashSet<(Amount, cdk_common::MintPublicKey)> = vec![
             (
                 Amount::from(1),
                 PublicKey::from_hex(
                     "0380a4bb98d9bc5d5b11c7cf2b705dbc894b62ac99cf67e0ef1a3d47ea6dc54706",
                 )
-                .unwrap(),
+                .unwrap()
+                .into(),
             ),
             (
                 Amount::from(2),
                 PublicKey::from_hex(
                     "022fe5e50a15d721014b538ca6a3ff20ee049b195ba0b1705f64829da8779b6940",
                 )
-                .unwrap(),
+                .unwrap()
+                .into(),
             ),
         ]
         .into_iter()
         .collect();
 
-        let amounts_and_pubkeys: HashSet<(Amount, PublicKey)> = keyset
+        let amounts_and_pubkeys: HashSet<(Amount, cdk_common::MintPublicKey)> = keyset
             .keys
             .iter()
             .map(|(amount, pair)| (*amount, pair.public_key))
@@ -1409,26 +1403,28 @@ mod test {
         assert_eq!(keyset.unit, CurrencyUnit::Sat);
         assert_eq!(keyset.keys.len(), 2);
 
-        let expected_amounts_and_pubkeys: HashSet<(Amount, PublicKey)> = vec![
+        let expected_amounts_and_pubkeys: HashSet<(Amount, cdk_common::MintPublicKey)> = vec![
             (
                 Amount::from(1),
                 PublicKey::from_hex(
                     "0380a4bb98d9bc5d5b11c7cf2b705dbc894b62ac99cf67e0ef1a3d47ea6dc54706",
                 )
-                .unwrap(),
+                .unwrap()
+                .into(),
             ),
             (
                 Amount::from(2),
                 PublicKey::from_hex(
                     "022fe5e50a15d721014b538ca6a3ff20ee049b195ba0b1705f64829da8779b6940",
                 )
-                .unwrap(),
+                .unwrap()
+                .into(),
             ),
         ]
         .into_iter()
         .collect();
 
-        let amounts_and_pubkeys: HashSet<(Amount, PublicKey)> = keyset
+        let amounts_and_pubkeys: HashSet<(Amount, cdk_common::MintPublicKey)> = keyset
             .keys
             .iter()
             .map(|(amount, pair)| (*amount, pair.public_key))
@@ -1862,8 +1858,8 @@ mod test {
             .await
             .expect("rotate_keyset");
 
-        let secret1 = SecretKey::generate().public_key();
-        let secret2 = SecretKey::generate().public_key();
+        let secret1: cdk_common::DhkePoint = SecretKey::generate().public_key().into();
+        let secret2: cdk_common::DhkePoint = SecretKey::generate().public_key().into();
         let messages = vec![
             BlindedMessage::new(Amount::from(1), keyset.id, secret1),
             BlindedMessage::new(Amount::from(2), keyset.id, secret2),
@@ -1902,7 +1898,7 @@ mod test {
 
         // Mismatched blind_secret must fail with SignatureMissingOrInvalid
         let mut invalid_args = args;
-        invalid_args[1].blind_secret = SecretKey::generate().public_key();
+        invalid_args[1].blind_secret = SecretKey::generate().public_key().into();
         let err = signatory.reconstruct_dleq(invalid_args).await;
         assert!(matches!(err, Err(Error::SignatureMissingOrInvalid)));
     }

@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use cdk_common::database::{self, WalletDatabase};
 use tracing::instrument;
 
-use crate::nuts::PublicKey;
+use crate::nuts::ProofId;
 use crate::wallet::saga::CompensatingAction;
 use crate::Error;
 
@@ -22,7 +22,7 @@ pub struct RemovePendingProofs {
     /// Database reference
     pub localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
     /// Y values (public keys) of the pending proofs to remove
-    pub proof_ys: Vec<PublicKey>,
+    pub proof_ys: Vec<ProofId>,
     /// Saga ID for cleanup
     pub saga_id: uuid::Uuid,
 }

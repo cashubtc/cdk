@@ -19,7 +19,7 @@ use bitcoin::secp256k1;
 use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
-use super::nut01::Keys;
+use super::nut01::{Keys, MintPublicKey};
 #[cfg(feature = "mint")]
 use super::nut01::{MintKeyPair, MintKeys};
 use crate::nuts::nut00::CurrencyUnit;
@@ -199,7 +199,7 @@ impl Id {
         expiry: Option<u64>,
         include_zero_expiry: bool,
     ) -> Self {
-        let mut keys: Vec<(&Amount, &super::PublicKey)> = map.iter().collect();
+        let mut keys: Vec<(&Amount, &MintPublicKey)> = map.iter().collect();
         keys.sort_by_key(|(amt, _v)| *amt);
 
         let keys_string = keys
@@ -248,13 +248,13 @@ impl Id {
     /// This function will not panic under normal circumstances as the hash output
     /// is always valid hex and the correct length.
     pub fn v1_from_keys(map: &Keys) -> Self {
-        let mut keys: Vec<(&Amount, &super::PublicKey)> = map.iter().collect();
+        let mut keys: Vec<(&Amount, &MintPublicKey)> = map.iter().collect();
         keys.sort_by_key(|(amt, _v)| *amt);
 
         let pubkeys_concat: Vec<u8> = keys
             .iter()
             .map(|(_, pubkey)| pubkey.to_bytes())
-            .collect::<Vec<[u8; 33]>>()
+            .collect::<Vec<Vec<u8>>>()
             .concat();
 
         let hash = Sha256::hash(&pubkeys_concat);
@@ -406,6 +406,11 @@ pub struct ShortKeysetId {
 }
 
 impl ShortKeysetId {
+    /// Get the version of the keyset.
+    pub fn get_version(&self) -> KeySetVersion {
+        self.version
+    }
+
     /// [`ShortKeysetId`] to bytes
     pub fn to_bytes(&self) -> Vec<u8> {
         [vec![self.version.to_byte()], self.prefix.clone()].concat()

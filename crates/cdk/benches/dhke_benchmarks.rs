@@ -1,7 +1,7 @@
 #![allow(missing_docs)]
 #![allow(clippy::unwrap_used)]
 use cdk::dhke;
-use cdk::nuts::nut01::{PublicKey, SecretKey};
+use cdk::nuts::nut01::{BlindingFactor, DhkePoint, MintPublicKey, MintSecretKey};
 use cdk::util::hex;
 use criterion::{criterion_group, criterion_main, Criterion};
 
@@ -11,24 +11,33 @@ fn bench_dhke(c: &mut Criterion) {
     // *************************************************************
     let message =
         hex::decode("d341ee4871f1f889041e63cf0d3823c713eea6aff01e80f1719f08f9e5be98f6").unwrap();
-    let alice_sec: SecretKey =
-        SecretKey::from_hex("99fce58439fc37412ab3468b73db0569322588f62fb3a49182d67e23d877824a")
-            .unwrap();
+    let alice_sec = BlindingFactor::from_hex(
+        "99fce58439fc37412ab3468b73db0569322588f62fb3a49182d67e23d877824a",
+    )
+    .unwrap();
 
-    let blinded_key =
-        PublicKey::from_hex("02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2")
-            .unwrap();
+    let blinded_key = DhkePoint::from_hex_any_curve(
+        "02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2",
+    )
+    .unwrap();
 
-    let r = SecretKey::from_hex("0000000000000000000000000000000000000000000000000000000000000001")
-        .unwrap();
-    let a =
-        PublicKey::from_hex("020000000000000000000000000000000000000000000000000000000000000001")
-            .unwrap();
+    let r = BlindingFactor::from_hex(
+        "0000000000000000000000000000000000000000000000000000000000000001",
+    )
+    .unwrap();
+    let a = MintPublicKey::from_hex(
+        "020000000000000000000000000000000000000000000000000000000000000001",
+    )
+    .unwrap();
     let bob_sec =
-        SecretKey::from_hex("0000000000000000000000000000000000000000000000000000000000000001")
+        MintSecretKey::from_hex("0000000000000000000000000000000000000000000000000000000000000001")
             .unwrap();
+    let bob_blinding = BlindingFactor::from_hex(
+        "0000000000000000000000000000000000000000000000000000000000000001",
+    )
+    .unwrap();
     let (blinded_message, _) =
-        dhke::blind_message("test_message".as_bytes(), Some(bob_sec.clone())).unwrap();
+        dhke::blind_message("test_message".as_bytes(), Some(bob_blinding)).unwrap();
 
     // *************************************************************
     // * RUN INDIVIDUAL STEPS                                  *

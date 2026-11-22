@@ -8,7 +8,7 @@ use tracing::instrument;
 use crate::fees::calculate_fee;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{
-    CheckStateRequest, Proof, ProofState, Proofs, PublicKey, SpendingConditions, State,
+    CheckStateRequest, Proof, ProofId, ProofState, Proofs, SpendingConditions, State,
 };
 use crate::{ensure_cdk, Amount, Error, Wallet};
 
@@ -87,7 +87,7 @@ impl Wallet {
 
     /// Return proofs to unspent allowing them to be selected and spent
     #[instrument(skip(self))]
-    pub async fn unreserve_proofs(&self, ys: Vec<PublicKey>) -> Result<(), Error> {
+    pub async fn unreserve_proofs(&self, ys: Vec<ProofId>) -> Result<(), Error> {
         self.localstore
             .update_proofs_state(ys, State::Unspent)
             .await?;
@@ -175,7 +175,7 @@ impl Wallet {
         // table. This is because a proof that has been created to send will be
         // stored in the pending table in order to avoid accidentally double
         // spending but to allow it to be explicitly reclaimed
-        let pending_states: HashSet<PublicKey> = states
+        let pending_states: HashSet<ProofId> = states
             .into_iter()
             .filter(|s| s.state.ne(&State::Spent))
             .map(|s| s.y)
@@ -648,7 +648,7 @@ mod tests {
 
     use cdk_common::amount::KeysetFeeAndAmounts;
     use cdk_common::secret::Secret;
-    use cdk_common::{Amount, Id, Proof, PublicKey};
+    use cdk_common::{Amount, DhkePoint, Id, Proof};
 
     use crate::Wallet;
 
@@ -661,7 +661,7 @@ mod tests {
             Amount::from(amount),
             id(),
             Secret::generate(),
-            PublicKey::from_hex(
+            DhkePoint::from_hex_any_curve(
                 "03deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
             )
             .unwrap(),
@@ -673,7 +673,7 @@ mod tests {
             Amount::from(amount),
             id(),
             Secret::new(format!("proof-{index:08}")),
-            PublicKey::from_hex(
+            DhkePoint::from_hex_any_curve(
                 "03deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
             )
             .unwrap(),
@@ -2369,7 +2369,7 @@ mod tests {
             Amount::from(amount),
             keyset_id,
             Secret::generate(),
-            PublicKey::from_hex(
+            DhkePoint::from_hex_any_curve(
                 "03deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
             )
             .unwrap(),

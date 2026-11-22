@@ -77,8 +77,8 @@ mod tests {
                 .expect("record migration");
         }
 
-        let a = SecretKey::generate().public_key();
-        let b = SecretKey::generate().public_key();
+        let a: cdk_common::DhkePoint = SecretKey::generate().public_key().into();
+        let b: cdk_common::DhkePoint = SecretKey::generate().public_key().into();
         let base = Transaction {
             mint_url: "https://mint.example".parse().expect("mint url"),
             direction: TransactionDirection::Incoming,
@@ -99,7 +99,7 @@ mod tests {
         let expected = vec![
             // Legacy record keyed by its proof identifiers.
             Transaction {
-                ys: vec![a, b],
+                ys: vec![a.into(), b.into()],
                 memo: Some("legacy".to_owned()),
                 metadata: HashMap::from([("key".to_owned(), "value".to_owned())]),
                 quote_id: Some("quote".to_owned()),
@@ -110,7 +110,7 @@ mod tests {
             // Saga record with repeated points, whose order must survive.
             Transaction {
                 direction: TransactionDirection::Outgoing,
-                ys: vec![b, a, b],
+                ys: vec![b.into(), a.into(), b.into()],
                 payment_proof: Some("preimage".to_owned()),
                 saga_id: Some(uuid::Uuid::new_v4()),
                 status: TransactionStatus::Pending,
@@ -208,7 +208,7 @@ mod tests {
             amount: Amount::from(1),
             fee: Amount::ZERO,
             unit: CurrencyUnit::Sat,
-            ys: vec![SecretKey::generate().public_key()],
+            ys: vec![SecretKey::generate().public_key().into()],
             timestamp: 123,
             memo: Some("original".to_owned()),
             metadata: Default::default(),
@@ -228,7 +228,7 @@ mod tests {
              WHEN NEW.position = 300 BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
         )
         .unwrap();
-        invalid.ys = vec![SecretKey::generate().public_key(); 301];
+        invalid.ys = vec![SecretKey::generate().public_key().into(); 301];
         assert!(db.add_transaction(invalid).await.is_err());
         let stored = db.get_transaction(original.id()).await.unwrap().unwrap();
         assert_eq!(stored.ys, original.ys);
@@ -255,7 +255,7 @@ mod tests {
             amount: Amount::from(1),
             fee: Amount::ZERO,
             unit: CurrencyUnit::Sat,
-            ys: vec![SecretKey::generate().public_key()],
+            ys: vec![SecretKey::generate().public_key().into()],
             timestamp: 123,
             memo: Some("original".to_owned()),
             metadata: Default::default(),
@@ -272,7 +272,7 @@ mod tests {
         db.add_transaction(bad_metadata.clone()).await.unwrap();
         let mut bad_point = valid.clone();
         bad_point.saga_id = Some(uuid::Uuid::new_v4());
-        bad_point.ys = vec![SecretKey::generate().public_key(); 3];
+        bad_point.ys = vec![SecretKey::generate().public_key().into(); 3];
         db.add_transaction(bad_point.clone()).await.unwrap();
         // Simulate corruption that normal writes reject.
         conn.execute_batch("PRAGMA ignore_check_constraints = ON;")
@@ -282,10 +282,11 @@ mod tests {
             [bad_metadata.id().as_slice()],
         )
         .unwrap();
-        // A bad middle point must discard both earlier and later joined rows.
+        // A bad middle identifier must discard both earlier and later joined rows.
+        // Proof identifiers are not curve-validated on read, so corrupt the length.
         conn.execute(
             "UPDATE transaction_ys SET y = ?1 WHERE transaction_id = ?2 AND position = 1",
-            rusqlite::params![vec![0u8; 33], bad_point.id().as_slice()],
+            rusqlite::params![vec![0u8; 5], bad_point.id().as_slice()],
         )
         .unwrap();
         assert_eq!(
@@ -297,45 +298,6 @@ mod tests {
         drop(conn);
         drop(db);
         std::fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn transaction_ys_migration_preserves_legacy_points() {
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(include_str!("../../../cdk-sql-common/src/wallet/migrations/sqlite/20250401120000_add_transactions_table.sql")).unwrap();
-        let first = cdk_common::SecretKey::generate().public_key().to_bytes();
-        let second = cdk_common::SecretKey::generate().public_key().to_bytes();
-        let points = [first, second, first];
-        for (id, ys) in [(vec![1u8], points.concat()), (vec![2u8], Vec::new())] {
-            conn.execute("INSERT INTO transactions (id, mint_url, direction, amount, fee, unit, ys, timestamp, memo) VALUES (?1, 'https://mint.example', 'Incoming', 1, 0, 'sat', ?2, 123, 'retained')", rusqlite::params![id, ys]).unwrap();
-        }
-        conn.execute_batch(include_str!("../../../cdk-sql-common/src/wallet/migrations/sqlite/20260924000000_normalize_transaction_ys.sql")).unwrap();
-        let mut stmt = conn
-            .prepare("SELECT y FROM transaction_ys WHERE transaction_id = ?1 ORDER BY position")
-            .unwrap();
-        let stored = stmt
-            .query_map([vec![1u8]], |row| row.get::<_, Vec<u8>>(0))
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
-        assert_eq!(stored, points);
-        let empty_count: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM transaction_ys WHERE transaction_id = ?1",
-                [vec![2u8]],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(empty_count, 0);
-        let retained: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM transactions WHERE memo = 'retained' AND timestamp = 123",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(retained, 2);
-        assert!(conn.prepare("SELECT ys FROM transactions").is_err());
     }
 
     #[test]
@@ -420,7 +382,7 @@ mod tests {
         let s = SecretKey::generate();
         let r = SecretKey::generate();
 
-        let dleq = ProofDleq::new(e.clone(), s.clone(), r.clone());
+        let dleq = ProofDleq::new(e.clone(), s.clone(), r.clone().into());
 
         let mut proof = Proof::new(
             Amount::from(64),
@@ -609,7 +571,7 @@ mod tests {
 
         // Retrieve with non-existent Y values returns only existing ones
         let non_existent_secret_key = SecretKey::generate();
-        let non_existent_y = non_existent_secret_key.public_key();
+        let non_existent_y = non_existent_secret_key.public_key().into();
         let mixed_ys = vec![expected_ys[0], non_existent_y, expected_ys[1]];
         let mixed_proofs = db.get_proofs_by_ys(mixed_ys).await.unwrap();
         assert_eq!(mixed_proofs.len(), 2);

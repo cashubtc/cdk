@@ -293,7 +293,7 @@ mod tests {
             amount: Amount::from(10),
             fee: Amount::ZERO,
             unit: CurrencyUnit::Sat,
-            ys: vec![SecretKey::generate().public_key()],
+            ys: vec![SecretKey::generate().public_key().into()],
             timestamp: 42,
             memo: None,
             metadata: HashMap::new(),

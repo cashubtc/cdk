@@ -164,7 +164,7 @@ fuzz_target!(|input: Input| {
                 amount: Amount::from(input.amount),
                 keyset_id,
                 secret,
-                c: pubkey_from(input.c_seed),
+                c: pubkey_from(input.c_seed).into(),
                 witness: Some(Witness::HTLCWitness(HTLCWitness {
                     preimage,
                     signatures: (!signatures.is_empty()).then_some(signatures),
@@ -225,7 +225,7 @@ fuzz_target!(|input: Input| {
                 amount: Amount::from(input.amount),
                 keyset_id,
                 secret,
-                c: pubkey_from(input.c_seed),
+                c: pubkey_from(input.c_seed).into(),
                 witness: Some(Witness::HTLCWitness(HTLCWitness {
                     preimage: hex_encode(&incorrect_preimage),
                     signatures: Some(signatures),
@@ -312,7 +312,7 @@ fuzz_target!(|input: Input| {
         amount: Amount::from(input.amount),
         keyset_id,
         secret,
-        c: c_point,
+        c: c_point.into(),
         witness: Some(witness),
         dleq: None,
         p2pk_e: None,

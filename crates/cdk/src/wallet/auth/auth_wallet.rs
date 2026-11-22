@@ -15,8 +15,8 @@ use crate::amount::SplitTarget;
 use crate::dhke::construct_proofs;
 use crate::nuts::nut22::MintAuthRequest;
 use crate::nuts::{
-    nut12, AuthRequired, AuthToken, BlindAuthToken, CurrencyUnit, KeySetInfo, PreMintSecrets,
-    Proofs, ProtectedEndpoint, State,
+    nut12, AuthRequired, AuthToken, BlindAuthToken, CurrencyUnit, KeySetInfo, LegacyDleq,
+    PreMintSecrets, Proofs, ProtectedEndpoint, State,
 };
 use crate::wallet::mint_connector::AuthHttpClient;
 use crate::wallet::mint_metadata_cache::MintMetadataCache;
@@ -378,7 +378,7 @@ impl AuthWallet {
                         Error::InsufficientBlindAuthTokens
                     })?;
 
-                    let auth_token = AuthToken::BlindAuth(proof.without_dleq());
+                    let auth_token = AuthToken::BlindAuth(Box::new(proof.without_dleq()));
 
                     Ok(Some(auth_token))
                 }
@@ -488,8 +488,12 @@ impl AuthWallet {
 
                 let keys = self.load_keyset_keys(sig.keyset_id).await?;
                 let key = keys.amount_key(sig.amount).ok_or(Error::AmountKey)?;
-                match sig.verify_dleq(key, premint.blinded_message.blinded_secret) {
-                    Ok(_) => (),
+                match sig.verify_signature(
+                    key,
+                    premint.blinded_message.blinded_secret,
+                    LegacyDleq::Required,
+                ) {
+                    Ok(()) => (),
                     Err(nut12::Error::MissingDleqProof) => {
                         tracing::warn!("Signature for bat returned without dleq proof.");
                         return Err(Error::DleqProofNotProvided);

@@ -389,7 +389,7 @@ impl<'a> Arbitrary<'a> for ProofArb {
             amount,
             keyset_id,
             secret,
-            c,
+            c: c.into(),
             witness,
             dleq,
             p2pk_e: None,
@@ -413,7 +413,7 @@ impl<'a> Arbitrary<'a> for ProofDleqArb {
         let e = SecretKeyArb::arbitrary(u)?.into_inner();
         let s = SecretKeyArb::arbitrary(u)?.into_inner();
         let r = SecretKeyArb::arbitrary(u)?.into_inner();
-        Ok(Self(ProofDleq::new(e, s, r)))
+        Ok(Self(ProofDleq::new(e, s, r.into())))
     }
 }
 

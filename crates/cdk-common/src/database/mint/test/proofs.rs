@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cashu::secret::Secret;
-use cashu::{Amount, Id, SecretKey, State};
+use cashu::{Amount, Id, ProofId, SecretKey, State};
 use tokio::sync::Barrier;
 
 use crate::database::mint::test::setup_keyset;
@@ -25,7 +25,7 @@ where
             amount: Amount::from(100),
             keyset_id,
             secret: Secret::generate(),
-            c: SecretKey::generate().public_key(),
+            c: SecretKey::generate().public_key().into(),
             witness: None,
             dleq: None,
             p2pk_e: None,
@@ -34,7 +34,7 @@ where
             amount: Amount::from(200),
             keyset_id,
             secret: Secret::generate(),
-            c: SecretKey::generate().public_key(),
+            c: SecretKey::generate().public_key().into(),
             witness: None,
             dleq: None,
             p2pk_e: None,
@@ -85,7 +85,7 @@ where
             amount: Amount::from(100),
             keyset_id,
             secret: Secret::generate(),
-            c: SecretKey::generate().public_key(),
+            c: SecretKey::generate().public_key().into(),
             witness: None,
             dleq: None,
             p2pk_e: None,
@@ -94,7 +94,7 @@ where
             amount: Amount::from(200),
             keyset_id,
             secret: Secret::generate(),
-            c: SecretKey::generate().public_key(),
+            c: SecretKey::generate().public_key().into(),
             witness: None,
             dleq: None,
             p2pk_e: None,
@@ -112,7 +112,9 @@ where
     .unwrap();
     assert!(tx.commit().await.is_ok());
 
-    let proofs_from_db = db.get_proofs_by_ys(&[proofs[0].c, proofs[1].c]).await;
+    let proofs_from_db = db
+        .get_proofs_by_ys(&[proofs[0].y().unwrap(), proofs[1].y().unwrap()])
+        .await;
     assert!(proofs_from_db.is_ok());
     assert_eq!(proofs_from_db.unwrap().len(), 2);
 
@@ -135,7 +137,7 @@ where
             amount: Amount::from(100),
             keyset_id,
             secret: Secret::generate(),
-            c: SecretKey::generate().public_key(),
+            c: SecretKey::generate().public_key().into(),
             witness: None,
             dleq: None,
             p2pk_e: None,
@@ -144,7 +146,7 @@ where
             amount: Amount::from(200),
             keyset_id,
             secret: Secret::generate(),
-            c: SecretKey::generate().public_key(),
+            c: SecretKey::generate().public_key().into(),
             witness: None,
             dleq: None,
             p2pk_e: None,
@@ -182,8 +184,6 @@ pub async fn update_proofs_states<DB>(db: DB)
 where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
-    use cashu::State;
-
     let keyset_id = setup_keyset(&db).await;
     let quote_id = QuoteId::new();
 
@@ -192,7 +192,7 @@ where
             amount: Amount::from(100),
             keyset_id,
             secret: Secret::generate(),
-            c: SecretKey::generate().public_key(),
+            c: SecretKey::generate().public_key().into(),
             witness: None,
             dleq: None,
             p2pk_e: None,
@@ -201,14 +201,14 @@ where
             amount: Amount::from(200),
             keyset_id,
             secret: Secret::generate(),
-            c: SecretKey::generate().public_key(),
+            c: SecretKey::generate().public_key().into(),
             witness: None,
             dleq: None,
             p2pk_e: None,
         },
     ];
 
-    let ys: Vec<_> = proofs.iter().map(|p| p.c).collect();
+    let ys: Vec<_> = proofs.iter().map(|p| p.y().unwrap()).collect();
 
     // Add proofs
     let mut tx = Database::begin_transaction(&db).await.unwrap();
@@ -266,7 +266,7 @@ where
         amount: Amount::from(100),
         keyset_id,
         secret: Secret::generate(),
-        c: SecretKey::generate().public_key(),
+        c: SecretKey::generate().public_key().into(),
         witness: None,
         dleq: None,
         p2pk_e: None,
@@ -316,7 +316,7 @@ where
             amount: Amount::from(100),
             keyset_id,
             secret: Secret::generate(),
-            c: SecretKey::generate().public_key(),
+            c: SecretKey::generate().public_key().into(),
             witness: None,
             dleq: None,
             p2pk_e: None,
@@ -325,7 +325,7 @@ where
             amount: Amount::from(200),
             keyset_id,
             secret: Secret::generate(),
-            c: SecretKey::generate().public_key(),
+            c: SecretKey::generate().public_key().into(),
             witness: None,
             dleq: None,
             p2pk_e: None,
@@ -379,7 +379,7 @@ where
         amount: Amount::from(100),
         keyset_id,
         secret: Secret::generate(),
-        c: SecretKey::generate().public_key(),
+        c: SecretKey::generate().public_key().into(),
         witness: None,
         dleq: None,
         p2pk_e: None,
@@ -439,7 +439,7 @@ pub async fn concurrent_multi_keyset_spends_use_consistent_lock_order(db: DynMin
         amount: Amount::from(100),
         keyset_id,
         secret: Secret::generate(),
-        c: SecretKey::generate().public_key(),
+        c: SecretKey::generate().public_key().into(),
         witness: None,
         dleq: None,
         p2pk_e: None,
@@ -518,7 +518,7 @@ where
             amount: Amount::from(100),
             keyset_id,
             secret: Secret::generate(),
-            c: SecretKey::generate().public_key(),
+            c: SecretKey::generate().public_key().into(),
             witness: None,
             dleq: None,
             p2pk_e: None,
@@ -527,14 +527,14 @@ where
             amount: Amount::from(200),
             keyset_id,
             secret: Secret::generate(),
-            c: SecretKey::generate().public_key(),
+            c: SecretKey::generate().public_key().into(),
             witness: None,
             dleq: None,
             p2pk_e: None,
         },
     ];
 
-    let ys: Vec<_> = proofs.iter().map(|p| p.c).collect();
+    let ys: Vec<_> = proofs.iter().map(|p| p.y().unwrap()).collect();
 
     // Add proofs
     let mut tx = Database::begin_transaction(&db).await.unwrap();
@@ -579,7 +579,7 @@ where
             amount: Amount::from(100),
             keyset_id,
             secret: Secret::generate(),
-            c: SecretKey::generate().public_key(),
+            c: SecretKey::generate().public_key().into(),
             witness: None,
             dleq: None,
             p2pk_e: None,
@@ -588,7 +588,7 @@ where
             amount: Amount::from(200),
             keyset_id,
             secret: Secret::generate(),
-            c: SecretKey::generate().public_key(),
+            c: SecretKey::generate().public_key().into(),
             witness: None,
             dleq: None,
             p2pk_e: None,
@@ -597,14 +597,14 @@ where
             amount: Amount::from(300),
             keyset_id,
             secret: Secret::generate(),
-            c: SecretKey::generate().public_key(),
+            c: SecretKey::generate().public_key().into(),
             witness: None,
             dleq: None,
             p2pk_e: None,
         },
     ];
 
-    let ys: Vec<_> = proofs.iter().map(|p| p.c).collect();
+    let ys: Vec<_> = proofs.iter().map(|p| p.y().unwrap()).collect();
 
     // Add proofs
     let mut tx = Database::begin_transaction(&db).await.unwrap();
@@ -657,7 +657,7 @@ where
             amount: Amount::from(100),
             keyset_id,
             secret: Secret::generate(),
-            c: SecretKey::generate().public_key(),
+            c: SecretKey::generate().public_key().into(),
             witness: None,
             dleq: None,
             p2pk_e: None,
@@ -666,7 +666,7 @@ where
             amount: Amount::from(200),
             keyset_id,
             secret: Secret::generate(),
-            c: SecretKey::generate().public_key(),
+            c: SecretKey::generate().public_key().into(),
             witness: None,
             dleq: None,
             p2pk_e: None,
@@ -677,14 +677,14 @@ where
         amount: Amount::from(300),
         keyset_id,
         secret: Secret::generate(),
-        c: SecretKey::generate().public_key(),
+        c: SecretKey::generate().public_key().into(),
         witness: None,
         dleq: None,
         p2pk_e: None,
     }];
 
-    let expected_ys1: Vec<_> = proofs1.iter().map(|p| p.c).collect();
-    let expected_ys2: Vec<_> = proofs2.iter().map(|p| p.c).collect();
+    let expected_ys1: Vec<_> = proofs1.iter().map(|p| p.y().unwrap()).collect();
+    let expected_ys2: Vec<_> = proofs2.iter().map(|p| p.y().unwrap()).collect();
 
     // Add proofs with different quote ids
     let mut tx = Database::begin_transaction(&db).await.unwrap();
@@ -731,7 +731,7 @@ where
             amount: Amount::from(100),
             keyset_id,
             secret: Secret::generate(),
-            c: SecretKey::generate().public_key(),
+            c: SecretKey::generate().public_key().into(),
             witness: None,
             dleq: None,
             p2pk_e: None,
@@ -740,14 +740,14 @@ where
             amount: Amount::from(200),
             keyset_id,
             secret: Secret::generate(),
-            c: SecretKey::generate().public_key(),
+            c: SecretKey::generate().public_key().into(),
             witness: None,
             dleq: None,
             p2pk_e: None,
         },
     ];
 
-    let ys: Vec<_> = proofs.iter().map(|p| p.c).collect();
+    let ys: Vec<_> = proofs.iter().map(|p| p.y().unwrap()).collect();
 
     // Add proofs
     let mut tx = Database::begin_transaction(&db).await.unwrap();
@@ -784,8 +784,8 @@ pub async fn get_nonexistent_proof_states<DB>(db: DB)
 where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
-    let y1 = SecretKey::generate().public_key();
-    let y2 = SecretKey::generate().public_key();
+    let y1: ProofId = SecretKey::generate().public_key().into();
+    let y2: ProofId = SecretKey::generate().public_key().into();
 
     // Try to get states for non-existent proofs
     let states = db.get_proofs_states(&[y1, y2]).await.unwrap();
@@ -799,8 +799,8 @@ pub async fn get_proofs_by_nonexistent_ys<DB>(db: DB)
 where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
-    let y1 = SecretKey::generate().public_key();
-    let y2 = SecretKey::generate().public_key();
+    let y1: ProofId = SecretKey::generate().public_key().into();
+    let y2: ProofId = SecretKey::generate().public_key().into();
 
     // Try to get proofs for non-existent ys
     let proofs = db.get_proofs_by_ys(&[y1, y2]).await.unwrap();
@@ -821,13 +821,13 @@ where
         amount: Amount::from(100),
         keyset_id,
         secret: Secret::generate(),
-        c: SecretKey::generate().public_key(),
+        c: SecretKey::generate().public_key().into(),
         witness: None,
         dleq: None,
         p2pk_e: None,
     };
 
-    let y = proof.c;
+    let y = proof.y().unwrap();
 
     // Verify proof doesn't exist before transaction
     let proofs_before = db.get_proofs_by_ys(&[y]).await.unwrap();
@@ -865,13 +865,13 @@ where
         amount: Amount::from(100),
         keyset_id,
         secret: Secret::generate(),
-        c: SecretKey::generate().public_key(),
+        c: SecretKey::generate().public_key().into(),
         witness: None,
         dleq: None,
         p2pk_e: None,
     };
 
-    let y = proof.c;
+    let y = proof.y().unwrap();
 
     // Start a transaction, add proof, then rollback
     let mut tx = Database::begin_transaction(&db).await.unwrap();
@@ -902,7 +902,7 @@ where
             amount: Amount::from((i + 1) * 100),
             keyset_id,
             secret: Secret::generate(),
-            c: SecretKey::generate().public_key(),
+            c: SecretKey::generate().public_key().into(),
             witness: None,
             dleq: None,
             p2pk_e: None,
@@ -949,7 +949,7 @@ where
             amount: Amount::from(100),
             keyset_id,
             secret: Secret::generate(),
-            c: SecretKey::generate().public_key(),
+            c: SecretKey::generate().public_key().into(),
             witness: None,
             dleq: None,
             p2pk_e: None,
@@ -958,7 +958,7 @@ where
             amount: Amount::from(200),
             keyset_id,
             secret: Secret::generate(),
-            c: SecretKey::generate().public_key(),
+            c: SecretKey::generate().public_key().into(),
             witness: None,
             dleq: None,
             p2pk_e: None,
@@ -1074,7 +1074,7 @@ where
             amount: Amount::from(100),
             keyset_id,
             secret: Secret::generate(),
-            c: SecretKey::generate().public_key(),
+            c: SecretKey::generate().public_key().into(),
             witness: None,
             dleq: None,
             p2pk_e: None,
@@ -1083,7 +1083,7 @@ where
             amount: Amount::from(200),
             keyset_id,
             secret: Secret::generate(),
-            c: SecretKey::generate().public_key(),
+            c: SecretKey::generate().public_key().into(),
             witness: None,
             dleq: None,
             p2pk_e: None,
@@ -1092,7 +1092,7 @@ where
             amount: Amount::from(300),
             keyset_id,
             secret: Secret::generate(),
-            c: SecretKey::generate().public_key(),
+            c: SecretKey::generate().public_key().into(),
             witness: None,
             dleq: None,
             p2pk_e: None,
@@ -1169,7 +1169,7 @@ where
             amount: Amount::from(100),
             keyset_id,
             secret: Secret::generate(),
-            c: SecretKey::generate().public_key(),
+            c: SecretKey::generate().public_key().into(),
             witness: None,
             dleq: None,
             p2pk_e: None,
@@ -1178,7 +1178,7 @@ where
             amount: Amount::from(200),
             keyset_id,
             secret: Secret::generate(),
-            c: SecretKey::generate().public_key(),
+            c: SecretKey::generate().public_key().into(),
             witness: None,
             dleq: None,
             p2pk_e: None,
@@ -1190,7 +1190,7 @@ where
         amount: Amount::from(300),
         keyset_id,
         secret: Secret::generate(),
-        c: SecretKey::generate().public_key(),
+        c: SecretKey::generate().public_key().into(),
         witness: None,
         dleq: None,
         p2pk_e: None,

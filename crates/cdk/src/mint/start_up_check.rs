@@ -10,7 +10,7 @@ use cdk_common::database::DynMintTransaction;
 use cdk_common::mint::{MeltPaymentRequest, OperationKind, Saga};
 use cdk_common::payment::PaymentIdentifier;
 use cdk_common::util::unix_time;
-use cdk_common::{PublicKey, QuoteId, State};
+use cdk_common::{DhkePoint, ProofId, QuoteId, State};
 
 use super::{Error, Mint};
 use crate::mint::melt::lease::MeltLease;
@@ -319,8 +319,8 @@ impl Mint {
     async fn cleanup_finalized_swap_saga(
         &self,
         saga: &Saga,
-        input_ys: &[PublicKey],
-        blinded_secrets: &[PublicKey],
+        input_ys: &[ProofId],
+        blinded_secrets: &[DhkePoint],
     ) -> Result<SwapSagaRecoveryAction, Error> {
         if input_ys.is_empty() || blinded_secrets.is_empty() {
             return Ok(SwapSagaRecoveryAction::Compensate);

@@ -9,10 +9,10 @@ use thiserror::Error;
 use tracing::instrument;
 
 use super::nut00::{BlindedMessage, PreMint, PreMintSecrets};
-use super::nut01::SecretKey;
-use super::nut02::Id;
+use super::nut01::BlindingFactor;
+use super::nut02::{Id, KeySetVersion};
 use crate::amount::{FeeAndAmounts, SplitTarget};
-use crate::dhke::blind_message;
+use crate::dhke::blind_message_for_version;
 use crate::secret::Secret;
 use crate::util::hex;
 use crate::{Amount, SECP256K1};
@@ -47,8 +47,8 @@ impl Secret {
     /// Create new [`Secret`] from seed
     pub fn from_seed(seed: &[u8; 64], keyset_id: Id, counter: u32) -> Result<Self, Error> {
         match keyset_id.get_version() {
-            super::nut02::KeySetVersion::Version00 => Self::legacy_derive(seed, keyset_id, counter),
-            super::nut02::KeySetVersion::Version01 => Self::derive(seed, keyset_id, counter),
+            KeySetVersion::Version00 => Self::legacy_derive(seed, keyset_id, counter),
+            KeySetVersion::Version01 => Self::derive(seed, keyset_id, counter),
         }
     }
 
@@ -80,12 +80,12 @@ impl Secret {
     }
 }
 
-impl SecretKey {
-    /// Create new [`SecretKey`] from seed
+impl BlindingFactor {
+    /// Create a new deterministic blinding factor from a seed.
     pub fn from_seed(seed: &[u8; 64], keyset_id: Id, counter: u32) -> Result<Self, Error> {
         match keyset_id.get_version() {
-            super::nut02::KeySetVersion::Version00 => Self::legacy_derive(seed, keyset_id, counter),
-            super::nut02::KeySetVersion::Version01 => Self::derive(seed, keyset_id, counter),
+            KeySetVersion::Version00 => Self::legacy_derive(seed, keyset_id, counter),
+            KeySetVersion::Version01 => Self::derive(seed, keyset_id, counter),
         }
     }
 
@@ -135,9 +135,13 @@ impl PreMintSecrets {
             (counter..).zip(amount.split_targeted(amount_split_target, fee_and_amounts)?)
         {
             let secret = Secret::from_seed(seed, keyset_id, counter)?;
-            let blinding_factor = SecretKey::from_seed(seed, keyset_id, counter)?;
+            let blinding_factor = BlindingFactor::from_seed(seed, keyset_id, counter)?;
 
-            let (blinded, r) = blind_message(&secret.to_bytes(), Some(blinding_factor))?;
+            let (blinded, r) = blind_message_for_version(
+                &secret.to_bytes(),
+                Some(blinding_factor),
+                keyset_id.get_version(),
+            )?;
 
             let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
 
@@ -170,9 +174,13 @@ impl PreMintSecrets {
 
         for counter in counter..(counter + count as u32) {
             let secret = Secret::from_seed(seed, keyset_id, counter)?;
-            let blinding_factor = SecretKey::from_seed(seed, keyset_id, counter)?;
+            let blinding_factor = BlindingFactor::from_seed(seed, keyset_id, counter)?;
 
-            let (blinded, r) = blind_message(&secret.to_bytes(), Some(blinding_factor))?;
+            let (blinded, r) = blind_message_for_version(
+                &secret.to_bytes(),
+                Some(blinding_factor),
+                keyset_id.get_version(),
+            )?;
 
             let amount = Amount::ZERO;
 
@@ -204,9 +212,13 @@ impl PreMintSecrets {
 
         for i in start_count..end_count {
             let secret = Secret::from_seed(seed, keyset_id, i)?;
-            let blinding_factor = SecretKey::from_seed(seed, keyset_id, i)?;
+            let blinding_factor = BlindingFactor::from_seed(seed, keyset_id, i)?;
 
-            let (blinded, r) = blind_message(&secret.to_bytes(), Some(blinding_factor))?;
+            let (blinded, r) = blind_message_for_version(
+                &secret.to_bytes(),
+                Some(blinding_factor),
+                keyset_id.get_version(),
+            )?;
 
             let blinded_message = BlindedMessage::new(Amount::ZERO, keyset_id, blinded);
 
@@ -283,8 +295,8 @@ mod tests {
         ];
 
         for (i, test_r) in test_rs.iter().enumerate() {
-            let r = SecretKey::from_seed(&seed, keyset_id, i.try_into().unwrap()).unwrap();
-            assert_eq!(r, SecretKey::from_hex(test_r).unwrap())
+            let r = BlindingFactor::from_seed(&seed, keyset_id, i.try_into().unwrap()).unwrap();
+            assert_eq!(r, BlindingFactor::from_hex(test_r).unwrap())
         }
     }
 
@@ -394,14 +406,14 @@ mod tests {
         ];
 
         for (i, test_secret) in test_secret_keys.iter().enumerate() {
-            let secret_key = SecretKey::from_seed(&seed, keyset_id, i as u32).unwrap();
+            let secret_key = BlindingFactor::from_seed(&seed, keyset_id, i as u32).unwrap();
 
             // Verify the secret key is valid (32 bytes)
             let secret_bytes = secret_key.to_secret_bytes();
             assert_eq!(secret_bytes.len(), 32);
 
             // Test deterministic derivation
-            let secret_key2 = SecretKey::from_str(test_secret).unwrap();
+            let secret_key2 = BlindingFactor::from_str(test_secret).unwrap();
             assert_eq!(secret_key, secret_key2);
         }
     }
@@ -430,8 +442,8 @@ mod tests {
                 counter
             );
 
-            let secret_key_1 = SecretKey::from_seed(&seed, keyset_id_1, counter).unwrap();
-            let secret_key_2 = SecretKey::from_seed(&seed, keyset_id_2, counter).unwrap();
+            let secret_key_1 = BlindingFactor::from_seed(&seed, keyset_id_1, counter).unwrap();
+            let secret_key_2 = BlindingFactor::from_seed(&seed, keyset_id_2, counter).unwrap();
             assert_ne!(
                 secret_key_1, secret_key_2,
                 "Different keyset IDs should produce different secret keys for counter {}",
@@ -457,7 +469,7 @@ mod tests {
         // Generate secrets with incremental counters
         for counter in 0..10 {
             let secret = Secret::from_seed(&seed, keyset_id, counter).unwrap();
-            let secret_key = SecretKey::from_seed(&seed, keyset_id, counter).unwrap();
+            let secret_key = BlindingFactor::from_seed(&seed, keyset_id, counter).unwrap();
 
             // Ensure no duplicates
             assert!(
@@ -500,7 +512,7 @@ mod tests {
 
         // The actual HMAC construction is internal, but we can verify the derivation works
         let secret = Secret::from_seed(&seed, keyset_id, counter).unwrap();
-        let secret_key = SecretKey::from_seed(&seed, keyset_id, counter).unwrap();
+        let secret_key = BlindingFactor::from_seed(&seed, keyset_id, counter).unwrap();
 
         // Verify outputs are valid hex strings of correct length
         assert_eq!(secret.to_string().len(), 64); // 32 bytes as hex

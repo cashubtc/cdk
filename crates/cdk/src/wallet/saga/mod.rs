@@ -21,7 +21,7 @@ use async_trait::async_trait;
 use cdk_common::database::{self, WalletDatabase};
 use tracing::instrument;
 
-use crate::nuts::PublicKey;
+use crate::nuts::ProofId;
 use crate::Error;
 
 #[cfg(test)]
@@ -89,7 +89,7 @@ pub(crate) async fn add_compensation(
 /// Sets proofs back to Unspent and deletes the saga record.
 pub(crate) struct RevertProofReservation {
     pub localstore: Arc<dyn WalletDatabase<database::Error> + Send + Sync>,
-    pub proof_ys: Vec<PublicKey>,
+    pub proof_ys: Vec<ProofId>,
     pub saga_id: uuid::Uuid,
 }
 
@@ -175,7 +175,7 @@ pub mod test_utils {
             amount: Amount::from(amount),
             keyset_id,
             secret: Secret::generate(),
-            c: SecretKey::generate().public_key(),
+            c: SecretKey::generate().public_key().into(),
             witness: None,
             dleq: None,
             p2pk_e: None,
