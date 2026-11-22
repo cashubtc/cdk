@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 
 use super::nut01::Error as Nut01Error;
 use super::nut20::{legacy_mint_quote_msg_to_sign, mint_quote_msg_to_sign};
+#[cfg(test)]
+use super::DhkePoint;
 use super::{PublicKey, SecretKey};
 #[cfg(feature = "mint")]
 use crate::quote_id::{QuoteId, QuoteIdError};
@@ -189,7 +191,7 @@ mod tests {
         BlindedMessage {
             amount: Amount::from(1),
             keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
-            blinded_secret: secret_key.public_key(),
+            blinded_secret: secret_key.public_key().into(),
             witness: None,
         }
     }
@@ -198,7 +200,8 @@ mod tests {
         BlindedMessage {
             amount: Amount::from(amount),
             keyset_id: Id::from_str("009a1f293253e41e").expect("valid keyset id"),
-            blinded_secret: PublicKey::from_hex(blinded_secret).expect("valid blinded secret"),
+            blinded_secret: DhkePoint::from_hex_any_curve(blinded_secret)
+                .expect("valid blinded secret"),
             witness: None,
         }
     }

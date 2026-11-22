@@ -2,12 +2,11 @@
 
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
-use bitcoin::secp256k1::{
-    Parity, PublicKey as NormalizedPublicKey, Scalar, Secp256k1, XOnlyPublicKey,
-};
+use bitcoin::secp256k1::{Parity, PublicKey as NormalizedPublicKey, Secp256k1, XOnlyPublicKey};
 use thiserror::Error;
 
-use crate::nuts::nut01::{PublicKey, SecretKey};
+use crate::nuts::nut01::{BlindingFactor, DhkePoint, MintPublicKey, MintSecretKey, PublicKey};
+use crate::nuts::nut02::KeySetVersion;
 use crate::nuts::nut12::ProofDleq;
 use crate::nuts::{BlindSignature, Keys, Proof, Proofs};
 use crate::secret::Secret;
@@ -28,6 +27,9 @@ pub enum Error {
     /// Secp256k1 error
     #[error(transparent)]
     Secp256k1(#[from] bitcoin::secp256k1::Error),
+    /// Key error
+    #[error(transparent)]
+    Key(#[from] crate::nuts::nut01::Error),
     // TODO: Remove use anyhow
     /// Custom Error
     #[error("`{0}`")]
@@ -64,6 +66,16 @@ pub fn hash_to_curve(message: &[u8]) -> Result<PublicKey, Error> {
     Err(Error::NoValidPoint)
 }
 
+/// Hash a proof secret to the curve used by a keyset version.
+pub fn hash_to_curve_for_version(
+    message: &[u8],
+    version: KeySetVersion,
+) -> Result<DhkePoint, Error> {
+    match version {
+        KeySetVersion::Version00 | KeySetVersion::Version01 => Ok(hash_to_curve(message)?.into()),
+    }
+}
+
 /// Convert iterator of [`PublicKey`] to byte array
 pub fn hash_e<I>(public_keys: I) -> [u8; 32]
 where
@@ -84,11 +96,24 @@ where
 /// `B_ = Y + rG`
 pub fn blind_message(
     secret: &[u8],
-    blinding_factor: Option<SecretKey>,
-) -> Result<(PublicKey, SecretKey), Error> {
-    let y: PublicKey = hash_to_curve(secret)?;
-    let r: SecretKey = blinding_factor.unwrap_or_else(SecretKey::generate);
-    Ok((y.combine(&r.public_key())?.into(), r))
+    blinding_factor: Option<BlindingFactor>,
+) -> Result<(DhkePoint, BlindingFactor), Error> {
+    blind_message_for_version(secret, blinding_factor, KeySetVersion::Version00)
+}
+
+/// Blind Message for a specific keyset version.
+pub fn blind_message_for_version(
+    secret: &[u8],
+    blinding_factor: Option<BlindingFactor>,
+    version: KeySetVersion,
+) -> Result<(DhkePoint, BlindingFactor), Error> {
+    match version {
+        KeySetVersion::Version00 | KeySetVersion::Version01 => {
+            let y: PublicKey = hash_to_curve(secret)?;
+            let r = blinding_factor.unwrap_or_else(BlindingFactor::generate);
+            Ok((y.combine(&r.secp_public_key()?)?.into(), r))
+        }
+    }
 }
 
 /// Unblind Message
@@ -96,25 +121,25 @@ pub fn blind_message(
 /// `C_ - rK`
 pub fn unblind_message(
     // C_
-    blinded_key: &PublicKey,
-    r: &SecretKey,
+    blinded_key: &DhkePoint,
+    r: &BlindingFactor,
     // K
-    mint_pubkey: &PublicKey,
-) -> Result<PublicKey, Error> {
-    let r: Scalar = r.as_scalar();
+    mint_pubkey: &MintPublicKey,
+) -> Result<DhkePoint, Error> {
+    let r = r.as_secp256k1()?.as_scalar();
 
     // a = r * K
-    let a: PublicKey = mint_pubkey.mul_tweak(&SECP256K1, &r)?.into();
+    let a = mint_pubkey.as_secp256k1()?.mul_tweak(&SECP256K1, &r)?;
 
     // C_ - a
-    let a: PublicKey = a.negate(&SECP256K1).into();
-    Ok(blinded_key.combine(&a)?.into()) // C_ + (-a)
+    let a: PublicKey = a.negate(&SECP256K1);
+    Ok(blinded_key.as_secp256k1()?.combine(&a)?.into()) // C_ + (-a)
 }
 
 /// Construct Proof
 pub fn construct_proofs(
     promises: Vec<BlindSignature>,
-    rs: Vec<SecretKey>,
+    rs: Vec<BlindingFactor>,
     secrets: Vec<Secret>,
     keys: &Keys,
 ) -> Result<Proofs, Error> {
@@ -131,12 +156,16 @@ pub fn construct_proofs(
     }
     let mut proofs = vec![];
     for ((blinded_signature, r), secret) in promises.into_iter().zip(rs).zip(secrets) {
-        let blinded_c: PublicKey = blinded_signature.c;
-        let a: PublicKey = keys
+        let blinded_c = blinded_signature.c;
+        let a = keys
             .amount_key(blinded_signature.amount)
             .ok_or(Error::Custom("Could not get proofs".to_string()))?;
 
-        let unblinded_signature: PublicKey = unblind_message(&blinded_c, &r, &a)?;
+        let unblinded_signature = match blinded_signature.keyset_id.get_version() {
+            KeySetVersion::Version00 | KeySetVersion::Version01 => {
+                unblind_message(&blinded_c, &r, &a)?
+            }
+        };
 
         let dleq = blinded_signature.dleq.map(|d| ProofDleq::new(d.e, d.s, r));
 
@@ -162,15 +191,22 @@ pub fn construct_proofs(
 /// * `k` is the private key of mint (one for each amount)
 /// * `B_` is the blinded message
 #[inline]
-pub fn sign_message(k: &SecretKey, blinded_message: &PublicKey) -> Result<PublicKey, Error> {
-    let k: Scalar = k.as_scalar();
-    Ok(blinded_message.mul_tweak(&SECP256K1, &k)?.into())
+pub fn sign_message(k: &MintSecretKey, blinded_message: &DhkePoint) -> Result<DhkePoint, Error> {
+    match k {
+        MintSecretKey::Secp256k1(inner) => {
+            let k = inner.as_scalar();
+            Ok(blinded_message
+                .as_secp256k1()?
+                .mul_tweak(&SECP256K1, &k)?
+                .into())
+        }
+    }
 }
 
 /// Verify Message
 pub fn verify_message(
-    a: &SecretKey,
-    unblinded_message: PublicKey,
+    a: &MintSecretKey,
+    unblinded_message: DhkePoint,
     msg: &[u8],
 ) -> Result<(), Error> {
     // Y
@@ -178,14 +214,30 @@ pub fn verify_message(
 
     // Compute the expected unblinded message
     let expected_unblinded_message: PublicKey =
-        y.mul_tweak(&Secp256k1::new(), &a.as_scalar())?.into();
+        y.mul_tweak(&Secp256k1::new(), &a.as_secp256k1()?.as_scalar())?;
 
     // Compare the unblinded_message with the expected value
-    if unblinded_message == expected_unblinded_message {
+    if unblinded_message.as_secp256k1()? == expected_unblinded_message {
         return Ok(());
     }
 
     Err(Error::TokenNotVerified)
+}
+
+/// Verify a proof's signature with the mint's secret key.
+///
+/// The secret key lets the mint check `C == a·Y` directly, without DLEQ
+/// proofs. Any DLEQ proof attached to the proof is ignored: it carries nothing
+/// the mint needs.
+pub fn verify_proof_with_mint_key(
+    proof: &Proof,
+    mint_secret_key: &MintSecretKey,
+) -> Result<(), Error> {
+    match proof.keyset_id.get_version() {
+        KeySetVersion::Version00 | KeySetVersion::Version01 => {
+            verify_message(mint_secret_key, proof.c, proof.secret.as_bytes())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -193,6 +245,7 @@ mod tests {
     use std::str::FromStr;
 
     use super::*;
+    use crate::nuts::{BlindingFactor, MintPublicKey, MintSecretKey, SecretKey};
 
     #[test]
     fn test_hash_to_curve() {
@@ -262,16 +315,17 @@ mod tests {
         let message =
             hex::decode("d341ee4871f1f889041e63cf0d3823c713eea6aff01e80f1719f08f9e5be98f6")
                 .unwrap();
-        let sec: SecretKey =
-            SecretKey::from_hex("99fce58439fc37412ab3468b73db0569322588f62fb3a49182d67e23d877824a")
-                .unwrap();
+        let sec = BlindingFactor::from_hex(
+            "99fce58439fc37412ab3468b73db0569322588f62fb3a49182d67e23d877824a",
+        )
+        .unwrap();
 
         let (b, r) = blind_message(&message, Some(sec.clone())).unwrap();
 
         assert_eq!(sec, r);
         assert_eq!(
             b,
-            PublicKey::from_hex(
+            DhkePoint::from_hex_any_curve(
                 "033b1a9737a40cc3fd9b6af4b723632b76a67a36782596304612a6c2bfb5197e6d"
             )
             .unwrap()
@@ -280,16 +334,17 @@ mod tests {
         let message =
             hex::decode("f1aaf16c2239746f369572c0784d9dd3d032d952c2d992175873fb58fae31a60")
                 .unwrap();
-        let sec: SecretKey =
-            SecretKey::from_hex("f78476ea7cc9ade20f9e05e58a804cf19533f03ea805ece5fee88c8e2874ba50")
-                .unwrap();
+        let sec = BlindingFactor::from_hex(
+            "f78476ea7cc9ade20f9e05e58a804cf19533f03ea805ece5fee88c8e2874ba50",
+        )
+        .unwrap();
 
         let (b, r) = blind_message(&message, Some(sec.clone())).unwrap();
 
         assert_eq!(sec, r);
         assert_eq!(
             b,
-            PublicKey::from_hex(
+            DhkePoint::from_hex_any_curve(
                 "029bdf2d716ee366eddf599ba252786c1033f47e230248a4612a5670ab931f1763"
             )
             .unwrap()
@@ -298,15 +353,16 @@ mod tests {
 
     #[test]
     fn test_unblind_message() {
-        let blinded_key = PublicKey::from_hex(
+        let blinded_key = DhkePoint::from_hex_any_curve(
             "02a9acc1e48c25eeeb9289b5031cc57da9fe72f3fe2861d264bdc074209b107ba2",
         )
         .unwrap();
 
-        let r =
-            SecretKey::from_hex("0000000000000000000000000000000000000000000000000000000000000001")
-                .unwrap();
-        let a = PublicKey::from_hex(
+        let r = BlindingFactor::from_hex(
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )
+        .unwrap();
+        let a = MintPublicKey::from_hex(
             "020000000000000000000000000000000000000000000000000000000000000001",
         )
         .unwrap();
@@ -314,7 +370,7 @@ mod tests {
         let unblinded = unblind_message(&blinded_key, &r, &a).unwrap();
 
         assert_eq!(
-            PublicKey::from_hex(
+            DhkePoint::from_hex_any_curve(
                 "03c724d7e6a5443b39ac8acf11f40420adc4f99a02e7cc1b57703d9391f6d129cd"
             )
             .unwrap(),
@@ -326,38 +382,41 @@ mod tests {
     fn test_sign_message() {
         use super::*;
         let message = "test_message";
-        let sec =
-            SecretKey::from_hex("0000000000000000000000000000000000000000000000000000000000000001")
-                .unwrap();
+        let sec = BlindingFactor::from_hex(
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )
+        .unwrap();
 
         let (blinded_message, _r) = blind_message(message.as_bytes(), Some(sec)).unwrap();
         // A
-        let bob_sec =
-            SecretKey::from_hex("0000000000000000000000000000000000000000000000000000000000000001")
-                .unwrap();
+        let bob_sec = MintSecretKey::from_hex(
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )
+        .unwrap();
 
         // C_
         let signed = sign_message(&bob_sec, &blinded_message).unwrap();
 
         assert_eq!(
             signed,
-            PublicKey::from_hex(
+            DhkePoint::from_hex_any_curve(
                 "025cc16fe33b953e2ace39653efb3e7a7049711ae1d8a2f7a9108753f1cdea742b"
             )
             .unwrap()
         );
 
         // A
-        let bob_sec =
-            SecretKey::from_hex("7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f")
-                .unwrap();
+        let bob_sec = MintSecretKey::from_hex(
+            "7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f",
+        )
+        .unwrap();
 
         // C_
         let signed = sign_message(&bob_sec, &blinded_message).unwrap();
 
         assert_eq!(
             signed,
-            PublicKey::from_hex(
+            DhkePoint::from_hex_any_curve(
                 "027726f0e5757b4202a27198369a3477a17bc275b7529da518fc7cb4a1d927cc0d"
             )
             .unwrap()
@@ -369,15 +428,17 @@ mod tests {
         let message =
             hex::decode("d341ee4871f1f889041e63cf0d3823c713eea6aff01e80f1719f08f9e5be98f6")
                 .unwrap();
-        let alice_sec: SecretKey =
-            SecretKey::from_hex("99fce58439fc37412ab3468b73db0569322588f62fb3a49182d67e23d877824a")
-                .unwrap();
+        let alice_sec = BlindingFactor::from_hex(
+            "99fce58439fc37412ab3468b73db0569322588f62fb3a49182d67e23d877824a",
+        )
+        .unwrap();
 
         let (b, r) = blind_message(&message, Some(alice_sec.clone())).unwrap();
 
-        let bob_sec =
-            SecretKey::from_hex("0000000000000000000000000000000000000000000000000000000000000001")
-                .unwrap();
+        let bob_sec = MintSecretKey::from_hex(
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )
+        .unwrap();
 
         // C_
         let signed = sign_message(&bob_sec, &b).unwrap();
@@ -399,12 +460,14 @@ mod tests {
     fn test_verify_message_wrong_key() {
         // Test that verify_message fails with wrong key
         let message = b"test message";
-        let correct_key =
-            SecretKey::from_hex("0000000000000000000000000000000000000000000000000000000000000001")
-                .unwrap();
-        let wrong_key =
-            SecretKey::from_hex("0000000000000000000000000000000000000000000000000000000000000002")
-                .unwrap();
+        let correct_key = MintSecretKey::from_hex(
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )
+        .unwrap();
+        let wrong_key = MintSecretKey::from_hex(
+            "0000000000000000000000000000000000000000000000000000000000000002",
+        )
+        .unwrap();
 
         let (blinded, r) = blind_message(message, None).unwrap();
         let signed = sign_message(&correct_key, &blinded).unwrap();
@@ -428,9 +491,10 @@ mod tests {
         // Test that verify_message fails with wrong message
         let message = b"test message";
         let wrong_message = b"wrong message";
-        let key =
-            SecretKey::from_hex("0000000000000000000000000000000000000000000000000000000000000001")
-                .unwrap();
+        let key = MintSecretKey::from_hex(
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )
+        .unwrap();
 
         let (blinded, r) = blind_message(message, None).unwrap();
         let signed = sign_message(&key, &blinded).unwrap();
@@ -459,18 +523,18 @@ mod tests {
 
         // Test that construct_proofs fails when lengths don't match
         let mut keys_map = BTreeMap::new();
-        keys_map.insert(Amount::from(1), SecretKey::generate().public_key());
+        keys_map.insert(Amount::from(1), MintSecretKey::generate().public_key());
         let keys = Keys::new(keys_map);
 
         // Mismatched promises and rs lengths
         let promise = BlindSignature {
             amount: Amount::from(1),
-            c: SecretKey::generate().public_key(),
+            c: SecretKey::generate().public_key().into(),
             keyset_id: Id::from_str("00deadbeef123456").unwrap(),
             dleq: None,
         };
         let promises = vec![promise];
-        let rs = vec![SecretKey::generate(), SecretKey::generate()]; // Different length
+        let rs = vec![BlindingFactor::generate(), BlindingFactor::generate()]; // Different length
         let secrets = vec![Secret::from_str("test").unwrap()];
 
         let result = construct_proofs(promises, rs, secrets, &keys);
@@ -496,7 +560,7 @@ mod tests {
         use crate::Amount;
 
         // Test that construct_proofs returns the correct number of proofs
-        let secret_key = SecretKey::generate();
+        let secret_key = MintSecretKey::generate();
         let mut keys_map = BTreeMap::new();
         keys_map.insert(Amount::from(1), secret_key.public_key());
         let keys = Keys::new(keys_map);

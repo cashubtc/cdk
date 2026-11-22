@@ -26,8 +26,8 @@ use tracing_subscriber::fmt::MakeWriter;
 
 use crate::nuts::{
     nut17, nut19, BatchCheckMintQuoteRequest, BatchMintRequest, BlindSignature, BlindedMessage,
-    MeltQuoteBolt11Response, MeltQuoteState, NUT04Settings, NUT05Settings, PaymentMethod,
-    ProofState, SecretKey, State,
+    MeltQuoteBolt11Response, MeltQuoteState, MintSecretKey, NUT04Settings, NUT05Settings,
+    PaymentMethod, ProofState, SecretKey, State,
 };
 use crate::secret::Secret;
 use crate::wallet::{MintConnector, Wallet};
@@ -227,7 +227,7 @@ pub fn test_keyset() -> KeySet {
     .map(|(amount, public_key)| {
         (
             Amount::from(amount),
-            crate::nuts::PublicKey::from_hex(public_key).unwrap(),
+            crate::nuts::PublicKey::from_hex(public_key).unwrap().into(),
         )
     })
     .collect::<BTreeMap<_, _>>();
@@ -368,7 +368,7 @@ pub fn test_proof(keyset_id: Id, amount: u64) -> Proof {
         amount: Amount::from(amount),
         keyset_id,
         secret: Secret::generate(),
-        c: SecretKey::generate().public_key(),
+        c: SecretKey::generate().public_key().into(),
         witness: None,
         dleq: None,
         p2pk_e: None,
@@ -507,7 +507,7 @@ pub struct MockMintConnector {
     ///
     /// Unlike `check_state_response`, this answers for the ys the wallet
     /// actually asked about (unknown ys are Unspent).
-    pub proof_states: Mutex<HashMap<crate::nuts::PublicKey, State>>,
+    pub proof_states: Mutex<HashMap<crate::nuts::ProofId, State>>,
     /// Response for post_restore calls
     pub restore_response: Mutex<Option<Result<RestoreResponse, Error>>>,
     /// Response for get_melt_quote_status calls
@@ -543,7 +543,7 @@ pub struct MockMintConnector {
     /// Secret keys backing the active keyset when mint signing is enabled.
     /// When set, unstaged `post_mint`/`post_batch_mint` calls are answered
     /// with valid blind signatures for the requested outputs.
-    pub mint_signing_keys: Mutex<Option<BTreeMap<Amount, SecretKey>>>,
+    pub mint_signing_keys: Mutex<Option<BTreeMap<Amount, MintSecretKey>>>,
     /// Response for post_swap calls
     pub post_swap_response: Mutex<Option<Result<SwapResponse, Error>>>,
     /// Queue of responses for successive post_swap calls.
@@ -645,7 +645,7 @@ impl MockMintConnector {
     }
 
     /// Set the state the mock mint reports for a proof `y`.
-    pub fn set_proof_state(&self, y: crate::nuts::PublicKey, state: State) {
+    pub fn set_proof_state(&self, y: crate::nuts::ProofId, state: State) {
         self.proof_states.lock().unwrap().insert(y, state);
     }
 
@@ -817,7 +817,7 @@ impl MockMintConnector {
         for power in 0..32u8 {
             let amount = Amount::from(1u64 << power);
             let secret_key =
-                SecretKey::from_slice(&[power + 1; 32]).expect("test key is a valid secret");
+                MintSecretKey::from_slice(&[power + 1; 32]).expect("test key is a valid secret");
             public_keys.insert(amount, secret_key.public_key());
             signing_keys.insert(amount, secret_key);
         }

@@ -19,7 +19,7 @@ use cdk_common::wallet::{
 use cdk_common::{Amount, PaymentMethod};
 use tracing::instrument;
 
-use crate::dhke::hash_to_curve;
+use crate::dhke::hash_to_curve_for_version;
 use crate::nuts::{MintRequest, PreMintSecrets};
 use crate::util::unix_time;
 use crate::wallet::issue::saga::compensation::ReleaseMintQuote;
@@ -197,7 +197,13 @@ impl Wallet {
         let ys = premint_secrets
             .secrets
             .iter()
-            .map(|pre_mint| hash_to_curve(pre_mint.secret.as_bytes()))
+            .map(|pre_mint| {
+                hash_to_curve_for_version(
+                    pre_mint.secret.as_bytes(),
+                    pre_mint.blinded_message.keyset_id.get_version(),
+                )
+                .map(Into::into)
+            })
             .collect::<Result<Vec<_>, _>>()?;
 
         let quote_ids = data.quote_ids();
@@ -1016,7 +1022,7 @@ mod tests {
             amount: Amount::from(2),
             keyset_id,
             secret: crate::secret::Secret::from_seed(&wallet.seed, keyset_id, 0).unwrap(),
-            c: crate::nuts::SecretKey::generate().public_key(),
+            c: crate::nuts::SecretKey::generate().public_key().into(),
             witness: None,
             dleq: None,
             p2pk_e: None,

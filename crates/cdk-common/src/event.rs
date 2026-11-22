@@ -238,11 +238,7 @@ mod tests {
     /// them.
     fn sample_events() -> Vec<MintEvent<String>> {
         vec![
-            MintEvent::new(NotificationPayload::ProofState(ProofState {
-                y: pubkey(),
-                state: State::Spent,
-                witness: None,
-            })),
+            MintEvent::from(ProofState::from((pubkey().into(), State::Spent))),
             MintEvent::new(NotificationPayload::MintQuoteBolt11Response(
                 MintQuoteBolt11Response {
                     quote: "mint-bolt11".to_string(),
@@ -385,11 +381,7 @@ mod tests {
     #[test]
     fn wire_format_carries_the_subscription_kind() {
         let event: MintEvent<String> =
-            MintEvent::new(NotificationPayload::ProofState(ProofState {
-                y: pubkey(),
-                state: State::Spent,
-                witness: None,
-            }));
+            MintEvent::from(ProofState::from((pubkey().into(), State::Spent)));
 
         let encoded: serde_json::Value = serde_json::to_value(&event).expect("serialize");
 

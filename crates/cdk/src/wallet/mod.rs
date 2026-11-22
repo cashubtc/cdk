@@ -28,8 +28,8 @@ use crate::mint_url::MintUrl;
 use crate::nuts::nut00::token::Token;
 use crate::nuts::nut17::Kind;
 use crate::nuts::{
-    nut10, CurrencyUnit, Id, Keys, MintInfo, MintQuoteState, PreMintSecrets, Proofs,
-    RestoreRequest, SpendingConditions, State,
+    nut10, verify_proof_signatures, CurrencyUnit, Id, Keys, LegacyDleq, MintInfo, MintQuoteState,
+    PreMintSecrets, Proofs, RestoreRequest, SpendingConditions, State,
 };
 use crate::wallet::blind_signature::{
     validate_mint_response_signatures, SignatureAmountValidation,
@@ -1083,9 +1083,11 @@ impl Wallet {
         Ok(())
     }
 
-    /// Verify all proofs in token have a valid DLEQ proof
+    /// Verify all proofs in token have a valid mint signature.
+    ///
+    /// This verifies the DLEQ proof of every proof in the token.
     #[instrument(skip(self, token))]
-    pub async fn verify_token_dleq(&self, token: &Token) -> Result<(), Error> {
+    pub async fn verify_token_signatures(&self, token: &Token) -> Result<(), Error> {
         let token_mint_url = token.mint_url()?;
         if token_mint_url != self.mint_url {
             return Err(Error::IncorrectWallet(format!(
@@ -1097,7 +1099,8 @@ impl Wallet {
         // We need the keysets information to properly convert from token proof to proof
         let proofs = self.token_proofs(token).await?;
         let mut keys_cache: HashMap<Id, Keys> = HashMap::new();
-        for proof in proofs {
+        let mut signed_proofs = Vec::with_capacity(proofs.len());
+        for proof in &proofs {
             let mint_pubkey = match keys_cache.get(&proof.keyset_id) {
                 Some(keys) => keys.amount_key(proof.amount),
                 None => {
@@ -1110,13 +1113,20 @@ impl Wallet {
                 }
             }
             .ok_or(Error::AmountKey)?;
-
-            proof
-                .verify_dleq(mint_pubkey)
-                .map_err(|_| Error::CouldNotVerifyDleq)?;
+            signed_proofs.push((proof, mint_pubkey));
         }
 
+        verify_proof_signatures(signed_proofs, LegacyDleq::Required)
+            .map_err(|_| Error::CouldNotVerifyDleq)?;
+
         Ok(())
+    }
+
+    /// Verify all proofs in token have a valid DLEQ proof.
+    #[deprecated(note = "use verify_token_signatures instead")]
+    #[instrument(skip(self, token))]
+    pub async fn verify_token_dleq(&self, token: &Token) -> Result<(), Error> {
+        self.verify_token_signatures(token).await
     }
 
     /// Set the client (MintConnector) for this wallet
@@ -1685,7 +1695,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_verify_token_dleq_rejects_wrong_mint_url() {
+    async fn test_verify_token_signatures_rejects_wrong_mint_url() {
         use crate::wallet::test_utils::{
             create_test_db, create_test_wallet_with_mock, test_keyset_id, test_proof,
             MockMintConnector,
@@ -1699,7 +1709,7 @@ mod tests {
         let proof = test_proof(test_keyset_id(), 1);
         let token = Token::new(other_mint_url, vec![proof], None, CurrencyUnit::Sat);
 
-        let result = wallet.verify_token_dleq(&token).await;
+        let result = wallet.verify_token_signatures(&token).await;
 
         assert!(
             matches!(result, Err(Error::IncorrectWallet(_))),
@@ -1811,7 +1821,7 @@ mod tests {
             let mut signature = BlindSignature {
                 amount: Amount::from(1),
                 keyset_id,
-                c: SecretKey::generate().public_key(),
+                c: SecretKey::generate().public_key().into(),
                 dleq: None,
             };
             match case {
@@ -1864,8 +1874,8 @@ mod tests {
         };
 
         let seed = [7; 64];
-        let max_key = SecretKey::from_slice(&[1; 32]).expect("valid secret key");
-        let one_key = SecretKey::from_slice(&[2; 32]).expect("valid secret key");
+        let max_key = crate::nuts::MintSecretKey::from_slice(&[1; 32]).expect("valid secret key");
+        let one_key = crate::nuts::MintSecretKey::from_slice(&[2; 32]).expect("valid secret key");
         let keys = Keys::new(BTreeMap::from([
             (Amount::from(1), one_key.public_key()),
             (Amount::from(u64::MAX), max_key.public_key()),
@@ -1904,7 +1914,8 @@ mod tests {
             .map(|premint| {
                 ProofState::from((
                     crate::dhke::hash_to_curve(premint.secret.as_bytes())
-                        .expect("proof Y should derive"),
+                        .expect("proof Y should derive")
+                        .into(),
                     State::Unspent,
                 ))
             })

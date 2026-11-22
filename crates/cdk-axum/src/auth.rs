@@ -21,7 +21,7 @@ pub enum AuthHeader {
     /// Clear Auth token
     Clear(String),
     /// Blind Auth token
-    Blind(BlindAuthToken),
+    Blind(Box<BlindAuthToken>),
     /// No auth
     None,
 }
@@ -62,7 +62,7 @@ where
                 )
             })?;
 
-            return Ok(AuthHeader::Blind(token));
+            return Ok(AuthHeader::Blind(Box::new(token)));
         }
 
         // Check for Clear-auth header

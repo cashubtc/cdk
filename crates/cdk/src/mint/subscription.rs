@@ -15,7 +15,7 @@ use cdk_common::{
     Amount, BlindSignature, CurrencyUnit, MeltQuoteBolt11Response, MeltQuoteBolt12Response,
     MeltQuoteOnchainResponse, MeltQuoteResponse, MeltQuoteState, MintQuoteBolt11Response,
     MintQuoteBolt12Response, MintQuoteCustomResponse, MintQuoteOnchainResponse, MintQuoteState,
-    NotificationPayload, ProofState, PublicKey, QuoteId,
+    NotificationPayload, ProofId, ProofState, QuoteId,
 };
 use cdk_signatory::signatory::Signatory;
 
@@ -95,7 +95,7 @@ impl MintPubSubSpec {
         request: &[NotificationId<QuoteId>],
     ) -> Result<Vec<MintEvent<QuoteId>>, String> {
         let mut to_return = vec![];
-        let mut public_keys: Vec<PublicKey> = Vec::new();
+        let mut public_keys: Vec<ProofId> = Vec::new();
         let mint_quote_ids = request
             .iter()
             .filter_map(|idx| match idx {
@@ -579,12 +579,12 @@ mod tests {
             let signature = BlindSignature {
                 amount: 2.into(),
                 keyset_id: "009a1f293253e41e".parse().expect("keyset id"),
-                c: cdk_common::SecretKey::generate().public_key(),
+                c: cdk_common::SecretKey::generate().public_key().into(),
                 dleq: None,
             };
             let signatures = vec![signature];
             tx.add_blind_signatures(
-                &[cdk_common::SecretKey::generate().public_key()],
+                &[cdk_common::SecretKey::generate().public_key().into()],
                 &signatures,
                 Some(quote.id),
             )

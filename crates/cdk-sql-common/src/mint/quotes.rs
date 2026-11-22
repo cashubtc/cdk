@@ -17,7 +17,7 @@ use cdk_common::quote_id::QuoteId;
 use cdk_common::state::check_melt_quote_state_transition;
 use cdk_common::util::unix_time;
 use cdk_common::{
-    Amount, BlindedMessage, CurrencyUnit, Id, MeltQuoteState, PaymentMethod, PublicKey,
+    Amount, BlindedMessage, CurrencyUnit, DhkePoint, Id, MeltQuoteState, PaymentMethod, PublicKey,
 };
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::MintMetricGuard;
@@ -793,7 +793,7 @@ where
 
     async fn delete_blinded_messages(
         &mut self,
-        blinded_secrets: &[PublicKey],
+        blinded_secrets: &[DhkePoint],
     ) -> Result<(), Self::Err> {
         // Acquire all affected row locks in primary-key order before deleting.
         query(
@@ -875,8 +875,11 @@ where
             let blinded_messages: Result<Vec<BlindedMessage>, Error> = blinded_messages_rows
                 .into_iter()
                 .map(|row| -> Result<BlindedMessage, Error> {
-                    let blinded_message_key =
-                        column_as_string!(&row[0], PublicKey::from_hex, PublicKey::from_slice);
+                    let blinded_message_key = column_as_string!(
+                        &row[0],
+                        DhkePoint::from_hex_any_curve,
+                        DhkePoint::from_slice_any_curve
+                    );
                     let keyset_id = column_as_string!(&row[1], Id::from_str, Id::from_bytes);
                     let amount: u64 = column_as_number!(row[2].clone());
 

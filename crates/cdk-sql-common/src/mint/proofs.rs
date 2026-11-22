@@ -11,7 +11,7 @@ use cdk_common::nut00::ProofsMethods;
 use cdk_common::quote_id::QuoteId;
 use cdk_common::secret::Secret;
 use cdk_common::util::unix_time;
-use cdk_common::{Amount, Id, Proof, Proofs, PublicKey, State};
+use cdk_common::{Amount, DhkePoint, Id, Proof, ProofId, Proofs, State};
 
 use super::{SQLMintDatabase, SQLTransaction};
 use crate::database::DatabaseExecutor;
@@ -21,9 +21,9 @@ use crate::{column_as_nullable_string, column_as_number, column_as_string, unpac
 
 pub(super) async fn get_current_states<C>(
     conn: &C,
-    ys: &[PublicKey],
+    ys: &[ProofId],
     for_update: bool,
-) -> Result<HashMap<PublicKey, State>, Error>
+) -> Result<HashMap<ProofId, State>, Error>
 where
     C: DatabaseExecutor + Send + Sync,
 {
@@ -39,7 +39,7 @@ where
     .into_iter()
     .map(|row| {
         Ok((
-            column_as_string!(&row[0], PublicKey::from_hex, PublicKey::from_slice),
+            column_as_string!(&row[0], ProofId::from_hex, ProofId::from_slice),
             column_as_string!(&row[1], State::from_str),
         ))
     })
@@ -62,7 +62,11 @@ pub(super) fn sql_row_to_proof(row: Vec<Column>) -> Result<Proof, Error> {
         amount: Amount::from(amount),
         keyset_id: column_as_string!(keyset_id, Id::from_str),
         secret: column_as_string!(secret, Secret::from_str),
-        c: column_as_string!(c, PublicKey::from_hex, PublicKey::from_slice),
+        c: column_as_string!(
+            c,
+            DhkePoint::from_hex_any_curve,
+            DhkePoint::from_slice_any_curve
+        ),
         witness: column_as_nullable_string!(witness).and_then(|w| serde_json::from_str(&w).ok()),
         dleq: None,
         p2pk_e: None,
@@ -86,7 +90,11 @@ pub(super) fn sql_row_to_proof_with_state(row: Vec<Column>) -> Result<(Proof, St
             amount: Amount::from(amount),
             keyset_id: column_as_string!(keyset_id, Id::from_str, Id::from_bytes),
             secret: column_as_string!(secret, Secret::from_str),
-            c: column_as_string!(c, PublicKey::from_hex, PublicKey::from_slice),
+            c: column_as_string!(
+                c,
+                DhkePoint::from_hex_any_curve,
+                DhkePoint::from_slice_any_curve
+            ),
             witness: column_as_nullable_string!(witness)
                 .and_then(|w| serde_json::from_str(&w).ok()),
             dleq: None,
@@ -244,7 +252,7 @@ where
 
     async fn remove_proofs(
         &mut self,
-        ys: &[PublicKey],
+        ys: &[ProofId],
         _quote_id: Option<QuoteId>,
     ) -> Result<(), Self::Err> {
         // Acquire all rows that can be deleted in primary-key order. This keeps
@@ -317,7 +325,7 @@ where
     async fn get_proof_ys_by_quote_id(
         &mut self,
         quote_id: &QuoteId,
-    ) -> Result<Vec<PublicKey>, Self::Err> {
+    ) -> Result<Vec<ProofId>, Self::Err> {
         Ok(query(
             r#"
             SELECT
@@ -346,7 +354,7 @@ where
     async fn get_proof_ys_by_operation_id(
         &mut self,
         operation_id: &uuid::Uuid,
-    ) -> Result<Vec<PublicKey>, Self::Err> {
+    ) -> Result<Vec<ProofId>, Self::Err> {
         Ok(query(
             r#"
             SELECT
@@ -361,20 +369,17 @@ where
         .fetch_all(&self.inner)
         .await?
         .into_iter()
-        .map(|row| -> Result<PublicKey, Error> {
+        .map(|row| -> Result<ProofId, Error> {
             Ok(column_as_string!(
                 &row[0],
-                PublicKey::from_hex,
-                PublicKey::from_slice
+                ProofId::from_hex,
+                ProofId::from_slice
             ))
         })
         .collect::<Result<Vec<_>, _>>()?)
     }
 
-    async fn get_proofs(
-        &mut self,
-        ys: &[PublicKey],
-    ) -> Result<Acquired<ProofsWithState>, Self::Err> {
+    async fn get_proofs(&mut self, ys: &[ProofId]) -> Result<Acquired<ProofsWithState>, Self::Err> {
         let rows = query(
             r#"
              SELECT
@@ -434,7 +439,7 @@ where
 {
     type Err = Error;
 
-    async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err> {
+    async fn get_proofs_by_ys(&self, ys: &[ProofId]) -> Result<Vec<Option<Proof>>, Self::Err> {
         let conn = self
             .pool
             .get()
@@ -463,8 +468,8 @@ where
             Ok((
                 column_as_string!(
                     row.pop().ok_or(Error::InvalidDbResponse)?,
-                    PublicKey::from_hex,
-                    PublicKey::from_slice
+                    ProofId::from_hex,
+                    ProofId::from_slice
                 ),
                 sql_row_to_proof(row)?,
             ))
@@ -477,7 +482,7 @@ where
     async fn get_proof_ys_by_quote_id(
         &self,
         quote_id: &QuoteId,
-    ) -> Result<Vec<PublicKey>, Self::Err> {
+    ) -> Result<Vec<ProofId>, Self::Err> {
         let conn = self
             .pool
             .get()
@@ -506,7 +511,7 @@ where
         .ys()?)
     }
 
-    async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err> {
+    async fn get_proofs_states(&self, ys: &[ProofId]) -> Result<Vec<Option<State>>, Self::Err> {
         let conn = self
             .pool
             .get()
@@ -580,7 +585,7 @@ where
     async fn get_proof_ys_by_operation_id(
         &self,
         operation_id: &uuid::Uuid,
-    ) -> Result<Vec<PublicKey>, Self::Err> {
+    ) -> Result<Vec<ProofId>, Self::Err> {
         let conn = self
             .pool
             .get()
@@ -600,11 +605,11 @@ where
         .fetch_all(&*conn)
         .await?
         .into_iter()
-        .map(|row| -> Result<PublicKey, Error> {
+        .map(|row| -> Result<ProofId, Error> {
             Ok(column_as_string!(
                 &row[0],
-                PublicKey::from_hex,
-                PublicKey::from_slice
+                ProofId::from_hex,
+                ProofId::from_slice
             ))
         })
         .collect::<Result<Vec<_>, _>>()

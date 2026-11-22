@@ -16,13 +16,13 @@ async fn test_blind_signature_order_in_db() -> Result<()> {
     let quote_id = QuoteId::from_str("00000000-0000-0000-0000-000000000000").unwrap();
 
     let msg1 = BlindedMessage {
-        blinded_secret: SecretKey::generate().public_key(),
+        blinded_secret: SecretKey::generate().public_key().into(),
         keyset_id: Id::from_str("001711afb1de20cb").unwrap(),
         amount: Amount::from(10),
         witness: None,
     };
     let msg2 = BlindedMessage {
-        blinded_secret: SecretKey::generate().public_key(),
+        blinded_secret: SecretKey::generate().public_key().into(),
         keyset_id: Id::from_str("001711afb1de20cb").unwrap(),
         amount: Amount::from(20),
         witness: None,

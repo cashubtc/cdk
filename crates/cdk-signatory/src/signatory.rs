@@ -12,7 +12,8 @@ use cdk_common::mint::MintKeySetInfo;
 use cdk_common::nuts::nut02::KeySetVersion;
 use cdk_common::work_pool::Admission;
 use cdk_common::{
-    BlindSignature, BlindedMessage, CurrencyUnit, Id, KeySet, Keys, MintKeySet, Proof, PublicKey,
+    BlindSignature, BlindedMessage, CurrencyUnit, DhkePoint, Id, KeySet, Keys, MintKeySet, Proof,
+    PublicKey,
 };
 
 /// RotateKeyArguments
@@ -40,7 +41,7 @@ pub struct ReconstructDleqArguments {
     /// Blind Signature
     pub blind_signature: BlindSignature,
     /// Blinded Message
-    pub blind_secret: PublicKey,
+    pub blind_secret: DhkePoint,
 }
 
 #[derive(Debug, Clone)]

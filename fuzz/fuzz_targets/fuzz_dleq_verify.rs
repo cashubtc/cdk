@@ -17,7 +17,10 @@ use std::str::FromStr;
 use cashu::dhke::{blind_message, unblind_message};
 use cashu::nuts::nut12::{BlindSignatureDleq, ProofDleq};
 use cashu::secret::Secret as SecretString;
-use cashu::{Amount, BlindSignature, Id, Proof, SecretKey, SECP256K1};
+use cashu::{
+    Amount, BlindSignature, BlindingFactor, DhkePoint, Id, MintPublicKey, MintSecretKey, Proof,
+    SecretKey, SECP256K1,
+};
 use cdk_fuzz::{pubkey_from, secret_key_from};
 use libfuzzer_sys::arbitrary::{Arbitrary, Unstructured};
 use libfuzzer_sys::fuzz_target;
@@ -71,14 +74,19 @@ fuzz_target!(|input: Input| {
         .unwrap_or_else(|_| Id::from_str("00deadbeef123456").expect("valid id"));
 
     if input.valid_case {
-        let mint_secret_key = secret_key_from(input.mint_sk_bytes);
+        let mint_sk = secret_key_from(input.mint_sk_bytes);
+        let mint_secret_key = MintSecretKey::from(mint_sk.clone());
         let mint_pubkey = mint_secret_key.public_key();
         let secret = SecretString::new(input.proof_secret);
-        let (blinded_message, r) =
-            blind_message(secret.as_bytes(), Some(secret_key_from(input.r_bytes)))
-                .expect("valid secret and scalar must produce a blinded message");
-        let blinded_signature_point = blinded_message
-            .mul_tweak(&SECP256K1, &mint_secret_key.as_scalar())
+        let (blinded_message, r) = blind_message(
+            secret.as_bytes(),
+            Some(BlindingFactor::from(secret_key_from(input.r_bytes))),
+        )
+        .expect("valid secret and scalar must produce a blinded message");
+        let blinded_signature_point: DhkePoint = blinded_message
+            .as_secp256k1()
+            .expect("legacy blinding yields a secp256k1 point")
+            .mul_tweak(&SECP256K1, &mint_sk.as_scalar())
             .expect("valid mint scalar must sign a blinded message")
             .into();
 
@@ -118,14 +126,16 @@ fuzz_target!(|input: Input| {
         );
 
         let mut wrong_mint_key = secret_key_from(input.bsig_sk_bytes);
-        if wrong_mint_key.public_key() == mint_pubkey {
+        if MintPublicKey::from(wrong_mint_key.public_key()) == mint_pubkey {
             wrong_mint_key = secret_key_from([2_u8; 32]);
         }
-        if wrong_mint_key.public_key() == mint_pubkey {
+        if MintPublicKey::from(wrong_mint_key.public_key()) == mint_pubkey {
             wrong_mint_key = secret_key_from([3_u8; 32]);
         }
         assert!(
-            proof.verify_dleq(wrong_mint_key.public_key()).is_err(),
+            proof
+                .verify_dleq(wrong_mint_key.public_key().into())
+                .is_err(),
             "a valid DLEQ proof must reject a different mint key"
         );
         return;
@@ -141,16 +151,16 @@ fuzz_target!(|input: Input| {
     let bsig = BlindSignature {
         amount: Amount::from(input.amount),
         keyset_id,
-        c: blinded_signature_point,
+        c: blinded_signature_point.into(),
         dleq: Some(dleq_bs),
     };
-    let _ = bsig.verify_dleq(mint_pubkey, blinded_message_point);
+    let _ = bsig.verify_dleq(mint_pubkey.into(), blinded_message_point.into());
 
     // --- Target 2: Proof::verify_dleq ---
     let dleq_proof = ProofDleq::new(
         SecretKey::from_slice(e.as_secret_bytes()).expect("roundtrip"),
         SecretKey::from_slice(s.as_secret_bytes()).expect("roundtrip"),
-        r,
+        BlindingFactor::from(r),
     );
     // `Proof::verify_dleq` hashes `self.secret.as_bytes()` onto the curve,
     // so we feed an arbitrary String directly (via Secret::new).
@@ -159,10 +169,10 @@ fuzz_target!(|input: Input| {
         amount: Amount::from(input.amount),
         keyset_id,
         secret,
-        c: pubkey_from(input.proof_c_seed),
+        c: pubkey_from(input.proof_c_seed).into(),
         witness: None,
         dleq: Some(dleq_proof),
         p2pk_e: None,
     };
-    let _ = proof.verify_dleq(mint_pubkey);
+    let _ = proof.verify_dleq(mint_pubkey.into());
 });

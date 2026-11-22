@@ -139,7 +139,7 @@ mod test {
         let proof = AuthProof {
             keyset_id: Id::from_str("00916bbf7ef91a36").expect("valid keyset id"),
             secret: Secret::generate(),
-            c: SecretKey::generate().public_key(),
+            c: SecretKey::generate().public_key().into(),
             dleq: None,
         };
         let y = proof.y().expect("proof y");
