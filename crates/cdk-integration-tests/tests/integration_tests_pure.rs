@@ -592,6 +592,22 @@ pub async fn test_p2pk_swap() {
         })
         .expect("valid subscription");
 
+    // Consume the initial UNSPENT state for every input before any transition
+    let mut initial: HashSet<String> = public_keys_to_listen.iter().cloned().collect();
+    while !initial.is_empty() {
+        let msg = tokio::time::timeout(Duration::from_secs(5), listener.recv())
+            .await
+            .expect("initial proof state")
+            .expect("subscription closed");
+        match msg.into_inner() {
+            NotificationPayload::ProofState(ProofState { y, state, .. }) => {
+                assert_eq!(state, State::Unspent, "unexpected initial state");
+                assert!(initial.remove(&y.to_string()), "duplicate initial state");
+            }
+            _ => panic!("Wrong message received"),
+        }
+    }
+
     match mint_bob.process_swap_request(swap_request).await {
         Ok(_) => panic!("Proofs spent without sig"),
         Err(err) => match err {
