@@ -512,7 +512,10 @@ pub struct KeySet {
     /// Keyset [`Keys`]
     pub keys: Keys,
     /// Input Fee PPK
-    #[serde(default)]
+    #[serde(
+        deserialize_with = "deserialize_input_fee_ppk",
+        default = "default_input_fee_ppk"
+    )]
     pub input_fee_ppk: u64,
     /// Expiry
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -790,7 +793,7 @@ mod test {
 
     use bitcoin::secp256k1::rand::{self, RngCore};
 
-    use super::{KeySetInfo, KeySetVersion, Keys, KeysetResponse, ShortKeysetId};
+    use super::{KeySet, KeySetInfo, KeySetVersion, Keys, KeysetResponse, ShortKeysetId};
     use crate::nuts::nut02::{Error, Id};
     use crate::nuts::KeysResponse;
     use crate::util::hex;
@@ -1567,6 +1570,27 @@ mod test {
         // A unit that does not match any entry must return an empty iterator.
         let none_ids: Vec<Id> = infos.unit(CurrencyUnit::Eur).map(|k| k.id).collect();
         assert!(none_ids.is_empty());
+    }
+
+    #[test]
+    fn test_keyset_with_null_input_fee_ppk() {
+        // NUT-01 allows `"input_fee_ppk": null`, meaning no fee.
+        let keys: Keys = serde_json::from_str(SHORT_KEYSET).unwrap();
+        let id = Id::v2_from_data(&keys, &CurrencyUnit::Sat, 0, None);
+        let keys_json = serde_json::to_string(&keys).unwrap();
+        let keyset_json = format!(
+            r#"{{"id":"{id}","unit":"sat","active":true,"keys":{keys_json},"input_fee_ppk":null}}"#
+        );
+
+        let keyset: KeySet = serde_json::from_str(&keyset_json).unwrap();
+        assert_eq!(keyset.input_fee_ppk, 0);
+        assert!(keyset.verify_id().is_ok());
+
+        // The keys response skips keysets it cannot parse, so the keyset must
+        // not be dropped from it either.
+        let response: KeysResponse =
+            serde_json::from_str(&format!(r#"{{"keysets":[{keyset_json}]}}"#)).unwrap();
+        assert_eq!(response.keysets, vec![keyset]);
     }
 
     #[test]
