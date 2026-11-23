@@ -357,3 +357,12 @@ Still to do in package 1, each needing test retargeting or a decision rather tha
 
 Verification: `cdk-mintd` builds with `sqlite,cln,federation`, `sqlite,federation-bdk,federation-bark`, `sqlite,federation-test-utils` and `sqlite,cln,fakewallet,federation`; its tests pass with `sqlite,federation-test-utils` (291) and the production-CLI gate tests pass without the test utilities; `cdk-sql-common`, `cdk-sqlite` and `cdk-postgres` test builds compile with `federation-bark`. Unused-function warnings in `cdk-mintd` test builds without the fake wallet predate this work.
 
+### 2026-11-23: package 1, test-only paths out of production
+
+- **Gated as test-only** (`cfg(any(test, feature = "test"))`): the legacy journal appends (`append`, `append_with_consensus_evidence`, `append_finalized_with_consensus_evidence`, `from_entries`) and their private helpers, and the consensus runtime constructors `new`, `for_members` and `with_limits`, which leave operation authorization unset. All 16 production builds the checks cover compile without them, which confirms production never used them. Since the previous step, `feature = "test"` no longer reaches production builds.
+- **Explicit test dependencies:** `cdk-federation-bark`'s tests and the fuzz crate now request `cdk-common/test` themselves instead of receiving it through feature unification.
+- **Already test-only, left in place:** the legacy non-checkpoint catch-up in `cdk-axum` and `reconstruct_retained_items` were already `cfg(test)`. Moving them into test modules is cosmetic.
+- **Deferred:** `ModuleFact` is constructed only by tests, but about 25 test sites use it as a variable-size stand-in consensus item; deleting it means rewriting those tests. `FederationOperationStatus::Applying` is never written but appears in the SQL `CHECK` constraint; it goes with the storage lifecycle work in package 6.
+
+Verification: the 16 production builds in the check script; unit tests of `cdk-common` (491), `cdk-federation-bark` (36), `cdk-sqlite` with `federation-bark` (194), `cdk-bark` (19); `cdk` and `cdk-axum` federation test binaries build.
+

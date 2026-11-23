@@ -2173,6 +2173,7 @@ impl FederationConsensusRuntime {
     ///
     /// Panics only if the compile-time default finalization limits are zero.
     #[must_use]
+    #[cfg(any(test, feature = "test"))]
     pub fn new(federation_id: FederationId, local_member: MemberId, session: u64) -> Self {
         Self {
             data_provider: FederationAlephBftUnitDataProvider::new(
@@ -2198,6 +2199,7 @@ impl FederationConsensusRuntime {
     }
 
     /// Create a runtime that only accepts finalized units from known members.
+    #[cfg(any(test, feature = "test"))]
     pub fn for_members<I>(
         federation_id: FederationId,
         local_member: MemberId,
@@ -2231,6 +2233,7 @@ impl FederationConsensusRuntime {
     }
 
     /// Create an AlephBFT runtime with explicit limits.
+    #[cfg(any(test, feature = "test"))]
     pub fn with_limits(
         federation_id: FederationId,
         local_member: MemberId,

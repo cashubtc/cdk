@@ -24,7 +24,7 @@ features = ["nostr"]
 [dependencies.cdk-common]
 path = "../crates/cdk-common"
 default-features = false
-features = ["federation", "mint"]
+features = ["federation", "mint", "test"]
 
 [dependencies.cdk-frost]
 path = "../crates/cdk-frost"

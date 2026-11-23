@@ -1085,6 +1085,7 @@ impl InMemoryFederationJournal {
     }
 
     /// Rebuild a journal from persisted entries after validating the digest chain.
+    #[cfg(any(test, feature = "test"))]
     pub fn from_entries(entries: Vec<FederationJournalEntry>) -> Result<Self> {
         Self::from_base_and_entries(0, FederationJournalDigest::genesis(), entries)
     }
@@ -1249,6 +1250,7 @@ impl InMemoryFederationJournal {
     }
 
     /// Append an accepted operation envelope or return an idempotent duplicate.
+    #[cfg(any(test, feature = "test"))]
     pub fn append(
         &mut self,
         envelope: FederationOperationEnvelope,
@@ -1257,6 +1259,7 @@ impl InMemoryFederationJournal {
     }
 
     /// Append an accepted operation envelope with consensus evidence.
+    #[cfg(any(test, feature = "test"))]
     pub fn append_with_consensus_evidence(
         &mut self,
         envelope: FederationOperationEnvelope,
@@ -1271,6 +1274,7 @@ impl InMemoryFederationJournal {
     /// a later operation conflicts with a previously accepted one. Such
     /// conflicts are persisted as deterministic rejected entries instead of
     /// aborting journal replay.
+    #[cfg(any(test, feature = "test"))]
     pub fn append_finalized_with_consensus_evidence(
         &mut self,
         envelope: FederationOperationEnvelope,
@@ -1380,6 +1384,7 @@ impl InMemoryFederationJournal {
         }
     }
 
+    #[cfg(any(test, feature = "test"))]
     fn append_inner(
         &mut self,
         envelope: FederationOperationEnvelope,
@@ -1414,6 +1419,7 @@ impl InMemoryFederationJournal {
         Ok(FederationJournalAppendOutcome::Appended(entry))
     }
 
+    #[cfg(any(test, feature = "test"))]
     fn append_finalized_inner(
         &mut self,
         envelope: FederationOperationEnvelope,
@@ -1447,6 +1453,7 @@ impl InMemoryFederationJournal {
         Ok(FederationJournalAppendOutcome::Appended(entry))
     }
 
+    #[cfg(any(test, feature = "test"))]
     fn push_entry(
         &mut self,
         envelope: FederationOperationEnvelope,

@@ -26,6 +26,7 @@ serde_json.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+cdk-common = { workspace = true, default-features = false, features = ["federation", "mint", "test"] }
 rand_chacha = "0.3"
 
 [lints]
