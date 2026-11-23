@@ -105,7 +105,7 @@ mod federation_payment_observations;
 mod federation_setup;
 #[cfg(feature = "federation")]
 mod federation_setup_command;
-#[cfg(all(feature = "federation", feature = "fakewallet", feature = "sqlite"))]
+#[cfg(all(feature = "federation-test-utils", feature = "sqlite"))]
 mod federation_smoke;
 #[cfg(feature = "federation")]
 mod federation_status;
@@ -261,7 +261,7 @@ pub async fn run_cli_command(args: &CLIArgs) -> Result<bool> {
                 cli::FederationCommand::TestTrustedDealer(args) => {
                     federation_setup::run_trusted_dealer_command(args)?;
                 }
-                #[cfg(all(feature = "fakewallet", feature = "sqlite"))]
+                #[cfg(all(feature = "federation-test-utils", feature = "sqlite"))]
                 cli::FederationCommand::SmokeOperations(smoke) => {
                     let transport = federation_operator_transport(args).await?;
                     federation_smoke::run_smoke_operations_command(smoke, transport).await?;

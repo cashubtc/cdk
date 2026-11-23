@@ -350,3 +350,10 @@ Still to do in package 1, each needing test retargeting or a decision rather tha
 - `cfg(test)` fields in runtime structs;
 - the legacy non-checkpoint catch-up in `cdk-axum`.
 
+### 2026-11-23: packages 0 and 1, test code out of production builds
+
+- **`cdk-common/test` leaked into production.** `crates/cdk-sql-common/Cargo.toml` enabled it in `[dependencies]` (on `main` it did not), so everything gated `cfg(any(test, feature = "test"))` in `cdk-common` compiled into every mint build. It now comes only through `cdk-sql-common`'s own `test` feature, which the SQLite and Postgres test builds already enable.
+- **Smoke tool** (`crates/cdk-mintd/src/federation_smoke.rs`) now compiles only with `federation-test-utils` and `sqlite`, instead of with the default `fakewallet` and `sqlite`. The daemon's `federation` feature no longer enables `cdk/wallet` and `cdk-sqlite/wallet`; `federation-test-utils` does. Every recipe that runs the smoke command already builds with it.
+
+Verification: `cdk-mintd` builds with `sqlite,cln,federation`, `sqlite,federation-bdk,federation-bark`, `sqlite,federation-test-utils` and `sqlite,cln,fakewallet,federation`; its tests pass with `sqlite,federation-test-utils` (291) and the production-CLI gate tests pass without the test utilities; `cdk-sql-common`, `cdk-sqlite` and `cdk-postgres` test builds compile with `federation-bark`. Unused-function warnings in `cdk-mintd` test builds without the fake wallet predate this work.
+

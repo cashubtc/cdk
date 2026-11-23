@@ -17,11 +17,11 @@ mint = ["cdk-common/mint"]
 wallet = ["cdk-common/wallet"]
 federation = ["cdk-common/federation"]
 federation-bark = ["federation", "dep:cdk-federation-bark"]
-test = ["cdk-federation-bark?/test-util"]
+test = ["cdk-common/test", "cdk-federation-bark?/test-util"]
 prometheus = ["cdk-prometheus"]
 [dependencies]
 async-trait.workspace = true
-cdk-common = { workspace = true, features = ["test"] }
+cdk-common.workspace = true
 cdk-federation-bark = { workspace = true, optional = true }
 cdk-prometheus = { workspace = true, optional = true }
 bitcoin.workspace = true

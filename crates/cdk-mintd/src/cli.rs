@@ -395,7 +395,7 @@ pub enum FederationCommand {
     /// List redacted payment-observation reports from signed member status.
     PaymentObservations(FederationPaymentObservationsArgs),
     /// Run a local fake-wallet operation smoke through the federation wallet connector.
-    #[cfg(all(feature = "fakewallet", feature = "sqlite"))]
+    #[cfg(all(feature = "federation-test-utils", feature = "sqlite"))]
     SmokeOperations(FederationSmokeOperationsArgs),
     /// Generate test-only trusted-dealer federation material for local regtest.
     #[cfg(feature = "federation-test-utils")]
@@ -934,7 +934,7 @@ pub struct FederationTrustedDealerArgs {
     pub force: bool,
 }
 
-#[cfg(all(feature = "federation", feature = "fakewallet", feature = "sqlite"))]
+#[cfg(all(feature = "federation-test-utils", feature = "sqlite"))]
 #[derive(Debug, Clone, Args)]
 pub struct FederationSmokeOperationsArgs {
     /// Shared public federation config JSON path.
@@ -972,7 +972,7 @@ pub struct FederationSmokeOperationsArgs {
     pub operation_timeout_seconds: Option<u64>,
 }
 
-#[cfg(all(feature = "federation", feature = "fakewallet", feature = "sqlite"))]
+#[cfg(all(feature = "federation-test-utils", feature = "sqlite"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum FederationSmokeScenario {
     /// Run the ordinary mint, swap, melt, restore smoke.
@@ -1296,7 +1296,7 @@ mod federation_tests {
         assert!(err.to_string().contains("unrecognized subcommand"));
     }
 
-    #[cfg(not(all(feature = "fakewallet", feature = "sqlite")))]
+    #[cfg(not(all(feature = "federation-test-utils", feature = "sqlite")))]
     #[test]
     fn production_cli_does_not_expose_federation_smoke_operations() {
         let err = CLIArgs::try_parse_from(["cdk-mintd", "federation", "smoke-operations"])
@@ -1677,7 +1677,7 @@ mod federation_tests {
         assert!(observations.include_resolved);
     }
 
-    #[cfg(all(feature = "fakewallet", feature = "sqlite"))]
+    #[cfg(all(feature = "federation-test-utils", feature = "sqlite"))]
     #[test]
     fn parses_federation_smoke_operations_subcommand() {
         let args = CLIArgs::try_parse_from([
@@ -1714,7 +1714,7 @@ mod federation_tests {
         assert_eq!(smoke.operation_timeout_seconds, Some(42));
     }
 
-    #[cfg(all(feature = "fakewallet", feature = "sqlite"))]
+    #[cfg(all(feature = "federation-test-utils", feature = "sqlite"))]
     #[test]
     fn parses_federation_keyset_rotation_smoke_operations_subcommand() {
         let args = CLIArgs::try_parse_from([
@@ -1743,7 +1743,7 @@ mod federation_tests {
         assert_eq!(smoke.scenario, FederationSmokeScenario::KeysetRotation);
     }
 
-    #[cfg(all(feature = "fakewallet", feature = "sqlite"))]
+    #[cfg(all(feature = "federation-test-utils", feature = "sqlite"))]
     #[test]
     fn parses_federation_offline_keyset_rotation_smoke_operations_subcommand() {
         let args = CLIArgs::try_parse_from([
@@ -1775,7 +1775,7 @@ mod federation_tests {
         );
     }
 
-    #[cfg(all(feature = "fakewallet", feature = "sqlite"))]
+    #[cfg(all(feature = "federation-test-utils", feature = "sqlite"))]
     #[test]
     fn parses_federation_offline_smoke_operations_subcommand() {
         let args = CLIArgs::try_parse_from([
