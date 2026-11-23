@@ -216,9 +216,6 @@ async fn federation_client_transport(
 
 /// Run a one-shot CLI subcommand, returning true when no mint daemon should be started.
 pub async fn run_cli_command(args: &CLIArgs) -> Result<bool> {
-    #[cfg(feature = "federation-bark")]
-    cdk_federation_bark::register_federation_bark_wire_codec()?;
-
     #[cfg(not(any(feature = "federation", feature = "iroh")))]
     let _ = args;
 
@@ -3192,9 +3189,6 @@ pub async fn run_mintd_with_shutdown(
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
     routers: Vec<Router>,
 ) -> Result<()> {
-    #[cfg(feature = "federation-bark")]
-    cdk_federation_bark::register_federation_bark_wire_codec()?;
-
     let (localstore, keystore, kv, _configuration_store) =
         initial_setup(work_dir, settings, db_password.clone()).await?;
 
@@ -3345,8 +3339,6 @@ pub async fn initialize_configuration(
     bdk_wallet_policy: BdkWalletPolicy,
     db_password: Option<String>,
 ) -> Result<()> {
-    #[cfg(feature = "federation-bark")]
-    cdk_federation_bark::register_federation_bark_wire_codec()?;
     let bootstrap = load_database_bootstrap_settings()?;
     let (localstore, keystore, _kv, configuration_store) =
         initial_setup(work_dir, &bootstrap, db_password).await?;
@@ -3386,8 +3378,6 @@ pub async fn apply_configuration(
     bdk_wallet_policy: BdkWalletPolicy,
     db_password: Option<String>,
 ) -> Result<ApplyOutcome> {
-    #[cfg(feature = "federation-bark")]
-    cdk_federation_bark::register_federation_bark_wire_codec()?;
     let bootstrap = load_database_bootstrap_settings()?;
     let (_localstore, _keystore, _kv, configuration_store) =
         initial_setup(work_dir, &bootstrap, db_password).await?;
@@ -3401,8 +3391,6 @@ pub async fn rollback_configuration(
     work_dir: &Path,
     db_password: Option<String>,
 ) -> Result<RollbackOutcome> {
-    #[cfg(feature = "federation-bark")]
-    cdk_federation_bark::register_federation_bark_wire_codec()?;
     let bootstrap = load_database_bootstrap_settings()?;
     let (_localstore, _keystore, _kv, configuration_store) =
         initial_setup(work_dir, &bootstrap, db_password).await?;
@@ -3416,8 +3404,6 @@ pub async fn stored_configuration_document(
     work_dir: &Path,
     db_password: Option<String>,
 ) -> Result<String> {
-    #[cfg(feature = "federation-bark")]
-    cdk_federation_bark::register_federation_bark_wire_codec()?;
     let bootstrap = load_database_bootstrap_settings()?;
     let (_localstore, _keystore, _kv, configuration_store) =
         initial_setup(work_dir, &bootstrap, db_password).await?;
@@ -3435,8 +3421,6 @@ async fn load_stored_settings(work_dir: &Path, args: &CLIArgs) -> Result<config:
         let _ = args;
         None
     };
-    #[cfg(feature = "federation-bark")]
-    cdk_federation_bark::register_federation_bark_wire_codec()?;
     let bootstrap = load_database_bootstrap_settings()?;
     let (_, _, _, store) = initial_setup(work_dir, &bootstrap, password).await?;
     Ok(configuration_service(store, &bootstrap)
@@ -3454,8 +3438,6 @@ pub async fn run_mintd_from_database(
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
     routers: Vec<Router>,
 ) -> Result<()> {
-    #[cfg(feature = "federation-bark")]
-    cdk_federation_bark::register_federation_bark_wire_codec()?;
     let bootstrap = load_database_bootstrap_settings()?;
     let (localstore, keystore, kv, configuration_store) =
         initial_setup(work_dir, &bootstrap, db_password.clone()).await?;

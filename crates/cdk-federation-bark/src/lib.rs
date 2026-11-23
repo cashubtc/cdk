@@ -7,6 +7,7 @@
 
 mod certificate;
 mod config;
+mod encoding;
 mod operation;
 mod operator_status;
 mod projection;
@@ -30,6 +31,11 @@ pub use self::config::{
     FederationBarkFrostApplicationConfig, FederationBarkFrostRegistrationAdapter,
     FederationBarkPolicyConfig, FederationBarkReceiveAntiDosPolicy, FederationBarkSetupConfig,
 };
+pub use self::encoding::{
+    federation_bark_digest, federation_bark_send_failed_result,
+    federation_bark_send_revocation_request_bytes, federation_bark_send_succeeded_result_hash,
+    validate_federation_bark_send_failed_result, validate_federation_bark_send_succeeded_result,
+};
 pub use self::operation::{
     federation_bark_application_id, federation_bark_application_operation,
     federation_bark_cpfp_allocation_quote, federation_bark_custody_attempt_is_current,
@@ -37,25 +43,25 @@ pub use self::operation::{
     federation_bark_exit_allocation_quote, federation_bark_mailbox_scope,
     federation_bark_next_actor, federation_bark_receive_htlc_package_hash,
     federation_bark_receive_request_hash, federation_bark_refresh_requires_recovery,
-    federation_bark_signer_set_for_attempt, register_federation_bark_wire_codec,
-    validate_federation_bark_application_operation, validate_federation_bark_lightning_send_expiry,
-    validate_federation_bark_operation, FederationBarkActionId, FederationBarkActionKind,
-    FederationBarkActionPlan, FederationBarkActionTransition, FederationBarkArtifact,
-    FederationBarkArtifactKind, FederationBarkAuthorizationReference,
-    FederationBarkCertifiedReceiveHtlcs, FederationBarkConflictKey, FederationBarkCustodyProtocol,
-    FederationBarkDigest, FederationBarkExitRequest, FederationBarkExternalId,
-    FederationBarkFrostAuthorization, FederationBarkMemberObservation,
-    FederationBarkObservationStatus, FederationBarkOperation, FederationBarkOperationKind,
-    FederationBarkOperationRecord, FederationBarkReceiveIntent, FederationBarkReceivePrepared,
-    FederationBarkReceiveProof, FederationBarkReceiveSecretAcknowledgement,
-    FederationBarkRefreshRequest, FederationBarkSemanticPhase, FederationBarkUnit,
-    FederationBarkVtxoId, FederationBarkVtxoInput, FederationBarkVtxoLocator,
-    FederationBarkVtxoOutput, FederationBarkVtxoState, FederationBarkVtxoTransition,
-    FEDERATION_BARK_AUTHORIZATION_VERSION, FEDERATION_BARK_EXIT_FEE_RATE_SAT_PER_KWU,
-    FEDERATION_BARK_OPERATION_VERSION, FEDERATION_MAX_BARK_ARTIFACT_AGGREGATE_BYTES,
-    FEDERATION_MAX_BARK_ARTIFACT_BYTES, FEDERATION_MAX_BARK_AUTHORIZATION_BYTES,
-    FEDERATION_MAX_BARK_COLLECTION_ENTRIES, FEDERATION_MAX_BARK_DESCRIPTION_BYTES,
-    FEDERATION_MAX_BARK_INVOICE_BYTES, FEDERATION_MAX_BARK_LIGHTNING_SEND_EXPIRY_EXTENSION_BLOCKS,
+    federation_bark_signer_set_for_attempt, validate_federation_bark_application_operation,
+    validate_federation_bark_lightning_send_expiry, validate_federation_bark_operation,
+    FederationBarkActionId, FederationBarkActionKind, FederationBarkActionPlan,
+    FederationBarkActionTransition, FederationBarkArtifact, FederationBarkArtifactKind,
+    FederationBarkAuthorizationReference, FederationBarkCertifiedReceiveHtlcs,
+    FederationBarkConflictKey, FederationBarkCustodyProtocol, FederationBarkDigest,
+    FederationBarkExitRequest, FederationBarkExternalId, FederationBarkFrostAuthorization,
+    FederationBarkMemberObservation, FederationBarkObservationStatus, FederationBarkOperation,
+    FederationBarkOperationKind, FederationBarkOperationRecord, FederationBarkReceiveIntent,
+    FederationBarkReceivePrepared, FederationBarkReceiveProof,
+    FederationBarkReceiveSecretAcknowledgement, FederationBarkRefreshRequest,
+    FederationBarkSemanticPhase, FederationBarkUnit, FederationBarkVtxoId, FederationBarkVtxoInput,
+    FederationBarkVtxoLocator, FederationBarkVtxoOutput, FederationBarkVtxoState,
+    FederationBarkVtxoTransition, FEDERATION_BARK_AUTHORIZATION_VERSION,
+    FEDERATION_BARK_EXIT_FEE_RATE_SAT_PER_KWU, FEDERATION_BARK_OPERATION_VERSION,
+    FEDERATION_MAX_BARK_ARTIFACT_AGGREGATE_BYTES, FEDERATION_MAX_BARK_ARTIFACT_BYTES,
+    FEDERATION_MAX_BARK_AUTHORIZATION_BYTES, FEDERATION_MAX_BARK_COLLECTION_ENTRIES,
+    FEDERATION_MAX_BARK_DESCRIPTION_BYTES, FEDERATION_MAX_BARK_INVOICE_BYTES,
+    FEDERATION_MAX_BARK_LIGHTNING_SEND_EXPIRY_EXTENSION_BLOCKS,
     FEDERATION_MAX_BARK_OPERATION_BYTES, FEDERATION_MAX_BARK_REFRESH_INPUTS,
     FEDERATION_MAX_BARK_REFRESH_INPUT_ARTIFACT_BYTES,
 };

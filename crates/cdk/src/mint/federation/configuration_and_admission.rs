@@ -699,7 +699,7 @@ impl FederationRuntimeConfig {
                 self.validate_federation_observer(observation.observer)
             }
             #[cfg(feature = "federation-bark")]
-            FederationOperation::Application(_) | FederationOperation::ExternalApplication(_) => {
+            FederationOperation::Application(_) => {
                 let operation = validate_federation_bark_operation(operation)?;
                 operation.validate()?;
                 let evidence_certificate = match &operation {
@@ -727,7 +727,7 @@ impl FederationRuntimeConfig {
                 Ok(())
             }
             #[cfg(not(feature = "federation-bark"))]
-            FederationOperation::Application(_) | FederationOperation::ExternalApplication(_) => {
+            FederationOperation::Application(_) => {
                 Err(FederationError::ApplicationOperationInvalid {
                     reason: "federation application support is disabled".to_owned(),
                 }

@@ -215,6 +215,10 @@ serde_urlencoded = { version = "0.7", default-features = false }
 ureq = { version = "3.1.0", features = ["json"] }
 tokio = { workspace = true, features = ["full"] }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# The wallet's Iroh connector tests start an `IrohServer`.
+cdk-iroh = { workspace = true, features = ["server"] }
+
 
 [[bench]]
 name = "dhke_benchmarks"

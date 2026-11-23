@@ -24,7 +24,9 @@ use cdk_federation_bark::{
     ark_server_commitment, federation_bark_application, federation_bark_application_id,
     federation_bark_cpfp_allocation_quote, federation_bark_exit_allocation_quote,
     federation_bark_next_actor, federation_bark_recovery_application,
+    federation_bark_send_failed_result, federation_bark_send_revocation_request_bytes,
     federation_bark_signer_set_for_attempt, validate_federation_bark_operation,
+    validate_federation_bark_send_failed_result, validate_federation_bark_send_succeeded_result,
     FederationBarkActionKind, FederationBarkActionPlan, FederationBarkActionRecord,
     FederationBarkActionTransition, FederationBarkArtifact, FederationBarkArtifactKind,
     FederationBarkCpfpPackageSet, FederationBarkCpfpPublication, FederationBarkDigest,
@@ -46,7 +48,7 @@ use super::application::{
 use super::chain_observation::CHAIN_OBSERVATION_PRIMARY_NAMESPACE;
 
 #[cfg(feature = "federation-bark")]
-pub(super) use self::bark_validation::*;
+use self::bark_validation::*;
 use super::federation_operation_uuid;
 
 const MATERIALIZED_STATE_QUERY_BATCH_SIZE: usize = 500;
@@ -265,7 +267,7 @@ impl Mint {
                                     "payment success references a non-plan",
                                 ));
                             };
-                            validate_payment_success_proof(&plan, transition)?;
+                            validate_federation_bark_send_succeeded_result(&plan, transition)?;
                             if plan.kind != FederationBarkActionKind::LightningSend
                                 || observation.result_hash != transition.result_hash
                                 || observation.amount != plan.external_amount
@@ -337,7 +339,8 @@ impl Mint {
                             (
                                 plan.external_amount,
                                 plan.fee_amount,
-                                payment_failed_result_hash(&plan, transition.result_hash)?,
+                                federation_bark_send_failed_result(&plan, transition.result_hash)?
+                                    .hash,
                             )
                         }
                         FederationBarkSemanticPhase::RevocationCompleted => {
@@ -791,7 +794,7 @@ impl Mint {
                 else {
                     return Err(bark_state_error("payment failure references a non-plan"));
                 };
-                validate_payment_failed_result(&send, failed)?;
+                validate_federation_bark_send_failed_result(&send, failed)?;
                 let mut records = snapshot
                     .vtxos
                     .iter()
@@ -823,7 +826,7 @@ impl Mint {
                 let expected_locator = send
                     .revocation_locator
                     .ok_or_else(|| bark_state_error("send revocation locator is missing"))?;
-                let request_bytes = failed_send_revocation_request_bytes(
+                let request_bytes = federation_bark_send_revocation_request_bytes(
                     plan.action_id,
                     plan.predecessor_operation_id,
                     plan.payment_hash
@@ -1030,7 +1033,7 @@ impl Mint {
                         "payment success differs from its accepted HTLC predecessor",
                     ));
                 }
-                validate_payment_success_proof(&plan, transition)?;
+                validate_federation_bark_send_succeeded_result(&plan, transition)?;
                 let expected_inputs = snapshot
                     .vtxos
                     .iter()
@@ -1147,7 +1150,7 @@ impl Mint {
                         "payment failure differs from its accepted HTLC predecessor",
                     ));
                 }
-                validate_payment_failed_result(&plan, transition)?;
+                validate_federation_bark_send_failed_result(&plan, transition)?;
                 let source_scope = ark_server_commitment(&application.ark_server_public_key)?;
                 let mut observers = BTreeSet::new();
                 for record in &snapshot.observations {
@@ -1988,8 +1991,7 @@ impl Mint {
                 FederationMaterializedStateKey::KeysetRotation { keyset } => {
                     keyset_rotations.push((record.operation_index, record.operation_id, keyset));
                 }
-                FederationMaterializedStateKey::Application { .. }
-                | FederationMaterializedStateKey::ExternalApplication(_) => {}
+                FederationMaterializedStateKey::Application { .. } => {}
             }
         }
 
@@ -2687,119 +2689,6 @@ mod bark_validation {
         }
     }
 
-    pub(crate) fn validate_payment_success_proof(
-        plan: &FederationBarkActionPlan,
-        transition: &FederationBarkActionTransition,
-    ) -> Result<(), Error> {
-        let mut proofs = transition
-            .artifacts
-            .iter()
-            .filter(|artifact| artifact.kind == FederationBarkArtifactKind::Proof);
-        let proof = proofs
-            .next()
-            .ok_or_else(|| bark_state_error("payment success proof is missing"))?;
-        let preimage: [u8; 32] = proof
-            .bytes
-            .as_slice()
-            .try_into()
-            .map_err(|_| bark_state_error("payment success proof is not a 32-byte preimage"))?;
-        let payment_hash = plan
-            .payment_hash
-            .ok_or_else(|| bark_state_error("send plan payment hash is missing"))?;
-        let mut result_bytes = b"cdk/bark/send-payment-succeeded/v1".to_vec();
-        result_bytes.extend_from_slice(&plan.action_id.to_bytes());
-        result_bytes.extend_from_slice(&transition.request_hash.to_bytes());
-        result_bytes.extend_from_slice(&preimage);
-        let result_hash =
-            FederationBarkDigest::from_bytes(sha256::Hash::hash(&result_bytes).to_byte_array())?;
-        if proofs.next().is_some()
-            || sha256::Hash::hash(&preimage).to_byte_array() != payment_hash.to_bytes()
-            || transition.result_hash != result_hash
-        {
-            return Err(bark_state_error(
-                "payment success proof differs from the accepted invoice or result",
-            ));
-        }
-        Ok(())
-    }
-
-    pub(super) fn payment_failed_result_hash(
-        plan: &FederationBarkActionPlan,
-        htlc_result_hash: FederationBarkDigest,
-    ) -> Result<FederationBarkDigest, Error> {
-        let bytes = payment_failed_result_bytes(plan, htlc_result_hash)?;
-        FederationBarkDigest::from_bytes(sha256::Hash::hash(&bytes).to_byte_array())
-            .map_err(Error::from)
-    }
-
-    pub(super) fn payment_failed_result_bytes(
-        plan: &FederationBarkActionPlan,
-        htlc_result_hash: FederationBarkDigest,
-    ) -> Result<Vec<u8>, Error> {
-        let mut bytes = b"cdk/bark/send-payment-failed/v1".to_vec();
-        bytes.extend_from_slice(&plan.action_id.to_bytes());
-        bytes.extend_from_slice(&htlc_result_hash.to_bytes());
-        bytes.extend_from_slice(
-            &plan
-                .payment_hash
-                .ok_or_else(|| bark_state_error("send payment hash is missing"))?
-                .to_bytes(),
-        );
-        Ok(bytes)
-    }
-
-    pub(super) fn validate_payment_failed_result(
-        plan: &FederationBarkActionPlan,
-        transition: &FederationBarkActionTransition,
-    ) -> Result<(), Error> {
-        let bytes = payment_failed_result_bytes(plan, transition.request_hash)?;
-        let expected = bark_projection_artifact(FederationBarkArtifactKind::ArkResult, bytes)?;
-        let mut results = transition
-            .artifacts
-            .iter()
-            .filter(|artifact| artifact.kind == FederationBarkArtifactKind::ArkResult);
-        if results.next() != Some(&expected)
-            || results.next().is_some()
-            || transition.result_hash != expected.hash
-        {
-            return Err(bark_state_error(
-                "payment failure result differs from its accepted HTLC result",
-            ));
-        }
-        Ok(())
-    }
-
-    pub(super) fn failed_send_revocation_request_bytes(
-        action_id: cdk_federation_bark::FederationBarkActionId,
-        failed_operation_id: FederationOperationId,
-        payment_hash: FederationBarkDigest,
-        output_locator: FederationBarkVtxoLocator,
-        inputs: &[FederationBarkVtxoInput],
-    ) -> Result<Vec<u8>, Error> {
-        let mut bytes = b"cdk/bark/send-revocation-request/v1".to_vec();
-        bytes.extend_from_slice(&action_id.to_bytes());
-        bytes.extend_from_slice(&failed_operation_id.to_bytes());
-        bytes.extend_from_slice(&payment_hash.to_bytes());
-        append_bark_locator(&mut bytes, output_locator);
-        bytes.extend_from_slice(
-            &u32::try_from(inputs.len())
-                .map_err(|_| bark_state_error("too many revocation inputs"))?
-                .to_be_bytes(),
-        );
-        for input in inputs {
-            bytes.extend_from_slice(&input.vtxo_id.to_bytes());
-            append_bark_locator(&mut bytes, input.locator);
-            bytes.extend_from_slice(&u64::from(input.amount).to_be_bytes());
-        }
-        Ok(bytes)
-    }
-
-    pub(super) fn append_bark_locator(bytes: &mut Vec<u8>, locator: FederationBarkVtxoLocator) {
-        bytes.push(locator.role);
-        bytes.extend_from_slice(&locator.index.to_be_bytes());
-        bytes.extend_from_slice(&locator.version.to_be_bytes());
-    }
-
     pub(super) fn bark_projection_artifact(
         kind: FederationBarkArtifactKind,
         bytes: Vec<u8>,
@@ -3265,23 +3154,25 @@ mod transition_tests {
             }],
             vtxo_transitions: Vec::new(),
         };
-        validate_payment_success_proof(&plan, &transition).expect("valid success proof");
+        validate_federation_bark_send_succeeded_result(&plan, &transition)
+            .expect("valid success proof");
 
         let mut changed_proof = transition.clone();
         changed_proof.artifacts[0].bytes[0] ^= 1;
-        assert!(validate_payment_success_proof(&plan, &changed_proof).is_err());
+        assert!(validate_federation_bark_send_succeeded_result(&plan, &changed_proof).is_err());
         let mut changed_predecessor = transition;
         changed_predecessor.request_hash = digest(11);
-        assert!(validate_payment_success_proof(&plan, &changed_predecessor).is_err());
+        assert!(
+            validate_federation_bark_send_succeeded_result(&plan, &changed_predecessor).is_err()
+        );
     }
 
     #[test]
     fn outgoing_failure_result_binds_the_accepted_htlc_result_and_payment_hash() {
         let plan = send_plan(digest(12));
         let htlc_result = digest(13);
-        let bytes = payment_failed_result_bytes(&plan, htlc_result).expect("failure result bytes");
-        let artifact = bark_projection_artifact(FederationBarkArtifactKind::ArkResult, bytes)
-            .expect("failure artifact");
+        let artifact =
+            federation_bark_send_failed_result(&plan, htlc_result).expect("failure artifact");
         let transition = FederationBarkActionTransition {
             version: FEDERATION_BARK_OPERATION_VERSION,
             action_id: plan.action_id,
@@ -3300,13 +3191,14 @@ mod transition_tests {
             artifacts: vec![artifact],
             vtxo_transitions: Vec::new(),
         };
-        validate_payment_failed_result(&plan, &transition).expect("valid failure result");
+        validate_federation_bark_send_failed_result(&plan, &transition)
+            .expect("valid failure result");
 
         let mut changed = transition.clone();
         changed.request_hash = digest(16);
-        assert!(validate_payment_failed_result(&plan, &changed).is_err());
+        assert!(validate_federation_bark_send_failed_result(&plan, &changed).is_err());
         let mut changed = transition;
         changed.artifacts[0].bytes.push(0);
-        assert!(validate_payment_failed_result(&plan, &changed).is_err());
+        assert!(validate_federation_bark_send_failed_result(&plan, &changed).is_err());
     }
 }

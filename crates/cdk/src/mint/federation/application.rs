@@ -611,7 +611,9 @@ impl Mint {
                 else {
                     return Err(Error::Internal);
                 };
-                projection::validate_payment_success_proof(&plan, transition)?;
+                cdk_federation_bark::validate_federation_bark_send_succeeded_result(
+                    &plan, transition,
+                )?;
                 let proof = transition
                     .artifacts
                     .iter()
@@ -1252,7 +1254,7 @@ impl Mint {
                 Ok(true)
             }
             #[cfg(feature = "federation-bark")]
-            FederationOperation::Application(_) | FederationOperation::ExternalApplication(_) => {
+            FederationOperation::Application(_) => {
                 let operation = cdk_federation_bark::validate_federation_bark_operation(
                     &entry.envelope.operation,
                 )?;
@@ -1260,7 +1262,7 @@ impl Mint {
                 Ok(true)
             }
             #[cfg(not(feature = "federation-bark"))]
-            FederationOperation::Application(_) | FederationOperation::ExternalApplication(_) => {
+            FederationOperation::Application(_) => {
                 Err(FederationError::ApplicationOperationInvalid {
                     reason: "federation application support is disabled".to_owned(),
                 }
@@ -1284,7 +1286,6 @@ impl Mint {
         }
         let application = match &entry.envelope.operation {
             FederationOperation::Application(application) => application,
-            FederationOperation::ExternalApplication(application) => application.application(),
             _ => return Err(Error::Internal),
         };
         let payment_records = match operation {

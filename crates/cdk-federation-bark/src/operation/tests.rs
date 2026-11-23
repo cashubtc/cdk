@@ -7,7 +7,8 @@ use lightning_invoice::{Currency, InvoiceBuilder, PaymentSecret};
 use super::*;
 use cdk_common::federation::{
     FederationAddressKeychain, FederationConfigDigest, FederationConsensusItem,
-    FederationJournalAppendOutcome, FederationOperationEnvelope, InMemoryFederationJournal,
+    FederationJournalAppendOutcome, FederationOperationConflictKey, FederationOperationEnvelope,
+    InMemoryFederationJournal,
 };
 
 use crate::{
@@ -793,7 +794,7 @@ fn established_wire_replays_with_stable_conflicts_and_materialized_keys() {
     assert_eq!(
         wire.pointer("/operation/type")
             .and_then(serde_json::Value::as_str),
-        Some("bark")
+        Some("application")
     );
 
     let decoded: FederationOperationEnvelope =
@@ -815,23 +816,36 @@ fn established_wire_replays_with_stable_conflicts_and_materialized_keys() {
         FederationJournalAppendOutcome::Appended(entry)
         | FederationJournalAppendOutcome::Duplicate(entry) => entry,
     };
+    assert!(!entry.conflict_keys.is_empty());
     assert!(entry.conflict_keys.iter().all(|key| {
-        serde_json::to_value(key)
-            .expect("conflict key")
-            .get("type")
-            .and_then(serde_json::Value::as_str)
-            == Some("bark")
+        let key = serde_json::to_value(key).expect("conflict key");
+        key.get("type").and_then(serde_json::Value::as_str) == Some("application")
+            && key
+                .pointer("/data/key/namespace")
+                .and_then(serde_json::Value::as_str)
+                == Some(FEDERATION_BARK_CONFLICT_NAMESPACE)
     }));
 
     let materialized = entry
         .materialized_state_keys()
         .expect("established materialized-state keys");
-    let kinds = materialized
+    let application_id = federation_bark_application_id().expect("Bark application ID");
+    let collections = materialized
         .iter()
-        .map(|record| record.kind_label())
+        .map(|record| match &record.key {
+            cdk_common::federation::FederationMaterializedStateKey::Application {
+                application_id: owner,
+                collection,
+                ..
+            } => {
+                assert_eq!(*owner, application_id);
+                collection.as_str()
+            }
+            other => panic!("unexpected materialized key {}", other.kind_label()),
+        })
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(
-        kinds,
+        collections,
         std::collections::BTreeSet::from(["bark_action", "bark_derivation_allocation"])
     );
     let materialized_wire = serde_json::to_vec(&materialized).expect("materialized key wire");
@@ -1006,10 +1020,17 @@ fn predecessor_conflicts_are_scoped_to_the_action_lineage() {
         action_id: action(70),
         operation_id: predecessor,
     };
-    let expected_key = serde_json::json!({
-        "type": "bark",
-        "data": { "key": bark_key },
-    });
+    let expected_key = serde_json::to_value(FederationOperationConflictKey::Application {
+        application_id: federation_bark_application_id().expect("Bark application ID"),
+        key: FederationApplicationConflictKey::new(
+            FEDERATION_BARK_CONFLICT_NAMESPACE,
+            cdk_common::util::hex::encode(
+                canonical_json_bytes(&bark_key).expect("canonical Bark conflict key"),
+            ),
+        )
+        .expect("Bark application conflict key"),
+    })
+    .expect("expected conflict-key JSON");
     assert!(journal.entries()[1]
         .conflict_keys
         .iter()

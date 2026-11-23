@@ -5,10 +5,9 @@ use bitcoin::hashes::Hash;
 use super::{
     accepted_custody_attempt, accepted_revocation_plan, accepted_send_plan,
     accepted_send_transition, bark_artifact, bark_digest, classify_send_execution_error,
-    failed_send_revocation_request_bytes, payment_failed_result, payment_succeeded_transition,
-    revocation_completed_transition, revocation_evidence_from_transition,
-    send_htlc_evidence_from_transition, send_htlc_transition, send_success_preimage,
-    validate_payment_failed_result, validate_send_transition_binding, FederatedBarkRuntime,
+    payment_succeeded_transition, revocation_completed_transition,
+    revocation_evidence_from_transition, send_htlc_evidence_from_transition, send_htlc_transition,
+    send_success_preimage, validate_send_transition_binding, FederatedBarkRuntime,
     FederatedBarkSendProposal, FederatedBarkSendTerminalStatus, BARK_PAYMENT_UPDATE_WAIT,
 };
 use crate::Error;
@@ -27,13 +26,14 @@ use cdk_common::federation::{
 use cdk_common::mint::MeltQuote;
 use cdk_common::MeltQuoteState;
 use cdk_federation_bark::{
-    ark_server_commitment, validate_federation_bark_lightning_send_expiry, FederationBarkActionId,
-    FederationBarkActionKind, FederationBarkActionPlan, FederationBarkActionTransition,
-    FederationBarkArtifactKind, FederationBarkDigest, FederationBarkExternalId,
-    FederationBarkMemberObservation, FederationBarkObservationStatus, FederationBarkOperation,
-    FederationBarkProjectionSnapshot, FederationBarkSemanticPhase, FederationBarkVtxoInput,
-    FederationBarkVtxoLocator, FederationBarkVtxoOutput, FederationBarkVtxoState,
-    FEDERATION_BARK_OPERATION_VERSION,
+    ark_server_commitment, federation_bark_send_failed_result,
+    federation_bark_send_revocation_request_bytes, validate_federation_bark_lightning_send_expiry,
+    validate_federation_bark_send_failed_result, FederationBarkActionId, FederationBarkActionKind,
+    FederationBarkActionPlan, FederationBarkActionTransition, FederationBarkArtifactKind,
+    FederationBarkDigest, FederationBarkExternalId, FederationBarkMemberObservation,
+    FederationBarkObservationStatus, FederationBarkOperation, FederationBarkProjectionSnapshot,
+    FederationBarkSemanticPhase, FederationBarkVtxoInput, FederationBarkVtxoLocator,
+    FederationBarkVtxoOutput, FederationBarkVtxoState, FEDERATION_BARK_OPERATION_VERSION,
 };
 
 impl FederatedBarkRuntime {
@@ -559,7 +559,9 @@ impl FederatedBarkRuntime {
         htlcs: &FederationBarkActionTransition,
         observation_epoch: u64,
     ) -> Result<FederationBarkMemberObservation, Error> {
-        let (_, result_hash) = payment_failed_result(plan, htlcs.result_hash)?;
+        let result_hash = federation_bark_send_failed_result(plan, htlcs.result_hash)
+            .map_err(|_| Error::SendExecutionFailed)?
+            .hash;
         Ok(FederationBarkMemberObservation {
             version: FEDERATION_BARK_OPERATION_VERSION,
             action_id: plan.action_id,
@@ -592,7 +594,9 @@ impl FederatedBarkRuntime {
             FederationBarkSemanticPhase::SendHtlcsCosigned,
         )?;
         validate_send_transition_binding(&self.federation, accepted_plan, &plan, &htlcs)?;
-        let (artifact, result_hash) = payment_failed_result(&plan, htlcs.result_hash)?;
+        let artifact = federation_bark_send_failed_result(&plan, htlcs.result_hash)
+            .map_err(|_| Error::SendExecutionFailed)?;
+        let result_hash = artifact.hash;
         Ok(FederationBarkActionTransition {
             version: FEDERATION_BARK_OPERATION_VERSION,
             action_id: plan.action_id,
@@ -626,7 +630,8 @@ impl FederatedBarkRuntime {
         let failed =
             accepted_send_transition(accepted_failed, FederationBarkSemanticPhase::PaymentFailed)?;
         validate_send_transition_binding(&self.federation, accepted_plan, &plan, &failed)?;
-        validate_payment_failed_result(&plan, &failed)?;
+        validate_federation_bark_send_failed_result(&plan, &failed)
+            .map_err(|_| Error::SendReconciliationFailed)?;
         let bark_plan = self.validate_lightning_send_plan(quote, projection, &plan)?;
         self.wallet
             .apply_lightning_send_failed(&bark_plan)
@@ -649,7 +654,8 @@ impl FederatedBarkRuntime {
         let failed =
             accepted_send_transition(accepted_failed, FederationBarkSemanticPhase::PaymentFailed)?;
         validate_send_transition_binding(&self.federation, send_plan_entry, &send, &failed)?;
-        validate_payment_failed_result(&send, &failed)?;
+        validate_federation_bark_send_failed_result(&send, &failed)
+            .map_err(|_| Error::SendReconciliationFailed)?;
         let mut records = projection
             .vtxos
             .iter()
@@ -685,13 +691,14 @@ impl FederatedBarkRuntime {
             return Err(Error::SendExecutionFailed);
         }
         let output_locator = send.revocation_locator.ok_or(Error::SendExecutionFailed)?;
-        let request_bytes = failed_send_revocation_request_bytes(
+        let request_bytes = federation_bark_send_revocation_request_bytes(
             send.action_id,
             accepted_failed.operation_id,
             send.payment_hash.ok_or(Error::SendExecutionFailed)?,
             output_locator,
             &inputs,
-        )?;
+        )
+        .map_err(|_| Error::SendExecutionFailed)?;
         let request_artifact =
             bark_artifact(FederationBarkArtifactKind::ArkRequest, request_bytes)?;
         let mut artifacts = records
@@ -874,13 +881,14 @@ impl FederatedBarkRuntime {
             .iter()
             .filter(|artifact| artifact.kind == FederationBarkArtifactKind::ArkRequest);
         let request = requests.next().ok_or(Error::SendPlanInvalid)?;
-        let expected_request = failed_send_revocation_request_bytes(
+        let expected_request = federation_bark_send_revocation_request_bytes(
             plan.action_id,
             plan.predecessor_operation_id,
             plan.payment_hash.ok_or(Error::SendPlanInvalid)?,
             output.locator,
             &plan.inputs,
-        )?;
+        )
+        .map_err(|_| Error::SendPlanInvalid)?;
         if requests.next().is_some()
             || request.bytes != expected_request
             || request.hash != bark_digest(&expected_request)?

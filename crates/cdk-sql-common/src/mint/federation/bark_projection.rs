@@ -1410,10 +1410,7 @@ mod tests {
             result_hash: FederationBarkDigest::from_bytes([3; 32]).expect("result hash"),
         });
         let operation = federation_bark_application_operation(bark.clone()).expect("Bark wire");
-        assert!(matches!(
-            operation,
-            FederationOperation::ExternalApplication(_)
-        ));
+        assert!(matches!(operation, FederationOperation::Application(_)));
 
         assert_eq!(
             bark_projection_entry_operation(&operation).expect("projection operation"),

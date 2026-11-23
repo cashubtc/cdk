@@ -281,7 +281,7 @@ Done when no consensus encoding has two definitions and `cdk-axum` contains no c
 
 1. Replace feature-selected key types with additive ones (package 3)? **Decided 2026-11-23:** yes, following the upstream `bls` branch: one unconditional `PublicKey`/`SecretKey` enum and BLS v3 always compiled, instead of the curve-tagged field type proposed above, so the protocol types do not fork from upstream.
 2. Allow the validate/plan/commit split in shared mint code, possibly landed on `main` first (package 4)?
-3. Bark as a typed, feature-gated operation variant, or a real trait object injected into the builder? Either way the global registry goes. **Decided 2026-11-23:** a typed, feature-gated variant.
+3. Bark as a typed, feature-gated operation variant, or a real trait object injected into the builder? Either way the global registry goes. **Decided 2026-11-23:** a typed, feature-gated variant. **Revised during package 5:** `cdk-common` cannot name the Bark crate's types, so Bark uses the existing generic `Application` variant instead; the global registry is gone either way.
 4. Crate layout: only extract `cdk-federation` from `cdk-axum`, or also move the pure domain out of `cdk-common` into a core crate? **Decided 2026-11-23:** only extract `cdk-federation`.
 5. Canonical encoding: keep sorted JSON behind one module, or move consensus hashing to one binary encoding?
 6. Persist the wallet's federation registry through `WalletDatabase`? This is new persisted information.
@@ -481,5 +481,21 @@ Verification: `cdk-iroh` tests with `server` (21); builds of `cdk-iroh` with and
 Verification:
 - unit tests: `cdk-federation` with `federation-bdk,federation-bark,iroh,prometheus` (131) and `cdk-axum` with `federation-bdk,federation-bark,iroh` (474), together the 602 tests this suite had before the split plus the three prometheus label tests now counted in `cdk-federation`; `cdk-axum` standalone (41); `cdk-mintd` with `federation-test-utils` (291);
 - clippy with `-D warnings` on both crates, federated and standalone;
+- the 16 production builds.
+
+### 2026-11-23: package 7, first and second steps (Bark as a generic application operation; shared send encodings)
+
+- **One way to carry an application operation.** Bark operations now travel as the generic `FederationOperation::Application` variant, the same path any registered application uses. The parallel `ExternalApplication` variants of the operation, its conflict key and its materialized key are gone, along with the process-global codec registry, the external payload types and the hand-written mirror enums that existed only to give those variants serde support. All three enums now derive their serde implementations.
+- **Bark conflict keys** become application conflict keys in the `bark` namespace; Bark rows become application materialized keys owned by the Bark application ID, with the same collection names as before (`bark_action`, `bark_derivation_allocation`, and so on).
+- **No start-up registration.** The eight `register_federation_bark_wire_codec()` calls in `cdk-mintd` and the test helpers are removed: decoding no longer depends on whether a process remembered to register a codec first.
+- **Wire change under cut-through.** A Bark operation's wire tag changes from `bark` to `application`, and its conflict keys change shape accordingly. Federation formats are undeployed, so no migration is provided. The two Bark wire tests now pin the new form.
+- **Test build fix:** `cdk`'s wallet Iroh tests start an `IrohServer`, which needs `cdk-iroh`'s `server` feature since package 8's second step. `cdk` now enables it as a non-wasm dev-dependency. The same tests also gained the `json_or_status_error` fix already applied to `cdk-axum`.
+- **One definition of each Lightning-send result encoding.** The executing member (`cdk-bark`) and every member's projection (`cdk`) each had their own copy of the payment-succeeded result hash, the payment-failed result and its check, and the revocation request bytes with their locator layout. These now live once in `cdk-federation-bark`'s new `encoding` module; both sides call it and map its error to their own. The projection's success check gains the proof-hash comparison the runtime already made.
+- Net change: about 1,400 lines removed.
+- **Found, not fixed: debug-build stack depth.** At the previous commit, one `cdk-axum` melt test (`duplicate_federation_melt_after_cache_eviction_returns_persisted_response`) already needs slightly more than the 2 MiB default test-thread stack in debug builds (it passes at 2.5 MiB). Earlier plans on this branch ran federation tests with `RUST_MIN_STACK=16777216`, which hides this. Large async futures on the request path are the likely cause; package 9 should find and box them so the suite runs with the default stack.
+
+Verification, with `RUST_MIN_STACK=16777216` as on the rest of this branch:
+- unit tests: `cdk-common` federation (493), `cdk-federation-bark` (36), `cdk-bark` (19), `cdk-sqlite` Bark (194), `cdk` federation and Bark (1,053), `cdk` wallet Iroh (2), `cdk-federation` with all features (131), `cdk-axum` with `federation-bdk,federation-bark,iroh` (474), `cdk-mintd` with `federation-test-utils,federation-bark` (298);
+- clippy with `-D warnings` on `cdk-federation-bark`, `cdk-bark` and `cdk`;
 - the 16 production builds.
 

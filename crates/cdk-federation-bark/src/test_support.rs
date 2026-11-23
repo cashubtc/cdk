@@ -95,7 +95,6 @@ where
     };
     let application = match &entry.envelope.operation {
         FederationOperation::Application(application) => application,
-        FederationOperation::ExternalApplication(application) => application.application(),
         _ => panic!("expected application operation"),
     };
 
@@ -184,7 +183,6 @@ where
         };
         let application = match &entry.envelope.operation {
             FederationOperation::Application(application) => application,
-            FederationOperation::ExternalApplication(application) => application.application(),
             _ => panic!("application operation"),
         };
         let mut transaction = Database::begin_transaction(&db)

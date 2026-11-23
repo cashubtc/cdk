@@ -685,6 +685,7 @@ async fn hybrid_wallet_connector_conformance_over_https_and_iroh() {
             None,
         )
         .await
+        .and_then(|response| response.json_or_status_error())
         .expect("future router-only route over Iroh");
     assert_eq!(future, json!({ "future": true }));
 
