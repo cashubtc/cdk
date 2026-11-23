@@ -17,11 +17,9 @@ use arc_swap::ArcSwap;
 use bitcoin::bip32::{DerivationPath, Xpriv};
 use bitcoin::secp256k1::{self, Secp256k1};
 use cdk_common::database::MintKeyDatabaseTransaction;
-#[cfg(feature = "federation")]
 use cdk_common::dhke::verify_bls_message;
 use cdk_common::dhke::{sign_message, verify_message};
 use cdk_common::mint::MintKeySetInfo;
-#[cfg(feature = "federation")]
 use cdk_common::nut02::KeySetVersion;
 use cdk_common::nuts::{BlindSignature, BlindedMessage, CurrencyUnit, Id, MintKeySet, Proof};
 use cdk_common::{database, Error, PublicKey};
@@ -397,7 +395,6 @@ impl Signatory for DbSignatory {
                 .get(&proof.keyset_id)
                 .ok_or(Error::UnknownKeySet)?;
             let key_pair = key.keys.get(&proof.amount).ok_or(Error::UnknownKeySet)?;
-            #[cfg(feature = "federation")]
             if proof.keyset_id.get_version() == KeySetVersion::Version02 {
                 if proof.dleq.is_some() {
                     return Err(Error::DHKE(cdk_common::dhke::Error::TokenNotVerified));

@@ -20,7 +20,7 @@ use futures::future::join_all;
 use futures::stream::{FuturesUnordered, StreamExt};
 use futures::FutureExt;
 
-use super::performance::{record_wallet_performance_stage, WalletPerformanceStage};
+use super::performance::record_wallet_performance_stage;
 use super::{AuthWallet, BaseHttpClient, HttpClient, HttpTransport, MintConnector};
 use crate::nuts::nut01::{
     aggregate_blind_signature_shares, batch_verify_blind_signature_shares,
@@ -222,7 +222,7 @@ impl<'a> RequestShareVerification<'a> {
             })
             .collect::<Result<Vec<_>, Error>>();
         record_wallet_performance_stage(
-            WalletPerformanceStage::ShareAggregation,
+            "share_aggregation",
             aggregation_started_at,
             outputs.len(),
             aggregate_signatures.is_ok(),
@@ -1635,7 +1635,7 @@ impl FederatedMintConnector {
         let batch_verification =
             batch_verify_blind_signature_shares(&shares, &blinded_messages, &public_shares);
         record_wallet_performance_stage(
-            WalletPerformanceStage::MemberShareBatchVerification,
+            "member_share_batch_verification",
             batch_started_at,
             shares.len(),
             batch_verification.as_ref().is_ok_and(|verified| *verified),
@@ -1659,7 +1659,7 @@ impl FederatedMintConnector {
                 Ok(())
             })();
             record_wallet_performance_stage(
-                WalletPerformanceStage::MemberShareScalarFallback,
+                "member_share_scalar_fallback",
                 scalar_started_at,
                 shares.len(),
                 scalar_verification.is_ok(),

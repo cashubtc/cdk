@@ -89,7 +89,6 @@ impl SecretKey {
         match keyset_id.get_version() {
             KeySetVersion::Version00 => Self::legacy_derive(seed, keyset_id, counter),
             KeySetVersion::Version01 => Self::derive(seed, keyset_id, counter),
-            #[cfg(feature = "federation")]
             KeySetVersion::Version02 => Self::derive_bls(seed, keyset_id, counter),
         }
     }
@@ -121,12 +120,10 @@ impl SecretKey {
         )?))
     }
 
-    #[cfg(feature = "federation")]
     fn derive_bls(seed: &[u8], keyset_id: Id, counter: u32) -> Result<Self, Error> {
         Self::derive_bls_with_attempt(seed, keyset_id, counter).map(|(secret_key, _)| secret_key)
     }
 
-    #[cfg(feature = "federation")]
     fn derive_bls_with_attempt(
         seed: &[u8],
         keyset_id: Id,
@@ -563,7 +560,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "federation")]
     fn test_v3_secret_derivation_vector() {
         let seed = b"nut13 v3 test seed";
         let keyset_id =

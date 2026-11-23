@@ -32,7 +32,6 @@
 //! | `[skipped]` | Recovery deferred (mint unreachable), will retry on next recovery |
 
 use std::collections::HashMap;
-#[cfg(feature = "federation")]
 use std::time::Instant;
 
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
@@ -48,12 +47,10 @@ use tracing::instrument;
 use self::compensation::RemovePendingProofs;
 use self::state::{Finalized, Initial, Prepared};
 use super::ReceiveOptions;
-#[cfg(feature = "federation")]
 use crate::dhke::batch_verify_bls_messages;
 use crate::dhke::construct_proofs;
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut10::Kind;
-#[cfg(feature = "federation")]
 use crate::nuts::KeySetVersion;
 use crate::nuts::{Conditions, Proofs, PublicKey, SecretKey, SigFlag, State};
 use crate::util::hex;
@@ -150,9 +147,7 @@ impl<'a> ReceiveSaga<'a, Initial> {
                     .map(|(x_only, _)| (x_only, s.clone()))
             })
             .collect::<Result<_, _>>()?;
-        #[cfg(feature = "federation")]
         let mut bls_mint_pubkeys = Vec::new();
-        #[cfg(feature = "federation")]
         let mut bls_signatures = Vec::new();
 
         // Process each proof: verify mint signature, handle P2PK/HTLC
@@ -170,22 +165,17 @@ impl<'a> ReceiveSaga<'a, Initial> {
                     }
                 }
                 true => {
-                    #[cfg(not(feature = "federation"))]
-                    return Err(Error::UnknownKeySet);
-                    #[cfg(feature = "federation")]
-                    {
-                        if proof.dleq.is_some() {
-                            return Err(Error::CouldNotVerifyDleq);
-                        }
-                        let keys = self
-                            .wallet
-                            .keyset_with_policy(proof.keyset_id, keyset_policy)
-                            .await?
-                            .keys;
-                        let key = keys.amount_key(proof.amount).ok_or(Error::AmountKey)?;
-                        bls_mint_pubkeys.push(key);
-                        bls_signatures.push(proof.c);
+                    if proof.dleq.is_some() {
+                        return Err(Error::CouldNotVerifyDleq);
                     }
+                    let keys = self
+                        .wallet
+                        .keyset_with_policy(proof.keyset_id, keyset_policy)
+                        .await?
+                        .keys;
+                    let key = keys.amount_key(proof.amount).ok_or(Error::AmountKey)?;
+                    bls_mint_pubkeys.push(key);
+                    bls_signatures.push(proof.c);
                 }
             }
 
@@ -276,7 +266,6 @@ impl<'a> ReceiveSaga<'a, Initial> {
             }
         }
 
-        #[cfg(feature = "federation")]
         {
             let bls_messages = proofs
                 .iter()
@@ -288,7 +277,7 @@ impl<'a> ReceiveSaga<'a, Initial> {
                 batch_verify_bls_messages(&bls_mint_pubkeys, &bls_signatures, &bls_messages)
                     .map_err(|_| Error::CouldNotVerifyDleq);
             crate::wallet::performance::record_wallet_performance_stage(
-                crate::wallet::performance::WalletPerformanceStage::FinalProofVerification,
+                "final_proof_verification",
                 proof_verification_started_at,
                 bls_signatures.len(),
                 proof_verification.is_ok(),

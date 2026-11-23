@@ -13,7 +13,6 @@ use tracing::instrument;
 use super::AuthMintConnector;
 use crate::amount::SplitTarget;
 use crate::dhke::construct_proofs;
-#[cfg(feature = "federation")]
 use crate::dhke::verify_bls_blind_signature;
 use crate::nuts::nut22::MintAuthRequest;
 use crate::nuts::{
@@ -496,20 +495,15 @@ impl AuthWallet {
                         Err(_) => return Err(Error::CouldNotVerifyDleq),
                     },
                     true => {
-                        #[cfg(not(feature = "federation"))]
-                        return Err(Error::UnknownKeySet);
-                        #[cfg(feature = "federation")]
-                        {
-                            if sig.dleq.is_some() {
-                                return Err(Error::CouldNotVerifyDleq);
-                            }
-                            verify_bls_blind_signature(
-                                key,
-                                sig.c,
-                                premint.blinded_message.blinded_secret,
-                            )
-                            .map_err(|_| Error::CouldNotVerifyDleq)?;
+                        if sig.dleq.is_some() {
+                            return Err(Error::CouldNotVerifyDleq);
                         }
+                        verify_bls_blind_signature(
+                            key,
+                            sig.c,
+                            premint.blinded_message.blinded_secret,
+                        )
+                        .map_err(|_| Error::CouldNotVerifyDleq)?;
                     }
                 }
             }

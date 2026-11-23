@@ -1,43 +1,37 @@
 #[cfg(test)]
 mod tests {
-    use std::ops::Deref;
-
     use cashu::nuts::{KeySetVersion, PublicKey, SecretKey};
 
+    /// Ordinary builds use the same key types as federation builds: no
+    /// feature changes a public type's shape.
     #[test]
-    fn ordinary_key_api_remains_source_compatible() {
+    fn key_types_do_not_depend_on_federation() {
         let secret = SecretKey::from_slice(&[1; 32]).unwrap();
         let public = secret.public_key();
-        let bytes: [u8; 33] = public.to_bytes();
-        let uncompressed: [u8; 65] = public.to_uncompressed_bytes();
-        let _: &[u8] = secret.as_secret_bytes();
-        let _ = secret.as_scalar();
-        let _ = secret.clone().to_scalar();
-        let _ = public.x_only_public_key().serialize();
-        let _: [u8; 32] = cashu::dhke::hash_e([public]);
-        let _ = public.deref().serialize();
-        let _ = secret.deref().secret_bytes();
+        let bytes = public.to_bytes();
+        assert_eq!(bytes.len(), 33);
         assert_eq!(PublicKey::from_slice(&bytes).unwrap(), public);
-        assert_eq!(PublicKey::from_slice(&uncompressed).unwrap(), public);
-        assert!(PublicKey::from_slice(&[0; 48]).is_err());
-        assert!(PublicKey::from_slice(&[0; 96]).is_err());
         assert_eq!(serde_json::to_value(public).unwrap(), public.to_hex());
         assert_eq!(
             serde_json::to_value(secret.clone()).unwrap(),
             secret.to_secret_hex()
         );
+
+        let bls_public = SecretKey::generate_bls().public_key();
+        assert_eq!(
+            PublicKey::from_slice(&bls_public.to_bytes()).unwrap(),
+            bls_public
+        );
     }
 
+    /// BLS v3 keysets are part of the ordinary protocol API.
     #[test]
-    fn ordinary_keyset_api_and_versions_remain_source_compatible() {
-        fn exhaustive(version: KeySetVersion) -> u8 {
-            match version {
-                KeySetVersion::Version00 => 0,
-                KeySetVersion::Version01 => 1,
-            }
-        }
-        assert_eq!(exhaustive(KeySetVersion::Version01), 1);
-        assert!(KeySetVersion::from_byte(&2).is_err());
+    fn v3_keysets_are_part_of_the_ordinary_api() {
+        assert!(KeySetVersion::Version02.is_bls());
+        assert_eq!(
+            KeySetVersion::from_byte(&2).unwrap(),
+            KeySetVersion::Version02
+        );
         let _ = cdk::mint::KeysetRotation {
             unit: cashu::CurrencyUnit::Sat,
             amounts: vec![1, 2, 4],

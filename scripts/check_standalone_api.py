@@ -42,14 +42,16 @@ def main():
             env=env,
             text=True,
         )
-        forbidden = ("bls12_381 ", "cdk-frost ", "cdk-federation-bark ")
+        # BLS12-381 is part of the core protocol (v3 keysets); only the
+        # federation's threshold custody stack must stay out.
+        forbidden = ("cdk-frost ", "cdk-federation-bark ")
         assert not any(line.startswith(forbidden) for line in graph.splitlines()), (
-            "Ordinary downstream dependencies include federation cryptography"
+            "Ordinary downstream dependencies include federation custody crates"
         )
         ffi = tomllib.loads((root / "crates/cdk-ffi/Cargo.toml").read_text())
         assert "federation" not in ffi["features"]["default"]
         subprocess.run([cargo, "test", *common], env=env, check=True)
-        print("Standalone API, serialization, dependencies, and FFI defaults verified.")
+        print("Standalone API, dependencies, and FFI defaults verified.")
 
 
 if __name__ == "__main__":

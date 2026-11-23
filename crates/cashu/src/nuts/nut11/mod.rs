@@ -757,9 +757,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "federation")]
     fn test_verify_p2pk_with_bls_pubkey_data_is_rejected_not_panic() {
-        #[cfg(feature = "federation")]
         use crate::nuts::nut01::BlsG1PublicKey;
 
         // An attacker-crafted P2PK secret whose `data` is a valid compressed BLS G1

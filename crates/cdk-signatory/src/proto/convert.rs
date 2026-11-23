@@ -416,7 +416,6 @@ mod tests {
         for (version, wire_version) in [
             (KeySetVersion::Version00, KeysetVersion::V1),
             (KeySetVersion::Version01, KeysetVersion::V2),
-            #[cfg(feature = "federation")]
             (KeySetVersion::Version02, KeysetVersion::V3),
         ] {
             let args = crate::signatory::RotateKeyArguments {
@@ -461,7 +460,7 @@ mod tests {
         assert!(check(request).is_ok());
     }
 
-    #[cfg(all(feature = "sqlite", feature = "federation"))]
+    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn v3_rotation_through_rpc_handler_returns_bls_keyset() {
         use std::sync::Arc;

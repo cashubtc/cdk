@@ -33,7 +33,6 @@
 //! | `[compensated]` | Minting failed or rolled back, quote released |
 
 use std::collections::HashMap;
-#[cfg(feature = "federation")]
 use std::time::Instant;
 
 use cdk_common::nut00::KnownMethod;
@@ -47,11 +46,9 @@ use tracing::instrument;
 use self::compensation::{MintCompensation, ReleaseMintQuote};
 use self::state::{Finalized, Initial, Prepared, PreparedMintRequest};
 use crate::amount::SplitTarget;
-#[cfg(feature = "federation")]
 use crate::dhke::batch_verify_bls_messages;
 use crate::dhke::{construct_proofs, hash_to_curve_for_version};
 use crate::nuts::nut00::ProofsMethods;
-#[cfg(feature = "federation")]
 use crate::nuts::KeySetVersion;
 use crate::nuts::{MintRequest, PreMintSecrets, Proofs, SpendingConditions, State};
 use crate::util::unix_time;
@@ -1018,7 +1015,6 @@ impl<'a> MintSaga<'a, Prepared> {
                 &keys,
             )?;
 
-            #[cfg(feature = "federation")]
             {
             let bls_proofs = proofs
                 .iter()
@@ -1038,7 +1034,7 @@ impl<'a> MintSaga<'a, Prepared> {
                 batch_verify_bls_messages(&bls_mint_pubkeys, &bls_signatures, &bls_messages)
                     .map_err(|_| Error::CouldNotVerifyDleq);
             crate::wallet::performance::record_wallet_performance_stage(
-                crate::wallet::performance::WalletPerformanceStage::FinalProofVerification,
+                "final_proof_verification",
                 proof_verification_started_at,
                 bls_signatures.len(),
                 proof_verification.is_ok(),
@@ -1218,7 +1214,6 @@ mod tests {
         MockMintConnector,
     };
 
-    #[cfg(feature = "federation")]
     fn bls_test_keyset() -> (KeySet, BTreeMap<Amount, SecretKey>) {
         let secret_keys = BTreeMap::from([
             (
@@ -1251,7 +1246,6 @@ mod tests {
         )
     }
 
-    #[cfg(feature = "federation")]
     async fn execute_bls_mint(corrupt_second_signature: bool) -> Result<Proofs, Error> {
         let db = create_test_db().await;
         let mint_url = test_mint_url();
@@ -1303,7 +1297,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "federation")]
     async fn standalone_bls_issue_accepts_valid_batched_signatures_and_proofs() {
         let proofs = execute_bls_mint(false).await.expect("standalone BLS issue");
 
@@ -1314,7 +1307,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "federation")]
     async fn standalone_bls_issue_rejects_corrupted_batched_signature() {
         assert!(matches!(
             execute_bls_mint(true).await,

@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::str::FromStr;
 use std::sync::Arc;
-#[cfg(feature = "federation")]
 use std::time::Instant;
 
 use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
@@ -24,7 +23,6 @@ use tracing::instrument;
 use zeroize::Zeroize;
 
 use crate::amount::SplitTarget;
-#[cfg(feature = "federation")]
 use crate::dhke::batch_verify_bls_messages;
 use crate::dhke::construct_proofs;
 use crate::error::Error;
@@ -68,7 +66,6 @@ mod npubcash;
 pub mod nwc;
 mod p2pk;
 pub mod payment_request;
-#[cfg(feature = "federation")]
 mod performance;
 mod proofs;
 mod receive;
@@ -1072,11 +1069,8 @@ impl Wallet {
         // We need the keysets information to properly convert from token proof to proof
         let proofs = self.token_proofs(token).await?;
         let mut keys_cache: HashMap<Id, Keys> = HashMap::new();
-        #[cfg(feature = "federation")]
         let mut bls_mint_pubkeys = Vec::new();
-        #[cfg(feature = "federation")]
         let mut bls_signatures = Vec::new();
-        #[cfg(feature = "federation")]
         let mut bls_messages = Vec::new();
 
         for proof in &proofs {
@@ -1098,29 +1092,23 @@ impl Wallet {
                     .verify_dleq(mint_pubkey)
                     .map_err(|_| Error::CouldNotVerifyDleq)?,
                 true => {
-                    #[cfg(not(feature = "federation"))]
-                    return Err(Error::UnknownKeySet);
-                    #[cfg(feature = "federation")]
-                    {
-                        if proof.dleq.is_some() {
-                            return Err(Error::CouldNotVerifyDleq);
-                        }
-                        bls_mint_pubkeys.push(mint_pubkey);
-                        bls_signatures.push(proof.c);
-                        bls_messages.push(proof.secret.as_bytes());
+                    if proof.dleq.is_some() {
+                        return Err(Error::CouldNotVerifyDleq);
                     }
+                    bls_mint_pubkeys.push(mint_pubkey);
+                    bls_signatures.push(proof.c);
+                    bls_messages.push(proof.secret.as_bytes());
                 }
             }
         }
 
-        #[cfg(feature = "federation")]
         {
             let proof_verification_started_at = Instant::now();
             let proof_verification =
                 batch_verify_bls_messages(&bls_mint_pubkeys, &bls_signatures, &bls_messages)
                     .map_err(|_| Error::CouldNotVerifyDleq);
             self::performance::record_wallet_performance_stage(
-                self::performance::WalletPerformanceStage::FinalProofVerification,
+                "final_proof_verification",
                 proof_verification_started_at,
                 bls_signatures.len(),
                 proof_verification.is_ok(),

@@ -279,7 +279,7 @@ Done when no consensus encoding has two definitions and `cdk-axum` contains no c
 
 ## Decisions needed
 
-1. Replace feature-selected key types with additive ones (package 3)?
+1. Replace feature-selected key types with additive ones (package 3)? **Decided 2026-11-23:** yes, following the upstream `bls` branch: one unconditional `PublicKey`/`SecretKey` enum and BLS v3 always compiled, instead of the curve-tagged field type proposed above, so the protocol types do not fork from upstream.
 2. Allow the validate/plan/commit split in shared mint code, possibly landed on `main` first (package 4)?
 3. Bark as a typed, feature-gated operation variant, or a real trait object injected into the builder? Either way the global registry goes.
 4. Crate layout: only extract `cdk-federation` from `cdk-axum`, or also move the pure domain out of `cdk-common` into a core crate?
@@ -390,4 +390,24 @@ Verification: `cdk-common` with `federation,test`, including the golden-vector s
 - **Pre-existing test build failure fixed.** `crates/cdk-axum/src/federation/tests/iroh_transport.rs` did not compile with `iroh` at the original branch tip `3183d04b8`, because `Transport::http_post` now returns a raw response. The test now decodes it with `json_or_status_error`.
 
 Verification: `cdk-axum` with `federation-bdk,federation-bark,iroh` (602 passed, including the Iroh tests that did not compile before) and the 16 production builds.
+
+### 2026-11-23: package 3 (key types no longer depend on a feature)
+
+- **One key implementation.** `cashu` no longer swaps `PublicKey` and `SecretKey` by feature. The curve-aware enums the upstream `bls` branch (`eb34616e8`) introduced are the only definitions, and `cashu` has no `federation` feature: BLS12-381, v3 keysets and threshold share verification and aggregation are always compiled. 63 plain gates and 8 special cases were removed. `TokenV4` omits an empty DLEQ field in every build, as upstream `bls` does; `main` still writes `"d": null`, and decoders accept both.
+- **Standalone BLS v3 now works.**
+  - Without `federation`, the wallet returned `UnknownKeySet` for v3 signatures; it now verifies them in every build.
+  - Without `federation`, the signatory checked v3 proofs with the secp256k1 verifier; it now uses the BLS check. `cdk-signatory` lost its `federation` feature.
+  - The standalone BLS issue tests and the v3 signatory rotation tests now run in ordinary builds.
+- **Wallet performance log:** replaced the five-variant stage enum with a fixed label string.
+- **Standalone API guard:** `scripts/check_standalone_api.py` and its fixture asserted the retired feature-dependent API. They now assert that ordinary builds expose the same key types as federation builds, including v3, and that the federation custody crates (`cdk-frost`, `cdk-federation-bark`) stay out of an ordinary dependency tree. `bls12_381` is no longer forbidden there.
+- **API change against `main`:** `PublicKey::to_bytes` returns `Vec<u8>`, the key types no longer `Deref` to secp256k1 types, and `KeySetVersion` has a `Version02` variant. This is the upstream `bls` branch's API.
+- Net: 25 files, 79 insertions, 276 deletions (the two duplicate key modules removed).
+
+Verification:
+- unit tests: `cashu` (665), `cdk` standalone (790) and with federation (1,035, one fewer because the stage-label test was removed), `cdk-common` with `federation,test` (515 including integration targets), `cdk-sqlite` (154) and with `federation-bark` (194), `cdk-mintd` with `federation-test-utils` (291), `cdk-axum` with `federation-bdk,federation-bark,iroh` (602);
+- `test_swap_flow` on the memory database (17);
+- builds: the workspace with default features except `cdk-ldk-node`, which was not built; the 16 production builds;
+- the standalone API guard.
+
+Not checked: the WASM target is not installed with this toolchain.
 

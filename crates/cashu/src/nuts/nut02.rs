@@ -21,7 +21,7 @@ use serde_with::{serde_as, VecSkipError};
 use thiserror::Error;
 
 use super::nut01::Keys;
-#[cfg(all(feature = "mint", feature = "federation"))]
+#[cfg(feature = "mint")]
 use super::nut01::SecretKey;
 #[cfg(feature = "mint")]
 use super::nut01::{MintKeyPair, MintKeys};
@@ -78,7 +78,6 @@ pub enum KeySetVersion {
     /// Version 01
     Version01,
     /// Version 02
-    #[cfg(feature = "federation")]
     Version02,
 }
 
@@ -87,7 +86,6 @@ impl KeySetVersion {
     pub const fn is_bls(self) -> bool {
         match self {
             Self::Version00 | Self::Version01 => false,
-            #[cfg(feature = "federation")]
             Self::Version02 => true,
         }
     }
@@ -116,7 +114,6 @@ impl KeySetVersion {
         match self {
             Self::Version00 => 0,
             Self::Version01 => 1,
-            #[cfg(feature = "federation")]
             Self::Version02 => 2,
         }
     }
@@ -126,7 +123,6 @@ impl KeySetVersion {
         match byte {
             0 => Ok(Self::Version00),
             1 => Ok(Self::Version01),
-            #[cfg(feature = "federation")]
             2 => Ok(Self::Version02),
             _ => Err(Error::UnknownVersion),
         }
@@ -137,7 +133,6 @@ impl KeySetVersion {
         match value {
             1 => Ok(Self::Version00),
             2 => Ok(Self::Version01),
-            #[cfg(feature = "federation")]
             3 => Ok(Self::Version02),
             _ => Err(Error::UnknownVersion),
         }
@@ -148,7 +143,6 @@ impl KeySetVersion {
         match self {
             Self::Version00 => 1,
             Self::Version01 => 2,
-            #[cfg(feature = "federation")]
             Self::Version02 => 3,
         }
     }
@@ -159,7 +153,6 @@ impl fmt::Display for KeySetVersion {
         match self {
             KeySetVersion::Version00 => f.write_str("00"),
             KeySetVersion::Version01 => f.write_str("01"),
-            #[cfg(feature = "federation")]
             KeySetVersion::Version02 => f.write_str("02"),
         }
     }
@@ -294,7 +287,6 @@ impl Id {
     ///
     /// Amounts and fees use minimal big-endian encoding; public keys are
     /// compressed G2 bytes. Expiry is metadata and is not committed by v3 IDs.
-    #[cfg(feature = "federation")]
     pub fn v3_from_data(
         map: &Keys,
         unit: &CurrencyUnit,
@@ -467,7 +459,6 @@ impl TryFrom<String> for Id {
                     .try_into()
                     .map_err(|_| Error::Length)?,
             ),
-            #[cfg(feature = "federation")]
             KeySetVersion::Version02 => IdBytes::V2(
                 hex::decode(&s[2..])?
                     .try_into()
@@ -622,7 +613,6 @@ impl KeySet {
     /// Verify the keyset ID canonically matches its keys and metadata.
     pub fn verify_id(&self) -> Result<(), Error> {
         self.id.version.validate_unit(&self.unit)?;
-        #[cfg(feature = "federation")]
         for (_, key) in self.keys.iter() {
             let matches_version = match self.id.version {
                 KeySetVersion::Version00 | KeySetVersion::Version01 => {
@@ -644,7 +634,6 @@ impl KeySet {
                 self.input_fee_ppk,
                 self.final_expiry,
             ),
-            #[cfg(feature = "federation")]
             KeySetVersion::Version02 => Id::v3_from_data(
                 &self.keys,
                 &self.unit,
@@ -801,7 +790,6 @@ impl MintKeySet {
                         public_key: public_key.into(),
                     }
                 }
-                #[cfg(feature = "federation")]
                 KeySetVersion::Version02 => {
                     let mut attempt = 0;
                     loop {
@@ -841,7 +829,6 @@ impl MintKeySet {
             KeySetVersion::Version01 => {
                 Id::v2_from_data(&keys.clone().into(), &unit, input_fee_ppk, final_expiry)
             }
-            #[cfg(feature = "federation")]
             KeySetVersion::Version02 => {
                 Id::v3_from_data(&keys.clone().into(), &unit, input_fee_ppk, final_expiry)
             }
@@ -929,7 +916,6 @@ impl From<MintKeySet> for Id {
                 keyset.input_fee_ppk,
                 keyset.final_expiry,
             ),
-            #[cfg(feature = "federation")]
             KeySetVersion::Version02 => Id::v3_from_data(
                 &keys,
                 &keyset.unit,
@@ -1041,22 +1027,18 @@ mod test {
         }
     "#;
 
-    #[cfg(feature = "federation")]
     const BLS_V3_KEYSET_VECTOR_1_KEYS: &str = r#"{
   "1": "8d0273f6bf31ed37c3b8d68083ec3d8e20b5f2cc170fa24b9b5be35b34ed013f9a921f1cad1644d4bdb14674247234c8049cd1dbb2d2c3581e54c088135fef36505a6823d61b859437bfc79b617030dc8b40e32bad1fa85b9c0f368af6d38d3c",
   "2": "8bf78a97086750eb166986ed8e428ca1d23ae3bbf8b2ee67451d7dd84445311e8bc8ab558b0bc008199f577195fc39b7152110e866f1a6e8c5348f6e005dbd93de671b7d0fbfa04d6614bcdd27a3cb2a70f0deacb3608ba95226268481a0be7c"
 }"#;
-    #[cfg(feature = "federation")]
     const BLS_V3_KEYSET_VECTOR_1_ID: &str =
         "02b7e077d020fabed456a6be138a8e20e9ef40b44d873fa12c005b656eb0cf99f6";
-    #[cfg(feature = "federation")]
     const BLS_V3_KEYSET_VECTOR_2_KEYS: &str = r#"{
   "1": "8d0273f6bf31ed37c3b8d68083ec3d8e20b5f2cc170fa24b9b5be35b34ed013f9a921f1cad1644d4bdb14674247234c8049cd1dbb2d2c3581e54c088135fef36505a6823d61b859437bfc79b617030dc8b40e32bad1fa85b9c0f368af6d38d3c",
   "2": "8bf78a97086750eb166986ed8e428ca1d23ae3bbf8b2ee67451d7dd84445311e8bc8ab558b0bc008199f577195fc39b7152110e866f1a6e8c5348f6e005dbd93de671b7d0fbfa04d6614bcdd27a3cb2a70f0deacb3608ba95226268481a0be7c",
   "4": "8c60dae92451206390e30b5daa7151d63624dee496753c87dd54eadc92dc9602081fae02a1a53bac97e984a571923a5d0a29e38da2d42fd4712052800c7c8dd6e94fd9f506e946068aaac799d60b94c2d7515769ffdd32ea95d3910330ec47de",
   "8": "a55dafcdf339360f74e3fd32296d062d5e36db3c2570e13a889b38502c0ff71864b19e324bc9c661c29b07c9cc378b5919c1656979648d7c3ef4bd6501fcc96490a34e47fe25afc8b14d60f1c3772138acaf8a0a5e4f940f57206eba74fdc973"
 }"#;
-    #[cfg(feature = "federation")]
     const BLS_V3_KEYSET_VECTOR_2_ID: &str =
         "027f0dcd008156363a8418b88f38ddd5155a38c46a3f27c15c7eb40ec5f04cb4b3";
 
@@ -1106,7 +1088,6 @@ mod test {
 
     // NUTs PR #371, head 68840ccd: tests/02-tests.md, Version 3.
     #[test]
-    #[cfg(feature = "federation")]
     fn test_v3_deserialization_and_id_generation() {
         for (json, expected, fee) in [
             (BLS_V3_KEYSET_VECTOR_1_KEYS, BLS_V3_KEYSET_VECTOR_1_ID, 0),
@@ -1133,11 +1114,7 @@ mod test {
 
     #[test]
     fn test_keyset_unit_rules_are_version_specific() {
-        for version in [
-            KeySetVersion::Version01,
-            #[cfg(feature = "federation")]
-            KeySetVersion::Version02,
-        ] {
+        for version in [KeySetVersion::Version01, KeySetVersion::Version02] {
             for unit in ["", "usd cents", "usd:cent", "éuro", "usd/cent"] {
                 let unit = CurrencyUnit::Custom(unit.into());
                 assert!(matches!(
@@ -1157,13 +1134,8 @@ mod test {
     }
 
     #[test]
-    #[cfg(feature = "federation")]
     fn test_keyset_verification_rejects_invalid_unit_and_curve() {
-        for version in [
-            KeySetVersion::Version01,
-            #[cfg(feature = "federation")]
-            KeySetVersion::Version02,
-        ] {
+        for version in [KeySetVersion::Version01, KeySetVersion::Version02] {
             let keys: Keys = serde_json::from_str(match version {
                 KeySetVersion::Version01 => SHORT_KEYSET,
                 _ => BLS_V3_KEYSET_VECTOR_1_KEYS,
@@ -1200,7 +1172,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(feature = "federation")]
     fn test_v3_id_encodes_multibyte_amount_and_fee() {
         let keys: Keys = serde_json::from_str(BLS_V3_KEYSET_VECTOR_1_KEYS).unwrap();
         let key = keys.amount_key(crate::Amount::from(1)).unwrap();
@@ -1213,7 +1184,6 @@ mod test {
 
     #[cfg(feature = "mint")]
     #[test]
-    #[cfg(feature = "federation")]
     fn test_v3_mint_key_derivation_uses_rejection_sampled_bip32_child_bytes() {
         use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 
@@ -1475,11 +1445,7 @@ mod test {
 
     #[test]
     fn test_short_keyset_resolution_requires_a_unique_full_id() {
-        for version in [
-            1,
-            #[cfg(feature = "federation")]
-            2,
-        ] {
+        for version in [1, 2] {
             let mut bytes = [0x11; 33];
             bytes[0] = version;
             let first = Id::from_bytes(&bytes).unwrap();

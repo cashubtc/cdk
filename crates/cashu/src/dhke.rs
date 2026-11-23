@@ -7,7 +7,6 @@ use bitcoin::secp256k1::{
 };
 use thiserror::Error;
 
-#[cfg(feature = "federation")]
 use crate::nuts::nut01::bls;
 use crate::nuts::nut01::{PublicKey, SecretKey};
 use crate::nuts::nut02::KeySetVersion;
@@ -77,7 +76,6 @@ pub fn hash_to_curve_for_version(
 ) -> Result<PublicKey, Error> {
     match version {
         KeySetVersion::Version00 | KeySetVersion::Version01 => hash_to_curve(message),
-        #[cfg(feature = "federation")]
         KeySetVersion::Version02 => Ok(bls::BlsG1PublicKey::hash_to_curve(message).into()),
     }
 }
@@ -97,21 +95,7 @@ where
     Ok(Sha256Hash::hash(e.as_bytes()).to_byte_array())
 }
 
-/// Hash public points for the ordinary secp256k1 DLEQ transcript.
-#[cfg(not(feature = "federation"))]
-pub fn hash_e<I>(public_keys: I) -> [u8; 32]
-where
-    I: IntoIterator<Item = PublicKey>,
-{
-    let mut encoded = String::new();
-    for point in public_keys {
-        encoded.push_str(&hex::encode(point.to_uncompressed_bytes()));
-    }
-    Sha256Hash::hash(encoded.as_bytes()).to_byte_array()
-}
-
 /// Hash public points, rejecting curves that cannot enter a secp256k1 transcript.
-#[cfg(feature = "federation")]
 pub use try_hash_e as hash_e;
 
 /// Blind Message
@@ -136,7 +120,6 @@ pub fn blind_message_for_version(
             let r: SecretKey = blinding_factor.unwrap_or_else(SecretKey::generate);
             Ok((y.try_combine(&r.public_key())?, r))
         }
-        #[cfg(feature = "federation")]
         KeySetVersion::Version02 => {
             let r = match blinding_factor {
                 Some(r) => r,
@@ -197,7 +180,6 @@ pub fn construct_proofs(
             KeySetVersion::Version00 | KeySetVersion::Version01 => {
                 unblind_message(&blinded_c, &r, &a)?
             }
-            #[cfg(feature = "federation")]
             KeySetVersion::Version02 => {
                 let c = blinded_c.as_bls_g1()?.mul(&r.as_bls()?.invert()?);
                 c.into()
@@ -208,7 +190,6 @@ pub fn construct_proofs(
             KeySetVersion::Version00 | KeySetVersion::Version01 => {
                 blinded_signature.dleq.map(|d| ProofDleq::new(d.e, d.s, r))
             }
-            #[cfg(feature = "federation")]
             KeySetVersion::Version02 => {
                 if blinded_signature.dleq.is_some() {
                     return Err(Error::TokenNotVerified);
@@ -240,7 +221,6 @@ pub fn construct_proofs(
 /// * `B_` is the blinded message
 #[inline]
 pub fn sign_message(k: &SecretKey, blinded_message: &PublicKey) -> Result<PublicKey, Error> {
-    #[cfg(feature = "federation")]
     if let SecretKey::Bls(inner) = k {
         return Ok(blinded_message.as_bls_g1()?.mul(inner).into());
     }
@@ -270,7 +250,6 @@ pub fn verify_message(
 }
 
 /// Verify BLS proof using pairings.
-#[cfg(feature = "federation")]
 pub fn verify_bls_message(
     mint_pubkey: PublicKey,
     unblinded_message: PublicKey,
@@ -288,7 +267,6 @@ pub fn verify_bls_message(
 }
 
 /// Verify BLS blind signature using pairings.
-#[cfg(feature = "federation")]
 pub fn verify_bls_blind_signature(
     mint_pubkey: PublicKey,
     blinded_signature: PublicKey,
@@ -306,7 +284,6 @@ pub fn verify_bls_blind_signature(
 }
 
 /// Batch verify BLS blind signatures using pairings.
-#[cfg(feature = "federation")]
 pub fn batch_verify_bls_blind_signatures(
     mint_pubkeys: &[PublicKey],
     blinded_signatures: &[PublicKey],
@@ -337,7 +314,6 @@ pub fn batch_verify_bls_blind_signatures(
 }
 
 /// Verify BLS proof using the mint secret key.
-#[cfg(feature = "federation")]
 pub fn verify_bls_message_keyed(
     mint_secretkey: &SecretKey,
     unblinded_message: PublicKey,
@@ -354,7 +330,6 @@ pub fn verify_bls_message_keyed(
 }
 
 /// Batch verify BLS proofs using pairings.
-#[cfg(feature = "federation")]
 pub fn batch_verify_bls_messages(
     mint_pubkeys: &[PublicKey],
     unblinded_messages: &[PublicKey],
@@ -576,7 +551,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "federation")]
     fn test_bls_full_dhke() {
         use std::collections::BTreeMap;
 
@@ -625,7 +599,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "federation")]
     fn test_construct_proofs_rejects_v3_dleq() {
         use std::collections::BTreeMap;
 
@@ -667,7 +640,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "federation")]
     fn test_bls_hash_to_curve_nutshell_vectors() {
         let y = bls::BlsG1PublicKey::hash_to_curve(
             &hex::decode("0000000000000000000000000000000000000000000000000000000000000000")
@@ -689,7 +661,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "federation")]
     fn test_bls_dhke_nutshell_steps() {
         let secret_msg = b"test_message";
         let (blinded, r) =
@@ -710,7 +681,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "federation")]
     fn test_bls_blind_signature_pairing_verification() {
         let secret_msg = b"test_message";
         let (blinded, _) =
@@ -737,7 +707,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "federation")]
     fn test_bls_blind_signature_batch_verification() {
         let mint_secret_1 = SecretKey::generate_bls();
         let mint_secret_2 = SecretKey::generate_bls();
@@ -779,7 +748,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "federation")]
     fn test_bls_batch_pairing_verification_nutshell() {
         let secrets = [b"msg1".as_slice(), b"msg2".as_slice(), b"msg3".as_slice()];
         let mint_secret_1 = SecretKey::generate_bls();
@@ -813,7 +781,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "federation")]
     fn test_deterministic_bls_steps_nutshell_vectors() {
         let secret_msg = b"test_message";
         let r = SecretKey::bls_from_reduced_bytes(

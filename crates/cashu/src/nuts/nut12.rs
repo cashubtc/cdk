@@ -212,7 +212,6 @@ impl BlindSignature {
                 blinded_message,
                 mint_secretkey,
             )?),
-            #[cfg(feature = "federation")]
             KeySetVersion::Version02 => None,
         };
 
@@ -494,7 +493,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "federation")]
     fn test_v3_blind_signature_omits_dleq() {
         use crate::nuts::nut02::{Id, KeySetVersion};
 

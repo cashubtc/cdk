@@ -1,7 +1,5 @@
-#[cfg(feature = "federation")]
 use std::time::Instant;
 
-#[cfg(feature = "federation")]
 use crate::dhke::batch_verify_bls_blind_signatures;
 use crate::nuts::{nut12, BlindSignature, BlindedMessage};
 use crate::wallet::Wallet;
@@ -46,11 +44,8 @@ pub(crate) async fn validate_mint_response_signatures<'a>(
         )));
     }
 
-    #[cfg(feature = "federation")]
     let mut bls_mint_pubkeys = Vec::new();
-    #[cfg(feature = "federation")]
     let mut bls_signatures = Vec::new();
-    #[cfg(feature = "federation")]
     let mut bls_blinded_messages = Vec::new();
 
     for (sig, blinded_message) in signatures.iter().zip(blinded_messages) {
@@ -84,22 +79,16 @@ pub(crate) async fn validate_mint_response_signatures<'a>(
                 Err(_) => return Err(Error::CouldNotVerifyDleq),
             },
             true => {
-                #[cfg(not(feature = "federation"))]
-                return Err(Error::UnknownKeySet);
-                #[cfg(feature = "federation")]
-                {
-                    if sig.dleq.is_some() {
-                        return Err(Error::CouldNotVerifyDleq);
-                    }
-                    bls_mint_pubkeys.push(key);
-                    bls_signatures.push(sig.c);
-                    bls_blinded_messages.push(blinded_message.blinded_secret);
+                if sig.dleq.is_some() {
+                    return Err(Error::CouldNotVerifyDleq);
                 }
+                bls_mint_pubkeys.push(key);
+                bls_signatures.push(sig.c);
+                bls_blinded_messages.push(blinded_message.blinded_secret);
             }
         }
     }
 
-    #[cfg(feature = "federation")]
     {
         let verification_started_at = Instant::now();
         let verification = batch_verify_bls_blind_signatures(
@@ -109,7 +98,7 @@ pub(crate) async fn validate_mint_response_signatures<'a>(
         )
         .map_err(|_| Error::CouldNotVerifyDleq);
         super::performance::record_wallet_performance_stage(
-            super::performance::WalletPerformanceStage::FinalBlindSignatureVerification,
+            "final_blind_signature_verification",
             verification_started_at,
             bls_signatures.len(),
             verification.is_ok(),

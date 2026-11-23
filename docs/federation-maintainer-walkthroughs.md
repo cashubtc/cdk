@@ -14,7 +14,7 @@ Read this alongside the [federation guide](federation.md). The federation featur
 | `MintConnector` | `FederatedMintConnector` validates member responses and returns an ordinary aggregate Cashu response | [Wallet connector](../crates/cdk/src/wallet/federation.rs) |
 | Saga restart and reconciliation | Journal replay, checkpoint evidence, and custody reconciliation restore readiness before new actions | [Startup](../crates/cdk-axum/src/federation/bootstrap.rs), [catch-up](../crates/cdk-axum/src/federation/checkpoint_catch_up.rs) |
 
-The ordinary key implementation and its original methods remain available when `cashu/federation` is disabled. Federation selects curve-aware key implementations. Shared code uses fallible `try_*` operations at that boundary. The [isolated downstream check](../scripts/check_standalone_api.py) exercises ordinary APIs and serialization without workspace feature unification.
+`cashu` has one curve-aware `PublicKey`/`SecretKey` and always compiles BLS12-381 v3 keysets, as on the upstream `bls` branch; no feature changes a public type. Secp256k1-only operations use fallible `try_*` methods. The [isolated downstream check](../scripts/check_standalone_api.py) builds an ordinary consumer without workspace feature unification and checks that the federation custody crates stay out of its dependency tree.
 
 ## Incoming payment and mint issuance
 
