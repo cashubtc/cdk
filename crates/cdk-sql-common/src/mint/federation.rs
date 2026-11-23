@@ -124,7 +124,6 @@ const FEDERATION_CHECKPOINT_STATE_KEY: &str = "active";
 fn status_to_str(status: FederationOperationStatus) -> &'static str {
     match status {
         FederationOperationStatus::Accepted => "accepted",
-        FederationOperationStatus::Applying => "applying",
         FederationOperationStatus::Applied => "applied",
         FederationOperationStatus::Rejected => "rejected",
         FederationOperationStatus::Failed => "failed",
@@ -134,7 +133,6 @@ fn status_to_str(status: FederationOperationStatus) -> &'static str {
 fn status_from_str(status: &str) -> Result<FederationOperationStatus, Error> {
     match status {
         "accepted" => Ok(FederationOperationStatus::Accepted),
-        "applying" => Ok(FederationOperationStatus::Applying),
         "applied" => Ok(FederationOperationStatus::Applied),
         "rejected" => Ok(FederationOperationStatus::Rejected),
         "failed" => Ok(FederationOperationStatus::Failed),

@@ -473,10 +473,7 @@ impl FederationNodeRuntime {
             let mut waits = Vec::with_capacity(existing.len());
             for (operation_id, entry) in operation_ids.iter().copied().zip(existing) {
                 let entry = entry.expect("all ordered group entries were checked as present");
-                if matches!(
-                    entry.status(),
-                    FederationOperationStatus::Accepted | FederationOperationStatus::Applying
-                ) {
+                if matches!(entry.status(), FederationOperationStatus::Accepted) {
                     waits.push(Some(notifications.register_waiter(
                         operation_id,
                         sync_config.response_waiter_limit,
@@ -590,10 +587,7 @@ impl FederationNodeRuntime {
         let notifications = &member.notifications;
         let mut consensus = member.consensus.lock().await;
         if let Some(entry) = consensus.journal().entry_by_operation_id(operation_id) {
-            if matches!(
-                entry.status(),
-                FederationOperationStatus::Accepted | FederationOperationStatus::Applying
-            ) {
+            if matches!(entry.status(), FederationOperationStatus::Accepted) {
                 notifications.record_duplicate_pending_waiter_join();
                 let wait_registration = notifications
                     .register_waiter(operation_id, sync_config.response_waiter_limit)?;

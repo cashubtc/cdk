@@ -3232,9 +3232,7 @@ impl FederationSubmitOperationResponse {
     /// Reject terminal non-accepted consensus outcomes before callers read applied state.
     pub fn ensure_accepted(&self) -> Result<()> {
         match self.outcome.entry().status() {
-            FederationOperationStatus::Accepted
-            | FederationOperationStatus::Applying
-            | FederationOperationStatus::Applied => Ok(()),
+            FederationOperationStatus::Accepted | FederationOperationStatus::Applied => Ok(()),
             FederationOperationStatus::Rejected | FederationOperationStatus::Failed => {
                 Err(FederationError::RejectedOperation {
                     operation_id: self.operation_id,
@@ -4257,7 +4255,6 @@ mod tests {
 
         for status in [
             FederationOperationStatus::Accepted,
-            FederationOperationStatus::Applying,
             FederationOperationStatus::Applied,
         ] {
             let mut response = FederationSubmitOperationResponse::from_outcome(outcome.clone());

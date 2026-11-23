@@ -473,8 +473,6 @@ impl FederationMaterializedStateKeyRecord {
 pub enum FederationOperationStatus {
     /// Operation has been accepted into the consensus order.
     Accepted,
-    /// Local member is applying the operation to mint state.
-    Applying,
     /// Local member applied the operation successfully.
     Applied,
     /// Local member rejected the operation during deterministic validation.
@@ -489,7 +487,6 @@ impl FederationOperationStatus {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Accepted => "accepted",
-            Self::Applying => "applying",
             Self::Applied => "applied",
             Self::Rejected => "rejected",
             Self::Failed => "failed",
@@ -509,8 +506,6 @@ impl fmt::Display for FederationOperationStatus {
 pub enum FederationApplicationState {
     /// Operation is accepted and waiting for local application.
     Accepted {},
-    /// Operation is currently being applied locally.
-    Applying {},
     /// Operation was applied successfully.
     Applied {},
     /// Operation failed for a retryable or ambiguous reason.
@@ -533,7 +528,6 @@ impl FederationApplicationState {
     ) -> Result<Self> {
         match (status, rejection) {
             (FederationOperationStatus::Accepted, None) => Ok(Self::Accepted {}),
-            (FederationOperationStatus::Applying, None) => Ok(Self::Applying {}),
             (FederationOperationStatus::Applied, None) => Ok(Self::Applied {}),
             (FederationOperationStatus::Failed, None) => Ok(Self::Failed {}),
             (FederationOperationStatus::Rejected, None) => Ok(Self::ConsensusRejected {}),
@@ -549,7 +543,6 @@ impl FederationApplicationState {
     pub fn from_status(status: FederationOperationStatus) -> Self {
         match status {
             FederationOperationStatus::Accepted => Self::Accepted {},
-            FederationOperationStatus::Applying => Self::Applying {},
             FederationOperationStatus::Applied => Self::Applied {},
             FederationOperationStatus::Rejected => Self::ConsensusRejected {},
             FederationOperationStatus::Failed => Self::Failed {},
@@ -561,7 +554,6 @@ impl FederationApplicationState {
     pub fn status(&self) -> FederationOperationStatus {
         match self {
             Self::Accepted {} => FederationOperationStatus::Accepted,
-            Self::Applying {} => FederationOperationStatus::Applying,
             Self::Applied {} => FederationOperationStatus::Applied,
             Self::Failed {} => FederationOperationStatus::Failed,
             Self::ConsensusRejected {} | Self::Rejected { .. } => {
@@ -1797,7 +1789,6 @@ mod tests {
     fn application_state_serializes_every_legal_state_and_rejects_invalid_shapes() {
         let states = [
             FederationApplicationState::Accepted {},
-            FederationApplicationState::Applying {},
             FederationApplicationState::Applied {},
             FederationApplicationState::Failed {},
             FederationApplicationState::ConsensusRejected {},

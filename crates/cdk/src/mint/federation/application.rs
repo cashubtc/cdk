@@ -1169,12 +1169,12 @@ impl Mint {
                 FederationOperationStatus::Failed => {
                     ensure_same_federation_journal_entry_for_retry(&persisted_entry, entry)?;
                 }
-                FederationOperationStatus::Accepted | FederationOperationStatus::Applying => {}
+                FederationOperationStatus::Accepted => {}
             }
         }
 
         match entry.status() {
-            FederationOperationStatus::Accepted | FederationOperationStatus::Applying => {}
+            FederationOperationStatus::Accepted => {}
             FederationOperationStatus::Applied => return Ok(false),
             FederationOperationStatus::Rejected | FederationOperationStatus::Failed => {
                 return Err(Error::Custom(format!(

@@ -163,27 +163,6 @@ async fn apply_accepted_federation_operation_applies_accepted_and_applying_entri
         .await
         .expect("accepted quote lookup")
         .is_some());
-
-    let applying_quote = QuoteId::new();
-    let mut applying_entry = appended_entry(
-        &mut journal,
-        runtime_config.mint_quote_operation(
-            applying_quote.clone(),
-            bolt11_quote_request(2),
-            bolt11_quote_response(&applying_quote, 2),
-        ),
-    );
-    applying_entry.application = FederationApplicationState::Applying {};
-    persist_journal_entry(&localstore, &applying_entry).await;
-    assert!(mint
-        .apply_accepted_federation_operation(&applying_entry)
-        .await
-        .expect("applying apply"));
-    assert!(localstore
-        .get_mint_quote(&applying_quote)
-        .await
-        .expect("applying quote lookup")
-        .is_some());
 }
 
 #[tokio::test]

@@ -11,7 +11,7 @@ CREATE TABLE federation_journal_entries (
     rejection_json TEXT,
     application_digest TEXT,
     status TEXT NOT NULL CHECK (
-        status IN ('accepted', 'applying', 'applied', 'rejected', 'failed')
+        status IN ('accepted', 'applied', 'rejected', 'failed')
     ),
     CHECK (status = 'rejected' OR rejection_json IS NULL)
 );

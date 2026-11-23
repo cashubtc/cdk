@@ -2015,7 +2015,6 @@ mod tests {
 
         for state in [
             FederationApplicationState::Accepted {},
-            FederationApplicationState::Applying {},
             FederationApplicationState::Failed {},
         ] {
             assert!(FederationApplicationDigest::genesis()

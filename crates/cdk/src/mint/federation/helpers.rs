@@ -36,7 +36,6 @@ pub(super) fn federation_payment_identifier_label(payment_id: &PaymentIdentifier
 pub(super) fn federation_operation_status_label(status: FederationOperationStatus) -> &'static str {
     match status {
         FederationOperationStatus::Accepted => "accepted",
-        FederationOperationStatus::Applying => "applying",
         FederationOperationStatus::Applied => "applied",
         FederationOperationStatus::Rejected => "rejected",
         FederationOperationStatus::Failed => "failed",

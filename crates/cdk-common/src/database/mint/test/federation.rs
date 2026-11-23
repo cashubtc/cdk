@@ -532,7 +532,6 @@ where
 {
     let expected_states = vec![
         FederationApplicationState::Accepted {},
-        FederationApplicationState::Applying {},
         FederationApplicationState::Applied {},
         FederationApplicationState::Failed {},
         FederationApplicationState::ConsensusRejected {},
@@ -542,8 +541,8 @@ where
     ];
     let mut journal = InMemoryFederationJournal::new();
     let mut entries = Vec::with_capacity(expected_states.len());
-    for index in 0..expected_states.len() {
-        let entry = if index == 4 {
+    for (index, state) in expected_states.iter().enumerate() {
+        let entry = if matches!(state, FederationApplicationState::ConsensusRejected {}) {
             appended(
                 journal
                     .append_finalized_with_consensus_evidence(

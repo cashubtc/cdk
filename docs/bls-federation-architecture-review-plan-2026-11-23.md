@@ -425,3 +425,11 @@ Not checked: the WASM target is not installed with this toolchain.
 
 Verification: `cdk` with federation (1,035) and standalone (790); `cdk-axum` with `federation-bdk,federation-bark,iroh` (602); `cdk-mintd` with `federation-test-utils` (291); the 16 production builds.
 
+### 2026-11-23: package 6, first step (remove the unreachable `Applying` status)
+
+- `FederationOperationStatus::Applying` and `FederationApplicationState::Applying` were mapped, matched and allowed by the SQL `CHECK` constraint, but no writer ever set them. Removed from both enums, every match arm, the SQL mappings, and the `CHECK` constraint in both creation migrations. The federation migrations are not checksum-locked, consistent with the cut-through policy; only the standalone history is.
+- Tests that enumerated legal states drop it. The persistence test now picks its consensus-rejected entry by state rather than by position.
+- Net: 13 files, 11 insertions, 62 deletions.
+
+Verification: `cdk-common` with `federation,test` (515), `cdk-sqlite` with `federation-bark` (194), `cdk` with federation (1,035), `cdk-mintd` with `federation-test-utils` (291), `cdk-axum` with `federation-bdk,federation-bark,iroh` (604 of 605 in the full run). The one failure, `aleph_bft_live_session_latency_probe_records_seven_member_bft_operation`, passed twice when rerun alone. It drives a seven-member live session against timing limits and looks load-sensitive, not related to this change.
+

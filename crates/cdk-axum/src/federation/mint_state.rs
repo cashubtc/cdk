@@ -847,12 +847,7 @@ pub(crate) fn accepted_federation_journal_entries(
 ) -> Vec<FederationJournalEntry> {
     entries
         .iter()
-        .filter(|entry| {
-            matches!(
-                entry.status(),
-                FederationOperationStatus::Accepted | FederationOperationStatus::Applying
-            )
-        })
+        .filter(|entry| matches!(entry.status(), FederationOperationStatus::Accepted))
         .cloned()
         .collect()
 }
@@ -878,13 +873,11 @@ pub(crate) fn stale_local_aleph_bft_entries_to_retry(
         .filter_map(|(local_entry, recovered_entry)| {
             let finalized_entry_is_accepted = matches!(
                 recovered_entry.status(),
-                FederationOperationStatus::Accepted | FederationOperationStatus::Applying
+                FederationOperationStatus::Accepted
             );
             let local_entry_needs_retry = matches!(
                 local_entry.status(),
-                FederationOperationStatus::Accepted
-                    | FederationOperationStatus::Applying
-                    | FederationOperationStatus::Failed
+                FederationOperationStatus::Accepted | FederationOperationStatus::Failed
             );
             (finalized_entry_is_accepted && local_entry_needs_retry)
                 .then(|| recovered_entry.clone())
