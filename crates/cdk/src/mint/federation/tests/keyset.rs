@@ -208,7 +208,7 @@ async fn effective_federation_config_replays_keyset_rotations() {
 }
 
 #[tokio::test]
-async fn effective_federation_config_reuses_cached_rotation_index() {
+async fn effective_federation_config_is_built_once_at_construction() {
     let (mint, _) = federated_test_mint(runtime_config()).await;
     mint.federation_effective_config_rebuild_count
         .store(0, std::sync::atomic::Ordering::SeqCst);
@@ -219,14 +219,14 @@ async fn effective_federation_config_reuses_cached_rotation_index() {
         .expect("federation config");
     mint.effective_federation_config()
         .await
-        .expect("cached effective config")
+        .expect("second effective config")
         .expect("federation config");
 
     assert_eq!(
         mint.federation_effective_config_rebuild_count
             .load(std::sync::atomic::Ordering::SeqCst),
-        1,
-        "an unchanged federation config must load the rotation index only once"
+        0,
+        "construction builds the effective config; an unchanged config must not be rebuilt"
     );
 }
 
@@ -260,26 +260,14 @@ async fn effective_federation_keyset_responses_use_rotated_config() {
     );
     persist_and_apply_entry(&mint, &rotation_entry).await;
 
-    let pubkeys = mint
-        .effective_federation_pubkeys()
-        .await
-        .expect("effective pubkeys")
-        .expect("federation pubkeys");
-    let keysets = mint
-        .effective_federation_keysets()
-        .await
-        .expect("effective keysets")
-        .expect("federation keysets");
+    let pubkeys = mint.pubkeys();
+    let keysets = mint.keysets();
     let old_specific = mint
-        .effective_federation_keyset_pubkeys(&old_keyset.id)
-        .await
-        .expect("old specific keyset")
-        .expect("federation specific keyset");
+        .keyset_pubkeys(&old_keyset.id)
+        .expect("old specific keyset");
     let next_specific = mint
-        .effective_federation_keyset_pubkeys(&next_keyset.id)
-        .await
-        .expect("next specific keyset")
-        .expect("federation specific keyset");
+        .keyset_pubkeys(&next_keyset.id)
+        .expect("next specific keyset");
 
     assert_eq!(pubkeys.keysets.len(), 1);
     assert_eq!(pubkeys.keysets[0].id, next_keyset.id);
@@ -330,24 +318,12 @@ async fn effective_federation_keyset_responses_survive_restart() {
     );
     persist_and_apply_entry(&mint, &rotation_entry).await;
 
-    let before_restart = mint
-        .effective_federation_keysets()
-        .await
-        .expect("effective keysets before restart")
-        .expect("federation keysets");
+    let before_restart = mint.keysets();
     drop(mint);
 
     let restarted = restart_federated_test_mint(runtime_config, localstore).await;
-    let after_restart = restarted
-        .effective_federation_keysets()
-        .await
-        .expect("effective keysets after restart")
-        .expect("federation keysets");
-    let active_after_restart = restarted
-        .effective_federation_pubkeys()
-        .await
-        .expect("effective pubkeys after restart")
-        .expect("federation pubkeys");
+    let after_restart = restarted.keysets();
+    let active_after_restart = restarted.pubkeys();
 
     assert_eq!(after_restart, before_restart);
     assert_eq!(active_after_restart.keysets.len(), 1);

@@ -13,83 +13,21 @@ use crate::Error;
 mod auth;
 
 impl Mint {
-    /// Retrieve public keys from the replay-derived federation config, if enabled.
-    #[cfg(feature = "federation")]
-    #[instrument(skip_all)]
-    pub async fn effective_federation_keyset_pubkeys(
-        &self,
-        keyset_id: &Id,
-    ) -> Result<Option<KeysResponse>, Error> {
-        let Some(config) = self.effective_federation_config().await? else {
-            return Ok(None);
-        };
-
-        config
-            .public_config()
-            .keysets
-            .iter()
-            .find(|keyset| &keyset.id == keyset_id)
-            .ok_or(Error::UnknownKeySet)
-            .map(|keyset| {
-                Some(KeysResponse {
-                    keysets: vec![federated_keyset_to_keyset(keyset)],
-                })
-            })
-    }
-
-    /// Retrieve active public keys from the replay-derived federation config, if enabled.
-    #[cfg(feature = "federation")]
-    #[instrument(skip_all)]
-    pub async fn effective_federation_pubkeys(&self) -> Result<Option<KeysResponse>, Error> {
-        let Some(config) = self.effective_federation_config().await? else {
-            return Ok(None);
-        };
-
-        Ok(Some(KeysResponse {
-            keysets: config
-                .public_config()
-                .keysets
-                .iter()
-                .filter(|keyset| keyset.active && keyset.unit != CurrencyUnit::Auth)
-                .map(federated_keyset_to_keyset)
-                .collect(),
-        }))
-    }
-
-    /// Retrieve all supported keysets from the replay-derived federation config, if enabled.
-    #[cfg(feature = "federation")]
-    #[instrument(skip_all)]
-    pub async fn effective_federation_keysets(&self) -> Result<Option<KeysetResponse>, Error> {
-        let Some(config) = self.effective_federation_config().await? else {
-            return Ok(None);
-        };
-
-        Ok(Some(KeysetResponse {
-            keysets: config
-                .public_config()
-                .keysets
-                .iter()
-                .filter(|keyset| keyset.unit != CurrencyUnit::Auth)
-                .map(federated_keyset_to_keyset_info)
-                .collect(),
-        }))
-    }
-
     /// Retrieve the public keys of the active keyset for distribution to wallet
     /// clients
     #[instrument(skip(self))]
     pub fn keyset_pubkeys(&self, keyset_id: &Id) -> Result<KeysResponse, Error> {
         #[cfg(feature = "federation")]
-        if let Some(config) = self.federation_config() {
-            return config
-                .public_config()
-                .keysets
+        if let Some(response) = self.with_federation_keysets(|keysets| {
+            keysets
                 .iter()
                 .find(|keyset| &keyset.id == keyset_id)
                 .ok_or(Error::UnknownKeySet)
                 .map(|keyset| KeysResponse {
                     keysets: vec![federated_keyset_to_keyset(keyset)],
-                });
+                })
+        }) {
+            return response;
         }
 
         self.keysets
@@ -107,16 +45,14 @@ impl Mint {
     #[instrument(skip_all)]
     pub fn pubkeys(&self) -> KeysResponse {
         #[cfg(feature = "federation")]
-        if let Some(config) = self.federation_config() {
-            return KeysResponse {
-                keysets: config
-                    .public_config()
-                    .keysets
-                    .iter()
-                    .filter(|keyset| keyset.active && keyset.unit != CurrencyUnit::Auth)
-                    .map(federated_keyset_to_keyset)
-                    .collect(),
-            };
+        if let Some(response) = self.with_federation_keysets(|keysets| KeysResponse {
+            keysets: keysets
+                .iter()
+                .filter(|keyset| keyset.active && keyset.unit != CurrencyUnit::Auth)
+                .map(federated_keyset_to_keyset)
+                .collect(),
+        }) {
+            return response;
         }
 
         KeysResponse {
@@ -134,16 +70,14 @@ impl Mint {
     #[instrument(skip_all)]
     pub fn keysets(&self) -> KeysetResponse {
         #[cfg(feature = "federation")]
-        if let Some(config) = self.federation_config() {
-            return KeysetResponse {
-                keysets: config
-                    .public_config()
-                    .keysets
-                    .iter()
-                    .filter(|keyset| keyset.unit != CurrencyUnit::Auth)
-                    .map(federated_keyset_to_keyset_info)
-                    .collect(),
-            };
+        if let Some(response) = self.with_federation_keysets(|keysets| KeysetResponse {
+            keysets: keysets
+                .iter()
+                .filter(|keyset| keyset.unit != CurrencyUnit::Auth)
+                .map(federated_keyset_to_keyset_info)
+                .collect(),
+        }) {
+            return response;
         }
 
         KeysetResponse {
@@ -167,13 +101,13 @@ impl Mint {
     #[instrument(skip(self))]
     pub fn keyset(&self, id: &Id) -> Option<KeySet> {
         #[cfg(feature = "federation")]
-        if let Some(config) = self.federation_config() {
-            return config
-                .public_config()
-                .keysets
+        if let Some(keyset) = self.with_federation_keysets(|keysets| {
+            keysets
                 .iter()
                 .find(|keyset| &keyset.id == id)
-                .map(federated_keyset_to_keyset);
+                .map(federated_keyset_to_keyset)
+        }) {
+            return keyset;
         }
 
         self.keysets

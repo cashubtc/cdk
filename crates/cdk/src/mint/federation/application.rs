@@ -31,15 +31,16 @@ use cdk_common::bitcoin::hashes::{sha256, Hash};
 use cdk_common::database;
 use cdk_common::error::Error;
 use cdk_common::federation::{
-    FederationAddressAllocationScope, FederationAddressKeychain, FederationApplicationState,
-    FederationError, FederationJournalEntry, FederationKeysetRotationOperation,
-    FederationMaterializedStateKey, FederationMeltOperation, FederationMeltQuoteOperation,
-    FederationMeltQuotePaymentObservation, FederationMintOperation, FederationMintQuoteOperation,
-    FederationMintQuotePaymentObservation, FederationOnchainMeltPaymentReceipt,
-    FederationOperation, FederationOperationConflictKey, FederationOperationId,
-    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
-    FederationPaymentObservationRecord, FederationPaymentObservationReport,
-    FederationSignatureShareRecord, FederationSwapOperation, MemberId,
+    FederatedKeyset, FederationAddressAllocationScope, FederationAddressKeychain,
+    FederationApplicationState, FederationError, FederationJournalEntry,
+    FederationKeysetRotationOperation, FederationMaterializedStateKey, FederationMeltOperation,
+    FederationMeltQuoteOperation, FederationMeltQuotePaymentObservation, FederationMintOperation,
+    FederationMintQuoteOperation, FederationMintQuotePaymentObservation,
+    FederationOnchainMeltPaymentReceipt, FederationOperation, FederationOperationConflictKey,
+    FederationOperationId, FederationOperationStatus, FederationPaymentObservation,
+    FederationPaymentObservationContext, FederationPaymentObservationRecord,
+    FederationPaymentObservationReport, FederationSignatureShareRecord, FederationSwapOperation,
+    MemberId,
 };
 use cdk_common::mint::{
     MeltQuote, MeltSagaState, MintQuote, Operation, OperationKind, SagaStateEnum,
@@ -58,6 +59,7 @@ use cdk_federation_bark::{
     FederationBarkRecoveryState, FederationBarkSemanticPhase,
 };
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 struct FederationActiveMeltPayment {
     active: std::sync::Arc<std::sync::Mutex<HashSet<QuoteId>>>,
@@ -1046,14 +1048,32 @@ impl Mint {
     /// Return the federation runtime config after replaying applied config transitions.
     pub async fn effective_federation_config(
         &self,
-    ) -> Result<Option<FederationRuntimeConfig>, Error> {
-        let Some(config) = self.federation_config() else {
+    ) -> Result<Option<Arc<FederationRuntimeConfig>>, Error> {
+        if self.federation_config().is_none() {
             return Ok(None);
-        };
+        }
+        if let Some(effective) = self.federation_effective_config.load_full() {
+            return Ok(Some(effective));
+        }
 
-        let mut cache = self.federation_effective_config_cache.lock().await;
-        if let Some(cached) = cache.as_ref() {
-            return Ok(Some(cached.clone()));
+        self.rebuild_effective_federation_config(false)
+            .await
+            .map(Some)
+    }
+
+    /// Rebuild the effective federation config from applied keyset rotations.
+    ///
+    /// With `force` unset, a config another caller built meanwhile is reused.
+    pub(crate) async fn rebuild_effective_federation_config(
+        &self,
+        force: bool,
+    ) -> Result<Arc<FederationRuntimeConfig>, Error> {
+        let config = self.federation_config().ok_or(Error::Internal)?;
+        let _rebuild = self.federation_effective_config_rebuild.lock().await;
+        if !force {
+            if let Some(effective) = self.federation_effective_config.load_full() {
+                return Ok(effective);
+            }
         }
 
         #[cfg(test)]
@@ -1079,9 +1099,26 @@ impl Mint {
                 effective.apply_keyset_rotation(&FederationKeysetRotationOperation { keyset })?;
         }
 
-        *cache = Some(effective.clone());
+        let effective = Arc::new(effective);
+        self.federation_effective_config
+            .store(Some(Arc::clone(&effective)));
+        Ok(effective)
+    }
 
-        Ok(Some(effective))
+    /// Run `f` on the federation's current keysets, if this mint is a member.
+    ///
+    /// Reads the effective config once built, else the configured one.
+    pub(crate) fn with_federation_keysets<R, F>(&self, f: F) -> Option<R>
+    where
+        F: FnOnce(&[FederatedKeyset]) -> R,
+    {
+        let config = self.federation_config()?;
+        let effective = self.federation_effective_config.load();
+        let keysets = match effective.as_deref() {
+            Some(effective) => &effective.public_config().keysets,
+            None => &config.public_config().keysets,
+        };
+        Some(f(keysets))
     }
 
     /// Apply accepted federation journal entries to this member's local mint database.
@@ -1856,7 +1893,7 @@ impl Mint {
 
         let transaction = self.localstore.begin_transaction().await?;
         finish_federation_apply_transaction(transaction, entry, Ok(())).await?;
-        *self.federation_effective_config_cache.lock().await = None;
+        self.rebuild_effective_federation_config(true).await?;
         Ok(())
     }
 

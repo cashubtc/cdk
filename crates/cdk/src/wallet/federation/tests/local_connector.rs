@@ -67,7 +67,9 @@ impl LocalFederatedMemberConnector {
         Ok(None)
     }
 
-    async fn effective_federation_config(&self) -> Result<FederationRuntimeConfig, crate::Error> {
+    async fn effective_federation_config(
+        &self,
+    ) -> Result<std::sync::Arc<FederationRuntimeConfig>, crate::Error> {
         self.mint
             .effective_federation_config()
             .await?
@@ -239,24 +241,12 @@ impl MintConnector for LocalFederatedMemberConnector {
     }
 
     async fn get_mint_keys(&self) -> Result<Vec<KeySet>, crate::Error> {
-        if let Some(pubkeys) = self.mint.effective_federation_pubkeys().await? {
-            return Ok(pubkeys.keysets);
-        }
-
         Ok(self.mint.pubkeys().keysets)
     }
 
     async fn get_mint_keyset(&self, keyset_id: Id) -> Result<KeySet, crate::Error> {
-        let pubkeys = match self
-            .mint
-            .effective_federation_keyset_pubkeys(&keyset_id)
-            .await?
-        {
-            Some(pubkeys) => pubkeys,
-            None => self.mint.keyset_pubkeys(&keyset_id)?,
-        };
-
-        pubkeys
+        self.mint
+            .keyset_pubkeys(&keyset_id)?
             .keysets
             .into_iter()
             .next()
@@ -264,10 +254,6 @@ impl MintConnector for LocalFederatedMemberConnector {
     }
 
     async fn get_mint_keysets(&self) -> Result<KeysetResponse, crate::Error> {
-        if let Some(keysets) = self.mint.effective_federation_keysets().await? {
-            return Ok(keysets);
-        }
-
         Ok(self.mint.keysets())
     }
 

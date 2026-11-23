@@ -1779,14 +1779,7 @@ impl MintConnector for DirectRouteMemberConnector {
     }
 
     async fn get_mint_keys(&self) -> Result<Vec<cdk::nuts::KeySet>, cdk::Error> {
-        let response = self
-            .state
-            .mint
-            .effective_federation_pubkeys()
-            .await?
-            .unwrap_or_else(|| self.state.mint.pubkeys());
-
-        Ok(response.keysets)
+        Ok(self.state.mint.pubkeys().keysets)
     }
 
     async fn get_mint_keyset(
@@ -1797,11 +1790,7 @@ impl MintConnector for DirectRouteMemberConnector {
     }
 
     async fn get_mint_keysets(&self) -> Result<cdk::nuts::KeysetResponse, cdk::Error> {
-        self.state
-            .mint
-            .effective_federation_keysets()
-            .await
-            .map(|keysets| keysets.unwrap_or_else(|| self.state.mint.keysets()))
+        Ok(self.state.mint.keysets())
     }
 
     async fn post_mint_quote(

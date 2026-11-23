@@ -412,3 +412,16 @@ Verification:
 Not checked: the WASM target is not installed with this toolchain.
 - **Follow-up, one v3 proof check in the wallet:** `verify_bls_proofs` in `crates/cdk/src/wallet/blind_signature.rs` batch-verifies v3 proofs, logs the stage and maps the error. It replaces three copies in `Wallet::verify_token_signatures`, the receive saga and the issue saga (4 files, 45 insertions, 67 deletions). `cdk` tests pass standalone (790) and with federation (1,035).
 
+### 2026-11-23: package 4, third step (one keyset owner for members)
+
+- **Problem:** in member mode the mint's synchronous keyset accessors (`pubkeys`, `keysets`, `keyset`, `keyset_pubkeys`, `get_active_keysets`, `get_keyset_info`) read the static configured keysets and ignored applied keyset rotations. Separate async `effective_federation_*` accessors read the rotation-aware config, and the HTTP handlers branched between the two. Any synchronous caller after a rotation saw stale keysets. The rotation-aware config was also cloned in full, secret shares included, on every use.
+- **Change:**
+  - The effective config is one atomically swapped `Arc` snapshot. It is built when a member mint is constructed and rebuilt after a rotation commits, rather than cleared and lazily rebuilt.
+  - The synchronous accessors read it through `with_federation_keysets`.
+  - The three async keyset accessors and the handler branches are deleted.
+  - `effective_federation_config` returns the shared `Arc` instead of a clone.
+- **Not done:** the signatory's own keyset store, which its subscription refreshes, still exists beside the federation snapshot. A member's keysets now have one owner, but the two modes still keep keysets in two fields.
+- **Test change:** the rebuild-count test now asserts that construction builds the config and an unchanged config is never rebuilt. The rotation tests now check the ordinary accessors, before and after a restart.
+
+Verification: `cdk` with federation (1,035) and standalone (790); `cdk-axum` with `federation-bdk,federation-bark,iroh` (602); `cdk-mintd` with `federation-test-utils` (291); the 16 production builds.
+

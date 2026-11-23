@@ -145,9 +145,15 @@ pub struct Mint {
     /// Validated federation config for member mode.
     #[cfg(feature = "federation")]
     federation_config: Option<FederationRuntimeConfig>,
-    /// Cached federation config after applying accepted keyset rotations.
+    /// Federation config after applying accepted keyset rotations.
+    ///
+    /// The one source of federation keysets once built. Empty until the first
+    /// rebuild; keyset accessors fall back to `federation_config` until then.
     #[cfg(feature = "federation")]
-    federation_effective_config_cache: Arc<Mutex<Option<FederationRuntimeConfig>>>,
+    federation_effective_config: Arc<arc_swap::ArcSwapOption<FederationRuntimeConfig>>,
+    /// Serializes rebuilds of `federation_effective_config`.
+    #[cfg(feature = "federation")]
+    federation_effective_config_rebuild: Arc<Mutex<()>>,
     /// Number of journal replays used to rebuild the effective federation config in tests.
     #[cfg(all(test, feature = "federation"))]
     federation_effective_config_rebuild_count: Arc<AtomicUsize>,
@@ -478,7 +484,7 @@ impl Mint {
         let (federation_payment_events, _) =
             broadcast::channel(FEDERATION_PAYMENT_EVENT_CHANNEL_CAPACITY);
 
-        Ok(Self {
+        let mint = Self {
             signatory,
             pubsub_manager: PubSubManager::new((
                 localstore.clone(),
@@ -506,14 +512,25 @@ impl Mint {
             #[cfg(feature = "federation")]
             federation_config,
             #[cfg(feature = "federation")]
-            federation_effective_config_cache: Arc::new(Mutex::new(None)),
+            federation_effective_config: Arc::new(arc_swap::ArcSwapOption::empty()),
+            #[cfg(feature = "federation")]
+            federation_effective_config_rebuild: Arc::new(Mutex::new(())),
             #[cfg(all(test, feature = "federation"))]
             federation_effective_config_rebuild_count: Arc::new(AtomicUsize::new(0)),
             #[cfg(feature = "federation")]
             federation_payment_events,
             #[cfg(feature = "federation")]
             federation_active_melt_payments: Arc::new(std::sync::Mutex::new(HashSet::new())),
-        })
+        };
+
+        // A member's keysets come from the effective federation config, which
+        // includes accepted rotations; build it before the mint serves requests.
+        #[cfg(feature = "federation")]
+        if mint.federation_config.is_some() {
+            mint.rebuild_effective_federation_config(false).await?;
+        }
+
+        Ok(mint)
     }
 
     /// Start the mint's background services and operations
@@ -1419,19 +1436,14 @@ impl Mint {
     /// Get active keysets
     pub fn get_active_keysets(&self) -> HashMap<CurrencyUnit, Id> {
         #[cfg(feature = "federation")]
-        if let Some(config) = self.federation_config() {
-            return config
-                .public_config()
-                .keysets
+        if let Some(active) = self.with_federation_keysets(|keysets| {
+            keysets
                 .iter()
-                .filter_map(|keyset| {
-                    if keyset.active {
-                        Some((keyset.unit.clone(), keyset.id))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
+                .filter(|keyset| keyset.active)
+                .map(|keyset| (keyset.unit.clone(), keyset.id))
+                .collect()
+        }) {
+            return active;
         }
 
         self.keysets
@@ -1450,13 +1462,13 @@ impl Mint {
     /// Get keyset info
     pub fn get_keyset_info(&self, id: &Id) -> Option<MintKeySetInfo> {
         #[cfg(feature = "federation")]
-        if let Some(config) = self.federation_config() {
-            return config
-                .public_config()
-                .keysets
+        if let Some(info) = self.with_federation_keysets(|keysets| {
+            keysets
                 .iter()
                 .find(|keyset| keyset.id == *id)
-                .map(keysets::federated_keyset_to_mint_keyset_info);
+                .map(keysets::federated_keyset_to_mint_keyset_info)
+        }) {
+            return info;
         }
 
         self.keysets
