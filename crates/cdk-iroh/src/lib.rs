@@ -14,6 +14,7 @@ mod metrics;
 mod node;
 mod pool;
 pub mod protocol;
+#[cfg(feature = "server")]
 mod server;
 mod transport;
 
@@ -24,6 +25,7 @@ pub use io::IrohStream;
 pub use iroh::{EndpointAddr, EndpointId, RelayUrl, SecretKey};
 pub use metrics::MetricsSnapshot;
 pub use node::IrohNode;
+#[cfg(feature = "server")]
 pub use server::{IrohConnectionInfo, IrohServer};
 pub use transport::IrohTransport;
 

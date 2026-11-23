@@ -27,7 +27,7 @@ sqlcipher = ["sqlite", "cdk-sqlite/sqlcipher"]
 redis = ["cdk-axum/redis"]
 prometheus = ["cdk/prometheus", "dep:cdk-prometheus", "cdk-sqlite?/prometheus", "cdk-axum/prometheus"]
 info-page = ["cdk-axum/info-page"]
-iroh = ["cdk/iroh", "cdk-axum/iroh", "dep:cdk-iroh"]
+iroh = ["cdk/iroh", "cdk-axum/iroh", "dep:cdk-iroh", "cdk-iroh/server"]
 federation = ["cdk/federation", "cdk-common/federation", "cdk-axum/federation", "cdk-sqlite?/federation", "cdk-postgres?/federation"]
 # Federated on-chain payments are independent from the base consensus runtime.
 federation-bdk = ["federation", "bdk", "cdk-axum/federation-bdk"]

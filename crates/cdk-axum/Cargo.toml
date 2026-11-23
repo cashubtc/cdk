@@ -11,7 +11,7 @@ readme = "README.md"
 
 
 [features]
-iroh = ["cdk/iroh", "dep:cdk-iroh"]
+iroh = ["cdk/iroh", "dep:cdk-iroh", "cdk-iroh/server"]
 federation = [
     "cdk/federation",
     "cdk-http-client/reqwest",

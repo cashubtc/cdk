@@ -452,3 +452,13 @@ Verification: `cdk` with `mint,wallet,federation` (1,036, including the wallet's
 
 Verification: `cdk-sqlite` with `federation-bark` (194, the storage conformance suite including ceremony, setup and projection transitions), `cdk-common` with `federation,test` (515), `cdk` with federation (1,036), `cdk-mintd` with `federation-test-utils` (291), `cdk-axum` with `federation-bdk,federation-bark,iroh` (601 of 602; the same timing-bound latency probe as above), and a `cdk-postgres` test build. The Postgres suite itself needs a running server and was not run.
 
+**Latency probe follow-up.** At the original branch tip `3183d04b8`, `aleph_bft_live_session_latency_probe_records_seven_member_bft_operation` took 7.6 s in isolation; after these changes it takes 5.3 s. Its 10 s wall-clock bound is tight when about 600 tests share the machine, so its failures in full-suite runs predate this work and are not a regression.
+
+### 2026-11-23: package 8, second step (Iroh client without the server)
+
+- `cdk-iroh` gained a `server` feature that gates `IrohServer`, `IrohConnectionInfo`, `axum` and `tower`. `cdk-axum` and `cdk-mintd` enable it with their `iroh` features; the wallet (`cdk`), FFI and CLI use only the client.
+- A wallet-only build with Iroh (`cdk` with `wallet,iroh`) no longer compiles `axum`. `tower` remains only through `iroh`'s own `reqwest` dependency.
+- The process-global default Iroh node the review flagged was not changed.
+
+Verification: `cdk-iroh` tests with `server` (21); builds of `cdk-iroh` with and without `server`, `cdk` with `iroh`, `cdk-ffi` with `federation`, `cdk-axum` with `federation,iroh`, `cdk-mintd` with `sqlite,iroh,federation`, and `cdk-cli` with `federation,iroh`.
+

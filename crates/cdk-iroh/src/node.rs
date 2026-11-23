@@ -289,7 +289,7 @@ impl fmt::Debug for IrohNode {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "server"))]
 mod tests {
     use std::{
         net::SocketAddr,
