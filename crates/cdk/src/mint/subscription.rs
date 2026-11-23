@@ -34,7 +34,9 @@ pub struct MintPubSubSpec {
 }
 
 impl MintPubSubSpec {
-    /// Call Mint::check_mint_quote_payments to update quotes by pinging the payment backend
+    /// Call Mint::check_mint_quote_payments to update quotes by pinging the payment backend.
+    ///
+    /// A quote whose check fails is returned as stored.
     async fn get_mint_quotes(
         &self,
         quote_ids: &[QuoteId],
@@ -52,13 +54,22 @@ impl MintPubSubSpec {
             .into_iter()
             .flatten()
         {
-            Mint::check_mint_quote_payments(
+            // A failed backend check leaves the quote as stored, so send that
+            // state rather than failing the backfill for every other filter.
+            if let Err(err) = Mint::check_mint_quote_payments(
                 self.db.clone(),
                 self.payment_processors.clone(),
                 self.pubsub_manager.upgrade(),
                 &mut quote,
             )
-            .await?;
+            .await
+            {
+                tracing::warn!(
+                    quote_id = %quote.id,
+                    error = %err,
+                    "Could not check mint quote payment for subscription, sending stored state",
+                );
+            }
 
             quotes.insert(quote.id.clone(), quote);
         }
