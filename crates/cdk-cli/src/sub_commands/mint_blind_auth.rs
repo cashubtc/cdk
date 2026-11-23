@@ -116,13 +116,6 @@ pub async fn mint_blind_auth(
                 "Authentication failed and no refresh token available"
             ));
         }
-    } else {
-        // If we have a refresh token, set it
-        if let Ok(Some(token_data)) = token_storage::get_token_for_mint(work_dir, &mint_url).await {
-            tracing::info!("Attempting to use refresh access token to refresh auth token");
-            wallet.set_refresh_token(token_data.refresh_token).await?;
-            wallet.refresh_access_token().await?;
-        }
     }
 
     println!("Attempting to mint blind auth");
@@ -134,7 +127,39 @@ pub async fn mint_blind_auth(
             .ok_or(anyhow!("Unknown max bat mint"))?,
     };
 
-    let proofs = wallet.mint_blind_auth(Amount::from(amount)).await?;
+    // A CAT that was set is used as is. The saved refresh token is only a
+    // recovery for a CAT the mint rejects: refreshing first would replace an
+    // explicit --cat, and fail the command if the saved refresh token is stale.
+    let proofs = match wallet.mint_blind_auth(Amount::from(amount)).await {
+        Ok(proofs) => proofs,
+        Err(err @ (cdk::Error::ClearAuthFailed | cdk::Error::ClearAuthRequired)) => {
+            let token_data = match token_storage::get_token_for_mint(work_dir, &mint_url).await {
+                Ok(Some(token_data)) => token_data,
+                _ => return Err(err.into()),
+            };
+            tracing::warn!("The mint rejected the access token: {}", err);
+            println!("Attempting to refresh the access token...");
+
+            let (new_access_token, new_refresh_token) =
+                refresh_access_token(&wallet, &mint_info, &token_data.refresh_token).await?;
+            println!("Successfully refreshed access token");
+
+            if let Err(e) = token_storage::save_tokens(
+                work_dir,
+                &mint_url,
+                &new_access_token,
+                &new_refresh_token,
+            )
+            .await
+            {
+                println!("Warning: Failed to save refreshed tokens: {e}");
+            }
+
+            wallet.set_cat(new_access_token).await?;
+            wallet.mint_blind_auth(Amount::from(amount)).await?
+        }
+        Err(err) => return Err(err.into()),
+    };
 
     println!("Received {} auth proofs for mint {mint_url}", proofs.len());
 
