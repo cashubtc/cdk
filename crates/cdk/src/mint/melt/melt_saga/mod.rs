@@ -7,8 +7,7 @@ use cdk_common::nut00::KnownMethod;
 use cdk_common::nuts::MeltQuoteState;
 use cdk_common::payment::OutgoingPaymentOptions;
 use cdk_common::{
-    Amount, CurrencyUnit, Error, ProofsMethods, PublicKey, QuoteId, SpendingConditionVerification,
-    State,
+    Amount, CurrencyUnit, Error, PublicKey, QuoteId, SpendingConditionVerification, State,
 };
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::MintMetricGuard;
@@ -207,9 +206,7 @@ impl MeltSaga<Initial> {
         input_verification: Verification,
         payment_method: cdk_common::PaymentMethod,
     ) -> Result<MeltSaga<SetupComplete>, Error> {
-        let Verification {
-            amount: input_amount,
-        } = input_verification;
+        let (input_amount, input_ys) = input_verification.into_parts();
         let input_unit = Some(input_amount.unit().clone());
 
         if let Some(outputs) = melt_request.outputs() {
@@ -268,8 +265,6 @@ impl MeltSaga<Initial> {
                 err => Error::Database(err),
             });
         }
-
-        let input_ys = melt_request.inputs().ys()?;
 
         let mut proofs = tx.get_proofs(&input_ys).await?;
 

@@ -2900,4 +2900,41 @@ mod tests {
             result
         );
     }
+
+    #[tokio::test]
+    async fn verify_inputs_rejects_duplicate_inputs() {
+        let mint = create_test_mint().await.unwrap();
+        let mut proofs = mint_test_proofs(&mint, Amount::from(8)).await.unwrap();
+        let duplicate = proofs[0].clone();
+        proofs.push(duplicate);
+
+        let ys = proofs.ys().unwrap();
+        assert!(matches!(
+            Mint::check_inputs_unique(&ys),
+            Err(Error::DuplicateInputs)
+        ));
+
+        let result = mint.verify_inputs(&proofs).await;
+        assert!(
+            matches!(result, Err(Error::DuplicateInputs)),
+            "expected DuplicateInputs error, got: {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_inputs_returns_ys_in_input_order() {
+        let mint = create_test_mint().await.unwrap();
+        let mut proofs = mint_test_proofs(&mint, Amount::from(15)).await.unwrap();
+        assert!(proofs.len() > 1, "test needs several proofs");
+        // Use an order that differs from how the proofs were minted.
+        proofs.reverse();
+
+        let verification = mint.verify_inputs(&proofs).await.unwrap();
+
+        assert_eq!(verification.ys().len(), proofs.len());
+        for (proof, y) in proofs.iter().zip(verification.ys()) {
+            assert_eq!(proof.y().unwrap(), *y);
+        }
+    }
 }
