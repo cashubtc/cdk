@@ -345,93 +345,6 @@ fn ensure_predecessor(
     Ok(())
 }
 
-fn planned_phase(
-    kind: cdk_federation_bark::FederationBarkActionKind,
-) -> cdk_federation_bark::FederationBarkSemanticPhase {
-    use cdk_federation_bark::{
-        FederationBarkActionKind as Kind, FederationBarkSemanticPhase as Phase,
-    };
-    match kind {
-        Kind::LightningSend => Phase::SendPlanned,
-        Kind::IncomingClaim => Phase::ClaimPlanned,
-        Kind::FailedSendRevocation => Phase::RevocationPlanned,
-        Kind::Refresh => Phase::RefreshPlanned,
-        Kind::EmergencyExit => Phase::ExitPlanned,
-    }
-}
-
-fn direct_transition_allowed(
-    previous: cdk_federation_bark::FederationBarkSemanticPhase,
-    next: cdk_federation_bark::FederationBarkSemanticPhase,
-) -> bool {
-    use cdk_federation_bark::FederationBarkSemanticPhase as Phase;
-    matches!(
-        (previous, next),
-        (Phase::ReceiveIntent, Phase::ReceivePrepared)
-            | (Phase::ClaimPlanned, Phase::ReceivePreimageDisclosed)
-            | (Phase::ReceivePreimageDisclosed, Phase::ReceiveClaimed)
-            | (Phase::SendPlanned, Phase::SendHtlcsCosigned)
-            | (
-                Phase::SendHtlcsCosigned,
-                Phase::PaymentSucceeded | Phase::PaymentFailed
-            )
-            | (Phase::PaymentFailed, Phase::RevocationPlanned)
-            | (Phase::RevocationPlanned, Phase::RevocationCompleted)
-            | (Phase::RefreshPlanned, Phase::ExitPlanned)
-            | (Phase::RefreshPlanned, Phase::RefreshCompleted)
-            | (Phase::ExitPlanned, Phase::ExitRegistered)
-            | (Phase::ExitRegistered, Phase::ExitPublished)
-            | (Phase::ExitPublished, Phase::ExitConfirmed)
-    )
-}
-
-fn is_refresh_exit_escalation(
-    phase: cdk_federation_bark::FederationBarkSemanticPhase,
-    signing_retry_phase: Option<cdk_federation_bark::FederationBarkSemanticPhase>,
-    plan_kind: cdk_federation_bark::FederationBarkActionKind,
-) -> bool {
-    use cdk_federation_bark::{
-        FederationBarkActionKind as Kind, FederationBarkSemanticPhase as Phase,
-    };
-
-    signing_retry_phase.unwrap_or(phase) == Phase::RefreshPlanned
-        && plan_kind == Kind::EmergencyExit
-}
-
-fn transition_allowed(
-    action: &FederationBarkActionRecord,
-    next: cdk_federation_bark::FederationBarkSemanticPhase,
-) -> bool {
-    use cdk_federation_bark::FederationBarkSemanticPhase as Phase;
-
-    let retry_phase = match action.phase {
-        Phase::SigningAttemptAdvanced => match action.signing_retry_phase {
-            Some(phase) => phase,
-            None => return false,
-        },
-        phase => phase,
-    };
-    match next {
-        Phase::SigningAttemptAdvanced => matches!(
-            retry_phase,
-            Phase::ReceiveIntent
-                | Phase::ReceivePrepared
-                | Phase::ReceiveHtlcsReady
-                | Phase::ClaimPlanned
-                | Phase::ReceivePreimageDisclosed
-                | Phase::SendPlanned
-                | Phase::SendHtlcsCosigned
-                | Phase::PaymentFailed
-                | Phase::RevocationPlanned
-                | Phase::RefreshPlanned
-                | Phase::ExitPlanned
-                | Phase::ExitRegistered
-                | Phase::ExitPublished
-        ),
-        _ => direct_transition_allowed(retry_phase, next),
-    }
-}
-
 async fn insert_allocation<C>(
     connection: &C,
     allocation: &FederationBarkDerivationAllocationRecord,
@@ -985,7 +898,7 @@ where
         .map_err(|_| invalid_projection("Bark receive preparation differs from its intent"))?;
     ensure_same_action_binding(&action, operation)?;
     ensure_predecessor(&action, prepared.intent_operation_id)?;
-    if !transition_allowed(&action, operation.phase()) {
+    if !action.may_transition_to(operation.phase()) {
         return Err(invalid_projection(
             "invalid Bark receive preparation transition",
         ));
@@ -1008,21 +921,16 @@ async fn apply_action_plan<C>(
 where
     C: DatabaseExecutor,
 {
-    if operation.phase() != planned_phase(plan.kind) {
-        return Err(invalid_projection(
-            "Bark action plan phase does not match its kind",
-        ));
-    }
     let existing = get_action(connection, plan.action_id).await?;
     let combined_receive_claim = plan.certified_receive_htlcs.is_some();
-    let refresh_exit_escalation = existing.as_ref().is_some_and(|action| {
-        is_refresh_exit_escalation(action.phase, action.signing_retry_phase, plan.kind)
-    });
+    let refresh_exit_escalation = existing
+        .as_ref()
+        .is_some_and(|action| action.is_refresh_exit_escalation(plan.kind));
     let action = match &existing {
         Some(action) => {
             ensure_same_action_binding(action, operation)?;
             ensure_predecessor(action, plan.predecessor_operation_id)?;
-            if !(transition_allowed(action, operation.phase())
+            if !(action.may_transition_to(operation.phase())
                 || combined_receive_claim
                     && action.phase
                         == cdk_federation_bark::FederationBarkSemanticPhase::ReceivePrepared)
@@ -1176,7 +1084,7 @@ where
     } else if transition.attempt != action.attempt && action.attempt != 0 {
         return Err(invalid_projection("Bark transition attempt is not current"));
     }
-    if !transition_allowed(&action, transition.phase) {
+    if !action.may_transition_to(transition.phase) {
         return Err(invalid_projection("invalid Bark semantic phase transition"));
     }
 
@@ -1384,15 +1292,12 @@ where
 mod tests {
     use cdk_common::federation::{FederationOperation, MemberId};
     use cdk_federation_bark::{
-        federation_bark_application_operation, FederationBarkActionId, FederationBarkActionKind,
-        FederationBarkDigest, FederationBarkMemberObservation, FederationBarkObservationStatus,
-        FederationBarkOperation, FederationBarkSemanticPhase as Phase,
+        federation_bark_application_operation, FederationBarkActionId, FederationBarkDigest,
+        FederationBarkMemberObservation, FederationBarkObservationStatus, FederationBarkOperation,
         FEDERATION_BARK_OPERATION_VERSION,
     };
 
-    use super::{
-        bark_projection_entry_operation, direct_transition_allowed, is_refresh_exit_escalation,
-    };
+    use super::bark_projection_entry_operation;
 
     #[test]
     fn projection_accepts_established_bark_wire_operations() {
@@ -1416,63 +1321,5 @@ mod tests {
             bark_projection_entry_operation(&operation).expect("projection operation"),
             bark
         );
-    }
-
-    #[test]
-    fn maintenance_projection_allows_only_the_frozen_lifecycle() {
-        for (previous, next) in [
-            (Phase::RefreshPlanned, Phase::RefreshCompleted),
-            (Phase::RefreshPlanned, Phase::ExitPlanned),
-            (Phase::ExitPlanned, Phase::ExitRegistered),
-            (Phase::ExitRegistered, Phase::ExitPublished),
-            (Phase::ExitPublished, Phase::ExitConfirmed),
-        ] {
-            assert!(direct_transition_allowed(previous, next));
-        }
-
-        for (previous, next) in [
-            (Phase::RefreshPlanned, Phase::ExitRegistered),
-            (Phase::ExitPlanned, Phase::ExitPublished),
-            (Phase::ExitRegistered, Phase::ExitConfirmed),
-            (Phase::ExitPublished, Phase::RefreshCompleted),
-            (Phase::ExitConfirmed, Phase::ExitPlanned),
-        ] {
-            assert!(!direct_transition_allowed(previous, next));
-        }
-    }
-
-    #[test]
-    fn signing_retry_preserves_the_refresh_reservation_during_exit_escalation() {
-        assert!(is_refresh_exit_escalation(
-            Phase::SigningAttemptAdvanced,
-            Some(Phase::RefreshPlanned),
-            FederationBarkActionKind::EmergencyExit,
-        ));
-        assert!(is_refresh_exit_escalation(
-            Phase::RefreshPlanned,
-            None,
-            FederationBarkActionKind::EmergencyExit,
-        ));
-        assert!(!is_refresh_exit_escalation(
-            Phase::SigningAttemptAdvanced,
-            Some(Phase::SendPlanned),
-            FederationBarkActionKind::EmergencyExit,
-        ));
-    }
-
-    #[test]
-    fn outgoing_terminal_results_follow_the_accepted_htlc_package_directly() {
-        assert!(direct_transition_allowed(
-            Phase::SendHtlcsCosigned,
-            Phase::PaymentSucceeded,
-        ));
-        assert!(direct_transition_allowed(
-            Phase::SendHtlcsCosigned,
-            Phase::PaymentFailed,
-        ));
-        assert!(!direct_transition_allowed(
-            Phase::SendPlanned,
-            Phase::PaymentSucceeded,
-        ));
     }
 }

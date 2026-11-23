@@ -789,6 +789,18 @@ impl FederationBarkActionKind {
             Self::EmergencyExit => "emergency_exit",
         }
     }
+
+    /// Phase an accepted plan of this kind puts its action in.
+    #[must_use]
+    pub const fn planned_phase(self) -> FederationBarkSemanticPhase {
+        match self {
+            Self::LightningSend => FederationBarkSemanticPhase::SendPlanned,
+            Self::IncomingClaim => FederationBarkSemanticPhase::ClaimPlanned,
+            Self::FailedSendRevocation => FederationBarkSemanticPhase::RevocationPlanned,
+            Self::Refresh => FederationBarkSemanticPhase::RefreshPlanned,
+            Self::EmergencyExit => FederationBarkSemanticPhase::ExitPlanned,
+        }
+    }
 }
 
 /// Exact side-effecting plan accepted before Bark or Ark execution.
@@ -1130,6 +1142,53 @@ impl FederationBarkSemanticPhase {
         }
     }
 
+    /// Whether an action may move directly from this phase to `next`.
+    ///
+    /// This is the Bark action lifecycle. Signing retries are covered by
+    /// [`Self::allows_signing_retry`].
+    #[must_use]
+    pub const fn may_advance_to(self, next: Self) -> bool {
+        matches!(
+            (self, next),
+            (Self::ReceiveIntent, Self::ReceivePrepared)
+                | (Self::ClaimPlanned, Self::ReceivePreimageDisclosed)
+                | (Self::ReceivePreimageDisclosed, Self::ReceiveClaimed)
+                | (Self::SendPlanned, Self::SendHtlcsCosigned)
+                | (
+                    Self::SendHtlcsCosigned,
+                    Self::PaymentSucceeded | Self::PaymentFailed
+                )
+                | (Self::PaymentFailed, Self::RevocationPlanned)
+                | (Self::RevocationPlanned, Self::RevocationCompleted)
+                | (Self::RefreshPlanned, Self::ExitPlanned)
+                | (Self::RefreshPlanned, Self::RefreshCompleted)
+                | (Self::ExitPlanned, Self::ExitRegistered)
+                | (Self::ExitRegistered, Self::ExitPublished)
+                | (Self::ExitPublished, Self::ExitConfirmed)
+        )
+    }
+
+    /// Whether custody work in this phase may move to a new signing attempt.
+    #[must_use]
+    pub const fn allows_signing_retry(self) -> bool {
+        matches!(
+            self,
+            Self::ReceiveIntent
+                | Self::ReceivePrepared
+                | Self::ReceiveHtlcsReady
+                | Self::ClaimPlanned
+                | Self::ReceivePreimageDisclosed
+                | Self::SendPlanned
+                | Self::SendHtlcsCosigned
+                | Self::PaymentFailed
+                | Self::RevocationPlanned
+                | Self::RefreshPlanned
+                | Self::ExitPlanned
+                | Self::ExitRegistered
+                | Self::ExitPublished
+        )
+    }
+
     /// Stable v1 numeric code used by action and session derivation.
     #[must_use]
     pub const fn code(self) -> u16 {
@@ -1465,17 +1524,7 @@ impl FederationBarkOperation {
         match self {
             Self::ReceiveIntent(_) => FederationBarkSemanticPhase::ReceiveIntent,
             Self::ReceivePrepared(_) => FederationBarkSemanticPhase::ReceivePrepared,
-            Self::ActionPlan(operation) => match operation.kind {
-                FederationBarkActionKind::LightningSend => FederationBarkSemanticPhase::SendPlanned,
-                FederationBarkActionKind::IncomingClaim => {
-                    FederationBarkSemanticPhase::ClaimPlanned
-                }
-                FederationBarkActionKind::FailedSendRevocation => {
-                    FederationBarkSemanticPhase::RevocationPlanned
-                }
-                FederationBarkActionKind::Refresh => FederationBarkSemanticPhase::RefreshPlanned,
-                FederationBarkActionKind::EmergencyExit => FederationBarkSemanticPhase::ExitPlanned,
-            },
+            Self::ActionPlan(operation) => operation.kind.planned_phase(),
             Self::ActionTransition(operation) => operation.phase,
             Self::MemberObservation(_) => FederationBarkSemanticPhase::Observation,
             Self::EvidenceCertificate(_) => FederationBarkSemanticPhase::Observation,

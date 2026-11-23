@@ -511,3 +511,16 @@ Verification, with `RUST_MIN_STACK=16777216` as on the rest of this branch:
   - The Bark drivers (about 4,200 lines in `cdk-federation`) have not moved into `cdk-bark` behind a host port.
 
 Verification, with `RUST_MIN_STACK=16777216`: the same suites and counts as the previous step, clippy with `-D warnings` on the four touched crates, and the 16 production builds.
+
+### 2026-11-23: package 6, third step (Bark lifecycle out of the SQL crate)
+
+- **The Bark action lifecycle lives in the Bark crate.** The SQL projection held the transition table, the plan-kind-to-phase map, the signing-retry rule and the refresh-to-exit escalation rule as private functions. They are now domain methods:
+  - `FederationBarkSemanticPhase::may_advance_to` and `allows_signing_retry`;
+  - `FederationBarkActionKind::planned_phase`;
+  - `FederationBarkActionRecord::may_transition_to` and `is_refresh_exit_escalation`.
+  The SQL crate calls them and keeps only storage.
+- **Duplicate removed.** `FederationBarkOperation::phase()` already mapped a plan's kind to its phase, and the SQL crate checked a plan's phase against its own copy of that map, a check that could not fail. Both now use `planned_phase`, and the redundant check is gone.
+- **Tests moved with the rules:** the lifecycle and outgoing-result table tests and the escalation test now live in `cdk-federation-bark`, plus a new test of signing-retry transitions.
+- **Remaining in package 6:** the row-per-entity storage, retention, the trait surface and the single apply transaction. The Bark snapshot's typed keyed queries also remain.
+
+Verification, with `RUST_MIN_STACK=16777216`: the same suites as package 7's third step, with `cdk-federation-bark` now at 40 tests. Also clippy with `-D warnings` on `cdk-federation-bark` and `cdk-sql-common`, and the 16 production builds.

@@ -1510,3 +1510,35 @@ fn incoming_claim_requires_current_certified_evidence() {
         .validate()
         .is_err());
 }
+
+#[test]
+fn maintenance_lifecycle_allows_only_the_frozen_transitions() {
+    use FederationBarkSemanticPhase as Phase;
+    for (previous, next) in [
+        (Phase::RefreshPlanned, Phase::RefreshCompleted),
+        (Phase::RefreshPlanned, Phase::ExitPlanned),
+        (Phase::ExitPlanned, Phase::ExitRegistered),
+        (Phase::ExitRegistered, Phase::ExitPublished),
+        (Phase::ExitPublished, Phase::ExitConfirmed),
+    ] {
+        assert!(previous.may_advance_to(next));
+    }
+
+    for (previous, next) in [
+        (Phase::RefreshPlanned, Phase::ExitRegistered),
+        (Phase::ExitPlanned, Phase::ExitPublished),
+        (Phase::ExitRegistered, Phase::ExitConfirmed),
+        (Phase::ExitPublished, Phase::RefreshCompleted),
+        (Phase::ExitConfirmed, Phase::ExitPlanned),
+    ] {
+        assert!(!previous.may_advance_to(next));
+    }
+}
+
+#[test]
+fn outgoing_terminal_results_follow_the_accepted_htlc_package_directly() {
+    use FederationBarkSemanticPhase as Phase;
+    assert!(Phase::SendHtlcsCosigned.may_advance_to(Phase::PaymentSucceeded));
+    assert!(Phase::SendHtlcsCosigned.may_advance_to(Phase::PaymentFailed));
+    assert!(!Phase::SendPlanned.may_advance_to(Phase::PaymentSucceeded));
+}

@@ -63,6 +63,34 @@ impl FederationBarkActionRecord {
         self.signing_retry_phase.unwrap_or(self.phase)
     }
 
+    /// Whether the action may record a transition into `next`.
+    ///
+    /// During a signing retry the retried phase decides; a retry that lost
+    /// its phase allows nothing.
+    #[must_use]
+    pub fn may_transition_to(&self, next: FederationBarkSemanticPhase) -> bool {
+        let current = match self.phase {
+            FederationBarkSemanticPhase::SigningAttemptAdvanced => match self.signing_retry_phase {
+                Some(phase) => phase,
+                None => return false,
+            },
+            phase => phase,
+        };
+        match next {
+            FederationBarkSemanticPhase::SigningAttemptAdvanced => current.allows_signing_retry(),
+            _ => current.may_advance_to(next),
+        }
+    }
+
+    /// Whether a plan of `plan_kind` escalates this action's pending refresh into an emergency exit.
+    ///
+    /// The exit keeps the refresh's reservation instead of reserving again.
+    #[must_use]
+    pub fn is_refresh_exit_escalation(&self, plan_kind: FederationBarkActionKind) -> bool {
+        self.effective_phase() == FederationBarkSemanticPhase::RefreshPlanned
+            && plan_kind == FederationBarkActionKind::EmergencyExit
+    }
+
     /// Build the first action head for a newly accepted lineage.
     pub fn new(
         entry: &FederationJournalEntry,
@@ -488,13 +516,15 @@ mod tests {
     use cdk_common::Amount;
 
     use super::{
-        federation_bark_refresh_candidates, FederationBarkObservationRecord,
-        FederationBarkProjectionSnapshot, FederationBarkVtxoRecord,
+        federation_bark_refresh_candidates, FederationBarkActionRecord,
+        FederationBarkObservationRecord, FederationBarkProjectionSnapshot,
+        FederationBarkVtxoRecord,
     };
     use crate::{
-        FederationBarkActionId, FederationBarkArtifact, FederationBarkArtifactKind,
-        FederationBarkDigest, FederationBarkMemberObservation, FederationBarkObservationStatus,
-        FederationBarkOperation, FederationBarkVtxoId, FederationBarkVtxoLocator,
+        FederationBarkActionId, FederationBarkActionKind, FederationBarkArtifact,
+        FederationBarkArtifactKind, FederationBarkDigest, FederationBarkMemberObservation,
+        FederationBarkObservationStatus, FederationBarkOperation,
+        FederationBarkSemanticPhase as Phase, FederationBarkVtxoId, FederationBarkVtxoLocator,
         FederationBarkVtxoState, FEDERATION_BARK_OPERATION_VERSION,
         FEDERATION_MAX_BARK_REFRESH_INPUTS,
     };
@@ -582,5 +612,75 @@ mod tests {
             ),
         });
         assert_eq!(snapshot.frontier(), Some(17));
+    }
+
+    fn action_record(
+        phase: Phase,
+        signing_retry_phase: Option<Phase>,
+    ) -> FederationBarkActionRecord {
+        let operation_id = FederationOperationId::from_bytes([1; 32]);
+        FederationBarkActionRecord {
+            action_id: FederationBarkActionId::from_bytes([1; 32]).expect("action ID"),
+            quote: None,
+            payment_hash: None,
+            action_kind: None,
+            phase,
+            signing_retry_phase,
+            actor: MemberId::new(1).expect("member"),
+            attempt: 1,
+            origin_operation_id: operation_id,
+            origin_operation_index: 1,
+            latest_operation_id: operation_id,
+            latest_operation_index: 1,
+            plan_operation_id: None,
+            predecessor_operation_id: None,
+            operation_commitment: FederationBarkDigest::from_bytes([2; 32]).expect("commitment"),
+            operation: FederationBarkOperation::MemberObservation(
+                FederationBarkMemberObservation {
+                    version: FEDERATION_BARK_OPERATION_VERSION,
+                    action_id: FederationBarkActionId::from_bytes([1; 32]).expect("action ID"),
+                    quote: None,
+                    observer: MemberId::new(1).expect("member"),
+                    observation_epoch: 1,
+                    source_scope: FederationBarkDigest::from_bytes([3; 32]).expect("scope"),
+                    payment_hash: None,
+                    status: FederationBarkObservationStatus::Pending,
+                    amount: Amount::ZERO,
+                    fee: Amount::ZERO,
+                    result_hash: FederationBarkDigest::from_bytes([4; 32]).expect("result"),
+                },
+            ),
+        }
+    }
+
+    #[test]
+    fn signing_retry_preserves_the_refresh_reservation_during_exit_escalation() {
+        let exit = FederationBarkActionKind::EmergencyExit;
+        assert!(
+            action_record(Phase::SigningAttemptAdvanced, Some(Phase::RefreshPlanned))
+                .is_refresh_exit_escalation(exit)
+        );
+        assert!(action_record(Phase::RefreshPlanned, None).is_refresh_exit_escalation(exit));
+        assert!(
+            !action_record(Phase::SigningAttemptAdvanced, Some(Phase::SendPlanned))
+                .is_refresh_exit_escalation(exit)
+        );
+        assert!(!action_record(Phase::RefreshPlanned, None)
+            .is_refresh_exit_escalation(FederationBarkActionKind::Refresh));
+    }
+
+    #[test]
+    fn signing_retries_resume_from_the_retried_phase() {
+        let retrying = action_record(Phase::SigningAttemptAdvanced, Some(Phase::SendPlanned));
+        assert!(retrying.may_transition_to(Phase::SendHtlcsCosigned));
+        assert!(retrying.may_transition_to(Phase::SigningAttemptAdvanced));
+        assert!(!retrying.may_transition_to(Phase::PaymentSucceeded));
+
+        let lost_phase = action_record(Phase::SigningAttemptAdvanced, None);
+        assert!(!lost_phase.may_transition_to(Phase::SendHtlcsCosigned));
+        assert!(!lost_phase.may_transition_to(Phase::SigningAttemptAdvanced));
+
+        let completed = action_record(Phase::RefreshCompleted, None);
+        assert!(!completed.may_transition_to(Phase::SigningAttemptAdvanced));
     }
 }
