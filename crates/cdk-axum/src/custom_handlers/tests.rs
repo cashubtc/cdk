@@ -157,11 +157,17 @@ async fn create_test_state() -> MintState {
         .unwrap();
     mint.start().await.unwrap();
 
-    MintState {
-        mint: Arc::new(mint),
-        cache: Arc::new(HttpCache::default()),
-        #[cfg(feature = "federation")]
-        federation: crate::federation::FederationNodeRuntime::disabled(),
+    {
+        let mint: Arc<cdk::mint::Mint> = Arc::new(mint);
+        MintState {
+            #[cfg(feature = "federation")]
+            node: cdk_federation::FederationNode {
+                mint: Arc::clone(&mint),
+                federation: crate::federation::FederationNodeRuntime::disabled(),
+            },
+            mint,
+            cache: Arc::new(HttpCache::default()),
+        }
     }
 }
 
@@ -735,45 +741,49 @@ async fn create_federated_test_state_with_backend_db_seed_and_finality(
     MintState {
         mint: Arc::clone(&mint),
         cache: Arc::new(HttpCache::default()),
-        federation: crate::federation::FederationNodeRuntime {
-            transport: crate::default_federation_transport(),
-            membership: crate::federation::FederationMembership::configured(
-                crate::federation::FederationMemberContext::new(
-                    mint,
-                    Arc::new(tokio::sync::Mutex::new(consensus)),
-                    Arc::new(tokio::sync::Mutex::new(
-                        cdk::federation::FederationRestSequenceTracker::new(),
-                    )),
-                    crate::FederationPeerSyncConfig::default(),
+        node: cdk_federation::FederationNode {
+            mint: Arc::clone(&mint),
+            federation: crate::federation::FederationNodeRuntime {
+                transport: crate::default_federation_transport(),
+                membership: crate::federation::FederationMembership::configured(
+                    crate::federation::FederationMemberContext::new(
+                        mint,
+                        Arc::new(tokio::sync::Mutex::new(consensus)),
+                        Arc::new(tokio::sync::Mutex::new(
+                            cdk::federation::FederationRestSequenceTracker::new(),
+                        )),
+                        crate::FederationPeerSyncConfig::default(),
+                    ),
                 ),
-            ),
-            tasks: crate::federation::services::FederationTaskGroup::default(),
-            payment_observer: crate::federation::FederationPaymentObserver::default(),
-            #[cfg(feature = "federation-bdk")]
-            transaction_broadcaster: crate::federation::FederationTransactionBroadcaster::default(),
-            #[cfg(feature = "federation-bdk")]
-            wallet_liveness: crate::federation::FederationWalletLivenessWorker::default(),
-            #[cfg(feature = "federation-bdk")]
-            onchain_sync_interval: None,
-            components: crate::federation::runtime_components::FederationRuntimeComponents::new(
-                Some(Arc::new(tokio::sync::Mutex::new(if local_finality_test {
-                    crate::FederationSyncState::default()
-                } else {
-                    crate::FederationSyncState::for_aleph_bft()
-                }))),
-                None,
-                None,
+                tasks: crate::federation::services::FederationTaskGroup::default(),
+                payment_observer: crate::federation::FederationPaymentObserver::default(),
                 #[cfg(feature = "federation-bdk")]
-                Vec::new(),
-                None,
-                #[cfg(feature = "federation-bark")]
-                None,
-            ),
-            aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
-            aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
-            aleph_bft_halt_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            local_finality_test,
-            manual_finality_test: false,
+                transaction_broadcaster:
+                    crate::federation::FederationTransactionBroadcaster::default(),
+                #[cfg(feature = "federation-bdk")]
+                wallet_liveness: crate::federation::FederationWalletLivenessWorker::default(),
+                #[cfg(feature = "federation-bdk")]
+                onchain_sync_interval: None,
+                components: crate::federation::runtime_components::FederationRuntimeComponents::new(
+                    Some(Arc::new(tokio::sync::Mutex::new(if local_finality_test {
+                        crate::FederationSyncState::default()
+                    } else {
+                        crate::FederationSyncState::for_aleph_bft()
+                    }))),
+                    None,
+                    None,
+                    #[cfg(feature = "federation-bdk")]
+                    Vec::new(),
+                    None,
+                    #[cfg(feature = "federation-bark")]
+                    None,
+                ),
+                aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
+                aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
+                aleph_bft_halt_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                local_finality_test,
+                manual_finality_test: false,
+            },
         },
     }
 }
@@ -975,11 +985,17 @@ async fn create_test_state_with_custom_methods(methods: &[&str]) -> MintState {
         .unwrap();
     mint.start().await.unwrap();
 
-    MintState {
-        mint: Arc::new(mint),
-        cache: Arc::new(HttpCache::default()),
-        #[cfg(feature = "federation")]
-        federation: crate::federation::FederationNodeRuntime::disabled(),
+    {
+        let mint: Arc<cdk::mint::Mint> = Arc::new(mint);
+        MintState {
+            #[cfg(feature = "federation")]
+            node: cdk_federation::FederationNode {
+                mint: Arc::clone(&mint),
+                federation: crate::federation::FederationNodeRuntime::disabled(),
+            },
+            mint,
+            cache: Arc::new(HttpCache::default()),
+        }
     }
 }
 
@@ -1564,49 +1580,53 @@ async fn threshold_member_state(mint: Arc<Mint>) -> MintState {
     MintState {
         mint: Arc::clone(&mint),
         cache: Arc::new(HttpCache::default()),
-        federation: crate::federation::FederationNodeRuntime {
-            transport: crate::default_federation_transport(),
-            membership: match (federation_consensus, federation_sequences) {
-                (Some(consensus), Some(sequences)) => {
-                    crate::federation::FederationMembership::configured(
-                        crate::federation::FederationMemberContext::new(
-                            Arc::clone(&mint),
-                            consensus,
-                            sequences,
-                            crate::FederationPeerSyncConfig::default(),
-                        ),
-                    )
-                }
-                (None, None) => crate::federation::FederationMembership::Standalone,
-                _ => panic!("incomplete test federation runtime"),
-            },
-            tasks: crate::federation::services::FederationTaskGroup::default(),
-            payment_observer: crate::federation::FederationPaymentObserver::default(),
-            #[cfg(feature = "federation-bdk")]
-            transaction_broadcaster: crate::federation::FederationTransactionBroadcaster::default(),
-            #[cfg(feature = "federation-bdk")]
-            wallet_liveness: crate::federation::FederationWalletLivenessWorker::default(),
-            #[cfg(feature = "federation-bdk")]
-            onchain_sync_interval: None,
-            components: crate::federation::runtime_components::FederationRuntimeComponents::new(
-                is_federated.then(|| {
-                    Arc::new(tokio::sync::Mutex::new(
-                        crate::FederationSyncState::default(),
-                    ))
-                }),
-                None,
-                None,
+        node: cdk_federation::FederationNode {
+            mint: Arc::clone(&mint),
+            federation: crate::federation::FederationNodeRuntime {
+                transport: crate::default_federation_transport(),
+                membership: match (federation_consensus, federation_sequences) {
+                    (Some(consensus), Some(sequences)) => {
+                        crate::federation::FederationMembership::configured(
+                            crate::federation::FederationMemberContext::new(
+                                Arc::clone(&mint),
+                                consensus,
+                                sequences,
+                                crate::FederationPeerSyncConfig::default(),
+                            ),
+                        )
+                    }
+                    (None, None) => crate::federation::FederationMembership::Standalone,
+                    _ => panic!("incomplete test federation runtime"),
+                },
+                tasks: crate::federation::services::FederationTaskGroup::default(),
+                payment_observer: crate::federation::FederationPaymentObserver::default(),
                 #[cfg(feature = "federation-bdk")]
-                Vec::new(),
-                None,
-                #[cfg(feature = "federation-bark")]
-                None,
-            ),
-            aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
-            aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
-            aleph_bft_halt_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            local_finality_test: is_federated,
-            manual_finality_test: false,
+                transaction_broadcaster:
+                    crate::federation::FederationTransactionBroadcaster::default(),
+                #[cfg(feature = "federation-bdk")]
+                wallet_liveness: crate::federation::FederationWalletLivenessWorker::default(),
+                #[cfg(feature = "federation-bdk")]
+                onchain_sync_interval: None,
+                components: crate::federation::runtime_components::FederationRuntimeComponents::new(
+                    is_federated.then(|| {
+                        Arc::new(tokio::sync::Mutex::new(
+                            crate::FederationSyncState::default(),
+                        ))
+                    }),
+                    None,
+                    None,
+                    #[cfg(feature = "federation-bdk")]
+                    Vec::new(),
+                    None,
+                    #[cfg(feature = "federation-bark")]
+                    None,
+                ),
+                aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
+                aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
+                aleph_bft_halt_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                local_finality_test: is_federated,
+                manual_finality_test: false,
+            },
         },
     }
 }

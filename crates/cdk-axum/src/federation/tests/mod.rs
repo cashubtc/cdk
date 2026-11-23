@@ -3355,62 +3355,66 @@ async fn federation_route_state_for_private_with_db_payment_and_finality(
     MintState {
         mint: Arc::clone(&mint),
         cache: Arc::new(crate::cache::HttpCache::default()),
-        federation: crate::federation::FederationNodeRuntime {
-            transport: crate::default_federation_transport(),
-            membership: crate::federation::FederationMembership::configured(
-                crate::federation::FederationMemberContext::new(
-                    mint,
-                    Arc::new(tokio::sync::Mutex::new(consensus)),
-                    Arc::new(tokio::sync::Mutex::new(
-                        cdk::federation::FederationRestSequenceTracker::new(),
-                    )),
-                    crate::FederationPeerSyncConfig::default(),
+        node: cdk_federation::FederationNode {
+            mint: Arc::clone(&mint),
+            federation: crate::federation::FederationNodeRuntime {
+                transport: crate::default_federation_transport(),
+                membership: crate::federation::FederationMembership::configured(
+                    crate::federation::FederationMemberContext::new(
+                        mint,
+                        Arc::new(tokio::sync::Mutex::new(consensus)),
+                        Arc::new(tokio::sync::Mutex::new(
+                            cdk::federation::FederationRestSequenceTracker::new(),
+                        )),
+                        crate::FederationPeerSyncConfig::default(),
+                    ),
                 ),
-            ),
-            tasks: crate::federation::services::FederationTaskGroup::default(),
-            payment_observer: crate::federation::FederationPaymentObserver::default(),
-            #[cfg(feature = "federation-bdk")]
-            transaction_broadcaster: crate::federation::FederationTransactionBroadcaster::default(),
-            #[cfg(feature = "federation-bdk")]
-            wallet_liveness: crate::federation::FederationWalletLivenessWorker::default(),
-            #[cfg(feature = "federation-bdk")]
-            onchain_sync_interval: None,
-            components: crate::federation::runtime_components::FederationRuntimeComponents::new(
-                Some(Arc::new(tokio::sync::Mutex::new(if local_finality_test {
-                    crate::FederationSyncState::default()
-                } else {
-                    crate::FederationSyncState::for_aleph_bft()
-                }))),
-                Some(Arc::new(FederationDkgAutoStartConfig {
-                    setup_authorization: public_config.setup_authorization,
-                    ceremony_id: FederationDkgCeremonyId::from_bytes([55; 32]),
-                    root_key_epoch: 1,
-                    keyset_spec: cdk::federation::FederationDkgKeysetSpec::new(
-                        CurrencyUnit::Sat,
-                        true,
-                        0,
-                        None,
-                        [Amount::from(1)].into_iter().collect(),
-                    )
-                    .expect("test DKG keyset spec"),
-                    driver: FederationDkgDriverRunConfig::default(),
-                })),
-                Some(crate::federation_dkg_member_admission(
-                    &public_config,
-                    FederationDkgDriverRunConfig::default().member_request_burst,
-                    FederationDkgDriverRunConfig::default().member_request_refill_interval,
-                )),
+                tasks: crate::federation::services::FederationTaskGroup::default(),
+                payment_observer: crate::federation::FederationPaymentObserver::default(),
                 #[cfg(feature = "federation-bdk")]
-                Vec::new(),
-                None,
-                #[cfg(feature = "federation-bark")]
-                None,
-            ),
-            aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
-            aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
-            aleph_bft_halt_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            local_finality_test,
-            manual_finality_test: false,
+                transaction_broadcaster:
+                    crate::federation::FederationTransactionBroadcaster::default(),
+                #[cfg(feature = "federation-bdk")]
+                wallet_liveness: crate::federation::FederationWalletLivenessWorker::default(),
+                #[cfg(feature = "federation-bdk")]
+                onchain_sync_interval: None,
+                components: crate::federation::runtime_components::FederationRuntimeComponents::new(
+                    Some(Arc::new(tokio::sync::Mutex::new(if local_finality_test {
+                        crate::FederationSyncState::default()
+                    } else {
+                        crate::FederationSyncState::for_aleph_bft()
+                    }))),
+                    Some(Arc::new(FederationDkgAutoStartConfig {
+                        setup_authorization: public_config.setup_authorization,
+                        ceremony_id: FederationDkgCeremonyId::from_bytes([55; 32]),
+                        root_key_epoch: 1,
+                        keyset_spec: cdk::federation::FederationDkgKeysetSpec::new(
+                            CurrencyUnit::Sat,
+                            true,
+                            0,
+                            None,
+                            [Amount::from(1)].into_iter().collect(),
+                        )
+                        .expect("test DKG keyset spec"),
+                        driver: FederationDkgDriverRunConfig::default(),
+                    })),
+                    Some(crate::federation_dkg_member_admission(
+                        &public_config,
+                        FederationDkgDriverRunConfig::default().member_request_burst,
+                        FederationDkgDriverRunConfig::default().member_request_refill_interval,
+                    )),
+                    #[cfg(feature = "federation-bdk")]
+                    Vec::new(),
+                    None,
+                    #[cfg(feature = "federation-bark")]
+                    None,
+                ),
+                aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
+                aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
+                aleph_bft_halt_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                local_finality_test,
+                manual_finality_test: false,
+            },
         },
     }
 }
@@ -6035,7 +6039,8 @@ async fn service_startup_failure_cancels_workers_already_started() {
         catch_up_limit: 0,
         ..Default::default()
     };
-    let services = super::services::FederationServices::new(state, Some(invalid_sync), None);
+    let services =
+        super::services::FederationServices::new(state.node.clone(), Some(invalid_sync), None);
     assert!(services.start().await.is_err());
     assert!(stop.is_cancelled());
 }

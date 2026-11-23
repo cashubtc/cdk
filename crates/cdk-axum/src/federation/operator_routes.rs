@@ -157,7 +157,7 @@ pub(super) async fn post_bark_reconcile(
         readiness: runtime_status.readiness.as_str().to_string(),
         degraded_reason: runtime_status
             .degraded_reason
-            .map(cdk_bark::FederatedBarkDegradedReason::as_str)
+            .map(cdk_federation::FederatedBarkDegradedReason::as_str)
             .map(str::to_string),
     }))
 }
@@ -350,7 +350,7 @@ async fn retry_bark_action(
         }
         Some(FederationBarkActionKind::Refresh) | Some(FederationBarkActionKind::EmergencyExit) => {
             super::bark_maintenance::retry_federated_bark_maintenance_action(
-                state.clone(),
+                state.node.clone(),
                 action.action_id,
             )
             .await

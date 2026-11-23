@@ -607,10 +607,13 @@ mod tests {
 
     fn make_context(mint: Arc<Mint>) -> WsContext {
         let state = MintState {
+            #[cfg(feature = "federation")]
+            node: cdk_federation::FederationNode {
+                mint: Arc::clone(&mint),
+                federation: crate::federation::FederationNodeRuntime::disabled(),
+            },
             mint,
             cache: Arc::new(HttpCache::default()),
-            #[cfg(feature = "federation")]
-            federation: crate::federation::FederationNodeRuntime::disabled(),
         };
         let (publisher, _receiver) = tokio::sync::mpsc::channel(100);
         WsContext {

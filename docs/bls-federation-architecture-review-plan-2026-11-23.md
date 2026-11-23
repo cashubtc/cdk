@@ -462,3 +462,24 @@ Verification: `cdk-sqlite` with `federation-bark` (194, the storage conformance 
 
 Verification: `cdk-iroh` tests with `server` (21); builds of `cdk-iroh` with and without `server`, `cdk` with `iroh`, `cdk-ffi` with `federation`, `cdk-axum` with `federation,iroh`, `cdk-mintd` with `sqlite,iroh,federation`, and `cdk-cli` with `federation,iroh`.
 
+### 2026-11-23: package 5 (federation node crate)
+
+- **New crate `cdk-federation`** holds the federation node: the AlephBFT session, network and runtime, peer sync and catch-up, checkpoints, the peer client, DKG execution, FROST signing, and the payment, Bark and on-chain workers. 34 modules moved from `crates/cdk-axum/src/federation/`, keeping their history. The runtime helpers formerly in `federation.rs` (checkpoint verification metrics, local peer status) form the crate root.
+- **Node type:** `FederationNode { mint, federation }` replaces `MintState` throughout the runtime. Its 51 methods formerly on `MintState` are now methods on the node.
+- **`cdk-axum` keeps the HTTP surface:**
+  - the router, private-request admission and error responses;
+  - the route modules, plus three new ones holding the handlers split out of the FROST signing, Bark custody and Bark secret files;
+  - the invalid-operation alert middleware;
+  - the setup coordinator service, an HTTP service in its own right.
+  - `MintState` holds a `FederationNode` and dereferences to it, so handlers needed few changes.
+- **Dependencies:** `cdk-axum`'s only federation dependency is `cdk-federation`. AlephBFT, FROST and the custody crates are now dev-dependencies, used only by its tests. `cdk-federation` re-exports the four names the HTTP layer needs (the DKG RNG, the two member-local config types, the Bark degraded reason and error).
+- **Visibility:** modules and items `cdk-axum` uses are `pub` and `#[doc(hidden)]`, which marks them as this pair's working surface rather than a stable API. Test hooks moved from `cfg(test)` to a `test-utils` feature that `cdk-axum` enables for its tests. The runtime gained `FederationNodeRuntime::new`, so test-only fields and their initializers stay in one crate.
+- **Public API unchanged:** `cdk-axum` re-exports the same items for `cdk-mintd`, which needed no changes. `Cargo.lock` and `Cargo.lock.msrv` gain only the new workspace crate; no external version changed.
+- **Decision 3 resolved differently.** A typed Bark variant in `cdk-common` would require `cdk-common` to name `cdk-federation-bark`'s types, but that crate depends on `cdk-common`. Doing it means moving about 10k lines of Bark protocol code into `cdk-common`, against decision 4. Package 7 therefore uses the existing generic `Application` variant, which also removes the global registry.
+- **Not done:** federation runtime construction (`prepare_federation_router` and the router configuration) is still in `cdk-axum`'s `lib.rs`, and most of the setup ceremony is still in `cdk-mintd`.
+
+Verification:
+- unit tests: `cdk-federation` with `federation-bdk,federation-bark,iroh,prometheus` (131) and `cdk-axum` with `federation-bdk,federation-bark,iroh` (474), together the 602 tests this suite had before the split plus the three prometheus label tests now counted in `cdk-federation`; `cdk-axum` standalone (41); `cdk-mintd` with `federation-test-utils` (291);
+- clippy with `-D warnings` on both crates, federated and standalone;
+- the 16 production builds.
+

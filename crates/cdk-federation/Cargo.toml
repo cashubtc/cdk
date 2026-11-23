@@ -1,0 +1,72 @@
+[package]
+name = "cdk-federation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage = "https://github.com/cashubtc/cdk"
+repository = "https://github.com/cashubtc/cdk.git"
+rust-version.workspace = true                            # MSRV
+description = "Federated Cashu mint node: consensus, synchronization, checkpoints and custody workers"
+readme = "README.md"
+
+[features]
+federation-bdk = [
+    "dep:cdk-bitcoin-wallet",
+    "dep:cdk-frost-bip32",
+    "dep:cdk-bdk",
+]
+federation-bark = [
+    "dep:cdk-bitcoin-wallet",
+    "dep:cdk-bark",
+    "dep:cdk-federation-bark",
+    "dep:cdk-frost-bark",
+    "dep:cdk-frost-bip32",
+    "cdk/federation-bark",
+    "cdk-bark/federation-bark",
+]
+iroh = ["cdk/iroh", "dep:cdk-iroh"]
+prometheus = ["dep:cdk-prometheus", "cdk-common/prometheus"]
+# Test-only hooks and constructors used by cdk-axum's federation tests.
+test-utils = ["cdk-common/test"]
+
+[dependencies]
+aleph-bft.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+cdk = { workspace = true, features = ["mint", "federation"] }
+cdk-common = { workspace = true, features = ["federation"] }
+cdk-bitcoin-wallet = { workspace = true, optional = true }
+cdk-frost.workspace = true
+cdk-frost-bark = { workspace = true, optional = true }
+cdk-frost-bip32 = { workspace = true, optional = true }
+cdk-bdk = { workspace = true, optional = true, features = ["bitcoin-rpc", "esplora"] }
+cdk-bark = { workspace = true, optional = true }
+cdk-federation-bark = { workspace = true, optional = true }
+cdk-http-client = { workspace = true, features = ["bitreq", "reqwest"] }
+cdk-iroh = { workspace = true, optional = true }
+cdk-prometheus = { workspace = true, optional = true }
+futures.workspace = true
+parity-scale-codec.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util = { workspace = true, features = ["rt"] }
+tracing.workspace = true
+url.workspace = true
+uuid.workspace = true
+sha2 = "0.11"
+
+[dev-dependencies]
+axum.workspace = true
+cdk = { workspace = true, features = ["mint", "wallet", "federation"] }
+cdk-common = { workspace = true, features = ["federation", "test"] }
+cdk-fake-wallet.workspace = true
+cdk-sqlite = { workspace = true, features = ["mint", "federation"] }
+cdk-signatory.workspace = true
+musig2.workspace = true
+tempfile = "3"
+tower = { workspace = true, features = ["util"] }
+
+[lints]
+workspace = true

@@ -13,7 +13,8 @@ This is the current guide for the undeployed BLS federation branch. Federation f
 | On-chain wallet synchronization | `cdk-bitcoin-wallet` | Shared validated RPC timeout and sync policy |
 | Bark accepted actions and projections | `cdk-federation-bark` and SQL projections | Quorum-certified evidence and current operation schema |
 | Bark execution and recovery | `cdk-bark::runtime` | Exact accepted plans and durable external identities |
-| HTTP/Iroh extraction, authentication, orchestration | `cdk-axum::federation` | Authenticated sequencing, bounded requests, readiness gating |
+| Consensus session, sync, checkpoints, peer client, DKG execution, payment and custody workers | `cdk-federation` | Authenticated sequencing, deterministic replay, readiness gating |
+| HTTP routes, request extraction and authentication | `cdk-axum::federation` | Bounded requests over the `cdk-federation` node |
 | Worker lifetime | `FederationServices` / `RunningFederationServices` | Explicit start, observed failure, cancellation and joined shutdown |
 | Wallet aggregation and discovery | `FederatedMintConnector` | Validated member metadata and threshold signature aggregation |
 | Mobile interfaces | `cdk-ffi::federation`, `WalletRepository` | The maintained Rust API; no generated source patch overlay |

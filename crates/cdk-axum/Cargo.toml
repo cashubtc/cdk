@@ -11,37 +11,20 @@ readme = "README.md"
 
 
 [features]
-iroh = ["cdk/iroh", "dep:cdk-iroh", "cdk-iroh/server"]
+iroh = ["cdk/iroh", "dep:cdk-iroh", "cdk-iroh/server", "cdk-federation?/iroh"]
 federation = [
     "cdk/federation",
     "cdk-http-client/reqwest",
-    "dep:aleph-bft",
-    "dep:parity-scale-codec",
-    "dep:cdk-frost",
+    "dep:cdk-federation",
 ]
-federation-bdk = [
-    "federation",
-    "dep:cdk-bitcoin-wallet",
-    "dep:cdk-frost-bip32",
-    "dep:cdk-bdk",
-]
-federation-bark = [
-    "federation",
-    "dep:cdk-bitcoin-wallet",
-    "dep:cdk-bark",
-    "dep:cdk-federation-bark",
-    "dep:cdk-frost-bark",
-    "dep:cdk-frost-bip32",
-    "cdk/federation-bark",
-    "cdk-bark/federation-bark",
-]
+federation-bdk = ["federation", "cdk-federation/federation-bdk"]
+federation-bark = ["federation", "cdk-federation/federation-bark", "cdk/federation-bark"]
 redis = ["dep:redis"]
 integration-tests = []
-prometheus = ["dep:cdk-prometheus", "cdk-common/prometheus"]
+prometheus = ["dep:cdk-prometheus", "cdk-common/prometheus", "cdk-federation?/prometheus"]
 info-page = ["dep:maud"]
 
 [dependencies]
-aleph-bft = { workspace = true, optional = true }
 anyhow.workspace = true
 async-trait.workspace = true
 axum = { workspace = true, features = ["ws"] }
@@ -50,13 +33,7 @@ cdk = { workspace = true, features = [
     "mint",
 ]}
 cdk-common.workspace = true
-cdk-bitcoin-wallet = { workspace = true, optional = true }
-cdk-frost = { workspace = true, optional = true }
-cdk-frost-bark = { workspace = true, optional = true }
-cdk-frost-bip32 = { workspace = true, optional = true }
-cdk-bdk = { workspace = true, optional = true, features = ["bitcoin-rpc", "esplora"] }
-cdk-bark = { workspace = true, optional = true }
-cdk-federation-bark = { workspace = true, optional = true }
+cdk-federation = { workspace = true, optional = true }
 cdk-http-client = { workspace = true, features = ["bitreq"] }
 cdk-iroh = { workspace = true, optional = true }
 tokio.workspace = true
@@ -69,7 +46,6 @@ cdk-prometheus = { workspace = true , optional = true}
 moka = { version = "0.12.10", features = ["future"] }
 serde_json.workspace = true
 paste.workspace = true
-parity-scale-codec = { workspace = true, optional = true }
 serde.workspace = true
 url.workspace = true
 uuid.workspace = true
@@ -82,8 +58,13 @@ redis = { version = "0.31.0", default-features = false, features = [
 ], optional = true }
 
 [dev-dependencies]
+aleph-bft.workspace = true
+cdk-bitcoin-wallet = { workspace = true, features = ["bitcoin-rpc", "esplora"] }
+cdk-frost.workspace = true
+parity-scale-codec.workspace = true
 cdk = { workspace = true, features = ["mint", "wallet", "bip353"] }
 cdk-common = { workspace = true, features = ["test"] }
+cdk-federation = { workspace = true, features = ["test-utils"] }
 cdk-fake-wallet = { workspace = true }
 cdk-frost-bip32 = { workspace = true }
 cdk-sqlite = { workspace = true, features = ["mint", "federation"] }

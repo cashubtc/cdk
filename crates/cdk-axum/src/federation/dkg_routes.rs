@@ -8,7 +8,7 @@ use cdk::federation::{
     FederationFrostDkgRound1Request, FederationFrostDkgRound2Record,
     FederationFrostDkgRound2Request, FederationRestMessageKind, FederationSignedRequest,
 };
-use cdk_frost::rand_core::OsRng;
+use cdk_federation::OsRng;
 use serde::Serialize;
 use tracing::instrument;
 

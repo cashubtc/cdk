@@ -1,0 +1,1869 @@
+use std::collections::{BTreeMap, BTreeSet};
+
+use cdk::federation::{
+    FederationAlephBftBackupRequest, FederationCheckpoint, FederationCheckpointKind,
+    FederationCheckpointQuorum, FederationCheckpointSummary, FederationCheckpointSummaryResponse,
+    FederationError, FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
+    FederationPeerStatus, MemberConfigPublic, MemberId,
+    FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES,
+    FEDERATION_MAX_CHECKPOINT_CATCH_UP_TRANSFER_BYTES,
+};
+use cdk_http_client::Transport;
+use futures::stream::{FuturesUnordered, StreamExt};
+use tokio::time::{self, Instant};
+
+use crate::FederationNode;
+
+use super::aleph_bft_runtime::{
+    MAX_ALEPH_BFT_SESSION_BACKUP_BYTES, MAX_ALEPH_BFT_SESSION_BACKUP_CHUNKS,
+};
+use super::peer_client::FederationRestPeerClient;
+use super::sync_config::{
+    federation_peer_sync_disabled_by_env, federation_peer_sync_initial_delay,
+    federation_peer_sync_interval, FederationPeerReconnectBackoff, FederationPeerSyncConfig,
+};
+#[cfg(feature = "prometheus")]
+use super::u64_to_i64_saturating;
+use super::{local_peer_order_status, local_peer_status};
+
+pub fn spawn_federation_peer_sync_loop_with_config(
+    state: FederationNode,
+    sync_config: FederationPeerSyncConfig,
+) -> Result<(), cdk::Error> {
+    sync_config
+        .validate()
+        .map_err(|err| cdk::Error::Custom(err.to_string()))?;
+    if federation_peer_sync_disabled_by_env() {
+        tracing::warn!("Federation peer sync loop disabled by environment");
+        return Ok(());
+    }
+
+    let Some(config) = state.mint.federation_config().cloned() else {
+        return Ok(());
+    };
+    let public_config = config.public_config().clone();
+    let local_member = config.member_id();
+    let member_rank = public_config
+        .members
+        .keys()
+        .position(|member| *member == local_member)
+        .unwrap_or_default();
+    let initial_delay = federation_peer_sync_initial_delay(
+        sync_config.peer_sync_interval,
+        member_rank,
+        public_config.members.len(),
+    );
+    let peers = public_config
+        .members
+        .values()
+        .filter(|member| member.member_id != local_member)
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if peers.is_empty() {
+        return Ok(());
+    }
+
+    let private_config = config.private_config().clone();
+    let client = FederationRestPeerClient::new_with_validated_config(
+        state.federation.transport.clone(),
+        &public_config,
+        private_config,
+        sync_config,
+    )
+    .map_err(|err| cdk::Error::Custom(err.to_string()))?;
+    let tasks = state.federation.tasks.clone();
+    let stop = tasks.stop_token();
+    tasks.spawn("peer sync", true, async move {
+        if !initial_delay.is_zero() {
+            tokio::select! {
+                _ = stop.cancelled() => return,
+                _ = time::sleep(initial_delay) => {}
+            }
+        }
+        let mut interval = federation_peer_sync_interval(sync_config);
+        let mut reconnect_backoff = FederationPeerReconnectBackoff::default();
+
+        loop {
+            tokio::select! {
+                _ = stop.cancelled() => break,
+                _ = interval.tick() => {}
+            }
+            run_federation_peer_sync_round_with_backoff(
+                &state,
+                &client,
+                &peers,
+                &mut reconnect_backoff,
+            )
+            .await;
+        }
+    });
+    Ok(())
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+pub async fn run_federation_peer_sync_round<T>(
+    state: &FederationNode,
+    client: &FederationRestPeerClient<T>,
+    peers: &[MemberConfigPublic],
+) -> usize
+where
+    T: Transport + 'static,
+{
+    run_federation_peer_sync_attempts(state, client, peers, None).await
+}
+
+pub async fn run_federation_peer_sync_round_with_backoff<T>(
+    state: &FederationNode,
+    client: &FederationRestPeerClient<T>,
+    peers: &[MemberConfigPublic],
+    backoff: &mut FederationPeerReconnectBackoff,
+) -> usize
+where
+    T: Transport + 'static,
+{
+    run_federation_peer_sync_attempts(state, client, peers, Some(backoff)).await
+}
+
+async fn run_federation_peer_sync_attempts<T>(
+    state: &FederationNode,
+    client: &FederationRestPeerClient<T>,
+    peers: &[MemberConfigPublic],
+    mut backoff: Option<&mut FederationPeerReconnectBackoff>,
+) -> usize
+where
+    T: Transport + 'static,
+{
+    if let Some(synced) =
+        reconcile_replayed_live_session_before_checkpoint_exchange(state, client, peers).await
+    {
+        return synced;
+    }
+
+    // Checkpoint discovery is independent of peer status convergence and may unblock the
+    // catch-up attempted below. Run it first so recovery requests, signatures, and quorums do
+    // not wait behind a full round of bounded peer timeouts.
+    let checkpoint_peers = peers.iter().collect::<Vec<_>>();
+    let checkpoint_updates = exchange_checkpoint_round(state, client, &checkpoint_peers).await;
+    if checkpoint_updates > 0 {
+        tracing::debug!(
+            checkpoint_updates,
+            "Federation peer sync exchanged checkpoint evidence"
+        );
+    }
+
+    // Measure freshness only across the status/catch-up phase. The checkpoint exchange above
+    // cannot age the evidence collected after it.
+    let round_started_at = Instant::now();
+    let mut synced = 0;
+    let mut peer_statuses = Vec::with_capacity(peers.len());
+    for peer in peers {
+        let now = Instant::now();
+        if let Some(backoff) = backoff.as_ref() {
+            if !backoff.should_attempt(peer.member_id, now) {
+                tracing::debug!(
+                    member_id = %peer.member_id,
+                    "Federation peer sync skipped until reconnect backoff expires"
+                );
+                continue;
+            }
+        }
+        match client.sync_once_from_member(state, peer).await {
+            Ok(status) => {
+                synced += 1;
+                peer_statuses.push(status.clone());
+                if let Some(backoff) = backoff.as_mut() {
+                    backoff.record_success(peer.member_id);
+                }
+                record_federation_peer_sync_metrics(
+                    state,
+                    peer.member_id,
+                    true,
+                    Some(status.operation_count),
+                );
+            }
+            Err(err) => {
+                let reconnect_after = backoff.as_mut().map(|backoff| {
+                    backoff.record_failure(peer.member_id, client.sync_config, Instant::now())
+                });
+                record_federation_peer_sync_metrics(state, peer.member_id, false, None);
+                match reconnect_after {
+                    Some(delay) => {
+                        tracing::warn!(
+                            member_id = %peer.member_id,
+                            reconnect_after_ms = delay.as_millis(),
+                            "Federation peer sync failed: {}",
+                            err
+                        );
+                    }
+                    None => {
+                        tracing::warn!(
+                            member_id = %peer.member_id,
+                            "Federation peer sync failed: {}",
+                            err
+                        );
+                    }
+                }
+            }
+        }
+    }
+    apply_checkpoint_discovered_during_peer_sync(state, client, peers, &peer_statuses).await;
+    reconcile_federation_startup_with_quorum(state, client, round_started_at, &peer_statuses).await;
+    synced
+}
+
+async fn reconcile_replayed_live_session_before_checkpoint_exchange<T>(
+    state: &FederationNode,
+    client: &FederationRestPeerClient<T>,
+    peers: &[MemberConfigPublic],
+) -> Option<usize>
+where
+    T: Transport + 'static,
+{
+    if !state.federation.live_session_available().await
+        || !state.federation.live_session_replay_ready().await
+        || matches!(
+            state.federation_sync_status().await,
+            Some(crate::FederationSyncStatus::Healthy | crate::FederationSyncStatus::Halted { .. })
+        )
+    {
+        return None;
+    }
+
+    let observed_at = Instant::now();
+    let mut attempts = peers
+        .iter()
+        .map(|peer| async move { client.peer_status(peer).await })
+        .collect::<FuturesUnordered<_>>();
+    let mut peer_statuses = Vec::with_capacity(peers.len());
+    while let Some(result) = attempts.next().await {
+        match result {
+            Ok(status) => peer_statuses.push(status),
+            Err(err) => tracing::debug!(
+                "Federation replay-ready quorum status request failed: {}",
+                err
+            ),
+        }
+    }
+
+    reconcile_federation_startup_with_quorum(state, client, observed_at, &peer_statuses).await;
+    matches!(
+        state.federation_sync_status().await,
+        Some(crate::FederationSyncStatus::Healthy)
+    )
+    .then_some(peer_statuses.len())
+}
+
+async fn apply_checkpoint_discovered_during_peer_sync<T>(
+    state: &FederationNode,
+    client: &FederationRestPeerClient<T>,
+    peers: &[MemberConfigPublic],
+    peer_statuses: &[FederationPeerStatus],
+) where
+    T: Transport,
+{
+    let local_operation_count = match local_peer_order_status(state).await {
+        Ok(status) => status.operation_count,
+        Err(err) => {
+            tracing::warn!(
+                "Could not inspect local status for late checkpoint catch-up: {}",
+                err
+            );
+            return;
+        }
+    };
+    let source_status = peer_statuses
+        .iter()
+        .filter(|status| status.operation_count > local_operation_count)
+        .max_by_key(|status| status.operation_count);
+    // A healthy member can already hold an ordered suffix and all its quorums
+    // while an earlier promotion is still pending. Advance local trust even
+    // when every peer has the same operation count. Target lookup verifies only
+    // a quorum that is not already covered by the trusted checkpoint.
+    let target = match next_local_checkpoint_catch_up_target(state).await {
+        Ok(Some(target)) => target,
+        Ok(None) => return,
+        Err(err) => {
+            tracing::warn!(
+                "Could not inspect late federation checkpoint target: {}",
+                err
+            );
+            return;
+        }
+    };
+    match promote_locally_reached_checkpoint_target(state, &target).await {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(err) => {
+            tracing::warn!("Could not promote reached federation checkpoint: {}", err);
+            return;
+        }
+    }
+    let Some(source_status) = source_status else {
+        return;
+    };
+    let Some(source) = peers
+        .iter()
+        .find(|peer| peer.member_id == source_status.member_id)
+    else {
+        return;
+    };
+    if let Err(err) = client.sync_once_from_member(state, source).await {
+        tracing::warn!(
+            member_id = %source.member_id,
+            "Federation late checkpoint catch-up failed: {}",
+            err
+        );
+    }
+}
+
+async fn promote_locally_reached_checkpoint_target(
+    state: &FederationNode,
+    target: &FederationCheckpointQuorum,
+) -> anyhow::Result<bool> {
+    let db = state.mint.localstore();
+    let frontier = db.get_federation_checkpoint_frontier().await?;
+    if frontier.materialized_state_audit_mismatch
+        || frontier
+            .ensure_covers_checkpoint(&target.checkpoint)
+            .is_err()
+    {
+        return Ok(false);
+    }
+    state.federation.persist_checkpoint_quorum(target).await?;
+    let trusted = db.get_trusted_federation_checkpoint_quorum().await?;
+    let target_id = target.checkpoint.id()?;
+    match trusted {
+        Some(trusted) => Ok(trusted.checkpoint.id()? == target_id),
+        None => Ok(false),
+    }
+}
+
+pub async fn exchange_checkpoint_round<T>(
+    state: &FederationNode,
+    client: &FederationRestPeerClient<T>,
+    peers: &[&MemberConfigPublic],
+) -> usize
+where
+    T: Transport,
+{
+    if peers.is_empty() {
+        return 0;
+    }
+    let startup_recovery = !matches!(
+        state.federation_sync_status().await,
+        Some(crate::FederationSyncStatus::Healthy)
+    );
+    if startup_recovery {
+        state.federation.request_recovery_checkpoint().await;
+    }
+    let request_recovery_checkpoint = state.federation.recovery_checkpoint_is_requested().await;
+    if startup_recovery {
+        match next_local_checkpoint_catch_up_target(state).await {
+            Ok(Some(_)) => return 0,
+            Ok(None) => {}
+            Err(err) => tracing::warn!(
+                "Could not inspect federation checkpoint target before discovery: {}",
+                err
+            ),
+        }
+    }
+    let trusted_scheduled_sequence = match state
+        .mint
+        .localstore()
+        .get_trusted_federation_checkpoint_quorum()
+        .await
+    {
+        Ok(Some(quorum)) => {
+            // Trusted quorums are verified during startup and before atomic promotion. Polling
+            // reads only the scalar scheduled sequence and must not repeat cryptographic work.
+            quorum.checkpoint.scheduled_checkpoint_sequence
+        }
+        Ok(None) => 0,
+        Err(err) => {
+            tracing::warn!("Could not load trusted checkpoint for discovery: {}", err);
+            return 0;
+        }
+    };
+    if let Err(err) = state
+        .federation
+        .propose_recovery_barrier_if_requested()
+        .await
+    {
+        tracing::warn!("Could not propose recovery checkpoint barrier: {}", err);
+    }
+
+    let mut updates = 0;
+    let mut peer_summaries = Vec::with_capacity(peers.len());
+    let mut summary_attempts = peers
+        .iter()
+        .map(|&peer| async move {
+            (
+                peer,
+                client
+                    .checkpoint_summary(
+                        peer,
+                        request_recovery_checkpoint,
+                        Some(trusted_scheduled_sequence),
+                    )
+                    .await,
+            )
+        })
+        .collect::<FuturesUnordered<_>>();
+    while let Some((peer, result)) = summary_attempts.next().await {
+        match result {
+            Ok(summary) => {
+                updates += fetch_advertised_checkpoint_quorums(
+                    state,
+                    client,
+                    peer,
+                    &summary,
+                    startup_recovery,
+                )
+                .await;
+                peer_summaries.push((peer, summary));
+                if startup_recovery {
+                    match next_local_checkpoint_catch_up_target(state).await {
+                        Ok(Some(_)) => return updates,
+                        Ok(None) => {}
+                        Err(err) => tracing::warn!(
+                            "Could not inspect federation checkpoint target during discovery: {}",
+                            err
+                        ),
+                    }
+                }
+            }
+            Err(err) => tracing::warn!(
+                member_id = %peer.member_id,
+                "Federation checkpoint summary request failed: {}",
+                err
+            ),
+        }
+    }
+
+    if startup_recovery {
+        match next_local_checkpoint_catch_up_target(state).await {
+            Ok(Some(_)) => return updates,
+            Ok(None) => {}
+            Err(err) => tracing::warn!(
+                "Could not inspect federation checkpoint target after discovery: {}",
+                err
+            ),
+        }
+    }
+
+    if startup_recovery {
+        updates += adopt_peer_recovery_candidate(state, client, &peer_summaries).await;
+    }
+
+    for kind in [
+        FederationCheckpointKind::Scheduled,
+        FederationCheckpointKind::Recovery,
+    ] {
+        updates += exchange_checkpoint_candidate(state, client, &peer_summaries, kind).await;
+    }
+
+    disseminate_latest_checkpoint_quorums(state, client, &peer_summaries, &mut updates).await;
+    updates
+}
+
+pub async fn adopt_peer_recovery_candidate<T>(
+    state: &FederationNode,
+    client: &FederationRestPeerClient<T>,
+    peer_summaries: &[(&MemberConfigPublic, FederationCheckpointSummaryResponse)],
+) -> usize
+where
+    T: Transport,
+{
+    let Some(runtime_config) = state.mint.federation_config() else {
+        return 0;
+    };
+    let required = usize::from(
+        runtime_config
+            .public_config()
+            .threshold_params
+            .consensus_threshold,
+    );
+    let mut candidates = BTreeMap::new();
+    for (peer, response) in peer_summaries {
+        let Some(summary) = response.latest_recovery_candidate.as_ref() else {
+            continue;
+        };
+        candidates
+            .entry(summary.checkpoint_id)
+            .or_insert_with(|| (summary, Vec::new()))
+            .1
+            .push(*peer);
+    }
+    let Some((summary, peers)) = candidates
+        .into_values()
+        .find(|(_, peers)| peers.len() >= required)
+    else {
+        return 0;
+    };
+    if local_checkpoint_quorum_is_stored(state, summary.checkpoint_id).await {
+        return 0;
+    }
+
+    // Try every advertising source within this bounded round, rotating the
+    // first attempt deterministically by the local member so one false
+    // advertiser is never the only source and does not always sit first.
+    // Only a fully verified candidate is persisted.
+    let local_member = runtime_config.member_id().get() as usize;
+    let peer_count = peers.len();
+    for position in 0..peer_count {
+        let source = peers[(local_member + position) % peer_count];
+        let response = match client.fetch_checkpoint(source, summary.checkpoint_id).await {
+            Ok(response) => response,
+            Err(err) => {
+                tracing::warn!(
+                    member_id = %source.member_id,
+                    checkpoint_id = %summary.checkpoint_id,
+                    "Federation recovery candidate fetch failed: {}",
+                    err
+                );
+                continue;
+            }
+        };
+        let Some(checkpoint) = response.checkpoint.as_ref() else {
+            tracing::warn!(
+                member_id = %source.member_id,
+                checkpoint_id = %summary.checkpoint_id,
+                "Federation peer advertised a recovery candidate but did not serve it"
+            );
+            continue;
+        };
+        if let Err(err) = summary.validate_checkpoint(checkpoint) {
+            tracing::warn!(
+                member_id = %source.member_id,
+                checkpoint_id = %summary.checkpoint_id,
+                "Federation recovery candidate did not match its summary: {}",
+                err
+            );
+            continue;
+        }
+        match state
+            .federation
+            .persist_checkpoint_candidate(checkpoint)
+            .await
+        {
+            Ok(()) => return 1,
+            Err(err) => {
+                tracing::warn!(
+                    member_id = %source.member_id,
+                    checkpoint_id = %summary.checkpoint_id,
+                    "Could not persist federation recovery candidate: {}",
+                    err
+                );
+                return 0;
+            }
+        }
+    }
+    0
+}
+
+async fn fetch_advertised_checkpoint_quorums<T>(
+    state: &FederationNode,
+    client: &FederationRestPeerClient<T>,
+    peer: &MemberConfigPublic,
+    summary: &FederationCheckpointSummaryResponse,
+    stop_at_catch_up_target: bool,
+) -> usize
+where
+    T: Transport,
+{
+    let mut updates = 0;
+    for (peer_quorum, require_exact_local_copy) in [
+        (summary.next_scheduled_quorum.as_ref(), true),
+        (summary.latest_scheduled_quorum.as_ref(), false),
+        (summary.latest_recovery_quorum.as_ref(), false),
+    ] {
+        let Some(peer_quorum) = peer_quorum else {
+            continue;
+        };
+        let already_stored = if require_exact_local_copy {
+            local_checkpoint_quorum_is_stored(state, peer_quorum.checkpoint_id).await
+        } else {
+            local_checkpoint_quorum_is_current(state, peer_quorum).await
+        };
+        if already_stored {
+            continue;
+        }
+        match client
+            .fetch_checkpoint(peer, peer_quorum.checkpoint_id)
+            .await
+        {
+            Ok(response) => {
+                let Some(quorum) = response.quorum.as_ref() else {
+                    tracing::warn!(
+                        member_id = %peer.member_id,
+                        checkpoint_id = %peer_quorum.checkpoint_id,
+                        "Federation peer advertised a checkpoint quorum but did not serve it"
+                    );
+                    continue;
+                };
+                match state.federation.persist_checkpoint_quorum(quorum).await {
+                    Ok(_) => {
+                        updates += 1;
+                        if stop_at_catch_up_target
+                            && matches!(
+                                next_local_checkpoint_catch_up_target(state).await,
+                                Ok(Some(_))
+                            )
+                        {
+                            return updates;
+                        }
+                    }
+                    Err(err) => tracing::warn!(
+                        member_id = %peer.member_id,
+                        checkpoint_id = %peer_quorum.checkpoint_id,
+                        "Could not persist fetched federation checkpoint quorum: {}",
+                        err
+                    ),
+                }
+            }
+            Err(err) => tracing::warn!(
+                member_id = %peer.member_id,
+                checkpoint_id = %peer_quorum.checkpoint_id,
+                "Federation checkpoint quorum fetch failed: {}",
+                err
+            ),
+        }
+    }
+    updates
+}
+
+async fn local_checkpoint_quorum_is_stored(
+    state: &FederationNode,
+    checkpoint_id: cdk::federation::FederationCheckpointId,
+) -> bool {
+    match state
+        .mint
+        .localstore()
+        .get_federation_checkpoint_quorum(checkpoint_id)
+        .await
+    {
+        Ok(Some(_)) => true,
+        Ok(None) => false,
+        Err(err) => {
+            tracing::warn!(
+                checkpoint_id = %checkpoint_id,
+                "Could not inspect local federation checkpoint quorum: {}",
+                err
+            );
+            false
+        }
+    }
+}
+
+pub async fn next_local_checkpoint_catch_up_target(
+    state: &FederationNode,
+) -> anyhow::Result<Option<FederationCheckpointQuorum>> {
+    let runtime_config =
+        state
+            .mint
+            .federation_config()
+            .ok_or(FederationError::RuntimeUnavailable {
+                component: "mint configuration",
+            })?;
+    let public_config = runtime_config.public_config();
+    let local_member = runtime_config.member_id();
+    let db = state.mint.localstore();
+    let current = db.get_trusted_federation_checkpoint_quorum().await?;
+    // Trusted quorums were verified before promotion. Use their checkpoint metadata to decide
+    // whether there is any catch-up work before doing expensive signature verification.
+    let current_checkpoint = current.as_ref().map(|quorum| &quorum.checkpoint);
+    let scheduled_sequence =
+        current_checkpoint.map_or(0, |checkpoint| checkpoint.scheduled_checkpoint_sequence);
+    if let Some(next) = db
+        .get_next_federation_scheduled_checkpoint_quorum(scheduled_sequence)
+        .await?
+    {
+        let verified_next = super::verify_checkpoint_quorum_with_metrics(
+            &next,
+            public_config,
+            local_member,
+            super::CheckpointQuorumVerificationContext::StartupCatchUp,
+        )?;
+        verified_next
+            .checkpoint()
+            .validate_promotion_from(current_checkpoint)?;
+        return Ok(Some(next));
+    }
+    let Some(recovery) = db
+        .get_latest_federation_checkpoint_quorum(FederationCheckpointKind::Recovery)
+        .await?
+    else {
+        return Ok(None);
+    };
+    if recovery_checkpoint_is_superseded(
+        recovery.checkpoint.scheduled_checkpoint_sequence,
+        scheduled_sequence,
+    ) {
+        return Ok(None);
+    }
+    if current_checkpoint.is_some_and(|current| current.covers(&recovery.checkpoint)) {
+        return Ok(None);
+    }
+    recovery
+        .checkpoint
+        .validate_promotion_from(current_checkpoint)?;
+    super::verify_checkpoint_quorum_with_metrics(
+        &recovery,
+        public_config,
+        local_member,
+        super::CheckpointQuorumVerificationContext::StartupCatchUp,
+    )?;
+    Ok(Some(recovery))
+}
+
+pub fn recovery_checkpoint_is_superseded(
+    recovery_scheduled_sequence: u64,
+    trusted_scheduled_sequence: u64,
+) -> bool {
+    recovery_scheduled_sequence < trusted_scheduled_sequence
+}
+
+async fn exchange_checkpoint_candidate<T>(
+    state: &FederationNode,
+    client: &FederationRestPeerClient<T>,
+    peer_summaries: &[(&MemberConfigPublic, FederationCheckpointSummaryResponse)],
+    kind: FederationCheckpointKind,
+) -> usize
+where
+    T: Transport,
+{
+    let Some(candidate) = local_pending_checkpoint(state, kind).await else {
+        return 0;
+    };
+    let checkpoint_id = match candidate.id() {
+        Ok(checkpoint_id) => checkpoint_id,
+        Err(err) => {
+            tracing::warn!("Could not identify local federation checkpoint: {}", err);
+            return 0;
+        }
+    };
+    let mut stored_signers = match state
+        .mint
+        .localstore()
+        .get_federation_checkpoint_signatures(checkpoint_id)
+        .await
+    {
+        Ok(signatures) => signatures
+            .into_iter()
+            .map(|signature| signature.signer)
+            .collect::<BTreeSet<_>>(),
+        Err(err) => {
+            tracing::warn!(
+                checkpoint_id = %checkpoint_id,
+                "Could not load federation checkpoint signatures: {}",
+                err
+            );
+            return 0;
+        }
+    };
+    let mut updates = 0;
+    // The request carries only the checkpoint ID, so a peer returns a signature only when it
+    // independently stored the same candidate. Asking before its summary advertises that
+    // candidate is safe and avoids an extra discovery interval during startup recovery.
+    for (peer, _) in peer_summaries {
+        if stored_signers.contains(&peer.member_id) {
+            continue;
+        }
+        match client.request_checkpoint_signature(peer, &candidate).await {
+            Ok(response) => {
+                let Some(signature) = response.signature.as_ref() else {
+                    continue;
+                };
+                match state
+                    .federation
+                    .persist_checkpoint_signature(checkpoint_id, signature)
+                    .await
+                {
+                    Ok(quorum) => {
+                        updates += 1;
+                        stored_signers.insert(signature.signer);
+                        if quorum.is_some() {
+                            break;
+                        }
+                    }
+                    Err(err) => tracing::warn!(
+                        member_id = %peer.member_id,
+                        checkpoint_id = %checkpoint_id,
+                        "Could not persist federation checkpoint signature: {}",
+                        err
+                    ),
+                }
+            }
+            Err(err) => tracing::warn!(
+                member_id = %peer.member_id,
+                checkpoint_id = %checkpoint_id,
+                "Federation checkpoint signature request failed: {}",
+                err
+            ),
+        }
+    }
+    updates
+}
+
+async fn local_checkpoint_quorum_is_current(
+    state: &FederationNode,
+    peer_quorum: &FederationCheckpointSummary,
+) -> bool {
+    let db = state.mint.localstore();
+    let same_kind = match db
+        .get_latest_federation_checkpoint_quorum(peer_quorum.kind)
+        .await
+    {
+        Ok(Some(local_quorum)) => {
+            let Ok(local_summary) =
+                FederationCheckpointSummary::from_checkpoint(&local_quorum.checkpoint)
+            else {
+                return false;
+            };
+            local_summary.covers(peer_quorum)
+        }
+        Ok(None) => false,
+        Err(err) => {
+            tracing::warn!("Could not load local federation checkpoint quorum: {}", err);
+            false
+        }
+    };
+    if same_kind || peer_quorum.kind == FederationCheckpointKind::Scheduled {
+        return same_kind;
+    }
+    match db
+        .get_latest_federation_checkpoint_quorum(FederationCheckpointKind::Scheduled)
+        .await
+    {
+        Ok(Some(local_quorum)) => {
+            FederationCheckpointSummary::from_checkpoint(&local_quorum.checkpoint)
+                .is_ok_and(|local_summary| local_summary.covers(peer_quorum))
+        }
+        Ok(None) => false,
+        Err(err) => {
+            tracing::warn!("Could not load local scheduled checkpoint quorum: {}", err);
+            false
+        }
+    }
+}
+
+async fn local_pending_checkpoint(
+    state: &FederationNode,
+    kind: FederationCheckpointKind,
+) -> Option<FederationCheckpoint> {
+    let db = state.mint.localstore();
+    let candidate = match async {
+        match kind {
+            FederationCheckpointKind::Scheduled => {
+                let sequence = db
+                    .get_latest_federation_checkpoint_quorum(kind)
+                    .await?
+                    .map_or(0, |quorum| quorum.checkpoint.scheduled_checkpoint_sequence);
+                db.get_next_federation_scheduled_checkpoint(sequence).await
+            }
+            FederationCheckpointKind::Recovery => db.get_latest_federation_checkpoint(kind).await,
+        }
+    }
+    .await
+    {
+        Ok(candidate) => candidate?,
+        Err(err) => {
+            tracing::warn!("Could not load local checkpoint candidate: {}", err);
+            return None;
+        }
+    };
+    let checkpoint_id = match candidate.id() {
+        Ok(checkpoint_id) => checkpoint_id,
+        Err(err) => {
+            tracing::warn!("Could not identify local checkpoint candidate: {}", err);
+            return None;
+        }
+    };
+    match db.get_federation_checkpoint_quorum(checkpoint_id).await {
+        Ok(Some(_)) => None,
+        Ok(None) => Some(candidate),
+        Err(err) => {
+            tracing::warn!("Could not inspect local checkpoint quorum: {}", err);
+            None
+        }
+    }
+}
+
+async fn disseminate_latest_checkpoint_quorums<T>(
+    state: &FederationNode,
+    client: &FederationRestPeerClient<T>,
+    peer_summaries: &[(&MemberConfigPublic, FederationCheckpointSummaryResponse)],
+    updates: &mut usize,
+) where
+    T: Transport,
+{
+    for kind in [
+        FederationCheckpointKind::Scheduled,
+        FederationCheckpointKind::Recovery,
+    ] {
+        let quorum = match state
+            .mint
+            .localstore()
+            .get_latest_federation_checkpoint_quorum(kind)
+            .await
+        {
+            Ok(Some(quorum)) => quorum,
+            Ok(None) => continue,
+            Err(err) => {
+                tracing::warn!(
+                    "Could not load checkpoint quorum for dissemination: {}",
+                    err
+                );
+                continue;
+            }
+        };
+        let checkpoint_id = match quorum.checkpoint.id() {
+            Ok(checkpoint_id) => checkpoint_id,
+            Err(err) => {
+                tracing::warn!(
+                    "Could not identify checkpoint quorum for dissemination: {}",
+                    err
+                );
+                continue;
+            }
+        };
+        for (peer, summary) in peer_summaries {
+            let (peer_candidate, peer_quorum) = match kind {
+                FederationCheckpointKind::Scheduled => (
+                    summary.latest_scheduled_candidate.as_ref(),
+                    summary.latest_scheduled_quorum.as_ref(),
+                ),
+                FederationCheckpointKind::Recovery => (
+                    summary.latest_recovery_candidate.as_ref(),
+                    summary.latest_recovery_quorum.as_ref(),
+                ),
+            };
+            // A peer that already has this candidate can collect the same signatures through
+            // the pull-based exchange. Avoid pushing the full quorum back into every member's
+            // application lock during recovery; that duplicate fan-out delays the lagging
+            // member's next discovery round without improving checkpoint availability.
+            if peer_candidate.is_some_and(|summary| summary.checkpoint_id == checkpoint_id)
+                || peer_quorum.is_some_and(|summary| summary.checkpoint_id == checkpoint_id)
+            {
+                continue;
+            }
+            match client.publish_checkpoint_quorum(peer, &quorum).await {
+                Ok(()) => *updates += 1,
+                Err(err) => tracing::warn!(
+                    member_id = %peer.member_id,
+                    checkpoint_id = %checkpoint_id,
+                    "Federation checkpoint quorum publication failed: {}",
+                    err
+                ),
+            }
+        }
+    }
+}
+
+pub async fn reconcile_federation_startup_with_quorum<T>(
+    state: &FederationNode,
+    client: &FederationRestPeerClient<T>,
+    evidence_observed_at: Instant,
+    peer_statuses: &[FederationPeerStatus],
+) where
+    T: Transport + 'static,
+{
+    let Some(sync_status) = state.federation_sync_status().await else {
+        return;
+    };
+    let live_session_active = state.federation.live_session_active().await;
+    if !quorum_reconciliation_is_required(&sync_status, live_session_active) {
+        return;
+    }
+    let Some(runtime_config) = state.mint.federation_config() else {
+        return;
+    };
+    let local_status = match local_peer_status(state).await {
+        Ok(status) => status,
+        Err(err) => {
+            tracing::warn!(
+                "Could not inspect local federation status for quorum startup: {}",
+                err
+            );
+            return;
+        }
+    };
+    let required = usize::from(
+        runtime_config
+            .public_config()
+            .threshold_params
+            .consensus_threshold,
+    );
+    let max_evidence_age = client
+        .sync_config
+        .peer_request_timeout
+        .saturating_mul(u32::from(
+            runtime_config.public_config().threshold_params.member_count,
+        ));
+    if !quorum_evidence_is_current(evidence_observed_at, Instant::now(), max_evidence_age) {
+        state
+            .mark_federation_awaiting_quorum(local_status.operation_count)
+            .await;
+        return;
+    }
+    let target_session = quorum_compatible_session(&local_status, peer_statuses, required);
+    let Some(target_session) = target_session else {
+        state
+            .mark_federation_awaiting_quorum(local_status.operation_count)
+            .await;
+        return;
+    };
+
+    if live_session_active {
+        if target_session == local_status.aleph_bft_session
+            && state.federation.live_session_replay_ready().await
+        {
+            state.mark_federation_healthy().await;
+            return;
+        }
+        if target_session > local_status.aleph_bft_session {
+            super::stop_current_federation_aleph_bft_session_for_catch_up(state).await;
+        } else {
+            state
+                .mark_federation_awaiting_quorum(local_status.operation_count)
+                .await;
+            return;
+        }
+    }
+
+    if target_session > local_status.aleph_bft_session {
+        let Some(consensus) = state.federation.consensus() else {
+            return;
+        };
+        let mut consensus = consensus.lock().await;
+        if let Err(err) = consensus.begin_aleph_bft_session(target_session) {
+            tracing::warn!(
+                target_session,
+                "Could not advance federation consensus to quorum session: {}",
+                err
+            );
+            return;
+        }
+    }
+
+    let replay_target_next_unit_index_by_member =
+        quorum_supported_replay_target(&local_status, peer_statuses, target_session, required);
+    match super::start_federation_aleph_bft_live_session_with_replay_target_and_transport(
+        state,
+        client.sync_config,
+        replay_target_next_unit_index_by_member,
+        client.cloned_transport(),
+    )
+    .await
+    {
+        Ok(Some(handle)) if handle.replay_ready() => state.mark_federation_healthy().await,
+        Ok(Some(_)) => {
+            state
+                .mark_federation_awaiting_quorum(local_status.operation_count)
+                .await;
+        }
+        Ok(None)
+            if state.federation.live_session_active().await
+                && state.federation.live_session_replay_ready().await =>
+        {
+            state.mark_federation_healthy().await;
+        }
+        Ok(None) => {}
+        Err(err) => {
+            tracing::warn!("Could not start quorum-validated AlephBFT session: {}", err);
+        }
+    }
+}
+
+pub fn quorum_supported_replay_target(
+    local_status: &FederationPeerStatus,
+    peer_statuses: &[FederationPeerStatus],
+    target_session: u64,
+    required: usize,
+) -> BTreeMap<MemberId, u64> {
+    if required <= 1 {
+        return local_status.aleph_bft_next_unit_index_by_member.clone();
+    }
+    let matching = peer_statuses
+        .iter()
+        .filter(|status| {
+            status.aleph_bft_session == target_session
+                && local_status.has_same_application_frontier(status)
+        })
+        .collect::<Vec<_>>();
+    local_status
+        .aleph_bft_next_unit_index_by_member
+        .iter()
+        .map(|(member_id, local_next_unit_index)| {
+            let mut supported_indexes = matching
+                .iter()
+                .filter_map(|status| {
+                    status
+                        .aleph_bft_next_unit_index_by_member
+                        .get(member_id)
+                        .copied()
+                })
+                .collect::<Vec<_>>();
+            supported_indexes.push(*local_next_unit_index);
+            if supported_indexes.len() < required {
+                return (*member_id, *local_next_unit_index);
+            }
+            supported_indexes.sort_unstable_by(|left, right| right.cmp(left));
+            (
+                *member_id,
+                (*local_next_unit_index).max(supported_indexes[required - 1]),
+            )
+        })
+        .collect()
+}
+
+pub fn quorum_reconciliation_is_required(
+    sync_status: &crate::FederationSyncStatus,
+    live_session_active: bool,
+) -> bool {
+    match sync_status {
+        crate::FederationSyncStatus::Healthy if live_session_active => false,
+        crate::FederationSyncStatus::Halted { .. } => false,
+        crate::FederationSyncStatus::Healthy
+        | crate::FederationSyncStatus::AwaitingQuorum { .. }
+        | crate::FederationSyncStatus::Lagging { .. }
+        | crate::FederationSyncStatus::CatchingUp { .. } => true,
+    }
+}
+
+pub fn quorum_evidence_is_current(
+    observed_at: Instant,
+    now: Instant,
+    max_age: std::time::Duration,
+) -> bool {
+    now.saturating_duration_since(observed_at) <= max_age
+}
+
+pub fn checked_checkpoint_transfer_bytes(
+    transferred: u64,
+    page_bytes: u64,
+    maximum: u64,
+) -> Result<u64, FederationError> {
+    let actual =
+        transferred
+            .checked_add(page_bytes)
+            .ok_or(FederationError::CheckpointCatchUpTooLarge {
+                resource: "transfer batch",
+                actual: u64::MAX,
+                max: maximum,
+            })?;
+    if actual > maximum {
+        return Err(FederationError::CheckpointCatchUpTooLarge {
+            resource: "transfer batch",
+            actual,
+            max: maximum,
+        });
+    }
+    Ok(actual)
+}
+
+pub fn checked_checkpoint_page_cursors(
+    next_journal_index: u64,
+    next_finalized_item_index: u64,
+    journal_progress: u64,
+    finalized_progress: u64,
+) -> Result<(u64, u64), FederationError> {
+    if journal_progress == 0 && finalized_progress == 0 {
+        return Err(FederationError::CatchUpNoProgress {
+            index: next_journal_index,
+        });
+    }
+    let next_journal_index = next_journal_index
+        .checked_add(journal_progress)
+        .ok_or_else(|| FederationError::CheckpointInvalid {
+            reason: "checkpoint catch-up journal cursor overflow".to_string(),
+        })?;
+    let next_finalized_item_index = next_finalized_item_index
+        .checked_add(finalized_progress)
+        .ok_or_else(|| FederationError::CheckpointInvalid {
+            reason: "checkpoint catch-up finalized cursor overflow".to_string(),
+        })?;
+    Ok((next_journal_index, next_finalized_item_index))
+}
+
+pub fn quorum_compatible_session(
+    local_status: &FederationPeerStatus,
+    peer_statuses: &[FederationPeerStatus],
+    required: usize,
+) -> Option<u64> {
+    peer_statuses
+        .iter()
+        .filter(|candidate| {
+            candidate.aleph_bft_session >= local_status.aleph_bft_session
+                && local_status.has_same_application_frontier(candidate)
+        })
+        .map(|candidate| candidate.aleph_bft_session)
+        .filter(|candidate_session| {
+            let matching_peers = peer_statuses
+                .iter()
+                .filter(|status| {
+                    status.aleph_bft_session == *candidate_session
+                        && local_status.has_same_application_frontier(status)
+                })
+                .count();
+            matching_peers.saturating_add(1) >= required
+        })
+        .max()
+}
+
+#[cfg(feature = "prometheus")]
+fn record_federation_peer_sync_metrics(
+    state: &FederationNode,
+    peer: MemberId,
+    connected: bool,
+    operation_count: Option<u64>,
+) {
+    let Some(config) = state.mint.federation_config() else {
+        return;
+    };
+    let member = config.member_id().to_string();
+    let peer = peer.to_string();
+    cdk_prometheus::METRICS.set_federation_peer_connected(&member, &peer, connected);
+    if let Some(operation_count) = operation_count {
+        cdk_prometheus::METRICS.set_federation_peer_operation_count(
+            &member,
+            &peer,
+            u64_to_i64_saturating(operation_count),
+        );
+    }
+}
+
+#[cfg(not(feature = "prometheus"))]
+fn record_federation_peer_sync_metrics(
+    _state: &FederationNode,
+    _peer: MemberId,
+    _connected: bool,
+    _operation_count: Option<u64>,
+) {
+}
+
+/// Owns checkpoint target application and bounded page acquisition from one source.
+///
+/// It may perform peer requests only before calling the runtime application path;
+/// it never holds the operation-application or consensus lock across network I/O.
+struct FederationCheckpointCatchUpManager<'a, T> {
+    client: &'a FederationRestPeerClient<T>,
+}
+
+impl<'a, T> FederationCheckpointCatchUpManager<'a, T> {
+    fn new(client: &'a FederationRestPeerClient<T>) -> Self {
+        Self { client }
+    }
+}
+
+impl<T> FederationCheckpointCatchUpManager<'_, T>
+where
+    T: Transport,
+{
+    pub async fn catch_up_state_to_checkpoint_from_member(
+        &self,
+        state: &FederationNode,
+        member: &MemberConfigPublic,
+        quorum: &FederationCheckpointQuorum,
+    ) -> anyhow::Result<()> {
+        let runtime_config =
+            state
+                .mint
+                .federation_config()
+                .ok_or(FederationError::RuntimeUnavailable {
+                    component: "mint configuration",
+                })?;
+        let public_config = runtime_config.public_config();
+        super::verify_checkpoint_quorum_with_metrics(
+            quorum,
+            public_config,
+            runtime_config.member_id(),
+            super::CheckpointQuorumVerificationContext::StartupCatchUp,
+        )?;
+        let checkpoint = &quorum.checkpoint;
+        let current_checkpoint = state
+            .mint
+            .localstore()
+            .get_trusted_federation_checkpoint_quorum()
+            .await?;
+        checkpoint.validate_catch_up_batch_from(
+            current_checkpoint.as_ref().map(|quorum| &quorum.checkpoint),
+        )?;
+        let checkpoint_id = checkpoint.id()?;
+        let consensus = state.federation.consensus().ok_or({
+            FederationError::RuntimeUnavailable {
+                component: "consensus",
+            }
+        })?;
+        let (initial_journal_index, initial_finalized_item_index, mut known_order_digest) = {
+            let consensus = consensus.lock().await;
+            let status = consensus.aleph_bft_status()?;
+            (
+                consensus.journal().next_index(),
+                status.next_item_index,
+                consensus.journal().latest_order_digest(),
+            )
+        };
+        if initial_journal_index > checkpoint.journal_next_index
+            || initial_finalized_item_index > checkpoint.finalized_next_item_index
+        {
+            return Err(FederationError::CheckpointInvalid {
+                reason: "local catch-up frontier is ahead of the selected target checkpoint"
+                    .to_string(),
+            }
+            .into());
+        }
+
+        let mut next_journal_index = initial_journal_index;
+        let mut next_finalized_item_index = initial_finalized_item_index;
+        let mut transferred_bytes = 0u64;
+        #[cfg(feature = "prometheus")]
+        let mut peak_in_flight_bytes = 0u64;
+        let mut page_count = 0u64;
+        #[cfg(feature = "prometheus")]
+        let metric_member = runtime_config.member_id().to_string();
+        #[cfg(feature = "prometheus")]
+        cdk_prometheus::METRICS
+            .set_federation_checkpoint_catch_up_peak_in_flight_bytes(&metric_member, 0);
+        while next_journal_index < checkpoint.journal_next_index
+            || next_finalized_item_index < checkpoint.finalized_next_item_index
+        {
+            let request = FederationJournalCatchUpRequest::new(next_journal_index)
+                .with_target_checkpoint(checkpoint_id)
+                .with_limit(self.client.sync_config.catch_up_limit)
+                .with_known_order_digest(known_order_digest)
+                .with_aleph_bft_next_item_index(next_finalized_item_index);
+            let request_bytes = serde_json::to_vec(&request)?.len();
+            if request_bytes > FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES {
+                return Err(FederationError::CheckpointCatchUpTooLarge {
+                    resource: "request",
+                    actual: u64::try_from(request_bytes).unwrap_or(u64::MAX),
+                    max: FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES as u64,
+                }
+                .into());
+            }
+            let page = self
+                .client
+                .catch_up_to_checkpoint(member, &request, checkpoint)
+                .await?;
+            let page_bytes =
+                u64::try_from(page.ensure_within_checkpoint_page_limit()?).unwrap_or(u64::MAX);
+            transferred_bytes = checked_checkpoint_transfer_bytes(
+                transferred_bytes,
+                page_bytes,
+                FEDERATION_MAX_CHECKPOINT_CATCH_UP_TRANSFER_BYTES,
+            )?;
+            #[cfg(feature = "prometheus")]
+            {
+                peak_in_flight_bytes = peak_in_flight_bytes.max(page_bytes);
+                cdk_prometheus::METRICS.record_federation_checkpoint_work(
+                    &metric_member,
+                    cdk_prometheus::FederationCheckpointWork::CatchUpPagesFetched,
+                    1,
+                );
+                cdk_prometheus::METRICS.record_federation_checkpoint_work(
+                    &metric_member,
+                    cdk_prometheus::FederationCheckpointWork::CatchUpCanonicalBytesFetched,
+                    page_bytes,
+                );
+                cdk_prometheus::METRICS.set_federation_checkpoint_catch_up_peak_in_flight_bytes(
+                    &metric_member,
+                    u64_to_i64_saturating(peak_in_flight_bytes),
+                );
+            }
+            page_count = page_count.saturating_add(1);
+            if page.from_index != next_journal_index
+                || page.aleph_bft_from_item_index != next_finalized_item_index
+            {
+                return Err(FederationError::CheckpointInvalid {
+                    reason: "checkpoint catch-up page does not start at the requested cursors"
+                        .to_string(),
+                }
+                .into());
+            }
+            if let Some(first) = page.entries.first() {
+                if first.previous_order_digest != known_order_digest {
+                    return Err(FederationError::CatchUpDigestMismatch {
+                        index: first.index,
+                        expected: known_order_digest,
+                        found: first.previous_order_digest,
+                    }
+                    .into());
+                }
+            }
+            let journal_progress = u64::try_from(page.entries.len()).map_err(|_| {
+                FederationError::CheckpointInvalid {
+                    reason: "checkpoint catch-up journal page length exceeds u64".to_string(),
+                }
+            })?;
+            let finalized_progress =
+                u64::try_from(page.aleph_bft_finalized_items.len()).map_err(|_| {
+                    FederationError::CheckpointInvalid {
+                        reason: "checkpoint catch-up finalized page length exceeds u64".to_string(),
+                    }
+                })?;
+            (next_journal_index, next_finalized_item_index) = checked_checkpoint_page_cursors(
+                next_journal_index,
+                next_finalized_item_index,
+                journal_progress,
+                finalized_progress,
+            )?;
+            if let Some(last) = page.entries.last() {
+                known_order_digest = last.order_digest;
+            }
+            state
+                .apply_federation_checkpoint_catch_up_response(&page, quorum)
+                .await?;
+        }
+
+        if page_count == 0 {
+            let response = FederationJournalCatchUpResponse::from_journal(
+                checkpoint.federation_id,
+                &cdk::federation::InMemoryFederationJournal::from_base(
+                    checkpoint.journal_next_index,
+                    checkpoint.journal_order_digest,
+                ),
+                checkpoint.materialized_state_digest,
+                &FederationJournalCatchUpRequest::new(checkpoint.journal_next_index)
+                    .with_target_checkpoint(checkpoint_id)
+                    .with_aleph_bft_next_item_index(checkpoint.finalized_next_item_index),
+                self.client.sync_config.catch_up_limit,
+                self.client.sync_config.catch_up_limit,
+            );
+            response.validate_checkpoint_binding(checkpoint)?;
+            state
+                .apply_federation_checkpoint_catch_up_response(&response, quorum)
+                .await?;
+        }
+        Ok(())
+    }
+}
+
+impl<T> FederationRestPeerClient<T>
+where
+    T: Transport,
+{
+    pub async fn catch_up_state_to_checkpoint_from_member(
+        &self,
+        state: &FederationNode,
+        member: &MemberConfigPublic,
+        quorum: &FederationCheckpointQuorum,
+    ) -> anyhow::Result<()> {
+        FederationCheckpointCatchUpManager::new(self)
+            .catch_up_state_to_checkpoint_from_member(state, member, quorum)
+            .await
+    }
+
+    pub async fn sync_once_from_member(
+        &self,
+        state: &FederationNode,
+        member: &MemberConfigPublic,
+    ) -> anyhow::Result<FederationPeerStatus> {
+        let mut peer_status = self.peer_status(member).await?;
+        let mut local_status = local_peer_order_status(state).await?;
+        let mut recovered_from_peer = false;
+
+        if peer_requires_catch_up(&local_status, &peer_status)? {
+            if should_defer_catch_up_to_live_aleph_bft(state).await {
+                tracing::debug!(
+                    member_id = %member.member_id,
+                    local_operation_count = local_status.operation_count,
+                    peer_operation_count = peer_status.operation_count,
+                    "Deferring peer catch-up to the healthy live AlephBFT session"
+                );
+                return Ok(peer_status);
+            }
+            state
+                .mark_federation_lagging(
+                    member.member_id,
+                    local_status.operation_count,
+                    peer_status.operation_count,
+                )
+                .await;
+            state.mark_federation_catching_up(member.member_id).await;
+
+            while peer_requires_catch_up(&local_status, &peer_status)? {
+                let Some(target) = next_local_checkpoint_catch_up_target(state).await? else {
+                    state.federation.request_recovery_checkpoint().await;
+                    state
+                        .mark_federation_lagging(
+                            member.member_id,
+                            local_status.operation_count,
+                            peer_status.operation_count,
+                        )
+                        .await;
+                    return Ok(peer_status);
+                };
+                let before_status = local_status.clone();
+                if let Err(err) = self
+                    .catch_up_state_to_checkpoint_from_member(state, member, &target)
+                    .await
+                {
+                    #[cfg(feature = "prometheus")]
+                    if let Some(config) = state.mint.federation_config() {
+                        cdk_prometheus::METRICS.record_federation_checkpoint_work(
+                            &config.member_id().to_string(),
+                            cdk_prometheus::FederationCheckpointWork::CatchUpRetries,
+                            1,
+                        );
+                    }
+                    state
+                        .mark_federation_lagging(
+                            member.member_id,
+                            before_status.operation_count,
+                            peer_status.operation_count,
+                        )
+                        .await;
+                    return Err(err);
+                }
+
+                local_status = local_peer_order_status(state).await?;
+                recovered_from_peer = true;
+                if !status_made_catch_up_progress(&before_status, &local_status)? {
+                    let before_finalized_item = format_aleph_bft_next_item_index(&before_status);
+                    super::halt_current_federation_aleph_bft_session(
+                        state,
+                        &format!(
+                            "peer {} returned no catch-up progress from operation {} / finalized item {}",
+                            member.member_id, before_status.operation_count, before_finalized_item
+                        ),
+                    )
+                    .await;
+                    return Err(FederationError::CatchUpNoProgress {
+                        index: before_status.operation_count,
+                    }
+                    .into());
+                }
+            }
+        }
+
+        if recovered_from_peer {
+            super::stop_current_federation_aleph_bft_session_for_catch_up(state).await;
+        }
+
+        local_status = local_peer_order_status(state).await?;
+        let order_digest_mismatch =
+            local_status.latest_order_digest != peer_status.latest_order_digest;
+        if local_status.operation_count == peer_status.operation_count && order_digest_mismatch {
+            return Err(FederationError::CatchUpDigestMismatch {
+                index: peer_status.operation_count.saturating_sub(1),
+                expected: local_status.latest_order_digest,
+                found: peer_status.latest_order_digest,
+            }
+            .into());
+        }
+
+        let local_full_status = local_peer_status(state).await?;
+        if state.federation.live_session_active().await
+            && !state.federation.live_session_replay_ready().await
+            && local_full_status.aleph_bft_session == peer_status.aleph_bft_session
+            && local_full_status.has_same_application_state(&peer_status)
+            && aleph_bft_session_has_progress(&peer_status)
+            && aleph_bft_frontier_is_ahead(&local_full_status, &peer_status)
+        {
+            let local_backup = state
+                .mint
+                .localstore()
+                .get_federation_aleph_bft_backup_metadata(peer_status.aleph_bft_session)
+                .await?;
+            let probe_timer = super::latency::FederationLatencyTimer::start(
+                super::latency::FederationLatencyCorrelation::Session,
+                peer_status.aleph_bft_session.to_string(),
+                super::latency::FederationLatencyBackend::AlephBft,
+                super::latency::FederationLatencyDirection::Incoming,
+                super::latency::FederationLatencyPhase::AlephBftBackupProbe,
+            );
+            let probe = self
+                .aleph_bft_backup(
+                    member,
+                    FederationAlephBftBackupRequest::new(
+                        peer_status.aleph_bft_session,
+                        local_backup.chunk_count,
+                    ),
+                )
+                .await;
+            probe_timer.finish(super::latency::FederationLatencyOutcome::from_success(
+                probe.is_ok(),
+            ));
+            let probe = probe?;
+            if !probe.chunks.is_empty() {
+                tracing::warn!(
+                    member_id = %member.member_id,
+                    session = peer_status.aleph_bft_session,
+                    local_backup_chunks = local_backup.chunk_count,
+                    peer_suffix_chunks = probe.chunks.len(),
+                    "Replacing an incomplete live AlephBFT backup from a quorum-compatible peer"
+                );
+                super::stop_current_federation_aleph_bft_session_for_catch_up(state).await;
+                let recovery_timer = super::latency::FederationLatencyTimer::start(
+                    super::latency::FederationLatencyCorrelation::Session,
+                    peer_status.aleph_bft_session.to_string(),
+                    super::latency::FederationLatencyBackend::AlephBft,
+                    super::latency::FederationLatencyDirection::Incoming,
+                    super::latency::FederationLatencyPhase::AlephBftBackupRecovery,
+                );
+                let recovered = self
+                    .recover_aleph_bft_backup_from_member(
+                        state,
+                        member,
+                        peer_status.aleph_bft_session,
+                        true,
+                    )
+                    .await;
+                recovery_timer.finish(super::latency::FederationLatencyOutcome::from_success(
+                    recovered.is_ok(),
+                ));
+                if let Some(recovered_backup_status) = recovered? {
+                    peer_status = recovered_backup_status;
+                }
+            }
+        }
+
+        let local_full_status = local_peer_status(state).await?;
+        if !state.federation.live_session_active().await
+            && local_full_status.has_same_application_state(&peer_status)
+            && aleph_bft_session_has_progress(&peer_status)
+        {
+            if let Some(recovered_backup_status) = self
+                .recover_aleph_bft_backup_from_member(
+                    state,
+                    member,
+                    peer_status.aleph_bft_session,
+                    recovered_from_peer,
+                )
+                .await?
+            {
+                peer_status = recovered_backup_status;
+            }
+        }
+
+        Ok(peer_status)
+    }
+
+    async fn recover_aleph_bft_backup_from_member(
+        &self,
+        state: &FederationNode,
+        member: &MemberConfigPublic,
+        session: u64,
+        replace_existing: bool,
+    ) -> anyhow::Result<Option<FederationPeerStatus>> {
+        let db = state.mint.localstore();
+        if !replace_existing
+            && !db
+                .get_federation_aleph_bft_backup_chunks(session)
+                .await?
+                .is_empty()
+        {
+            return Ok(None);
+        }
+
+        let mut chunks = Vec::new();
+        let mut next_chunk = 0u64;
+        let mut total_bytes = 0usize;
+        loop {
+            let request = FederationAlephBftBackupRequest::new(session, next_chunk);
+            let backup = self.aleph_bft_backup(member, request).await?;
+            for chunk in backup.chunks {
+                total_bytes = total_bytes
+                    .checked_add(chunk.len())
+                    .ok_or_else(|| anyhow::anyhow!("AlephBFT backup byte count overflowed"))?;
+                if total_bytes > MAX_ALEPH_BFT_SESSION_BACKUP_BYTES {
+                    anyhow::bail!(
+                        "AlephBFT session {} backup exceeds the {} byte recovery bound",
+                        session,
+                        MAX_ALEPH_BFT_SESSION_BACKUP_BYTES
+                    );
+                }
+                chunks.push(chunk);
+                if chunks.len() > MAX_ALEPH_BFT_SESSION_BACKUP_CHUNKS {
+                    anyhow::bail!(
+                        "AlephBFT session {} backup exceeds the {} chunk recovery bound",
+                        session,
+                        MAX_ALEPH_BFT_SESSION_BACKUP_CHUNKS
+                    );
+                }
+                next_chunk = next_chunk
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow::anyhow!("AlephBFT backup chunk count overflowed"))?;
+            }
+            if backup.complete {
+                break;
+            }
+        }
+        if chunks.is_empty() {
+            anyhow::bail!(
+                "federation member {} has no AlephBFT backup for progressed session {}",
+                member.member_id,
+                session
+            );
+        }
+
+        let mut tx = db.begin_transaction().await?;
+        if replace_existing {
+            tx.replace_federation_aleph_bft_backup_chunks(session, &chunks)
+                .await?;
+        } else {
+            for chunk in &chunks {
+                tx.append_federation_aleph_bft_backup_bytes(session, chunk)
+                    .await?;
+            }
+        }
+        tx.commit().await?;
+        tracing::info!(
+            member_id = %member.member_id,
+            session,
+            backup_chunks = chunks.len(),
+            backup_bytes = total_bytes,
+            "Recovered AlephBFT live-session backup from federation peer"
+        );
+        let recovered_backup_status = self.peer_status(member).await?;
+        if recovered_backup_status.aleph_bft_session != session {
+            anyhow::bail!(
+                "federation member {} advanced AlephBFT session while its backup was recovered",
+                member.member_id
+            );
+        }
+        Ok(Some(recovered_backup_status))
+    }
+}
+
+fn peer_requires_catch_up(
+    local_status: &FederationPeerStatus,
+    peer_status: &FederationPeerStatus,
+) -> anyhow::Result<bool> {
+    let _ = aleph_bft_next_item_index(local_status)?;
+    let _ = aleph_bft_next_item_index(peer_status)?;
+    Ok(peer_status.operation_count > local_status.operation_count)
+}
+
+async fn should_defer_catch_up_to_live_aleph_bft(state: &FederationNode) -> bool {
+    if !matches!(
+        state.federation_sync_status().await,
+        Some(crate::FederationSyncStatus::Healthy)
+    ) {
+        return false;
+    }
+
+    state.federation.live_session_active().await && state.federation.network_inbound_active().await
+}
+
+fn status_made_catch_up_progress(
+    before_status: &FederationPeerStatus,
+    after_status: &FederationPeerStatus,
+) -> anyhow::Result<bool> {
+    Ok(after_status.operation_count > before_status.operation_count
+        || status_finalized_cursor_increased(before_status, after_status)?)
+}
+
+fn status_finalized_cursor_increased(
+    before_status: &FederationPeerStatus,
+    after_status: &FederationPeerStatus,
+) -> anyhow::Result<bool> {
+    match (
+        aleph_bft_next_item_index(before_status)?,
+        aleph_bft_next_item_index(after_status)?,
+    ) {
+        (Some(before_next_item_index), Some(after_next_item_index)) => {
+            Ok(after_next_item_index > before_next_item_index)
+        }
+        _ => Ok(false),
+    }
+}
+
+fn aleph_bft_next_item_index(status: &FederationPeerStatus) -> anyhow::Result<Option<u64>> {
+    Ok(Some(status.aleph_bft_next_item_index.ok_or(
+        FederationError::AlephBftFinalizedCursorMissing {
+            member_id: status.member_id,
+        },
+    )?))
+}
+
+fn format_aleph_bft_next_item_index(status: &FederationPeerStatus) -> String {
+    match status.aleph_bft_next_item_index {
+        Some(index) => index.to_string(),
+        None => "none".to_string(),
+    }
+}
+
+fn aleph_bft_session_has_progress(status: &FederationPeerStatus) -> bool {
+    status
+        .aleph_bft_next_unit_index_by_member
+        .values()
+        .any(|next_unit_index| *next_unit_index > 0)
+}
+
+fn aleph_bft_frontier_is_ahead(
+    local_status: &FederationPeerStatus,
+    peer_status: &FederationPeerStatus,
+) -> bool {
+    peer_status.aleph_bft_next_unit_index_by_member.iter().any(
+        |(member_id, peer_next_unit_index)| {
+            *peer_next_unit_index
+                > local_status
+                    .aleph_bft_next_unit_index_by_member
+                    .get(member_id)
+                    .copied()
+                    .unwrap_or_default()
+        },
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn global_finalized_cursor_does_not_make_an_empty_session_require_backup() {
+        let member = MemberId::new(1).expect("member");
+        let mut status = FederationPeerStatus::new(
+            cdk::federation::FederationId::from_bytes([1; 32]),
+            member,
+            10,
+            Some(9),
+            cdk::federation::FederationJournalDigest::from_bytes([2; 32]),
+        )
+        .with_aleph_bft_session(6)
+        .with_aleph_bft_next_item_index(329)
+        .with_aleph_bft_next_unit_index_by_member(BTreeMap::from([(member, 0)]));
+
+        assert!(!aleph_bft_session_has_progress(&status));
+
+        status.aleph_bft_next_unit_index_by_member.insert(member, 1);
+        assert!(aleph_bft_session_has_progress(&status));
+    }
+
+    #[test]
+    fn aleph_bft_frontier_detects_any_peer_suffix() {
+        let first = MemberId::new(1).expect("first member");
+        let second = MemberId::new(2).expect("second member");
+        let federation_id = cdk::federation::FederationId::from_bytes([1; 32]);
+        let local = FederationPeerStatus::new(
+            federation_id,
+            first,
+            0,
+            None,
+            cdk::federation::FederationJournalDigest::genesis(),
+        )
+        .with_aleph_bft_next_unit_index_by_member(BTreeMap::from([(first, 4), (second, 7)]));
+        let equal = FederationPeerStatus::new(
+            federation_id,
+            second,
+            0,
+            None,
+            cdk::federation::FederationJournalDigest::genesis(),
+        )
+        .with_aleph_bft_next_unit_index_by_member(BTreeMap::from([(first, 4), (second, 7)]));
+        let ahead = FederationPeerStatus::new(
+            federation_id,
+            second,
+            0,
+            None,
+            cdk::federation::FederationJournalDigest::genesis(),
+        )
+        .with_aleph_bft_next_unit_index_by_member(BTreeMap::from([(first, 4), (second, 8)]));
+
+        assert!(!aleph_bft_frontier_is_ahead(&local, &equal));
+        assert!(aleph_bft_frontier_is_ahead(&local, &ahead));
+    }
+}
