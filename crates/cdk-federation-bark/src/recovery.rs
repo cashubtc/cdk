@@ -20,12 +20,13 @@ use cdk_frost::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    canonical_json_bytes, invalid_bark, validate_federation_bark_operation, FederationBarkActionId,
+    invalid_bark, validate_federation_bark_operation, FederationBarkActionId,
     FederationBarkActionRecord, FederationBarkActionTransition, FederationBarkArtifact,
     FederationBarkArtifactKind, FederationBarkDigest, FederationBarkOperation,
     FederationBarkProjectionSnapshot, FederationBarkRecoveryApplicationConfig,
     FederationBarkSemanticPhase,
 };
+use cdk_common::federation::canonical::canonical_json_bytes;
 
 const BARK_CPFP_PACKAGE_VERSION: u16 = 1;
 const BARK_CPFP_PACKAGE_SET_VERSION: u16 = 1;

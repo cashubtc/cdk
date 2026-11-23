@@ -16,10 +16,11 @@ use cdk_common::federation::{
 use cdk_common::Amount;
 
 use crate::{
-    canonical_json_bytes, FederationBarkActionId, FederationBarkDigest,
-    FederationBarkReceiveIntent, FederationBarkReceiveProof,
-    FederationBarkReceiveSecretAcknowledgement, FederationBarkUnit, FederationBarkVtxoLocator,
+    FederationBarkActionId, FederationBarkDigest, FederationBarkReceiveIntent,
+    FederationBarkReceiveProof, FederationBarkReceiveSecretAcknowledgement, FederationBarkUnit,
+    FederationBarkVtxoLocator,
 };
+use cdk_common::federation::canonical::canonical_json_bytes;
 
 /// Current protected receive-secret record and acknowledgement format.
 pub const FEDERATION_BARK_RECEIVE_SECRET_VERSION: u16 = 1;

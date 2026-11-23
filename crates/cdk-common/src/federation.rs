@@ -8,6 +8,7 @@ use thiserror::Error;
 
 mod address_allocation;
 mod backup;
+pub mod canonical;
 mod chain_observation;
 mod checkpoint;
 mod config;

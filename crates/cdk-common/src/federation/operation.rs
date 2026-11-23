@@ -18,6 +18,7 @@ use serde::de::Error as _;
 use serde::ser::{Error as _, SerializeMap};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use super::canonical::{append_hash_bytes, canonical_json_bytes};
 use super::journal::FederationJournalEntry;
 use super::{
     FederatedKeyset, FederationAddressAllocationOperation, FederationChainObservation,
@@ -3067,20 +3068,6 @@ fn operation_id_from_canonical(canonical: &[u8]) -> FederationOperationId {
     append_hash_bytes(&mut transcript, FEDERATION_OPERATION_HASH_VERSION);
     append_hash_bytes(&mut transcript, canonical);
     FederationOperationId::from_bytes(Sha256Hash::hash(&transcript).to_byte_array())
-}
-
-pub(super) fn canonical_json_bytes<T>(value: &T) -> Result<Vec<u8>>
-where
-    T: Serialize + ?Sized,
-{
-    let mut value = serde_json::to_value(value)?;
-    value.sort_all_objects();
-    Ok(serde_json::to_vec(&value)?)
-}
-
-fn append_hash_bytes(transcript: &mut Vec<u8>, value: &[u8]) {
-    transcript.extend_from_slice(&(value.len() as u32).to_be_bytes());
-    transcript.extend_from_slice(value);
 }
 
 #[cfg(test)]

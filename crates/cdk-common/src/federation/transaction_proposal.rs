@@ -17,6 +17,7 @@ use bitcoin::secp256k1::{schnorr, Message, Secp256k1, XOnlyPublicKey};
 use bitcoin::{BlockHash, Network, OutPoint, ScriptBuf, Transaction, TxOut, Txid};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use super::canonical::canonical_json_bytes;
 use super::{
     FederationAllocatedAddressRef, FederationError, FederationFrostApplicationId,
     FederationMaterializedStateRow, FederationOperationConflictKey, FederationOperationId,
@@ -2610,15 +2611,6 @@ fn transaction_settlement_from_observations(
             confirmations: records.into_iter().take(required).collect(),
         })
     })
-}
-
-fn canonical_json_bytes<T>(value: &T) -> Result<Vec<u8>>
-where
-    T: Serialize + ?Sized,
-{
-    let mut value = serde_json::to_value(value)?;
-    value.sort_all_objects();
-    Ok(serde_json::to_vec(&value)?)
 }
 
 fn canonical_hash(domain: &[u8], payload: &[u8]) -> [u8; 32] {

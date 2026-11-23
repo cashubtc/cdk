@@ -14,6 +14,7 @@ use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::schnorr::Signature;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use super::canonical::{append_hash_bytes, canonical_json_bytes};
 use super::{
     FederationAlephBftFinalizedItem, FederationApplicationState, FederationConfig,
     FederationConfigDigest, FederationError, FederationId, FederationJournalDigest,
@@ -1717,20 +1718,6 @@ fn checkpoint_invalid(reason: &str) -> FederationError {
     FederationError::CheckpointInvalid {
         reason: reason.to_string(),
     }
-}
-
-fn canonical_json_bytes<T>(value: &T) -> Result<Vec<u8>>
-where
-    T: Serialize + ?Sized,
-{
-    let mut value = serde_json::to_value(value)?;
-    value.sort_all_objects();
-    Ok(serde_json::to_vec(&value)?)
-}
-
-fn append_hash_bytes(transcript: &mut Vec<u8>, value: &[u8]) {
-    transcript.extend_from_slice(&(value.len() as u32).to_be_bytes());
-    transcript.extend_from_slice(value);
 }
 
 mod checkpoint_signature_hex {

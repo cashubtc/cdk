@@ -12,6 +12,7 @@ use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use super::canonical::append_hash_bytes;
 use super::{
     FederatedKeyset, FederationError, FederationOperation, FederationOperationConflictKey,
     FederationOperationEnvelope, FederationOperationId, MemberId, Result,
@@ -1533,11 +1534,6 @@ fn application_reserves_conflict_keys(application: &FederationApplicationState) 
         application,
         FederationApplicationState::ConsensusRejected {}
     )
-}
-
-fn append_hash_bytes(transcript: &mut Vec<u8>, value: &[u8]) {
-    transcript.extend_from_slice(&(value.len() as u32).to_be_bytes());
-    transcript.extend_from_slice(value);
 }
 
 #[cfg(test)]

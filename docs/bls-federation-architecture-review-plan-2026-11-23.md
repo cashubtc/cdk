@@ -366,3 +366,12 @@ Verification: `cdk-mintd` builds with `sqlite,cln,federation`, `sqlite,federatio
 
 Verification: the 16 production builds in the check script; unit tests of `cdk-common` (491), `cdk-federation-bark` (36), `cdk-sqlite` with `federation-bark` (194), `cdk-bark` (19); `cdk` and `cdk-axum` federation test binaries build.
 
+### 2026-11-23: package 2, first step (canonical encoding)
+
+- **One canonical module.** `crates/cdk-common/src/federation/canonical.rs` holds `canonical_json_bytes` and `append_hash_bytes`. It replaces six copies of the first (five in `cdk-common`, one in `cdk-federation-bark`) and five byte-identical copies of the second, plus the hand-written recursive key sorter in `consensus.rs`. The output is unchanged: the operation-ID and setup-transcript golden vectors pass.
+- **Left as is:** `transaction_proposal.rs` frames lengths as `u64` rather than `u32`. Unifying the framing changes those hashes and needs regenerated vectors.
+- **`serde_json`:** dropped the unused `raw_value` feature. `preserve_order` stays until package 6, because the Bark projection's JSON-string compare-and-set may depend on key order.
+- Net: 12 files, 19 insertions, 107 deletions, plus the new 55-line module with two tests.
+
+Verification: `cdk-common` with `federation,test` (493 unit tests and both vector suites), `cdk-federation-bark` (36), and the 16 production builds.
+

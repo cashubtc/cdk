@@ -100,19 +100,10 @@ pub use cdk_common::federation::{
     FederationApplicationVirtualMusigPartialResponse as FederationBarkVirtualMusigPartialResponse,
 };
 
-use cdk_common::federation::{FederationError, Result};
+use cdk_common::federation::FederationError;
 
 fn invalid_bark(reason: impl Into<String>) -> FederationError {
     FederationError::ApplicationOperationInvalid {
         reason: format!("Bark: {}", reason.into()),
     }
-}
-
-fn canonical_json_bytes<T>(value: &T) -> Result<Vec<u8>>
-where
-    T: serde::Serialize + ?Sized,
-{
-    let mut value = serde_json::to_value(value)?;
-    value.sort_all_objects();
-    Ok(serde_json::to_vec(&value)?)
 }

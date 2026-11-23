@@ -25,7 +25,8 @@ use cdk_common::federation::{
 };
 use cdk_common::Amount;
 
-use crate::{canonical_json_bytes, FederationBarkEvidenceCertificate, FederationBarkEvidencePhase};
+use crate::{FederationBarkEvidenceCertificate, FederationBarkEvidencePhase};
+use cdk_common::federation::canonical::{append_hash_bytes, canonical_json_bytes};
 
 /// Current nested Bark operation format.
 ///
@@ -3678,11 +3679,6 @@ fn domain_hash(domain: &[u8], value: &[u8]) -> Result<FederationBarkDigest> {
     append_hash_bytes(&mut transcript, domain);
     append_hash_bytes(&mut transcript, value);
     FederationBarkDigest::from_bytes(Sha256Hash::hash(&transcript).to_byte_array())
-}
-
-fn append_hash_bytes(transcript: &mut Vec<u8>, value: &[u8]) {
-    transcript.extend_from_slice(&(value.len() as u32).to_be_bytes());
-    transcript.extend_from_slice(value);
 }
 
 /// Return Bark's stable application identifier independent of key epoch.

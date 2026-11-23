@@ -9,6 +9,7 @@ use core::fmt;
 use core::str::FromStr;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
+use super::canonical::canonical_json_bytes;
 use super::journal::PreparedFederationJournalFinalization;
 use super::{
     FederationAlephBftRecoveryCursor, FederationApplicationState, FederationCheckpoint,
@@ -3490,35 +3491,6 @@ where
     }
 
     Ok(members)
-}
-
-fn canonical_json_bytes<T>(value: &T) -> Result<Vec<u8>>
-where
-    T: Serialize,
-{
-    let mut value = serde_json::to_value(value)?;
-    sort_json_value(&mut value);
-    Ok(serde_json::to_vec(&value)?)
-}
-
-fn sort_json_value(value: &mut serde_json::Value) {
-    match value {
-        serde_json::Value::Object(map) => {
-            map.sort_keys();
-            for value in map.values_mut() {
-                sort_json_value(value);
-            }
-        }
-        serde_json::Value::Array(values) => {
-            for value in values {
-                sort_json_value(value);
-            }
-        }
-        serde_json::Value::Null
-        | serde_json::Value::Bool(_)
-        | serde_json::Value::Number(_)
-        | serde_json::Value::String(_) => {}
-    }
 }
 
 #[cfg(test)]

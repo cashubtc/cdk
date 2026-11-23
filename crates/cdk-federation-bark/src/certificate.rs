@@ -12,9 +12,10 @@ use cdk_common::federation::{
 use cdk_common::Amount;
 
 use crate::{
-    canonical_json_bytes, FederationBarkActionId, FederationBarkDigest,
-    FederationBarkMemberObservation, FederationBarkObservationStatus,
+    FederationBarkActionId, FederationBarkDigest, FederationBarkMemberObservation,
+    FederationBarkObservationStatus,
 };
+use cdk_common::federation::canonical::canonical_json_bytes;
 
 /// Current signed Bark evidence-certificate format.
 pub const FEDERATION_BARK_EVIDENCE_CERTIFICATE_VERSION: u16 = 1;
