@@ -10,8 +10,7 @@ use cdk_common::database::mint::Acquired;
 use cdk_common::database::{self, DynMintDatabase, DynMintTransaction};
 #[cfg(feature = "federation")]
 use cdk_common::federation::{
-    FederationAcceptedSigningRequest, FederationJournalEntry, FederationOperationId,
-    FederationSignatureShareRecord,
+    FederationJournalEntry, FederationOperationId, FederationSignatureShareRecord,
 };
 use cdk_common::mint::{self as mint_types};
 #[cfg(feature = "federation")]
@@ -20,70 +19,33 @@ use cdk_common::nuts::{BlindSignature, BlindedMessage, MeltQuoteState, Proofs, S
 use cdk_common::{Amount, CurrencyUnit, Error, PublicKey, QuoteId};
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::METRICS;
-use cdk_signatory::signatory::SignatoryKeySet;
 
 use crate::mint::subscription::PubSubManager;
+use crate::mint::verification::KeysetView;
 use crate::mint::MeltQuote;
 use crate::Mint;
 
 /// Retrieves fee and amount configuration for the keyset matching the change outputs.
 ///
-/// Searches active keysets for one matching the first output's keyset_id.
-/// Used during change calculation for melts.
-///
-/// # Arguments
-///
-/// * `keysets` - Arc reference to the loaded keysets
-/// * `outputs` - Change output blinded messages
+/// Looks up the keyset of the first output. Used during change calculation
+/// for melts.
 ///
 /// # Returns
 ///
-/// Fee per thousand and allowed amounts for the keyset, or default if not found
-pub fn get_keyset_fee_and_amounts(
-    keysets: &arc_swap::ArcSwap<Vec<SignatoryKeySet>>,
+/// Fee per thousand and allowed amounts for the keyset, or no fee and powers
+/// of two if the keyset is unknown or inactive
+pub(crate) fn get_keyset_fee_and_amounts<K>(
+    keysets: &K,
     outputs: &[BlindedMessage],
-) -> cdk_common::amount::FeeAndAmounts {
-    keysets
-        .load()
-        .iter()
-        .filter_map(|keyset| {
-            if keyset.active && Some(keyset.id) == outputs.first().map(|x| x.keyset_id) {
-                Some((keyset.input_fee_ppk, keyset.amounts.clone()).into())
-            } else {
-                None
-            }
-        })
-        .next()
-        .unwrap_or_else(|| (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into())
-}
-
-#[cfg(feature = "federation")]
-fn get_federation_keyset_fee_and_amounts(
-    config: &crate::mint::FederationRuntimeConfig,
-    outputs: &[BlindedMessage],
-) -> cdk_common::amount::FeeAndAmounts {
-    config
-        .public_config()
-        .keysets
-        .iter()
-        .filter_map(|keyset| {
-            if keyset.active && Some(keyset.id) == outputs.first().map(|output| output.keyset_id) {
-                Some(
-                    (
-                        keyset.input_fee_ppk,
-                        keyset
-                            .aggregate_keys
-                            .keys()
-                            .map(|amount| amount.to_u64())
-                            .collect::<Vec<_>>(),
-                    )
-                        .into(),
-                )
-            } else {
-                None
-            }
-        })
-        .next()
+) -> cdk_common::amount::FeeAndAmounts
+where
+    K: KeysetView + ?Sized,
+{
+    outputs
+        .first()
+        .and_then(|output| keysets.keyset_info(&output.keyset_id))
+        .filter(|keyset| keyset.active)
+        .map(|keyset| (keyset.input_fee_ppk, keyset.amounts).into())
         .unwrap_or_else(|| (0, (0..32).map(|x| 2u64.pow(x)).collect::<Vec<_>>()).into())
 }
 
@@ -561,7 +523,7 @@ pub(super) async fn process_melt_change(
     }
 
     // Get keyset configuration
-    let fee_and_amounts = get_keyset_fee_and_amounts(&mint.keysets, &change_outputs);
+    let fee_and_amounts = get_keyset_fee_and_amounts(mint, &change_outputs);
 
     // Split change into denominations
     let mut amounts: Vec<Amount> = change_target.split(&fee_and_amounts)?;
@@ -739,7 +701,7 @@ async fn prepare_federation_melt_change(
         .effective_federation_config()
         .await?
         .ok_or(Error::Internal)?;
-    let fee_and_amounts = get_federation_keyset_fee_and_amounts(&config, &change_outputs);
+    let fee_and_amounts = get_keyset_fee_and_amounts(&config.keysets(), &change_outputs);
     let mut amounts: Vec<Amount> = change_target.split(&fee_and_amounts)?;
 
     if change_outputs.len() < amounts.len() {
@@ -757,38 +719,16 @@ async fn prepare_federation_melt_change(
         blinded_messages_to_sign.push(blinded_message);
     }
 
-    #[cfg(feature = "prometheus")]
-    let started = std::time::Instant::now();
-    let signing_request = FederationAcceptedSigningRequest::from_journal_entry(
-        config.public_config(),
+    let share_set = config.sign_accepted_outputs(
         &signature_share_provenance.entry,
         &blinded_messages_to_sign,
-    )?;
-    let share_set = config
-        .private_config()
-        .sign_accepted_blinded_messages(config.public_config(), &signing_request);
-    #[cfg(feature = "prometheus")]
-    METRICS.record_federation_signing_share_latency(
-        &config.member_id().to_string(),
         "melt",
-        started.elapsed().as_secs_f64(),
-    );
-    let share_set = share_set?;
+    )?;
     let signature_share_records = FederationSignatureShareRecord::from_accepted_journal_entry(
         &share_set,
         &signature_share_provenance.entry,
     )?;
-    let change_sigs = share_set
-        .shares
-        .into_iter()
-        .map(|share| {
-            super::super::federation_blind_signature_from_share(
-                share.amount,
-                share.keyset_id,
-                &share.share,
-            )
-        })
-        .collect::<Vec<_>>();
+    let change_sigs = crate::mint::federation::federation_share_signatures(share_set);
     let blinded_secrets = blinded_messages_to_sign
         .iter()
         .map(|bm| bm.blinded_secret)
@@ -1321,7 +1261,8 @@ pub(crate) async fn finalize_federation_internal_melt_quote(
         .await?;
     }
 
-    let fee_breakdown = mint.get_federation_proofs_fee_with_config(&config, &proofs)?;
+    let fee_breakdown =
+        crate::mint::verification::calculate_proofs_fee(&config.keysets(), &proofs)?;
     let change_amount = match prepared_change.change_sigs.as_ref() {
         Some(sigs) => match Amount::try_sum(sigs.iter().map(|sig| sig.amount)) {
             Ok(amount) => amount,
@@ -1526,7 +1467,10 @@ async fn finalize_melt_quote_inner(
             .effective_federation_config()
             .await?
             .ok_or(Error::Internal)?;
-        Some(mint.get_federation_proofs_fee_with_config(&config, &proofs)?)
+        Some(crate::mint::verification::calculate_proofs_fee(
+            &config.keysets(),
+            &proofs,
+        )?)
     } else {
         None
     };

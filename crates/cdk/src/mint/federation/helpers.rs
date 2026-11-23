@@ -389,7 +389,8 @@ pub(super) fn federation_payment_identifier_from_label(payment_id: &str) -> Paym
     }
 }
 
-pub(super) fn federation_share_signatures(
+/// Converts a member's signature shares into wallet-facing blind signatures.
+pub(in crate::mint) fn federation_share_signatures(
     share_set: FederationBlindSignatureShareSet,
 ) -> Vec<BlindSignature> {
     share_set
@@ -403,69 +404,6 @@ pub(super) fn federation_share_signatures(
             )
         })
         .collect()
-}
-
-pub(super) fn validate_federation_mint_quotes(
-    quotes: &[database::mint::Acquired<MintQuote>],
-) -> Result<(PaymentMethod, CurrencyUnit), Error> {
-    let first = quotes.first().ok_or(Error::UnknownQuote)?;
-    let payment_method = first.payment_method.clone();
-    let unit = first.unit.clone();
-
-    for quote in quotes {
-        if quote.payment_method != payment_method {
-            return Err(Error::InvalidPaymentMethod);
-        }
-        if quote.unit != unit {
-            return Err(Error::UnitMismatch);
-        }
-    }
-
-    Ok((payment_method, unit))
-}
-
-pub(super) fn validate_federation_mint_quote_signatures(
-    input: &MintInput,
-    quotes: &[database::mint::Acquired<MintQuote>],
-) -> Result<(), Error> {
-    match input {
-        MintInput::Single(request) => {
-            let quote = quotes.first().ok_or(Error::UnknownQuote)?;
-            match quote.pubkey.as_ref() {
-                Some(pubkey) => request
-                    .verify_signature(*pubkey)
-                    .map_err(|_| Error::SignatureMissingOrInvalid),
-                None if request.signature.is_some() => Err(Error::SignatureMissingOrInvalid),
-                None => Ok(()),
-            }
-        }
-        MintInput::Batch(request) => {
-            for (index, quote) in quotes.iter().enumerate() {
-                let signature = request
-                    .signatures
-                    .as_ref()
-                    .and_then(|signatures| signatures.get(index))
-                    .and_then(Option::as_ref);
-
-                match quote.pubkey.as_ref() {
-                    Some(pubkey) => {
-                        let signature = signature.ok_or(Error::SignatureMissingOrInvalid)?;
-                        let quote_id = request
-                            .quotes
-                            .get(index)
-                            .ok_or(Error::SignatureMissingOrInvalid)?;
-                        request
-                            .verify_quote_signature(quote_id, signature, pubkey)
-                            .map_err(|_| Error::SignatureMissingOrInvalid)?;
-                    }
-                    None if signature.is_some() => return Err(Error::SignatureMissingOrInvalid),
-                    None => {}
-                }
-            }
-
-            Ok(())
-        }
-    }
 }
 
 pub(super) fn validate_federation_mint_quote_states_for_signing(

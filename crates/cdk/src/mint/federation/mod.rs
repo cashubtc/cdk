@@ -16,7 +16,7 @@ mod helpers;
 
 pub(super) use self::configuration_and_admission::FederationProofVerificationContext;
 pub use self::configuration_and_admission::{FederationMode, FederationRuntimeConfig};
-pub(super) use self::helpers::federation_operation_uuid;
+pub(super) use self::helpers::{federation_operation_uuid, federation_share_signatures};
 pub use self::transaction_policy::{
     FederationCpfpPolicy, FederationFeeRateSource, FederationOnchainTransactionPolicy,
 };

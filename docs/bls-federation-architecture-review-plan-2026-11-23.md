@@ -1,6 +1,6 @@
 # BLS federation architecture review and refactoring plan
 
-Status: proposed on 2026-11-23. No work package has started. Decisions in "Decisions needed" are open.
+Status: package 4 started on 2026-11-23 (first step recorded in the implementation ledger). Decisions in "Decisions needed" are open.
 
 Baseline: `bls-federation` at `3183d04b8`, compared with its fork point from `main` at `87c2bf976`. All `path:line` references are against that baseline.
 
@@ -48,7 +48,7 @@ Federation was added as a second mint beside the standalone one, joined by featu
 
 - [V] Federated swap and mint application are parallel pipelines: `crates/cdk/src/mint/federation/application.rs:2369` and `:2193` against the swap saga and `process_mint_request` in `crates/cdk/src/mint/issue/mod.rs`.
 - [V] `verify_federation_transaction_balanced_with_config` at `crates/cdk/src/mint/federation/application.rs:2958` is a line-for-line copy of `crates/cdk/src/mint/verification.rs:286`. [R] The output, input and fee functions are copied the same way.
-- [V] The copies have drifted. The batch-mint size limit is checked in `crates/cdk/src/mint/issue/mod.rs:888` and in the HTTP handler `crates/cdk-axum/src/custom_handlers.rs:257`, but not in federated application. [R] Three further standalone mint rules have no counterpart there.
+- [V] Corrected on 2026-11-23: the federated mint does not lack value rules. It bounds issuance by the payment quorum covering the issued amount plus the new amount. The standalone rules it does not run (batch size, NUT-29 methods, NUT-04 limits) read each member's local `mint_info`, so they belong at admission, not in deterministic application; the HTTP handler checks the batch size (`crates/cdk-axum/src/custom_handlers.rs:257`). What was duplicated is the pure quote rules (uniform method and unit, NUT-20 signatures), now shared.
 - [R] Share signing is a three-times repeated block, and each application writes the share and a blind signature to two tables.
 - [R] Admission and application validate separately, so the proposer verifies BLS proofs three times, while stateless rules run only at application.
 - [R] Melt has one persisted saga but two drivers; the federated transitions are an if/else over quote state, observation state and saga existence.
@@ -303,3 +303,20 @@ Done when no consensus encoding has two definitions and `cdk-axum` contains no c
 - `cdk-frost` wrapping a FROST library, with an explicit nonce lifecycle and authorization that re-derives the signed message.
 - Iroh as a decorator on the existing `Transport`; one `BdkWalletEngine` for standalone and federated.
 - `FederationTaskGroup`, the capability types (`VerifiedFederationSuffix`, `VerifiedFederationCheckpointQuorum`, `FederationAcceptedSigningRequest`), and `deny_unknown_fields` with explicit size bounds.
+
+## Implementation ledger
+
+### 2026-11-23: package 4, first step (shared mint rules)
+
+Started with package 4 because finding 1 is the most important; packages 0 to 3 are not yet done.
+
+- **Verification, fees and balance.** `crates/cdk/src/mint/verification.rs` now runs every rule against a `KeysetView`: the mint's signatory keysets, or a federation config through `FederationKeysets`, which also applies the federation's per-output BLS checks. Deleted the federated copies of output, change-output, input, fee and balance verification and the federated change-fee helper.
+- **Journal loads.** `require_prior_applied_*` read the whole journal on every mint, melt and payment application. They now read the one entry that reserved the quote's conflict key, an indexed lookup.
+- **Signing.** One `sign_accepted_outputs` replaces three copies of the share-signing block, and one `federation_share_signatures` replaces four share-to-signature mappings.
+- **Mint quote rules.** `uniform_method_and_unit` and `MintInput::verify_quote_signatures` are shared by standalone issuance and federated application; the two federation wrappers are gone. Standalone now checks NUT-20 signatures after all per-quote state checks, so a request with several faults may report a different first error.
+- Net: 9 files, 558 insertions, 716 deletions.
+
+Verification: `cdk` mint tests with federation (412 passed) and without it (258 passed); `cdk-axum` compiles with `federation-bdk,federation-bark`; clippy clean on the changed files. Four unused-import warnings in `crates/cdk/src/wallet/issue/saga/mod.rs` test code predate this work. Not run: the workspace-wide suite, integration tests and regtest.
+
+Not done in this step: the swap and mint commit paths (add proofs, signatures, completed operation) are still written twice; sharing them needs the `validate → plan → commit` split. The duplicate share and blind-signature table writes remain.
+

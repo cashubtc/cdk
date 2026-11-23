@@ -32,7 +32,6 @@ use tokio::task::{JoinHandle, JoinSet};
 use tracing::instrument;
 
 use crate::error::Error;
-use crate::fees::calculate_fee;
 use crate::nuts::*;
 use crate::{Amount, OidcClient};
 
@@ -1414,28 +1413,7 @@ impl Mint {
         &self,
         proofs: &Proofs,
     ) -> Result<crate::fees::ProofsFeeBreakdown, Error> {
-        let mut proofs_per_keyset = HashMap::new();
-        let mut fee_per_keyset = HashMap::new();
-
-        for proof in proofs {
-            if let std::collections::hash_map::Entry::Vacant(e) =
-                fee_per_keyset.entry(proof.keyset_id)
-            {
-                let mint_keyset_info = self
-                    .get_keyset_info(&proof.keyset_id)
-                    .ok_or(Error::UnknownKeySet)?;
-                e.insert(mint_keyset_info.input_fee_ppk);
-            }
-
-            proofs_per_keyset
-                .entry(proof.keyset_id)
-                .and_modify(|count| *count += 1)
-                .or_insert(1);
-        }
-
-        let fee_breakdown = calculate_fee(&proofs_per_keyset, &fee_per_keyset)?;
-
-        Ok(fee_breakdown)
+        verification::calculate_proofs_fee(self, proofs)
     }
 
     /// Get active keysets

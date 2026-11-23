@@ -15,15 +15,13 @@ use super::helpers::{
     federation_payment_identifier_label, federation_share_signatures, melt_quote_payment_response,
     mint_input_from_federation_request, mint_quote_from_federation_operation,
     mint_quote_state_label, payment_observation_record_from_entry, quote_id_from_federation,
-    validate_federation_mint_quote_signatures, validate_federation_mint_quote_states_for_signing,
-    validate_federation_mint_quotes, validate_federation_onchain_melt_receipt,
+    validate_federation_mint_quote_states_for_signing, validate_federation_onchain_melt_receipt,
 };
 #[cfg(feature = "federation-bark")]
 use super::projection;
 use super::transaction_state::persist_pending_onchain_intent;
-use crate::fees::calculate_fee;
 use crate::mint::melt::ensure_melt_quote_matches_request;
-use crate::mint::verification::Verification;
+use crate::mint::verification::{self, Verification};
 use crate::mint::Mint;
 use crate::mint::MintInput;
 use crate::types::PaymentProcessorKey;
@@ -37,8 +35,8 @@ use cdk_common::federation::{
     FederationMaterializedStateKey, FederationMeltOperation, FederationMeltQuoteOperation,
     FederationMeltQuotePaymentObservation, FederationMintOperation, FederationMintQuoteOperation,
     FederationMintQuotePaymentObservation, FederationOnchainMeltPaymentReceipt,
-    FederationOperation, FederationOperationId, FederationOperationStatus,
-    FederationPaymentObservation, FederationPaymentObservationContext,
+    FederationOperation, FederationOperationConflictKey, FederationOperationId,
+    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationRecord, FederationPaymentObservationReport,
     FederationSignatureShareRecord, FederationSwapOperation, MemberId,
 };
@@ -1085,142 +1083,6 @@ impl Mint {
         Ok(Some(effective))
     }
 
-    pub(crate) fn verify_federation_outputs_with_config(
-        &self,
-        config: &FederationRuntimeConfig,
-        outputs: &[BlindedMessage],
-    ) -> Result<Verification, Error> {
-        if outputs.is_empty() {
-            tracing::debug!("verify_federation_outputs called with empty outputs");
-            return Err(Error::TransactionUnbalanced(0, 0, 0));
-        }
-
-        let outputs_count = outputs.len();
-        if outputs_count > self.max_outputs {
-            tracing::warn!(
-                "Federation request exceeds max outputs limit: {} > {}",
-                outputs_count,
-                self.max_outputs
-            );
-            return Err(Error::MaxOutputsExceeded {
-                actual: outputs_count,
-                max: self.max_outputs,
-            });
-        }
-
-        Self::check_outputs_unique(outputs)?;
-        let mut keyset_units = HashSet::new();
-        for output in outputs {
-            let keyset = config.public_config().validate_blinded_output(output)?;
-            let keyset_info = crate::mint::keysets::federated_keyset_to_mint_keyset_info(keyset);
-            if keyset_info.is_expired() {
-                tracing::debug!(
-                    "Transaction attempted with expired federated keyset in outputs: {}.",
-                    keyset.id
-                );
-                return Err(Error::ExpiredKeyset);
-            }
-            keyset_units.insert(keyset.unit.clone());
-        }
-
-        if keyset_units.len() != 1 {
-            tracing::debug!(
-                "Federation transaction attempted with multiple units in outputs: {:?}.",
-                keyset_units
-            );
-            return Err(Error::MultipleUnits);
-        }
-
-        let unit = keyset_units.into_iter().next().ok_or(Error::Internal)?;
-        let amount = Amount::try_sum(outputs.iter().map(|output| output.amount))?.with_unit(unit);
-
-        Ok(Verification { amount })
-    }
-
-    pub(crate) fn verify_federation_change_outputs_with_config(
-        &self,
-        config: &FederationRuntimeConfig,
-        outputs: &[BlindedMessage],
-    ) -> Result<Verification, Error> {
-        if outputs.is_empty() {
-            tracing::debug!("verify_federation_change_outputs called with empty outputs");
-            return Err(Error::TransactionUnbalanced(0, 0, 0));
-        }
-
-        let outputs_count = outputs.len();
-        if outputs_count > self.max_outputs {
-            tracing::warn!(
-                "Federation request exceeds max outputs limit: {} > {}",
-                outputs_count,
-                self.max_outputs
-            );
-            return Err(Error::MaxOutputsExceeded {
-                actual: outputs_count,
-                max: self.max_outputs,
-            });
-        }
-
-        Self::check_outputs_unique(outputs)?;
-        let mut keyset_units = HashSet::new();
-        for output in outputs {
-            let keyset = config
-                .public_config()
-                .validate_blinded_change_output(output)?;
-            let keyset_info = crate::mint::keysets::federated_keyset_to_mint_keyset_info(keyset);
-            if keyset_info.is_expired() {
-                tracing::debug!(
-                    "Transaction attempted with expired federated keyset in change outputs: {}.",
-                    keyset.id
-                );
-                return Err(Error::ExpiredKeyset);
-            }
-            keyset_units.insert(keyset.unit.clone());
-        }
-
-        if keyset_units.len() != 1 {
-            tracing::debug!(
-                "Federation transaction attempted with multiple units in change outputs: {:?}.",
-                keyset_units
-            );
-            return Err(Error::MultipleUnits);
-        }
-
-        let unit = keyset_units.into_iter().next().ok_or(Error::Internal)?;
-        let amount = Amount::try_sum(outputs.iter().map(|output| output.amount))?.with_unit(unit);
-
-        Ok(Verification { amount })
-    }
-
-    pub(crate) fn get_federation_proofs_fee_with_config(
-        &self,
-        config: &FederationRuntimeConfig,
-        proofs: &Proofs,
-    ) -> Result<crate::fees::ProofsFeeBreakdown, Error> {
-        let mut proofs_per_keyset = HashMap::new();
-        let mut fee_per_keyset = HashMap::new();
-
-        for proof in proofs {
-            if let std::collections::hash_map::Entry::Vacant(entry) =
-                fee_per_keyset.entry(proof.keyset_id)
-            {
-                let keyset = config
-                    .public_config()
-                    .keysets
-                    .iter()
-                    .find(|keyset| keyset.id == proof.keyset_id)
-                    .ok_or(Error::UnknownKeySet)?;
-                entry.insert(keyset.input_fee_ppk);
-            }
-
-            proofs_per_keyset
-                .entry(proof.keyset_id)
-                .and_modify(|count| *count += 1)
-                .or_insert(1);
-        }
-
-        calculate_fee(&proofs_per_keyset, &fee_per_keyset)
-    }
-
     /// Apply accepted federation journal entries to this member's local mint database.
     ///
     /// This is intentionally idempotent so startup replay, duplicate operation
@@ -1681,22 +1543,13 @@ impl Mint {
         quote: &QuoteId,
         max_operation_index: u64,
     ) -> Result<(), Error> {
-        let entries = self.localstore.get_federation_journal_entries().await?;
-        let quote = quote.to_string();
-        let has_prior_quote = Self::has_prior_applied_federation_operation(
-            &entries,
-            max_operation_index,
-            |operation| {
-                matches!(
-                    operation,
-                    FederationOperation::MeltQuote(operation) if operation.quote == quote
-                )
+        self.require_prior_applied_quote_operation(
+            FederationOperationConflictKey::MeltQuote {
+                quote: quote.to_string(),
             },
-        );
-        if !has_prior_quote {
-            return Err(Error::UnknownQuote);
-        }
-        Ok(())
+            max_operation_index,
+        )
+        .await
     }
 
     async fn require_prior_applied_mint_quote(
@@ -1704,8 +1557,13 @@ impl Mint {
         quote: &QuoteId,
         max_operation_index: u64,
     ) -> Result<(), Error> {
-        let entries = self.localstore.get_federation_journal_entries().await?;
-        Self::require_prior_applied_mint_quote_in_entries(&entries, quote, max_operation_index)
+        self.require_prior_applied_quote_operation(
+            FederationOperationConflictKey::MintQuote {
+                quote: quote.to_string(),
+            },
+            max_operation_index,
+        )
+        .await
     }
 
     async fn require_prior_applied_mint_quotes(
@@ -1713,49 +1571,39 @@ impl Mint {
         quotes: &[QuoteId],
         max_operation_index: u64,
     ) -> Result<(), Error> {
-        let entries = self.localstore.get_federation_journal_entries().await?;
         for quote in quotes {
-            Self::require_prior_applied_mint_quote_in_entries(
-                &entries,
-                quote,
-                max_operation_index,
-            )?;
+            self.require_prior_applied_mint_quote(quote, max_operation_index)
+                .await?;
         }
         Ok(())
     }
 
-    fn require_prior_applied_mint_quote_in_entries(
-        entries: &[FederationJournalEntry],
-        quote: &QuoteId,
+    /// Requires that the operation creating a quote was applied before
+    /// `max_operation_index`.
+    ///
+    /// A quote's conflict key is reserved by exactly one journal entry: the
+    /// quote operation itself. Any later operation with the same key is
+    /// rejected by consensus and never applied. Reading that one entry
+    /// therefore answers the question without scanning the journal.
+    async fn require_prior_applied_quote_operation(
+        &self,
+        quote_key: FederationOperationConflictKey,
         max_operation_index: u64,
     ) -> Result<(), Error> {
-        let quote = quote.to_string();
-        let has_prior_quote = Self::has_prior_applied_federation_operation(
-            entries,
-            max_operation_index,
-            |operation| {
-                matches!(
-                    operation,
-                    FederationOperation::MintQuote(operation) if operation.quote == quote
-                )
-            },
-        );
-        if !has_prior_quote {
-            return Err(Error::UnknownQuote);
-        }
-        Ok(())
-    }
+        let applied_before = self
+            .localstore
+            .get_federation_journal_entry_by_conflict_key(&quote_key)
+            .await?
+            .is_some_and(|entry| {
+                entry.index < max_operation_index
+                    && entry.status() == FederationOperationStatus::Applied
+            });
 
-    fn has_prior_applied_federation_operation(
-        entries: &[FederationJournalEntry],
-        max_operation_index: u64,
-        mut matches_operation: impl FnMut(&FederationOperation) -> bool,
-    ) -> bool {
-        entries.iter().any(|entry| {
-            entry.index < max_operation_index
-                && entry.status() == FederationOperationStatus::Applied
-                && matches_operation(&entry.envelope.operation)
-        })
+        if applied_before {
+            Ok(())
+        } else {
+            Err(Error::UnknownQuote)
+        }
     }
 
     fn federation_payment_observation_can_finalize_at_or_before(
@@ -2203,7 +2051,7 @@ impl Mint {
         let input = mint_input_from_federation_request(&operation.request)?;
         input.validate()?;
         let output_verification =
-            self.verify_federation_outputs_with_config(&config, input.outputs())?;
+            verification::verify_outputs(&config.keysets(), self.max_outputs, input.outputs())?;
         let outputs_amount = output_verification.amount;
         let blinded_secrets = input
             .outputs()
@@ -2225,7 +2073,8 @@ impl Mint {
                 );
             }
 
-            let (payment_method, unit) = validate_federation_mint_quotes(&quotes)?;
+            let (payment_method, unit) =
+                crate::mint::issue::uniform_method_and_unit(quotes.iter().map(|quote| &**quote))?;
             if outputs_amount.unit() != &unit {
                 return Err(Error::UnsupportedUnit);
             }
@@ -2244,7 +2093,7 @@ impl Mint {
                 ));
             }
 
-            validate_federation_mint_quote_signatures(&input, &quotes)?;
+            input.verify_quote_signatures(quotes.iter().map(|quote| &**quote))?;
 
             let existing_signatures = tx.get_blind_signatures(&blinded_secrets).await?;
             let signatures_present = existing_signatures
@@ -2391,16 +2240,14 @@ impl Mint {
             FederationProofVerificationContext::SwapApply,
         )?;
         operation.request.verify_spending_conditions()?;
-        let output_verification =
-            self.verify_federation_outputs_with_config(&config, operation.request.outputs())?;
-        self.verify_federation_transaction_balanced_with_config(
-            &config,
-            input_verification.clone(),
-            output_verification.clone(),
-            input_proofs,
+        let output_verification = verification::verify_outputs(
+            &config.keysets(),
+            self.max_outputs,
+            operation.request.outputs(),
         )?;
+        let fee_breakdown = verification::calculate_proofs_fee(&config.keysets(), input_proofs)?;
+        verification::verify_balanced(&input_verification, &output_verification, &fee_breakdown)?;
 
-        let fee_breakdown = self.get_federation_proofs_fee_with_config(&config, input_proofs)?;
         let input_ys = input_proofs.ys()?;
         let blinded_secrets = operation
             .request
@@ -2898,94 +2745,13 @@ impl Mint {
         inputs: &Proofs,
         context: Option<FederationProofVerificationContext>,
     ) -> Result<Verification, Error> {
-        let inputs_count = inputs.len();
-        if inputs_count > self.max_inputs {
-            tracing::warn!(
-                "Federation request exceeds max inputs limit: {} > {}",
-                inputs_count,
-                self.max_inputs
-            );
-            return Err(Error::MaxInputsExceeded {
-                actual: inputs_count,
-                max: self.max_inputs,
-            });
-        }
+        verification::verify_inputs_bounds(self.max_inputs, inputs)?;
 
-        FederationRuntimeConfig::validate_proof_content_bounds(inputs)?;
-
-        Self::check_inputs_unique(inputs)?;
         match context {
             Some(context) => config.verify_proofs_with_performance_context(inputs, context)?,
             None => config.verify_proofs(inputs)?,
         }
-        let mut keyset_units = HashSet::new();
-        for proof in inputs {
-            let keyset = config
-                .public_config()
-                .keysets
-                .iter()
-                .find(|keyset| keyset.id == proof.keyset_id)
-                .ok_or(Error::UnknownKeySet)?;
-            let keyset_info = crate::mint::keysets::federated_keyset_to_mint_keyset_info(keyset);
-            if keyset_info.is_expired() {
-                tracing::debug!(
-                    "Transaction attempted with expired federated keyset in inputs: {}.",
-                    proof.keyset_id
-                );
-                return Err(Error::ExpiredKeyset);
-            }
-            keyset_units.insert(keyset.unit.clone());
-        }
 
-        if keyset_units.len() != 1 {
-            tracing::debug!(
-                "Federation transaction attempted with multiple units in inputs: {:?}.",
-                keyset_units
-            );
-            return Err(Error::MultipleUnits);
-        }
-
-        let unit = keyset_units.into_iter().next().ok_or(Error::Internal)?;
-        if unit == CurrencyUnit::Auth {
-            return Err(Error::UnsupportedUnit);
-        }
-
-        let amount = inputs.total_amount()?.with_unit(unit);
-
-        Ok(Verification { amount })
-    }
-
-    fn verify_federation_transaction_balanced_with_config(
-        &self,
-        config: &FederationRuntimeConfig,
-        input_verification: Verification,
-        output_verification: Verification,
-        inputs: &Proofs,
-    ) -> Result<(), Error> {
-        let fee_breakdown = self.get_federation_proofs_fee_with_config(config, inputs)?;
-
-        if output_verification.amount.unit() != input_verification.amount.unit() {
-            tracing::debug!(
-                "Federation output unit {:?} does not match input unit {:?}",
-                output_verification.amount.unit(),
-                input_verification.amount.unit()
-            );
-            return Err(Error::UnitMismatch);
-        }
-
-        let fee_typed = fee_breakdown
-            .total
-            .with_unit(input_verification.amount.unit().clone());
-        let expected_output = input_verification.amount.checked_sub(&fee_typed)?;
-
-        if output_verification.amount != expected_output {
-            return Err(Error::TransactionUnbalanced(
-                input_verification.amount.value(),
-                output_verification.amount.value(),
-                fee_breakdown.total.to_u64(),
-            ));
-        }
-
-        Ok(())
+        verification::verify_inputs_amount(&config.keysets(), inputs)
     }
 }

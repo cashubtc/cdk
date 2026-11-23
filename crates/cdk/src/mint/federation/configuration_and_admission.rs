@@ -1,9 +1,10 @@
 use super::helpers::{
-    melt_quote_request_string, mint_input_from_federation_request, mint_request_from_input,
-    quote_id_from_federation, validate_payment_method_name,
+    federation_share_signatures, melt_quote_request_string, mint_input_from_federation_request,
+    mint_request_from_input, quote_id_from_federation, validate_payment_method_name,
 };
+use crate::mint::keysets::federated_keyset_to_mint_keyset_info;
 use crate::mint::melt::ensure_melt_quote_matches_request;
-use crate::mint::verification::validate_proof_content_bounds;
+use crate::mint::verification::{validate_proof_content_bounds, KeysetView};
 use crate::mint::Mint;
 use crate::mint::MintInput;
 use cdk_common::error::Error;
@@ -116,6 +117,43 @@ impl FederationMode {
     }
 }
 
+/// Which outputs a [`FederationKeysets`] view accepts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FederationOutputPolicy {
+    /// Outputs of a mint or swap: every amount must exist in the keyset.
+    Issued,
+    /// Melt change outputs: blank zero-amount outputs are allowed.
+    MeltChange,
+}
+
+/// Keysets of a federation config, as seen by transaction verification.
+#[derive(Debug, Clone, Copy)]
+pub(in crate::mint) struct FederationKeysets<'a> {
+    config: &'a FederationConfig,
+    outputs: FederationOutputPolicy,
+}
+
+impl KeysetView for FederationKeysets<'_> {
+    fn keyset_info(&self, id: &cdk_common::Id) -> Option<cdk_common::mint::MintKeySetInfo> {
+        self.config
+            .keysets
+            .iter()
+            .find(|keyset| keyset.id == *id)
+            .map(federated_keyset_to_mint_keyset_info)
+    }
+
+    fn check_output(&self, output: &BlindedMessage) -> Result<(), Error> {
+        match self.outputs {
+            FederationOutputPolicy::Issued => self.config.validate_blinded_output(output)?,
+            FederationOutputPolicy::MeltChange => {
+                self.config.validate_blinded_change_output(output)?
+            }
+        };
+
+        Ok(())
+    }
+}
+
 /// Validated federation config held by a mint member at runtime.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FederationRuntimeConfig {
@@ -155,6 +193,22 @@ impl FederationRuntimeConfig {
     #[must_use]
     pub fn public_config(&self) -> &FederationConfig {
         &self.public_config
+    }
+
+    /// Keysets for verifying inputs, fees, and mint or swap outputs.
+    pub(in crate::mint) fn keysets(&self) -> FederationKeysets<'_> {
+        FederationKeysets {
+            config: &self.public_config,
+            outputs: FederationOutputPolicy::Issued,
+        }
+    }
+
+    /// Keysets for verifying melt change outputs.
+    pub(in crate::mint) fn change_keysets(&self) -> FederationKeysets<'_> {
+        FederationKeysets {
+            config: &self.public_config,
+            outputs: FederationOutputPolicy::MeltChange,
+        }
     }
 
     /// Digest of the public config validated when this runtime was created.
@@ -863,18 +917,23 @@ impl FederationRuntimeConfig {
         self.validate_federated_mint_submission(&input)
     }
 
-    /// Sign an accepted mint operation into local threshold BLS signature shares.
-    pub fn mint_signature_shares(
+    /// Sign the outputs of an accepted operation into local threshold BLS signature shares.
+    ///
+    /// The journal entry is the signing authority: outputs that the accepted
+    /// operation does not commit to are refused. `operation` labels the
+    /// signing latency metric.
+    pub(in crate::mint) fn sign_accepted_outputs(
         &self,
         entry: &FederationJournalEntry,
-        input: &MintInput,
+        outputs: &[BlindedMessage],
+        operation: &'static str,
     ) -> Result<FederationBlindSignatureShareSet, Error> {
         #[cfg(feature = "prometheus")]
         let started = Instant::now();
         let request = FederationAcceptedSigningRequest::from_journal_entry(
             &self.public_config,
             entry,
-            input.outputs(),
+            outputs,
         )?;
         let result = self
             .private_config
@@ -882,10 +941,21 @@ impl FederationRuntimeConfig {
         #[cfg(feature = "prometheus")]
         cdk_prometheus::METRICS.record_federation_signing_share_latency(
             &self.member_id().to_string(),
-            "mint",
+            operation,
             started.elapsed().as_secs_f64(),
         );
+        #[cfg(not(feature = "prometheus"))]
+        let _ = operation;
         Ok(result?)
+    }
+
+    /// Sign an accepted mint operation into local threshold BLS signature shares.
+    pub fn mint_signature_shares(
+        &self,
+        entry: &FederationJournalEntry,
+        input: &MintInput,
+    ) -> Result<FederationBlindSignatureShareSet, Error> {
+        self.sign_accepted_outputs(entry, input.outputs(), "mint")
     }
 
     /// Convert an accepted mint operation into this member's wallet-facing share response.
@@ -896,17 +966,7 @@ impl FederationRuntimeConfig {
     ) -> Result<MintResponse, Error> {
         let share_set = self.mint_signature_shares(entry, input)?;
         Ok(MintResponse {
-            signatures: share_set
-                .shares
-                .into_iter()
-                .map(|share| {
-                    crate::mint::federation_blind_signature_from_share(
-                        share.amount,
-                        share.keyset_id,
-                        &share.share,
-                    )
-                })
-                .collect(),
+            signatures: federation_share_signatures(share_set),
         })
     }
 
@@ -1080,23 +1140,7 @@ impl FederationRuntimeConfig {
         entry: &FederationJournalEntry,
         request: &SwapRequest,
     ) -> Result<FederationBlindSignatureShareSet, Error> {
-        #[cfg(feature = "prometheus")]
-        let started = Instant::now();
-        let signing_request = FederationAcceptedSigningRequest::from_journal_entry(
-            &self.public_config,
-            entry,
-            request.outputs(),
-        )?;
-        let result = self
-            .private_config
-            .sign_accepted_blinded_messages(&self.public_config, &signing_request);
-        #[cfg(feature = "prometheus")]
-        cdk_prometheus::METRICS.record_federation_signing_share_latency(
-            &self.member_id().to_string(),
-            "swap",
-            started.elapsed().as_secs_f64(),
-        );
-        Ok(result?)
+        self.sign_accepted_outputs(entry, request.outputs(), "swap")
     }
 
     /// Convert an accepted swap operation into this member's wallet-facing share response.
@@ -1107,17 +1151,7 @@ impl FederationRuntimeConfig {
     ) -> Result<SwapResponse, Error> {
         let share_set = self.swap_signature_shares(entry, request)?;
         Ok(SwapResponse {
-            signatures: share_set
-                .shares
-                .into_iter()
-                .map(|share| {
-                    crate::mint::federation_blind_signature_from_share(
-                        share.amount,
-                        share.keyset_id,
-                        &share.share,
-                    )
-                })
-                .collect(),
+            signatures: federation_share_signatures(share_set),
         })
     }
 }

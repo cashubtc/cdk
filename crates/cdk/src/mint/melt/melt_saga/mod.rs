@@ -239,9 +239,11 @@ impl MeltSaga<Initial> {
             if !outputs.is_empty() {
                 #[cfg(feature = "federation")]
                 let output_verification = match self.mint.effective_federation_config().await? {
-                    Some(config) => self
-                        .mint
-                        .verify_federation_change_outputs_with_config(&config, outputs)?,
+                    Some(config) => crate::mint::verification::verify_outputs(
+                        &config.change_keysets(),
+                        self.mint.max_outputs,
+                        outputs,
+                    )?,
                     None => self.mint.verify_outputs(outputs)?,
                 };
                 #[cfg(not(feature = "federation"))]

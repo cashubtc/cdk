@@ -131,6 +131,94 @@ impl MintInput {
     pub fn is_batch(&self) -> bool {
         matches!(self, MintInput::Batch(_))
     }
+
+    /// Verifies the NUT-20 signature this input carries for one of its quotes.
+    ///
+    /// A locked quote (one with a pubkey) needs a valid signature; an
+    /// unlocked quote must not carry one. `signature` is the signature the
+    /// input supplies for `quote`.
+    fn verify_quote_signature(
+        &self,
+        quote: &MintQuote,
+        signature: Option<&String>,
+    ) -> Result<(), Error> {
+        match (quote.pubkey.as_ref(), self) {
+            (Some(pubkey), MintInput::Single(request)) => request
+                .verify_signature(*pubkey)
+                .map_err(|_| Error::SignatureMissingOrInvalid),
+            (Some(pubkey), MintInput::Batch(request)) => {
+                let signature = signature.ok_or(Error::SignatureMissingOrInvalid)?;
+                request
+                    .verify_quote_signature(&quote.id, signature, pubkey)
+                    .map_err(|_| Error::SignatureMissingOrInvalid)
+            }
+            // Quote is unlocked but a signature was provided
+            (None, _) if signature.is_some() => Err(Error::SignatureMissingOrInvalid),
+            (None, _) => Ok(()),
+        }
+    }
+
+    /// Verifies the NUT-20 signatures of every quote in this input.
+    ///
+    /// `quotes` must be in the order of [`Self::quote_ids`].
+    pub(crate) fn verify_quote_signatures<'a, Q>(&self, quotes: Q) -> Result<(), Error>
+    where
+        Q: IntoIterator<Item = &'a MintQuote>,
+    {
+        let entries = self.quote_entries();
+        let mut quotes = quotes.into_iter();
+        for entry in &entries {
+            let quote = quotes.next().ok_or(Error::UnknownQuote)?;
+            if quote.id != entry.quote_id {
+                return Err(Error::UnknownQuote);
+            }
+            self.verify_quote_signature(quote, entry.signature.as_ref())?;
+        }
+
+        if quotes.next().is_some() {
+            return Err(Error::UnknownQuote);
+        }
+
+        Ok(())
+    }
+}
+
+/// Returns the payment method and unit shared by all `quotes`.
+///
+/// Quotes minted together must agree on both.
+pub(crate) fn uniform_method_and_unit<'a, Q>(
+    quotes: Q,
+) -> Result<(PaymentMethod, CurrencyUnit), Error>
+where
+    Q: IntoIterator<Item = &'a MintQuote>,
+{
+    let mut quotes = quotes.into_iter();
+    let first = quotes.next().ok_or(Error::UnknownQuote)?;
+    let method = first.payment_method.clone();
+    let unit = first.unit.clone();
+
+    for quote in quotes {
+        if quote.payment_method != method {
+            tracing::error!(
+                "Quote {} has payment method {} but expected {}",
+                quote.id,
+                quote.payment_method,
+                method
+            );
+            return Err(Error::InvalidPaymentMethod);
+        }
+        if quote.unit != unit {
+            tracing::error!(
+                "Quote {} has unit {} but expected {}",
+                quote.id,
+                quote.unit,
+                unit
+            );
+            return Err(Error::UnitMismatch);
+        }
+    }
+
+    Ok((method, unit))
 }
 
 impl Mint {
@@ -924,31 +1012,7 @@ impl Mint {
             }
 
             // Validate all quotes have the same payment method and currency unit
-            let Some(first_quote) = quote_map.values().next() else {
-                return Err(Error::UnknownQuote);
-            };
-            let batch_method = first_quote.payment_method.clone();
-            let batch_unit = first_quote.unit.clone();
-            for (quote_id, quote) in &quote_map {
-                if quote.payment_method != batch_method {
-                    tracing::error!(
-                        "Quote {} has payment method {} but expected {}",
-                        quote_id,
-                        quote.payment_method,
-                        batch_method
-                    );
-                    return Err(Error::InvalidPaymentMethod);
-                }
-                if quote.unit != batch_unit {
-                    tracing::error!(
-                        "Quote {} has unit {} but expected {}",
-                        quote_id,
-                        quote.unit,
-                        batch_unit
-                    );
-                    return Err(Error::UnitMismatch);
-                }
-            }
+            let (batch_method, batch_unit) = uniform_method_and_unit(quote_map.values())?;
 
             if let Some(settings) = &nut29_settings {
                 if let Some(methods) = &settings.methods {
@@ -1032,33 +1096,19 @@ impl Mint {
                     return Err(Error::SignatureMissingOrInvalid);
                 }
 
-                // Verify NUT-20 signature
-                if let Some(ref pubkey) = mint_quote.pubkey {
-                    match &input {
-                        MintInput::Single(request) => request
-                            .verify_signature(*pubkey)
-                            .map_err(|_| Error::SignatureMissingOrInvalid)?,
-                        MintInput::Batch(request) => {
-                            let signature = entry
-                                .signature
-                                .as_ref()
-                                .ok_or(Error::SignatureMissingOrInvalid)?;
-
-                            request
-                                .verify_quote_signature(&entry.quote_id, signature, pubkey)
-                                .map_err(|_| Error::SignatureMissingOrInvalid)?;
-                        }
-                    }
-                } else if entry.signature.is_some() {
-                    // Quote is unlocked but signature was provided
-                    return Err(Error::SignatureMissingOrInvalid);
-                }
-
                 total_expected_value = total_expected_value
                     .checked_add(expected_amount.value())
                     .ok_or(Error::AmountOverflow)?;
                 expected_amounts.insert(entry.quote_id.clone(), expected_amount);
             }
+
+            // Verify NUT-20 signatures
+            input.verify_quote_signatures(
+                quote_ids
+                    .iter()
+                    .map(|quote_id| quote_map.get(quote_id).ok_or(Error::UnknownQuote))
+                    .collect::<Result<Vec<_>, _>>()?,
+            )?;
 
             // Phase 3: Amount validation
             ensure_cdk!(outputs_amount.unit() == &batch_unit, Error::UnsupportedUnit);
