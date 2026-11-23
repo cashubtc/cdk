@@ -524,3 +524,17 @@ Verification, with `RUST_MIN_STACK=16777216`: the same suites and counts as the 
 - **Remaining in package 6:** the row-per-entity storage, retention, the trait surface and the single apply transaction. The Bark snapshot's typed keyed queries also remain.
 
 Verification, with `RUST_MIN_STACK=16777216`: the same suites as package 7's third step, with `cdk-federation-bark` now at 40 tests. Also clippy with `-D warnings` on `cdk-federation-bark` and `cdk-sql-common`, and the 16 production builds.
+
+### 2026-11-23: package 9, first step (tests run on the default stack)
+
+- **Cause.** In debug builds an async function's poll frame reserves stack for every child future it awaits, and nothing between the HTTP handler and the SQL layer was boxed, so each level's future contained the whole apply chain below it. A federated melt nests submission, local finalization, journal apply, the mint's operation dispatch and the melt saga. About a dozen frames used 80 KB to 210 KB each, 2.1 MB in total. This affects a debug `cdk-mintd` as well as tests, since Tokio worker threads also default to 2 MiB.
+- **Production boundaries now return boxed futures from plain functions**, so callers hold a pointer instead of the callee's state machine:
+  - `Mint::apply_accepted_federation_operation`, plus one dispatch function that boxes each operation kind's apply future;
+  - `FederationNodeRuntime::submit_envelope`, `apply_finalized_unit` and `apply_journal_entries`;
+  - `FederationNode::submit_federation_envelope_to_consensus`, matching the existing `submit_federation_envelope`.
+  `reconcile_federation_bark_runtime` is boxed at its four call sites.
+- **Test fixtures.** The five fixture builders whose futures made most test futures large are boxed at their call sites. `RUSTC_BOOTSTRAP=1 cargo rustc … -- -Zprint-type-sizes` lists each future's largest awaited child, which is how these were found.
+- **Result.** Every federation suite passes on the default 2 MiB test stack; `cdk-axum` also passes on 1.5 MiB, about 25% headroom. `RUST_MIN_STACK` is no longer needed.
+- **Not done in package 9:** splitting the fixture files into shared builders.
+
+Verification, without `RUST_MIN_STACK`: the same nine suites and counts as the previous step, the 16 production builds, and clippy with `-D warnings` on `cdk`, `cdk-federation` and `cdk-axum`.

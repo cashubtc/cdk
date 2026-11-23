@@ -604,8 +604,15 @@ async fn create_federated_test_state_with_backend_db_and_seed(
     db: Arc<cdk_sqlite::MintSqliteDatabase>,
     seed: &[u8],
 ) -> MintState {
-    create_federated_test_state_with_backend_db_seed_and_finality(payment_processor, db, seed, true)
-        .await
+    Box::pin(
+        create_federated_test_state_with_backend_db_seed_and_finality(
+            payment_processor,
+            db,
+            seed,
+            true,
+        ),
+    )
+    .await
 }
 
 #[cfg(feature = "federation")]
@@ -622,11 +629,13 @@ async fn create_aleph_bft_federated_test_state() -> MintState {
     );
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
     let mnemonic = Mnemonic::generate(12).unwrap();
-    create_federated_test_state_with_backend_db_seed_and_finality(
-        Arc::new(fake),
-        db,
-        &mnemonic.to_seed_normalized(""),
-        false,
+    Box::pin(
+        create_federated_test_state_with_backend_db_seed_and_finality(
+            Arc::new(fake),
+            db,
+            &mnemonic.to_seed_normalized(""),
+            false,
+        ),
     )
     .await
 }
@@ -1478,7 +1487,12 @@ async fn build_threshold_member_mint(
         0,
         CurrencyUnit::Sat,
     );
-    build_threshold_member_mint_with_backend(public_config, private_config, Arc::new(fake)).await
+    Box::pin(build_threshold_member_mint_with_backend(
+        public_config,
+        private_config,
+        Arc::new(fake),
+    ))
+    .await
 }
 
 #[cfg(feature = "federation")]
@@ -6016,11 +6030,13 @@ async fn duplicate_process_melt_aleph_bft_pending_requests_join_one_queue_item()
     let (backend, make_payment_calls) = CountingFakeWallet::new();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
     let mnemonic = Mnemonic::generate(12).unwrap();
-    let mut state = create_federated_test_state_with_backend_db_seed_and_finality(
-        backend,
-        db,
-        &mnemonic.to_seed_normalized(""),
-        false,
+    let mut state = Box::pin(
+        create_federated_test_state_with_backend_db_seed_and_finality(
+            backend,
+            db,
+            &mnemonic.to_seed_normalized(""),
+            false,
+        ),
     )
     .await;
     state.mark_federation_healthy().await;
@@ -7097,11 +7113,11 @@ async fn concurrent_federated_wallet_melt_fanout_aggregates_once_per_member() {
             .get(&member_id)
             .expect("private member config")
             .clone();
-        let mint = build_threshold_member_mint_with_backend(
+        let mint = Box::pin(build_threshold_member_mint_with_backend(
             bundle.public_config.clone(),
             private_config,
             payment_processor.clone(),
-        )
+        ))
         .await;
         mints.push(mint);
     }
@@ -8725,7 +8741,7 @@ async fn process_melt_request_rejects_non_v3_change_before_consensus() {
 
 #[tokio::test]
 async fn cache_post_mint_custom_rejects_cached_url_method_quote_method_mismatch() {
-    let state = create_test_state().await;
+    let state = Box::pin(create_test_state()).await;
     let quote_id = create_paid_bolt11_quote(&state).await;
     let mint_request = MintRequest {
         quote: quote_id,
@@ -8763,7 +8779,7 @@ async fn cache_post_mint_custom_rejects_cached_url_method_quote_method_mismatch(
 
 #[tokio::test]
 async fn cache_post_batch_mint_rejects_cached_url_method_quote_method_mismatch() {
-    let state = create_test_state().await;
+    let state = Box::pin(create_test_state()).await;
     let quote_id = create_paid_bolt11_quote(&state).await;
     let batch_request = BatchMintRequest {
         quotes: vec![quote_id],
@@ -8802,7 +8818,7 @@ async fn cache_post_batch_mint_rejects_cached_url_method_quote_method_mismatch()
 
 #[tokio::test]
 async fn batch_routes_reject_invalid_bounds_before_loading_quotes() {
-    let state = create_test_state().await;
+    let state = Box::pin(create_test_state()).await;
     // These IDs do not exist. Any premature quote lookup would return UnknownQuote.
     let duplicate_id = QuoteId::new();
     for (quotes, expected) in [
@@ -8859,7 +8875,7 @@ async fn batch_routes_reject_invalid_bounds_before_loading_quotes() {
 
 #[tokio::test]
 async fn batch_status_accepts_configured_limit() {
-    let state = create_test_state().await;
+    let state = Box::pin(create_test_state()).await;
     let mut quotes = Vec::new();
     for _ in 0..10 {
         quotes.push(create_paid_bolt11_quote(&state).await);
@@ -8881,7 +8897,7 @@ async fn batch_status_accepts_configured_limit() {
 
 #[tokio::test]
 async fn post_batch_check_mint_quote_rejects_url_method_quote_method_mismatch() {
-    let state = create_test_state_with_custom_methods(&["paypal", "venmo"]).await;
+    let state = Box::pin(create_test_state_with_custom_methods(&["paypal", "venmo"])).await;
     let quote_id = create_custom_quote(&state, "venmo", 2).await;
 
     let result = post_batch_check_mint_quote(
@@ -8902,7 +8918,7 @@ async fn post_batch_check_mint_quote_rejects_url_method_quote_method_mismatch() 
 
 #[tokio::test]
 async fn post_melt_custom_quote_rejects_url_method_request_body_mismatch() {
-    let state = create_test_state_with_custom_methods(&["paypal", "venmo"]).await;
+    let state = Box::pin(create_test_state_with_custom_methods(&["paypal", "venmo"])).await;
 
     let payload = serde_json::to_value(MeltQuoteCustomRequest {
         method: "venmo".to_string(),
@@ -8942,7 +8958,7 @@ async fn post_melt_custom_quote_rejects_url_method_request_body_mismatch() {
 
 #[tokio::test]
 async fn post_melt_custom_quote_accepts_normalized_method_match() {
-    let state = create_test_state_with_custom_methods(&["paypal"]).await;
+    let state = Box::pin(create_test_state_with_custom_methods(&["paypal"])).await;
 
     let payload = serde_json::to_value(MeltQuoteCustomRequest {
         method: "PayPal".to_string(),

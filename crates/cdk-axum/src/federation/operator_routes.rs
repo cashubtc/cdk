@@ -142,9 +142,13 @@ pub(super) async fn post_bark_reconcile(
         .get_federation_journal_entries()
         .await
         .map_err(|error| cdk_error_response(error.into()))?;
-    crate::reconcile_federation_bark_runtime(&state.mint, &runtime, &entries)
-        .await
-        .map_err(anyhow_response)?;
+    Box::pin(crate::reconcile_federation_bark_runtime(
+        &state.mint,
+        &runtime,
+        &entries,
+    ))
+    .await
+    .map_err(anyhow_response)?;
     let runtime_status = runtime.status(accepted_frontier).await;
     state
         .record_federation_sequence(kind, verified.sender(), verified.sequence())

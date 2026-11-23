@@ -614,7 +614,12 @@ pub async fn create_federation_runtime_state_with_wallet(
     #[cfg(feature = "federation-bark")]
     if let Some(runtime) = bark.as_ref() {
         let persisted_entries = db.get_federation_journal_entries().await?;
-        if let Err(err) = reconcile_federation_bark_runtime(mint, runtime, &persisted_entries).await
+        if let Err(err) = Box::pin(reconcile_federation_bark_runtime(
+            mint,
+            runtime,
+            &persisted_entries,
+        ))
+        .await
         {
             tracing::error!(
                 reason = %format!("{err:#}"),
@@ -725,7 +730,7 @@ pub async fn federation_bark_ready_projection(
     let required_frontier = projection.frontier().unwrap_or(0);
     if runtime.ensure_ready(required_frontier).await.is_err() {
         let entries = mint.localstore().get_federation_journal_entries().await?;
-        reconcile_federation_bark_runtime(mint, runtime, &entries).await?;
+        Box::pin(reconcile_federation_bark_runtime(mint, runtime, &entries)).await?;
         projection = mint.federation_bark_projection_snapshot().await?;
     }
     runtime

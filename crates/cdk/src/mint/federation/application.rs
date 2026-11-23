@@ -58,6 +58,7 @@ use cdk_federation_bark::{
     FederationBarkCpfpPackageSet, FederationBarkCpfpPublication, FederationBarkOperation,
     FederationBarkRecoveryState, FederationBarkSemanticPhase,
 };
+use futures::future::BoxFuture;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -1150,7 +1151,17 @@ impl Mint {
     /// stateful validity decision. Already applied entries are skipped for
     /// idempotent replay; locally rejected or failed entries are never
     /// materialized again through this path.
-    pub async fn apply_accepted_federation_operation(
+    ///
+    /// Returns a boxed future so callers do not embed the whole apply state
+    /// machine in their own; see [`Self::federation_operation_apply_future`].
+    pub fn apply_accepted_federation_operation<'a>(
+        &'a self,
+        entry: &'a FederationJournalEntry,
+    ) -> BoxFuture<'a, Result<bool, Error>> {
+        Box::pin(self.apply_accepted_federation_operation_inner(entry))
+    }
+
+    async fn apply_accepted_federation_operation_inner(
         &self,
         entry: &FederationJournalEntry,
     ) -> Result<bool, Error> {
@@ -1187,88 +1198,92 @@ impl Mint {
             }
         }
 
-        match &entry.envelope.operation {
-            FederationOperation::AddressAllocation(operation) => {
+        self.federation_operation_apply_future(entry)?.await?;
+        Ok(true)
+    }
+
+    /// Build the future that applies one accepted operation by kind.
+    ///
+    /// This is a plain function returning boxed futures, so the caller's
+    /// frame holds a pointer instead of every operation's state machine.
+    /// Without it, debug builds overflow the default 2 MiB thread stack on
+    /// the melt path, where submission, finalization and apply nest.
+    fn federation_operation_apply_future<'a>(
+        &'a self,
+        entry: &'a FederationJournalEntry,
+    ) -> Result<BoxFuture<'a, Result<(), Error>>, Error> {
+        Ok(match &entry.envelope.operation {
+            FederationOperation::AddressAllocation(operation) => Box::pin(async move {
                 self.apply_federation_address_allocation(entry, operation)
-                    .await?;
-                Ok(true)
-            }
-            FederationOperation::ChainObservation(observation) => {
+                    .await
+                    .map(drop)
+            }),
+            FederationOperation::ChainObservation(observation) => Box::pin(async move {
                 self.apply_federation_chain_observation(entry, observation)
-                    .await?;
-                Ok(true)
-            }
+                    .await
+                    .map(drop)
+            }),
             FederationOperation::MintQuote(operation) => {
-                self.apply_federation_mint_quote(entry, operation).await?;
-                Ok(true)
+                Box::pin(self.apply_federation_mint_quote(entry, operation))
             }
             FederationOperation::MintQuotePayment(observation) => {
-                self.apply_federation_mint_quote_payment(entry, observation)
-                    .await?;
-                Ok(true)
+                Box::pin(self.apply_federation_mint_quote_payment(entry, observation))
             }
             FederationOperation::Mint(operation) => {
-                self.apply_federation_mint(entry, operation).await?;
-                Ok(true)
+                Box::pin(self.apply_federation_mint(entry, operation))
             }
             FederationOperation::MeltQuote(operation) => {
-                self.apply_federation_melt_quote(entry, operation).await?;
-                Ok(true)
+                Box::pin(self.apply_federation_melt_quote(entry, operation))
             }
             FederationOperation::MeltQuotePayment(observation) => {
-                self.apply_federation_melt_quote_payment(entry, observation)
-                    .await?;
-                Ok(true)
+                Box::pin(self.apply_federation_melt_quote_payment(entry, observation))
             }
             FederationOperation::Swap(operation) => {
-                self.apply_federation_swap(entry, operation).await?;
-                Ok(true)
+                Box::pin(self.apply_federation_swap(entry, operation))
             }
             FederationOperation::Melt(operation) => {
-                self.apply_federation_melt(entry, operation).await?;
-                Ok(true)
+                Box::pin(self.apply_federation_melt(entry, operation))
             }
             FederationOperation::KeysetRotation(operation) => {
-                self.apply_federation_keyset_rotation(entry, operation)
-                    .await?;
-                Ok(true)
+                Box::pin(self.apply_federation_keyset_rotation(entry, operation))
             }
-            FederationOperation::TransactionProposal(proposal) => {
+            FederationOperation::TransactionProposal(proposal) => Box::pin(async move {
                 self.apply_federation_transaction_proposal(entry, proposal)
-                    .await?;
-                Ok(true)
-            }
-            FederationOperation::TransactionSigned(signed) => {
+                    .await
+                    .map(drop)
+            }),
+            FederationOperation::TransactionSigned(signed) => Box::pin(async move {
                 self.apply_federation_signed_transaction(entry, signed)
-                    .await?;
-                Ok(true)
-            }
-            FederationOperation::TransactionBroadcastIntent(intent) => {
+                    .await
+                    .map(drop)
+            }),
+            FederationOperation::TransactionBroadcastIntent(intent) => Box::pin(async move {
                 self.apply_federation_transaction_broadcast_intent(entry, intent)
-                    .await?;
-                Ok(true)
-            }
+                    .await
+                    .map(drop)
+            }),
             FederationOperation::TransactionBroadcastObservation(observation) => {
-                self.apply_federation_transaction_broadcast_observation(entry, observation)
-                    .await?;
-                Ok(true)
+                Box::pin(async move {
+                    self.apply_federation_transaction_broadcast_observation(entry, observation)
+                        .await
+                        .map(drop)
+                })
             }
             #[cfg(feature = "federation-bark")]
             FederationOperation::Application(_) => {
                 let operation = cdk_federation_bark::validate_federation_bark_operation(
                     &entry.envelope.operation,
                 )?;
-                self.apply_federation_bark(entry, &operation).await?;
-                Ok(true)
+                Box::pin(async move { self.apply_federation_bark(entry, &operation).await })
             }
             #[cfg(not(feature = "federation-bark"))]
             FederationOperation::Application(_) => {
-                Err(FederationError::ApplicationOperationInvalid {
+                return Err(FederationError::ApplicationOperationInvalid {
                     reason: "federation application support is disabled".to_owned(),
                 }
                 .into())
             }
-        }
+        })
     }
 
     #[cfg(feature = "federation-bark")]

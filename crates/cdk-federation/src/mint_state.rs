@@ -519,7 +519,14 @@ impl FederationNode {
         Ok(response)
     }
 
-    pub async fn submit_federation_envelope_to_consensus(
+    pub fn submit_federation_envelope_to_consensus(
+        &self,
+        envelope: FederationOperationEnvelope,
+    ) -> futures::future::BoxFuture<'_, Result<FederationSubmitOperationResponse, cdk::Error>> {
+        Box::pin(self.submit_federation_envelope_to_consensus_inner(envelope))
+    }
+
+    async fn submit_federation_envelope_to_consensus_inner(
         &self,
         envelope: FederationOperationEnvelope,
     ) -> Result<FederationSubmitOperationResponse, cdk::Error> {

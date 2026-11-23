@@ -23,6 +23,7 @@ use cdk::federation::{
     FederationSubmitOperationResponse, MemberId,
 };
 use cdk::mint::Mint;
+use futures::future::BoxFuture;
 
 use super::node_runtime::{
     apply_federation_journal_entry_for_replay, finalized_unit_recovery_mismatch,
@@ -398,7 +399,14 @@ impl FederationNodeRuntime {
         Ok(Some(responses))
     }
 
-    pub async fn submit_envelope(
+    pub fn submit_envelope(
+        &self,
+        envelope: FederationOperationEnvelope,
+    ) -> BoxFuture<'_, Result<FederationSubmitOperationResponse, cdk::Error>> {
+        Box::pin(self.submit_envelope_timed(envelope))
+    }
+
+    async fn submit_envelope_timed(
         &self,
         envelope: FederationOperationEnvelope,
     ) -> Result<FederationSubmitOperationResponse, cdk::Error> {
@@ -821,7 +829,14 @@ impl FederationNodeRuntime {
         }
     }
 
-    pub async fn apply_finalized_unit(
+    pub fn apply_finalized_unit(
+        &self,
+        payload: FederationAlephBftUnitPayload,
+    ) -> BoxFuture<'_, Result<Vec<FederationSubmitOperationResponse>, cdk::Error>> {
+        Box::pin(self.apply_finalized_unit_inner(payload))
+    }
+
+    async fn apply_finalized_unit_inner(
         &self,
         payload: FederationAlephBftUnitPayload,
     ) -> Result<Vec<FederationSubmitOperationResponse>, cdk::Error> {
@@ -917,7 +932,14 @@ impl FederationNodeRuntime {
         self.publish_terminal_operation_responses(&responses).await
     }
 
-    pub async fn apply_journal_entries(
+    pub fn apply_journal_entries<'a>(
+        &'a self,
+        entries: &'a [FederationJournalEntry],
+    ) -> BoxFuture<'a, Result<Vec<FederationOperationId>, cdk::Error>> {
+        Box::pin(self.apply_journal_entries_timed(entries))
+    }
+
+    async fn apply_journal_entries_timed(
         &self,
         entries: &[FederationJournalEntry],
     ) -> Result<Vec<FederationOperationId>, cdk::Error> {
@@ -1025,8 +1047,12 @@ impl FederationNodeRuntime {
         }
         #[cfg(feature = "federation-bark")]
         if let Some(runtime) = self.components.wallet.bark.as_ref() {
-            if let Err(err) =
-                crate::reconcile_federation_bark_runtime(mint, runtime, &terminal_entries).await
+            if let Err(err) = Box::pin(crate::reconcile_federation_bark_runtime(
+                mint,
+                runtime,
+                &terminal_entries,
+            ))
+            .await
             {
                 tracing::error!(
                     reason = %format!("{err:#}"),

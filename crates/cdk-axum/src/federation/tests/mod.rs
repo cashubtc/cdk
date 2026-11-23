@@ -3265,13 +3265,15 @@ async fn federation_route_state_for_private_with_db(
         0,
         CurrencyUnit::Sat,
     ));
-    federation_route_state_for_private_with_db_payment_and_finality(
-        public_config,
-        local_private,
-        db,
-        seed,
-        fake,
-        true,
+    Box::pin(
+        federation_route_state_for_private_with_db_payment_and_finality(
+            public_config,
+            local_private,
+            db,
+            seed,
+            fake,
+            true,
+        ),
     )
     .await
 }
@@ -3292,13 +3294,15 @@ async fn federation_route_state_for_private_with_db_and_aleph_bft(
         0,
         CurrencyUnit::Sat,
     ));
-    federation_route_state_for_private_with_db_payment_and_finality(
-        public_config,
-        local_private,
-        db,
-        seed,
-        fake,
-        false,
+    Box::pin(
+        federation_route_state_for_private_with_db_payment_and_finality(
+            public_config,
+            local_private,
+            db,
+            seed,
+            fake,
+            false,
+        ),
     )
     .await
 }
@@ -3310,13 +3314,15 @@ async fn federation_route_state_for_private_with_db_and_aleph_bft_payment_proces
     seed: &[u8],
     payment_processor: DynMintPayment,
 ) -> MintState {
-    federation_route_state_for_private_with_db_payment_and_finality(
-        public_config,
-        local_private,
-        db,
-        seed,
-        payment_processor,
-        false,
+    Box::pin(
+        federation_route_state_for_private_with_db_payment_and_finality(
+            public_config,
+            local_private,
+            db,
+            seed,
+            payment_processor,
+            false,
+        ),
     )
     .await
 }
