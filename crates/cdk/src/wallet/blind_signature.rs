@@ -1,7 +1,7 @@
 use std::time::Instant;
 
-use crate::dhke::batch_verify_bls_blind_signatures;
-use crate::nuts::{nut12, BlindSignature, BlindedMessage};
+use crate::dhke::{batch_verify_bls_blind_signatures, batch_verify_bls_messages};
+use crate::nuts::{nut12, BlindSignature, BlindedMessage, Proof, PublicKey};
 use crate::wallet::Wallet;
 use crate::{Amount, Error};
 
@@ -107,4 +107,30 @@ pub(crate) async fn validate_mint_response_signatures<'a>(
     }
 
     Ok(())
+}
+
+/// Batch-verifies the BLS signatures of v3 proofs.
+///
+/// `mint_keys[i]` is the mint public key for the amount of the `i`-th proof,
+/// and every proof must come from a v3 keyset. The verification time is logged
+/// as the `final_proof_verification` stage.
+pub(crate) fn verify_bls_proofs<'a, P>(mint_keys: &[PublicKey], proofs: P) -> Result<(), Error>
+where
+    P: IntoIterator<Item = &'a Proof>,
+{
+    let (signatures, messages): (Vec<PublicKey>, Vec<&[u8]>) = proofs
+        .into_iter()
+        .map(|proof| (proof.c, proof.secret.as_bytes()))
+        .unzip();
+
+    let started_at = Instant::now();
+    let verification = batch_verify_bls_messages(mint_keys, &signatures, &messages)
+        .map_err(|_| Error::CouldNotVerifyDleq);
+    super::performance::record_wallet_performance_stage(
+        "final_proof_verification",
+        started_at,
+        signatures.len(),
+        verification.is_ok(),
+    );
+    verification
 }

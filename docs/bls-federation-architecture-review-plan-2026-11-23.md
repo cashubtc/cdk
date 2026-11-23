@@ -410,4 +410,5 @@ Verification:
 - the standalone API guard.
 
 Not checked: the WASM target is not installed with this toolchain.
+- **Follow-up, one v3 proof check in the wallet:** `verify_bls_proofs` in `crates/cdk/src/wallet/blind_signature.rs` batch-verifies v3 proofs, logs the stage and maps the error. It replaces three copies in `Wallet::verify_token_signatures`, the receive saga and the issue saga (4 files, 45 insertions, 67 deletions). `cdk` tests pass standalone (790) and with federation (1,035).
 

@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Instant;
 
 use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 use bitcoin::Network;
@@ -23,7 +22,6 @@ use tracing::instrument;
 use zeroize::Zeroize;
 
 use crate::amount::SplitTarget;
-use crate::dhke::batch_verify_bls_messages;
 use crate::dhke::construct_proofs;
 use crate::error::Error;
 use crate::fees::calculate_fee;
@@ -1070,8 +1068,6 @@ impl Wallet {
         let proofs = self.token_proofs(token).await?;
         let mut keys_cache: HashMap<Id, Keys> = HashMap::new();
         let mut bls_mint_pubkeys = Vec::new();
-        let mut bls_signatures = Vec::new();
-        let mut bls_messages = Vec::new();
 
         for proof in &proofs {
             let mint_pubkey = match keys_cache.get(&proof.keyset_id) {
@@ -1096,27 +1092,16 @@ impl Wallet {
                         return Err(Error::CouldNotVerifyDleq);
                     }
                     bls_mint_pubkeys.push(mint_pubkey);
-                    bls_signatures.push(proof.c);
-                    bls_messages.push(proof.secret.as_bytes());
                 }
             }
         }
 
-        {
-            let proof_verification_started_at = Instant::now();
-            let proof_verification =
-                batch_verify_bls_messages(&bls_mint_pubkeys, &bls_signatures, &bls_messages)
-                    .map_err(|_| Error::CouldNotVerifyDleq);
-            self::performance::record_wallet_performance_stage(
-                "final_proof_verification",
-                proof_verification_started_at,
-                bls_signatures.len(),
-                proof_verification.is_ok(),
-            );
-            proof_verification?;
-        }
-
-        Ok(())
+        blind_signature::verify_bls_proofs(
+            &bls_mint_pubkeys,
+            proofs
+                .iter()
+                .filter(|proof| proof.keyset_id.get_version().is_bls()),
+        )
     }
 
     /// Verify all proofs in token have a valid DLEQ proof.

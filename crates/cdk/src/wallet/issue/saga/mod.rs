@@ -33,7 +33,6 @@
 //! | `[compensated]` | Minting failed or rolled back, quote released |
 
 use std::collections::HashMap;
-use std::time::Instant;
 
 use cdk_common::nut00::KnownMethod;
 use cdk_common::wallet::{
@@ -46,10 +45,8 @@ use tracing::instrument;
 use self::compensation::{MintCompensation, ReleaseMintQuote};
 use self::state::{Finalized, Initial, Prepared, PreparedMintRequest};
 use crate::amount::SplitTarget;
-use crate::dhke::batch_verify_bls_messages;
 use crate::dhke::{construct_proofs, hash_to_curve_for_version};
 use crate::nuts::nut00::ProofsMethods;
-use crate::nuts::KeySetVersion;
 use crate::nuts::{MintRequest, PreMintSecrets, Proofs, SpendingConditions, State};
 use crate::util::unix_time;
 use crate::wallet::blind_signature::{
@@ -1015,32 +1012,18 @@ impl<'a> MintSaga<'a, Prepared> {
                 &keys,
             )?;
 
-            {
             let bls_proofs = proofs
                 .iter()
-                .filter(|proof| proof.keyset_id.get_version() == KeySetVersion::Version02)
+                .filter(|proof| proof.keyset_id.get_version().is_bls())
                 .collect::<Vec<_>>();
             let bls_mint_pubkeys = bls_proofs
                 .iter()
                 .map(|proof| keys.amount_key(proof.amount).ok_or(Error::AmountKey))
                 .collect::<Result<Vec<_>, _>>()?;
-            let bls_signatures = bls_proofs.iter().map(|proof| proof.c).collect::<Vec<_>>();
-            let bls_messages = bls_proofs
-                .iter()
-                .map(|proof| proof.secret.as_bytes())
-                .collect::<Vec<_>>();
-            let proof_verification_started_at = Instant::now();
-            let proof_verification =
-                batch_verify_bls_messages(&bls_mint_pubkeys, &bls_signatures, &bls_messages)
-                    .map_err(|_| Error::CouldNotVerifyDleq);
-            crate::wallet::performance::record_wallet_performance_stage(
-                "final_proof_verification",
-                proof_verification_started_at,
-                bls_signatures.len(),
-                proof_verification.is_ok(),
-            );
-            proof_verification?;
-            }
+            crate::wallet::blind_signature::verify_bls_proofs(
+                &bls_mint_pubkeys,
+                bls_proofs.into_iter(),
+            )?;
 
 
             let minted_amount = proofs.total_amount()?;
@@ -1206,6 +1189,7 @@ mod tests {
     use super::*;
     use crate::dhke::sign_message;
     use crate::nuts::nut01::{Keys, SecretKey};
+    use crate::nuts::KeySetVersion;
     use crate::nuts::{
         BatchMintRequest, BlindSignature, BlindedMessage, CurrencyUnit, Id, KeySet, MintResponse,
     };
