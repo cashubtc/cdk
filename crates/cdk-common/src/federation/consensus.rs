@@ -10,6 +10,7 @@ use core::str::FromStr;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 use super::canonical::canonical_json_bytes;
+use super::canonical::impl_fixed_bytes;
 use super::journal::PreparedFederationJournalFinalization;
 use super::{
     FederationAlephBftRecoveryCursor, FederationApplicationState, FederationCheckpoint,
@@ -56,79 +57,11 @@ pub const FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES: usize =
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FederationAlephBftUnitBodyHash([u8; 32]);
 
-impl FederationAlephBftUnitBodyHash {
-    /// Create a unit body hash from raw bytes.
-    #[must_use]
-    pub fn from_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-
-    /// Parse a unit body hash from a byte slice.
-    pub fn from_slice(bytes: &[u8]) -> Result<Self> {
-        let bytes: [u8; 32] =
-            bytes
-                .try_into()
-                .map_err(|_| FederationError::InvalidAlephBftUnitBodyHashSize {
-                    expected: 32,
-                    found: bytes.len(),
-                })?;
-        Ok(Self(bytes))
-    }
-
-    /// Parse a unit body hash from hex.
-    pub fn from_hex<S>(hex: S) -> Result<Self>
-    where
-        S: AsRef<str>,
-    {
-        let bytes = crate::util::hex::decode(hex.as_ref())?;
-        Self::from_slice(&bytes)
-    }
-
-    /// Return this unit body hash as bytes.
-    #[must_use]
-    pub fn to_bytes(self) -> [u8; 32] {
-        self.0
-    }
-
-    /// Return this unit body hash as hex.
-    #[must_use]
-    pub fn to_hex(self) -> String {
-        crate::util::hex::encode(self.0)
-    }
-}
-
-impl fmt::Display for FederationAlephBftUnitBodyHash {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.to_hex())
-    }
-}
-
-impl FromStr for FederationAlephBftUnitBodyHash {
-    type Err = FederationError;
-
-    fn from_str(value: &str) -> Result<Self> {
-        Self::from_hex(value)
-    }
-}
-
-impl Serialize for FederationAlephBftUnitBodyHash {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&self.to_hex())
-    }
-}
-
-impl<'de> Deserialize<'de> for FederationAlephBftUnitBodyHash {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        Self::from_hex(value).map_err(serde::de::Error::custom)
-    }
-}
+impl_fixed_bytes!(
+    FederationAlephBftUnitBodyHash,
+    32,
+    InvalidAlephBftUnitBodyHashSize
+);
 
 /// Canonical payload carried by an AlephBFT unit.
 ///

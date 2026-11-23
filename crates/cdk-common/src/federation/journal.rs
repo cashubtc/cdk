@@ -5,14 +5,14 @@
 //! ranges. Durable storage backends persist the same entry shape.
 
 use core::fmt;
-use core::str::FromStr;
 use std::collections::{BTreeMap, HashMap};
 
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 
 use super::canonical::append_hash_bytes;
+use super::canonical::impl_fixed_bytes;
 use super::{
     FederatedKeyset, FederationError, FederationOperation, FederationOperationConflictKey,
     FederationOperationEnvelope, FederationOperationId, MemberId, Result,
@@ -34,46 +34,9 @@ const FEDERATION_MATERIALIZED_STATE_ROW_FINGERPRINT_VERSION: &[u8] =
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FederationJournalDigest([u8; 32]);
 
+impl_fixed_bytes!(FederationJournalDigest, 32, InvalidJournalDigestSize);
+
 impl FederationJournalDigest {
-    /// Create a journal digest from raw bytes.
-    #[must_use]
-    pub fn from_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-
-    /// Parse a journal digest from a byte slice.
-    pub fn from_slice(bytes: &[u8]) -> Result<Self> {
-        let bytes: [u8; 32] =
-            bytes
-                .try_into()
-                .map_err(|_| FederationError::InvalidJournalDigestSize {
-                    expected: 32,
-                    found: bytes.len(),
-                })?;
-        Ok(Self(bytes))
-    }
-
-    /// Parse a journal digest from hex.
-    pub fn from_hex<S>(hex: S) -> Result<Self>
-    where
-        S: AsRef<str>,
-    {
-        let bytes = crate::util::hex::decode(hex.as_ref())?;
-        Self::from_slice(&bytes)
-    }
-
-    /// Return this journal digest as bytes.
-    #[must_use]
-    pub fn to_bytes(self) -> [u8; 32] {
-        self.0
-    }
-
-    /// Return this journal digest as hex.
-    #[must_use]
-    pub fn to_hex(self) -> String {
-        crate::util::hex::encode(self.0)
-    }
-
     /// Return the empty-journal digest.
     #[must_use]
     pub fn genesis() -> Self {
@@ -90,83 +53,17 @@ impl FederationJournalDigest {
     }
 }
 
-impl fmt::Display for FederationJournalDigest {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.to_hex())
-    }
-}
-
-impl FromStr for FederationJournalDigest {
-    type Err = FederationError;
-
-    fn from_str(value: &str) -> Result<Self> {
-        Self::from_hex(value)
-    }
-}
-
-impl Serialize for FederationJournalDigest {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&self.to_hex())
-    }
-}
-
-impl<'de> Deserialize<'de> for FederationJournalDigest {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        Self::from_hex(value).map_err(serde::de::Error::custom)
-    }
-}
-
 /// Digest of the deterministic materialized federation database state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FederationMaterializedStateDigest([u8; 32]);
 
+impl_fixed_bytes!(
+    FederationMaterializedStateDigest,
+    32,
+    InvalidMaterializedStateDigestSize
+);
+
 impl FederationMaterializedStateDigest {
-    /// Create a materialized-state digest from raw bytes.
-    #[must_use]
-    pub fn from_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-
-    /// Parse a materialized-state digest from a byte slice.
-    pub fn from_slice(bytes: &[u8]) -> Result<Self> {
-        let bytes: [u8; 32] =
-            bytes
-                .try_into()
-                .map_err(|_| FederationError::InvalidMaterializedStateDigestSize {
-                    expected: 32,
-                    found: bytes.len(),
-                })?;
-        Ok(Self(bytes))
-    }
-
-    /// Parse a materialized-state digest from hex.
-    pub fn from_hex<S>(hex: S) -> Result<Self>
-    where
-        S: AsRef<str>,
-    {
-        let bytes = crate::util::hex::decode(hex.as_ref())?;
-        Self::from_slice(&bytes)
-    }
-
-    /// Return this materialized-state digest as bytes.
-    #[must_use]
-    pub fn to_bytes(self) -> [u8; 32] {
-        self.0
-    }
-
-    /// Return this materialized-state digest as hex.
-    #[must_use]
-    pub fn to_hex(self) -> String {
-        crate::util::hex::encode(self.0)
-    }
-
     /// Return the empty materialized-state digest.
     #[must_use]
     pub fn genesis() -> Self {
@@ -180,39 +77,6 @@ impl FederationMaterializedStateDigest {
         append_hash_bytes(&mut transcript, &self.to_bytes());
         append_hash_bytes(&mut transcript, &row);
         Ok(Self(Sha256Hash::hash(&transcript).to_byte_array()))
-    }
-}
-
-impl fmt::Display for FederationMaterializedStateDigest {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.to_hex())
-    }
-}
-
-impl FromStr for FederationMaterializedStateDigest {
-    type Err = FederationError;
-
-    fn from_str(value: &str) -> Result<Self> {
-        Self::from_hex(value)
-    }
-}
-
-impl Serialize for FederationMaterializedStateDigest {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&self.to_hex())
-    }
-}
-
-impl<'de> Deserialize<'de> for FederationMaterializedStateDigest {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        Self::from_hex(value).map_err(serde::de::Error::custom)
     }
 }
 

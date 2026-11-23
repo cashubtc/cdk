@@ -5,16 +5,14 @@
 //! prefix. It cannot authorize application state by itself, and opaque
 //! AlephBFT backup bytes are deliberately excluded from the signed payload.
 
-use core::fmt;
-use core::str::FromStr;
 use std::collections::{BTreeMap, BTreeSet};
 
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::schnorr::Signature;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 
-use super::canonical::{append_hash_bytes, canonical_json_bytes};
+use super::canonical::{append_hash_bytes, canonical_json_bytes, impl_fixed_bytes};
 use super::{
     FederationAlephBftFinalizedItem, FederationApplicationState, FederationConfig,
     FederationConfigDigest, FederationError, FederationId, FederationJournalDigest,
@@ -98,46 +96,13 @@ fn ensure_checkpoint_batch_item_limits(
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FederationApplicationDigest([u8; 32]);
 
+impl_fixed_bytes!(
+    FederationApplicationDigest,
+    32,
+    InvalidApplicationDigestSize
+);
+
 impl FederationApplicationDigest {
-    /// Create an application digest from raw bytes.
-    #[must_use]
-    pub fn from_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-
-    /// Parse an application digest from a byte slice.
-    pub fn from_slice(bytes: &[u8]) -> Result<Self> {
-        let bytes: [u8; 32] =
-            bytes
-                .try_into()
-                .map_err(|_| FederationError::InvalidApplicationDigestSize {
-                    expected: 32,
-                    found: bytes.len(),
-                })?;
-        Ok(Self(bytes))
-    }
-
-    /// Parse an application digest from hex.
-    pub fn from_hex<S>(hex: S) -> Result<Self>
-    where
-        S: AsRef<str>,
-    {
-        let bytes = crate::util::hex::decode(hex.as_ref())?;
-        Self::from_slice(&bytes)
-    }
-
-    /// Return this application digest as bytes.
-    #[must_use]
-    pub fn to_bytes(self) -> [u8; 32] {
-        self.0
-    }
-
-    /// Return this application digest as hex.
-    #[must_use]
-    pub fn to_hex(self) -> String {
-        crate::util::hex::encode(self.0)
-    }
-
     /// Return the digest before any accepted operation reaches a terminal state.
     #[must_use]
     pub fn genesis() -> Self {
@@ -172,83 +137,17 @@ impl FederationApplicationDigest {
     }
 }
 
-impl fmt::Display for FederationApplicationDigest {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.to_hex())
-    }
-}
-
-impl FromStr for FederationApplicationDigest {
-    type Err = FederationError;
-
-    fn from_str(value: &str) -> Result<Self> {
-        Self::from_hex(value)
-    }
-}
-
-impl Serialize for FederationApplicationDigest {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&self.to_hex())
-    }
-}
-
-impl<'de> Deserialize<'de> for FederationApplicationDigest {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        Self::from_hex(value).map_err(serde::de::Error::custom)
-    }
-}
-
 /// Cumulative digest of every AlephBFT finalized item and its provenance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FederationFinalizedItemDigest([u8; 32]);
 
+impl_fixed_bytes!(
+    FederationFinalizedItemDigest,
+    32,
+    InvalidFinalizedItemDigestSize
+);
+
 impl FederationFinalizedItemDigest {
-    /// Create a finalized-item digest from raw bytes.
-    #[must_use]
-    pub fn from_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-
-    /// Parse a finalized-item digest from a byte slice.
-    pub fn from_slice(bytes: &[u8]) -> Result<Self> {
-        let bytes: [u8; 32] =
-            bytes
-                .try_into()
-                .map_err(|_| FederationError::InvalidFinalizedItemDigestSize {
-                    expected: 32,
-                    found: bytes.len(),
-                })?;
-        Ok(Self(bytes))
-    }
-
-    /// Parse a finalized-item digest from hex.
-    pub fn from_hex<S>(hex: S) -> Result<Self>
-    where
-        S: AsRef<str>,
-    {
-        let bytes = crate::util::hex::decode(hex.as_ref())?;
-        Self::from_slice(&bytes)
-    }
-
-    /// Return this finalized-item digest as bytes.
-    #[must_use]
-    pub fn to_bytes(self) -> [u8; 32] {
-        self.0
-    }
-
-    /// Return this finalized-item digest as hex.
-    #[must_use]
-    pub fn to_hex(self) -> String {
-        crate::util::hex::encode(self.0)
-    }
-
     /// Return the digest before any AlephBFT item is finalized.
     #[must_use]
     pub fn genesis() -> Self {
@@ -273,39 +172,6 @@ impl FederationFinalizedItemDigest {
         append_hash_bytes(&mut transcript, &self.to_bytes());
         append_hash_bytes(&mut transcript, &item);
         Ok(Self(Sha256Hash::hash(&transcript).to_byte_array()))
-    }
-}
-
-impl fmt::Display for FederationFinalizedItemDigest {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.to_hex())
-    }
-}
-
-impl FromStr for FederationFinalizedItemDigest {
-    type Err = FederationError;
-
-    fn from_str(value: &str) -> Result<Self> {
-        Self::from_hex(value)
-    }
-}
-
-impl Serialize for FederationFinalizedItemDigest {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&self.to_hex())
-    }
-}
-
-impl<'de> Deserialize<'de> for FederationFinalizedItemDigest {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        Self::from_hex(value).map_err(serde::de::Error::custom)
     }
 }
 
@@ -1381,79 +1247,7 @@ impl FederationCheckpoint {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FederationCheckpointId([u8; 32]);
 
-impl FederationCheckpointId {
-    /// Create a checkpoint ID from raw bytes.
-    #[must_use]
-    pub fn from_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-
-    /// Parse a checkpoint ID from a byte slice.
-    pub fn from_slice(bytes: &[u8]) -> Result<Self> {
-        let bytes: [u8; 32] =
-            bytes
-                .try_into()
-                .map_err(|_| FederationError::InvalidCheckpointIdSize {
-                    expected: 32,
-                    found: bytes.len(),
-                })?;
-        Ok(Self(bytes))
-    }
-
-    /// Parse a checkpoint ID from hex.
-    pub fn from_hex<S>(hex: S) -> Result<Self>
-    where
-        S: AsRef<str>,
-    {
-        let bytes = crate::util::hex::decode(hex.as_ref())?;
-        Self::from_slice(&bytes)
-    }
-
-    /// Return this checkpoint ID as bytes.
-    #[must_use]
-    pub fn to_bytes(self) -> [u8; 32] {
-        self.0
-    }
-
-    /// Return this checkpoint ID as hex.
-    #[must_use]
-    pub fn to_hex(self) -> String {
-        crate::util::hex::encode(self.0)
-    }
-}
-
-impl fmt::Display for FederationCheckpointId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.to_hex())
-    }
-}
-
-impl FromStr for FederationCheckpointId {
-    type Err = FederationError;
-
-    fn from_str(value: &str) -> Result<Self> {
-        Self::from_hex(value)
-    }
-}
-
-impl Serialize for FederationCheckpointId {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&self.to_hex())
-    }
-}
-
-impl<'de> Deserialize<'de> for FederationCheckpointId {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        Self::from_hex(value).map_err(serde::de::Error::custom)
-    }
-}
+impl_fixed_bytes!(FederationCheckpointId, 32, InvalidCheckpointIdSize);
 
 /// One member identity signature over a checkpoint ID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

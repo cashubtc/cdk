@@ -1,7 +1,6 @@
 //! Dealer-free DKG ceremony, participant-state, and transcript types.
 
 use core::fmt;
-use core::str::FromStr;
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(feature = "prometheus")]
 use std::time::Instant;
@@ -9,8 +8,9 @@ use std::time::Instant;
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::schnorr::Signature;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 
+use super::canonical::impl_fixed_bytes;
 use super::config::{
     FederatedKeyset, FederationConfig, FederationId, MemberConfigPrivate, MemberConfigPublic,
     MemberId, ThresholdParams,
@@ -170,79 +170,7 @@ impl FederationDkgMemberKeysetShare {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FederationDkgCeremonyId([u8; 32]);
 
-impl FederationDkgCeremonyId {
-    /// Create a ceremony ID from 32 bytes of operator-provided entropy.
-    #[must_use]
-    pub fn from_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-
-    /// Parse a ceremony ID from a byte slice.
-    pub fn from_slice(bytes: &[u8]) -> Result<Self> {
-        let bytes: [u8; 32] =
-            bytes
-                .try_into()
-                .map_err(|_| FederationError::InvalidDkgCeremonyIdSize {
-                    expected: 32,
-                    found: bytes.len(),
-                })?;
-        Ok(Self(bytes))
-    }
-
-    /// Parse a ceremony ID from hex.
-    pub fn from_hex<S>(hex: S) -> Result<Self>
-    where
-        S: AsRef<str>,
-    {
-        let bytes = crate::util::hex::decode(hex.as_ref())?;
-        Self::from_slice(&bytes)
-    }
-
-    /// Return the ceremony ID as bytes.
-    #[must_use]
-    pub fn to_bytes(self) -> [u8; 32] {
-        self.0
-    }
-
-    /// Return the ceremony ID as lowercase hex.
-    #[must_use]
-    pub fn to_hex(self) -> String {
-        crate::util::hex::encode(self.0)
-    }
-}
-
-impl fmt::Display for FederationDkgCeremonyId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.to_hex())
-    }
-}
-
-impl FromStr for FederationDkgCeremonyId {
-    type Err = FederationError;
-
-    fn from_str(value: &str) -> Result<Self> {
-        Self::from_hex(value)
-    }
-}
-
-impl Serialize for FederationDkgCeremonyId {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&self.to_hex())
-    }
-}
-
-impl<'de> Deserialize<'de> for FederationDkgCeremonyId {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        Self::from_hex(value).map_err(serde::de::Error::custom)
-    }
-}
+impl_fixed_bytes!(FederationDkgCeremonyId, 32, InvalidDkgCeremonyIdSize);
 
 /// Public keyset policy agreed before a dealer-free DKG ceremony starts.
 ///
@@ -428,85 +356,19 @@ impl FederationDkgCeremonyRecord {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FederationDkgCommitmentHash([u8; 32]);
 
+impl_fixed_bytes!(
+    FederationDkgCommitmentHash,
+    32,
+    InvalidDkgCommitmentHashSize
+);
+
 impl FederationDkgCommitmentHash {
-    /// Create a commitment hash from raw bytes.
-    #[must_use]
-    pub fn from_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-
-    /// Parse a commitment hash from a byte slice.
-    pub fn from_slice(bytes: &[u8]) -> Result<Self> {
-        let bytes: [u8; 32] =
-            bytes
-                .try_into()
-                .map_err(|_| FederationError::InvalidDkgCommitmentHashSize {
-                    expected: 32,
-                    found: bytes.len(),
-                })?;
-        Ok(Self(bytes))
-    }
-
-    /// Parse a commitment hash from hex.
-    pub fn from_hex<S>(hex: S) -> Result<Self>
-    where
-        S: AsRef<str>,
-    {
-        let bytes = crate::util::hex::decode(hex.as_ref())?;
-        Self::from_slice(&bytes)
-    }
-
-    /// Return this commitment hash as bytes.
-    #[must_use]
-    pub fn to_bytes(self) -> [u8; 32] {
-        self.0
-    }
-
-    /// Return this commitment hash as hex.
-    #[must_use]
-    pub fn to_hex(self) -> String {
-        crate::util::hex::encode(self.0)
-    }
-
     fn for_reveal(reveal: &FederationDkgParticipantCommitmentReveal) -> Result<Self> {
         let canonical = serde_json::to_vec(reveal)?;
         let mut transcript = Vec::new();
         append_bytes(&mut transcript, FEDERATION_DKG_COMMITMENT_HASH_VERSION);
         append_bytes(&mut transcript, &canonical);
         Ok(Self(Sha256Hash::hash(&transcript).to_byte_array()))
-    }
-}
-
-impl fmt::Display for FederationDkgCommitmentHash {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.to_hex())
-    }
-}
-
-impl FromStr for FederationDkgCommitmentHash {
-    type Err = FederationError;
-
-    fn from_str(value: &str) -> Result<Self> {
-        Self::from_hex(value)
-    }
-}
-
-impl Serialize for FederationDkgCommitmentHash {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&self.to_hex())
-    }
-}
-
-impl<'de> Deserialize<'de> for FederationDkgCommitmentHash {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        Self::from_hex(value).map_err(serde::de::Error::custom)
     }
 }
 
@@ -1639,46 +1501,13 @@ impl FederationDkgSetupState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FederationDkgTranscriptHash([u8; 32]);
 
+impl_fixed_bytes!(
+    FederationDkgTranscriptHash,
+    32,
+    InvalidDkgTranscriptHashSize
+);
+
 impl FederationDkgTranscriptHash {
-    /// Create a transcript hash from raw bytes.
-    #[must_use]
-    pub fn from_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-
-    /// Parse a transcript hash from a byte slice.
-    pub fn from_slice(bytes: &[u8]) -> Result<Self> {
-        let bytes: [u8; 32] =
-            bytes
-                .try_into()
-                .map_err(|_| FederationError::InvalidDkgTranscriptHashSize {
-                    expected: 32,
-                    found: bytes.len(),
-                })?;
-        Ok(Self(bytes))
-    }
-
-    /// Parse a transcript hash from hex.
-    pub fn from_hex<S>(hex: S) -> Result<Self>
-    where
-        S: AsRef<str>,
-    {
-        let bytes = crate::util::hex::decode(hex.as_ref())?;
-        Self::from_slice(&bytes)
-    }
-
-    /// Return this transcript hash as bytes.
-    #[must_use]
-    pub fn to_bytes(self) -> [u8; 32] {
-        self.0
-    }
-
-    /// Return this transcript hash as hex.
-    #[must_use]
-    pub fn to_hex(self) -> String {
-        crate::util::hex::encode(self.0)
-    }
-
     fn for_payload(payload: &FederationDkgTranscriptPayload) -> Result<Self> {
         let canonical = serde_json::to_vec(payload)?;
         let mut transcript = Vec::new();
@@ -1688,77 +1517,17 @@ impl FederationDkgTranscriptHash {
     }
 }
 
-impl fmt::Display for FederationDkgTranscriptHash {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.to_hex())
-    }
-}
-
-impl FromStr for FederationDkgTranscriptHash {
-    type Err = FederationError;
-
-    fn from_str(value: &str) -> Result<Self> {
-        Self::from_hex(value)
-    }
-}
-
-impl Serialize for FederationDkgTranscriptHash {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&self.to_hex())
-    }
-}
-
-impl<'de> Deserialize<'de> for FederationDkgTranscriptHash {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        Self::from_hex(value).map_err(serde::de::Error::custom)
-    }
-}
-
 /// Schnorr identity signature over a DKG/setup transcript hash.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FederationDkgTranscriptSignature([u8; 64]);
 
+impl_fixed_bytes!(
+    FederationDkgTranscriptSignature,
+    64,
+    InvalidDkgTranscriptSignatureSize
+);
+
 impl FederationDkgTranscriptSignature {
-    /// Create a transcript signature from raw Schnorr bytes.
-    pub fn from_slice(bytes: &[u8]) -> Result<Self> {
-        let bytes: [u8; 64] =
-            bytes
-                .try_into()
-                .map_err(|_| FederationError::InvalidDkgTranscriptSignatureSize {
-                    expected: 64,
-                    found: bytes.len(),
-                })?;
-        Ok(Self(bytes))
-    }
-
-    /// Parse a transcript signature from hex.
-    pub fn from_hex<S>(hex: S) -> Result<Self>
-    where
-        S: AsRef<str>,
-    {
-        let bytes = crate::util::hex::decode(hex.as_ref())?;
-        Self::from_slice(&bytes)
-    }
-
-    /// Return this signature as bytes.
-    #[must_use]
-    pub fn to_bytes(self) -> [u8; 64] {
-        self.0
-    }
-
-    /// Return this signature as hex.
-    #[must_use]
-    pub fn to_hex(self) -> String {
-        crate::util::hex::encode(self.0)
-    }
-
     /// Sign a DKG/setup transcript hash with one member identity key.
     pub fn sign(
         transcript_hash: FederationDkgTranscriptHash,
@@ -1819,43 +1588,10 @@ impl FederationDkgTranscriptSignature {
     }
 }
 
-impl fmt::Display for FederationDkgTranscriptSignature {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.to_hex())
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FederationSchnorrSigningMode {
     RandomAux,
     NoAuxRand,
-}
-
-impl FromStr for FederationDkgTranscriptSignature {
-    type Err = FederationError;
-
-    fn from_str(value: &str) -> Result<Self> {
-        Self::from_hex(value)
-    }
-}
-
-impl Serialize for FederationDkgTranscriptSignature {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&self.to_hex())
-    }
-}
-
-impl<'de> Deserialize<'de> for FederationDkgTranscriptSignature {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        Self::from_hex(value).map_err(serde::de::Error::custom)
-    }
 }
 
 /// Key generation method recorded by a federation setup transcript.

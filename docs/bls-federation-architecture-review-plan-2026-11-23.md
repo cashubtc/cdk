@@ -375,3 +375,11 @@ Verification: the 16 production builds in the check script; unit tests of `cdk-c
 
 Verification: `cdk-common` with `federation,test` (493 unit tests and both vector suites), `cdk-federation-bark` (36), and the 16 production builds.
 
+### 2026-11-23: package 2, second step (byte newtypes)
+
+- **One macro for byte newtypes.** `impl_fixed_bytes!` in `crates/cdk-common/src/federation/canonical.rs` generates `from_bytes`, `from_slice`, `from_hex`, `to_bytes`, `to_hex`, `Display`, `FromStr` and hex serde. It replaces the hand-written copies on 13 digest and ID types and 3 signature types, which had identical bodies apart from name, length and size-error variant. Each type keeps its own size-error variant, so errors and wire format are unchanged. The signature types gain `from_bytes`.
+- **Not converted:** four types with different behaviour (the recovery-barrier ID, the FROST application ID, the setup correlation nonce, and the secret-bearing invitation capability), and the two older macros in `transaction_proposal.rs` and `setup/mod.rs`, whose size errors are free-form strings. They go with the per-module error enums.
+- Net: 8 files, 157 insertions, 1,154 deletions.
+
+Verification: `cdk-common` with `federation,test`, including the golden-vector suites; `cdk-federation-bark` (36); `cdk` federation (1,036); `cdk-axum` with `federation-bdk,federation-bark` (598); `cdk-mintd` with `federation-test-utils` (291); `cdk-sqlite` with `federation-bark` (194); the 16 production builds.
+

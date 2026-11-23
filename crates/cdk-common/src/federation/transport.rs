@@ -4,16 +4,14 @@
 //! submission and catch-up. The first router checkpoint can use them before a
 //! real consensus engine is wired behind the endpoints.
 
-use core::fmt;
-use core::str::FromStr;
 use std::collections::{BTreeMap, BTreeSet};
 
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::schnorr::Signature;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 
-use super::canonical::{append_hash_bytes, canonical_json_bytes};
+use super::canonical::{append_hash_bytes, canonical_json_bytes, impl_fixed_bytes};
 use super::{
     FederationAlephBftFinalizedItem, FederationApplicationDigest, FederationApplicationState,
     FederationCheckpoint, FederationCheckpointFrontier, FederationCheckpointId,
@@ -260,46 +258,9 @@ impl FederationDkgReadinessRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FederationRestBodyHash([u8; 32]);
 
+impl_fixed_bytes!(FederationRestBodyHash, 32, InvalidRestBodyHashSize);
+
 impl FederationRestBodyHash {
-    /// Create a body hash from raw bytes.
-    #[must_use]
-    pub fn from_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-
-    /// Parse a body hash from a byte slice.
-    pub fn from_slice(bytes: &[u8]) -> Result<Self> {
-        let bytes: [u8; 32] =
-            bytes
-                .try_into()
-                .map_err(|_| FederationError::InvalidRestBodyHashSize {
-                    expected: 32,
-                    found: bytes.len(),
-                })?;
-        Ok(Self(bytes))
-    }
-
-    /// Parse a body hash from hex.
-    pub fn from_hex<S>(hex: S) -> Result<Self>
-    where
-        S: AsRef<str>,
-    {
-        let bytes = crate::util::hex::decode(hex.as_ref())?;
-        Self::from_slice(&bytes)
-    }
-
-    /// Return this body hash as bytes.
-    #[must_use]
-    pub fn to_bytes(self) -> [u8; 32] {
-        self.0
-    }
-
-    /// Return this body hash as hex.
-    #[must_use]
-    pub fn to_hex(self) -> String {
-        crate::util::hex::encode(self.0)
-    }
-
     /// Compute the canonical payload hash.
     pub fn for_payload<T>(payload: &T) -> Result<Self>
     where
@@ -313,77 +274,13 @@ impl FederationRestBodyHash {
     }
 }
 
-impl fmt::Display for FederationRestBodyHash {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.to_hex())
-    }
-}
-
-impl FromStr for FederationRestBodyHash {
-    type Err = FederationError;
-
-    fn from_str(value: &str) -> Result<Self> {
-        Self::from_hex(value)
-    }
-}
-
-impl Serialize for FederationRestBodyHash {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&self.to_hex())
-    }
-}
-
-impl<'de> Deserialize<'de> for FederationRestBodyHash {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        Self::from_hex(value).map_err(serde::de::Error::custom)
-    }
-}
-
 /// Schnorr signature over a federation REST request transcript.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FederationRestSignature([u8; 64]);
 
+impl_fixed_bytes!(FederationRestSignature, 64, InvalidRestSignatureSize);
+
 impl FederationRestSignature {
-    /// Create a transport signature from raw Schnorr bytes.
-    pub fn from_slice(bytes: &[u8]) -> Result<Self> {
-        let bytes: [u8; 64] =
-            bytes
-                .try_into()
-                .map_err(|_| FederationError::InvalidRestSignatureSize {
-                    expected: 64,
-                    found: bytes.len(),
-                })?;
-        Ok(Self(bytes))
-    }
-
-    /// Parse a transport signature from hex.
-    pub fn from_hex<S>(hex: S) -> Result<Self>
-    where
-        S: AsRef<str>,
-    {
-        let bytes = crate::util::hex::decode(hex.as_ref())?;
-        Self::from_slice(&bytes)
-    }
-
-    /// Return this signature as bytes.
-    #[must_use]
-    pub fn to_bytes(self) -> [u8; 64] {
-        self.0
-    }
-
-    /// Return this signature as hex.
-    #[must_use]
-    pub fn to_hex(self) -> String {
-        crate::util::hex::encode(self.0)
-    }
-
     fn sign(transcript: &[u8], private_config: &MemberConfigPrivate) -> Result<Self> {
         Self::sign_with(
             transcript,
@@ -418,39 +315,6 @@ impl FederationRestSignature {
 
     fn as_schnorr(self) -> Result<Signature> {
         Signature::from_slice(&self.0).map_err(|_| FederationError::InvalidRestSignature)
-    }
-}
-
-impl fmt::Display for FederationRestSignature {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.to_hex())
-    }
-}
-
-impl FromStr for FederationRestSignature {
-    type Err = FederationError;
-
-    fn from_str(value: &str) -> Result<Self> {
-        Self::from_hex(value)
-    }
-}
-
-impl Serialize for FederationRestSignature {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&self.to_hex())
-    }
-}
-
-impl<'de> Deserialize<'de> for FederationRestSignature {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        Self::from_hex(value).map_err(serde::de::Error::custom)
     }
 }
 

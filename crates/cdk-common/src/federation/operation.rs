@@ -7,7 +7,6 @@
 //! payment-observation requests before signing or mutating spend state.
 
 use core::fmt;
-use core::str::FromStr;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{OnceLock, RwLock};
 
@@ -18,7 +17,7 @@ use serde::de::Error as _;
 use serde::ser::{Error as _, SerializeMap};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use super::canonical::{append_hash_bytes, canonical_json_bytes};
+use super::canonical::{append_hash_bytes, canonical_json_bytes, impl_fixed_bytes};
 use super::journal::FederationJournalEntry;
 use super::{
     FederatedKeyset, FederationAddressAllocationOperation, FederationChainObservation,
@@ -609,79 +608,7 @@ impl std::hash::Hash for FederationExternalApplicationConflictKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FederationOperationId([u8; 32]);
 
-impl FederationOperationId {
-    /// Create an operation ID from raw bytes.
-    #[must_use]
-    pub fn from_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-
-    /// Parse an operation ID from a byte slice.
-    pub fn from_slice(bytes: &[u8]) -> Result<Self> {
-        let bytes: [u8; 32] =
-            bytes
-                .try_into()
-                .map_err(|_| FederationError::InvalidOperationIdSize {
-                    expected: 32,
-                    found: bytes.len(),
-                })?;
-        Ok(Self(bytes))
-    }
-
-    /// Parse an operation ID from hex.
-    pub fn from_hex<S>(hex: S) -> Result<Self>
-    where
-        S: AsRef<str>,
-    {
-        let bytes = crate::util::hex::decode(hex.as_ref())?;
-        Self::from_slice(&bytes)
-    }
-
-    /// Return this operation ID as bytes.
-    #[must_use]
-    pub fn to_bytes(self) -> [u8; 32] {
-        self.0
-    }
-
-    /// Return this operation ID as hex.
-    #[must_use]
-    pub fn to_hex(self) -> String {
-        crate::util::hex::encode(self.0)
-    }
-}
-
-impl fmt::Display for FederationOperationId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.to_hex())
-    }
-}
-
-impl FromStr for FederationOperationId {
-    type Err = FederationError;
-
-    fn from_str(value: &str) -> Result<Self> {
-        Self::from_hex(value)
-    }
-}
-
-impl Serialize for FederationOperationId {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&self.to_hex())
-    }
-}
-
-impl<'de> Deserialize<'de> for FederationOperationId {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        Self::from_hex(value).map_err(serde::de::Error::custom)
-    }
-}
+impl_fixed_bytes!(FederationOperationId, 32, InvalidOperationIdSize);
 
 /// High-level kind of a federation operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -2777,75 +2704,15 @@ fn outputs_amount(
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FederationOperationSignature([u8; 64]);
 
+impl_fixed_bytes!(
+    FederationOperationSignature,
+    64,
+    InvalidOperationSignatureSize
+);
+
 impl FederationOperationSignature {
-    /// Create an operation signature from raw Schnorr bytes.
-    pub fn from_slice(bytes: &[u8]) -> Result<Self> {
-        let bytes: [u8; 64] =
-            bytes
-                .try_into()
-                .map_err(|_| FederationError::InvalidOperationSignatureSize {
-                    expected: 64,
-                    found: bytes.len(),
-                })?;
-        Ok(Self(bytes))
-    }
-
-    /// Parse an operation signature from hex.
-    pub fn from_hex<S>(hex: S) -> Result<Self>
-    where
-        S: AsRef<str>,
-    {
-        let bytes = crate::util::hex::decode(hex.as_ref())?;
-        Self::from_slice(&bytes)
-    }
-
-    /// Return this signature as bytes.
-    #[must_use]
-    pub fn to_bytes(self) -> [u8; 64] {
-        self.0
-    }
-
-    /// Return this signature as hex.
-    #[must_use]
-    pub fn to_hex(self) -> String {
-        crate::util::hex::encode(self.0)
-    }
-
     fn as_schnorr(self) -> Result<Signature> {
         Signature::from_slice(&self.0).map_err(|_| FederationError::InvalidOperationSignature)
-    }
-}
-
-impl fmt::Display for FederationOperationSignature {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.to_hex())
-    }
-}
-
-impl FromStr for FederationOperationSignature {
-    type Err = FederationError;
-
-    fn from_str(value: &str) -> Result<Self> {
-        Self::from_hex(value)
-    }
-}
-
-impl Serialize for FederationOperationSignature {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&self.to_hex())
-    }
-}
-
-impl<'de> Deserialize<'de> for FederationOperationSignature {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        Self::from_hex(value).map_err(serde::de::Error::custom)
     }
 }
 
