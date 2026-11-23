@@ -158,38 +158,30 @@ impl<'a> RequestShareVerification<'a> {
             )));
         }
 
-        let mut matching_share_sets = Vec::<(
-            Vec<(Amount, Id)>,
-            Vec<(MemberId, Vec<BlsBlindSignatureShare>)>,
-        )>::new();
+        let mut valid_shares = Vec::new();
         let mut invalid_members = Vec::new();
-
         for (member_id, response) in member_responses {
             match self.verify(outputs, *member_id, response) {
-                Ok(VerifiedMemberShares { metadata, shares }) => match matching_share_sets
-                    .iter_mut()
-                    .find(|(candidate, _)| candidate == &metadata)
-                {
-                    Some((_, members)) => members.push((*member_id, shares)),
-                    None => matching_share_sets.push((metadata, vec![(*member_id, shares)])),
-                },
+                Ok(verified) => valid_shares.push((*member_id, verified)),
                 Err(err) => invalid_members.push(format!("member {} ignored: {}", member_id, err)),
             }
         }
+        let share_sets =
+            group_by_view(valid_shares, |(_, verified)| Ok(verified.metadata.clone()))?;
 
-        let max_valid_group = matching_share_sets
+        let max_valid_group = share_sets
             .iter()
             .map(|(_, members)| members.len())
             .max()
             .unwrap_or(0);
-        let (metadata, selected_members) = matching_share_sets
-            .into_iter()
-            .find_map(|(metadata, members)| {
-                if members.len() >= threshold {
-                    Some((metadata, members.into_iter().take(threshold).collect::<Vec<_>>()))
-                } else {
-                    None
-                }
+        let (metadata, selected_members) = first_quorum(share_sets, threshold)
+            .map(|(metadata, members)| {
+                let members = members
+                    .into_iter()
+                    .take(threshold)
+                    .map(|(member_id, verified)| (member_id, verified.shares))
+                    .collect::<Vec<_>>();
+                (metadata, members)
             })
             .ok_or_else(|| {
                 let invalid = if invalid_members.is_empty() {
@@ -1747,31 +1739,12 @@ impl FederatedMintConnector {
         member_responses: &[(MemberId, MintQuoteResponse<String>)],
     ) -> Result<MintQuoteResponse<String>, Error> {
         let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
+        let groups = group_by_view(member_responses, |(member_id, response)| {
+            mint_quote_status_consensus_view(*member_id, response)
+        })?;
 
-        let mut matching_views =
-            Vec::<(serde_json::Value, MintQuoteResponse<String>, Vec<MemberId>)>::new();
-
-        for (member_id, response) in member_responses {
-            let view = mint_quote_status_consensus_view(*member_id, response)?;
-
-            match matching_views
-                .iter_mut()
-                .find(|(candidate, _, _)| *candidate == view)
-            {
-                Some((_, _, members)) => members.push(*member_id),
-                None => matching_views.push((view, response.clone(), vec![*member_id])),
-            }
-        }
-
-        matching_views
-            .into_iter()
-            .find_map(|(_, response, members)| {
-                if members.len() >= threshold {
-                    Some(response)
-                } else {
-                    None
-                }
-            })
+        first_quorum(groups, threshold)
+            .and_then(|(_, members)| members.first().map(|(_, response)| response.clone()))
             .ok_or_else(|| {
                 Error::InvalidMintResponse(format!(
                     "insufficient matching federation mint quote status responses: required {}",
@@ -1786,14 +1759,7 @@ impl FederatedMintConnector {
         member_responses: &[(MemberId, Vec<MintQuoteResponse<String>>)],
     ) -> Result<Vec<MintQuoteResponse<String>>, Error> {
         let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
-
-        let mut matching_views = Vec::<(
-            serde_json::Value,
-            Vec<MintQuoteResponse<String>>,
-            Vec<MemberId>,
-        )>::new();
-
-        for (member_id, response) in member_responses {
+        let groups = group_by_view(member_responses, |(member_id, response)| {
             if response.len() != expected_count {
                 return Err(Error::InvalidMintResponse(format!(
                     "member {} returned {} batch mint quote statuses for {} requested quotes",
@@ -1802,35 +1768,14 @@ impl FederatedMintConnector {
                     expected_count
                 )));
             }
-            let view = response
+            response
                 .iter()
                 .map(|response| mint_quote_status_consensus_view(*member_id, response))
-                .collect::<Result<Vec<_>, _>>()?;
-            let view = serde_json::to_value(view).map_err(|err| {
-                Error::InvalidMintResponse(format!(
-                    "member {} returned unserializable batch mint quote status response: {}",
-                    member_id, err
-                ))
-            })?;
+                .collect::<Result<Vec<_>, _>>()
+        })?;
 
-            match matching_views
-                .iter_mut()
-                .find(|(candidate, _, _)| *candidate == view)
-            {
-                Some((_, _, members)) => members.push(*member_id),
-                None => matching_views.push((view, response.clone(), vec![*member_id])),
-            }
-        }
-
-        matching_views
-            .into_iter()
-            .find_map(|(_, response, members)| {
-                if members.len() >= threshold {
-                    Some(response)
-                } else {
-                    None
-                }
-            })
+        first_quorum(groups, threshold)
+            .and_then(|(_, members)| members.first().map(|(_, response)| response.clone()))
             .ok_or_else(|| {
                 Error::InvalidMintResponse(format!(
                     "insufficient matching federation batch mint quote status responses: required {}",
@@ -1980,29 +1925,13 @@ impl FederatedMintConnector {
         member_responses: &[(MemberId, CheckStateResponse)],
     ) -> Result<CheckStateResponse, Error> {
         let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
-        let mut matching_views = Vec::<(CheckStateResponse, Vec<MemberId>)>::new();
-
-        for (member_id, response) in member_responses {
+        let groups = group_by_view(member_responses, |(member_id, response)| {
             validate_check_state_response(request, response, *member_id)?;
+            Ok(response.states.clone())
+        })?;
 
-            match matching_views
-                .iter_mut()
-                .find(|(candidate, _)| candidate.states == response.states)
-            {
-                Some((_, members)) => members.push(*member_id),
-                None => matching_views.push((response.clone(), vec![*member_id])),
-            }
-        }
-
-        matching_views
-            .into_iter()
-            .find_map(|(response, members)| {
-                if members.len() >= threshold {
-                    Some(response)
-                } else {
-                    None
-                }
-            })
+        first_quorum(groups, threshold)
+            .and_then(|(_, members)| members.first().map(|(_, response)| response.clone()))
             .ok_or_else(|| {
                 Error::InvalidMintResponse(format!(
                     "insufficient matching federation check-state responses: required {}",
@@ -2010,6 +1939,33 @@ impl FederatedMintConnector {
                 ))
             })
     }
+}
+
+/// Groups `items` by the view `view_of` computes, keeping first-seen order.
+///
+/// Member responses are grouped by the part that must agree for a quorum.
+fn group_by_view<T, V, I, F>(items: I, mut view_of: F) -> Result<Vec<(V, Vec<T>)>, Error>
+where
+    I: IntoIterator<Item = T>,
+    V: PartialEq,
+    F: FnMut(&T) -> Result<V, Error>,
+{
+    let mut groups: Vec<(V, Vec<T>)> = Vec::new();
+    for item in items {
+        let view = view_of(&item)?;
+        match groups.iter().position(|(candidate, _)| *candidate == view) {
+            Some(index) => groups[index].1.push(item),
+            None => groups.push((view, vec![item])),
+        }
+    }
+    Ok(groups)
+}
+
+/// The first group, in first-seen order, with at least `threshold` members.
+fn first_quorum<V, T>(groups: Vec<(V, Vec<T>)>, threshold: usize) -> Option<(V, Vec<T>)> {
+    groups
+        .into_iter()
+        .find(|(_, members)| members.len() >= threshold)
 }
 
 fn mint_quote_status_consensus_view(
@@ -2578,51 +2534,27 @@ fn has_threshold_matching_mint_quote_status(
     responses: &[(MemberId, MintQuoteResponse<String>)],
     threshold: usize,
 ) -> bool {
-    let mut matching_views = Vec::<(serde_json::Value, usize)>::new();
-
-    for (_, response) in responses {
-        let Ok(view) = serde_json::to_value(response) else {
-            return false;
-        };
-
-        match matching_views
-            .iter_mut()
-            .find(|(candidate, _)| *candidate == view)
-        {
-            Some((_, count)) => {
-                *count = count.saturating_add(1);
-                if *count >= threshold {
-                    return true;
-                }
-            }
-            None => matching_views.push((view, 1)),
-        }
-    }
-
-    false
+    // Compare the same view the aggregator compares, so members that only
+    // differ in `updated_at` count toward one quorum.
+    group_by_view(responses, |(member_id, response)| {
+        mint_quote_status_consensus_view(*member_id, response)
+    })
+    .is_ok_and(|groups| first_quorum(groups, threshold).is_some())
 }
 
 fn matching_melt_quote_status_group(
     responses: &[(MemberId, MeltQuoteResponse<String>)],
     threshold: usize,
 ) -> Option<Vec<(MemberId, &MeltQuoteResponse<String>)>> {
-    let mut matching_views = Vec::<(
-        MeltQuoteStatusView,
-        Vec<(MemberId, &MeltQuoteResponse<String>)>,
-    )>::new();
-
-    for (member_id, response) in responses {
-        let view = melt_quote_status_view(response);
-        match matching_views
+    let groups = group_by_view(
+        responses
             .iter()
-            .position(|(candidate, _)| candidate == &view)
-        {
-            Some(index) => matching_views[index].1.push((*member_id, response)),
-            None => matching_views.push((view, vec![(*member_id, response)])),
-        }
-    }
+            .map(|(member_id, response)| (*member_id, response)),
+        |(_, response)| Ok(melt_quote_status_view(response)),
+    )
+    .ok()?;
 
-    matching_views
+    groups
         .into_iter()
         .filter(|(_, members)| members.len() >= threshold)
         .max_by_key(|(view, _)| match view.state {
@@ -2652,28 +2584,18 @@ fn matching_restore_response_group<'a>(
     responses: &'a [(MemberId, RestoreResponse)],
     threshold: usize,
 ) -> Result<Vec<(MemberId, &'a RestoreResponse)>, Error> {
-    let mut matching_views = Vec::<(Vec<BlindedMessage>, Vec<(MemberId, &RestoreResponse)>)>::new();
-
-    for (member_id, response) in responses {
-        validate_restore_response(requested_outputs, response, *member_id)?;
-        match matching_views
+    let groups = group_by_view(
+        responses
             .iter()
-            .position(|(outputs, _)| outputs == &response.outputs)
-        {
-            Some(index) => matching_views[index].1.push((*member_id, response)),
-            None => matching_views.push((response.outputs.clone(), vec![(*member_id, response)])),
-        }
-    }
+            .map(|(member_id, response)| (*member_id, response)),
+        |(member_id, response)| {
+            validate_restore_response(requested_outputs, response, *member_id)?;
+            Ok(response.outputs.clone())
+        },
+    )?;
 
-    matching_views
-        .into_iter()
-        .find_map(|(_, members)| {
-            if members.len() >= threshold {
-                Some(members)
-            } else {
-                None
-            }
-        })
+    first_quorum(groups, threshold)
+        .map(|(_, members)| members)
         .ok_or_else(|| {
             Error::InvalidMintResponse(format!(
                 "insufficient matching federation restore responses: required {}",

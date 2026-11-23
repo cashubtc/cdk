@@ -433,3 +433,11 @@ Verification: `cdk` with federation (1,035) and standalone (790); `cdk-axum` wit
 
 Verification: `cdk-common` with `federation,test` (515), `cdk-sqlite` with `federation-bark` (194), `cdk` with federation (1,035), `cdk-mintd` with `federation-test-utils` (291), `cdk-axum` with `federation-bdk,federation-bark,iroh` (604 of 605 in the full run). The one failure, `aleph_bft_live_session_latency_probe_records_seven_member_bft_operation`, passed twice when rerun alone. It drives a seven-member live session against timing limits and looks load-sensitive, not related to this change.
 
+### 2026-11-23: package 8, first step (one quorum routine in the wallet)
+
+- **Two helpers.** `group_by_view` groups member responses by the part that must agree, failing on an invalid response where the caller does. `first_quorum` picks the first group that reaches the threshold. Together they replace seven hand-written copies of grouping and selection in `crates/cdk/src/wallet/federation.rs`: the signature-share sets, mint quote status, batch mint quote status, check-state, restore, melt quote status (which keeps its state-priority selection) and the mint-quote early-stop check.
+- **Bug fixed.** The mint-quote early-stop check compared raw JSON, while the aggregator compared a view that ignores `updated_at`. Members whose quotes differed only in update time never triggered early stop, so the wallet always waited for every member. Both now use the same view; regression test `mint_quote_status_quorum_ignores_member_update_times`.
+- Net: 2 files, 98 insertions, 159 deletions.
+
+Verification: `cdk` with `mint,wallet,federation` (1,036, including the wallet's adversarial federation tests), clippy clean, the 16 production builds.
+

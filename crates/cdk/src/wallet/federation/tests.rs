@@ -29,8 +29,8 @@ use cdk_common::{MintQuoteRequest, MintQuoteResponse, MintResponse, SecretKey};
 use cdk_fake_wallet::{create_fake_invoice, FakeWallet};
 
 use super::{
-    member_websocket_url, FederatedMintConnector, FederatedMintConnectorConfig,
-    ShareAmountValidation, FEDERATION_CATCH_UP_MAX_RETRIES,
+    has_threshold_matching_mint_quote_status, member_websocket_url, FederatedMintConnector,
+    FederatedMintConnectorConfig, ShareAmountValidation, FEDERATION_CATCH_UP_MAX_RETRIES,
 };
 use crate::dhke::verify_bls_blind_signature;
 use crate::mint::{FederationRuntimeConfig, Mint, MintBuilder, MintInput, MintMeltLimits};
@@ -878,6 +878,23 @@ fn assert_melt_quote_matches_expected(
 
 fn mint_quote_status_response(state: MintQuoteState) -> MintQuoteBolt11Response<String> {
     mint_quote_status_response_for("mint-quote", state)
+}
+
+#[test]
+fn mint_quote_status_quorum_ignores_member_update_times() {
+    let mut first = mint_quote_status_response_for("mint-quote", MintQuoteState::Paid);
+    let mut second = first.clone();
+    first.updated_at = 100;
+    second.updated_at = 101;
+    let responses = vec![
+        (member_id(1), MintQuoteResponse::Bolt11(first)),
+        (member_id(2), MintQuoteResponse::Bolt11(second)),
+    ];
+
+    assert!(
+        has_threshold_matching_mint_quote_status(&responses, 2),
+        "responses that differ only in updated_at must form one quorum"
+    );
 }
 
 fn mint_quote_status_response_for(
