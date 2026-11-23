@@ -65,6 +65,34 @@ where
     .collect()
 }
 
+/// Read one DKG ceremony record, locking its row for the rest of the transaction.
+async fn locked_federation_dkg_ceremony<RM>(
+    transaction: &SQLTransaction<RM>,
+    ceremony_id: FederationDkgCeremonyId,
+) -> Result<Option<FederationDkgCeremonyRecord>, Error>
+where
+    RM: DatabasePool + 'static,
+{
+    query(
+        r#"
+        SELECT payload_json
+        FROM federation_dkg_ceremonies
+        WHERE ceremony_id = :ceremony_id
+        FOR UPDATE
+        "#,
+    )?
+    .bind("ceremony_id", ceremony_id.to_string())
+    .fetch_one(&transaction.inner)
+    .await?
+    .map(|row| {
+        unpack_into!(let (payload_json) = row);
+        serde_json::from_str(&column_as_string!(&payload_json)).map_err(|error| {
+            Error::Internal(format!("Invalid federation DKG ceremony JSON: {error}"))
+        })
+    })
+    .transpose()
+}
+
 #[async_trait]
 impl<RM> FederationDkgTransaction for SQLTransaction<RM>
 where
@@ -82,9 +110,7 @@ where
             (ceremony_id, payload_json)
             VALUES
             (:ceremony_id, :payload_json)
-            ON CONFLICT (ceremony_id)
-            DO UPDATE SET payload_json = EXCLUDED.payload_json
-            WHERE federation_dkg_ceremonies.payload_json = EXCLUDED.payload_json
+            ON CONFLICT (ceremony_id) DO NOTHING
             "#,
         )?
         .bind("ceremony_id", ceremony.ceremony_id.to_string())
@@ -92,7 +118,11 @@ where
         .execute(&self.inner)
         .await?;
         if rows_affected == 0 {
-            return Err(federation_dkg_ceremony_conflict_error(ceremony.ceremony_id));
+            // Idempotent retry: the identical record is already stored.
+            let existing = locked_federation_dkg_ceremony(self, ceremony.ceremony_id).await?;
+            if existing.as_ref() != Some(ceremony) {
+                return Err(federation_dkg_ceremony_conflict_error(ceremony.ceremony_id));
+            }
         }
         Ok(())
     }
@@ -107,25 +137,34 @@ where
                 "Federation DKG ceremony transition cannot change ceremony ID".to_string(),
             ));
         }
-        let rows_affected = query(
+        if !expected.state.can_transition_to(updated.state) {
+            return Err(Error::Internal(format!(
+                "Illegal federation DKG ceremony transition from {} to {}",
+                expected.state.as_str(),
+                updated.state.as_str()
+            )));
+        }
+
+        let current = locked_federation_dkg_ceremony(self, expected.ceremony_id).await?;
+        if current.as_ref() == Some(updated) {
+            // Idempotent retry of a transition that already committed.
+            return Ok(());
+        }
+        if current.as_ref() != Some(expected) {
+            return Err(federation_dkg_ceremony_conflict_error(expected.ceremony_id));
+        }
+
+        query(
             r#"
             UPDATE federation_dkg_ceremonies
             SET payload_json = :updated_payload_json
             WHERE ceremony_id = :ceremony_id
-              AND (
-                payload_json = :expected_payload_json
-                OR payload_json = :updated_payload_json
-              )
             "#,
         )?
         .bind("ceremony_id", expected.ceremony_id.to_string())
-        .bind("expected_payload_json", serde_json::to_string(expected)?)
         .bind("updated_payload_json", serde_json::to_string(updated)?)
         .execute(&self.inner)
         .await?;
-        if rows_affected == 0 {
-            return Err(federation_dkg_ceremony_conflict_error(expected.ceremony_id));
-        }
         Ok(())
     }
 

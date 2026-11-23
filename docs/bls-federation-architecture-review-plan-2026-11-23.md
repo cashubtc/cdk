@@ -441,3 +441,14 @@ Verification: `cdk-common` with `federation,test` (515), `cdk-sqlite` with `fede
 
 Verification: `cdk` with `mint,wallet,federation` (1,036, including the wallet's adversarial federation tests), clippy clean, the 16 production builds.
 
+### 2026-11-23: package 6, second step (lifecycle transitions without JSON compare-and-set)
+
+- **Six transitions changed.** They guarded concurrent updates with `WHERE payload_json = :expected` (serialized-string equality), which depends on byte-identical serialization and checks no transition rule:
+  - DKG ceremony insert and transition: lock and read the row, treat a row equal to the update as an idempotent retry, reject anything else not equal to the expected record (compared as decoded records), and require the new `FederationDkgCeremonyState::can_transition_to` before writing;
+  - setup session transition, invitation transition and invitation replacement: the same locked read and record comparison, after the existing domain `validate_transition_to` checks;
+  - Bark allocation and VTXO updates: the readers now lock (`FOR UPDATE`) the rows they return inside the projection transaction, so the update no longer needs the JSON guard.
+- **Left as is:** about 25 idempotent inserts of immutable records still accept "an identical row already exists" by comparing JSON. That is replay detection for values that never change, not a lifecycle guard. The Bark action head update already guards on a typed column (the expected latest operation).
+- **Not yet removed:** `serde_json`'s `preserve_order`. These transitions no longer depend on it, but the idempotent inserts above compare serialized JSON.
+
+Verification: `cdk-sqlite` with `federation-bark` (194, the storage conformance suite including ceremony, setup and projection transitions), `cdk-common` with `federation,test` (515), `cdk` with federation (1,036), `cdk-mintd` with `federation-test-utils` (291), `cdk-axum` with `federation-bdk,federation-bark,iroh` (601 of 602; the same timing-bound latency probe as above), and a `cdk-postgres` test build. The Postgres suite itself needs a running server and was not run.
+

@@ -40,6 +40,54 @@ where
         .collect()
 }
 
+/// Read the local setup session, locking its row for the rest of the transaction.
+async fn locked_setup_session<RM>(
+    transaction: &SQLTransaction<RM>,
+    setup_id: FederationSetupId,
+) -> Result<Option<FederationSetupSession>, Error>
+where
+    RM: DatabasePool + 'static,
+{
+    query(
+        r#"
+        SELECT payload_json
+        FROM federation_setup_sessions
+        WHERE setup_id = :setup_id
+        FOR UPDATE
+        "#,
+    )?
+    .bind("setup_id", setup_id.to_string())
+    .fetch_one(&transaction.inner)
+    .await?
+    .map(|row| setup_record(row, "session"))
+    .transpose()
+}
+
+/// Read one setup invitation, locking its row for the rest of the transaction.
+async fn locked_setup_invitation<RM>(
+    transaction: &SQLTransaction<RM>,
+    expected: &FederationSetupInvitationRecord,
+) -> Result<Option<FederationSetupInvitationRecord>, Error>
+where
+    RM: DatabasePool + 'static,
+{
+    query(
+        r#"
+        SELECT payload_json
+        FROM federation_setup_invitations
+        WHERE setup_id = :setup_id
+          AND invitation_id = :invitation_id
+        FOR UPDATE
+        "#,
+    )?
+    .bind("setup_id", expected.setup_id.to_string())
+    .bind("invitation_id", expected.invitation_id.to_string())
+    .fetch_one(&transaction.inner)
+    .await?
+    .map(|row| setup_record(row, "invitation"))
+    .transpose()
+}
+
 fn sql_i64(label: &'static str, value: u64) -> Result<i64, Error> {
     i64::try_from(value)
         .map_err(|_| Error::Internal(format!("Federation setup {label} exceeds SQL i64")))
@@ -146,7 +194,15 @@ where
         updated: &FederationSetupSession,
     ) -> Result<(), Self::Err> {
         expected.validate_transition_to(updated)?;
-        let rows_affected = query(
+        let current = locked_setup_session(self, expected.setup_id).await?;
+        if current.as_ref() == Some(updated) {
+            // Idempotent retry of a transition that already committed.
+            return Ok(());
+        }
+        if current.as_ref() != Some(expected) {
+            return Err(setup_conflict("session", expected.setup_id, "local"));
+        }
+        query(
             r#"
             UPDATE federation_setup_sessions
             SET coordinator_phase = :coordinator_phase,
@@ -154,7 +210,6 @@ where
                 updated_at_unix = :updated_at_unix,
                 payload_json = :updated_payload_json
             WHERE setup_id = :setup_id
-              AND (payload_json = :expected_payload_json OR payload_json = :updated_payload_json)
             "#,
         )?
         .bind("setup_id", expected.setup_id.to_string())
@@ -170,13 +225,9 @@ where
             "updated_at_unix",
             sql_i64("update time", updated.updated_at_unix)?,
         )
-        .bind("expected_payload_json", setup_json(expected)?)
         .bind("updated_payload_json", setup_json(updated)?)
         .execute(&self.inner)
         .await?;
-        if rows_affected == 0 {
-            return Err(setup_conflict("session", expected.setup_id, "local"));
-        }
         Ok(())
     }
 
@@ -243,30 +294,33 @@ where
         updated: &FederationSetupInvitationRecord,
     ) -> Result<(), Self::Err> {
         expected.validate_transition_to(updated)?;
-        let rows_affected = query(
-            r#"
-            UPDATE federation_setup_invitations
-            SET invitation_state = :invitation_state,
-                payload_json = :updated_payload_json
-            WHERE setup_id = :setup_id
-              AND invitation_id = :invitation_id
-              AND (payload_json = :expected_payload_json OR payload_json = :updated_payload_json)
-            "#,
-        )?
-        .bind("setup_id", expected.setup_id.to_string())
-        .bind("invitation_id", expected.invitation_id.to_string())
-        .bind("invitation_state", invitation_state_to_str(updated.state))
-        .bind("expected_payload_json", setup_json(expected)?)
-        .bind("updated_payload_json", setup_json(updated)?)
-        .execute(&self.inner)
-        .await?;
-        if rows_affected == 0 {
+        let current = locked_setup_invitation(self, expected).await?;
+        if current.as_ref() == Some(updated) {
+            // Idempotent retry of a transition that already committed.
+            return Ok(());
+        }
+        if current.as_ref() != Some(expected) {
             return Err(setup_conflict(
                 "invitation",
                 expected.setup_id,
                 expected.invitation_id.to_string(),
             ));
         }
+        query(
+            r#"
+            UPDATE federation_setup_invitations
+            SET invitation_state = :invitation_state,
+                payload_json = :updated_payload_json
+            WHERE setup_id = :setup_id
+              AND invitation_id = :invitation_id
+            "#,
+        )?
+        .bind("setup_id", expected.setup_id.to_string())
+        .bind("invitation_id", expected.invitation_id.to_string())
+        .bind("invitation_state", invitation_state_to_str(updated.state))
+        .bind("updated_payload_json", setup_json(updated)?)
+        .execute(&self.inner)
+        .await?;
         Ok(())
     }
 
@@ -277,6 +331,14 @@ where
     ) -> Result<(), Self::Err> {
         expected.validate_replacement(replacement)?;
         let expired = expected.expired()?;
+        let current = locked_setup_invitation(self, expected).await?;
+        if current.as_ref() != Some(expected) && current.as_ref() != Some(&expired) {
+            return Err(setup_conflict(
+                "invitation replacement",
+                expected.setup_id,
+                expected.member_id.to_string(),
+            ));
+        }
         let rows_affected = query(
             r#"
             UPDATE federation_setup_invitations
@@ -284,7 +346,6 @@ where
                 payload_json = :expired_payload_json
             WHERE setup_id = :setup_id
               AND invitation_id = :invitation_id
-              AND (payload_json = :expected_payload_json OR payload_json = :expired_payload_json)
               AND NOT EXISTS (
                   SELECT 1
                   FROM federation_setup_enrollments
@@ -299,7 +360,6 @@ where
             "invitation_state",
             invitation_state_to_str(FederationSetupInvitationState::Expired),
         )
-        .bind("expected_payload_json", setup_json(expected)?)
         .bind("expired_payload_json", setup_json(&expired)?)
         .execute(&self.inner)
         .await?;

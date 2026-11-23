@@ -494,6 +494,7 @@ where
         WHERE locator_role = :locator_role
           AND locator_index = :locator_index
           AND locator_version = :locator_version
+        FOR UPDATE
         "#,
     )?
     .bind("locator_role", i64::from(locator.role))
@@ -505,9 +506,9 @@ where
     .transpose()
 }
 
+/// Overwrites an allocation the caller read with [`get_allocation`] in this transaction.
 async fn materialize_allocation<C>(
     connection: &C,
-    previous: &FederationBarkDerivationAllocationRecord,
     updated: &FederationBarkDerivationAllocationRecord,
 ) -> Result<(), Error>
 where
@@ -524,7 +525,6 @@ where
         WHERE locator_role = :locator_role
           AND locator_index = :locator_index
           AND locator_version = :locator_version
-          AND record_json = :expected_record_json
         "#,
     )?
     .bind(
@@ -544,7 +544,6 @@ where
     .bind("locator_role", i64::from(updated.locator.role))
     .bind("locator_index", i64::from(updated.locator.index))
     .bind("locator_version", i64::from(updated.locator.version))
-    .bind("expected_record_json", serde_json::to_string(previous)?)
     .execute(connection)
     .await?;
     if rows_affected != 1 {
@@ -562,7 +561,8 @@ async fn get_vtxo<C>(
 where
     C: DatabaseExecutor,
 {
-    query("SELECT record_json FROM federation_bark_vtxos WHERE vtxo_id = :vtxo_id")?
+    // Locks the row: projection updates rely on it not changing until commit.
+    query("SELECT record_json FROM federation_bark_vtxos WHERE vtxo_id = :vtxo_id FOR UPDATE")?
         .bind("vtxo_id", vtxo_id.to_string())
         .fetch_one(connection)
         .await?
@@ -614,11 +614,8 @@ where
     Ok(())
 }
 
-async fn update_vtxo<C>(
-    connection: &C,
-    previous: &FederationBarkVtxoRecord,
-    updated: &FederationBarkVtxoRecord,
-) -> Result<(), Error>
+/// Overwrites a VTXO the caller read with [`get_vtxo`] in this transaction.
+async fn update_vtxo<C>(connection: &C, updated: &FederationBarkVtxoRecord) -> Result<(), Error>
 where
     C: DatabaseExecutor,
 {
@@ -631,7 +628,6 @@ where
             latest_operation_index = :latest_operation_index,
             record_json = :record_json
         WHERE vtxo_id = :vtxo_id
-          AND record_json = :expected_record_json
         "#,
     )?
     .bind("state", vtxo_state_label(updated.state))
@@ -654,7 +650,6 @@ where
     )
     .bind("record_json", serde_json::to_string(updated)?)
     .bind("vtxo_id", updated.vtxo_id.to_string())
-    .bind("expected_record_json", serde_json::to_string(previous)?)
     .execute(connection)
     .await?;
     if rows_affected != 1 {
@@ -706,7 +701,7 @@ where
         latest_operation_index: entry.index,
         ..previous.clone()
     };
-    update_vtxo(connection, &previous, &updated).await?;
+    update_vtxo(connection, &updated).await?;
 
     let reservation = FederationBarkReservationRecord {
         vtxo_id: input.vtxo_id,
@@ -836,7 +831,7 @@ where
                 latest_operation_index: entry.index,
                 ..previous.clone()
             };
-            update_vtxo(connection, &previous, &updated).await
+            update_vtxo(connection, &updated).await
         }
         None => {
             if mutation.previous_state.is_some() {
@@ -888,7 +883,7 @@ where
                 operation_index: entry.index,
                 ..allocation.clone()
             };
-            materialize_allocation(connection, &allocation, &updated_allocation).await
+            materialize_allocation(connection, &updated_allocation).await
         }
     }
 }
@@ -1096,7 +1091,7 @@ where
                 operation_index: entry.index,
                 ..previous.clone()
             };
-            materialize_allocation(connection, &previous, &updated).await?;
+            materialize_allocation(connection, &updated).await?;
         } else {
             let amount =
                 if plan.kind == cdk_federation_bark::FederationBarkActionKind::LightningSend {

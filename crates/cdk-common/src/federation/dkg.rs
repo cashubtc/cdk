@@ -256,6 +256,17 @@ pub enum FederationDkgCeremonyState {
 }
 
 impl FederationDkgCeremonyState {
+    /// Whether a ceremony may move from `self` to `next`.
+    ///
+    /// Only an active ceremony moves, to aborted or complete; both are terminal.
+    #[must_use]
+    pub const fn can_transition_to(self, next: Self) -> bool {
+        matches!(
+            (self, next),
+            (Self::Active, Self::Aborted) | (Self::Active, Self::Complete)
+        )
+    }
+
     /// Return the stable operator-facing state label.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
