@@ -354,6 +354,8 @@ async fn crash_boundaries_recover_only_consensus_accepted_indexes() {
         CurrencyUnit::Sat,
     );
     let mut builder = MintBuilder::new(localstore.clone()).with_federation_config(runtime);
+    #[cfg(feature = "federation-bark")]
+    builder.set_federation_bark_store(localstore.clone());
     builder
         .add_payment_processor(
             CurrencyUnit::Sat,

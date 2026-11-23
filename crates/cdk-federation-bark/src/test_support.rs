@@ -9,11 +9,11 @@ use cdk_common::federation::{
 use cdk_common::{Amount, SecretKey};
 
 use crate::{
-    federation_bark_application_id, federation_bark_application_operation,
-    federation_bark_description_hash, federation_bark_mailbox_scope, FederationBarkActionId,
-    FederationBarkDigest, FederationBarkProjectionSnapshot, FederationBarkReceiveIntent,
-    FederationBarkReceiveProof, FederationBarkReceiveSecretAcknowledgement, FederationBarkUnit,
-    FederationBarkVtxoLocator, FEDERATION_BARK_OPERATION_VERSION,
+    federation_bark_application_operation, federation_bark_description_hash,
+    federation_bark_mailbox_scope, FederationBarkActionId, FederationBarkDigest,
+    FederationBarkProjectionSnapshot, FederationBarkReceiveIntent, FederationBarkReceiveProof,
+    FederationBarkReceiveSecretAcknowledgement, FederationBarkUnit, FederationBarkVtxoLocator,
+    FEDERATION_BARK_OPERATION_VERSION,
 };
 
 fn federation_id() -> FederationId {
@@ -79,7 +79,7 @@ fn receive_intent() -> FederationBarkReceiveIntent {
 /// Assert that an application-wrapped Bark operation persists and replays idempotently.
 pub async fn federation_bark_projection_persistence<DB>(db: DB)
 where
-    DB: Database<DatabaseError>,
+    DB: Database<DatabaseError> + crate::FederationBarkStore,
 {
     let operation = crate::FederationBarkOperation::ReceiveIntent(receive_intent());
     let envelope = FederationOperationEnvelope::new(
@@ -109,14 +109,10 @@ where
         .commit()
         .await
         .expect("commit Bark projection operation");
-    let first: FederationBarkProjectionSnapshot = serde_json::from_value(
-        db.get_federation_application_projection_snapshot(
-            federation_bark_application_id().expect("Bark application ID"),
-        )
+    let first: FederationBarkProjectionSnapshot = db
+        .bark_projection_snapshot()
         .await
-        .expect("Bark projection snapshot"),
-    )
-    .expect("decode Bark projection snapshot");
+        .expect("Bark projection snapshot");
     assert_eq!(first.actions.len(), 1);
     assert!(first.transitions.is_empty());
 
@@ -128,14 +124,10 @@ where
         .await
         .expect("replay Bark projection operation");
     replay.commit().await.expect("commit Bark replay");
-    let second: FederationBarkProjectionSnapshot = serde_json::from_value(
-        db.get_federation_application_projection_snapshot(
-            federation_bark_application_id().expect("Bark application ID"),
-        )
+    let second: FederationBarkProjectionSnapshot = db
+        .bark_projection_snapshot()
         .await
-        .expect("replayed Bark projection snapshot"),
-    )
-    .expect("decode replayed Bark projection snapshot");
+        .expect("replayed Bark projection snapshot");
     assert_eq!(second, first);
 }
 
@@ -145,12 +137,11 @@ where
 /// Both storage backends run the same absence, rollback, replay, and equality checks.
 pub async fn federation_bark_action_reads<DB>(db: DB)
 where
-    DB: Database<DatabaseError>,
+    DB: Database<DatabaseError> + crate::FederationBarkStore,
 {
-    let application_id = federation_bark_application_id().expect("Bark application ID");
     let selected_id = FederationBarkActionId::from_bytes([1; 32]).expect("selected action ID");
     assert!(db
-        .get_federation_application_action(application_id, selected_id.to_bytes())
+        .bark_action(selected_id)
         .await
         .expect("absent action read")
         .is_none());
@@ -197,7 +188,7 @@ where
             .expect("Bark operation")
             .action_id();
         assert!(db
-            .get_federation_application_action(application_id, action_id.to_bytes())
+            .bark_action(action_id)
             .await
             .expect("rolled back action read")
             .is_none());
@@ -222,12 +213,8 @@ where
         let mut last_snapshot = None;
         for _ in 0..20 {
             let started = std::time::Instant::now();
-            let snapshot: FederationBarkProjectionSnapshot = serde_json::from_value(
-                db.get_federation_application_projection_snapshot(application_id)
-                    .await
-                    .expect("snapshot"),
-            )
-            .expect("typed snapshot");
+            let snapshot: FederationBarkProjectionSnapshot =
+                db.bark_projection_snapshot().await.expect("snapshot");
             snapshot_elapsed += started.elapsed();
             rows = snapshot.actions.len()
                 + snapshot.vtxos.len()
@@ -236,13 +223,11 @@ where
                 + snapshot.transitions.len()
                 + snapshot.observations.len();
             let started = std::time::Instant::now();
-            let action: crate::FederationBarkActionRecord = serde_json::from_value(
-                db.get_federation_application_action(application_id, selected_id.to_bytes())
-                    .await
-                    .expect("focused action")
-                    .expect("present action"),
-            )
-            .expect("typed action");
+            let action: crate::FederationBarkActionRecord = db
+                .bark_action(selected_id)
+                .await
+                .expect("focused action")
+                .expect("present action");
             action_elapsed += started.elapsed();
             assert_eq!(snapshot.actions.len(), index as usize);
             assert_eq!(
@@ -262,4 +247,91 @@ where
         eprintln!("Bark read digest: history={index}, digest={digest}");
         eprintln!("Bark read comparison: history={index}, repetitions=20, snapshot_rows={rows}, focused_rows=1, snapshot_us={}, focused_us={}", snapshot_elapsed.as_micros(), action_elapsed.as_micros());
     }
+    assert_keyed_reads_match_snapshot(&db, selected_id).await;
+}
+
+/// Check every keyed store read against the same filter over the whole snapshot.
+async fn assert_keyed_reads_match_snapshot<DB>(db: &DB, action_id: FederationBarkActionId)
+where
+    DB: crate::FederationBarkStore,
+{
+    let snapshot = db.bark_projection_snapshot().await.expect("snapshot");
+    let mut transitions = snapshot
+        .transitions
+        .iter()
+        .filter(|record| record.action_id == action_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    transitions.sort_by_key(|record| record.operation_index);
+    assert_eq!(
+        db.bark_action_transitions(action_id)
+            .await
+            .expect("action transitions"),
+        transitions
+    );
+    let mut observations = snapshot
+        .observations
+        .iter()
+        .filter(|record| {
+            matches!(
+                &record.operation,
+                crate::FederationBarkOperation::MemberObservation(observation)
+                    if observation.action_id == action_id
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    observations.sort_by_key(|record| record.operation_index);
+    assert_eq!(
+        db.bark_action_observations(action_id)
+            .await
+            .expect("action observations"),
+        observations
+    );
+    for state in [
+        crate::FederationBarkVtxoState::Observed,
+        crate::FederationBarkVtxoState::Spendable,
+        crate::FederationBarkVtxoState::Reserved,
+        crate::FederationBarkVtxoState::PendingSpend,
+        crate::FederationBarkVtxoState::Spent,
+        crate::FederationBarkVtxoState::Exiting,
+        crate::FederationBarkVtxoState::Exited,
+    ] {
+        let expected = snapshot
+            .vtxos
+            .iter()
+            .filter(|record| record.state == state)
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            db.bark_vtxos_in_state(state).await.expect("VTXOs in state"),
+            expected
+        );
+    }
+    let reserved = snapshot
+        .vtxos
+        .iter()
+        .filter(|record| record.reservation_action_id == Some(action_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        db.bark_vtxos_reserved_by(action_id)
+            .await
+            .expect("reserved VTXOs"),
+        reserved
+    );
+    let ids = snapshot
+        .vtxos
+        .iter()
+        .map(|record| record.vtxo_id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        db.bark_vtxos(&ids).await.expect("VTXOs by id"),
+        snapshot.vtxos
+    );
+    assert!(db.bark_vtxos(&[]).await.expect("no VTXOs").is_empty());
+    assert_eq!(
+        db.bark_max_locator_index().await.expect("max locator"),
+        snapshot.max_locator_index()
+    );
 }

@@ -29,9 +29,10 @@ pub(crate) async fn run_backup_manifest_command(
     let password = cli_args.password.clone();
     #[cfg(not(feature = "sqlcipher"))]
     let password = None;
-    let (db, _, _, _) = crate::setup_database(&settings, &work_dir, password)
-        .await
-        .context("failed to open mint database for federation backup manifest")?;
+    let crate::MintDatabases { localstore: db, .. } =
+        crate::setup_database(&settings, &work_dir, password)
+            .await
+            .context("failed to open mint database for federation backup manifest")?;
     let manifest = build_manifest(&db, &public_config, &private_config).await?;
     crate::federation_files::write_private_json_file(&args.output, &manifest, args.force)?;
     println!("backup_manifest_written=true");

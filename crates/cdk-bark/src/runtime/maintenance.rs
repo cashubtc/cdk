@@ -50,7 +50,7 @@ impl FederatedBarkRuntime {
             Some(expiry) => expiry,
             None => return Ok(None),
         };
-        let records = federation_bark_refresh_candidates(projection);
+        let records = federation_bark_refresh_candidates(&projection.vtxos);
         if records.is_empty() {
             let actual = projection
                 .vtxos

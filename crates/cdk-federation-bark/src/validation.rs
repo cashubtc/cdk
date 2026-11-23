@@ -1,4 +1,4 @@
-//! Checks of Bark transitions against the projection snapshot.
+//! Checks of Bark transitions against accepted projection records.
 //!
 //! These functions are pure: they compare a proposed transition with the
 //! accepted plan and the current projection, so every member reaches the same
@@ -16,8 +16,9 @@ use cdk_common::Amount;
 use crate::{
     FederationBarkActionKind, FederationBarkActionPlan, FederationBarkActionRecord,
     FederationBarkActionTransition, FederationBarkArtifact, FederationBarkArtifactKind,
-    FederationBarkDigest, FederationBarkObservationStatus, FederationBarkOperation,
-    FederationBarkProjectionSnapshot, FederationBarkSemanticPhase, FederationBarkVtxoState,
+    FederationBarkDigest, FederationBarkObservationRecord, FederationBarkObservationStatus,
+    FederationBarkOperation, FederationBarkSemanticPhase, FederationBarkVtxoRecord,
+    FederationBarkVtxoState,
 };
 
 fn invalid_state(reason: &str) -> FederationError {
@@ -27,18 +28,13 @@ fn invalid_state(reason: &str) -> FederationError {
 }
 
 /// Next unused VTXO locator index after every allocated derivation.
-pub fn next_bark_locator_index(snapshot: &FederationBarkProjectionSnapshot) -> Result<u32> {
-    snapshot
-        .derivation_allocations
-        .iter()
-        .map(|allocation| allocation.locator.index)
-        .max()
-        .map_or(Ok(0), |index| {
-            index
-                .checked_add(1)
-                .filter(|index| *index <= FEDERATION_MAX_DERIVATION_INDEX)
-                .ok_or_else(|| invalid_state("Bark locator space is exhausted"))
-        })
+pub fn next_bark_locator_index(max_allocated: Option<u32>) -> Result<u32> {
+    max_allocated.map_or(Ok(0), |index| {
+        index
+            .checked_add(1)
+            .filter(|index| *index <= FEDERATION_MAX_DERIVATION_INDEX)
+            .ok_or_else(|| invalid_state("Bark locator space is exhausted"))
+    })
 }
 
 /// Check that a maintenance transition continues its accepted plan and custody attempt.
@@ -74,7 +70,7 @@ pub fn validate_maintenance_transition_header(
 
 /// Check that at least `threshold` members accepted an observation matching the maintenance plan.
 pub fn validate_maintenance_trigger_quorum(
-    snapshot: &FederationBarkProjectionSnapshot,
+    observations: &[FederationBarkObservationRecord],
     threshold: u16,
     plan: &FederationBarkActionPlan,
 ) -> Result<()> {
@@ -87,8 +83,7 @@ pub fn validate_maintenance_trigger_quorum(
     } else {
         plan.external_amount
     };
-    let observers = snapshot
-        .observations
+    let observers = observations
         .iter()
         .filter_map(|record| match &record.operation {
             FederationBarkOperation::MemberObservation(observation)
@@ -113,7 +108,7 @@ pub fn validate_maintenance_trigger_quorum(
 
 /// Check that a refresh result spends exactly the reserved inputs into the allocated outputs.
 pub fn validate_refresh_completed_result(
-    snapshot: &FederationBarkProjectionSnapshot,
+    vtxos: &[FederationBarkVtxoRecord],
     plan: &FederationBarkActionPlan,
     transition: &FederationBarkActionTransition,
 ) -> Result<()> {
@@ -137,8 +132,7 @@ pub fn validate_refresh_completed_result(
         ));
     }
     for input in &plan.inputs {
-        let record = snapshot
-            .vtxos
+        let record = vtxos
             .iter()
             .find(|record| record.vtxo_id == input.vtxo_id)
             .ok_or_else(|| invalid_state("refresh reserved input is missing"))?;
@@ -197,7 +191,7 @@ pub fn validate_refresh_completed_result(
 
 /// Check that an exit registration moves exactly the reserved inputs into the exiting state.
 pub fn validate_exit_registered_result(
-    snapshot: &FederationBarkProjectionSnapshot,
+    vtxos: &[FederationBarkVtxoRecord],
     plan: &FederationBarkActionPlan,
     transition: &FederationBarkActionTransition,
 ) -> Result<()> {
@@ -217,8 +211,7 @@ pub fn validate_exit_registered_result(
         ));
     }
     for input in &plan.inputs {
-        let record = snapshot
-            .vtxos
+        let record = vtxos
             .iter()
             .find(|record| record.vtxo_id == input.vtxo_id)
             .ok_or_else(|| invalid_state("exit reserved input is missing"))?;
@@ -252,7 +245,7 @@ pub fn validate_exit_published_result(
 
 /// Check that a confirmed exit spends the exiting inputs and keeps the published transactions.
 pub fn validate_exit_confirmed_result(
-    snapshot: &FederationBarkProjectionSnapshot,
+    vtxos: &[FederationBarkVtxoRecord],
     plan: &FederationBarkActionPlan,
     published: &FederationBarkActionTransition,
     transition: &FederationBarkActionTransition,
@@ -273,8 +266,7 @@ pub fn validate_exit_confirmed_result(
         ));
     }
     for input in &plan.inputs {
-        let record = snapshot
-            .vtxos
+        let record = vtxos
             .iter()
             .find(|record| record.vtxo_id == input.vtxo_id)
             .ok_or_else(|| invalid_state("exiting input is missing"))?;
@@ -446,7 +438,7 @@ pub fn federation_bark_artifact(
 
 /// Check that a revocation result returns every accepted HTLC input to custody.
 pub fn validate_revocation_completed_result(
-    snapshot: &FederationBarkProjectionSnapshot,
+    vtxos: &[FederationBarkVtxoRecord],
     plan: &FederationBarkActionPlan,
     transition: &FederationBarkActionTransition,
 ) -> Result<()> {
@@ -471,8 +463,7 @@ pub fn validate_revocation_completed_result(
     }
     let mut expected_artifacts = Vec::new();
     for input in &plan.inputs {
-        let record = snapshot
-            .vtxos
+        let record = vtxos
             .iter()
             .find(|record| record.vtxo_id == input.vtxo_id)
             .ok_or_else(|| invalid_state("reserved revocation input is missing"))?;

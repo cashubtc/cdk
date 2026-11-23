@@ -88,6 +88,8 @@ pub struct MintBuilder {
     max_batch_size: Option<u64>,
     #[cfg(feature = "federation")]
     federation_config: Option<FederationRuntimeConfig>,
+    #[cfg(feature = "federation-bark")]
+    federation_bark_store: Option<cdk_federation_bark::DynFederationBarkStore>,
     /// Interval at which the built signatory reloads keysets from the shared
     /// database. `None` (the default) disables the reload for a single-instance
     /// deployment that owns its database; set an interval only to run several
@@ -139,6 +141,8 @@ impl MintBuilder {
             keyset_refresh_interval: None,
             #[cfg(feature = "federation")]
             federation_config: None,
+            #[cfg(feature = "federation-bark")]
+            federation_bark_store: None,
         }
     }
 
@@ -158,6 +162,34 @@ impl MintBuilder {
     pub fn with_federation_config(mut self, federation_config: FederationRuntimeConfig) -> Self {
         self.federation_config = Some(federation_config);
         self
+    }
+
+    /// Attach keyed reads of the accepted Bark projection.
+    ///
+    /// Required when the federation config enables Bark; normally the same
+    /// database passed to [`MintBuilder::new`].
+    #[cfg(feature = "federation-bark")]
+    pub fn with_federation_bark_store(
+        mut self,
+        store: cdk_federation_bark::DynFederationBarkStore,
+    ) -> Self {
+        self.set_federation_bark_store(store);
+        self
+    }
+
+    /// Attach keyed reads of the accepted Bark projection in place.
+    #[cfg(feature = "federation-bark")]
+    pub fn set_federation_bark_store(
+        &mut self,
+        store: cdk_federation_bark::DynFederationBarkStore,
+    ) {
+        self.federation_bark_store = Some(store);
+    }
+
+    /// Return the attached Bark projection store, if any.
+    #[cfg(feature = "federation-bark")]
+    pub fn federation_bark_store(&self) -> Option<cdk_federation_bark::DynFederationBarkStore> {
+        self.federation_bark_store.clone()
     }
 
     /// Return the federation mode currently selected for this builder.
@@ -942,7 +974,11 @@ impl MintBuilder {
                     inputs: self.max_inputs,
                     outputs: self.max_outputs,
                 },
-                self.federation_config,
+                super::MintFederationParts {
+                    config: self.federation_config,
+                    #[cfg(feature = "federation-bark")]
+                    bark_store: self.federation_bark_store,
+                },
             )
             .await;
 
@@ -970,7 +1006,11 @@ impl MintBuilder {
                 inputs: self.max_inputs,
                 outputs: self.max_outputs,
             },
-            self.federation_config,
+            super::MintFederationParts {
+                config: self.federation_config,
+                #[cfg(feature = "federation-bark")]
+                bark_store: self.federation_bark_store,
+            },
         )
         .await;
 

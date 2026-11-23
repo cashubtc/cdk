@@ -1123,9 +1123,10 @@ async fn read_database_records_loads_persisted_dkg_completion_records() {
     std::fs::create_dir_all(&work_dir).expect("create work dir");
 
     let settings = crate::config::Settings::default();
-    let (db, _, _, _) = crate::setup_database(&settings, &work_dir, test_db_password())
-        .await
-        .expect("open test database");
+    let crate::MintDatabases { localstore: db, .. } =
+        crate::setup_database(&settings, &work_dir, test_db_password())
+            .await
+            .expect("open test database");
     let mut tx = db.begin_transaction().await.expect("begin transaction");
     tx.add_federation_dkg_ceremony(&ceremony)
         .await

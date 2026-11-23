@@ -724,6 +724,8 @@ async fn create_federated_test_state_with_backend_db_seed_and_finality(
     let mut builder = MintBuilder::new(db.clone())
         .with_batch_minting(Some(10), Some(vec![KnownMethod::Bolt11.to_string()]))
         .with_federation_config(runtime_config.clone());
+    #[cfg(feature = "federation-bark")]
+    builder.set_federation_bark_store(db.clone());
     builder
         .add_payment_processor(
             CurrencyUnit::Sat,
@@ -1507,6 +1509,8 @@ async fn build_threshold_member_mint_with_backend(
     let mut builder = MintBuilder::new(db.clone())
         .with_batch_minting(Some(10), Some(vec![KnownMethod::Bolt11.to_string()]))
         .with_federation_config(runtime_config);
+    #[cfg(feature = "federation-bark")]
+    builder.set_federation_bark_store(db.clone());
     builder
         .add_payment_processor(
             CurrencyUnit::Sat,

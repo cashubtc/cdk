@@ -21,18 +21,19 @@ use cdk_common::mint::Operation;
 use cdk_common::{Amount, PublicKey};
 #[cfg(feature = "federation-bark")]
 use cdk_federation_bark::{
-    ark_server_commitment, federation_bark_application, federation_bark_application_id,
-    federation_bark_cpfp_allocation_quote, federation_bark_exit_allocation_quote,
-    federation_bark_next_actor, federation_bark_recovery_application,
-    federation_bark_send_failed_result, federation_bark_send_revocation_request_bytes,
-    federation_bark_signer_set_for_attempt, validate_federation_bark_operation,
-    validate_federation_bark_send_failed_result, validate_federation_bark_send_succeeded_result,
+    ark_server_commitment, federation_bark_application, federation_bark_cpfp_allocation_quote,
+    federation_bark_exit_allocation_quote, federation_bark_next_actor,
+    federation_bark_recovery_application, federation_bark_send_failed_result,
+    federation_bark_send_revocation_request_bytes, federation_bark_signer_set_for_attempt,
+    validate_federation_bark_operation, validate_federation_bark_send_failed_result,
+    validate_federation_bark_send_succeeded_result, DynFederationBarkStore,
     FederationBarkActionKind, FederationBarkActionPlan, FederationBarkActionRecord,
     FederationBarkActionTransition, FederationBarkArtifactKind, FederationBarkCpfpPackageSet,
     FederationBarkCpfpPublication, FederationBarkEvidencePhase, FederationBarkObservationStatus,
     FederationBarkOperation, FederationBarkProjectionSnapshot, FederationBarkReceiveIntent,
-    FederationBarkRecoveryState, FederationBarkSemanticPhase, FederationBarkVtxoInput,
-    FederationBarkVtxoLocator, FederationBarkVtxoState, FEDERATION_BARK_EXIT_FEE_RATE_SAT_PER_KWU,
+    FederationBarkRecoveryState, FederationBarkSemanticPhase, FederationBarkTransitionRecord,
+    FederationBarkVtxoInput, FederationBarkVtxoLocator, FederationBarkVtxoRecord,
+    FederationBarkVtxoState, FEDERATION_BARK_EXIT_FEE_RATE_SAT_PER_KWU,
 };
 use tracing::instrument;
 use uuid::Uuid;
@@ -73,17 +74,22 @@ pub(super) fn bark_operation(
 
 #[cfg(feature = "federation-bark")]
 impl Mint {
-    /// Load the canonical Bark action/VTXO projection for route orchestration and workers.
+    /// Keyed reads of the accepted Bark projection.
+    pub fn federation_bark_store(&self) -> Result<&DynFederationBarkStore, Error> {
+        self.federation_bark_store.as_ref().ok_or_else(|| {
+            Error::Custom("federated Bark requires a Bark projection store".to_owned())
+        })
+    }
+
+    /// Load the whole accepted Bark projection for workers and operator status.
     #[instrument(skip_all)]
     pub async fn federation_bark_projection_snapshot(
         &self,
     ) -> Result<FederationBarkProjectionSnapshot, Error> {
-        let application_id = federation_bark_application_id()?;
-        let snapshot = self
-            .localstore()
-            .get_federation_application_projection_snapshot(application_id)
-            .await?;
-        serde_json::from_value(snapshot).map_err(|_| Error::Internal)
+        Ok(self
+            .federation_bark_store()?
+            .bark_projection_snapshot()
+            .await?)
     }
 
     /// Load one canonical Bark action without scanning projection history.
@@ -92,17 +98,16 @@ impl Mint {
         &self,
         action_id: cdk_federation_bark::FederationBarkActionId,
     ) -> Result<Option<FederationBarkActionRecord>, Error> {
-        let action: Option<FederationBarkActionRecord> = self
-            .localstore()
-            .get_federation_application_action(
-                federation_bark_application_id()?,
-                action_id.to_bytes(),
-            )
-            .await?
-            .map(serde_json::from_value)
-            .transpose()
-            .map_err(|_| Error::Internal)?;
-        Ok(action.filter(|record| record.action_id == action_id))
+        Ok(self.federation_bark_store()?.bark_action(action_id).await?)
+    }
+
+    /// Load the accepted VTXO records named by plan inputs.
+    async fn federation_bark_input_vtxos(
+        &self,
+        inputs: &[FederationBarkVtxoInput],
+    ) -> Result<Vec<FederationBarkVtxoRecord>, Error> {
+        let vtxo_ids = inputs.iter().map(|input| input.vtxo_id).collect::<Vec<_>>();
+        Ok(self.federation_bark_store()?.bark_vtxos(&vtxo_ids).await?)
     }
 
     /// Load one applied receive intent by its accepted operation ID.
@@ -141,11 +146,9 @@ impl Mint {
             .ok_or(Error::Internal)?;
         let application =
             federation_bark_application(config.public_config())?.ok_or(Error::Internal)?;
-        let snapshot = self.federation_bark_projection_snapshot().await?;
-        let action = snapshot
-            .actions
-            .iter()
-            .find(|action| action.action_id == operation.action_id());
+        let store = self.federation_bark_store()?;
+        let action = store.bark_action(operation.action_id()).await?;
+        let action = action.as_ref();
 
         if let FederationBarkOperation::ActionPlan(plan) = operation {
             let expected =
@@ -522,10 +525,15 @@ impl Mint {
             FederationBarkOperation::ActionPlan(plan)
                 if plan.kind == FederationBarkActionKind::Refresh =>
             {
+                let spendable = store
+                    .bark_vtxos_in_state(FederationBarkVtxoState::Spendable)
+                    .await?;
+                let output_index = next_bark_locator_index(store.bark_max_locator_index().await?)?;
                 self.validate_federation_bark_refresh_plan_submission(
                     &config,
                     &application,
-                    &snapshot,
+                    &spendable,
+                    output_index,
                     action,
                     plan,
                 )?;
@@ -537,7 +545,6 @@ impl Mint {
                 self.validate_federation_bark_exit_plan_submission(
                     &config,
                     &application,
-                    &snapshot,
                     action,
                     plan,
                     &allocations,
@@ -716,10 +723,9 @@ impl Mint {
                 let mut expected_inputs = Vec::new();
                 let mut selected_amount = Amount::ZERO;
                 let mut minimum_expiry = u32::MAX;
-                for vtxo in snapshot
-                    .vtxos
-                    .iter()
-                    .filter(|vtxo| vtxo.state == FederationBarkVtxoState::Spendable)
+                for vtxo in store
+                    .bark_vtxos_in_state(FederationBarkVtxoState::Spendable)
+                    .await?
                 {
                     expected_inputs.push(FederationBarkVtxoInput {
                         vtxo_id: vtxo.vtxo_id,
@@ -747,16 +753,15 @@ impl Mint {
                     minimum_expiry,
                     plan_expiry,
                 )?;
-                let output_index = snapshot
-                    .derivation_allocations
-                    .iter()
-                    .map(|allocation| allocation.locator.index)
-                    .max()
-                    .map_or(Ok(0), |index| {
-                        index
-                            .checked_add(1)
-                            .ok_or_else(|| bark_state_error("Bark locator space is exhausted"))
-                    })?;
+                let output_index =
+                    store
+                        .bark_max_locator_index()
+                        .await?
+                        .map_or(Ok(0), |index| {
+                            index
+                                .checked_add(1)
+                                .ok_or_else(|| bark_state_error("Bark locator space is exhausted"))
+                        })?;
                 let revocation_index = output_index
                     .checked_add(1)
                     .filter(|index| *index <= FEDERATION_MAX_DERIVATION_INDEX)
@@ -806,8 +811,8 @@ impl Mint {
                     return Err(bark_state_error("payment failure references a non-plan"));
                 };
                 validate_federation_bark_send_failed_result(&send, failed)?;
-                let mut records = snapshot
-                    .vtxos
+                let reserved = store.bark_vtxos_reserved_by(send.action_id).await?;
+                let mut records = reserved
                     .iter()
                     .filter(|record| {
                         record.state == FederationBarkVtxoState::PendingSpend
@@ -932,9 +937,9 @@ impl Mint {
                         "outgoing HTLC result does not spend every accepted input",
                     ));
                 }
+                let input_vtxos = self.federation_bark_input_vtxos(&plan.inputs).await?;
                 for input in &plan.inputs {
-                    let record = snapshot
-                        .vtxos
+                    let record = input_vtxos
                         .iter()
                         .find(|record| record.vtxo_id == input.vtxo_id)
                         .ok_or_else(|| bark_state_error("reserved send input is missing"))?;
@@ -1045,8 +1050,8 @@ impl Mint {
                     ));
                 }
                 validate_federation_bark_send_succeeded_result(&plan, transition)?;
-                let expected_inputs = snapshot
-                    .vtxos
+                let reserved = store.bark_vtxos_reserved_by(plan.action_id).await?;
+                let expected_inputs = reserved
                     .iter()
                     .filter(|record| {
                         record.state == FederationBarkVtxoState::PendingSpend
@@ -1070,7 +1075,7 @@ impl Mint {
                     ));
                 }
                 let mut pending_amount = Amount::ZERO;
-                for input in snapshot.vtxos.iter().filter(|record| {
+                for input in reserved.iter().filter(|record| {
                     record.state == FederationBarkVtxoState::PendingSpend
                         && record.reservation_action_id == Some(plan.action_id)
                 }) {
@@ -1164,7 +1169,7 @@ impl Mint {
                 validate_federation_bark_send_failed_result(&plan, transition)?;
                 let source_scope = ark_server_commitment(&application.ark_server_public_key)?;
                 let mut observers = BTreeSet::new();
-                for record in &snapshot.observations {
+                for record in &store.bark_action_observations(transition.action_id).await? {
                     let FederationBarkOperation::MemberObservation(observation) = &record.operation
                     else {
                         continue;
@@ -1223,7 +1228,11 @@ impl Mint {
                         "revocation result differs from its accepted plan",
                     ));
                 }
-                validate_revocation_completed_result(&snapshot, &plan, transition)?;
+                validate_revocation_completed_result(
+                    &self.federation_bark_input_vtxos(&plan.inputs).await?,
+                    &plan,
+                    transition,
+                )?;
             }
             FederationBarkOperation::ActionTransition(transition)
                 if transition.phase == FederationBarkSemanticPhase::RefreshCompleted =>
@@ -1255,11 +1264,15 @@ impl Mint {
                     ));
                 }
                 validate_maintenance_trigger_quorum(
-                    &snapshot,
+                    &store.bark_action_observations(plan.action_id).await?,
                     config.public_config().threshold_params.signature_threshold,
                     &plan,
                 )?;
-                validate_refresh_completed_result(&snapshot, &plan, transition)?;
+                validate_refresh_completed_result(
+                    &self.federation_bark_input_vtxos(&plan.inputs).await?,
+                    &plan,
+                    transition,
+                )?;
             }
             FederationBarkOperation::ActionTransition(transition)
                 if transition.phase == FederationBarkSemanticPhase::ExitRegistered =>
@@ -1291,11 +1304,15 @@ impl Mint {
                     ));
                 }
                 validate_maintenance_trigger_quorum(
-                    &snapshot,
+                    &store.bark_action_observations(plan.action_id).await?,
                     config.public_config().threshold_params.signature_threshold,
                     &plan,
                 )?;
-                validate_exit_registered_result(&snapshot, &plan, transition)?;
+                validate_exit_registered_result(
+                    &self.federation_bark_input_vtxos(&plan.inputs).await?,
+                    &plan,
+                    transition,
+                )?;
                 validate_bark_recovery_package_set(
                     self,
                     &config,
@@ -1335,7 +1352,12 @@ impl Mint {
                     ));
                 }
                 validate_exit_published_result(&plan, transition)?;
-                validate_bark_recovery_publication(self, &snapshot, transition).await?;
+                validate_bark_recovery_publication(
+                    self,
+                    &store.bark_action_transitions(transition.action_id).await?,
+                    transition,
+                )
+                .await?;
             }
             FederationBarkOperation::ActionTransition(transition)
                 if transition.phase == FederationBarkSemanticPhase::ExitConfirmed =>
@@ -1367,8 +1389,8 @@ impl Mint {
                     ));
                 }
                 let source_scope = ark_server_commitment(&application.ark_server_public_key)?;
-                let observers = snapshot
-                    .observations
+                let observations = store.bark_action_observations(plan.action_id).await?;
+                let observers = observations
                     .iter()
                     .filter_map(|record| match &record.operation {
                         FederationBarkOperation::MemberObservation(observation)
@@ -1392,8 +1414,8 @@ impl Mint {
                         "exit confirmation has not reached the accepted member threshold",
                     ));
                 }
-                let published = snapshot
-                    .transitions
+                let transitions = store.bark_action_transitions(action.action_id).await?;
+                let published = transitions
                     .iter()
                     .find_map(|record| match &record.operation {
                         FederationBarkOperation::ActionTransition(published)
@@ -1408,7 +1430,12 @@ impl Mint {
                     .ok_or_else(|| {
                         bark_state_error("exit confirmation predecessor has no publication")
                     })?;
-                validate_exit_confirmed_result(&snapshot, &plan, published, transition)?;
+                validate_exit_confirmed_result(
+                    &self.federation_bark_input_vtxos(&plan.inputs).await?,
+                    &plan,
+                    published,
+                    transition,
+                )?;
             }
             FederationBarkOperation::ActionTransition(transition)
                 if transition.phase == FederationBarkSemanticPhase::ReceivePreimageDisclosed =>
@@ -1453,9 +1480,9 @@ impl Mint {
                         "preimage disclosure differs from the accepted claim plan",
                     ));
                 }
+                let input_vtxos = self.federation_bark_input_vtxos(&plan.inputs).await?;
                 for input in &plan.inputs {
-                    let vtxo = snapshot
-                        .vtxos
+                    let vtxo = input_vtxos
                         .iter()
                         .find(|vtxo| vtxo.vtxo_id == input.vtxo_id)
                         .ok_or_else(|| bark_state_error("reserved claim input is missing"))?;
@@ -1547,21 +1574,21 @@ impl Mint {
         &self,
         config: &super::FederationRuntimeConfig,
         application: &cdk_federation_bark::FederationBarkFrostApplicationConfig,
-        snapshot: &FederationBarkProjectionSnapshot,
+        spendable: &[FederationBarkVtxoRecord],
+        output_index: u32,
         action: Option<&FederationBarkActionRecord>,
         plan: &FederationBarkActionPlan,
     ) -> Result<(), Error> {
         if action.is_some() {
             return Err(bark_state_error("refresh action already exists"));
         }
-        let minimum_expiry = snapshot
-            .vtxos
+        let minimum_expiry = spendable
             .iter()
             .filter(|record| record.state == FederationBarkVtxoState::Spendable)
             .map(|record| record.expiry_height)
             .min()
             .ok_or_else(|| bark_state_error("refresh has no spendable candidate"))?;
-        let records = cdk_federation_bark::federation_bark_refresh_candidates(snapshot);
+        let records = cdk_federation_bark::federation_bark_refresh_candidates(spendable);
         let predecessor = records
             .first()
             .ok_or_else(|| bark_state_error("refresh has no deterministic predecessor"))?
@@ -1612,7 +1639,6 @@ impl Mint {
             .copied()
             .take(usize::from(application.threshold))
             .collect::<Vec<_>>();
-        let output_index = next_bark_locator_index(snapshot)?;
         let output = plan
             .outputs
             .first()
@@ -1667,7 +1693,6 @@ impl Mint {
         &self,
         config: &super::FederationRuntimeConfig,
         application: &cdk_federation_bark::FederationBarkFrostApplicationConfig,
-        snapshot: &FederationBarkProjectionSnapshot,
         action: Option<&FederationBarkActionRecord>,
         plan: &FederationBarkActionPlan,
         allocations: &cdk_common::federation::FederationAddressAllocationState,
@@ -1701,10 +1726,10 @@ impl Mint {
                             "exit escalation does not follow an accepted refresh",
                         ));
                     }
+                    let input_vtxos = self.federation_bark_input_vtxos(&refresh.inputs).await?;
                     let mut records = Vec::with_capacity(refresh.inputs.len());
                     for input in &refresh.inputs {
-                        let record = snapshot
-                            .vtxos
+                        let record = input_vtxos
                             .iter()
                             .find(|record| record.vtxo_id == input.vtxo_id)
                             .ok_or_else(|| bark_state_error("exit escalation input is missing"))?;
@@ -1717,7 +1742,7 @@ impl Mint {
                                 "exit escalation input differs from its refresh reservation",
                             ));
                         }
-                        records.push(record);
+                        records.push(record.clone());
                     }
                     (
                         records,
@@ -1732,20 +1757,18 @@ impl Mint {
                     )
                 }
                 None => {
-                    let minimum_expiry = snapshot
-                        .vtxos
+                    let spendable = self
+                        .federation_bark_store()?
+                        .bark_vtxos_in_state(FederationBarkVtxoState::Spendable)
+                        .await?;
+                    let minimum_expiry = spendable
                         .iter()
-                        .filter(|record| record.state == FederationBarkVtxoState::Spendable)
                         .map(|record| record.expiry_height)
                         .min()
                         .ok_or_else(|| bark_state_error("exit has no spendable candidate"))?;
-                    let mut records = snapshot
-                        .vtxos
-                        .iter()
-                        .filter(|record| {
-                            record.state == FederationBarkVtxoState::Spendable
-                                && record.expiry_height == minimum_expiry
-                        })
+                    let mut records = spendable
+                        .into_iter()
+                        .filter(|record| record.expiry_height == minimum_expiry)
                         .collect::<Vec<_>>();
                     records.sort_by_key(|record| record.vtxo_id);
                     let predecessor = records
@@ -1948,13 +1971,7 @@ impl Mint {
         #[cfg(feature = "federation-bark")]
         if let Some(runtime) = self.federation_config() {
             if federation_bark_application(runtime.public_config())?.is_some() {
-                let bark_projection: FederationBarkProjectionSnapshot = serde_json::from_value(
-                    db.get_federation_application_projection_snapshot(
-                        federation_bark_application_id()?,
-                    )
-                    .await?,
-                )
-                .map_err(|_| Error::Internal)?;
+                let bark_projection = self.federation_bark_projection_snapshot().await?;
                 for row in bark_projection.materialized_rows()? {
                     snapshot.push(row);
                 }
@@ -2221,11 +2238,10 @@ async fn validate_bark_recovery_package_set(
 #[cfg(feature = "federation-bark")]
 async fn validate_bark_recovery_publication(
     mint: &Mint,
-    snapshot: &FederationBarkProjectionSnapshot,
+    action_transitions: &[FederationBarkTransitionRecord],
     transition: &FederationBarkActionTransition,
 ) -> Result<(), Error> {
-    let registered_operation_id = snapshot
-        .transitions
+    let registered_operation_id = action_transitions
         .iter()
         .find(|record| {
             record.action_id == transition.action_id

@@ -595,7 +595,10 @@ async fn build_certified_dkg_mint(
     let [keyset_spec] = handoff.manifest.keyset_specs() else {
         bail!("setup-only DKG requires exactly one manifest keyset policy");
     };
-    let mut builder = cdk::mint::MintBuilder::new(database).with_federation_config(runtime_config);
+    let mut builder =
+        cdk::mint::MintBuilder::new(database.clone()).with_federation_config(runtime_config);
+    #[cfg(feature = "federation-bark")]
+    builder.set_federation_bark_store(database);
     builder
         .configure_unit(
             keyset_spec.unit.clone(),

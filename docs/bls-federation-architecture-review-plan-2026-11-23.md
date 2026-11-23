@@ -546,3 +546,19 @@ Verification, without `RUST_MIN_STACK`: the same nine suites and counts as the p
 - `FederationError` goes from 162 variants to 145. **Not done in package 2:** splitting the rest into per-module enums with typed reasons, and with it the operator-message redactor.
 
 Verification: `cdk-common` federation tests (493), compile checks of all targets in the dependent crates, and the 16 production builds.
+
+### 2026-11-23: package 6, fourth step (typed Bark store with keyed reads)
+
+- **No JSON boundary.** `cdk-common`'s database trait no longer has `get_federation_application_projection_snapshot` and `get_federation_application_action`, which returned `serde_json::Value` because `cdk-common` cannot name Bark types. In their place, `cdk-federation-bark` defines a `FederationBarkStore` trait with typed reads, and `cdk-sql-common` implements it for SQLite and Postgres. The mint receives it through `MintBuilder::with_federation_bark_store`. `cdk-mintd` now returns one `MintDatabases` struct (localstore, keystore, KV, configuration store, Bark store) instead of a four-handle tuple.
+- **Keyed reads on the apply path.** Bark operation validation and payment-record derivation read the whole projection on every Bark operation. They now use indexed queries:
+  - one action;
+  - one action's transitions or observations;
+  - VTXOs by id, by state, or by reserving action;
+  - the highest allocated locator index.
+  The pure validators in `cdk-federation-bark` take the records they check (input VTXOs, the action's observations) instead of the snapshot. The Bark payment adapter's balance check reads spendable VTXOs only.
+- **Still whole-snapshot:** the Bark workers and recovery driver in `cdk-bark` and `cdk-federation`, operator status, and checkpoint materialization. These run outside the apply path and need every live row; bounding them belongs with retention.
+- **Ordering.** Per-action transitions and observations come back in consensus order (`operation_index`). The snapshot sorted them by operation id; where validation picks the first match, it now picks the earliest accepted one.
+- **Test.** The shared storage test, which runs on SQLite and Postgres, now checks every keyed read against the same filter over the full snapshot after 256 actions.
+- **Remaining in package 6:** row-per-entity storage for the `state_v1` blobs, retention, the rest of the trait surface, and the single apply transaction.
+
+Verification: the nine federation suites, with the same counts as the previous step. Clippy with `-D warnings` on each touched crate alone, and the 16 production builds. One `cdk-axum` latency test (`aleph_bft_live_session_latency_probe_records_seven_member_bft_operation`) asserts a 10-second bound. It failed once while other builds were running and passed when rerun alone.

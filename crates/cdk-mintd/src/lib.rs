@@ -624,21 +624,27 @@ fn expand_path(path: &str) -> Option<PathBuf> {
 /// Performs the initial setup for the application, including configuring tracing,
 /// parsing CLI arguments, setting up the working directory, loading settings,
 /// and initializing the database connection.
+/// Typed handles to the one mint database, one per role.
+pub(crate) struct MintDatabases {
+    pub(crate) localstore: DynMintDatabase,
+    pub(crate) keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
+    pub(crate) kv: Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync>,
+    pub(crate) configuration_store:
+        Arc<dyn KVStoreCompareAndSwap<Err = cdk_database::Error> + Send + Sync>,
+    /// Keyed reads of the accepted Bark projection.
+    #[cfg(feature = "federation-bark")]
+    pub(crate) bark_store: cdk_federation_bark::DynFederationBarkStore,
+}
+
 async fn initial_setup(
     work_dir: &Path,
     settings: &config::Settings,
     db_password: Option<String>,
-) -> Result<(
-    DynMintDatabase,
-    Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
-    Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync>,
-    Arc<dyn KVStoreCompareAndSwap<Err = cdk_database::Error> + Send + Sync>,
-)> {
+) -> Result<MintDatabases> {
     tracing::info!("Initializing database...");
-    let (localstore, keystore, kv, configuration_store) =
-        setup_database(settings, work_dir, db_password).await?;
+    let databases = setup_database(settings, work_dir, db_password).await?;
     tracing::info!("Database initialized successfully");
-    Ok((localstore, keystore, kv, configuration_store))
+    Ok(databases)
 }
 
 /// Operator intent for the mint database targeted by `config init`.
@@ -1216,12 +1222,7 @@ async fn setup_database(
     settings: &config::Settings,
     _work_dir: &Path,
     _db_password: Option<String>,
-) -> Result<(
-    DynMintDatabase,
-    Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
-    Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync>,
-    Arc<dyn KVStoreCompareAndSwap<Err = cdk_database::Error> + Send + Sync>,
-)> {
+) -> Result<MintDatabases> {
     tracing::info!("Using database engine: {:?}", settings.database.engine);
     match settings.database.engine {
         #[cfg(feature = "sqlite")]
@@ -1232,8 +1233,17 @@ async fn setup_database(
             let configuration_store: Arc<
                 dyn KVStoreCompareAndSwap<Err = cdk_database::Error> + Send + Sync,
             > = db.clone();
+            #[cfg(feature = "federation-bark")]
+            let bark_store: cdk_federation_bark::DynFederationBarkStore = db.clone();
             let keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync> = db;
-            Ok((localstore, keystore, kv, configuration_store))
+            Ok(MintDatabases {
+                localstore,
+                keystore,
+                kv,
+                configuration_store,
+                #[cfg(feature = "federation-bark")]
+                bark_store,
+            })
         }
         #[cfg(feature = "postgres")]
         DatabaseEngine::Postgres => {
@@ -1265,12 +1275,21 @@ async fn setup_database(
             let configuration_store: Arc<
                 dyn KVStoreCompareAndSwap<Err = cdk_database::Error> + Send + Sync,
             > = pg_db.clone();
+            #[cfg(feature = "federation-bark")]
+            let bark_store: cdk_federation_bark::DynFederationBarkStore = pg_db.clone();
             #[cfg(feature = "postgres")]
             let keystore: Arc<
                 dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync,
             > = pg_db;
             #[cfg(feature = "postgres")]
-            return Ok((localstore, keystore, kv, configuration_store));
+            return Ok(MintDatabases {
+                localstore,
+                keystore,
+                kv,
+                configuration_store,
+                #[cfg(feature = "federation-bark")]
+                bark_store,
+            });
 
             #[cfg(not(feature = "postgres"))]
             bail!("PostgreSQL support not compiled in. Enable the 'postgres' feature to use PostgreSQL database.")
@@ -1714,11 +1733,14 @@ async fn configure_payment_backends(
                     .ok_or_else(|| {
                         anyhow!("federated Bark requires an accepted Bark application")
                     })?;
+                let store = mint_builder
+                    .federation_bark_store()
+                    .ok_or_else(|| anyhow!("federated Bark requires the Bark projection store"))?;
                 let adapter = cdk_bark::FederatedBarkPaymentAdapter::from_accepted_config(
                     limits,
                     application.network,
                     application.policy.clone(),
-                    mint_builder.localstore(),
+                    store,
                 );
                 mint_builder = configure_backend_for_unit(
                     settings,
@@ -3189,15 +3211,12 @@ pub async fn run_mintd_with_shutdown(
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
     routers: Vec<Router>,
 ) -> Result<()> {
-    let (localstore, keystore, kv, _configuration_store) =
-        initial_setup(work_dir, settings, db_password.clone()).await?;
+    let databases = initial_setup(work_dir, settings, db_password.clone()).await?;
 
     run_mintd_with_database_and_shutdown(
         work_dir,
         settings,
-        localstore,
-        keystore,
-        kv,
+        databases,
         shutdown_signal,
         db_password,
         runtime,
@@ -3212,9 +3231,7 @@ pub async fn run_mintd_with_shutdown(
 async fn run_mintd_with_database_and_shutdown(
     work_dir: &Path,
     settings: &config::Settings,
-    localstore: DynMintDatabase,
-    keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
-    kv: Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync>,
+    databases: MintDatabases,
     shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
     db_password: Option<String>,
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
@@ -3222,6 +3239,14 @@ async fn run_mintd_with_database_and_shutdown(
     activation: Option<ConfigurationActivation>,
     validated_signing_source: Option<ValidatedSigningSource>,
 ) -> Result<()> {
+    let MintDatabases {
+        localstore,
+        keystore,
+        kv,
+        #[cfg(feature = "federation-bark")]
+        bark_store,
+        ..
+    } = databases;
     #[cfg(feature = "federation")]
     federation_backup::validate_configured_restore(settings, &localstore).await?;
 
@@ -3229,6 +3254,8 @@ async fn run_mintd_with_database_and_shutdown(
     reconcile_federation_dkg_ceremony(settings, &localstore).await?;
 
     let mint_builder = MintBuilder::new(localstore);
+    #[cfg(feature = "federation-bark")]
+    let mint_builder = mint_builder.with_federation_bark_store(bark_store);
 
     // If RPC is enabled and DB contains mint_info already, initialize the builder from DB.
     // This ensures subsequent builder modifications (like version injection) can respect stored values.
@@ -3340,8 +3367,12 @@ pub async fn initialize_configuration(
     db_password: Option<String>,
 ) -> Result<()> {
     let bootstrap = load_database_bootstrap_settings()?;
-    let (localstore, keystore, _kv, configuration_store) =
-        initial_setup(work_dir, &bootstrap, db_password).await?;
+    let MintDatabases {
+        localstore,
+        keystore,
+        configuration_store,
+        ..
+    } = initial_setup(work_dir, &bootstrap, db_password).await?;
     let mut mint_builder = MintBuilder::new(localstore.clone());
     mint_builder.init_from_db_if_present().await?;
     let database_pubkey = mint_builder.current_mint_info().pubkey;
@@ -3379,8 +3410,10 @@ pub async fn apply_configuration(
     db_password: Option<String>,
 ) -> Result<ApplyOutcome> {
     let bootstrap = load_database_bootstrap_settings()?;
-    let (_localstore, _keystore, _kv, configuration_store) =
-        initial_setup(work_dir, &bootstrap, db_password).await?;
+    let MintDatabases {
+        configuration_store,
+        ..
+    } = initial_setup(work_dir, &bootstrap, db_password).await?;
     Ok(configuration_service(configuration_store, &bootstrap)
         .apply(document, validate_only, work_dir, bdk_wallet_policy)
         .await?)
@@ -3392,8 +3425,10 @@ pub async fn rollback_configuration(
     db_password: Option<String>,
 ) -> Result<RollbackOutcome> {
     let bootstrap = load_database_bootstrap_settings()?;
-    let (_localstore, _keystore, _kv, configuration_store) =
-        initial_setup(work_dir, &bootstrap, db_password).await?;
+    let MintDatabases {
+        configuration_store,
+        ..
+    } = initial_setup(work_dir, &bootstrap, db_password).await?;
     Ok(configuration_service(configuration_store, &bootstrap)
         .rollback()
         .await?)
@@ -3405,8 +3440,10 @@ pub async fn stored_configuration_document(
     db_password: Option<String>,
 ) -> Result<String> {
     let bootstrap = load_database_bootstrap_settings()?;
-    let (_localstore, _keystore, _kv, configuration_store) =
-        initial_setup(work_dir, &bootstrap, db_password).await?;
+    let MintDatabases {
+        configuration_store,
+        ..
+    } = initial_setup(work_dir, &bootstrap, db_password).await?;
     Ok(configuration_service(configuration_store, &bootstrap)
         .document()
         .await?)
@@ -3422,7 +3459,10 @@ async fn load_stored_settings(work_dir: &Path, args: &CLIArgs) -> Result<config:
         None
     };
     let bootstrap = load_database_bootstrap_settings()?;
-    let (_, _, _, store) = initial_setup(work_dir, &bootstrap, password).await?;
+    let MintDatabases {
+        configuration_store: store,
+        ..
+    } = initial_setup(work_dir, &bootstrap, password).await?;
     Ok(configuration_service(store, &bootstrap)
         .startup()
         .await?
@@ -3439,9 +3479,8 @@ pub async fn run_mintd_from_database(
     routers: Vec<Router>,
 ) -> Result<()> {
     let bootstrap = load_database_bootstrap_settings()?;
-    let (localstore, keystore, kv, configuration_store) =
-        initial_setup(work_dir, &bootstrap, db_password.clone()).await?;
-    let service = configuration_service(configuration_store, &bootstrap);
+    let databases = initial_setup(work_dir, &bootstrap, db_password.clone()).await?;
+    let service = configuration_service(databases.configuration_store.clone(), &bootstrap);
     let startup = service.startup().await?;
     config_service::require_existing_bdk_wallet(
         &startup.resolved.settings,
@@ -3470,9 +3509,7 @@ pub async fn run_mintd_from_database(
     let result = run_mintd_with_database_and_shutdown(
         work_dir,
         &settings,
-        localstore,
-        keystore,
-        kv,
+        databases,
         shutdown_signal(),
         db_password,
         runtime,
@@ -4024,10 +4061,14 @@ engine = "sqlite"
         let document = sqlite_configuration_document(&secret, "legacy")
             .replace("[mint_info]", "[mint_info]\npubkey = \"02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619\"");
         let bootstrap = load_database_bootstrap_settings().expect("bootstrap");
-        let (db, keystore, _, config_store) =
-            initial_setup(&work_dir, &bootstrap, password.clone())
-                .await
-                .expect("database");
+        let MintDatabases {
+            localstore: db,
+            keystore,
+            configuration_store: config_store,
+            ..
+        } = initial_setup(&work_dir, &bootstrap, password.clone())
+            .await
+            .expect("database");
         let mut builder = MintBuilder::new(db.clone());
         builder
             .configure_unit(CurrencyUnit::Sat, Default::default())
@@ -4249,10 +4290,13 @@ engine = "sqlite"
         let password: Option<String> = None;
 
         let bootstrap = load_database_bootstrap_settings().expect("bootstrap settings");
-        let (localstore, keystore, _kv, _configuration_store) =
-            initial_setup(&work_dir, &bootstrap, password.clone())
-                .await
-                .expect("initialize database");
+        let MintDatabases {
+            localstore,
+            keystore,
+            ..
+        } = initial_setup(&work_dir, &bootstrap, password.clone())
+            .await
+            .expect("initialize database");
         let mut builder = MintBuilder::new(localstore);
         builder
             .configure_unit(CurrencyUnit::Sat, Default::default())
@@ -4307,10 +4351,13 @@ engine = "sqlite"
         let password: Option<String> = None;
 
         let bootstrap = load_database_bootstrap_settings().expect("bootstrap settings");
-        let (localstore, keystore, _kv, _configuration_store) =
-            initial_setup(&work_dir, &bootstrap, password.clone())
-                .await
-                .expect("initialize database");
+        let MintDatabases {
+            localstore,
+            keystore,
+            ..
+        } = initial_setup(&work_dir, &bootstrap, password.clone())
+            .await
+            .expect("initialize database");
         let mut builder = MintBuilder::new(localstore);
         builder
             .configure_unit(CurrencyUnit::Sat, Default::default())

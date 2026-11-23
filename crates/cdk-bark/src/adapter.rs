@@ -4,7 +4,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use cdk_common::database::DynMintDatabase;
 use cdk_common::payment::{
     Bolt11Settings, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions,
     MakePaymentResponse, MintPayment, OutgoingPaymentOptions, PaymentIdentifier,
@@ -12,8 +11,7 @@ use cdk_common::payment::{
 };
 use cdk_common::CurrencyUnit;
 use cdk_federation_bark::{
-    federation_bark_application_id, FederationBarkPolicyConfig, FederationBarkProjectionSnapshot,
-    FederationBarkVtxoState,
+    DynFederationBarkStore, FederationBarkPolicyConfig, FederationBarkVtxoState,
 };
 use futures::{stream, Stream};
 
@@ -26,7 +24,7 @@ pub struct FederatedBarkPaymentAdapter {
     limits: FederatedBarkLimits,
     network: bitcoin::Network,
     policy: FederationBarkPolicyConfig,
-    database: DynMintDatabase,
+    store: DynFederationBarkStore,
 }
 
 impl std::fmt::Debug for FederatedBarkPaymentAdapter {
@@ -47,7 +45,7 @@ impl std::fmt::Debug for FederatedBarkPaymentAdapter {
 impl FederatedBarkPaymentAdapter {
     /// Construct the adapter over an already validated runtime.
     #[must_use]
-    pub fn new(runtime: Arc<FederatedBarkRuntime>, database: DynMintDatabase) -> Self {
+    pub fn new(runtime: Arc<FederatedBarkRuntime>, store: DynFederationBarkStore) -> Self {
         let limits = runtime.limits();
         let network = runtime.network();
         let policy = runtime.policy().clone();
@@ -56,7 +54,7 @@ impl FederatedBarkPaymentAdapter {
             limits,
             network,
             policy,
-            database,
+            store,
         }
     }
 
@@ -70,14 +68,14 @@ impl FederatedBarkPaymentAdapter {
         limits: FederatedBarkLimits,
         network: bitcoin::Network,
         policy: FederationBarkPolicyConfig,
-        database: DynMintDatabase,
+        store: DynFederationBarkStore,
     ) -> Self {
         Self {
             runtime: None,
             limits,
             network,
             policy,
-            database,
+            store,
         }
     }
 
@@ -163,20 +161,12 @@ impl MintPayment for FederatedBarkPaymentAdapter {
         let required = cdk_common::Amount::from(amount_sat)
             .checked_add(fee)
             .ok_or(cdk_common::payment::Error::AmountMismatch)?;
-        let projection = self
-            .database
-            .get_federation_application_projection_snapshot(
-                federation_bark_application_id()
-                    .map_err(|_| cdk_common::payment::Error::UnknownPaymentState)?,
-            )
+        let available = self
+            .store
+            .bark_vtxos_in_state(FederationBarkVtxoState::Spendable)
             .await
-            .map_err(|_| cdk_common::payment::Error::UnknownPaymentState)?;
-        let projection: FederationBarkProjectionSnapshot = serde_json::from_value(projection)
-            .map_err(|_| cdk_common::payment::Error::UnknownPaymentState)?;
-        let available = projection
-            .vtxos
+            .map_err(|_| cdk_common::payment::Error::UnknownPaymentState)?
             .iter()
-            .filter(|vtxo| vtxo.state == FederationBarkVtxoState::Spendable)
             .try_fold(cdk_common::Amount::ZERO, |sum, vtxo| {
                 sum.checked_add(vtxo.amount)
             })

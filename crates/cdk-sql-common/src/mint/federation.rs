@@ -46,6 +46,8 @@ macro_rules! federation_aleph_bft_finalized_item_select {
 mod application;
 #[cfg(feature = "federation-bark")]
 mod bark_projection;
+#[cfg(feature = "federation-bark")]
+mod bark_store;
 mod dkg;
 mod frost_wallet;
 mod journal;

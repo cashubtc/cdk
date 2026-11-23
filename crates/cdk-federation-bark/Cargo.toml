@@ -14,6 +14,7 @@ default = []
 test-util = []
 
 [dependencies]
+async-trait.workspace = true
 bitcoin.workspace = true
 cdk-common = { workspace = true, default-features = false, features = ["federation", "mint"] }
 cdk-frost.workspace = true

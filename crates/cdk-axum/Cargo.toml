@@ -18,7 +18,7 @@ federation = [
     "dep:cdk-federation",
 ]
 federation-bdk = ["federation", "cdk-federation/federation-bdk"]
-federation-bark = ["federation", "cdk-federation/federation-bark", "cdk/federation-bark"]
+federation-bark = ["federation", "cdk-federation/federation-bark", "cdk/federation-bark", "cdk-sqlite/federation-bark"]
 redis = ["dep:redis"]
 integration-tests = []
 prometheus = ["dep:cdk-prometheus", "cdk-common/prometheus", "cdk-federation?/prometheus"]

@@ -1266,6 +1266,147 @@ where
     })
 }
 
+pub(super) async fn get_action_transitions<C>(
+    connection: &C,
+    action_id: cdk_federation_bark::FederationBarkActionId,
+) -> Result<Vec<FederationBarkTransitionRecord>, Error>
+where
+    C: DatabaseExecutor,
+{
+    query(
+        r#"
+        SELECT record_json
+        FROM federation_bark_transitions
+        WHERE action_id = :action_id
+        ORDER BY operation_index ASC
+        "#,
+    )?
+    .bind("action_id", action_id.to_string())
+    .fetch_all(connection)
+    .await?
+    .into_iter()
+    .map(|row| decode_record(row, "Bark transition"))
+    .collect()
+}
+
+pub(super) async fn get_action_observations<C>(
+    connection: &C,
+    action_id: cdk_federation_bark::FederationBarkActionId,
+) -> Result<Vec<FederationBarkObservationRecord>, Error>
+where
+    C: DatabaseExecutor,
+{
+    query(
+        r#"
+        SELECT record_json
+        FROM federation_bark_observations
+        WHERE action_id = :action_id
+        ORDER BY operation_index ASC
+        "#,
+    )?
+    .bind("action_id", action_id.to_string())
+    .fetch_all(connection)
+    .await?
+    .into_iter()
+    .map(|row| decode_record(row, "Bark observation"))
+    .collect()
+}
+
+pub(super) async fn get_vtxos_in_state<C>(
+    connection: &C,
+    state: FederationBarkVtxoState,
+) -> Result<Vec<FederationBarkVtxoRecord>, Error>
+where
+    C: DatabaseExecutor,
+{
+    query(
+        r#"
+        SELECT record_json
+        FROM federation_bark_vtxos
+        WHERE state = :state
+        ORDER BY vtxo_id ASC
+        "#,
+    )?
+    .bind("state", vtxo_state_label(state))
+    .fetch_all(connection)
+    .await?
+    .into_iter()
+    .map(|row| decode_record(row, "Bark VTXO"))
+    .collect()
+}
+
+pub(super) async fn get_vtxos<C>(
+    connection: &C,
+    vtxo_ids: &[cdk_federation_bark::FederationBarkVtxoId],
+) -> Result<Vec<FederationBarkVtxoRecord>, Error>
+where
+    C: DatabaseExecutor,
+{
+    if vtxo_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    query(
+        r#"
+        SELECT record_json
+        FROM federation_bark_vtxos
+        WHERE vtxo_id IN (:vtxo_ids)
+        ORDER BY vtxo_id ASC
+        "#,
+    )?
+    .bind_vec(
+        "vtxo_ids",
+        vtxo_ids.iter().map(ToString::to_string).collect(),
+    )?
+    .fetch_all(connection)
+    .await?
+    .into_iter()
+    .map(|row| decode_record(row, "Bark VTXO"))
+    .collect()
+}
+
+pub(super) async fn get_reserved_vtxos<C>(
+    connection: &C,
+    action_id: cdk_federation_bark::FederationBarkActionId,
+) -> Result<Vec<FederationBarkVtxoRecord>, Error>
+where
+    C: DatabaseExecutor,
+{
+    query(
+        r#"
+        SELECT record_json
+        FROM federation_bark_vtxos
+        WHERE reservation_action_id = :action_id
+        ORDER BY vtxo_id ASC
+        "#,
+    )?
+    .bind("action_id", action_id.to_string())
+    .fetch_all(connection)
+    .await?
+    .into_iter()
+    .map(|row| decode_record(row, "Bark VTXO"))
+    .collect()
+}
+
+pub(super) async fn get_max_locator_index<C>(connection: &C) -> Result<Option<u32>, Error>
+where
+    C: DatabaseExecutor,
+{
+    let Some(row) = query("SELECT MAX(locator_index) FROM federation_bark_derivation_allocations")?
+        .fetch_one(connection)
+        .await?
+    else {
+        return Ok(None);
+    };
+    unpack_into!(let (max_index) = row);
+    match max_index {
+        Column::Null => Ok(None),
+        value => {
+            let index: u32 = column_as_number!(value);
+            Ok(Some(index))
+        }
+    }
+}
+
 async fn fetch_records<C, T>(connection: &C, sql: &str, label: &str) -> Result<Vec<T>, Error>
 where
     C: DatabaseExecutor,

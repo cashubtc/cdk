@@ -1927,6 +1927,7 @@ dependencies = [
 name = "cdk-federation-bark"
 version = "0.18.0"
 dependencies = [
+ "async-trait",
  "bitcoin",
  "cdk-common",
  "cdk-frost",

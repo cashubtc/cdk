@@ -14,6 +14,7 @@ mod projection;
 mod recovery;
 mod recovery_config;
 mod secret;
+mod store;
 #[cfg(feature = "test-util")]
 #[doc(hidden)]
 pub mod test_support;
@@ -97,6 +98,7 @@ pub use self::secret::{
     FederationBarkReceiveSecretBinding, FEDERATION_BARK_RECEIVE_SECRET_VERSION,
     FEDERATION_MAX_BARK_RECEIVE_SECRET_REQUEST_BYTES,
 };
+pub use self::store::{DynFederationBarkStore, FederationBarkStore};
 pub use cdk_common::federation::{
     FederationApplicationCustodyAbortRequest as FederationBarkCustodyAbortRequest,
     FederationApplicationThresholdDhRequest as FederationBarkThresholdDhRequest,

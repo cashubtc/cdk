@@ -284,10 +284,9 @@ impl FederationBarkVtxoRecord {
 /// prefix across every member and leaves the remainder for a later refresh.
 #[must_use]
 pub fn federation_bark_refresh_candidates(
-    snapshot: &FederationBarkProjectionSnapshot,
+    vtxos: &[FederationBarkVtxoRecord],
 ) -> Vec<&FederationBarkVtxoRecord> {
-    let Some(minimum_expiry) = snapshot
-        .vtxos
+    let Some(minimum_expiry) = vtxos
         .iter()
         .filter(|record| record.state == FederationBarkVtxoState::Spendable)
         .map(|record| record.expiry_height)
@@ -295,8 +294,7 @@ pub fn federation_bark_refresh_candidates(
     else {
         return Vec::new();
     };
-    let mut records = snapshot
-        .vtxos
+    let mut records = vtxos
         .iter()
         .filter(|record| {
             record.state == FederationBarkVtxoState::Spendable
@@ -412,6 +410,15 @@ pub struct FederationBarkProjectionSnapshot {
 }
 
 impl FederationBarkProjectionSnapshot {
+    /// Highest allocated custody locator index, if any.
+    #[must_use]
+    pub fn max_locator_index(&self) -> Option<u32> {
+        self.derivation_allocations
+            .iter()
+            .map(|allocation| allocation.locator.index)
+            .max()
+    }
+
     /// Highest accepted operation index represented by any materialized Bark row.
     #[must_use]
     pub fn frontier(&self) -> Option<u64> {
@@ -561,7 +568,7 @@ mod tests {
         }
         snapshot.vtxos.push(spendable_vtxo(11, 901, 1));
 
-        let selected = federation_bark_refresh_candidates(&snapshot);
+        let selected = federation_bark_refresh_candidates(&snapshot.vtxos);
 
         assert_eq!(selected.len(), FEDERATION_MAX_BARK_REFRESH_INPUTS);
         assert_eq!(selected.first().expect("first").locator.index, 1);
@@ -576,7 +583,7 @@ mod tests {
             snapshot.vtxos.push(spendable_vtxo(seed, 900, 3_000));
         }
 
-        let selected = federation_bark_refresh_candidates(&snapshot);
+        let selected = federation_bark_refresh_candidates(&snapshot.vtxos);
 
         assert_eq!(selected.len(), 4);
         assert_eq!(

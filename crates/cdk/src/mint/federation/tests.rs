@@ -67,8 +67,7 @@ use crate::mint::{Mint, MintBuilder, MintInput, MintMeltLimits};
 
 #[cfg(feature = "federation-bark")]
 use super::application::{
-    federation_bark_matching_result_observers,
-    federation_bark_result_payment_records_from_projection,
+    federation_bark_matching_result_observers, federation_bark_result_payment_records,
     FederationBarkPaymentObservationTemplate, FederationBarkResultObservationKey,
 };
 use super::FederationRuntimeConfig;
@@ -275,6 +274,8 @@ async fn restart_federated_test_mint(
         CurrencyUnit::Sat,
     );
     let mut builder = MintBuilder::new(localstore.clone()).with_federation_config(runtime_config);
+    #[cfg(feature = "federation-bark")]
+    builder.set_federation_bark_store(localstore.clone());
     builder
         .add_payment_processor(
             CurrencyUnit::Sat,
@@ -296,6 +297,8 @@ async fn federated_test_mint_with_payment_processor(
 ) -> (Mint, Arc<MintSqliteDatabase>) {
     let localstore = Arc::new(memory::empty().await.expect("mint db"));
     let mut builder = MintBuilder::new(localstore.clone()).with_federation_config(runtime_config);
+    #[cfg(feature = "federation-bark")]
+    builder.set_federation_bark_store(localstore.clone());
     builder
         .add_payment_processor(
             CurrencyUnit::Sat,
@@ -830,6 +833,8 @@ async fn federated_test_mint_with_reserve_checking_payment_response(
         payment_total_spent,
     });
     let mut builder = MintBuilder::new(localstore.clone()).with_federation_config(runtime_config);
+    #[cfg(feature = "federation-bark")]
+    builder.set_federation_bark_store(localstore.clone());
     builder
         .add_payment_processor(
             CurrencyUnit::Sat,

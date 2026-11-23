@@ -145,6 +145,9 @@ pub struct Mint {
     /// Validated federation config for member mode.
     #[cfg(feature = "federation")]
     federation_config: Option<FederationRuntimeConfig>,
+    /// Keyed reads of the accepted Bark projection, when Bark is enabled.
+    #[cfg(feature = "federation-bark")]
+    federation_bark_store: Option<cdk_federation_bark::DynFederationBarkStore>,
     /// Federation config after applying accepted keyset rotations.
     ///
     /// The one source of federation keysets once built. Empty until the first
@@ -174,6 +177,15 @@ impl std::fmt::Debug for Mint {
 struct MintLimits {
     inputs: usize,
     outputs: usize,
+}
+
+/// Federation inputs a member mint is built with.
+#[cfg(feature = "federation")]
+#[derive(Default)]
+pub(crate) struct MintFederationParts {
+    pub(crate) config: Option<FederationRuntimeConfig>,
+    #[cfg(feature = "federation-bark")]
+    pub(crate) bark_store: Option<cdk_federation_bark::DynFederationBarkStore>,
 }
 
 /// State for managing background tasks
@@ -337,7 +349,7 @@ impl Mint {
                 outputs: max_outputs,
             },
             #[cfg(feature = "federation")]
-            None,
+            MintFederationParts::default(),
         )
         .await
     }
@@ -363,7 +375,7 @@ impl Mint {
                 outputs: max_outputs,
             },
             #[cfg(feature = "federation")]
-            None,
+            MintFederationParts::default(),
         )
         .await
     }
@@ -377,8 +389,14 @@ impl Mint {
         auth_localstore: Option<DynMintAuthDatabase>,
         payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
         limits: MintLimits,
-        #[cfg(feature = "federation")] federation_config: Option<FederationRuntimeConfig>,
+        #[cfg(feature = "federation")] federation: MintFederationParts,
     ) -> Result<Self, Error> {
+        #[cfg(feature = "federation")]
+        let MintFederationParts {
+            config: federation_config,
+            #[cfg(feature = "federation-bark")]
+                bark_store: federation_bark_store,
+        } = federation;
         let MintLimits {
             inputs: max_inputs,
             outputs: max_outputs,
@@ -511,6 +529,8 @@ impl Mint {
             max_outputs,
             #[cfg(feature = "federation")]
             federation_config,
+            #[cfg(feature = "federation-bark")]
+            federation_bark_store,
             #[cfg(feature = "federation")]
             federation_effective_config: Arc::new(arc_swap::ArcSwapOption::empty()),
             #[cfg(feature = "federation")]

@@ -143,8 +143,8 @@ fn bark_result_records_materialize_only_after_distinct_inner_quorum() {
         _ => panic!("member observation"),
     };
 
-    assert!(federation_bark_result_payment_records_from_projection(
-        &projection,
+    assert!(federation_bark_result_payment_records(
+        &projection.observations,
         &expected,
         3,
         &template,
@@ -156,8 +156,8 @@ fn bark_result_records_materialize_only_after_distinct_inner_quorum() {
             let mut conflicting_projection = projection.clone();
             conflicting_projection.observations.push(conflicting);
             assert!(
-                federation_bark_result_payment_records_from_projection(
-                    &conflicting_projection,
+                federation_bark_result_payment_records(
+                    &conflicting_projection.observations,
                     &expected,
                     3,
                     &template,
@@ -224,12 +224,8 @@ fn bark_result_records_materialize_only_after_distinct_inner_quorum() {
     );
 
     projection.observations.push(observation(3, 10));
-    let records = federation_bark_result_payment_records_from_projection(
-        &projection,
-        &expected,
-        3,
-        &template,
-    );
+    let records =
+        federation_bark_result_payment_records(&projection.observations, &expected, 3, &template);
     assert_eq!(
         records
             .iter()
@@ -258,12 +254,8 @@ fn bark_result_records_materialize_only_after_distinct_inner_quorum() {
     );
 
     projection.observations.push(observation(5, 11));
-    let records = federation_bark_result_payment_records_from_projection(
-        &projection,
-        &expected,
-        3,
-        &template,
-    );
+    let records =
+        federation_bark_result_payment_records(&projection.observations, &expected, 3, &template);
     let report = FederationPaymentObservationReport::from_records(
         FederationPaymentObservationContext::MintQuote,
         &quote.to_string(),
@@ -283,8 +275,8 @@ fn bark_result_records_materialize_only_after_distinct_inner_quorum() {
             payment_id: Some(PaymentIdentifier::PaymentHash(payment_hash.to_bytes())),
             payment_proof: Some("proof".to_string()),
         });
-    let melt_records = federation_bark_result_payment_records_from_projection(
-        &projection,
+    let melt_records = federation_bark_result_payment_records(
+        &projection.observations,
         &expected,
         3,
         &melt_template,
@@ -299,8 +291,8 @@ fn bark_result_records_materialize_only_after_distinct_inner_quorum() {
                     && observation.payment_proof.as_deref() == Some("proof")
         )
     }));
-    assert!(federation_bark_result_payment_records_from_projection(
-        &projection,
+    assert!(federation_bark_result_payment_records(
+        &projection.observations,
         &expected,
         5,
         &template,

@@ -989,6 +989,8 @@ async fn create_fake_wallet_member_mint(
     let mut builder = MintBuilder::new(db.clone())
         .with_batch_minting(Some(10), Some(vec![KnownMethod::Bolt11.to_string()]))
         .with_federation_config(runtime_config);
+    #[cfg(feature = "federation-bark")]
+    builder.set_federation_bark_store(db.clone());
     let fake = FakeWallet::new(
         FeeReserve {
             min_fee_reserve: Amount::from(1),

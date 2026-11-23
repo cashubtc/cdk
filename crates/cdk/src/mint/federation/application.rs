@@ -228,8 +228,8 @@ impl FederationBarkPaymentObservationTemplate {
 }
 
 #[cfg(feature = "federation-bark")]
-pub(super) fn federation_bark_result_payment_records_from_projection(
-    projection: &cdk_federation_bark::FederationBarkProjectionSnapshot,
+pub(super) fn federation_bark_result_payment_records(
+    action_observations: &[cdk_federation_bark::FederationBarkObservationRecord],
     expected: &cdk_federation_bark::FederationBarkMemberObservation,
     required_bark_observers: u16,
     template: &FederationBarkPaymentObservationTemplate,
@@ -247,7 +247,7 @@ pub(super) fn federation_bark_result_payment_records_from_projection(
         result_hash: expected.result_hash,
     };
     let mut matching_by_observer = std::collections::BTreeMap::new();
-    for record in &projection.observations {
+    for record in action_observations {
         let FederationBarkOperation::MemberObservation(candidate) = &record.operation else {
             continue;
         };
@@ -429,36 +429,32 @@ impl Mint {
             .effective_federation_config()
             .await?
             .ok_or(Error::Internal)?;
-        let mut projection = self.federation_bark_projection_snapshot().await?;
-        if !projection
-            .observations
+        let store = self.federation_bark_store()?;
+        let mut observations = store
+            .bark_action_observations(observation.action_id)
+            .await?;
+        if !observations
             .iter()
             .any(|record| record.operation_id == entry.operation_id)
         {
-            projection
-                .observations
-                .push(cdk_federation_bark::FederationBarkObservationRecord {
-                    operation_id: entry.operation_id,
-                    operation_index: entry.index,
-                    operation: FederationBarkOperation::MemberObservation(observation.clone()),
-                });
+            observations.push(cdk_federation_bark::FederationBarkObservationRecord {
+                operation_id: entry.operation_id,
+                operation_index: entry.index,
+                operation: FederationBarkOperation::MemberObservation(observation.clone()),
+            });
         }
 
-        let Some(action) = projection
-            .actions
-            .iter()
-            .find(|action| action.action_id == observation.action_id)
-        else {
+        let Some(action) = store.bark_action(observation.action_id).await? else {
             return Err(Error::Internal);
         };
         let Some(template) = self
-            .federation_bark_payment_observation_template(action, observation)
+            .federation_bark_payment_observation_template(&action, observation)
             .await?
         else {
             return Ok(Vec::new());
         };
-        Ok(federation_bark_result_payment_records_from_projection(
-            &projection,
+        Ok(federation_bark_result_payment_records(
+            &observations,
             observation,
             config.public_config().threshold_params.signature_threshold,
             &template,
@@ -1445,9 +1441,10 @@ impl Mint {
                 let [publication] = publications.as_slice() else {
                     return Err(Error::Internal);
                 };
-                let projection = self.federation_bark_projection_snapshot().await?;
-                let registered_operation_id = projection
-                    .transitions
+                let registered_operation_id = self
+                    .federation_bark_store()?
+                    .bark_action_transitions(transition.action_id)
+                    .await?
                     .iter()
                     .find(|record| {
                         record.action_id == transition.action_id

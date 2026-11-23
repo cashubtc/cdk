@@ -3341,6 +3341,8 @@ async fn federation_route_state_for_private_with_db_payment_and_finality(
     let mut builder = MintBuilder::new(db.clone())
         .with_batch_minting(Some(10), Some(vec![KnownMethod::Bolt11.to_string()]))
         .with_federation_config(runtime_config.clone());
+    #[cfg(feature = "federation-bark")]
+    builder.set_federation_bark_store(db.clone());
     builder
         .add_payment_processor(
             CurrencyUnit::Sat,
