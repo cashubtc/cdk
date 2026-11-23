@@ -21,6 +21,7 @@ use super::helpers::{
 use super::projection;
 use super::transaction_state::persist_pending_onchain_intent;
 use crate::mint::melt::ensure_melt_quote_matches_request;
+use crate::mint::swap::{plan_swap, SwapPlan};
 use crate::mint::verification::{self, Verification};
 use crate::mint::Mint;
 use crate::mint::MintInput;
@@ -2240,14 +2241,19 @@ impl Mint {
             FederationProofVerificationContext::SwapApply,
         )?;
         operation.request.verify_spending_conditions()?;
-        let output_verification = verification::verify_outputs(
+        // Consensus orders completion but does not attest its wall-clock time.
+        let SwapPlan {
+            fee_breakdown,
+            operation: operation_record,
+        } = plan_swap(
             &config.keysets(),
             self.max_outputs,
+            input_verification,
+            input_proofs,
             operation.request.outputs(),
+            federation_operation_uuid(operation_id),
+            Some(0),
         )?;
-        let fee_breakdown = verification::calculate_proofs_fee(&config.keysets(), input_proofs)?;
-        verification::verify_balanced(&input_verification, &output_verification, &fee_breakdown)?;
-
         let input_ys = input_proofs.ys()?;
         let blinded_secrets = operation
             .request
@@ -2255,16 +2261,6 @@ impl Mint {
             .iter()
             .map(|output| output.blinded_secret)
             .collect::<Vec<PublicKey>>();
-        // Consensus orders completion but does not attest its wall-clock time.
-        let operation_record = Operation::new(
-            federation_operation_uuid(operation_id),
-            OperationKind::Swap,
-            output_verification.amount.clone().into(),
-            input_verification.amount.clone().into(),
-            fee_breakdown.total,
-            Some(0),
-            None,
-        );
         let completed_swap = self
             .localstore
             .get_completed_operation(operation_record.id())

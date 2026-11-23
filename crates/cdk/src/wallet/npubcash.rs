@@ -633,7 +633,8 @@ impl Wallet {
     }
 
     pub(crate) fn is_legacy_npubcash_secret_key(&self, secret_key: &SecretKey) -> bool {
-        secret_key.as_secret_bytes() == self.seed[..32]
+        // Slice both sides: the byte accessor's type depends on `cashu/federation`.
+        secret_key.as_secret_bytes()[..] == self.seed[..32]
     }
 
     pub(crate) fn npubcash_quote_secret_key(

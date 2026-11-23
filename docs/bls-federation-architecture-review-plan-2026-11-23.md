@@ -49,7 +49,7 @@ Federation was added as a second mint beside the standalone one, joined by featu
 - [V] Federated swap and mint application are parallel pipelines: `crates/cdk/src/mint/federation/application.rs:2369` and `:2193` against the swap saga and `process_mint_request` in `crates/cdk/src/mint/issue/mod.rs`.
 - [V] `verify_federation_transaction_balanced_with_config` at `crates/cdk/src/mint/federation/application.rs:2958` is a line-for-line copy of `crates/cdk/src/mint/verification.rs:286`. [R] The output, input and fee functions are copied the same way.
 - [V] Corrected on 2026-11-23: the federated mint does not lack value rules. It bounds issuance by the payment quorum covering the issued amount plus the new amount. The standalone rules it does not run (batch size, NUT-29 methods, NUT-04 limits) read each member's local `mint_info`, so they belong at admission, not in deterministic application; the HTTP handler checks the batch size (`crates/cdk-axum/src/custom_handlers.rs:257`). What was duplicated is the pure quote rules (uniform method and unit, NUT-20 signatures), now shared.
-- [R] Share signing is a three-times repeated block, and each application writes the share and a blind signature to two tables.
+- [V] Share signing was a three-times repeated block (now one). Each application writes the share and a blind signature to two tables; corrected on 2026-11-23: the share record is the provenance authority (restore must ignore a blind signature without one, per `7fdb8d473`), so the removable copy is the blind signature, not the share.
 - [R] Admission and application validate separately, so the proposer verifies BLS proofs three times, while stateless rules run only at application.
 - [R] Melt has one persisted saga but two drivers; the federated transitions are an if/else over quote state, observation state and saga existence.
 
@@ -319,4 +319,13 @@ Started with package 4 because finding 1 is the most important; packages 0 to 3 
 Verification: `cdk` mint tests with federation (412 passed) and without it (258 passed); `cdk-axum` compiles with `federation-bdk,federation-bark`; clippy clean on the changed files. Four unused-import warnings in `crates/cdk/src/wallet/issue/saga/mod.rs` test code predate this work. Not run: the workspace-wide suite, integration tests and regtest.
 
 Not done in this step: the swap and mint commit paths (add proofs, signatures, completed operation) are still written twice; sharing them needs the `validate → plan → commit` split. The duplicate share and blind-signature table writes remain.
+
+### 2026-11-23: package 4, second step (swap plan)
+
+- **Swap plan.** `plan_swap` in `crates/cdk/src/mint/swap/mod.rs` verifies outputs and balance, computes the fee once and builds the operation record. The standalone saga and federated application both call it; the saga previously computed the fee twice.
+- **Mint write path left separate, deliberately.** Standalone issuance and federated application write the same rows, but federated application needs deterministic operation ids and idempotent replay rules, and the standalone path does neither. Merging them would change behaviour in both for a few shared calls.
+- **Restore reverted.** Switching member-mode restore to the batched blind-signature read broke `restore_ignores_orphan_blind_signature_without_federation_share`, a deliberate provenance rule. Reverted; a batched share lookup would need a new storage method (package 6).
+- **Unrelated build fix.** `crates/cdk/src/wallet/npubcash.rs` did not compile with `npubcash` and without `federation`, because the type of `SecretKey::as_secret_bytes()` depends on the feature (finding 3). Fixed by comparing slices. This blocked the integration tests.
+
+Verification: `cdk` mint tests with federation (412 passed) and without (258 passed); `test_swap_flow` integration test on the memory database (17 passed); `cdk` builds with `npubcash` with and without federation; `cdk-axum` compiles with `federation-bdk,federation-bark`. Not run: workspace-wide suite, other integration tests, regtest.
 

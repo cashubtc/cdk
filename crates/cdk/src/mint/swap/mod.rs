@@ -1,11 +1,63 @@
-use cdk_common::SpendingConditionVerification;
+use cdk_common::mint::{Operation, OperationKind};
+use cdk_common::{BlindedMessage, Proofs, SpendingConditionVerification};
 use swap_saga::SwapSaga;
 use tracing::instrument;
 
+use super::verification::{self, KeysetView, Verification};
 use super::{Mint, SwapRequest, SwapResponse};
+use crate::fees::ProofsFeeBreakdown;
 use crate::Error;
 
 pub mod swap_saga;
+
+/// A swap whose outputs and balance are verified, ready to persist.
+#[derive(Debug)]
+pub(crate) struct SwapPlan {
+    /// Fee charged on the inputs, per keyset and in total.
+    pub(crate) fee_breakdown: ProofsFeeBreakdown,
+    /// Completed-operation record for the swap.
+    pub(crate) operation: Operation,
+}
+
+/// Verifies a swap's outputs and balance and builds its operation record.
+///
+/// `input_verification` must come from verifying `inputs`; how the inputs'
+/// signatures are checked differs between standalone and federated mints.
+/// `completed_at` is the completion time recorded on the operation.
+pub(crate) fn plan_swap<K>(
+    keysets: &K,
+    max_outputs: usize,
+    input_verification: Verification,
+    inputs: &Proofs,
+    outputs: &[BlindedMessage],
+    operation_id: uuid::Uuid,
+    completed_at: Option<u64>,
+) -> Result<SwapPlan, Error>
+where
+    K: KeysetView + ?Sized,
+{
+    let output_verification = verification::verify_outputs(keysets, max_outputs, outputs)
+        .inspect_err(|err| {
+            tracing::debug!("Output verification failed: {}", err);
+        })?;
+    let fee_breakdown = verification::calculate_proofs_fee(keysets, inputs)?;
+    verification::verify_balanced(&input_verification, &output_verification, &fee_breakdown)?;
+
+    let operation = Operation::new(
+        operation_id,
+        OperationKind::Swap,
+        output_verification.amount.into(),
+        input_verification.amount.into(),
+        fee_breakdown.total,
+        completed_at,
+        None, // payment_method (not applicable for swap)
+    );
+
+    Ok(SwapPlan {
+        fee_breakdown,
+        operation,
+    })
+}
 
 #[cfg(test)]
 mod tests;
