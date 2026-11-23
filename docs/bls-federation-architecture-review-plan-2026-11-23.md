@@ -281,8 +281,8 @@ Done when no consensus encoding has two definitions and `cdk-axum` contains no c
 
 1. Replace feature-selected key types with additive ones (package 3)? **Decided 2026-11-23:** yes, following the upstream `bls` branch: one unconditional `PublicKey`/`SecretKey` enum and BLS v3 always compiled, instead of the curve-tagged field type proposed above, so the protocol types do not fork from upstream.
 2. Allow the validate/plan/commit split in shared mint code, possibly landed on `main` first (package 4)?
-3. Bark as a typed, feature-gated operation variant, or a real trait object injected into the builder? Either way the global registry goes.
-4. Crate layout: only extract `cdk-federation` from `cdk-axum`, or also move the pure domain out of `cdk-common` into a core crate?
+3. Bark as a typed, feature-gated operation variant, or a real trait object injected into the builder? Either way the global registry goes. **Decided 2026-11-23:** a typed, feature-gated variant.
+4. Crate layout: only extract `cdk-federation` from `cdk-axum`, or also move the pure domain out of `cdk-common` into a core crate? **Decided 2026-11-23:** only extract `cdk-federation`.
 5. Canonical encoding: keep sorted JSON behind one module, or move consensus hashing to one binary encoding?
 6. Persist the wallet's federation registry through `WalletDatabase`? This is new persisted information.
 7. `scripts/fed-cdk-tui`: promote to a crate on the shared registry, or move out of the repository? Same question for the archived documents.
