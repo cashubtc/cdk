@@ -530,6 +530,56 @@ mod tests {
         assert_eq!(quote_ids, vec![first_quote_id, second_quote_id]);
     }
 
+    #[tokio::test]
+    async fn get_events_from_db_keeps_quotes_whose_payment_check_fails() {
+        let db: DynMintDatabase = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("in-memory mint database"),
+        );
+        let paid_quote_id = QuoteId::new();
+        let unpaid_quote_id = QuoteId::new();
+        add_mint_quote(&db, bolt11_quote(paid_quote_id.clone(), 21)).await;
+        // Unpaid, so the backfill asks the payment backend about it. There is
+        // no backend for it here, so that check fails.
+        let mut tx = db.begin_transaction().await.expect("begin transaction");
+        tx.add_mint_quote(bolt11_quote(unpaid_quote_id.clone(), 34))
+            .await
+            .expect("add mint quote");
+        tx.commit().await.expect("commit transaction");
+
+        let snaps = rotated_snapshots(1).await;
+        let signatory = MockSignatory::new(snaps[0].clone());
+
+        let spec =
+            MintPubSubSpec::new_instance((db, Arc::new(HashMap::new()), Arc::new(signatory)));
+        let events = spec
+            .get_events_from_db(&[
+                NotificationId::MintQuoteBolt11(paid_quote_id.clone()),
+                NotificationId::MintQuoteBolt11(unpaid_quote_id.clone()),
+            ])
+            .await
+            .expect("get events");
+
+        let states = events
+            .into_iter()
+            .map(|event| match event.into_inner() {
+                NotificationPayload::MintQuoteBolt11Response(response) => {
+                    (response.quote, response.state)
+                }
+                payload => panic!("unexpected payload: {payload:?}"),
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            states,
+            vec![
+                (paid_quote_id, MintQuoteState::Paid),
+                (unpaid_quote_id, MintQuoteState::Unpaid),
+            ]
+        );
+    }
+
     fn melt_quote(method: cdk_common::PaymentMethod, state: MeltQuoteState) -> MeltQuote {
         use cdk_common::mint::MeltPaymentRequest;
         use cdk_common::nut00::KnownMethod;
