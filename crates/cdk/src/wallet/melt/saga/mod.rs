@@ -633,8 +633,8 @@ impl<'a> MeltSaga<'a, Initial> {
         // so a failure there has nothing to undo. Everything after
         // `initialize_melt` goes through the inner fn, whose errors are
         // compensated here: the funds check, and the `?`s on
-        // `get_proofs_by_ys`, `update_proofs`, `add_saga` and `get_proofs_fee`
-        // (#2771).
+        // `get_proofs_by_ys`, `add_saga`, `reserve_proofs`, `update_proofs` and
+        // `get_proofs_fee` (#2771).
         match self
             .prepare_with_proofs_inner(quote_id, proofs, options)
             .await
@@ -731,11 +731,9 @@ impl<'a> MeltSaga<'a, Initial> {
         // Save recovery information before the reservation can commit.
         self.wallet.localstore.add_saga(saga.clone()).await?;
 
-        self.wallet
-            .localstore
-            .update_proofs(proofs_info, vec![])
-            .await?;
-
+        // Registered before reserving so a refused reservation still deletes
+        // the saga row. `release_proofs` only touches proofs owned by this
+        // operation, so it cannot release proofs reserved elsewhere.
         add_compensation(
             &mut self.compensations,
             Box::new(RevertProofReservation {
@@ -745,6 +743,25 @@ impl<'a> MeltSaga<'a, Initial> {
             }),
         )
         .await;
+
+        // Proofs the wallet already stores must be unspent. Reserve them
+        // atomically first: the upsert below would otherwise overwrite a
+        // spent proof, or one reserved by another operation, and a later
+        // cancel would release it as unspent.
+        let existing_ys: Vec<_> = existing_proofs.iter().map(|p| p.y).collect();
+        if !existing_ys.is_empty() {
+            self.wallet
+                .localstore
+                .reserve_proofs(existing_ys, &operation_id)
+                .await?;
+        }
+
+        // Every stored row is now reserved by this operation, so the upsert
+        // only adds external proofs and persists witnesses.
+        self.wallet
+            .localstore
+            .update_proofs(proofs_info, vec![])
+            .await?;
 
         let input_fee = self.wallet.get_proofs_fee(&proofs).await?.total;
 
