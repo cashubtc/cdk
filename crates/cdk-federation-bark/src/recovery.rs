@@ -784,8 +784,7 @@ impl FederationBarkRecoveryFrostAuthorization {
                 "Bark recovery action head is not a transition",
             ));
         };
-        if action.signing_retry_phase.unwrap_or(action.phase)
-            != FederationBarkSemanticPhase::ExitRegistered
+        if action.effective_phase() != FederationBarkSemanticPhase::ExitRegistered
             || action.plan_operation_id != Some(registered.plan_operation_id)
             || action.latest_operation_id != self.authorization_operation_id
             || authorization_head.action_id != registered.action_id

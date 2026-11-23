@@ -17,6 +17,7 @@ mod secret;
 #[cfg(feature = "test-util")]
 #[doc(hidden)]
 pub mod test_support;
+pub mod validation;
 
 pub use self::certificate::{
     FederationBarkEvidenceAttestation, FederationBarkEvidenceAttestationRequest,

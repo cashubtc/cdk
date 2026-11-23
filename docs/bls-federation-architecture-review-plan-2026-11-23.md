@@ -499,3 +499,15 @@ Verification, with `RUST_MIN_STACK=16777216` as on the rest of this branch:
 - clippy with `-D warnings` on `cdk-federation-bark`, `cdk-bark` and `cdk`;
 - the 16 production builds.
 
+
+### 2026-11-23: package 7, third step (Bark state validator in the Bark crate)
+
+- **Validator moved.** The 13 pure checks of Bark transitions against the projection snapshot (maintenance, refresh, exit, revocation, receive-claim and send headers, locator allocation, custody signers) moved from a module inside `cdk`'s projection to `cdk_federation_bark::validation`. They depend only on Bark and `cdk-common` types, so other crates can use them too. `cdk` keeps the stateful projection that reads storage and calls them.
+- **Error classification unchanged.** The checks now return `FederationError::ApplicationOperationInvalid` with the same message. Like the previous `Error::Custom`, the apply path treats it as neither a definitive rejection nor a retryable storage error.
+- **One effective-phase rule.** `signing_retry_phase.unwrap_or(phase)` was written out in ten places across `cdk`, `cdk-bark`, `cdk-federation-bark` and `cdk-federation`, plus a helper in the projection. It is now `FederationBarkActionRecord::effective_phase()`. The SQL crate's raw-column copy stays until package 6 removes the transition logic from storage.
+- Net change: about 560 lines removed.
+- **Not done in package 7:**
+  - The two quote-and-settings adapters (`cdk-bark`'s `FederatedBarkPaymentAdapter`, `cdk-mintd`'s `FederatedBdkPaymentAdapter`) are not only stubs. They supply payment settings and melt fee quotes to the mint, and only their execution methods are consensus-only. Removing them needs a quote-only seam in the shared mint payment registry, which is standalone code and part of decision 2.
+  - The Bark drivers (about 4,200 lines in `cdk-federation`) have not moved into `cdk-bark` behind a host port.
+
+Verification, with `RUST_MIN_STACK=16777216`: the same suites and counts as the previous step, clippy with `-D warnings` on the four touched crates, and the 16 production builds.

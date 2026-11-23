@@ -764,7 +764,7 @@ impl FederatedBarkRuntime {
             .filter(|action| !bark_action_phase_is_terminal(action.phase))
         {
             let value_sat = action_values.get(&action.action_id).copied().unwrap_or(0);
-            let effective_phase = action.signing_retry_phase.unwrap_or(action.phase);
+            let effective_phase = action.effective_phase();
             if bark_action_phase_is_ambiguous(effective_phase) {
                 ambiguous_action_count = ambiguous_action_count.saturating_add(1);
                 ambiguous_value_sat = ambiguous_value_sat.saturating_add(value_sat);

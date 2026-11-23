@@ -637,7 +637,7 @@ pub fn select_recovery_step(
         return (target_action_id.is_none() && controls.automatic_refresh)
             .then_some(FederatedBarkRecoveryStep::PlanRefresh);
     };
-    match action.signing_retry_phase.unwrap_or(action.phase) {
+    match action.effective_phase() {
         FederationBarkSemanticPhase::RefreshPlanned => {
             Some(FederatedBarkRecoveryStep::RefreshPlanned {
                 action_id: action.action_id,

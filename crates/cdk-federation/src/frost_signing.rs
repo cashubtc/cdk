@@ -1696,11 +1696,7 @@ async fn wait_for_bark_custody_projection(
                 action.signing_retry_phase,
                 action.attempt,
                 authorization_attempt,
-            ) && bark_custody_inputs_are_authorized(
-                plan,
-                action.signing_retry_phase.unwrap_or(action.phase),
-                &projection,
-            )
+            ) && bark_custody_inputs_are_authorized(plan, action.effective_phase(), &projection)
         });
         if authorization_is_current {
             return Ok(());

@@ -57,6 +57,12 @@ pub struct FederationBarkActionRecord {
 }
 
 impl FederationBarkActionRecord {
+    /// The action's phase, or the retried phase while a signing retry is pending.
+    #[must_use]
+    pub fn effective_phase(&self) -> FederationBarkSemanticPhase {
+        self.signing_retry_phase.unwrap_or(self.phase)
+    }
+
     /// Build the first action head for a newly accepted lineage.
     pub fn new(
         entry: &FederationJournalEntry,

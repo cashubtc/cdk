@@ -322,8 +322,7 @@ impl FederatedBarkRuntime {
             return Err(Error::MaintenanceExecutionFailed);
         };
         if action.action_id != registered.action_id
-            || action.signing_retry_phase.unwrap_or(action.phase)
-                != FederationBarkSemanticPhase::ExitRegistered
+            || action.effective_phase() != FederationBarkSemanticPhase::ExitRegistered
             || action.plan_operation_id != Some(registered.plan_operation_id)
             || (action.phase == FederationBarkSemanticPhase::ExitRegistered
                 && action.latest_operation_id != registered_entry.operation_id)

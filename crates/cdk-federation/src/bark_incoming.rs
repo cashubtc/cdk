@@ -495,7 +495,7 @@ async fn advance_federated_bark_mint_quote_inner(
                         .into())
                 }
             };
-            let effective_phase = action.signing_retry_phase.unwrap_or(action.phase);
+            let effective_phase = action.effective_phase();
             match outcome {
                 cdk_bark::FederatedBarkReceiveClaimOutcome::RecoveryRequired {
                     preimage_disclosed,

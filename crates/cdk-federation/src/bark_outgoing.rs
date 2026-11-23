@@ -125,7 +125,7 @@ pub async fn advance_federated_bark_melt_quote(
     });
 
     if let Some(action) = existing_action {
-        let effective_phase = action.signing_retry_phase.unwrap_or(action.phase);
+        let effective_phase = action.effective_phase();
         let plan_entry = send_transition_entry(
             state,
             &projection,

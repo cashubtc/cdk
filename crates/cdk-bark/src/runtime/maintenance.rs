@@ -472,7 +472,7 @@ impl FederatedBarkRuntime {
     ) -> Result<FederationBarkActionPlan, Error> {
         let refresh =
             accepted_maintenance_plan(refresh_plan_entry, FederationBarkActionKind::Refresh)?;
-        let effective_phase = action.signing_retry_phase.unwrap_or(action.phase);
+        let effective_phase = action.effective_phase();
         let signer_set = federation_bark_signer_set_for_attempt(&self.federation, action.attempt)
             .map_err(|_| Error::MaintenancePlanInvalid)?;
         if action.action_id != refresh.action_id
@@ -883,8 +883,7 @@ impl FederatedBarkRuntime {
         let plan = accepted_maintenance_plan(plan_entry, FederationBarkActionKind::EmergencyExit)?;
         if action.action_id != plan.action_id
             || action.actor != self.member_id
-            || action.signing_retry_phase.unwrap_or(action.phase)
-                != FederationBarkSemanticPhase::ExitPublished
+            || action.effective_phase() != FederationBarkSemanticPhase::ExitPublished
             || action.plan_operation_id != Some(plan_entry.operation_id)
         {
             return Err(Error::MaintenanceReconciliationFailed);
