@@ -13,8 +13,7 @@ use super::journal::PreparedFederationJournalFinalization;
 use super::{
     FederationAlephBftRecoveryCursor, FederationApplicationState, FederationCheckpoint,
     FederationCheckpointId, FederationConfig, FederationError, FederationId,
-    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
-    FederationJournalConsensusEvidence, FederationJournalEntry, FederationMaterializedStateDigest,
+    FederationJournalCatchUpRequest, FederationJournalConsensusEvidence, FederationJournalEntry,
     FederationOperationConflictKey, FederationOperationEnvelope, FederationOperationId,
     FederationOperationStatus, FederationPeerStatus, FederationRestMessageKind,
     FederationSignedRequest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
@@ -25,9 +24,6 @@ use super::{
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-const DEFAULT_CATCH_UP_LIMIT: u16 = 100;
-const MAX_CATCH_UP_LIMIT: u16 = 1000;
 
 /// Version of consensus item payloads.
 pub const FEDERATION_CONSENSUS_ITEM_VERSION: u16 = 1;
@@ -3440,42 +3436,6 @@ impl FederationConsensusRuntime {
         FederationJournalCatchUpRequest::new(self.journal().next_index())
             .with_known_order_digest(self.journal().latest_order_digest())
             .with_aleph_bft_next_item_index(self.next_item_index())
-    }
-
-    /// Return journal entries for a catch-up request.
-    #[must_use]
-    pub fn catch_up(
-        &self,
-        request: &FederationJournalCatchUpRequest,
-    ) -> FederationJournalCatchUpResponse {
-        FederationJournalCatchUpResponse::from_journal(
-            self.federation_id(),
-            self.journal(),
-            FederationMaterializedStateDigest::genesis(),
-            request,
-            DEFAULT_CATCH_UP_LIMIT,
-            MAX_CATCH_UP_LIMIT,
-        )
-    }
-
-    /// Return journal entries after checking the request's known digest.
-    pub fn catch_up_checked(
-        &self,
-        request: &FederationJournalCatchUpRequest,
-    ) -> Result<FederationJournalCatchUpResponse> {
-        if let Some(known_order_digest) = request.known_order_digest {
-            if let Some(expected_digest) = self.journal().order_digest_before(request.next_index) {
-                if expected_digest != known_order_digest {
-                    return Err(FederationError::CatchUpDigestMismatch {
-                        index: request.next_index,
-                        expected: expected_digest,
-                        found: known_order_digest,
-                    });
-                }
-            }
-        }
-
-        Ok(self.catch_up(request))
     }
 
     /// Update local application status for an ordered operation.

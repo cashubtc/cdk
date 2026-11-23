@@ -22,12 +22,10 @@ use super::{admit_private_request, federation_error_response, federation_runtime
 
 /// Bounded collector for one exact protected receive-secret replication set.
 #[derive(Debug)]
-#[allow(dead_code)]
 pub(crate) struct FederationBarkReceiveSecretCoordinator<'a, T> {
     client: &'a super::peer_client::FederationRestPeerClient<T>,
 }
 
-#[allow(dead_code)]
 impl<'a, T> FederationBarkReceiveSecretCoordinator<'a, T>
 where
     T: cdk_http_client::Transport,

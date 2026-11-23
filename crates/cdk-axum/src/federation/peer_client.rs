@@ -21,15 +21,13 @@ use cdk::federation::{
     FederationFrostSigningAck, FederationFrostSigningPackageRequest, FederationId,
     FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationPeerStatus,
     FederationPeerStatusRequest, FederationRestMessageKind, FederationSignedRequest,
-    FederationSubmitOperationRequest, FederationSubmitOperationResponse, MemberConfigPrivate,
-    MemberConfigPublic, FEDERATION_MAX_ALEPH_BFT_BACKUP_PAGE_BYTES,
+    MemberConfigPrivate, MemberConfigPublic, FEDERATION_MAX_ALEPH_BFT_BACKUP_PAGE_BYTES,
     FEDERATION_MAX_ALEPH_BFT_BACKUP_REQUEST_BYTES, FEDERATION_MAX_CHECKPOINT_CATCH_UP_PAGE_BYTES,
     FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES, FEDERATION_REST_API_VERSION,
 };
 #[cfg(feature = "federation-bark")]
 use cdk::federation::{
-    FederationBarkCustodyAbortRequest, FederationBarkThresholdDhRequest,
-    FederationBarkThresholdDhResponse, FederationBarkVirtualMusigCommitmentRequest,
+    FederationBarkCustodyAbortRequest, FederationBarkVirtualMusigCommitmentRequest,
     FederationBarkVirtualMusigCommitmentResponse, FederationBarkVirtualMusigPartialRequest,
     FederationBarkVirtualMusigPartialResponse,
 };
@@ -39,6 +37,10 @@ use cdk::federation::{
     FederationBarkPrepareReceiveSecretRequest, FederationBarkReceiveSecretAcknowledgement,
     FEDERATION_MAX_BARK_EVIDENCE_ATTESTATION_REQUEST_BYTES,
 };
+#[cfg(all(test, feature = "federation-bark"))]
+use cdk::federation::{FederationBarkThresholdDhRequest, FederationBarkThresholdDhResponse};
+#[cfg(test)]
+use cdk::federation::{FederationSubmitOperationRequest, FederationSubmitOperationResponse};
 use cdk_http_client::{Async, HttpError, Transport};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -69,7 +71,6 @@ pub(super) enum FederationRestPeerClientError {
 }
 
 #[derive(Debug, Clone)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct FederationRestPeerClient<T = Async> {
     transport: T,
     public_config: FederationConfig,
@@ -80,7 +81,6 @@ pub(crate) struct FederationRestPeerClient<T = Async> {
     pub(super) outbound_admission: Arc<tokio::sync::Semaphore>,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl<T> FederationRestPeerClient<T>
 where
     T: Transport,
@@ -89,6 +89,7 @@ where
         self.transport.clone()
     }
 
+    #[cfg(test)]
     pub(crate) fn new(
         transport: T,
         public_config: &FederationConfig,
@@ -102,6 +103,7 @@ where
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn new_with_config(
         transport: T,
         public_config: &FederationConfig,
@@ -489,6 +491,7 @@ where
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) async fn submit_operation(
         &self,
         member: &MemberConfigPublic,
@@ -771,6 +774,10 @@ where
         Ok(response)
     }
 
+    #[cfg_attr(
+        not(any(feature = "federation-bdk", feature = "federation-bark")),
+        allow(dead_code)
+    )] // FROST signing is used only by the custody backends.
     pub(crate) async fn request_frost_commitment(
         &self,
         member: &MemberConfigPublic,
@@ -795,6 +802,10 @@ where
             .decode(member.member_id, expected_session)?)
     }
 
+    #[cfg_attr(
+        not(any(feature = "federation-bdk", feature = "federation-bark")),
+        allow(dead_code)
+    )] // FROST signing is used only by the custody backends.
     pub(crate) async fn request_frost_signature_share(
         &self,
         member: &MemberConfigPublic,
@@ -820,6 +831,10 @@ where
             .decode(member.member_id, expected_session, package_hash)?)
     }
 
+    #[cfg_attr(
+        not(any(feature = "federation-bdk", feature = "federation-bark")),
+        allow(dead_code)
+    )] // FROST signing is used only by the custody backends.
     pub(crate) async fn notify_frost_aggregate_result(
         &self,
         member: &MemberConfigPublic,
@@ -851,6 +866,10 @@ where
         Ok(())
     }
 
+    #[cfg_attr(
+        not(any(feature = "federation-bdk", feature = "federation-bark")),
+        allow(dead_code)
+    )] // FROST signing is used only by the custody backends.
     pub(crate) async fn abort_frost_signing(
         &self,
         member: &MemberConfigPublic,
@@ -930,6 +949,7 @@ where
     }
 
     #[cfg(feature = "federation-bark")]
+    #[cfg(test)]
     pub(crate) async fn request_bark_threshold_dh_share(
         &self,
         member: &MemberConfigPublic,

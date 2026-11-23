@@ -59,7 +59,6 @@ fn next_aleph_bft_session_generation() -> Result<u64, cdk::Error> {
 }
 
 #[derive(Debug, Clone)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct FederationAlephBftLiveSessionOptions {
     pump_config: CdkAlephBftNetworkPumpConfig,
     max_round: u16,
@@ -361,7 +360,6 @@ pub(crate) async fn federation_aleph_bft_live_session_startup_decision(
 }
 
 /// Live upstream AlephBFT session tasks owned by router state.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct AlephBftSessionSupervisor {
     session_id: u64,
     generation: u64,
@@ -598,7 +596,7 @@ fn cdk_aleph_bft_network_pump_config(
 }
 
 /// Start the live upstream AlephBFT session with explicit testable work bounds.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub(crate) async fn start_federation_aleph_bft_live_session_with_config(
     state: &MintState,
     sync_config: FederationPeerSyncConfig,
@@ -614,7 +612,7 @@ pub(crate) async fn start_federation_aleph_bft_live_session_with_config(
 }
 
 /// Start the live upstream AlephBFT session with an injected private REST transport.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub(crate) async fn start_federation_aleph_bft_live_session_with_transport<T>(
     state: &MintState,
     sync_config: FederationPeerSyncConfig,
@@ -633,7 +631,6 @@ where
     .await
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) async fn start_federation_aleph_bft_live_session_with_options_and_transport<T>(
     state: &MintState,
     sync_config: FederationPeerSyncConfig,
@@ -1731,7 +1728,7 @@ pub(crate) async fn halt_federation_aleph_bft_generation_for_test(
 }
 
 /// Rotate a live upstream AlephBFT task into the next empty session.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub(crate) async fn rotate_federation_aleph_bft_live_session_to_next_empty_with_transport<T>(
     state: &mut MintState,
     sync_config: FederationPeerSyncConfig,
@@ -1750,6 +1747,7 @@ where
     .await
 }
 
+#[cfg(test)]
 async fn rotate_federation_aleph_bft_live_session_to_next_empty_with_options_and_transport<T>(
     state: &mut MintState,
     sync_config: FederationPeerSyncConfig,

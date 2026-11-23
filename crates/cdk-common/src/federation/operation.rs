@@ -2146,15 +2146,6 @@ impl FederationPaymentObservationQuorum {
         self.matching_observers.len().try_into().unwrap_or(u16::MAX)
     }
 
-    /// Number of distinct members with conflicting observations.
-    #[must_use]
-    pub fn conflicting_count(&self) -> u16 {
-        self.conflicting_observers
-            .len()
-            .try_into()
-            .unwrap_or(u16::MAX)
-    }
-
     /// Return true once the matching observer set reaches the configured quorum.
     #[must_use]
     pub fn is_reached(&self) -> bool {

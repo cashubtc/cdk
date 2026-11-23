@@ -263,12 +263,16 @@ mod bark_custody_authorization_tests {
 
 type AggregateResultCache = BTreeMap<[u8; 32], ([u8; 32], [u8; 64])>;
 
-#[allow(dead_code)]
+#[cfg_attr(not(feature = "federation-bdk"), allow(dead_code))] // `package_hash` is read only by on-chain signing.
 struct CoordinatedFrostSignature {
     signature: cdk_frost::AggregateSignature,
     package_hash: [u8; 32],
 }
 
+#[cfg_attr(
+    not(any(feature = "federation-bdk", feature = "federation-bark")),
+    allow(dead_code)
+)] // FROST signing is used only by the custody backends.
 #[derive(Debug, Clone)]
 /// Correlation metadata for one application-neutral FROST signing request.
 pub(crate) struct FrostLatencyContext {
@@ -278,6 +282,10 @@ pub(crate) struct FrostLatencyContext {
     direction: super::latency::FederationLatencyDirection,
 }
 
+#[cfg_attr(
+    not(any(feature = "federation-bdk", feature = "federation-bark")),
+    allow(dead_code)
+)] // FROST signing is used only by the custody backends.
 impl FrostLatencyContext {
     /// Construct bounded latency metadata without exposing it to consensus.
     #[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
@@ -296,15 +304,22 @@ impl FrostLatencyContext {
     }
 }
 
+#[cfg_attr(
+    not(any(feature = "federation-bdk", feature = "federation-bark")),
+    allow(dead_code)
+)] // FROST signing is used only by the custody backends.
 /// Application-neutral coordinator for one exact selected signer set.
 #[derive(Debug)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct FederationFrostSigningCoordinator<'a, T> {
     client: &'a super::peer_client::FederationRestPeerClient<T>,
     public: DerivedPublicPackage,
     local_signer: Option<FederationFrostLocalSigner<'a>>,
 }
 
+#[cfg_attr(
+    not(any(feature = "federation-bdk", feature = "federation-bark")),
+    allow(dead_code)
+)] // FROST signing is used only by the custody backends.
 #[derive(Debug, Clone, Copy)]
 struct FederationFrostLocalSigner<'a> {
     member_id: cdk::federation::MemberId,
@@ -312,7 +327,10 @@ struct FederationFrostLocalSigner<'a> {
     runtime: &'a FederationFrostSigningRuntime,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg_attr(
+    not(any(feature = "federation-bdk", feature = "federation-bark")),
+    allow(dead_code)
+)] // FROST signing is used only by the custody backends.
 impl<'a, T> FederationFrostSigningCoordinator<'a, T>
 where
     T: cdk_http_client::Transport,
@@ -347,6 +365,7 @@ where
     }
 
     /// Run both rounds, verify every response, aggregate, and notify signers.
+    #[cfg(test)]
     pub(crate) async fn sign(
         &self,
         public_config: &cdk::federation::FederationConfig,
@@ -604,7 +623,6 @@ where
 
     /// Sign every input, finalize through BDK, then order the signed record in consensus.
     #[cfg(feature = "federation-bdk")]
-    #[allow(dead_code)]
     pub(crate) async fn sign_accepted_transaction(
         &self,
         state: &MintState,
@@ -863,6 +881,10 @@ where
     }
 }
 
+#[cfg_attr(
+    not(any(feature = "federation-bdk", feature = "federation-bark")),
+    allow(dead_code)
+)] // FROST signing is used only by the custody backends.
 fn frost_transport_error_is_retryable(error: &anyhow::Error) -> bool {
     error.chain().any(|source| {
         if let Some(peer_error) =

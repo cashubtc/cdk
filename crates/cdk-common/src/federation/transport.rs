@@ -3170,13 +3170,6 @@ impl FederationPeerStatus {
             && self.has_same_application_frontier(other)
     }
 
-    /// Return whether both members report the same committed and audited state.
-    #[must_use]
-    pub fn has_same_committed_state(&self, other: &Self) -> bool {
-        self.aleph_bft_session == other.aleph_bft_session
-            && self.has_same_committed_history_and_audit(other)
-    }
-
     /// Return whether committed history and audit state match, ignoring active session.
     #[must_use]
     pub fn has_same_committed_history_and_audit(&self, other: &Self) -> bool {
@@ -4234,7 +4227,6 @@ mod tests {
 
         assert!(local.has_same_application_state(&peer));
         assert!(!local.has_same_committed_history_and_audit(&peer));
-        assert!(!local.has_same_committed_state(&peer));
     }
 
     #[test]

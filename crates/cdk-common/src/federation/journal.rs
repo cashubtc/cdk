@@ -346,12 +346,6 @@ impl FederationMaterializedStateSnapshot {
         &self.rows
     }
 
-    /// Consume this snapshot and return its rows.
-    #[must_use]
-    pub fn into_rows(self) -> Vec<FederationMaterializedStateRow> {
-        self.rows
-    }
-
     /// Return compact fingerprints for all rows in deterministic order.
     pub fn row_fingerprints(&self) -> Result<Vec<FederationMaterializedStateRowFingerprint>> {
         let mut rows = self.rows.clone();
@@ -1488,74 +1482,6 @@ impl InMemoryFederationJournal {
         }
         self.latest_order_digest = order_digest;
         entry
-    }
-
-    /// Validate and append one catch-up entry from a federation peer.
-    ///
-    /// The peer's local application status is intentionally ignored. Catch-up
-    /// synchronizes accepted consensus order; each member applies that order to
-    /// its own mint state independently.
-    pub fn append_catch_up_entry(
-        &mut self,
-        peer_entry: &FederationJournalEntry,
-    ) -> Result<FederationJournalEntry> {
-        let expected_index = self.next_index();
-        if peer_entry.index != expected_index {
-            return Err(FederationError::CatchUpIndexMismatch {
-                expected: expected_index,
-                found: peer_entry.index,
-            });
-        }
-
-        let expected_operation_id = peer_entry.envelope.operation_id()?;
-        if expected_operation_id != peer_entry.operation_id {
-            return Err(FederationError::CatchUpOperationIdMismatch {
-                index: peer_entry.index,
-                expected: expected_operation_id,
-                found: peer_entry.operation_id,
-            });
-        }
-
-        if peer_entry.previous_order_digest != self.latest_order_digest {
-            return Err(FederationError::CatchUpDigestMismatch {
-                index: peer_entry.index,
-                expected: self.latest_order_digest,
-                found: peer_entry.previous_order_digest,
-            });
-        }
-
-        let expected_order_digest = self
-            .latest_order_digest
-            .append(peer_entry.index, peer_entry.operation_id);
-        if peer_entry.order_digest != expected_order_digest {
-            return Err(FederationError::CatchUpDigestMismatch {
-                index: peer_entry.index.saturating_add(1),
-                expected: expected_order_digest,
-                found: peer_entry.order_digest,
-            });
-        }
-
-        let outcome = match (&peer_entry.application, peer_entry.consensus_evidence) {
-            (FederationApplicationState::ConsensusRejected {}, None) => {
-                return Err(FederationError::JournalConsensusEvidenceMissing {
-                    index: peer_entry.index,
-                });
-            }
-            (_, Some(consensus_evidence)) => {
-                self.append_finalized_inner(peer_entry.envelope.clone(), consensus_evidence)?
-            }
-            (_, None) => self.append_inner(peer_entry.envelope.clone(), None)?,
-        };
-
-        match outcome {
-            FederationJournalAppendOutcome::Appended(entry) => Ok(entry),
-            FederationJournalAppendOutcome::Duplicate(entry) => {
-                Err(FederationError::CatchUpIndexMismatch {
-                    expected: expected_index,
-                    found: entry.index,
-                })
-            }
-        }
     }
 
     /// Update local application status for an accepted operation.

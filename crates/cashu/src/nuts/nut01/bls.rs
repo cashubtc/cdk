@@ -1,6 +1,5 @@
 use core::fmt;
 use std::collections::BTreeMap;
-#[cfg(feature = "federation")]
 use std::collections::BTreeSet;
 
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
@@ -22,7 +21,6 @@ use super::Error;
 const BLS_DST: &[u8] = b"CASHU_BLS12_381_G1_XMD:SHA-256_SSWU_RO_";
 const BLS_BATCH_DST: &[u8] = b"Cashu_BLS_Batch_v1";
 const BLS_BLIND_BATCH_DST: &[u8] = b"Cashu_BLS_Blind_Batch_v1";
-#[cfg(feature = "federation")]
 const BLS_THRESHOLD_SHARE_VERSION: u8 = 1;
 
 /// BLS12-381 scalar/private key.
@@ -267,15 +265,12 @@ impl<'de> Deserialize<'de> for BlsG2PublicKey {
 }
 
 /// Non-zero signer ID used for threshold BLS interpolation.
-#[cfg(feature = "federation")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BlsSignerId(u16);
 
 /// Aggregate BLS public key produced from a threshold keyset.
-#[cfg(feature = "federation")]
 pub type BlsAggregatePublicKey = BlsG2PublicKey;
 
-#[cfg(feature = "federation")]
 impl BlsSignerId {
     /// Create a non-zero signer ID.
     pub fn new(id: u16) -> Result<Self, Error> {
@@ -309,14 +304,12 @@ impl BlsSignerId {
 }
 
 /// Secret threshold BLS key share for one federation member.
-#[cfg(feature = "federation")]
 #[derive(Clone, PartialEq, Eq)]
 pub struct BlsSecretKeyShare {
     signer_id: BlsSignerId,
     secret_key: BlsSecretKey,
 }
 
-#[cfg(feature = "federation")]
 impl fmt::Debug for BlsSecretKeyShare {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BlsSecretKeyShare")
@@ -325,7 +318,6 @@ impl fmt::Debug for BlsSecretKeyShare {
     }
 }
 
-#[cfg(feature = "federation")]
 impl BlsSecretKeyShare {
     /// Create a secret key share.
     pub fn new(signer_id: BlsSignerId, secret_key: BlsSecretKey) -> Self {
@@ -396,14 +388,12 @@ impl BlsSecretKeyShare {
     }
 }
 
-#[cfg(feature = "federation")]
 impl Zeroize for BlsSecretKeyShare {
     fn zeroize(&mut self) {
         self.secret_key.zeroize();
     }
 }
 
-#[cfg(feature = "federation")]
 impl Serialize for BlsSecretKeyShare {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -418,7 +408,6 @@ impl Serialize for BlsSecretKeyShare {
     }
 }
 
-#[cfg(feature = "federation")]
 impl<'de> Deserialize<'de> for BlsSecretKeyShare {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -435,14 +424,12 @@ impl<'de> Deserialize<'de> for BlsSecretKeyShare {
 }
 
 /// Public threshold BLS key share for one federation member.
-#[cfg(feature = "federation")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BlsPublicKeyShare {
     signer_id: BlsSignerId,
     public_key: BlsG2PublicKey,
 }
 
-#[cfg(feature = "federation")]
 impl BlsPublicKeyShare {
     /// Create a public key share.
     pub fn new(signer_id: BlsSignerId, public_key: BlsG2PublicKey) -> Self {
@@ -490,7 +477,6 @@ impl BlsPublicKeyShare {
     }
 }
 
-#[cfg(feature = "federation")]
 impl Serialize for BlsPublicKeyShare {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -500,7 +486,6 @@ impl Serialize for BlsPublicKeyShare {
     }
 }
 
-#[cfg(feature = "federation")]
 impl<'de> Deserialize<'de> for BlsPublicKeyShare {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -513,14 +498,12 @@ impl<'de> Deserialize<'de> for BlsPublicKeyShare {
 }
 
 /// Blind signature share produced by one threshold BLS signer.
-#[cfg(feature = "federation")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BlsBlindSignatureShare {
     signer_id: BlsSignerId,
     signature: BlsG1PublicKey,
 }
 
-#[cfg(feature = "federation")]
 impl BlsBlindSignatureShare {
     /// Create a blind signature share.
     pub fn new(signer_id: BlsSignerId, signature: BlsG1PublicKey) -> Self {
@@ -568,7 +551,6 @@ impl BlsBlindSignatureShare {
     }
 }
 
-#[cfg(feature = "federation")]
 impl Serialize for BlsBlindSignatureShare {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -578,7 +560,6 @@ impl Serialize for BlsBlindSignatureShare {
     }
 }
 
-#[cfg(feature = "federation")]
 impl<'de> Deserialize<'de> for BlsBlindSignatureShare {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -591,7 +572,6 @@ impl<'de> Deserialize<'de> for BlsBlindSignatureShare {
 }
 
 /// Trusted-dealer threshold BLS keyset.
-#[cfg(feature = "federation")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlsThresholdKeySet {
     threshold: usize,
@@ -600,7 +580,6 @@ pub struct BlsThresholdKeySet {
     public_shares: Vec<BlsPublicKeyShare>,
 }
 
-#[cfg(feature = "federation")]
 impl BlsThresholdKeySet {
     /// Return the signature threshold.
     #[must_use]
@@ -631,7 +610,6 @@ impl BlsThresholdKeySet {
 ///
 /// `coefficients[0]` is the aggregate secret. The number of coefficients is
 /// the threshold, and the polynomial is evaluated at each non-zero signer ID.
-#[cfg(feature = "federation")]
 pub fn trusted_dealer_keygen(
     coefficients: &[BlsSecretKey],
     signer_ids: &[BlsSignerId],
@@ -663,7 +641,6 @@ pub fn trusted_dealer_keygen(
 /// share-delivery code. The returned share is for one participant polynomial;
 /// final member shares are created by summing one valid contribution from each
 /// participant with [`aggregate_secret_key_shares`].
-#[cfg(feature = "federation")]
 pub fn evaluate_secret_key_coefficients(
     signer_id: BlsSignerId,
     coefficients: &[BlsSecretKey],
@@ -685,7 +662,6 @@ pub fn evaluate_secret_key_coefficients(
 /// In dealer-free DKG, each participant contributes a private scalar share to a
 /// recipient. The recipient sums those same-signer contributions to obtain the
 /// final threshold secret share matching the aggregate public commitments.
-#[cfg(feature = "federation")]
 pub fn aggregate_secret_key_shares(
     signer_id: BlsSignerId,
     shares: &[BlsSecretKeyShare],
@@ -714,7 +690,6 @@ pub fn aggregate_secret_key_shares(
 }
 
 /// Verify a blind signature share against the signer's public key share.
-#[cfg(feature = "federation")]
 pub fn verify_blind_signature_share(
     share: &BlsBlindSignatureShare,
     blinded_message: &BlsG1PublicKey,
@@ -739,7 +714,6 @@ pub fn verify_blind_signature_share(
 /// The batch uses domain-separated transcript-derived non-zero weights. A
 /// caller that needs to identify an invalid signer can fall back to
 /// [`verify_blind_signature_share`] after this function returns `false`.
-#[cfg(feature = "federation")]
 pub fn batch_verify_blind_signature_shares(
     shares: &[BlsBlindSignatureShare],
     blinded_messages: &[BlsG1PublicKey],
@@ -775,7 +749,6 @@ pub fn batch_verify_blind_signature_shares(
 }
 
 /// Aggregate threshold blind signature shares into one BLS blind signature.
-#[cfg(feature = "federation")]
 pub fn aggregate_blind_signature_shares(
     threshold: usize,
     shares: &[BlsBlindSignatureShare],
@@ -798,7 +771,6 @@ pub fn aggregate_blind_signature_shares(
 }
 
 /// Aggregate threshold public key shares into the aggregate public key.
-#[cfg(feature = "federation")]
 pub fn aggregate_public_key_shares(
     threshold: usize,
     shares: &[BlsPublicKeyShare],
@@ -823,7 +795,6 @@ pub fn aggregate_public_key_shares(
 /// polynomial commitments. It intentionally accepts plain public keys rather
 /// than threshold shares because each participant contributes one public point
 /// to the final aggregate key.
-#[cfg(feature = "federation")]
 pub fn aggregate_public_key_commitments(
     commitments: &[BlsAggregatePublicKey],
 ) -> Result<BlsAggregatePublicKey, Error> {
@@ -841,7 +812,6 @@ pub fn aggregate_public_key_commitments(
 /// public key share corresponding to `C_0 + x*C_1 + x^2*C_2 + ...`, where `x`
 /// is the non-zero signer ID. The secret scalar is never needed for this
 /// verification step.
-#[cfg(feature = "federation")]
 pub fn evaluate_public_key_commitments(
     signer_id: BlsSignerId,
     commitments: &[BlsAggregatePublicKey],
@@ -862,7 +832,6 @@ pub fn evaluate_public_key_commitments(
 
 // Variable-time multiplication is safe here because both the point and signer ID
 // are public. Keep the typed ID boundary: secret scalars must use the group library.
-#[cfg(feature = "federation")]
 fn multiply_by_public_signer_id(point: G2Projective, signer_id: BlsSignerId) -> G2Projective {
     let id = signer_id.get();
     // BlsSignerId excludes zero, so the leading set bit initializes the result.
@@ -876,7 +845,6 @@ fn multiply_by_public_signer_id(point: G2Projective, signer_id: BlsSignerId) -> 
     result
 }
 
-#[cfg(feature = "federation")]
 fn validate_threshold_inputs(threshold: usize, signer_ids: &[BlsSignerId]) -> Result<(), Error> {
     if threshold == 0 || threshold > signer_ids.len() {
         return Err(Error::InvalidThreshold {
@@ -888,7 +856,6 @@ fn validate_threshold_inputs(threshold: usize, signer_ids: &[BlsSignerId]) -> Re
     reject_duplicate_signer_ids(signer_ids.iter().copied())
 }
 
-#[cfg(feature = "federation")]
 fn validate_threshold_shares<I>(threshold: usize, signer_ids: I) -> Result<(), Error>
 where
     I: IntoIterator<Item = BlsSignerId>,
@@ -904,7 +871,6 @@ where
     validate_threshold_inputs(threshold, &signer_ids)
 }
 
-#[cfg(feature = "federation")]
 fn validate_threshold_share_bytes(bytes: &[u8], expected_len: usize) -> Result<(), Error> {
     if bytes.len() != expected_len {
         return Err(Error::InvalidThresholdShareSize {
@@ -923,7 +889,6 @@ fn validate_threshold_share_bytes(bytes: &[u8], expected_len: usize) -> Result<(
     Ok(())
 }
 
-#[cfg(feature = "federation")]
 fn reject_duplicate_signer_ids<I>(signer_ids: I) -> Result<(), Error>
 where
     I: IntoIterator<Item = BlsSignerId>,
@@ -940,7 +905,6 @@ where
     Ok(())
 }
 
-#[cfg(feature = "federation")]
 fn evaluate_polynomial(coefficients: &[BlsSecretKey], x: Scalar) -> BlsSecretKey {
     let mut result = Scalar::zero();
     for coefficient in coefficients.iter().rev() {
@@ -951,7 +915,6 @@ fn evaluate_polynomial(coefficients: &[BlsSecretKey], x: Scalar) -> BlsSecretKey
     BlsSecretKey { scalar: result }
 }
 
-#[cfg(feature = "federation")]
 fn reject_zero_secret_key(secret_key: &BlsSecretKey) -> Result<(), Error> {
     if bool::from(secret_key.public_key_g2().point().is_identity()) {
         return Err(Error::InvalidSecretKey);
@@ -960,7 +923,6 @@ fn reject_zero_secret_key(secret_key: &BlsSecretKey) -> Result<(), Error> {
     Ok(())
 }
 
-#[cfg(feature = "federation")]
 fn lagrange_coefficient_at_zero<I>(signer_id: BlsSignerId, signer_ids: I) -> Result<Scalar, Error>
 where
     I: IntoIterator<Item = BlsSignerId>,
@@ -985,7 +947,6 @@ where
     Ok(numerator * denominator_inverse)
 }
 
-#[cfg(feature = "federation")]
 fn g1_from_projective(point: G1Projective) -> Result<BlsG1PublicKey, Error> {
     let point = point.to_affine();
     if bool::from(point.is_identity()) {
@@ -995,7 +956,6 @@ fn g1_from_projective(point: G1Projective) -> Result<BlsG1PublicKey, Error> {
     Ok(BlsG1PublicKey { point })
 }
 
-#[cfg(feature = "federation")]
 fn g2_from_projective(point: G2Projective) -> Result<BlsG2PublicKey, Error> {
     let point = point.to_affine();
     if bool::from(point.is_identity()) {
@@ -1202,25 +1162,21 @@ mod tests {
         BlsG2PublicKey::from_bytes(&crate::util::hex::decode(hex).expect("hex")).expect("g2")
     }
 
-    #[cfg(feature = "federation")]
     fn signer_ids(ids: &[u16]) -> Vec<BlsSignerId> {
         ids.iter()
             .map(|id| BlsSignerId::new(*id).expect("non-zero signer id"))
             .collect()
     }
 
-    #[cfg(feature = "federation")]
     fn bls_key(seed: u8) -> BlsSecretKey {
         BlsSecretKey::from_reduced_bytes(&[seed; 32])
     }
 
-    #[cfg(feature = "federation")]
     #[derive(Debug)]
     struct DeterministicTestRng {
         state: u64,
     }
 
-    #[cfg(feature = "federation")]
     impl DeterministicTestRng {
         fn new(seed: u64) -> Self {
             Self { state: seed }
@@ -1379,7 +1335,6 @@ mod tests {
         assert!(BlsG2PublicKey::from_bytes(&identity).is_err());
     }
 
-    #[cfg(feature = "federation")]
     #[test]
     fn test_threshold_bls_one_of_one_matches_standalone_signature() {
         let coefficients = vec![bls_key(7)];
@@ -1413,7 +1368,6 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "federation")]
     #[test]
     fn test_public_polynomial_commitments_match_trusted_dealer_shares() {
         let signer_ids = signer_ids(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 20, u16::MAX]);
@@ -1450,7 +1404,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "federation")]
     #[test]
     fn test_public_signer_multiplication_matches_scalar_multiplication() {
         let mut ids = vec![1, u16::MAX];
@@ -1474,7 +1427,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "federation")]
     #[test]
     fn test_public_polynomial_rejects_only_final_identity() {
         let signer = BlsSignerId::new(1).expect("signer");
@@ -1496,7 +1448,6 @@ mod tests {
         assert_eq!(share, BlsPublicKeyShare::new(signer, positive));
     }
 
-    #[cfg(feature = "federation")]
     #[test]
     fn test_secret_polynomial_contributions_aggregate_to_public_commitments() {
         let first_coefficients = vec![bls_key(3), bls_key(5)];
@@ -1536,7 +1487,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "federation")]
     #[test]
     fn test_secret_share_aggregation_rejects_missing_or_wrong_signer() {
         let signer_one = BlsSignerId::new(1).expect("signer one");
@@ -1569,7 +1519,6 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "federation")]
     #[test]
     fn test_threshold_bls_three_of_five_aggregates_any_valid_subset() {
         let coefficients = vec![bls_key(3), bls_key(5), bls_key(9)];
@@ -1618,7 +1567,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "federation")]
     #[test]
     fn test_batch_verify_blind_signature_shares_matches_scalar_verification() {
         let coefficients = vec![bls_key(3), bls_key(5), bls_key(9)];
@@ -1645,7 +1593,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "federation")]
     #[test]
     fn test_batch_verify_blind_signature_shares_rejects_corruption_and_bad_shape() {
         let coefficients = vec![bls_key(11), bls_key(13), bls_key(17)];
@@ -1688,7 +1635,6 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "federation")]
     #[test]
     fn test_threshold_bls_four_of_seven_aggregates_valid_quorums() {
         let coefficients = vec![bls_key(17), bls_key(19), bls_key(23), bls_key(29)];
@@ -1739,7 +1685,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "federation")]
     #[test]
     fn test_threshold_bls_subsets_and_order_permutations_match() {
         let cases = [
@@ -1802,7 +1747,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "federation")]
     #[test]
     fn test_threshold_bls_seeded_random_messages_thresholds_and_subsets() {
         let mut rng = DeterministicTestRng::new(0x0c_a5_1f_ed_b1_51_70_01);
@@ -1871,7 +1815,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "federation")]
     #[test]
     fn test_threshold_bls_rejects_bad_share_sets() {
         let coefficients = vec![bls_key(11), bls_key(13), bls_key(17)];
@@ -1908,7 +1851,6 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "federation")]
     #[test]
     fn test_threshold_bls_share_serialization_round_trips() {
         let coefficients = vec![bls_key(19), bls_key(23), bls_key(29)];
@@ -1979,7 +1921,6 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "federation")]
     #[test]
     fn test_threshold_bls_secret_share_zeroize_clears_secret_material() {
         let coefficients = vec![bls_key(31), bls_key(37), bls_key(41)];
@@ -1996,7 +1937,6 @@ mod tests {
         assert_eq!(secret_share.to_secret_bytes(), [0u8; 32]);
     }
 
-    #[cfg(feature = "federation")]
     #[test]
     fn test_threshold_bls_aggregate_signature_unblinds_and_verifies() {
         let coefficients = vec![bls_key(31), bls_key(37), bls_key(41)];

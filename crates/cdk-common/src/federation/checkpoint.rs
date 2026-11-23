@@ -1694,12 +1694,6 @@ impl VerifiedFederationCheckpointQuorum {
     pub const fn signers(&self) -> &BTreeSet<MemberId> {
         &self.signers
     }
-
-    /// Consume the authority wrapper and return its raw proof.
-    #[must_use]
-    pub fn into_quorum(self) -> FederationCheckpointQuorum {
-        self.quorum
-    }
 }
 
 fn checkpoint_signature_transcript(checkpoint_id: FederationCheckpointId) -> Vec<u8> {

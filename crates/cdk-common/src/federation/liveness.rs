@@ -134,12 +134,6 @@ impl FederationWalletLivenessSchedule {
             signer_set,
         })
     }
-
-    /// Number of unique threshold signer subsets before the schedule repeats.
-    #[must_use]
-    pub fn signer_set_count(&self) -> u128 {
-        binomial(self.members.len(), self.threshold)
-    }
 }
 
 /// Return the restart-stable active signing attempt for Unix epoch milliseconds.
@@ -254,7 +248,6 @@ mod tests {
     fn signing_attempts_cover_every_threshold_subset_and_rotate_coordinators() {
         let schedule = FederationWalletLivenessSchedule::new([8; 32], members(5), 3)
             .expect("liveness schedule");
-        assert_eq!(schedule.signer_set_count(), 10);
         let plans = (1..=10)
             .map(|attempt| schedule.signing_plan(attempt).expect("signing plan"))
             .collect::<Vec<_>>();

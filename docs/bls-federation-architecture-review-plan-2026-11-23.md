@@ -120,6 +120,7 @@ Root cause: keysets have two owners (the static config and the rotation-replayed
 
 - [V] The "group matching responses, pick a group at threshold" pattern is written inline (`crates/cdk/src/wallet/federation.rs:161`). [R] It appears seven times, with four different definitions of equality.
 - [R] Federation discovery, validation and registry are reimplemented in `cdk-cli`, `cdk-ffi` and `scripts/fed-cdk-tui`, with different alias rules.
+- [V] Corrected on 2026-11-23: the wallet connector's member-validity cache is not vestigial. Connectors built from member URLs start with it filled and skip member validation; connectors built from injected clients validate over the network. Whether both should validate is a design decision. The dead part was the member-map parameter threaded through every helper, now removed.
 - [R] BLS verification is repeated at five wallet sites behind 47 cfg gates.
 - [R] The operator CLI re-implements the signed peer client because the real one is `pub(crate)`.
 - Keep: the `MintConnector` seam held; `Wallet` gained no federation fields.
@@ -328,4 +329,24 @@ Not done in this step: the swap and mint commit paths (add proofs, signatures, c
 - **Unrelated build fix.** `crates/cdk/src/wallet/npubcash.rs` did not compile with `npubcash` and without `federation`, because the type of `SecretKey::as_secret_bytes()` depends on the feature (finding 3). Fixed by comparing slices. This blocked the integration tests.
 
 Verification: `cdk` mint tests with federation (412 passed) and without (258 passed); `test_swap_flow` integration test on the memory database (17 passed); `cdk` builds with `npubcash` with and without federation; `cdk-axum` compiles with `federation-bdk,federation-bark`. Not run: workspace-wide suite, other integration tests, regtest.
+
+### 2026-11-23: package 1, first step (dead code)
+
+- **Deleted, no callers:** in `cdk-common`, the consensus runtime's `catch_up` and `catch_up_checked`, the journal's `append_catch_up_entry` and `into_rows`, `into_quorum`, `conflicting_count`, `signer_set_count` and `has_same_committed_state`, plus two constants and two imports only they used.
+- **`cdk-axum` dead-code allowances:** removed all 14 blanket `allow(dead_code)` markers in the federation runtime. Eight items the compiler then flagged are test entry points, now `#[cfg(test)]` so they leave production builds. FROST signing items that only custody backends use carry an allowance naming that feature condition. All four CI feature combinations build without warnings.
+- **Wallet connector:** removed the member-map parameter that every caller filled with the full member set, and folded the two `*_from` wrappers into their implementations.
+- **Always-true gates:** removed 60 from `crates/cashu/src/nuts/nut01/bls.rs` and 8 from `crates/cdk/src/wallet/performance.rs`, both inside modules already gated on `federation`, plus one constant that could never compile.
+- Net: 13 files, 71 insertions, 301 deletions.
+
+Verification: `cashu` with federation (665 passed), `cdk-common` with `federation,test` (491), `cdk` with `mint,wallet,federation` (1,036), `cdk-axum` with `federation-bdk,federation-bark` (598). Not run: `cdk-mintd`, FFI, integration tests, regtest.
+
+Still to do in package 1, each needing test retargeting or a decision rather than plain deletion:
+
+- the legacy journal appends (`append`, `append_with_consensus_evidence`, `from_entries`), now used only by tests;
+- the test-only recovery path `reconstruct_retained_items` and its `*_for_test` constructors;
+- `ModuleFact`, which only tests construct;
+- `FederationOperationStatus::Applying`, which appears in the SQL `CHECK` constraint;
+- the unauthenticated runtime constructors;
+- `cfg(test)` fields in runtime structs;
+- the legacy non-checkpoint catch-up in `cdk-axum`.
 
