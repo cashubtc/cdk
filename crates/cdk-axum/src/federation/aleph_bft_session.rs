@@ -35,10 +35,7 @@ use super::aleph_bft_runtime::{
 };
 use super::peer_client::FederationRestPeerClient;
 use super::sync_config::{federation_peer_sync_interval, FederationPeerSyncConfig};
-use crate::{
-    is_retryable_federation_apply_error, FEDERATION_APPLY_RETRY_INITIAL_DELAY,
-    FEDERATION_APPLY_RETRY_MAX_DELAY,
-};
+use crate::is_retryable_federation_apply_error;
 
 // AlephBFT validates its default delay schedule by summing all configured
 // round delays. Keep production live sessions comfortably bounded; natural
@@ -1971,56 +1968,25 @@ async fn apply_federation_aleph_bft_finalized_unit_with_retry(
     state: &MintState,
     payload: cdk::federation::FederationAlephBftUnitPayload,
 ) -> Result<(), cdk::Error> {
-    let mut attempts = 0usize;
-    let mut retry_delay = FEDERATION_APPLY_RETRY_INITIAL_DELAY;
-    let started_at = tokio::time::Instant::now();
-
-    loop {
-        match state
-            .apply_federation_aleph_bft_finalized_unit(payload.clone())
-            .await
-        {
-            Ok(_) => {
-                if attempts > 0 {
-                    tracing::info!(
-                        retry_attempts = attempts,
-                        "AlephBFT finalized-unit apply recovered after transient storage contention"
-                    );
-                }
-                return Ok(());
-            }
-            Err(err) if is_retryable_federation_apply_error(&err) => {
-                attempts = attempts.saturating_add(1);
-                let elapsed = started_at.elapsed();
-                if elapsed >= crate::federation_apply_retry_budget() {
-                    tracing::error!(
-                        retry_attempts = attempts,
-                        elapsed_ms = elapsed.as_millis(),
-                        "AlephBFT finalized-unit apply retry budget exhausted; transitioning to bounded operator-repairable state"
-                    );
-                    return Err(cdk::Error::Custom(format!(
-                        "federation AlephBFT finalized-unit apply retry budget exhausted after {} attempts over {:.1}s: {}",
-                        attempts,
-                        elapsed.as_secs_f64(),
-                        err
-                    )));
-                }
-                if attempts == 1 || attempts.is_multiple_of(10) {
-                    tracing::warn!(
-                        retry_attempts = attempts,
-                        retry_delay_ms = retry_delay.as_millis(),
-                        "AlephBFT finalized-unit apply hit transient storage contention; retrying"
-                    );
-                }
-                tokio::time::sleep(retry_delay).await;
-                retry_delay = retry_delay
-                    .saturating_mul(2)
-                    .min(FEDERATION_APPLY_RETRY_MAX_DELAY);
-            }
-            Err(err) => {
-                return Err(err);
-            }
-        }
+    match crate::retry_transient_storage(
+        "AlephBFT finalized-unit apply",
+        is_retryable_federation_apply_error,
+        || state.apply_federation_aleph_bft_finalized_unit(payload.clone()),
+    )
+    .await
+    {
+        Ok(_) => Ok(()),
+        Err(crate::TransientRetryFailure::Exhausted {
+            error,
+            attempts,
+            elapsed,
+        }) => Err(cdk::Error::Custom(format!(
+            "federation AlephBFT finalized-unit apply retry budget exhausted after {} attempts over {:.1}s: {}",
+            attempts,
+            elapsed.as_secs_f64(),
+            error
+        ))),
+        Err(crate::TransientRetryFailure::Permanent(err)) => Err(err),
     }
 }
 

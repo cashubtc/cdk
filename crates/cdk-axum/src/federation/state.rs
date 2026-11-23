@@ -63,6 +63,88 @@ pub(crate) fn federation_apply_retry_budget() -> Duration {
     FEDERATION_APPLY_RETRY_BUDGET
 }
 
+/// How [`retry_transient_storage`] ended without success.
+#[derive(Debug)]
+pub(crate) enum TransientRetryFailure<E> {
+    /// The operation failed with an error that is not transient.
+    Permanent(E),
+    /// Transient failures outlasted [`federation_apply_retry_budget`].
+    Exhausted {
+        /// The last transient error.
+        error: E,
+        /// Retries made before giving up.
+        attempts: usize,
+        /// Time spent retrying.
+        elapsed: Duration,
+    },
+}
+
+/// Runs `operation`, retrying while `is_transient` classifies its error as
+/// transient storage contention.
+///
+/// The delay doubles from [`FEDERATION_APPLY_RETRY_INITIAL_DELAY`] up to
+/// [`FEDERATION_APPLY_RETRY_MAX_DELAY`] until [`federation_apply_retry_budget`]
+/// has elapsed. `label` names the work in logs.
+pub(crate) async fn retry_transient_storage<T, E, F, Fut, P>(
+    label: &str,
+    is_transient: P,
+    mut operation: F,
+) -> Result<T, TransientRetryFailure<E>>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+    P: Fn(&E) -> bool,
+{
+    let mut attempts = 0usize;
+    let mut retry_delay = FEDERATION_APPLY_RETRY_INITIAL_DELAY;
+    let started_at = tokio::time::Instant::now();
+
+    loop {
+        match operation().await {
+            Ok(value) => {
+                if attempts > 0 {
+                    tracing::info!(
+                        retry_attempts = attempts,
+                        "{} recovered after transient storage contention",
+                        label
+                    );
+                }
+                return Ok(value);
+            }
+            Err(error) if is_transient(&error) => {
+                attempts = attempts.saturating_add(1);
+                let elapsed = started_at.elapsed();
+                if elapsed >= federation_apply_retry_budget() {
+                    tracing::error!(
+                        retry_attempts = attempts,
+                        elapsed_ms = elapsed.as_millis(),
+                        "{} retry budget exhausted; transitioning to bounded operator-repairable state",
+                        label
+                    );
+                    return Err(TransientRetryFailure::Exhausted {
+                        error,
+                        attempts,
+                        elapsed,
+                    });
+                }
+                if attempts == 1 || attempts.is_multiple_of(10) {
+                    tracing::warn!(
+                        retry_attempts = attempts,
+                        retry_delay_ms = retry_delay.as_millis(),
+                        "{} hit transient storage contention; retrying",
+                        label
+                    );
+                }
+                tokio::time::sleep(retry_delay).await;
+                retry_delay = retry_delay
+                    .saturating_mul(2)
+                    .min(FEDERATION_APPLY_RETRY_MAX_DELAY);
+            }
+            Err(error) => return Err(TransientRetryFailure::Permanent(error)),
+        }
+    }
+}
+
 /// Bounded message-count budget for each AlephBFT runtime channel
 /// (inbound/outbound network, finalized units, and essential/activity
 /// events). Bounds memory growth independent of the bounded

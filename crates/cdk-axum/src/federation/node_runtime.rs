@@ -228,65 +228,37 @@ pub(crate) async fn apply_federation_journal_entry_for_replay(
     if replay_entry.status() == FederationOperationStatus::Failed {
         replay_entry.application = FederationApplicationState::Accepted {};
     }
-    let mut attempts = 0usize;
-    let mut retry_delay = crate::FEDERATION_APPLY_RETRY_INITIAL_DELAY;
-    let started_at = tokio::time::Instant::now();
-
-    loop {
-        match mint
-            .apply_accepted_federation_operation(&replay_entry)
-            .await
-        {
-            Ok(true) => {
-                if attempts > 0 {
-                    tracing::info!(
-                        operation_id = %entry.operation_id,
-                        retry_attempts = attempts,
-                        "Federation journal replay apply recovered after transient storage contention"
-                    );
-                }
-                return Ok(Some(entry.operation_id));
+    let label = format!(
+        "Federation journal replay apply of operation {}",
+        entry.operation_id
+    );
+    match crate::retry_transient_storage(
+        &label,
+        crate::is_retryable_federation_apply_error,
+        || mint.apply_accepted_federation_operation(&replay_entry),
+    )
+    .await
+    {
+        Ok(true) => Ok(Some(entry.operation_id)),
+        Ok(false) => Ok(None),
+        Err(crate::TransientRetryFailure::Exhausted {
+            error,
+            attempts,
+            elapsed,
+        }) => Err(cdk::Error::Custom(format!(
+            "federation journal replay apply retry budget exhausted for operation {} after {} attempts over {:.1}s: {}",
+            entry.operation_id,
+            attempts,
+            elapsed.as_secs_f64(),
+            error
+        ))),
+        Err(crate::TransientRetryFailure::Permanent(err)) => {
+            let (status, err) =
+                mark_federation_operation_apply_failure(mint, entry.operation_id, err).await?;
+            if status == FederationOperationStatus::Rejected {
+                return Ok(None);
             }
-            Ok(false) => return Ok(None),
-            Err(err) if crate::is_retryable_federation_apply_error(&err) => {
-                attempts = attempts.saturating_add(1);
-                let elapsed = started_at.elapsed();
-                if elapsed >= crate::federation_apply_retry_budget() {
-                    tracing::error!(
-                        operation_id = %entry.operation_id,
-                        retry_attempts = attempts,
-                        elapsed_ms = elapsed.as_millis(),
-                        "Federation journal replay apply retry budget exhausted; transitioning to bounded operator-repairable state"
-                    );
-                    return Err(cdk::Error::Custom(format!(
-                        "federation journal replay apply retry budget exhausted for operation {} after {} attempts over {:.1}s: {}",
-                        entry.operation_id,
-                        attempts,
-                        elapsed.as_secs_f64(),
-                        err
-                    )));
-                }
-                if attempts == 1 || attempts.is_multiple_of(10) {
-                    tracing::warn!(
-                        operation_id = %entry.operation_id,
-                        retry_attempts = attempts,
-                        retry_delay_ms = retry_delay.as_millis(),
-                        "Federation journal replay apply hit transient storage contention; retrying"
-                    );
-                }
-                tokio::time::sleep(retry_delay).await;
-                retry_delay = retry_delay
-                    .saturating_mul(2)
-                    .min(crate::FEDERATION_APPLY_RETRY_MAX_DELAY);
-            }
-            Err(err) => {
-                let (status, err) =
-                    mark_federation_operation_apply_failure(mint, entry.operation_id, err).await?;
-                if status == FederationOperationStatus::Rejected {
-                    return Ok(None);
-                }
-                return Err(err);
-            }
+            Err(err)
         }
     }
 }

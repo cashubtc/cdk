@@ -383,3 +383,11 @@ Verification: `cdk-common` with `federation,test` (493 unit tests and both vecto
 
 Verification: `cdk-common` with `federation,test`, including the golden-vector suites; `cdk-federation-bark` (36); `cdk` federation (1,036); `cdk-axum` with `federation-bdk,federation-bark` (598); `cdk-mintd` with `federation-test-utils` (291); `cdk-sqlite` with `federation-bark` (194); the 16 production builds.
 
+### 2026-11-23: package 2, third step (transient storage retry)
+
+- **One retry helper.** `retry_transient_storage` in `crates/cdk-axum/src/federation/state.rs` owns the doubling delay, the retry budget and the recovery, retry and exhaustion logs. It returns either the value or a typed `Permanent` / `Exhausted` failure, which each caller maps to its own error. It replaces three copies of the loop: journal replay apply (`node_runtime.rs`), finalized-unit apply (`aleph_bft_session.rs`) and backup persistence (`aleph_bft_runtime.rs`). Error messages are unchanged; the logs carry the operation or session in the message rather than as a separate field.
+- **`main`'s `BackoffPolicy` does not fit.** It only configures supervised-stream reconnects and computes no delays, so it could not replace these loops as the plan assumed. The other backoff code (payment observer, scheduler, chain sync, setup) has different policies and stays.
+- **Pre-existing test build failure fixed.** `crates/cdk-axum/src/federation/tests/iroh_transport.rs` did not compile with `iroh` at the original branch tip `3183d04b8`, because `Transport::http_post` now returns a raw response. The test now decodes it with `json_or_status_error`.
+
+Verification: `cdk-axum` with `federation-bdk,federation-bark,iroh` (602 passed, including the Iroh tests that did not compile before) and the 16 production builds.
+

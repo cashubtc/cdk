@@ -29,10 +29,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, Notify};
 use tokio::task::AbortHandle;
 
-use crate::{
-    is_retryable_federation_database_error, FEDERATION_APPLY_RETRY_INITIAL_DELAY,
-    FEDERATION_APPLY_RETRY_MAX_DELAY,
-};
+use crate::is_retryable_federation_database_error;
 
 /// How long inbound AlephBFT traffic keeps a member on the active proposal cadence.
 ///
@@ -1340,54 +1337,26 @@ async fn persist_aleph_bft_backup_bytes(
         return Ok(());
     }
 
-    let mut attempts = 0usize;
-    let mut retry_delay = FEDERATION_APPLY_RETRY_INITIAL_DELAY;
-    let started_at = tokio::time::Instant::now();
-
-    loop {
-        match try_persist_aleph_bft_backup_bytes(Arc::clone(&db), session_id, &bytes).await {
-            Ok(()) => {
-                if attempts > 0 {
-                    tracing::info!(
-                        session_id,
-                        retry_attempts = attempts,
-                        "AlephBFT backup persistence recovered after transient storage contention"
-                    );
-                }
-                return Ok(());
-            }
-            Err(err) if is_retryable_federation_database_error(&err) => {
-                attempts = attempts.saturating_add(1);
-                let elapsed = started_at.elapsed();
-                if elapsed >= crate::federation_apply_retry_budget() {
-                    tracing::error!(
-                        session_id,
-                        retry_attempts = attempts,
-                        elapsed_ms = elapsed.as_millis(),
-                        "AlephBFT backup persistence retry budget exhausted; transitioning to bounded operator-repairable state"
-                    );
-                    return Err(io::Error::other(format!(
-                        "federation AlephBFT backup persistence retry budget exhausted after {} attempts over {:.1}s: {}",
-                        attempts,
-                        elapsed.as_secs_f64(),
-                        err
-                    )));
-                }
-                if attempts == 1 || attempts.is_multiple_of(10) {
-                    tracing::warn!(
-                        session_id,
-                        retry_attempts = attempts,
-                        retry_delay_ms = retry_delay.as_millis(),
-                        "AlephBFT backup persistence hit transient storage contention; retrying"
-                    );
-                }
-                tokio::time::sleep(retry_delay).await;
-                retry_delay = retry_delay
-                    .saturating_mul(2)
-                    .min(FEDERATION_APPLY_RETRY_MAX_DELAY);
-            }
-            Err(err) => return Err(database_io_error(err)),
-        }
+    let label = format!("AlephBFT backup persistence for session {session_id}");
+    match crate::retry_transient_storage(
+        &label,
+        is_retryable_federation_database_error,
+        || try_persist_aleph_bft_backup_bytes(Arc::clone(&db), session_id, &bytes),
+    )
+    .await
+    {
+        Ok(()) => Ok(()),
+        Err(crate::TransientRetryFailure::Exhausted {
+            error,
+            attempts,
+            elapsed,
+        }) => Err(io::Error::other(format!(
+            "federation AlephBFT backup persistence retry budget exhausted after {} attempts over {:.1}s: {}",
+            attempts,
+            elapsed.as_secs_f64(),
+            error
+        ))),
+        Err(crate::TransientRetryFailure::Permanent(err)) => Err(database_io_error(err)),
     }
 }
 

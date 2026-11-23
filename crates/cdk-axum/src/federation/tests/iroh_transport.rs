@@ -197,9 +197,12 @@ async fn all_iroh_private_routes_preserve_dkg_signatures_and_replay_fences() {
     let _: FederationPeerStatus = transport
         .http_post(status_url.clone(), None, &replay_request)
         .await
+        .and_then(|response| response.json_or_status_error())
         .expect("first exact signed request");
-    let replay: Result<FederationPeerStatus, _> =
-        transport.http_post(status_url, None, &replay_request).await;
+    let replay: Result<FederationPeerStatus, _> = transport
+        .http_post(status_url, None, &replay_request)
+        .await
+        .and_then(|response| response.json_or_status_error());
     assert!(replay.is_err(), "Iroh must not bypass replay rejection");
 
     second_server
