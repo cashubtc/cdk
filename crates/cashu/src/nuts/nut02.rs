@@ -512,7 +512,10 @@ pub struct KeySet {
     /// Keyset [`Keys`]
     pub keys: Keys,
     /// Input Fee PPK
-    #[serde(default)]
+    #[serde(
+        deserialize_with = "deserialize_input_fee_ppk",
+        default = "default_input_fee_ppk"
+    )]
     pub input_fee_ppk: u64,
     /// Expiry
     #[serde(skip_serializing_if = "Option::is_none")]
