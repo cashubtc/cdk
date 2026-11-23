@@ -37,17 +37,13 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FederationId([u8; 32]);
 
-impl_fixed_bytes!(FederationId, 32, InvalidFederationIdSize);
+impl_fixed_bytes!(FederationId, 32, "federation id");
 
 /// Digest of the complete public federation config.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FederationConfigDigest([u8; 32]);
 
-impl_fixed_bytes!(
-    FederationConfigDigest,
-    32,
-    InvalidFederationConfigDigestSize
-);
+impl_fixed_bytes!(FederationConfigDigest, 32, "federation config digest");
 
 /// Non-zero federation member identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

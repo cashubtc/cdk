@@ -259,7 +259,7 @@ fn application_operation_invalid(reason: impl Into<String>) -> FederationError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FederationOperationId([u8; 32]);
 
-impl_fixed_bytes!(FederationOperationId, 32, InvalidOperationIdSize);
+impl_fixed_bytes!(FederationOperationId, 32, "federation operation id");
 
 /// High-level kind of a federation operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -1902,7 +1902,7 @@ pub struct FederationOperationSignature([u8; 64]);
 impl_fixed_bytes!(
     FederationOperationSignature,
     64,
-    InvalidOperationSignatureSize
+    "federation operation signature"
 );
 
 impl FederationOperationSignature {

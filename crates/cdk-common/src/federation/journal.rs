@@ -34,7 +34,7 @@ const FEDERATION_MATERIALIZED_STATE_ROW_FINGERPRINT_VERSION: &[u8] =
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FederationJournalDigest([u8; 32]);
 
-impl_fixed_bytes!(FederationJournalDigest, 32, InvalidJournalDigestSize);
+impl_fixed_bytes!(FederationJournalDigest, 32, "federation journal digest");
 
 impl FederationJournalDigest {
     /// Return the empty-journal digest.
@@ -60,7 +60,7 @@ pub struct FederationMaterializedStateDigest([u8; 32]);
 impl_fixed_bytes!(
     FederationMaterializedStateDigest,
     32,
-    InvalidMaterializedStateDigestSize
+    "federation materialized-state digest"
 );
 
 impl FederationMaterializedStateDigest {

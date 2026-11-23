@@ -170,7 +170,7 @@ impl FederationDkgMemberKeysetShare {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FederationDkgCeremonyId([u8; 32]);
 
-impl_fixed_bytes!(FederationDkgCeremonyId, 32, InvalidDkgCeremonyIdSize);
+impl_fixed_bytes!(FederationDkgCeremonyId, 32, "federation DKG ceremony id");
 
 /// Public keyset policy agreed before a dealer-free DKG ceremony starts.
 ///
@@ -370,7 +370,7 @@ pub struct FederationDkgCommitmentHash([u8; 32]);
 impl_fixed_bytes!(
     FederationDkgCommitmentHash,
     32,
-    InvalidDkgCommitmentHashSize
+    "federation DKG commitment hash"
 );
 
 impl FederationDkgCommitmentHash {
@@ -1515,7 +1515,7 @@ pub struct FederationDkgTranscriptHash([u8; 32]);
 impl_fixed_bytes!(
     FederationDkgTranscriptHash,
     32,
-    InvalidDkgTranscriptHashSize
+    "federation DKG transcript hash"
 );
 
 impl FederationDkgTranscriptHash {
@@ -1535,7 +1535,7 @@ pub struct FederationDkgTranscriptSignature([u8; 64]);
 impl_fixed_bytes!(
     FederationDkgTranscriptSignature,
     64,
-    InvalidDkgTranscriptSignatureSize
+    "federation DKG transcript signature"
 );
 
 impl FederationDkgTranscriptSignature {

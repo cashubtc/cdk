@@ -60,7 +60,7 @@ pub struct FederationAlephBftUnitBodyHash([u8; 32]);
 impl_fixed_bytes!(
     FederationAlephBftUnitBodyHash,
     32,
-    InvalidAlephBftUnitBodyHashSize
+    "federation AlephBFT unit body hash"
 );
 
 /// Canonical payload carried by an AlephBFT unit.

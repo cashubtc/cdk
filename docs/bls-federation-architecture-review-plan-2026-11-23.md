@@ -538,3 +538,11 @@ Verification, with `RUST_MIN_STACK=16777216`: the same suites as package 7's thi
 - **Not done in package 9:** splitting the fixture files into shared builders.
 
 Verification, without `RUST_MIN_STACK`: the same nine suites and counts as the previous step, the 16 production builds, and clippy with `-D warnings` on `cdk`, `cdk-federation` and `cdk-axum`.
+
+### 2026-11-23: package 2, fourth step (one byte-length error)
+
+- **One variant instead of seventeen.** Each fixed-length federation value had its own `Invalid…Size { expected, found }` variant of `FederationError`. They are now one `InvalidByteLength { kind, expected, found }`, and `impl_fixed_bytes!` takes the value's name instead of a variant. Display text is unchanged.
+- **Dead variant removed:** `OperationFederationMismatch` had no constructor.
+- `FederationError` goes from 162 variants to 145. **Not done in package 2:** splitting the rest into per-module enums with typed reasons, and with it the operator-message redactor.
+
+Verification: `cdk-common` federation tests (493), compile checks of all targets in the dependent crates, and the 16 production builds.

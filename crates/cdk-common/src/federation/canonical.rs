@@ -31,11 +31,11 @@ pub fn append_hash_bytes(transcript: &mut Vec<u8>, value: &[u8]) {
 /// Implements byte access and lowercase-hex `Display`, `FromStr` and serde for
 /// a `struct $name([u8; $len])` newtype.
 ///
-/// `$size_error` names the [`FederationError`](super::FederationError)
-/// variant, with `expected` and `found` fields, returned for input of the
-/// wrong length.
+/// `$kind` names the value in the
+/// [`FederationError::InvalidByteLength`](super::FederationError::InvalidByteLength)
+/// returned for input of the wrong length.
 macro_rules! impl_fixed_bytes {
-    ($name:ident, $len:literal, $size_error:ident) => {
+    ($name:ident, $len:literal, $kind:literal) => {
         impl $name {
             /// Construct from raw bytes.
             #[must_use]
@@ -46,7 +46,8 @@ macro_rules! impl_fixed_bytes {
             /// Parse from a byte slice of exactly the right length.
             pub fn from_slice(bytes: &[u8]) -> $crate::federation::Result<Self> {
                 let bytes: [u8; $len] = bytes.try_into().map_err(|_| {
-                    $crate::federation::FederationError::$size_error {
+                    $crate::federation::FederationError::InvalidByteLength {
+                        kind: $kind,
                         expected: $len,
                         found: bytes.len(),
                     }

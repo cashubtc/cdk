@@ -459,6 +459,16 @@ fn federation_operator_token_suffix(ch: char) -> bool {
 /// Errors returned by federation configuration helpers.
 #[derive(Debug, Error)]
 pub enum FederationError {
+    /// A fixed-length federation value has the wrong number of bytes.
+    #[error("Invalid {kind} size: expected={expected}, found={found}")]
+    InvalidByteLength {
+        /// The value being parsed.
+        kind: &'static str,
+        /// Expected byte length.
+        expected: usize,
+        /// Actual byte length.
+        found: usize,
+    },
     /// Canonical address allocation state or operation is malformed.
     #[error("Federation address allocation is invalid: {reason}")]
     AddressAllocationInvalid {
@@ -527,80 +537,6 @@ pub enum FederationError {
     WalletLivenessInvalid {
         /// Stable validation reason without local timing or endpoint data.
         reason: String,
-    },
-    /// A federation ID must be exactly 32 bytes.
-    #[error("Invalid federation id size: expected={expected}, found={found}")]
-    InvalidFederationIdSize {
-        /// Expected byte length.
-        expected: usize,
-        /// Actual byte length.
-        found: usize,
-    },
-    /// A federation config digest must be exactly 32 bytes.
-    #[error("Invalid federation config digest size: expected={expected}, found={found}")]
-    InvalidFederationConfigDigestSize {
-        /// Expected byte length.
-        expected: usize,
-        /// Actual byte length.
-        found: usize,
-    },
-    /// A federation operation ID must be exactly 32 bytes.
-    #[error("Invalid federation operation id size: expected={expected}, found={found}")]
-    InvalidOperationIdSize {
-        /// Expected byte length.
-        expected: usize,
-        /// Actual byte length.
-        found: usize,
-    },
-    /// A federation journal digest must be exactly 32 bytes.
-    #[error("Invalid federation journal digest size: expected={expected}, found={found}")]
-    InvalidJournalDigestSize {
-        /// Expected byte length.
-        expected: usize,
-        /// Actual byte length.
-        found: usize,
-    },
-    /// A federation materialized-state digest must be exactly 32 bytes.
-    #[error(
-        "Invalid federation materialized-state digest size: expected={expected}, found={found}"
-    )]
-    InvalidMaterializedStateDigestSize {
-        /// Expected byte length.
-        expected: usize,
-        /// Actual byte length.
-        found: usize,
-    },
-    /// A federation application digest must be exactly 32 bytes.
-    #[error("Invalid federation application digest size: expected={expected}, found={found}")]
-    InvalidApplicationDigestSize {
-        /// Expected byte length.
-        expected: usize,
-        /// Actual byte length.
-        found: usize,
-    },
-    /// A federation finalized-item digest must be exactly 32 bytes.
-    #[error("Invalid federation finalized-item digest size: expected={expected}, found={found}")]
-    InvalidFinalizedItemDigestSize {
-        /// Expected byte length.
-        expected: usize,
-        /// Actual byte length.
-        found: usize,
-    },
-    /// A federation checkpoint ID must be exactly 32 bytes.
-    #[error("Invalid federation checkpoint id size: expected={expected}, found={found}")]
-    InvalidCheckpointIdSize {
-        /// Expected byte length.
-        expected: usize,
-        /// Actual byte length.
-        found: usize,
-    },
-    /// A federation checkpoint signature must be exactly 64 bytes.
-    #[error("Invalid federation checkpoint signature size: expected={expected}, found={found}")]
-    InvalidCheckpointSignatureSize {
-        /// Expected byte length.
-        expected: usize,
-        /// Actual byte length.
-        found: usize,
     },
     /// A federation checkpoint signature is not a valid Schnorr signature.
     #[error("Invalid federation checkpoint signature")]
@@ -905,14 +841,6 @@ pub enum FederationError {
         expected: u16,
         /// Threshold configured by the federation.
         found: u16,
-    },
-    /// An AlephBFT unit body hash must be exactly 32 bytes.
-    #[error("Invalid federation AlephBFT unit body hash size: expected={expected}, found={found}")]
-    InvalidAlephBftUnitBodyHashSize {
-        /// Expected byte length.
-        expected: usize,
-        /// Actual byte length.
-        found: usize,
     },
     /// An AlephBFT unit body hash does not match the canonical item body.
     #[error("Federation AlephBFT unit body hash mismatch: expected={expected}, found={found}")]
@@ -1347,14 +1275,6 @@ pub enum FederationError {
     /// A consensus operation did not carry durable member authorization.
     #[error("Federation operation is missing member authorization")]
     OperationAuthorizationMissing,
-    /// A federation operation signature must be exactly 64 bytes.
-    #[error("Invalid federation operation signature size: expected={expected}, found={found}")]
-    InvalidOperationSignatureSize {
-        /// Expected byte length.
-        expected: usize,
-        /// Actual byte length.
-        found: usize,
-    },
     /// A federation operation signature could not be decoded as Schnorr.
     #[error("Invalid federation operation signature encoding")]
     InvalidOperationSignature,
@@ -1399,14 +1319,6 @@ pub enum FederationError {
     UnknownOperation {
         /// Operation ID that could not be found.
         operation_id: String,
-    },
-    /// Operation envelope belongs to a different federation.
-    #[error("Federation operation id mismatch: expected={expected}, found={found}")]
-    OperationFederationMismatch {
-        /// Expected federation ID.
-        expected: FederationId,
-        /// Found federation ID.
-        found: FederationId,
     },
     /// Catch-up response belongs to a different federation.
     #[error("Federation catch-up mismatch: expected={expected}, found={found}")]
@@ -1470,41 +1382,9 @@ pub enum FederationError {
         /// Journal index whose application state was malformed.
         index: u64,
     },
-    /// A federation REST body hash must be exactly 32 bytes.
-    #[error("Invalid federation REST body hash size: expected={expected}, found={found}")]
-    InvalidRestBodyHashSize {
-        /// Expected byte length.
-        expected: usize,
-        /// Actual byte length.
-        found: usize,
-    },
-    /// A federation REST signature must be exactly 64 bytes.
-    #[error("Invalid federation REST signature size: expected={expected}, found={found}")]
-    InvalidRestSignatureSize {
-        /// Expected byte length.
-        expected: usize,
-        /// Actual byte length.
-        found: usize,
-    },
     /// A federation REST signature could not be decoded as a Schnorr signature.
     #[error("Invalid federation REST signature encoding")]
     InvalidRestSignature,
-    /// A federation DKG commitment hash must be exactly 32 bytes.
-    #[error("Invalid federation DKG commitment hash size: expected={expected}, found={found}")]
-    InvalidDkgCommitmentHashSize {
-        /// Expected byte length.
-        expected: usize,
-        /// Actual byte length.
-        found: usize,
-    },
-    /// DKG ceremony IDs must be exactly 32 bytes.
-    #[error("Invalid federation DKG ceremony id size: expected={expected}, found={found}")]
-    InvalidDkgCeremonyIdSize {
-        /// Required byte length.
-        expected: usize,
-        /// Actual byte length.
-        found: usize,
-    },
     /// A dealer-free DKG roster exceeds the supported resource bound.
     #[error("Federation DKG member limit exceeded: found={found}, max={max}")]
     DkgMemberLimitExceeded {
@@ -1534,24 +1414,6 @@ pub enum FederationError {
     DkgCommitmentRoundMismatch {
         /// Human-readable mismatch reason.
         reason: String,
-    },
-    /// A federation DKG transcript hash must be exactly 32 bytes.
-    #[error("Invalid federation DKG transcript hash size: expected={expected}, found={found}")]
-    InvalidDkgTranscriptHashSize {
-        /// Expected byte length.
-        expected: usize,
-        /// Actual byte length.
-        found: usize,
-    },
-    /// A federation DKG transcript signature must be exactly 64 bytes.
-    #[error(
-        "Invalid federation DKG transcript signature size: expected={expected}, found={found}"
-    )]
-    InvalidDkgTranscriptSignatureSize {
-        /// Expected byte length.
-        expected: usize,
-        /// Actual byte length.
-        found: usize,
     },
     /// A federation DKG transcript signature could not be decoded as a Schnorr signature.
     #[error("Invalid federation DKG transcript signature encoding")]
@@ -2692,7 +2554,8 @@ mod tests {
         );
         assert!(matches!(
             FederationDkgCeremonyId::from_slice(&[1; 31]),
-            Err(FederationError::InvalidDkgCeremonyIdSize {
+            Err(FederationError::InvalidByteLength {
+                kind: "federation DKG ceremony id",
                 expected: 32,
                 found: 31
             })

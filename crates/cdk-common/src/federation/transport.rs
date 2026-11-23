@@ -258,7 +258,7 @@ impl FederationDkgReadinessRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FederationRestBodyHash([u8; 32]);
 
-impl_fixed_bytes!(FederationRestBodyHash, 32, InvalidRestBodyHashSize);
+impl_fixed_bytes!(FederationRestBodyHash, 32, "federation REST body hash");
 
 impl FederationRestBodyHash {
     /// Compute the canonical payload hash.
@@ -278,7 +278,7 @@ impl FederationRestBodyHash {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FederationRestSignature([u8; 64]);
 
-impl_fixed_bytes!(FederationRestSignature, 64, InvalidRestSignatureSize);
+impl_fixed_bytes!(FederationRestSignature, 64, "federation REST signature");
 
 impl FederationRestSignature {
     fn sign(transcript: &[u8], private_config: &MemberConfigPrivate) -> Result<Self> {

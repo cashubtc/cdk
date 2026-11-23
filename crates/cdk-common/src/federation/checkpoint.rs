@@ -99,7 +99,7 @@ pub struct FederationApplicationDigest([u8; 32]);
 impl_fixed_bytes!(
     FederationApplicationDigest,
     32,
-    InvalidApplicationDigestSize
+    "federation application digest"
 );
 
 impl FederationApplicationDigest {
@@ -144,7 +144,7 @@ pub struct FederationFinalizedItemDigest([u8; 32]);
 impl_fixed_bytes!(
     FederationFinalizedItemDigest,
     32,
-    InvalidFinalizedItemDigestSize
+    "federation finalized-item digest"
 );
 
 impl FederationFinalizedItemDigest {
@@ -1247,7 +1247,7 @@ impl FederationCheckpoint {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FederationCheckpointId([u8; 32]);
 
-impl_fixed_bytes!(FederationCheckpointId, 32, InvalidCheckpointIdSize);
+impl_fixed_bytes!(FederationCheckpointId, 32, "federation checkpoint id");
 
 /// One member identity signature over a checkpoint ID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -1288,7 +1288,8 @@ impl FederationCheckpointSignature {
         let signature: [u8; 64] =
             signature
                 .try_into()
-                .map_err(|_| FederationError::InvalidCheckpointSignatureSize {
+                .map_err(|_| FederationError::InvalidByteLength {
+                    kind: "federation checkpoint signature",
                     expected: 64,
                     found: signature.len(),
                 })?;
