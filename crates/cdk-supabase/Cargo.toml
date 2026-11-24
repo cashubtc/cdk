@@ -31,8 +31,6 @@ scrypt = { version = "0.12.0", default-features = false }
 
 [dev-dependencies]
 cdk-common = { workspace = true, features = ["test"] }
-# Needed at macro-expansion sites of cdk-common's `*_db_test!` macros
-paste.workspace = true
 mockito = { version = "1", default-features = false }
 
 [lints]
