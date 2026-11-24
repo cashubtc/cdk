@@ -45,25 +45,7 @@ pub mod aleph_bft_session;
 pub mod bark_custody;
 #[cfg(feature = "federation-bark")]
 #[doc(hidden)]
-pub mod bark_custody_attempt;
-#[cfg(feature = "federation-bark")]
-#[doc(hidden)]
-pub mod bark_evidence;
-#[cfg(feature = "federation-bark")]
-#[doc(hidden)]
-pub mod bark_incoming;
-#[cfg(feature = "federation-bark")]
-#[doc(hidden)]
-pub mod bark_maintenance;
-#[cfg(feature = "federation-bark")]
-#[doc(hidden)]
-pub mod bark_observer;
-#[cfg(feature = "federation-bark")]
-#[doc(hidden)]
-pub mod bark_outgoing;
-#[cfg(feature = "federation-bark")]
-#[doc(hidden)]
-pub mod bark_secret;
+pub mod bark_node;
 #[doc(hidden)]
 pub mod bootstrap;
 #[cfg(feature = "federation-bdk")]
@@ -80,7 +62,7 @@ pub mod dkg_persistence;
 #[doc(hidden)]
 pub mod frost_signing;
 #[doc(hidden)]
-pub mod latency;
+pub use cdk::federation::latency;
 #[doc(hidden)]
 pub mod mint_state;
 #[doc(hidden)]
@@ -172,34 +154,23 @@ pub use self::sync_loop::{
     run_federation_peer_sync_round, run_federation_peer_sync_round_with_backoff,
 };
 
-#[doc(hidden)]
-#[cfg(feature = "federation-bark")]
-pub fn bark_operation(
-    operation: &cdk::federation::FederationOperation,
-) -> Result<cdk::federation::FederationBarkOperation, cdk::Error> {
-    cdk::federation::validate_federation_bark_operation(operation).map_err(cdk::Error::from)
-}
-
-#[doc(hidden)]
-#[cfg(feature = "federation-bark")]
-pub fn bark_federation_operation(
-    operation: cdk::federation::FederationBarkOperation,
-) -> Result<cdk::federation::FederationOperation, cdk::Error> {
-    cdk::federation::federation_bark_application_operation(operation).map_err(cdk::Error::from)
-}
-
-#[doc(hidden)]
-#[cfg(feature = "federation-bark")]
-pub fn bark_application(
-    config: &cdk::federation::FederationConfig,
-) -> Result<cdk::federation::FederationBarkFrostApplicationConfig, cdk::Error> {
-    cdk::federation::federation_bark_application(config)?.ok_or(cdk::Error::Internal)
-}
 #[cfg(feature = "iroh")]
 pub use self::transport::federation_transport_with_iroh_node;
 pub use self::transport::{default_federation_transport, FederationTransport};
 #[cfg(feature = "federation-bdk")]
 pub use self::wallet_liveness::FederationWalletLivenessWorker;
+/// Bark operation codecs and the Bark payment drivers this node runs.
+#[doc(hidden)]
+#[cfg(feature = "federation-bark")]
+pub use cdk_bark::{
+    advance_federated_bark_melt_quote, advance_federated_bark_melt_quote_from_evidence_delivery,
+    advance_federated_bark_mint_quote, advance_federated_bark_mint_quote_from_evidence_delivery,
+    advance_federated_bark_receive_intent, bark_application, bark_federation_operation,
+    bark_operation, federated_bark_quote_id, federation_bark_ready_projection,
+    federation_bark_recovery_projection, prepare_federated_bark_mint_quote,
+    reconcile_federation_bark_runtime, retry_federated_bark_maintenance_action,
+    submit_federated_bark_melt_with_plan,
+};
 
 const FEDERATION_DISABLE_PEER_SYNC_ENV_VAR: &str = "CDK_FEDERATION_DISABLE_PEER_SYNC";
 

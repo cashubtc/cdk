@@ -562,3 +562,24 @@ Verification: `cdk-common` federation tests (493), compile checks of all targets
 - **Remaining in package 6:** row-per-entity storage for the `state_v1` blobs, retention, the rest of the trait surface, and the single apply transaction.
 
 Verification: the nine federation suites, with the same counts as the previous step. Clippy with `-D warnings` on each touched crate alone, and the 16 production builds. One `cdk-axum` latency test (`aleph_bft_live_session_latency_probe_records_seven_member_bft_operation`) asserts a 10-second bound. It failed once while other builds were running and passed when rerun alone.
+
+### 2026-11-24: package 7, fourth step (Bark drivers in the Bark crate)
+
+- **Drivers moved.** The incoming, outgoing, evidence, observer, receive-secret replication, custody-attempt and maintenance code (about 3,700 lines) moved from `cdk-federation` into a `node` module of `cdk-bark`. So did the projection readiness and replay code from `cdk-federation`'s bootstrap. `cdk-bark` now owns Bark phase selection, replay, evidence and the construction of every Bark operation, and depends on `cdk`'s mint for accepted state.
+- **One node port.** The drivers reach the node only through `FederatedBarkNode`:
+  - the mint;
+  - the Bark runtime, receive-secret store and incoming lock;
+  - envelope submission, ordered group submission, admission and readiness checks;
+  - wallet-publisher ordering;
+  - an authenticated peer client for receive-secret replication and evidence delivery.
+
+  `cdk-federation` implements it in `bark_node.rs`.
+- **Recovery host unified.** The recovery driver's `FederatedBarkRecoveryHost` is now implemented once, in `cdk-bark`, for any `FederatedBarkNode`. The node no longer has its own Bark-specific recovery host.
+- **Shared types moved down.** The latency timers and their label domain moved to `cdk_common::federation::latency`, and `FederationPaymentAdvancement` to `cdk_common::federation`. Both are shared by the node and the backend. The tracing target is unchanged, so existing log filters still match.
+- **Stays in the node:**
+  - `bark_custody.rs`, the FROST signing fan-out behind the existing `FederatedBarkCustodyClient` port. It shares the signing coordinator with BDK, and the shared signer fan-out is a separate package 7 item.
+  - The payment scheduler that decides when to call the drivers.
+- **No behaviour change intended.** One difference is visible: a failed operator reconciliation's log line now carries the `cdk::Error` wrapper text around the same federation error.
+- Net change: about 220 lines added, mostly the port trait, its implementation and the shared replay source.
+
+Verification: the nine federation suites pass. `cdk-bark` now has 36 tests and `cdk-federation` 114; together that is the same 150 as before. The other suites are unchanged. Clippy with `-D warnings` is clean on `cdk-common`, `cdk-bark`, `cdk-federation` and `cdk-axum` alone, and the 16 production builds pass.

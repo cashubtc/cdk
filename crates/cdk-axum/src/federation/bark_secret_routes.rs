@@ -157,24 +157,24 @@ pub async fn post_bark_evidence_attestation(
             .tasks
             .spawn("Bark evidence wake", false, async move {
                 let result = match phase {
-                FederationBarkEvidencePhase::ReceiveHtlcsReady
-                | FederationBarkEvidencePhase::ReceiveClaimed => {
-                    super::bark_incoming::advance_federated_bark_mint_quote_from_evidence_delivery(
-                        &wake_state,
-                        &quote,
-                        collector_fallback_round,
-                    )
-                    .await
-                }
-                FederationBarkEvidencePhase::SendSucceeded => {
-                    super::bark_outgoing::advance_federated_bark_melt_quote_from_evidence_delivery(
-                        &wake_state,
-                        &quote,
-                        collector_fallback_round,
-                    )
-                    .await
-                }
-            };
+                    FederationBarkEvidencePhase::ReceiveHtlcsReady
+                    | FederationBarkEvidencePhase::ReceiveClaimed => {
+                        crate::federation::advance_federated_bark_mint_quote_from_evidence_delivery(
+                            &wake_state.node,
+                            &quote,
+                            collector_fallback_round,
+                        )
+                        .await
+                    }
+                    FederationBarkEvidencePhase::SendSucceeded => {
+                        crate::federation::advance_federated_bark_melt_quote_from_evidence_delivery(
+                            &wake_state.node,
+                            &quote,
+                            collector_fallback_round,
+                        )
+                        .await
+                    }
+                };
                 if let Err(error) = result {
                     tracing::debug!(error = %error, "Bark evidence wake did not advance quote");
                 }

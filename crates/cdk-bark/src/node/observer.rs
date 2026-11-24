@@ -1,8 +1,6 @@
 //! Deterministic, threshold-sized Bark observer selection.
 
-use cdk::federation::MemberId;
-
-use super::payment_schedule::FederationPaymentAdvancement;
+use cdk::federation::{FederationPaymentAdvancement, MemberId};
 
 pub fn is_selected_bark_observer(
     members: impl IntoIterator<Item = MemberId>,
@@ -77,14 +75,13 @@ pub fn unselected_bark_observer_wait(
 
 #[cfg(test)]
 mod tests {
-    use cdk::federation::MemberId;
+    use cdk::federation::{FederationPaymentAdvancement, MemberId};
 
     use super::{
         bark_outgoing_terminal_pending_wait, is_selected_bark_observer,
         is_selected_bark_receive_observer, required_bark_result_observers,
         unselected_bark_observer_wait,
     };
-    use crate::payment_schedule::FederationPaymentAdvancement;
 
     fn member(id: u16) -> MemberId {
         MemberId::new(id).expect("member ID")

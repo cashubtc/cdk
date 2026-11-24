@@ -111,7 +111,7 @@ fn advance_bark_mint_quote<'a>(
             + 'a,
     >,
 > {
-    Box::pin(super::bark_incoming::advance_federated_bark_mint_quote(
+    Box::pin(cdk_bark::advance_federated_bark_mint_quote(
         state,
         quote_id,
         observer_fallback_round,
@@ -132,7 +132,7 @@ fn advance_bark_melt_quote<'a>(
             + 'a,
     >,
 > {
-    Box::pin(super::bark_outgoing::advance_federated_bark_melt_quote(
+    Box::pin(cdk_bark::advance_federated_bark_melt_quote(
         state,
         quote_id,
         observer_fallback_round,

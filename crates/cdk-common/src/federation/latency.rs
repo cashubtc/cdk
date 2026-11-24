@@ -1,4 +1,8 @@
 //! Low-cardinality metrics and correlated traces for federated transaction latency.
+//!
+//! Shared by the federation node and the custody backends so every phase of a
+//! federated payment reports to one bounded label domain. The label enums are
+//! that domain itself, so their variants are not documented one by one.
 
 use std::time::{Duration, Instant};
 
@@ -44,7 +48,6 @@ impl FederationLatencyDirection {
 
 /// Stable correlation domain used only in structured traces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // One shared bounded domain spans independently feature-gated backends.
 pub enum FederationLatencyCorrelation {
     Quote,
     Operation,
@@ -71,7 +74,6 @@ impl FederationLatencyCorrelation {
 
 /// Fixed phase domain for payment and consensus latency attribution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // One shared bounded domain spans independently feature-gated backends.
 pub enum FederationLatencyPhase {
     CashuSwap,
     CashuMint,

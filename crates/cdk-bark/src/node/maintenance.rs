@@ -1,4 +1,5 @@
-//! HTTP integration port for backend-owned Bark maintenance.
+//! Bark maintenance on a federation node: the recovery driver's host and the
+//! rule that holds routine maintenance back while payments are in flight.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
@@ -15,58 +16,38 @@ use cdk::federation::{
 use cdk::mint::QuoteId;
 use cdk::nuts::MeltQuoteState;
 
-use crate::FederationNode;
+use super::FederatedBarkNode;
+use crate::{FederatedBarkRecoveryDriver, FederatedBarkRecoveryDriverError, FederatedBarkRuntime};
 
 const BARK_ROUTINE_MAINTENANCE_PAYMENT_QUIET_PERIOD: std::time::Duration =
     std::time::Duration::from_secs(30);
 const BARK_RECENT_PAYMENT_JOURNAL_LIMIT: usize = 256;
 
-pub fn spawn(state: &FederationNode) {
-    let Some(runtime) = state.federation.bark_runtime().cloned() else {
-        return;
-    };
-    let tasks = state.federation.tasks.clone();
-    let stop = tasks.stop_token();
-    let host = Arc::new(AxumBarkRecoveryHost {
-        state: state.clone(),
-    });
-    tasks.spawn(
-        "Bark recovery",
-        true,
-        cdk_bark::FederatedBarkRecoveryDriver::new(runtime).run_until(host, stop.cancelled_owned()),
-    );
-}
-
-/// Keep projection failures ambiguous while retaining a redacted local diagnostic.
-pub fn projection_error(error: impl std::fmt::Display) -> cdk::Error {
-    cdk::federation::FederationError::BackendFailure {
-        backend: "Bark",
-        phase: "load ready projection",
-        operation_id: None,
-        reason: cdk::federation::redact_federation_operator_message(&error.to_string()),
-    }
-    .into()
-}
-
 /// Retry at most one consensus-visible step for one exact accepted action.
-pub async fn retry_federated_bark_maintenance_action(
-    state: FederationNode,
+///
+/// Returns the number of operations submitted, zero when Bark is not
+/// configured on this member.
+pub async fn retry_federated_bark_maintenance_action<N>(
+    node: N,
     action_id: FederationBarkActionId,
-) -> Result<usize, cdk::Error> {
-    let runtime = match state.federation.bark_runtime() {
+) -> Result<usize, cdk::Error>
+where
+    N: FederatedBarkNode + 'static,
+{
+    let runtime = match node.bark_runtime() {
         Some(runtime) => runtime.clone(),
         None => return Ok(0),
     };
-    cdk_bark::FederatedBarkRecoveryDriver::new(runtime)
-        .advance(&AxumBarkRecoveryHost { state }, Some(action_id))
+    FederatedBarkRecoveryDriver::new(runtime)
+        .advance(&FederatedBarkNodeRecoveryHost::new(node), Some(action_id))
         .await
         .map_err(|error| {
             let reason = match error {
-                cdk_bark::FederatedBarkRecoveryDriverError::Backend(error) => error.to_string(),
-                cdk_bark::FederatedBarkRecoveryDriverError::Host(error) => {
+                FederatedBarkRecoveryDriverError::Backend(error) => error.to_string(),
+                FederatedBarkRecoveryDriverError::Host(error) => {
                     cdk::federation::redact_federation_operator_message(&error.to_string())
                 }
-                cdk_bark::FederatedBarkRecoveryDriverError::InvalidAcceptedState => {
+                FederatedBarkRecoveryDriverError::InvalidAcceptedState => {
                     "accepted recovery state is invalid".to_string()
                 }
             };
@@ -80,35 +61,46 @@ pub async fn retry_federated_bark_maintenance_action(
         })
 }
 
-#[derive(Clone)]
-struct AxumBarkRecoveryHost {
-    state: FederationNode,
+/// Recovery host backed by a federation node.
+#[derive(Debug, Clone)]
+pub struct FederatedBarkNodeRecoveryHost<N> {
+    node: N,
+}
+
+impl<N> FederatedBarkNodeRecoveryHost<N> {
+    /// Serve the recovery driver from `node`.
+    pub fn new(node: N) -> Self {
+        Self { node }
+    }
 }
 
 #[async_trait]
-impl cdk_bark::FederatedBarkRecoveryHost for AxumBarkRecoveryHost {
+impl<N> crate::FederatedBarkRecoveryHost for FederatedBarkNodeRecoveryHost<N>
+where
+    N: FederatedBarkNode + 'static,
+{
     type Error = cdk::Error;
 
     async fn recovery_projection(
         &self,
-        runtime: &Arc<cdk_bark::FederatedBarkRuntime>,
+        runtime: &Arc<FederatedBarkRuntime>,
     ) -> Result<FederationBarkProjectionSnapshot, Self::Error> {
-        recovery_projection(&self.state, runtime).await
+        super::projection::federation_bark_recovery_projection(&self.node, runtime).await
     }
 
     async fn routine_payment_work_blocks(
         &self,
         projection: &FederationBarkProjectionSnapshot,
     ) -> Result<bool, Self::Error> {
-        routine_payment_work_blocks_maintenance(&self.state, projection).await
+        routine_payment_work_blocks_maintenance(&self.node, projection).await
     }
 
     async fn journal_entry(
         &self,
         operation_id: FederationOperationId,
     ) -> Result<Option<FederationJournalEntry>, Self::Error> {
-        self.state
-            .mint
+        self.node
+            .mint()
             .localstore()
             .get_federation_journal_entry_by_operation_id(operation_id)
             .await
@@ -119,17 +111,12 @@ impl cdk_bark::FederatedBarkRecoveryHost for AxumBarkRecoveryHost {
         &self,
         operation: &FederationBarkOperation,
     ) -> Result<Option<FederationOperationStatus>, Self::Error> {
-        let federation = self
-            .state
-            .mint
-            .federation_config()
-            .ok_or(cdk::Error::Internal)?;
+        let mint = self.node.mint();
+        let federation = mint.federation_config().ok_or(cdk::Error::Internal)?;
         let envelope =
             federation.operation_envelope(super::bark_federation_operation(operation.clone())?);
         let operation_id = envelope.operation_id()?;
-        Ok(self
-            .state
-            .mint
+        Ok(mint
             .localstore()
             .get_federation_journal_entry_by_operation_id(operation_id)
             .await?
@@ -141,14 +128,13 @@ impl cdk_bark::FederatedBarkRecoveryHost for AxumBarkRecoveryHost {
         operation: FederationBarkOperation,
     ) -> Result<usize, Self::Error> {
         let federation = self
-            .state
-            .mint
+            .node
+            .mint()
             .federation_config()
             .ok_or(cdk::Error::Internal)?;
         let envelope = federation.operation_envelope(super::bark_federation_operation(operation)?);
-        self.state
-            .clone()
-            .submit_federation_envelope(envelope)
+        self.node
+            .submit_envelope(envelope)
             .await?
             .ensure_accepted()?;
         Ok(1)
@@ -159,8 +145,8 @@ impl cdk_bark::FederatedBarkRecoveryHost for AxumBarkRecoveryHost {
         scope: FederationAddressAllocationScope,
         quote: &str,
     ) -> Result<Option<FederationAddressAllocation>, Self::Error> {
-        self.state
-            .mint
+        self.node
+            .mint()
             .federation_address_allocation(scope, quote)
             .await
     }
@@ -172,8 +158,8 @@ impl cdk_bark::FederatedBarkRecoveryHost for AxumBarkRecoveryHost {
         keychain: FederationAddressKeychain,
     ) -> Result<usize, Self::Error> {
         let federation = self
-            .state
-            .mint
+            .node
+            .mint()
             .federation_config()
             .ok_or(cdk::Error::Internal)?;
         let envelope = federation.address_allocation_operation(
@@ -182,9 +168,8 @@ impl cdk_bark::FederatedBarkRecoveryHost for AxumBarkRecoveryHost {
             scope.application_key_epoch,
             keychain,
         )?;
-        self.state
-            .clone()
-            .submit_federation_envelope(envelope)
+        self.node
+            .submit_envelope(envelope)
             .await?
             .ensure_accepted()?;
         Ok(1)
@@ -193,50 +178,12 @@ impl cdk_bark::FederatedBarkRecoveryHost for AxumBarkRecoveryHost {
     async fn chain_observation_state(
         &self,
     ) -> Result<FederationChainObservationState, Self::Error> {
-        self.state.mint.federation_chain_observation_state().await
+        self.node.mint().federation_chain_observation_state().await
     }
-}
-
-/// Return the accepted projection for an ordinary ready runtime or an exact
-/// operator/maintenance recovery flow.
-///
-/// Recovery remains fail-closed unless the member has replayed the complete
-/// accepted frontier and its only degradation is a recovery condition.
-pub async fn recovery_projection(
-    state: &FederationNode,
-    runtime: &Arc<cdk_bark::FederatedBarkRuntime>,
-) -> Result<FederationBarkProjectionSnapshot, cdk::Error> {
-    match crate::federation_bark_ready_projection(&state.mint, runtime).await {
-        Ok(projection) => Ok(projection),
-        Err(error) => {
-            let projection = state.mint.federation_bark_projection_snapshot().await?;
-            let required_frontier = projection.frontier().unwrap_or(0);
-            let status = runtime.status(required_frontier).await;
-            if runtime_allows_recovery(status, required_frontier) {
-                Ok(projection)
-            } else {
-                Err(projection_error(error))
-            }
-        }
-    }
-}
-
-fn runtime_allows_recovery(
-    status: cdk_bark::FederatedBarkRuntimeStatus,
-    required_frontier: u64,
-) -> bool {
-    status.local_frontier >= required_frontier
-        && matches!(
-            status.degraded_reason,
-            Some(
-                cdk_bark::FederatedBarkDegradedReason::RecoveryRequired
-                    | cdk_bark::FederatedBarkDegradedReason::RecoveryFeeReserveInsufficient
-            )
-        )
 }
 
 async fn routine_payment_work_blocks_maintenance(
-    state: &FederationNode,
+    state: &dyn FederatedBarkNode,
     projection: &FederationBarkProjectionSnapshot,
 ) -> Result<bool, cdk::Error> {
     if projection
@@ -256,11 +203,11 @@ async fn routine_payment_work_blocks_maintenance(
 }
 
 async fn recent_receive_accounting_blocks_routine_maintenance(
-    state: &FederationNode,
+    state: &dyn FederatedBarkNode,
     projection: &FederationBarkProjectionSnapshot,
     now: u64,
 ) -> Result<bool, cdk::Error> {
-    let store = state.mint.localstore();
+    let store = state.mint().localstore();
     let Some(tip) = store.get_federation_journal_tip().await? else {
         return Ok(false);
     };
@@ -290,10 +237,10 @@ async fn recent_receive_accounting_blocks_routine_maintenance(
 }
 
 async fn recent_bolt11_melt_blocks_routine_maintenance(
-    state: &FederationNode,
+    state: &dyn FederatedBarkNode,
     now: u64,
 ) -> Result<bool, cdk::Error> {
-    let store = state.mint.localstore();
+    let store = state.mint().localstore();
     let Some(tip) = store.get_federation_journal_tip().await? else {
         return Ok(false);
     };
@@ -405,7 +352,7 @@ fn payment_state_blocks_routine_maintenance(
     match phase {
         FederationBarkSemanticPhase::ReceiveIntent
         | FederationBarkSemanticPhase::ReceivePrepared => expires_at.is_none_or(|expires_at| {
-            !super::bark_incoming::receive_is_automatically_terminal(
+            !super::incoming::receive_is_automatically_terminal(
                 expires_at,
                 accepted_evidence_present,
                 now,
@@ -442,50 +389,14 @@ fn current_unix_time_seconds() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use cdk::federation::FederationBarkSemanticPhase;
-    use cdk::nuts::MeltQuoteState;
-    use cdk_bark::{
-        FederatedBarkDegradedReason, FederatedBarkReadiness, FederatedBarkRuntimeStatus,
-    };
-
     use super::{
         melt_quote_blocks_routine_maintenance, payment_phase_is_terminal,
         payment_state_blocks_routine_maintenance, payment_timestamp_is_quiet,
-        recent_payment_journal_floor, runtime_allows_recovery, BARK_RECENT_PAYMENT_JOURNAL_LIMIT,
+        recent_payment_journal_floor, BARK_RECENT_PAYMENT_JOURNAL_LIMIT,
         BARK_ROUTINE_MAINTENANCE_PAYMENT_QUIET_PERIOD,
     };
-
-    #[test]
-    fn recovery_projection_requires_caught_up_recovery_degradation() {
-        let recovery = FederatedBarkRuntimeStatus {
-            readiness: FederatedBarkReadiness::Degraded,
-            local_frontier: 42,
-            degraded_reason: Some(FederatedBarkDegradedReason::RecoveryRequired),
-        };
-        assert!(runtime_allows_recovery(recovery, 42));
-        assert!(!runtime_allows_recovery(recovery, 43));
-        for reason in [
-            None,
-            Some(FederatedBarkDegradedReason::WalletUnavailable),
-            Some(FederatedBarkDegradedReason::ProjectionInvalid),
-            Some(FederatedBarkDegradedReason::ParticipantsUnavailable),
-        ] {
-            assert!(!runtime_allows_recovery(
-                FederatedBarkRuntimeStatus {
-                    degraded_reason: reason,
-                    ..recovery
-                },
-                42,
-            ));
-        }
-        assert!(runtime_allows_recovery(
-            FederatedBarkRuntimeStatus {
-                degraded_reason: Some(FederatedBarkDegradedReason::RecoveryFeeReserveInsufficient,),
-                ..recovery
-            },
-            42,
-        ));
-    }
+    use cdk::federation::FederationBarkSemanticPhase;
+    use cdk::nuts::MeltQuoteState;
 
     #[test]
     fn payment_phases_gate_routine_maintenance() {

@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+pub use cdk::federation::FederationPaymentAdvancement;
 use cdk::federation::MemberId;
 use cdk::mint::QuoteId;
 use cdk_common::database::DynMintDatabase;
@@ -65,18 +66,6 @@ impl FederationPaymentQuote {
             FederationPaymentQuoteKind::Melt => 0,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FederationPaymentAdvancement {
-    Progressed,
-    AwaitingExternalEvidence,
-    #[cfg_attr(not(feature = "federation-bark"), allow(dead_code))]
-    AwaitingBackendNotification,
-    AwaitingFederationEvidence,
-    #[cfg_attr(not(feature = "federation-bark"), allow(dead_code))]
-    AwaitingObserverFallback,
-    Complete,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

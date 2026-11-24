@@ -11,8 +11,9 @@ use cdk::federation::{
     FederationBarkReceiveIntent, FederationBarkReceivePrepared, FederationBarkReceiveProof,
     FederationBarkReceiveSecretBinding, FederationBarkSemanticPhase, FederationBarkUnit,
     FederationBarkVtxoLocator, FederationBarkVtxoState, FederationError, FederationId,
-    FederationJournalEntry, FederationOperationId, FederationPaymentObservationContext,
-    MemberConfigPublic, FEDERATION_BARK_OPERATION_VERSION, FEDERATION_MAX_DERIVATION_INDEX,
+    FederationJournalEntry, FederationOperationId, FederationPaymentAdvancement,
+    FederationPaymentObservationContext, MemberConfigPublic, FEDERATION_BARK_OPERATION_VERSION,
+    FEDERATION_MAX_DERIVATION_INDEX,
 };
 use cdk::mint::{MintQuoteRequest, MintQuoteResponse, QuoteId};
 use cdk::nuts::CurrencyUnit;
@@ -20,21 +21,18 @@ use cdk::Amount;
 use cdk_frost::rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256};
 
-use crate::FederationNode;
-
 #[cfg(test)]
-use super::bark_evidence::bark_evidence_retry_collector;
-use super::bark_evidence::{
+use super::evidence::bark_evidence_retry_collector;
+use super::evidence::{
     bark_evidence_collector, collect_bark_evidence_certificate,
     persist_local_bark_evidence_attestation, scheduled_bark_evidence_collector_round,
 };
-use super::bark_observer::{
+use super::observer::{
     is_selected_bark_observer, is_selected_bark_receive_observer, required_bark_result_observers,
     unselected_bark_observer_wait,
 };
-use super::bark_secret::FederationBarkReceiveSecretCoordinator;
-use super::payment_schedule::FederationPaymentAdvancement;
-use super::peer_client::FederationRestPeerClient;
+use super::receive_secret::FederationBarkReceiveSecretCoordinator;
+use super::FederatedBarkNode;
 
 const FEDERATION_BARK_RECEIVE_INTENT_LIFETIME_SECONDS: u64 = 7 * 24 * 60 * 60;
 const FEDERATION_BARK_RECEIVE_EXPIRY_GRACE_SECONDS: u64 = 15 * 60;
@@ -99,7 +97,7 @@ fn validate_atomic_receive_claim_group(
 }
 
 async fn receive_transition_entry(
-    state: &FederationNode,
+    state: &dyn FederatedBarkNode,
     projection: &cdk::federation::FederationBarkProjectionSnapshot,
     action_id: FederationBarkActionId,
     phase: FederationBarkSemanticPhase,
@@ -112,7 +110,7 @@ async fn receive_transition_entry(
         .map(|record| record.operation_id)
         .ok_or(cdk::Error::Internal)?;
     state
-        .mint
+        .mint()
         .localstore()
         .get_federation_journal_entry_by_operation_id(operation_id)
         .await?
@@ -123,7 +121,7 @@ fn receive_claim_proposal(
     config: &cdk::federation::FederationConfig,
     projection: &cdk::federation::FederationBarkProjectionSnapshot,
     actor: cdk::federation::MemberId,
-) -> Result<cdk_bark::FederatedBarkReceiveClaimProposal, cdk::Error> {
+) -> Result<crate::FederatedBarkReceiveClaimProposal, cdk::Error> {
     let application = super::bark_application(config)?;
     let signer_set = config
         .members
@@ -140,7 +138,7 @@ fn receive_claim_proposal(
         .checked_add(1)
         .filter(|index| *index <= FEDERATION_MAX_DERIVATION_INDEX)
         .ok_or(cdk::Error::Internal)?;
-    Ok(cdk_bark::FederatedBarkReceiveClaimProposal {
+    Ok(crate::FederatedBarkReceiveClaimProposal {
         actor,
         signer_set,
         attempt: 1,
@@ -151,7 +149,7 @@ fn receive_claim_proposal(
 /// Poll and advance one already-created federated Bark quote. Mailbox events
 /// call the same function; they never supply settlement truth themselves.
 pub async fn advance_federated_bark_mint_quote(
-    state: &FederationNode,
+    state: &dyn FederatedBarkNode,
     quote_id: &QuoteId,
     observer_fallback_round: u32,
     wait_for_backend_update: bool,
@@ -166,8 +164,10 @@ pub async fn advance_federated_bark_mint_quote(
     .await
 }
 
+/// Advance a mint quote after a peer delivered Bark evidence, without waiting
+/// for a backend update.
 pub async fn advance_federated_bark_mint_quote_from_evidence_delivery(
-    state: &FederationNode,
+    state: &dyn FederatedBarkNode,
     quote_id: &QuoteId,
     collector_fallback_round: u32,
 ) -> Result<FederationPaymentAdvancement, cdk::Error> {
@@ -182,18 +182,18 @@ pub async fn advance_federated_bark_mint_quote_from_evidence_delivery(
 }
 
 async fn advance_federated_bark_mint_quote_inner(
-    state: &FederationNode,
+    state: &dyn FederatedBarkNode,
     quote_id: &QuoteId,
     observer_fallback_round: u32,
     collector_fallback_round_override: Option<u32>,
     wait_for_backend_update: bool,
 ) -> Result<FederationPaymentAdvancement, cdk::Error> {
-    let _guard = state.federation.bark_incoming_lock().lock().await;
-    let federation = state.mint.federation_config().ok_or(cdk::Error::Internal)?;
-    let runtime = state
-        .federation
-        .bark_runtime()
-        .ok_or_else(bark_unavailable)?;
+    let _guard = state.bark_incoming_lock().lock().await;
+    let federation = state
+        .mint()
+        .federation_config()
+        .ok_or(cdk::Error::Internal)?;
+    let runtime = state.bark_runtime().ok_or_else(bark_unavailable)?;
     let quote = quote_id.to_string();
     let projection_timer = super::latency::FederationLatencyTimer::start(
         super::latency::FederationLatencyCorrelation::Quote,
@@ -202,11 +202,12 @@ async fn advance_federated_bark_mint_quote_inner(
         super::latency::FederationLatencyDirection::Incoming,
         super::latency::FederationLatencyPhase::BarkProjectionReady,
     );
-    let projection_result = crate::federation_bark_ready_projection(&state.mint, runtime).await;
+    let projection_result =
+        super::projection::federation_bark_ready_projection(state.mint(), runtime).await;
     projection_timer.finish(super::latency::FederationLatencyOutcome::from_success(
         projection_result.is_ok(),
     ));
-    let projection = projection_result.map_err(super::bark_maintenance::projection_error)?;
+    let projection = projection_result.map_err(super::projection::projection_error)?;
     let Some(action) = projection
         .actions
         .iter()
@@ -216,7 +217,7 @@ async fn advance_federated_bark_mint_quote_inner(
         return Ok(FederationPaymentAdvancement::AwaitingFederationEvidence);
     };
     let intent = state
-        .mint
+        .mint()
         .federation_bark_receive_intent(action.origin_operation_id)
         .await?
         .ok_or(cdk::Error::Internal)?;
@@ -263,7 +264,7 @@ async fn advance_federated_bark_mint_quote_inner(
     match action.phase {
         FederationBarkSemanticPhase::ReceivePrepared => {
             let receive_actor = state
-                .mint
+                .mint()
                 .federation_bark_receive_actor(action.origin_operation_id)
                 .await?;
             let is_receive_actor = receive_actor == federation.member_id();
@@ -416,10 +417,7 @@ async fn advance_federated_bark_mint_quote_inner(
                 let envelope = federation.operation_envelope(super::bark_federation_operation(
                     FederationBarkOperation::ActionPlan(plan),
                 )?);
-                state
-                    .submit_federation_envelope(envelope)
-                    .await?
-                    .ensure_accepted()?;
+                state.submit_envelope(envelope).await?.ensure_accepted()?;
                 return Ok(FederationPaymentAdvancement::Progressed);
             }
             Ok(if is_evidence_collector {
@@ -447,7 +445,7 @@ async fn advance_federated_bark_mint_quote_inner(
                 _ => return Err(cdk::Error::Internal),
             };
             let plan_entry = state
-                .mint
+                .mint()
                 .localstore()
                 .get_federation_journal_entry_by_operation_id(plan_operation_id)
                 .await?
@@ -460,14 +458,13 @@ async fn advance_federated_bark_mint_quote_inner(
             if plan.actor != federation.member_id() {
                 return Ok(FederationPaymentAdvancement::AwaitingFederationEvidence);
             }
-            let authorization_entry =
-                super::bark_custody_attempt::accepted_bark_custody_authorization(
-                    &state.mint,
-                    &projection,
-                    &action,
-                    &plan_entry,
-                )
-                .await?;
+            let authorization_entry = super::custody_attempt::accepted_bark_custody_authorization(
+                state.mint(),
+                &projection,
+                &action,
+                &plan_entry,
+            )
+            .await?;
             let claim_timer = super::latency::FederationLatencyTimer::start(
                 super::latency::FederationLatencyCorrelation::Action,
                 action.action_id.to_string(),
@@ -483,7 +480,7 @@ async fn advance_federated_bark_mint_quote_inner(
             ));
             let outcome = match claim_result {
                 Ok(outcome) => outcome,
-                Err(cdk_bark::Error::CustodySignerUnavailable) => {
+                Err(crate::Error::CustodySignerUnavailable) => {
                     return advance_receive_signing_attempt(state, &action, &plan_entry).await;
                 }
                 Err(error) => {
@@ -497,7 +494,7 @@ async fn advance_federated_bark_mint_quote_inner(
             };
             let effective_phase = action.effective_phase();
             match outcome {
-                cdk_bark::FederatedBarkReceiveClaimOutcome::RecoveryRequired {
+                crate::FederatedBarkReceiveClaimOutcome::RecoveryRequired {
                     preimage_disclosed,
                     signer_unavailable,
                 } => {
@@ -506,10 +503,7 @@ async fn advance_federated_bark_mint_quote_inner(
                             federation.operation_envelope(super::bark_federation_operation(
                                 FederationBarkOperation::ActionTransition(preimage_disclosed),
                             )?);
-                        state
-                            .submit_federation_envelope(envelope)
-                            .await?
-                            .ensure_accepted()?;
+                        state.submit_envelope(envelope).await?.ensure_accepted()?;
                         Ok(FederationPaymentAdvancement::Progressed)
                     } else if signer_unavailable {
                         advance_receive_signing_attempt(state, &action, &plan_entry).await
@@ -517,7 +511,7 @@ async fn advance_federated_bark_mint_quote_inner(
                         Ok(FederationPaymentAdvancement::AwaitingExternalEvidence)
                     }
                 }
-                cdk_bark::FederatedBarkReceiveClaimOutcome::Claimed {
+                crate::FederatedBarkReceiveClaimOutcome::Claimed {
                     preimage_disclosed,
                     result,
                 } => {
@@ -554,7 +548,7 @@ async fn advance_federated_bark_mint_quote_inner(
                                 FederationBarkOperation::ActionTransition(claimed.clone()),
                             )?);
                         let responses = state
-                            .submit_federation_ordered_successor_group(vec![
+                            .submit_ordered_successor_group(vec![
                                 disclosed_envelope,
                                 claimed_envelope,
                             ])
@@ -585,7 +579,7 @@ async fn advance_federated_bark_mint_quote_inner(
                             federation.operation_envelope(super::bark_federation_operation(
                                 FederationBarkOperation::ActionTransition(claimed.clone()),
                             )?);
-                        let response = state.submit_federation_envelope(envelope).await?;
+                        let response = state.submit_envelope(envelope).await?;
                         response.ensure_accepted()?;
                         (claimed, response)
                     };
@@ -649,15 +643,15 @@ async fn advance_federated_bark_mint_quote_inner(
 }
 
 async fn advance_receive_signing_attempt(
-    state: &FederationNode,
+    state: &dyn FederatedBarkNode,
     action: &FederationBarkActionRecord,
     plan_entry: &FederationJournalEntry,
 ) -> Result<FederationPaymentAdvancement, cdk::Error> {
-    let federation = state.mint.federation_config().ok_or(cdk::Error::Internal)?;
-    let runtime = state
-        .federation
-        .bark_runtime()
-        .ok_or_else(bark_unavailable)?;
+    let federation = state
+        .mint()
+        .federation_config()
+        .ok_or(cdk::Error::Internal)?;
+    let runtime = state.bark_runtime().ok_or_else(bark_unavailable)?;
     let retry = runtime
         .advance_signing_attempt(action, plan_entry)
         .map_err(|error| {
@@ -669,26 +663,23 @@ async fn advance_receive_signing_attempt(
     let envelope = federation.operation_envelope(super::bark_federation_operation(
         FederationBarkOperation::ActionTransition(retry),
     )?);
-    state
-        .submit_federation_envelope(envelope)
-        .await?
-        .ensure_accepted()?;
+    state.submit_envelope(envelope).await?.ensure_accepted()?;
     Ok(FederationPaymentAdvancement::Progressed)
 }
 
 async fn advance_receive_claimed_evidence(
-    state: &FederationNode,
+    state: &dyn FederatedBarkNode,
     projection: &cdk::federation::FederationBarkProjectionSnapshot,
     action: &cdk::federation::FederationBarkActionRecord,
     intent: &FederationBarkReceiveIntent,
     observer_fallback_round: u32,
     collector_fallback_round_override: Option<u32>,
 ) -> Result<FederationPaymentAdvancement, cdk::Error> {
-    let federation = state.mint.federation_config().ok_or(cdk::Error::Internal)?;
-    let runtime = state
-        .federation
-        .bark_runtime()
-        .ok_or_else(bark_unavailable)?;
+    let federation = state
+        .mint()
+        .federation_config()
+        .ok_or(cdk::Error::Internal)?;
+    let runtime = state.bark_runtime().ok_or_else(bark_unavailable)?;
     let FederationBarkOperation::ActionTransition(claimed) = &action.operation else {
         return Err(cdk::Error::Internal);
     };
@@ -794,10 +785,7 @@ async fn advance_receive_claimed_evidence(
         let envelope = federation.operation_envelope(super::bark_federation_operation(
             FederationBarkOperation::EvidenceCertificate(certificate),
         )?);
-        state
-            .submit_federation_envelope(envelope)
-            .await?
-            .ensure_accepted()?;
+        state.submit_envelope(envelope).await?.ensure_accepted()?;
         return Ok(FederationPaymentAdvancement::Progressed);
     }
     // Only the active collector starts the bounded standby timer. Letting
@@ -821,14 +809,11 @@ pub fn receive_is_automatically_terminal(
 
 /// Retry invoice preparation for one exact accepted receive intent.
 pub async fn advance_federated_bark_receive_intent(
-    state: &FederationNode,
+    state: &dyn FederatedBarkNode,
     action_id: FederationBarkActionId,
 ) -> Result<usize, cdk::Error> {
-    let _guard = state.federation.bark_incoming_lock().lock().await;
-    let runtime = state
-        .federation
-        .bark_runtime()
-        .ok_or_else(bark_unavailable)?;
+    let _guard = state.bark_incoming_lock().lock().await;
+    let runtime = state.bark_runtime().ok_or_else(bark_unavailable)?;
     let projection_timer = super::latency::FederationLatencyTimer::start(
         super::latency::FederationLatencyCorrelation::Action,
         action_id.to_string(),
@@ -836,11 +821,12 @@ pub async fn advance_federated_bark_receive_intent(
         super::latency::FederationLatencyDirection::Incoming,
         super::latency::FederationLatencyPhase::BarkProjectionReady,
     );
-    let projection_result = crate::federation_bark_ready_projection(&state.mint, runtime).await;
+    let projection_result =
+        super::projection::federation_bark_ready_projection(state.mint(), runtime).await;
     projection_timer.finish(super::latency::FederationLatencyOutcome::from_success(
         projection_result.is_ok(),
     ));
-    let projection = projection_result.map_err(super::bark_maintenance::projection_error)?;
+    let projection = projection_result.map_err(super::projection::projection_error)?;
     let action = projection
         .actions
         .iter()
@@ -887,7 +873,7 @@ pub fn federated_bark_quote_id(
 
 /// Prepare the ordinary CDK quote from a consensus-accepted Bark invoice.
 pub async fn prepare_federated_bark_mint_quote(
-    state: &FederationNode,
+    state: &dyn FederatedBarkNode,
     quote_id: QuoteId,
     request: MintQuoteRequest,
 ) -> Result<
@@ -898,21 +884,21 @@ pub async fn prepare_federated_bark_mint_quote(
     ),
     cdk::Error,
 > {
-    let _guard = state.federation.bark_incoming_lock().lock().await;
-    if let Some(quote) = state.mint.localstore().get_mint_quote(&quote_id).await? {
+    let _guard = state.bark_incoming_lock().lock().await;
+    if let Some(quote) = state.mint().localstore().get_mint_quote(&quote_id).await? {
         let request_lookup_id = quote.request_lookup_id.clone();
         return Ok((quote.try_into()?, request_lookup_id, None));
     }
     let (invoice, receive_prepared) = accepted_invoice(state, &quote_id, &request).await?;
     let (response, request_lookup_id) = state
-        .mint
+        .mint()
         .prepare_bolt11_mint_quote_with_invoice(quote_id, request, invoice)
         .await?;
     Ok((response, request_lookup_id, receive_prepared))
 }
 
 async fn accepted_invoice(
-    state: &FederationNode,
+    state: &dyn FederatedBarkNode,
     quote_id: &QuoteId,
     request: &MintQuoteRequest,
 ) -> Result<
@@ -931,19 +917,19 @@ async fn accepted_invoice(
     {
         return Err(cdk::Error::InvalidPaymentRequest);
     }
-    let federation = state.mint.federation_config().ok_or(cdk::Error::Internal)?;
-    let runtime = state
-        .federation
-        .bark_runtime()
-        .ok_or_else(bark_unavailable)?;
+    let federation = state
+        .mint()
+        .federation_config()
+        .ok_or(cdk::Error::Internal)?;
+    let runtime = state.bark_runtime().ok_or_else(bark_unavailable)?;
     let limits = runtime.limits();
     let amount = u64::from(bolt11.amount);
     if amount < limits.minimum_sat() || amount > limits.maximum_sat() {
         return Err(cdk::Error::InvalidPaymentRequest);
     }
-    let projection = crate::federation_bark_ready_projection(&state.mint, runtime)
+    let projection = super::projection::federation_bark_ready_projection(state.mint(), runtime)
         .await
-        .map_err(super::bark_maintenance::projection_error)?;
+        .map_err(super::projection::projection_error)?;
     let quote = quote_id.to_string();
     let action = projection
         .actions
@@ -954,7 +940,7 @@ async fn accepted_invoice(
         return match &action.operation {
             FederationBarkOperation::ReceivePrepared(prepared) => {
                 let intent = state
-                    .mint
+                    .mint()
                     .federation_bark_receive_intent(prepared.intent_operation_id)
                     .await?
                     .ok_or(cdk::Error::InvalidPaymentRequest)?;
@@ -1027,16 +1013,7 @@ async fn accepted_invoice(
         .filter(|member| member.member_id != federation.member_id())
         .cloned()
         .collect::<Vec<MemberConfigPublic>>();
-    let peer_client = FederationRestPeerClient::new_with_validated_config(
-        state.federation.transport.clone(),
-        federation.public_config(),
-        federation.private_config().clone(),
-        state
-            .federation
-            .peer_sync_config()
-            .ok_or_else(bark_unavailable)?,
-    )
-    .map_err(|_| bark_unavailable())?;
+    let peer_client = state.bark_peers().map_err(|_| bark_unavailable())?;
     let secret_timer = super::latency::FederationLatencyTimer::start(
         super::latency::FederationLatencyCorrelation::Action,
         intent.action_id.to_string(),
@@ -1044,7 +1021,7 @@ async fn accepted_invoice(
         super::latency::FederationLatencyDirection::Incoming,
         super::latency::FederationLatencyPhase::BarkSecretReplication,
     );
-    let secret_result = FederationBarkReceiveSecretCoordinator::new(&peer_client)
+    let secret_result = FederationBarkReceiveSecretCoordinator::new(peer_client.as_ref())
         .distribute(
             federation.public_config(),
             &binding,
@@ -1063,12 +1040,12 @@ async fn accepted_invoice(
     let envelope = federation.operation_envelope(super::bark_federation_operation(
         FederationBarkOperation::ReceiveIntent(intent.clone()),
     )?);
-    let accepted = state.submit_federation_envelope(envelope).await?;
+    let accepted = state.submit_envelope(envelope).await?;
     let entry = accepted.outcome.entry();
     store
         .mark_intent_accepted(
             intent.action_id,
-            cdk_bark::FederatedBarkReceiveSecretAcceptedRef {
+            crate::FederatedBarkReceiveSecretAcceptedRef {
                 operation_id: entry.operation_id,
                 operation_index: entry.index,
             },
@@ -1083,7 +1060,7 @@ async fn accepted_invoice(
 }
 
 async fn fresh_intent(
-    state: &FederationNode,
+    state: &dyn FederatedBarkNode,
     quote_id: &QuoteId,
     request: &cdk::nuts::MintQuoteBolt11Request,
     projection: &cdk::federation::FederationBarkProjectionSnapshot,
@@ -1095,11 +1072,11 @@ async fn fresh_intent(
     ),
     cdk::Error,
 > {
-    let federation = state.mint.federation_config().ok_or(cdk::Error::Internal)?;
-    let runtime = state
-        .federation
-        .bark_runtime()
-        .ok_or_else(bark_unavailable)?;
+    let federation = state
+        .mint()
+        .federation_config()
+        .ok_or(cdk::Error::Internal)?;
+    let runtime = state.bark_runtime().ok_or_else(bark_unavailable)?;
     let application =
         super::bark_application(federation.public_config()).map_err(|_| bark_unavailable())?;
     let minimum_cltv_delta = runtime
@@ -1169,7 +1146,7 @@ async fn fresh_intent(
 }
 
 async fn prepare_and_accept_invoice(
-    state: &FederationNode,
+    state: &dyn FederatedBarkNode,
     intent_operation_id: FederationOperationId,
     intent_operation_index: u64,
     intent: &FederationBarkReceiveIntent,
@@ -1177,13 +1154,13 @@ async fn prepare_and_accept_invoice(
     let (invoice, prepared, envelope) =
         prepare_invoice_candidate(state, intent_operation_id, intent_operation_index, intent)
             .await?;
-    state.submit_federation_envelope(envelope).await?;
+    state.submit_envelope(envelope).await?;
     apply_accepted_receive_prepared(state, intent, &prepared).await;
     Ok(invoice)
 }
 
 async fn prepare_invoice_candidate(
-    state: &FederationNode,
+    state: &dyn FederatedBarkNode,
     intent_operation_id: FederationOperationId,
     intent_operation_index: u64,
     intent: &FederationBarkReceiveIntent,
@@ -1195,7 +1172,10 @@ async fn prepare_invoice_candidate(
     ),
     cdk::Error,
 > {
-    let federation = state.mint.federation_config().ok_or(cdk::Error::Internal)?;
+    let federation = state
+        .mint()
+        .federation_config()
+        .ok_or(cdk::Error::Internal)?;
     let execution_actor = federation.member_id();
     if !intent
         .secret_acknowledgements
@@ -1205,15 +1185,12 @@ async fn prepare_invoice_candidate(
     {
         return Err(bark_unavailable());
     }
-    let runtime = state
-        .federation
-        .bark_runtime()
-        .ok_or_else(bark_unavailable)?;
+    let runtime = state.bark_runtime().ok_or_else(bark_unavailable)?;
     runtime
         .receive_secret_store()
         .mark_intent_accepted(
             intent.action_id,
-            cdk_bark::FederatedBarkReceiveSecretAcceptedRef {
+            crate::FederatedBarkReceiveSecretAcceptedRef {
                 operation_id: intent_operation_id,
                 operation_index: intent_operation_index,
             },
@@ -1251,16 +1228,16 @@ async fn prepare_invoice_candidate(
 }
 
 async fn apply_accepted_receive_prepared(
-    state: &FederationNode,
+    state: &dyn FederatedBarkNode,
     intent: &FederationBarkReceiveIntent,
     prepared: &FederationBarkReceivePrepared,
 ) {
-    let Some(runtime) = state.federation.bark_runtime() else {
+    let Some(runtime) = state.bark_runtime() else {
         return;
     };
     if let Err(error) = runtime.apply_receive_prepared(intent, prepared).await {
         runtime
-            .mark_degraded(cdk_bark::FederatedBarkDegradedReason::ProjectionInvalid)
+            .mark_degraded(crate::FederatedBarkDegradedReason::ProjectionInvalid)
             .await;
         tracing::error!(
             action_id = %intent.action_id,

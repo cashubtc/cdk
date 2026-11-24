@@ -6,17 +6,15 @@ use cdk::federation::{
     FederationBarkMemberObservation, FederationOperationId, MemberId,
 };
 
-use crate::FederationNode;
-
 use super::latency::{
     FederationLatencyBackend, FederationLatencyCorrelation, FederationLatencyDirection,
     FederationLatencyOutcome, FederationLatencyPhase, FederationLatencyTimer,
 };
-use super::peer_client::FederationRestPeerClient;
+use super::FederatedBarkNode;
 
 #[allow(clippy::too_many_arguments)]
 pub async fn collect_bark_evidence_certificate(
-    state: &FederationNode,
+    state: &dyn FederatedBarkNode,
     action_id: FederationBarkActionId,
     actor: MemberId,
     phase: FederationBarkEvidencePhase,
@@ -55,7 +53,7 @@ pub async fn collect_bark_evidence_certificate(
 
 #[allow(clippy::too_many_arguments)]
 async fn collect_bark_evidence_certificate_inner(
-    state: &FederationNode,
+    state: &dyn FederatedBarkNode,
     actor: MemberId,
     phase: FederationBarkEvidencePhase,
     evidence_operation_id: FederationOperationId,
@@ -64,7 +62,10 @@ async fn collect_bark_evidence_certificate_inner(
     required: u16,
     collector_fallback_round: u32,
 ) -> Result<Option<FederationBarkEvidenceCertificate>, cdk::Error> {
-    let federation = state.mint.federation_config().ok_or(cdk::Error::Internal)?;
+    let federation = state
+        .mint()
+        .federation_config()
+        .ok_or(cdk::Error::Internal)?;
     let (binding, _) = persist_local_bark_evidence_attestation(
         state,
         phase,
@@ -72,10 +73,7 @@ async fn collect_bark_evidence_certificate_inner(
         attempt,
         observation,
     )?;
-    let store = state
-        .federation
-        .bark_receive_secrets()
-        .ok_or(cdk::Error::Internal)?;
+    let store = state.bark_receive_secrets().ok_or(cdk::Error::Internal)?;
     let collector = bark_evidence_collector(
         federation.public_config().members.keys().copied(),
         actor,
@@ -91,16 +89,7 @@ async fn collect_bark_evidence_certificate_inner(
             .public_config()
             .member(collector)
             .ok_or(cdk::Error::Internal)?;
-        let peer_client = FederationRestPeerClient::new_with_validated_config(
-            state.federation.transport.clone(),
-            federation.public_config(),
-            federation.private_config().clone(),
-            state
-                .federation
-                .peer_sync_config()
-                .ok_or(cdk::Error::Internal)?,
-        )
-        .map_err(|_| cdk::Error::Internal)?;
+        let peer_client = state.bark_peers()?;
         for attestation in attestations {
             let request =
                 FederationBarkEvidenceAttestationRequest::new(binding.clone(), attestation);
@@ -153,7 +142,7 @@ async fn collect_bark_evidence_certificate_inner(
 }
 
 pub fn persist_local_bark_evidence_attestation(
-    state: &FederationNode,
+    state: &dyn FederatedBarkNode,
     phase: FederationBarkEvidencePhase,
     evidence_operation_id: FederationOperationId,
     attempt: u32,
@@ -165,7 +154,10 @@ pub fn persist_local_bark_evidence_attestation(
     ),
     cdk::Error,
 > {
-    let federation = state.mint.federation_config().ok_or(cdk::Error::Internal)?;
+    let federation = state
+        .mint()
+        .federation_config()
+        .ok_or(cdk::Error::Internal)?;
     let binding = FederationBarkEvidenceBinding::from_observation(
         federation.public_config(),
         phase,
@@ -179,7 +171,6 @@ pub fn persist_local_bark_evidence_attestation(
         federation.private_config(),
     )?;
     state
-        .federation
         .bark_receive_secrets()
         .ok_or(cdk::Error::Internal)?
         .persist_evidence_attestation(&binding, attestation, federation.public_config())

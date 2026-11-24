@@ -65,14 +65,14 @@ async fn create_mint_quote_for_route(
             && state.federation.bark_runtime().is_some()
         {
             let federation = state.mint.federation_config().ok_or(cdk::Error::Internal)?;
-            let quote_id = crate::federation::bark_incoming::federated_bark_quote_id(
-                federation.federation_id(),
-                &request,
-            )?;
+            let quote_id =
+                crate::federation::federated_bark_quote_id(federation.federation_id(), &request)?;
             state.mint.check_mint_request_acceptable(&request).await?;
             let (response, request_lookup_id, receive_prepared) =
-                crate::federation::bark_incoming::prepare_federated_bark_mint_quote(
-                    state, quote_id, request,
+                crate::federation::prepare_federated_bark_mint_quote(
+                    &state.node,
+                    quote_id,
+                    request,
                 )
                 .await?;
             return Ok((response, Some(request_lookup_id), receive_prepared));
@@ -1050,8 +1050,8 @@ async fn process_federation_melt_request(
                     cdk_common::mint::MeltPaymentRequest::Bolt11 { .. }
                 )
             {
-                crate::federation::bark_outgoing::submit_federated_bark_melt_with_plan(
-                    state,
+                crate::federation::submit_federated_bark_melt_with_plan(
+                    &state.node,
                     envelope.clone(),
                     payload.quote(),
                 )

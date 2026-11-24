@@ -614,7 +614,7 @@ pub async fn create_federation_runtime_state_with_wallet(
     #[cfg(feature = "federation-bark")]
     if let Some(runtime) = bark.as_ref() {
         let persisted_entries = db.get_federation_journal_entries().await?;
-        if let Err(err) = Box::pin(reconcile_federation_bark_runtime(
+        if let Err(err) = Box::pin(cdk_bark::reconcile_federation_bark_runtime(
             mint,
             runtime,
             &persisted_entries,
@@ -645,99 +645,6 @@ pub async fn create_federation_runtime_state_with_wallet(
         #[cfg(feature = "federation-bdk")]
         bdk_degraded_reason: startup_bdk_degraded_reason,
     })
-}
-
-#[cfg(feature = "federation-bark")]
-pub async fn reconcile_federation_bark_runtime(
-    mint: &Mint,
-    runtime: &Arc<cdk_bark::FederatedBarkRuntime>,
-    entries: &[FederationJournalEntry],
-) -> Result<()> {
-    cdk_bark::FederatedBarkRecoveryDriver::new(runtime.clone())
-        .reconcile(&AxumFederatedBarkReplaySource { mint }, entries)
-        .await
-        .map_err(|error| {
-            error
-                .into_federation_error("replay accepted state", None)
-                .into()
-        })
-}
-
-#[allow(missing_debug_implementations)]
-#[cfg(feature = "federation-bark")]
-pub struct AxumFederatedBarkReplaySource<'a> {
-    pub mint: &'a Mint,
-}
-
-#[cfg(feature = "federation-bark")]
-#[async_trait::async_trait]
-impl cdk_bark::FederatedBarkReplaySource for AxumFederatedBarkReplaySource<'_> {
-    async fn replay_projection(
-        &self,
-    ) -> std::result::Result<cdk::federation::FederationBarkProjectionSnapshot, cdk_bark::Error>
-    {
-        self.mint
-            .federation_bark_projection_snapshot()
-            .await
-            .map_err(|_| cdk_bark::Error::ReceiveProjectionFailed)
-    }
-
-    async fn replay_entry(
-        &self,
-        operation_id: cdk::federation::FederationOperationId,
-    ) -> std::result::Result<FederationJournalEntry, cdk_bark::Error> {
-        self.mint
-            .localstore()
-            .get_federation_journal_entry_by_operation_id(operation_id)
-            .await
-            .map_err(|_| cdk_bark::Error::MaintenanceReconciliationFailed)?
-            .ok_or(cdk_bark::Error::MaintenanceReconciliationFailed)
-    }
-
-    async fn replay_receive_intent(
-        &self,
-        operation_id: cdk::federation::FederationOperationId,
-    ) -> std::result::Result<cdk::federation::FederationBarkReceiveIntent, cdk_bark::Error> {
-        self.mint
-            .federation_bark_receive_intent(operation_id)
-            .await
-            .map_err(|_| cdk_bark::Error::ReceiveProjectionFailed)?
-            .ok_or(cdk_bark::Error::ReceiveProjectionFailed)
-    }
-
-    async fn replay_melt_quote(
-        &self,
-        quote: &str,
-    ) -> std::result::Result<cdk_common::mint::MeltQuote, cdk_bark::Error> {
-        let quote = quote
-            .parse::<cdk::mint::QuoteId>()
-            .map_err(|_| cdk_bark::Error::SendReconciliationFailed)?;
-        self.mint
-            .localstore()
-            .get_melt_quote(&quote)
-            .await
-            .map_err(|_| cdk_bark::Error::SendReconciliationFailed)?
-            .ok_or(cdk_bark::Error::SendReconciliationFailed)
-    }
-}
-
-#[cfg(feature = "federation-bark")]
-pub async fn federation_bark_ready_projection(
-    mint: &Mint,
-    runtime: &Arc<cdk_bark::FederatedBarkRuntime>,
-) -> Result<cdk::federation::FederationBarkProjectionSnapshot> {
-    let mut projection = mint.federation_bark_projection_snapshot().await?;
-    let required_frontier = projection.frontier().unwrap_or(0);
-    if runtime.ensure_ready(required_frontier).await.is_err() {
-        let entries = mint.localstore().get_federation_journal_entries().await?;
-        Box::pin(reconcile_federation_bark_runtime(mint, runtime, &entries)).await?;
-        projection = mint.federation_bark_projection_snapshot().await?;
-    }
-    runtime
-        .ensure_ready(projection.frontier().unwrap_or(0))
-        .await
-        .map_err(|error| error.into_federation_error("verify projection readiness", None))?;
-    Ok(projection)
 }
 
 #[cfg(feature = "federation-bdk")]

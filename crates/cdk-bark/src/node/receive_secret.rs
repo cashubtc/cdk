@@ -1,4 +1,4 @@
-//! Authenticated private transport for protected Bark receive secrets.
+//! Replication of protected Bark receive secrets to the other members.
 
 use cdk::federation::{
     FederationBarkPrepareReceiveSecretRequest, FederationBarkReceiveSecret,
@@ -8,16 +8,12 @@ use cdk::federation::{
 use futures::future::join_all;
 
 /// Bounded collector for one exact protected receive-secret replication set.
-#[derive(Debug)]
-pub struct FederationBarkReceiveSecretCoordinator<'a, T> {
-    client: &'a super::peer_client::FederationRestPeerClient<T>,
+pub struct FederationBarkReceiveSecretCoordinator<'a> {
+    client: &'a dyn super::FederatedBarkPeers,
 }
 
-impl<'a, T> FederationBarkReceiveSecretCoordinator<'a, T>
-where
-    T: cdk_http_client::Transport,
-{
-    pub fn new(client: &'a super::peer_client::FederationRestPeerClient<T>) -> Self {
+impl<'a> FederationBarkReceiveSecretCoordinator<'a> {
+    pub fn new(client: &'a dyn super::FederatedBarkPeers) -> Self {
         Self { client }
     }
 

@@ -18,9 +18,12 @@ mod dkg_driver;
 mod frost_config;
 mod frost_dkg;
 mod journal;
+#[allow(missing_docs)]
+pub mod latency;
 mod liveness;
 mod operation;
 mod operator_status;
+mod payment_advancement;
 mod recovery;
 mod setup;
 mod signing;
@@ -166,6 +169,7 @@ pub use self::operator_status::{
     FederationWalletOperationPhaseCount, FederationWalletOperatorStatus,
     FederationWalletTransactionStatus, FederationWalletUtxoStatusCount,
 };
+pub use self::payment_advancement::FederationPaymentAdvancement;
 pub use self::recovery::{
     FederationRecoveryAction, FederationRecoveryActionCount, FederationRecoveryPhase,
     FederationWalletRecoveryStatus,

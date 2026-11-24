@@ -151,7 +151,7 @@ impl FederationServices {
                 .clone()
                 .spawn(self.state.clone());
             #[cfg(feature = "federation-bark")]
-            super::bark_maintenance::spawn(&self.state);
+            super::bark_node::spawn_bark_recovery(&self.state);
             if let Some(config) = self.peer_sync {
                 super::spawn_federation_peer_sync_loop_with_config(self.state, config)?;
             }

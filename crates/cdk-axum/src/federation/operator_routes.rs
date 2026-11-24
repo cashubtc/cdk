@@ -142,13 +142,13 @@ pub(super) async fn post_bark_reconcile(
         .get_federation_journal_entries()
         .await
         .map_err(|error| cdk_error_response(error.into()))?;
-    Box::pin(crate::reconcile_federation_bark_runtime(
+    Box::pin(crate::federation::reconcile_federation_bark_runtime(
         &state.mint,
         &runtime,
         &entries,
     ))
     .await
-    .map_err(anyhow_response)?;
+    .map_err(|error| anyhow_response(error.into()))?;
     let runtime_status = runtime.status(accepted_frontier).await;
     state
         .record_federation_sequence(kind, verified.sender(), verified.sequence())
@@ -182,8 +182,8 @@ pub(super) async fn post_bark_action_retry(
         .ensure_federation_ready_for_authoritative_read()
         .await
         .map_err(cdk_error_response)?;
-    let projection = super::bark_maintenance::recovery_projection(
-        &state,
+    let projection = crate::federation::federation_bark_recovery_projection(
+        &state.node,
         state
             .federation
             .bark_runtime()
@@ -322,7 +322,7 @@ async fn retry_bark_action(
         Some(FederationBarkActionKind::LightningSend)
         | Some(FederationBarkActionKind::FailedSendRevocation) => {
             let quote = action_quote_id(action).map_err(cdk_error_response)?;
-            super::bark_outgoing::advance_federated_bark_melt_quote(state, &quote, 0, false)
+            crate::federation::advance_federated_bark_melt_quote(&state.node, &quote, 0, false)
                 .await
                 .map(|outcome| {
                     usize::from(matches!(
@@ -334,15 +334,15 @@ async fn retry_bark_action(
         }
         Some(FederationBarkActionKind::IncomingClaim) | None => {
             if action.phase == cdk::federation::FederationBarkSemanticPhase::ReceiveIntent {
-                return super::bark_incoming::advance_federated_bark_receive_intent(
-                    state,
+                return crate::federation::advance_federated_bark_receive_intent(
+                    &state.node,
                     action.action_id,
                 )
                 .await
                 .map_err(cdk_error_response);
             }
             let quote = action_quote_id(action).map_err(cdk_error_response)?;
-            super::bark_incoming::advance_federated_bark_mint_quote(state, &quote, 0, false)
+            crate::federation::advance_federated_bark_mint_quote(&state.node, &quote, 0, false)
                 .await
                 .map(|outcome| {
                     usize::from(matches!(
@@ -353,7 +353,7 @@ async fn retry_bark_action(
                 .map_err(cdk_error_response)
         }
         Some(FederationBarkActionKind::Refresh) | Some(FederationBarkActionKind::EmergencyExit) => {
-            super::bark_maintenance::retry_federated_bark_maintenance_action(
+            crate::federation::retry_federated_bark_maintenance_action(
                 state.node.clone(),
                 action.action_id,
             )
