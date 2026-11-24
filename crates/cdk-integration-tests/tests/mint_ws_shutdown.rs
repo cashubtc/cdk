@@ -70,3 +70,54 @@ async fn stopping_mint_closes_websockets_and_refuses_new_ones() {
 
     mint.stop().await.expect("mint stops");
 }
+
+/// A single in-memory connection with bounded buffering in each direction.
+struct SingleConnection(Option<tokio::io::DuplexStream>);
+
+impl axum::serve::Listener for SingleConnection {
+    type Io = tokio::io::DuplexStream;
+    type Addr = ();
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        match self.0.take() {
+            Some(stream) => (stream, ()),
+            None => std::future::pending().await,
+        }
+    }
+
+    fn local_addr(&self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn stop_interrupts_a_blocked_websocket_write() {
+    use futures::SinkExt;
+    use tokio::io::AsyncReadExt;
+
+    let mint = mint_connector_test::build_test_mint().await;
+    let router = cdk_axum::create_mint_router(mint.clone(), vec!["bolt11".to_string()])
+        .await
+        .unwrap();
+    let (client, server) = tokio::io::duplex(64);
+    let server = tokio::spawn(async move {
+        axum::serve(SingleConnection(Some(server)), router)
+            .await
+            .unwrap();
+    });
+    let (mut socket, _) = tokio_tungstenite::client_async("ws://localhost/v1/ws", client)
+        .await
+        .unwrap();
+    socket
+        .send(Message::Ping(vec![0; 125].into()))
+        .await
+        .unwrap();
+    // The server has started writing its response. The 64-byte buffer
+    // cannot hold the rest of the frame, and the client stops reading here.
+    socket.get_mut().read_u8().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(3), mint.stop())
+        .await
+        .expect("blocked write must not keep the connection alive")
+        .unwrap();
+    server.abort();
+}

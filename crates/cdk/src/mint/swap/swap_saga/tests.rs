@@ -3263,7 +3263,15 @@ async fn test_swap_saga_compensation_publishes_unspent_inputs() {
 struct SignGate {
     reached: tokio::sync::oneshot::Sender<()>,
     release: tokio::sync::oneshot::Receiver<()>,
+    /// Whether the call panics once it is released.
+    panic: bool,
 }
+
+/// Fires once an armed call is parked, and releases it.
+type GateHandles = (
+    tokio::sync::oneshot::Receiver<()>,
+    tokio::sync::oneshot::Sender<()>,
+);
 
 /// Delegates to the real signatory but can hold the next `blind_sign` call
 /// open, parking a swap between its setup and finalize transactions.
@@ -3275,17 +3283,22 @@ struct BlindSignGate {
 impl BlindSignGate {
     /// Arm the next `blind_sign` call to pause. Returns a receiver that fires
     /// once the call is parked, and a sender that releases it.
-    async fn arm(
-        &self,
-    ) -> (
-        tokio::sync::oneshot::Receiver<()>,
-        tokio::sync::oneshot::Sender<()>,
-    ) {
+    async fn arm(&self) -> GateHandles {
+        self.arm_with(false).await
+    }
+
+    /// Like [`Self::arm`], but the parked call panics once it is released.
+    async fn arm_to_panic(&self) -> GateHandles {
+        self.arm_with(true).await
+    }
+
+    async fn arm_with(&self, panic: bool) -> GateHandles {
         let (reached_tx, reached_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = tokio::sync::oneshot::channel();
         *self.gate.lock().await = Some(SignGate {
             reached: reached_tx,
             release: release_rx,
+            panic,
         });
         (reached_rx, release_tx)
     }
@@ -3305,6 +3318,9 @@ impl Signatory for BlindSignGate {
         if let Some(gate) = gate {
             let _ = gate.reached.send(());
             let _ = gate.release.await;
+            if gate.panic {
+                panic!("blind signing failed");
+            }
         }
         self.inner.blind_sign(blinded_messages).await
     }
@@ -3514,6 +3530,66 @@ async fn test_stop_aborts_a_swap_past_the_deadline_and_restart_recovers_it() {
         .unwrap();
     assert!(sagas.is_empty(), "restart must recover the aborted swap");
 
+    mint.process_swap_request(request)
+        .await
+        .expect("recovered swap can be retried");
+    let states = mint.localstore().get_proofs_states(&ys).await.unwrap();
+    assert!(states.iter().all(|state| *state == Some(State::Spent)));
+
+    mint.stop().await.expect("mint stops");
+}
+
+/// Tests that a swap task that panics while the mint drains does not hold up
+/// the stop, and that the next start recovers what the panic left behind.
+#[tokio::test]
+async fn test_stop_survives_a_swap_that_panics_during_the_drain() {
+    let (mint, gate) = create_gated_mint().await;
+
+    let amount = Amount::from(100);
+    let (input_proofs, _) = create_swap_inputs(&mint, amount).await;
+    let (outputs, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let ys = input_proofs.ys().unwrap();
+    let request = SwapRequest::new(input_proofs, outputs);
+
+    let (reached, release) = gate.arm_to_panic().await;
+    let swap = tokio::spawn({
+        let mint = Arc::clone(&mint);
+        let request = request.clone();
+        async move { mint.process_swap_request(request).await }
+    });
+    reached.await.expect("swap reached the signing gate");
+
+    let mut stop = tokio::spawn({
+        let mint = Arc::clone(&mint);
+        async move { mint.stop_with_timeout(Duration::from_secs(60)).await }
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), &mut stop)
+            .await
+            .is_err(),
+        "stop must wait for the running swap"
+    );
+
+    release.send(()).expect("release the signing gate");
+
+    // The panicked task counts as finished: nothing was left to abort.
+    let report = stop.await.expect("stop joins").expect("stop succeeds");
+    assert_eq!(report.drained, 1);
+    assert_eq!(report.aborted, 0);
+
+    // The panic still reaches the swap's caller.
+    assert!(swap.await.expect_err("swap panics").is_panic());
+
+    mint.start().await.expect("mint restarts");
+
+    assert!(
+        mint.localstore()
+            .get_incomplete_sagas(cdk_common::mint::OperationKind::Swap)
+            .await
+            .unwrap()
+            .is_empty(),
+        "restart must recover the panicked swap"
+    );
     mint.process_swap_request(request)
         .await
         .expect("recovered swap can be retried");

@@ -3014,6 +3014,71 @@ mod tests {
         mint.stop().await.expect("mint should stop");
     }
 
+    /// Repeated stop/start cycles leave the mint fully usable each time, and
+    /// no cycle leaves an operation or a connection tracked.
+    #[tokio::test]
+    async fn stop_start_cycles_keep_the_mint_usable() {
+        let mint = create_test_mint().await.unwrap();
+
+        let amount = Amount::from(64);
+        for cycle in 0..3 {
+            let inputs = mint_test_proofs(&mint, amount).await.unwrap();
+            let (outputs, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+            let request = SwapRequest::new(inputs, outputs);
+            let connection = mint
+                .track_connection()
+                .expect("running mint accepts connections");
+
+            let stop = tokio::spawn({
+                let mint = Arc::clone(&mint);
+                async move { mint.stop_with_timeout(Duration::from_secs(60)).await }
+            });
+
+            // The stop tells the connection to close and waits for its guard.
+            connection.closed().await;
+            drop(connection);
+            let report = stop.await.expect("stop joins").expect("stop succeeds");
+            // The issuance above may still be publishing its notification,
+            // which the stop drains. Nothing may need aborting.
+            assert_eq!(report.aborted, 0, "cycle {cycle}");
+
+            assert!(matches!(
+                mint.process_swap_request(request.clone()).await,
+                Err(Error::ShuttingDown)
+            ));
+            assert!(matches!(mint.track_connection(), Err(Error::ShuttingDown)));
+            assert_eq!(mint.operations.active(), 0);
+            assert_eq!(mint.connections.active(), 0);
+
+            mint.start().await.expect("mint restarts");
+            mint.process_swap_request(request)
+                .await
+                .expect("restarted mint accepts the swap");
+        }
+
+        mint.stop().await.expect("mint stops");
+    }
+
+    #[tokio::test]
+    async fn stop_finishes_after_caller_cancellation() {
+        let mint = create_test_mint().await.unwrap();
+        let old_supervisor = mint.task_state.lock().await.shutdown.clone().unwrap();
+        let connection = mint.track_connection().unwrap();
+        let stop = tokio::spawn({
+            let mint = mint.clone();
+            async move { mint.stop().await }
+        });
+        connection.closed().await;
+        stop.abort();
+        assert!(stop.await.unwrap_err().is_cancelled());
+        drop(connection);
+
+        // start waits on the shutdown worker's lifecycle lock.
+        mint.start().await.unwrap();
+        assert!(old_supervisor.is_cancelled());
+        mint.stop().await.unwrap();
+    }
+
     /// Payment backend that counts `start` and `stop` calls, and fails `start`
     /// once another backend sharing its counter has already started.
     struct LifecycleBackend {

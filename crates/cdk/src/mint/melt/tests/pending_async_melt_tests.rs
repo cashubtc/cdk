@@ -31,6 +31,11 @@ struct NoEventPendingBackend {
     strip_quote_lookup_id: bool,
     amount_mismatch_dispatch_error: bool,
     stall_status_checks: AtomicBool,
+    /// While set, `make_payment` never returns.
+    stall_dispatch: AtomicBool,
+    stall_stop: AtomicBool,
+    /// Notified when a `make_payment` call has been received.
+    dispatch_reached: tokio::sync::Notify,
     spent_msat: Option<u64>,
 }
 
@@ -56,6 +61,9 @@ impl NoEventPendingBackend {
             strip_quote_lookup_id: false,
             amount_mismatch_dispatch_error: false,
             stall_status_checks: AtomicBool::new(false),
+            stall_dispatch: AtomicBool::new(false),
+            stall_stop: AtomicBool::new(false),
+            dispatch_reached: tokio::sync::Notify::new(),
             spent_msat: None,
         }
     }
@@ -81,6 +89,14 @@ impl NoEventPendingBackend {
 #[async_trait]
 impl MintPayment for NoEventPendingBackend {
     type Err = payment::Error;
+
+    async fn stop(&self) -> Result<(), Self::Err> {
+        if self.stall_stop.load(Ordering::SeqCst) {
+            std::future::pending().await
+        } else {
+            Ok(())
+        }
+    }
 
     async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
         self.inner.get_settings().await
@@ -112,6 +128,11 @@ impl MintPayment for NoEventPendingBackend {
     ) -> Result<MakePaymentResponse, Self::Err> {
         if self.amount_mismatch_dispatch_error {
             return Err(payment::Error::AmountMismatch);
+        }
+
+        self.dispatch_reached.notify_one();
+        if self.stall_dispatch.load(Ordering::SeqCst) {
+            return futures::future::pending().await;
         }
 
         let mut response = self.inner.make_payment(unit, options).await?;
@@ -1150,4 +1171,105 @@ async fn stop_does_not_wait_for_pending_melt_settlement() {
         .await
         .unwrap();
     assert!(saga.is_some(), "pending melt must remain recoverable");
+}
+
+/// A melt stuck in its payment dispatch outlasts the drain time. The stop
+/// aborts it and still returns, and the next start resolves the melt from the
+/// backend's answer, releasing the inputs.
+#[tokio::test]
+async fn stop_aborts_a_melt_past_the_deadline_and_restart_recovers_it() {
+    let backend = Arc::new(NoEventPendingBackend::new(1, Some(MeltQuoteState::Unpaid)));
+    backend.stall_dispatch.store(true, Ordering::SeqCst);
+    let mint = create_pending_test_mint(backend.clone()).await.unwrap();
+    let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+    let input_ys = proofs.ys().unwrap();
+    let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+    let melt_request = create_test_melt_request(&proofs, &quote);
+
+    let pending = mint.melt(&melt_request).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), backend.dispatch_reached.notified())
+        .await
+        .expect("melt reaches its payment dispatch");
+
+    let report = mint
+        .stop_with_timeout(Duration::from_millis(50))
+        .await
+        .expect("stop succeeds");
+    assert_eq!(report.drained, 0);
+    assert_eq!(report.aborted, 1);
+    assert!(matches!(pending.await, Err(Error::ShuttingDown)));
+
+    // The abort left the melt as a crash would: saga kept, inputs reserved.
+    let saga = mint
+        .localstore()
+        .get_melt_saga_by_quote_id(&quote.id)
+        .await
+        .unwrap();
+    assert!(saga.is_some(), "aborted melt must remain recoverable");
+    let proof_states = mint
+        .localstore()
+        .get_proofs_states(&input_ys)
+        .await
+        .unwrap();
+    assert!(proof_states.iter().all(Option::is_some));
+
+    // Restart immediately with the actual lease state left by shutdown.
+    backend.stall_dispatch.store(false, Ordering::SeqCst);
+
+    mint.start().await.expect("mint restarts");
+
+    let saga = mint
+        .localstore()
+        .get_melt_saga_by_quote_id(&quote.id)
+        .await
+        .unwrap();
+    assert!(saga.is_none(), "restart must recover the aborted melt");
+    let proof_states = mint
+        .localstore()
+        .get_proofs_states(&input_ys)
+        .await
+        .unwrap();
+    assert!(proof_states.iter().all(Option::is_none));
+
+    mint.stop().await.expect("mint stops");
+}
+
+#[tokio::test]
+async fn stop_aborts_melt_waiting_for_setup() {
+    let backend = Arc::new(NoEventPendingBackend::new(1, None));
+    let mint = create_pending_test_mint(backend).await.unwrap();
+    let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+    let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+    let request = create_test_melt_request(&proofs, &quote);
+    let lock = mint.melt_quote_lock(&quote.id).await;
+    let _guard = lock.lock().await;
+    // Poll the entry point through admission, keeping the caller alive but
+    // unpolled while the mint stops.
+    let mut melt = Box::pin(mint.melt(&request));
+    assert!(futures::poll!(&mut melt).is_pending());
+    let report = mint.stop_with_timeout(Duration::ZERO).await.unwrap();
+    assert_eq!(report.aborted, 1);
+    assert!(matches!(melt.await, Err(Error::ShuttingDown)));
+    assert!(mint
+        .localstore()
+        .get_melt_saga_by_quote_id(&quote.id)
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn stop_times_out_stalled_processor_and_can_retry() {
+    let backend = Arc::new(NoEventPendingBackend::new(1, None));
+    let mint = create_pending_test_mint(backend.clone()).await.unwrap();
+    backend.stall_stop.store(true, Ordering::SeqCst);
+    tokio::time::pause();
+    let result = tokio::time::timeout(Duration::from_secs(10), mint.stop()).await;
+    assert!(result.expect("processor shutdown is bounded").is_err());
+    assert!(mint.start().await.is_err());
+    backend.stall_stop.store(false, Ordering::SeqCst);
+    mint.stop().await.unwrap();
+    tokio::time::resume();
+    mint.start().await.unwrap();
+    mint.stop().await.unwrap();
 }
