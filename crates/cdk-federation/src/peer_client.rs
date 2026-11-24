@@ -21,8 +21,9 @@ use cdk::federation::{
     FederationFrostSigningAck, FederationFrostSigningPackageRequest, FederationId,
     FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationPeerStatus,
     FederationPeerStatusRequest, FederationRestMessageKind, FederationSignedRequest,
-    FederationStateTransferRequest, FederationStateTransferResponse, MemberConfigPrivate,
-    MemberConfigPublic, FEDERATION_MAX_ALEPH_BFT_BACKUP_PAGE_BYTES,
+    FederationStateTransferRequest, FederationStateTransferResponse,
+    FederationStateTransferWindowRequest, FederationStateTransferWindowResponse,
+    MemberConfigPrivate, MemberConfigPublic, FEDERATION_MAX_ALEPH_BFT_BACKUP_PAGE_BYTES,
     FEDERATION_MAX_ALEPH_BFT_BACKUP_REQUEST_BYTES, FEDERATION_MAX_CHECKPOINT_CATCH_UP_PAGE_BYTES,
     FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES, FEDERATION_REST_API_VERSION,
 };
@@ -1242,6 +1243,37 @@ where
             .await?;
         response.ensure_within_page_limit()?;
         response.validate_for_request(self.federation_id, request)?;
+        Ok(response)
+    }
+
+    /// Fetch one page of a peer's validity window before `checkpoint`.
+    ///
+    /// The page is checked for shape and binding only; the window is trusted
+    /// once it chains to the checkpoint's signed cursors.
+    pub async fn fetch_state_transfer_window_page(
+        &self,
+        member: &MemberConfigPublic,
+        checkpoint: &FederationCheckpoint,
+        request: &FederationStateTransferWindowRequest,
+    ) -> anyhow::Result<FederationStateTransferWindowResponse> {
+        let signed = self.signed_request(
+            member,
+            FederationRestMessageKind::StateTransfer,
+            request.clone(),
+        )?;
+        ensure_checkpoint_catch_up_request_size(&signed)?;
+        let response: FederationStateTransferWindowResponse = self
+            .http_post_bounded_with_timeout(
+                member,
+                "state-transfer/window",
+                "state transfer window request",
+                &signed,
+                self.sync_config.peer_request_timeout,
+                FEDERATION_MAX_CHECKPOINT_CATCH_UP_PAGE_BYTES,
+            )
+            .await?;
+        response.ensure_within_page_limit()?;
+        response.validate_for_request(self.federation_id, checkpoint, request)?;
         Ok(response)
     }
 

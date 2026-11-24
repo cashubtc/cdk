@@ -333,6 +333,46 @@ Two readers learned about the base:
 - `require_prior_applied_quote_operation` accepts a quote with no journal row
   if a base exists at or below the operation and the quote row is installed.
 
+### The validity window
+
+Duplicate and conflict checks at finalization read durable journal rows by
+operation id and conflict key (`operation_pipeline.rs`, then
+`register_historical_journal_entry`). A member holding only the checkpoint's
+state would append an operation its peers treat as a duplicate and fork its
+journal. So the transfer also carries the validity window before the
+checkpoint, and the installer stores it as history:
+
+- **Bounds.** The window is every finalized item and journal entry ordered in
+  session `checkpoint session - FEDERATION_OPERATION_VALIDITY_SESSIONS` or
+  later, plus the one finalized item before them
+  (`federation_state_transfer_window_start` in SQL). It comes with the
+  finalized-item and application digests just before it.
+- **Transfer.** `POST /federation/v1/state-transfer/window` (same REST kind)
+  returns items and entries from two cursors, row-limited and under the page
+  byte limit; `download_state_transfer_window_from_member` pages it and
+  requires stable bounds. It is read from the exporter's journal at serve
+  time: entries below a checkpoint are terminal and never change.
+- **Verification** (`FederationStateTransferWindow::verify`, before anything
+  is written):
+  - the items are contiguous to the checkpoint and chain from their base to
+    its signed finalized-item digest;
+  - the window starts at item 0, or its first item is older than the window,
+    so a shortened window is refused; the item sessions are bound by that
+    signed chain, the entries' own evidence is not trusted;
+  - the entries are exactly the accepted operations among the items, in
+    order, with matching consensus evidence;
+  - the entries chain to the signed journal order digest
+    (`InMemoryFederationJournal::from_base_and_entries`, which also checks
+    operation ids and conflict keys against the envelopes);
+  - their terminal application states chain from the base to the signed
+    application digest.
+- **Install.** In the install transaction,
+  `install_federation_state_transfer_frontier` stores the items with their
+  cumulative digests, the entries with their application digests and
+  statuses, and the conflict keys the entries reserve, and records the
+  bounds. Checkpoint digest lookups answer at the window's start from the
+  recorded bases, so a transferred member can serve the same window onward.
+
 ### Tests
 
 - `state_transfer::wiped_member_installs_checkpoint_state_then_catches_up_and_restores`
@@ -344,22 +384,31 @@ Two readers learned about the base:
   catches up a suffix that mints a quote created below the checkpoint, reaches
   the peers' digest, and serves NUT-09 restore and check-state on both sides
   of the checkpoint. Its recomputed shares combine with a peer's share into the
-  same signatures as any other pair.
+  same signatures as any other pair. A tampered window (an altered application
+  result) and a truncated one (base digests recomputed so every chain closes)
+  are refused with nothing written. After the install all three members order
+  a unit that repeats a swap from the window and adds a quote conflicting with
+  one created in the window: all three record the swap as a duplicate and
+  consensus-reject the quote, and their journal, application, finalized-item
+  and materialized digests stay equal. Without the window rows the installed
+  member appends the swap as a new entry and rejects the quote differently;
+  the test fails.
 - `state_transfer::scheduled_capture_keeps_the_latest_two_snapshots`.
 - Page validation and digest order unit tests in `cdk-common`.
 
 ### Left out, and what must follow
 
-1. **Operation ids and conflict keys of the validity window (must come before
-   any member relies on state transfer).** The installed member holds no
-   journal rows below the checkpoint. If an envelope ordered in the
-   `FEDERATION_OPERATION_VALIDITY_SESSIONS` sessions before the checkpoint is
-   ordered again (a client retry submitted through the installed member, or a
-   resubmitted quote), its peers find the duplicate by operation id or
-   conflict key while the installed member appends it, and its journal forks.
-   The transfer must also carry the journal entries of that window (ids,
-   conflict keys, statuses). They are verifiable: their order and application
-   digests chain to the checkpoint's signed cursors.
+1. **Duplicates and conflicts older than the validity window.** The window
+   (above) makes the installed member decide like its peers for every
+   operation ordered in the last `FEDERATION_OPERATION_VALIDITY_SESSIONS`
+   sessions before the checkpoint. Peers still keep their whole journal and
+   conflict keys, so an operation id or conflict key older than the window is
+   still a duplicate or a conflict to them but not to the installed member.
+   Reaching one needs an author to re-stamp an operation older than the window
+   or a member to reuse an old quote id or observation key. The fix belongs
+   with deletion: make duplicate and conflict lookups ignore entries older
+   than the window on every member, so the per-kind guards in "Replay guard
+   per operation kind" decide alike everywhere.
 2. **In-flight melts.** A snapshot with a pending melt quote or a pending proof
    is refused; the member retries from a later checkpoint. Installing one needs
    the melt request, the pending blinded messages and the saga.

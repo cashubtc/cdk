@@ -90,8 +90,9 @@ use cdk_common::federation::{
     FederationSetupInvitationId, FederationSetupInvitationRecord, FederationSetupInvitationState,
     FederationSetupLocalRole, FederationSetupManifest, FederationSetupParticipantPhase,
     FederationSetupProposal, FederationSetupSession, FederationSignatureShareRecord,
-    FederationStateSnapshotInfo, FederationStateSnapshotRow, MemberId,
-    VerifiedFederationCheckpointQuorum,
+    FederationStateSnapshotInfo, FederationStateSnapshotRow, FederationStateTransferWindowBounds,
+    MemberId, VerifiedFederationCheckpointQuorum, VerifiedFederationStateTransferWindow,
+    FEDERATION_OPERATION_VALIDITY_SESSIONS,
 };
 use cdk_common::quote_id::QuoteId;
 use cdk_common::PublicKey;

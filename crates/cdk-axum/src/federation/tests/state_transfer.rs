@@ -74,6 +74,7 @@ async fn wiped_member_installs_checkpoint_state_then_catches_up_and_restores() {
         ))
         .expect("swap one");
     let swap_one_id = swap_one.operation_id().expect("swap one id");
+    let swap_one_envelope = swap_one.clone();
     for envelope in [
         mint_quote_envelope(&first, &quote_a),
         paid_observation_envelope(&first, &quote_a),
@@ -190,6 +191,14 @@ async fn wiped_member_installs_checkpoint_state_then_catches_up_and_restores() {
         .expect("download snapshot");
     assert_eq!(rows.len() as u64, snapshots[0].row_count);
     assert!(rows.len() > 4, "the download spans several pages");
+    let window = client
+        .download_state_transfer_window_from_member(first_member, &scheduled_quorum)
+        .await
+        .expect("download validity window");
+    // Every operation before the checkpoint is in session 0, inside the window.
+    assert_eq!(window.bounds.item_start, 0);
+    assert_eq!(window.entries.len(), 6);
+    assert_eq!(window.items.len(), 6);
     let mut tampered = rows.clone();
     let quote_row = tampered
         .iter_mut()
@@ -198,7 +207,7 @@ async fn wiped_member_installs_checkpoint_state_then_catches_up_and_restores() {
     quote_row.row.insert_field("amount_issued", "0");
     let refused = third
         .mint
-        .install_federation_state_transfer(&scheduled_quorum, &tampered)
+        .install_federation_state_transfer(&scheduled_quorum, &tampered, window.clone())
         .await
         .expect_err("tampered row is refused");
     assert!(
@@ -219,13 +228,72 @@ async fn wiped_member_installs_checkpoint_state_then_catches_up_and_restores() {
     );
     let refused = third
         .mint
-        .install_federation_state_transfer(&scheduled_quorum, &tampered)
+        .install_federation_state_transfer(&scheduled_quorum, &tampered, window.clone())
         .await
         .expect_err("tampered attachment is refused");
     assert!(
         refused.to_string().contains("attachment does not match"),
         "unexpected refusal: {refused}"
     );
+
+    // A window whose application results were altered (here the swap, which
+    // reserves no conflict keys) does not chain to the signed application
+    // digest.
+    let mut tampered_window = window.clone();
+    tampered_window.entries[5].application =
+        cdk::federation::FederationApplicationState::ConsensusRejected {};
+    let refused = third
+        .mint
+        .install_federation_state_transfer(&scheduled_quorum, &rows, tampered_window)
+        .await
+        .expect_err("tampered window is refused");
+    assert!(
+        refused
+            .to_string()
+            .contains("application results do not chain"),
+        "unexpected refusal: {refused}"
+    );
+    // A window cut short at its start, with base digests recomputed so every
+    // chain still closes, does not reach back past the validity window.
+    let mut truncated = window.clone();
+    let first_item = truncated.items.remove(0);
+    let first_entry = truncated.entries.remove(0);
+    truncated.bounds = cdk::federation::FederationStateTransferWindowBounds {
+        item_start: 1,
+        journal_start: 1,
+        item_base_digest: truncated
+            .bounds
+            .item_base_digest
+            .append(&first_item)
+            .expect("item base"),
+        application_base_digest: truncated
+            .bounds
+            .application_base_digest
+            .append_terminal(
+                first_entry.index,
+                first_entry.operation_id,
+                &first_entry.application,
+            )
+            .expect("application base"),
+    };
+    let refused = third
+        .mint
+        .install_federation_state_transfer(&scheduled_quorum, &rows, truncated)
+        .await
+        .expect_err("truncated window is refused");
+    assert!(
+        refused
+            .to_string()
+            .contains("does not reach back past the validity window"),
+        "unexpected refusal: {refused}"
+    );
+    assert!(third
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("journal after refused install")
+        .is_empty());
     assert!(third
         .mint
         .localstore()
@@ -267,13 +335,28 @@ async fn wiped_member_installs_checkpoint_state_then_catches_up_and_restores() {
         .expect("installed frontier");
     assert_eq!(frontier.journal_next_index, 6);
     assert_eq!(frontier.trusted_checkpoint_id, Some(scheduled_id));
-    assert!(third
-        .mint
-        .localstore()
-        .get_federation_journal_entries()
-        .await
-        .expect("installed journal")
-        .is_empty());
+    // The validity window is stored below the checkpoint as history.
+    assert_eq!(
+        third
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("installed journal")
+            .iter()
+            .map(|entry| (entry.index, entry.operation_id))
+            .collect::<Vec<_>>(),
+        first
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("source journal")
+            .iter()
+            .take(6)
+            .map(|entry| (entry.index, entry.operation_id))
+            .collect::<Vec<_>>()
+    );
     assert!(
         client
             .transfer_state_from_member(&third.mint, first_member, &scheduled_quorum)
@@ -303,6 +386,7 @@ async fn wiped_member_installs_checkpoint_state_then_catches_up_and_restores() {
     assert_eq!(
         entries
             .iter()
+            .skip(6)
             .map(|entry| (entry.index, entry.operation_id))
             .collect::<Vec<_>>(),
         vec![(6, mint_b_id), (7, swap_two_id)]
@@ -367,6 +451,133 @@ async fn wiped_member_installs_checkpoint_state_then_catches_up_and_restores() {
         .expect("quote b lookup")
         .expect("quote b");
     assert_eq!(quote_b_state.state(), MintQuoteState::Issued);
+
+    // An operation from the validity window ordered again, and a new quote
+    // that conflicts with one created in the window: the installed member
+    // decides both exactly as its peers do, so all journals stay identical.
+    let conflicting_quote = config.mint_quote_operation(
+        quote_b.clone(),
+        cdk::mint::MintQuoteRequest::Bolt11(MintQuoteBolt11Request {
+            amount: Amount::from(2),
+            unit: CurrencyUnit::Sat,
+            description: None,
+            pubkey: None,
+        }),
+        cdk::mint::MintQuoteResponse::Bolt11(MintQuoteBolt11Response {
+            quote: quote_b.to_string(),
+            request: format!("conflicting-invoice-{quote_b}"),
+            amount: Some(Amount::from(2)),
+            unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::Known(KnownMethod::Bolt11),
+            amount_paid: Amount::ZERO,
+            amount_issued: Amount::ZERO,
+            updated_at: 0,
+            state: MintQuoteState::Unpaid,
+            expiry: Some(10_000),
+            pubkey: None,
+        }),
+    );
+    let payload = {
+        let consensus = first
+            .federation
+            .consensus()
+            .expect("first consensus")
+            .lock()
+            .await;
+        let status = consensus.status();
+        FederationAlephBftUnitPayload::new(
+            status.federation_id,
+            status.local_member,
+            status.session,
+            consensus.next_unit_index(),
+            vec![
+                FederationConsensusItem::operation(swap_one_envelope.clone()),
+                FederationConsensusItem::operation(conflicting_quote),
+            ],
+        )
+        .expect("replay payload")
+    };
+    for state in [&first, &second, &third] {
+        state
+            .federation
+            .apply_finalized_unit(payload.clone())
+            .await
+            .expect("apply replayed unit");
+    }
+    let first_journal = first
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("first journal after replay");
+    assert!(
+        first_journal.len() > 8,
+        "the conflicting quote is ordered after the checkpoint suffix"
+    );
+    assert!(
+        first_journal
+            .iter()
+            .filter(|entry| entry.operation_id == swap_one_id)
+            .count()
+            == 1,
+        "the window operation is a duplicate, not a new entry"
+    );
+    let outcome = |entries: Vec<cdk::federation::FederationJournalEntry>| {
+        entries
+            .into_iter()
+            .map(|entry| {
+                (
+                    entry.index,
+                    entry.operation_id,
+                    serde_json::to_string(&entry.application).expect("application state"),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let expected = outcome(first_journal);
+    for state in [&second, &third] {
+        let entries = state
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("journal after replay");
+        let actual = outcome(entries);
+        // The installed member holds no entries below its window, which here
+        // starts at genesis, so all three journals must be equal.
+        assert_eq!(actual, expected);
+    }
+    let first_frontier = first
+        .mint
+        .localstore()
+        .get_federation_checkpoint_frontier()
+        .await
+        .expect("first frontier after replay");
+    for state in [&second, &third] {
+        let frontier = state
+            .mint
+            .localstore()
+            .get_federation_checkpoint_frontier()
+            .await
+            .expect("frontier after replay");
+        assert_eq!(
+            frontier.journal_next_index,
+            first_frontier.journal_next_index
+        );
+        assert_eq!(
+            frontier.journal_order_digest,
+            first_frontier.journal_order_digest
+        );
+        assert_eq!(
+            frontier.application_digest,
+            first_frontier.application_digest
+        );
+        assert_eq!(
+            frontier.finalized_item_digest,
+            first_frontier.finalized_item_digest
+        );
+    }
+    assert_eq!(live_digest(&third).await, live_digest(&first).await);
 }
 
 /// A member keeps the latest two scheduled snapshots and drops older ones.

@@ -79,6 +79,7 @@ CREATE TABLE federation_checkpoint_state (
     latest_audited_checkpoint_id TEXT,
     latest_materialized_state_digest TEXT,
     state_transfer_base_checkpoint_id TEXT,
+    state_transfer_window_json TEXT,
     materialized_state_audit_mismatch INTEGER NOT NULL DEFAULT 0 CHECK (
         materialized_state_audit_mismatch IN (0, 1)
     )

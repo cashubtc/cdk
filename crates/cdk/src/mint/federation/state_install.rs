@@ -19,8 +19,8 @@ use cdk_common::federation::{
     FederationMaterializedStateKeyRecord, FederationMaterializedStateRow, FederationOperationId,
     FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationRecord, FederationSignatureShareRecord, FederationStateRows,
-    FederationStateSnapshotRow, FederationStateTable, FederationTransactionState,
-    FEDERATION_STATE_PRIMARY_NAMESPACE,
+    FederationStateSnapshotRow, FederationStateTable, FederationStateTransferWindow,
+    FederationTransactionState, FEDERATION_STATE_PRIMARY_NAMESPACE,
 };
 use cdk_common::mint::{MeltPaymentRequest, MeltQuote, MintQuote, Operation, OperationKind};
 use cdk_common::nuts::{BlindedMessage, MeltQuoteState, PaymentMethod, State};
@@ -433,6 +433,10 @@ impl Mint {
     /// frontier.
     ///
     /// The member must hold no federation state yet; its key material stays.
+    /// `window` carries the finalized items and journal entries of the
+    /// validity window before the checkpoint; it must chain to the
+    /// checkpoint's signed cursors, and it is stored as history so duplicate
+    /// and conflict checks decide as the peers' do.
     /// The rows must hash to the quorum-signed materialized-state digest. They
     /// are written in one transaction, the digest is recomputed from what was
     /// written inside that transaction, and the transaction commits only if it
@@ -444,6 +448,7 @@ impl Mint {
         &self,
         quorum: &FederationCheckpointQuorum,
         rows: &[FederationStateSnapshotRow],
+        window: FederationStateTransferWindow,
     ) -> Result<(), Error> {
         let runtime = self.federation_config().ok_or(Error::Internal)?;
         let verified = quorum.verify(runtime.public_config())?;
@@ -464,6 +469,7 @@ impl Mint {
             )
             .into());
         }
+        let window = window.verify(checkpoint)?;
         let plan = InstallPlan::from_rows(rows)?;
         let effective = effective_config_with_rotations(runtime, &plan.keysets)?;
         let checkpoint_id = checkpoint.id()?;
@@ -498,7 +504,7 @@ impl Mint {
                     },
                 )));
             }
-            tx.install_federation_state_transfer_frontier(&verified)
+            tx.install_federation_state_transfer_frontier(&verified, &window)
                 .await?;
             Ok(())
         }

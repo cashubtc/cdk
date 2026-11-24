@@ -27,7 +27,8 @@ use crate::federation::{
     FederationSetupInvitationId, FederationSetupInvitationRecord, FederationSetupManifest,
     FederationSetupParticipantPhase, FederationSetupProposal, FederationSetupSession,
     FederationSetupUrlPolicy, FederationSignatureShareRecord, FederationStateSnapshotInfo,
-    FederationStateSnapshotRow, MemberId, VerifiedFederationCheckpointQuorum,
+    FederationStateSnapshotRow, FederationStateTransferWindowBounds, MemberId,
+    VerifiedFederationCheckpointQuorum, VerifiedFederationStateTransferWindow,
 };
 use crate::mint::{self, MintQuote as MintMintQuote};
 use crate::nuts::{
@@ -232,14 +233,18 @@ pub trait FederationJournalTransaction {
     ) -> Result<(), Self::Err>;
 
     /// Make a caller-verified checkpoint the frontier of a member whose state
-    /// was installed from that checkpoint's snapshot in this transaction.
+    /// was installed from that checkpoint's snapshot in this transaction, and
+    /// store the checkpoint's verified validity window as history.
     ///
     /// The member must hold no journal, finalized items or frontier yet. The
     /// checkpoint becomes the trusted, audited frontier and the state-transfer
-    /// base: journal positions below it are covered by the installed state.
+    /// base. The window's finalized items and journal entries (with their
+    /// application digests and reserved conflict keys) are stored below it,
+    /// so duplicate and conflict checks see them as its peers do.
     async fn install_federation_state_transfer_frontier(
         &mut self,
         quorum: &VerifiedFederationCheckpointQuorum,
+        window: &VerifiedFederationStateTransferWindow,
     ) -> Result<(), Self::Err>;
 
     /// Prune superseded checkpoint candidates and covered recovery proofs.
@@ -921,6 +926,13 @@ pub trait FederationJournalDatabase {
         from_row_index: u64,
         limit: usize,
     ) -> Result<Vec<FederationStateSnapshotRow>, Self::Err>;
+
+    /// Where the validity window before `checkpoint` starts in this member's
+    /// history, and the digests just before it.
+    async fn get_federation_state_transfer_window_bounds(
+        &self,
+        checkpoint: &FederationCheckpoint,
+    ) -> Result<FederationStateTransferWindowBounds, Self::Err>;
 
     /// Get the checkpoint whose snapshot this member installed, if any.
     ///

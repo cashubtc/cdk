@@ -81,7 +81,7 @@ pub use self::setup::{
     FederationSetupCoordinatorServiceConfig, FederationSetupHttpClient, FederationSetupHttpError,
     FederationSetupHttpErrorCode,
 };
-use self::state_transfer_routes::post_state_transfer;
+use self::state_transfer_routes::{post_state_transfer, post_state_transfer_window};
 use self::status_routes::{post_local_status, post_status};
 
 #[cfg(test)]
@@ -185,6 +185,12 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
         .route(
             "/state-transfer",
             post(post_state_transfer).layer(DefaultBodyLimit::max(
+                cdk::federation::FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES,
+            )),
+        )
+        .route(
+            "/state-transfer/window",
+            post(post_state_transfer_window).layer(DefaultBodyLimit::max(
                 cdk::federation::FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES,
             )),
         );

@@ -215,7 +215,9 @@ pub use self::state_table::{
 pub use self::state_transfer::{
     ensure_federation_state_snapshot_rows_sorted, federation_state_snapshot_digest,
     sort_federation_state_snapshot_rows, FederationStateSnapshotInfo, FederationStateSnapshotRow,
-    FederationStateTransferRequest, FederationStateTransferResponse,
+    FederationStateTransferRequest, FederationStateTransferResponse, FederationStateTransferWindow,
+    FederationStateTransferWindowBounds, FederationStateTransferWindowRequest,
+    FederationStateTransferWindowResponse, VerifiedFederationStateTransferWindow,
     DEFAULT_FEDERATION_STATE_TRANSFER_PAGE_ROWS, FEDERATION_MAX_STATE_TRANSFER_BYTES,
     FEDERATION_STATE_SNAPSHOT_RETAINED, MAX_FEDERATION_STATE_TRANSFER_PAGE_ROWS,
 };

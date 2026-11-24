@@ -10,7 +10,8 @@
 use cdk::federation::{
     FederationCheckpointError, FederationCheckpointKind, FederationCheckpointQuorum,
     FederationError, FederationStateSnapshotRow, FederationStateTransferRequest,
-    MemberConfigPublic, FEDERATION_MAX_STATE_TRANSFER_BYTES,
+    FederationStateTransferWindow, FederationStateTransferWindowRequest, MemberConfigPublic,
+    FEDERATION_MAX_STATE_TRANSFER_BYTES,
 };
 use cdk::Mint;
 use cdk_http_client::Transport;
@@ -75,8 +76,72 @@ where
         }
     }
 
+    /// Download every page of `member`'s validity window before the quorum's
+    /// checkpoint: its finalized items and journal entries.
+    pub async fn download_state_transfer_window_from_member(
+        &self,
+        member: &MemberConfigPublic,
+        quorum: &FederationCheckpointQuorum,
+    ) -> anyhow::Result<FederationStateTransferWindow> {
+        let checkpoint = &quorum.checkpoint;
+        let checkpoint_id = checkpoint.id()?;
+        let mut bounds = None;
+        let mut items = Vec::new();
+        let mut entries = Vec::new();
+        let mut next_item_index = None;
+        let mut next_journal_index = None;
+        let mut transferred_bytes = 0_u64;
+        loop {
+            let request = FederationStateTransferWindowRequest {
+                checkpoint_id,
+                next_item_index,
+                next_journal_index,
+                limit: Some(self.sync_config.catch_up_limit),
+            };
+            let page = self
+                .fetch_state_transfer_window_page(member, checkpoint, &request)
+                .await?;
+            let page_bytes = u64::try_from(page.encoded_size()?).unwrap_or(u64::MAX);
+            transferred_bytes = checked_checkpoint_transfer_bytes(
+                transferred_bytes,
+                page_bytes,
+                FEDERATION_MAX_STATE_TRANSFER_BYTES,
+            )?;
+            match bounds {
+                Some(bounds) if bounds != page.bounds => {
+                    return Err(transfer_invalid("window bounds changed between pages").into());
+                }
+                Some(_) => {}
+                None => bounds = Some(page.bounds),
+            }
+            let item_cursor = page
+                .from_item_index
+                .checked_add(page.items.len() as u64)
+                .ok_or_else(|| transfer_invalid("window item cursor overflow"))?;
+            let journal_cursor = page
+                .from_journal_index
+                .checked_add(page.entries.len() as u64)
+                .ok_or_else(|| transfer_invalid("window journal cursor overflow"))?;
+            items.extend(page.items);
+            entries.extend(page.entries);
+            if item_cursor == checkpoint.finalized_next_item_index
+                && journal_cursor == checkpoint.journal_next_index
+            {
+                let bounds = bounds.ok_or_else(|| transfer_invalid("window has no bounds"))?;
+                return Ok(FederationStateTransferWindow {
+                    bounds,
+                    items,
+                    entries,
+                });
+            }
+            next_item_index = Some(item_cursor);
+            next_journal_index = Some(journal_cursor);
+        }
+    }
+
     /// Download `member`'s snapshot of the quorum's scheduled checkpoint and
-    /// install it into `mint`, which must hold no federation state yet.
+    /// its validity window, and install them into `mint`, which must hold no
+    /// federation state yet.
     ///
     /// The federation runtime must be (re)started afterwards: it starts from
     /// the installed checkpoint.
@@ -89,7 +154,10 @@ where
         let rows = self
             .download_state_snapshot_from_member(member, quorum)
             .await?;
-        mint.install_federation_state_transfer(quorum, &rows)
+        let window = self
+            .download_state_transfer_window_from_member(member, quorum)
+            .await?;
+        mint.install_federation_state_transfer(quorum, &rows, window)
             .await?;
         Ok(())
     }
