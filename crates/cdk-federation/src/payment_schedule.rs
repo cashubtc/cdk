@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 pub use cdk::federation::FederationPaymentAdvancement;
@@ -9,9 +9,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 const PRIMARY_NAMESPACE: &str = "cdk_federation";
-const SECONDARY_NAMESPACE: &str = "payment_observer";
-const SCHEDULE_KEY: &str = "payment_quote_backoff_v2";
-const SCHEDULE_VERSION: u8 = 4;
+/// Scan cursors, one key per quote kind.
+const CURSOR_NAMESPACE: &str = "payment_observer";
+/// One schedule per quote, keyed by [`FederationPaymentQuote::storage_key`].
+const QUOTE_NAMESPACE: &str = "payment_quote_schedule_v5";
+const MINT_SCAN_CURSOR_KEY: &str = "mint_scan_after";
+const MELT_SCAN_CURSOR_KEY: &str = "melt_scan_after";
 
 const BASE_DELAY_MS: u64 = 5_000;
 const MAX_DELAY_MS: u64 = 5 * 60 * 1_000;
@@ -57,6 +60,12 @@ impl FederationPaymentQuote {
         format!("{prefix}:{}", self.id)
     }
 
+    /// KV key for this quote's schedule. Quote IDs may contain characters the
+    /// KV store rejects, so the key carries a digest of the schedule key.
+    fn storage_key(&self) -> String {
+        storage_key(&self.schedule_key())
+    }
+
     fn request_cooldown_ms(&self) -> u64 {
         match self.kind {
             FederationPaymentQuoteKind::Mint => MINT_REQUEST_COOLDOWN_MS,
@@ -84,6 +93,7 @@ impl FederationPaymentObservationTrigger {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FederationPaymentObservationPermit {
+    /// Schedule key; also the jitter seed.
     quote: String,
     generation: u64,
     observer_fallback_round: u32,
@@ -105,9 +115,13 @@ pub struct FederationPaymentObservationProgress {
     pub last_processed_operation_index: Option<u64>,
 }
 
+/// Durable retry schedule for payment observation, one stored entry per quote.
+///
+/// Each mutation reads and writes only its own quote's entry under that
+/// quote's lock, so quotes never wait on each other.
 #[derive(Debug, Clone)]
 pub struct FederationPaymentObservationSchedule {
-    mutation_lock: Arc<tokio::sync::Mutex<()>>,
+    locks: KeyedLocks,
     changes: tokio::sync::watch::Sender<u64>,
 }
 
@@ -115,7 +129,7 @@ impl Default for FederationPaymentObservationSchedule {
     fn default() -> Self {
         let (changes, _) = tokio::sync::watch::channel(0);
         Self {
-            mutation_lock: Arc::new(tokio::sync::Mutex::new(())),
+            locks: KeyedLocks::default(),
             changes,
         }
     }
@@ -133,19 +147,18 @@ impl FederationPaymentObservationSchedule {
         trigger: FederationPaymentObservationTrigger,
         now_ms: u64,
     ) -> Result<Vec<FederationPaymentQuote>, cdk::Error> {
-        let schedules = load_schedules(db).await?;
-        Ok(quotes
-            .iter()
-            .filter(|quote| {
-                schedules
-                    .quotes
-                    .get(&quote.schedule_key())
-                    .is_none_or(|schedule| {
-                        schedule.is_due(trigger, quote.request_cooldown_ms(), now_ms)
-                    })
-            })
-            .cloned()
-            .collect())
+        let mut due = Vec::with_capacity(quotes.len());
+        for quote in quotes {
+            let is_due = load_schedule(db, &quote.storage_key())
+                .await?
+                .is_none_or(|schedule| {
+                    schedule.is_due(trigger, quote.request_cooldown_ms(), now_ms)
+                });
+            if is_due {
+                due.push(quote.clone());
+            }
+        }
+        Ok(due)
     }
 
     pub async fn scan_cursor(
@@ -153,11 +166,7 @@ impl FederationPaymentObservationSchedule {
         db: &DynMintDatabase,
         kind: FederationPaymentQuoteKind,
     ) -> Result<Option<QuoteId>, cdk::Error> {
-        let schedules = load_schedules(db).await?;
-        Ok(match kind {
-            FederationPaymentQuoteKind::Mint => schedules.mint_scan_after,
-            FederationPaymentQuoteKind::Melt => schedules.melt_scan_after,
-        })
+        load_scan_cursor(db, scan_cursor_key(kind)).await
     }
 
     pub async fn set_scan_cursor(
@@ -166,15 +175,10 @@ impl FederationPaymentObservationSchedule {
         kind: FederationPaymentQuoteKind,
         cursor: Option<QuoteId>,
     ) -> Result<(), cdk::Error> {
-        let _guard = self.mutation_lock.lock().await;
-        let mut schedules = load_schedules(db).await?;
-        let stored = match kind {
-            FederationPaymentQuoteKind::Mint => &mut schedules.mint_scan_after,
-            FederationPaymentQuoteKind::Melt => &mut schedules.melt_scan_after,
-        };
-        if *stored != cursor {
-            *stored = cursor;
-            store_schedules(db, &schedules).await?;
+        let key = scan_cursor_key(kind);
+        let _guard = self.locks.lock(key).await;
+        if load_scan_cursor(db, key).await? != cursor {
+            store_scan_cursor(db, key, cursor.as_ref()).await?;
         }
         Ok(())
     }
@@ -186,11 +190,11 @@ impl FederationPaymentObservationSchedule {
         trigger: FederationPaymentObservationTrigger,
         now_ms: u64,
     ) -> Result<Option<FederationPaymentObservationPermit>, cdk::Error> {
-        let _guard = self.mutation_lock.lock().await;
-        let mut schedules = load_schedules(db).await?;
+        let storage_key = quote.storage_key();
+        let _guard = self.locks.lock(&storage_key).await;
+        let mut schedule = load_schedule(db, &storage_key).await?.unwrap_or_default();
         let request_cooldown_ms = quote.request_cooldown_ms();
         let quote = quote.schedule_key();
-        let schedule = schedules.quotes.entry(quote.clone()).or_default();
         if !schedule.is_due(trigger, request_cooldown_ms, now_ms) {
             return Ok(None);
         }
@@ -219,7 +223,7 @@ impl FederationPaymentObservationSchedule {
         schedule.next_attempt_at_ms = schedule.lease_until_ms;
         let generation = schedule.generation;
         let observer_fallback_round = schedule.observer_fallback_round;
-        store_schedules(db, &schedules).await?;
+        store_schedule(db, &storage_key, &schedule).await?;
         self.notify_changed();
 
         Ok(Some(FederationPaymentObservationPermit {
@@ -244,9 +248,9 @@ impl FederationPaymentObservationSchedule {
             made_progress,
             last_processed_operation_index,
         } = progress;
-        let _guard = self.mutation_lock.lock().await;
-        let mut schedules = load_schedules(db).await?;
-        let Some(schedule) = schedules.quotes.get_mut(&permit.quote) else {
+        let storage_key = storage_key(&permit.quote);
+        let _guard = self.locks.lock(&storage_key).await;
+        let Some(mut schedule) = load_schedule(db, &storage_key).await? else {
             return Ok(());
         };
         if schedule.generation != permit.generation {
@@ -254,8 +258,7 @@ impl FederationPaymentObservationSchedule {
         }
 
         if advancement == FederationPaymentAdvancement::Complete {
-            schedules.quotes.remove(&permit.quote);
-            store_schedules(db, &schedules).await?;
+            remove_schedule(db, &storage_key).await?;
             self.notify_changed();
             return Ok(());
         }
@@ -328,7 +331,7 @@ impl FederationPaymentObservationSchedule {
             }
             FederationPaymentAdvancement::Complete => unreachable!("handled above"),
         }
-        store_schedules(db, &schedules).await?;
+        store_schedule(db, &storage_key, &schedule).await?;
         self.notify_changed();
         Ok(())
     }
@@ -337,12 +340,14 @@ impl FederationPaymentObservationSchedule {
         &self,
         db: &DynMintDatabase,
     ) -> Result<Option<u64>, cdk::Error> {
-        Ok(load_schedules(db)
-            .await?
-            .quotes
-            .values()
-            .map(|schedule| schedule.next_attempt_at_ms.max(schedule.lease_until_ms))
-            .min())
+        let mut next = None::<u64>;
+        for key in db.kv_list(PRIMARY_NAMESPACE, QUOTE_NAMESPACE).await? {
+            if let Some(schedule) = load_schedule(db, &key).await? {
+                let at = schedule.next_attempt_at_ms.max(schedule.lease_until_ms);
+                next = Some(next.map_or(at, |next| next.min(at)));
+            }
+        }
+        Ok(next)
     }
 
     pub async fn active_lease_until_ms(
@@ -351,13 +356,17 @@ impl FederationPaymentObservationSchedule {
         quotes: &[FederationPaymentQuote],
         now_ms: u64,
     ) -> Result<Option<u64>, cdk::Error> {
-        let schedules = load_schedules(db).await?;
-        Ok(quotes
-            .iter()
-            .filter_map(|quote| schedules.quotes.get(&quote.schedule_key()))
-            .map(|schedule| schedule.lease_until_ms)
-            .filter(|lease_until_ms| *lease_until_ms > now_ms)
-            .min())
+        let mut earliest = None::<u64>;
+        for quote in quotes {
+            if let Some(schedule) = load_schedule(db, &quote.storage_key()).await? {
+                if schedule.lease_until_ms > now_ms {
+                    earliest = Some(earliest.map_or(schedule.lease_until_ms, |earliest| {
+                        earliest.min(schedule.lease_until_ms)
+                    }));
+                }
+            }
+        }
+        Ok(earliest)
     }
 
     pub async fn remove(
@@ -365,10 +374,10 @@ impl FederationPaymentObservationSchedule {
         db: &DynMintDatabase,
         quote: &FederationPaymentQuote,
     ) -> Result<(), cdk::Error> {
-        let _guard = self.mutation_lock.lock().await;
-        let mut schedules = load_schedules(db).await?;
-        if schedules.quotes.remove(&quote.schedule_key()).is_some() {
-            store_schedules(db, &schedules).await?;
+        let storage_key = quote.storage_key();
+        let _guard = self.locks.lock(&storage_key).await;
+        if load_schedule(db, &storage_key).await?.is_some() {
+            remove_schedule(db, &storage_key).await?;
             self.notify_changed();
         }
         Ok(())
@@ -378,27 +387,6 @@ impl FederationPaymentObservationSchedule {
         self.changes.send_modify(|generation| {
             *generation = generation.saturating_add(1);
         });
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct PersistedPaymentSchedules {
-    version: u8,
-    quotes: BTreeMap<String, PersistedPaymentSchedule>,
-    #[serde(default)]
-    mint_scan_after: Option<QuoteId>,
-    #[serde(default)]
-    melt_scan_after: Option<QuoteId>,
-}
-
-impl Default for PersistedPaymentSchedules {
-    fn default() -> Self {
-        Self {
-            version: SCHEDULE_VERSION,
-            quotes: BTreeMap::new(),
-            mint_scan_after: None,
-            melt_scan_after: None,
-        }
     }
 }
 
@@ -454,44 +442,133 @@ impl PersistedPaymentSchedule {
     }
 }
 
-async fn load_schedules(db: &DynMintDatabase) -> Result<PersistedPaymentSchedules, cdk::Error> {
-    if let Some(bytes) = db
-        .kv_read(PRIMARY_NAMESPACE, SECONDARY_NAMESPACE, SCHEDULE_KEY)
-        .await?
-    {
-        return match serde_json::from_slice::<PersistedPaymentSchedules>(&bytes) {
-            Ok(schedules) if schedules.version == SCHEDULE_VERSION => Ok(schedules),
-            Ok(schedules) => {
-                tracing::warn!(
-                    stored_version = schedules.version,
-                    expected_version = SCHEDULE_VERSION,
-                    "Ignoring unsupported federation payment quote backoff state"
-                );
-                Ok(PersistedPaymentSchedules::default())
-            }
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    "Ignoring invalid federation payment quote backoff state"
-                );
-                Ok(PersistedPaymentSchedules::default())
-            }
-        };
-    }
-
-    Ok(PersistedPaymentSchedules::default())
+fn storage_key(schedule_key: &str) -> String {
+    let (prefix, _) = schedule_key
+        .split_once(':')
+        .unwrap_or(("quote", schedule_key));
+    let digest = Sha256::digest(schedule_key.as_bytes());
+    let hex = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("{prefix}_{hex}")
 }
 
-async fn store_schedules(
+const fn scan_cursor_key(kind: FederationPaymentQuoteKind) -> &'static str {
+    match kind {
+        FederationPaymentQuoteKind::Mint => MINT_SCAN_CURSOR_KEY,
+        FederationPaymentQuoteKind::Melt => MELT_SCAN_CURSOR_KEY,
+    }
+}
+
+/// Load one quote's schedule. The schedule is a local cache of retry timing,
+/// so an entry that no longer decodes is dropped and rebuilt.
+async fn load_schedule(
     db: &DynMintDatabase,
-    schedules: &PersistedPaymentSchedules,
+    key: &str,
+) -> Result<Option<PersistedPaymentSchedule>, cdk::Error> {
+    let Some(bytes) = db.kv_read(PRIMARY_NAMESPACE, QUOTE_NAMESPACE, key).await? else {
+        return Ok(None);
+    };
+    match serde_json::from_slice(&bytes) {
+        Ok(schedule) => Ok(Some(schedule)),
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "Ignoring invalid federation payment quote schedule"
+            );
+            Ok(None)
+        }
+    }
+}
+
+async fn store_schedule(
+    db: &DynMintDatabase,
+    key: &str,
+    schedule: &PersistedPaymentSchedule,
 ) -> Result<(), cdk::Error> {
-    let bytes = serde_json::to_vec(schedules)?;
+    let bytes = serde_json::to_vec(schedule)?;
     let mut tx = db.begin_transaction().await?;
-    tx.kv_write(PRIMARY_NAMESPACE, SECONDARY_NAMESPACE, SCHEDULE_KEY, &bytes)
+    tx.kv_write(PRIMARY_NAMESPACE, QUOTE_NAMESPACE, key, &bytes)
         .await?;
     tx.commit().await?;
     Ok(())
+}
+
+async fn remove_schedule(db: &DynMintDatabase, key: &str) -> Result<(), cdk::Error> {
+    let mut tx = db.begin_transaction().await?;
+    tx.kv_remove(PRIMARY_NAMESPACE, QUOTE_NAMESPACE, key)
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn load_scan_cursor(db: &DynMintDatabase, key: &str) -> Result<Option<QuoteId>, cdk::Error> {
+    let Some(bytes) = db.kv_read(PRIMARY_NAMESPACE, CURSOR_NAMESPACE, key).await? else {
+        return Ok(None);
+    };
+    Ok(serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+        tracing::warn!(error = %error, "Ignoring invalid federation payment scan cursor");
+        None
+    }))
+}
+
+async fn store_scan_cursor(
+    db: &DynMintDatabase,
+    key: &str,
+    cursor: Option<&QuoteId>,
+) -> Result<(), cdk::Error> {
+    let bytes = serde_json::to_vec(&cursor)?;
+    let mut tx = db.begin_transaction().await?;
+    tx.kv_write(PRIMARY_NAMESPACE, CURSOR_NAMESPACE, key, &bytes)
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// One async lock per key, created on first use and dropped when unused.
+#[derive(Debug, Clone, Default)]
+struct KeyedLocks(Arc<std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>);
+
+impl KeyedLocks {
+    async fn lock(&self, key: &str) -> KeyedLockGuard {
+        let mutex = {
+            let mut locks = self
+                .0
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            Arc::clone(locks.entry(key.to_owned()).or_default())
+        };
+        let guard = Arc::clone(&mutex).lock_owned().await;
+        KeyedLockGuard {
+            locks: self.clone(),
+            key: key.to_owned(),
+            mutex,
+            guard: Some(guard),
+        }
+    }
+}
+
+struct KeyedLockGuard {
+    locks: KeyedLocks,
+    key: String,
+    mutex: Arc<tokio::sync::Mutex<()>>,
+    guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl Drop for KeyedLockGuard {
+    fn drop(&mut self) {
+        self.guard.take();
+        let mut locks = self
+            .locks
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // Only the map and this guard still hold the lock: nobody is waiting.
+        if Arc::strong_count(&self.mutex) == 2 {
+            locks.remove(&self.key);
+        }
+    }
 }
 
 fn nominal_delay_ms(consecutive_no_progress: u32) -> u64 {
@@ -531,6 +608,8 @@ fn jittered_delay_ms(
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use super::*;
 
     fn member_id() -> MemberId {
@@ -714,10 +793,9 @@ mod tests {
             .await
             .expect("finish notification wait");
 
-        let persisted = load_schedules(&db).await.expect("load schedule");
-        let persisted = persisted
-            .quotes
-            .get(&quote.schedule_key())
+        let persisted = load_schedule(&db, &quote.storage_key())
+            .await
+            .expect("load schedule")
             .expect("quote schedule");
         assert_eq!(persisted.wait, PersistedPaymentWait::BackendNotification);
         assert_eq!(persisted.next_attempt_at_ms, 2_100);
@@ -774,10 +852,13 @@ mod tests {
                 .expect("finish schedule");
         }
 
-        let persisted = load_schedules(&db).await.expect("load schedule");
-        assert_eq!(persisted.quotes.len(), 2);
-        assert!(persisted.quotes.contains_key(&mint.schedule_key()));
-        assert!(persisted.quotes.contains_key(&melt.schedule_key()));
+        let stored = db
+            .kv_list(PRIMARY_NAMESPACE, QUOTE_NAMESPACE)
+            .await
+            .expect("list schedules");
+        assert_eq!(stored.len(), 2);
+        assert!(stored.contains(&mint.storage_key()));
+        assert!(stored.contains(&melt.storage_key()));
 
         let restarted = FederationPaymentObservationSchedule::default();
         assert!(restarted
@@ -902,10 +983,9 @@ mod tests {
             .await
             .expect("finish");
 
-        let persisted = load_schedules(&db).await.expect("load");
-        let persisted = persisted
-            .quotes
-            .get(&quote.schedule_key())
+        let persisted = load_schedule(&db, &quote.storage_key())
+            .await
+            .expect("load")
             .expect("quote schedule");
         assert_eq!(persisted.wait, PersistedPaymentWait::Federation);
         assert_eq!(persisted.consecutive_no_progress, 0);
@@ -977,10 +1057,9 @@ mod tests {
             .await
             .expect("restore original fallback deadline");
 
-        let persisted = load_schedules(&db).await.expect("load fallback");
-        let persisted = persisted
-            .quotes
-            .get(&quote.schedule_key())
+        let persisted = load_schedule(&db, &quote.storage_key())
+            .await
+            .expect("load fallback")
             .expect("quote schedule");
         assert_eq!(persisted.wait, PersistedPaymentWait::ObserverFallback);
         assert_eq!(persisted.observer_fallback_round, 0);
@@ -1021,10 +1100,9 @@ mod tests {
             )
             .await
             .expect("finish expanded fallback");
-        let persisted = load_schedules(&db).await.expect("load expanded fallback");
-        let persisted = persisted
-            .quotes
-            .get(&quote.schedule_key())
+        let persisted = load_schedule(&db, &quote.storage_key())
+            .await
+            .expect("load expanded fallback")
             .expect("quote schedule");
         assert_eq!(persisted.observer_fallback_round, 1);
         assert_eq!(persisted.next_attempt_at_ms, 14_100);
@@ -1089,39 +1167,63 @@ mod tests {
             .await
             .expect("finish progress");
 
-        let persisted = load_schedules(&db).await.expect("load reset schedule");
-        let persisted = persisted
-            .quotes
-            .get(&quote.schedule_key())
+        let persisted = load_schedule(&db, &quote.storage_key())
+            .await
+            .expect("load reset schedule")
             .expect("quote schedule");
         assert_eq!(persisted.wait, PersistedPaymentWait::Ready);
         assert_eq!(persisted.observer_fallback_round, 0);
     }
 
     #[tokio::test]
-    async fn unsupported_schedule_versions_rebuild_the_local_cache() {
+    async fn undecodable_schedules_rebuild_the_local_cache() {
         let db: DynMintDatabase = Arc::new(
             cdk_sqlite::mint::memory::empty()
                 .await
                 .expect("sqlite database"),
         );
-        for version in [1, 2, 3, SCHEDULE_VERSION + 1] {
-            let schedules = PersistedPaymentSchedules {
-                version,
-                quotes: BTreeMap::from([(
-                    "mint:obsolete".to_string(),
-                    PersistedPaymentSchedule {
-                        consecutive_no_progress: 4,
-                        next_attempt_at_ms: 41_000,
-                        ..Default::default()
-                    },
-                )]),
-                ..Default::default()
-            };
-            store_schedules(&db, &schedules).await.expect("store cache");
-            let rebuilt = load_schedules(&db).await.expect("rebuild cache");
-            assert_eq!(rebuilt.version, SCHEDULE_VERSION);
-            assert!(rebuilt.quotes.is_empty());
+        let quote = FederationPaymentQuote::mint(QuoteId::new());
+        let mut tx = db.begin_transaction().await.expect("transaction");
+        tx.kv_write(
+            PRIMARY_NAMESPACE,
+            QUOTE_NAMESPACE,
+            &quote.storage_key(),
+            b"{\"obsolete\":true",
+        )
+        .await
+        .expect("write corrupt cache");
+        tx.commit().await.expect("commit");
+
+        assert!(load_schedule(&db, &quote.storage_key())
+            .await
+            .expect("rebuild cache")
+            .is_none());
+        let schedule = FederationPaymentObservationSchedule::default();
+        assert!(schedule
+            .claim(
+                &db,
+                &quote,
+                FederationPaymentObservationTrigger::Scheduled,
+                1_000,
+            )
+            .await
+            .expect("claim")
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn storage_keys_are_valid_kv_keys_for_any_quote_id() {
+        for id in [
+            QuoteId::new(),
+            QuoteId::from_str("YWJjZA==").expect("base64 quote id"),
+        ] {
+            for quote in [
+                FederationPaymentQuote::mint(id.clone()),
+                FederationPaymentQuote::melt(id.clone()),
+            ] {
+                cdk_common::database::validate_kvstore_string(&quote.storage_key())
+                    .expect("storage key is a valid KV key");
+            }
         }
     }
 
@@ -1167,8 +1269,13 @@ mod tests {
                 .expect("finish");
         }
 
-        let persisted = load_schedules(&db).await.expect("load");
-        assert!(!persisted.quotes.contains_key(&completed.schedule_key()));
-        assert!(persisted.quotes.contains_key(&pending.schedule_key()));
+        assert!(load_schedule(&db, &completed.storage_key())
+            .await
+            .expect("load")
+            .is_none());
+        assert!(load_schedule(&db, &pending.storage_key())
+            .await
+            .expect("load")
+            .is_some());
     }
 }

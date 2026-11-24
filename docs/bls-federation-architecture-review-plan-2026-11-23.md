@@ -639,3 +639,15 @@ Package 2 is done.
   - The custody trait with three implementations and deleting the stub adapters both need decision 2's quote-only payment seam.
   - The on-chain spend driver (`wallet_liveness.rs`, `broadcast.rs`) depends on the node's FROST coordinator and peer client. Moving it beside the BDK wallet means giving `cdk-bitcoin-wallet` or `cdk-bdk` a node port, as `cdk-bark` now has.
   - The DKG planner and the `cdk-frost` session-store unification are not started.
+
+### 2026-11-24: package 8, finding (the HTTP client's federation flag stays)
+
+- The plan proposed removing the federation mode flag from `HttpClient`. It is `preserve_error_responses`, set only by the federation wallet connector. With it, the client returns a mint's exact `ErrorResponse` for 4xx replies, so the threshold aggregator can compare members' answers. Ordinary wallets map the same replies to typed `Error` variants. Removing the flag means giving the aggregator a second, lower-level connector API that returns raw responses, which trades one boolean for a parallel trait. It stays.
+
+### 2026-11-24: package 6, fifth step (payment scheduler per quote)
+
+- **One stored entry per quote.** The payment observation scheduler kept every quote's retry schedule in one KV blob (`payment_quote_backoff_v2`) and rewrote it on each transition. Each quote now has its own entry in `payment_quote_schedule_v5`, and the two scan cursors have their own keys. The key is `mint_`/`melt_` plus a SHA-256 digest of the schedule key, because base64 quote IDs contain characters the KV store rejects. The jitter seed is unchanged, so retry timing is the same.
+- **Per-quote locks instead of one global lock.** `claim`, `finish` and `remove` lock only their own quote's key (`KeyedLocks`, whose entries are dropped when unused), so attempts on different quotes no longer serialise behind one mutex and one blob write.
+- **Reads.** `candidates` and `active_lease_until_ms` read only the quotes they are given. `next_attempt_at_ms` lists the stored schedules, which holds only quotes still being observed, because a completed quote's entry is deleted.
+- **Leases stay durable.** The plan suggested keeping leases in memory. The persisted lease still coalesces concurrent wakes (`concurrent_wakes_share_one_persisted_attempt_lease`), so it stays in the per-quote entry.
+- **Cache semantics kept.** An entry that no longer decodes is dropped and rebuilt, as the old version check did; the test now covers a corrupt entry. The old blob is no longer read; federation storage is cut-through.
