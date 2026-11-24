@@ -1,7 +1,7 @@
 use axum::extract::{Json, State};
 use axum::response::Response;
 use cdk::federation::{
-    FederationCheckpointAuditRequest, FederationCheckpointAuditResponse,
+    FederationCheckpointAuditRequest, FederationCheckpointAuditResponse, FederationCheckpointError,
     FederationCheckpointFetchRequest, FederationCheckpointFetchResponse,
     FederationCheckpointQuorumRequest, FederationCheckpointQuorumResponse,
     FederationCheckpointSignatureRequest, FederationCheckpointSignatureResponse,
@@ -150,10 +150,11 @@ pub(super) async fn post_checkpoint_audit(
     let local_member = federation_runtime_config(&state)?.member_id();
     if verified.sender() != local_member {
         return Err(federation_error_response(
-            cdk::federation::FederationError::CheckpointAuditNotLocal {
+            FederationCheckpointError::AuditNotLocal {
                 expected: local_member,
                 found: verified.sender(),
-            },
+            }
+            .into(),
         ));
     }
     payload

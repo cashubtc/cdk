@@ -8,10 +8,10 @@ use axum::Router;
 #[cfg(test)]
 use cdk::federation::FederationLocalStatusResponse;
 use cdk::federation::{
-    redact_federation_operator_message, FederationError, FederationRestMessageKind,
-    FederationRestSequenceTracker, FederationSignedRequest, FederationSubmitOperationRequest,
-    FederationSubmitOperationResponse, FederationVerifiedOperationAdmission,
-    FEDERATION_MAX_DKG_REQUEST_BODY_BYTES,
+    redact_federation_operator_message, FederationCheckpointError, FederationError,
+    FederationRestMessageKind, FederationRestSequenceTracker, FederationSignedRequest,
+    FederationSubmitOperationRequest, FederationSubmitOperationResponse,
+    FederationVerifiedOperationAdmission, FEDERATION_MAX_DKG_REQUEST_BODY_BYTES,
 };
 #[cfg(test)]
 use cdk::federation::{
@@ -466,7 +466,9 @@ fn federation_error_response(err: FederationError) -> Response {
 fn federation_error_status(err: &FederationError) -> StatusCode {
     match err {
         FederationError::ConflictingOperation { .. } => StatusCode::CONFLICT,
-        FederationError::CheckpointAuditNotLocal { .. } => StatusCode::FORBIDDEN,
+        FederationError::Checkpoint(FederationCheckpointError::AuditNotLocal { .. }) => {
+            StatusCode::FORBIDDEN
+        }
         FederationError::PendingConsensusMempoolFull { .. }
         | FederationError::ResponseWaiterLimitExceeded { .. }
         | FederationError::AlephBftBackpressure { .. } => StatusCode::TOO_MANY_REQUESTS,

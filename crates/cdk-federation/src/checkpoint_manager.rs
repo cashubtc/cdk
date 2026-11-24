@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use cdk::federation::{
     FederationAlephBftFinalizedItem, FederationAlephBftFinalizedItemStatus, FederationCheckpoint,
-    FederationCheckpointAuditResponse, FederationCheckpointBoundary,
+    FederationCheckpointAuditResponse, FederationCheckpointBoundary, FederationCheckpointError,
     FederationCheckpointFetchResponse, FederationCheckpointId, FederationCheckpointKind,
     FederationCheckpointQuorum, FederationCheckpointQuorumResponse, FederationCheckpointSignature,
     FederationCheckpointSignatureResponse, FederationCheckpointSummary,
@@ -148,8 +148,8 @@ impl FederationNodeRuntime {
             return Ok(());
         };
         if expected_batch_items > cdk::federation::FEDERATION_MAX_CHECKPOINT_BATCH_FINALIZED_ITEMS {
-            return Err(FederationError::CheckpointInvalid {
-                reason: "scheduled checkpoint batch exceeds the finalized-item maximum".to_string(),
+            return Err(FederationCheckpointError::Invalid {
+                reason: "scheduled checkpoint batch exceeds the finalized-item maximum",
             }
             .into());
         }
@@ -213,11 +213,9 @@ impl FederationNodeRuntime {
                         );
                         let base_finalized_items = base_finalized_items?;
                         if base_finalized_items.len() != base_item_limit {
-                            return Err(FederationError::CheckpointInvalid {
-                                reason: "scheduled checkpoint byte-accounting base has missing finalized items"
-                                    .to_string(),
-                            }
-                            .into());
+                            return Err(FederationCheckpointError::Invalid {
+                                reason: "scheduled checkpoint byte-accounting base has missing finalized items",
+                            }.into());
                         }
                         #[cfg(feature = "prometheus")]
                         cdk_prometheus::METRICS.record_federation_performance_work(
@@ -252,8 +250,8 @@ impl FederationNodeRuntime {
 
             base_canonical_bytes
                 .checked_add(retained_canonical_bytes)
-                .ok_or_else(|| FederationError::CheckpointInvalid {
-                    reason: "scheduled checkpoint canonical byte count overflow".to_string(),
+                .ok_or(FederationCheckpointError::Invalid {
+                    reason: "scheduled checkpoint canonical byte count overflow",
                 })
                 .map_err(cdk::Error::from)
         }
@@ -269,8 +267,8 @@ impl FederationNodeRuntime {
         let batch_canonical_bytes = batch_canonical_bytes?;
         if batch_canonical_bytes > cdk::federation::FEDERATION_MAX_CHECKPOINT_BATCH_CANONICAL_BYTES
         {
-            return Err(FederationError::CheckpointInvalid {
-                reason: "scheduled checkpoint batch exceeds the canonical byte maximum".to_string(),
+            return Err(FederationCheckpointError::Invalid {
+                reason: "scheduled checkpoint batch exceeds the canonical byte maximum",
             }
             .into());
         }
@@ -445,17 +443,16 @@ impl FederationNodeRuntime {
         let db = mint.localstore();
         let frontier = db.get_federation_checkpoint_frontier().await?;
         if frontier.materialized_state_audit_mismatch {
-            return Err(FederationError::CheckpointInvalid {
-                reason: "materialized-state audit mismatch is already latched".to_string(),
+            return Err(FederationCheckpointError::Invalid {
+                reason: "materialized-state audit mismatch is already latched",
             }
             .into());
         }
-        let quorum = db
-            .get_trusted_federation_checkpoint_quorum()
-            .await?
-            .ok_or_else(|| FederationError::CheckpointInvalid {
-                reason: "operator audit requires a trusted checkpoint".to_string(),
-            })?;
+        let quorum = db.get_trusted_federation_checkpoint_quorum().await?.ok_or(
+            FederationCheckpointError::Invalid {
+                reason: "operator audit requires a trusted checkpoint",
+            },
+        )?;
         super::verify_checkpoint_quorum_with_metrics(
             &quorum,
             runtime_config.public_config(),
@@ -467,11 +464,9 @@ impl FederationNodeRuntime {
         if frontier.trusted_checkpoint_id != Some(checkpoint_id)
             || !frontier.exactly_matches_checkpoint(checkpoint)
         {
-            return Err(FederationError::CheckpointInvalid {
-                reason: "operator audit requires the current durable frontier to equal the trusted checkpoint"
-                    .to_string(),
-            }
-            .into());
+            return Err(FederationCheckpointError::Invalid {
+                reason: "operator audit requires the current durable frontier to equal the trusted checkpoint",
+            }.into());
         }
 
         let materialized_state_digest =
@@ -481,7 +476,7 @@ impl FederationNodeRuntime {
             tx.latch_federation_materialized_state_audit_mismatch()
                 .await?;
             tx.commit().await?;
-            return Err(FederationError::MaterializedStateAuditMismatch {
+            return Err(FederationCheckpointError::MaterializedStateAuditMismatch {
                 checkpoint_id,
                 expected: checkpoint.materialized_state_digest,
                 found: materialized_state_digest,
@@ -908,12 +903,12 @@ impl FederationNodeRuntime {
         let expected_batch_items = boundary
             .finalized_next_item_index
             .checked_sub(batch_base_finalized_index)
-            .ok_or_else(|| FederationError::CheckpointInvalid {
-                reason: "recovery checkpoint finalized frontier regressed".to_string(),
+            .ok_or(FederationCheckpointError::Invalid {
+                reason: "recovery checkpoint finalized frontier regressed",
             })?;
         if expected_batch_items > cdk::federation::FEDERATION_MAX_CHECKPOINT_BATCH_FINALIZED_ITEMS {
-            return Err(FederationError::CheckpointInvalid {
-                reason: "recovery checkpoint batch exceeds the finalized-item maximum".to_string(),
+            return Err(FederationCheckpointError::Invalid {
+                reason: "recovery checkpoint batch exceeds the finalized-item maximum",
             }
             .into());
         }
@@ -927,8 +922,8 @@ impl FederationNodeRuntime {
             )
             .await?;
         if batch_finalized_items.len() != batch_item_limit {
-            return Err(FederationError::CheckpointInvalid {
-                reason: "recovery checkpoint batch has missing finalized items".to_string(),
+            return Err(FederationCheckpointError::Invalid {
+                reason: "recovery checkpoint batch has missing finalized items",
             }
             .into());
         }
@@ -936,8 +931,8 @@ impl FederationNodeRuntime {
             cdk::federation::federation_checkpoint_batch_canonical_bytes(&batch_finalized_items)?;
         if batch_canonical_bytes > cdk::federation::FEDERATION_MAX_CHECKPOINT_BATCH_CANONICAL_BYTES
         {
-            return Err(FederationError::CheckpointInvalid {
-                reason: "recovery checkpoint batch exceeds the canonical byte maximum".to_string(),
+            return Err(FederationCheckpointError::Invalid {
+                reason: "recovery checkpoint batch exceeds the canonical byte maximum",
             }
             .into());
         }
@@ -1002,8 +997,8 @@ impl FederationNodeRuntime {
         if let Some(checkpoint) = checkpoint.as_ref() {
             checkpoint.validate_against_validated_config(public_config)?;
             if checkpoint.id()? != checkpoint_id {
-                return Err(FederationError::CheckpointInvalid {
-                    reason: "stored checkpoint does not match its lookup id".to_string(),
+                return Err(FederationCheckpointError::Invalid {
+                    reason: "stored checkpoint does not match its lookup id",
                 }
                 .into());
             }
@@ -1169,16 +1164,15 @@ impl FederationNodeRuntime {
             .ok_or_else(|| runtime_unavailable("mint configuration"))?;
         let public_config = runtime_config.public_config();
         let db = mint.localstore();
-        let checkpoint = db
-            .get_federation_checkpoint(checkpoint_id)
-            .await?
-            .ok_or_else(|| FederationError::CheckpointInvalid {
-                reason: "cannot store a signature for an unknown checkpoint".to_string(),
-            })?;
+        let checkpoint = db.get_federation_checkpoint(checkpoint_id).await?.ok_or(
+            FederationCheckpointError::Invalid {
+                reason: "cannot store a signature for an unknown checkpoint",
+            },
+        )?;
         checkpoint.validate_against_validated_config(public_config)?;
         if checkpoint.id()? != checkpoint_id || signature.checkpoint_id != checkpoint_id {
-            return Err(FederationError::CheckpointInvalid {
-                reason: "checkpoint signature lookup binding mismatch".to_string(),
+            return Err(FederationCheckpointError::Invalid {
+                reason: "checkpoint signature lookup binding mismatch",
             }
             .into());
         }

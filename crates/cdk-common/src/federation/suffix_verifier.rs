@@ -5,11 +5,11 @@ use std::collections::VecDeque;
 use super::{
     FederationAlephBftFinalizedItem, FederationAlephBftRecoveryCursor,
     FederationAlephBftUnitPayload, FederationApplicationDigest, FederationApplicationFrontier,
-    FederationApplicationState, FederationCatchUpOperation, FederationCheckpointFrontier,
-    FederationCommittedFrontier, FederationConfig, FederationConsensusRecoveryBase,
-    FederationConsensusRuntime, FederationError, FederationFinalizedFrontier,
-    FederationFinalizedItemDigest, FederationJournalEntry, FederationJournalFrontier, MemberId,
-    Result, VerifiedFederationCheckpointQuorum,
+    FederationApplicationState, FederationCatchUpOperation, FederationCheckpointError,
+    FederationCheckpointFrontier, FederationCommittedFrontier, FederationConfig,
+    FederationConsensusRecoveryBase, FederationConsensusRuntime, FederationError,
+    FederationFinalizedFrontier, FederationFinalizedItemDigest, FederationJournalEntry,
+    FederationJournalFrontier, MemberId, Result, VerifiedFederationCheckpointQuorum,
 };
 
 #[derive(Debug, Clone)]
@@ -330,9 +330,10 @@ impl FederationSuffixVerifier {
         target: &FederationCheckpointFrontier,
     ) -> Result<VerifiedFederationSuffix> {
         if target.materialized_state_audit_mismatch {
-            return Err(FederationError::CheckpointInvalid {
-                reason: "materialized-state audit mismatch is latched".to_string(),
-            });
+            return Err(FederationCheckpointError::Invalid {
+                reason: "materialized-state audit mismatch is latched",
+            }
+            .into());
         }
         self.finish(
             target.journal_frontier(),

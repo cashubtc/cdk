@@ -14,12 +14,13 @@ use serde::{Deserialize, Serialize};
 use super::canonical::{append_hash_bytes, canonical_json_bytes, impl_fixed_bytes};
 use super::{
     FederationAlephBftFinalizedItem, FederationApplicationDigest, FederationApplicationState,
-    FederationCheckpoint, FederationCheckpointFrontier, FederationCheckpointId,
-    FederationCheckpointKind, FederationCheckpointQuorum, FederationCheckpointSignature,
-    FederationCommittedFrontier, FederationConfig, FederationConfigDigest,
-    FederationConsensusRuntimeStatus, FederationDkgCeremonyId, FederationDkgKeysetSpec,
-    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgTranscriptHash, FederationDkgTranscriptSignature, FederationError, FederationId,
+    FederationCheckpoint, FederationCheckpointError, FederationCheckpointFrontier,
+    FederationCheckpointId, FederationCheckpointKind, FederationCheckpointQuorum,
+    FederationCheckpointSignature, FederationCommittedFrontier, FederationConfig,
+    FederationConfigDigest, FederationConsensusRuntimeStatus, FederationDkgCeremonyId,
+    FederationDkgKeysetSpec, FederationDkgParticipantCommitment,
+    FederationDkgParticipantCommitmentReveal, FederationDkgTranscriptHash,
+    FederationDkgTranscriptSignature, FederationError, FederationId,
     FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
     FederationMaterializedStateDigest, FederationMaterializedStateRowFingerprint,
     FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
@@ -1688,9 +1689,10 @@ impl FederationCheckpointSummary {
     /// Confirm that this summary describes the exact supplied checkpoint.
     pub fn validate_checkpoint(&self, checkpoint: &FederationCheckpoint) -> Result<()> {
         if *self != Self::from_checkpoint(checkpoint)? {
-            return Err(FederationError::CheckpointInvalid {
-                reason: "checkpoint summary does not match the checkpoint payload".to_string(),
-            });
+            return Err(FederationCheckpointError::Invalid {
+                reason: "checkpoint summary does not match the checkpoint payload",
+            }
+            .into());
         }
         Ok(())
     }
@@ -1798,9 +1800,10 @@ impl FederationCheckpointSummaryResponse {
             });
         }
         if self.member_id != expected_member_id {
-            return Err(FederationError::CheckpointInvalid {
-                reason: "checkpoint summary response member mismatch".to_string(),
-            });
+            return Err(FederationCheckpointError::Invalid {
+                reason: "checkpoint summary response member mismatch",
+            }
+            .into());
         }
         for (summary, expected_kind) in [
             (
@@ -1826,10 +1829,10 @@ impl FederationCheckpointSummaryResponse {
         ] {
             if let Some(summary) = summary {
                 if summary.kind != expected_kind {
-                    return Err(FederationError::CheckpointInvalid {
-                        reason: "checkpoint summary field contains the wrong checkpoint kind"
-                            .to_string(),
-                    });
+                    return Err(FederationCheckpointError::Invalid {
+                        reason: "checkpoint summary field contains the wrong checkpoint kind",
+                    }
+                    .into());
                 }
                 summary
                     .frontier
@@ -1911,34 +1914,37 @@ impl FederationCheckpointFetchResponse {
             });
         }
         if self.member_id != expected_member_id {
-            return Err(FederationError::CheckpointInvalid {
-                reason: "checkpoint fetch response member mismatch".to_string(),
-            });
+            return Err(FederationCheckpointError::Invalid {
+                reason: "checkpoint fetch response member mismatch",
+            }
+            .into());
         }
         if let Some(checkpoint) = self.checkpoint.as_ref() {
             checkpoint.validate_against_validated_config(config)?;
             if checkpoint.id()? != expected_checkpoint_id {
-                return Err(FederationError::CheckpointInvalid {
-                    reason: "checkpoint fetch returned a different checkpoint payload".to_string(),
-                });
+                return Err(FederationCheckpointError::Invalid {
+                    reason: "checkpoint fetch returned a different checkpoint payload",
+                }
+                .into());
             }
         }
         if let Some(quorum) = self.quorum.as_ref() {
             quorum.verify_against_validated_config(config)?;
             if quorum.checkpoint.id()? != expected_checkpoint_id {
-                return Err(FederationError::CheckpointInvalid {
-                    reason: "checkpoint fetch returned a quorum for a different checkpoint"
-                        .to_string(),
-                });
+                return Err(FederationCheckpointError::Invalid {
+                    reason: "checkpoint fetch returned a quorum for a different checkpoint",
+                }
+                .into());
             }
             if self
                 .checkpoint
                 .as_ref()
                 .is_some_and(|checkpoint| checkpoint != &quorum.checkpoint)
             {
-                return Err(FederationError::CheckpointInvalid {
-                    reason: "checkpoint fetch payload and quorum disagree".to_string(),
-                });
+                return Err(FederationCheckpointError::Invalid {
+                    reason: "checkpoint fetch payload and quorum disagree",
+                }
+                .into());
             }
         }
         Ok(())
@@ -2002,9 +2008,10 @@ impl FederationCheckpointSignatureResponse {
             });
         }
         if self.member_id != expected_member_id {
-            return Err(FederationError::CheckpointInvalid {
-                reason: "checkpoint signature response member mismatch".to_string(),
-            });
+            return Err(FederationCheckpointError::Invalid {
+                reason: "checkpoint signature response member mismatch",
+            }
+            .into());
         }
         if let Some(signature) = self.signature.as_ref() {
             let member =
@@ -2083,9 +2090,10 @@ impl FederationCheckpointQuorumResponse {
             });
         }
         if self.member_id != expected_member_id || self.checkpoint_id != expected_checkpoint_id {
-            return Err(FederationError::CheckpointInvalid {
-                reason: "checkpoint quorum acknowledgement mismatch".to_string(),
-            });
+            return Err(FederationCheckpointError::Invalid {
+                reason: "checkpoint quorum acknowledgement mismatch",
+            }
+            .into());
         }
         Ok(())
     }
@@ -3610,11 +3618,12 @@ impl FederationJournalCatchUpResponse {
     pub fn ensure_within_checkpoint_page_limit(&self) -> Result<usize> {
         let actual = self.encoded_size()?;
         if actual > FEDERATION_MAX_CHECKPOINT_CATCH_UP_PAGE_BYTES {
-            return Err(FederationError::CheckpointCatchUpTooLarge {
+            return Err(FederationCheckpointError::CatchUpTooLarge {
                 resource: "page",
                 actual: actual as u64,
                 max: FEDERATION_MAX_CHECKPOINT_CATCH_UP_PAGE_BYTES as u64,
-            });
+            }
+            .into());
         }
         Ok(actual)
     }
@@ -3696,19 +3705,20 @@ impl FederationJournalCatchUpResponse {
     pub fn bound_to_checkpoint(mut self, checkpoint: &FederationCheckpoint) -> Result<Self> {
         let checkpoint_id = checkpoint.id()?;
         if self.target_checkpoint_id != Some(checkpoint_id) {
-            return Err(FederationError::CheckpointInvalid {
-                reason: "catch-up target checkpoint binding mismatch".to_string(),
-            });
+            return Err(FederationCheckpointError::Invalid {
+                reason: "catch-up target checkpoint binding mismatch",
+            }
+            .into());
         }
         let remaining = checkpoint
             .journal_next_index
             .checked_sub(self.from_index)
-            .ok_or_else(|| FederationError::CheckpointInvalid {
-                reason: "catch-up journal cursor is ahead of target checkpoint".to_string(),
+            .ok_or(FederationCheckpointError::Invalid {
+                reason: "catch-up journal cursor is ahead of target checkpoint",
             })?;
         let remaining =
-            usize::try_from(remaining).map_err(|_| FederationError::CheckpointInvalid {
-                reason: "catch-up checkpoint range does not fit in memory".to_string(),
+            usize::try_from(remaining).map_err(|_| FederationCheckpointError::Invalid {
+                reason: "catch-up checkpoint range does not fit in memory",
             })?;
         self.entries.truncate(remaining);
         self.latest_index = checkpoint.journal_next_index.checked_sub(1);
@@ -3728,46 +3738,47 @@ impl FederationJournalCatchUpResponse {
             || self.latest_order_digest != checkpoint.journal_order_digest
             || self.materialized_state_digest != checkpoint.materialized_state_digest
         {
-            return Err(FederationError::CheckpointInvalid {
-                reason: "catch-up response does not match its target checkpoint".to_string(),
-            });
+            return Err(FederationCheckpointError::Invalid {
+                reason: "catch-up response does not match its target checkpoint",
+            }
+            .into());
         }
         let returned_next_index = self
             .from_index
             .checked_add(self.entries.len() as u64)
-            .ok_or_else(|| FederationError::CheckpointInvalid {
-                reason: "catch-up journal cursor overflow".to_string(),
+            .ok_or(FederationCheckpointError::Invalid {
+                reason: "catch-up journal cursor overflow",
             })?;
         if returned_next_index > checkpoint.journal_next_index
             || self.complete != (returned_next_index == checkpoint.journal_next_index)
         {
-            return Err(FederationError::CheckpointInvalid {
-                reason: "catch-up response crosses or misstates its checkpoint boundary"
-                    .to_string(),
-            });
+            return Err(FederationCheckpointError::Invalid {
+                reason: "catch-up response crosses or misstates its checkpoint boundary",
+            }
+            .into());
         }
         let mut expected_finalized_index = self.aleph_bft_from_item_index;
         for item in &self.aleph_bft_finalized_items {
             if item.accepted_item_index != expected_finalized_index {
-                return Err(FederationError::CheckpointInvalid {
-                    reason: "catch-up finalized items are not contiguous".to_string(),
-                });
+                return Err(FederationCheckpointError::Invalid {
+                    reason: "catch-up finalized items are not contiguous",
+                }
+                .into());
             }
-            expected_finalized_index =
-                expected_finalized_index.checked_add(1).ok_or_else(|| {
-                    FederationError::CheckpointInvalid {
-                        reason: "catch-up finalized-item cursor overflow".to_string(),
-                    }
-                })?;
+            expected_finalized_index = expected_finalized_index.checked_add(1).ok_or({
+                FederationCheckpointError::Invalid {
+                    reason: "catch-up finalized-item cursor overflow",
+                }
+            })?;
         }
         if expected_finalized_index > checkpoint.finalized_next_item_index
             || self.aleph_bft_finalized_items_complete
                 != (expected_finalized_index == checkpoint.finalized_next_item_index)
         {
-            return Err(FederationError::CheckpointInvalid {
-                reason: "catch-up finalized page crosses or misstates its checkpoint boundary"
-                    .to_string(),
-            });
+            return Err(FederationCheckpointError::Invalid {
+                reason: "catch-up finalized page crosses or misstates its checkpoint boundary",
+            }
+            .into());
         }
         Ok(())
     }
@@ -4545,7 +4556,9 @@ mod tests {
         );
         assert!(matches!(
             too_many_chunks.validate(federation_id(), member_id(), request),
-            Err(FederationError::CheckpointCatchUpTooLarge { .. })
+            Err(FederationError::Checkpoint(
+                FederationCheckpointError::CatchUpTooLarge { .. }
+            ))
         ));
         let too_many_bytes = FederationAlephBftBackupResponse::new(
             federation_id(),
@@ -4559,7 +4572,9 @@ mod tests {
         );
         assert!(matches!(
             too_many_bytes.validate(federation_id(), member_id(), request),
-            Err(FederationError::CheckpointCatchUpTooLarge { .. })
+            Err(FederationError::Checkpoint(
+                FederationCheckpointError::CatchUpTooLarge { .. }
+            ))
         ));
         let no_progress = FederationAlephBftBackupResponse::new(
             federation_id(),
@@ -4570,7 +4585,9 @@ mod tests {
         );
         assert!(matches!(
             no_progress.validate(federation_id(), member_id(), request),
-            Err(FederationError::CheckpointInvalid { .. })
+            Err(FederationError::Checkpoint(
+                FederationCheckpointError::Invalid { .. }
+            ))
         ));
     }
 

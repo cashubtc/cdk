@@ -9,19 +9,23 @@ fn checkpoint_transfer_budget_rejects_oversize_and_overflow() {
     );
     assert!(matches!(
         super::super::sync_loop::checked_checkpoint_transfer_bytes(40, 3, 42),
-        Err(FederationError::CheckpointCatchUpTooLarge {
-            resource: "transfer batch",
-            actual: 43,
-            max: 42,
-        })
+        Err(FederationError::Checkpoint(
+            FederationCheckpointError::CatchUpTooLarge {
+                resource: "transfer batch",
+                actual: 43,
+                max: 42,
+            }
+        ))
     ));
     assert!(matches!(
         super::super::sync_loop::checked_checkpoint_transfer_bytes(u64::MAX, 1, u64::MAX),
-        Err(FederationError::CheckpointCatchUpTooLarge {
-            resource: "transfer batch",
-            actual: u64::MAX,
-            max: u64::MAX,
-        })
+        Err(FederationError::Checkpoint(
+            FederationCheckpointError::CatchUpTooLarge {
+                resource: "transfer batch",
+                actual: u64::MAX,
+                max: u64::MAX,
+            }
+        ))
     ));
 }
 
@@ -103,11 +107,15 @@ fn checkpoint_page_cursor_checks_reject_no_progress_and_overflow() {
     ));
     assert!(matches!(
         super::super::sync_loop::checked_checkpoint_page_cursors(u64::MAX, 9, 1, 0),
-        Err(FederationError::CheckpointInvalid { .. })
+        Err(FederationError::Checkpoint(
+            FederationCheckpointError::Invalid { .. }
+        ))
     ));
     assert!(matches!(
         super::super::sync_loop::checked_checkpoint_page_cursors(7, u64::MAX, 0, 1),
-        Err(FederationError::CheckpointInvalid { .. })
+        Err(FederationError::Checkpoint(
+            FederationCheckpointError::Invalid { .. }
+        ))
     ));
 }
 
@@ -140,10 +148,12 @@ async fn rest_peer_client_rejects_oversized_backup_before_validation() {
         .expect_err("oversized backup response must fail before validation");
     assert!(matches!(
         error.downcast_ref::<FederationError>(),
-        Some(FederationError::CheckpointCatchUpTooLarge {
-            resource: "decoded response",
-            ..
-        })
+        Some(FederationError::Checkpoint(
+            FederationCheckpointError::CatchUpTooLarge {
+                resource: "decoded response",
+                ..
+            }
+        ))
     ));
 }
 

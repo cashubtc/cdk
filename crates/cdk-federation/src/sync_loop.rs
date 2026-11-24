@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use cdk::federation::{
-    FederationAlephBftBackupRequest, FederationCheckpoint, FederationCheckpointKind,
-    FederationCheckpointQuorum, FederationCheckpointSummary, FederationCheckpointSummaryResponse,
-    FederationError, FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
-    FederationPeerStatus, MemberConfigPublic, MemberId,
+    FederationAlephBftBackupRequest, FederationCheckpoint, FederationCheckpointError,
+    FederationCheckpointKind, FederationCheckpointQuorum, FederationCheckpointSummary,
+    FederationCheckpointSummaryResponse, FederationError, FederationJournalCatchUpRequest,
+    FederationJournalCatchUpResponse, FederationPeerStatus, MemberConfigPublic, MemberId,
     FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES,
     FEDERATION_MAX_CHECKPOINT_CATCH_UP_TRANSFER_BYTES,
 };
@@ -1148,17 +1148,18 @@ pub fn checked_checkpoint_transfer_bytes(
     let actual =
         transferred
             .checked_add(page_bytes)
-            .ok_or(FederationError::CheckpointCatchUpTooLarge {
+            .ok_or(FederationCheckpointError::CatchUpTooLarge {
                 resource: "transfer batch",
                 actual: u64::MAX,
                 max: maximum,
             })?;
     if actual > maximum {
-        return Err(FederationError::CheckpointCatchUpTooLarge {
+        return Err(FederationCheckpointError::CatchUpTooLarge {
             resource: "transfer batch",
             actual,
             max: maximum,
-        });
+        }
+        .into());
     }
     Ok(actual)
 }
@@ -1174,15 +1175,15 @@ pub fn checked_checkpoint_page_cursors(
             index: next_journal_index,
         });
     }
-    let next_journal_index = next_journal_index
-        .checked_add(journal_progress)
-        .ok_or_else(|| FederationError::CheckpointInvalid {
-            reason: "checkpoint catch-up journal cursor overflow".to_string(),
-        })?;
+    let next_journal_index = next_journal_index.checked_add(journal_progress).ok_or(
+        FederationCheckpointError::Invalid {
+            reason: "checkpoint catch-up journal cursor overflow",
+        },
+    )?;
     let next_finalized_item_index = next_finalized_item_index
         .checked_add(finalized_progress)
-        .ok_or_else(|| FederationError::CheckpointInvalid {
-            reason: "checkpoint catch-up finalized cursor overflow".to_string(),
+        .ok_or(FederationCheckpointError::Invalid {
+            reason: "checkpoint catch-up finalized cursor overflow",
         })?;
     Ok((next_journal_index, next_finalized_item_index))
 }
@@ -1308,11 +1309,12 @@ where
         if initial_journal_index > checkpoint.journal_next_index
             || initial_finalized_item_index > checkpoint.finalized_next_item_index
         {
-            return Err(FederationError::CheckpointInvalid {
-                reason: "local catch-up frontier is ahead of the selected target checkpoint"
-                    .to_string(),
-            }
-            .into());
+            return Err(
+                FederationError::Checkpoint(FederationCheckpointError::Invalid {
+                    reason: "local catch-up frontier is ahead of the selected target checkpoint",
+                })
+                .into(),
+            );
         }
 
         let mut next_journal_index = initial_journal_index;
@@ -1336,11 +1338,13 @@ where
                 .with_aleph_bft_next_item_index(next_finalized_item_index);
             let request_bytes = serde_json::to_vec(&request)?.len();
             if request_bytes > FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES {
-                return Err(FederationError::CheckpointCatchUpTooLarge {
-                    resource: "request",
-                    actual: u64::try_from(request_bytes).unwrap_or(u64::MAX),
-                    max: FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES as u64,
-                }
+                return Err(FederationError::Checkpoint(
+                    FederationCheckpointError::CatchUpTooLarge {
+                        resource: "request",
+                        actual: u64::try_from(request_bytes).unwrap_or(u64::MAX),
+                        max: FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES as u64,
+                    },
+                )
                 .into());
             }
             let page = self
@@ -1376,11 +1380,12 @@ where
             if page.from_index != next_journal_index
                 || page.aleph_bft_from_item_index != next_finalized_item_index
             {
-                return Err(FederationError::CheckpointInvalid {
-                    reason: "checkpoint catch-up page does not start at the requested cursors"
-                        .to_string(),
-                }
-                .into());
+                return Err(
+                    FederationError::Checkpoint(FederationCheckpointError::Invalid {
+                        reason: "checkpoint catch-up page does not start at the requested cursors",
+                    })
+                    .into(),
+                );
             }
             if let Some(first) = page.entries.first() {
                 if first.previous_order_digest != known_order_digest {
@@ -1393,15 +1398,15 @@ where
                 }
             }
             let journal_progress = u64::try_from(page.entries.len()).map_err(|_| {
-                FederationError::CheckpointInvalid {
-                    reason: "checkpoint catch-up journal page length exceeds u64".to_string(),
-                }
+                FederationError::Checkpoint(FederationCheckpointError::Invalid {
+                    reason: "checkpoint catch-up journal page length exceeds u64",
+                })
             })?;
             let finalized_progress =
                 u64::try_from(page.aleph_bft_finalized_items.len()).map_err(|_| {
-                    FederationError::CheckpointInvalid {
-                        reason: "checkpoint catch-up finalized page length exceeds u64".to_string(),
-                    }
+                    FederationError::Checkpoint(FederationCheckpointError::Invalid {
+                        reason: "checkpoint catch-up finalized page length exceeds u64",
+                    })
                 })?;
             (next_journal_index, next_finalized_item_index) = checked_checkpoint_page_cursors(
                 next_journal_index,

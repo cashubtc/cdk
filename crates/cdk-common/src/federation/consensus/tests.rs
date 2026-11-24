@@ -594,7 +594,7 @@ fn recovery_barrier_generation_is_canonical_and_tamper_evident() {
     tampered.requested_after_finalized_item_index = 54;
     assert!(matches!(
         tampered.ensure_supported_version(),
-        Err(FederationError::CheckpointInvalid { reason })
+        Err(FederationError::Checkpoint(FederationCheckpointError::Invalid { reason }))
             if reason.contains("generation does not match")
     ));
 }
@@ -613,7 +613,7 @@ fn recovery_barrier_is_bound_to_its_aleph_bft_federation() {
             0,
             vec![item],
         ),
-        Err(FederationError::CheckpointInvalid { reason })
+        Err(FederationError::Checkpoint(FederationCheckpointError::Invalid { reason }))
             if reason.contains("does not match its AlephBFT unit")
     ));
 }

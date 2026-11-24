@@ -12,14 +12,15 @@ use cdk::federation::{
     FederationError, FederationFrostApplicationId,
 };
 use cdk::federation::{
-    FederationAlephBftUnitPayload, FederationCheckpointQuorum, FederationConsensusRuntimeStatus,
-    FederationDkgActivationRequest, FederationDkgFinalizedMemberConfig,
-    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgSecretShareRequest, FederationDkgTranscriptSignatureRequest,
-    FederationInvalidOperationAlertSummary, FederationJournalAppendOutcome,
-    FederationJournalCatchUpResponse, FederationJournalEntry, FederationOperationEnvelope,
-    FederationOperationId, FederationOperationKind, FederationOperationStatus,
-    FederationRestMessageKind, FederationSubmitOperationResponse, MemberId,
+    FederationAlephBftUnitPayload, FederationCheckpointError, FederationCheckpointQuorum,
+    FederationConsensusRuntimeStatus, FederationDkgActivationRequest,
+    FederationDkgFinalizedMemberConfig, FederationDkgParticipantCommitment,
+    FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
+    FederationDkgTranscriptSignatureRequest, FederationInvalidOperationAlertSummary,
+    FederationJournalAppendOutcome, FederationJournalCatchUpResponse, FederationJournalEntry,
+    FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
+    FederationOperationStatus, FederationRestMessageKind, FederationSubmitOperationResponse,
+    MemberId,
 };
 
 use cdk::mint::Mint;
@@ -834,7 +835,9 @@ impl FederationNode {
         if matches!(
             &audit,
             Err(cdk::Error::Federation(
-                cdk::federation::FederationError::MaterializedStateAuditMismatch { .. }
+                cdk::federation::FederationError::Checkpoint(
+                    FederationCheckpointError::MaterializedStateAuditMismatch { .. }
+                )
             ))
         ) {
             crate::halt_current_federation_aleph_bft_session(

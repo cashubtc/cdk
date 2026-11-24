@@ -14,13 +14,13 @@ use super::canonical::impl_fixed_bytes;
 use super::journal::PreparedFederationJournalFinalization;
 use super::{
     FederationAlephBftRecoveryCursor, FederationApplicationState, FederationCheckpoint,
-    FederationCheckpointId, FederationConfig, FederationError, FederationId,
-    FederationJournalCatchUpRequest, FederationJournalConsensusEvidence, FederationJournalEntry,
-    FederationOperationConflictKey, FederationOperationEnvelope, FederationOperationId,
-    FederationOperationStatus, FederationPeerStatus, FederationRestMessageKind,
-    FederationSignedRequest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
-    InMemoryFederationJournal, MemberId, Result, ThresholdParams,
-    VerifiedFederationCheckpointQuorum, VerifiedFederationSuffix,
+    FederationCheckpointError, FederationCheckpointId, FederationConfig, FederationError,
+    FederationId, FederationJournalCatchUpRequest, FederationJournalConsensusEvidence,
+    FederationJournalEntry, FederationOperationConflictKey, FederationOperationEnvelope,
+    FederationOperationId, FederationOperationStatus, FederationPeerStatus,
+    FederationRestMessageKind, FederationSignedRequest, FederationSubmitOperationRequest,
+    FederationSubmitOperationResponse, InMemoryFederationJournal, MemberId, Result,
+    ThresholdParams, VerifiedFederationCheckpointQuorum, VerifiedFederationSuffix,
     FEDERATION_MAX_OPERATION_ENVELOPE_BYTES,
 };
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
@@ -279,8 +279,11 @@ fn finalized_item_canonical_byte_sizes(
     items
         .iter()
         .map(|item| {
-            u64::try_from(item.canonical_size()?).map_err(|_| FederationError::CheckpointInvalid {
-                reason: "canonical finalized item size exceeds u64".to_string(),
+            u64::try_from(item.canonical_size()?).map_err(|_| {
+                FederationCheckpointError::Invalid {
+                    reason: "canonical finalized item size exceeds u64",
+                }
+                .into()
             })
         })
         .collect()
@@ -296,8 +299,8 @@ fn canonical_byte_prefix_sums(item_bytes: &[u64]) -> Result<Vec<u64>> {
             .copied()
             .expect("canonical byte prefix always contains its zero base")
             .checked_add(*item_bytes)
-            .ok_or_else(|| FederationError::CheckpointInvalid {
-                reason: "checkpoint canonical byte count overflow".to_string(),
+            .ok_or(FederationCheckpointError::Invalid {
+                reason: "checkpoint canonical byte count overflow",
             })?;
         prefix_sums.push(next);
     }
@@ -424,11 +427,10 @@ impl FederationRecoveryBarrierId {
     pub fn from_slice(bytes: &[u8]) -> Result<Self> {
         let bytes: [u8; 32] = bytes
             .try_into()
-            .map_err(|_| FederationError::CheckpointInvalid {
-                reason: format!(
-                    "recovery barrier id must be 32 bytes, found {}",
-                    bytes.len()
-                ),
+            .map_err(|_| FederationError::InvalidByteLength {
+                kind: "recovery barrier id",
+                expected: 32,
+                found: bytes.len(),
             })?;
         Ok(Self(bytes))
     }
@@ -547,9 +549,10 @@ impl FederationRecoveryBarrier {
             });
         }
         if (self.scheduled_checkpoint_sequence == 0) != self.scheduled_anchor_id.is_none() {
-            return Err(FederationError::CheckpointInvalid {
-                reason: "recovery barrier scheduled anchor shape is invalid".to_string(),
-            });
+            return Err(FederationCheckpointError::Invalid {
+                reason: "recovery barrier scheduled anchor shape is invalid",
+            }
+            .into());
         }
         let expected = recovery_barrier_id(
             self.federation_id,
@@ -558,9 +561,10 @@ impl FederationRecoveryBarrier {
             self.requested_after_finalized_item_index,
         )?;
         if self.generation != expected {
-            return Err(FederationError::CheckpointInvalid {
-                reason: "recovery barrier generation does not match its request".to_string(),
-            });
+            return Err(FederationCheckpointError::Invalid {
+                reason: "recovery barrier generation does not match its request",
+            }
+            .into());
         }
         Ok(())
     }
@@ -662,10 +666,10 @@ impl FederationConsensusItem {
     fn ensure_federation_id(&self, federation_id: FederationId) -> Result<()> {
         match self {
             Self::RecoveryBarrier(barrier) if barrier.federation_id != federation_id => {
-                Err(FederationError::CheckpointInvalid {
-                    reason: "recovery barrier federation does not match its AlephBFT unit"
-                        .to_string(),
-                })
+                Err(FederationCheckpointError::Invalid {
+                    reason: "recovery barrier federation does not match its AlephBFT unit",
+                }
+                .into())
             }
             Self::Operation(_) | Self::RecoveryBarrier(_) | Self::ModuleFact(_) => Ok(()),
         }
@@ -786,9 +790,10 @@ fn recovery_barrier_id(
     requested_after_finalized_item_index: u64,
 ) -> Result<FederationRecoveryBarrierId> {
     if (scheduled_checkpoint_sequence == 0) != scheduled_anchor_id.is_none() {
-        return Err(FederationError::CheckpointInvalid {
-            reason: "recovery barrier scheduled anchor shape is invalid".to_string(),
-        });
+        return Err(FederationCheckpointError::Invalid {
+            reason: "recovery barrier scheduled anchor shape is invalid",
+        }
+        .into());
     }
 
     let mut transcript = Vec::new();
@@ -2527,26 +2532,27 @@ impl FederationConsensusRuntime {
         to_item_index: u64,
     ) -> Result<u64> {
         let retained_item_count = u64::try_from(self.finalized_items.len()).map_err(|_| {
-            FederationError::CheckpointInvalid {
-                reason: "retained finalized item count exceeds u64".to_string(),
+            FederationCheckpointError::Invalid {
+                reason: "retained finalized item count exceeds u64",
             }
         })?;
         let retained_from_item_index = self
             .next_item_index()
             .checked_sub(retained_item_count)
-            .ok_or_else(|| FederationError::CheckpointInvalid {
-                reason: "retained finalized item range underflow".to_string(),
+            .ok_or(FederationCheckpointError::Invalid {
+                reason: "retained finalized item range underflow",
             })?;
         if from_item_index < retained_from_item_index
             || to_item_index > self.next_item_index()
             || from_item_index > to_item_index
         {
-            return Err(FederationError::CheckpointInvalid {
-                reason: format!(
-                    "canonical byte range {from_item_index}..{to_item_index} is outside retained finalized range {retained_from_item_index}..{}",
-                    self.next_item_index()
-                ),
-            });
+            return Err(FederationCheckpointError::RangeOutsideRetainedItems {
+                from_item_index,
+                to_item_index,
+                retained_from_item_index,
+                retained_to_item_index: self.next_item_index(),
+            }
+            .into());
         }
         let from_offset = usize::try_from(from_item_index - retained_from_item_index)
             .expect("retained finalized item offset fits in usize");
@@ -2556,21 +2562,22 @@ impl FederationConsensusRuntime {
             .retained_finalized_canonical_byte_prefix_sums
             .get(from_offset)
             .copied()
-            .ok_or_else(|| FederationError::CheckpointInvalid {
-                reason: "canonical byte prefix is missing the requested range start".to_string(),
+            .ok_or(FederationCheckpointError::Invalid {
+                reason: "canonical byte prefix is missing the requested range start",
             })?;
         let to_bytes = self
             .retained_finalized_canonical_byte_prefix_sums
             .get(to_offset)
             .copied()
-            .ok_or_else(|| FederationError::CheckpointInvalid {
-                reason: "canonical byte prefix is missing the requested range end".to_string(),
+            .ok_or(FederationCheckpointError::Invalid {
+                reason: "canonical byte prefix is missing the requested range end",
             })?;
-        to_bytes
-            .checked_sub(from_bytes)
-            .ok_or_else(|| FederationError::CheckpointInvalid {
-                reason: "canonical byte prefix regressed".to_string(),
-            })
+        to_bytes.checked_sub(from_bytes).ok_or_else(|| {
+            FederationCheckpointError::Invalid {
+                reason: "canonical byte prefix regressed",
+            }
+            .into()
+        })
     }
 
     /// Return this member's current peer status from finalized operations.
@@ -2753,9 +2760,10 @@ impl FederationConsensusRuntime {
     pub fn submit_recovery_barrier(&mut self, barrier: FederationRecoveryBarrier) -> Result<bool> {
         barrier.ensure_supported_version()?;
         if barrier.federation_id != self.data_provider.federation_id {
-            return Err(FederationError::CheckpointInvalid {
-                reason: "recovery barrier federation does not match consensus runtime".to_string(),
-            });
+            return Err(FederationCheckpointError::Invalid {
+                reason: "recovery barrier federation does not match consensus runtime",
+            }
+            .into());
         }
         let pending_covers_request = self.data_provider.has_recovery_barrier_covering(&barrier)
             || self.pending_finalization_units.values().any(|items| {

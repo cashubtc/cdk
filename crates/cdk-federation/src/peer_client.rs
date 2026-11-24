@@ -6,13 +6,13 @@ use cdk::federation::{
     FederationAlephBftActivityRequest, FederationAlephBftActivityResponse,
     FederationAlephBftBackupRequest, FederationAlephBftBackupResponse,
     FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkMessageResponse,
-    FederationCheckpoint, FederationCheckpointFetchRequest, FederationCheckpointFetchResponse,
-    FederationCheckpointId, FederationCheckpointQuorum, FederationCheckpointQuorumRequest,
-    FederationCheckpointQuorumResponse, FederationCheckpointSignatureRequest,
-    FederationCheckpointSignatureResponse, FederationCheckpointSummaryRequest,
-    FederationCheckpointSummaryResponse, FederationConfig, FederationDkgActivationRequest,
-    FederationDkgCommitmentRequest, FederationDkgReadinessRequest, FederationDkgRevealRequest,
-    FederationDkgSecretShareRequest, FederationDkgSetupResponse,
+    FederationCheckpoint, FederationCheckpointError, FederationCheckpointFetchRequest,
+    FederationCheckpointFetchResponse, FederationCheckpointId, FederationCheckpointQuorum,
+    FederationCheckpointQuorumRequest, FederationCheckpointQuorumResponse,
+    FederationCheckpointSignatureRequest, FederationCheckpointSignatureResponse,
+    FederationCheckpointSummaryRequest, FederationCheckpointSummaryResponse, FederationConfig,
+    FederationDkgActivationRequest, FederationDkgCommitmentRequest, FederationDkgReadinessRequest,
+    FederationDkgRevealRequest, FederationDkgSecretShareRequest, FederationDkgSetupResponse,
     FederationDkgTranscriptSignatureRequest, FederationError,
     FederationFrostAggregateResultNotification, FederationFrostCommitmentRequest,
     FederationFrostCommitmentResponse, FederationFrostDkgConfirmationRequest,
@@ -215,14 +215,14 @@ where
             max_response_bytes,
         );
         match time::timeout(timeout, request).await {
-            Ok(Err(HttpError::ResponseTooLarge { actual, max })) => {
-                Err(FederationError::CheckpointCatchUpTooLarge {
+            Ok(Err(HttpError::ResponseTooLarge { actual, max })) => Err(
+                FederationError::Checkpoint(FederationCheckpointError::CatchUpTooLarge {
                     resource: "decoded response",
                     actual: u64::try_from(actual).unwrap_or(u64::MAX),
                     max: u64::try_from(max).unwrap_or(u64::MAX),
-                }
-                .into())
-            }
+                })
+                .into(),
+            ),
             Ok(result) => Ok(result?),
             Err(_) => Err(FederationRestPeerClientError::RequestTimeout {
                 member_id: member.member_id,
@@ -303,19 +303,18 @@ where
             next_scheduled_quorum_after,
             response.payload.next_scheduled_quorum.as_ref(),
         ) {
-            let expected =
-                sequence
-                    .checked_add(1)
-                    .ok_or_else(|| FederationError::CheckpointInvalid {
-                        reason: "scheduled checkpoint sequence overflow".to_string(),
-                    })?;
+            let expected = sequence.checked_add(1).ok_or({
+                FederationError::Checkpoint(FederationCheckpointError::Invalid {
+                    reason: "scheduled checkpoint sequence overflow",
+                })
+            })?;
             if next.scheduled_checkpoint_sequence != expected {
-                return Err(FederationError::CheckpointInvalid {
-                    reason: format!(
-                        "peer returned scheduled checkpoint sequence {}, expected {}",
-                        next.scheduled_checkpoint_sequence, expected
-                    ),
-                }
+                return Err(FederationError::Checkpoint(
+                    FederationCheckpointError::ScheduledSequenceMismatch {
+                        expected,
+                        found: next.scheduled_checkpoint_sequence,
+                    },
+                )
                 .into());
             }
         }
@@ -1129,12 +1128,14 @@ where
             self.signed_request(member, FederationRestMessageKind::AlephBftBackup, request)?;
         let request_bytes = serde_json::to_vec(&request)?.len();
         if request_bytes > FEDERATION_MAX_ALEPH_BFT_BACKUP_REQUEST_BYTES {
-            return Err(FederationError::CheckpointCatchUpTooLarge {
-                resource: "AlephBFT backup request",
-                actual: u64::try_from(request_bytes).unwrap_or(u64::MAX),
-                max: FEDERATION_MAX_ALEPH_BFT_BACKUP_REQUEST_BYTES as u64,
-            }
-            .into());
+            return Err(
+                FederationError::Checkpoint(FederationCheckpointError::CatchUpTooLarge {
+                    resource: "AlephBFT backup request",
+                    actual: u64::try_from(request_bytes).unwrap_or(u64::MAX),
+                    max: FEDERATION_MAX_ALEPH_BFT_BACKUP_REQUEST_BYTES as u64,
+                })
+                .into(),
+            );
         }
         let request_sequence = request.sequence;
         let response: FederationSignedRequest<FederationAlephBftBackupResponse> = self
@@ -1153,10 +1154,12 @@ where
             FederationRestMessageKind::AlephBftBackup,
         )?;
         if response.sequence != request_sequence {
-            return Err(FederationError::CheckpointInvalid {
-                reason: "AlephBFT backup response sequence mismatch".to_string(),
-            }
-            .into());
+            return Err(
+                FederationError::Checkpoint(FederationCheckpointError::Invalid {
+                    reason: "AlephBFT backup response sequence mismatch",
+                })
+                .into(),
+            );
         }
         response
             .payload
@@ -1172,10 +1175,12 @@ where
     ) -> anyhow::Result<FederationJournalCatchUpResponse> {
         let checkpoint_id = checkpoint.id()?;
         if request.target_checkpoint_id != Some(checkpoint_id) {
-            return Err(FederationError::CheckpointInvalid {
-                reason: "catch-up request does not bind the supplied target checkpoint".to_string(),
-            }
-            .into());
+            return Err(
+                FederationError::Checkpoint(FederationCheckpointError::Invalid {
+                    reason: "catch-up request does not bind the supplied target checkpoint",
+                })
+                .into(),
+            );
         }
         let request =
             self.signed_request(member, FederationRestMessageKind::CatchUp, request.clone())?;
@@ -1282,12 +1287,14 @@ where
 {
     let actual = serde_json::to_vec(request)?.len();
     if actual > FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES {
-        return Err(FederationError::CheckpointCatchUpTooLarge {
-            resource: "request",
-            actual: u64::try_from(actual).unwrap_or(u64::MAX),
-            max: FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES as u64,
-        }
-        .into());
+        return Err(
+            FederationError::Checkpoint(FederationCheckpointError::CatchUpTooLarge {
+                resource: "request",
+                actual: u64::try_from(actual).unwrap_or(u64::MAX),
+                max: FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES as u64,
+            })
+            .into(),
+        );
     }
     Ok(actual)
 }
@@ -1389,10 +1396,12 @@ fn validate_peer_status(
         .copied()
         .ne(public_config.members.keys().copied())
     {
-        return Err(FederationError::CheckpointInvalid {
-            reason: "peer status per-member AlephBFT cursor roster mismatch".to_string(),
-        }
-        .into());
+        return Err(
+            FederationError::Checkpoint(FederationCheckpointError::Invalid {
+                reason: "peer status per-member AlephBFT cursor roster mismatch",
+            })
+            .into(),
+        );
     }
 
     Ok(())

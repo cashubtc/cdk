@@ -3,7 +3,9 @@
 use serde::{Deserialize, Serialize};
 
 use super::FEDERATION_REST_API_VERSION;
-use crate::federation::{FederationError, FederationId, MemberId, Result};
+use crate::federation::{
+    FederationCheckpointError, FederationError, FederationId, MemberId, Result,
+};
 
 /// Maximum number of opaque backup chunks returned by one page.
 pub const FEDERATION_MAX_ALEPH_BFT_BACKUP_CHUNKS_PER_PAGE: usize = 512;
@@ -115,56 +117,63 @@ impl FederationAlephBftBackupResponse {
             });
         }
         if self.member_id != expected_member_id {
-            return Err(FederationError::CheckpointInvalid {
-                reason: "AlephBFT backup response member mismatch".to_string(),
-            });
+            return Err(FederationCheckpointError::Invalid {
+                reason: "AlephBFT backup response member mismatch",
+            }
+            .into());
         }
         if self.session != request.session || self.from_chunk != request.next_chunk {
-            return Err(FederationError::CheckpointInvalid {
-                reason: "AlephBFT backup response session or chunk cursor mismatch".to_string(),
-            });
+            return Err(FederationCheckpointError::Invalid {
+                reason: "AlephBFT backup response session or chunk cursor mismatch",
+            }
+            .into());
         }
         if self.chunks.len() > FEDERATION_MAX_ALEPH_BFT_BACKUP_CHUNKS_PER_PAGE {
-            return Err(FederationError::CheckpointCatchUpTooLarge {
+            return Err(FederationCheckpointError::CatchUpTooLarge {
                 resource: "AlephBFT backup chunks",
                 actual: u64::try_from(self.chunks.len()).unwrap_or(u64::MAX),
                 max: FEDERATION_MAX_ALEPH_BFT_BACKUP_CHUNKS_PER_PAGE as u64,
-            });
+            }
+            .into());
         }
         let mut raw_bytes = 0usize;
         for chunk in &self.chunks {
             if chunk.is_empty() {
-                return Err(FederationError::CheckpointInvalid {
-                    reason: "AlephBFT backup response contains an empty chunk".to_string(),
-                });
+                return Err(FederationCheckpointError::Invalid {
+                    reason: "AlephBFT backup response contains an empty chunk",
+                }
+                .into());
             }
-            raw_bytes = raw_bytes.checked_add(chunk.len()).ok_or({
-                FederationError::CheckpointCatchUpTooLarge {
+            raw_bytes = raw_bytes.checked_add(chunk.len()).ok_or(
+                FederationCheckpointError::CatchUpTooLarge {
                     resource: "AlephBFT backup raw bytes",
                     actual: u64::MAX,
                     max: FEDERATION_MAX_ALEPH_BFT_BACKUP_RAW_BYTES_PER_PAGE as u64,
-                }
-            })?;
+                },
+            )?;
         }
         if raw_bytes > FEDERATION_MAX_ALEPH_BFT_BACKUP_RAW_BYTES_PER_PAGE {
-            return Err(FederationError::CheckpointCatchUpTooLarge {
+            return Err(FederationCheckpointError::CatchUpTooLarge {
                 resource: "AlephBFT backup raw bytes",
                 actual: u64::try_from(raw_bytes).unwrap_or(u64::MAX),
                 max: FEDERATION_MAX_ALEPH_BFT_BACKUP_RAW_BYTES_PER_PAGE as u64,
-            });
+            }
+            .into());
         }
         if self.chunks.is_empty() && !self.complete {
-            return Err(FederationError::CheckpointInvalid {
-                reason: "AlephBFT backup response made no progress".to_string(),
-            });
+            return Err(FederationCheckpointError::Invalid {
+                reason: "AlephBFT backup response made no progress",
+            }
+            .into());
         }
         let encoded_size = self.encoded_size()?;
         if encoded_size > FEDERATION_MAX_ALEPH_BFT_BACKUP_PAGE_BYTES {
-            return Err(FederationError::CheckpointCatchUpTooLarge {
+            return Err(FederationCheckpointError::CatchUpTooLarge {
                 resource: "AlephBFT backup page",
                 actual: u64::try_from(encoded_size).unwrap_or(u64::MAX),
                 max: FEDERATION_MAX_ALEPH_BFT_BACKUP_PAGE_BYTES as u64,
-            });
+            }
+            .into());
         }
         Ok(())
     }

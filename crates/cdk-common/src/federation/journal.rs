@@ -14,8 +14,9 @@ use serde::{Deserialize, Serialize};
 use super::canonical::append_hash_bytes;
 use super::canonical::impl_fixed_bytes;
 use super::{
-    FederatedKeyset, FederationError, FederationOperation, FederationOperationConflictKey,
-    FederationOperationEnvelope, FederationOperationId, MemberId, Result,
+    FederatedKeyset, FederationCheckpointError, FederationError, FederationOperation,
+    FederationOperationConflictKey, FederationOperationEnvelope, FederationOperationId, MemberId,
+    Result,
 };
 use crate::error::ErrorResponse;
 use crate::PublicKey;
@@ -956,20 +957,17 @@ impl InMemoryFederationJournal {
             if serde_json::to_vec(existing)? == serde_json::to_vec(&entry)? {
                 return Ok(());
             }
-            return Err(FederationError::CheckpointInvalid {
-                reason: format!(
-                    "indexed durable operation {} disagrees with the retained journal",
-                    entry.operation_id
-                ),
-            });
+            return Err(FederationCheckpointError::RetainedOperationMismatch {
+                operation_id: entry.operation_id,
+            }
+            .into());
         }
         if entry.index >= self.base_next_index {
-            return Err(FederationError::CheckpointInvalid {
-                reason: format!(
-                    "indexed durable operation {} at index {} is missing from the retained suffix",
-                    entry.operation_id, entry.index
-                ),
-            });
+            return Err(FederationCheckpointError::RetainedOperationMissing {
+                operation_id: entry.operation_id,
+                index: entry.index,
+            }
+            .into());
         }
 
         if entry.reserves_conflict_keys() {

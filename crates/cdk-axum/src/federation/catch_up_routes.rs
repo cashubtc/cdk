@@ -1,9 +1,9 @@
 use axum::extract::{Json, State};
 use axum::response::Response;
 use cdk::federation::{
-    FederationAlephBftFinalizedItem, FederationError, FederationJournalCatchUpRequest,
-    FederationJournalCatchUpResponse, FederationRestMessageKind, FederationSignedRequest,
-    InMemoryFederationJournal, FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS,
+    FederationAlephBftFinalizedItem, FederationCheckpointError, FederationError,
+    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationRestMessageKind,
+    FederationSignedRequest, InMemoryFederationJournal, FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS,
     FEDERATION_MAX_CHECKPOINT_CATCH_UP_PAGE_BYTES,
 };
 use tracing::instrument;
@@ -54,18 +54,22 @@ async fn durable_catch_up_response(
                 .await
                 .map_err(|err| anyhow_response(err.into()))?
                 .ok_or_else(|| {
-                    federation_error_response(FederationError::CheckpointInvalid {
-                        reason: "requested catch-up checkpoint is not stored".to_string(),
-                    })
+                    federation_error_response(
+                        FederationCheckpointError::Invalid {
+                            reason: "requested catch-up checkpoint is not stored",
+                        }
+                        .into(),
+                    )
                 })?;
             checkpoint
                 .validate_against_validated_config(runtime_config.public_config())
                 .map_err(federation_error_response)?;
             if checkpoint.id().map_err(federation_error_response)? != checkpoint_id {
                 return Err(federation_error_response(
-                    FederationError::CheckpointInvalid {
-                        reason: "requested catch-up checkpoint lookup binding mismatch".to_string(),
-                    },
+                    FederationCheckpointError::Invalid {
+                        reason: "requested catch-up checkpoint lookup binding mismatch",
+                    }
+                    .into(),
                 ));
             }
             Some(checkpoint)
@@ -94,9 +98,10 @@ async fn durable_catch_up_response(
     };
     if request.next_index > end_index {
         return Err(federation_error_response(
-            FederationError::CheckpointInvalid {
-                reason: "catch-up journal cursor is ahead of the available frontier".to_string(),
-            },
+            FederationCheckpointError::Invalid {
+                reason: "catch-up journal cursor is ahead of the available frontier",
+            }
+            .into(),
         ));
     }
     let limit = request.effective_limit(
@@ -115,9 +120,10 @@ async fn durable_catch_up_response(
         None if request.next_index == end_index => end_order_digest,
         None => {
             return Err(federation_error_response(
-                FederationError::CheckpointInvalid {
-                    reason: "journal bodies are unavailable at the requested cursor".to_string(),
-                },
+                FederationCheckpointError::Invalid {
+                    reason: "journal bodies are unavailable at the requested cursor",
+                }
+                .into(),
             ));
         }
     };
@@ -144,9 +150,12 @@ async fn durable_catch_up_response(
 
     let mut response_request = request.clone();
     response_request.limit = Some(u16::try_from(fetch_limit).map_err(|_| {
-        federation_error_response(FederationError::CheckpointInvalid {
-            reason: "catch-up fetch limit exceeds u16".to_string(),
-        })
+        federation_error_response(
+            FederationCheckpointError::Invalid {
+                reason: "catch-up fetch limit exceeds u16",
+            }
+            .into(),
+        )
     })?);
     let mut response = FederationJournalCatchUpResponse::from_journal(
         runtime_config.federation_id(),
@@ -211,11 +220,12 @@ pub(super) fn fit_checkpoint_page_to_byte_limit(
                 })
                 .map_or(0, |index| index.saturating_add(1));
             if last_unit_start == 0 {
-                return Err(FederationError::CheckpointCatchUpTooLarge {
+                return Err(FederationCheckpointError::CatchUpTooLarge {
                     resource: "single finalized unit page",
                     actual: u64::try_from(encoded_size).unwrap_or(u64::MAX),
                     max: FEDERATION_MAX_CHECKPOINT_CATCH_UP_PAGE_BYTES as u64,
-                });
+                }
+                .into());
             }
             let retain_at_most = response
                 .aleph_bft_finalized_items
@@ -259,8 +269,8 @@ pub(super) fn fit_checkpoint_page_to_byte_limit(
                 .entries
                 .len()
                 .checked_sub(removed_accepted_operations)
-                .ok_or_else(|| FederationError::CheckpointInvalid {
-                    reason: "catch-up page finalized prefix has too few journal claims".to_string(),
+                .ok_or(FederationCheckpointError::Invalid {
+                    reason: "catch-up page finalized prefix has too few journal claims",
                 })?;
             response.entries.truncate(retained_entries);
             response.complete = false;
@@ -269,11 +279,12 @@ pub(super) fn fit_checkpoint_page_to_byte_limit(
             continue;
         }
 
-        return Err(FederationError::CheckpointCatchUpTooLarge {
+        return Err(FederationCheckpointError::CatchUpTooLarge {
             resource: "page metadata and backup",
             actual: u64::try_from(encoded_size).unwrap_or(u64::MAX),
             max: FEDERATION_MAX_CHECKPOINT_CATCH_UP_PAGE_BYTES as u64,
-        });
+        }
+        .into());
     }
 }
 
@@ -290,20 +301,21 @@ fn align_catch_up_page_to_finalized_prefix(
         })
         .count();
     if response.entries.len() < accepted_operations {
-        return Err(FederationError::CheckpointInvalid {
-            reason: "catch-up finalized prefix exceeds the available journal claims".to_string(),
-        });
+        return Err(FederationCheckpointError::Invalid {
+            reason: "catch-up finalized prefix exceeds the available journal claims",
+        }
+        .into());
     }
     response.entries.truncate(accepted_operations);
     let returned_next_index = response
         .from_index
         .checked_add(u64::try_from(response.entries.len()).map_err(|_| {
-            FederationError::CheckpointInvalid {
-                reason: "catch-up journal page length exceeds u64".to_string(),
+            FederationCheckpointError::Invalid {
+                reason: "catch-up journal page length exceeds u64",
             }
         })?)
-        .ok_or_else(|| FederationError::CheckpointInvalid {
-            reason: "catch-up journal cursor overflow".to_string(),
+        .ok_or(FederationCheckpointError::Invalid {
+            reason: "catch-up journal cursor overflow",
         })?;
     response.complete = returned_next_index == journal_end_index;
     Ok(response)
@@ -320,10 +332,12 @@ async fn maybe_attach_aleph_bft_finalized_items(
         MAX_FEDERATION_CATCH_UP_LIMIT,
     );
     if request.aleph_bft_next_item_index > finalized_end_item_index {
-        return Err(FederationError::CheckpointInvalid {
-            reason: "catch-up finalized cursor is ahead of the available frontier".to_string(),
-        }
-        .into());
+        return Err(
+            FederationError::Checkpoint(FederationCheckpointError::Invalid {
+                reason: "catch-up finalized cursor is ahead of the available frontier",
+            })
+            .into(),
+        );
     }
     let fetch_limit = requested_limit.max(FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS);
     let finalized_items = state

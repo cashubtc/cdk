@@ -1539,7 +1539,9 @@ async fn operator_checkpoint_audit_latches_materialized_state_mismatch() {
         .expect_err("operator audit must reject altered state");
     assert!(matches!(
         error,
-        cdk::Error::Federation(FederationError::MaterializedStateAuditMismatch { .. })
+        cdk::Error::Federation(FederationError::Checkpoint(
+            FederationCheckpointError::MaterializedStateAuditMismatch { .. }
+        ))
     ));
     assert!(
         db.get_federation_checkpoint_frontier()
@@ -1554,7 +1556,9 @@ async fn operator_checkpoint_audit_latches_materialized_state_mismatch() {
         .expect_err("latched mismatch must remain fail closed");
     assert!(matches!(
         restart_error,
-        cdk::Error::Federation(FederationError::CheckpointInvalid { .. })
+        cdk::Error::Federation(FederationError::Checkpoint(
+            FederationCheckpointError::Invalid { .. }
+        ))
     ));
 }
 

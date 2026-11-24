@@ -1,7 +1,7 @@
 use axum::extract::{Json, State};
 use axum::response::Response;
 use cdk::federation::{
-    FederationAlephBftBackupRequest, FederationAlephBftBackupResponse, FederationError,
+    FederationAlephBftBackupRequest, FederationAlephBftBackupResponse, FederationCheckpointError,
     FederationRestMessageKind, FederationSignedRequest,
     FEDERATION_MAX_ALEPH_BFT_BACKUP_CHUNKS_PER_PAGE,
     FEDERATION_MAX_ALEPH_BFT_BACKUP_RAW_BYTES_PER_PAGE,
@@ -75,20 +75,24 @@ async fn backup_page(
         .take(FEDERATION_MAX_ALEPH_BFT_BACKUP_CHUNKS_PER_PAGE)
     {
         let next_bytes = raw_bytes.checked_add(chunk.len()).ok_or_else(|| {
-            federation_error_response(FederationError::CheckpointCatchUpTooLarge {
-                resource: "AlephBFT backup raw bytes",
-                actual: u64::MAX,
-                max: FEDERATION_MAX_ALEPH_BFT_BACKUP_RAW_BYTES_PER_PAGE as u64,
-            })
+            federation_error_response(
+                FederationCheckpointError::CatchUpTooLarge {
+                    resource: "AlephBFT backup raw bytes",
+                    actual: u64::MAX,
+                    max: FEDERATION_MAX_ALEPH_BFT_BACKUP_RAW_BYTES_PER_PAGE as u64,
+                }
+                .into(),
+            )
         })?;
         if next_bytes > FEDERATION_MAX_ALEPH_BFT_BACKUP_RAW_BYTES_PER_PAGE {
             if chunks.is_empty() {
                 return Err(federation_error_response(
-                    FederationError::CheckpointCatchUpTooLarge {
+                    FederationCheckpointError::CatchUpTooLarge {
                         resource: "single AlephBFT backup chunk",
                         actual: u64::try_from(next_bytes).unwrap_or(u64::MAX),
                         max: FEDERATION_MAX_ALEPH_BFT_BACKUP_RAW_BYTES_PER_PAGE as u64,
-                    },
+                    }
+                    .into(),
                 ));
             }
             break;

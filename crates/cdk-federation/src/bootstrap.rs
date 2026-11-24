@@ -7,10 +7,10 @@ use anyhow::Result;
 
 use cdk::federation::{
     FederationAlephBftFinalizedItem, FederationAlephBftFinalizedItemStatus, FederationCheckpoint,
-    FederationCheckpointFrontier, FederationConfig, FederationConfigSnapshot,
-    FederationConsensusItem, FederationConsensusRecoveryBase, FederationConsensusRuntime,
-    FederationError, FederationFrostDkgContext, FederationJournalEntry, FederationOperationStatus,
-    FederationRestSequenceTracker, FederationSuffixVerifier, MemberId,
+    FederationCheckpointError, FederationCheckpointFrontier, FederationConfig,
+    FederationConfigSnapshot, FederationConsensusItem, FederationConsensusRecoveryBase,
+    FederationConsensusRuntime, FederationError, FederationFrostDkgContext, FederationJournalEntry,
+    FederationOperationStatus, FederationRestSequenceTracker, FederationSuffixVerifier, MemberId,
     VerifiedFederationCheckpointQuorum,
 };
 use cdk::mint::Mint;
@@ -29,8 +29,8 @@ pub fn checkpoint_is_exact_startup_frontier(
     frontier: &FederationCheckpointFrontier,
 ) -> std::result::Result<bool, cdk::Error> {
     if frontier.materialized_state_audit_mismatch {
-        return Err(FederationError::CheckpointInvalid {
-            reason: "materialized-state audit mismatch is latched".to_string(),
+        return Err(FederationCheckpointError::Invalid {
+            reason: "materialized-state audit mismatch is latched",
         }
         .into());
     }
@@ -138,9 +138,8 @@ impl FederationCheckpointStartupVerifier<'_> {
         let db = self.mint.localstore();
         let repaired_frontier = db.get_federation_checkpoint_frontier().await?;
         if !repaired_frontier.ordered_history_matches(initial_frontier) {
-            return Err(FederationError::CheckpointStartupSuffixMismatch {
-                reason: "durable ordered frontier changed during startup application replay"
-                    .to_string(),
+            return Err(FederationCheckpointError::StartupSuffixMismatch {
+                reason: "durable ordered frontier changed during startup application replay",
             }
             .into());
         }
@@ -156,16 +155,15 @@ impl FederationCheckpointStartupVerifier<'_> {
             .await?;
         let repaired_terminal_prefix_len =
             usize::try_from(repaired_suffix.terminal_application_count()).map_err(|_| {
-                FederationError::CheckpointStartupSuffixMismatch {
-                    reason: "terminal application suffix length exceeds local address space"
-                        .to_string(),
+                FederationCheckpointError::StartupSuffixMismatch {
+                    reason: "terminal application suffix length exceeds local address space",
                 }
             })?;
         if !repaired_frontier.is_fully_terminal()
             || repaired_terminal_prefix_len != repaired_journal_entries.len()
         {
             return Err(
-                FederationError::CheckpointStartupApplicationReplayIncomplete {
+                FederationCheckpointError::StartupApplicationReplayIncomplete {
                     expected: repaired_frontier.journal_next_index,
                     found: repaired_frontier.application_next_index,
                 }
@@ -319,17 +317,20 @@ pub async fn create_federation_runtime_state_with_wallet(
     let checkpoint_consensus = match (frontier.trusted_checkpoint_id, trusted_quorum) {
         (None, None) => None,
         (Some(_), None) => {
-            return Err(FederationError::CheckpointInvalid {
-                reason: "trusted checkpoint metadata references a missing quorum".to_string(),
-            }
-            .into());
+            return Err(
+                FederationError::Checkpoint(FederationCheckpointError::Invalid {
+                    reason: "trusted checkpoint metadata references a missing quorum",
+                })
+                .into(),
+            );
         }
         (None, Some(_)) => {
-            return Err(FederationError::CheckpointInvalid {
-                reason: "trusted checkpoint quorum is not bound to the durable frontier"
-                    .to_string(),
-            }
-            .into());
+            return Err(
+                FederationError::Checkpoint(FederationCheckpointError::Invalid {
+                    reason: "trusted checkpoint quorum is not bound to the durable frontier",
+                })
+                .into(),
+            );
         }
         (Some(trusted_checkpoint_id), Some(quorum)) => {
             let verified_quorum = crate::verify_checkpoint_quorum_with_metrics(
@@ -340,16 +341,20 @@ pub async fn create_federation_runtime_state_with_wallet(
             )?;
             let checkpoint = verified_quorum.checkpoint();
             if checkpoint.id()? != trusted_checkpoint_id {
-                return Err(FederationError::CheckpointInvalid {
-                    reason: "trusted checkpoint ID does not match its stored quorum".to_string(),
-                }
-                .into());
+                return Err(
+                    FederationError::Checkpoint(FederationCheckpointError::Invalid {
+                        reason: "trusted checkpoint ID does not match its stored quorum",
+                    })
+                    .into(),
+                );
             }
             if active_session < checkpoint.aleph_bft_session {
-                return Err(FederationError::CheckpointInvalid {
-                    reason: "active AlephBFT session is behind the trusted checkpoint".to_string(),
-                }
-                .into());
+                return Err(
+                    FederationError::Checkpoint(FederationCheckpointError::Invalid {
+                        reason: "active AlephBFT session is behind the trusted checkpoint",
+                    })
+                    .into(),
+                );
             }
             let exact_checkpoint = checkpoint_is_exact_startup_frontier(checkpoint, &frontier)?;
             #[cfg(feature = "prometheus")]
@@ -404,9 +409,10 @@ pub async fn create_federation_runtime_state_with_wallet(
                 .verify(&frontier, &journal_entries, &finalized_items)
                 .await?;
             let terminal_prefix_len = usize::try_from(verified_suffix.terminal_application_count())
-                .map_err(|_| FederationError::CheckpointStartupSuffixMismatch {
-                    reason: "terminal application suffix length exceeds local address space"
-                        .to_string(),
+                .map_err(|_| {
+                    FederationError::Checkpoint(FederationCheckpointError::StartupSuffixMismatch {
+                        reason: "terminal application suffix length exceeds local address space",
+                    })
                 })?;
             let mut consensus =
                 FederationConsensusRuntime::recover_verified_suffix(verified_suffix);

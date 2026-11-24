@@ -13,8 +13,8 @@ use std::sync::atomic::Ordering;
 #[cfg(any(test, feature = "test-utils"))]
 use cdk::federation::FederationCatchUpOperation;
 use cdk::federation::{
-    FederationCheckpointFrontier, FederationCheckpointQuorum, FederationConsensusRecoveryBase,
-    FederationConsensusRuntime, FederationError, FederationJournalCatchUpResponse,
+    FederationCheckpointError, FederationCheckpointFrontier, FederationCheckpointQuorum,
+    FederationConsensusRecoveryBase, FederationConsensusRuntime, FederationJournalCatchUpResponse,
     FederationJournalEntry, FederationJournalFrontier, FederationSuffixVerifier,
     VerifiedFederationCheckpointQuorum,
 };
@@ -80,9 +80,8 @@ impl FederationNodeRuntime {
             || frontier.application_next_index != response.from_index
             || frontier.finalized_next_item_index != response.aleph_bft_from_item_index
         {
-            return Err(FederationError::CheckpointInvalid {
-                reason: "catch-up response does not start at the durable local frontier"
-                    .to_string(),
+            return Err(FederationCheckpointError::Invalid {
+                reason: "catch-up response does not start at the durable local frontier",
             }
             .into());
         }
@@ -127,8 +126,8 @@ impl FederationNodeRuntime {
             return Ok(applied);
         }
         if !frontier.exactly_matches_checkpoint(checkpoint) {
-            return Err(FederationError::CheckpointInvalid {
-                reason: "durable catch-up frontiers do not equal the target checkpoint".to_string(),
+            return Err(FederationCheckpointError::Invalid {
+                reason: "durable catch-up frontiers do not equal the target checkpoint",
             }
             .into());
         }
@@ -139,8 +138,8 @@ impl FederationNodeRuntime {
             .fail_next_checkpoint_promotion
             .swap(false, Ordering::AcqRel)
         {
-            return Err(FederationError::CheckpointInvalid {
-                reason: "injected failure before checkpoint promotion".to_string(),
+            return Err(FederationCheckpointError::Invalid {
+                reason: "injected failure before checkpoint promotion",
             }
             .into());
         }
@@ -230,9 +229,8 @@ impl FederationNodeRuntime {
         if response.from_index != consensus.journal().next_index()
             || response.aleph_bft_from_item_index != status.next_item_index
         {
-            return Err(FederationError::CheckpointInvalid {
-                reason: "checkpoint catch-up response does not begin after the local suffix"
-                    .to_string(),
+            return Err(FederationCheckpointError::Invalid {
+                reason: "checkpoint catch-up response does not begin after the local suffix",
             }
             .into());
         }
@@ -383,7 +381,7 @@ impl FederationNodeRuntime {
             && response.latest_order_digest != next_consensus.journal().latest_order_digest()
         {
             return Err(cdk::Error::Federation(
-                FederationError::CatchUpDigestMismatch {
+                cdk::federation::FederationError::CatchUpDigestMismatch {
                     index: next_consensus.journal().next_index(),
                     expected: next_consensus.journal().latest_order_digest(),
                     found: response.latest_order_digest,

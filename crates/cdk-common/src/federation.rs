@@ -73,13 +73,13 @@ pub use self::chain_observation::{
 pub use self::checkpoint::{
     federation_checkpoint_batch_canonical_bytes, FederationAlephBftRecoveryCursor,
     FederationApplicationDigest, FederationApplicationFrontier, FederationCheckpoint,
-    FederationCheckpointBoundary, FederationCheckpointFrontier, FederationCheckpointId,
-    FederationCheckpointKind, FederationCheckpointPolicy, FederationCheckpointQuorum,
-    FederationCheckpointSignature, FederationCommittedFrontier, FederationFinalizedFrontier,
-    FederationFinalizedItemDigest, FederationJournalFrontier, VerifiedFederationCheckpointQuorum,
-    DEFAULT_CHECKPOINT_INTERVAL_CANONICAL_BYTES, DEFAULT_CHECKPOINT_INTERVAL_FINALIZED_ITEMS,
-    DEFAULT_CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS, FEDERATION_CHECKPOINT_VERSION,
-    FEDERATION_MAX_CHECKPOINT_BATCH_CANONICAL_BYTES,
+    FederationCheckpointBoundary, FederationCheckpointError, FederationCheckpointFrontier,
+    FederationCheckpointId, FederationCheckpointKind, FederationCheckpointPolicy,
+    FederationCheckpointQuorum, FederationCheckpointSignature, FederationCommittedFrontier,
+    FederationFinalizedFrontier, FederationFinalizedItemDigest, FederationJournalFrontier,
+    VerifiedFederationCheckpointQuorum, DEFAULT_CHECKPOINT_INTERVAL_CANONICAL_BYTES,
+    DEFAULT_CHECKPOINT_INTERVAL_FINALIZED_ITEMS, DEFAULT_CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS,
+    FEDERATION_CHECKPOINT_VERSION, FEDERATION_MAX_CHECKPOINT_BATCH_CANONICAL_BYTES,
     FEDERATION_MAX_CHECKPOINT_BATCH_FINALIZED_ITEMS,
     FEDERATION_MAX_CHECKPOINT_BATCH_JOURNAL_OPERATIONS,
     FEDERATION_MAX_CHECKPOINT_CATCH_UP_PAGE_BYTES,
@@ -542,86 +542,14 @@ pub enum FederationError {
         /// Stable validation reason without local timing or endpoint data.
         reason: String,
     },
-    /// A federation checkpoint signature is not a valid Schnorr signature.
-    #[error("Invalid federation checkpoint signature")]
-    InvalidCheckpointSignature,
-    /// A checkpoint uses an unsupported canonical payload version.
-    #[error("Federation checkpoint version mismatch: expected={expected}, found={found}")]
-    CheckpointVersionMismatch {
-        /// Checkpoint version supported by this build.
-        expected: u16,
-        /// Version found in the checkpoint.
-        found: u16,
-    },
-    /// A checkpoint payload or promotion violates a protocol invariant.
-    #[error("Federation checkpoint is invalid: {reason}")]
-    CheckpointInvalid {
-        /// Stable validation reason without operation payloads.
-        reason: String,
-    },
-    /// A checkpoint audit was not authorized by the member whose state would be scanned.
-    #[error(
-        "Federation checkpoint audit must be authorized by local member {expected}, found {found}"
-    )]
-    CheckpointAuditNotLocal {
-        /// Member whose local database would be audited.
-        expected: MemberId,
-        /// Authenticated member that requested the audit.
-        found: MemberId,
-    },
+    /// Checkpoint construction, verification or catch-up failed.
+    #[error(transparent)]
+    Checkpoint(#[from] FederationCheckpointError),
     /// A checkpoint-bound database backup manifest failed validation.
     #[error("Federation database backup manifest is invalid: {reason}")]
     BackupManifestInvalid {
         /// Stable validation reason without secrets or local paths.
         reason: String,
-    },
-    /// Durable history after a trusted checkpoint does not form one valid ordered suffix.
-    #[error("Federation checkpoint startup suffix is invalid: {reason}")]
-    CheckpointStartupSuffixMismatch {
-        /// Stable validation reason without operation payloads.
-        reason: String,
-    },
-    /// Startup replay did not advance terminal application through the durable journal frontier.
-    #[error(
-        "Federation checkpoint startup application replay is incomplete: expected={expected}, found={found}"
-    )]
-    CheckpointStartupApplicationReplayIncomplete {
-        /// Durable journal cursor startup replay had to reach.
-        expected: u64,
-        /// Durable application cursor reached after replay.
-        found: u64,
-    },
-    /// An explicit full-state audit disagreed with the trusted checkpoint.
-    #[error(
-        "Federation materialized-state audit mismatch for checkpoint {checkpoint_id}: expected={expected}, found={found}"
-    )]
-    MaterializedStateAuditMismatch {
-        /// Trusted checkpoint used as the audit baseline.
-        checkpoint_id: FederationCheckpointId,
-        /// Materialized-state digest committed by the trusted checkpoint.
-        expected: FederationMaterializedStateDigest,
-        /// Materialized-state digest recomputed from the local database.
-        found: FederationMaterializedStateDigest,
-    },
-    /// One member signature does not verify for the checkpoint ID.
-    #[error("Federation checkpoint signature verification failed for member {member_id}")]
-    CheckpointSignatureVerificationFailed {
-        /// Member whose signature failed verification.
-        member_id: MemberId,
-    },
-    /// One checkpoint quorum contains the same signer more than once.
-    #[error("Duplicate federation checkpoint signer {member_id}")]
-    DuplicateCheckpointSigner {
-        /// Repeated member identifier.
-        member_id: MemberId,
-    },
-    /// A checkpoint proof does not contain the configured consensus quorum.
-    #[error("Federation checkpoint quorum not reached: required={required}, found={found}")]
-    CheckpointQuorumNotReached {
-        /// Configured consensus threshold.
-        required: u16,
-        /// Number of distinct valid signatures found.
-        found: u16,
     },
     /// Member IDs are non-zero u16 values.
     #[error("Invalid federation member id: {0}")]
@@ -761,16 +689,6 @@ pub enum FederationError {
         actual: usize,
         /// Maximum allowed canonical item size.
         max: usize,
-    },
-    /// Checkpoint catch-up work exceeded one fixed protocol byte limit.
-    #[error("Federation checkpoint catch-up {resource} too large: actual={actual}, max={max}")]
-    CheckpointCatchUpTooLarge {
-        /// Stable bounded resource label.
-        resource: &'static str,
-        /// Bytes observed or requested.
-        actual: u64,
-        /// Maximum admitted bytes.
-        max: u64,
     },
     /// Pending consensus item admission would exceed the configured queue limit.
     #[error("Federation pending consensus mempool full: pending={pending}, max={max}")]

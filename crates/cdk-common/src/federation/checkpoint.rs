@@ -11,6 +11,7 @@ use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::schnorr::Signature;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 use super::canonical::{append_hash_bytes, canonical_json_bytes, impl_fixed_bytes};
 use super::{
@@ -51,6 +52,151 @@ pub const FEDERATION_MAX_CHECKPOINT_CATCH_UP_PAGE_BYTES: usize = 8 * 1024 * 1024
 pub const FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES: usize = 64 * 1024;
 /// Protocol maximum aggregate encoded bytes fetched for one checkpoint batch.
 pub const FEDERATION_MAX_CHECKPOINT_CATCH_UP_TRANSFER_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Errors from building, verifying, storing and catching up to checkpoints.
+///
+/// Reasons are fixed text and every other field is public protocol data, so
+/// the message never carries member-local details and needs no redaction.
+#[derive(Debug, Error)]
+pub enum FederationCheckpointError {
+    /// A checkpoint signature is not a valid Schnorr signature.
+    #[error("Invalid federation checkpoint signature")]
+    InvalidSignature,
+    /// A checkpoint uses an unsupported canonical payload version.
+    #[error("Federation checkpoint version mismatch: expected={expected}, found={found}")]
+    VersionMismatch {
+        /// Checkpoint version supported by this build.
+        expected: u16,
+        /// Version found in the checkpoint.
+        found: u16,
+    },
+    /// A checkpoint payload, promotion or catch-up step violates a protocol invariant.
+    #[error("Federation checkpoint is invalid: {reason}")]
+    Invalid {
+        /// Which invariant failed.
+        reason: &'static str,
+    },
+    /// A checkpoint cursor is behind the one it must extend.
+    #[error("Federation checkpoint is invalid: {cursor} regressed from {current} to {candidate}")]
+    CursorRegressed {
+        /// Which cursor regressed.
+        cursor: &'static str,
+        /// Cursor it must not fall behind.
+        current: u64,
+        /// Cursor found.
+        candidate: u64,
+    },
+    /// A canonical byte range lies outside the finalized items still held in memory.
+    #[error(
+        "Federation checkpoint is invalid: canonical byte range {from_item_index}..{to_item_index} is outside retained finalized range {retained_from_item_index}..{retained_to_item_index}"
+    )]
+    RangeOutsideRetainedItems {
+        /// First requested finalized item.
+        from_item_index: u64,
+        /// End of the requested range.
+        to_item_index: u64,
+        /// First retained finalized item.
+        retained_from_item_index: u64,
+        /// End of the retained range.
+        retained_to_item_index: u64,
+    },
+    /// An indexed durable operation differs from the retained journal entry.
+    #[error(
+        "Federation checkpoint is invalid: indexed durable operation {operation_id} disagrees with the retained journal"
+    )]
+    RetainedOperationMismatch {
+        /// Operation whose stored copies differ.
+        operation_id: FederationOperationId,
+    },
+    /// An indexed durable operation is missing from the retained journal suffix.
+    #[error(
+        "Federation checkpoint is invalid: indexed durable operation {operation_id} at index {index} is missing from the retained suffix"
+    )]
+    RetainedOperationMissing {
+        /// Missing operation.
+        operation_id: FederationOperationId,
+        /// Journal index the operation claims.
+        index: u64,
+    },
+    /// A peer returned a scheduled checkpoint out of sequence.
+    #[error(
+        "Federation checkpoint is invalid: peer returned scheduled checkpoint sequence {found}, expected {expected}"
+    )]
+    ScheduledSequenceMismatch {
+        /// Next sequence the local member expects.
+        expected: u64,
+        /// Sequence the peer returned.
+        found: u64,
+    },
+    /// A checkpoint audit was not authorized by the member whose state would be scanned.
+    #[error(
+        "Federation checkpoint audit must be authorized by local member {expected}, found {found}"
+    )]
+    AuditNotLocal {
+        /// Member whose local database would be audited.
+        expected: MemberId,
+        /// Authenticated member that requested the audit.
+        found: MemberId,
+    },
+    /// Durable history after a trusted checkpoint does not form one valid ordered suffix.
+    #[error("Federation checkpoint startup suffix is invalid: {reason}")]
+    StartupSuffixMismatch {
+        /// Which invariant failed.
+        reason: &'static str,
+    },
+    /// Startup replay did not advance terminal application through the durable journal frontier.
+    #[error(
+        "Federation checkpoint startup application replay is incomplete: expected={expected}, found={found}"
+    )]
+    StartupApplicationReplayIncomplete {
+        /// Durable journal cursor startup replay had to reach.
+        expected: u64,
+        /// Durable application cursor reached after replay.
+        found: u64,
+    },
+    /// An explicit full-state audit disagreed with the trusted checkpoint.
+    #[error(
+        "Federation materialized-state audit mismatch for checkpoint {checkpoint_id}: expected={expected}, found={found}"
+    )]
+    MaterializedStateAuditMismatch {
+        /// Trusted checkpoint used as the audit baseline.
+        checkpoint_id: FederationCheckpointId,
+        /// Materialized-state digest committed by the trusted checkpoint.
+        expected: FederationMaterializedStateDigest,
+        /// Materialized-state digest recomputed from the local database.
+        found: FederationMaterializedStateDigest,
+    },
+    /// One member signature does not verify for the checkpoint ID.
+    #[error("Federation checkpoint signature verification failed for member {member_id}")]
+    SignatureVerificationFailed {
+        /// Member whose signature failed verification.
+        member_id: MemberId,
+    },
+    /// One checkpoint quorum contains the same signer more than once.
+    #[error("Duplicate federation checkpoint signer {member_id}")]
+    DuplicateSigner {
+        /// Repeated member identifier.
+        member_id: MemberId,
+    },
+    /// A checkpoint proof does not contain the configured consensus quorum.
+    #[error("Federation checkpoint quorum not reached: required={required}, found={found}")]
+    QuorumNotReached {
+        /// Configured consensus threshold.
+        required: u16,
+        /// Number of distinct valid signatures found.
+        found: u16,
+    },
+    /// Checkpoint catch-up work exceeded one fixed protocol byte limit.
+    #[error("Federation checkpoint catch-up {resource} too large: actual={actual}, max={max}")]
+    CatchUpTooLarge {
+        /// Which bounded resource.
+        resource: &'static str,
+        /// Bytes observed or requested.
+        actual: u64,
+        /// Maximum admitted bytes.
+        max: u64,
+    },
+}
 
 /// Sum canonical finalized-history bytes for one checkpoint batch.
 pub fn federation_checkpoint_batch_canonical_bytes(
@@ -1213,10 +1359,11 @@ impl FederationCheckpoint {
 
     fn validate_shape(&self) -> Result<()> {
         if self.version != FEDERATION_CHECKPOINT_VERSION {
-            return Err(FederationError::CheckpointVersionMismatch {
+            return Err(FederationCheckpointError::VersionMismatch {
                 expected: FEDERATION_CHECKPOINT_VERSION,
                 found: self.version,
-            });
+            }
+            .into());
         }
         match self.kind {
             FederationCheckpointKind::Scheduled => {
@@ -1324,12 +1471,15 @@ impl FederationCheckpointSignature {
             ));
         }
         let signature = Signature::from_slice(&self.signature)
-            .map_err(|_| FederationError::InvalidCheckpointSignature)?;
+            .map_err(|_| FederationCheckpointError::InvalidSignature)?;
         member
             .identity_public_key
             .verify(&checkpoint_signature_transcript(checkpoint_id), &signature)
-            .map_err(|_| FederationError::CheckpointSignatureVerificationFailed {
-                member_id: self.signer,
+            .map_err(|_| {
+                FederationCheckpointError::SignatureVerificationFailed {
+                    member_id: self.signer,
+                }
+                .into()
             })
     }
 
@@ -1422,9 +1572,10 @@ impl FederationCheckpointQuorum {
         let mut signers = BTreeSet::new();
         for signature in &self.signatures {
             if !signers.insert(signature.signer) {
-                return Err(FederationError::DuplicateCheckpointSigner {
+                return Err(FederationCheckpointError::DuplicateSigner {
                     member_id: signature.signer,
-                });
+                }
+                .into());
             }
             let member = config
                 .member(signature.signer)
@@ -1437,7 +1588,7 @@ impl FederationCheckpointQuorum {
         let found = u16::try_from(signers.len()).unwrap_or(u16::MAX);
         let required = config.threshold_params.consensus_threshold;
         if found < required {
-            return Err(FederationError::CheckpointQuorumNotReached { required, found });
+            return Err(FederationCheckpointError::QuorumNotReached { required, found }.into());
         }
 
         Ok(VerifiedFederationCheckpointQuorum {
@@ -1500,19 +1651,24 @@ fn checkpoint_signature_transcript(checkpoint_id: FederationCheckpointId) -> Vec
     transcript
 }
 
-fn ensure_cursor_does_not_regress(name: &str, candidate: u64, current: u64) -> Result<()> {
+fn ensure_cursor_does_not_regress(
+    cursor: &'static str,
+    candidate: u64,
+    current: u64,
+) -> Result<()> {
     if candidate < current {
-        return Err(checkpoint_invalid(&format!(
-            "{name} regressed from {current} to {candidate}"
-        )));
+        return Err(FederationCheckpointError::CursorRegressed {
+            cursor,
+            current,
+            candidate,
+        }
+        .into());
     }
     Ok(())
 }
 
-fn checkpoint_invalid(reason: &str) -> FederationError {
-    FederationError::CheckpointInvalid {
-        reason: reason.to_string(),
-    }
+fn checkpoint_invalid(reason: &'static str) -> FederationError {
+    FederationCheckpointError::Invalid { reason }.into()
 }
 
 mod checkpoint_signature_hex {
@@ -1931,7 +2087,9 @@ mod tests {
         oversized.finalized_next_item_index = oversized.journal_next_index;
         assert!(matches!(
             oversized.validate_catch_up_batch_from(None),
-            Err(FederationError::CheckpointInvalid { .. })
+            Err(FederationError::Checkpoint(
+                FederationCheckpointError::Invalid { .. }
+            ))
         ));
     }
 
@@ -1952,7 +2110,9 @@ mod tests {
         missing_member.next_unit_index_by_member.remove(&member_id);
         assert!(matches!(
             missing_member.validate_against_config(&config),
-            Err(FederationError::CheckpointInvalid { .. })
+            Err(FederationError::Checkpoint(
+                FederationCheckpointError::Invalid { .. }
+            ))
         ));
     }
 
@@ -2068,10 +2228,12 @@ mod tests {
             FederationCheckpointQuorum::new(checkpoint.clone(), signatures[..2].to_vec());
         assert!(matches!(
             insufficient.verify_against_validated_config(&config),
-            Err(FederationError::CheckpointQuorumNotReached {
-                required: 3,
-                found: 2
-            })
+            Err(FederationError::Checkpoint(
+                FederationCheckpointError::QuorumNotReached {
+                    required: 3,
+                    found: 2
+                }
+            ))
         ));
 
         let mut zero_threshold = config.clone();
@@ -2088,7 +2250,9 @@ mod tests {
         );
         assert!(matches!(
             duplicate.verify_against_validated_config(&config),
-            Err(FederationError::DuplicateCheckpointSigner { .. })
+            Err(FederationError::Checkpoint(
+                FederationCheckpointError::DuplicateSigner { .. }
+            ))
         ));
 
         let mut corrupted_bytes = signatures[0].to_bytes();
@@ -2105,8 +2269,11 @@ mod tests {
         );
         assert!(matches!(
             corrupted.verify_against_validated_config(&config),
-            Err(FederationError::CheckpointSignatureVerificationFailed { .. })
-                | Err(FederationError::InvalidCheckpointSignature)
+            Err(FederationError::Checkpoint(
+                FederationCheckpointError::SignatureVerificationFailed { .. }
+            )) | Err(FederationError::Checkpoint(
+                FederationCheckpointError::InvalidSignature
+            ))
         ));
 
         let unknown_private = MemberConfigPrivate {
@@ -2287,7 +2454,7 @@ mod tests {
         wrong_federation.federation_id = FederationId::from_bytes([91; 32]);
         assert!(matches!(
             wrong_federation.validate_against_validated_config(&config),
-            Err(FederationError::CheckpointInvalid { reason })
+            Err(FederationError::Checkpoint(FederationCheckpointError::Invalid { reason }))
                 if reason == "federation id mismatch"
         ));
 
@@ -2295,7 +2462,7 @@ mod tests {
         wrong_digest.federation_config_digest = FederationConfigDigest::from_bytes([92; 32]);
         assert!(matches!(
             wrong_digest.validate_against_validated_config(&config),
-            Err(FederationError::CheckpointInvalid { reason })
+            Err(FederationError::Checkpoint(FederationCheckpointError::Invalid { reason }))
                 if reason == "federation config digest mismatch"
         ));
 
@@ -2305,7 +2472,7 @@ mod tests {
             .remove(&member_id(4));
         assert!(matches!(
             missing_member.validate_against_validated_config(&config),
-            Err(FederationError::CheckpointInvalid { reason })
+            Err(FederationError::Checkpoint(FederationCheckpointError::Invalid { reason }))
                 if reason == "next-unit watermarks do not match the configured federation roster"
         ));
 
@@ -2315,7 +2482,7 @@ mod tests {
             .insert(member_id(9), 0);
         assert!(matches!(
             unknown_member.validate_against_validated_config(&config),
-            Err(FederationError::CheckpointInvalid { reason })
+            Err(FederationError::Checkpoint(FederationCheckpointError::Invalid { reason }))
                 if reason == "next-unit watermarks do not match the configured federation roster"
         ));
     }
