@@ -236,7 +236,15 @@ mod tests {
     use crate::mint::{MintBuilder, MintMeltLimits};
     use crate::types::FeeReserve;
 
-    async fn create_auth_enabled_mint() -> Mint {
+    async fn create_auth_enabled_mint() -> Arc<Mint> {
+        let mint = build_auth_enabled_mint().await;
+        mint.start().await.expect("start mint");
+        mint
+    }
+
+    /// Builds an auth-enabled mint without starting it, so a test can still
+    /// adjust it through `Arc::get_mut` before the background tasks share it.
+    async fn build_auth_enabled_mint() -> Arc<Mint> {
         let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
         let auth_db = Arc::new(
             cdk_sqlite::mint::MintSqliteAuthDatabase::new(":memory:")
@@ -269,7 +277,7 @@ mod tests {
             .expect("payment processor");
 
         let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-        let mint = mint_builder
+        mint_builder
             .with_auth(
                 auth_db,
                 "https://example.com/.well-known/openid-configuration".to_string(),
@@ -279,10 +287,7 @@ mod tests {
             .with_blind_auth(50, vec![])
             .build_with_seed(db, &mnemonic.to_seed_normalized(""))
             .await
-            .expect("mint");
-
-        mint.start().await.expect("start mint");
-        mint
+            .expect("mint")
     }
 
     fn output_for_keyset(keyset_id: Id) -> BlindedMessage {
@@ -367,12 +372,15 @@ mod tests {
     async fn mint_blind_auth_rejects_inactive_keysets() {
         // Signed by a disposable test key, with an expiry in 2100.
         let cat = "eyJhbGciOiJSUzI1NiIsImtpZCI6InRlc3QifQ.eyJpc3MiOiJodHRwczovL2V4YW1wbGUuY29tIiwiY2xpZW50X2lkIjoidGVzdC1jbGllbnQiLCJleHAiOjQxMDI0NDQ4MDB9.cKzTzB8Y-tnvoYhRY5SrUGQtzTgw_Cvhc_MOB6c23cv6FWafEK5hUuDPHF89lvc8HOfPZ9L519-S2bR_ibF6PW4_ntG5olPhfQj_YiOmek-mtHg8aiXtRRH1G077WEH_FvW9wxwkoL-MpupZSoqN3RHftLdO9O3kxJm6sa9ylHuvepC2CNkHnqrIwHoI90xMzzV8lyf1d3ybnXtG-Vcso58vlh-DbNIfUyRNHJ-hz18q1OuSNuvRh8wb5thX3So971hs-eVNt2dfuuYd3Kk3eIGhmLwZbjmgATt3NltRp3h-iCyuP2zRsxhrlxP23MCiHSjTewHDnTCA1gBdbo5m0Q";
-        let mut mint = create_auth_enabled_mint().await;
-        mint.oidc_client = Some(OidcClient::with_transport(
+        let mut mint = build_auth_enabled_mint().await;
+        Arc::get_mut(&mut mint)
+            .expect("mint is not shared before start")
+            .oidc_client = Some(OidcClient::with_transport(
             "https://example.com/.well-known/openid-configuration".to_string(),
             Some("test-client".to_string()),
             Arc::new(TestOidcTransport),
         ));
+        mint.start().await.expect("start mint");
         let keyset_id = mint.get_active_keysets()[&CurrencyUnit::Auth];
         let output = output_for_keyset(keyset_id);
 

@@ -9,6 +9,7 @@
 //! same language.
 
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use cdk::amount::{FeeAndAmounts, SplitTarget};
@@ -29,7 +30,7 @@ use cdk_fake_wallet::create_fake_invoice;
 use crate::init_pure_tests::create_and_start_in_memory_test_mint;
 
 /// Build a fresh in-memory test mint for a connector backend.
-pub async fn build_test_mint() -> Mint {
+pub async fn build_test_mint() -> Arc<Mint> {
     create_and_start_in_memory_test_mint()
         .await
         .expect("failed to build test mint")

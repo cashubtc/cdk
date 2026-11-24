@@ -1839,7 +1839,7 @@ async fn build_mint(
     keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
     mint_builder: MintBuilder,
     validated_signing_source: Option<&ValidatedSigningSource>,
-) -> Result<Mint> {
+) -> Result<Arc<Mint>> {
     if let Some(signatory) = settings.enabled_signatory() {
         let tls_dir = signatory.tls_dir.clone();
 
@@ -2661,8 +2661,6 @@ async fn run_mintd_with_database_and_shutdown(
     .await?;
 
     tracing::debug!("Mint built from builder.");
-
-    let mint = Arc::new(mint);
 
     start_services_with_shutdown(
         mint.clone(),

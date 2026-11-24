@@ -271,7 +271,7 @@ async fn committed_completion_preserves_executor_result() {
         .unwrap();
     let request = MeltRequest::new(response.quote().unwrap().clone(), proofs, Some(outputs));
     let verification = mint.verify_inputs(request.inputs()).await.unwrap();
-    let setup = MeltSaga::new(Arc::new(mint.clone()), db.clone(), mint.pubsub_manager())
+    let setup = MeltSaga::new(Arc::clone(&mint), db.clone(), mint.pubsub_manager())
         .setup_melt(
             &request,
             verification,

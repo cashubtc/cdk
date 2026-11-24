@@ -59,7 +59,6 @@ const CDK_MINT_CONFIG_KV_KEY: &str = "mint_info";
 const CDK_MINT_QUOTE_TTL_KV_KEY: &str = "quote_ttl";
 
 /// Cashu Mint
-#[derive(Clone)]
 pub struct Mint {
     /// Signatory backend.
     ///
@@ -433,7 +432,7 @@ impl Mint {
     /// Currently manages:
     /// - Payment processor initialization and startup
     /// - Invoice payment monitoring across all configured payment processors
-    pub async fn start(&self) -> Result<(), Error> {
+    pub async fn start(self: &Arc<Self>) -> Result<(), Error> {
         // Recover from incomplete swap sagas
         // This cleans up incomplete swap operations using persisted saga state
         if let Err(e) = self.recover_from_incomplete_sagas().await {
@@ -488,7 +487,7 @@ impl Mint {
         let shutdown_notify = Arc::new(Notify::new());
 
         // Clone required components for the background task
-        let mint_clone = Arc::new(self.clone());
+        let mint_clone = Arc::clone(self);
         let payment_processors = self.payment_processors.clone();
         let localstore = Arc::clone(&self.localstore);
         let pubsub_manager = Arc::clone(&self.pubsub_manager);
@@ -1672,7 +1671,7 @@ mod tests {
     }
 
     /// Build a mint around an arbitrary signatory, with a fresh empty store.
-    async fn create_mint_with_signatory(signatory: Arc<dyn Signatory + Send + Sync>) -> Mint {
+    async fn create_mint_with_signatory(signatory: Arc<dyn Signatory + Send + Sync>) -> Arc<Mint> {
         let localstore = Arc::new(
             new_with_state(
                 Default::default(),
@@ -1696,6 +1695,7 @@ mod tests {
             1000,
         )
         .await
+        .map(Arc::new)
         .unwrap()
     }
 
@@ -2151,7 +2151,7 @@ mod tests {
         mint.stop().await.expect("mint should stop");
     }
 
-    async fn create_mint(config: MintConfig<'_>) -> Mint {
+    async fn create_mint(config: MintConfig<'_>) -> Arc<Mint> {
         let localstore = Arc::new(
             new_with_state(
                 config.active_keysets,
@@ -2199,6 +2199,7 @@ mod tests {
             1000,
         )
         .await
+        .map(Arc::new)
         .unwrap()
     }
 
@@ -2455,11 +2456,7 @@ mod tests {
         let melt_request = create_test_melt_request(&proofs, &quote);
 
         let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
-        let saga = MeltSaga::new(
-            Arc::new(mint.clone()),
-            mint.localstore(),
-            mint.pubsub_manager(),
-        );
+        let saga = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
         let setup_saga = saga
             .setup_melt(
                 &melt_request,
@@ -2507,7 +2504,7 @@ mod tests {
         .unwrap();
 
         Mint::handle_successful_melt_payment_event(
-            &Arc::new(mint.clone()),
+            &mint,
             &mint.localstore,
             &mint.pubsub_manager,
             &quote.id,
@@ -2556,7 +2553,7 @@ mod tests {
         tx.commit().await.unwrap();
 
         Mint::handle_successful_melt_payment_event(
-            &Arc::new(mint.clone()),
+            &mint,
             &mint.localstore,
             &mint.pubsub_manager,
             &quote.id,
@@ -2581,11 +2578,7 @@ mod tests {
         let melt_request = create_test_melt_request(&proofs, &quote);
 
         let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
-        let saga = MeltSaga::new(
-            Arc::new(mint.clone()),
-            mint.localstore(),
-            mint.pubsub_manager(),
-        );
+        let saga = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
         let _setup_saga = saga
             .setup_melt(
                 &melt_request,
@@ -2615,7 +2608,7 @@ mod tests {
         tx.commit().await.unwrap();
 
         Mint::handle_failed_melt_payment_event(
-            &Arc::new(mint.clone()),
+            &mint,
             &mint.localstore,
             &mint.pubsub_manager,
             &quote.id,

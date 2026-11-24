@@ -29,13 +29,13 @@ use tokio::sync::RwLock;
 /// A [`MintConnector`] that talks to a [`Mint`] in-process instead of over HTTP.
 pub struct DirectMintConnection {
     /// The wrapped mint.
-    pub mint: Mint,
+    pub mint: Arc<Mint>,
     auth_wallet: Arc<RwLock<Option<AuthWallet>>>,
 }
 
 impl DirectMintConnection {
     /// Create a new connection wrapping the given [`Mint`].
-    pub fn new(mint: Mint) -> Self {
+    pub fn new(mint: Arc<Mint>) -> Self {
         Self {
             mint,
             auth_wallet: Arc::new(RwLock::new(None)),

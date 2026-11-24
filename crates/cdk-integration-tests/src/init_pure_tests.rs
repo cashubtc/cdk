@@ -39,21 +39,21 @@ pub fn setup_tracing() {
         .try_init();
 }
 
-pub async fn create_and_start_test_mint() -> Result<Mint> {
+pub async fn create_and_start_test_mint() -> Result<Arc<Mint>> {
     create_mint_with_limits(None).await
 }
 
-pub async fn create_mint_with_fee(fee_ppk: u64) -> Result<Mint> {
+pub async fn create_mint_with_fee(fee_ppk: u64) -> Result<Arc<Mint>> {
     build_and_start_mint(env_localstore().await?, None, Some(fee_ppk)).await
 }
 
-pub async fn create_mint_with_limits(limits: Option<(usize, usize)>) -> Result<Mint> {
+pub async fn create_mint_with_limits(limits: Option<(usize, usize)>) -> Result<Arc<Mint>> {
     build_and_start_mint(env_localstore().await?, limits, None).await
 }
 
 /// Build and start an in-memory test mint without reading `CDK_TEST_DB_TYPE`,
 /// so callers do not need to set (and mutate) that process-global variable.
-pub async fn create_and_start_in_memory_test_mint() -> Result<Mint> {
+pub async fn create_and_start_in_memory_test_mint() -> Result<Arc<Mint>> {
     build_and_start_mint(
         Arc::new(cdk_sqlite::mint::memory::empty().await?),
         None,
@@ -90,7 +90,7 @@ async fn build_and_start_mint(
     localstore: Arc<cdk_sqlite::MintSqliteDatabase>,
     limits: Option<(usize, usize)>,
     fee: Option<u64>,
-) -> Result<Mint> {
+) -> Result<Arc<Mint>> {
     let mut mint_builder = MintBuilder::new(localstore.clone());
 
     let fee_reserve = FeeReserve {
@@ -161,7 +161,7 @@ async fn build_and_start_mint(
     Ok(mint)
 }
 
-pub async fn create_test_wallet_for_mint(mint: Mint) -> Result<Wallet> {
+pub async fn create_test_wallet_for_mint(mint: Arc<Mint>) -> Result<Wallet> {
     let seed = Mnemonic::generate(12)?.to_seed_normalized("");
     create_test_wallet_for_mint_with_seed(mint, seed).await
 }
@@ -169,8 +169,11 @@ pub async fn create_test_wallet_for_mint(mint: Mint) -> Result<Wallet> {
 /// Create a test wallet connected directly to a mint with a specific seed
 ///
 /// Useful for restore tests where two wallets must share the same seed.
-pub async fn create_test_wallet_for_mint_with_seed(mint: Mint, seed: [u8; 64]) -> Result<Wallet> {
-    let connector = DirectMintConnection::new(mint.clone());
+pub async fn create_test_wallet_for_mint_with_seed(
+    mint: Arc<Mint>,
+    seed: [u8; 64],
+) -> Result<Wallet> {
+    let connector = DirectMintConnection::new(Arc::clone(&mint));
 
     let mint_info = mint.mint_info().await?;
     let mint_url = mint_info
