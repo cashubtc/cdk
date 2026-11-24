@@ -651,25 +651,36 @@ async fn byzantine_balance_overflow_operation_does_not_halt_finalized_applicatio
             .await;
     }
 
-    let reference_journal = journal_convergence_projection(
-        &session.states[0]
-            .mint
-            .localstore()
-            .get_federation_journal_entries()
-            .await
-            .expect("reference journal lookup"),
-    );
-    for state in &honest_states {
-        assert_eq!(
-            journal_convergence_projection(
+    // Members append later entries asynchronously, so compare once the honest
+    // journals have stopped differing rather than at one instant.
+    let honest_journals = || async {
+        let mut journals = Vec::with_capacity(honest_states.len() + 1);
+        for state in std::iter::once(&session.states[0]).chain(&honest_states) {
+            journals.push(journal_convergence_projection(
                 &state
                     .mint
                     .localstore()
                     .get_federation_journal_entries()
                     .await
                     .expect("honest journal lookup"),
-            ),
-            reference_journal,
+            ));
+        }
+        journals
+    };
+    let _ = time::timeout(Duration::from_secs(30), async {
+        loop {
+            let journals = honest_journals().await;
+            if journals.windows(2).all(|pair| pair[0] == pair[1]) {
+                break;
+            }
+            time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    let journals = honest_journals().await;
+    for journal in &journals {
+        assert_eq!(
+            journal, &journals[0],
             "honest members must converge on the same journal"
         );
     }
