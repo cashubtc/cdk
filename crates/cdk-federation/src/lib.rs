@@ -61,6 +61,11 @@ pub mod dkg_driver;
 pub mod dkg_persistence;
 #[doc(hidden)]
 pub mod frost_signing;
+#[cfg_attr(
+    not(any(feature = "federation-bdk", feature = "federation-bark")),
+    allow(dead_code)
+)] // FROST signing is used only by the custody backends.
+mod signer_fan_out;
 #[doc(hidden)]
 pub use cdk::federation::latency;
 #[doc(hidden)]

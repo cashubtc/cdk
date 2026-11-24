@@ -629,3 +629,13 @@ Verification: the nine federation suites pass. `cdk-bark` now has 36 tests and `
 - `FederationError` has 123 variants: 145 at the start of package 2, minus 35 moved into the checkpoint, DKG and AlephBFT enums, plus their three wrappers and the ten general shapes added in this step.
 
 Package 2 is done.
+
+### 2026-11-24: package 7, fifth step (one signer fan-out)
+
+- **One fan-out.** `crates/cdk-federation/src/signer_fan_out.rs` runs one request per selected FROST signer. This member's request goes to the local signer runtime; every other member's goes over authenticated REST. The FROST signing coordinator (commitment, signature-share, aggregate-result and abort rounds) and the Bark custody coordinator (virtual MuSig2 commitment and partial, threshold DH and abort rounds) now share it. They also share `LocalFrostSigner`, `signer_members` and `concurrency_limit`, which replace a duplicated local-signer struct, `member_for_signer` and `parallel_limit`.
+- **One behaviour, the stricter of the two.** FROST waited for every signer but had no concurrency bound. Bark was bounded but stopped at the first error, dropping requests still in flight before it sent the abort. The shared fan-out is bounded by the private REST outbound limit, waits for every request before returning (so an abort never races an in-flight request), keeps signer order, and returns the first error in that order. FROST keeps its one transport retry inside its remote calls.
+- Net change: about the same size. The 300 lines of repeated dispatch become one 110-line module.
+- **Still to do in package 7:**
+  - The custody trait with three implementations and deleting the stub adapters both need decision 2's quote-only payment seam.
+  - The on-chain spend driver (`wallet_liveness.rs`, `broadcast.rs`) depends on the node's FROST coordinator and peer client. Moving it beside the BDK wallet means giving `cdk-bitcoin-wallet` or `cdk-bdk` a node port, as `cdk-bark` now has.
+  - The DKG planner and the `cdk-frost` session-store unification are not started.

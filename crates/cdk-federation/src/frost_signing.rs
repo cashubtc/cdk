@@ -8,6 +8,9 @@ use std::sync::Arc;
 #[cfg(feature = "federation-bdk")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use super::signer_fan_out::{
+    concurrency_limit, fan_out, known_signer_members, signer_members, LocalFrostSigner,
+};
 #[cfg(feature = "federation-bark")]
 use cdk::federation::{
     FederationBarkActionKind, FederationBarkCustodyProtocol, FederationBarkFrostAuthorization,
@@ -38,7 +41,6 @@ use cdk_frost::{
 };
 #[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
 use cdk_frost_bip32::{FrostBip32, WalletBranch, WalletIndex};
-use futures::future::join_all;
 use sha2::{Digest, Sha256};
 
 use crate::FederationNode;
@@ -305,18 +307,7 @@ impl FrostLatencyContext {
 pub struct FederationFrostSigningCoordinator<'a, T> {
     client: &'a super::peer_client::FederationRestPeerClient<T>,
     public: DerivedPublicPackage,
-    local_signer: Option<FederationFrostLocalSigner<'a>>,
-}
-
-#[cfg_attr(
-    not(any(feature = "federation-bdk", feature = "federation-bark")),
-    allow(dead_code)
-)] // FROST signing is used only by the custody backends.
-#[derive(Debug, Clone, Copy)]
-struct FederationFrostLocalSigner<'a> {
-    member_id: cdk::federation::MemberId,
-    mint: &'a Mint,
-    runtime: &'a FederationFrostSigningRuntime,
+    local_signer: Option<LocalFrostSigner<'a>>,
 }
 
 #[cfg_attr(
@@ -348,7 +339,7 @@ where
         mint: &'a Mint,
         runtime: &'a FederationFrostSigningRuntime,
     ) -> Self {
-        self.local_signer = Some(FederationFrostLocalSigner {
+        self.local_signer = Some(LocalFrostSigner {
             member_id,
             mint,
             runtime,
@@ -406,17 +397,8 @@ where
         }
         let commitment_request =
             FederationFrostCommitmentRequest::new(context, derivation, authorization);
-        let signer_members = context
-            .signer_set()
-            .iter()
-            .map(|signer| {
-                let member_id = cdk::federation::MemberId::new(signer.get())?;
-                let member = public_config
-                    .member(member_id)
-                    .ok_or(cdk::federation::FederationError::UnknownMember { member_id })?;
-                Ok((*signer, member))
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?;
+        let signer_members = signer_members(public_config, context.signer_set())?;
+        let limit = concurrency_limit(self.client, signer_members.len());
         let default_correlation_id =
             cdk::federation::FederationOperationId::from_bytes(context.session_id().to_bytes())
                 .to_string();
@@ -443,48 +425,39 @@ where
             direction,
             super::latency::FederationLatencyPhase::FrostCommitmentRound,
         );
-        let commitment_results = join_all(signer_members.iter().map(|(_, member)| {
-            let commitment_request = commitment_request.clone();
-            async move {
-                match self
-                    .local_signer
-                    .filter(|local| local.member_id == member.member_id)
-                {
-                    Some(local) => local
-                        .runtime
-                        .commit(local.mint, context, derivation, authorization)
-                        .await
-                        .map_err(anyhow::Error::from),
-                    None => {
-                        self.request_frost_commitment_resilient(member, &commitment_request)
-                            .await
-                    }
-                }
-            }
-        }))
+        let commitments = fan_out(
+            signer_members
+                .iter()
+                .map(|(_, member)| (*member, ()))
+                .collect(),
+            self.local_signer,
+            limit,
+            |local, ()| async move {
+                local
+                    .runtime
+                    .commit(local.mint, context, derivation, authorization)
+                    .await
+                    .map_err(anyhow::Error::from)
+            },
+            |member, ()| self.request_frost_commitment_resilient(member, &commitment_request),
+        )
         .await;
-        let mut commitments = Vec::with_capacity(signer_members.len());
-        let mut commitment_error = None;
-        for result in commitment_results {
-            match result {
-                Ok(commitment) => commitments.push(commitment),
-                Err(error) if commitment_error.is_none() => commitment_error = Some(error),
-                Err(_) => {}
-            }
-        }
         commitment_timer.finish(super::latency::FederationLatencyOutcome::from_success(
-            commitment_error.is_none(),
+            commitments.is_ok(),
         ));
-        if let Some(error) = commitment_error {
-            self.abort_selected(
-                public_config,
-                context,
-                authorization,
-                cdk_frost::NonceBurnReason::AmbiguousResponse,
-            )
-            .await;
-            return Err(error);
-        }
+        let commitments = match commitments {
+            Ok(commitments) => commitments,
+            Err(error) => {
+                self.abort_selected(
+                    public_config,
+                    context,
+                    authorization,
+                    cdk_frost::NonceBurnReason::AmbiguousResponse,
+                )
+                .await;
+                return Err(error);
+            }
+        };
         let commitments = cdk_frost::NonceCommitmentSet::new(commitments)?;
         let signing_packages = signer_members
             .iter()
@@ -509,55 +482,47 @@ where
             direction,
             super::latency::FederationLatencyPhase::FrostSignatureRound,
         );
-        let share_results = join_all(signing_packages.iter().map(|(member, package)| async move {
-            match self
-                .local_signer
-                .filter(|local| local.member_id == member.member_id)
-            {
-                Some(local) => {
-                    let (decoded_context, nonce_id, decoded_authorization, commitments) =
-                        package.decode(public_config.federation_id, member.member_id)?;
-                    local
-                        .runtime
-                        .sign(
-                            local.mint,
-                            &decoded_context,
-                            nonce_id,
-                            &decoded_authorization,
-                            &commitments,
-                        )
-                        .await
-                        .map_err(anyhow::Error::from)
-                }
-                None => {
-                    self.request_frost_signature_share_resilient(member, package)
-                        .await
-                }
-            }
-        }))
+        let shares = fan_out(
+            signing_packages
+                .iter()
+                .map(|(member, package)| (*member, package))
+                .collect(),
+            self.local_signer,
+            limit,
+            |local, package| async move {
+                let (decoded_context, nonce_id, decoded_authorization, commitments) =
+                    package.decode(public_config.federation_id, local.member_id)?;
+                local
+                    .runtime
+                    .sign(
+                        local.mint,
+                        &decoded_context,
+                        nonce_id,
+                        &decoded_authorization,
+                        &commitments,
+                    )
+                    .await
+                    .map_err(anyhow::Error::from)
+            },
+            |member, package| self.request_frost_signature_share_resilient(member, package),
+        )
         .await;
-        let mut shares = Vec::with_capacity(signing_packages.len());
-        let mut share_error = None;
-        for result in share_results {
-            match result {
-                Ok(share) => shares.push(share),
-                Err(error) if share_error.is_none() => share_error = Some(error),
-                Err(_) => {}
-            }
-        }
         share_timer.finish(super::latency::FederationLatencyOutcome::from_success(
-            share_error.is_none(),
+            shares.is_ok(),
         ));
-        if let Some(error) = share_error {
-            self.abort_selected(
-                public_config,
-                context,
-                authorization,
-                cdk_frost::NonceBurnReason::AmbiguousResponse,
-            )
-            .await;
-            return Err(error);
-        }
+        let shares = match shares {
+            Ok(shares) => shares,
+            Err(error) => {
+                self.abort_selected(
+                    public_config,
+                    context,
+                    authorization,
+                    cdk_frost::NonceBurnReason::AmbiguousResponse,
+                )
+                .await;
+                return Err(error);
+            }
+        };
         let signature = ParticipantKeyManager::aggregate_for_derivation(
             &self.public,
             derivation,
@@ -577,36 +542,23 @@ where
             package_hash,
             signature,
         );
-        let result_notifications = join_all(signer_members.iter().map(|(_, member)| {
-            let notification = notification.clone();
-            async move {
-                match self
-                    .local_signer
-                    .filter(|local| local.member_id == member.member_id)
-                {
-                    Some(local) => local
-                        .runtime
-                        .record_aggregate(
-                            local.mint,
-                            context,
-                            authorization,
-                            package_hash,
-                            signature,
-                        )
-                        .await
-                        .map_err(anyhow::Error::from),
-                    None => {
-                        self.notify_frost_aggregate_result_resilient(member, &notification)
-                            .await
-                    }
-                }
-            }
-        }))
-        .await;
-        let result_error = result_notifications.into_iter().find_map(Result::err);
-        if let Some(error) = result_error {
-            return Err(error);
-        }
+        fan_out(
+            signer_members
+                .iter()
+                .map(|(_, member)| (*member, ()))
+                .collect(),
+            self.local_signer,
+            limit,
+            |local, ()| async move {
+                local
+                    .runtime
+                    .record_aggregate(local.mint, context, authorization, package_hash, signature)
+                    .await
+                    .map_err(anyhow::Error::from)
+            },
+            |member, ()| self.notify_frost_aggregate_result_resilient(member, &notification),
+        )
+        .await?;
         Ok(CoordinatedFrostSignature {
             signature,
             package_hash,
@@ -788,25 +740,23 @@ where
         reason: cdk_frost::NonceBurnReason,
     ) {
         let request = FederationFrostSigningAbortRequest::new(context, authorization, reason);
-        for signer in context.signer_set() {
-            let Ok(member_id) = cdk::federation::MemberId::new(signer.get()) else {
-                continue;
-            };
-            let Some(member) = public_config.member(member_id) else {
-                continue;
-            };
-            if let Some(local) = self
-                .local_signer
-                .filter(|local| local.member_id == member.member_id)
-            {
-                let _ = local
+        let members = known_signer_members(public_config, context.signer_set());
+        let limit = concurrency_limit(self.client, members.len());
+        // Best effort: every selected signer is told, and failures are ignored.
+        let _ = fan_out(
+            members.into_iter().map(|member| (member, ())).collect(),
+            self.local_signer,
+            limit,
+            |local, ()| async move {
+                local
                     .runtime
                     .abort(local.mint, context, authorization, reason)
-                    .await;
-                continue;
-            }
-            let _ = self.client.abort_frost_signing(member, &request).await;
-        }
+                    .await
+                    .map_err(anyhow::Error::from)
+            },
+            |member, ()| self.client.abort_frost_signing(member, &request),
+        )
+        .await;
     }
 
     async fn request_frost_commitment_resilient(
