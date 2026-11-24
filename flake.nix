@@ -832,6 +832,11 @@
         # ========================================
         # Example definitions - single source of truth
         # ========================================
+        bindingsRelease = import ./nix/bindings-release.nix {
+          inherit pkgs lib cargoVendorDir uniffiBindgenGo nixpkgs system;
+          dartSdk = dartpkgs.default;
+        };
+
         exampleChecks = [
           "mint-token"
           "melt-token"
@@ -1634,6 +1639,7 @@
           dart-bindings = dartBindings;
           kotlin-bindings = kotlinBindings;
           go-bindings = goBindings;
+          bindings-windows-sdk = bindingsRelease.windowsSdk;
         }
         # Static build deps (Linux only)
         // lib.optionalAttrs (muslTarget != null) {
@@ -2036,7 +2042,7 @@
               kotlin-publish
               ;
             default = stable;
-          };
+          } // bindingsRelease.shells;
       }
     );
 }

@@ -1,5 +1,7 @@
 plugins {
     kotlin("jvm") version "1.9.24" apply false
+    id("com.android.library") apply false
+    id("org.jetbrains.dokka") version "1.9.20" apply false
     id("com.vanniktech.maven.publish.base") version "0.34.0" apply false
 }
 
@@ -17,7 +19,9 @@ subprojects {
             // Only cdk-android is published to Central; desktop JVM users build
             // from source. Publish it as a single Central Portal deployment.
             publishToMavenCentral()
-            signAllPublications()
+            if (!providers.gradleProperty("cdkUnsigned").map(String::toBoolean).getOrElse(false)) {
+                signAllPublications()
+            }
         }
 
         // Gradle creates four checksums for artifacts and their signatures. Central
@@ -45,6 +49,14 @@ subprojects {
         }
 
         configure<PublishingExtension> {
+            providers.gradleProperty("cdkReleaseRepository").orNull?.let { candidateRepository ->
+                repositories {
+                    maven {
+                        name = "Candidate"
+                        url = uri(candidateRepository)
+                    }
+                }
+            }
             publications.withType<MavenPublication> {
                 pom {
                     name.set(artifactId)
@@ -69,6 +81,22 @@ subprojects {
                     }
                 }
             }
+        }
+    }
+
+    tasks.withType<AbstractArchiveTask>().configureEach {
+        isPreserveFileTimestamps = false
+        isReproducibleFileOrder = true
+    }
+
+    tasks.withType<Javadoc>().configureEach {
+        (options as org.gradle.external.javadoc.StandardJavadocDocletOptions).noTimestamp(true)
+    }
+
+    if (providers.gradleProperty("cdkReleaseRepository").isPresent) {
+        dependencyLocking {
+            lockAllConfigurations()
+            lockMode.set(LockMode.STRICT)
         }
     }
 }
