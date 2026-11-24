@@ -2071,7 +2071,18 @@ impl Mint {
                         .with_field("amount_paid", quote.amount_paid.value().to_string())
                         .with_field("amount_issued", quote.amount_issued.value().to_string())
                         .with_field("state", quote.state.to_string())
-                        .with_field("payment_method", quote.payment_method.to_string()),
+                        .with_field("payment_method", quote.payment_method.to_string())
+                        .with_field(
+                            "request_lookup_id",
+                            canonical_json_field(&quote.request_lookup_id)?,
+                        )
+                        .with_field(
+                            "pubkey",
+                            quote
+                                .pubkey
+                                .map(|pubkey| pubkey.to_hex())
+                                .unwrap_or_default(),
+                        ),
                 ),
                 None => snapshot.push(
                     FederationMaterializedStateRow::new("mint_quotes", quote)
@@ -2103,6 +2114,11 @@ impl Mint {
                         .with_field("request", quote.request.to_string())
                         .with_field("state", quote.state.to_string())
                         .with_field("payment_method", quote.payment_method.to_string())
+                        .with_field("expiry", quote.expiry.to_string())
+                        .with_field("options", canonical_json_field(&quote.options)?)
+                        .with_field("created_time", quote.created_time.to_string())
+                        .with_field("extra_json", canonical_json_field(&quote.extra_json)?)
+                        .with_field("fee_options", canonical_json_field(quote.fee_options())?)
                         .with_field("payment_proof", quote.payment_proof.unwrap_or_default()),
                 ),
                 None => snapshot.push(
@@ -2394,6 +2410,16 @@ fn federation_keyset_materialized_row(
                 serde_json::to_string(&keyset.public_shares)?,
             ),
     )
+}
+
+/// Canonical JSON of a field set once from the accepted operation, so every
+/// member encodes it to the same bytes.
+fn canonical_json_field<T>(value: &T) -> Result<String, Error>
+where
+    T: serde::Serialize + ?Sized,
+{
+    let bytes = cdk_common::federation::canonical::canonical_json_bytes(value)?;
+    String::from_utf8(bytes).map_err(|_| Error::Internal)
 }
 
 fn optional_amount_value(amount: Option<&Amount<cdk_common::CurrencyUnit>>) -> String {

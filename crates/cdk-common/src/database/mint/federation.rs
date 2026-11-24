@@ -52,6 +52,10 @@ pub struct FederationMintQuoteState {
     pub state: MintQuoteState,
     /// Payment method used by the quote.
     pub payment_method: PaymentMethod,
+    /// Payment-processor lookup identifier fixed by the accepted operation.
+    pub request_lookup_id: crate::payment::PaymentIdentifier,
+    /// NUT-20 public key locking the quote, when the request carried one.
+    pub pubkey: Option<PublicKey>,
 }
 
 /// Scalar size metadata for one local AlephBFT session backup.
@@ -78,6 +82,8 @@ impl From<MintMintQuote> for FederationMintQuoteState {
             amount_issued,
             state,
             payment_method: quote.payment_method,
+            request_lookup_id: quote.request_lookup_id,
+            pubkey: quote.pubkey,
         }
     }
 }
