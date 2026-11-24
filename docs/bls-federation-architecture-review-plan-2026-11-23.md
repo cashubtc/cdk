@@ -651,3 +651,21 @@ Package 2 is done.
 - **Reads.** `candidates` and `active_lease_until_ms` read only the quotes they are given. `next_attempt_at_ms` lists the stored schedules, which holds only quotes still being observed, because a completed quote's entry is deleted.
 - **Leases stay durable.** The plan suggested keeping leases in memory. The persisted lease still coalesces concurrent wakes (`concurrent_wakes_share_one_persisted_attempt_lease`), so it stays in the per-quote entry.
 - **Cache semantics kept.** An entry that no longer decodes is dropped and rebuilt, as the old version check did; the test now covers a corrupt entry. The old blob is no longer read; federation storage is cut-through.
+
+### 2026-11-24: package 7, sixth step (one session state machine in `cdk-frost`)
+
+- **One state machine instead of six copies.** FROST signing nonces, virtual MuSig2 nonces and threshold-DH requests share one participant lifecycle: activate an attempt for an authorization slot, reserve one record, advance it by exact compare-and-swap, list nonterminal records, and compact terminal detail into a permanent replay tombstone. Each kind had its own in-memory and redb implementation. `crates/cdk-frost/src/session.rs` (`SessionRecord`, `MemorySessionTable`) and `session_redb.rs` (`RedbSessionTable`) now implement the six operations once. `MemoryNonceStore` and `RedbNonceStore` keep the public `DurableNonceStore` and `DurableProtocolStore` traits and delegate each method.
+- **Only real differences remain as hooks:**
+  - whether a kind is keyed by session;
+  - key encoding, context and terminal state;
+  - tombstone and burn-for-replacement;
+  - per-kind validation of new records and transitions;
+  - per-kind error variants;
+  - the redb table layout and the two locks.
+
+  Accidental differences (validation order, slot-release order, claim-check style, load and compaction order, and wording that differed by backend) became one rule, choosing the stricter behaviour each time.
+- **Bugs fixed in the in-memory store.** A failed activation could release a slot without burning its record or advancing the attempt, and a failed compaction could drop terminal-order entries after compacting some records. Both now leave the table unchanged, like redb's rolled-back transaction. Regression tests: `failed_memory_activation_leaves_table_unchanged`, `failed_memory_compaction_leaves_table_unchanged`. The in-memory store is for tests and embedding prototypes; production uses redb, which was already all-or-nothing.
+- **Nonce activation now checks the protocol** like the other kinds. `cdk-federation`'s only path to it already rejected other protocols first.
+- **Unchanged:** public API, redb table names and on-disk encodings. In-memory error messages now use the redb wording. Error variants are unchanged.
+- **Inconsistencies recorded, not changed.** The same failure maps to `InvalidCommitment` for one kind and `InvalidSigningSession` for another: key collision, compacted session, and load of a compacted key. A wrong-protocol nonce record fails activation and reservation with different variants. Callers may match on these variants, so aligning them is a separate change.
+- Net change: about 70 lines fewer in the stores (1,402 added, 1,509 removed for the unification, then 231 added and 193 removed for the follow-up, about 110 of which are the regression tests).
