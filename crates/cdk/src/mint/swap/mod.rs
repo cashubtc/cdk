@@ -4,6 +4,7 @@ use cdk_common::SpendingConditionVerification;
 use swap_saga::SwapSaga;
 use tracing::instrument;
 
+use super::tasks::Operations;
 use super::{Mint, SwapRequest, SwapResponse};
 use crate::Error;
 
@@ -19,15 +20,20 @@ impl Mint {
     /// future is dropped (for example, when an HTTP client disconnects).
     /// Abandoning it between the setup and finalize transactions would leave
     /// the inputs pending until the next mint restart.
+    ///
+    /// The task is owned by the mint. A mint that is stopping or stopped does
+    /// not start it, and returns [`Error::ShuttingDown`].
     #[instrument(skip_all)]
     pub async fn process_swap_request(
         self: &Arc<Self>,
         swap_request: SwapRequest,
     ) -> Result<SwapResponse, Error> {
+        let permit = self.operations.admit()?;
         let mint = Arc::clone(self);
-        let task = tokio::spawn(tracing::Instrument::in_current_span(async move {
-            mint.run_swap(swap_request).await
-        }));
+        let task = Operations::spawn(
+            permit,
+            tracing::Instrument::in_current_span(async move { mint.run_swap(swap_request).await }),
+        );
 
         match task.await {
             Ok(result) => result,
