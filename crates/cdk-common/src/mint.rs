@@ -741,13 +741,31 @@ impl MintQuote {
     /// Amount mintable
     /// Returns the amount that is still available for minting.
     ///
-    /// The value is computed as the difference between the total amount that
-    /// has been paid for this issuance (`self.amount_paid`) and the amount
-    /// that has already been issued (`self.amount_issued`). In other words,
+    /// The value is computed as the difference between the amount that can be
+    /// issued for this quote (see `issuance_limit`) and the amount
+    /// that has already been issued (`self.amount_issued`).
     pub fn amount_mintable(&self) -> Amount<CurrencyUnit> {
-        self.amount_paid
+        self.issuance_limit()
             .checked_sub(&self.amount_issued)
             .unwrap_or_else(|_| Amount::new(0, self.unit.clone()))
+    }
+
+    /// Cumulative amount this quote can issue, including what was already
+    /// issued.
+    ///
+    /// This is what has been paid, except that a BOLT11 quote is for exactly
+    /// its amount: an invoice paid more than that still issues the quote
+    /// amount, and the quote is complete once that much has been issued.
+    /// `amount_paid` keeps recording what was actually received.
+    fn issuance_limit(&self) -> Amount<CurrencyUnit> {
+        match &self.amount {
+            Some(amount)
+                if self.payment_method.is_bolt11() && self.amount_paid.value() > amount.value() =>
+            {
+                amount.clone()
+            }
+            _ => self.amount_paid.clone(),
+        }
     }
 
     /// Extracts and returns all pending changes, leaving the internal change tracker empty.
@@ -822,7 +840,11 @@ impl MintQuote {
             return MintQuoteState::Unpaid;
         }
 
-        match self.amount_paid.value().cmp(&self.amount_issued.value()) {
+        match self
+            .issuance_limit()
+            .value()
+            .cmp(&self.amount_issued.value())
+        {
             std::cmp::Ordering::Less => {
                 tracing::error!("We should not have issued more then has been paid");
                 MintQuoteState::Issued
@@ -1709,6 +1731,53 @@ mod tests {
     use cashu::Bolt11Invoice;
 
     use super::*;
+
+    fn bolt11_mint_quote(amount: u64, amount_paid: u64, amount_issued: u64) -> MintQuote {
+        MintQuote::new(
+            None,
+            "lnbc-overpayment-test".to_string(),
+            CurrencyUnit::Sat,
+            Some(Amount::new(amount, CurrencyUnit::Sat)),
+            unix_time() + 3600,
+            PaymentIdentifier::CustomId("lookup".to_string()),
+            None,
+            Amount::new(amount_paid, CurrencyUnit::Sat),
+            Amount::new(amount_issued, CurrencyUnit::Sat),
+            PaymentMethod::Known(cashu::nuts::nut00::KnownMethod::Bolt11),
+            unix_time(),
+            unix_time(),
+            vec![],
+            vec![],
+            None,
+        )
+    }
+
+    #[test]
+    fn test_overpaid_bolt11_quote_mints_its_amount() {
+        let quote = bolt11_mint_quote(64, 65, 0);
+
+        assert_eq!(quote.state(), MintQuoteState::Paid);
+        assert_eq!(quote.amount_mintable(), Amount::new(64, CurrencyUnit::Sat));
+        assert_eq!(quote.amount_paid(), Amount::new(65, CurrencyUnit::Sat));
+    }
+
+    #[test]
+    fn test_overpaid_bolt11_quote_is_issued_once_its_amount_is_minted() {
+        // Also covers quotes overpaid before this was handled: their payment
+        // records stay as they are
+        let quote = bolt11_mint_quote(64, 65, 64);
+
+        assert_eq!(quote.state(), MintQuoteState::Issued);
+        assert_eq!(quote.amount_mintable(), Amount::new(0, CurrencyUnit::Sat));
+    }
+
+    #[test]
+    fn test_partially_paid_bolt11_quote_is_not_complete() {
+        let quote = bolt11_mint_quote(64, 40, 0);
+
+        assert_eq!(quote.state(), MintQuoteState::Paid);
+        assert_eq!(quote.amount_mintable(), Amount::new(40, CurrencyUnit::Sat));
+    }
 
     #[test]
     fn test_operation_new_mint_uses_uuid_v7() {
