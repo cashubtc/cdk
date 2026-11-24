@@ -1767,6 +1767,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn lookup_invoice_ignores_melt_quotes_of_other_mints() {
+        // Wallets for different mints can share one database
+        let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
+        let wallet = Wallet::new(
+            "https://mint.example.com",
+            CurrencyUnit::Sat,
+            localstore.clone(),
+            [0x42; 64],
+            None,
+        )
+        .expect("wallet");
+
+        localstore
+            .add_melt_quote(MeltQuote {
+                id: "other-mint-melt-quote".to_string(),
+                mint_url: Some(MintUrl::from_str("https://other-mint.example.com").expect("url")),
+                unit: CurrencyUnit::Sat,
+                amount: Amount::from(10u64),
+                request: TEST_BOLT11.to_string(),
+                fee_reserve: Amount::from(2u64),
+                state: MeltQuoteState::Pending,
+                expiry: 9_999_999_999,
+                payment_proof: None,
+                estimated_blocks: None,
+                fee_index: None,
+                payment_method: PaymentMethod::Known(KnownMethod::Bolt11),
+                used_by_operation: None,
+                version: 0,
+            })
+            .await
+            .expect("add melt quote");
+
+        let handler = WalletNwcHandler::new(Arc::new(wallet), None);
+        let err = cdk_nostr::nwc::NwcRequestHandler::lookup_invoice(
+            &handler,
+            LookupInvoiceRequest {
+                payment_hash: Some(payment_hash_of(TEST_BOLT11).expect("payment hash")),
+                invoice: None,
+            },
+        )
+        .await
+        .expect_err("another mint's payment should not be reported");
+
+        assert_eq!(err.code, ErrorCode::NotFound);
+    }
+
+    #[tokio::test]
     async fn lookup_invoice_requires_payment_hash_or_invoice() {
         let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
         let wallet = Wallet::new(
