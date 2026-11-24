@@ -53,6 +53,7 @@ pub use cdk_common::mint_quote::{MintQuoteRequest, MintQuoteResponse};
 pub use issue::MintInput;
 pub use melt::PendingMelt;
 pub use server::MintServer;
+pub use tasks::ConnectionGuard;
 pub use verification::Verification;
 
 const CDK_MINT_PRIMARY_NAMESPACE: &str = "cdk_mint";
@@ -98,6 +99,8 @@ pub struct Mint {
     task_state: Arc<Mutex<TaskState>>,
     /// Owner of the swaps and melts that run in their own tasks
     operations: tasks::Operations,
+    /// Owner of the long-lived client connections served for this mint
+    connections: tasks::Operations,
     /// Maximum number of inputs allowed per transaction
     max_inputs: usize,
     /// Maximum number of outputs allowed per transaction
@@ -438,6 +441,7 @@ impl Mint {
                 ..Default::default()
             })),
             operations: tasks::Operations::new(),
+            connections: tasks::Operations::new(),
             max_inputs,
             max_outputs,
         })
@@ -619,6 +623,7 @@ impl Mint {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
         self.operations.open();
+        self.connections.open();
 
         tracing::info!("Mint background services started");
         Ok(())
@@ -652,10 +657,14 @@ impl Mint {
     /// 3. Operations still running after `timeout` are aborted. An aborted
     ///    operation stops where it is, as if the process had died there, and
     ///    the saga recovery of the next `start()` resolves it.
-    /// 4. The background services are signalled and joined, then the payment
+    /// 4. Client connections registered with
+    ///    [`track_connection`](Self::track_connection) are told to close. They
+    ///    stay open through the drain, so subscribers see how the drained
+    ///    operations ended.
+    /// 5. The background services are signalled and joined, then the payment
     ///    processors are stopped.
     ///
-    /// The whole call is bounded: steps 3 and 4 wait at most a few seconds
+    /// The whole call is bounded: steps 3 to 5 wait at most a few seconds
     /// each for work that does not react. When it returns, none of the mint's
     /// tasks is using the database, so the caller may close it.
     ///
@@ -675,7 +684,11 @@ impl Mint {
         // task even if the caller drops its future.
         task_state.stopping = true;
         tokio::spawn(Self::drain_and_stop(
-            task_state, operations, processors, timeout,
+            task_state,
+            operations,
+            self.connections.clone(),
+            processors,
+            timeout,
         ))
         .await
         .map_err(|_| Error::Internal)?
@@ -684,6 +697,7 @@ impl Mint {
     async fn drain_and_stop(
         mut task_state: tokio::sync::OwnedMutexGuard<TaskState>,
         operations: tasks::Operations,
+        connections: tasks::Operations,
         processors: Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
         timeout: Duration,
     ) -> Result<StopReport, Error> {
@@ -726,7 +740,18 @@ impl Mint {
 
         let mut result = Ok(report);
 
-        // Take the handles out of the state
+        connections.close();
+        if tokio::time::timeout(STOP_GRACE, connections.wait_idle())
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                "{} client connection(s) did not close during shutdown",
+                connections.active()
+            );
+            return Err(Error::Internal);
+        }
+
         let shutdown = task_state.shutdown.take();
         let supervisor_handle = task_state.supervisor_handle.take();
         let keyset_drain_handle = task_state.keyset_drain_handle.take();
@@ -788,6 +813,18 @@ impl Mint {
         task_state.stopping = result.is_err();
 
         result
+    }
+
+    /// Register a long-lived client connection, such as a WebSocket
+    ///
+    /// The task serving the connection keeps the returned guard and ends
+    /// when [`ConnectionGuard::closed`] resolves, which happens when the mint
+    /// stops. `stop()` waits for registered connections to end.
+    ///
+    /// Returns [`Error::ShuttingDown`] once the mint has closed its
+    /// connections, until the next `start()`.
+    pub fn track_connection(&self) -> Result<ConnectionGuard, Error> {
+        self.connections.admit().map(ConnectionGuard::new)
     }
 
     /// Stop all payment processors
