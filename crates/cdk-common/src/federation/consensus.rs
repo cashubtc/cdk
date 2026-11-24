@@ -846,7 +846,9 @@ pub enum FederationConsensusItem {
     Operation(FederationOperationEnvelope),
     /// A bounded request to select a recovery checkpoint after this ordered unit.
     RecoveryBarrier(FederationRecoveryBarrier),
-    /// A module-defined fact that must be ordered with operations.
+    /// An opaque test item without an operation id, used by tests as a
+    /// variable-size stand-in. It does not exist in production builds.
+    #[cfg(any(test, feature = "test"))]
     ModuleFact(FederationConsensusModuleFact),
 }
 
@@ -901,7 +903,20 @@ impl FederationConsensusItem {
     pub fn operation_id(&self) -> Result<Option<FederationOperationId>> {
         match self {
             Self::Operation(envelope) => Ok(Some(envelope.operation_id()?)),
-            Self::RecoveryBarrier(_) | Self::ModuleFact(_) => Ok(None),
+            Self::RecoveryBarrier(_) => Ok(None),
+            #[cfg(any(test, feature = "test"))]
+            Self::ModuleFact(_) => Ok(None),
+        }
+    }
+
+    /// The recovery barrier this item carries, if it is one.
+    #[must_use]
+    pub fn as_recovery_barrier(&self) -> Option<&FederationRecoveryBarrier> {
+        match self {
+            Self::RecoveryBarrier(barrier) => Some(barrier),
+            Self::Operation(_) => None,
+            #[cfg(any(test, feature = "test"))]
+            Self::ModuleFact(_) => None,
         }
     }
 
@@ -910,6 +925,7 @@ impl FederationConsensusItem {
         match self {
             Self::Operation(envelope) => envelope.ensure_supported_version(),
             Self::RecoveryBarrier(barrier) => barrier.ensure_supported_version(),
+            #[cfg(any(test, feature = "test"))]
             Self::ModuleFact(item) => item.ensure_supported_version(),
         }
     }
@@ -922,7 +938,9 @@ impl FederationConsensusItem {
                 }
                 .into())
             }
-            Self::Operation(_) | Self::RecoveryBarrier(_) | Self::ModuleFact(_) => Ok(()),
+            Self::Operation(_) | Self::RecoveryBarrier(_) => Ok(()),
+            #[cfg(any(test, feature = "test"))]
+            Self::ModuleFact(_) => Ok(()),
         }
     }
 }
@@ -973,8 +991,11 @@ impl FederationVerifiedOperationAdmission {
     pub fn operation_envelope(&self) -> &FederationOperationEnvelope {
         match &self.item {
             FederationConsensusItem::Operation(envelope) => envelope,
-            FederationConsensusItem::RecoveryBarrier(_)
-            | FederationConsensusItem::ModuleFact(_) => {
+            FederationConsensusItem::RecoveryBarrier(_) => {
+                unreachable!("verified operation admissions always carry operation items")
+            }
+            #[cfg(any(test, feature = "test"))]
+            FederationConsensusItem::ModuleFact(_) => {
                 unreachable!("verified operation admissions always carry operation items")
             }
         }
@@ -987,7 +1008,8 @@ impl FederationVerifiedOperationAdmission {
     }
 }
 
-/// Module-defined fact to order through consensus.
+/// Opaque test item to order through consensus; test builds only.
+#[cfg(any(test, feature = "test"))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FederationConsensusModuleFact {
@@ -1001,6 +1023,7 @@ pub struct FederationConsensusModuleFact {
     pub payload: serde_json::Value,
 }
 
+#[cfg(any(test, feature = "test"))]
 impl FederationConsensusModuleFact {
     /// Create a module fact consensus item.
     #[must_use]
@@ -1023,6 +1046,7 @@ impl FederationConsensusModuleFact {
     }
 }
 
+#[cfg(any(test, feature = "test"))]
 fn ensure_consensus_item_version(version: u16) -> Result<()> {
     if version != FEDERATION_CONSENSUS_ITEM_VERSION {
         return Err(FederationError::ConsensusItemVersionMismatch {
@@ -1206,7 +1230,9 @@ impl FederationConsensusItemQueue {
             FederationConsensusItem::RecoveryBarrier(pending) => {
                 recovery_barrier_covers(pending, requested)
             }
-            FederationConsensusItem::Operation(_) | FederationConsensusItem::ModuleFact(_) => false,
+            FederationConsensusItem::Operation(_) => false,
+            #[cfg(any(test, feature = "test"))]
+            FederationConsensusItem::ModuleFact(_) => false,
         })
     }
 
@@ -1483,9 +1509,9 @@ fn pending_consensus_item_operation_metadata(
         FederationConsensusItem::Operation(envelope) => {
             Ok(Some(pending_operation_metadata_from_envelope(envelope)?))
         }
-        FederationConsensusItem::RecoveryBarrier(_) | FederationConsensusItem::ModuleFact(_) => {
-            Ok(None)
-        }
+        FederationConsensusItem::RecoveryBarrier(_) => Ok(None),
+        #[cfg(any(test, feature = "test"))]
+        FederationConsensusItem::ModuleFact(_) => Ok(None),
     }
 }
 
@@ -3036,8 +3062,9 @@ impl FederationConsensusRuntime {
                     FederationConsensusItem::RecoveryBarrier(pending) => {
                         recovery_barrier_covers(pending, &barrier)
                     }
-                    FederationConsensusItem::Operation(_)
-                    | FederationConsensusItem::ModuleFact(_) => false,
+                    FederationConsensusItem::Operation(_) => false,
+                    #[cfg(any(test, feature = "test"))]
+                    FederationConsensusItem::ModuleFact(_) => false,
                 })
             });
         if pending_covers_request

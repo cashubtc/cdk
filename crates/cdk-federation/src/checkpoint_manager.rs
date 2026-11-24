@@ -13,8 +13,8 @@ use cdk::federation::{
     FederationCheckpointFetchResponse, FederationCheckpointId, FederationCheckpointKind,
     FederationCheckpointQuorum, FederationCheckpointQuorumResponse, FederationCheckpointSignature,
     FederationCheckpointSignatureResponse, FederationCheckpointSummary,
-    FederationCheckpointSummaryResponse, FederationConsensusItem, FederationError,
-    FederationRecoveryBarrier, FEDERATION_REST_API_VERSION,
+    FederationCheckpointSummaryResponse, FederationError, FederationRecoveryBarrier,
+    FEDERATION_REST_API_VERSION,
 };
 
 use super::node_runtime::{
@@ -768,12 +768,7 @@ impl FederationNodeRuntime {
         let Some(barrier) = finalized_items
             .iter()
             .filter(|item| item.status == FederationAlephBftFinalizedItemStatus::Accepted)
-            .filter_map(|item| match &item.item {
-                FederationConsensusItem::RecoveryBarrier(barrier) => Some(barrier),
-                FederationConsensusItem::Operation(_) | FederationConsensusItem::ModuleFact(_) => {
-                    None
-                }
-            })
+            .filter_map(|item| item.item.as_recovery_barrier())
             .max_by_key(|barrier| barrier.requested_after_finalized_item_index)
         else {
             return Ok(None);
@@ -848,16 +843,10 @@ impl FederationNodeRuntime {
             let has_current_anchor_barrier = finalized_items
                 .iter()
                 .filter(|item| item.status == FederationAlephBftFinalizedItemStatus::Accepted)
-                .filter_map(|item| match &item.item {
-                    FederationConsensusItem::RecoveryBarrier(barrier)
-                        if barrier.scheduled_checkpoint_sequence == scheduled_sequence
-                            && barrier.scheduled_anchor_id == scheduled_anchor_id =>
-                    {
-                        Some(barrier)
-                    }
-                    FederationConsensusItem::Operation(_)
-                    | FederationConsensusItem::RecoveryBarrier(_)
-                    | FederationConsensusItem::ModuleFact(_) => None,
+                .filter_map(|item| item.item.as_recovery_barrier())
+                .filter(|barrier| {
+                    barrier.scheduled_checkpoint_sequence == scheduled_sequence
+                        && barrier.scheduled_anchor_id == scheduled_anchor_id
                 })
                 .max_by_key(|barrier| barrier.requested_after_finalized_item_index)
                 .is_some();

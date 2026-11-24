@@ -94,16 +94,17 @@ pub use self::config::{
     FederationPaymentObservationPolicy, FederationPaymentVerificationPolicy, MemberConfigPrivate,
     MemberConfigPublic, MemberId, ThresholdParams,
 };
+#[cfg(any(test, feature = "test"))]
+pub use self::consensus::FederationConsensusModuleFact;
 pub use self::consensus::{
     FederationAlephBftError, FederationAlephBftFinalizedItem,
     FederationAlephBftFinalizedItemStatus, FederationAlephBftFinalizedUnitOutcome,
     FederationAlephBftOrderedOperationGroup, FederationAlephBftPendingOperationRecord,
     FederationAlephBftUnitBodyHash, FederationAlephBftUnitPayload, FederationConsensusItem,
-    FederationConsensusItemAdmission, FederationConsensusModuleFact,
-    FederationConsensusRecoveryBase, FederationConsensusRuntime, FederationConsensusRuntimeStatus,
-    FederationPreparedAlephBftFinalization, FederationPreparedAlephBftSubmission,
-    FederationPreparedAlephBftSubmissionGroup, FederationRecoveryBarrier,
-    FederationRecoveryBarrierId, FederationVerifiedOperationAdmission,
+    FederationConsensusItemAdmission, FederationConsensusRecoveryBase, FederationConsensusRuntime,
+    FederationConsensusRuntimeStatus, FederationPreparedAlephBftFinalization,
+    FederationPreparedAlephBftSubmission, FederationPreparedAlephBftSubmissionGroup,
+    FederationRecoveryBarrier, FederationRecoveryBarrierId, FederationVerifiedOperationAdmission,
     FEDERATION_ALEPH_BFT_UNIT_PAYLOAD_VERSION, FEDERATION_CONSENSUS_ITEM_VERSION,
     FEDERATION_MAX_ALEPH_BFT_UNIT_BODY_BYTES, FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS,
     FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES, FEDERATION_MAX_CONSENSUS_ITEM_BYTES,
