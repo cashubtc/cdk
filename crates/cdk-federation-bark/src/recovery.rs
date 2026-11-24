@@ -11,8 +11,8 @@ use bitcoin::{
 use cdk_common::federation::{
     decode_row, insert_row, outpoint_row_key, row_kind, unknown_row_kind,
     FederationAllocatedAddressRef, FederationChainObservationState, FederationJournalEntry,
-    FederationMaterializedStateRow, FederationOperationId, FederationOperationStatus,
-    FederationStateRows, FederationStateTable, FederationWalletUtxoState, MemberId, Result,
+    FederationOperationId, FederationOperationStatus, FederationStateRows, FederationStateTable,
+    FederationWalletUtxoState, MemberId, Result,
 };
 use cdk_frost::{
     ApplicationAuthorization, ApplicationRegistration, AuthorizationRequest,
@@ -71,33 +71,6 @@ impl FederationBarkRecoveryState {
         Self {
             reservations: BTreeMap::new(),
         }
-    }
-
-    /// Build stable materialized-state rows for checkpoint convergence.
-    pub fn materialized_rows(&self) -> Result<Vec<FederationMaterializedStateRow>> {
-        self.validate()?;
-        Ok(self
-            .reservations
-            .values()
-            .map(|reservation| {
-                FederationMaterializedStateRow::new(
-                    "federation_bark_recovery_reservations",
-                    reservation.outpoint.to_string(),
-                )
-                .with_field("action_id", reservation.action_id.to_string())
-                .with_field(
-                    "registered_operation_id",
-                    reservation.registered_operation_id.to_string(),
-                )
-                .with_field(
-                    "published_operation_id",
-                    reservation
-                        .published_operation_id
-                        .map(|operation_id| operation_id.to_string())
-                        .unwrap_or_default(),
-                )
-            })
-            .collect())
     }
 
     /// Reserve every exact package input. Returns whether state changed.

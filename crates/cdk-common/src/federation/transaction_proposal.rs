@@ -21,8 +21,8 @@ use super::canonical::canonical_json_bytes;
 use super::{
     decode_row, hex_row_key, insert_row, outpoint_row_key, row_kind, unknown_row_kind,
     FederationAllocatedAddressRef, FederationError, FederationFrostApplicationId,
-    FederationMaterializedStateRow, FederationOperationConflictKey, FederationOperationId,
-    FederationStateRows, FederationStateTable, MemberId, Result, FEDERATION_MAX_DERIVATION_INDEX,
+    FederationOperationConflictKey, FederationOperationId, FederationStateRows,
+    FederationStateTable, MemberId, Result, FEDERATION_MAX_DERIVATION_INDEX,
 };
 
 const PAYMENT_INTENT_VERSION: u16 = 3;
@@ -2137,40 +2137,6 @@ impl FederationTransactionState {
         self.validate()
     }
 
-    /// Build stable state-digest rows for every intent, transaction, and reservation.
-    pub fn materialized_rows(&self) -> Result<Vec<FederationMaterializedStateRow>> {
-        self.validate()?;
-        let mut rows = Vec::new();
-        for (intent_id, record) in &self.intents {
-            rows.push(
-                FederationMaterializedStateRow::new(
-                    "federation_onchain_payment_intents",
-                    intent_id.to_string(),
-                )
-                .with_field("record", serde_json::to_string(record)?),
-            );
-        }
-        for (proposal_id, accepted) in &self.accepted_transactions {
-            rows.push(
-                FederationMaterializedStateRow::new(
-                    "federation_onchain_transactions",
-                    proposal_id.to_string(),
-                )
-                .with_field("accepted", serde_json::to_string(accepted)?),
-            );
-        }
-        for (outpoint, proposal_id) in &self.utxo_reservations {
-            rows.push(
-                FederationMaterializedStateRow::new(
-                    "federation_onchain_utxo_reservations",
-                    outpoint.clone(),
-                )
-                .with_field("proposal_id", proposal_id.to_string()),
-            );
-        }
-        Ok(rows)
-    }
-
     /// Validate every identity, ownership index, and sticky reservation.
     pub fn validate(&self) -> Result<()> {
         if self.intents.len() != self.quote_intents.len() {
@@ -3586,7 +3552,8 @@ mod tests {
         )
         .expect("decode transaction state");
         assert_eq!(decoded, state);
-        assert_eq!(state.materialized_rows().expect("digest rows").len(), 5);
+        // Two intents, one transaction, one lineage head, two reservations.
+        assert_eq!(state.materialized_rows().expect("digest rows").len(), 6);
     }
 
     #[test]

@@ -8,6 +8,7 @@ use cdk_common::error::Error;
 use cdk_common::federation::{
     FederatedKeyset, FederationMaterializedStateKey, FederationMaterializedStateRow,
     FederationMaterializedStateSnapshot, FederationOperationId, FederationPaymentObservationRecord,
+    FederationStateTable,
 };
 #[cfg(feature = "federation-bark")]
 use cdk_common::federation::{

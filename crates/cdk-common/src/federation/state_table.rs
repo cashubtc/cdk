@@ -15,7 +15,8 @@ use bitcoin::OutPoint;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use super::{FederationError, Result};
+use super::canonical::canonical_json_bytes;
+use super::{FederationError, FederationMaterializedStateRow, Result};
 use crate::database::mint::{DynMintDatabase, DynMintTransaction};
 use crate::error::Error;
 
@@ -36,6 +37,24 @@ pub trait FederationStateTable: Sized {
     /// Decode every row and validate the rebuilt projection. Every row key must
     /// be the key its content would be stored under.
     fn from_rows(rows: &FederationStateRows) -> Result<Self>;
+
+    /// State-digest rows: one per stored row, carrying its exact stored bytes,
+    /// so the signed digest covers everything a state transfer installs.
+    fn materialized_rows(&self) -> Result<Vec<FederationMaterializedStateRow>> {
+        self.to_rows()?
+            .into_iter()
+            .map(|(key, value)| {
+                let record =
+                    String::from_utf8(value).map_err(|_| FederationError::StateRowsInvalid {
+                        reason: "stored row is not UTF-8 JSON",
+                    })?;
+                Ok(
+                    FederationMaterializedStateRow::new(Self::SECONDARY_NAMESPACE, key)
+                        .with_field("record", record),
+                )
+            })
+            .collect()
+    }
 }
 
 /// Read and validate a whole projection outside a database transaction.
@@ -166,12 +185,13 @@ pub fn digest_row_key(prefix: &str, parts: &[&[u8]]) -> String {
     )
 }
 
-/// Encode one row, rejecting a key that is already present.
+/// Encode one row as canonical JSON, so every member stores and hashes the
+/// same bytes, rejecting a key that is already present.
 pub fn insert_row<T>(rows: &mut FederationStateRows, key: String, value: &T) -> Result<()>
 where
     T: Serialize,
 {
-    match rows.insert(key, serde_json::to_vec(value)?) {
+    match rows.insert(key, canonical_json_bytes(value)?) {
         Some(_) => Err(FederationError::StateRowsInvalid {
             reason: "two entities map to the same row key",
         }),

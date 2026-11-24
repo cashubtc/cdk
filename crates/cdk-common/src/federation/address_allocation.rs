@@ -12,8 +12,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::{
     decode_row, digest_row_key, insert_row, row_kind, unknown_row_kind, FederationError,
-    FederationFrostApplicationId, FederationMaterializedStateRow, FederationOperationId,
-    FederationStateRows, FederationStateTable, Result,
+    FederationFrostApplicationId, FederationOperationId, FederationStateRows, FederationStateTable,
+    Result,
 };
 
 const MAX_QUOTE_ID_BYTES: usize = 256;
@@ -306,42 +306,6 @@ impl FederationAddressAllocationState {
         self.wallets.iter().map(|(scope, wallet)| (*scope, wallet))
     }
 
-    /// Build stable rows for federation state-digest comparison.
-    pub fn materialized_rows(&self) -> Result<Vec<FederationMaterializedStateRow>> {
-        self.validate()?;
-        let mut rows = Vec::new();
-        for (scope, wallet) in &self.wallets {
-            let scope_key = format!("{}:{}", scope.application_id, scope.application_key_epoch);
-            rows.push(
-                FederationMaterializedStateRow::new(
-                    "federation_address_allocation_counters",
-                    scope_key.clone(),
-                )
-                .with_field(
-                    "external_next_index",
-                    wallet.external_next_index.to_string(),
-                )
-                .with_field(
-                    "internal_next_index",
-                    wallet.internal_next_index.to_string(),
-                ),
-            );
-            for allocation in wallet.allocations.values() {
-                rows.push(
-                    FederationMaterializedStateRow::new(
-                        "federation_address_allocations",
-                        format!("{scope_key}:{}", allocation.quote),
-                    )
-                    .with_field("keychain", allocation.keychain.to_string())
-                    .with_field("derivation_index", allocation.derivation_index.to_string())
-                    .with_field("operation_id", allocation.operation_id.to_string())
-                    .with_field("operation_index", allocation.operation_index.to_string()),
-                );
-            }
-        }
-        Ok(rows)
-    }
-
     /// Validate counters, uniqueness, and contiguous allocation invariants.
     pub fn validate(&self) -> Result<()> {
         let max_next = u64::from(FEDERATION_MAX_DERIVATION_INDEX) + 1;
@@ -631,7 +595,8 @@ mod tests {
             FederationAddressAllocationState::from_rows(&state.to_rows().expect("serialize"))
                 .expect("restore");
         assert_eq!(restored, state);
-        assert_eq!(restored.materialized_rows().expect("rows").len(), 2);
+        // One row per allocation; the next-index counters are rebuilt on load.
+        assert_eq!(restored.materialized_rows().expect("rows").len(), 1);
     }
 
     #[test]

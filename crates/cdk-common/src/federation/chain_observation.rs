@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 use super::{
     decode_row, insert_row, outpoint_row_key, row_kind, unknown_row_kind,
     FederationAddressAllocation, FederationAddressAllocationScope, FederationAddressKeychain,
-    FederationError, FederationFrostApplicationId, FederationMaterializedStateRow,
-    FederationOperationId, FederationStateRows, FederationStateTable, MemberId, Result,
+    FederationError, FederationFrostApplicationId, FederationOperationId, FederationStateRows,
+    FederationStateTable, MemberId, Result,
 };
 
 const MAX_QUOTE_ID_BYTES: usize = 256;
@@ -1019,87 +1019,6 @@ impl FederationChainObservationState {
         self.validate()
     }
 
-    /// Build stable state-digest rows for UTXOs and all accepted evidence.
-    pub fn materialized_rows(&self) -> Result<Vec<FederationMaterializedStateRow>> {
-        self.validate()?;
-        let mut rows = Vec::new();
-        for utxo in self.utxos.values() {
-            let key = utxo.outpoint.to_string();
-            let (block_hash, block_height) = match utxo.block {
-                Some((hash, height)) => (hash.to_string(), height.to_string()),
-                None => (String::new(), String::new()),
-            };
-            let utxo_row =
-                FederationMaterializedStateRow::new("federation_wallet_utxos", key.clone())
-                    .with_field("value_sat", utxo.txout.value.to_sat().to_string())
-                    .with_field("script", utxo.txout.script_pubkey.to_hex_string())
-                    .with_field("allocation_quote", utxo.allocation.quote.clone())
-                    .with_field("keychain", utxo.allocation.keychain.to_string())
-                    .with_field(
-                        "derivation_index",
-                        utxo.allocation.derivation_index.to_string(),
-                    )
-                    .with_field("block_hash", block_hash)
-                    .with_field("block_height", block_height)
-                    .with_field("state", utxo.state.to_string())
-                    .with_field("required_observers", utxo.required_observers.to_string())
-                    .with_field(
-                        "minimum_confirmations",
-                        utxo.minimum_confirmations.to_string(),
-                    )
-                    .with_field("liability_issued", utxo.liability_issued.to_string())
-                    .with_field("liability_alarm", utxo.liability_alarm.to_string())
-                    .with_field("observation_epoch", utxo.observation_epoch.to_string());
-            rows.push(utxo_row);
-            for (observer, evidence) in &utxo.observations {
-                let FederationChainObservation::Deposit(observation) = &evidence.observation else {
-                    return Err(invalid_state("deposit evidence contains a reorg payload"));
-                };
-                let (hash, height, depth) = match observation.confirmation {
-                    Some(confirmation) => (
-                        confirmation.block_hash.to_string(),
-                        confirmation.block_height.to_string(),
-                        confirmation.confirmation_depth.to_string(),
-                    ),
-                    None => (String::new(), String::new(), "0".to_string()),
-                };
-                let evidence_row = FederationMaterializedStateRow::new(
-                    "federation_wallet_deposit_evidence",
-                    format!("{key}:{observer}"),
-                )
-                .with_field("block_hash", hash)
-                .with_field("block_height", height)
-                .with_field("confirmation_depth", depth)
-                .with_field("source_scope", observation.source.scope.to_string())
-                .with_field("source_id", observation.source.source_id.clone())
-                .with_field("operation_id", evidence.operation_id.to_string())
-                .with_field("operation_index", evidence.operation_index.to_string())
-                .with_field(
-                    "observation_epoch",
-                    observation.observation_epoch.to_string(),
-                );
-                rows.push(evidence_row);
-            }
-            for (observer, evidence) in &utxo.reorg_observations {
-                let FederationChainObservation::Reorg(observation) = &evidence.observation else {
-                    return Err(invalid_state("reorg evidence contains a deposit payload"));
-                };
-                let evidence_row = FederationMaterializedStateRow::new(
-                    "federation_wallet_reorg_evidence",
-                    format!("{key}:{observer}"),
-                )
-                .with_field("operation_id", evidence.operation_id.to_string())
-                .with_field("operation_index", evidence.operation_index.to_string())
-                .with_field(
-                    "observation_epoch",
-                    observation.observation_epoch.to_string(),
-                );
-                rows.push(evidence_row);
-            }
-        }
-        Ok(rows)
-    }
-
     /// Validate all durable invariants and fail closed on corrupted state.
     pub fn validate(&self) -> Result<()> {
         for (key, utxo) in &self.utxos {
@@ -1952,9 +1871,12 @@ mod tests {
             }
         );
         let rows = state.materialized_rows().expect("rows");
-        assert!(rows
-            .iter()
-            .all(|row| row.fields.get("observation_epoch").map(String::as_str) == Some("0")));
+        assert!(rows.iter().all(|row| {
+            let record: serde_json::Value =
+                serde_json::from_str(row.fields.get("record").expect("record field"))
+                    .expect("record JSON");
+            record["observation_epoch"] == serde_json::json!(0)
+        }));
         let mut changed = state.clone();
         let evidence = changed
             .utxos
