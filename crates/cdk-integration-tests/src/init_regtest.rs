@@ -381,6 +381,10 @@ pub async fn start_regtest_end(
     ldk_node: Option<Arc<Node>>,
     skip_ln: bool,
 ) -> anyhow::Result<()> {
+    // Only a fully initialized topology can skip funding and channel creation.
+    let initialized_path = work_dir.join(".regtest-initialized");
+    let reuse = initialized_path.is_file();
+
     let mut bitcoind = init_bitcoind(work_dir);
     bitcoind.start_bitcoind()?;
 
@@ -388,8 +392,10 @@ pub async fn start_regtest_end(
     bitcoin_client.create_wallet().ok();
     bitcoin_client.load_wallet()?;
 
-    let new_add = bitcoin_client.get_new_address()?;
-    bitcoin_client.generate_blocks(&new_add, 200)?;
+    if !reuse {
+        let new_add = bitcoin_client.get_new_address()?;
+        bitcoin_client.generate_blocks(&new_add, 200)?;
+    }
 
     if skip_ln {
         // Send notification that regtest set up is complete
@@ -414,7 +420,9 @@ pub async fn start_regtest_end(
 
     wait_for_ln_ready(&cln_client).await?;
 
-    fund_ln(&bitcoin_client, &cln_client).await.unwrap();
+    if !reuse {
+        fund_ln(&bitcoin_client, &cln_client).await?;
+    }
 
     // Create second cln
     let cln_two_dir = get_cln_dir(work_dir, "two");
@@ -431,7 +439,9 @@ pub async fn start_regtest_end(
 
     wait_for_ln_ready(&cln_two_client).await?;
 
-    fund_ln(&bitcoin_client, &cln_two_client).await.unwrap();
+    if !reuse {
+        fund_ln(&bitcoin_client, &cln_two_client).await?;
+    }
 
     let lnd_dir = get_lnd_dir(work_dir, "one");
     println!("{}", lnd_dir.display());
@@ -449,14 +459,16 @@ pub async fn start_regtest_end(
 
     wait_for_ln_ready(&lnd_client).await?;
 
-    if let Some(node) = ldk_node.as_ref() {
+    if let Some(node) = ldk_node.as_ref().filter(|_| !reuse) {
         tracing::info!("Starting ldk node");
         node.start()?;
         let addr = node.onchain_payment().new_address().unwrap();
         bitcoin_client.send_to_address(&addr.to_string(), 5_000_000)?;
     }
 
-    fund_ln(&bitcoin_client, &lnd_client).await.unwrap();
+    if !reuse {
+        fund_ln(&bitcoin_client, &lnd_client).await?;
+    }
 
     // create second lnd node
     let work_dir = get_temp_dir();
@@ -480,11 +492,10 @@ pub async fn start_regtest_end(
 
     wait_for_ln_ready(&lnd_two_client).await?;
 
-    fund_ln(&bitcoin_client, &lnd_two_client).await.unwrap();
+    if !reuse {
+        fund_ln(&bitcoin_client, &lnd_two_client).await?;
 
-    // Open channels concurrently
-    // Open channels
-    {
+        // Create the initial topology only once, preserving user changes on restart.
         open_channel(&cln_client, &lnd_client).await.unwrap();
         tracing::info!("Opened channel between cln and lnd one");
         generate_block(&bitcoin_client)?;
@@ -630,7 +641,8 @@ pub async fn start_regtest_end(
         }
     }
 
-    tracing::info!("Regtest channels active");
+    std::fs::write(initialized_path, b"")?;
+    tracing::info!("Regtest network ready (reused: {reuse})");
 
     // Send notification that regtest set up is complete
     sender.send(()).expect("Could not send oneshot");

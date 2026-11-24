@@ -1,11 +1,12 @@
 //! CLN rpc client
 
-use std::path::PathBuf;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use cdk::util::hex;
 use cln_rpc::model::requests::{
@@ -33,6 +34,31 @@ use crate::ln_regtest::InvoiceStatus;
 pub struct ClnClient {
     client: Arc<Mutex<ClnRpc>>,
     pub rpc_path: PathBuf,
+}
+
+async fn connect_rpc(rpc_path: &Path, wait: Duration) -> Result<ClnRpc> {
+    timeout(wait, async {
+        loop {
+            match ClnRpc::new(rpc_path).await {
+                Ok(client) => return Ok(client),
+                Err(err) => {
+                    let retryable = err.downcast_ref::<io::Error>().is_some_and(|err| {
+                        matches!(
+                            err.kind(),
+                            io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+                        )
+                    });
+                    if !retryable {
+                        return Err(err);
+                    }
+                    tracing::debug!("Waiting for CLN RPC at {}: {err}", rpc_path.display());
+                    sleep(Duration::from_millis(200)).await;
+                }
+            }
+        }
+    })
+    .await
+    .with_context(|| format!("Timeout waiting for CLN RPC at {}", rpc_path.display()))?
 }
 
 fn reconcile_outgoing_payment_status<I>(statuses: I) -> InvoiceStatus
@@ -104,7 +130,9 @@ impl ClnClient {
 
         println!("rpc_path: {}", rpc_path.display());
 
-        let cln_client = cln_rpc::ClnRpc::new(&rpc_path).await?;
+        // A persisted socket can exist before lightningd is listening again.
+        // Retry the connection itself, before the chain-sync readiness checks.
+        let cln_client = connect_rpc(&rpc_path, Duration::from_secs(60)).await?;
 
         Ok(Self {
             rpc_path,
@@ -726,6 +754,58 @@ pub fn amount_for_offer(offer: &Offer) -> Result<Amount> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    async fn assert_delayed_rpc_connection(stale_socket: bool) {
+        let rpc_path = std::env::temp_dir().join(format!("cdk-cln-{}.sock", Uuid::new_v4()));
+        if stale_socket {
+            let listener =
+                std::os::unix::net::UnixListener::bind(&rpc_path).expect("create stale socket");
+            drop(listener);
+        }
+
+        let server_path = rpc_path.clone();
+        let server = tokio::spawn(async move {
+            sleep(Duration::from_millis(50)).await;
+            if stale_socket {
+                std::fs::remove_file(&server_path).expect("remove stale socket");
+            }
+            let listener = tokio::net::UnixListener::bind(&server_path).expect("listen on socket");
+            listener.accept().await.expect("accept RPC connection").0
+        });
+
+        let client = connect_rpc(&rpc_path, Duration::from_secs(2))
+            .await
+            .expect("wait for RPC listener");
+        let stream = server.await.expect("server task");
+        drop(client);
+        drop(stream);
+        std::fs::remove_file(rpc_path).expect("remove test socket");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rpc_connection_waits_for_listener() {
+        assert_delayed_rpc_connection(false).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rpc_connection_retries_stale_socket_on_restart() {
+        assert_delayed_rpc_connection(true).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rpc_connection_timeout_reports_socket_path() {
+        let rpc_path = std::env::temp_dir().join(format!("cdk-cln-{}.sock", Uuid::new_v4()));
+        let err = match connect_rpc(&rpc_path, Duration::from_millis(10)).await {
+            Ok(_) => panic!("missing socket should time out"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("Timeout waiting for CLN RPC"));
+        assert!(err.to_string().contains(&rpc_path.display().to_string()));
+    }
 
     #[test]
     fn outgoing_payment_status_prefers_complete_over_stale_failure() {
