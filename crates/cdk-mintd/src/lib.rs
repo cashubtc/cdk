@@ -2443,7 +2443,12 @@ impl RunningMintd {
             }
         }
 
-        self.mint.stop().await?;
+        // A failed mint stop must not skip the remaining cleanup, so the error
+        // is returned only after the other services and the database close.
+        let stop_result = self.mint.stop().await;
+        if let Err(err) = &stop_result {
+            tracing::error!("Mint stop failed; continuing shutdown: {}", err);
+        }
 
         #[cfg(feature = "management-rpc")]
         {
@@ -2457,6 +2462,8 @@ impl RunningMintd {
         if let Some(auth_localstore) = self.auth_localstore {
             auth_localstore.close().await?;
         }
+
+        stop_result?;
 
         Ok(())
     }
