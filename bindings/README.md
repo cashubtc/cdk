@@ -33,6 +33,21 @@ contains everything that tag delivers. That matters because not every language
 has a second channel: Kotlin's release uploads no assets and nightlies skip
 Maven Central, so a nightly would otherwise deliver nothing at all.
 
+Published stable and release-candidate branches are merged into the binding
+repository's default branch with their history intact. The release tag stays on
+the artifact commit, which becomes an ancestor of later releases. Nightlies are
+kept separate and do not update the default branch.
+
+Release notes describe changes in this CDK repository, using the previous
+published version of that binding as the explicit starting point. Stable
+releases skip candidates and nightlies; candidates also consider earlier
+candidates. Version ordering keeps backport notes on the appropriate release
+line, and a binding that skips a CDK version includes all intervening changes.
+Nightlies compare the exact CDK source commits recorded in their release notes,
+falling back to the latest stable binding version for the first nightly. An
+initial binding release states that there is no previous version to compare.
+Existing tags are not moved by this flow.
+
 | Language | Committed at | Also published as |
 |---|---|---|
 | Swift | `CashuDevKitFFI.xcframework.zip` at the root, a local `binaryTarget(path:)` | a release asset |

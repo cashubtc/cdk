@@ -34,6 +34,17 @@ env:
   CDK_ITEST_SUITE_TIMEOUT_SECONDS: 1500
 
 jobs:
+  ffi-release-workflows:
+    name: "FFI release workflow regressions"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Test changelog selection and release ancestry
+        run: python3 -m unittest discover -s .github/scripts -p 'test_ffi_release.py' -v
+
   rusqlite-compat:
     name: "rusqlite compatibility (${{ matrix.endpoint }})"
     runs-on: self-hosted
