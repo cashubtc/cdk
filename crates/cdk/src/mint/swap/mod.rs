@@ -22,7 +22,9 @@ impl Mint {
     /// the inputs pending until the next mint restart.
     ///
     /// The task is owned by the mint. A mint that is stopping or stopped does
-    /// not start it, and returns [`Error::ShuttingDown`].
+    /// not start it, and returns [`Error::ShuttingDown`]. A swap that is still
+    /// running when the mint's stop deadline passes is aborted, and returns
+    /// the same error; startup recovery then releases its inputs.
     #[instrument(skip_all)]
     pub async fn process_swap_request(
         self: &Arc<Self>,

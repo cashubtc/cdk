@@ -110,9 +110,30 @@ impl std::fmt::Debug for Mint {
     }
 }
 
+/// How long [`Mint::stop`] lets running swaps and melts finish before it
+/// aborts them.
+pub const DEFAULT_STOP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long a stopping mint waits for aborted operations and for each
+/// background service to end before it moves on.
+const STOP_GRACE: Duration = Duration::from_secs(5);
+
+/// What happened to the swaps and melts that were running when the mint was
+/// stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct StopReport {
+    /// Operations that finished on their own within the drain time.
+    pub drained: usize,
+    /// Operations that were still running when the drain time ran out, and
+    /// were aborted. The next `start()` recovers them.
+    pub aborted: usize,
+}
+
 /// State for managing background tasks
 #[derive(Default)]
 struct TaskState {
+    /// A failed stop must be retried before recovery may run.
+    stopping: bool,
     /// Shutdown signal for all background tasks. `Some` while the mint runs.
     shutdown: Option<CancellationToken>,
     /// Handle to the main supervisor task
@@ -445,7 +466,7 @@ impl Mint {
         // Prevent starting if already running. This has to come before saga
         // recovery: recovery assumes no operation is in flight, which only
         // holds for a mint that is not running.
-        if task_state.shutdown.is_some() {
+        if task_state.shutdown.is_some() || task_state.stopping {
             return Err(Error::Internal); // Already started
         }
 
@@ -603,81 +624,181 @@ impl Mint {
         Ok(())
     }
 
-    /// Stop all background services and wait for graceful shutdown
+    /// Stop the mint with the default drain time, [`DEFAULT_STOP_TIMEOUT`]
     ///
-    /// This function signals all background tasks to shut down and waits for them
-    /// to complete gracefully. It's safe to call multiple times.
-    ///
-    /// From this call until the next `start()`, the mint rejects new swaps and
-    /// melts with [`Error::ShuttingDown`]. Swaps and melts that are already
-    /// running are not interrupted.
+    /// See [`stop_with_timeout`](Self::stop_with_timeout) for what stopping
+    /// does. It's safe to call multiple times.
     ///
     /// # Returns
     ///
     /// Returns `Ok(())` when all background services have shut down cleanly, or an
     /// `Error` if there was an issue during shutdown.
     pub async fn stop(&self) -> Result<(), Error> {
-        let mut task_state = self.task_state.lock().await;
+        self.stop_with_timeout(DEFAULT_STOP_TIMEOUT)
+            .await
+            .map(|_| ())
+    }
 
+    /// Stop the mint, giving running swaps and melts up to `timeout` to finish
+    ///
+    /// Stopping happens in this order:
+    ///
+    /// 1. Admission closes. Until the next `start()`, new swaps and melts are
+    ///    rejected with [`Error::ShuttingDown`].
+    /// 2. Running swaps and melts are drained for up to `timeout`. The
+    ///    background services, payment processors, signatory and database stay
+    ///    available while they finish. A melt whose payment is still pending
+    ///    at the backend is not waited for: it stays pending.
+    /// 3. Operations still running after `timeout` are aborted. An aborted
+    ///    operation stops where it is, as if the process had died there, and
+    ///    the saga recovery of the next `start()` resolves it.
+    /// 4. The background services are signalled and joined, then the payment
+    ///    processors are stopped.
+    ///
+    /// The whole call is bounded: steps 3 and 4 wait at most a few seconds
+    /// each for work that does not react. When it returns, none of the mint's
+    /// tasks is using the database, so the caller may close it.
+    ///
+    /// A `start()` issued while this runs waits for it to finish.
+    ///
+    /// # Returns
+    ///
+    /// A [`StopReport`] with what happened to the running operations, or an
+    /// `Error` if a background service failed or had to be aborted.
+    pub async fn stop_with_timeout(&self, timeout: Duration) -> Result<StopReport, Error> {
+        // Held for the whole stop, so that a concurrent `start()` cannot run
+        // saga recovery against operations that are still draining.
+        let mut task_state = self.task_state.clone().lock_owned().await;
+        let operations = self.operations.clone();
+        let processors = self.payment_processors.clone();
+        // Once admission closes, the lifecycle lock belongs to the shutdown
+        // task even if the caller drops its future.
+        task_state.stopping = true;
+        tokio::spawn(Self::drain_and_stop(
+            task_state, operations, processors, timeout,
+        ))
+        .await
+        .map_err(|_| Error::Internal)?
+    }
+
+    async fn drain_and_stop(
+        mut task_state: tokio::sync::OwnedMutexGuard<TaskState>,
+        operations: tasks::Operations,
+        processors: Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
+        timeout: Duration,
+    ) -> Result<StopReport, Error> {
         // Refuse new swaps and melts from here on, until the next `start()`.
-        // Closing under the task state lock orders this after a concurrent
-        // `start()`, which reopens admission while it holds the lock.
-        self.operations.close();
+        operations.close();
+
+        // Drain the running operations before anything they depend on stops.
+        let in_flight = operations.active();
+        if in_flight > 0 {
+            tracing::info!("Waiting for {} running operation(s) to finish", in_flight);
+        }
+        let aborted = match tokio::time::timeout(timeout, operations.wait_idle()).await {
+            Ok(()) => 0,
+            Err(_) => {
+                let remaining = operations.active();
+                tracing::warn!(
+                    "{} operation(s) still running after {:?}; aborting them for recovery on the next start",
+                    remaining,
+                    timeout
+                );
+                operations.abort();
+                if tokio::time::timeout(STOP_GRACE, operations.wait_idle())
+                    .await
+                    .is_err()
+                {
+                    tracing::error!(
+                        "{} aborted operation(s) did not stop within {:?}",
+                        operations.active(),
+                        STOP_GRACE
+                    );
+                    return Err(Error::Internal);
+                }
+                remaining
+            }
+        };
+        let report = StopReport {
+            drained: in_flight.saturating_sub(aborted),
+            aborted,
+        };
+
+        let mut result = Ok(report);
 
         // Take the handles out of the state
         let shutdown = task_state.shutdown.take();
         let supervisor_handle = task_state.supervisor_handle.take();
         let keyset_drain_handle = task_state.keyset_drain_handle.take();
 
-        // If nothing to stop, return early
-        let (shutdown, supervisor_handle) = match (shutdown, supervisor_handle) {
-            (Some(shutdown), Some(handle)) => (shutdown, handle),
+        match (shutdown, supervisor_handle) {
+            (Some(shutdown), Some(mut supervisor_handle)) => {
+                tracing::info!("Stopping mint background services...");
+
+                // Signal shutdown
+                shutdown.cancel();
+
+                // Wait for supervisor to complete
+                match tokio::time::timeout(STOP_GRACE, &mut supervisor_handle).await {
+                    Ok(Ok(Ok(()))) => {
+                        tracing::info!("Mint background services stopped");
+                    }
+                    Ok(Ok(Err(err))) => {
+                        tracing::info!("Mint background services stopped");
+                        result = Err(err);
+                    }
+                    Ok(Err(join_error)) => {
+                        tracing::error!("Background service task panicked: {:?}", join_error);
+                        result = Err(Error::Internal);
+                    }
+                    Err(_) => {
+                        tracing::error!(
+                            "Background services did not stop within {:?}; aborting them",
+                            STOP_GRACE
+                        );
+                        supervisor_handle.abort();
+                        result = Err(Error::Internal);
+                    }
+                }
+
+                // Wait for the keyset drain task to complete
+                if let Some(mut handle) = keyset_drain_handle {
+                    match tokio::time::timeout(STOP_GRACE, &mut handle).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(join_error)) => {
+                            tracing::error!("Keyset drain task panicked: {:?}", join_error);
+                        }
+                        Err(_) => {
+                            tracing::error!(
+                                "Keyset drain task did not stop within {:?}; aborting it",
+                                STOP_GRACE
+                            );
+                            handle.abort();
+                        }
+                    }
+                }
+            }
             _ => {
                 tracing::debug!("Stop called but no background services were running");
-                // Still try to stop payment processors
-                return self.stop_payment_processors().await;
-            }
-        };
-
-        // Drop the lock before waiting
-        drop(task_state);
-
-        tracing::info!("Stopping mint background services...");
-
-        // Signal shutdown
-        shutdown.cancel();
-
-        // Wait for supervisor to complete
-        let result = match supervisor_handle.await {
-            Ok(result) => {
-                tracing::info!("Mint background services stopped");
-                result
-            }
-            Err(join_error) => {
-                tracing::error!("Background service task panicked: {:?}", join_error);
-                Err(Error::Internal)
-            }
-        };
-
-        // Wait for the keyset drain task to complete
-        if let Some(handle) = keyset_drain_handle {
-            if let Err(join_error) = handle.await {
-                tracing::error!("Keyset drain task panicked: {:?}", join_error);
             }
         }
 
         // Stop all payment processors
-        self.stop_payment_processors().await?;
+        Self::stop_payment_processors(&processors).await?;
+        task_state.stopping = result.is_err();
 
         result
     }
 
     /// Stop all payment processors
-    async fn stop_payment_processors(&self) -> Result<(), Error> {
+    async fn stop_payment_processors(
+        processors: &HashMap<PaymentProcessorKey, DynMintPayment>,
+    ) -> Result<(), Error> {
         tracing::info!("Stopping payment processors...");
         let mut seen_processors = Vec::new();
 
-        for (key, processor) in self.payment_processors.iter() {
+        let mut result = Ok(());
+        for (key, processor) in processors {
             // Skip if we've already spawned a task for this processor instance
             if seen_processors.iter().any(|p| Arc::ptr_eq(p, processor)) {
                 continue;
@@ -685,18 +806,22 @@ impl Mint {
 
             seen_processors.push(Arc::clone(processor));
 
-            match processor.stop().await {
-                Ok(()) => {
+            match tokio::time::timeout(STOP_GRACE, processor.stop()).await {
+                Ok(Ok(())) => {
                     tracing::debug!("Successfully stopped payment processor for {:?}", key);
                 }
-                Err(e) => {
-                    // Log the error but continue with other processors
+                Ok(Err(e)) => {
                     tracing::error!("Failed to stop payment processor for {:?}: {}", key, e);
+                    result = Err(e.into());
+                }
+                Err(_) => {
+                    tracing::error!("Payment processor {:?} timed out during shutdown", key);
+                    result = Err(Error::Internal);
                 }
             }
         }
         tracing::info!("Payment processor shutdown completed");
-        Ok(())
+        result
     }
 
     /// Get all custom payment methods supported by registered payment processors

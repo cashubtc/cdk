@@ -1079,3 +1079,75 @@ async fn startup_defers_stalled_payment_checks_and_recovers_later() {
         mint.stop().await.unwrap();
     }
 }
+
+/// A melt whose payment is pending at the backend only waits for settlement.
+/// Stopping the mint ends that wait at once instead of draining it, and the
+/// melt stays pending and recoverable.
+#[tokio::test]
+async fn stop_does_not_wait_for_pending_melt_settlement() {
+    let backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> =
+        Arc::new(NoEventPendingBackend::new(usize::MAX, None));
+    let mint = create_pending_test_mint(backend).await.unwrap();
+    let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+    let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+    let melt_request = create_test_melt_request(&proofs, &quote);
+
+    let pending = mint.melt(&melt_request).await.unwrap();
+    assert_eq!(pending.pending_response().state(), MeltQuoteState::Pending);
+
+    // Wait until the completion task has handed the payment over: it releases
+    // its lease right before it starts waiting for settlement.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let stored = mint
+                .localstore()
+                .get_melt_quote(&quote.id)
+                .await
+                .unwrap()
+                .unwrap();
+            if stored.state == MeltQuoteState::Pending && !stored.is_locked() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("melt reaches its settlement wait");
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    // Freeze the clock, so the settlement wait cannot end through its own
+    // timeout, then close admission as a stop does.
+    tokio::time::pause();
+    let before = tokio::time::Instant::now();
+    mint.operations.close();
+
+    let err = pending.await.unwrap_err();
+    assert!(matches!(err, Error::PendingMeltTimeout { .. }));
+    assert_eq!(
+        before.elapsed(),
+        Duration::ZERO,
+        "the wait must end on the stop, not on a timer"
+    );
+
+    tokio::time::resume();
+
+    let report = mint
+        .stop_with_timeout(Duration::from_secs(60))
+        .await
+        .expect("stop succeeds");
+    assert_eq!(report.aborted, 0);
+
+    let stored_quote = mint
+        .localstore()
+        .get_melt_quote(&quote.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored_quote.state, MeltQuoteState::Pending);
+    let saga = mint
+        .localstore()
+        .get_melt_saga_by_quote_id(&quote.id)
+        .await
+        .unwrap();
+    assert!(saga.is_some(), "pending melt must remain recoverable");
+}

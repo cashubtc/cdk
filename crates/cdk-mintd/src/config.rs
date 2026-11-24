@@ -98,6 +98,10 @@ pub struct Info {
     /// the database. Unset or `0` disables it; set an interval only when several
     /// mints or signatories share one database.
     pub keyset_refresh_interval_ms: Option<u64>,
+    /// How long, in seconds, a shutdown lets in-flight requests, swaps and
+    /// melts finish before it aborts them. Unset uses the mint's default of 30
+    /// seconds. Work that is aborted is recovered on the next start.
+    pub shutdown_timeout_seconds: Option<u64>,
 
     pub http_cache: cache::Config,
 
@@ -130,6 +134,7 @@ impl Default for Info {
             use_keyset_v2: None,
             keyset_version: None,
             keyset_refresh_interval_ms: None,
+            shutdown_timeout_seconds: None,
             http_cache: cache::Config::default(),
             enable_info_page: Some(true),
             logging: LoggingConfig::default(),
@@ -162,6 +167,7 @@ impl std::fmt::Debug for Info {
                 "keyset_refresh_interval_ms",
                 &self.keyset_refresh_interval_ms,
             )
+            .field("shutdown_timeout_seconds", &self.shutdown_timeout_seconds)
             .field("http_cache", &self.http_cache)
             .field("logging", &self.logging)
             .field("enable_info_page", &self.enable_info_page)
@@ -1628,6 +1634,52 @@ rgs_url = "https://rgs.example.com/snapshot"
     #[test]
     fn keyset_refresh_interval_is_off_by_default() {
         assert_eq!(Info::default().keyset_refresh_interval_ms, None);
+    }
+
+    #[test]
+    fn shutdown_timeout_is_unset_by_default_and_parses_from_toml() {
+        assert_eq!(Info::default().shutdown_timeout_seconds, None);
+
+        let settings = Settings::try_from_toml(
+            r#"
+[info]
+url = "https://mint.example.com"
+shutdown_timeout_seconds = 45
+"#,
+        )
+        .expect("document should parse");
+
+        assert_eq!(settings.info.shutdown_timeout_seconds, Some(45));
+    }
+
+    #[test]
+    fn shutdown_timeout_env_override_keeps_value_when_unparsable() {
+        let _guard = config_env_lock();
+        std::env::remove_var(crate::env_vars::ENV_SHUTDOWN_TIMEOUT_SECONDS);
+
+        std::env::set_var(crate::env_vars::ENV_SHUTDOWN_TIMEOUT_SECONDS, "10");
+        assert_eq!(
+            Info::default()
+                .from_env()
+                .expect("valid environment")
+                .shutdown_timeout_seconds,
+            Some(10)
+        );
+
+        std::env::set_var(crate::env_vars::ENV_SHUTDOWN_TIMEOUT_SECONDS, "soon");
+        let configured = Info {
+            shutdown_timeout_seconds: Some(10),
+            ..Default::default()
+        };
+        assert_eq!(
+            configured
+                .from_env()
+                .expect("valid environment")
+                .shutdown_timeout_seconds,
+            Some(10)
+        );
+
+        std::env::remove_var(crate::env_vars::ENV_SHUTDOWN_TIMEOUT_SECONDS);
     }
 
     #[test]
