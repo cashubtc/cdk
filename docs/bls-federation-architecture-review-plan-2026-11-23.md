@@ -715,3 +715,12 @@ Decision: the replay guard is a validity window, not a permanent index.
 - **Not covered by a dedicated test.** The marker runs under the existing Bark suites (`cdk-axum` with `federation-bark`, `cdk-federation`), which pass; there is no test that restarts a member and checks that only the suffix is read.
 - **Spent-UTXO records (prerequisite 2) move to the pruning step.** They only have a job once spent UTXOs are deleted; adding them now would be unused code.
 - **State transfer designed, not built.** The signed digest leaves out fields a transferred member would install (quote public keys, payment identifiers, blind signatures), and a live database cannot export the state at an earlier checkpoint. The design in `docs/federation-storage-retention-2026-11-24.md`: full-fidelity digest rows, snapshots frozen at scheduled checkpoint capture, a paged transfer verified against the quorum-signed digest, and pairing checks for blind signatures.
+
+### 2026-11-24: package 6, state transfer step 1 (digest covers what a transfer installs)
+
+- **Quotes.** Mint quote rows add the payment lookup id and NUT-20 public key; melt quote rows add expiry, options, creation time, extra fields and fee options. Each is fixed by the accepted operation and checked equal on insert. Fields that can differ on the originating or paying member (mint creation time and extra fields, the melt payment lookup id) stay out.
+- **Projections.** The four stored projections hash their stored rows (now canonical JSON) through a default `FederationStateTable::materialized_rows`, replacing four hand-written field lists (about 190 lines removed). The digest and the transfer use one encoding.
+- **Proofs.** Proof rows add the full stored proof, which every member stores from the same operation inputs, so an installer can write the spent-proof rows that block double spends.
+- **Blind signatures stay out by design**: each member stores its own share and will recompute it on install.
+- **Verification.** Multi-member value-flow tests compare every member's digest after real flows and pass. One full `cdk-axum` run had six timing-sensitive failures under machine load; each passed alone, and a second full run passed (474/474).
+- **Remaining for state transfer:** check completed operations, keysets and FROST application configs; snapshot storage at scheduled capture; the paged route, client and installer; an end-to-end transfer test.

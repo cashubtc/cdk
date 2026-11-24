@@ -189,6 +189,19 @@ public key. Quote public keys and payment identifiers must be added to the
 digest rows. That changes the digest definition, which is acceptable
 (cut-through), and is the first implementation step.
 
+### Digest coverage, table by table (step 1 status)
+
+| Digest table | Covers what a transfer installs | Change |
+|---|---|---|
+| `transaction`, `chain_observation`, `address_allocation`, `bark_recovery` | Yes | Digest rows are now the stored rows themselves (canonical JSON), so the digest and the transfer use one encoding |
+| Bark actions, VTXOs, derivation allocations, transitions, observations | Yes | Already carried each record's full JSON |
+| `payment_observations` | Yes, via a hash of the full observation | The transfer carries the observation; the installer checks the hash |
+| `mint_quotes` | Yes, for consensus-fixed fields | Added payment lookup id and NUT-20 public key. Creation time and extra fields can differ on the originating member and stay out; the installer leaves them empty |
+| `melt_quotes` | Yes, for consensus-fixed fields | Added expiry, options, creation time, extra fields and fee options. The payment lookup id is rewritten by the paying member's processor and stays out |
+| `proof_states` | Yes | Added the full stored proof (secret, C, witness), which every member stores from the same operation inputs |
+| `blind_signatures` | No, by design | Each member stores its own signature share. The installer recomputes the member's share from its key share; it needs each output's operation id and position, which are consensus-fixed |
+| `completed_operations`, `federation_keysets`, FROST application configs | To check in the installer step | |
+
 ### A snapshot has to be taken at the checkpoint
 
 A peer's live database is already past the checkpoint, so it cannot export the

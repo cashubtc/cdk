@@ -2314,11 +2314,19 @@ async fn append_proof_state_rows(
 ) -> Result<(), Error> {
     let proof_ys = proof_ys.into_iter().collect::<Vec<_>>();
     let proof_states = db.get_proofs_states(&proof_ys).await?;
-    for (y, state) in proof_ys.into_iter().zip(proof_states) {
+    let proofs = db.get_proofs_by_ys(&proof_ys).await?;
+    for ((y, state), proof) in proof_ys.into_iter().zip(proof_states).zip(proofs) {
         let mut row = FederationMaterializedStateRow::new("proof_states", y.to_hex());
-        match state {
-            Some(state) => row.insert_field("state", state.to_string()),
-            None => row.insert_field("missing", "true"),
+        match (state, proof) {
+            // The stored proof comes from the accepted operation's inputs, so
+            // every member stores the same bytes and a state transfer can
+            // install it.
+            (Some(state), Some(proof)) => {
+                row.insert_field("state", state.to_string());
+                row.insert_field("proof", canonical_json_field(&proof)?);
+            }
+            (Some(_), None) | (None, Some(_)) => return Err(Error::Internal),
+            (None, None) => row.insert_field("missing", "true"),
         }
         snapshot.push(row);
     }
