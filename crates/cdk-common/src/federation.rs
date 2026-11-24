@@ -28,6 +28,7 @@ mod recovery;
 mod setup;
 mod signing;
 mod state_table;
+mod state_transfer;
 mod suffix_verifier;
 mod transaction_proposal;
 mod transport;
@@ -210,6 +211,15 @@ pub use self::state_table::{
     decode_row, digest_row_key, hex_row_key, insert_row, outpoint_row_key, read_federation_state,
     row_kind, unknown_row_kind, write_federation_state, FederationStateRows, FederationStateTable,
     FederationStoredState, FEDERATION_STATE_PRIMARY_NAMESPACE,
+};
+pub use self::state_transfer::{
+    ensure_federation_state_snapshot_rows_sorted, federation_state_snapshot_digest,
+    sort_federation_state_snapshot_rows, FederationStateSnapshotInfo, FederationStateSnapshotRow,
+    FederationStateTransferRequest, FederationStateTransferResponse, FederationStateTransferWindow,
+    FederationStateTransferWindowBounds, FederationStateTransferWindowRequest,
+    FederationStateTransferWindowResponse, VerifiedFederationStateTransferWindow,
+    DEFAULT_FEDERATION_STATE_TRANSFER_PAGE_ROWS, FEDERATION_MAX_STATE_TRANSFER_BYTES,
+    FEDERATION_STATE_SNAPSHOT_RETAINED, MAX_FEDERATION_STATE_TRANSFER_PAGE_ROWS,
 };
 pub use self::suffix_verifier::{FederationSuffixVerifier, VerifiedFederationSuffix};
 pub use self::transaction_proposal::{

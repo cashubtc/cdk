@@ -127,6 +127,8 @@ pub enum FederationRestMessageKind {
     AlephBftBackup,
     /// Request missing journal entries from a peer.
     CatchUp,
+    /// Request one page of a stored checkpoint state snapshot.
+    StateTransfer,
 }
 
 impl FederationRestMessageKind {
@@ -185,6 +187,7 @@ impl FederationRestMessageKind {
             Self::AlephBftNetworkMessage => b"aleph_bft_network_message",
             Self::AlephBftBackup => b"aleph_bft_backup",
             Self::CatchUp => b"catch_up",
+            Self::StateTransfer => b"state_transfer",
         }
     }
 }

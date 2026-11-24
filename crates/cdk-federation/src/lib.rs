@@ -87,6 +87,8 @@ pub mod services;
 #[doc(hidden)]
 pub mod state;
 #[doc(hidden)]
+pub mod state_transfer;
+#[doc(hidden)]
 pub mod sync_config;
 #[doc(hidden)]
 pub mod sync_loop;

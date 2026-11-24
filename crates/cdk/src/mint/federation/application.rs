@@ -1612,6 +1612,31 @@ impl Mint {
             });
 
         if applied_before {
+            return Ok(());
+        }
+        // A quote installed by a state transfer was created below the
+        // transfer base, whose journal rows this member does not hold. Its
+        // stored row is the proof that the creating operation was applied.
+        let Some(base) = self.localstore.get_federation_state_transfer_base().await? else {
+            return Err(Error::UnknownQuote);
+        };
+        if base.journal_next_index > max_operation_index {
+            return Err(Error::UnknownQuote);
+        }
+        let installed = match &quote_key {
+            FederationOperationConflictKey::MintQuote { quote } => self
+                .localstore
+                .get_mint_quote(&quote_id_from_federation(quote)?)
+                .await?
+                .is_some(),
+            FederationOperationConflictKey::MeltQuote { quote } => self
+                .localstore
+                .get_melt_quote(&quote_id_from_federation(quote)?)
+                .await?
+                .is_some(),
+            _ => false,
+        };
+        if installed {
             Ok(())
         } else {
             Err(Error::UnknownQuote)
@@ -1924,7 +1949,7 @@ impl Mint {
         Ok(())
     }
 
-    async fn apply_mint_payment_observations_to_quote(
+    pub(super) async fn apply_mint_payment_observations_to_quote(
         &self,
         tx: &mut database::mint::DynMintTransaction,
         quote: &mut database::mint::Acquired<MintQuote>,

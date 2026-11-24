@@ -20,16 +20,20 @@ use crate::federation::{
     FederationFrostDkgRound1Request, FederationFrostDkgRound2Record,
     FederationFrostRootPrivateConfig, FederationFrostRootPublicConfig, FederationFrostRootRecord,
     FederationId, FederationJournalEntry, FederationJournalTip,
-    FederationMaterializedStateKeyRecord, FederationOperationConflictKey, FederationOperationId,
-    FederationPaymentObservationContext, FederationPaymentObservationRecord,
-    FederationSetupActivation, FederationSetupApproval, FederationSetupCoordinatorPhase,
-    FederationSetupEnrollment, FederationSetupId, FederationSetupInvitationId,
-    FederationSetupInvitationRecord, FederationSetupManifest, FederationSetupParticipantPhase,
-    FederationSetupProposal, FederationSetupSession, FederationSetupUrlPolicy,
-    FederationSignatureShareRecord, MemberId, VerifiedFederationCheckpointQuorum,
+    FederationMaterializedStateKeyRecord, FederationMaterializedStateRow,
+    FederationOperationConflictKey, FederationOperationId, FederationPaymentObservationContext,
+    FederationPaymentObservationRecord, FederationSetupActivation, FederationSetupApproval,
+    FederationSetupCoordinatorPhase, FederationSetupEnrollment, FederationSetupId,
+    FederationSetupInvitationId, FederationSetupInvitationRecord, FederationSetupManifest,
+    FederationSetupParticipantPhase, FederationSetupProposal, FederationSetupSession,
+    FederationSetupUrlPolicy, FederationSignatureShareRecord, FederationStateSnapshotInfo,
+    FederationStateSnapshotRow, FederationStateTransferWindowBounds, MemberId,
+    VerifiedFederationCheckpointQuorum, VerifiedFederationStateTransferWindow,
 };
 use crate::mint::{self, MintQuote as MintMintQuote};
-use crate::nuts::{CurrencyUnit, MintQuoteState, PaymentMethod, PublicKey};
+use crate::nuts::{
+    BlindSignature, CurrencyUnit, MintQuoteState, PaymentMethod, Proof, PublicKey, State,
+};
 
 /// Minimal durable mint-quote state used by federation convergence projection.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +60,66 @@ pub struct FederationMintQuoteState {
     pub request_lookup_id: crate::payment::PaymentIdentifier,
     /// NUT-20 public key locking the quote, when the request carried one.
     pub pubkey: Option<PublicKey>,
+}
+
+/// One stored proof named by the materialized-state key registry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FederationStoredProof {
+    /// Proof Y.
+    pub y: PublicKey,
+    /// Stored proof (secret, C and witness).
+    pub proof: Proof,
+    /// Stored proof state.
+    pub state: State,
+    /// Quote the proof was spent against, for melts.
+    pub quote_id: Option<String>,
+    /// Kind of the mint operation that stored the proof.
+    pub operation_kind: Option<String>,
+    /// Mint operation that stored the proof.
+    pub operation_id: Option<String>,
+}
+
+/// One signed blind signature named by the materialized-state key registry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FederationStoredBlindSignature {
+    /// Blinded message the signature answers.
+    pub blinded_message: PublicKey,
+    /// This member's stored signature (its BLS share).
+    pub signature: BlindSignature,
+    /// Quote the output was signed for, when the operation names one.
+    pub quote_id: Option<String>,
+}
+
+/// Every stored row the materialized-state digest reads, read through one
+/// connection or transaction.
+///
+/// Rows are keyed by the materialized-state key registry exactly as the
+/// digest enumerates them, so a missing row is visible to the caller.
+#[derive(Debug, Default)]
+pub struct FederationMaterializedStateSource {
+    /// FROST root public configs.
+    pub frost_root_public_configs: Vec<FederationFrostRootPublicConfig>,
+    /// FROST application configs.
+    pub frost_application_configs: Vec<FederationFrostApplicationConfig>,
+    /// The materialized-state key registry.
+    pub state_keys: Vec<FederationMaterializedStateKeyRecord>,
+    /// Completed operations named by the registry that exist.
+    pub completed_operations: Vec<mint::Operation>,
+    /// Mint quotes named by the registry that exist.
+    pub mint_quotes: Vec<FederationMintQuoteState>,
+    /// Melt quotes named by the registry that exist.
+    pub melt_quotes: Vec<mint::MeltQuote>,
+    /// Every payment observation, in consensus order.
+    pub payment_observations: Vec<FederationPaymentObservationRecord>,
+    /// Proofs named by the registry that exist.
+    pub proofs: Vec<FederationStoredProof>,
+    /// Signed blind signatures named by the registry that exist.
+    pub blind_signatures: Vec<FederationStoredBlindSignature>,
+    /// Every member's signature shares for the named blinded messages.
+    pub signature_shares: Vec<FederationSignatureShareRecord>,
+    /// Application-owned projection rows (the Bark projection), when the
+    /// backend stores one.
+    pub application_rows: Vec<FederationMaterializedStateRow>,
 }
 
 /// Scalar size metadata for one local AlephBFT session backup.
@@ -155,6 +219,32 @@ pub trait FederationJournalTransaction {
     async fn promote_verified_federation_checkpoint(
         &mut self,
         quorum: &VerifiedFederationCheckpointQuorum,
+    ) -> Result<(), Self::Err>;
+
+    /// Store the frozen state rows of a scheduled checkpoint this member has
+    /// just captured, and drop snapshots older than the latest
+    /// [`crate::federation::FEDERATION_STATE_SNAPSHOT_RETAINED`] scheduled ones.
+    ///
+    /// The rows must hash to the checkpoint's materialized-state digest.
+    async fn add_federation_state_snapshot(
+        &mut self,
+        checkpoint: &FederationCheckpoint,
+        rows: &[FederationStateSnapshotRow],
+    ) -> Result<(), Self::Err>;
+
+    /// Make a caller-verified checkpoint the frontier of a member whose state
+    /// was installed from that checkpoint's snapshot in this transaction, and
+    /// store the checkpoint's verified validity window as history.
+    ///
+    /// The member must hold no journal, finalized items or frontier yet. The
+    /// checkpoint becomes the trusted, audited frontier and the state-transfer
+    /// base. The window's finalized items and journal entries (with their
+    /// application digests and reserved conflict keys) are stored below it,
+    /// so duplicate and conflict checks see them as its peers do.
+    async fn install_federation_state_transfer_frontier(
+        &mut self,
+        quorum: &VerifiedFederationCheckpointQuorum,
+        window: &VerifiedFederationStateTransferWindow,
     ) -> Result<(), Self::Err>;
 
     /// Prune superseded checkpoint candidates and covered recovery proofs.
@@ -270,6 +360,26 @@ pub trait FederationApplicationTransaction {
         context: FederationPaymentObservationContext,
         quote: &str,
     ) -> Result<Vec<FederationPaymentObservationRecord>, Self::Err>;
+
+    /// Read every stored row the materialized-state digest covers.
+    async fn get_federation_materialized_state_source(
+        &mut self,
+    ) -> Result<FederationMaterializedStateSource, Self::Err>;
+
+    /// Write materialized-state key registry records as a state transfer
+    /// installs them.
+    async fn add_federation_materialized_state_keys(
+        &mut self,
+        records: &[FederationMaterializedStateKeyRecord],
+    ) -> Result<(), Self::Err>;
+
+    /// Install application-owned projection rows (the Bark projection) from a
+    /// state transfer. The rows are the ones the materialized-state source
+    /// returns in `application_rows`.
+    async fn install_federation_application_rows(
+        &mut self,
+        rows: &[FederationMaterializedStateRow],
+    ) -> Result<(), Self::Err>;
 
     /// Deterministically apply one accepted extension operation to its projection.
     async fn apply_federation_application_operation(
@@ -804,6 +914,34 @@ pub trait FederationJournalDatabase {
         &self,
     ) -> Result<Option<FederationCheckpointQuorum>, Self::Err>;
 
+    /// Get the stored state snapshots, oldest scheduled sequence first.
+    async fn get_federation_state_snapshots(
+        &self,
+    ) -> Result<Vec<FederationStateSnapshotInfo>, Self::Err>;
+
+    /// Get up to `limit` rows of one stored state snapshot from `from_row_index`.
+    async fn get_federation_state_snapshot_rows(
+        &self,
+        checkpoint_id: FederationCheckpointId,
+        from_row_index: u64,
+        limit: usize,
+    ) -> Result<Vec<FederationStateSnapshotRow>, Self::Err>;
+
+    /// Where the validity window before `checkpoint` starts in this member's
+    /// history, and the digests just before it.
+    async fn get_federation_state_transfer_window_bounds(
+        &self,
+        checkpoint: &FederationCheckpoint,
+    ) -> Result<FederationStateTransferWindowBounds, Self::Err>;
+
+    /// Get the checkpoint whose snapshot this member installed, if any.
+    ///
+    /// Journal positions below it hold no local entries: the installed state
+    /// stands for them.
+    async fn get_federation_state_transfer_base(
+        &self,
+    ) -> Result<Option<FederationCheckpoint>, Self::Err>;
+
     /// Get all persisted AlephBFT finalized items in accepted item order.
     async fn get_federation_aleph_bft_finalized_items(
         &self,
@@ -914,6 +1052,11 @@ pub trait FederationApplicationDatabase {
         &self,
         operation_ids: &[uuid::Uuid],
     ) -> Result<Vec<mint::Operation>, Self::Err>;
+
+    /// Read every stored row the materialized-state digest covers.
+    async fn get_federation_materialized_state_source(
+        &self,
+    ) -> Result<FederationMaterializedStateSource, Self::Err>;
 
     /// Get signature shares for one accepted operation output.
     async fn get_federation_signature_shares_for_output(

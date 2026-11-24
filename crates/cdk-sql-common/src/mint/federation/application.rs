@@ -109,6 +109,26 @@ where
         .collect()
     }
 
+    async fn get_federation_materialized_state_source(
+        &mut self,
+    ) -> Result<cdk_common::database::mint::FederationMaterializedStateSource, Self::Err> {
+        super::state_transfer::get_materialized_state_source(&self.inner).await
+    }
+
+    async fn add_federation_materialized_state_keys(
+        &mut self,
+        records: &[FederationMaterializedStateKeyRecord],
+    ) -> Result<(), Self::Err> {
+        super::state_transfer::add_materialized_state_keys(&self.inner, records).await
+    }
+
+    async fn install_federation_application_rows(
+        &mut self,
+        rows: &[cdk_common::federation::FederationMaterializedStateRow],
+    ) -> Result<(), Self::Err> {
+        super::state_transfer::install_application_rows(&self.inner, rows).await
+    }
+
     async fn apply_federation_application_operation(
         &mut self,
         entry: &FederationJournalEntry,
@@ -246,6 +266,17 @@ where
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
         get_completed_operations_by_ids_inner(&*conn, operation_ids).await
+    }
+
+    async fn get_federation_materialized_state_source(
+        &self,
+    ) -> Result<cdk_common::database::mint::FederationMaterializedStateSource, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        super::state_transfer::get_materialized_state_source(&*conn).await
     }
 
     async fn get_federation_signature_shares_for_output(

@@ -4733,6 +4733,7 @@ mod operation_results;
 mod operations;
 mod peer_client;
 mod recovery;
+mod state_transfer;
 mod status;
 
 async fn queue_local_aleph_bft_unit(

@@ -19,8 +19,9 @@ use cdk::federation::{
 
 use super::node_runtime::{
     checkpoint_matches_boundary, checkpoint_summary, materialized_state_digest_with_metrics,
-    runtime_unavailable, stored_checkpoint_quorum_summary,
-    verify_checkpoint_signature_with_metrics, FederationNodeRuntime,
+    materialized_state_snapshot_with_metrics, runtime_unavailable,
+    stored_checkpoint_quorum_summary, verify_checkpoint_signature_with_metrics,
+    FederationNodeRuntime,
 };
 use super::runtime_components::ScheduledCheckpointCanonicalByteBase;
 
@@ -295,8 +296,11 @@ impl FederationNodeRuntime {
 
         #[cfg(feature = "prometheus")]
         let checkpoint_started_at = std::time::Instant::now();
-        let materialized_state_digest =
-            materialized_state_digest_with_metrics(mint, runtime_config.member_id()).await?;
+        // The live database moves past the checkpoint at once, so the rows a
+        // state transfer serves are frozen here, from the same read that
+        // produces the signed digest.
+        let (snapshot_rows, materialized_state_digest) =
+            materialized_state_snapshot_with_metrics(mint, runtime_config.member_id()).await?;
         let checkpoint = boundary.scheduled_checkpoint_for_validated_config(
             public_config,
             latest_scheduled,
@@ -322,6 +326,8 @@ impl FederationNodeRuntime {
             tx.record_federation_materialized_state_audit(&checkpoint)
                 .await?;
             tx.add_federation_checkpoint_signature(&signature).await?;
+            tx.add_federation_state_snapshot(&checkpoint, &snapshot_rows)
+                .await?;
             tx.commit().await?;
             Ok::<(), cdk::Error>(())
         }

@@ -43,6 +43,7 @@ mod frost_signing_routes;
 mod operator_routes;
 mod private_request;
 mod setup;
+mod state_transfer_routes;
 mod status_routes;
 
 use self::aleph_bft_routes::{post_aleph_bft_activity, post_aleph_bft_network_message};
@@ -80,6 +81,7 @@ pub use self::setup::{
     FederationSetupCoordinatorServiceConfig, FederationSetupHttpClient, FederationSetupHttpError,
     FederationSetupHttpErrorCode,
 };
+use self::state_transfer_routes::{post_state_transfer, post_state_transfer_window};
 use self::status_routes::{post_local_status, post_status};
 
 #[cfg(test)]
@@ -177,6 +179,18 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
         .route(
             "/journal",
             post(post_journal).layer(DefaultBodyLimit::max(
+                cdk::federation::FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES,
+            )),
+        )
+        .route(
+            "/state-transfer",
+            post(post_state_transfer).layer(DefaultBodyLimit::max(
+                cdk::federation::FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES,
+            )),
+        )
+        .route(
+            "/state-transfer/window",
+            post(post_state_transfer_window).layer(DefaultBodyLimit::max(
                 cdk::federation::FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES,
             )),
         );

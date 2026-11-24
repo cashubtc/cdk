@@ -78,9 +78,28 @@ CREATE TABLE federation_checkpoint_state (
     trusted_checkpoint_id TEXT,
     latest_audited_checkpoint_id TEXT,
     latest_materialized_state_digest TEXT,
+    state_transfer_base_checkpoint_id TEXT,
+    state_transfer_window_json TEXT,
     materialized_state_audit_mismatch INTEGER NOT NULL DEFAULT 0 CHECK (
         materialized_state_audit_mismatch IN (0, 1)
     )
+);
+
+CREATE TABLE federation_state_snapshots (
+    checkpoint_id TEXT PRIMARY KEY NOT NULL,
+    scheduled_checkpoint_sequence BIGINT NOT NULL,
+    row_count BIGINT NOT NULL,
+    materialized_state_digest TEXT NOT NULL
+);
+
+CREATE INDEX idx_federation_state_snapshots_sequence
+ON federation_state_snapshots (scheduled_checkpoint_sequence);
+
+CREATE TABLE federation_state_snapshot_rows (
+    checkpoint_id TEXT NOT NULL REFERENCES federation_state_snapshots(checkpoint_id) ON DELETE CASCADE,
+    row_index BIGINT NOT NULL,
+    row_json TEXT NOT NULL,
+    PRIMARY KEY (checkpoint_id, row_index)
 );
 
 CREATE TABLE federation_materialized_state_keys (

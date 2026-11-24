@@ -67,6 +67,26 @@ where
     .collect()
 }
 
+/// Every FROST root public config, as the materialized-state digest reads them.
+pub(super) async fn fetch_root_public_configs<C>(
+    connection: &C,
+) -> Result<Vec<FederationFrostRootPublicConfig>, Error>
+where
+    C: DatabaseExecutor,
+{
+    fetch_records(connection, ROOT_PUBLIC).await
+}
+
+/// Every FROST application config, as the materialized-state digest reads them.
+pub(super) async fn fetch_application_configs<C>(
+    connection: &C,
+) -> Result<Vec<FederationFrostApplicationConfig>, Error>
+where
+    C: DatabaseExecutor,
+{
+    fetch_records(connection, APPLICATION).await
+}
+
 #[async_trait]
 impl<RM> FederationFrostWalletTransaction for SQLTransaction<RM>
 where

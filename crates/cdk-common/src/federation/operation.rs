@@ -267,6 +267,17 @@ pub struct FederationOperationId([u8; 32]);
 
 impl_fixed_bytes!(FederationOperationId, 32, "federation operation id");
 
+impl FederationOperationId {
+    /// Mint operation UUID under which the apply path stores this operation's
+    /// completed operation, proofs and blinded messages: the first 16 bytes.
+    #[must_use]
+    pub fn mint_operation_uuid(&self) -> uuid::Uuid {
+        let mut uuid = [0_u8; 16];
+        uuid.copy_from_slice(&self.0[..16]);
+        uuid::Uuid::from_bytes(uuid)
+    }
+}
+
 /// High-level kind of a federation operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

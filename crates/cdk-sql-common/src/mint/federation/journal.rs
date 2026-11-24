@@ -418,12 +418,73 @@ where
     Ok(checkpoint_id)
 }
 
-async fn federation_journal_digest_at<RM>(
-    transaction: &SQLTransaction<RM>,
+/// Checkpoint whose snapshot this member installed, if any.
+///
+/// Journal and finalized-item positions at or below it hold no local rows;
+/// its signed cursors stand for them.
+async fn federation_state_transfer_base<C>(
+    connection: &C,
+) -> Result<Option<FederationCheckpoint>, Error>
+where
+    C: DatabaseExecutor,
+{
+    query(
+        r#"
+        SELECT c.checkpoint_id, c.checkpoint_json
+        FROM federation_checkpoint_state AS s
+        INNER JOIN federation_checkpoints AS c
+            ON c.checkpoint_id = s.state_transfer_base_checkpoint_id
+        WHERE s.state_key = :state_key
+        "#,
+    )?
+    .bind("state_key", FEDERATION_CHECKPOINT_STATE_KEY)
+    .fetch_one(connection)
+    .await?
+    .map(sql_row_to_federation_checkpoint)
+    .transpose()
+}
+
+/// Window bounds stored by a state transfer, if this member installed one.
+async fn federation_state_transfer_window_bounds<C>(
+    connection: &C,
+) -> Result<Option<FederationStateTransferWindowBounds>, Error>
+where
+    C: DatabaseExecutor,
+{
+    let Some(row) = query(
+        r#"
+        SELECT state_transfer_window_json
+        FROM federation_checkpoint_state
+        WHERE state_key = :state_key
+        "#,
+    )?
+    .bind("state_key", FEDERATION_CHECKPOINT_STATE_KEY)
+    .fetch_one(connection)
+    .await?
+    else {
+        return Ok(None);
+    };
+    unpack_into!(let (window_json) = row);
+    column_as_nullable_string!(&window_json)
+        .map(|json| {
+            serde_json::from_str(&json).map_err(|e| {
+                Error::Internal(format!("Invalid federation state transfer window: {e}"))
+            })
+        })
+        .transpose()
+}
+
+/// Accepted-order digest before journal position `next_index`.
+///
+/// A member that installed a state transfer holds no rows below its window;
+/// at the window's start the first window entry, or the installed checkpoint,
+/// stands for them.
+async fn federation_journal_digest_at<C>(
+    connection: &C,
     next_index: u64,
 ) -> Result<FederationJournalDigest, Error>
 where
-    RM: DatabasePool + 'static,
+    C: DatabaseExecutor,
 {
     if next_index == 0 {
         return Ok(FederationJournalDigest::genesis());
@@ -437,26 +498,50 @@ where
         "#,
     )?
     .bind("operation_index", index as i64)
-    .fetch_one(&transaction.inner)
-    .await?
+    .fetch_one(connection)
+    .await?;
+    let digest = match row {
+        Some(row) => row.into_iter().next(),
+        None => {
+            let next = query(
+                r#"
+                SELECT previous_order_digest
+                FROM federation_journal_entries
+                WHERE operation_index = :operation_index
+                "#,
+            )?
+            .bind("operation_index", next_index as i64)
+            .fetch_one(connection)
+            .await?;
+            match next {
+                Some(row) => row.into_iter().next(),
+                None => {
+                    return match federation_state_transfer_base(connection).await? {
+                        Some(base) if base.journal_next_index == next_index => {
+                            Ok(base.journal_order_digest)
+                        }
+                        _ => Err(Error::Internal(format!(
+                            "Federation checkpoint journal boundary is missing index {index}"
+                        ))),
+                    };
+                }
+            }
+        }
+    }
     .ok_or_else(|| {
-        Error::Internal(format!(
-            "Federation checkpoint journal boundary is missing index {index}"
-        ))
-    })?;
-    let digest = row.into_iter().next().ok_or_else(|| {
         Error::Internal("Federation checkpoint journal digest row had no value".to_string())
     })?;
     FederationJournalDigest::from_hex(column_as_string!(&digest))
         .map_err(|e| Error::Internal(format!("Invalid federation journal digest: {e}")))
 }
 
-async fn federation_application_digest_at<RM>(
-    transaction: &SQLTransaction<RM>,
+/// Application digest before journal position `next_index`.
+async fn federation_application_digest_at<C>(
+    connection: &C,
     next_index: u64,
 ) -> Result<FederationApplicationDigest, Error>
 where
-    RM: DatabasePool + 'static,
+    C: DatabaseExecutor,
 {
     if next_index == 0 {
         return Ok(FederationApplicationDigest::genesis());
@@ -470,13 +555,21 @@ where
         "#,
     )?
     .bind("operation_index", index as i64)
-    .fetch_one(&transaction.inner)
-    .await?
-    .ok_or_else(|| {
-        Error::Internal(format!(
-            "Federation checkpoint application boundary is missing index {index}"
-        ))
-    })?;
+    .fetch_one(connection)
+    .await?;
+    let Some(row) = row else {
+        if let Some(window) = federation_state_transfer_window_bounds(connection).await? {
+            if window.journal_start == next_index {
+                return Ok(window.application_base_digest);
+            }
+        }
+        return match federation_state_transfer_base(connection).await? {
+            Some(base) if base.journal_next_index == next_index => Ok(base.application_digest),
+            _ => Err(Error::Internal(format!(
+                "Federation checkpoint application boundary is missing index {index}"
+            ))),
+        };
+    };
     let digest = row.into_iter().next().ok_or_else(|| {
         Error::Internal("Federation checkpoint application digest row had no value".to_string())
     })?;
@@ -489,12 +582,13 @@ where
         .map_err(|e| Error::Internal(format!("Invalid federation application digest: {e}")))
 }
 
-async fn federation_finalized_item_digest_at<RM>(
-    transaction: &SQLTransaction<RM>,
+/// Finalized-item digest before finalized-item position `next_index`.
+async fn federation_finalized_item_digest_at<C>(
+    connection: &C,
     next_index: u64,
 ) -> Result<FederationFinalizedItemDigest, Error>
 where
-    RM: DatabasePool + 'static,
+    C: DatabaseExecutor,
 {
     if next_index == 0 {
         return Ok(FederationFinalizedItemDigest::genesis());
@@ -508,13 +602,23 @@ where
         "#,
     )?
     .bind("accepted_item_index", index as i64)
-    .fetch_one(&transaction.inner)
-    .await?
-    .ok_or_else(|| {
-        Error::Internal(format!(
-            "Federation checkpoint finalized-item boundary is missing index {index}"
-        ))
-    })?;
+    .fetch_one(connection)
+    .await?;
+    let Some(row) = row else {
+        if let Some(window) = federation_state_transfer_window_bounds(connection).await? {
+            if window.item_start == next_index {
+                return Ok(window.item_base_digest);
+            }
+        }
+        return match federation_state_transfer_base(connection).await? {
+            Some(base) if base.finalized_next_item_index == next_index => {
+                Ok(base.finalized_item_digest)
+            }
+            _ => Err(Error::Internal(format!(
+                "Federation checkpoint finalized-item boundary is missing index {index}"
+            ))),
+        };
+    };
     let digest = row.into_iter().next().ok_or_else(|| {
         Error::Internal("Federation checkpoint finalized digest row had no value".to_string())
     })?;
@@ -525,6 +629,205 @@ where
     })?;
     FederationFinalizedItemDigest::from_hex(digest)
         .map_err(|e| Error::Internal(format!("Invalid finalized-item digest: {e}")))
+}
+
+/// Where the validity window before `checkpoint` starts in this member's
+/// history, and the digests just before it.
+async fn federation_state_transfer_window_start<C>(
+    connection: &C,
+    checkpoint: &FederationCheckpoint,
+) -> Result<FederationStateTransferWindowBounds, Error>
+where
+    C: DatabaseExecutor,
+{
+    let item_end = checkpoint.finalized_next_item_index;
+    let floor = checkpoint
+        .aleph_bft_session
+        .saturating_sub(FEDERATION_OPERATION_VALIDITY_SESSIONS);
+    let first_in_window = query(
+        r#"
+        SELECT MIN(accepted_item_index)
+        FROM federation_aleph_bft_finalized_items
+        WHERE session >= :session AND accepted_item_index < :item_end
+        "#,
+    )?
+    .bind("session", floor as i64)
+    .bind("item_end", item_end as i64)
+    .fetch_one(connection)
+    .await?
+    .and_then(|row| row.into_iter().next())
+    .and_then(|column| match column {
+        Column::Null => None,
+        column => Some(column),
+    })
+    .map(|column| Ok::<u64, Error>(column_as_number!(column)))
+    .transpose()?
+    .unwrap_or(item_end);
+    // One older item proves that nothing of the window is left out.
+    let item_start = first_in_window.saturating_sub(1);
+    let journal_start = query(
+        r#"
+        SELECT j.operation_index
+        FROM federation_aleph_bft_finalized_items AS i
+        INNER JOIN federation_journal_entries AS j
+            ON j.operation_id = i.operation_id
+        WHERE i.accepted_item_index >= :item_start
+          AND i.accepted_item_index < :item_end
+          AND i.status = :status
+        ORDER BY i.accepted_item_index ASC
+        LIMIT 1
+        "#,
+    )?
+    .bind("item_start", item_start as i64)
+    .bind("item_end", item_end as i64)
+    .bind(
+        "status",
+        aleph_bft_finalized_item_status_to_str(FederationAlephBftFinalizedItemStatus::Accepted),
+    )
+    .fetch_one(connection)
+    .await?
+    .and_then(|row| row.into_iter().next())
+    .map(|column| Ok::<u64, Error>(column_as_number!(column)))
+    .transpose()?
+    .unwrap_or(checkpoint.journal_next_index);
+    Ok(FederationStateTransferWindowBounds {
+        item_start,
+        journal_start,
+        item_base_digest: federation_finalized_item_digest_at(connection, item_start).await?,
+        application_base_digest: federation_application_digest_at(connection, journal_start)
+            .await?,
+    })
+}
+
+/// Store a verified validity window below an installed checkpoint, as the
+/// apply path would have stored it: finalized items with their cumulative
+/// digests, terminal journal entries with their application digests, and the
+/// conflict keys those entries reserve.
+async fn install_federation_state_transfer_window<RM>(
+    transaction: &SQLTransaction<RM>,
+    window: &VerifiedFederationStateTransferWindow,
+) -> Result<(), Error>
+where
+    RM: DatabasePool + 'static,
+{
+    for (item, digest) in window.items() {
+        query(
+            r#"
+            INSERT INTO federation_aleph_bft_finalized_items
+            (
+                accepted_item_index,
+                session,
+                unit_finalization_index,
+                unit_submitting_member,
+                unit_index,
+                item_index_in_unit,
+                operation_id,
+                status,
+                unit_body_hash,
+                finalized_item_digest,
+                item_json
+            )
+            VALUES
+            (
+                :accepted_item_index,
+                :session,
+                :unit_finalization_index,
+                :unit_submitting_member,
+                :unit_index,
+                :item_index_in_unit,
+                :operation_id,
+                :status,
+                :unit_body_hash,
+                :finalized_item_digest,
+                :item_json
+            )
+            "#,
+        )?
+        .bind("accepted_item_index", item.accepted_item_index as i64)
+        .bind("session", item.session as i64)
+        .bind(
+            "unit_finalization_index",
+            item.unit_finalization_index as i64,
+        )
+        .bind(
+            "unit_submitting_member",
+            i64::from(item.unit_submitting_member.get()),
+        )
+        .bind("unit_index", item.unit_index as i64)
+        .bind("item_index_in_unit", item.item_index_in_unit as i64)
+        .bind(
+            "operation_id",
+            item.operation_id
+                .map(|operation_id| operation_id.to_string()),
+        )
+        .bind(
+            "status",
+            aleph_bft_finalized_item_status_to_str(item.status),
+        )
+        .bind("unit_body_hash", item.unit_body_hash.to_hex())
+        .bind("finalized_item_digest", digest.to_string())
+        .bind("item_json", serde_json::to_string(item)?)
+        .execute(&transaction.inner)
+        .await?;
+    }
+    for (entry, application_digest) in window.entries() {
+        query(
+            r#"
+            INSERT INTO federation_journal_entries
+            (operation_index, operation_id, envelope_json, conflict_keys_json, previous_order_digest, order_digest, consensus_evidence_json, rejection_json, application_digest, status)
+            VALUES
+            (:operation_index, :operation_id, :envelope_json, :conflict_keys_json, :previous_order_digest, :order_digest, :consensus_evidence_json, :rejection_json, :application_digest, :status)
+            "#,
+        )?
+        .bind("operation_index", entry.index as i64)
+        .bind("operation_id", entry.operation_id.to_string())
+        .bind("envelope_json", serde_json::to_string(&entry.envelope)?)
+        .bind(
+            "conflict_keys_json",
+            serde_json::to_string(&entry.conflict_keys)?,
+        )
+        .bind(
+            "previous_order_digest",
+            entry.previous_order_digest.to_string(),
+        )
+        .bind("order_digest", entry.order_digest.to_string())
+        .bind(
+            "consensus_evidence_json",
+            entry
+                .consensus_evidence
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()?,
+        )
+        .bind(
+            "rejection_json",
+            entry
+                .rejection()
+                .map(serde_json::to_string)
+                .transpose()?,
+        )
+        .bind("application_digest", application_digest.to_string())
+        .bind("status", status_to_str(entry.status()))
+        .execute(&transaction.inner)
+        .await?;
+        if entry.reserves_conflict_keys() {
+            for conflict_key in &entry.conflict_keys {
+                query(
+                    r#"
+                    INSERT INTO federation_journal_conflict_keys
+                    (conflict_key_json, operation_id)
+                    VALUES (:conflict_key_json, :operation_id)
+                    ON CONFLICT (conflict_key_json) DO NOTHING
+                    "#,
+                )?
+                .bind("conflict_key_json", serde_json::to_string(conflict_key)?)
+                .bind("operation_id", entry.operation_id.to_string())
+                .execute(&transaction.inner)
+                .await?;
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn ensure_checkpoint_not_ahead_of_local_state<RM>(
@@ -543,12 +846,16 @@ where
     frontier
         .ensure_covers_checkpoint_position(checkpoint)
         .map_err(|error| Error::Internal(error.to_string()))?;
-    if federation_journal_digest_at(transaction, checkpoint.journal_next_index).await?
+    if federation_journal_digest_at(&transaction.inner, checkpoint.journal_next_index).await?
         != checkpoint.journal_order_digest
-        || federation_application_digest_at(transaction, checkpoint.journal_next_index).await?
-            != checkpoint.application_digest
-        || federation_finalized_item_digest_at(transaction, checkpoint.finalized_next_item_index)
+        || federation_application_digest_at(&transaction.inner, checkpoint.journal_next_index)
             .await?
+            != checkpoint.application_digest
+        || federation_finalized_item_digest_at(
+            &transaction.inner,
+            checkpoint.finalized_next_item_index,
+        )
+        .await?
             != checkpoint.finalized_item_digest
     {
         return Err(Error::Internal(
@@ -1230,6 +1537,122 @@ where
         .execute(&self.inner)
         .await?;
         self.prune_federation_checkpoints().await?;
+        Ok(())
+    }
+
+    async fn add_federation_state_snapshot(
+        &mut self,
+        checkpoint: &FederationCheckpoint,
+        rows: &[FederationStateSnapshotRow],
+    ) -> Result<(), Self::Err> {
+        if checkpoint.kind != FederationCheckpointKind::Scheduled {
+            return Err(Error::Internal(
+                "Federation state snapshots are taken at scheduled checkpoints".to_string(),
+            ));
+        }
+        let digest = federation_state_snapshot_digest(rows)
+            .map_err(|e| Error::Internal(format!("Invalid federation state snapshot: {e}")))?;
+        if digest != checkpoint.materialized_state_digest {
+            return Err(Error::Internal(
+                "Federation state snapshot does not hash to its checkpoint digest".to_string(),
+            ));
+        }
+        let info = FederationStateSnapshotInfo {
+            checkpoint_id: checkpoint
+                .id()
+                .map_err(|e| Error::Internal(format!("Invalid federation checkpoint: {e}")))?,
+            scheduled_checkpoint_sequence: checkpoint.scheduled_checkpoint_sequence,
+            row_count: rows.len() as u64,
+            materialized_state_digest: digest,
+        };
+        super::state_transfer::add_state_snapshot(&self.inner, &info, rows).await
+    }
+
+    async fn install_federation_state_transfer_frontier(
+        &mut self,
+        verified_quorum: &VerifiedFederationCheckpointQuorum,
+        window: &VerifiedFederationStateTransferWindow,
+    ) -> Result<(), Self::Err> {
+        let quorum = verified_quorum.as_quorum();
+        let checkpoint = &quorum.checkpoint;
+        let frontier = federation_checkpoint_frontier_for_update(self).await?;
+        if frontier != FederationCheckpointFrontier::genesis() {
+            return Err(Error::Internal(
+                "Federation state transfer needs a member without a frontier".to_string(),
+            ));
+        }
+        let has_history = query(
+            r#"
+            SELECT 1 FROM federation_journal_entries
+            UNION ALL
+            SELECT 1 FROM federation_aleph_bft_finalized_items
+            LIMIT 1
+            "#,
+        )?
+        .fetch_one(&self.inner)
+        .await?
+        .is_some();
+        if has_history {
+            return Err(Error::Internal(
+                "Federation state transfer needs a member without journal history".to_string(),
+            ));
+        }
+        self.add_federation_checkpoint_quorum(quorum).await?;
+        let checkpoint_id = checkpoint
+            .id()
+            .map_err(|e| Error::Internal(format!("Invalid federation checkpoint: {e}")))?
+            .to_string();
+        query(
+            r#"
+            UPDATE federation_checkpoint_state
+            SET
+                journal_next_index = :journal_next_index,
+                journal_order_digest = :journal_order_digest,
+                finalized_next_item_index = :finalized_next_item_index,
+                finalized_item_digest = :finalized_item_digest,
+                application_next_index = :application_next_index,
+                application_digest = :application_digest,
+                trusted_checkpoint_id = :checkpoint_id,
+                latest_audited_checkpoint_id = :checkpoint_id,
+                latest_materialized_state_digest = :materialized_state_digest,
+                state_transfer_base_checkpoint_id = :checkpoint_id,
+                state_transfer_window_json = :window_json
+            WHERE state_key = :state_key
+            "#,
+        )?
+        .bind("journal_next_index", checkpoint.journal_next_index as i64)
+        .bind(
+            "journal_order_digest",
+            checkpoint.journal_order_digest.to_string(),
+        )
+        .bind(
+            "finalized_next_item_index",
+            checkpoint.finalized_next_item_index as i64,
+        )
+        .bind(
+            "finalized_item_digest",
+            checkpoint.finalized_item_digest.to_string(),
+        )
+        .bind(
+            "application_next_index",
+            checkpoint.journal_next_index as i64,
+        )
+        .bind(
+            "application_digest",
+            checkpoint.application_digest.to_string(),
+        )
+        .bind("checkpoint_id", checkpoint_id)
+        .bind(
+            "materialized_state_digest",
+            checkpoint.materialized_state_digest.to_string(),
+        )
+        .bind("window_json", serde_json::to_string(&window.bounds())?)
+        .bind("state_key", FEDERATION_CHECKPOINT_STATE_KEY)
+        .execute(&self.inner)
+        .await?;
+        install_federation_state_transfer_window(self, window).await?;
+        self.set_federation_aleph_bft_active_session(checkpoint.aleph_bft_session)
+            .await?;
         Ok(())
     }
 
@@ -2126,6 +2549,55 @@ where
         .await?
         .map(sql_row_to_federation_checkpoint_quorum)
         .transpose()
+    }
+
+    async fn get_federation_state_snapshots(
+        &self,
+    ) -> Result<Vec<FederationStateSnapshotInfo>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        super::state_transfer::get_state_snapshots(&*conn).await
+    }
+
+    async fn get_federation_state_snapshot_rows(
+        &self,
+        checkpoint_id: FederationCheckpointId,
+        from_row_index: u64,
+        limit: usize,
+    ) -> Result<Vec<FederationStateSnapshotRow>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        super::state_transfer::get_state_snapshot_rows(&*conn, checkpoint_id, from_row_index, limit)
+            .await
+    }
+
+    async fn get_federation_state_transfer_window_bounds(
+        &self,
+        checkpoint: &FederationCheckpoint,
+    ) -> Result<FederationStateTransferWindowBounds, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        federation_state_transfer_window_start(&*conn, checkpoint).await
+    }
+
+    async fn get_federation_state_transfer_base(
+        &self,
+    ) -> Result<Option<FederationCheckpoint>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        federation_state_transfer_base(&*conn).await
     }
 
     async fn get_federation_aleph_bft_finalized_items(
