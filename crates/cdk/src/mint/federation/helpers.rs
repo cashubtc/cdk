@@ -17,10 +17,7 @@ use std::str::FromStr;
 use uuid::Uuid;
 
 pub(in crate::mint) fn federation_operation_uuid(operation_id: FederationOperationId) -> Uuid {
-    let bytes = operation_id.to_bytes();
-    let mut uuid = [0_u8; 16];
-    uuid.copy_from_slice(&bytes[..16]);
-    Uuid::from_bytes(uuid)
+    operation_id.mint_operation_uuid()
 }
 
 pub(super) fn payment_observation_record_from_entry(

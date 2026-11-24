@@ -52,6 +52,7 @@ mod dkg;
 mod frost_wallet;
 mod journal;
 mod setup;
+mod state_transfer;
 
 use async_trait::async_trait;
 use cdk_common::database::mint::{
@@ -65,13 +66,14 @@ use cdk_common::database::Error;
 #[cfg(feature = "federation-bark")]
 use cdk_common::federation::FederationOperation;
 use cdk_common::federation::{
-    FederationAlephBftFinalizedItem, FederationAlephBftFinalizedItemStatus,
-    FederationAlephBftOrderedOperationGroup, FederationAlephBftPendingOperationRecord,
-    FederationApplicationDigest, FederationApplicationOperation, FederationApplicationState,
-    FederationCheckpoint, FederationCheckpointFrontier, FederationCheckpointId,
-    FederationCheckpointKind, FederationCheckpointQuorum, FederationCheckpointSignature,
-    FederationConfigDigest, FederationConfigSnapshot, FederationDkgActivationRequest,
-    FederationDkgCeremonyId, FederationDkgCeremonyRecord, FederationDkgMemberKeysetShare,
+    federation_state_snapshot_digest, FederationAlephBftFinalizedItem,
+    FederationAlephBftFinalizedItemStatus, FederationAlephBftOrderedOperationGroup,
+    FederationAlephBftPendingOperationRecord, FederationApplicationDigest,
+    FederationApplicationOperation, FederationApplicationState, FederationCheckpoint,
+    FederationCheckpointFrontier, FederationCheckpointId, FederationCheckpointKind,
+    FederationCheckpointQuorum, FederationCheckpointSignature, FederationConfigDigest,
+    FederationConfigSnapshot, FederationDkgActivationRequest, FederationDkgCeremonyId,
+    FederationDkgCeremonyRecord, FederationDkgMemberKeysetShare,
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
     FederationDkgParticipantState, FederationDkgSecretShareRequest, FederationDkgTranscriptHash,
     FederationDkgTranscriptSignatureRequest, FederationFinalizedItemDigest,
@@ -87,7 +89,8 @@ use cdk_common::federation::{
     FederationSetupCoordinatorPhase, FederationSetupEnrollment, FederationSetupId,
     FederationSetupInvitationId, FederationSetupInvitationRecord, FederationSetupInvitationState,
     FederationSetupLocalRole, FederationSetupManifest, FederationSetupParticipantPhase,
-    FederationSetupProposal, FederationSetupSession, FederationSignatureShareRecord, MemberId,
+    FederationSetupProposal, FederationSetupSession, FederationSignatureShareRecord,
+    FederationStateSnapshotInfo, FederationStateSnapshotRow, MemberId,
     VerifiedFederationCheckpointQuorum,
 };
 use cdk_common::quote_id::QuoteId;

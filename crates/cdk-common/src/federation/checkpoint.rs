@@ -62,6 +62,20 @@ pub enum FederationCheckpointError {
     /// A checkpoint signature is not a valid Schnorr signature.
     #[error("Invalid federation checkpoint signature")]
     InvalidSignature,
+    /// A checkpoint state transfer page, snapshot or install violates a protocol invariant.
+    #[error("Federation state transfer is invalid: {reason}")]
+    StateTransferInvalid {
+        /// Which invariant failed.
+        reason: &'static str,
+    },
+    /// Installed state rows do not hash to the checkpoint's signed digest.
+    #[error("Federation state transfer digest mismatch: expected={expected}, found={found}")]
+    StateTransferDigestMismatch {
+        /// Digest signed by the checkpoint quorum.
+        expected: FederationMaterializedStateDigest,
+        /// Digest of the transferred or installed rows.
+        found: FederationMaterializedStateDigest,
+    },
     /// A checkpoint uses an unsupported canonical payload version.
     #[error("Federation checkpoint version mismatch: expected={expected}, found={found}")]
     VersionMismatch {

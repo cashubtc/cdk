@@ -157,26 +157,42 @@ pub async fn materialized_state_digest_with_metrics(
     mint: &Mint,
     member_id: MemberId,
 ) -> Result<FederationMaterializedStateDigest, cdk::Error> {
+    Ok(materialized_state_snapshot_with_metrics(mint, member_id)
+        .await?
+        .1)
+}
+
+/// The current materialized state as frozen snapshot rows, with their digest.
+pub async fn materialized_state_snapshot_with_metrics(
+    mint: &Mint,
+    member_id: MemberId,
+) -> Result<
+    (
+        Vec<cdk::federation::FederationStateSnapshotRow>,
+        FederationMaterializedStateDigest,
+    ),
+    cdk::Error,
+> {
     #[cfg(feature = "prometheus")]
     let started_at = std::time::Instant::now();
     #[cfg(feature = "prometheus")]
     let load_started_at = std::time::Instant::now();
-    let snapshot = mint.federation_materialized_state_snapshot().await;
+    let rows = mint.federation_state_snapshot_rows().await;
     #[cfg(feature = "prometheus")]
     cdk_prometheus::METRICS.record_federation_performance_operation(
         cdk_prometheus::FederationPerformanceOperation::MaterializedStateLoad,
-        cdk_prometheus::FederationPerformanceOutcome::from_success(snapshot.is_ok()),
+        cdk_prometheus::FederationPerformanceOutcome::from_success(rows.is_ok()),
         load_started_at.elapsed().as_secs_f64(),
     );
-    let snapshot = snapshot?;
+    let rows = rows?;
     #[cfg(feature = "prometheus")]
     cdk_prometheus::METRICS.record_federation_performance_work(
         cdk_prometheus::FederationPerformanceWork::MaterializedStateRowsLoaded,
-        u64::try_from(snapshot.rows().len()).unwrap_or(u64::MAX),
+        u64::try_from(rows.len()).unwrap_or(u64::MAX),
     );
     #[cfg(feature = "prometheus")]
     let digest_started_at = std::time::Instant::now();
-    let digest = snapshot.digest();
+    let digest = cdk::federation::federation_state_snapshot_digest(&rows);
     #[cfg(feature = "prometheus")]
     cdk_prometheus::METRICS.record_federation_performance_operation(
         cdk_prometheus::FederationPerformanceOperation::MaterializedStateDigest,
@@ -192,7 +208,7 @@ pub async fn materialized_state_digest_with_metrics(
     );
     #[cfg(not(feature = "prometheus"))]
     let _ = member_id;
-    Ok(digest)
+    Ok((rows, digest))
 }
 
 pub async fn persist_federation_operation_apply_failure(

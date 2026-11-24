@@ -1226,6 +1226,133 @@ fn bark_projection_entry_operation(
     cdk_federation_bark::validate_federation_bark_operation(operation).map_err(Error::from)
 }
 
+/// Install Bark projection rows from a state transfer into empty tables.
+///
+/// Each row carries one stored record's JSON. Rows go in through the same
+/// inserts the apply path uses, so derived columns match the record.
+pub(super) async fn install_bark_projection_rows<C>(
+    connection: &C,
+    rows: &[cdk_common::federation::FederationMaterializedStateRow],
+) -> Result<(), Error>
+where
+    C: DatabaseExecutor,
+{
+    fn record<T>(row: &cdk_common::federation::FederationMaterializedStateRow) -> Result<T, Error>
+    where
+        T: DeserializeOwned,
+    {
+        let payload = row
+            .fields
+            .get("payload_json")
+            .ok_or_else(|| invalid_projection("Bark state row has no payload"))?;
+        serde_json::from_str(payload)
+            .map_err(|_| invalid_projection("Bark state row payload is invalid"))
+    }
+
+    let mut actions = Vec::new();
+    let mut allocations = Vec::new();
+    let mut vtxos = Vec::new();
+    let mut reservations = Vec::new();
+    let mut transitions = Vec::new();
+    let mut observations = Vec::new();
+    for row in rows {
+        match row.table.as_str() {
+            "federation_bark_actions" => actions.push(record::<FederationBarkActionRecord>(row)?),
+            "federation_bark_derivation_allocations" => {
+                allocations.push(record::<FederationBarkDerivationAllocationRecord>(row)?)
+            }
+            "federation_bark_vtxos" => vtxos.push(record::<FederationBarkVtxoRecord>(row)?),
+            "federation_bark_reservations" => {
+                reservations.push(record::<FederationBarkReservationRecord>(row)?)
+            }
+            "federation_bark_transitions" => {
+                transitions.push(record::<FederationBarkTransitionRecord>(row)?)
+            }
+            "federation_bark_observations" => {
+                observations.push(record::<FederationBarkObservationRecord>(row)?)
+            }
+            _ => return Err(invalid_projection("Bark state row has an unknown table")),
+        }
+    }
+    let snapshot = FederationBarkProjectionSnapshot {
+        actions,
+        vtxos,
+        derivation_allocations: allocations,
+        reservations,
+        transitions,
+        observations,
+    };
+    for action in &snapshot.actions {
+        insert_action(connection, action).await?;
+    }
+    for allocation in &snapshot.derivation_allocations {
+        insert_allocation(connection, allocation).await?;
+    }
+    for vtxo in &snapshot.vtxos {
+        insert_vtxo(connection, vtxo).await?;
+    }
+    for reservation in &snapshot.reservations {
+        query(
+            r#"
+            INSERT INTO federation_bark_reservations
+            (vtxo_id, action_id, operation_id, operation_index, amount, record_json)
+            VALUES (:vtxo_id, :action_id, :operation_id, :operation_index, :amount, :record_json)
+            "#,
+        )?
+        .bind("vtxo_id", reservation.vtxo_id.to_string())
+        .bind("action_id", reservation.action_id.to_string())
+        .bind("operation_id", reservation.operation_id.to_string())
+        .bind(
+            "operation_index",
+            sql_i64("reservation operation index", reservation.operation_index)?,
+        )
+        .bind(
+            "amount",
+            sql_i64("reservation amount", u64::from(reservation.amount))?,
+        )
+        .bind("record_json", serde_json::to_string(reservation)?)
+        .execute(connection)
+        .await?;
+    }
+    for transition in &snapshot.transitions {
+        insert_transition(connection, transition).await?;
+    }
+    for observation in &snapshot.observations {
+        let FederationBarkOperation::MemberObservation(member_observation) = &observation.operation
+        else {
+            return Err(invalid_projection(
+                "Bark observation row does not hold a member observation",
+            ));
+        };
+        query(
+            r#"
+            INSERT INTO federation_bark_observations
+            (operation_id, operation_index, action_id, observer_member_id, observation_epoch, record_json)
+            VALUES
+            (:operation_id, :operation_index, :action_id, :observer_member_id, :observation_epoch, :record_json)
+            "#,
+        )?
+        .bind("operation_id", observation.operation_id.to_string())
+        .bind(
+            "operation_index",
+            sql_i64("observation operation index", observation.operation_index)?,
+        )
+        .bind("action_id", member_observation.action_id.to_string())
+        .bind(
+            "observer_member_id",
+            i64::from(member_observation.observer.get()),
+        )
+        .bind(
+            "observation_epoch",
+            sql_i64("observation epoch", member_observation.observation_epoch)?,
+        )
+        .bind("record_json", serde_json::to_string(observation)?)
+        .execute(connection)
+        .await?;
+    }
+    Ok(())
+}
+
 pub(super) async fn get_bark_projection_snapshot<C>(
     connection: &C,
 ) -> Result<FederationBarkProjectionSnapshot, Error>

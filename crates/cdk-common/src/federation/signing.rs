@@ -283,6 +283,23 @@ impl MemberConfigPrivate {
         self.sign_blinded_messages(public_config, request.operation_id, &request.outputs)
     }
 
+    /// Sign outputs installed by a verified checkpoint state transfer.
+    ///
+    /// Each output was authorized by an operation ordered before the
+    /// checkpoint. The checkpoint's quorum-signed materialized-state digest
+    /// covers the output's operation, position, blinded message, amount and
+    /// keyset, so the caller must have checked the transferred rows against
+    /// that digest before signing. Signing is deterministic: the share equals
+    /// the one this member stored when it applied the operation.
+    pub fn sign_transferred_blinded_messages(
+        &self,
+        public_config: &FederationConfig,
+        operation_id: FederationOperationId,
+        outputs: &[BlindedMessage],
+    ) -> Result<FederationBlindSignatureShareSet> {
+        self.sign_blinded_messages(public_config, operation_id, outputs)
+    }
+
     /// Sign blinded outputs with this member's threshold BLS secret shares.
     fn sign_blinded_messages(
         &self,
