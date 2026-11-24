@@ -21,7 +21,8 @@ use cdk::federation::{
     FederationFrostSigningAck, FederationFrostSigningPackageRequest, FederationId,
     FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationPeerStatus,
     FederationPeerStatusRequest, FederationRestMessageKind, FederationSignedRequest,
-    MemberConfigPrivate, MemberConfigPublic, FEDERATION_MAX_ALEPH_BFT_BACKUP_PAGE_BYTES,
+    FederationStateTransferRequest, FederationStateTransferResponse, MemberConfigPrivate,
+    MemberConfigPublic, FEDERATION_MAX_ALEPH_BFT_BACKUP_PAGE_BYTES,
     FEDERATION_MAX_ALEPH_BFT_BACKUP_REQUEST_BYTES, FEDERATION_MAX_CHECKPOINT_CATCH_UP_PAGE_BYTES,
     FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES, FEDERATION_REST_API_VERSION,
 };
@@ -1211,6 +1212,36 @@ where
         }
         response.ensure_within_checkpoint_page_limit()?;
         response.validate_checkpoint_binding(checkpoint)?;
+        Ok(response)
+    }
+
+    /// Fetch one page of a peer's stored snapshot of a scheduled checkpoint.
+    ///
+    /// The page is checked for shape and binding only; the rows are trusted
+    /// once the whole snapshot hashes to the checkpoint's signed digest.
+    pub async fn fetch_state_transfer_page(
+        &self,
+        member: &MemberConfigPublic,
+        request: &FederationStateTransferRequest,
+    ) -> anyhow::Result<FederationStateTransferResponse> {
+        let signed = self.signed_request(
+            member,
+            FederationRestMessageKind::StateTransfer,
+            request.clone(),
+        )?;
+        ensure_checkpoint_catch_up_request_size(&signed)?;
+        let response: FederationStateTransferResponse = self
+            .http_post_bounded_with_timeout(
+                member,
+                "state-transfer",
+                "state transfer request",
+                &signed,
+                self.sync_config.peer_request_timeout,
+                FEDERATION_MAX_CHECKPOINT_CATCH_UP_PAGE_BYTES,
+            )
+            .await?;
+        response.ensure_within_page_limit()?;
+        response.validate_for_request(self.federation_id, request)?;
         Ok(response)
     }
 
