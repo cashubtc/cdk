@@ -22,6 +22,8 @@ npubcash = ["cdk/npubcash"]
 anyhow.workspace = true
 bip39.workspace = true
 bitcoin.workspace = true
+cbor-diag.workspace = true
+ciborium.workspace = true
 cdk = { workspace = true, default-features = false, features = ["wallet", "nostr", "bip353"] }
 cdk-http-client = { workspace = true, features = ["bitreq"] }
 cdk-redb = { workspace = true, features = ["wallet"], optional = true }

@@ -20,7 +20,6 @@ bench = []
 [dependencies]
 uuid.workspace = true
 bitcoin.workspace = true
-cbor-diag.workspace = true
 ciborium.workspace = true
 serde.workspace = true
 serde_bytes.workspace = true

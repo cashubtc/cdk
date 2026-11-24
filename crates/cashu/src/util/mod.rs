@@ -23,26 +23,3 @@ pub fn unix_time() -> u64 {
         .unwrap_or_default()
         .as_secs()
 }
-
-#[derive(Debug, thiserror::Error)]
-/// Error type for serialization
-pub enum CborError {
-    /// CBOR serialization error
-    #[error("CBOR serialization error")]
-    Cbor(#[from] ciborium::ser::Error<std::io::Error>),
-
-    /// CBOR diagnostic notation error
-    #[error("CBOR diagnostic notation error: {0}")]
-    CborDiag(#[from] cbor_diag::Error),
-}
-
-/// Serializes a struct to the CBOR diagnostic notation.
-///
-/// See <https://www.rfc-editor.org/rfc/rfc8949.html#name-diagnostic-notation>
-pub fn serialize_to_cbor_diag<T: serde::Serialize>(data: &T) -> Result<String, CborError> {
-    let mut cbor_buffer = Vec::<u8>::new();
-    ciborium::ser::into_writer(data, &mut cbor_buffer)?;
-
-    let diag = cbor_diag::parse_bytes(&cbor_buffer)?;
-    Ok(diag.to_diag_pretty())
-}
