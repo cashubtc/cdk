@@ -1973,6 +1973,7 @@ struct PreparedMintd {
     listen_port: u16,
     activation: Option<ConfigurationActivation>,
     shutdown_tx: tokio::sync::broadcast::Sender<()>,
+    shutdown_timeout: std::time::Duration,
     /// Management RPC server and its TLS directory, when enabled.
     #[cfg(feature = "management-rpc")]
     rpc_to_start: Option<(cdk_mint_rpc::MintRPCServer, Option<PathBuf>)>,
@@ -1986,6 +1987,8 @@ struct RunningMintd {
     mint_service: Router,
     listener: tokio::net::TcpListener,
     shutdown_tx: tokio::sync::broadcast::Sender<()>,
+    /// Time a shutdown gives in-flight requests and operations to finish.
+    shutdown_timeout: std::time::Duration,
     #[cfg(feature = "prometheus")]
     prometheus_handle: Option<tokio::task::JoinHandle<()>>,
     #[cfg(feature = "management-rpc")]
@@ -2310,6 +2313,11 @@ impl PreparedMintd {
             listen_port,
             activation,
             shutdown_tx,
+            shutdown_timeout: settings
+                .info
+                .shutdown_timeout_seconds
+                .map(std::time::Duration::from_secs)
+                .unwrap_or(cdk::mint::DEFAULT_STOP_TIMEOUT),
             #[cfg(feature = "management-rpc")]
             rpc_to_start,
         })
@@ -2386,6 +2394,7 @@ impl PreparedMintd {
             mint_service: self.mint_service,
             listener,
             shutdown_tx: self.shutdown_tx,
+            shutdown_timeout: self.shutdown_timeout,
             #[cfg(feature = "prometheus")]
             prometheus_handle,
             #[cfg(feature = "management-rpc")]
@@ -2397,6 +2406,13 @@ impl PreparedMintd {
 impl RunningMintd {
     /// Serves requests until the shutdown signal fires, then stops all
     /// services gracefully.
+    ///
+    /// One deadline, `shutdown_timeout` after the signal, bounds the shutdown.
+    /// The mint stops admitting swaps and melts at the signal. The HTTP
+    /// server gets until the deadline to finish in-flight requests, and the
+    /// mint gets what is left of it to drain running swaps and melts. Work
+    /// that is still running at the deadline is aborted and recovered on the
+    /// next start.
     async fn serve(
         self,
         shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
@@ -2417,18 +2433,56 @@ impl RunningMintd {
             let _ = axum_shutdown_rx.recv().await;
         };
 
-        // Wait for axum server to complete with custom shutdown signal
-        let axum_result =
-            axum::serve(self.listener, self.mint_service).with_graceful_shutdown(axum_shutdown);
+        // Fires with the shutdown signal, to start the shutdown deadline.
+        let mut deadline_shutdown_rx = self.shutdown_tx.subscribe();
 
-        match axum_result.await {
-            Ok(_) => {
+        // Wait for axum server to complete with custom shutdown signal
+        let axum_server = std::future::IntoFuture::into_future(
+            axum::serve(self.listener, self.mint_service).with_graceful_shutdown(axum_shutdown),
+        );
+        tokio::pin!(axum_server);
+
+        let (axum_result, deadline) = tokio::select! {
+            result = &mut axum_server => (Some(result), None),
+            _ = deadline_shutdown_rx.recv() => {
+                // A timeout too large to add to the clock leaves the
+                // shutdown without a deadline.
+                let deadline = tokio::time::Instant::now().checked_add(self.shutdown_timeout);
+                // Close admission before waiting for the in-flight requests.
+                // A request that would start a swap or a melt is refused, and
+                // one that waits for a pending melt to settle answers with the
+                // pending state, so neither holds the server until the
+                // deadline.
+                self.mint.begin_stop().await;
+                // The graceful shutdown waits for every in-flight request,
+                // with no limit of its own.
+                let result = match deadline {
+                    Some(deadline) => tokio::time::timeout_at(deadline, &mut axum_server)
+                        .await
+                        .ok(),
+                    None => Some((&mut axum_server).await),
+                };
+                (result, deadline)
+            }
+        };
+
+        match axum_result {
+            Some(Ok(_)) => {
                 tracing::info!("Axum server stopped with okay status");
             }
-            Err(err) => {
+            Some(Err(err)) => {
                 tracing::warn!("Axum server stopped with error");
                 tracing::error!("{}", err);
                 bail!("Axum exited with error")
+            }
+            None => {
+                // The requests still in flight are left behind. Swaps and
+                // melts run in tasks owned by the mint, which stops them
+                // below; anything else ends with the process.
+                tracing::warn!(
+                    "HTTP requests still in flight after {:?}; continuing shutdown",
+                    self.shutdown_timeout
+                );
             }
         }
 
@@ -2443,11 +2497,24 @@ impl RunningMintd {
             }
         }
 
+        let stop_timeout = match deadline {
+            Some(deadline) => deadline.saturating_duration_since(tokio::time::Instant::now()),
+            None => self.shutdown_timeout,
+        };
         // A failed mint stop must not skip the remaining cleanup, so the error
         // is returned only after the other services and the database close.
-        let stop_result = self.mint.stop().await;
-        if let Err(err) = &stop_result {
-            tracing::error!("Mint stop failed; continuing shutdown: {}", err);
+        let stop_result = self.mint.stop_with_timeout(stop_timeout).await;
+        match &stop_result {
+            Ok(report) if report.aborted > 0 => {
+                tracing::warn!(
+                    "Aborted {} operation(s) at the shutdown deadline; they are recovered on the next start",
+                    report.aborted
+                );
+            }
+            Ok(_) => {}
+            Err(err) => {
+                tracing::error!("Mint stop failed; continuing shutdown: {}", err);
+            }
         }
 
         #[cfg(feature = "management-rpc")]
