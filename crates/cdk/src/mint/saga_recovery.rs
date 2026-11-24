@@ -578,6 +578,23 @@ async fn persist_permanent_payment_failure(
     Ok(())
 }
 
+/// Reloads a melt saga by `quote_id` when present, falling back to a read-only
+/// `operation_id` lookup for legacy pre-`quote_id` rows.
+pub(crate) async fn reload_melt_saga(
+    db: &cdk_common::database::DynMintDatabase,
+    saga: &Saga,
+    quote_id: &cdk_common::QuoteId,
+) -> Result<Option<Saga>, Error> {
+    if saga.quote_id().is_some() {
+        Ok(db.get_melt_saga_by_quote_id(quote_id).await?)
+    } else {
+        let mut tx = db.begin_transaction().await?;
+        let reloaded = tx.get_saga(&saga.operation_id).await?;
+        tx.rollback().await?;
+        Ok(reloaded)
+    }
+}
+
 /// Compensate a melt only when a durable authoritative failure was recorded.
 pub(crate) async fn recover_recorded_payment_failure_with_lease(
     stale_saga: &Saga,
@@ -585,14 +602,7 @@ pub(crate) async fn recover_recorded_payment_failure_with_lease(
     db: &cdk_common::database::DynMintDatabase,
     pubsub: &PubSubManager,
 ) -> Result<(), Error> {
-    let current_saga = if stale_saga.quote_id().is_some() {
-        db.get_melt_saga_by_quote_id(&quote.id).await?
-    } else {
-        let mut tx = db.begin_transaction().await?;
-        let reloaded = tx.get_saga(&stale_saga.operation_id).await?;
-        tx.rollback().await?;
-        reloaded
-    };
+    let current_saga = reload_melt_saga(db, stale_saga, &quote.id).await?;
     let Some(saga) = current_saga else {
         *quote = db
             .get_melt_quote(&quote.id)

@@ -500,19 +500,10 @@ impl Mint {
             // coordinate with executors in other mint instances.
             let quote_lock = self.melt_quote_lock(&quote_id_parsed).await;
             let _quote_guard = quote_lock.lock_owned().await;
-            let saga = if saga.quote_id().is_some() {
-                self.localstore
-                    .get_melt_saga_by_quote_id(&quote_id_parsed)
+            let Some(saga) =
+                super::saga_recovery::reload_melt_saga(&self.localstore, &saga, &quote_id_parsed)
                     .await?
-            } else {
-                // Legacy sagas stored without `quote_id` cannot be reloaded by
-                // quote_id equality; reload directly by operation_id.
-                let mut tx = self.localstore.begin_transaction().await?;
-                let reloaded = tx.get_saga(&saga.operation_id).await?;
-                tx.rollback().await?;
-                reloaded
-            };
-            let Some(saga) = saga else {
+            else {
                 continue;
             };
 
