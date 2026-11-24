@@ -11,6 +11,7 @@ use hyper_util::client::legacy::Client as HyperClient;
 use hyper_util::rt::TokioExecutor;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::ring::default_provider;
+use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{ClientConfig, DigitallySignedStruct, Error as TLSError, SignatureScheme};
 use tokio::fs;
@@ -34,11 +35,11 @@ impl LndCertVerifier {
         let provider = default_provider();
 
         let contents = fs::read(path).await.map_err(|_| Error::ReadFile)?;
-        let mut reader = std::io::Cursor::new(contents);
 
-        // Parse PEM certificates
-        let certs: Vec<CertificateDer<'static>> =
-            rustls_pemfile::certs(&mut reader).flatten().collect();
+        // Parse PEM certificates, skipping entries that fail to parse
+        let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(&contents)
+            .flatten()
+            .collect();
 
         Ok(LndCertVerifier {
             certs: certs.into_iter().map(|c| c.to_vec()).collect(),
