@@ -11,6 +11,8 @@ mod nonce_redb;
 mod protocol;
 mod protocol_redb;
 mod sealed;
+mod session;
+mod session_redb;
 mod threshold_dh;
 mod types;
 mod virtual_musig;

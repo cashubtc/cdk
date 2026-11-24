@@ -1,11 +1,11 @@
 //! Durable participant state for non-FROST custody protocols.
 
-use std::collections::BTreeMap;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
 use crate::nonce::CustodyProtocol;
+use crate::session::{Backend, Failure, MemorySessionTable, MemoryStoreTable, SessionRecord};
 use crate::{
     ApplicationDerivationVersion, ApplicationId, ApplicationKeyEpoch, ApplicationRegistration,
     EncryptedSecret, Error, MemberId, MemoryNonceStore, NonceBurnReason, RootKeyEpoch,
@@ -486,86 +486,50 @@ pub trait DurableProtocolStore: fmt::Debug + Send + Sync + 'static {
 
 #[derive(Debug, Default)]
 pub(crate) struct ProtocolMemoryState {
-    virtual_records: BTreeMap<VirtualMusigNonceId, VirtualMusigRecord>,
-    virtual_sessions: BTreeMap<SigningSessionId, VirtualMusigNonceId>,
-    virtual_active_slots: BTreeMap<SigningSlotId, VirtualMusigNonceId>,
-    virtual_latest_attempts: BTreeMap<SigningSlotId, (u32, SigningSessionId)>,
-    virtual_tombstones: BTreeMap<VirtualMusigNonceId, VirtualMusigTombstone>,
-    virtual_terminal_order: Vec<VirtualMusigNonceId>,
-    dh_records: BTreeMap<SigningSessionId, ThresholdDhRecord>,
-    dh_active_slots: BTreeMap<SigningSlotId, SigningSessionId>,
-    dh_latest_attempts: BTreeMap<SigningSlotId, (u32, SigningSessionId)>,
-    dh_tombstones: BTreeMap<SigningSessionId, ThresholdDhTombstone>,
-    dh_terminal_order: Vec<SigningSessionId>,
+    virtual_musig: MemorySessionTable<VirtualMusigRecord>,
+    threshold_dh: MemorySessionTable<ThresholdDhRecord>,
+}
+
+const PROTOCOL_LOCK_POISONED: &str = "protocol store lock poisoned";
+
+impl MemoryNonceStore {
+    fn virtual_musig_table(&self) -> MemoryStoreTable<'_, ProtocolMemoryState, VirtualMusigRecord> {
+        MemoryStoreTable::new(&self.protocol_state, PROTOCOL_LOCK_POISONED, |state| {
+            &mut state.virtual_musig
+        })
+    }
+
+    fn threshold_dh_table(&self) -> MemoryStoreTable<'_, ProtocolMemoryState, ThresholdDhRecord> {
+        MemoryStoreTable::new(&self.protocol_state, PROTOCOL_LOCK_POISONED, |state| {
+            &mut state.threshold_dh
+        })
+    }
 }
 
 impl DurableProtocolStore for MemoryNonceStore {
     fn activate_virtual_musig_attempt(&self, context: &SigningSessionContext) -> Result<(), Error> {
-        require_protocol(context, CustodyProtocol::VirtualMusig2)?;
-        let mut state = self.protocol_lock()?;
-        activate_virtual_attempt(&mut state, context)
+        self.virtual_musig_table().activate_attempt(context)
     }
 
     fn reserve_virtual_musig(
         &self,
         record: VirtualMusigRecord,
     ) -> Result<VirtualMusigReservation, Error> {
-        validate_new_virtual_record(&record)?;
-        let mut state = self.protocol_lock()?;
-        let session_id = record.context.session_id();
-        if let Some(nonce_id) = state.virtual_sessions.get(&session_id) {
-            return match state.virtual_records.get(nonce_id) {
-                Some(existing) => Ok(VirtualMusigReservation::Existing(Box::new(
-                    existing.clone(),
-                ))),
-                None => Err(Error::InvalidCommitment(
-                    "virtual MuSig2 session is terminal and compacted".to_string(),
-                )),
-            };
-        }
-        if state.virtual_latest_attempts.get(&record.context.slot_id())
-            != Some(&(record.context.attempt(), session_id))
-            || state
-                .virtual_active_slots
-                .contains_key(&record.context.slot_id())
-            || state.virtual_records.contains_key(&record.nonce_id())
-            || state.virtual_tombstones.contains_key(&record.nonce_id())
-        {
-            return Err(Error::InvalidSigningSession(
-                "virtual MuSig2 attempt was not exclusively activated".to_string(),
-            ));
-        }
-        let nonce_id = record.nonce_id();
-        state.virtual_sessions.insert(session_id, nonce_id);
-        state
-            .virtual_active_slots
-            .insert(record.context.slot_id(), nonce_id);
-        state.virtual_records.insert(nonce_id, record);
-        Ok(VirtualMusigReservation::Inserted)
+        self.virtual_musig_table().reserve(record)
     }
 
     fn load_virtual_musig_nonce(
         &self,
         nonce_id: VirtualMusigNonceId,
     ) -> Result<Option<VirtualMusigRecord>, Error> {
-        let state = self.protocol_lock()?;
-        if state.virtual_tombstones.contains_key(&nonce_id) {
-            return Err(Error::InvalidCommitment(
-                "virtual MuSig2 nonce is terminal and compacted".to_string(),
-            ));
-        }
-        Ok(state.virtual_records.get(&nonce_id).cloned())
+        self.virtual_musig_table().load_key(nonce_id)
     }
 
     fn load_virtual_musig_session(
         &self,
         session_id: SigningSessionId,
     ) -> Result<Option<VirtualMusigRecord>, Error> {
-        let state = self.protocol_lock()?;
-        let Some(nonce_id) = state.virtual_sessions.get(&session_id) else {
-            return Ok(None);
-        };
-        Ok(state.virtual_records.get(nonce_id).cloned())
+        self.virtual_musig_table().load_session(session_id)
     }
 
     fn compare_and_swap_virtual_musig(
@@ -573,117 +537,34 @@ impl DurableProtocolStore for MemoryNonceStore {
         expected: &VirtualMusigRecord,
         replacement: VirtualMusigRecord,
     ) -> Result<(), Error> {
-        validate_virtual_transition(expected, &replacement)?;
-        let mut state = self.protocol_lock()?;
-        let current = state
-            .virtual_records
-            .get(&expected.nonce_id())
-            .ok_or_else(|| {
-                Error::NoncePersistence("virtual MuSig2 record disappeared".to_string())
-            })?;
-        if current != expected {
-            return Err(Error::NoncePersistence(
-                "virtual MuSig2 record changed concurrently".to_string(),
-            ));
-        }
-        if !expected.lifecycle.is_terminal() && replacement.lifecycle.is_terminal() {
-            state
-                .virtual_active_slots
-                .remove(&expected.context.slot_id());
-            state.virtual_terminal_order.push(expected.nonce_id());
-        }
-        state
-            .virtual_records
-            .insert(expected.nonce_id(), replacement);
-        Ok(())
+        self.virtual_musig_table()
+            .compare_and_swap(expected, replacement)
     }
 
     fn nonterminal_virtual_musig_records(&self) -> Result<Vec<VirtualMusigRecord>, Error> {
-        let state = self.protocol_lock()?;
-        Ok(state
-            .virtual_records
-            .values()
-            .filter(|record| !record.lifecycle.is_terminal())
-            .cloned()
-            .collect())
+        self.virtual_musig_table().nonterminal_records()
     }
 
     fn compact_virtual_musig(&self, retain_detailed: usize) -> Result<usize, Error> {
-        let mut state = self.protocol_lock()?;
-        let compact_count = state
-            .virtual_terminal_order
-            .len()
-            .saturating_sub(retain_detailed);
-        let ids = state
-            .virtual_terminal_order
-            .drain(..compact_count)
-            .collect::<Vec<_>>();
-        for nonce_id in &ids {
-            let record = state.virtual_records.remove(nonce_id).ok_or_else(|| {
-                Error::NoncePersistence("terminal virtual MuSig2 record is missing".to_string())
-            })?;
-            state.virtual_tombstones.insert(
-                *nonce_id,
-                VirtualMusigTombstone {
-                    session_id: record.context.session_id(),
-                    slot_id: record.context.slot_id(),
-                    nonce_id: *nonce_id,
-                    lifecycle: record.lifecycle,
-                },
-            );
-        }
-        Ok(ids.len())
+        self.virtual_musig_table().compact_terminal(retain_detailed)
     }
 
     fn activate_threshold_dh_attempt(&self, context: &SigningSessionContext) -> Result<(), Error> {
-        require_protocol(context, CustodyProtocol::ThresholdDh)?;
-        let mut state = self.protocol_lock()?;
-        activate_dh_attempt(&mut state, context)
+        self.threshold_dh_table().activate_attempt(context)
     }
 
     fn reserve_threshold_dh(
         &self,
         record: ThresholdDhRecord,
     ) -> Result<ThresholdDhReservation, Error> {
-        validate_new_dh_record(&record)?;
-        let mut state = self.protocol_lock()?;
-        let session_id = record.context.session_id();
-        if let Some(existing) = state.dh_records.get(&session_id) {
-            return Ok(ThresholdDhReservation::Existing(Box::new(existing.clone())));
-        }
-        if state.dh_tombstones.contains_key(&session_id) {
-            return Err(Error::InvalidSigningSession(
-                "threshold-DH session is terminal and compacted".to_string(),
-            ));
-        }
-        if state.dh_latest_attempts.get(&record.context.slot_id())
-            != Some(&(record.context.attempt(), session_id))
-            || state
-                .dh_active_slots
-                .contains_key(&record.context.slot_id())
-        {
-            return Err(Error::InvalidSigningSession(
-                "threshold-DH attempt was not exclusively activated".to_string(),
-            ));
-        }
-        state
-            .dh_active_slots
-            .insert(record.context.slot_id(), session_id);
-        state.dh_records.insert(session_id, record);
-        Ok(ThresholdDhReservation::Inserted)
+        self.threshold_dh_table().reserve(record)
     }
 
     fn load_threshold_dh_session(
         &self,
         session_id: SigningSessionId,
     ) -> Result<Option<ThresholdDhRecord>, Error> {
-        let state = self.protocol_lock()?;
-        if state.dh_tombstones.contains_key(&session_id) {
-            return Err(Error::InvalidSigningSession(
-                "threshold-DH session is terminal and compacted".to_string(),
-            ));
-        }
-        Ok(state.dh_records.get(&session_id).cloned())
+        self.threshold_dh_table().load_session(session_id)
     }
 
     fn compare_and_swap_threshold_dh(
@@ -691,152 +572,233 @@ impl DurableProtocolStore for MemoryNonceStore {
         expected: &ThresholdDhRecord,
         replacement: ThresholdDhRecord,
     ) -> Result<(), Error> {
-        validate_dh_transition(expected, &replacement)?;
-        let mut state = self.protocol_lock()?;
-        let session_id = expected.context.session_id();
-        let current = state.dh_records.get(&session_id).ok_or_else(|| {
-            Error::NoncePersistence("threshold-DH record disappeared".to_string())
-        })?;
-        if current != expected {
-            return Err(Error::NoncePersistence(
-                "threshold-DH record changed concurrently".to_string(),
-            ));
-        }
-        if !expected.lifecycle.is_terminal() && replacement.lifecycle.is_terminal() {
-            state.dh_active_slots.remove(&expected.context.slot_id());
-            state.dh_terminal_order.push(session_id);
-        }
-        state.dh_records.insert(session_id, replacement);
-        Ok(())
+        self.threshold_dh_table()
+            .compare_and_swap(expected, replacement)
     }
 
     fn nonterminal_threshold_dh_records(&self) -> Result<Vec<ThresholdDhRecord>, Error> {
-        let state = self.protocol_lock()?;
-        Ok(state
-            .dh_records
-            .values()
-            .filter(|record| !record.lifecycle.is_terminal())
-            .cloned()
-            .collect())
+        self.threshold_dh_table().nonterminal_records()
     }
 
     fn compact_threshold_dh(&self, retain_detailed: usize) -> Result<usize, Error> {
-        let mut state = self.protocol_lock()?;
-        let compact_count = state
-            .dh_terminal_order
-            .len()
-            .saturating_sub(retain_detailed);
-        let sessions = state
-            .dh_terminal_order
-            .drain(..compact_count)
-            .collect::<Vec<_>>();
-        for session_id in &sessions {
-            let record = state.dh_records.remove(session_id).ok_or_else(|| {
-                Error::NoncePersistence("terminal threshold-DH record is missing".to_string())
-            })?;
-            state.dh_tombstones.insert(
-                *session_id,
-                ThresholdDhTombstone {
-                    session_id: *session_id,
-                    slot_id: record.context.slot_id(),
-                    request_binding: record.request_binding,
-                    lifecycle: record.lifecycle,
-                },
-            );
-        }
-        Ok(sessions.len())
+        self.threshold_dh_table().compact_terminal(retain_detailed)
     }
 }
 
-fn activate_virtual_attempt(
-    state: &mut ProtocolMemoryState,
-    context: &SigningSessionContext,
-) -> Result<(), Error> {
-    let slot = context.slot_id();
-    check_attempt(&state.virtual_latest_attempts, context)?;
-    if state
-        .virtual_latest_attempts
-        .get(&slot)
-        .is_some_and(|(attempt, _)| *attempt == context.attempt())
-    {
-        return Ok(());
+impl SessionRecord for VirtualMusigRecord {
+    type Key = VirtualMusigNonceId;
+    type Tombstone = VirtualMusigTombstone;
+    type Reservation = VirtualMusigReservation;
+
+    const VALIDATE_NEW_FIRST: bool = true;
+    const MEMORY_RELEASES_SLOT_BEFORE_BURN: bool = true;
+    const KEYED_BY_SESSION: bool = false;
+
+    fn key(&self) -> VirtualMusigNonceId {
+        self.nonce_id()
     }
-    if let Some(nonce_id) = state.virtual_active_slots.remove(&slot) {
-        let existing = state
-            .virtual_records
-            .get(&nonce_id)
-            .cloned()
-            .ok_or_else(|| {
-                Error::NoncePersistence("active virtual MuSig2 record is missing".to_string())
-            })?;
-        let burned = existing.transition(
+
+    fn key_bytes(key: VirtualMusigNonceId) -> [u8; 32] {
+        key.to_bytes()
+    }
+
+    fn context(&self) -> &SigningSessionContext {
+        &self.context
+    }
+
+    fn is_terminal(&self) -> bool {
+        self.lifecycle.is_terminal()
+    }
+
+    fn tombstone(&self) -> VirtualMusigTombstone {
+        VirtualMusigTombstone {
+            session_id: self.context.session_id(),
+            slot_id: self.context.slot_id(),
+            nonce_id: self.nonce_id(),
+            lifecycle: self.lifecycle.clone(),
+        }
+    }
+
+    fn burned_for_replacement(&self) -> Result<Self, Error> {
+        self.transition(
             VirtualMusigLifecycle::Burned {
                 reason: NonceBurnReason::ReplacedAttempt,
             },
             false,
             None,
-        )?;
-        validate_virtual_transition(&existing, &burned)?;
-        state.virtual_records.insert(nonce_id, burned);
-        state.virtual_terminal_order.push(nonce_id);
+        )
     }
-    state
-        .virtual_latest_attempts
-        .insert(slot, (context.attempt(), context.session_id()));
-    Ok(())
+
+    fn validate_activation(context: &SigningSessionContext) -> Result<(), Error> {
+        require_protocol(context, CustodyProtocol::VirtualMusig2)
+    }
+
+    fn validate_new(&self) -> Result<(), Error> {
+        validate_new_virtual_record(self)
+    }
+
+    fn validate_transition(expected: &Self, replacement: &Self) -> Result<(), Error> {
+        validate_virtual_transition(expected, replacement)
+    }
+
+    fn inserted() -> VirtualMusigReservation {
+        VirtualMusigReservation::Inserted
+    }
+
+    fn existing(record: Self) -> VirtualMusigReservation {
+        VirtualMusigReservation::Existing(Box::new(record))
+    }
+
+    fn error(failure: Failure, backend: Backend) -> Error {
+        let session = |message: &str| Error::InvalidSigningSession(message.to_string());
+        let commitment = |message: &str| Error::InvalidCommitment(message.to_string());
+        let persistence = |message: &str| Error::NoncePersistence(message.to_string());
+        match (failure, backend) {
+            (Failure::StaleAttempt, Backend::Memory) => session("protocol attempt is stale"),
+            (Failure::StaleAttempt, Backend::Redb) => session("virtual MuSig2 attempt is stale"),
+            (Failure::SignerSetChanged, Backend::Memory) => {
+                session("signer set changed within a protocol attempt")
+            }
+            (Failure::SignerSetChanged, Backend::Redb) => {
+                session("signer set changed within a virtual MuSig2 attempt")
+            }
+            (Failure::ActiveRecordMissing, _) => {
+                persistence("active virtual MuSig2 record is missing")
+            }
+            (Failure::SessionCompacted, _) => {
+                commitment("virtual MuSig2 session is terminal and compacted")
+            }
+            (
+                Failure::NotActivated | Failure::SlotClaimed | Failure::KeyClaimed,
+                Backend::Memory,
+            ) => session("virtual MuSig2 attempt was not exclusively activated"),
+            (Failure::NotActivated, Backend::Redb) => {
+                session("virtual MuSig2 attempt was not durably activated")
+            }
+            (Failure::SlotClaimed | Failure::KeyClaimed, Backend::Redb) => {
+                session("virtual MuSig2 slot or nonce is already claimed")
+            }
+            (Failure::KeyCompacted, _) => {
+                commitment("virtual MuSig2 nonce is terminal and compacted")
+            }
+            (Failure::RecordDisappeared, _) => persistence("virtual MuSig2 record disappeared"),
+            (Failure::ChangedConcurrently, _) => {
+                persistence("virtual MuSig2 record changed concurrently")
+            }
+            (Failure::TerminalRecordMissing, _) => {
+                persistence("terminal virtual MuSig2 record is missing")
+            }
+            (Failure::TerminalOrderNonterminal, _) => {
+                persistence("virtual MuSig2 terminal order references active state")
+            }
+        }
+    }
 }
 
-fn activate_dh_attempt(
-    state: &mut ProtocolMemoryState,
-    context: &SigningSessionContext,
-) -> Result<(), Error> {
-    let slot = context.slot_id();
-    check_attempt(&state.dh_latest_attempts, context)?;
-    if state
-        .dh_latest_attempts
-        .get(&slot)
-        .is_some_and(|(attempt, _)| *attempt == context.attempt())
-    {
-        return Ok(());
+impl SessionRecord for ThresholdDhRecord {
+    type Key = SigningSessionId;
+    type Tombstone = ThresholdDhTombstone;
+    type Reservation = ThresholdDhReservation;
+
+    const VALIDATE_NEW_FIRST: bool = true;
+    const MEMORY_RELEASES_SLOT_BEFORE_BURN: bool = true;
+    const KEYED_BY_SESSION: bool = true;
+
+    fn key(&self) -> SigningSessionId {
+        self.context.session_id()
     }
-    if let Some(session_id) = state.dh_active_slots.remove(&slot) {
-        let existing = state.dh_records.get(&session_id).cloned().ok_or_else(|| {
-            Error::NoncePersistence("active threshold-DH record is missing".to_string())
-        })?;
-        let burned = existing.transition(
+
+    fn key_bytes(key: SigningSessionId) -> [u8; 32] {
+        key.to_bytes()
+    }
+
+    fn context(&self) -> &SigningSessionContext {
+        &self.context
+    }
+
+    fn is_terminal(&self) -> bool {
+        self.lifecycle.is_terminal()
+    }
+
+    fn tombstone(&self) -> ThresholdDhTombstone {
+        ThresholdDhTombstone {
+            session_id: self.context.session_id(),
+            slot_id: self.context.slot_id(),
+            request_binding: self.request_binding,
+            lifecycle: self.lifecycle.clone(),
+        }
+    }
+
+    fn burned_for_replacement(&self) -> Result<Self, Error> {
+        self.transition(
             ThresholdDhLifecycle::Burned {
                 reason: NonceBurnReason::ReplacedAttempt,
             },
             None,
-        )?;
-        validate_dh_transition(&existing, &burned)?;
-        state.dh_records.insert(session_id, burned);
-        state.dh_terminal_order.push(session_id);
+        )
     }
-    state
-        .dh_latest_attempts
-        .insert(slot, (context.attempt(), context.session_id()));
-    Ok(())
-}
 
-fn check_attempt(
-    attempts: &BTreeMap<SigningSlotId, (u32, SigningSessionId)>,
-    context: &SigningSessionContext,
-) -> Result<(), Error> {
-    match attempts.get(&context.slot_id()).copied() {
-        Some((attempt, _)) if attempt > context.attempt() => Err(Error::InvalidSigningSession(
-            "protocol attempt is stale".to_string(),
-        )),
-        Some((attempt, session_id)) if attempt == context.attempt() => {
-            if session_id == context.session_id() {
-                Ok(())
-            } else {
-                Err(Error::InvalidSigningSession(
-                    "signer set changed within a protocol attempt".to_string(),
-                ))
+    fn validate_activation(context: &SigningSessionContext) -> Result<(), Error> {
+        require_protocol(context, CustodyProtocol::ThresholdDh)
+    }
+
+    fn validate_new(&self) -> Result<(), Error> {
+        validate_new_dh_record(self)
+    }
+
+    fn validate_transition(expected: &Self, replacement: &Self) -> Result<(), Error> {
+        validate_dh_transition(expected, replacement)
+    }
+
+    fn inserted() -> ThresholdDhReservation {
+        ThresholdDhReservation::Inserted
+    }
+
+    fn existing(record: Self) -> ThresholdDhReservation {
+        ThresholdDhReservation::Existing(Box::new(record))
+    }
+
+    fn error(failure: Failure, backend: Backend) -> Error {
+        let session = |message: &str| Error::InvalidSigningSession(message.to_string());
+        let persistence = |message: &str| Error::NoncePersistence(message.to_string());
+        match (failure, backend) {
+            (Failure::StaleAttempt, Backend::Memory) => session("protocol attempt is stale"),
+            (Failure::StaleAttempt, Backend::Redb) => session("threshold-DH attempt is stale"),
+            (Failure::SignerSetChanged, Backend::Memory) => {
+                session("signer set changed within a protocol attempt")
+            }
+            (Failure::SignerSetChanged, Backend::Redb) => {
+                session("signer set changed within a threshold-DH attempt")
+            }
+            (Failure::ActiveRecordMissing, _) => {
+                persistence("active threshold-DH record is missing")
+            }
+            (Failure::SessionCompacted | Failure::KeyCompacted, _) => {
+                session("threshold-DH session is terminal and compacted")
+            }
+            // Records are keyed by session, so a claimed key is always reported
+            // as an existing or compacted session before this check.
+            (
+                Failure::NotActivated | Failure::SlotClaimed | Failure::KeyClaimed,
+                Backend::Memory,
+            ) => session("threshold-DH attempt was not exclusively activated"),
+            (Failure::NotActivated, Backend::Redb) => {
+                session("threshold-DH attempt was not durably activated")
+            }
+            (Failure::SlotClaimed | Failure::KeyClaimed, Backend::Redb) => {
+                session("threshold-DH slot is already claimed")
+            }
+            (Failure::RecordDisappeared, _) => persistence("threshold-DH record disappeared"),
+            (Failure::ChangedConcurrently, _) => {
+                persistence("threshold-DH record changed concurrently")
+            }
+            (Failure::TerminalRecordMissing, _) => {
+                persistence("terminal threshold-DH record is missing")
+            }
+            (Failure::TerminalOrderNonterminal, _) => {
+                persistence("threshold-DH terminal order references active state")
             }
         }
-        _ => Ok(()),
     }
 }
 

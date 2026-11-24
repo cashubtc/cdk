@@ -1,6 +1,5 @@
 //! Durable, application-neutral FROST signing-session and nonce state.
 
-use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
@@ -8,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::protocol::ProtocolMemoryState;
+use crate::session::{Backend, Failure, MemorySessionTable, MemoryStoreTable, SessionRecord};
 use crate::types::{
     ApplicationDerivationVersion, ApplicationId, ApplicationKeyEpoch, SignatureMode,
     MAX_PARTICIPANTS,
@@ -681,146 +681,43 @@ pub trait DurableNonceStore: fmt::Debug + Send + Sync + 'static {
     fn compact_terminal(&self, retain_detailed: usize) -> Result<usize, Error>;
 }
 
-#[derive(Debug, Default)]
-struct MemoryNonceState {
-    records: BTreeMap<NonceId, NonceRecord>,
-    sessions: BTreeMap<SigningSessionId, NonceId>,
-    active_slots: BTreeMap<SigningSlotId, NonceId>,
-    latest_attempts: BTreeMap<SigningSlotId, (u32, SigningSessionId)>,
-    tombstones: BTreeMap<NonceId, NonceTombstone>,
-    terminal_order: Vec<NonceId>,
-}
-
 /// Cloneable in-memory CAS store for tests and embedding prototypes.
 ///
 /// Production integrations must provide a store backed by durable local
 /// storage; this implementation intentionally makes no durability claim.
 #[derive(Debug, Clone, Default)]
 pub struct MemoryNonceStore {
-    state: Arc<Mutex<MemoryNonceState>>,
+    state: Arc<Mutex<MemorySessionTable<NonceRecord>>>,
     pub(crate) protocol_state: Arc<Mutex<ProtocolMemoryState>>,
 }
 
 impl MemoryNonceStore {
     /// Inspect a retained tombstone in tests or operator tooling.
     pub fn tombstone(&self, nonce_id: NonceId) -> Result<Option<NonceTombstone>, Error> {
-        let state = self.lock()?;
-        Ok(state.tombstones.get(&nonce_id).cloned())
+        self.nonce_table()
+            .with_table(|table| Ok(table.tombstone(nonce_id)))
     }
 
-    fn lock(&self) -> Result<std::sync::MutexGuard<'_, MemoryNonceState>, Error> {
-        self.state
-            .lock()
-            .map_err(|_| Error::NoncePersistence("nonce store lock poisoned".to_string()))
-    }
-
-    pub(crate) fn protocol_lock(
-        &self,
-    ) -> Result<std::sync::MutexGuard<'_, ProtocolMemoryState>, Error> {
-        self.protocol_state
-            .lock()
-            .map_err(|_| Error::NoncePersistence("protocol store lock poisoned".to_string()))
+    fn nonce_table(&self) -> MemoryStoreTable<'_, MemorySessionTable<NonceRecord>, NonceRecord> {
+        MemoryStoreTable::new(&self.state, "nonce store lock poisoned", |table| table)
     }
 }
 
 impl DurableNonceStore for MemoryNonceStore {
     fn activate_attempt(&self, context: &SigningSessionContext) -> Result<(), Error> {
-        let mut state = self.lock()?;
-        let slot_id = context.slot_id();
-        match state.latest_attempts.get(&slot_id).copied() {
-            Some((attempt, _)) if attempt > context.attempt() => {
-                return Err(Error::InvalidSigningSession(
-                    "signing attempt is stale".to_string(),
-                ));
-            }
-            Some((attempt, session_id)) if attempt == context.attempt() => {
-                if session_id != context.session_id() {
-                    return Err(Error::InvalidSigningSession(
-                        "signer set changed within an active attempt".to_string(),
-                    ));
-                }
-                return Ok(());
-            }
-            _ => {}
-        }
-
-        if let Some(nonce_id) = state.active_slots.get(&slot_id).copied() {
-            let existing = state.records.get(&nonce_id).cloned().ok_or_else(|| {
-                Error::NoncePersistence("active signing slot has no nonce record".to_string())
-            })?;
-            let burned = existing.transition(
-                NonceLifecycle::Burned {
-                    reason: NonceBurnReason::ReplacedAttempt,
-                },
-                false,
-                None,
-            )?;
-            validate_nonce_transition(&existing, &burned)?;
-            state.records.insert(nonce_id, burned);
-            state.active_slots.remove(&slot_id);
-            state.terminal_order.push(nonce_id);
-        }
-        state
-            .latest_attempts
-            .insert(slot_id, (context.attempt(), context.session_id()));
-        Ok(())
+        self.nonce_table().activate_attempt(context)
     }
 
     fn reserve(&self, record: NonceRecord) -> Result<NonceReservation, Error> {
-        let mut state = self.lock()?;
-        let session_id = record.context.session_id();
-        if let Some(nonce_id) = state.sessions.get(&session_id) {
-            if let Some(existing) = state.records.get(nonce_id) {
-                return Ok(NonceReservation::Existing(Box::new(existing.clone())));
-            }
-            return Err(Error::InvalidCommitment(
-                "signing session was already compacted and cannot be retried".to_string(),
-            ));
-        }
-        if state.latest_attempts.get(&record.context.slot_id())
-            != Some(&(record.context.attempt(), session_id))
-        {
-            return Err(Error::InvalidSigningSession(
-                "signing attempt was not durably activated".to_string(),
-            ));
-        }
-        if state.active_slots.contains_key(&record.context.slot_id()) {
-            return Err(Error::InvalidSigningSession(
-                "authorization slot already has an active signing attempt".to_string(),
-            ));
-        }
-        validate_new_nonce_record(&record)?;
-        if state.records.contains_key(&record.nonce_id)
-            || state.tombstones.contains_key(&record.nonce_id)
-        {
-            return Err(Error::InvalidCommitment(
-                "nonce identifier was already reserved".to_string(),
-            ));
-        }
-        state.sessions.insert(session_id, record.nonce_id);
-        state
-            .active_slots
-            .insert(record.context.slot_id(), record.nonce_id);
-        state.records.insert(record.nonce_id, record);
-        Ok(NonceReservation::Inserted)
+        self.nonce_table().reserve(record)
     }
 
     fn load_nonce(&self, nonce_id: NonceId) -> Result<Option<NonceRecord>, Error> {
-        let state = self.lock()?;
-        if state.tombstones.contains_key(&nonce_id) {
-            return Err(Error::InvalidCommitment(
-                "nonce is terminal and its retry metadata was compacted".to_string(),
-            ));
-        }
-        Ok(state.records.get(&nonce_id).cloned())
+        self.nonce_table().load_key(nonce_id)
     }
 
     fn load_session(&self, session_id: SigningSessionId) -> Result<Option<NonceRecord>, Error> {
-        let state = self.lock()?;
-        let Some(nonce_id) = state.sessions.get(&session_id) else {
-            return Ok(None);
-        };
-        Ok(state.records.get(nonce_id).cloned())
+        self.nonce_table().load_session(session_id)
     }
 
     fn compare_and_swap(
@@ -828,56 +725,111 @@ impl DurableNonceStore for MemoryNonceStore {
         expected: &NonceRecord,
         replacement: NonceRecord,
     ) -> Result<(), Error> {
-        validate_nonce_transition(expected, &replacement)?;
-        let mut state = self.lock()?;
-        let current = state.records.get(&expected.nonce_id).ok_or_else(|| {
-            Error::NoncePersistence("nonce record disappeared during update".to_string())
-        })?;
-        if current != expected {
-            return Err(Error::NoncePersistence(
-                "nonce record changed concurrently".to_string(),
-            ));
-        }
-        if !expected.lifecycle.is_terminal() && replacement.lifecycle.is_terminal() {
-            state.active_slots.remove(&expected.context.slot_id());
-            state.terminal_order.push(expected.nonce_id);
-        }
-        state.records.insert(expected.nonce_id, replacement);
-        Ok(())
+        self.nonce_table().compare_and_swap(expected, replacement)
     }
 
     fn nonterminal_records(&self) -> Result<Vec<NonceRecord>, Error> {
-        let state = self.lock()?;
-        Ok(state
-            .records
-            .values()
-            .filter(|record| !record.lifecycle.is_terminal())
-            .cloned()
-            .collect())
+        self.nonce_table().nonterminal_records()
     }
 
     fn compact_terminal(&self, retain_detailed: usize) -> Result<usize, Error> {
-        let mut state = self.lock()?;
-        let compact_count = state.terminal_order.len().saturating_sub(retain_detailed);
-        let compact_ids = state
-            .terminal_order
-            .drain(..compact_count)
-            .collect::<Vec<_>>();
-        for nonce_id in &compact_ids {
-            let record = state.records.remove(nonce_id).ok_or_else(|| {
-                Error::NoncePersistence("terminal nonce record is missing".to_string())
-            })?;
-            state.tombstones.insert(
-                *nonce_id,
-                NonceTombstone {
-                    session_id: record.context.session_id(),
-                    slot_id: record.context.slot_id(),
-                    nonce_id: *nonce_id,
-                    lifecycle: record.lifecycle,
-                },
-            );
+        self.nonce_table().compact_terminal(retain_detailed)
+    }
+}
+
+impl SessionRecord for NonceRecord {
+    type Key = NonceId;
+    type Tombstone = NonceTombstone;
+    type Reservation = NonceReservation;
+
+    const VALIDATE_NEW_FIRST: bool = false;
+    const MEMORY_RELEASES_SLOT_BEFORE_BURN: bool = false;
+    const KEYED_BY_SESSION: bool = false;
+
+    fn key(&self) -> NonceId {
+        self.nonce_id
+    }
+
+    fn key_bytes(key: NonceId) -> [u8; 32] {
+        key.to_bytes()
+    }
+
+    fn context(&self) -> &SigningSessionContext {
+        &self.context
+    }
+
+    fn is_terminal(&self) -> bool {
+        self.lifecycle.is_terminal()
+    }
+
+    fn tombstone(&self) -> NonceTombstone {
+        NonceTombstone {
+            session_id: self.context.session_id(),
+            slot_id: self.context.slot_id(),
+            nonce_id: self.nonce_id,
+            lifecycle: self.lifecycle.clone(),
         }
-        Ok(compact_ids.len())
+    }
+
+    fn burned_for_replacement(&self) -> Result<Self, Error> {
+        self.transition(
+            NonceLifecycle::Burned {
+                reason: NonceBurnReason::ReplacedAttempt,
+            },
+            false,
+            None,
+        )
+    }
+
+    fn validate_activation(_context: &SigningSessionContext) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn validate_new(&self) -> Result<(), Error> {
+        validate_new_nonce_record(self)
+    }
+
+    fn validate_transition(expected: &Self, replacement: &Self) -> Result<(), Error> {
+        validate_nonce_transition(expected, replacement)
+    }
+
+    fn inserted() -> NonceReservation {
+        NonceReservation::Inserted
+    }
+
+    fn existing(record: Self) -> NonceReservation {
+        NonceReservation::Existing(Box::new(record))
+    }
+
+    fn error(failure: Failure, backend: Backend) -> Error {
+        let session = |message: &str| Error::InvalidSigningSession(message.to_string());
+        let commitment = |message: &str| Error::InvalidCommitment(message.to_string());
+        let persistence = |message: &str| Error::NoncePersistence(message.to_string());
+        match failure {
+            Failure::StaleAttempt => session("signing attempt is stale"),
+            Failure::SignerSetChanged => session("signer set changed within an active attempt"),
+            Failure::ActiveRecordMissing => persistence("active signing slot has no nonce record"),
+            Failure::SessionCompacted => match backend {
+                Backend::Memory => {
+                    commitment("signing session was already compacted and cannot be retried")
+                }
+                Backend::Redb => commitment("signing session is terminal and cannot be retried"),
+            },
+            Failure::NotActivated => session("signing attempt was not durably activated"),
+            Failure::SlotClaimed => {
+                session("authorization slot already has an active signing attempt")
+            }
+            Failure::KeyClaimed => commitment("nonce identifier was already reserved"),
+            Failure::KeyCompacted => {
+                commitment("nonce is terminal and its retry metadata was compacted")
+            }
+            Failure::RecordDisappeared => persistence("nonce record disappeared during update"),
+            Failure::ChangedConcurrently => persistence("nonce record changed concurrently"),
+            Failure::TerminalRecordMissing => persistence("terminal nonce record is missing"),
+            Failure::TerminalOrderNonterminal => {
+                persistence("terminal order references a nonterminal nonce")
+            }
+        }
     }
 }
 
