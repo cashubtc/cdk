@@ -698,3 +698,13 @@ Decision: checkpoints may truncate logs, history and terminal entities. The inve
 - **Design.** A retention floor fixed by the scheduled checkpoint sequence; terminal entities below the floor excluded from the digest by definition and deleted in the background; spent-UTXO tombstones; Bark readers off the full journal; state transfer verified against the signed materialized-state digest.
 - **Storage contract.** The design document has the per-store table (purpose, authority, readers, retention target) that this package asked for.
 - **Open decisions:** the replay guard (permanent compact index or envelope validity window) and whether to build state transfer.
+
+### 2026-11-24: package 6, retention prerequisite 1 (operation validity window)
+
+Decision: the replay guard is a validity window, not a permanent index.
+
+- **Envelope stamp.** `FederationOperationEnvelope` carries the AlephBFT `session` its author stamped it in. The stamp is outside the operation id, so client retries keep their id, and inside the authorization signature (transcript `v2`), so only the author can re-stamp. Envelope version 7.
+- **Stamped at submission.** The submission funnel stamps every envelope this member authored with the active session and signs it again before it enters the mempool, so the ~40 creation sites are unchanged.
+- **Enforced at finalization.** An envelope is `RejectedInvalidOperation` unless the unit's session is within `[session, session + 16]`. Startup recovery checks stored statuses with the same rule.
+- **Tests.** `session_stamp_is_signed_but_outside_the_operation_id` and `finalization_rejects_envelopes_outside_their_validity_window` (expired, future, and oldest-valid stamps in one unit).
+- **Nothing is deleted yet.** The design document has the per-kind table of what guards each operation once ids outside the window are forgotten; each row needs a replay test before journal rows are deleted.

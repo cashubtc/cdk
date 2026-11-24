@@ -1892,10 +1892,11 @@ impl FederationAlephBftFinalizationHandler {
             if let (Some(operation_config), FederationConsensusItem::Operation(envelope)) =
                 (&operation_config, &finalized_item.item)
             {
-                let authorization_valid = envelope.verify_authorization(operation_config).is_ok();
+                let operation_valid = envelope.verify_authorization(operation_config).is_ok()
+                    && envelope.is_valid_in_session(finalized_item.session);
                 let marked_rejected = finalized_item.status
                     == FederationAlephBftFinalizedItemStatus::RejectedInvalidOperation;
-                if authorization_valid == marked_rejected {
+                if operation_valid == marked_rejected {
                     return Err(FederationAlephBftError::RecoveryMismatch {
                         reason: "finalized operation authentication does not match its status",
                     }
@@ -2178,13 +2179,14 @@ impl FederationAlephBftFinalizationHandler {
     }
 
     /// Return true when a finalized operation envelope fails member
-    /// authorization or pure operation-local validation. Such untrusted
-    /// contents are rejected per item so one Byzantine operation cannot abort
-    /// the containing unit.
+    /// authorization, falls outside its validity window, or fails pure
+    /// operation-local validation. Such untrusted contents are rejected per
+    /// item so one Byzantine operation cannot abort the containing unit.
     fn is_invalid_finalized_operation(&self, envelope: &FederationOperationEnvelope) -> bool {
         self.operation_config
             .as_ref()
             .is_some_and(|config| envelope.verify_authorization(config).is_err())
+            || !envelope.is_valid_in_session(self.session)
             || envelope.operation.validate_pure().is_err()
     }
 

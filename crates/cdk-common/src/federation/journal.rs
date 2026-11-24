@@ -1861,11 +1861,11 @@ mod tests {
         );
         assert_eq!(
             entry.operation_id.to_string(),
-            "d7c9e7c084dc33de0f1dab094a5b9884b8d0fc4d34544df5fa746840a7c2f9a0"
+            "38f4773d60f6466b4510f26029180b791d981a10594381efd673c69647b24995"
         );
         assert_eq!(
             entry.order_digest.to_hex(),
-            "022d8081272bbb704f7a2df0f1980295b87a5a3ad7a2967d248900a04364fe27"
+            "20ba1a34ebbbdf14941488c14db8dfd5516a5f845aa789ce902e32a51f7de392"
         );
         assert_eq!(
             FederationMaterializedStateDigest::genesis().to_hex(),

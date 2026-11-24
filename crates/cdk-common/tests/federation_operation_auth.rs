@@ -11,7 +11,7 @@ use cdk_common::federation::{
     FederationOperationEnvelope, FederationOperationId, FederationPaymentObservation,
     FederationPaymentObservationContext, FederationPaymentObservationRecord,
     FederationPaymentObservationReport, MemberId, ThresholdParams, TrustedDealerConfigBundle,
-    TrustedDealerMember,
+    TrustedDealerMember, FEDERATION_OPERATION_VALIDITY_SESSIONS,
 };
 use cdk_common::mint_url::MintUrl;
 use cdk_common::payment::PaymentIdentifier;
@@ -196,6 +196,108 @@ fn authenticated_consensus_rejects_observer_impersonation_without_poisoning_the_
     assert_eq!(
         runtime.finalized_items()[1].status,
         FederationAlephBftFinalizedItemStatus::Accepted
+    );
+}
+
+#[test]
+fn session_stamp_is_signed_but_outside_the_operation_id() {
+    let bundle = config_bundle();
+    let private_member = bundle
+        .private_configs
+        .get(&member_id(1))
+        .expect("member private config");
+    let unstamped = FederationOperationEnvelope::new(
+        bundle.public_config.federation_id,
+        payment_observation(member_id(1)),
+    )
+    .authorize(private_member)
+    .expect("authorize operation");
+    let stamped = unstamped
+        .clone()
+        .for_session(5, private_member)
+        .expect("stamp operation");
+
+    assert_eq!(stamped.session, 5);
+    assert_eq!(
+        stamped.operation_id().expect("stamped operation id"),
+        unstamped.operation_id().expect("unstamped operation id")
+    );
+    assert_eq!(
+        stamped
+            .verify_authorization(&bundle.public_config)
+            .expect("verify stamped author"),
+        member_id(1)
+    );
+
+    let mut restamped = stamped.clone();
+    restamped.session = 6;
+    assert!(matches!(
+        restamped.verify_authorization(&bundle.public_config),
+        Err(FederationError::OperationSignatureVerificationFailed { member_id: author })
+            if author == member_id(1)
+    ));
+
+    assert!(!stamped.is_valid_in_session(4));
+    assert!(stamped.is_valid_in_session(5));
+    assert!(stamped.is_valid_in_session(5 + FEDERATION_OPERATION_VALIDITY_SESSIONS));
+    assert!(!stamped.is_valid_in_session(6 + FEDERATION_OPERATION_VALIDITY_SESSIONS));
+}
+
+#[test]
+fn finalization_rejects_envelopes_outside_their_validity_window() {
+    let bundle = config_bundle();
+    let config = &bundle.public_config;
+    let session = 2 * FEDERATION_OPERATION_VALIDITY_SESSIONS;
+    let mut runtime =
+        FederationConsensusRuntime::authenticated_aleph_bft(config, member_id(1), session)
+            .expect("authenticated runtime");
+    let stamped = |member: u16, stamp: u64| {
+        FederationOperationEnvelope::new(
+            config.federation_id,
+            payment_observation(member_id(member)),
+        )
+        .for_session(
+            stamp,
+            bundle
+                .private_configs
+                .get(&member_id(member))
+                .expect("member private config"),
+        )
+        .expect("stamp operation")
+    };
+    let oldest_valid = session - FEDERATION_OPERATION_VALIDITY_SESSIONS;
+    let unit = FederationAlephBftUnitPayload::new(
+        config.federation_id,
+        member_id(1),
+        session,
+        0,
+        vec![
+            FederationConsensusItem::operation(stamped(1, oldest_valid - 1)),
+            FederationConsensusItem::operation(stamped(2, session + 1)),
+            FederationConsensusItem::operation(stamped(3, oldest_valid)),
+        ],
+    )
+    .expect("unit");
+
+    assert_eq!(
+        runtime
+            .finalize_unit(unit)
+            .expect("reject expired and future operations without halting")
+            .len(),
+        1
+    );
+    let statuses = runtime
+        .finalized_items()
+        .iter()
+        .map(|item| item.status)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        statuses,
+        vec![
+            FederationAlephBftFinalizedItemStatus::RejectedInvalidOperation,
+            FederationAlephBftFinalizedItemStatus::RejectedInvalidOperation,
+            FederationAlephBftFinalizedItemStatus::Accepted,
+        ]
     );
 }
 

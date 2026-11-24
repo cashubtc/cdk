@@ -124,6 +124,19 @@ impl FederationNodeRuntime {
         Ok(())
     }
 
+    /// Stamp a locally authored envelope with the active session before it
+    /// enters the mempool, so it gets the full validity window.
+    fn stamp_for_session(
+        &self,
+        envelope: FederationOperationEnvelope,
+        session: u64,
+    ) -> Result<FederationOperationEnvelope, cdk::Error> {
+        match self.mint().and_then(|mint| mint.federation_config()) {
+            Some(config) => config.stamp_operation_envelope(envelope, session),
+            None => Ok(envelope),
+        }
+    }
+
     pub fn active_mint(&self) -> Result<&Arc<Mint>, cdk::Error> {
         self.mint().ok_or_else(|| runtime_unavailable("mint"))
     }
@@ -526,6 +539,11 @@ impl FederationNodeRuntime {
             return Ok(responses);
         }
 
+        let session = consensus.aleph_bft_status()?.session;
+        let envelopes = envelopes
+            .into_iter()
+            .map(|envelope| self.stamp_for_session(envelope, session))
+            .collect::<Result<Vec<_>, _>>()?;
         let queued_before = consensus.pending_mempool_len();
         let prepared = consensus.prepare_aleph_bft_envelope_group(envelopes.clone())?;
         let admission = prepared.admission();
@@ -627,6 +645,7 @@ impl FederationNodeRuntime {
             return Ok(response);
         }
 
+        let envelope = self.stamp_for_session(envelope, consensus.aleph_bft_status()?.session)?;
         let queued_before = consensus.pending_mempool_len();
         let prepared = match consensus.prepare_aleph_bft_envelope(envelope.clone()) {
             Ok(prepared) => prepared,

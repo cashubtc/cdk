@@ -82,13 +82,8 @@ all record that yet.
 
 ### Prerequisites, in order
 
-1. **Replay guard without journal bodies (decision A).** Either:
-   - *permanent compact index*: keep operation ids and conflict keys forever in a
-     narrow table (about 40 bytes per operation), or
-   - *validity window*: envelopes carry the AlephBFT session they were created
-     in, admission rejects envelopes older than a fixed number of sessions, and
-     ids and keys older than the window are deleted. This bounds the guard but
-     changes the envelope format (cut-through) and makes slow clients resubmit.
+1. **Replay guard without journal bodies: validity window (decided, implemented).**
+   See "Validity window" below.
 2. **Outpoint tombstones for spent UTXOs**, kept forever, so a replayed deposit
    observation cannot recreate a pruned UTXO.
 3. **Bark readers off the full journal.** Reconcile, the recovery driver and the
@@ -106,6 +101,57 @@ all record that yet.
 
 Steps 1 to 3 are useful on their own. Steps 4 to 6 must land together: no
 member may delete bodies until every member can install a state transfer.
+
+## Validity window
+
+Decision A was the validity window. Implemented:
+
+- `FederationOperationEnvelope` has a `session` field. It is not part of the
+  operation id, so a retried client request keeps its id and its idempotent
+  response, but it is covered by the author's authorization signature
+  (authorization transcript `v2`). The envelope version is now 7.
+- The submission funnel (`cdk-federation/src/operation_pipeline.rs`) stamps
+  every envelope this member authored with the active AlephBFT session and signs
+  it again before it enters the mempool. Envelopes authored by other members
+  keep their stamp.
+- Finalization marks an envelope `RejectedInvalidOperation` unless the unit's
+  session is within `[session, session + FEDERATION_OPERATION_VALIDITY_SESSIONS]`
+  (16). Every member computes this from the finalized bytes, and startup
+  recovery checks the stored status with the same rule.
+
+Consequences:
+
+- Duplicate detection by operation id only needs operations ordered in the last
+  `FEDERATION_OPERATION_VALIDITY_SESSIONS` sessions. The retention floor must
+  therefore also stay at or below the first journal index of session
+  `current - FEDERATION_OPERATION_VALIDITY_SESSIONS`.
+- An operation still pending when its window closes is rejected at finalization.
+  Its waiter receives the rejection, and the caller submits again with a fresh
+  stamp.
+- Peer-to-peer operation submission is test-only. In production every envelope
+  enters consensus through its author's funnel, so it is always stamped.
+
+### Replay guard per operation kind, once ids outside the window are forgotten
+
+Only a member can stamp an envelope. For kinds bound to an author, only that
+author can; for the others, any member can, so a Byzantine member could re-wrap
+an old operation in a fresh session. What then stops it applying twice:
+
+| Kind | Re-stampable by | Guard after the window |
+|---|---|---|
+| `ChainObservation`, `MintQuotePayment`, `MeltQuotePayment`, `TransactionBroadcastObservation`, `Application` with an author | Author only | Projection state per observer, plus outpoint tombstones for deposits (prerequisite 2) |
+| `TransactionProposal` | Proposer only | `accept_transaction` returns `Existing` for a known proposal; batch lineage heads |
+| `Mint` | Any member | Issued-quote check and already-signed blinded messages in the mint database |
+| `Melt` | Any member | Melt quote state in the mint database |
+| `Swap` | Any member | Spent proofs in the mint database |
+| `MintQuote`, `MeltQuote` | Any member | Existing quote rows in the mint database |
+| `KeysetRotation` | Any member | Keyset state |
+| `AddressAllocation` | Any member | `apply` returns `Existing` for a known quote |
+| `TransactionSigned`, `TransactionBroadcastIntent` | Any member | `Existing` for a known transaction; rejected once the transaction is pruned |
+
+Each row must be confirmed by a test that replays the operation with a fresh
+stamp before step 6 deletes any journal row. Conflict keys follow the same
+window: they can be deleted together with the operation ids.
 
 ## Not retained-history work
 

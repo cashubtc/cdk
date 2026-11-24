@@ -437,6 +437,24 @@ impl FederationRuntimeConfig {
             .expect("validated federation identity key signs operation envelopes")
     }
 
+    /// Stamp this member's envelope with the active AlephBFT `session` and
+    /// sign it again, so it is valid for the full window from now.
+    ///
+    /// An envelope authored by another member keeps its stamp: only its author
+    /// can re-stamp it.
+    pub fn stamp_operation_envelope(
+        &self,
+        envelope: FederationOperationEnvelope,
+        session: u64,
+    ) -> Result<FederationOperationEnvelope, Error> {
+        match envelope.authorization {
+            Some(authorization) if authorization.author == self.private_config.member_id => {
+                Ok(envelope.for_session(session, &self.private_config)?)
+            }
+            _ => Ok(envelope),
+        }
+    }
+
     /// Build the consensus operation for creating a mint quote.
     #[must_use]
     pub fn mint_quote_operation<Q>(

@@ -789,7 +789,7 @@ fn established_wire_replays_with_stable_conflicts_and_materialized_keys() {
     let wire = serde_json::to_value(&envelope).expect("established envelope wire");
     assert_eq!(
         wire.get("version").and_then(serde_json::Value::as_u64),
-        Some(6)
+        Some(7)
     );
     assert_eq!(
         wire.pointer("/operation/type")

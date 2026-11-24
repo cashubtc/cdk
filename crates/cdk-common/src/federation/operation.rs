@@ -33,10 +33,20 @@ use crate::{
 
 const FEDERATION_OPERATION_HASH_VERSION: &[u8] = b"cdk-federation-operation-v1";
 const FEDERATION_OPERATION_AUTHORIZATION_VERSION: &[u8] =
-    b"cdk-federation-operation-authorization-v1";
+    b"cdk-federation-operation-authorization-v2";
+
+/// Number of AlephBFT sessions after its stamped session in which an operation
+/// envelope may still be ordered.
+///
+/// An envelope stamped with session `s` is valid only in sessions `s` through
+/// `s + FEDERATION_OPERATION_VALIDITY_SESSIONS`. The stamp is covered by the
+/// author's signature, so only the author can re-stamp an operation. Duplicate
+/// detection by operation id therefore only needs the operations ordered within
+/// the window; older replays are rejected by the window itself.
+pub const FEDERATION_OPERATION_VALIDITY_SESSIONS: u64 = 16;
 
 /// Current federation operation envelope format, shared by every operation kind.
-pub const FEDERATION_OPERATION_VERSION: u16 = 6;
+pub const FEDERATION_OPERATION_VERSION: u16 = 7;
 
 /// Maximum canonical operation envelope size admitted into federation consensus.
 ///
@@ -1933,6 +1943,12 @@ pub struct FederationOperationEnvelope {
     pub federation_id: FederationId,
     /// Operation payload.
     pub operation: FederationOperation,
+    /// AlephBFT session the authoring member stamped the envelope in.
+    ///
+    /// Not part of the operation id, so a retried request keeps its id, but
+    /// covered by the authorization signature. See
+    /// [`FEDERATION_OPERATION_VALIDITY_SESSIONS`].
+    pub session: u64,
     /// Receiver-independent member authorization required at consensus admission.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authorization: Option<FederationOperationAuthorization>,
@@ -1947,8 +1963,27 @@ impl FederationOperationEnvelope {
             version,
             federation_id,
             operation,
+            session: 0,
             authorization: None,
         }
+    }
+
+    /// Stamp the envelope with `session` and sign it as this member.
+    pub fn for_session(
+        mut self,
+        session: u64,
+        private_config: &MemberConfigPrivate,
+    ) -> Result<Self> {
+        self.session = session;
+        self.authorize(private_config)
+    }
+
+    /// Whether this envelope may be ordered in `session`.
+    #[must_use]
+    pub fn is_valid_in_session(&self, session: u64) -> bool {
+        session
+            .checked_sub(self.session)
+            .is_some_and(|age| age <= FEDERATION_OPERATION_VALIDITY_SESSIONS)
     }
 
     /// Sign this operation with the authoring federation member's identity key.
@@ -2112,6 +2147,7 @@ impl FederationOperationEnvelope {
         let mut transcript = Vec::new();
         append_hash_bytes(&mut transcript, FEDERATION_OPERATION_AUTHORIZATION_VERSION);
         append_hash_bytes(&mut transcript, &author.get().to_be_bytes());
+        append_hash_bytes(&mut transcript, &self.session.to_be_bytes());
         append_hash_bytes(&mut transcript, &self.unsigned_canonical_bytes()?);
         Ok(transcript)
     }
@@ -2514,7 +2550,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_operation_encoding_matches_v6_golden_vector() {
+    fn canonical_operation_encoding_matches_v7_golden_vector() {
         let envelope = envelope(mint_operation(
             "quote-golden",
             vec![output(
@@ -2530,12 +2566,12 @@ mod tests {
             concat!(
                 r#"{"federation_id":"0707070707070707070707070707070707070707070707070707070707070707","#,
                 r#""operation":{"data":{"request":{"data":{"outputs":[{"B_":"0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41","#,
-                r#""amount":1,"id":"00bfa73302d12ffd"}],"quote":"quote-golden"},"type":"single"}},"type":"mint"},"version":6}"#
+                r#""amount":1,"id":"00bfa73302d12ffd"}],"quote":"quote-golden"},"type":"single"}},"type":"mint"},"session":0,"version":7}"#
             )
         );
         assert_eq!(
             envelope.operation_id().expect("operation id").to_hex(),
-            "5ea20e90a36ab5621c7c8310f47d836bf5fc0398b743ccd4b6b94ae0e0d9c354"
+            "e8c7ebc7e5c36bf92dd9c1d8720b4996fb7e7dc25321221149f7a4436f3725f4"
         );
     }
 
@@ -2695,12 +2731,12 @@ mod tests {
                 r#"{"federation_id":"0707070707070707070707070707070707070707070707070707070707070707","#,
                 r#""operation":{"data":{"application_id":"0909090909090909090909090909090909090909090909090909090909090909","#,
                 r#""conflict_keys":[],"operation_kind":"test_operation","payload":{"version":1},"state_keys":[],"version":1},"#,
-                r#""type":"application"},"version":6}"#
+                r#""type":"application"},"session":0,"version":7}"#
             )
         );
         assert_eq!(
             envelope.operation_id().expect("operation ID").to_hex(),
-            "156807cc736360f993d838e8769ac08146fc1d65fe54dd321c458b3d411068c5"
+            "05b894ba46da4062305a476c7951262fb47288e53dfc503d6679ac327551ba7c"
         );
 
         envelope.version = 5;
