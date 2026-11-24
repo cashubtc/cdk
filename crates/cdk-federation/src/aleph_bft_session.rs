@@ -17,13 +17,16 @@ use cdk_http_client::Transport;
 use futures::channel::oneshot;
 use futures::future::join_all;
 use futures::FutureExt;
-#[cfg(any(test, feature = "test-utils"))]
-use tokio::sync::Notify;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
+mod faults;
+
 use crate::FederationNode;
 
+#[cfg(any(test, feature = "test-utils"))]
+pub use self::faults::TestAlephBftSessionFaults;
+pub use self::faults::{AlephBftSessionFaults, NoAlephBftSessionFaults};
 use super::aleph_bft_network::{
     run_cdk_aleph_bft_network_pump_tick_with_retry_queue_and_first_outbound,
     CdkAlephBftNetworkInboundHandle, CdkAlephBftNetworkPumpConfig, CdkAlephBftNetworkRetryQueue,
@@ -65,20 +68,7 @@ pub struct FederationAlephBftLiveSessionOptions {
     automatic_rotation_limit: Option<usize>,
     replay_target_next_unit_index_by_member: BTreeMap<MemberId, u64>,
     aleph_bft_channel_capacity: usize,
-    #[cfg(any(test, feature = "test-utils"))]
-    panic_session_task: bool,
-    #[cfg(any(test, feature = "test-utils"))]
-    fail_before_task_spawn: bool,
-    #[cfg(any(test, feature = "test-utils"))]
-    fail_next_finalized_payload_apply: bool,
-    #[cfg(any(test, feature = "test-utils"))]
-    panic_network_pump_task: bool,
-    #[cfg(any(test, feature = "test-utils"))]
-    fail_automatic_rotation_start: bool,
-    #[cfg(any(test, feature = "test-utils"))]
-    publication_pause: Option<(Arc<Notify>, Arc<Notify>)>,
-    #[cfg(any(test, feature = "test-utils"))]
-    root_task_activation_observer: Option<Arc<AtomicBool>>,
+    faults: Arc<dyn AlephBftSessionFaults>,
 }
 
 impl FederationAlephBftLiveSessionOptions {
@@ -148,45 +138,11 @@ impl FederationAlephBftLiveSessionOptions {
         self.automatic_rotation_limit
     }
 
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn with_panicking_session_task(mut self) -> Self {
-        self.panic_session_task = true;
-        self
-    }
-
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn with_publication_pause(mut self, reached: Arc<Notify>, release: Arc<Notify>) -> Self {
-        self.publication_pause = Some((reached, release));
-        self
-    }
-
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn with_root_task_activation_observer(mut self, observer: Arc<AtomicBool>) -> Self {
-        self.root_task_activation_observer = Some(observer);
-        self
-    }
-
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn with_pre_spawn_failure(mut self) -> Self {
-        self.fail_before_task_spawn = true;
-        self
-    }
-
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn with_finalized_payload_apply_failure(mut self) -> Self {
-        self.fail_next_finalized_payload_apply = true;
-        self
-    }
-
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn with_panicking_network_pump_task(mut self) -> Self {
-        self.panic_network_pump_task = true;
-        self
-    }
-
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn with_automatic_rotation_start_failure(mut self) -> Self {
-        self.fail_automatic_rotation_start = true;
+    /// Inject session faults; production sessions keep the default, which
+    /// injects none.
+    #[must_use]
+    pub fn with_faults(mut self, faults: Arc<dyn AlephBftSessionFaults>) -> Self {
+        self.faults = faults;
         self
     }
 
@@ -197,13 +153,7 @@ impl FederationAlephBftLiveSessionOptions {
     pub fn after_automatic_rotation(&self) -> Self {
         let mut next = self.clone();
         next.replay_target_next_unit_index_by_member.clear();
-        #[cfg(any(test, feature = "test-utils"))]
-        {
-            next.fail_before_task_spawn = next.fail_automatic_rotation_start;
-            next.fail_automatic_rotation_start = false;
-            next.publication_pause = None;
-            next.root_task_activation_observer = None;
-        }
+        next.faults = self.faults.after_automatic_rotation();
         if let Some(limit) = next.automatic_rotation_limit {
             let remaining = limit.saturating_sub(1);
             if remaining == 0 {
@@ -235,20 +185,7 @@ impl Default for FederationAlephBftLiveSessionOptions {
             automatic_rotation_limit: None,
             replay_target_next_unit_index_by_member: BTreeMap::new(),
             aleph_bft_channel_capacity: crate::FEDERATION_ALEPH_BFT_CHANNEL_CAPACITY,
-            #[cfg(any(test, feature = "test-utils"))]
-            panic_session_task: false,
-            #[cfg(any(test, feature = "test-utils"))]
-            fail_before_task_spawn: false,
-            #[cfg(any(test, feature = "test-utils"))]
-            fail_next_finalized_payload_apply: false,
-            #[cfg(any(test, feature = "test-utils"))]
-            panic_network_pump_task: false,
-            #[cfg(any(test, feature = "test-utils"))]
-            fail_automatic_rotation_start: false,
-            #[cfg(any(test, feature = "test-utils"))]
-            publication_pause: None,
-            #[cfg(any(test, feature = "test-utils"))]
-            root_task_activation_observer: None,
+            faults: Arc::new(NoAlephBftSessionFaults),
         }
     }
 }
@@ -759,8 +696,7 @@ where
             "Could not create AlephBFT live session peer client: {err}"
         ))
     })?;
-    #[cfg(any(test, feature = "test-utils"))]
-    if options.fail_before_task_spawn {
+    if options.faults.fail_before_task_spawn() {
         return Err(cdk::Error::Custom(
             "injected AlephBFT pre-spawn startup failure".to_string(),
         ));
@@ -779,20 +715,16 @@ where
     let session_activation = activation_receiver.clone();
     let termination_requested = Arc::new(AtomicBool::new(false));
     let session_termination_requested = termination_requested.clone();
-    #[cfg(any(test, feature = "test-utils"))]
-    let panic_session_task = options.panic_session_task;
-    #[cfg(any(test, feature = "test-utils"))]
-    let root_task_activation_observer = options.root_task_activation_observer.clone();
+    let panic_session_task = options.faults.panic_session_task();
+    let root_task_activation_observer = options.faults.root_task_activation_observer();
     let session_task = tokio::spawn(async move {
         if !await_aleph_bft_session_activation(session_activation).await {
             return;
         }
-        #[cfg(any(test, feature = "test-utils"))]
         if let Some(observer) = root_task_activation_observer {
             observer.store(true, Ordering::SeqCst);
         }
         let session = async move {
-            #[cfg(any(test, feature = "test-utils"))]
             if panic_session_task {
                 panic!("injected AlephBFT root session task panic");
             }
@@ -845,14 +777,12 @@ where
     let pump_keychain = keychain.clone();
     let network_event_sender = essential_event_sender.clone();
     let network_activation = activation_receiver.clone();
-    #[cfg(any(test, feature = "test-utils"))]
-    let panic_network_pump_task = options.panic_network_pump_task;
+    let panic_network_pump_task = options.faults.panic_network_pump_task();
     let network_pump_task = tokio::spawn(async move {
         if !await_aleph_bft_session_activation(network_activation).await {
             return;
         }
         let pump = async move {
-            #[cfg(any(test, feature = "test-utils"))]
             if panic_network_pump_task {
                 panic!("injected AlephBFT network pump task panic");
             }
@@ -989,10 +919,7 @@ where
     let apply_state = state.clone();
     let apply_event_sender = essential_event_sender;
     let apply_activation = activation_receiver;
-    #[cfg(any(test, feature = "test-utils"))]
-    let fail_next_finalized_payload_apply = options.fail_next_finalized_payload_apply;
-    #[cfg(not(any(test, feature = "test-utils")))]
-    let fail_next_finalized_payload_apply = false;
+    let fail_next_finalized_payload_apply = options.faults.fail_finalized_payload_apply();
     let apply_task = tokio::spawn(async move {
         if !await_aleph_bft_session_activation(apply_activation).await {
             return;
@@ -1026,8 +953,7 @@ where
             }
         }
     });
-    #[cfg(any(test, feature = "test-utils"))]
-    let publication_pause = options.publication_pause.clone();
+    let publication_pause = options.faults.publication_pause();
     let completion_watcher_task = spawn_federation_aleph_bft_session_completion_watcher(
         state.clone(),
         sync_config,
@@ -1056,7 +982,6 @@ where
         })),
         termination_requested,
     });
-    #[cfg(any(test, feature = "test-utils"))]
     if let Some((reached, release)) = publication_pause {
         reached.notify_one();
         release.notified().await;

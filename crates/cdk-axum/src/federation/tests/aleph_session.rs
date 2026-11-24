@@ -97,7 +97,10 @@ async fn aleph_bft_session_supervisor_partial_startup_failure_publishes_no_tasks
     .await;
     let options =
         FederationAlephBftLiveSessionOptions::new(CdkAlephBftNetworkPumpConfig::default())
-            .with_pre_spawn_failure();
+            .with_faults(Arc::new(
+                cdk_federation::aleph_bft_session::TestAlephBftSessionFaults::default()
+                    .with_pre_spawn_failure(),
+            ));
 
     start_federation_aleph_bft_live_session_with_options_and_transport(
         &state,
@@ -126,7 +129,10 @@ async fn aleph_bft_session_supervisor_halts_and_cleans_up_after_root_task_panic(
     .await;
     let options =
         FederationAlephBftLiveSessionOptions::new(CdkAlephBftNetworkPumpConfig::default())
-            .with_panicking_session_task();
+            .with_faults(Arc::new(
+                cdk_federation::aleph_bft_session::TestAlephBftSessionFaults::default()
+                    .with_panicking_session_task(),
+            ));
     let supervisor = start_federation_aleph_bft_live_session_with_options_and_transport(
         &state,
         FederationPeerSyncConfig::default(),
@@ -173,12 +179,15 @@ async fn aleph_bft_session_tasks_wait_for_supervisor_publication_before_activati
     let root_task_activated = Arc::new(AtomicBool::new(false));
     let options =
         FederationAlephBftLiveSessionOptions::new(CdkAlephBftNetworkPumpConfig::default())
-            .with_panicking_session_task()
-            .with_publication_pause(
-                Arc::clone(&publication_reached),
-                Arc::clone(&publication_release),
-            )
-            .with_root_task_activation_observer(Arc::clone(&root_task_activated));
+            .with_faults(Arc::new(
+                cdk_federation::aleph_bft_session::TestAlephBftSessionFaults::default()
+                    .with_panicking_session_task()
+                    .with_publication_pause(
+                        Arc::clone(&publication_reached),
+                        Arc::clone(&publication_release),
+                    )
+                    .with_root_task_activation_observer(Arc::clone(&root_task_activated)),
+            ));
     let observed_state = state.clone();
     let start_state = state;
     let start_task = tokio::spawn(async move {
@@ -263,11 +272,14 @@ async fn aleph_bft_session_halt_during_construction_aborts_without_publication()
     let root_task_activated = Arc::new(AtomicBool::new(false));
     let options =
         FederationAlephBftLiveSessionOptions::new(CdkAlephBftNetworkPumpConfig::default())
-            .with_publication_pause(
-                Arc::clone(&publication_reached),
-                Arc::clone(&publication_release),
-            )
-            .with_root_task_activation_observer(Arc::clone(&root_task_activated));
+            .with_faults(Arc::new(
+                cdk_federation::aleph_bft_session::TestAlephBftSessionFaults::default()
+                    .with_publication_pause(
+                        Arc::clone(&publication_reached),
+                        Arc::clone(&publication_release),
+                    )
+                    .with_root_task_activation_observer(Arc::clone(&root_task_activated)),
+            ));
     let observed_state = state.clone();
     let start_state = state;
     let start_task = tokio::spawn(async move {
@@ -319,7 +331,10 @@ async fn aleph_bft_session_supervisor_halts_after_network_pump_panic() {
     .await;
     let options =
         FederationAlephBftLiveSessionOptions::new(CdkAlephBftNetworkPumpConfig::default())
-            .with_panicking_network_pump_task();
+            .with_faults(Arc::new(
+                cdk_federation::aleph_bft_session::TestAlephBftSessionFaults::default()
+                    .with_panicking_network_pump_task(),
+            ));
     let supervisor = start_federation_aleph_bft_live_session_with_options_and_transport(
         &state,
         FederationPeerSyncConfig::default(),
@@ -359,7 +374,10 @@ async fn aleph_bft_non_retryable_finalized_payload_failure_halts_exact_generatio
         },
         500,
     )
-    .with_finalized_payload_apply_failure();
+    .with_faults(Arc::new(
+        cdk_federation::aleph_bft_session::TestAlephBftSessionFaults::default()
+            .with_finalized_payload_apply_failure(),
+    ));
     let session = start_two_member_aleph_bft_live_session(options)
         .await
         .expect("start apply-failure live session");
@@ -1344,7 +1362,10 @@ async fn aleph_bft_automatic_rotation_failure_halts_without_live_resources() {
         6,
     )
     .with_automatic_rotation_limit(1)
-    .with_automatic_rotation_start_failure();
+    .with_faults(Arc::new(
+        cdk_federation::aleph_bft_session::TestAlephBftSessionFaults::default()
+            .with_automatic_rotation_start_failure(),
+    ));
     let session = start_two_member_aleph_bft_live_session(options)
         .await
         .expect("start rotation-failure live session");

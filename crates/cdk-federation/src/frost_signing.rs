@@ -861,17 +861,7 @@ fn frost_transport_error_is_retryable(error: &anyhow::Error) -> bool {
 pub struct FederationFrostSigningRuntime {
     managers: Arc<BTreeMap<u64, Arc<tokio::sync::Mutex<ParticipantKeyManager>>>>,
     aggregate_results: Arc<tokio::sync::Mutex<AggregateResultCache>>,
-    #[cfg(any(test, feature = "test-utils"))]
-    test_authorizations: Arc<
-        BTreeMap<
-            [u8; 32],
-            (
-                SigningSessionContext,
-                AuthorizationRequest,
-                SigningDerivation,
-            ),
-        >,
-    >,
+    authorizer: Arc<dyn SigningAuthorizer>,
 }
 
 impl std::fmt::Debug for FederationFrostSigningRuntime {
@@ -971,8 +961,7 @@ impl FederationFrostSigningRuntime {
         Ok(Some(Self {
             managers: Arc::new(managers),
             aggregate_results: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
-            #[cfg(any(test, feature = "test-utils"))]
-            test_authorizations: Arc::new(BTreeMap::new()),
+            authorizer: Arc::new(MintSigningAuthorizer),
         }))
     }
 
@@ -990,12 +979,12 @@ impl FederationFrostSigningRuntime {
         Self {
             managers: Arc::new(managers),
             aggregate_results: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
-            test_authorizations: Arc::new(
+            authorizer: Arc::new(FixedSigningAuthorizations(
                 authorizations
                     .into_iter()
                     .map(|value| (value.0.session_id().to_bytes(), value))
                     .collect(),
-            ),
+            )),
         }
     }
 
@@ -1259,27 +1248,9 @@ impl FederationFrostSigningRuntime {
         context: &SigningSessionContext,
         authorization: &AuthorizationRequest,
     ) -> Result<ValidatedCdkAuthorization, cdk::Error> {
-        #[cfg(any(test, feature = "test-utils"))]
-        if let Some((accepted_context, accepted_authorization, derivation)) = self
-            .test_authorizations
-            .get(&context.session_id().to_bytes())
-        {
-            if accepted_context != context || accepted_authorization != authorization {
-                return Err(frost_invalid("test authorization binding mismatch").into());
-            }
-            return Ok(ValidatedCdkAuthorization {
-                derivation: derivation.clone(),
-            });
-        }
-        #[cfg(feature = "federation-bdk")]
-        {
-            validate_cdk_authorization(mint, context, authorization).await
-        }
-        #[cfg(not(feature = "federation-bdk"))]
-        {
-            let _ = (mint, context, authorization);
-            Err(frost_invalid("CDK on-chain FROST application is disabled").into())
-        }
+        self.authorizer
+            .validate_onchain(mint, context, authorization)
+            .await
     }
 
     async fn validate_signing_authorization(
@@ -1422,213 +1393,200 @@ impl FederationFrostSigningRuntime {
         context: &SigningSessionContext,
         authorization: &AuthorizationRequest,
     ) -> Result<ValidatedCdkAuthorization, cdk::Error> {
-        #[cfg(any(test, feature = "test-utils"))]
-        if let Some((accepted_context, accepted_authorization, derivation)) = self
-            .test_authorizations
-            .get(&context.session_id().to_bytes())
+        self.authorizer
+            .validate_bark(mint, context, authorization)
+            .await
+    }
+}
+
+/// The mint's own check that a Bark custody signing request is bound to an
+/// accepted action plan and attempt.
+#[cfg(feature = "federation-bark")]
+async fn validate_bark_authorization(
+    mint: &Mint,
+    context: &SigningSessionContext,
+    authorization: &AuthorizationRequest,
+) -> Result<ValidatedCdkAuthorization, cdk::Error> {
+    let typed = FederationBarkFrostAuthorization::from_bytes(authorization.payload())?;
+    let entry = mint
+        .localstore()
+        .get_federation_journal_entry_by_operation_id(typed.reference.accepted_operation_id)
+        .await?
+        .ok_or_else(|| frost_invalid("accepted Bark operation is unavailable"))?;
+    let runtime = mint
+        .federation_config()
+        .ok_or_else(|| frost_invalid("federation configuration is unavailable"))?;
+    let public_config = runtime.public_config();
+    typed
+        .reference
+        .validate_accepted_operation(public_config, &entry)?;
+    let operation = super::bark_operation(&entry.envelope.operation)?;
+    let (plan_entry, authorization_attempt) = match &operation {
+        cdk::federation::FederationBarkOperation::ActionPlan(plan) => (entry.clone(), plan.attempt),
+        cdk::federation::FederationBarkOperation::ActionTransition(transition)
+            if transition.phase == FederationBarkSemanticPhase::SigningAttemptAdvanced =>
         {
-            if accepted_context != context || accepted_authorization != authorization {
-                return Err(frost_invalid("test Bark authorization binding mismatch").into());
-            }
-            return Ok(ValidatedCdkAuthorization {
-                derivation: derivation.clone(),
-            });
-        }
-        {
-            let typed = FederationBarkFrostAuthorization::from_bytes(authorization.payload())?;
-            let entry = mint
-                .localstore()
-                .get_federation_journal_entry_by_operation_id(typed.reference.accepted_operation_id)
-                .await?
-                .ok_or_else(|| frost_invalid("accepted Bark operation is unavailable"))?;
-            let runtime = mint
-                .federation_config()
-                .ok_or_else(|| frost_invalid("federation configuration is unavailable"))?;
-            let public_config = runtime.public_config();
-            typed
-                .reference
-                .validate_accepted_operation(public_config, &entry)?;
-            let operation = super::bark_operation(&entry.envelope.operation)?;
-            let (plan_entry, authorization_attempt) = match &operation {
-                cdk::federation::FederationBarkOperation::ActionPlan(plan) => {
-                    (entry.clone(), plan.attempt)
-                }
-                cdk::federation::FederationBarkOperation::ActionTransition(transition)
-                    if transition.phase == FederationBarkSemanticPhase::SigningAttemptAdvanced =>
-                {
-                    (
-                        mint.localstore()
-                            .get_federation_journal_entry_by_operation_id(
-                                transition.plan_operation_id,
-                            )
-                            .await?
-                            .ok_or_else(|| {
-                                frost_invalid("accepted Bark action plan is unavailable")
-                            })?,
-                        transition.attempt,
-                    )
-                }
-                _ => return Err(frost_invalid("Bark custody reference has no action plan").into()),
-            };
-            let cdk::federation::FederationBarkOperation::ActionPlan(plan) =
-                super::bark_operation(&plan_entry.envelope.operation)?
-            else {
-                return Err(frost_invalid("Bark custody plan reference is invalid").into());
-            };
-            let plan_commitment =
-                cdk::federation::FederationBarkOperation::ActionPlan(plan.clone()).commitment()?;
-            if let cdk::federation::FederationBarkOperation::ActionTransition(transition) =
-                &operation
-            {
-                let signer_set = cdk::federation::federation_bark_signer_set_for_attempt(
-                    public_config,
-                    transition.attempt,
-                )?;
-                let expected =
-                    cdk::federation::FederationBarkActionTransition::signing_attempt_advanced(
-                        plan_entry.operation_id,
-                        transition.predecessor_operation_id,
-                        &plan,
-                        transition.actor,
-                        transition.attempt,
-                        signer_set,
-                    )?;
-                if transition != &expected {
-                    return Err(frost_invalid(
-                        "Bark custody retry differs from the deterministic accepted attempt",
-                    )
-                    .into());
-                }
-            }
-            if !matches!(
-                plan.kind,
-                cdk::federation::FederationBarkActionKind::IncomingClaim
-                    | cdk::federation::FederationBarkActionKind::LightningSend
-                    | cdk::federation::FederationBarkActionKind::FailedSendRevocation
-                    | cdk::federation::FederationBarkActionKind::Refresh
-                    | cdk::federation::FederationBarkActionKind::EmergencyExit
-            ) || !typed
-                .request_transcript
-                .starts_with(&plan_commitment.to_bytes())
-            {
-                return Err(frost_invalid(
-                    "Bark custody transcript is not bound to the accepted action plan",
-                )
-                .into());
-            }
-            let locator_is_input = plan
-                .inputs
-                .iter()
-                .any(|input| input.locator == typed.reference.locator);
-            let locator_is_authorized_output = bark_action_authorizes_output_locator(plan.kind)
-                && plan
-                    .outputs
-                    .iter()
-                    .any(|output| output.locator == typed.reference.locator);
-            if !locator_is_input && !locator_is_authorized_output {
-                return Err(frost_invalid(
-                    "Bark custody locator is not authorized by the accepted action",
-                )
-                .into());
-            }
-            let action_authorization = match plan.kind {
-                cdk::federation::FederationBarkActionKind::LightningSend => {
-                    let payment_hash = plan.payment_hash.ok_or_else(|| {
-                        frost_invalid("accepted Bark send payment hash is missing")
-                    })?;
-                    let mut authorization = plan_commitment.to_bytes().to_vec();
-                    authorization.extend_from_slice(b"bark/lightning-send-authorization/v1");
-                    authorization.extend_from_slice(&payment_hash.to_bytes());
-                    authorization.extend_from_slice(&u64::from(plan.external_amount).to_be_bytes());
-                    authorization.extend_from_slice(&u64::from(plan.fee_amount).to_be_bytes());
-                    for input in &plan.inputs {
-                        authorization.extend_from_slice(&input.vtxo_id.to_bytes());
-                    }
-                    Some(authorization)
-                }
-                cdk::federation::FederationBarkActionKind::FailedSendRevocation => {
-                    let payment_hash = plan.payment_hash.ok_or_else(|| {
-                        frost_invalid("accepted Bark revocation payment hash is missing")
-                    })?;
-                    let mut authorization = plan_commitment.to_bytes().to_vec();
-                    authorization.extend_from_slice(b"bark/lightning-revocation-authorization/v1");
-                    authorization.extend_from_slice(&payment_hash.to_bytes());
-                    for input in &plan.inputs {
-                        authorization.extend_from_slice(&input.vtxo_id.to_bytes());
-                    }
-                    Some(authorization)
-                }
-                cdk::federation::FederationBarkActionKind::IncomingClaim
-                | cdk::federation::FederationBarkActionKind::Refresh
-                | cdk::federation::FederationBarkActionKind::EmergencyExit => None,
-            };
-            if action_authorization
-                .as_ref()
-                .is_some_and(|authorization| !typed.request_transcript.starts_with(authorization))
-            {
-                return Err(frost_invalid(
-                    "Bark custody request differs from the accepted action authorization",
-                )
-                .into());
-            }
-            wait_for_bark_custody_projection(mint, &plan, authorization_attempt).await?;
-            let wallet = public_config
-                .frost_wallet
-                .as_ref()
-                .ok_or_else(|| frost_invalid("FROST wallet configuration is unavailable"))?;
-            let application = cdk::federation::federation_bark_application(public_config)?
-                .ok_or_else(|| frost_invalid("Bark application configuration is unavailable"))?;
-            let adapter = cdk_frost_bark::FrostBark::new(
-                application.derived_public_package(public_config, &wallet.root)?,
+            (
+                mint.localstore()
+                    .get_federation_journal_entry_by_operation_id(transition.plan_operation_id)
+                    .await?
+                    .ok_or_else(|| frost_invalid("accepted Bark action plan is unavailable"))?,
+                transition.attempt,
             )
-            .map_err(|_| {
-                cdk::Error::from(frost_invalid(
-                    "Bark FROST adapter rejected the derived public package",
-                ))
-            })?;
-            let locator = cdk_frost_bark::BarkKeyLocator::vtxo(typed.reference.locator.index);
-            let derived = adapter
-                .derive(locator)
-                .map_err(|_| cdk::Error::from(frost_invalid("Bark VTXO key derivation failed")))?;
-            let derivation = typed.signing_derivation()?;
-            let expected_protocol = match typed.reference.protocol {
-                FederationBarkCustodyProtocol::Frost => CustodyProtocol::OrdinaryFrost,
-                FederationBarkCustodyProtocol::Musig2 => CustodyProtocol::VirtualMusig2,
-                FederationBarkCustodyProtocol::ThresholdDh => CustodyProtocol::ThresholdDh,
-            };
-            let expected_signers = typed
-                .reference
-                .signer_set
-                .iter()
-                .map(|member| cdk_frost::MemberId::new(member.get()))
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(frost_boundary_error)?;
-            let reference_commitment = typed.reference.commitment()?.to_bytes();
-            if authorization.application_id() != adapter.application().registration().id()
-                || authorization.application_key_epoch()
-                    != adapter.application().registration().key_epoch()
-                || authorization.derivation_version()
-                    != adapter.application().registration().derivation_version()
-                || authorization.session_id() != context.session_id()
-                || context.protocol() != expected_protocol
-                || context.federation_id() != public_config.federation_id.to_bytes()
-                || context.root_epoch().get() != typed.reference.root_key_epoch
-                || context.registration() != adapter.application().registration()
-                || context.derivation_binding() != derivation.binding()
-                || context.authorization_reference() != reference_commitment
-                || context.message_commitment() != typed.message
-                || context.attempt() != typed.reference.attempt
-                || context.signer_set() != expected_signers
-                || derivation != *derived.signing_derivation()
-            {
-                return Err(frost_invalid(
-                    "Bark custody context differs from the accepted authorization",
-                )
-                .into());
-            }
-            Ok(ValidatedCdkAuthorization { derivation })
+        }
+        _ => return Err(frost_invalid("Bark custody reference has no action plan").into()),
+    };
+    let cdk::federation::FederationBarkOperation::ActionPlan(plan) =
+        super::bark_operation(&plan_entry.envelope.operation)?
+    else {
+        return Err(frost_invalid("Bark custody plan reference is invalid").into());
+    };
+    let plan_commitment =
+        cdk::federation::FederationBarkOperation::ActionPlan(plan.clone()).commitment()?;
+    if let cdk::federation::FederationBarkOperation::ActionTransition(transition) = &operation {
+        let signer_set = cdk::federation::federation_bark_signer_set_for_attempt(
+            public_config,
+            transition.attempt,
+        )?;
+        let expected = cdk::federation::FederationBarkActionTransition::signing_attempt_advanced(
+            plan_entry.operation_id,
+            transition.predecessor_operation_id,
+            &plan,
+            transition.actor,
+            transition.attempt,
+            signer_set,
+        )?;
+        if transition != &expected {
+            return Err(frost_invalid(
+                "Bark custody retry differs from the deterministic accepted attempt",
+            )
+            .into());
         }
     }
+    if !matches!(
+        plan.kind,
+        cdk::federation::FederationBarkActionKind::IncomingClaim
+            | cdk::federation::FederationBarkActionKind::LightningSend
+            | cdk::federation::FederationBarkActionKind::FailedSendRevocation
+            | cdk::federation::FederationBarkActionKind::Refresh
+            | cdk::federation::FederationBarkActionKind::EmergencyExit
+    ) || !typed
+        .request_transcript
+        .starts_with(&plan_commitment.to_bytes())
+    {
+        return Err(frost_invalid(
+            "Bark custody transcript is not bound to the accepted action plan",
+        )
+        .into());
+    }
+    let locator_is_input = plan
+        .inputs
+        .iter()
+        .any(|input| input.locator == typed.reference.locator);
+    let locator_is_authorized_output = bark_action_authorizes_output_locator(plan.kind)
+        && plan
+            .outputs
+            .iter()
+            .any(|output| output.locator == typed.reference.locator);
+    if !locator_is_input && !locator_is_authorized_output {
+        return Err(
+            frost_invalid("Bark custody locator is not authorized by the accepted action").into(),
+        );
+    }
+    let action_authorization = match plan.kind {
+        cdk::federation::FederationBarkActionKind::LightningSend => {
+            let payment_hash = plan
+                .payment_hash
+                .ok_or_else(|| frost_invalid("accepted Bark send payment hash is missing"))?;
+            let mut authorization = plan_commitment.to_bytes().to_vec();
+            authorization.extend_from_slice(b"bark/lightning-send-authorization/v1");
+            authorization.extend_from_slice(&payment_hash.to_bytes());
+            authorization.extend_from_slice(&u64::from(plan.external_amount).to_be_bytes());
+            authorization.extend_from_slice(&u64::from(plan.fee_amount).to_be_bytes());
+            for input in &plan.inputs {
+                authorization.extend_from_slice(&input.vtxo_id.to_bytes());
+            }
+            Some(authorization)
+        }
+        cdk::federation::FederationBarkActionKind::FailedSendRevocation => {
+            let payment_hash = plan
+                .payment_hash
+                .ok_or_else(|| frost_invalid("accepted Bark revocation payment hash is missing"))?;
+            let mut authorization = plan_commitment.to_bytes().to_vec();
+            authorization.extend_from_slice(b"bark/lightning-revocation-authorization/v1");
+            authorization.extend_from_slice(&payment_hash.to_bytes());
+            for input in &plan.inputs {
+                authorization.extend_from_slice(&input.vtxo_id.to_bytes());
+            }
+            Some(authorization)
+        }
+        cdk::federation::FederationBarkActionKind::IncomingClaim
+        | cdk::federation::FederationBarkActionKind::Refresh
+        | cdk::federation::FederationBarkActionKind::EmergencyExit => None,
+    };
+    if action_authorization
+        .as_ref()
+        .is_some_and(|authorization| !typed.request_transcript.starts_with(authorization))
+    {
+        return Err(frost_invalid(
+            "Bark custody request differs from the accepted action authorization",
+        )
+        .into());
+    }
+    wait_for_bark_custody_projection(mint, &plan, authorization_attempt).await?;
+    let wallet = public_config
+        .frost_wallet
+        .as_ref()
+        .ok_or_else(|| frost_invalid("FROST wallet configuration is unavailable"))?;
+    let application = cdk::federation::federation_bark_application(public_config)?
+        .ok_or_else(|| frost_invalid("Bark application configuration is unavailable"))?;
+    let adapter = cdk_frost_bark::FrostBark::new(
+        application.derived_public_package(public_config, &wallet.root)?,
+    )
+    .map_err(|_| {
+        cdk::Error::from(frost_invalid(
+            "Bark FROST adapter rejected the derived public package",
+        ))
+    })?;
+    let locator = cdk_frost_bark::BarkKeyLocator::vtxo(typed.reference.locator.index);
+    let derived = adapter
+        .derive(locator)
+        .map_err(|_| cdk::Error::from(frost_invalid("Bark VTXO key derivation failed")))?;
+    let derivation = typed.signing_derivation()?;
+    let expected_protocol = match typed.reference.protocol {
+        FederationBarkCustodyProtocol::Frost => CustodyProtocol::OrdinaryFrost,
+        FederationBarkCustodyProtocol::Musig2 => CustodyProtocol::VirtualMusig2,
+        FederationBarkCustodyProtocol::ThresholdDh => CustodyProtocol::ThresholdDh,
+    };
+    let expected_signers = typed
+        .reference
+        .signer_set
+        .iter()
+        .map(|member| cdk_frost::MemberId::new(member.get()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(frost_boundary_error)?;
+    let reference_commitment = typed.reference.commitment()?.to_bytes();
+    if authorization.application_id() != adapter.application().registration().id()
+        || authorization.application_key_epoch() != adapter.application().registration().key_epoch()
+        || authorization.derivation_version()
+            != adapter.application().registration().derivation_version()
+        || authorization.session_id() != context.session_id()
+        || context.protocol() != expected_protocol
+        || context.federation_id() != public_config.federation_id.to_bytes()
+        || context.root_epoch().get() != typed.reference.root_key_epoch
+        || context.registration() != adapter.application().registration()
+        || context.derivation_binding() != derivation.binding()
+        || context.authorization_reference() != reference_commitment
+        || context.message_commitment() != typed.message
+        || context.attempt() != typed.reference.attempt
+        || context.signer_set() != expected_signers
+        || derivation != *derived.signing_derivation()
+    {
+        return Err(
+            frost_invalid("Bark custody context differs from the accepted authorization").into(),
+        );
+    }
+    Ok(ValidatedCdkAuthorization { derivation })
 }
 
 #[cfg(feature = "federation-bark")]
@@ -1695,6 +1653,118 @@ fn bark_custody_inputs_are_authorized(
 
 struct ValidatedCdkAuthorization {
     derivation: SigningDerivation,
+}
+
+/// Decides whether a signing request is authorized by accepted federation
+/// state. Production uses [`MintSigningAuthorizer`]; tests supply fixed
+/// authorizations instead of a test-only field on the runtime.
+#[async_trait::async_trait]
+trait SigningAuthorizer: Send + Sync {
+    async fn validate_onchain(
+        &self,
+        mint: &Mint,
+        context: &SigningSessionContext,
+        authorization: &AuthorizationRequest,
+    ) -> Result<ValidatedCdkAuthorization, cdk::Error> {
+        validate_onchain_authorization(mint, context, authorization).await
+    }
+
+    #[cfg(feature = "federation-bark")]
+    async fn validate_bark(
+        &self,
+        mint: &Mint,
+        context: &SigningSessionContext,
+        authorization: &AuthorizationRequest,
+    ) -> Result<ValidatedCdkAuthorization, cdk::Error> {
+        validate_bark_authorization(mint, context, authorization).await
+    }
+}
+
+/// The mint's own authorization checks.
+struct MintSigningAuthorizer;
+
+impl SigningAuthorizer for MintSigningAuthorizer {}
+
+/// The mint's own check that an on-chain signing request is bound to an
+/// accepted transaction.
+async fn validate_onchain_authorization(
+    mint: &Mint,
+    context: &SigningSessionContext,
+    authorization: &AuthorizationRequest,
+) -> Result<ValidatedCdkAuthorization, cdk::Error> {
+    #[cfg(feature = "federation-bdk")]
+    {
+        validate_cdk_authorization(mint, context, authorization).await
+    }
+    #[cfg(not(feature = "federation-bdk"))]
+    {
+        let _ = (mint, context, authorization);
+        Err(frost_invalid("CDK on-chain FROST application is disabled").into())
+    }
+}
+
+/// Fixed authorizations keyed by signing session, accepted without consulting
+/// the mint; any other session falls through to the mint's own checks.
+#[cfg(any(test, feature = "test-utils"))]
+struct FixedSigningAuthorizations(
+    BTreeMap<
+        [u8; 32],
+        (
+            SigningSessionContext,
+            AuthorizationRequest,
+            SigningDerivation,
+        ),
+    >,
+);
+
+#[cfg(any(test, feature = "test-utils"))]
+impl FixedSigningAuthorizations {
+    fn fixed(
+        &self,
+        context: &SigningSessionContext,
+        authorization: &AuthorizationRequest,
+    ) -> Result<Option<ValidatedCdkAuthorization>, cdk::Error> {
+        match self.0.get(&context.session_id().to_bytes()) {
+            Some((accepted_context, accepted_authorization, derivation)) => {
+                if accepted_context != context || accepted_authorization != authorization {
+                    return Err(frost_invalid("test authorization binding mismatch").into());
+                }
+                Ok(Some(ValidatedCdkAuthorization {
+                    derivation: derivation.clone(),
+                }))
+            }
+            None => Ok(None),
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+#[async_trait::async_trait]
+impl SigningAuthorizer for FixedSigningAuthorizations {
+    async fn validate_onchain(
+        &self,
+        mint: &Mint,
+        context: &SigningSessionContext,
+        authorization: &AuthorizationRequest,
+    ) -> Result<ValidatedCdkAuthorization, cdk::Error> {
+        match self.fixed(context, authorization)? {
+            Some(validated) => Ok(validated),
+            None => validate_onchain_authorization(mint, context, authorization).await,
+        }
+    }
+
+    #[cfg(feature = "federation-bark")]
+    async fn validate_bark(
+        &self,
+        mint: &Mint,
+        context: &SigningSessionContext,
+        authorization: &AuthorizationRequest,
+    ) -> Result<ValidatedCdkAuthorization, cdk::Error> {
+        match self.fixed(context, authorization)? {
+            Some(validated) => Ok(validated),
+            None => validate_bark_authorization(mint, context, authorization).await,
+        }
+    }
 }
 
 #[cfg(feature = "federation-bdk")]

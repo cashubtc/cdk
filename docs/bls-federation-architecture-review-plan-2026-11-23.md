@@ -731,3 +731,10 @@ Decision: the replay guard is a validity window, not a permanent index.
 - **One delivery path.** Five BLS broadcast and per-receiver blocks and three FROST blocks become two generic helpers, `deliver_broadcast` and `deliver_unicast`, both driven by `FederationDkgDeliveryTracker`, which now tracks the FROST rounds too.
 - **Behaviour change:** FROST messages are no longer re-sent to members that already acknowledged them. A three-member ceremony takes 70 deliveries instead of 97; the tests pin the new counts. A FROST round now advances on acknowledgements gathered across ticks instead of requiring every send in one tick to succeed.
 - **Not moved to `cdk-common`.** The FROST planner stays in `cdk-federation` because it calls the `cdk-frost` DKG functions, and decision 4 is about removing that dependency from `cdk-common`.
+
+### 2026-11-24: package 1, test hooks out of production structs (part 1)
+
+- **AlephBFT session.** Seven `cfg(test)` fields on `FederationAlephBftLiveSessionOptions` (task panics, pre-spawn failure, apply failure, rotation-start failure, publication pause, activation observer) become one `faults: Arc<dyn AlephBftSessionFaults>`. Production uses `NoAlephBftSessionFaults`; tests pass a `TestAlephBftSessionFaults` through `with_faults`. The apply loop no longer carries a production branch on a constant `false`.
+- **FROST signing.** The runtime's test-only map that bypassed authorization in two validators becomes a `SigningAuthorizer` trait object: `MintSigningAuthorizer` runs the mint's checks; the test constructor installs fixed authorizations that fall through to those checks for any other session. The two validators are now free functions.
+- **Setup coordinator.** The `cfg(test)` delay and storage-failure fields become a `SetupOperationFaults` trait object; the test fixture owns the test implementation.
+- **Remaining:** the two finality test flags in `node_runtime.rs` (changed on the state-transfer branch, so done after its merge) and the feature-conditional `allow(dead_code)` markers on the FROST signing path.

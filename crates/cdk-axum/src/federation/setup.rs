@@ -225,11 +225,23 @@ pub struct FederationSetupCoordinatorService {
     shutting_down: AtomicBool,
     active_tasks: AtomicUsize,
     idle: Notify,
-    #[cfg(test)]
-    operation_delay: Mutex<Option<Duration>>,
-    #[cfg(test)]
-    fail_storage: AtomicBool,
+    faults: Arc<dyn SetupOperationFaults>,
 }
+
+/// Fault points in one coordinator operation. Production injects none; tests
+/// delay operations or fail storage through their own implementation.
+#[async_trait::async_trait]
+trait SetupOperationFaults: Send + Sync {
+    /// Run before the operation body; an error ends the operation.
+    async fn before_operation(&self) -> Result<(), FederationSetupHttpError> {
+        Ok(())
+    }
+}
+
+/// The production coordinator: no injected faults.
+struct NoSetupOperationFaults;
+
+impl SetupOperationFaults for NoSetupOperationFaults {}
 
 impl FederationSetupCoordinatorService {
     /// Construct a bounded coordinator for one locally created setup.
@@ -266,10 +278,7 @@ impl FederationSetupCoordinatorService {
             shutting_down: AtomicBool::new(false),
             active_tasks: AtomicUsize::new(0),
             idle: Notify::new(),
-            #[cfg(test)]
-            operation_delay: Mutex::new(None),
-            #[cfg(test)]
-            fail_storage: AtomicBool::new(false),
+            faults: Arc::new(NoSetupOperationFaults),
         })
     }
 
@@ -315,14 +324,7 @@ impl FederationSetupCoordinatorService {
         let mut task = tokio::spawn(async move {
             let _active = active;
             let _permits = permits;
-            #[cfg(test)]
-            if let Some(delay) = *service.operation_delay.lock().await {
-                tokio::time::sleep(delay).await;
-            }
-            #[cfg(test)]
-            if service.fail_storage.load(Ordering::Acquire) {
-                return Err(FederationSetupHttpError::storage());
-            }
+            service.faults.before_operation().await?;
             operation(service).await
         });
         match tokio::time::timeout(self.config.request_deadline, &mut task).await {
@@ -687,13 +689,9 @@ impl FederationSetupCoordinatorService {
     }
 
     #[cfg(test)]
-    async fn set_operation_delay(&self, delay: Option<Duration>) {
-        *self.operation_delay.lock().await = delay;
-    }
-
-    #[cfg(test)]
-    fn set_storage_failure(&self, fail: bool) {
-        self.fail_storage.store(fail, Ordering::Release);
+    fn with_faults(mut self, faults: Arc<dyn SetupOperationFaults>) -> Self {
+        self.faults = faults;
+        self
     }
 }
 
@@ -1517,9 +1515,40 @@ mod tests {
 
     use super::*;
 
+    /// Injected operation delay and storage failure for the coordinator.
+    #[derive(Default)]
+    struct TestSetupOperationFaults {
+        delay: tokio::sync::Mutex<Option<Duration>>,
+        fail_storage: AtomicBool,
+    }
+
+    impl TestSetupOperationFaults {
+        async fn set_operation_delay(&self, delay: Option<Duration>) {
+            *self.delay.lock().await = delay;
+        }
+
+        fn set_storage_failure(&self, fail: bool) {
+            self.fail_storage.store(fail, Ordering::Release);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SetupOperationFaults for TestSetupOperationFaults {
+        async fn before_operation(&self) -> Result<(), FederationSetupHttpError> {
+            if let Some(delay) = *self.delay.lock().await {
+                tokio::time::sleep(delay).await;
+            }
+            if self.fail_storage.load(Ordering::Acquire) {
+                return Err(FederationSetupHttpError::storage());
+            }
+            Ok(())
+        }
+    }
+
     struct SetupHttpFixture {
         database: Arc<MintSqliteDatabase>,
         service: Arc<FederationSetupCoordinatorService>,
+        faults: Arc<TestSetupOperationFaults>,
         invitations: BTreeMap<MemberId, FederationSetupInvitation>,
         enrollments: BTreeMap<MemberId, FederationSetupEnrollment>,
         member_secrets: BTreeMap<MemberId, SecretKey>,
@@ -1747,7 +1776,7 @@ mod tests {
             .expect_err("expired invitation");
         assert_eq!(expired_error.code, FederationSetupHttpErrorCode::Expired);
 
-        fixture.service.set_storage_failure(true);
+        fixture.faults.set_storage_failure(true);
         let storage_error = client
             .enroll(fixture.invitation(2), fixture.enrollment(2))
             .await
@@ -1756,7 +1785,7 @@ mod tests {
             storage_error.code,
             FederationSetupHttpErrorCode::StorageFailure
         );
-        fixture.service.set_storage_failure(false);
+        fixture.faults.set_storage_failure(false);
 
         let nonce = FederationSetupCorrelationNonce::from_bytes([4; 32]).expect("nonce");
         let response = reqwest::Client::new()
@@ -1847,7 +1876,7 @@ mod tests {
             .contains("cache-control: no-store"));
 
         fixture
-            .service
+            .faults
             .set_operation_delay(Some(Duration::from_millis(150)))
             .await;
         let client = FederationSetupHttpClient {
@@ -1888,7 +1917,7 @@ mod tests {
         };
         let fixture = setup_http_fixture(config).await;
         fixture
-            .service
+            .faults
             .set_operation_delay(Some(Duration::from_millis(100)))
             .await;
         let client = FederationSetupHttpClient {
@@ -1905,7 +1934,7 @@ mod tests {
             .or_else(|| second.err())
             .expect("one saturation");
         assert_eq!(error.code, FederationSetupHttpErrorCode::RateLimited);
-        fixture.service.set_operation_delay(None).await;
+        fixture.faults.set_operation_delay(None).await;
         client
             .enroll(fixture.invitation(2), fixture.enrollment(2))
             .await
@@ -2068,6 +2097,7 @@ mod tests {
         }
         transaction.commit().await.expect("commit fixture");
         let dynamic_database: DynMintDatabase = database.clone();
+        let faults = Arc::new(TestSetupOperationFaults::default());
         let service = Arc::new(
             FederationSetupCoordinatorService::new(
                 dynamic_database,
@@ -2077,7 +2107,8 @@ mod tests {
                 url_policy,
                 config,
             )
-            .expect("setup service"),
+            .expect("setup service")
+            .with_faults(faults.clone()),
         );
         let router = create_federation_setup_router(service.clone());
         let (shutdown, shutdown_receiver) = oneshot::channel();
@@ -2095,6 +2126,7 @@ mod tests {
         SetupHttpFixture {
             database,
             service,
+            faults,
             invitations,
             enrollments,
             member_secrets,
