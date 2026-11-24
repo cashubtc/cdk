@@ -1189,7 +1189,6 @@ dependencies = [
  "serde",
  "serde_bytes",
  "serde_json",
- "serde_with",
  "thiserror 2.0.21",
  "tracing",
  "unicode-normalization",

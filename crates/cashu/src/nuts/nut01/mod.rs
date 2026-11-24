@@ -9,7 +9,6 @@ use std::ops::{Deref, DerefMut};
 use bitcoin::secp256k1;
 use serde::de::{self, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde_with::{serde_as, VecSkipError};
 use thiserror::Error;
 
 mod public_key;
@@ -19,6 +18,7 @@ pub use self::public_key::PublicKey;
 pub use self::secret_key::SecretKey;
 use super::nut02::KeySet;
 use crate::amount::Amount;
+use crate::util::serde_helpers::deserialize_vec_skip_invalid;
 
 /// Nut01 Error
 #[derive(Debug, Error)]
@@ -140,11 +140,10 @@ impl Keys {
 }
 
 /// Mint Public Keys [NUT-01]
-#[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeysResponse {
     /// Keysets
-    #[serde_as(as = "VecSkipError<_>")]
+    #[serde(deserialize_with = "deserialize_vec_skip_invalid")]
     pub keysets: Vec<KeySet>,
 }
 
