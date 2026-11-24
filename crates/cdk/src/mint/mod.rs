@@ -433,6 +433,17 @@ impl Mint {
     /// - Payment processor initialization and startup
     /// - Invoice payment monitoring across all configured payment processors
     pub async fn start(self: &Arc<Self>) -> Result<(), Error> {
+        // Hold the task state for the whole startup, so a concurrent `start()`
+        // or `stop()` waits for this one to finish.
+        let mut task_state = self.task_state.lock().await;
+
+        // Prevent starting if already running. This has to come before saga
+        // recovery: recovery assumes no operation is in flight, which only
+        // holds for a mint that is not running.
+        if task_state.shutdown_notify.is_some() {
+            return Err(Error::Internal); // Already started
+        }
+
         // Recover from incomplete swap sagas
         // This cleans up incomplete swap operations using persisted saga state
         if let Err(e) = self.recover_from_incomplete_sagas().await {
@@ -449,33 +460,40 @@ impl Mint {
             // Don't fail startup
         }
 
-        let mut task_state = self.task_state.lock().await;
-
-        // Prevent starting if already running
-        if task_state.shutdown_notify.is_some() {
-            return Err(Error::Internal); // Already started
-        }
-
         // Start all payment processors first
         tracing::info!("Starting payment processors...");
-        let mut seen_processors = Vec::new();
+        let mut started_processors: Vec<(&PaymentProcessorKey, &DynMintPayment)> = Vec::new();
         for (key, processor) in self.payment_processors.iter() {
-            // Skip if we've already spawned a task for this processor instance
-            if seen_processors.iter().any(|p| Arc::ptr_eq(p, processor)) {
+            // Skip if we've already started this processor instance
+            if started_processors
+                .iter()
+                .any(|(_, p)| Arc::ptr_eq(p, processor))
+            {
                 continue;
             }
-
-            seen_processors.push(Arc::clone(processor));
 
             tracing::info!("Starting payment wait task for {:?}", key);
 
             match processor.start().await {
                 Ok(()) => {
                     tracing::debug!("Successfully started payment processor for {:?}", key);
+                    started_processors.push((key, processor));
                 }
                 Err(e) => {
-                    // Log the error but continue with other processors
                     tracing::error!("Failed to start payment processor for {:?}: {}", key, e);
+
+                    // Startup is all or nothing: stop the processors that did
+                    // start, so a failed `start()` leaves none running.
+                    for (started_key, started) in started_processors {
+                        if let Err(stop_err) = started.stop().await {
+                            tracing::error!(
+                                "Failed to stop payment processor for {:?}: {}",
+                                started_key,
+                                stop_err
+                            );
+                        }
+                    }
+
                     return Err(e.into());
                 }
             }
@@ -2730,6 +2748,203 @@ mod tests {
         // Should be able to start again after stopping
         mint.start().await.expect("Should be able to restart");
         mint.stop().await.expect("Final stop should work");
+    }
+
+    /// A second `start()` on a running mint is rejected before saga recovery
+    /// runs, so recovery never acts on the running mint's operations.
+    #[tokio::test]
+    async fn start_on_running_mint_does_not_run_saga_recovery() {
+        let mint = create_test_mint().await.unwrap();
+        let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+        let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+        let melt_request = create_test_melt_request(&proofs, &quote);
+
+        let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
+        let saga = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
+        let setup_saga = saga
+            .setup_melt(
+                &melt_request,
+                verification,
+                PaymentMethod::Known(KnownMethod::Bolt11),
+            )
+            .await
+            .unwrap();
+        let operation_id = assert_single_melt_saga_operation_id(&mint).await;
+
+        // Recovery only claims a saga whose lease has lapsed. Expire it, so
+        // that recovery would resolve this saga if it ran.
+        drop(setup_saga);
+        crate::test_helpers::mint::expire_melt_leases(&mint).await;
+
+        assert!(mint.start().await.is_err());
+
+        assert_eq!(
+            assert_single_melt_saga_operation_id(&mint).await,
+            operation_id
+        );
+
+        // Recovery does resolve this saga when it runs, so the saga surviving
+        // `start()` above shows that recovery was skipped.
+        mint.recover_from_incomplete_melt_sagas().await.unwrap();
+        let sagas = mint
+            .localstore
+            .get_incomplete_sagas(OperationKind::Melt)
+            .await
+            .unwrap();
+        assert!(sagas.is_empty());
+    }
+
+    /// Payment backend that counts `start` and `stop` calls, and fails `start`
+    /// once another backend sharing its counter has already started.
+    struct LifecycleBackend {
+        inner: cdk_fake_wallet::FakeWallet,
+        started: Arc<std::sync::atomic::AtomicUsize>,
+        stopped: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl cdk_common::payment::MintPayment for LifecycleBackend {
+        type Err = cdk_common::payment::Error;
+
+        async fn start(&self) -> Result<(), Self::Err> {
+            use std::sync::atomic::Ordering;
+
+            match self
+                .started
+                .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+            {
+                Ok(_) => Ok(()),
+                Err(_) => Err(cdk_common::payment::Error::Custom(
+                    "start failed".to_string(),
+                )),
+            }
+        }
+
+        async fn stop(&self) -> Result<(), Self::Err> {
+            self.stopped
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn get_settings(&self) -> Result<cdk_common::payment::SettingsResponse, Self::Err> {
+            self.inner.get_settings().await
+        }
+
+        async fn create_incoming_payment_request(
+            &self,
+            options: cdk_common::payment::IncomingPaymentOptions,
+        ) -> Result<cdk_common::payment::CreateIncomingPaymentResponse, Self::Err> {
+            self.inner.create_incoming_payment_request(options).await
+        }
+
+        async fn get_payment_quote(
+            &self,
+            unit: &CurrencyUnit,
+            options: cdk_common::payment::OutgoingPaymentOptions,
+        ) -> Result<cdk_common::payment::PaymentQuoteResponse, Self::Err> {
+            self.inner.get_payment_quote(unit, options).await
+        }
+
+        async fn make_payment(
+            &self,
+            unit: &CurrencyUnit,
+            options: cdk_common::payment::OutgoingPaymentOptions,
+        ) -> Result<MakePaymentResponse, Self::Err> {
+            self.inner.make_payment(unit, options).await
+        }
+
+        async fn wait_payment_event(
+            &self,
+        ) -> Result<Pin<Box<dyn Stream<Item = cdk_common::payment::Event> + Send>>, Self::Err>
+        {
+            Ok(Box::pin(futures::stream::pending()))
+        }
+
+        fn is_payment_event_stream_active(&self) -> bool {
+            false
+        }
+
+        fn cancel_payment_event_stream(&self) {}
+
+        async fn check_incoming_payment_status(
+            &self,
+            payment_identifier: &PaymentIdentifier,
+        ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
+            self.inner
+                .check_incoming_payment_status(payment_identifier)
+                .await
+        }
+
+        async fn check_outgoing_payment(
+            &self,
+            payment_identifier: &PaymentIdentifier,
+        ) -> Result<MakePaymentResponse, Self::Err> {
+            self.inner.check_outgoing_payment(payment_identifier).await
+        }
+    }
+
+    /// When one payment processor fails to start, the processors that already
+    /// started are stopped again.
+    #[tokio::test]
+    async fn failed_start_stops_started_payment_processors() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let started = Arc::new(AtomicUsize::new(0));
+        let stopped = Arc::new(AtomicUsize::new(0));
+
+        // Two distinct backends: whichever the mint starts first succeeds, and
+        // the other one fails.
+        let mut payment_processors: HashMap<PaymentProcessorKey, DynMintPayment> = HashMap::new();
+        for unit in [CurrencyUnit::Sat, CurrencyUnit::Msat] {
+            let backend = LifecycleBackend {
+                inner: cdk_fake_wallet::FakeWallet::new(
+                    crate::types::FeeReserve {
+                        min_fee_reserve: 1.into(),
+                        percent_fee_reserve: 1.0,
+                    },
+                    HashMap::default(),
+                    std::collections::HashSet::default(),
+                    2,
+                    unit.clone(),
+                ),
+                started: Arc::clone(&started),
+                stopped: Arc::clone(&stopped),
+            };
+            payment_processors.insert(
+                PaymentProcessorKey::new(unit, PaymentMethod::Known(KnownMethod::Bolt11)),
+                Arc::new(backend),
+            );
+        }
+
+        let seed = bip39::Mnemonic::generate(12)
+            .unwrap()
+            .to_seed_normalized("");
+        let localstore = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
+        let mut supported_units = HashMap::new();
+        let amounts: Vec<u64> = (0..32).map(|i| 2u64.pow(i)).collect();
+        supported_units.insert(CurrencyUnit::Sat, (0, amounts));
+        let signatory = Arc::new(
+            DbSignatory::new(localstore.clone(), &seed, supported_units, HashMap::new())
+                .await
+                .unwrap(),
+        );
+        let mint = Arc::new(
+            Mint::new(
+                MintInfo::default(),
+                signatory,
+                localstore,
+                payment_processors,
+                1000,
+                1000,
+            )
+            .await
+            .unwrap(),
+        );
+
+        assert!(mint.start().await.is_err());
+
+        assert_eq!(started.load(Ordering::SeqCst), 1);
+        assert_eq!(stopped.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
