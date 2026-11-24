@@ -1715,6 +1715,7 @@ dependencies = [
  "bark-wallet",
  "bitcoin",
  "cashu",
+ "cdk",
  "cdk-bitcoin-wallet",
  "cdk-common",
  "cdk-federation-bark",
@@ -1731,6 +1732,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "uuid",
  "zeroize",
 ]
 
