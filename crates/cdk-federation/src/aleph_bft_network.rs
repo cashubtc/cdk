@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use aleph_bft::Recipient;
+use cdk::federation::FederationAlephBftError;
 use cdk::federation::FederationOperationId;
 use cdk::federation::{FederationAlephBftNetworkMessageRequest, MemberConfigPublic, MemberId};
 use cdk_http_client::{HttpError, Transport};
@@ -151,10 +152,12 @@ where
     ) -> Result<usize, cdk::Error> {
         if request.session_id != self.session_id {
             return Err(cdk::Error::from(
-                cdk::federation::FederationError::AlephBftUnitSessionMismatch {
-                    expected: self.session_id,
-                    found: request.session_id,
-                },
+                cdk::federation::FederationError::AlephBft(
+                    FederationAlephBftError::UnitSessionMismatch {
+                        expected: self.session_id,
+                        found: request.session_id,
+                    },
+                ),
             ));
         }
         let bytes = request.message_bytes().map_err(cdk::Error::from)?;
@@ -163,23 +166,23 @@ where
         let encoded_prefix = request.encoded_message.chars().take(64).collect::<String>();
         let mut input = bytes.as_slice();
         let message = D::decode(&mut input).map_err(|err| {
-            let reason = format!("{err:?}");
             tracing::warn!(
                 session_id = self.session_id,
                 encoded_bytes = actual,
                 encoded_prefix = %encoded_prefix,
-                "AlephBFT network message SCALE decode failed: {}",
-                reason
+                "AlephBFT network message SCALE decode failed: {err:?}"
             );
-            cdk::Error::from(
-                cdk::federation::FederationError::InvalidAlephBftNetworkMessage { reason },
-            )
+            cdk::Error::from(FederationAlephBftError::InvalidNetworkMessage {
+                reason: "SCALE decode failed",
+            })
         })?;
         if !input.is_empty() {
             return Err(cdk::Error::from(
-                cdk::federation::FederationError::InvalidAlephBftNetworkMessage {
-                    reason: "trailing bytes after SCALE network message".to_string(),
-                },
+                cdk::federation::FederationError::AlephBft(
+                    FederationAlephBftError::InvalidNetworkMessage {
+                        reason: "trailing bytes after SCALE network message",
+                    },
+                ),
             ));
         }
         let activity_ids = message.consensus_activity_ids();
@@ -195,12 +198,14 @@ where
         );
         if let Err(buffered) = reservation {
             return Err(cdk::Error::from(
-                cdk::federation::FederationError::AlephBftBackpressure {
-                    session_id: self.session_id,
-                    detail: format!(
-                        "inbound byte budget {byte_budget} exceeded (buffered={buffered}, incoming={actual})"
-                    ),
-                },
+                cdk::federation::FederationError::AlephBft(
+                    FederationAlephBftError::InboundByteBudgetExceeded {
+                        session_id: self.session_id,
+                        byte_budget,
+                        buffered,
+                        incoming: actual,
+                    },
+                ),
             ));
         }
         let send_result = self.incoming.try_send(CdkAlephBftInboundEnvelope {
@@ -212,10 +217,12 @@ where
                 .fetch_sub(actual, std::sync::atomic::Ordering::AcqRel);
             return Err(match err {
                 mpsc::error::TrySendError::Full(_) => {
-                    cdk::Error::from(cdk::federation::FederationError::AlephBftBackpressure {
-                        session_id: self.session_id,
-                        detail: "inbound queue is at the bounded message-count budget".to_string(),
-                    })
+                    cdk::Error::from(cdk::federation::FederationError::AlephBft(
+                        FederationAlephBftError::Backpressure {
+                            session_id: self.session_id,
+                            detail: "inbound queue is at the bounded message-count budget",
+                        },
+                    ))
                 }
                 mpsc::error::TrySendError::Closed(_) => {
                     cdk::Error::Custom("AlephBFT network message receiver is closed".to_string())

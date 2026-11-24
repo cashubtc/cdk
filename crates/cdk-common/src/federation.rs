@@ -93,14 +93,15 @@ pub use self::config::{
     MemberConfigPublic, MemberId, ThresholdParams,
 };
 pub use self::consensus::{
-    FederationAlephBftFinalizedItem, FederationAlephBftFinalizedItemStatus,
-    FederationAlephBftFinalizedUnitOutcome, FederationAlephBftOrderedOperationGroup,
-    FederationAlephBftPendingOperationRecord, FederationAlephBftUnitBodyHash,
-    FederationAlephBftUnitPayload, FederationConsensusItem, FederationConsensusItemAdmission,
-    FederationConsensusModuleFact, FederationConsensusRecoveryBase, FederationConsensusRuntime,
-    FederationConsensusRuntimeStatus, FederationPreparedAlephBftFinalization,
-    FederationPreparedAlephBftSubmission, FederationPreparedAlephBftSubmissionGroup,
-    FederationRecoveryBarrier, FederationRecoveryBarrierId, FederationVerifiedOperationAdmission,
+    FederationAlephBftError, FederationAlephBftFinalizedItem,
+    FederationAlephBftFinalizedItemStatus, FederationAlephBftFinalizedUnitOutcome,
+    FederationAlephBftOrderedOperationGroup, FederationAlephBftPendingOperationRecord,
+    FederationAlephBftUnitBodyHash, FederationAlephBftUnitPayload, FederationConsensusItem,
+    FederationConsensusItemAdmission, FederationConsensusModuleFact,
+    FederationConsensusRecoveryBase, FederationConsensusRuntime, FederationConsensusRuntimeStatus,
+    FederationPreparedAlephBftFinalization, FederationPreparedAlephBftSubmission,
+    FederationPreparedAlephBftSubmissionGroup, FederationRecoveryBarrier,
+    FederationRecoveryBarrierId, FederationVerifiedOperationAdmission,
     FEDERATION_ALEPH_BFT_UNIT_PAYLOAD_VERSION, FEDERATION_CONSENSUS_ITEM_VERSION,
     FEDERATION_MAX_ALEPH_BFT_UNIT_BODY_BYTES, FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS,
     FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES, FEDERATION_MAX_CONSENSUS_ITEM_BYTES,
@@ -549,6 +550,9 @@ pub enum FederationError {
     /// The dealer-free DKG failed validation.
     #[error(transparent)]
     Dkg(#[from] FederationDkgError),
+    /// AlephBFT unit, session, network or recovery validation failed.
+    #[error(transparent)]
+    AlephBft(#[from] FederationAlephBftError),
     /// A checkpoint-bound database backup manifest failed validation.
     #[error("Federation database backup manifest is invalid: {reason}")]
     BackupManifestInvalid {
@@ -702,14 +706,6 @@ pub enum FederationError {
         /// Maximum pending item count.
         max: usize,
     },
-    /// Inbound AlephBFT network admission exceeded the bounded queue budget.
-    #[error("AlephBFT inbound queue backpressure: session={session_id}, {detail}")]
-    AlephBftBackpressure {
-        /// AlephBFT session whose inbound queue is full.
-        session_id: u64,
-        /// Which bounded budget was exceeded.
-        detail: String,
-    },
     /// Waiting for an accepted operation response would exceed the configured limit.
     #[error("Federation response waiter limit exceeded: waiting={waiting}, max={max}")]
     ResponseWaiterLimitExceeded {
@@ -744,14 +740,6 @@ pub enum FederationError {
         /// Operation ID found in the peer response.
         found: FederationOperationId,
     },
-    /// A peer acknowledged AlephBFT activity for a different operation.
-    #[error("Federation AlephBFT activity response mismatch: expected={expected}, found={found}")]
-    AlephBftActivityOperationMismatch {
-        /// Expected activity operation ID.
-        expected: FederationOperationId,
-        /// Operation ID found in the peer response.
-        found: FederationOperationId,
-    },
     /// A consensus batching or payload limit must be non-zero.
     #[error("Invalid federation consensus limit {field}: value={value}")]
     InvalidConsensusLimit {
@@ -759,96 +747,6 @@ pub enum FederationError {
         field: &'static str,
         /// Invalid value.
         value: u64,
-    },
-    /// The configured consensus threshold does not satisfy AlephBFT's BFT quorum rule.
-    #[error("Invalid AlephBFT consensus threshold: expected={expected}, found={found}")]
-    InvalidAlephBftConsensusThreshold {
-        /// Threshold required by the AlephBFT roster size.
-        expected: u16,
-        /// Threshold configured by the federation.
-        found: u16,
-    },
-    /// An AlephBFT unit body hash does not match the canonical item body.
-    #[error("Federation AlephBFT unit body hash mismatch: expected={expected}, found={found}")]
-    AlephBftUnitBodyHashMismatch {
-        /// Expected body hash.
-        expected: String,
-        /// Found body hash.
-        found: String,
-    },
-    /// An AlephBFT unit operation ID list does not match the canonical item body.
-    #[error("Federation AlephBFT unit operation ids do not match item body")]
-    AlephBftUnitOperationIdsMismatch,
-    /// An AlephBFT unit must contain at least one consensus item.
-    #[error("Federation AlephBFT unit cannot be empty")]
-    EmptyAlephBftUnit,
-    /// One ordered operation group cannot be represented safely in one unit.
-    #[error("Federation AlephBFT ordered operation group is invalid: {reason}")]
-    AlephBftOrderedOperationGroupInvalid {
-        /// Stable validation reason without operation payloads.
-        reason: String,
-    },
-    /// An AlephBFT unit belongs to a different finalization session.
-    #[error("Federation AlephBFT unit session mismatch: expected={expected}, found={found}")]
-    AlephBftUnitSessionMismatch {
-        /// Expected finalization session.
-        expected: u64,
-        /// Found payload session.
-        found: u64,
-    },
-    /// A peer status omitted the durable AlephBFT finalized-item cursor.
-    #[error("Federation member {member_id} AlephBFT status is missing its finalized-item cursor")]
-    AlephBftFinalizedCursorMissing {
-        /// Member whose status omitted the cursor.
-        member_id: MemberId,
-    },
-    /// An AlephBFT session cannot rotate while local units are awaiting finality.
-    #[error(
-        "Federation AlephBFT session rotation blocked: current_session={current_session}, requested_session={requested_session}, pending_units={pending_units}, pending_items={pending_items}"
-    )]
-    PendingAlephBftFinalization {
-        /// Session currently accepted by the adapter.
-        current_session: u64,
-        /// Later session requested by the caller.
-        requested_session: u64,
-        /// Locally drained units still waiting for finality.
-        pending_units: usize,
-        /// Consensus items inside locally drained units still waiting for finality.
-        pending_items: usize,
-    },
-    /// A live-session rotation was requested while operations remained pending.
-    #[error(
-        "Federation AlephBFT session rotation blocked: session={session}, pending_items={pending_items}"
-    )]
-    AlephBftSessionRotationBlocked {
-        /// Session that cannot yet rotate.
-        session: u64,
-        /// Consensus items still awaiting finalization.
-        pending_items: usize,
-    },
-    /// An opaque AlephBFT network message could not be decoded.
-    #[error("Invalid federation AlephBFT network message: {reason}")]
-    InvalidAlephBftNetworkMessage {
-        /// Decode rejection reason.
-        reason: String,
-    },
-    /// The same AlephBFT member unit was finalized more than once.
-    #[error(
-        "Duplicate federation AlephBFT unit: session={session}, member={member_id}, unit_index={unit_index}"
-    )]
-    DuplicateAlephBftUnit {
-        /// Finalization session containing the duplicate unit.
-        session: u64,
-        /// Member whose unit was duplicated.
-        member_id: MemberId,
-        /// Member-local unit index.
-        unit_index: u64,
-    },
-    /// Retained AlephBFT finalized-item metadata is not internally consistent.
-    #[error("Federation AlephBFT finalized item recovery mismatch: {reason}")]
-    AlephBftFinalizedItemRecoveryMismatch {
-        /// Human-readable mismatch reason.
-        reason: String,
     },
     /// The roster has a different member count than the threshold params.
     #[error("Federation member count mismatch: expected={expected}, found={found}")]

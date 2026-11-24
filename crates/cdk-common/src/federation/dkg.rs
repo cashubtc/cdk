@@ -2548,13 +2548,13 @@ impl FederationDkgFinalizedMemberConfig {
         self.public_config.validate()?;
         self.private_config
             .validate_against_public(&self.public_config)?;
-        let transcript = self
-            .public_config
-            .setup_transcript
-            .as_ref()
-            .ok_or(FederationDkgError::Transcript {
-                reason: "DKG activation requires a complete setup transcript",
-            })?;
+        let transcript =
+            self.public_config
+                .setup_transcript
+                .as_ref()
+                .ok_or(FederationDkgError::Transcript {
+                    reason: "DKG activation requires a complete setup transcript",
+                })?;
         let mut activation_public_config = self.public_config.clone();
         activation_public_config.keysets = transcript
             .payload

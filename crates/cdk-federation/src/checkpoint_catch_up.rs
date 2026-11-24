@@ -10,6 +10,7 @@
 #[cfg(any(test, feature = "test-utils"))]
 use std::sync::atomic::Ordering;
 
+use cdk::federation::FederationAlephBftError;
 #[cfg(any(test, feature = "test-utils"))]
 use cdk::federation::FederationCatchUpOperation;
 use cdk::federation::{
@@ -261,11 +262,13 @@ impl FederationNodeRuntime {
         };
         let recovered_entries = verified_suffix.journal_entries().to_vec();
         if recovered_entries.len() < local_entry_count {
-            return Err(crate::aleph_bft_catch_up_recovery_mismatch(format!(
-                "verified checkpoint suffix recovered {} entries but the local suffix has {}",
-                recovered_entries.len(),
-                local_entry_count
-            )));
+            return Err(cdk::Error::from(
+                FederationAlephBftError::RecoveryCountMismatch {
+                    reason: "verified checkpoint suffix entry count differs from the local suffix",
+                    expected: local_entry_count,
+                    found: recovered_entries.len(),
+                },
+            ));
         }
         let applied = recovered_entries[local_entry_count..].to_vec();
         let next_consensus = FederationConsensusRuntime::recover_verified_suffix(verified_suffix);
@@ -318,7 +321,7 @@ impl FederationNodeRuntime {
                 || response_to_apply.entries.len() != response.entries.len()
             {
                 return Err(crate::aleph_bft_catch_up_recovery_mismatch(
-                    "checkpoint catch-up response does not cover the local suffix".to_string(),
+                    "checkpoint catch-up response does not cover the local suffix",
                 ));
             }
         }
@@ -333,7 +336,7 @@ impl FederationNodeRuntime {
                 .is_some_and(|response_to_apply| !response_to_apply.entries.is_empty())
         {
             return Err(crate::aleph_bft_catch_up_recovery_mismatch(
-                "non-empty AlephBFT catch-up entries missing finalized-item evidence".to_string(),
+                "non-empty AlephBFT catch-up entries missing finalized-item evidence",
             ));
         }
 
@@ -362,11 +365,13 @@ impl FederationNodeRuntime {
         }
         let recovered_entries = next_consensus.journal().entries();
         if recovered_entries.len() < local_entries.len() {
-            return Err(crate::aleph_bft_catch_up_recovery_mismatch(format!(
-                "finalized-item catch-up recovered {} journal entries but local journal has {}",
-                recovered_entries.len(),
-                local_entries.len()
-            )));
+            return Err(cdk::Error::from(
+                FederationAlephBftError::RecoveryCountMismatch {
+                    reason: "finalized-item catch-up entry count differs from the local journal",
+                    expected: local_entries.len(),
+                    found: recovered_entries.len(),
+                },
+            ));
         }
         for (local_entry, recovered_entry) in local_entries.iter().zip(recovered_entries.iter()) {
             FederationCatchUpOperation::from(recovered_entry)

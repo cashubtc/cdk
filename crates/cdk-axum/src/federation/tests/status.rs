@@ -1264,9 +1264,16 @@ async fn finalized_item_catch_up_pages_mixed_suffix_without_count_mismatch() {
     )
     .expect_err("mismatched page must be rejected");
     assert!(
-        mismatch
-            .to_string()
-            .contains("recovered 2 journal entries but response carried 1"),
+        matches!(
+            mismatch,
+            cdk::Error::Federation(FederationError::AlephBft(
+                FederationAlephBftError::RecoveryCountMismatch {
+                    expected: 1,
+                    found: 2,
+                    ..
+                }
+            ))
+        ),
         "rejection must name the exact count mismatch: {mismatch}"
     );
 }

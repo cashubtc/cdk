@@ -8,9 +8,9 @@ use axum::Router;
 #[cfg(test)]
 use cdk::federation::FederationLocalStatusResponse;
 use cdk::federation::{
-    redact_federation_operator_message, FederationCheckpointError, FederationError,
-    FederationRestMessageKind, FederationRestSequenceTracker, FederationSignedRequest,
-    FederationSubmitOperationRequest, FederationSubmitOperationResponse,
+    redact_federation_operator_message, FederationAlephBftError, FederationCheckpointError,
+    FederationError, FederationRestMessageKind, FederationRestSequenceTracker,
+    FederationSignedRequest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
     FederationVerifiedOperationAdmission, FEDERATION_MAX_DKG_REQUEST_BODY_BYTES,
 };
 #[cfg(test)]
@@ -470,19 +470,27 @@ fn federation_error_status(err: &FederationError) -> StatusCode {
             StatusCode::FORBIDDEN
         }
         FederationError::PendingConsensusMempoolFull { .. }
-        | FederationError::ResponseWaiterLimitExceeded { .. }
-        | FederationError::AlephBftBackpressure { .. } => StatusCode::TOO_MANY_REQUESTS,
+        | FederationError::ResponseWaiterLimitExceeded { .. } => StatusCode::TOO_MANY_REQUESTS,
         FederationError::ConsensusQuorumUnavailable { .. }
         | FederationError::RuntimeUnavailable { .. }
         | FederationError::NodeAwaitingQuorum { .. }
         | FederationError::NodeLagging { .. }
         | FederationError::NodeCatchingUp { .. }
         | FederationError::NodeHalted { .. }
-        | FederationError::OperationPendingFinalization { .. }
-        | FederationError::PendingAlephBftFinalization { .. }
-        | FederationError::AlephBftSessionRotationBlocked { .. } => StatusCode::SERVICE_UNAVAILABLE,
-        FederationError::AlephBftFinalizedItemRecoveryMismatch { .. }
-        | FederationError::BackendFailure { .. } => StatusCode::INTERNAL_SERVER_ERROR,
+        | FederationError::OperationPendingFinalization { .. } => StatusCode::SERVICE_UNAVAILABLE,
+        FederationError::AlephBft(err) => match err {
+            FederationAlephBftError::Backpressure { .. }
+            | FederationAlephBftError::InboundByteBudgetExceeded { .. } => {
+                StatusCode::TOO_MANY_REQUESTS
+            }
+            FederationAlephBftError::PendingFinalization { .. }
+            | FederationAlephBftError::SessionRotationBlocked { .. } => {
+                StatusCode::SERVICE_UNAVAILABLE
+            }
+            err if err.is_recovery_mismatch() => StatusCode::INTERNAL_SERVER_ERROR,
+            _ => StatusCode::BAD_REQUEST,
+        },
+        FederationError::BackendFailure { .. } => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::BAD_REQUEST,
     }
 }

@@ -434,12 +434,14 @@ fn consensus_runtime_begin_aleph_bft_session_waits_for_pending_finality() {
 
     assert!(matches!(
         runtime.begin_aleph_bft_session(1),
-        Err(FederationError::PendingAlephBftFinalization {
-            current_session: 0,
-            requested_session: 1,
-            pending_units: 1,
-            pending_items: 1,
-        })
+        Err(FederationError::AlephBft(
+            FederationAlephBftError::PendingFinalization {
+                current_session: 0,
+                requested_session: 1,
+                pending_units: 1,
+                pending_items: 1,
+            }
+        ))
     ));
     assert_eq!(runtime.aleph_bft_status().expect("status").session, 0);
 
@@ -1230,7 +1232,9 @@ fn aleph_bft_unit_payload_rejects_tampered_body_hash_and_operation_ids() {
     payload.body_hash = FederationAlephBftUnitBodyHash::from_bytes([9; 32]);
     assert!(matches!(
         payload.ensure_supported_version(),
-        Err(FederationError::AlephBftUnitBodyHashMismatch { .. })
+        Err(FederationError::AlephBft(
+            FederationAlephBftError::UnitBodyHashMismatch { .. }
+        ))
     ));
 
     let mut payload =
@@ -1239,7 +1243,9 @@ fn aleph_bft_unit_payload_rejects_tampered_body_hash_and_operation_ids() {
     payload.operation_ids.clear();
     assert!(matches!(
         payload.ensure_supported_version(),
-        Err(FederationError::AlephBftUnitOperationIdsMismatch)
+        Err(FederationError::AlephBft(
+            FederationAlephBftError::UnitOperationIdsMismatch
+        ))
     ));
 
     let mut payload =
@@ -1385,7 +1391,11 @@ fn aleph_bft_ordered_group_rejects_partial_duplicate_admission() {
             FederationConsensusItem::operation(first),
             FederationConsensusItem::operation(second),
         ]),
-        Err(FederationError::AlephBftOrderedOperationGroupInvalid { .. })
+        Err(FederationError::AlephBft(
+            FederationAlephBftError::OrderedGroupInvalid { .. }
+                | FederationAlephBftError::OrderedGroupTooManyItems { .. }
+                | FederationAlephBftError::OrderedGroupBodyTooLarge { .. }
+        ))
     ));
     assert_eq!(provider.queued_len(), 1);
 }
@@ -1786,10 +1796,12 @@ fn aleph_bft_finalization_handler_rejects_wrong_federation_and_session() {
     ));
     assert!(matches!(
         handler.finalize_next_unit(wrong_session_payload),
-        Err(FederationError::AlephBftUnitSessionMismatch {
-            expected: 0,
-            found: 1,
-        })
+        Err(FederationError::AlephBft(
+            FederationAlephBftError::UnitSessionMismatch {
+                expected: 0,
+                found: 1,
+            }
+        ))
     ));
 }
 
@@ -1862,11 +1874,11 @@ fn aleph_bft_finalization_handler_rejects_duplicate_member_unit_replay() {
 
     assert!(matches!(
         handler.finalize_next_unit(payload),
-        Err(FederationError::DuplicateAlephBftUnit {
+        Err(FederationError::AlephBft(FederationAlephBftError::DuplicateUnit {
             session: 0,
             member_id,
             unit_index: 0,
-        }) if member_id == member_id_value(2)
+        })) if member_id == member_id_value(2)
     ));
     assert_eq!(handler.next_unit_finalization_index(), 1);
 }
@@ -1889,7 +1901,9 @@ fn aleph_bft_finalization_handler_rejects_empty_unit_before_state_change() {
 
     assert!(matches!(
         handler.finalize_next_unit(empty_unit),
-        Err(FederationError::EmptyAlephBftUnit)
+        Err(FederationError::AlephBft(
+            FederationAlephBftError::EmptyUnit
+        ))
     ));
     assert_eq!(handler.next_unit_finalization_index(), 0);
     assert_eq!(handler.next_item_index(), 0);
@@ -1968,10 +1982,12 @@ fn aleph_bft_finalization_handler_advances_to_later_sessions() {
     handler.finalize_next_unit(next).expect("next finalized");
     assert!(matches!(
         handler.begin_session(1),
-        Err(FederationError::AlephBftUnitSessionMismatch {
-            expected: 2,
-            found: 1,
-        })
+        Err(FederationError::AlephBft(
+            FederationAlephBftError::UnitSessionMismatch {
+                expected: 2,
+                found: 1,
+            }
+        ))
     ));
 }
 
@@ -2391,11 +2407,11 @@ fn consensus_runtime_recovers_from_finalized_items() {
     );
     assert!(matches!(
         recovered.finalize_unit(duplicate_unit),
-        Err(FederationError::DuplicateAlephBftUnit {
+        Err(FederationError::AlephBft(FederationAlephBftError::DuplicateUnit {
             session: 0,
             member_id,
             unit_index: 0,
-        }) if member_id == member_id_value(3)
+        })) if member_id == member_id_value(3)
     ));
 
     let duplicate_response = recovered
@@ -2464,11 +2480,11 @@ fn consensus_runtime_starts_at_a_trusted_checkpoint_without_prefix_rows() {
     .expect("pre-checkpoint replay");
     assert!(matches!(
         runtime.finalize_unit(replay),
-        Err(FederationError::DuplicateAlephBftUnit {
+        Err(FederationError::AlephBft(FederationAlephBftError::DuplicateUnit {
             session: 7,
             member_id,
             unit_index: 4,
-        }) if member_id == member_id_value(2)
+        })) if member_id == member_id_value(2)
     ));
 
     let suffix = FederationAlephBftUnitPayload::new(
@@ -2716,12 +2732,14 @@ fn consensus_runtime_session_rotation_waits_for_pending_local_finality() {
 
     assert!(matches!(
         adapter.begin_session(1),
-        Err(FederationError::PendingAlephBftFinalization {
-            current_session: 0,
-            requested_session: 1,
-            pending_units: 1,
-            pending_items: 1,
-        })
+        Err(FederationError::AlephBft(
+            FederationAlephBftError::PendingFinalization {
+                current_session: 0,
+                requested_session: 1,
+                pending_units: 1,
+                pending_items: 1,
+            }
+        ))
     ));
     assert_eq!(adapter.session(), 0);
     assert_eq!(adapter.next_unit_index(), 1);
@@ -2932,8 +2950,8 @@ fn consensus_runtime_recovery_rejects_corrupted_finalized_items() {
             0,
             gap,
         ),
-        Err(FederationError::AlephBftFinalizedItemRecoveryMismatch { reason })
-            if reason.contains("non-contiguous accepted item index")
+        Err(FederationError::AlephBft(FederationAlephBftError::RecoveryNonContiguous { cursor, .. }))
+            if cursor.contains("accepted item index")
     ));
 
     let mut mismatched_operation_id = finalized_items.clone();
@@ -2946,7 +2964,7 @@ fn consensus_runtime_recovery_rejects_corrupted_finalized_items() {
             0,
             mismatched_operation_id,
         ),
-        Err(FederationError::AlephBftFinalizedItemRecoveryMismatch { reason })
+        Err(FederationError::AlephBft(FederationAlephBftError::RecoveryMismatch { reason }))
             if reason.contains("operation id does not match")
     ));
 
@@ -2959,7 +2977,7 @@ fn consensus_runtime_recovery_rejects_corrupted_finalized_items() {
             0,
             mismatched_body_hash,
         ),
-        Err(FederationError::AlephBftFinalizedItemRecoveryMismatch { reason })
+        Err(FederationError::AlephBft(FederationAlephBftError::RecoveryMismatch { reason }))
             if reason.contains("body hash does not match")
     ));
 
@@ -2972,8 +2990,8 @@ fn consensus_runtime_recovery_rejects_corrupted_finalized_items() {
             0,
             non_contiguous_item_index,
         ),
-        Err(FederationError::AlephBftFinalizedItemRecoveryMismatch { reason })
-            if reason.contains("non-contiguous item index")
+        Err(FederationError::AlephBft(FederationAlephBftError::RecoveryNonContiguous { cursor, .. }))
+            if cursor.contains("item index")
     ));
 
     let mut out_of_order_unit_items = ordered_finalized_items.clone();
@@ -2987,8 +3005,8 @@ fn consensus_runtime_recovery_rejects_corrupted_finalized_items() {
             0,
             out_of_order_unit_items,
         ),
-        Err(FederationError::AlephBftFinalizedItemRecoveryMismatch { reason })
-            if reason.contains("accepted order")
+        Err(FederationError::AlephBft(FederationAlephBftError::RecoveryNonContiguous { cursor, .. }))
+            if cursor.contains("accepted order")
     ));
 
     let mut interleaved_unit_items = ordered_finalized_items.clone();
@@ -3002,7 +3020,7 @@ fn consensus_runtime_recovery_rejects_corrupted_finalized_items() {
             0,
             interleaved_unit_items,
         ),
-        Err(FederationError::AlephBftFinalizedItemRecoveryMismatch { reason })
+        Err(FederationError::AlephBft(FederationAlephBftError::RecoveryMismatch { reason }))
             if reason.contains("not contiguous in accepted item order")
     ));
 
@@ -3015,8 +3033,8 @@ fn consensus_runtime_recovery_rejects_corrupted_finalized_items() {
             0,
             non_advancing_unit_finalization,
         ),
-        Err(FederationError::AlephBftFinalizedItemRecoveryMismatch { reason })
-            if reason.contains("non-contiguous unit finalization index")
+        Err(FederationError::AlephBft(FederationAlephBftError::RecoveryNonContiguous { cursor, .. }))
+            if cursor.contains("unit finalization index")
     ));
 
     let mut skipped_unit_finalization = ordered_finalized_items.clone();
@@ -3028,8 +3046,8 @@ fn consensus_runtime_recovery_rejects_corrupted_finalized_items() {
             0,
             skipped_unit_finalization,
         ),
-        Err(FederationError::AlephBftFinalizedItemRecoveryMismatch { reason })
-            if reason.contains("non-contiguous unit finalization index")
+        Err(FederationError::AlephBft(FederationAlephBftError::RecoveryNonContiguous { cursor, .. }))
+            if cursor.contains("unit finalization index")
     ));
 
     let mut impossible_duplicate = finalized_items;
@@ -3041,7 +3059,7 @@ fn consensus_runtime_recovery_rejects_corrupted_finalized_items() {
             0,
             impossible_duplicate,
         ),
-        Err(FederationError::AlephBftFinalizedItemRecoveryMismatch { reason })
+        Err(FederationError::AlephBft(FederationAlephBftError::RecoveryMismatch { reason }))
             if reason.contains("duplicate operation finalized before")
     ));
 }
@@ -3104,8 +3122,8 @@ fn consensus_runtime_recovery_rejects_out_of_order_sessions() {
             1,
             backwards_sessions,
         ),
-        Err(FederationError::AlephBftFinalizedItemRecoveryMismatch { reason })
-            if reason.contains("session moved backwards")
+        Err(FederationError::AlephBft(FederationAlephBftError::RecoverySessionRegressed { .. }))
+            if true
     ));
 }
 
@@ -3128,7 +3146,9 @@ fn consensus_runtime_rejects_invalid_finalized_units_before_journal_append() {
     ));
     assert!(matches!(
         adapter.finalize_unit(tampered_unit),
-        Err(FederationError::AlephBftUnitBodyHashMismatch { .. })
+        Err(FederationError::AlephBft(
+            FederationAlephBftError::UnitBodyHashMismatch { .. }
+        ))
     ));
     assert_eq!(adapter.journal().len(), 0);
     assert!(adapter.finalized_items().is_empty());

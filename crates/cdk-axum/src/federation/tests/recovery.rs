@@ -516,13 +516,17 @@ async fn assert_trusted_checkpoint_suffix_rejects_corruption(alter_consensus_evi
     let error = crate::create_federation_runtime_state(&state.mint)
         .await
         .expect_err("corrupted trusted-checkpoint suffix must fail closed");
-    assert!(matches!(
-        error.downcast_ref::<cdk::Error>(),
-        Some(cdk::Error::Federation(
-            FederationError::AlephBftFinalizedItemRecoveryMismatch { .. }
-                | FederationError::CatchUpOperationIdMismatch { .. }
-        ))
-    ));
+    assert!(error
+        .downcast_ref::<cdk::Error>()
+        .is_some_and(|error| match error {
+            cdk::Error::Federation(FederationError::AlephBft(error)) => {
+                error.is_recovery_mismatch()
+            }
+            error => matches!(
+                error,
+                cdk::Error::Federation(FederationError::CatchUpOperationIdMismatch { .. })
+            ),
+        }));
     assert!(db
         .get_federation_journal_entry_by_operation_id(corrupted_operation_id)
         .await
@@ -625,7 +629,7 @@ async fn trusted_checkpoint_startup_rejects_changed_terminal_result() {
         .expect_err("changed terminal result must fail suffix verification");
     assert!(matches!(
         error,
-        cdk::Error::Federation(FederationError::AlephBftFinalizedItemRecoveryMismatch { .. })
+        cdk::Error::Federation(FederationError::AlephBft(error)) if error.is_recovery_mismatch()
     ));
 }
 

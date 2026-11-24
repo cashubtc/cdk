@@ -55,13 +55,12 @@ async fn federation_runtime_startup_rejects_aleph_bft_journal_mismatch() {
     let err = crate::create_federation_runtime_state(&state.mint)
         .await
         .expect_err("AlephBFT journal mismatch rejected");
-    assert!(matches!(
-        err.downcast_ref::<FederationError>(),
-        Some(
-            FederationError::AlephBftFinalizedItemRecoveryMismatch { .. }
-                | FederationError::CatchUpOperationIdMismatch { .. }
-        )
-    ));
+    assert!(err
+        .downcast_ref::<FederationError>()
+        .is_some_and(|error| match error {
+            FederationError::AlephBft(error) => error.is_recovery_mismatch(),
+            error => matches!(error, FederationError::CatchUpOperationIdMismatch { .. }),
+        }));
 }
 
 #[tokio::test]

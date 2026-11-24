@@ -4,7 +4,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use cdk::federation::{
     FederationAlephBftActivityRequest, FederationAlephBftActivityResponse,
-    FederationAlephBftBackupRequest, FederationAlephBftBackupResponse,
+    FederationAlephBftBackupRequest, FederationAlephBftBackupResponse, FederationAlephBftError,
     FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkMessageResponse,
     FederationCheckpoint, FederationCheckpointError, FederationCheckpointFetchRequest,
     FederationCheckpointFetchResponse, FederationCheckpointId, FederationCheckpointQuorum,
@@ -1385,10 +1385,12 @@ fn validate_peer_status(
         .into());
     }
     if status.aleph_bft_next_item_index.is_none() {
-        return Err(FederationError::AlephBftFinalizedCursorMissing {
-            member_id: member.member_id,
-        }
-        .into());
+        return Err(
+            FederationError::AlephBft(FederationAlephBftError::FinalizedCursorMissing {
+                member_id: member.member_id,
+            })
+            .into(),
+        );
     }
     if status
         .aleph_bft_next_unit_index_by_member

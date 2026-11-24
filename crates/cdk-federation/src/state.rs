@@ -8,10 +8,10 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 
 use cdk::federation::{
-    redact_federation_operator_message, FederationConfig, FederationConsensusRuntime,
-    FederationDkgFinalizedMemberConfig, FederationError, FederationInvalidOperationAlertSummary,
-    FederationOperationId, FederationOperationStatus, FederationRestSequenceTracker,
-    FederationSubmitOperationResponse, MemberId,
+    redact_federation_operator_message, FederationAlephBftError, FederationConfig,
+    FederationConsensusRuntime, FederationDkgFinalizedMemberConfig, FederationError,
+    FederationInvalidOperationAlertSummary, FederationOperationId, FederationOperationStatus,
+    FederationRestSequenceTracker, FederationSubmitOperationResponse, MemberId,
 };
 
 use sha2::{Digest, Sha256};
@@ -863,16 +863,16 @@ pub fn aleph_bft_finalized_item_suffix_for_local(
                 .checked_sub(local_base_item_index)
                 .and_then(|index| usize::try_from(index).ok())
                 .ok_or_else(|| {
-                    aleph_bft_catch_up_recovery_mismatch(format!(
-                        "finalized item {} precedes retained base {}",
-                        peer_item.accepted_item_index, local_base_item_index
-                    ))
+                    cdk::Error::from(FederationAlephBftError::RecoveryItemIndexMismatch {
+                        reason: "finalized item precedes the retained base",
+                        accepted_item_index: peer_item.accepted_item_index,
+                    })
                 })?;
             let local_item = local_items.get(local_index).ok_or_else(|| {
-                aleph_bft_catch_up_recovery_mismatch(format!(
-                    "missing local finalized item {} for catch-up overlap",
-                    peer_item.accepted_item_index
-                ))
+                cdk::Error::from(FederationAlephBftError::RecoveryItemIndexMismatch {
+                    reason: "missing local finalized item for catch-up overlap",
+                    accepted_item_index: peer_item.accepted_item_index,
+                })
             })?;
             local_item.ensure_matches(peer_item)?;
         } else {
@@ -881,9 +881,12 @@ pub fn aleph_bft_finalized_item_suffix_for_local(
     }
 
     if suffix.is_empty() && !response.aleph_bft_finalized_items_complete {
-        return Err(aleph_bft_catch_up_recovery_mismatch(format!(
-            "AlephBFT catch-up made no finalized-item progress at item index {local_next_item_index}"
-        )));
+        return Err(cdk::Error::from(
+            FederationAlephBftError::RecoveryItemIndexMismatch {
+                reason: "AlephBFT catch-up made no finalized-item progress",
+                accepted_item_index: local_next_item_index,
+            },
+        ));
     }
 
     Ok(suffix)
@@ -897,11 +900,13 @@ pub fn ensure_catch_up_entries_match_recovered_journal(
     match response_to_apply {
         Some(response) => {
             if response.entries.len() != recovered_entries.len() {
-                return Err(aleph_bft_catch_up_recovery_mismatch(format!(
-                    "finalized-item catch-up recovered {} journal entries but response carried {}",
-                    recovered_entries.len(),
-                    response.entries.len()
-                )));
+                return Err(cdk::Error::from(
+                    FederationAlephBftError::RecoveryCountMismatch {
+                        reason: "finalized-item catch-up entry count differs from the response",
+                        expected: response.entries.len(),
+                        found: recovered_entries.len(),
+                    },
+                ));
             }
             for (recovered_entry, response_entry) in
                 recovered_entries.iter().zip(response.entries.iter())
@@ -911,10 +916,14 @@ pub fn ensure_catch_up_entries_match_recovered_journal(
         }
         None => {
             if !recovered_entries.is_empty() {
-                return Err(aleph_bft_catch_up_recovery_mismatch(format!(
-                    "finalized-item catch-up recovered {} new journal entries without response entries",
-                    recovered_entries.len()
-                )));
+                return Err(cdk::Error::from(
+                    FederationAlephBftError::RecoveryCountMismatch {
+                        reason:
+                            "finalized-item catch-up recovered entries without response entries",
+                        expected: 0,
+                        found: recovered_entries.len(),
+                    },
+                ));
             }
         }
     }
@@ -922,8 +931,8 @@ pub fn ensure_catch_up_entries_match_recovered_journal(
     Ok(())
 }
 
-pub fn aleph_bft_catch_up_recovery_mismatch(reason: String) -> cdk::Error {
-    cdk::Error::Federation(FederationError::AlephBftFinalizedItemRecoveryMismatch { reason })
+pub fn aleph_bft_catch_up_recovery_mismatch(reason: &'static str) -> cdk::Error {
+    FederationAlephBftError::RecoveryMismatch { reason }.into()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

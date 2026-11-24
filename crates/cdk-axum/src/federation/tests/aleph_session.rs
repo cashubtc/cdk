@@ -1799,10 +1799,12 @@ async fn aleph_bft_live_session_rotation_refuses_non_empty_pending_mempool() {
     .expect_err("non-empty mempool must block live-session rotation");
     assert!(matches!(
         err,
-        cdk::Error::Federation(FederationError::AlephBftSessionRotationBlocked {
-            session: 0,
-            pending_items: 1,
-        })
+        cdk::Error::Federation(FederationError::AlephBft(
+            FederationAlephBftError::SessionRotationBlocked {
+                session: 0,
+                pending_items: 1,
+            }
+        ))
     ));
     let status = state
         .federation_aleph_bft_status()

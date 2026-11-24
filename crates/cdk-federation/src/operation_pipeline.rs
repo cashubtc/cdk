@@ -14,13 +14,13 @@ use std::sync::Arc;
 #[cfg(feature = "federation-bark")]
 use cdk::federation::FederationAlephBftOrderedOperationGroup;
 use cdk::federation::{
-    FederationAlephBftFinalizedItem, FederationAlephBftFinalizedItemStatus,
-    FederationAlephBftPendingOperationRecord, FederationAlephBftUnitPayload,
-    FederationApplicationState, FederationCatchUpOperation, FederationConsensusItem,
-    FederationConsensusItemAdmission, FederationConsensusRuntime, FederationError,
-    FederationJournalAppendOutcome, FederationJournalEntry, FederationOperationEnvelope,
-    FederationOperationId, FederationOperationStatus, FederationRestMessageKind,
-    FederationSubmitOperationResponse, MemberId,
+    FederationAlephBftError, FederationAlephBftFinalizedItem,
+    FederationAlephBftFinalizedItemStatus, FederationAlephBftPendingOperationRecord,
+    FederationAlephBftUnitPayload, FederationApplicationState, FederationCatchUpOperation,
+    FederationConsensusItem, FederationConsensusItemAdmission, FederationConsensusRuntime,
+    FederationError, FederationJournalAppendOutcome, FederationJournalEntry,
+    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
+    FederationRestMessageKind, FederationSubmitOperationResponse, MemberId,
 };
 use cdk::mint::Mint;
 use futures::future::BoxFuture;
@@ -37,21 +37,23 @@ fn validate_ordered_group_responses(
     responses: &[FederationSubmitOperationResponse],
 ) -> Result<(), cdk::Error> {
     let Some(first) = responses.first() else {
-        return Err(FederationError::AlephBftOrderedOperationGroupInvalid {
-            reason: "ordered group produced no responses".to_string(),
-        }
-        .into());
+        return Err(
+            FederationError::AlephBft(FederationAlephBftError::OrderedGroupInvalid {
+                reason: "ordered group produced no responses",
+            })
+            .into(),
+        );
     };
-    let first_evidence = first.outcome.entry().consensus_evidence.ok_or_else(|| {
-        FederationError::AlephBftOrderedOperationGroupInvalid {
-            reason: "ordered group response is missing consensus evidence".to_string(),
-        }
+    let first_evidence = first.outcome.entry().consensus_evidence.ok_or({
+        FederationError::AlephBft(FederationAlephBftError::OrderedGroupInvalid {
+            reason: "ordered group response is missing consensus evidence",
+        })
     })?;
     for (offset, response) in responses.iter().enumerate() {
-        let evidence = response.outcome.entry().consensus_evidence.ok_or_else(|| {
-            FederationError::AlephBftOrderedOperationGroupInvalid {
-                reason: "ordered group response is missing consensus evidence".to_string(),
-            }
+        let evidence = response.outcome.entry().consensus_evidence.ok_or({
+            FederationError::AlephBft(FederationAlephBftError::OrderedGroupInvalid {
+                reason: "ordered group response is missing consensus evidence",
+            })
         })?;
         let expected_item_index = first_evidence
             .item_index
@@ -62,10 +64,12 @@ fn validate_ordered_group_responses(
             || evidence.unit_index != first_evidence.unit_index
             || evidence.item_index != expected_item_index
         {
-            return Err(FederationError::AlephBftOrderedOperationGroupInvalid {
-                reason: "ordered group did not finalize consecutively in one unit".to_string(),
-            }
-            .into());
+            return Err(
+                FederationError::AlephBft(FederationAlephBftError::OrderedGroupInvalid {
+                    reason: "ordered group did not finalize consecutively in one unit",
+                })
+                .into(),
+            );
         }
     }
     Ok(())
@@ -385,10 +389,10 @@ impl FederationNodeRuntime {
                     .journal()
                     .entry_by_operation_id(operation_id)
                     .ok_or_else(|| {
-                        finalized_unit_recovery_mismatch(
-                            payload,
-                            &format!("operation {operation_id} is missing from the local journal"),
-                        )
+                        cdk::Error::from(FederationAlephBftError::RecoveryOperationMismatch {
+                            reason: "finalized operation is missing from the local journal",
+                            operation_id,
+                        })
                     })?;
                 responses.push(FederationSubmitOperationResponse::from_outcome(
                     FederationJournalAppendOutcome::Duplicate(entry.clone()),
@@ -447,10 +451,12 @@ impl FederationNodeRuntime {
         envelopes: Vec<FederationOperationEnvelope>,
     ) -> Result<Vec<FederationSubmitOperationResponse>, cdk::Error> {
         if envelopes.is_empty() {
-            return Err(FederationError::AlephBftOrderedOperationGroupInvalid {
-                reason: "ordered group cannot be empty".to_string(),
-            }
-            .into());
+            return Err(
+                FederationError::AlephBft(FederationAlephBftError::OrderedGroupInvalid {
+                    reason: "ordered group cannot be empty",
+                })
+                .into(),
+            );
         }
         let operation_ids = envelopes
             .iter()
@@ -472,9 +478,11 @@ impl FederationNodeRuntime {
             .collect::<Vec<_>>();
         if existing.iter().any(Option::is_some) {
             if !existing.iter().all(Option::is_some) {
-                return Err(FederationError::AlephBftOrderedOperationGroupInvalid {
-                    reason: "ordered group is only partially present in the journal".to_string(),
-                }
+                return Err(FederationError::AlephBft(
+                    FederationAlephBftError::OrderedGroupInvalid {
+                        reason: "ordered group is only partially present in the journal",
+                    },
+                )
                 .into());
             }
             let mut waits = Vec::with_capacity(existing.len());
@@ -1082,10 +1090,12 @@ impl FederationNodeRuntime {
                     })
                 })?;
             if local_entry.application != peer_entry.application {
-                return Err(crate::aleph_bft_catch_up_recovery_mismatch(format!(
-                    "catch-up rejection mismatch at operation {}",
-                    peer_entry.operation_id
-                )));
+                return Err(cdk::Error::from(
+                    FederationAlephBftError::RecoveryOperationMismatch {
+                        reason: "catch-up rejection mismatch",
+                        operation_id: peer_entry.operation_id,
+                    },
+                ));
             }
         }
 

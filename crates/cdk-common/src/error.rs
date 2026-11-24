@@ -1107,6 +1107,13 @@ impl From<crate::federation::FederationDkgError> for Error {
     }
 }
 
+#[cfg(feature = "federation")]
+impl From<crate::federation::FederationAlephBftError> for Error {
+    fn from(err: crate::federation::FederationAlephBftError) -> Self {
+        Self::Federation(err.into())
+    }
+}
+
 impl From<crate::nuts::nut10::Error> for Error {
     fn from(err: crate::nuts::nut10::Error) -> Self {
         match err {

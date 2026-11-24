@@ -9,8 +9,8 @@ use aleph_bft::{
     NodeCount, Terminator,
 };
 use cdk::federation::{
-    FederationAlephBftActivityRequest, FederationError, FederationOperationId, MemberConfigPublic,
-    MemberId,
+    FederationAlephBftActivityRequest, FederationAlephBftError, FederationError,
+    FederationOperationId, MemberConfigPublic, MemberId,
 };
 use cdk_common::database::DynMintDatabase;
 use cdk_http_client::Transport;
@@ -1779,13 +1779,13 @@ where
         let status = consensus.aleph_bft_status().map_err(cdk::Error::from)?;
         let pending = consensus.pending_mempool_len();
         if pending != 0 {
-            return Err(
-                cdk::federation::FederationError::AlephBftSessionRotationBlocked {
+            return Err(cdk::federation::FederationError::AlephBft(
+                FederationAlephBftError::SessionRotationBlocked {
                     session: status.session,
                     pending_items: pending,
-                }
-                .into(),
-            );
+                },
+            )
+            .into());
         }
 
         status.session.checked_add(1).ok_or_else(|| {
@@ -1804,13 +1804,13 @@ where
         let status = consensus.aleph_bft_status().map_err(cdk::Error::from)?;
         let pending = consensus.pending_mempool_len();
         if pending != 0 {
-            return Err(
-                cdk::federation::FederationError::AlephBftSessionRotationBlocked {
+            return Err(cdk::federation::FederationError::AlephBft(
+                FederationAlephBftError::SessionRotationBlocked {
                     session: status.session,
                     pending_items: pending,
-                }
-                .into(),
-            );
+                },
+            )
+            .into());
         }
         consensus
             .begin_aleph_bft_session(next_session)
@@ -1947,7 +1947,9 @@ async fn run_federation_aleph_bft_finalized_unit_apply_loop(
         }
         match apply_federation_aleph_bft_finalized_unit_with_retry(&state, payload).await {
             Ok(()) => {}
-            Err(cdk::Error::Federation(FederationError::DuplicateAlephBftUnit { .. })) => {
+            Err(cdk::Error::Federation(FederationError::AlephBft(
+                FederationAlephBftError::DuplicateUnit { .. },
+            ))) => {
                 tracing::warn!(
                     %creator,
                     round,

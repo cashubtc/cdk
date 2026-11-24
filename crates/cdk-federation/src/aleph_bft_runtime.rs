@@ -16,9 +16,9 @@ use aleph_bft::{
     TaskHandle, UnitFinalizationHandler,
 };
 use cdk::federation::{
-    FederationAlephBftUnitPayload, FederationConfig, FederationConsensusRuntime, FederationError,
-    FederationId, MemberConfigPrivate, MemberConfigPublic, MemberId,
-    FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
+    FederationAlephBftError, FederationAlephBftUnitPayload, FederationConfig,
+    FederationConsensusRuntime, FederationError, FederationId, MemberConfigPrivate,
+    MemberConfigPublic, MemberId, FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
 };
 use cdk::nuts::SecretKey;
 use cdk_common::database::DynMintDatabase;
@@ -357,10 +357,12 @@ impl CdkAlephBftKeychain {
         let expected_consensus_threshold = u16::try_from(node_count.consensus_threshold().0)
             .map_err(|_| cdk::Error::Custom("AlephBFT node count exceeds u16".to_string()))?;
         if public_config.threshold_params.consensus_threshold != expected_consensus_threshold {
-            return Err(FederationError::InvalidAlephBftConsensusThreshold {
-                expected: expected_consensus_threshold,
-                found: public_config.threshold_params.consensus_threshold,
-            }
+            return Err(FederationError::AlephBft(
+                FederationAlephBftError::InvalidConsensusThreshold {
+                    expected: expected_consensus_threshold,
+                    found: public_config.threshold_params.consensus_threshold,
+                },
+            )
             .into());
         }
 
@@ -751,7 +753,9 @@ impl CdkAlephBftFinalizedUnit {
         self,
     ) -> Result<FederationAlephBftUnitPayload, FederationError> {
         if self.payload.items.is_empty() {
-            return Err(FederationError::EmptyAlephBftUnit);
+            return Err(FederationError::AlephBft(
+                FederationAlephBftError::EmptyUnit,
+            ));
         }
         let payload = FederationAlephBftUnitPayload::new(
             self.federation_id,
@@ -1859,10 +1863,12 @@ mod tests {
 
         assert!(matches!(
             err,
-            cdk::Error::Federation(FederationError::InvalidAlephBftConsensusThreshold {
-                expected: 4,
-                found: 3,
-            })
+            cdk::Error::Federation(FederationError::AlephBft(
+                FederationAlephBftError::InvalidConsensusThreshold {
+                    expected: 4,
+                    found: 3,
+                }
+            ))
         ));
     }
 
@@ -2258,7 +2264,9 @@ mod tests {
         let malformed = receiver.recv().await.expect("malformed finalized unit");
         assert!(matches!(
             malformed.into_authenticated_payload(),
-            Err(FederationError::EmptyAlephBftUnit)
+            Err(FederationError::AlephBft(
+                FederationAlephBftError::EmptyUnit
+            ))
         ));
         let next = receiver
             .recv()

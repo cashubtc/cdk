@@ -13,14 +13,14 @@ use serde::{Deserialize, Serialize};
 
 use super::canonical::{append_hash_bytes, canonical_json_bytes, impl_fixed_bytes};
 use super::{
-    FederationAlephBftFinalizedItem, FederationApplicationDigest, FederationApplicationState,
-    FederationCheckpoint, FederationCheckpointError, FederationCheckpointFrontier,
-    FederationCheckpointId, FederationCheckpointKind, FederationCheckpointQuorum,
-    FederationCheckpointSignature, FederationCommittedFrontier, FederationConfig,
-    FederationConfigDigest, FederationConsensusRuntimeStatus, FederationDkgCeremonyId,
-    FederationDkgError, FederationDkgKeysetSpec, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgTranscriptHash,
-    FederationDkgTranscriptSignature, FederationError, FederationId,
+    FederationAlephBftError, FederationAlephBftFinalizedItem, FederationApplicationDigest,
+    FederationApplicationState, FederationCheckpoint, FederationCheckpointError,
+    FederationCheckpointFrontier, FederationCheckpointId, FederationCheckpointKind,
+    FederationCheckpointQuorum, FederationCheckpointSignature, FederationCommittedFrontier,
+    FederationConfig, FederationConfigDigest, FederationConsensusRuntimeStatus,
+    FederationDkgCeremonyId, FederationDkgError, FederationDkgKeysetSpec,
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationDkgTranscriptHash, FederationDkgTranscriptSignature, FederationError, FederationId,
     FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
     FederationMaterializedStateDigest, FederationMaterializedStateRowFingerprint,
     FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
@@ -2511,12 +2511,11 @@ impl FederationDkgActivationRequest {
         identity_config.keyset_secret_shares.clear();
         identity_config.setup_transcript_hash = None;
         identity_config.validate_against_public(&setup_public_config)?;
-        let transcript = final_public_config
-            .setup_transcript
-            .as_ref()
-            .ok_or(FederationDkgError::Transcript {
+        let transcript = final_public_config.setup_transcript.as_ref().ok_or(
+            FederationDkgError::Transcript {
                 reason: "DKG activation requires a complete setup transcript",
-            })?;
+            },
+        )?;
         if !transcript
             .payload
             .ceremonies
@@ -2607,12 +2606,11 @@ impl FederationDkgActivationRequest {
             }
             .into());
         }
-        let transcript = final_public_config
-            .setup_transcript
-            .as_ref()
-            .ok_or(FederationDkgError::Transcript {
+        let transcript = final_public_config.setup_transcript.as_ref().ok_or(
+            FederationDkgError::Transcript {
                 reason: "DKG activation requires a complete setup transcript",
-            })?;
+            },
+        )?;
         if !transcript
             .payload
             .ceremonies
@@ -3339,16 +3337,18 @@ impl FederationAlephBftActivityResponse {
             });
         }
         if self.session_id != expected_session_id {
-            return Err(FederationError::AlephBftUnitSessionMismatch {
+            return Err(FederationAlephBftError::UnitSessionMismatch {
                 expected: expected_session_id,
                 found: self.session_id,
-            });
+            }
+            .into());
         }
         if self.operation_id != expected_operation_id {
-            return Err(FederationError::AlephBftActivityOperationMismatch {
+            return Err(FederationAlephBftError::ActivityOperationMismatch {
                 expected: expected_operation_id,
                 found: self.operation_id,
-            });
+            }
+            .into());
         }
 
         Ok(())
@@ -3437,10 +3437,11 @@ impl FederationAlephBftNetworkMessageResponse {
             });
         }
         if self.session_id != expected_session_id {
-            return Err(FederationError::AlephBftUnitSessionMismatch {
+            return Err(FederationAlephBftError::UnitSessionMismatch {
                 expected: expected_session_id,
                 found: self.session_id,
-            });
+            }
+            .into());
         }
 
         Ok(())
@@ -3582,12 +3583,11 @@ impl FederationCatchUpOperation {
             && self.application.is_terminal()
             && entry.application != self.application
         {
-            return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
-                reason: format!(
-                    "catch-up application outcome mismatch at operation {}",
-                    self.operation_id
-                ),
-            });
+            return Err(FederationAlephBftError::RecoveryOperationMismatch {
+                reason: "catch-up application outcome mismatch",
+                operation_id: self.operation_id,
+            }
+            .into());
         }
         Ok(())
     }
@@ -4980,16 +4980,18 @@ mod tests {
                 payload.session_id,
                 FederationOperationId::from_bytes([42; 32]),
             ),
-            Err(FederationError::AlephBftActivityOperationMismatch { expected, found })
+            Err(FederationError::AlephBft(FederationAlephBftError::ActivityOperationMismatch { expected, found }))
                 if expected == FederationOperationId::from_bytes([42; 32])
                     && found == operation_id
         ));
         assert!(matches!(
             response.validate(config.federation_id, payload.session_id + 1, operation_id),
-            Err(FederationError::AlephBftUnitSessionMismatch {
-                expected: 4,
-                found: 3
-            })
+            Err(FederationError::AlephBft(
+                FederationAlephBftError::UnitSessionMismatch {
+                    expected: 4,
+                    found: 3
+                }
+            ))
         ));
     }
 
@@ -5034,10 +5036,12 @@ mod tests {
             .expect("response validates");
         assert!(matches!(
             response.validate(config.federation_id, 4),
-            Err(FederationError::AlephBftUnitSessionMismatch {
-                expected: 4,
-                found: 3
-            })
+            Err(FederationError::AlephBft(
+                FederationAlephBftError::UnitSessionMismatch {
+                    expected: 4,
+                    found: 3
+                }
+            ))
         ));
     }
 

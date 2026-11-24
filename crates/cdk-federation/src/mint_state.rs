@@ -465,9 +465,11 @@ impl FederationNode {
         envelopes: Vec<FederationOperationEnvelope>,
     ) -> Result<Vec<FederationSubmitOperationResponse>, cdk::Error> {
         let Some(first) = envelopes.first() else {
-            return Err(FederationError::AlephBftOrderedOperationGroupInvalid {
-                reason: "ordered successor group cannot be empty".to_string(),
-            }
+            return Err(FederationError::AlephBft(
+                cdk::federation::FederationAlephBftError::OrderedGroupInvalid {
+                    reason: "ordered successor group cannot be empty",
+                },
+            )
             .into());
         };
         self.validate_federation_envelope_admission(first).await?;

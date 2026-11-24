@@ -37,6 +37,258 @@ pub const FEDERATION_MAX_CONSENSUS_ITEM_BYTES: usize =
 const FEDERATION_ALEPH_BFT_UNIT_BODY_HASH_VERSION: &[u8] = b"cdk-federation-aleph-bft-unit-body-v1";
 const FEDERATION_RECOVERY_BARRIER_ID_VERSION: &[u8] = b"cdk-federation-recovery-barrier-id-v1";
 
+/// Errors from AlephBFT units, sessions, network admission and finalized-item recovery.
+///
+/// Reasons are fixed text and every other field is public protocol data, so
+/// the message never carries member-local details and needs no redaction.
+#[derive(Debug, thiserror::Error)]
+pub enum FederationAlephBftError {
+    /// Inbound network admission exceeded the bounded message-count budget.
+    #[error("AlephBFT inbound queue backpressure: session={session_id}, {detail}")]
+    Backpressure {
+        /// Session whose inbound queue is full.
+        session_id: u64,
+        /// Which bounded budget was exceeded.
+        detail: &'static str,
+    },
+    /// Inbound network admission exceeded the bounded byte budget.
+    #[error(
+        "AlephBFT inbound queue backpressure: session={session_id}, inbound byte budget {byte_budget} exceeded (buffered={buffered}, incoming={incoming})"
+    )]
+    InboundByteBudgetExceeded {
+        /// Session whose inbound queue is full.
+        session_id: u64,
+        /// Configured byte budget.
+        byte_budget: usize,
+        /// Bytes already buffered.
+        buffered: usize,
+        /// Bytes in the rejected message.
+        incoming: usize,
+    },
+    /// A peer acknowledged activity for a different operation.
+    #[error("Federation AlephBFT activity response mismatch: expected={expected}, found={found}")]
+    ActivityOperationMismatch {
+        /// Operation whose activity was announced.
+        expected: FederationOperationId,
+        /// Operation named in the acknowledgement.
+        found: FederationOperationId,
+    },
+    /// The configured consensus threshold does not satisfy AlephBFT's quorum rule.
+    #[error("Invalid AlephBFT consensus threshold: expected={expected}, found={found}")]
+    InvalidConsensusThreshold {
+        /// Threshold required by the roster size.
+        expected: u16,
+        /// Threshold configured by the federation.
+        found: u16,
+    },
+    /// A unit body hash does not match the canonical item body.
+    #[error("Federation AlephBFT unit body hash mismatch: expected={expected}, found={found}")]
+    UnitBodyHashMismatch {
+        /// Hash of the canonical item body.
+        expected: FederationAlephBftUnitBodyHash,
+        /// Hash carried by the unit.
+        found: FederationAlephBftUnitBodyHash,
+    },
+    /// A unit's operation ID list does not match the canonical item body.
+    #[error("Federation AlephBFT unit operation ids do not match item body")]
+    UnitOperationIdsMismatch,
+    /// A unit must contain at least one consensus item.
+    #[error("Federation AlephBFT unit cannot be empty")]
+    EmptyUnit,
+    /// One ordered operation group cannot be represented safely in one unit.
+    #[error("Federation AlephBFT ordered operation group is invalid: {reason}")]
+    OrderedGroupInvalid {
+        /// Which check failed.
+        reason: &'static str,
+    },
+    /// An ordered operation group has more items than one unit may carry.
+    #[error(
+        "Federation AlephBFT ordered operation group is invalid: ordered group has {actual} items, exceeding unit limit {max}"
+    )]
+    OrderedGroupTooManyItems {
+        /// Items in the group.
+        actual: usize,
+        /// Maximum items per unit.
+        max: usize,
+    },
+    /// An ordered operation group body is larger than one unit may carry.
+    #[error(
+        "Federation AlephBFT ordered operation group is invalid: ordered group body is {actual} bytes, exceeding unit limit {max}"
+    )]
+    OrderedGroupBodyTooLarge {
+        /// Canonical body bytes of the group.
+        actual: usize,
+        /// Maximum body bytes per unit.
+        max: usize,
+    },
+    /// A unit belongs to a different finalization session.
+    #[error("Federation AlephBFT unit session mismatch: expected={expected}, found={found}")]
+    UnitSessionMismatch {
+        /// Expected finalization session.
+        expected: u64,
+        /// Session found in the payload.
+        found: u64,
+    },
+    /// A peer status omitted the durable finalized-item cursor.
+    #[error("Federation member {member_id} AlephBFT status is missing its finalized-item cursor")]
+    FinalizedCursorMissing {
+        /// Member whose status omitted the cursor.
+        member_id: MemberId,
+    },
+    /// A session cannot rotate while local units are awaiting finality.
+    #[error(
+        "Federation AlephBFT session rotation blocked: current_session={current_session}, requested_session={requested_session}, pending_units={pending_units}, pending_items={pending_items}"
+    )]
+    PendingFinalization {
+        /// Session currently accepted by the adapter.
+        current_session: u64,
+        /// Later session requested by the caller.
+        requested_session: u64,
+        /// Locally drained units still waiting for finality.
+        pending_units: usize,
+        /// Consensus items inside those units.
+        pending_items: usize,
+    },
+    /// A live-session rotation was requested while operations remained pending.
+    #[error(
+        "Federation AlephBFT session rotation blocked: session={session}, pending_items={pending_items}"
+    )]
+    SessionRotationBlocked {
+        /// Current session.
+        session: u64,
+        /// Operations still pending.
+        pending_items: usize,
+    },
+    /// An opaque network message could not be decoded.
+    #[error("Invalid federation AlephBFT network message: {reason}")]
+    InvalidNetworkMessage {
+        /// Which decode step failed.
+        reason: &'static str,
+    },
+    /// The same member unit was finalized more than once.
+    #[error(
+        "Duplicate federation AlephBFT unit: session={session}, member={member_id}, unit_index={unit_index}"
+    )]
+    DuplicateUnit {
+        /// Finalization session.
+        session: u64,
+        /// Submitting member.
+        member_id: MemberId,
+        /// Unit index within the member's units.
+        unit_index: u64,
+    },
+    /// Retained finalized-item metadata is not internally consistent.
+    #[error("Federation AlephBFT finalized item recovery mismatch: {reason}")]
+    RecoveryMismatch {
+        /// Which check failed.
+        reason: &'static str,
+    },
+    /// A retained finalized item differs from the one being recovered.
+    #[error(
+        "Federation AlephBFT finalized item recovery mismatch: finalized item mismatch at accepted item index {accepted_item_index}"
+    )]
+    RecoveryItemMismatch {
+        /// Accepted-order index of the differing item.
+        accepted_item_index: u64,
+    },
+    /// A finalized-item cursor skips or repeats a position.
+    #[error(
+        "Federation AlephBFT finalized item recovery mismatch: non-contiguous {cursor}: expected {expected}, found {found}"
+    )]
+    RecoveryNonContiguous {
+        /// Which cursor is non-contiguous.
+        cursor: &'static str,
+        /// Next position expected.
+        expected: u64,
+        /// Position found.
+        found: u64,
+    },
+    /// Finalized items move to an earlier session.
+    #[error(
+        "Federation AlephBFT finalized item recovery mismatch: finalized item session moved backwards: previous {previous}, found {found}"
+    )]
+    RecoverySessionRegressed {
+        /// Session of the preceding item.
+        previous: u64,
+        /// Session found.
+        found: u64,
+    },
+    /// The journal disagrees with finalized evidence at one operation index.
+    #[error(
+        "Federation AlephBFT finalized item recovery mismatch: {reason} at operation index {index}"
+    )]
+    RecoveryJournalMismatch {
+        /// Which check failed.
+        reason: &'static str,
+        /// Journal index.
+        index: u64,
+    },
+    /// Recovery disagrees about one operation.
+    #[error(
+        "Federation AlephBFT finalized item recovery mismatch: {reason} at operation {operation_id}"
+    )]
+    RecoveryOperationMismatch {
+        /// Which check failed.
+        reason: &'static str,
+        /// Operation concerned.
+        operation_id: FederationOperationId,
+    },
+    /// Recovery disagrees about one finalized item.
+    #[error(
+        "Federation AlephBFT finalized item recovery mismatch: {reason} at item index {accepted_item_index}"
+    )]
+    RecoveryItemIndexMismatch {
+        /// Which check failed.
+        reason: &'static str,
+        /// Accepted-order index concerned.
+        accepted_item_index: u64,
+    },
+    /// Recovery produced a different number of entries than expected.
+    #[error(
+        "Federation AlephBFT finalized item recovery mismatch: {reason}: expected={expected}, found={found}"
+    )]
+    RecoveryCountMismatch {
+        /// Which count differs.
+        reason: &'static str,
+        /// Count expected.
+        expected: usize,
+        /// Count recovered.
+        found: usize,
+    },
+    /// A finalized unit cannot be replayed onto the recovered state.
+    #[error(
+        "Federation AlephBFT finalized item recovery mismatch: {reason}: member={member_id} session={session} unit={unit_index}"
+    )]
+    RecoveryUnitMismatch {
+        /// Which check failed.
+        reason: &'static str,
+        /// Submitting member.
+        member_id: MemberId,
+        /// Finalization session.
+        session: u64,
+        /// Unit index within the member's units.
+        unit_index: u64,
+    },
+}
+
+impl FederationAlephBftError {
+    /// Whether retained finalized history disagrees with recovered or peer evidence.
+    pub const fn is_recovery_mismatch(&self) -> bool {
+        matches!(
+            self,
+            Self::RecoveryMismatch { .. }
+                | Self::RecoveryItemMismatch { .. }
+                | Self::RecoveryNonContiguous { .. }
+                | Self::RecoverySessionRegressed { .. }
+                | Self::RecoveryJournalMismatch { .. }
+                | Self::RecoveryOperationMismatch { .. }
+                | Self::RecoveryItemIndexMismatch { .. }
+                | Self::RecoveryCountMismatch { .. }
+                | Self::RecoveryUnitMismatch { .. }
+        )
+    }
+}
+
 /// Version of AlephBFT unit payloads carrying CDK consensus items.
 pub const FEDERATION_ALEPH_BFT_UNIT_PAYLOAD_VERSION: u16 = 1;
 
@@ -153,15 +405,16 @@ impl FederationAlephBftUnitPayload {
 
         let expected_operation_ids = collect_operation_ids(&self.items)?;
         if self.operation_ids != expected_operation_ids {
-            return Err(FederationError::AlephBftUnitOperationIdsMismatch);
+            return Err(FederationAlephBftError::UnitOperationIdsMismatch.into());
         }
 
         let expected_hash = compute_aleph_bft_unit_body_hash(&self.items)?;
         if self.body_hash != expected_hash {
-            return Err(FederationError::AlephBftUnitBodyHashMismatch {
-                expected: expected_hash.to_hex(),
-                found: self.body_hash.to_hex(),
-            });
+            return Err(FederationAlephBftError::UnitBodyHashMismatch {
+                expected: expected_hash,
+                found: self.body_hash,
+            }
+            .into());
         }
 
         Ok(())
@@ -338,12 +591,10 @@ impl FederationAlephBftFinalizedItem {
             || self.unit_body_hash != other.unit_body_hash
             || self.item.canonical_bytes()? != other.item.canonical_bytes()?
         {
-            return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
-                reason: format!(
-                    "finalized item mismatch at accepted item index {}",
-                    other.accepted_item_index
-                ),
-            });
+            return Err(FederationAlephBftError::RecoveryItemMismatch {
+                accepted_item_index: other.accepted_item_index,
+            }
+            .into());
         }
         Ok(())
     }
@@ -1046,9 +1297,10 @@ impl FederationConsensusItemQueue {
         items: Vec<FederationConsensusItem>,
     ) -> Result<FederationPreparedAlephBftSubmissionGroup> {
         if items.is_empty() {
-            return Err(FederationError::AlephBftOrderedOperationGroupInvalid {
-                reason: "ordered group cannot be empty".to_string(),
-            });
+            return Err(FederationAlephBftError::OrderedGroupInvalid {
+                reason: "ordered group cannot be empty",
+            }
+            .into());
         }
         let mut operation_ids = self.pending_operation_ids.clone();
         let mut conflict_keys = self.pending_conflict_keys.clone();
@@ -1089,9 +1341,10 @@ impl FederationConsensusItemQueue {
             .iter()
             .any(|item| item.admission != admission)
         {
-            return Err(FederationError::AlephBftOrderedOperationGroupInvalid {
-                reason: "ordered group must be entirely new or entirely pending".to_string(),
-            });
+            return Err(FederationAlephBftError::OrderedGroupInvalid {
+                reason: "ordered group must be entirely new or entirely pending",
+            }
+            .into());
         }
         Ok(FederationPreparedAlephBftSubmissionGroup {
             items: prepared_items,
@@ -1162,12 +1415,11 @@ impl FederationConsensusItemQueue {
             };
             if group.len() > max_items {
                 if batch.is_empty() {
-                    return Err(FederationError::AlephBftOrderedOperationGroupInvalid {
-                        reason: format!(
-                            "ordered group has {} items, exceeding unit limit {max_items}",
-                            group.len()
-                        ),
-                    });
+                    return Err(FederationAlephBftError::OrderedGroupTooManyItems {
+                        actual: group.len(),
+                        max: max_items,
+                    }
+                    .into());
                 }
                 break;
             }
@@ -1185,11 +1437,11 @@ impl FederationConsensusItemQueue {
                             max: max_bytes,
                         });
                     }
-                    return Err(FederationError::AlephBftOrderedOperationGroupInvalid {
-                        reason: format!(
-                            "ordered group body is {group_bytes} bytes, exceeding unit limit {max_bytes}"
-                        ),
-                    });
+                    return Err(FederationAlephBftError::OrderedGroupBodyTooLarge {
+                        actual: group_bytes,
+                        max: max_bytes,
+                    }
+                    .into());
                 }
                 break;
             }
@@ -1390,24 +1642,21 @@ impl FederationAlephBftUnitDataProvider {
         items: Vec<FederationConsensusItem>,
     ) -> Result<FederationPreparedAlephBftSubmissionGroup> {
         if items.len() > self.max_items_per_unit {
-            return Err(FederationError::AlephBftOrderedOperationGroupInvalid {
-                reason: format!(
-                    "ordered group has {} items, exceeding unit limit {}",
-                    items.len(),
-                    self.max_items_per_unit
-                ),
-            });
+            return Err(FederationAlephBftError::OrderedGroupTooManyItems {
+                actual: items.len(),
+                max: self.max_items_per_unit,
+            }
+            .into());
         }
         let body_bytes = items.iter().try_fold(0usize, |total, item| {
             Ok::<_, FederationError>(total.saturating_add(item.canonical_size()?))
         })?;
         if body_bytes > self.max_unit_body_bytes {
-            return Err(FederationError::AlephBftOrderedOperationGroupInvalid {
-                reason: format!(
-                    "ordered group body is {body_bytes} bytes, exceeding unit limit {}",
-                    self.max_unit_body_bytes
-                ),
-            });
+            return Err(FederationAlephBftError::OrderedGroupBodyTooLarge {
+                actual: body_bytes,
+                max: self.max_unit_body_bytes,
+            }
+            .into());
         }
         self.queue.prepare_group(items)
     }
@@ -1598,27 +1847,27 @@ impl FederationAlephBftFinalizationHandler {
                 u64::try_from(expected_index).expect("finalized item count fits in u64"),
             );
             if finalized_item.accepted_item_index != expected_index {
-                return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
-                    reason: format!(
-                        "non-contiguous accepted item index: expected {expected_index}, found {}",
-                        finalized_item.accepted_item_index
-                    ),
-                });
+                return Err(FederationAlephBftError::RecoveryNonContiguous {
+                    cursor: "accepted item index",
+                    expected: expected_index,
+                    found: finalized_item.accepted_item_index,
+                }
+                .into());
             }
             if finalized_item.session > session {
-                return Err(FederationError::AlephBftUnitSessionMismatch {
+                return Err(FederationAlephBftError::UnitSessionMismatch {
                     expected: session,
                     found: finalized_item.session,
-                });
+                }
+                .into());
             }
             if let Some(previous_session) = last_seen_session {
                 if finalized_item.session < previous_session {
-                    return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
-                        reason: format!(
-                            "finalized item session moved backwards: previous {previous_session}, found {}",
-                            finalized_item.session
-                        ),
-                    });
+                    return Err(FederationAlephBftError::RecoverySessionRegressed {
+                        previous: previous_session,
+                        found: finalized_item.session,
+                    }
+                    .into());
                 }
             }
             last_seen_session = Some(finalized_item.session);
@@ -1634,9 +1883,10 @@ impl FederationAlephBftFinalizationHandler {
 
             let computed_operation_id = finalized_item.item.operation_id()?;
             if computed_operation_id != finalized_item.operation_id {
-                return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
-                    reason: "finalized item operation id does not match item body".to_string(),
-                });
+                return Err(FederationAlephBftError::RecoveryMismatch {
+                    reason: "finalized item operation id does not match item body",
+                }
+                .into());
             }
 
             if let (Some(operation_config), FederationConsensusItem::Operation(envelope)) =
@@ -1646,10 +1896,10 @@ impl FederationAlephBftFinalizationHandler {
                 let marked_rejected = finalized_item.status
                     == FederationAlephBftFinalizedItemStatus::RejectedInvalidOperation;
                 if authorization_valid == marked_rejected {
-                    return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
-                        reason: "finalized operation authentication does not match its status"
-                            .to_string(),
-                    });
+                    return Err(FederationAlephBftError::RecoveryMismatch {
+                        reason: "finalized operation authentication does not match its status",
+                    }
+                    .into());
                 }
             }
             if let FederationConsensusItem::RecoveryBarrier(barrier) = &finalized_item.item {
@@ -1658,49 +1908,52 @@ impl FederationAlephBftFinalizationHandler {
                 let marked_rejected = finalized_item.status
                     == FederationAlephBftFinalizedItemStatus::RejectedInvalidRecoveryBarrier;
                 if barrier_valid == marked_rejected {
-                    return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
-                        reason: "recovery barrier cursor does not match its status".to_string(),
-                    });
+                    return Err(FederationAlephBftError::RecoveryMismatch {
+                        reason: "recovery barrier cursor does not match its status",
+                    }
+                    .into());
                 }
             }
 
             match (finalized_item.status, finalized_item.operation_id) {
                 (FederationAlephBftFinalizedItemStatus::Accepted, Some(operation_id)) => {
                     if !finalized_operation_ids.insert(operation_id) {
-                        return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
-                            reason: "accepted finalized item repeats an operation id".to_string(),
-                        });
+                        return Err(FederationAlephBftError::RecoveryMismatch {
+                            reason: "accepted finalized item repeats an operation id",
+                        }
+                        .into());
                     }
                 }
                 (FederationAlephBftFinalizedItemStatus::DuplicateOperation, Some(operation_id)) => {
                     if finalized_operation_ids.insert(operation_id) && checkpoint.is_none() {
-                        return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
-                            reason: "duplicate operation finalized before its accepted item"
-                                .to_string(),
-                        });
+                        return Err(FederationAlephBftError::RecoveryMismatch {
+                            reason: "duplicate operation finalized before its accepted item",
+                        }
+                        .into());
                     }
                 }
                 (FederationAlephBftFinalizedItemStatus::DuplicateOperation, None) => {
-                    return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
-                        reason: "non-operation finalized item cannot be a duplicate operation"
-                            .to_string(),
-                    });
+                    return Err(FederationAlephBftError::RecoveryMismatch {
+                        reason: "non-operation finalized item cannot be a duplicate operation",
+                    }
+                    .into());
                 }
                 (FederationAlephBftFinalizedItemStatus::RejectedInvalidOperation, Some(_)) => {}
                 (FederationAlephBftFinalizedItemStatus::RejectedInvalidOperation, None) => {
-                    return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
-                        reason: "non-operation finalized item cannot be an invalid operation"
-                            .to_string(),
-                    });
+                    return Err(FederationAlephBftError::RecoveryMismatch {
+                        reason: "non-operation finalized item cannot be an invalid operation",
+                    }
+                    .into());
                 }
                 (FederationAlephBftFinalizedItemStatus::RejectedInvalidRecoveryBarrier, None) => {}
                 (
                     FederationAlephBftFinalizedItemStatus::RejectedInvalidRecoveryBarrier,
                     Some(_),
                 ) => {
-                    return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
-                        reason: "operation item cannot be an invalid recovery barrier".to_string(),
-                    });
+                    return Err(FederationAlephBftError::RecoveryMismatch {
+                        reason: "operation item cannot be an invalid recovery barrier",
+                    }
+                    .into());
                 }
                 (FederationAlephBftFinalizedItemStatus::Accepted, None) => {}
             }
@@ -1717,31 +1970,32 @@ impl FederationAlephBftFinalizationHandler {
                         .get(&finalized_item.unit_submitting_member)
                         .is_some_and(|floor| finalized_item.unit_index < *floor)
             }) {
-                return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
-                    reason: "finalized suffix replays a pre-checkpoint unit".to_string(),
-                });
+                return Err(FederationAlephBftError::RecoveryMismatch {
+                    reason: "finalized suffix replays a pre-checkpoint unit",
+                }
+                .into());
             }
             if last_unit_key != Some(unit_key) {
                 if let Some(previous_unit_key) = last_unit_key {
                     closed_unit_keys.insert(previous_unit_key);
                 }
                 if closed_unit_keys.contains(&unit_key) {
-                    return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
-                        reason: "finalized unit items are not contiguous in accepted item order"
-                            .to_string(),
-                    });
+                    return Err(FederationAlephBftError::RecoveryMismatch {
+                        reason: "finalized unit items are not contiguous in accepted item order",
+                    }
+                    .into());
                 }
                 last_unit_key = Some(unit_key);
             }
 
             let expected_item_index = next_item_index_by_unit.entry(unit_key).or_insert(0);
             if finalized_item.item_index_in_unit != *expected_item_index {
-                return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
-                    reason: format!(
-                        "non-contiguous item index in finalized unit accepted order: expected {}, found {}",
-                        *expected_item_index, finalized_item.item_index_in_unit
-                    ),
-                });
+                return Err(FederationAlephBftError::RecoveryNonContiguous {
+                    cursor: "item index in finalized unit accepted order",
+                    expected: *expected_item_index,
+                    found: finalized_item.item_index_in_unit,
+                }
+                .into());
             }
             *expected_item_index = (*expected_item_index).saturating_add(1);
 
@@ -1751,13 +2005,12 @@ impl FederationAlephBftFinalizationHandler {
                     .entry(finalized_item.session)
                     .or_insert(0);
                 if finalized_item.unit_finalization_index != *expected_unit_finalization_index {
-                    return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
-                        reason: format!(
-                            "non-contiguous unit finalization index: expected {}, found {}",
-                            *expected_unit_finalization_index,
-                            finalized_item.unit_finalization_index
-                        ),
-                    });
+                    return Err(FederationAlephBftError::RecoveryNonContiguous {
+                        cursor: "unit finalization index",
+                        expected: *expected_unit_finalization_index,
+                        found: finalized_item.unit_finalization_index,
+                    }
+                    .into());
                 }
                 *expected_unit_finalization_index =
                     (*expected_unit_finalization_index).saturating_add(1);
@@ -1769,9 +2022,10 @@ impl FederationAlephBftFinalizationHandler {
             );
             match finalized_unit_metadata.get(&unit_key) {
                 Some(existing) if *existing != unit_metadata => {
-                    return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
-                        reason: "finalized unit metadata changed within retained items".to_string(),
-                    });
+                    return Err(FederationAlephBftError::RecoveryMismatch {
+                        reason: "finalized unit metadata changed within retained items",
+                    }
+                    .into());
                 }
                 Some(_) => {}
                 None => {
@@ -1805,11 +2059,12 @@ impl FederationAlephBftFinalizationHandler {
                 let expected_index =
                     u64::try_from(expected_index).expect("unit item count fits in u64");
                 if *item_index != expected_index {
-                    return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
-                        reason: format!(
-                            "non-contiguous item index in finalized unit: expected {expected_index}, found {item_index}"
-                        ),
-                    });
+                    return Err(FederationAlephBftError::RecoveryNonContiguous {
+                        cursor: "item index in finalized unit",
+                        expected: expected_index,
+                        found: *item_index,
+                    }
+                    .into());
                 }
             }
             let items = indexed_items
@@ -1818,15 +2073,16 @@ impl FederationAlephBftFinalizationHandler {
                 .collect::<Vec<_>>();
             let expected_body_hash = compute_aleph_bft_unit_body_hash(&items)?;
             let Some((_, found_body_hash)) = finalized_unit_metadata.get(&unit_key) else {
-                return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
-                    reason: "missing finalized unit metadata for retained items".to_string(),
-                });
+                return Err(FederationAlephBftError::RecoveryMismatch {
+                    reason: "missing finalized unit metadata for retained items",
+                }
+                .into());
             };
             if *found_body_hash != expected_body_hash {
-                return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
-                    reason: "finalized unit body hash does not match retained item body"
-                        .to_string(),
-                });
+                return Err(FederationAlephBftError::RecoveryMismatch {
+                    reason: "finalized unit body hash does not match retained item body",
+                }
+                .into());
             }
         }
 
@@ -1892,10 +2148,11 @@ impl FederationAlephBftFinalizationHandler {
     /// Begin a later session and reset the per-session unit finalization index.
     pub fn begin_session(&mut self, session: u64) -> Result<()> {
         if session <= self.session {
-            return Err(FederationError::AlephBftUnitSessionMismatch {
+            return Err(FederationAlephBftError::UnitSessionMismatch {
                 expected: self.session.saturating_add(1),
                 found: session,
-            });
+            }
+            .into());
         }
 
         self.session = session;
@@ -1943,10 +2200,11 @@ impl FederationAlephBftFinalizationHandler {
             });
         }
         if payload.session != self.session {
-            return Err(FederationError::AlephBftUnitSessionMismatch {
+            return Err(FederationAlephBftError::UnitSessionMismatch {
                 expected: self.session,
                 found: payload.session,
-            });
+            }
+            .into());
         }
         if let Some(allowed_members) = &self.allowed_members {
             if !allowed_members.contains(&payload.submitting_member) {
@@ -1960,14 +2218,15 @@ impl FederationAlephBftFinalizationHandler {
             .get(&payload.submitting_member)
             .is_some_and(|floor| payload.unit_index < *floor)
         {
-            return Err(FederationError::DuplicateAlephBftUnit {
+            return Err(FederationAlephBftError::DuplicateUnit {
                 session: payload.session,
                 member_id: payload.submitting_member,
                 unit_index: payload.unit_index,
-            });
+            }
+            .into());
         }
         if payload.items.is_empty() {
-            return Err(FederationError::EmptyAlephBftUnit);
+            return Err(FederationAlephBftError::EmptyUnit.into());
         }
 
         let unit_key = (
@@ -1976,11 +2235,12 @@ impl FederationAlephBftFinalizationHandler {
             payload.unit_index,
         );
         if self.finalized_units.contains(&unit_key) {
-            return Err(FederationError::DuplicateAlephBftUnit {
+            return Err(FederationAlephBftError::DuplicateUnit {
                 session: payload.session,
                 member_id: payload.submitting_member,
                 unit_index: payload.unit_index,
-            });
+            }
+            .into());
         }
 
         let unit_finalization_index = self.next_unit_finalization_index;
@@ -2596,12 +2856,13 @@ impl FederationConsensusRuntime {
     /// Begin a later AlephBFT session for both data-provider and finalizer.
     pub fn begin_session(&mut self, session: u64) -> Result<()> {
         if !self.pending_finalization_units.is_empty() {
-            return Err(FederationError::PendingAlephBftFinalization {
+            return Err(FederationAlephBftError::PendingFinalization {
                 current_session: self.session(),
                 requested_session: session,
                 pending_units: self.pending_finalization_units.len(),
                 pending_items: self.pending_finalization_len(),
-            });
+            }
+            .into());
         }
 
         self.finalization_handler.begin_session(session)?;
@@ -2693,9 +2954,10 @@ impl FederationConsensusRuntime {
         envelopes: Vec<FederationOperationEnvelope>,
     ) -> Result<FederationPreparedAlephBftSubmissionGroup> {
         if envelopes.is_empty() {
-            return Err(FederationError::AlephBftOrderedOperationGroupInvalid {
-                reason: "ordered group cannot be empty".to_string(),
-            });
+            return Err(FederationAlephBftError::OrderedGroupInvalid {
+                reason: "ordered group cannot be empty",
+            }
+            .into());
         }
         let metadata = envelopes
             .iter()
@@ -2710,9 +2972,10 @@ impl FederationConsensusRuntime {
             .collect::<Vec<_>>();
         if pending_finalization.iter().any(|pending| *pending) {
             if !pending_finalization.iter().all(|pending| *pending) {
-                return Err(FederationError::AlephBftOrderedOperationGroupInvalid {
-                    reason: "ordered group must be entirely new or entirely pending".to_string(),
-                });
+                return Err(FederationAlephBftError::OrderedGroupInvalid {
+                    reason: "ordered group must be entirely new or entirely pending",
+                }
+                .into());
             }
             let items = envelopes
                 .into_iter()
@@ -3124,10 +3387,11 @@ impl FederationConsensusRuntime {
             FederationConsensusRecoveryBase::Checkpoint(checkpoint) => {
                 let checkpoint = checkpoint.checkpoint();
                 if active_session < checkpoint.aleph_bft_session {
-                    return Err(FederationError::AlephBftUnitSessionMismatch {
+                    return Err(FederationAlephBftError::UnitSessionMismatch {
                         expected: checkpoint.aleph_bft_session,
                         found: active_session,
-                    });
+                    }
+                    .into());
                 }
                 Self::from_verified_checkpoint_base(public_config.clone(), member_id, checkpoint)
             }

@@ -6,11 +6,12 @@ use std::sync::Arc;
 use anyhow::Result;
 
 use cdk::federation::{
-    FederationAlephBftFinalizedItem, FederationAlephBftFinalizedItemStatus, FederationCheckpoint,
-    FederationCheckpointError, FederationCheckpointFrontier, FederationConfig,
-    FederationConfigSnapshot, FederationConsensusItem, FederationConsensusRecoveryBase,
-    FederationConsensusRuntime, FederationError, FederationFrostDkgContext, FederationJournalEntry,
-    FederationOperationStatus, FederationRestSequenceTracker, FederationSuffixVerifier, MemberId,
+    FederationAlephBftError, FederationAlephBftFinalizedItem,
+    FederationAlephBftFinalizedItemStatus, FederationCheckpoint, FederationCheckpointError,
+    FederationCheckpointFrontier, FederationConfig, FederationConfigSnapshot,
+    FederationConsensusItem, FederationConsensusRecoveryBase, FederationConsensusRuntime,
+    FederationError, FederationFrostDkgContext, FederationJournalEntry, FederationOperationStatus,
+    FederationRestSequenceTracker, FederationSuffixVerifier, MemberId,
     VerifiedFederationCheckpointQuorum,
 };
 use cdk::mint::Mint;
@@ -535,10 +536,12 @@ pub async fn create_federation_runtime_state_with_wallet(
                 .len()
                 != group.operation_ids.len()
         {
-            return Err(FederationError::AlephBftOrderedOperationGroupInvalid {
-                reason: "persisted ordered group is empty or contains duplicate IDs".to_string(),
-            }
-            .into());
+            return Err(
+                FederationError::AlephBft(FederationAlephBftError::OrderedGroupInvalid {
+                    reason: "persisted ordered group is empty or contains duplicate IDs",
+                })
+                .into(),
+            );
         }
         let group_key = group.operation_ids[0];
         if !recovered_groups.insert(group_key) {
@@ -547,22 +550,26 @@ pub async fn create_federation_runtime_state_with_wallet(
         let mut envelopes = Vec::with_capacity(group.operation_ids.len());
         let mut finalized = Vec::with_capacity(group.operation_ids.len());
         for group_operation_id in &group.operation_ids {
-            let member = pending_by_id.get(group_operation_id).ok_or_else(|| {
-                FederationError::AlephBftOrderedOperationGroupInvalid {
-                    reason: "persisted ordered group is incomplete".to_string(),
-                }
+            let member = pending_by_id.get(group_operation_id).ok_or({
+                FederationError::AlephBft(FederationAlephBftError::OrderedGroupInvalid {
+                    reason: "persisted ordered group is incomplete",
+                })
             })?;
             if member.session_id != session_id || member.ordered_group.as_ref() != Some(&group) {
-                return Err(FederationError::AlephBftOrderedOperationGroupInvalid {
-                    reason: "persisted ordered group metadata is inconsistent".to_string(),
-                }
+                return Err(FederationError::AlephBft(
+                    FederationAlephBftError::OrderedGroupInvalid {
+                        reason: "persisted ordered group metadata is inconsistent",
+                    },
+                )
                 .into());
             }
             let computed = member.envelope.operation_id()?;
             if computed != *group_operation_id || computed != member.operation_id {
-                return Err(FederationError::AlephBftOrderedOperationGroupInvalid {
-                    reason: "persisted ordered group operation ID is inconsistent".to_string(),
-                }
+                return Err(FederationError::AlephBft(
+                    FederationAlephBftError::OrderedGroupInvalid {
+                        reason: "persisted ordered group operation ID is inconsistent",
+                    },
+                )
                 .into());
             }
             finalized.push(
@@ -579,9 +586,11 @@ pub async fn create_federation_runtime_state_with_wallet(
         }
         if finalized.iter().any(|is_finalized| *is_finalized) {
             if !finalized.iter().all(|is_finalized| *is_finalized) {
-                return Err(FederationError::AlephBftOrderedOperationGroupInvalid {
-                    reason: "persisted ordered group is only partially finalized".to_string(),
-                }
+                return Err(FederationError::AlephBft(
+                    FederationAlephBftError::OrderedGroupInvalid {
+                        reason: "persisted ordered group is only partially finalized",
+                    },
+                )
                 .into());
             }
             continue;

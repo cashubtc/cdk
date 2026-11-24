@@ -675,7 +675,7 @@ async fn rest_peer_client_rejects_aleph_bft_status_without_finalized_cursor() {
     let err = sync.expect_err("missing AlephBFT cursor should fail");
     assert!(matches!(
         err.downcast_ref::<FederationError>(),
-        Some(FederationError::AlephBftFinalizedCursorMissing { member_id })
+        Some(FederationError::AlephBft(FederationAlephBftError::FinalizedCursorMissing { member_id }))
             if *member_id == peer_member.member_id
     ));
 }

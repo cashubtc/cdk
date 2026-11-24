@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use cdk::federation::{
-    FederationAlephBftBackupRequest, FederationCheckpoint, FederationCheckpointError,
-    FederationCheckpointKind, FederationCheckpointQuorum, FederationCheckpointSummary,
-    FederationCheckpointSummaryResponse, FederationError, FederationJournalCatchUpRequest,
-    FederationJournalCatchUpResponse, FederationPeerStatus, MemberConfigPublic, MemberId,
-    FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES,
+    FederationAlephBftBackupRequest, FederationAlephBftError, FederationCheckpoint,
+    FederationCheckpointError, FederationCheckpointKind, FederationCheckpointQuorum,
+    FederationCheckpointSummary, FederationCheckpointSummaryResponse, FederationError,
+    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationPeerStatus,
+    MemberConfigPublic, MemberId, FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES,
     FEDERATION_MAX_CHECKPOINT_CATCH_UP_TRANSFER_BYTES,
 };
 use cdk_http_client::Transport;
@@ -1778,9 +1778,9 @@ fn status_finalized_cursor_increased(
 
 fn aleph_bft_next_item_index(status: &FederationPeerStatus) -> anyhow::Result<Option<u64>> {
     Ok(Some(status.aleph_bft_next_item_index.ok_or(
-        FederationError::AlephBftFinalizedCursorMissing {
+        FederationError::AlephBft(FederationAlephBftError::FinalizedCursorMissing {
             member_id: status.member_id,
-        },
+        }),
     )?))
 }
 

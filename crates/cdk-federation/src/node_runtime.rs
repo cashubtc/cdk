@@ -16,11 +16,11 @@ use crate::{
     FederationRestAdmissionHandle, FederationSequenceHandle, FederationSyncStatus,
 };
 use cdk::federation::{
-    FederationAlephBftUnitPayload, FederationApplicationState, FederationCheckpoint,
-    FederationCheckpointBoundary, FederationCheckpointQuorum, FederationCheckpointSignature,
-    FederationCheckpointSummary, FederationConsensusRuntimeStatus, FederationError,
-    FederationJournalEntry, FederationMaterializedStateDigest, FederationOperationId,
-    FederationOperationStatus, MemberConfigPublic, MemberId,
+    FederationAlephBftError, FederationAlephBftUnitPayload, FederationApplicationState,
+    FederationCheckpoint, FederationCheckpointBoundary, FederationCheckpointQuorum,
+    FederationCheckpointSignature, FederationCheckpointSummary, FederationConsensusRuntimeStatus,
+    FederationError, FederationJournalEntry, FederationMaterializedStateDigest,
+    FederationOperationId, FederationOperationStatus, MemberConfigPublic, MemberId,
 };
 use cdk::mint::{FederationRuntimeConfig, Mint};
 
@@ -364,14 +364,14 @@ pub fn checkpoint_matches_boundary(
 
 pub fn finalized_unit_recovery_mismatch(
     payload: &FederationAlephBftUnitPayload,
-    reason: &str,
+    reason: &'static str,
 ) -> cdk::Error {
-    FederationError::AlephBftFinalizedItemRecoveryMismatch {
-        reason: format!(
-            "{reason}: member={} session={} unit={}",
-            payload.submitting_member, payload.session, payload.unit_index
-        ),
-    }
+    FederationError::AlephBft(FederationAlephBftError::RecoveryUnitMismatch {
+        reason,
+        member_id: payload.submitting_member,
+        session: payload.session,
+        unit_index: payload.unit_index,
+    })
     .into()
 }
 
@@ -789,12 +789,12 @@ impl FederationNodeRuntime {
             .await
             .ok_or_else(|| runtime_unavailable("AlephBFT consensus"))?;
         if status.session != session_id {
-            return Err(cdk::Error::from(
-                FederationError::AlephBftUnitSessionMismatch {
+            return Err(cdk::Error::from(FederationError::AlephBft(
+                FederationAlephBftError::UnitSessionMismatch {
                     expected: status.session,
                     found: session_id,
                 },
-            ));
+            )));
         }
         let handle = self
             .aleph_bft_live_session

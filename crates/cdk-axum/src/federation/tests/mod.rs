@@ -19,7 +19,7 @@ use cdk::cdk_payment::{
 };
 use cdk::federation::{
     generate_trusted_dealer_configs, FederationAlephBftActivityRequest,
-    FederationAlephBftBackupRequest, FederationAlephBftBackupResponse,
+    FederationAlephBftBackupRequest, FederationAlephBftBackupResponse, FederationAlephBftError,
     FederationAlephBftFinalizedItemStatus, FederationAlephBftNetworkMessageRequest,
     FederationAlephBftNetworkMessageResponse, FederationAlephBftPendingOperationRecord,
     FederationAlephBftUnitPayload, FederationApplicationState, FederationCheckpoint,
@@ -2690,9 +2690,11 @@ fn private_federation_error_statuses_preserve_failure_class() {
         axum::http::StatusCode::CONFLICT
     );
     assert_eq!(
-        federation_error_status(&FederationError::AlephBftFinalizedItemRecoveryMismatch {
-            reason: "stored state mismatch".to_string(),
-        }),
+        federation_error_status(&FederationError::AlephBft(
+            FederationAlephBftError::RecoveryMismatch {
+                reason: "stored state mismatch"
+            }
+        )),
         axum::http::StatusCode::INTERNAL_SERVER_ERROR
     );
     assert_eq!(
@@ -2708,9 +2710,9 @@ fn private_federation_error_statuses_preserve_failure_class() {
 #[tokio::test]
 async fn private_internal_federation_error_hides_diagnostic_detail() {
     for error in [
-        FederationError::AlephBftFinalizedItemRecoveryMismatch {
-            reason: "secret=internal-value".to_string(),
-        },
+        FederationError::AlephBft(FederationAlephBftError::RecoveryMismatch {
+            reason: "secret=internal-value",
+        }),
         FederationError::BackendFailure {
             backend: "Bark",
             phase: "observe outgoing payment",

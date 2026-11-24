@@ -600,3 +600,18 @@ Verification: the nine federation suites pass. `cdk-bark` now has 36 tests and `
 - **Text changes.** Messages that named a keyset, ceremony or member in mid-sentence now end with `: keyset <id>`, `: ceremony <id>` or `: member <id>`. Two messages drop a secondary value: the transcript hash on a conflicting transcript signature, and the receiver on a contribution that does not match the public commitments. Nothing parses these messages.
 - **Tests.** Tests that matched a substring of a formatted reason now match the typed variant.
 - `FederationError` goes from 135 variants to 126. Net change: about 240 lines added. The enum is larger than the variants it replaces, because each formatted message became a documented variant.
+
+### 2026-11-24: package 2, seventh step (AlephBFT errors in their own enum)
+
+- **`FederationAlephBftError`** in `crates/cdk-common/src/federation/consensus.rs` takes the 14 AlephBFT variants of `FederationError`: units, sessions, ordered groups, network admission and finalized-item recovery. `FederationError::AlephBft` wraps it transparently.
+- **Fixed reasons.** The 25 sites that formatted values into a reason now use typed variants:
+  - ordered groups that are too large;
+  - the inbound byte budget;
+  - non-contiguous cursors and session regressions;
+  - journal, operation, item-index and count mismatches;
+  - unit replay mismatches.
+
+  `aleph_bft_catch_up_recovery_mismatch` and `finalized_unit_recovery_mismatch` now take `&'static str`.
+- **Two values no longer travel in the error.** The SCALE decoder's debug text was copied into `InvalidAlephBftNetworkMessage`; it is still logged where decoding fails, and the error carries a fixed reason. Unit body hashes are typed hashes instead of hex strings.
+- **One predicate replaces a variant.** "Any recovery mismatch" used to be one variant and now spans nine. `FederationAlephBftError::is_recovery_mismatch` keeps the HTTP status mapping (500) and the tests that asked that question in one place.
+- `FederationError` goes from 126 variants to 113. Net change: about 265 lines added.

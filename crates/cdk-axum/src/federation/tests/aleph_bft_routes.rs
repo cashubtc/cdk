@@ -532,7 +532,7 @@ async fn federation_peer_client_rejects_aleph_bft_network_response_session_misma
 
     assert!(matches!(
         err.downcast_ref::<FederationError>(),
-        Some(FederationError::AlephBftUnitSessionMismatch { expected, found })
+        Some(FederationError::AlephBft(FederationAlephBftError::UnitSessionMismatch { expected, found }))
             if *expected == 3 && *found == 4
     ));
     assert_eq!(transport.aleph_bft_network_message_requests().len(), 1);

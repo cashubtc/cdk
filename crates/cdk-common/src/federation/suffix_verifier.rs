@@ -3,7 +3,7 @@
 use std::collections::VecDeque;
 
 use super::{
-    FederationAlephBftFinalizedItem, FederationAlephBftRecoveryCursor,
+    FederationAlephBftError, FederationAlephBftFinalizedItem, FederationAlephBftRecoveryCursor,
     FederationAlephBftUnitPayload, FederationApplicationDigest, FederationApplicationFrontier,
     FederationApplicationState, FederationCatchUpOperation, FederationCheckpointError,
     FederationCheckpointFrontier, FederationCommittedFrontier, FederationConfig,
@@ -49,12 +49,11 @@ impl FederationSuffixJournalClaim {
                 || entry.conflict_keys != derived.conflict_keys
                 || entry.consensus_evidence != derived.consensus_evidence
             {
-                return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
-                    reason: format!(
-                        "journal body or consensus evidence mismatch at operation index {}",
-                        entry.index
-                    ),
-                });
+                return Err(FederationAlephBftError::RecoveryJournalMismatch {
+                    reason: "journal body or consensus evidence mismatch",
+                    index: entry.index,
+                }
+                .into());
             }
         }
 
@@ -67,12 +66,11 @@ impl FederationSuffixJournalClaim {
             FederationApplicationState::ConsensusRejected {}
         );
         if derived_consensus_rejection != claimed_consensus_rejection {
-            return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
-                reason: format!(
-                    "journal conflict outcome mismatch at operation index {}",
-                    derived.index
-                ),
-            });
+            return Err(FederationAlephBftError::RecoveryJournalMismatch {
+                reason: "journal conflict outcome mismatch",
+                index: derived.index,
+            }
+            .into());
         }
         Ok(())
     }
@@ -271,10 +269,12 @@ impl FederationSuffixVerifier {
                 .checked_add(pending_len)
                 .ok_or_else(|| suffix_mismatch("finalized item cursor overflow"))?;
             if item.accepted_item_index != expected_item_index {
-                return Err(suffix_mismatch(format!(
-                    "non-contiguous finalized item: expected {expected_item_index}, found {}",
-                    item.accepted_item_index
-                )));
+                return Err(FederationAlephBftError::RecoveryNonContiguous {
+                    cursor: "finalized item",
+                    expected: expected_item_index,
+                    found: item.accepted_item_index,
+                }
+                .into());
             }
 
             if let Some(first) = self.pending_unit.first() {
@@ -288,10 +288,12 @@ impl FederationSuffixVerifier {
             let expected_in_unit = u64::try_from(self.pending_unit.len())
                 .map_err(|_| suffix_mismatch("unit item count does not fit in u64"))?;
             if item.item_index_in_unit != expected_in_unit {
-                return Err(suffix_mismatch(format!(
-                    "non-contiguous item within finalized unit: expected {expected_in_unit}, found {}",
-                    item.item_index_in_unit
-                )));
+                return Err(FederationAlephBftError::RecoveryNonContiguous {
+                    cursor: "item within finalized unit",
+                    expected: expected_in_unit,
+                    found: item.item_index_in_unit,
+                }
+                .into());
             }
             self.pending_unit.push(item.clone());
         }
@@ -457,10 +459,11 @@ impl FederationSuffixVerifier {
         if first.session > runtime_session {
             self.runtime.begin_aleph_bft_session(first.session)?;
         } else if first.session < runtime_session {
-            return Err(FederationError::AlephBftUnitSessionMismatch {
+            return Err(FederationAlephBftError::UnitSessionMismatch {
                 expected: runtime_session,
                 found: first.session,
-            });
+            }
+            .into());
         }
         let payload = FederationAlephBftUnitPayload::new(
             self.runtime.federation_id(),
@@ -566,10 +569,8 @@ impl VerifiedFederationSuffix {
     }
 }
 
-fn suffix_mismatch(reason: impl Into<String>) -> FederationError {
-    FederationError::AlephBftFinalizedItemRecoveryMismatch {
-        reason: reason.into(),
-    }
+fn suffix_mismatch(reason: &'static str) -> FederationError {
+    FederationAlephBftError::RecoveryMismatch { reason }.into()
 }
 
 #[cfg(test)]
@@ -901,7 +902,7 @@ mod tests {
             .expect("buffer partial unit");
         assert!(matches!(
             verifier.finish_for_durable_frontier(&fixture.target),
-            Err(FederationError::AlephBftFinalizedItemRecoveryMismatch { .. })
+            Err(FederationError::AlephBft(error)) if error.is_recovery_mismatch()
         ));
     }
 
