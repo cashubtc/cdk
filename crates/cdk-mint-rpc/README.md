@@ -76,3 +76,27 @@ the mint only accepts when explicitly configured to allow it. See
 ## License
 
 This project is licensed under the [MIT License](../../LICENSE).
+
+## Upgrading manual payment credits
+
+Manual credits remain on `cdk_mint_quote_v1.QuoteService`. The new `amount` and
+`payment_id` protobuf fields are optional on the wire. BOLT11 defaults an omitted
+amount to the unpaid remainder; all other methods require an explicit nonzero
+amount, even for fixed-amount quotes.
+
+The actual backend `payment_id` is required for every method. Old callers that
+omit it receive `INVALID_ARGUMENT`; this is an intentional behavioral change.
+Use the exact backend payment ID, not an offer/address identifier:
+
+```sh
+# BOLT11: credit the unpaid remainder
+cdk-mint-cli update-mint-quote-state "$QUOTE_ID" PAID --payment-id "$BACKEND_PAYMENT_ID"
+# Other methods: specify the amount in the quote's unit
+cdk-mint-cli update-mint-quote-state "$QUOTE_ID" PAID --amount 100 --payment-id "$BACKEND_PAYMENT_ID"
+```
+
+An already recorded payment ID returns `ALREADY_EXISTS`, regardless of the
+requested amount. Fixed quotes cap credits at their requested amount,
+except reusable BOLT12 offers. The recorded amount remains final: mismatched
+backend reports warn when processed but never adjust the balance. No database
+migration is required. Upgrade the server before using the new credit workflow.
