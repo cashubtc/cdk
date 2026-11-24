@@ -281,6 +281,7 @@ coverage:
   echo "Running MintConnector parity suites coverage..."
   cargo llvm-cov --no-report -p cdk-integration-tests --test mint_connector_direct
   cargo llvm-cov --no-report -p cdk-integration-tests --test mint_connector_http
+  cargo llvm-cov --no-report -p cdk-integration-tests --test mint_ws_shutdown
 
   # Generate report
   echo "Generating coverage report..."
@@ -305,6 +306,7 @@ test-pure db="memory":
       run_test nip17_inbox_e2e -j 1
       run_test mint_connector_direct -j 1
       run_test mint_connector_http -j 1
+      run_test mint_ws_shutdown -j 1
     fi
   else
     # Run pure integration tests (cargo test will only build what's needed for the test)
@@ -322,6 +324,7 @@ test-pure db="memory":
       cargo test -p cdk-integration-tests --test nip17_inbox_e2e -- --test-threads 1
       cargo test -p cdk-integration-tests --test mint_connector_direct -- --test-threads 1
       cargo test -p cdk-integration-tests --test mint_connector_http -- --test-threads 1
+      cargo test -p cdk-integration-tests --test mint_ws_shutdown -- --test-threads 1
     fi
   fi
 

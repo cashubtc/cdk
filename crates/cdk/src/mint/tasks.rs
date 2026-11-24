@@ -170,6 +170,29 @@ impl OperationPermit {
     }
 }
 
+/// Ties a long-lived client connection, such as a WebSocket, to the mint's
+/// lifecycle.
+///
+/// The task serving the connection holds the guard for as long as it runs,
+/// and ends when [`closed`](Self::closed) resolves. `Mint::stop` waits for
+/// the guards to be dropped, so that no connection is left using a stopped
+/// mint.
+#[derive(Debug)]
+pub struct ConnectionGuard {
+    permit: OperationPermit,
+}
+
+impl ConnectionGuard {
+    pub(crate) fn new(permit: OperationPermit) -> Self {
+        Self { permit }
+    }
+
+    /// Resolves once the mint is stopping and the connection has to end.
+    pub async fn closed(&self) {
+        self.permit.closing.cancelled().await;
+    }
+}
+
 impl Drop for OperationPermit {
     fn drop(&mut self) {
         self.state
