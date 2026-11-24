@@ -628,13 +628,7 @@ pub async fn create_federation_runtime_state_with_wallet(
 
     #[cfg(feature = "federation-bark")]
     if let Some(runtime) = bark.as_ref() {
-        let persisted_entries = db.get_federation_journal_entries().await?;
-        if let Err(err) = Box::pin(cdk_bark::reconcile_federation_bark_runtime(
-            mint,
-            runtime,
-            &persisted_entries,
-        ))
-        .await
+        if let Err(err) = Box::pin(cdk_bark::reconcile_federation_bark_runtime(mint, runtime)).await
         {
             tracing::error!(
                 reason = %format!("{err:#}"),

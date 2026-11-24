@@ -153,6 +153,79 @@ Each row must be confirmed by a test that replays the operation with a fresh
 stamp before step 6 deletes any journal row. Conflict keys follow the same
 window: they can be deleted together with the operation ids.
 
+## Bark readers (prerequisite 3, implemented)
+
+Startup, readiness, the operator reconcile route and the post-apply hook all
+replayed the whole journal into the member's Bark runtime. They now call one
+function, `reconcile_federation_bark_runtime(mint, runtime)`, which keeps a
+durable marker per Bark scope (`cdk_bark` / `replay_next_index`, keyed by a
+digest of the scope) holding the first journal index not yet replayed. A call
+reads only entries from the marker on. After a successful replay the marker moves
+past every finished entry and stops at the first entry still awaiting
+application; a failed replay leaves it in place, so the same entries are tried
+again. Replay is idempotent against the durable Bark wallet. A new Bark scope has
+no marker and replays from the start, as a fresh wallet must.
+
+## State transfer (prerequisite 4): design
+
+### What the signed digest can and cannot vouch for
+
+Every checkpoint signs `materialized_state_digest`, so a member that installs a
+state whose recomputed digest equals the signed one has the federation's state,
+provided the digest covers every byte it installs. Today it does not. The digest
+rows are an audit projection and leave fields out:
+
+- `mint_quotes` rows hold amount, unit, request, expiry, paid and issued
+  amounts, state and method, but not the NUT-20 public key or payment
+  identifiers;
+- `blind_signatures` rows hold amount and keyset id, but not the signature;
+- `proof_states` rows hold the state only, which is enough, because the key is Y;
+- the consensus projections (transactions, UTXOs, allocations, Bark) are
+  already complete encodings.
+
+A field outside the digest is either added to it or verified on its own. Blind
+signatures can be verified with a pairing check against the keyset's aggregate
+public key. Quote public keys and payment identifiers must be added to the
+digest rows. That changes the digest definition, which is acceptable
+(cut-through), and is the first implementation step.
+
+### A snapshot has to be taken at the checkpoint
+
+A peer's live database is already past the checkpoint, so it cannot export the
+state *at* the checkpoint later. The exporter must freeze the rows when it
+captures the scheduled checkpoint, which already walks every row to compute the
+digest. It stores them, full fidelity, as one snapshot per scheduled
+checkpoint, and keeps the latest two (the same two the retention floor keeps).
+
+### Protocol
+
+1. A member below a peer's retention floor asks for the snapshot of the latest
+   scheduled checkpoint it has a verified quorum for.
+2. It downloads the snapshot in bounded pages (the existing catch-up page
+   limits) from any peer. One honest peer suffices; the quorum signature is the
+   trust anchor.
+3. It installs the rows into empty federation tables in one transaction,
+   recomputes the digest, and commits only if it equals the signed digest and
+   every self-verifying field checks out.
+4. It promotes the checkpoint as its trusted frontier and catches up the
+   journal suffix with the existing protocol.
+
+### Not transferable
+
+Member-local secrets (DKG and FROST key shares, receive secrets, the Bark
+wallet) are not federation state. A member that lost them must restore them
+from its own backup; state transfer does not replace that. Signature shares
+are not in the digest; each can be verified against its member's verification
+key, so they may be transferred too, but they are optional for consensus.
+
+### Size of the work
+
+Full-fidelity rows and an installer for each table in the digest (about
+fifteen tables across the mint, the consensus projections and Bark), the
+snapshot store and its retention, the paged route and client, and tests that a
+transferred member reaches the same digest and serves restore. This is the
+largest piece of the retention work.
+
 ## Not retained-history work
 
 Signature shares, address allocations and the mint's proof and blind-signature

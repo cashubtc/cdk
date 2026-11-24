@@ -136,16 +136,9 @@ pub(super) async fn post_bark_reconcile(
         .map_err(cdk_error_response)?;
     let accepted_frontier = projection.frontier().unwrap_or(0);
     let local_frontier_before = runtime.status(accepted_frontier).await.local_frontier;
-    let entries = state
-        .mint
-        .localstore()
-        .get_federation_journal_entries()
-        .await
-        .map_err(|error| cdk_error_response(error.into()))?;
     Box::pin(crate::federation::reconcile_federation_bark_runtime(
         &state.mint,
         &runtime,
-        &entries,
     ))
     .await
     .map_err(|error| anyhow_response(error.into()))?;

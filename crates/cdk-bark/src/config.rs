@@ -79,6 +79,22 @@ impl FederatedBarkScope {
     pub const fn custody_fingerprint(self) -> [u8; 32] {
         self.custody_fingerprint
     }
+
+    /// Key-value key naming this scope's member-local Bark wallet, so state
+    /// kept per wallet starts over when the scope changes.
+    #[must_use]
+    pub fn storage_key(self) -> String {
+        cdk_common::federation::digest_row_key(
+            "scope",
+            &[
+                self.federation_id.to_string().as_bytes(),
+                self.application_id.to_string().as_bytes(),
+                &self.root_key_epoch.to_be_bytes(),
+                &self.application_key_epoch.to_be_bytes(),
+                &self.custody_fingerprint,
+            ],
+        )
+    }
 }
 
 /// Explicit public bindings repeated in member-local configuration.

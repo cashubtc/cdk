@@ -994,8 +994,6 @@ impl FederationNodeRuntime {
         let db = self.active_mint()?.localstore();
         let mut applied = Vec::new();
         let mut terminal_applications = Vec::with_capacity(entries.len());
-        #[cfg(feature = "federation-bark")]
-        let mut terminal_entries = Vec::with_capacity(entries.len());
         for entry in entries {
             let persisted_before_apply = db
                 .get_federation_journal_entry_by_operation_id(entry.operation_id)
@@ -1032,8 +1030,6 @@ impl FederationNodeRuntime {
                 )));
             }
             terminal_applications.push((entry.operation_id, persisted.application.clone()));
-            #[cfg(feature = "federation-bark")]
-            terminal_entries.push(persisted);
         }
         self.mark_operation_applications(&terminal_applications)
             .await?;
@@ -1074,12 +1070,8 @@ impl FederationNodeRuntime {
         }
         #[cfg(feature = "federation-bark")]
         if let Some(runtime) = self.components.wallet.bark.as_ref() {
-            if let Err(err) = Box::pin(crate::reconcile_federation_bark_runtime(
-                mint,
-                runtime,
-                &terminal_entries,
-            ))
-            .await
+            if let Err(err) =
+                Box::pin(crate::reconcile_federation_bark_runtime(mint, runtime)).await
             {
                 tracing::error!(
                     reason = %format!("{err:#}"),
