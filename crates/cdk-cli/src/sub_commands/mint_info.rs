@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use anyhow::Result;
 use cdk::mint_url::MintUrl;
@@ -24,7 +25,8 @@ pub async fn mint_info(
                 println!("{}", escape_json(&serde_json::to_string_pretty(&info)?));
             }
             Err(fetch_err) => {
-                let wallets: Vec<Wallet> = wallet_repository.get_wallets_for_mint(mint_url).await;
+                let wallets: Vec<Arc<Wallet>> =
+                    wallet_repository.get_wallets_for_mint(mint_url).await;
 
                 if let Some(wallet) = wallets.first() {
                     match wallet.load_mint_info().await {

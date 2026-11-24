@@ -142,7 +142,7 @@ impl DerivationCounterNamespace {
 ///
 /// For pending mint quotes, call [`Wallet::mint_unissued_quotes`] which checks
 /// quote states with the mint and mints available tokens. This makes network calls.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Wallet {
     /// Mint Url
     pub mint_url: MintUrl,
@@ -154,9 +154,9 @@ pub struct Wallet {
     pub metadata_cache: Arc<MintMetadataCache>,
     /// The targeted amount of proofs to have at each size
     pub target_proof_count: usize,
-    // Keep automatic proof selection and reservation together across clones.
+    // Keep automatic proof selection and reservation together for this wallet.
     // The database still atomically rejects competing reservations from other wallets.
-    proof_selection_lock: Arc<tokio::sync::Mutex<()>>,
+    proof_selection_lock: tokio::sync::Mutex<()>,
     auth_wallet: Arc<TokioRwLock<Option<AuthWallet>>>,
     auth_connector: Option<Arc<dyn AuthMintConnector + Send + Sync>>,
     #[cfg(feature = "npubcash")]

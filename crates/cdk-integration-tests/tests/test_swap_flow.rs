@@ -52,7 +52,7 @@ async fn test_swap_happy_path() {
         .expect("Failed to create test wallet");
 
     // Fund wallet with 100 sats
-    fund_wallet(wallet.clone(), 100, None)
+    fund_wallet(&wallet, 100, None)
         .await
         .expect("Failed to fund wallet");
 
@@ -184,7 +184,7 @@ async fn test_swap_duplicate_blinded_messages() {
         .expect("Failed to create test wallet");
 
     // Fund wallet with 200 sats (enough for two swaps)
-    fund_wallet(wallet.clone(), 200, None)
+    fund_wallet(&wallet, 200, None)
         .await
         .expect("Failed to fund wallet");
 
@@ -243,7 +243,7 @@ async fn test_swap_double_spend_detection() {
         .expect("Failed to create test wallet");
 
     // Fund wallet with 100 sats
-    fund_wallet(wallet.clone(), 100, None)
+    fund_wallet(&wallet, 100, None)
         .await
         .expect("Failed to fund wallet");
 
@@ -305,7 +305,7 @@ async fn test_swap_unbalanced_transaction_detection() {
         .expect("Failed to create test wallet");
 
     // Fund wallet with 100 sats
-    fund_wallet(wallet.clone(), 100, None)
+    fund_wallet(&wallet, 100, None)
         .await
         .expect("Failed to fund wallet");
 
@@ -372,7 +372,7 @@ async fn test_swap_empty_inputs_or_outputs() {
         .expect("Failed to create test wallet");
 
     // Fund wallet with 100 sats
-    fund_wallet(wallet.clone(), 100, None)
+    fund_wallet(&wallet, 100, None)
         .await
         .expect("Failed to fund wallet");
 
@@ -433,7 +433,7 @@ async fn test_swap_p2pk_signature_validation() {
         .expect("Failed to create test wallet");
 
     // Fund wallet with 100 sats
-    fund_wallet(wallet.clone(), 100, None)
+    fund_wallet(&wallet, 100, None)
         .await
         .expect("Failed to fund wallet");
 
@@ -536,7 +536,7 @@ async fn test_swap_rollback_on_duplicate_blinded_message() {
         .expect("Failed to create test wallet");
 
     // Fund with enough for multiple swaps
-    fund_wallet(wallet.clone(), 200, None)
+    fund_wallet(&wallet, 200, None)
         .await
         .expect("Failed to fund wallet");
 
@@ -613,7 +613,7 @@ async fn test_swap_concurrent_double_spend_prevention() {
         .expect("Failed to create test wallet");
 
     // Fund wallet
-    fund_wallet(wallet.clone(), 100, None)
+    fund_wallet(&wallet, 100, None)
         .await
         .expect("Failed to fund wallet");
 
@@ -736,7 +736,7 @@ async fn test_swap_with_fees() {
     // Wait a bit for keyset to be available
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    fund_wallet(wallet.clone(), 1000, Some(SplitTarget::Value(Amount::ONE)))
+    fund_wallet(&wallet, 1000, Some(SplitTarget::Value(Amount::ONE)))
         .await
         .expect("Failed to fund wallet");
 
@@ -838,7 +838,7 @@ async fn test_melt_with_fees_swap_before_melt() {
     // Fund with default split target to get optimal denominations
     // Use larger amount to ensure enough margin for swap fees
     let initial_amount = 4096u64;
-    fund_wallet(wallet.clone(), initial_amount, None)
+    fund_wallet(&wallet, initial_amount, None)
         .await
         .expect("Failed to fund wallet");
 
@@ -973,7 +973,7 @@ async fn test_melt_exact_match_no_swap() {
     // For a 1000 sat melt, fee_reserve = max(1, 1000 * 2%) = 20 sats
     // inputs_needed = 1000 + 20 = 1020 sats
     let initial_amount = 1020u64;
-    fund_wallet(wallet.clone(), initial_amount, None)
+    fund_wallet(&wallet, initial_amount, None)
         .await
         .expect("Failed to fund wallet");
 
@@ -1087,7 +1087,7 @@ async fn test_melt_small_amount_tight_margin() {
     // Fund with enough to cover melt + fees, but amounts that will trigger swap
     // 32 sats gives us enough margin even with 1 sat/proof fees
     let initial_amount = 32;
-    fund_wallet(wallet.clone(), initial_amount, None)
+    fund_wallet(&wallet, initial_amount, None)
         .await
         .expect("Failed to fund wallet");
 
@@ -1195,7 +1195,7 @@ async fn test_melt_swap_tight_margin_regression() {
     // Fund with 100 sats using default split to get optimal denominations
     // This should give us proofs like [64, 32, 4] or similar power-of-2 split
     let initial_amount = 100;
-    fund_wallet(wallet.clone(), initial_amount, None)
+    fund_wallet(&wallet, initial_amount, None)
         .await
         .expect("Failed to fund wallet");
 
@@ -1277,7 +1277,7 @@ async fn test_swap_amount_overflow_protection() {
         .expect("Failed to create test wallet");
 
     // Fund wallet
-    fund_wallet(wallet.clone(), 100, None)
+    fund_wallet(&wallet, 100, None)
         .await
         .expect("Failed to fund wallet");
 
@@ -1347,7 +1347,7 @@ async fn test_swap_state_transition_notifications() {
         .expect("Failed to create test wallet");
 
     // Fund wallet
-    fund_wallet(wallet.clone(), 100, None)
+    fund_wallet(&wallet, 100, None)
         .await
         .expect("Failed to fund wallet");
 
@@ -1432,7 +1432,7 @@ async fn test_swap_proof_state_consistency() {
         .expect("Failed to create test wallet");
 
     // Fund wallet
-    fund_wallet(wallet.clone(), 100, None)
+    fund_wallet(&wallet, 100, None)
         .await
         .expect("Failed to fund wallet");
 
@@ -1502,7 +1502,7 @@ async fn test_wallet_multi_keyset_counter_updates() {
         .expect("Failed to create test wallet");
 
     // Fund wallet with initial 100 sats using first keyset
-    fund_wallet(wallet.clone(), 100, None)
+    fund_wallet(&wallet, 100, None)
         .await
         .expect("Failed to fund wallet");
 
@@ -1529,7 +1529,7 @@ async fn test_wallet_multi_keyset_counter_updates() {
         .expect("Failed to refresh wallet keysets");
 
     // Fund wallet again with 100 sats using second keyset
-    fund_wallet(wallet.clone(), 100, None)
+    fund_wallet(&wallet, 100, None)
         .await
         .expect("Failed to fund wallet with second keyset");
 

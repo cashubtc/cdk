@@ -22,12 +22,15 @@ pub async fn update_mint_url(
         new_mint_url,
     } = sub_command_args;
 
-    let mut wallet = wallet_repository
-        .get_wallet(&sub_command_args.old_mint_url, unit)
+    // Wallets are shared through the repository, so rename the mint in storage
+    // directly. The CLI exits after this command and rebuilds the repository
+    // from storage on the next run, so the stale in-memory entry is harmless.
+    wallet_repository
+        .get_wallet(old_mint_url, unit)
         .await?
-        .clone();
-
-    wallet.update_mint_url(new_mint_url.clone()).await?;
+        .localstore
+        .update_mint_url(old_mint_url.clone(), new_mint_url.clone())
+        .await?;
 
     println!("Mint Url changed from {old_mint_url} to {new_mint_url}");
 

@@ -239,7 +239,7 @@ fn create_temp_dir(prefix: &str) -> Result<PathBuf> {
 }
 
 pub async fn fund_wallet(
-    wallet: Wallet,
+    wallet: &Wallet,
     amount: u64,
     split_target: Option<SplitTarget>,
 ) -> Result<Amount> {

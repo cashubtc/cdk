@@ -1623,7 +1623,7 @@ mod tests {
         let mut keyset = crate::wallet::test_utils::test_keyset();
         keyset.input_fee_ppk = 0;
         client.set_active_keyset(keyset);
-        let wallet = create_test_wallet_with_mock(db.clone(), client).await;
+        let wallet = Arc::new(create_test_wallet_with_mock(db.clone(), client).await);
         // Warm metadata so only proof selection and reservation overlap.
         wallet.keysets(KeysetLoadPolicy::default()).await.unwrap();
         let start = Arc::new(tokio::sync::Barrier::new(4));
