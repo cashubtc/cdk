@@ -21,8 +21,9 @@ use cdk_signatory::signatory::{
 use futures::{Stream, StreamExt};
 use nut21::ProtectedEndpoint;
 use subscription::PubSubManager;
-use tokio::sync::{watch, Mutex, Notify};
+use tokio::sync::{watch, Mutex};
 use tokio::task::{JoinHandle, JoinSet};
+use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 
 use crate::error::Error;
@@ -43,6 +44,7 @@ mod server;
 mod start_up_check;
 mod subscription;
 mod swap;
+mod tasks;
 mod verification;
 
 pub use builder::{KeysetRotation, MintBuilder, MintMeltLimits, UnitConfig};
@@ -94,6 +96,8 @@ pub struct Mint {
     melt_quote_locks: Arc<Mutex<HashMap<QuoteId, Weak<Mutex<()>>>>>,
     /// Background task management
     task_state: Arc<Mutex<TaskState>>,
+    /// Owner of the swaps and melts that run in their own tasks
+    operations: tasks::Operations,
     /// Maximum number of inputs allowed per transaction
     max_inputs: usize,
     /// Maximum number of outputs allowed per transaction
@@ -109,8 +113,8 @@ impl std::fmt::Debug for Mint {
 /// State for managing background tasks
 #[derive(Default)]
 struct TaskState {
-    /// Shutdown signal for all background tasks
-    shutdown_notify: Option<Arc<Notify>>,
+    /// Shutdown signal for all background tasks. `Some` while the mint runs.
+    shutdown: Option<CancellationToken>,
     /// Handle to the main supervisor task
     supervisor_handle: Option<JoinHandle<Result<(), Error>>>,
     /// Handle to the keyset drain task
@@ -412,6 +416,7 @@ impl Mint {
                 keyset_updates: Some(keyset_updates),
                 ..Default::default()
             })),
+            operations: tasks::Operations::new(),
             max_inputs,
             max_outputs,
         })
@@ -440,7 +445,7 @@ impl Mint {
         // Prevent starting if already running. This has to come before saga
         // recovery: recovery assumes no operation is in flight, which only
         // holds for a mint that is not running.
-        if task_state.shutdown_notify.is_some() {
+        if task_state.shutdown.is_some() {
             return Err(Error::Internal); // Already started
         }
 
@@ -502,14 +507,14 @@ impl Mint {
         tracing::info!("Payment processor startup completed");
 
         // Create shutdown signal
-        let shutdown_notify = Arc::new(Notify::new());
+        let shutdown = CancellationToken::new();
 
         // Clone required components for the background task
         let mint_clone = Arc::clone(self);
         let payment_processors = self.payment_processors.clone();
         let localstore = Arc::clone(&self.localstore);
         let pubsub_manager = Arc::clone(&self.pubsub_manager);
-        let shutdown_clone = shutdown_notify.clone();
+        let shutdown_clone = shutdown.clone();
 
         // Spawn the supervisor task
         let supervisor_handle = tokio::spawn(async move {
@@ -555,21 +560,11 @@ impl Mint {
         let keyset_drain_handle = if let Some(mut keyset_updates) = keyset_updates {
             let keysets = self.keysets.clone();
             let keyset_store_lock = Arc::clone(&self.keyset_store_lock);
-            let shutdown = shutdown_notify.clone();
+            let shutdown = shutdown.clone();
             Some(tokio::spawn(async move {
-                // Register the shutdown waiter once and hold it across
-                // iterations. A fresh `shutdown.notified()` per loop would be
-                // dropped whenever the `changed` branch wins the select,
-                // deregistering the waiter for the duration of the handler. A
-                // `notify_waiters()` from `stop()` in that window buffers
-                // nothing, so it would be lost and the next `notified()` would
-                // wait forever, hanging `stop()` on the drain handle. A single
-                // pinned future stays registered, so shutdown is never missed.
-                let shutdown_wait = shutdown.notified();
-                tokio::pin!(shutdown_wait);
                 loop {
                     tokio::select! {
-                        _ = &mut shutdown_wait => break,
+                        _ = shutdown.cancelled() => break,
                         changed = keyset_updates.changed() => {
                             if changed.is_err() {
                                 // Signatory dropped the sender; stop draining.
@@ -595,12 +590,14 @@ impl Mint {
         };
 
         // Store the handles
-        task_state.shutdown_notify = Some(shutdown_notify);
+        task_state.shutdown = Some(shutdown);
         task_state.supervisor_handle = Some(supervisor_handle);
         task_state.keyset_drain_handle = keyset_drain_handle;
 
         // Give the background task a tiny bit of time to start waiting
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        self.operations.open();
 
         tracing::info!("Mint background services started");
         Ok(())
@@ -611,6 +608,10 @@ impl Mint {
     /// This function signals all background tasks to shut down and waits for them
     /// to complete gracefully. It's safe to call multiple times.
     ///
+    /// From this call until the next `start()`, the mint rejects new swaps and
+    /// melts with [`Error::ShuttingDown`]. Swaps and melts that are already
+    /// running are not interrupted.
+    ///
     /// # Returns
     ///
     /// Returns `Ok(())` when all background services have shut down cleanly, or an
@@ -618,14 +619,19 @@ impl Mint {
     pub async fn stop(&self) -> Result<(), Error> {
         let mut task_state = self.task_state.lock().await;
 
+        // Refuse new swaps and melts from here on, until the next `start()`.
+        // Closing under the task state lock orders this after a concurrent
+        // `start()`, which reopens admission while it holds the lock.
+        self.operations.close();
+
         // Take the handles out of the state
-        let shutdown_notify = task_state.shutdown_notify.take();
+        let shutdown = task_state.shutdown.take();
         let supervisor_handle = task_state.supervisor_handle.take();
         let keyset_drain_handle = task_state.keyset_drain_handle.take();
 
         // If nothing to stop, return early
-        let (shutdown_notify, supervisor_handle) = match (shutdown_notify, supervisor_handle) {
-            (Some(notify), Some(handle)) => (notify, handle),
+        let (shutdown, supervisor_handle) = match (shutdown, supervisor_handle) {
+            (Some(shutdown), Some(handle)) => (shutdown, handle),
             _ => {
                 tracing::debug!("Stop called but no background services were running");
                 // Still try to stop payment processors
@@ -639,7 +645,7 @@ impl Mint {
         tracing::info!("Stopping mint background services...");
 
         // Signal shutdown
-        shutdown_notify.notify_waiters();
+        shutdown.cancel();
 
         // Wait for supervisor to complete
         let result = match supervisor_handle.await {
@@ -925,7 +931,7 @@ impl Mint {
         payment_processors: &HashMap<PaymentProcessorKey, DynMintPayment>,
         localstore: DynMintDatabase,
         pubsub_manager: Arc<PubSubManager>,
-        shutdown: Arc<Notify>,
+        shutdown: CancellationToken,
     ) -> Result<(), Error> {
         let mut join_set = JoinSet::new();
 
@@ -952,7 +958,7 @@ impl Mint {
             let processor = Arc::clone(processor);
             let localstore = Arc::clone(&localstore);
             let pubsub_manager = Arc::clone(&pubsub_manager);
-            let shutdown = Arc::clone(&shutdown);
+            let shutdown = shutdown.clone();
 
             join_set.spawn(async move {
                 let result = Self::wait_for_processor_payments(
@@ -973,14 +979,12 @@ impl Mint {
 
         // If no payment processors, just wait for shutdown
         if join_set.is_empty() {
-            shutdown.notified().await;
+            shutdown.cancelled().await;
         } else {
-            let shutdown_future = shutdown.notified();
-            tokio::pin!(shutdown_future);
             // Wait for shutdown or all tasks to complete
             loop {
                 tokio::select! {
-                    _ = &mut shutdown_future => {
+                    _ = shutdown.cancelled() => {
                         tracing::info!("Shutting down payment processors");
                         break;
                     }
@@ -1006,7 +1010,7 @@ impl Mint {
         processor: DynMintPayment,
         localstore: DynMintDatabase,
         pubsub_manager: Arc<PubSubManager>,
-        shutdown: Arc<Notify>,
+        shutdown: CancellationToken,
     ) -> Result<(), Error> {
         let mut waiter = PaymentWaiter {
             name,
@@ -1017,7 +1021,7 @@ impl Mint {
         };
         // `supervise` owns the reconnect/backoff/shutdown loop and runs
         // `on_shutdown` (which cancels the backend stream) on the way out.
-        waiter.supervise(shutdown.notified()).await;
+        waiter.supervise(shutdown.cancelled_owned()).await;
         Ok(())
     }
 
@@ -2792,6 +2796,60 @@ mod tests {
             .await
             .unwrap();
         assert!(sagas.is_empty());
+    }
+
+    /// A stopped mint rejects new swaps and melts without reserving anything,
+    /// and accepts them again after a restart.
+    #[tokio::test]
+    async fn stopped_mint_rejects_swaps_and_melts_until_restart() {
+        let mint = create_test_mint().await.unwrap();
+        let swap_inputs = mint_test_proofs(&mint, Amount::from(64)).await.unwrap();
+        let (swap_outputs, _) = create_test_blinded_messages(&mint, Amount::from(64))
+            .await
+            .unwrap();
+        let swap_request = SwapRequest::new(swap_inputs, swap_outputs);
+        let melt_inputs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+        let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+        let melt_request = create_test_melt_request(&melt_inputs, &quote);
+
+        mint.stop().await.expect("mint should stop");
+
+        let err = mint
+            .process_swap_request(swap_request.clone())
+            .await
+            .expect_err("stopped mint must reject a swap");
+        assert!(matches!(err, Error::ShuttingDown));
+
+        let err = mint
+            .melt(&melt_request)
+            .await
+            .expect_err("stopped mint must reject a melt");
+        assert!(matches!(err, Error::ShuttingDown));
+
+        // The rejected melt did not get as far as reserving its inputs.
+        let sagas = mint
+            .localstore
+            .get_incomplete_sagas(OperationKind::Melt)
+            .await
+            .unwrap();
+        assert!(sagas.is_empty());
+        assert_eq!(mint.operations.active(), 0);
+
+        mint.start().await.expect("mint should restart");
+
+        mint.process_swap_request(swap_request)
+            .await
+            .expect("restarted mint must accept the swap");
+        mint.melt(&melt_request)
+            .await
+            .expect("restarted mint must accept the melt")
+            .await
+            .expect("melt should complete");
+
+        // Finished operations are no longer tracked.
+        assert_eq!(mint.operations.active(), 0);
+
+        mint.stop().await.expect("mint should stop");
     }
 
     /// Payment backend that counts `start` and `stop` calls, and fails `start`

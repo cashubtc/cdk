@@ -1109,7 +1109,8 @@ impl Mint {
 
             let localstore = Arc::clone(&self.localstore);
             let pubsub_manager = Arc::clone(&self.pubsub_manager);
-            tokio::spawn(async move {
+            let permit = self.operations.track();
+            crate::mint::tasks::Operations::spawn(permit, async move {
                 // Publish notifications after successful commit
                 if let Ok(quotes) = localstore.get_mint_quotes_by_ids(&quote_ids).await {
                     for mint_quote in quotes.iter().flatten() {

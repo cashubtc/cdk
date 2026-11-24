@@ -405,6 +405,9 @@ pub enum Error {
     /// Internal Error
     #[error("Internal Error")]
     Internal,
+    /// The mint is stopping or stopped, and does not accept new operations
+    #[error("Mint is shutting down")]
+    ShuttingDown,
     /// Oidc config not set
     #[error("Oidc client not set")]
     OidcNotSet,
