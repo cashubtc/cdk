@@ -413,10 +413,6 @@ mod test {
 
     #[tokio::test]
     async fn legacy_finalizing_enrichment_rejects_second_overwrite() {
-        use cdk_common::database::MintDatabase;
-        use cdk_common::mint::{MeltFinalizationData, MeltSagaState, SagaStateEnum};
-        use cdk_common::payment::PaymentIdentifier;
-        use cdk_common::{Amount, CurrencyUnit};
         use cdk_sql_common::stmt::query;
 
         let test_id = format!(
@@ -454,61 +450,11 @@ mod test {
             .expect("seed legacy finalizing row");
         }
 
-        let mut stale_tx = MintDatabase::begin_transaction(&db).await.unwrap();
-        let mut stale_snapshot = stale_tx
-            .get_saga_for_update(&operation_id)
-            .await
-            .unwrap()
-            .expect("legacy row exists");
-        assert_eq!(
-            stale_snapshot.state,
-            SagaStateEnum::Melt(MeltSagaState::Finalizing(None))
-        );
-        stale_tx.rollback().await.unwrap();
-
-        let first_data = MeltFinalizationData {
-            total_spent: Amount::from(9_100).with_unit(CurrencyUnit::Sat),
-            payment_lookup_id: PaymentIdentifier::CustomId("first-lookup".to_string()),
-            payment_proof: Some("first-preimage".to_string()),
-        };
-        let second_data = MeltFinalizationData {
-            total_spent: Amount::from(9_200).with_unit(CurrencyUnit::Sat),
-            payment_lookup_id: PaymentIdentifier::CustomId("second-lookup".to_string()),
-            payment_proof: Some("second-preimage".to_string()),
-        };
-
-        let mut tx1 = MintDatabase::begin_transaction(&db).await.unwrap();
-        let mut acquired1 = tx1
-            .get_saga_for_update(&operation_id)
-            .await
-            .unwrap()
-            .expect("legacy row exists");
-        tx1.update_acquired_saga(
-            &mut acquired1,
-            SagaStateEnum::Melt(MeltSagaState::finalizing(first_data.clone())),
+        cdk_common::database::mint::test::legacy_finalizing_enrichment_rejects_second_overwrite(
+            &db,
+            operation_id,
         )
-        .await
-        .expect("first enrichment should succeed");
-        tx1.commit().await.unwrap();
-
-        let mut tx2 = MintDatabase::begin_transaction(&db).await.unwrap();
-        let err = tx2
-            .update_acquired_saga(
-                &mut stale_snapshot,
-                SagaStateEnum::Melt(MeltSagaState::finalizing(second_data)),
-            )
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(err, cdk_common::database::Error::ConcurrentUpdate),
-            "expected ConcurrentUpdate on stale enrichment, got {err:?}"
-        );
-        tx2.rollback().await.unwrap();
-
-        let mut verify_tx = MintDatabase::begin_transaction(&db).await.unwrap();
-        let stored = verify_tx.get_saga(&operation_id).await.unwrap().unwrap();
-        assert_eq!(stored.finalization_data(), Some(&first_data));
-        verify_tx.commit().await.unwrap();
+        .await;
     }
 
     #[tokio::test]

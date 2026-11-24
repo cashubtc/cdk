@@ -185,6 +185,26 @@ impl<'de> Deserialize<'de> for MeltSagaState {
     where
         D: serde::Deserializer<'de>,
     {
+        if !deserializer.is_human_readable() {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "snake_case")]
+            enum MeltSagaStateCompact {
+                SetupComplete,
+                PaymentAttempted,
+                PaymentPending,
+                PaymentFailed,
+                Finalizing(Option<MeltFinalizationData>),
+            }
+
+            return MeltSagaStateCompact::deserialize(deserializer).map(|state| match state {
+                MeltSagaStateCompact::SetupComplete => Self::SetupComplete,
+                MeltSagaStateCompact::PaymentAttempted => Self::PaymentAttempted,
+                MeltSagaStateCompact::PaymentPending => Self::PaymentPending,
+                MeltSagaStateCompact::PaymentFailed => Self::PaymentFailed,
+                MeltSagaStateCompact::Finalizing(data) => Self::Finalizing(data),
+            });
+        }
+
         struct MeltSagaStateVisitor;
 
         impl<'de> serde::de::Visitor<'de> for MeltSagaStateVisitor {
@@ -418,56 +438,222 @@ impl<'de> Deserialize<'de> for Saga {
     where
         D: serde::Deserializer<'de>,
     {
-        #[derive(Deserialize)]
-        struct SagaDe {
+        const FIELDS: &[&str] = &[
+            "operation_id",
+            "state",
+            "quote_id",
+            "created_at",
+            "updated_at",
+        ];
+
+        fn finish_saga<E>(
             operation_id: Uuid,
-            #[serde(default)]
             operation_kind: Option<OperationKind>,
             state: SagaStateEnum,
-            #[serde(default)]
             quote_id: Option<String>,
-            #[serde(default)]
             finalization_data: Option<MeltFinalizationData>,
             created_at: u64,
             updated_at: u64,
+        ) -> Result<Saga, E>
+        where
+            E: serde::de::Error,
+        {
+            if let Some(kind) = operation_kind {
+                if kind != state.operation_kind() {
+                    return Err(E::custom(format!(
+                        "Saga operation_kind ({kind}) does not match state ({})",
+                        state.operation_kind()
+                    )));
+                }
+            }
+
+            let state = match (state, finalization_data) {
+                (SagaStateEnum::Melt(MeltSagaState::Finalizing(None)), Some(data)) => {
+                    SagaStateEnum::Melt(MeltSagaState::Finalizing(Some(data)))
+                }
+                (SagaStateEnum::Melt(MeltSagaState::Finalizing(Some(existing))), Some(legacy))
+                    if existing != legacy =>
+                {
+                    return Err(E::custom(
+                        "Conflicting MeltFinalizationData between state and legacy finalization_data",
+                    ));
+                }
+                (SagaStateEnum::Swap(_), Some(_)) => {
+                    return Err(E::custom("Swap saga cannot carry melt finalization_data"));
+                }
+                (state, _) => state,
+            };
+
+            Ok(Saga {
+                operation_id,
+                state,
+                quote_id,
+                created_at,
+                updated_at,
+            })
         }
 
-        let raw = SagaDe::deserialize(deserializer)?;
-        if let Some(kind) = raw.operation_kind {
-            if kind != raw.state.operation_kind() {
-                return Err(serde::de::Error::custom(format!(
-                    "Saga operation_kind ({kind}) does not match state ({})",
-                    raw.state.operation_kind()
-                )));
-            }
-        }
+        struct SagaVisitor;
 
-        let state = match (raw.state, raw.finalization_data) {
-            (SagaStateEnum::Melt(MeltSagaState::Finalizing(None)), Some(data)) => {
-                SagaStateEnum::Melt(MeltSagaState::Finalizing(Some(data)))
+        impl<'de> serde::de::Visitor<'de> for SagaVisitor {
+            type Value = Saga;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("struct Saga")
             }
-            (SagaStateEnum::Melt(MeltSagaState::Finalizing(Some(existing))), Some(legacy))
-                if existing != legacy =>
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
             {
-                return Err(serde::de::Error::custom(
-                    "Conflicting MeltFinalizationData between state and legacy finalization_data",
-                ));
-            }
-            (SagaStateEnum::Swap(_), Some(_)) => {
-                return Err(serde::de::Error::custom(
-                    "Swap saga cannot carry melt finalization_data",
-                ));
-            }
-            (state, _) => state,
-        };
+                // Preserve compatibility with legacy 7-field positional encodings
+                // (e.g., MessagePack tuple encoding from before operation_kind and
+                // finalization_data were removed) when the sequence reports length 7,
+                // while matching the current 5-field Serialize layout otherwise.
+                if seq.size_hint() == Some(7) {
+                    let operation_id: Uuid = seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
+                    let operation_kind: OperationKind = seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
+                    let state: SagaStateEnum = seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(2, &self))?;
+                    let quote_id: Option<String> = seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(3, &self))?;
+                    let finalization_data: Option<MeltFinalizationData> = seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(4, &self))?;
+                    let created_at: u64 = seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(5, &self))?;
+                    let updated_at: u64 = seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(6, &self))?;
 
-        Ok(Self {
-            operation_id: raw.operation_id,
-            state,
-            quote_id: raw.quote_id,
-            created_at: raw.created_at,
-            updated_at: raw.updated_at,
-        })
+                    return finish_saga(
+                        operation_id,
+                        Some(operation_kind),
+                        state,
+                        quote_id,
+                        finalization_data,
+                        created_at,
+                        updated_at,
+                    );
+                }
+
+                let operation_id: Uuid = seq
+                    .next_element()?
+                    .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
+                let state: SagaStateEnum = seq
+                    .next_element()?
+                    .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
+                let quote_id: Option<String> = seq
+                    .next_element()?
+                    .ok_or_else(|| serde::de::Error::invalid_length(2, &self))?;
+                let created_at: u64 = seq
+                    .next_element()?
+                    .ok_or_else(|| serde::de::Error::invalid_length(3, &self))?;
+                let updated_at: u64 = seq
+                    .next_element()?
+                    .ok_or_else(|| serde::de::Error::invalid_length(4, &self))?;
+
+                finish_saga(
+                    operation_id,
+                    None,
+                    state,
+                    quote_id,
+                    None,
+                    created_at,
+                    updated_at,
+                )
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut operation_id: Option<Uuid> = None;
+                let mut operation_kind: Option<Option<OperationKind>> = None;
+                let mut state: Option<SagaStateEnum> = None;
+                let mut quote_id: Option<Option<String>> = None;
+                let mut finalization_data: Option<Option<MeltFinalizationData>> = None;
+                let mut created_at: Option<u64> = None;
+                let mut updated_at: Option<u64> = None;
+
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "operation_id" => {
+                            if operation_id.is_some() {
+                                return Err(serde::de::Error::duplicate_field("operation_id"));
+                            }
+                            operation_id = Some(map.next_value()?);
+                        }
+                        "operation_kind" => {
+                            if operation_kind.is_some() {
+                                return Err(serde::de::Error::duplicate_field("operation_kind"));
+                            }
+                            operation_kind = Some(map.next_value()?);
+                        }
+                        "state" => {
+                            if state.is_some() {
+                                return Err(serde::de::Error::duplicate_field("state"));
+                            }
+                            state = Some(map.next_value()?);
+                        }
+                        "quote_id" => {
+                            if quote_id.is_some() {
+                                return Err(serde::de::Error::duplicate_field("quote_id"));
+                            }
+                            quote_id = Some(map.next_value()?);
+                        }
+                        "finalization_data" => {
+                            if finalization_data.is_some() {
+                                return Err(serde::de::Error::duplicate_field("finalization_data"));
+                            }
+                            finalization_data = Some(map.next_value()?);
+                        }
+                        "created_at" => {
+                            if created_at.is_some() {
+                                return Err(serde::de::Error::duplicate_field("created_at"));
+                            }
+                            created_at = Some(map.next_value()?);
+                        }
+                        "updated_at" => {
+                            if updated_at.is_some() {
+                                return Err(serde::de::Error::duplicate_field("updated_at"));
+                            }
+                            updated_at = Some(map.next_value()?);
+                        }
+                        _ => {
+                            let _: serde::de::IgnoredAny = map.next_value()?;
+                        }
+                    }
+                }
+
+                let operation_id =
+                    operation_id.ok_or_else(|| serde::de::Error::missing_field("operation_id"))?;
+                let state = state.ok_or_else(|| serde::de::Error::missing_field("state"))?;
+                let created_at =
+                    created_at.ok_or_else(|| serde::de::Error::missing_field("created_at"))?;
+                let updated_at =
+                    updated_at.ok_or_else(|| serde::de::Error::missing_field("updated_at"))?;
+
+                finish_saga(
+                    operation_id,
+                    operation_kind.flatten(),
+                    state,
+                    quote_id.flatten(),
+                    finalization_data.flatten(),
+                    created_at,
+                    updated_at,
+                )
+            }
+        }
+
+        deserializer.deserialize_struct("Saga", FIELDS, SagaVisitor)
     }
 }
 
@@ -2729,5 +2915,355 @@ mod tests {
         })
         .to_string();
         assert!(serde_json::from_str::<Saga>(&bad_kind).is_err());
+
+        // Positional/tuple encoding (matching default MessagePack `rmp_serde::to_vec`):
+        // verify current 5-field tuple round-trip and legacy 7-field tuple decoding.
+        let current_tuple = serde_json::json!([
+            current.operation_id,
+            current.state,
+            current.quote_id(),
+            current.created_at,
+            current.updated_at,
+        ]);
+        let roundtripped_tuple: Saga =
+            serde_json::from_value(current_tuple).expect("deserialize current 5-field Saga tuple");
+        assert_eq!(roundtripped_tuple, current);
+
+        let legacy_tuple = serde_json::json!([
+            operation_id,
+            "melt",
+            { "type": "melt", "finalizing": null },
+            "quote-1",
+            data,
+            100,
+            200,
+        ]);
+        let migrated_tuple: Saga =
+            serde_json::from_value(legacy_tuple).expect("deserialize legacy 7-field Saga tuple");
+        assert_eq!(migrated_tuple.operation_id, operation_id);
+        assert_eq!(migrated_tuple.operation_kind(), OperationKind::Melt);
+        assert_eq!(migrated_tuple.quote_id(), Some("quote-1"));
+        assert_eq!(migrated_tuple.finalization_data(), Some(&data));
+        assert_eq!(migrated_tuple.created_at, 100);
+        assert_eq!(migrated_tuple.updated_at, 200);
+    }
+
+    #[test]
+    fn melt_saga_state_compact_non_self_describing_enum_compat() {
+        use serde::de::{self, Deserializer, EnumAccess, IntoDeserializer, VariantAccess};
+        use serde::ser::{self, Serializer};
+
+        #[derive(Debug)]
+        struct CompactErr(String);
+
+        impl fmt::Display for CompactErr {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(&self.0)
+            }
+        }
+        impl std::error::Error for CompactErr {}
+        impl de::Error for CompactErr {
+            fn custom<T: fmt::Display>(msg: T) -> Self {
+                Self(msg.to_string())
+            }
+        }
+        impl ser::Error for CompactErr {
+            fn custom<T: fmt::Display>(msg: T) -> Self {
+                Self(msg.to_string())
+            }
+        }
+
+        // Captures enum variant index + optional newtype payload as JSON (modeling
+        // bincode's non-self-describing enum framing without deserialize_any).
+        #[derive(Debug)]
+        struct CompactEnumFrame {
+            variant_index: u32,
+            payload: Option<serde_json::Value>,
+        }
+
+        struct CompactEnumSerializer;
+
+        impl Serializer for CompactEnumSerializer {
+            type Ok = CompactEnumFrame;
+            type Error = CompactErr;
+            type SerializeSeq = ser::Impossible<Self::Ok, Self::Error>;
+            type SerializeTuple = ser::Impossible<Self::Ok, Self::Error>;
+            type SerializeTupleStruct = ser::Impossible<Self::Ok, Self::Error>;
+            type SerializeTupleVariant = ser::Impossible<Self::Ok, Self::Error>;
+            type SerializeMap = ser::Impossible<Self::Ok, Self::Error>;
+            type SerializeStruct = ser::Impossible<Self::Ok, Self::Error>;
+            type SerializeStructVariant = ser::Impossible<Self::Ok, Self::Error>;
+
+            fn is_human_readable(&self) -> bool {
+                false
+            }
+
+            fn serialize_unit_variant(
+                self,
+                _name: &'static str,
+                variant_index: u32,
+                _variant: &'static str,
+            ) -> Result<Self::Ok, Self::Error> {
+                Ok(CompactEnumFrame {
+                    variant_index,
+                    payload: None,
+                })
+            }
+
+            fn serialize_newtype_variant<T: ?Sized + Serialize>(
+                self,
+                _name: &'static str,
+                variant_index: u32,
+                _variant: &'static str,
+                value: &T,
+            ) -> Result<Self::Ok, Self::Error> {
+                let payload = serde_json::to_value(value).map_err(ser::Error::custom)?;
+                Ok(CompactEnumFrame {
+                    variant_index,
+                    payload: Some(payload),
+                })
+            }
+
+            fn serialize_bool(self, _: bool) -> Result<Self::Ok, Self::Error> {
+                Err(ser::Error::custom("expected enum"))
+            }
+            fn serialize_i8(self, _: i8) -> Result<Self::Ok, Self::Error> {
+                Err(ser::Error::custom("expected enum"))
+            }
+            fn serialize_i16(self, _: i16) -> Result<Self::Ok, Self::Error> {
+                Err(ser::Error::custom("expected enum"))
+            }
+            fn serialize_i32(self, _: i32) -> Result<Self::Ok, Self::Error> {
+                Err(ser::Error::custom("expected enum"))
+            }
+            fn serialize_i64(self, _: i64) -> Result<Self::Ok, Self::Error> {
+                Err(ser::Error::custom("expected enum"))
+            }
+            fn serialize_u8(self, _: u8) -> Result<Self::Ok, Self::Error> {
+                Err(ser::Error::custom("expected enum"))
+            }
+            fn serialize_u16(self, _: u16) -> Result<Self::Ok, Self::Error> {
+                Err(ser::Error::custom("expected enum"))
+            }
+            fn serialize_u32(self, _: u32) -> Result<Self::Ok, Self::Error> {
+                Err(ser::Error::custom("expected enum"))
+            }
+            fn serialize_u64(self, _: u64) -> Result<Self::Ok, Self::Error> {
+                Err(ser::Error::custom("expected enum"))
+            }
+            fn serialize_f32(self, _: f32) -> Result<Self::Ok, Self::Error> {
+                Err(ser::Error::custom("expected enum"))
+            }
+            fn serialize_f64(self, _: f64) -> Result<Self::Ok, Self::Error> {
+                Err(ser::Error::custom("expected enum"))
+            }
+            fn serialize_char(self, _: char) -> Result<Self::Ok, Self::Error> {
+                Err(ser::Error::custom("expected enum"))
+            }
+            fn serialize_str(self, _: &str) -> Result<Self::Ok, Self::Error> {
+                Err(ser::Error::custom("expected enum"))
+            }
+            fn serialize_bytes(self, _: &[u8]) -> Result<Self::Ok, Self::Error> {
+                Err(ser::Error::custom("expected enum"))
+            }
+            fn serialize_none(self) -> Result<Self::Ok, Self::Error> {
+                Err(ser::Error::custom("expected enum"))
+            }
+            fn serialize_some<T: ?Sized + Serialize>(self, _: &T) -> Result<Self::Ok, Self::Error> {
+                Err(ser::Error::custom("expected enum"))
+            }
+            fn serialize_unit(self) -> Result<Self::Ok, Self::Error> {
+                Err(ser::Error::custom("expected enum"))
+            }
+            fn serialize_unit_struct(self, _: &'static str) -> Result<Self::Ok, Self::Error> {
+                Err(ser::Error::custom("expected enum"))
+            }
+            fn serialize_newtype_struct<T: ?Sized + Serialize>(
+                self,
+                _: &'static str,
+                _: &T,
+            ) -> Result<Self::Ok, Self::Error> {
+                Err(ser::Error::custom("expected enum"))
+            }
+            fn serialize_seq(self, _: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
+                Err(ser::Error::custom("expected enum"))
+            }
+            fn serialize_tuple(self, _: usize) -> Result<Self::SerializeTuple, Self::Error> {
+                Err(ser::Error::custom("expected enum"))
+            }
+            fn serialize_tuple_struct(
+                self,
+                _: &'static str,
+                _: usize,
+            ) -> Result<Self::SerializeTupleStruct, Self::Error> {
+                Err(ser::Error::custom("expected enum"))
+            }
+            fn serialize_tuple_variant(
+                self,
+                _: &'static str,
+                _: u32,
+                _: &'static str,
+                _: usize,
+            ) -> Result<Self::SerializeTupleVariant, Self::Error> {
+                Err(ser::Error::custom("expected enum"))
+            }
+            fn serialize_map(self, _: Option<usize>) -> Result<Self::SerializeMap, Self::Error> {
+                Err(ser::Error::custom("expected enum"))
+            }
+            fn serialize_struct(
+                self,
+                _: &'static str,
+                _: usize,
+            ) -> Result<Self::SerializeStruct, Self::Error> {
+                Err(ser::Error::custom("expected enum"))
+            }
+            fn serialize_struct_variant(
+                self,
+                _: &'static str,
+                _: u32,
+                _: &'static str,
+                _: usize,
+            ) -> Result<Self::SerializeStructVariant, Self::Error> {
+                Err(ser::Error::custom("expected enum"))
+            }
+        }
+
+        struct CompactEnumDeserializer(CompactEnumFrame);
+
+        impl<'de> EnumAccess<'de> for CompactEnumDeserializer {
+            type Error = CompactErr;
+            type Variant = CompactVariantAccess;
+
+            fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self::Variant), Self::Error>
+            where
+                V: de::DeserializeSeed<'de>,
+            {
+                let tag = seed.deserialize(self.0.variant_index.into_deserializer())?;
+                Ok((tag, CompactVariantAccess(self.0.payload)))
+            }
+        }
+
+        struct CompactVariantAccess(Option<serde_json::Value>);
+
+        impl<'de> VariantAccess<'de> for CompactVariantAccess {
+            type Error = CompactErr;
+
+            fn unit_variant(self) -> Result<(), Self::Error> {
+                match self.0 {
+                    None => Ok(()),
+                    Some(_) => Err(de::Error::custom("unexpected payload for unit variant")),
+                }
+            }
+
+            fn newtype_variant_seed<T>(self, seed: T) -> Result<T::Value, Self::Error>
+            where
+                T: de::DeserializeSeed<'de>,
+            {
+                let payload = self
+                    .0
+                    .ok_or_else(|| de::Error::custom("unexpected EOF reading newtype payload"))?;
+                seed.deserialize(payload).map_err(de::Error::custom)
+            }
+
+            fn tuple_variant<V>(self, _: usize, _: V) -> Result<V::Value, Self::Error>
+            where
+                V: de::Visitor<'de>,
+            {
+                Err(de::Error::custom("tuple variant unsupported"))
+            }
+
+            fn struct_variant<V>(
+                self,
+                _: &'static [&'static str],
+                _: V,
+            ) -> Result<V::Value, Self::Error>
+            where
+                V: de::Visitor<'de>,
+            {
+                Err(de::Error::custom("struct variant unsupported"))
+            }
+        }
+
+        impl<'de> Deserializer<'de> for CompactEnumDeserializer {
+            type Error = CompactErr;
+
+            fn is_human_readable(&self) -> bool {
+                false
+            }
+
+            fn deserialize_any<V>(self, _: V) -> Result<V::Value, Self::Error>
+            where
+                V: de::Visitor<'de>,
+            {
+                Err(de::Error::custom(
+                    "non-self-describing format does not support deserialize_any",
+                ))
+            }
+
+            fn deserialize_enum<V>(
+                self,
+                _name: &'static str,
+                _variants: &'static [&'static str],
+                visitor: V,
+            ) -> Result<V::Value, Self::Error>
+            where
+                V: de::Visitor<'de>,
+            {
+                visitor.visit_enum(self)
+            }
+
+            serde::forward_to_deserialize_any! {
+                bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+                bytes byte_buf option unit unit_struct newtype_struct seq tuple
+                tuple_struct map struct identifier ignored_any
+            }
+        }
+
+        // Pre-change bincode-style unit variant fixtures (indices 0..=3) still decode.
+        for (idx, expected) in [
+            (0u32, MeltSagaState::SetupComplete),
+            (1u32, MeltSagaState::PaymentAttempted),
+            (2u32, MeltSagaState::PaymentPending),
+            (3u32, MeltSagaState::PaymentFailed),
+        ] {
+            let decoded = MeltSagaState::deserialize(CompactEnumDeserializer(CompactEnumFrame {
+                variant_index: idx,
+                payload: None,
+            }))
+            .expect("decode legacy unit variant index");
+            assert_eq!(decoded, expected);
+        }
+
+        // Current round-trip of all five variants works without deserialize_any.
+        let data = MeltFinalizationData {
+            total_spent: Amount::from(9_250).with_unit(CurrencyUnit::Sat),
+            payment_lookup_id: PaymentIdentifier::CustomId("lookup-compact".to_string()),
+            payment_proof: Some("preimage-compact".to_string()),
+        };
+        for state in [
+            MeltSagaState::SetupComplete,
+            MeltSagaState::PaymentAttempted,
+            MeltSagaState::PaymentPending,
+            MeltSagaState::PaymentFailed,
+            MeltSagaState::Finalizing(None),
+            MeltSagaState::finalizing(data),
+        ] {
+            let encoded = state
+                .serialize(CompactEnumSerializer)
+                .expect("serialize compact enum");
+            let decoded = MeltSagaState::deserialize(CompactEnumDeserializer(encoded))
+                .expect("deserialize compact enum");
+            assert_eq!(decoded, state);
+        }
+
+        // Pre-change payloadless Finalizing (index 4, no payload) fails cleanly
+        // because non-self-describing formats cannot distinguish unit vs Option payload.
+        assert!(
+            MeltSagaState::deserialize(CompactEnumDeserializer(CompactEnumFrame {
+                variant_index: 4,
+                payload: None,
+            }))
+            .is_err()
+        );
     }
 }

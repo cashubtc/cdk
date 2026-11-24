@@ -730,3 +730,71 @@ where
     );
     tx.commit().await.unwrap();
 }
+
+/// Verify that a pre-seeded legacy `Finalizing(None)` row can be enriched once
+/// and rejects a second overwrite from a stale `Finalizing(None)` snapshot.
+pub async fn legacy_finalizing_enrichment_rejects_second_overwrite<DB>(
+    db: &DB,
+    operation_id: uuid::Uuid,
+) where
+    DB: Database<Error>,
+{
+    let mut stale_tx = Database::begin_transaction(db).await.unwrap();
+    let mut stale_snapshot = stale_tx
+        .get_saga_for_update(&operation_id)
+        .await
+        .unwrap()
+        .expect("legacy row exists");
+    assert_eq!(
+        stale_snapshot.state,
+        SagaStateEnum::Melt(MeltSagaState::Finalizing(None))
+    );
+    stale_tx.rollback().await.unwrap();
+
+    let first_data = MeltFinalizationData {
+        total_spent: Amount::from(9_100).with_unit(CurrencyUnit::Sat),
+        payment_lookup_id: PaymentIdentifier::CustomId("first-lookup".to_string()),
+        payment_proof: Some("first-preimage".to_string()),
+    };
+    let second_data = MeltFinalizationData {
+        total_spent: Amount::from(9_200).with_unit(CurrencyUnit::Sat),
+        payment_lookup_id: PaymentIdentifier::CustomId("second-lookup".to_string()),
+        payment_proof: Some("second-preimage".to_string()),
+    };
+
+    // First enrichment commits successfully.
+    let mut tx1 = Database::begin_transaction(db).await.unwrap();
+    let mut acquired1 = tx1
+        .get_saga_for_update(&operation_id)
+        .await
+        .unwrap()
+        .expect("legacy row exists");
+    tx1.update_acquired_saga(
+        &mut acquired1,
+        SagaStateEnum::Melt(MeltSagaState::finalizing(first_data.clone())),
+    )
+    .await
+    .expect("first enrichment should succeed");
+    tx1.commit().await.unwrap();
+
+    // Second enrichment using the stale Finalizing(None) snapshot must fail
+    // with ConcurrentUpdate and preserve the first payload.
+    let mut tx2 = Database::begin_transaction(db).await.unwrap();
+    let err = tx2
+        .update_acquired_saga(
+            &mut stale_snapshot,
+            SagaStateEnum::Melt(MeltSagaState::finalizing(second_data)),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::ConcurrentUpdate),
+        "expected ConcurrentUpdate on stale enrichment, got {err:?}"
+    );
+    tx2.rollback().await.unwrap();
+
+    let mut verify_tx = Database::begin_transaction(db).await.unwrap();
+    let stored = verify_tx.get_saga(&operation_id).await.unwrap().unwrap();
+    assert_eq!(stored.finalization_data(), Some(&first_data));
+    verify_tx.commit().await.unwrap();
+}
