@@ -61,10 +61,7 @@ pub mod dkg_driver;
 pub mod dkg_persistence;
 #[doc(hidden)]
 pub mod frost_signing;
-#[cfg_attr(
-    not(any(feature = "federation-bdk", feature = "federation-bark")),
-    allow(dead_code)
-)] // FROST signing is used only by the custody backends.
+#[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
 mod signer_fan_out;
 #[doc(hidden)]
 pub use cdk::federation::latency;
@@ -132,8 +129,8 @@ pub use self::dkg_driver::{
     FederationDkgDriverTickOutcome, FederationDkgSecretShareTransportPolicy,
 };
 pub use self::node_runtime::{
-    apply_federation_journal_entry_for_replay, FederationMemberContext, FederationMembership,
-    FederationNodeRuntime,
+    apply_federation_journal_entry_for_replay, FederationFinalityMode, FederationMemberContext,
+    FederationMembership, FederationNodeRuntime,
 };
 #[doc(hidden)]
 pub use self::payment_observation::payment_observation_report_summaries;

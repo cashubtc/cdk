@@ -14,17 +14,14 @@ use cdk::federation::{
     FederationDkgActivationRequest, FederationDkgCommitmentRequest, FederationDkgReadinessRequest,
     FederationDkgRevealRequest, FederationDkgSecretShareRequest, FederationDkgSetupResponse,
     FederationDkgTranscriptSignatureRequest, FederationError,
-    FederationFrostAggregateResultNotification, FederationFrostCommitmentRequest,
-    FederationFrostCommitmentResponse, FederationFrostDkgConfirmationRequest,
-    FederationFrostDkgRound1Request, FederationFrostDkgRound2Request,
-    FederationFrostSignatureShareResponse, FederationFrostSigningAbortRequest,
-    FederationFrostSigningAck, FederationFrostSigningPackageRequest, FederationId,
-    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationPeerStatus,
-    FederationPeerStatusRequest, FederationRestMessageKind, FederationSignedRequest,
-    FederationStateTransferRequest, FederationStateTransferResponse,
-    FederationStateTransferWindowRequest, FederationStateTransferWindowResponse,
-    MemberConfigPrivate, MemberConfigPublic, FEDERATION_MAX_ALEPH_BFT_BACKUP_PAGE_BYTES,
-    FEDERATION_MAX_ALEPH_BFT_BACKUP_REQUEST_BYTES, FEDERATION_MAX_CHECKPOINT_CATCH_UP_PAGE_BYTES,
+    FederationFrostDkgConfirmationRequest, FederationFrostDkgRound1Request,
+    FederationFrostDkgRound2Request, FederationId, FederationJournalCatchUpRequest,
+    FederationJournalCatchUpResponse, FederationPeerStatus, FederationPeerStatusRequest,
+    FederationRestMessageKind, FederationSignedRequest, FederationStateTransferRequest,
+    FederationStateTransferResponse, FederationStateTransferWindowRequest,
+    FederationStateTransferWindowResponse, MemberConfigPrivate, MemberConfigPublic,
+    FEDERATION_MAX_ALEPH_BFT_BACKUP_PAGE_BYTES, FEDERATION_MAX_ALEPH_BFT_BACKUP_REQUEST_BYTES,
+    FEDERATION_MAX_CHECKPOINT_CATCH_UP_PAGE_BYTES,
     FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES, FEDERATION_REST_API_VERSION,
 };
 #[cfg(feature = "federation-bark")]
@@ -41,6 +38,13 @@ use cdk::federation::{
 };
 #[cfg(all(any(test, feature = "test-utils"), feature = "federation-bark"))]
 use cdk::federation::{FederationBarkThresholdDhRequest, FederationBarkThresholdDhResponse};
+#[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
+use cdk::federation::{
+    FederationFrostAggregateResultNotification, FederationFrostCommitmentRequest,
+    FederationFrostCommitmentResponse, FederationFrostSignatureShareResponse,
+    FederationFrostSigningAbortRequest, FederationFrostSigningAck,
+    FederationFrostSigningPackageRequest,
+};
 #[cfg(any(test, feature = "test-utils"))]
 use cdk::federation::{FederationSubmitOperationRequest, FederationSubmitOperationResponse};
 use cdk_http_client::{Async, HttpError, Transport};
@@ -775,10 +779,7 @@ where
         Ok(response)
     }
 
-    #[cfg_attr(
-        not(any(feature = "federation-bdk", feature = "federation-bark")),
-        allow(dead_code)
-    )] // FROST signing is used only by the custody backends.
+    #[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
     pub async fn request_frost_commitment(
         &self,
         member: &MemberConfigPublic,
@@ -803,10 +804,7 @@ where
             .decode(member.member_id, expected_session)?)
     }
 
-    #[cfg_attr(
-        not(any(feature = "federation-bdk", feature = "federation-bark")),
-        allow(dead_code)
-    )] // FROST signing is used only by the custody backends.
+    #[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
     pub async fn request_frost_signature_share(
         &self,
         member: &MemberConfigPublic,
@@ -832,10 +830,7 @@ where
             .decode(member.member_id, expected_session, package_hash)?)
     }
 
-    #[cfg_attr(
-        not(any(feature = "federation-bdk", feature = "federation-bark")),
-        allow(dead_code)
-    )] // FROST signing is used only by the custody backends.
+    #[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
     pub async fn notify_frost_aggregate_result(
         &self,
         member: &MemberConfigPublic,
@@ -867,10 +862,7 @@ where
         Ok(())
     }
 
-    #[cfg_attr(
-        not(any(feature = "federation-bdk", feature = "federation-bark")),
-        allow(dead_code)
-    )] // FROST signing is used only by the custody backends.
+    #[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
     pub async fn abort_frost_signing(
         &self,
         member: &MemberConfigPublic,

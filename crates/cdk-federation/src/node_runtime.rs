@@ -112,10 +112,21 @@ pub struct FederationNodeRuntime {
     pub aleph_bft_network_inbound: FederationAlephBftNetworkInboundState,
     pub aleph_bft_live_session: FederationAlephBftLiveSessionState,
     pub aleph_bft_halt_epoch: Arc<AtomicU64>,
+    pub finality: FederationFinalityMode,
+}
+
+/// How finalized consensus units reach this node.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum FederationFinalityMode {
+    /// From the live AlephBFT session.
+    #[default]
+    Live,
+    /// Each submission is finalized locally at once.
     #[cfg(any(test, feature = "test-utils"))]
-    pub local_finality_test: bool,
+    Local,
+    /// The test drives finalization explicitly.
     #[cfg(any(test, feature = "test-utils"))]
-    pub manual_finality_test: bool,
+    Manual,
 }
 
 impl FederationNodeRuntime {
@@ -141,10 +152,7 @@ impl FederationNodeRuntime {
             aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
             aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
             aleph_bft_halt_epoch: Arc::new(AtomicU64::new(0)),
-            #[cfg(any(test, feature = "test-utils"))]
-            local_finality_test: false,
-            #[cfg(any(test, feature = "test-utils"))]
-            manual_finality_test: false,
+            finality: FederationFinalityMode::Live,
         }
     }
 }
@@ -486,10 +494,7 @@ impl FederationNodeRuntime {
             aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
             aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
             aleph_bft_halt_epoch: Arc::new(AtomicU64::new(0)),
-            #[cfg(any(test, feature = "test-utils"))]
-            local_finality_test: false,
-            #[cfg(any(test, feature = "test-utils"))]
-            manual_finality_test: false,
+            finality: FederationFinalityMode::Live,
         }
     }
 
@@ -758,8 +763,7 @@ impl FederationNodeRuntime {
     }
 
     pub async fn live_session_available(&self) -> bool {
-        #[cfg(any(test, feature = "test-utils"))]
-        if self.local_finality_test || self.manual_finality_test {
+        if self.finality != FederationFinalityMode::Live {
             return true;
         }
         self.live_session_active().await && self.network_inbound_active().await

@@ -3422,8 +3422,11 @@ async fn federation_route_state_for_private_with_db_payment_and_finality(
                 aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
                 aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
                 aleph_bft_halt_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-                local_finality_test,
-                manual_finality_test: false,
+                finality: if local_finality_test {
+                    cdk_federation::FederationFinalityMode::Local
+                } else {
+                    cdk_federation::FederationFinalityMode::Live
+                },
             },
         },
     }
@@ -4030,7 +4033,7 @@ fn reset_federation_runtime_journal(state: &mut MintState) {
 }
 
 fn activate_local_test_finality(state: &mut MintState) {
-    state.federation.local_finality_test = true;
+    state.federation.finality = cdk_federation::FederationFinalityMode::Local;
 }
 
 async fn catch_up_response_with_materialized_digest(

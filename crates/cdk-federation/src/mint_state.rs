@@ -435,16 +435,8 @@ impl FederationNode {
         self.ensure_federation_ready_for_public_submit().await?;
 
         let coordinate_wallet_publication =
-            crate::wallet_operation_publisher::coordinates(envelope.operation.kind()) && {
-                #[cfg(any(test, feature = "test-utils"))]
-                {
-                    !(self.federation.local_finality_test || self.federation.manual_finality_test)
-                }
-                #[cfg(not(any(test, feature = "test-utils")))]
-                {
-                    true
-                }
-            };
+            crate::wallet_operation_publisher::coordinates(envelope.operation.kind())
+                && self.federation.finality == crate::FederationFinalityMode::Live;
         if coordinate_wallet_publication {
             return Box::pin(
                 self.submit_coordinated_wallet_federation_envelope(envelope, operation_id),

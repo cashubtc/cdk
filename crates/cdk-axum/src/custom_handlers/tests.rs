@@ -792,8 +792,11 @@ async fn create_federated_test_state_with_backend_db_seed_and_finality(
                 aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
                 aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
                 aleph_bft_halt_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-                local_finality_test,
-                manual_finality_test: false,
+                finality: if local_finality_test {
+                    cdk_federation::FederationFinalityMode::Local
+                } else {
+                    cdk_federation::FederationFinalityMode::Live
+                },
             },
         },
     }
@@ -1642,8 +1645,11 @@ async fn threshold_member_state(mint: Arc<Mint>) -> MintState {
                 aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
                 aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
                 aleph_bft_halt_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-                local_finality_test: is_federated,
-                manual_finality_test: false,
+                finality: if is_federated {
+                    cdk_federation::FederationFinalityMode::Local
+                } else {
+                    cdk_federation::FederationFinalityMode::Live
+                },
             },
         },
     }
@@ -2741,7 +2747,7 @@ async fn repeated_standard_federation_quote_requests_create_distinct_quotes() {
 async fn pending_aleph_bft_mint_quote_is_not_persisted_before_consensus() {
     let mut state = create_aleph_bft_federated_test_state().await;
     state.mark_federation_healthy().await;
-    state.federation.manual_finality_test = true;
+    state.federation.finality = cdk_federation::FederationFinalityMode::Manual;
     state.federation.member_mut_for_test().peer_sync_config = crate::FederationPeerSyncConfig {
         operation_submission_timeout: Duration::from_millis(10),
         ..crate::FederationPeerSyncConfig::default()
@@ -3671,7 +3677,7 @@ async fn cache_post_batch_mint_aleph_bft_public_route_fails_closed_before_queuei
 async fn batch_mint_pending_aleph_bft_retry_returns_persisted_response_without_issuing_twice() {
     let mut state = create_aleph_bft_federated_test_state().await;
     state.mark_federation_healthy().await;
-    state.federation.manual_finality_test = true;
+    state.federation.finality = cdk_federation::FederationFinalityMode::Manual;
     state.federation.member_mut_for_test().peer_sync_config = crate::FederationPeerSyncConfig {
         operation_submission_timeout: Duration::from_millis(10),
         response_waiter_limit: 2,
@@ -3845,7 +3851,7 @@ async fn batch_mint_pending_aleph_bft_retry_returns_persisted_response_without_i
 async fn post_mint_pending_aleph_bft_retry_returns_persisted_response_without_issuing_twice() {
     let mut state = create_aleph_bft_federated_test_state().await;
     state.mark_federation_healthy().await;
-    state.federation.manual_finality_test = true;
+    state.federation.finality = cdk_federation::FederationFinalityMode::Manual;
     state.federation.member_mut_for_test().peer_sync_config = crate::FederationPeerSyncConfig {
         operation_submission_timeout: Duration::from_millis(10),
         response_waiter_limit: 2,
@@ -4062,7 +4068,7 @@ async fn post_mint_pending_aleph_bft_retry_returns_persisted_response_without_is
 async fn duplicate_batch_mint_aleph_bft_pending_requests_join_one_queue_item() {
     let mut state = create_aleph_bft_federated_test_state().await;
     state.mark_federation_healthy().await;
-    state.federation.manual_finality_test = true;
+    state.federation.finality = cdk_federation::FederationFinalityMode::Manual;
     state.federation.member_mut_for_test().peer_sync_config = crate::FederationPeerSyncConfig {
         operation_submission_timeout: Duration::from_secs(5),
         response_waiter_limit: 4,
@@ -4217,7 +4223,7 @@ async fn duplicate_batch_mint_aleph_bft_pending_requests_join_one_queue_item() {
 async fn duplicate_post_mint_aleph_bft_pending_requests_join_one_queue_item() {
     let mut state = create_aleph_bft_federated_test_state().await;
     state.mark_federation_healthy().await;
-    state.federation.manual_finality_test = true;
+    state.federation.finality = cdk_federation::FederationFinalityMode::Manual;
     state.federation.member_mut_for_test().peer_sync_config = crate::FederationPeerSyncConfig {
         operation_submission_timeout: Duration::from_secs(5),
         response_waiter_limit: 4,
@@ -5032,7 +5038,7 @@ async fn post_swap_aleph_bft_public_route_fails_closed_before_queueing() {
 async fn post_swap_pending_aleph_bft_retry_returns_persisted_response_after_finality() {
     let mut state = create_aleph_bft_federated_test_state().await;
     state.mark_federation_healthy().await;
-    state.federation.manual_finality_test = true;
+    state.federation.finality = cdk_federation::FederationFinalityMode::Manual;
     state.federation.member_mut_for_test().peer_sync_config = crate::FederationPeerSyncConfig {
         operation_submission_timeout: Duration::from_millis(10),
         response_waiter_limit: 2,
@@ -5173,7 +5179,7 @@ async fn post_swap_pending_aleph_bft_retry_returns_persisted_response_after_fina
 async fn duplicate_post_swap_aleph_bft_pending_requests_join_one_queue_item() {
     let mut state = create_aleph_bft_federated_test_state().await;
     state.mark_federation_healthy().await;
-    state.federation.manual_finality_test = true;
+    state.federation.finality = cdk_federation::FederationFinalityMode::Manual;
     state.federation.member_mut_for_test().peer_sync_config = crate::FederationPeerSyncConfig {
         operation_submission_timeout: Duration::from_secs(5),
         response_waiter_limit: 4,
@@ -5802,7 +5808,7 @@ async fn process_melt_request_aleph_bft_public_route_fails_closed_before_queuein
 async fn process_melt_pending_aleph_bft_retry_returns_persisted_response_after_finality() {
     let mut state = create_aleph_bft_federated_test_state().await;
     state.mark_federation_healthy().await;
-    state.federation.manual_finality_test = true;
+    state.federation.finality = cdk_federation::FederationFinalityMode::Manual;
     state.federation.member_mut_for_test().peer_sync_config = crate::FederationPeerSyncConfig {
         operation_submission_timeout: Duration::from_millis(10),
         response_waiter_limit: 2,
@@ -6044,7 +6050,7 @@ async fn duplicate_process_melt_aleph_bft_pending_requests_join_one_queue_item()
     )
     .await;
     state.mark_federation_healthy().await;
-    state.federation.manual_finality_test = true;
+    state.federation.finality = cdk_federation::FederationFinalityMode::Manual;
     state.federation.member_mut_for_test().peer_sync_config = crate::FederationPeerSyncConfig {
         operation_submission_timeout: Duration::from_secs(5),
         response_waiter_limit: 4,

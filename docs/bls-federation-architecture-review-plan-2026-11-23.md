@@ -749,3 +749,9 @@ Decision: the replay guard is a validity window, not a permanent index.
 - **FROST signing.** The runtime's test-only map that bypassed authorization in two validators becomes a `SigningAuthorizer` trait object: `MintSigningAuthorizer` runs the mint's checks; the test constructor installs fixed authorizations that fall through to those checks for any other session. The two validators are now free functions.
 - **Setup coordinator.** The `cfg(test)` delay and storage-failure fields become a `SetupOperationFaults` trait object; the test fixture owns the test implementation.
 - **Remaining:** the two finality test flags in `node_runtime.rs` (changed on the state-transfer branch, so done after its merge) and the feature-conditional `allow(dead_code)` markers on the FROST signing path.
+
+### 2026-11-24: package 1, test hooks out of production structs (part 2) and dead-code markers
+
+- **Finality mode.** The node runtime's two test booleans (`local_finality_test`, `manual_finality_test`) become one `finality: FederationFinalityMode`. Production compiles only `Live`; `Local` and `Manual` exist in test builds. The impossible both-true state is gone, and the wallet publisher check no longer needs a `cfg` block.
+- **FROST signing dead code.** Ten `cfg_attr(not(custody), allow(dead_code))` markers on the signing coordinator, its peer-client methods and the signer fan-out module become `cfg(any(feature = "federation-bdk", feature = "federation-bark"))`, with their imports gated to match. The aggregate signature's package hash, read only by on-chain signing, compiles only with `federation-bdk`. Clippy passes with both custody features, with each alone, and in all 16 production builds.
+- **Package 1 done criterion met:** no federation module carries `allow(dead_code)`, and no production struct has a `cfg(test)` field.

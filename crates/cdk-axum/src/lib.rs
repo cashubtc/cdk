@@ -396,7 +396,9 @@ async fn create_mint_router_with_custom_cache_inner(
     };
     #[cfg(all(test, feature = "federation"))]
     {
-        state.federation.local_finality_test = federation_local_finality_test;
+        if federation_local_finality_test {
+            state.federation.finality = cdk_federation::FederationFinalityMode::Local;
+        }
     }
     #[cfg(feature = "federation-bdk")]
     state
@@ -405,7 +407,7 @@ async fn create_mint_router_with_custom_cache_inner(
         .set_startup_bdk_degraded_reason(federation_startup_bdk_degraded_reason)
         .await;
     #[cfg(all(test, feature = "federation"))]
-    if state.federation.local_finality_test {
+    if state.federation.finality == cdk_federation::FederationFinalityMode::Local {
         let sync_handle = state
             .federation
             .consensus()

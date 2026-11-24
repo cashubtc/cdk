@@ -8,6 +8,7 @@ use std::sync::Arc;
 #[cfg(feature = "federation-bdk")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
 use super::signer_fan_out::{
     concurrency_limit, fan_out, known_signer_members, signer_members, LocalFrostSigner,
 };
@@ -24,14 +25,17 @@ use cdk::federation::{
     FederationFrostInputSignatureAudit, FederationSignedTransaction,
     FederationTransactionProposalId,
 };
+#[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
 use cdk::federation::{
     FederationFrostAggregateResultNotification, FederationFrostCommitmentRequest,
     FederationFrostSigningAbortRequest, FederationFrostSigningPackageRequest, MemberConfigPublic,
 };
 use cdk::mint::{FederationRuntimeConfig, Mint};
+#[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
+use cdk_frost::DerivedPublicPackage;
 use cdk_frost::{
-    AuthorizationRequest, DerivedPublicPackage, NonceCommitment, ParticipantKeyManager,
-    RedbNonceStore, SecretEncryptionKey, SignatureShare, SigningDerivation, SigningSessionContext,
+    AuthorizationRequest, NonceCommitment, ParticipantKeyManager, RedbNonceStore,
+    SecretEncryptionKey, SignatureShare, SigningDerivation, SigningSessionContext,
 };
 #[cfg(feature = "federation-bark")]
 use cdk_frost::{
@@ -257,16 +261,15 @@ mod bark_custody_authorization_tests {
 
 type AggregateResultCache = BTreeMap<[u8; 32], ([u8; 32], [u8; 64])>;
 
-#[cfg_attr(not(feature = "federation-bdk"), allow(dead_code))] // `package_hash` is read only by on-chain signing.
+#[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
 struct CoordinatedFrostSignature {
     signature: cdk_frost::AggregateSignature,
+    /// Read only by on-chain signing, which records it in the input audit.
+    #[cfg(feature = "federation-bdk")]
     package_hash: [u8; 32],
 }
 
-#[cfg_attr(
-    not(any(feature = "federation-bdk", feature = "federation-bark")),
-    allow(dead_code)
-)] // FROST signing is used only by the custody backends.
+#[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
 #[derive(Debug, Clone)]
 /// Correlation metadata for one application-neutral FROST signing request.
 pub struct FrostLatencyContext {
@@ -276,10 +279,7 @@ pub struct FrostLatencyContext {
     direction: super::latency::FederationLatencyDirection,
 }
 
-#[cfg_attr(
-    not(any(feature = "federation-bdk", feature = "federation-bark")),
-    allow(dead_code)
-)] // FROST signing is used only by the custody backends.
+#[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
 impl FrostLatencyContext {
     /// Construct bounded latency metadata without exposing it to consensus.
     #[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
@@ -298,10 +298,7 @@ impl FrostLatencyContext {
     }
 }
 
-#[cfg_attr(
-    not(any(feature = "federation-bdk", feature = "federation-bark")),
-    allow(dead_code)
-)] // FROST signing is used only by the custody backends.
+#[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
 /// Application-neutral coordinator for one exact selected signer set.
 #[derive(Debug)]
 pub struct FederationFrostSigningCoordinator<'a, T> {
@@ -310,10 +307,7 @@ pub struct FederationFrostSigningCoordinator<'a, T> {
     local_signer: Option<LocalFrostSigner<'a>>,
 }
 
-#[cfg_attr(
-    not(any(feature = "federation-bdk", feature = "federation-bark")),
-    allow(dead_code)
-)] // FROST signing is used only by the custody backends.
+#[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
 impl<'a, T> FederationFrostSigningCoordinator<'a, T>
 where
     T: cdk_http_client::Transport,
@@ -561,6 +555,7 @@ where
         .await?;
         Ok(CoordinatedFrostSignature {
             signature,
+            #[cfg(feature = "federation-bdk")]
             package_hash,
         })
     }
@@ -823,10 +818,7 @@ where
     }
 }
 
-#[cfg_attr(
-    not(any(feature = "federation-bdk", feature = "federation-bark")),
-    allow(dead_code)
-)] // FROST signing is used only by the custody backends.
+#[cfg(any(feature = "federation-bdk", feature = "federation-bark"))]
 fn frost_transport_error_is_retryable(error: &anyhow::Error) -> bool {
     error.chain().any(|source| {
         if let Some(peer_error) =

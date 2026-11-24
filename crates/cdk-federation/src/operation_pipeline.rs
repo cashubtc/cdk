@@ -718,7 +718,7 @@ impl FederationNodeRuntime {
 
     #[cfg(any(test, feature = "test-utils"))]
     pub async fn finalize_unit_locally_for_test(&self) -> Result<(), cdk::Error> {
-        if !self.local_finality_test {
+        if self.finality != crate::FederationFinalityMode::Local {
             return Ok(());
         }
 
