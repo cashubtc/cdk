@@ -341,6 +341,9 @@ pub struct FederationDkgDeliveryTracker {
     secret_shares: BTreeMap<MemberId, FederationDkgSecretShareRequest>,
     transcript_signature: Option<TrackedDkgBroadcast<FederationDkgTranscriptSignatureRequest>>,
     activation: Option<TrackedDkgBroadcast<FederationDkgActivationRequest>>,
+    frost_round1: Option<TrackedDkgBroadcast<FederationFrostDkgRound1Request>>,
+    frost_round2: BTreeMap<MemberId, FederationFrostDkgRound2Request>,
+    frost_confirmation: Option<TrackedDkgBroadcast<FederationFrostDkgConfirmationRequest>>,
 }
 
 fn pending_broadcast_targets<T, I>(
@@ -405,10 +408,13 @@ where
     })
 }
 
-fn secret_shares_acknowledged_by_all(
-    tracked: &BTreeMap<MemberId, FederationDkgSecretShareRequest>,
-    requests: &BTreeMap<MemberId, FederationDkgSecretShareRequest>,
-) -> bool {
+fn unicast_acknowledged_by_all<T>(
+    tracked: &BTreeMap<MemberId, T>,
+    requests: &BTreeMap<MemberId, T>,
+) -> bool
+where
+    T: PartialEq,
+{
     !requests.is_empty()
         && requests
             .iter()
@@ -811,17 +817,39 @@ pub async fn prepare_federation_dkg_participant_state(
 /// batches remain ordered, while deliveries within one phase run concurrently.
 /// Later plans rebroadcast earlier artifacts, allowing lagging members to catch
 /// up without a separate acknowledgement journal.
-async fn run_frost_dkg_tick<T>(
+/// One tick's FROST DKG decision: the local phase and the messages still to
+/// deliver. Network delivery happens in the shared delivery path.
+struct FrostDkgPlan {
+    phase: FederationDkgDriverPhase,
+    round1: Option<FederationFrostDkgRound1Request>,
+    round2: BTreeMap<MemberId, FederationFrostDkgRound2Request>,
+    confirmation: Option<FederationFrostDkgConfirmationRequest>,
+}
+
+impl FrostDkgPlan {
+    fn new(phase: FederationDkgDriverPhase) -> Self {
+        Self {
+            phase,
+            round1: None,
+            round2: BTreeMap::new(),
+            confirmation: None,
+        }
+    }
+}
+
+/// Plan the FROST side of the ceremony from stored records and the delivery
+/// tracker, advancing durable local state when a round is complete.
+///
+/// A round advances only once every member acknowledged this member's
+/// messages and every other member's messages were received.
+async fn plan_frost_dkg(
     state: &FederationNode,
-    client: &FederationRestPeerClient<T>,
     public_config: &FederationConfig,
     private_config: &cdk::federation::MemberConfigPrivate,
     ceremony_id: FederationDkgCeremonyId,
     root_key_epoch: u64,
-) -> Result<(FederationDkgDriverPhase, DeliverySummary), cdk::Error>
-where
-    T: Transport,
-{
+    tracker: &FederationDkgDeliveryTracker,
+) -> Result<FrostDkgPlan, cdk::Error> {
     let context = FederationFrostDkgContext::new(public_config, ceremony_id, root_key_epoch)?;
     let frost_context = context.to_frost_context()?;
     let local_member = private_config.member_id;
@@ -830,34 +858,12 @@ where
     let storage_key = frost_storage_key(private_config, &context)?;
     let db = state.mint.localstore();
     let roots = db.get_federation_frost_root_records().await?;
-    let local_root = roots
-        .iter()
-        .find(|record| record.context == context && record.member_id == local_member);
-    let mut delivery = DeliverySummary::default();
 
-    if let Some(root) = local_root {
+    if let Some(root) = roots
+        .iter()
+        .find(|record| record.context == context && record.member_id == local_member)
+    {
         let public = root.validate(public_config)?;
-        let confirmation = FederationFrostDkgConfirmationRequest {
-            context: context.clone(),
-            member_id: local_member,
-            public_package: public.encode(),
-        };
-        let members = public_config.members.values().cloned().collect::<Vec<_>>();
-        let results = stream::iter(members.into_iter().map(|member| {
-            let confirmation = confirmation.clone();
-            async move {
-                (
-                    member.member_id,
-                    client
-                        .submit_frost_dkg_confirmation(&member, &confirmation)
-                        .await,
-                )
-            }
-        }))
-        .buffer_unordered(FEDERATION_DKG_DELIVERY_CONCURRENCY)
-        .collect::<Vec<_>>()
-        .await;
-        record_delivery_results("FROST confirmation", results, &mut delivery);
         let confirmations = db.get_federation_frost_dkg_confirmations().await?;
         let matching = confirmations
             .iter()
@@ -873,14 +879,17 @@ where
                 .into());
             }
         }
-        return Ok((
-            if matching.len() == public_config.members.len() {
-                FederationDkgDriverPhase::Complete
-            } else {
-                FederationDkgDriverPhase::FrostConfirmation
-            },
-            delivery,
-        ));
+        let mut plan = FrostDkgPlan::new(if matching.len() == public_config.members.len() {
+            FederationDkgDriverPhase::Complete
+        } else {
+            FederationDkgDriverPhase::FrostConfirmation
+        });
+        plan.confirmation = Some(FederationFrostDkgConfirmationRequest {
+            context,
+            member_id: local_member,
+            public_package: public.encode(),
+        });
+        return Ok(plan);
     }
 
     let states = db.get_federation_frost_dkg_local_states().await?;
@@ -897,172 +906,226 @@ where
         .find(|record| record.phase == FederationFrostDkgLocalPhase::Round1)
         .copied();
 
-    if round1_state.is_none() && round2_state.is_none() {
-        let (secret, package) = start_dkg(frost_context, frost_member, OsRng)
+    match (round1_state, round2_state) {
+        (None, None) => {
+            let (secret, _package) = start_dkg(frost_context, frost_member, OsRng)
+                .map_err(|error| cdk::Error::Custom(error.to_string()))?;
+            let encrypted = secret
+                .seal(&storage_key, &mut OsRng)
+                .map_err(|error| cdk::Error::Custom(error.to_string()))?;
+            state
+                .federation
+                .persist_frost_dkg_local_state(&FederationFrostDkgLocalState {
+                    context,
+                    member_id: local_member,
+                    phase: FederationFrostDkgLocalPhase::Round1,
+                    encrypted_state: encrypted.to_bytes(),
+                })
+                .await?;
+            Ok(FrostDkgPlan::new(FederationDkgDriverPhase::FrostRound1))
+        }
+        (Some(state_record), None) => {
+            state_record.validate(public_config)?;
+            let encrypted = EncryptedSecret::from_bytes(state_record.encrypted_state.clone())
+                .map_err(|error| cdk::Error::Custom(error.to_string()))?;
+            let secret = DkgRound1Secret::open(
+                frost_context.clone(),
+                frost_member,
+                &storage_key,
+                &encrypted,
+            )
             .map_err(|error| cdk::Error::Custom(error.to_string()))?;
-        let encrypted = secret
-            .seal(&storage_key, &mut OsRng)
-            .map_err(|error| cdk::Error::Custom(error.to_string()))?;
-        state
-            .federation
-            .persist_frost_dkg_local_state(&FederationFrostDkgLocalState {
-                context,
+            let request = FederationFrostDkgRound1Request {
+                context: context.clone(),
+                sender: local_member,
+                package: secret.public_package().encode(),
+            };
+            let received = db
+                .get_federation_frost_dkg_round1()
+                .await?
+                .iter()
+                .filter(|candidate| {
+                    candidate.context == context && candidate.sender != local_member
+                })
+                .map(|candidate| candidate.decode_package(public_config, candidate.sender))
+                .collect::<cdk::federation::Result<Vec<_>>>()?;
+            if !broadcast_acknowledged_by_all(
+                &tracker.frost_round1,
+                &request,
+                public_config.members.keys().copied(),
+            ) || received.len() + 1 != public_config.members.len()
+            {
+                let mut plan = FrostDkgPlan::new(FederationDkgDriverPhase::FrostRound1);
+                plan.round1 = Some(request);
+                return Ok(plan);
+            }
+            let (round2_secret, outgoing) = advance_dkg(secret, received)
+                .map_err(|error| cdk::Error::Custom(error.to_string()))?;
+            let encrypted = round2_secret
+                .seal(&storage_key, &mut OsRng)
+                .map_err(|error| cdk::Error::Custom(error.to_string()))?;
+            let mut tx = db.begin_transaction().await?;
+            tx.set_federation_frost_dkg_local_state(&FederationFrostDkgLocalState {
+                context: context.clone(),
                 member_id: local_member,
-                phase: FederationFrostDkgLocalPhase::Round1,
+                phase: FederationFrostDkgLocalPhase::Round2,
                 encrypted_state: encrypted.to_bytes(),
             })
             .await?;
-        let _ = package;
-        return Ok((FederationDkgDriverPhase::FrostRound1, delivery));
-    }
-
-    if let Some(state_record) = round1_state.filter(|_| round2_state.is_none()) {
-        state_record.validate(public_config)?;
-        let encrypted = EncryptedSecret::from_bytes(state_record.encrypted_state.clone())
-            .map_err(|error| cdk::Error::Custom(error.to_string()))?;
-        let secret = DkgRound1Secret::open(
-            frost_context.clone(),
-            frost_member,
-            &storage_key,
-            &encrypted,
-        )
-        .map_err(|error| cdk::Error::Custom(error.to_string()))?;
-        let own_package = secret.public_package();
-        let request = FederationFrostDkgRound1Request {
-            context: context.clone(),
-            sender: local_member,
-            package: own_package.encode(),
-        };
-        let members = public_config.members.values().cloned().collect::<Vec<_>>();
-        let results = stream::iter(members.into_iter().map(|member| {
-            let request = request.clone();
-            async move {
-                (
-                    member.member_id,
-                    client.submit_frost_dkg_round1(&member, &request).await,
-                )
+            for (receiver, package) in outgoing {
+                let encrypted = package
+                    .seal(&storage_key, &mut OsRng)
+                    .map_err(|error| cdk::Error::Custom(error.to_string()))?;
+                tx.add_federation_frost_dkg_round2(&FederationFrostDkgRound2Record {
+                    context: context.clone(),
+                    sender: local_member,
+                    receiver: MemberId::new(receiver.get())?,
+                    encrypted_package: encrypted.to_bytes(),
+                })
+                .await?;
             }
-        }))
+            tx.commit().await?;
+            Ok(FrostDkgPlan::new(FederationDkgDriverPhase::FrostRound2))
+        }
+        (_, Some(state_record)) => {
+            state_record.validate(public_config)?;
+            let records = db.get_federation_frost_dkg_round2().await?;
+            let requests = records
+                .iter()
+                .filter(|candidate| {
+                    candidate.context == context && candidate.sender == local_member
+                })
+                .map(|record| {
+                    let package = record.open(public_config, &storage_key)?;
+                    Ok((
+                        record.receiver,
+                        FederationFrostDkgRound2Request {
+                            context: record.context.clone(),
+                            sender: record.sender,
+                            receiver: record.receiver,
+                            package: package.encode(),
+                        },
+                    ))
+                })
+                .collect::<cdk::federation::Result<BTreeMap<_, _>>>()?;
+            let incoming = records
+                .iter()
+                .filter(|candidate| {
+                    candidate.context == context
+                        && candidate.receiver == local_member
+                        && candidate.sender != local_member
+                })
+                .map(|candidate| candidate.open(public_config, &storage_key))
+                .collect::<cdk::federation::Result<Vec<_>>>()?;
+            if !unicast_acknowledged_by_all(&tracker.frost_round2, &requests)
+                || incoming.len() + 1 != public_config.members.len()
+            {
+                let mut plan = FrostDkgPlan::new(FederationDkgDriverPhase::FrostRound2);
+                plan.round2 = requests;
+                return Ok(plan);
+            }
+            let round1 = db
+                .get_federation_frost_dkg_round1()
+                .await?
+                .into_iter()
+                .filter(|candidate| {
+                    candidate.context == context && candidate.sender != local_member
+                })
+                .map(|candidate| candidate.decode_package(public_config, candidate.sender))
+                .collect::<cdk::federation::Result<Vec<DkgRound1Package>>>()?;
+            let encrypted = EncryptedSecret::from_bytes(state_record.encrypted_state.clone())
+                .map_err(|error| cdk::Error::Custom(error.to_string()))?;
+            let secret =
+                DkgRound2Secret::open(frost_context, frost_member, &storage_key, &encrypted)
+                    .map_err(|error| cdk::Error::Custom(error.to_string()))?;
+            let root = finish_dkg(secret, round1, incoming)
+                .map_err(|error| cdk::Error::Custom(error.to_string()))?;
+            let public = root.public().clone();
+            let encrypted_root = root
+                .seal(&storage_key, &mut OsRng)
+                .map_err(|error| cdk::Error::Custom(error.to_string()))?;
+            state
+                .federation
+                .persist_frost_root_record(&FederationFrostRootRecord {
+                    context,
+                    member_id: local_member,
+                    public_package: public.encode(),
+                    encrypted_root_share: encrypted_root.to_bytes(),
+                })
+                .await?;
+            Ok(FrostDkgPlan::new(
+                FederationDkgDriverPhase::FrostConfirmation,
+            ))
+        }
+    }
+}
+
+/// Send one broadcast to every member that has not acknowledged it yet.
+async fn deliver_broadcast<'a, T, R, F, Fut>(
+    label: &'static str,
+    public_config: &'a FederationConfig,
+    tracked: &mut Option<TrackedDkgBroadcast<T>>,
+    request: &'a T,
+    send: F,
+    delivery: &mut DeliverySummary,
+) where
+    T: Clone + PartialEq,
+    F: Fn(&'a cdk::federation::MemberConfigPublic, &'a T) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<R>>,
+{
+    let targets =
+        pending_broadcast_targets(tracked, request, public_config.members.keys().copied());
+    let requests = targets
+        .into_iter()
+        .filter_map(|member_id| public_config.member(member_id))
+        .map(|member| {
+            let response = send(member, request);
+            async move { (member.member_id, response.await) }
+        })
+        .collect::<Vec<_>>();
+    let results = stream::iter(requests)
         .buffer_unordered(FEDERATION_DKG_DELIVERY_CONCURRENCY)
         .collect::<Vec<_>>()
         .await;
-        record_delivery_results("FROST round one", results, &mut delivery);
-        if delivery.failed != 0 || delivery.successful != public_config.members.len() {
-            return Ok((FederationDkgDriverPhase::FrostRound1, delivery));
-        }
-        let requests = db.get_federation_frost_dkg_round1().await?;
-        let received = requests
-            .iter()
-            .filter(|candidate| candidate.context == context && candidate.sender != local_member)
-            .map(|candidate| candidate.decode_package(public_config, candidate.sender))
-            .collect::<cdk::federation::Result<Vec<_>>>()?;
-        if received.len() + 1 != public_config.members.len() {
-            return Ok((FederationDkgDriverPhase::FrostRound1, delivery));
-        }
-        let (round2_secret, outgoing) =
-            advance_dkg(secret, received).map_err(|error| cdk::Error::Custom(error.to_string()))?;
-        let encrypted = round2_secret
-            .seal(&storage_key, &mut OsRng)
-            .map_err(|error| cdk::Error::Custom(error.to_string()))?;
-        let mut tx = db.begin_transaction().await?;
-        tx.set_federation_frost_dkg_local_state(&FederationFrostDkgLocalState {
-            context: context.clone(),
-            member_id: local_member,
-            phase: FederationFrostDkgLocalPhase::Round2,
-            encrypted_state: encrypted.to_bytes(),
-        })
-        .await?;
-        for (receiver, package) in outgoing {
-            let encrypted = package
-                .seal(&storage_key, &mut OsRng)
-                .map_err(|error| cdk::Error::Custom(error.to_string()))?;
-            tx.add_federation_frost_dkg_round2(&FederationFrostDkgRound2Record {
-                context: context.clone(),
-                sender: local_member,
-                receiver: MemberId::new(receiver.get())?,
-                encrypted_package: encrypted.to_bytes(),
-            })
-            .await?;
-        }
-        tx.commit().await?;
-        return Ok((FederationDkgDriverPhase::FrostRound2, delivery));
-    }
+    let acknowledged = record_delivery_results(label, results, delivery);
+    record_broadcast_acknowledgements(tracked, request, &acknowledged);
+}
 
-    let state_record = round2_state.ok_or_else(|| {
-        cdk::Error::Custom("FROST DKG has no restartable round-two state".to_string())
-    })?;
-    state_record.validate(public_config)?;
-    let records = db.get_federation_frost_dkg_round2().await?;
-    let outgoing = records
-        .into_iter()
-        .filter(|candidate| candidate.context == context && candidate.sender == local_member)
-        .map(|record| {
-            let package = record.open(public_config, &storage_key)?;
-            Ok(FederationFrostDkgRound2Request {
-                context: record.context,
-                sender: record.sender,
-                receiver: record.receiver,
-                package: package.encode(),
-            })
-        })
-        .collect::<cdk::federation::Result<Vec<_>>>()?;
-    let outgoing_count = outgoing.len();
-    let results = stream::iter(outgoing.into_iter().map(|request| async move {
-        let member = public_config
-            .member(request.receiver)
-            .expect("validated FROST receiver must be configured");
-        (
-            member.member_id,
-            client.submit_frost_dkg_round2(member, &request).await,
-        )
-    }))
-    .buffer_unordered(FEDERATION_DKG_DELIVERY_CONCURRENCY)
-    .collect::<Vec<_>>()
-    .await;
-    record_delivery_results("FROST round two", results, &mut delivery);
-    if delivery.failed != 0 || delivery.successful != outgoing_count {
-        return Ok((FederationDkgDriverPhase::FrostRound2, delivery));
-    }
-    let records = db.get_federation_frost_dkg_round2().await?;
-    let incoming = records
+/// Send each per-receiver message its receiver has not acknowledged yet.
+async fn deliver_unicast<'a, T, R, F, Fut>(
+    label: &'static str,
+    public_config: &'a FederationConfig,
+    tracked: &mut BTreeMap<MemberId, T>,
+    requests: &'a BTreeMap<MemberId, T>,
+    send: F,
+    delivery: &mut DeliverySummary,
+) where
+    T: Clone + PartialEq,
+    F: Fn(&'a cdk::federation::MemberConfigPublic, &'a T) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<R>>,
+{
+    let pending = requests
         .iter()
-        .filter(|candidate| {
-            candidate.context == context
-                && candidate.receiver == local_member
-                && candidate.sender != local_member
+        .filter(|(receiver, request)| tracked.get(*receiver) != Some(*request))
+        .filter_map(|(receiver, request)| {
+            public_config
+                .member(*receiver)
+                .map(|member| (member, request))
         })
-        .map(|candidate| candidate.open(public_config, &storage_key))
-        .collect::<cdk::federation::Result<Vec<_>>>()?;
-    if incoming.len() + 1 != public_config.members.len() {
-        return Ok((FederationDkgDriverPhase::FrostRound2, delivery));
+        .map(|(member, request)| {
+            let response = send(member, request);
+            async move { (member.member_id, response.await) }
+        })
+        .collect::<Vec<_>>();
+    let results = stream::iter(pending)
+        .buffer_unordered(FEDERATION_DKG_DELIVERY_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
+    for member_id in record_delivery_results(label, results, delivery) {
+        if let Some(request) = requests.get(&member_id) {
+            tracked.insert(member_id, request.clone());
+        }
     }
-    let round1 = db
-        .get_federation_frost_dkg_round1()
-        .await?
-        .into_iter()
-        .filter(|candidate| candidate.context == context && candidate.sender != local_member)
-        .map(|candidate| candidate.decode_package(public_config, candidate.sender))
-        .collect::<cdk::federation::Result<Vec<DkgRound1Package>>>()?;
-    let encrypted = EncryptedSecret::from_bytes(state_record.encrypted_state.clone())
-        .map_err(|error| cdk::Error::Custom(error.to_string()))?;
-    let secret = DkgRound2Secret::open(frost_context, frost_member, &storage_key, &encrypted)
-        .map_err(|error| cdk::Error::Custom(error.to_string()))?;
-    let root = finish_dkg(secret, round1, incoming)
-        .map_err(|error| cdk::Error::Custom(error.to_string()))?;
-    let public = root.public().clone();
-    let encrypted_root = root
-        .seal(&storage_key, &mut OsRng)
-        .map_err(|error| cdk::Error::Custom(error.to_string()))?;
-    state
-        .federation
-        .persist_frost_root_record(&FederationFrostRootRecord {
-            context,
-            member_id: local_member,
-            public_package: public.encode(),
-            encrypted_root_share: encrypted_root.to_bytes(),
-        })
-        .await?;
-    Ok((FederationDkgDriverPhase::FrostConfirmation, delivery))
 }
 
 pub fn frost_storage_key(
@@ -1143,25 +1206,49 @@ where
     }
     let phase_before = plan.phase;
     let mut delivery = DeliverySummary::default();
-    let (frost_phase, frost_delivery) = run_frost_dkg_tick(
+    let frost = plan_frost_dkg(
         state,
-        client,
         &public_config,
         &private_config,
         ceremony_id,
         root_key_epoch,
+        delivery_tracker,
     )
     .await?;
-    delivery.attempted = delivery.attempted.saturating_add(frost_delivery.attempted);
-    delivery.successful = delivery
-        .successful
-        .saturating_add(frost_delivery.successful);
-    delivery.failed = delivery.failed.saturating_add(frost_delivery.failed);
-    delivery
-        .failed_members
-        .extend(frost_delivery.failed_members);
+    if let Some(request) = frost.round1.as_ref() {
+        deliver_broadcast(
+            "FROST round one",
+            &public_config,
+            &mut delivery_tracker.frost_round1,
+            request,
+            |member, request| client.submit_frost_dkg_round1(member, request),
+            &mut delivery,
+        )
+        .await;
+    }
+    deliver_unicast(
+        "FROST round two",
+        &public_config,
+        &mut delivery_tracker.frost_round2,
+        &frost.round2,
+        |member, request| client.submit_frost_dkg_round2(member, request),
+        &mut delivery,
+    )
+    .await;
+    if let Some(request) = frost.confirmation.as_ref() {
+        deliver_broadcast(
+            "FROST confirmation",
+            &public_config,
+            &mut delivery_tracker.frost_confirmation,
+            request,
+            |member, request| client.submit_frost_dkg_confirmation(member, request),
+            &mut delivery,
+        )
+        .await;
+    }
+
     let secret_shares_ready_before_tick =
-        secret_shares_acknowledged_by_all(&delivery_tracker.secret_shares, &plan.secret_shares);
+        unicast_acknowledged_by_all(&delivery_tracker.secret_shares, &plan.secret_shares);
     let transcript_ready_before_tick = plan.transcript_signature.as_ref().is_some_and(|request| {
         broadcast_acknowledged_by_all(
             &delivery_tracker.transcript_signature,
@@ -1171,91 +1258,36 @@ where
     });
 
     if let Some(request) = plan.commitment.as_ref() {
-        let targets = pending_broadcast_targets(
+        deliver_broadcast(
+            "commitment",
+            &public_config,
             &mut delivery_tracker.commitment,
             request,
-            public_config.members.keys().copied(),
-        );
-        let results = stream::iter(targets.into_iter().map(|member_id| {
-            let member = public_config
-                .member(member_id)
-                .expect("tracked DKG commitment receiver must be configured");
-            async move {
-                (
-                    member.member_id,
-                    client.submit_dkg_commitment(member, request).await,
-                )
-            }
-        }))
-        .buffer_unordered(FEDERATION_DKG_DELIVERY_CONCURRENCY)
-        .collect::<Vec<_>>()
+            |member, request| client.submit_dkg_commitment(member, request),
+            &mut delivery,
+        )
         .await;
-        let acknowledged = record_delivery_results("commitment", results, &mut delivery);
-        record_broadcast_acknowledgements(&mut delivery_tracker.commitment, request, &acknowledged);
     }
-
     if let Some(request) = plan.reveal.as_ref() {
-        let targets = pending_broadcast_targets(
+        deliver_broadcast(
+            "reveal",
+            &public_config,
             &mut delivery_tracker.reveal,
             request,
-            public_config.members.keys().copied(),
-        );
-        let results = stream::iter(targets.into_iter().map(|member_id| {
-            let member = public_config
-                .member(member_id)
-                .expect("tracked DKG reveal receiver must be configured");
-            async move {
-                (
-                    member.member_id,
-                    client.submit_dkg_reveal(member, request).await,
-                )
-            }
-        }))
-        .buffer_unordered(FEDERATION_DKG_DELIVERY_CONCURRENCY)
-        .collect::<Vec<_>>()
+            |member, request| client.submit_dkg_reveal(member, request),
+            &mut delivery,
+        )
         .await;
-        let acknowledged = record_delivery_results("reveal", results, &mut delivery);
-        record_broadcast_acknowledgements(&mut delivery_tracker.reveal, request, &acknowledged);
     }
-
-    if !plan.secret_shares.is_empty() {
-        let targets = plan
-            .secret_shares
-            .iter()
-            .filter(|(receiver, request)| {
-                delivery_tracker.secret_shares.get(receiver) != Some(*request)
-            })
-            .map(|(receiver, _)| *receiver)
-            .collect::<Vec<_>>();
-        let deliveries = targets.into_iter().map(|receiver| {
-            let member = public_config
-                .member(receiver)
-                .expect("validated DKG plan receiver must be configured");
-            let request = plan
-                .secret_shares
-                .get(&receiver)
-                .expect("validated DKG plan request must be configured")
-                .clone();
-            async move {
-                (
-                    member.member_id,
-                    client.submit_dkg_secret_share(member, &request).await,
-                )
-            }
-        });
-        let results = stream::iter(deliveries)
-            .buffer_unordered(FEDERATION_DKG_DELIVERY_CONCURRENCY)
-            .collect::<Vec<_>>()
-            .await;
-        let acknowledged = record_delivery_results("secret share", results, &mut delivery);
-        for member_id in acknowledged {
-            if let Some(request) = plan.secret_shares.get(&member_id) {
-                delivery_tracker
-                    .secret_shares
-                    .insert(member_id, request.clone());
-            }
-        }
-    }
+    deliver_unicast(
+        "secret share",
+        &public_config,
+        &mut delivery_tracker.secret_shares,
+        &plan.secret_shares,
+        |member, request| client.submit_dkg_secret_share(member, request),
+        &mut delivery,
+    )
+    .await;
 
     if let Some(keyset_share) = plan.derived_keyset_share.as_ref() {
         persist_federation_dkg_member_keyset_share(state, keyset_share).await?;
@@ -1265,63 +1297,42 @@ where
         secret_shares_ready_before_tick,
         plan.transcript_signature.as_ref(),
     ) {
-        let targets = pending_broadcast_targets(
+        deliver_broadcast(
+            "transcript signature",
+            &public_config,
             &mut delivery_tracker.transcript_signature,
             request,
-            public_config.members.keys().copied(),
-        );
-        let results = stream::iter(targets.into_iter().map(|member_id| {
-            let member = public_config
-                .member(member_id)
-                .expect("tracked DKG transcript receiver must be configured");
-            async move {
-                (
-                    member.member_id,
-                    client
-                        .submit_dkg_transcript_signature(member, request)
-                        .await,
-                )
-            }
-        }))
-        .buffer_unordered(FEDERATION_DKG_DELIVERY_CONCURRENCY)
-        .collect::<Vec<_>>()
+            |member, request| client.submit_dkg_transcript_signature(member, request),
+            &mut delivery,
+        )
         .await;
-        let acknowledged = record_delivery_results("transcript signature", results, &mut delivery);
-        record_broadcast_acknowledgements(
-            &mut delivery_tracker.transcript_signature,
-            request,
-            &acknowledged,
-        );
     }
-
     if let (true, true, Some(request)) = (
         transcript_ready_before_tick,
-        frost_phase == FederationDkgDriverPhase::Complete,
+        frost.phase == FederationDkgDriverPhase::Complete,
         plan.activation.as_ref(),
     ) {
-        let targets = pending_broadcast_targets(
+        deliver_broadcast(
+            "activation",
+            &public_config,
             &mut delivery_tracker.activation,
             request,
-            public_config.members.keys().copied(),
-        );
-        let results = stream::iter(targets.into_iter().map(|member_id| {
-            let member = public_config
-                .member(member_id)
-                .expect("tracked DKG activation receiver must be configured");
-            async move {
-                (
-                    member.member_id,
-                    client.submit_dkg_activation(member, request).await,
-                )
-            }
-        }))
-        .buffer_unordered(FEDERATION_DKG_DELIVERY_CONCURRENCY)
-        .collect::<Vec<_>>()
+            |member, request| client.submit_dkg_activation(member, request),
+            &mut delivery,
+        )
         .await;
-        let acknowledged = record_delivery_results("activation", results, &mut delivery);
-        record_broadcast_acknowledgements(&mut delivery_tracker.activation, request, &acknowledged);
     }
 
+    let frost_phase = plan_frost_dkg(
+        state,
+        &public_config,
+        &private_config,
+        ceremony_id,
+        root_key_epoch,
+        delivery_tracker,
+    )
+    .await?
+    .phase;
     let records = load_federation_dkg_driver_records(state, ceremony_id).await?;
     let next_plan = plan_federation_dkg_records(
         records,

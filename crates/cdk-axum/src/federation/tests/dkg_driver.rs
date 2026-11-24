@@ -335,7 +335,9 @@ async fn dkg_driver_completes_over_authenticated_member_routes() {
     let federation = DkgDriverTestFederation::new().await;
 
     let attempted_deliveries = federation.drive_until_complete(12).await;
-    assert_eq!(attempted_deliveries, 97);
+    // BLS and FROST messages both go through the delivery tracker, so no
+    // message is re-sent to a member that already acknowledged it.
+    assert_eq!(attempted_deliveries, 70);
     federation.assert_complete_and_consistent().await;
 }
 
@@ -533,7 +535,9 @@ async fn dkg_driver_ignores_durable_artifacts_from_prior_ceremony() {
     }
 
     let attempted_deliveries = federation.drive_until_complete(12).await;
-    assert_eq!(attempted_deliveries, 97);
+    // BLS and FROST messages both go through the delivery tracker, so no
+    // message is re-sent to a member that already acknowledged it.
+    assert_eq!(attempted_deliveries, 70);
     federation.assert_complete_and_consistent().await;
     for member in &federation.members {
         assert_eq!(
@@ -556,7 +560,8 @@ async fn dkg_driver_retries_response_lost_after_durable_persistence() {
         .fail_post_responses_after_delivery("/federation/v1/dkg/commitments", 1);
 
     let attempted_deliveries = federation.drive_until_complete(12).await;
-    assert_eq!(attempted_deliveries, 98);
+    // One commitment response is lost after delivery and retried once.
+    assert_eq!(attempted_deliveries, 71);
     federation.assert_complete_and_consistent().await;
     for member in &federation.members {
         let commitments = member

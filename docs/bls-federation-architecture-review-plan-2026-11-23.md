@@ -724,3 +724,10 @@ Decision: the replay guard is a validity window, not a permanent index.
 - **Blind signatures stay out by design**: each member stores its own share and will recompute it on install.
 - **Verification.** Multi-member value-flow tests compare every member's digest after real flows and pass. One full `cdk-axum` run had six timing-sensitive failures under machine load; each passed alone, and a second full run passed (474/474).
 - **Remaining for state transfer:** check completed operations, keysets and FROST application configs; snapshot storage at scheduled capture; the paged route, client and installer; an end-to-end transfer test.
+
+### 2026-11-24: package 7, DKG planner (one delivery path for BLS and FROST)
+
+- **FROST planning without network I/O.** `run_frost_dkg_tick` mixed deciding the next step with sending. `plan_frost_dkg` now decides the phase and the messages to send from stored records and the delivery tracker, and advances durable local state only when a round is complete: every member acknowledged this member's messages and every other member's were received.
+- **One delivery path.** Five BLS broadcast and per-receiver blocks and three FROST blocks become two generic helpers, `deliver_broadcast` and `deliver_unicast`, both driven by `FederationDkgDeliveryTracker`, which now tracks the FROST rounds too.
+- **Behaviour change:** FROST messages are no longer re-sent to members that already acknowledged them. A three-member ceremony takes 70 deliveries instead of 97; the tests pin the new counts. A FROST round now advances on acknowledgements gathered across ticks instead of requiring every send in one tick to succeed.
+- **Not moved to `cdk-common`.** The FROST planner stays in `cdk-federation` because it calls the `cdk-frost` DKG functions, and decision 4 is about removing that dependency from `cdk-common`.
