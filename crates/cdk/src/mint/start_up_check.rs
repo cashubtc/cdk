@@ -177,30 +177,20 @@ impl Mint {
             return Ok(Some(payment_response));
         }
 
-        match self.check_melt_payment_status(quote).await {
-            Ok(payment_response) if payment_response.status == MeltQuoteState::Paid => {
-                tracing::info!(
-                    "Recovered legacy Finalizing saga {} from the payment backend",
-                    saga.operation_id
-                );
-                Ok(Some(payment_response))
-            }
-            Ok(payment_response) => {
-                tracing::error!(
-                    "Legacy Finalizing saga {} returned {} from the payment backend after TX1 may have committed. Manual intervention required.",
-                    saga.operation_id,
-                    payment_response.status
-                );
-                Ok(None)
-            }
-            Err(err) => {
-                tracing::error!(
-                    "Failed to recover legacy Finalizing saga {} from the payment backend: {}",
-                    saga.operation_id,
-                    err
-                );
-                Ok(None)
-            }
+        let payment_response = self.check_melt_payment_status(quote).await?;
+        if payment_response.status == MeltQuoteState::Paid {
+            tracing::info!(
+                "Recovered legacy Finalizing saga {} from the payment backend",
+                saga.operation_id
+            );
+            Ok(Some(payment_response))
+        } else {
+            tracing::error!(
+                "Legacy Finalizing saga {} returned {} from the payment backend after TX1 may have committed. Manual intervention required.",
+                saga.operation_id,
+                payment_response.status
+            );
+            Ok(None)
         }
     }
 
@@ -500,11 +490,19 @@ impl Mint {
             // coordinate with executors in other mint instances.
             let quote_lock = self.melt_quote_lock(&quote_id_parsed).await;
             let _quote_guard = quote_lock.lock_owned().await;
-            let Some(saga) = self
-                .localstore
-                .get_melt_saga_by_quote_id(&quote_id_parsed)
-                .await?
-            else {
+            let saga = if saga.quote_id().is_some() {
+                self.localstore
+                    .get_melt_saga_by_quote_id(&quote_id_parsed)
+                    .await?
+            } else {
+                // Legacy sagas stored without `quote_id` cannot be reloaded by
+                // quote_id equality; reload directly by operation_id.
+                let mut tx = self.localstore.begin_transaction().await?;
+                let reloaded = tx.get_saga(&saga.operation_id).await?;
+                tx.rollback().await?;
+                reloaded
+            };
+            let Some(saga) = saga else {
                 continue;
             };
 

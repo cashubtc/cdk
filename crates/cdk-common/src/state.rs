@@ -118,15 +118,18 @@ pub fn check_swap_saga_state_transition(
 
 /// Check if a melt saga state transition is allowed.
 ///
-/// The melt saga forms a strict DAG; `PaymentFailed` and `Finalizing` are
-/// terminal persisted states until the saga row is deleted by compensation or
-/// finalization.
+/// The melt saga forms a strict DAG; `PaymentFailed` and `Finalizing(Some(_))`
+/// are terminal persisted states until the saga row is deleted by compensation
+/// or finalization. Fresh transitions to `Finalizing` must carry a
+/// [`MeltFinalizationData`](crate::mint::MeltFinalizationData) payload; legacy
+/// `Finalizing(None)` rows may only be enriched to `Finalizing(Some(_))`.
 ///
 /// Valid transitions:
 /// - `SetupComplete -> PaymentAttempted` (external dispatch write-ahead marker)
-/// - `SetupComplete -> Finalizing` (atomic internal settlement)
-/// - `PaymentAttempted -> PaymentPending | PaymentFailed | Finalizing`
-/// - `PaymentPending -> PaymentFailed | Finalizing`
+/// - `SetupComplete -> Finalizing(Some(_))` (atomic internal settlement)
+/// - `PaymentAttempted -> PaymentPending | PaymentFailed | Finalizing(Some(_))`
+/// - `PaymentPending -> PaymentFailed | Finalizing(Some(_))`
+/// - `Finalizing(None) -> Finalizing(Some(_))` (legacy row enrichment)
 #[inline]
 pub fn check_melt_saga_state_transition(
     current_state: &MeltSagaState,
@@ -136,15 +139,18 @@ pub fn check_melt_saga_state_transition(
         (current_state, new_state),
         (
             MeltSagaState::SetupComplete,
-            MeltSagaState::PaymentAttempted | MeltSagaState::Finalizing(_),
+            MeltSagaState::PaymentAttempted | MeltSagaState::Finalizing(Some(_)),
         ) | (
             MeltSagaState::PaymentAttempted,
             MeltSagaState::PaymentPending
                 | MeltSagaState::PaymentFailed
-                | MeltSagaState::Finalizing(_),
+                | MeltSagaState::Finalizing(Some(_)),
         ) | (
             MeltSagaState::PaymentPending,
-            MeltSagaState::PaymentFailed | MeltSagaState::Finalizing(_),
+            MeltSagaState::PaymentFailed | MeltSagaState::Finalizing(Some(_)),
+        ) | (
+            MeltSagaState::Finalizing(None),
+            MeltSagaState::Finalizing(Some(_)),
         )
     );
 
@@ -401,91 +407,88 @@ mod tests {
         }
     }
 
-    mod saga_state_transitions {
-        use super::*;
-        use crate::mint::MeltFinalizationData;
-        use crate::payment::PaymentIdentifier;
-        use crate::{Amount, CurrencyUnit};
+    fn sample_finalization_data() -> crate::mint::MeltFinalizationData {
+        crate::mint::MeltFinalizationData {
+            total_spent: crate::Amount::from(100).with_unit(crate::CurrencyUnit::Sat),
+            payment_lookup_id: crate::payment::PaymentIdentifier::CustomId("lookup".to_string()),
+            payment_proof: Some("preimage".to_string()),
+        }
+    }
 
-        fn sample_finalization_data() -> MeltFinalizationData {
-            MeltFinalizationData {
-                total_spent: Amount::from(100).with_unit(CurrencyUnit::Sat),
-                payment_lookup_id: PaymentIdentifier::CustomId("lookup".to_string()),
-                payment_proof: Some("preimage".to_string()),
+    #[test]
+    fn melt_saga_transition_matrix() {
+        let all_states = [
+            MeltSagaState::SetupComplete,
+            MeltSagaState::PaymentAttempted,
+            MeltSagaState::PaymentPending,
+            MeltSagaState::PaymentFailed,
+            MeltSagaState::Finalizing(None),
+            MeltSagaState::finalizing(sample_finalization_data()),
+        ];
+
+        for from in &all_states {
+            for to in &all_states {
+                let expected_ok = matches!(
+                    (from, to),
+                    (
+                        MeltSagaState::SetupComplete,
+                        MeltSagaState::PaymentAttempted | MeltSagaState::Finalizing(Some(_)),
+                    ) | (
+                        MeltSagaState::PaymentAttempted,
+                        MeltSagaState::PaymentPending
+                            | MeltSagaState::PaymentFailed
+                            | MeltSagaState::Finalizing(Some(_)),
+                    ) | (
+                        MeltSagaState::PaymentPending,
+                        MeltSagaState::PaymentFailed | MeltSagaState::Finalizing(Some(_)),
+                    ) | (
+                        MeltSagaState::Finalizing(None),
+                        MeltSagaState::Finalizing(Some(_)),
+                    )
+                );
+
+                let result = check_melt_saga_state_transition(from, to);
+                assert_eq!(
+                    result.is_ok(),
+                    expected_ok,
+                    "transition {from} -> {to} expected ok={expected_ok}, got {result:?}"
+                );
             }
         }
+    }
 
-        #[test]
-        fn melt_saga_transition_matrix() {
-            let all_states = [
-                MeltSagaState::SetupComplete,
-                MeltSagaState::PaymentAttempted,
-                MeltSagaState::PaymentPending,
-                MeltSagaState::PaymentFailed,
-                MeltSagaState::finalizing(sample_finalization_data()),
-            ];
+    #[test]
+    fn swap_saga_transition_matrix() {
+        let all_states = [SwapSagaState::SetupComplete, SwapSagaState::Signed];
 
-            for from in &all_states {
-                for to in &all_states {
-                    let expected_ok = matches!(
-                        (from, to),
-                        (
-                            MeltSagaState::SetupComplete,
-                            MeltSagaState::PaymentAttempted | MeltSagaState::Finalizing(_),
-                        ) | (
-                            MeltSagaState::PaymentAttempted,
-                            MeltSagaState::PaymentPending
-                                | MeltSagaState::PaymentFailed
-                                | MeltSagaState::Finalizing(_),
-                        ) | (
-                            MeltSagaState::PaymentPending,
-                            MeltSagaState::PaymentFailed | MeltSagaState::Finalizing(_),
-                        )
-                    );
-
-                    let result = check_melt_saga_state_transition(from, to);
-                    assert_eq!(
-                        result.is_ok(),
-                        expected_ok,
-                        "transition {from} -> {to} expected ok={expected_ok}, got {result:?}"
-                    );
-                }
+        for from in &all_states {
+            for to in &all_states {
+                let expected_ok = matches!(
+                    (from, to),
+                    (SwapSagaState::SetupComplete, SwapSagaState::Signed)
+                );
+                let result = check_swap_saga_state_transition(from, to);
+                assert_eq!(
+                    result.is_ok(),
+                    expected_ok,
+                    "transition {from} -> {to} expected ok={expected_ok}, got {result:?}"
+                );
             }
         }
+    }
 
-        #[test]
-        fn swap_saga_transition_matrix() {
-            let all_states = [SwapSagaState::SetupComplete, SwapSagaState::Signed];
+    #[test]
+    fn cross_kind_saga_transitions_are_invalid() {
+        let swap = SagaStateEnum::Swap(SwapSagaState::SetupComplete);
+        let melt = SagaStateEnum::Melt(MeltSagaState::PaymentAttempted);
 
-            for from in &all_states {
-                for to in &all_states {
-                    let expected_ok = matches!(
-                        (from, to),
-                        (SwapSagaState::SetupComplete, SwapSagaState::Signed)
-                    );
-                    let result = check_swap_saga_state_transition(from, to);
-                    assert_eq!(
-                        result.is_ok(),
-                        expected_ok,
-                        "transition {from} -> {to} expected ok={expected_ok}, got {result:?}"
-                    );
-                }
-            }
-        }
-
-        #[test]
-        fn cross_kind_saga_transitions_are_invalid() {
-            let swap = SagaStateEnum::Swap(SwapSagaState::SetupComplete);
-            let melt = SagaStateEnum::Melt(MeltSagaState::PaymentAttempted);
-
-            assert!(matches!(
-                check_saga_state_transition(&swap, &melt),
-                Err(Error::InvalidSagaTransition { .. })
-            ));
-            assert!(matches!(
-                check_saga_state_transition(&melt, &swap),
-                Err(Error::InvalidSagaTransition { .. })
-            ));
-        }
+        assert!(matches!(
+            check_saga_state_transition(&swap, &melt),
+            Err(Error::InvalidSagaTransition { .. })
+        ));
+        assert!(matches!(
+            check_saga_state_transition(&melt, &swap),
+            Err(Error::InvalidSagaTransition { .. })
+        ));
     }
 }

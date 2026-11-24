@@ -816,9 +816,62 @@ async fn test_finalizing_recovery_uses_persisted_payment_fee() {
     assert_saga_not_exists(&mint, &operation_id).await;
 }
 
+fn into_mint_arc<M>(mint: M) -> std::sync::Arc<crate::mint::Mint>
+where
+    M: Into<std::sync::Arc<crate::mint::Mint>>,
+{
+    mint.into()
+}
+
 #[tokio::test]
 async fn test_finalizing_recovery_without_metadata_uses_internal_settlement() {
-    let mint = create_test_mint().await.unwrap();
+    use crate::mint::{MintBuilder, MintMeltLimits};
+    use crate::types::{FeeReserve, QuoteTTL};
+
+    let db_path = std::env::temp_dir().join(format!(
+        "cdk-legacy-internal-finalizing-{}.db",
+        uuid::Uuid::new_v4()
+    ));
+    let db = std::sync::Arc::new(
+        cdk_sqlite::mint::MintSqliteDatabase::new(&db_path)
+            .await
+            .unwrap(),
+    );
+    let backend = cdk_fake_wallet::FakeWallet::new(
+        FeeReserve {
+            min_fee_reserve: 1.into(),
+            percent_fee_reserve: 1.0,
+        },
+        std::collections::HashMap::default(),
+        std::collections::HashSet::default(),
+        2,
+        CurrencyUnit::Sat,
+    );
+    let mut mint_builder = MintBuilder::new(db.clone());
+    mint_builder
+        .add_payment_processor(
+            CurrencyUnit::Sat,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            MintMeltLimits::new(1, 10_000),
+            std::sync::Arc::new(backend),
+        )
+        .await
+        .unwrap();
+    let mnemonic = bip39::Mnemonic::generate(12).unwrap();
+    let mint = into_mint_arc(
+        mint_builder
+            .with_name("test mint".to_string())
+            .with_description("test mint".to_string())
+            .with_urls(vec!["https://test-mint".to_string()])
+            .build_with_seed(db.clone(), &mnemonic.to_seed_normalized(""))
+            .await
+            .unwrap(),
+    );
+    mint.set_quote_ttl(QuoteTTL::new(10000, 10000))
+        .await
+        .unwrap();
+    mint.start().await.unwrap();
+
     let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
     let mint_quote_response: cdk_common::MintQuoteBolt11Response<_> = mint
         .get_mint_quote(
@@ -857,7 +910,7 @@ async fn test_finalizing_recovery_without_metadata_uses_internal_settlement() {
 
     let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
     let saga = MeltSaga::new(
-        std::sync::Arc::new(mint.clone()),
+        std::sync::Arc::clone(&mint),
         mint.localstore(),
         mint.pubsub_manager(),
     );
@@ -879,16 +932,15 @@ async fn test_finalizing_recovery_without_metadata_uses_internal_settlement() {
         panic!("expected internal settlement");
     };
 
-    // Simulate a legacy Finalizing row written without finalization_data.
-    let mut tx = mint.localstore.begin_transaction().await.unwrap();
-    tx.delete_saga(&operation_id).await.unwrap();
-    let legacy_saga = Saga::new_melt(
-        operation_id,
-        MeltSagaState::Finalizing(None),
-        quote.id.to_string(),
-    );
-    tx.add_saga(&legacy_saga).await.unwrap();
-    tx.commit().await.unwrap();
+    // Simulate a legacy stored Finalizing row without finalization_data.
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute(
+            "UPDATE saga_state SET finalization_data = NULL WHERE operation_id = ?1",
+            [operation_id.to_string()],
+        )
+        .unwrap();
+    }
 
     drop(confirmed_saga);
 
@@ -913,6 +965,149 @@ async fn test_finalizing_recovery_without_metadata_uses_internal_settlement() {
         .unwrap()
         .expect("Mint quote should still exist");
     assert_eq!(paid_mint_quote.state(), MintQuoteState::Paid);
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn test_startup_recovery_legacy_null_quote_id_internal_settlement() {
+    use crate::mint::{MintBuilder, MintMeltLimits};
+    use crate::types::{FeeReserve, QuoteTTL};
+
+    for (legacy_state, clear_finalization_data) in
+        [("payment_attempted", true), ("finalizing", true)]
+    {
+        let db_path = std::env::temp_dir().join(format!(
+            "cdk-legacy-null-qid-{legacy_state}-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let db = std::sync::Arc::new(
+            cdk_sqlite::mint::MintSqliteDatabase::new(&db_path)
+                .await
+                .unwrap(),
+        );
+        let backend = cdk_fake_wallet::FakeWallet::new(
+            FeeReserve {
+                min_fee_reserve: 1.into(),
+                percent_fee_reserve: 1.0,
+            },
+            std::collections::HashMap::default(),
+            std::collections::HashSet::default(),
+            2,
+            CurrencyUnit::Sat,
+        );
+        let mut mint_builder = MintBuilder::new(db.clone());
+        mint_builder
+            .add_payment_processor(
+                CurrencyUnit::Sat,
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                MintMeltLimits::new(1, 10_000),
+                std::sync::Arc::new(backend),
+            )
+            .await
+            .unwrap();
+        let mnemonic = bip39::Mnemonic::generate(12).unwrap();
+        let mint = into_mint_arc(
+            mint_builder
+                .with_name("test mint".to_string())
+                .with_description("test mint".to_string())
+                .with_urls(vec!["https://test-mint".to_string()])
+                .build_with_seed(db.clone(), &mnemonic.to_seed_normalized(""))
+                .await
+                .unwrap(),
+        );
+        mint.set_quote_ttl(QuoteTTL::new(10000, 10000))
+            .await
+            .unwrap();
+        mint.start().await.unwrap();
+
+        let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+        let input_ys = proofs.ys().unwrap();
+        let mint_quote_response: cdk_common::MintQuoteBolt11Response<_> = mint
+            .get_mint_quote(
+                MintQuoteBolt11Request {
+                    amount: Amount::from(4_000),
+                    unit: CurrencyUnit::Sat,
+                    description: None,
+                    pubkey: None,
+                }
+                .into(),
+            )
+            .await
+            .unwrap()
+            .into();
+        let mint_quote_id = cdk_common::QuoteId::from_str(&mint_quote_response.quote).unwrap();
+        let mint_quote = mint
+            .localstore
+            .get_mint_quote(&mint_quote_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let melt_quote_response = mint
+            .get_melt_quote(MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
+                request: mint_quote.request.to_string().parse().unwrap(),
+                unit: CurrencyUnit::Sat,
+                options: None,
+            }))
+            .await
+            .unwrap();
+        let melt_quote = mint
+            .localstore
+            .get_melt_quote(melt_quote_response.quote().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        let melt_request = create_test_melt_request(&proofs, &melt_quote);
+        let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
+        let setup_saga = MeltSaga::new(
+            std::sync::Arc::clone(&mint),
+            mint.localstore(),
+            mint.pubsub_manager(),
+        )
+        .setup_melt(
+            &melt_request,
+            verification,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+        )
+        .await
+        .unwrap();
+        let operation_id = setup_saga.operation_id;
+        let InternalSettlementOutcome::Settled(confirmed_saga) = setup_saga
+            .attempt_internal_settlement(&melt_request)
+            .await
+            .unwrap()
+        else {
+            panic!("expected internal settlement");
+        };
+        drop(confirmed_saga);
+
+        // Seed a legacy row with quote_id = NULL and the target legacy state.
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            if clear_finalization_data {
+                conn.execute(
+                    "UPDATE saga_state SET quote_id = NULL, state = ?1, finalization_data = NULL WHERE operation_id = ?2",
+                    [legacy_state, &operation_id.to_string()],
+                )
+                .unwrap();
+            }
+        }
+
+        crate::test_helpers::mint::expire_melt_leases(&mint).await;
+        mint.recover_from_incomplete_melt_sagas().await.unwrap();
+
+        assert_saga_not_exists(&mint, &operation_id).await;
+        assert_proofs_state(&mint, &input_ys, Some(State::Spent)).await;
+        let recovered_quote = mint
+            .localstore
+            .get_melt_quote(&melt_quote.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered_quote.state, MeltQuoteState::Paid);
+
+        let _ = std::fs::remove_file(&db_path);
+    }
 }
 
 /// Test: Saga remains in database if finalize fails

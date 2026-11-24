@@ -117,6 +117,18 @@ where
     }
 
     async fn add_saga(&mut self, saga: &mint::Saga) -> Result<(), Self::Err> {
+        if matches!(
+            saga.state,
+            mint::SagaStateEnum::Melt(mint::MeltSagaState::Finalizing(None))
+        ) {
+            return Err(Error::InvalidStateTransition(
+                cdk_common::state::Error::InvalidSagaTransition {
+                    from: "new",
+                    to: saga.state.state(),
+                },
+            ));
+        }
+
         let current_time = unix_time();
 
         query(
@@ -166,10 +178,13 @@ where
             r#"
             UPDATE saga_state
             SET state = :state, finalization_data = :finalization_data, updated_at = :updated_at
-            WHERE operation_id = :operation_id AND state = :old_state
+            WHERE operation_id = :operation_id
+              AND operation_kind = :operation_kind
+              AND state = :old_state
             "#,
         )?
         .bind("state", new_state.state())
+        .bind("operation_kind", saga.operation_kind().to_string())
         .bind("old_state", saga.state.state())
         .bind("finalization_data", finalization_data_json)
         .bind("updated_at", i64::try_from(current_time)?)

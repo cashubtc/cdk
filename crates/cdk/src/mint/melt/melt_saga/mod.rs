@@ -645,7 +645,16 @@ impl MeltSaga<SetupComplete> {
             mint_quote.id
         );
 
-        Ok(InternalSettlementOutcome::Settled(Box::new(MeltSaga {
+        Ok(InternalSettlementOutcome::Settled(
+            self.into_payment_confirmed(payment_result),
+        ))
+    }
+
+    fn into_payment_confirmed(
+        self,
+        payment_result: MakePaymentResponse,
+    ) -> Box<MeltSaga<PaymentConfirmed>> {
+        Box::new(MeltSaga {
             mint: self.mint,
             db: self.db,
             pubsub: self.pubsub,
@@ -657,7 +666,7 @@ impl MeltSaga<SetupComplete> {
                 quote: self.state_data.quote,
                 payment_result,
             },
-        })))
+        })
     }
 
     /// Makes an external payment via the configured payment backend.
@@ -684,21 +693,9 @@ impl MeltSaga<SetupComplete> {
     #[instrument(skip_all)]
     pub async fn make_payment(self) -> Result<PaymentOutcome, Error> {
         match self.dispatch_and_persist_external_payment().await? {
-            ExternalPaymentObservation::Paid(payment_result) => {
-                Ok(PaymentOutcome::Confirmed(Box::new(MeltSaga {
-                    mint: self.mint,
-                    db: self.db,
-                    pubsub: self.pubsub,
-                    compensations: self.compensations,
-                    operation_id: self.operation_id,
-                    #[cfg(feature = "prometheus")]
-                    metrics: self.metrics,
-                    state_data: PaymentConfirmed {
-                        quote: self.state_data.quote,
-                        payment_result,
-                    },
-                })))
-            }
+            ExternalPaymentObservation::Paid(payment_result) => Ok(PaymentOutcome::Confirmed(
+                self.into_payment_confirmed(payment_result),
+            )),
             ExternalPaymentObservation::AuthoritativeFailure(response) => {
                 tracing::warn!(
                     quote_id = %self.state_data.quote.id,
@@ -1235,8 +1232,8 @@ impl MeltSaga<PaymentConfirmed> {
 
 /// Classified result of dispatching an external melt payment.
 ///
-/// Replaces the `(MakePaymentResponse, acknowledged: bool)` tuple so dispatch
-/// and persistence share one explicit decision type.
+/// Drives both durable saga state persistence and the live [`MeltSaga`]
+/// transition after calling the payment backend.
 enum ExternalPaymentObservation {
     /// Backend confirmed the payment succeeded.
     Paid(MakePaymentResponse),

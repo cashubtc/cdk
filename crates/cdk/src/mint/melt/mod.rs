@@ -43,7 +43,7 @@ pub(crate) mod shared;
 #[cfg(test)]
 mod tests;
 
-use melt_saga::{InternalSettlementOutcome, MeltSaga, PaymentOutcome};
+use self::melt_saga::{InternalSettlementOutcome, MeltSaga, PaymentOutcome};
 
 fn pending_melt_wait_timeout() -> Duration {
     if cfg!(test) {

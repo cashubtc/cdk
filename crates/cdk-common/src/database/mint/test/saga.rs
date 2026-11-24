@@ -432,14 +432,19 @@ where
     assert_eq!(retrieved.quote_id(), Some(quote_id.to_string().as_str()));
 }
 
-/// Test melt-specific quote lookup ignores non-melt sagas
+/// Test melt-specific quote lookup ignores non-melt sagas even when `quote_id` collides
 pub async fn get_melt_saga_by_quote_id_filters_non_melt<DB>(db: DB)
 where
     DB: Database<Error>,
 {
     let quote_id = crate::QuoteId::new();
-    let swap_saga = Saga::new_swap(uuid::Uuid::new_v4(), SwapSagaState::SetupComplete)
-        .with_timestamps(1234567890, 1234567890);
+    let swap_saga = Saga::from_db(
+        uuid::Uuid::new_v4(),
+        SagaStateEnum::Swap(SwapSagaState::SetupComplete),
+        Some(quote_id.to_string()),
+        1234567890,
+        1234567890,
+    );
     let melt_saga = Saga::new_melt(
         uuid::Uuid::new_v4(),
         MeltSagaState::SetupComplete,
@@ -624,4 +629,102 @@ where
         assert_eq!(retrieved.finalization_data(), saga.finalization_data());
         tx.commit().await.unwrap();
     }
+}
+
+/// Test that fresh saga writes cannot create a payloadless `Finalizing(None)` row.
+pub async fn add_saga_rejects_payloadless_finalizing<DB>(db: DB)
+where
+    DB: Database<Error>,
+{
+    let operation_id = uuid::Uuid::new_v4();
+    let invalid_saga = Saga::new_melt(
+        operation_id,
+        MeltSagaState::Finalizing(None),
+        "quote_payloadless".to_string(),
+    )
+    .with_timestamps(1234567890, 1234567890);
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let err = tx.add_saga(&invalid_saga).await.unwrap_err();
+    assert!(
+        matches!(err, Error::InvalidStateTransition(_)),
+        "expected InvalidStateTransition on payloadless Finalizing insert, got {err:?}"
+    );
+    tx.rollback().await.unwrap();
+
+    // Also verify transitioning an existing saga to Finalizing(None) is rejected.
+    let valid_saga = Saga::new_melt(
+        operation_id,
+        MeltSagaState::SetupComplete,
+        "quote_payloadless".to_string(),
+    )
+    .with_timestamps(1234567890, 1234567890);
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_saga(&valid_saga).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut acquired = tx
+        .get_saga_for_update(&operation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let err = tx
+        .update_acquired_saga(
+            &mut acquired,
+            SagaStateEnum::Melt(MeltSagaState::Finalizing(None)),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::InvalidStateTransition(_)),
+        "expected InvalidStateTransition on transition to Finalizing(None), got {err:?}"
+    );
+    tx.rollback().await.unwrap();
+}
+
+/// Test that mutating an acquired swap saga's in-memory kind cannot update the stored row.
+pub async fn update_acquired_saga_refuses_cross_kind_snapshot_mutation<DB>(db: DB)
+where
+    DB: Database<Error>,
+{
+    let operation_id = uuid::Uuid::new_v4();
+    let swap_saga = Saga::new_swap(operation_id, SwapSagaState::SetupComplete)
+        .with_timestamps(1234567890, 1234567890);
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_saga(&swap_saga).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut acquired = tx
+        .get_saga_for_update(&operation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    // Mutate the in-memory snapshot from Swap(SetupComplete) to Melt(SetupComplete),
+    // which shares the `setup_complete` state tag. The SQL update must still check
+    // `operation_kind` and reject the cross-kind update.
+    acquired.state = SagaStateEnum::Melt(MeltSagaState::SetupComplete);
+    let err = tx
+        .update_acquired_saga(
+            &mut acquired,
+            SagaStateEnum::Melt(MeltSagaState::PaymentAttempted),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::ConcurrentUpdate),
+        "expected ConcurrentUpdate on cross-kind snapshot mutation, got {err:?}"
+    );
+    tx.rollback().await.unwrap();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let stored = tx.get_saga(&operation_id).await.unwrap().unwrap();
+    assert_eq!(stored.operation_kind(), OperationKind::Swap);
+    assert_eq!(
+        stored.state,
+        SagaStateEnum::Swap(SwapSagaState::SetupComplete)
+    );
+    tx.commit().await.unwrap();
 }
