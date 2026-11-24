@@ -174,6 +174,20 @@ async fn set_saga_state(mint: &Mint, operation_id: &uuid::Uuid, state: MeltSagaS
         .await
         .unwrap()
         .expect("saga should exist");
+    if matches!(
+        saga.state,
+        SagaStateEnum::Melt(MeltSagaState::SetupComplete)
+    ) && matches!(
+        state,
+        MeltSagaState::PaymentPending | MeltSagaState::PaymentFailed
+    ) {
+        tx.update_acquired_saga(
+            &mut saga,
+            SagaStateEnum::Melt(MeltSagaState::PaymentAttempted),
+        )
+        .await
+        .unwrap();
+    }
     tx.update_acquired_saga(&mut saga, SagaStateEnum::Melt(state))
         .await
         .unwrap();
@@ -565,10 +579,9 @@ async fn status_poll_replays_finalizing_handoff_after_lease_expires() {
             .await
             .unwrap()
             .unwrap();
-        tx.update_acquired_saga_with_finalization_data(
+        tx.update_acquired_saga(
             &mut saga,
-            SagaStateEnum::Melt(MeltSagaState::Finalizing),
-            Some(&finalization_data),
+            SagaStateEnum::Melt(MeltSagaState::finalizing(finalization_data.clone())),
         )
         .await
         .unwrap();

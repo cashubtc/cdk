@@ -2469,13 +2469,17 @@ mod tests {
             .await
             .unwrap();
 
-        let (payment_saga, decision) = setup_saga
+        let crate::mint::melt::melt_saga::InternalSettlementOutcome::RequiresExternalPayment(
+            payment_saga,
+        ) = setup_saga
             .attempt_internal_settlement(&melt_request)
             .await
-            .unwrap();
+            .unwrap()
+        else {
+            panic!("Expected external payment");
+        };
         let operation_id = assert_single_melt_saga_operation_id(&mint).await;
-        let PaymentOutcome::Confirmed(_confirmed_saga) =
-            payment_saga.make_payment(decision).await.unwrap()
+        let PaymentOutcome::Confirmed(_confirmed_saga) = payment_saga.make_payment().await.unwrap()
         else {
             panic!("Expected Confirmed outcome");
         };

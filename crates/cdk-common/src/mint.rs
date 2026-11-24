@@ -171,19 +171,52 @@ pub enum MeltSagaState {
     /// The backend authoritatively reported that the payment operation ended
     /// without paying. Recovery may safely compensate this melt.
     PaymentFailed,
-    /// TX1 committed (proofs Spent, quote Paid) - change signing + cleanup pending
-    Finalizing,
+    /// Payment confirmed paid — change signing + cleanup pending.
+    ///
+    /// Carries the persisted [`MeltFinalizationData`] needed to resume
+    /// finalization after a crash. `None` is only produced when loading legacy
+    /// rows persisted before finalization data was stored; new transitions
+    /// always use [`Self::finalizing`].
+    Finalizing(Option<MeltFinalizationData>),
+}
+
+impl MeltSagaState {
+    /// Constructs a `Finalizing` state carrying the durable finalization payload.
+    pub fn finalizing(data: MeltFinalizationData) -> Self {
+        Self::Finalizing(Some(data))
+    }
+
+    /// Returns the canonical database tag for this state.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::SetupComplete => "setup_complete",
+            Self::PaymentAttempted => "payment_attempted",
+            Self::PaymentPending => "payment_pending",
+            Self::PaymentFailed => "payment_failed",
+            Self::Finalizing(_) => "finalizing",
+        }
+    }
+
+    /// Returns `true` if this state is terminal until the saga row is deleted.
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, Self::PaymentFailed | Self::Finalizing(_))
+    }
+
+    /// Returns the persisted finalization payload if this state is `Finalizing(Some(_))`.
+    pub fn finalization_data(&self) -> Option<&MeltFinalizationData> {
+        match self {
+            Self::Finalizing(data) => data.as_ref(),
+            Self::SetupComplete
+            | Self::PaymentAttempted
+            | Self::PaymentPending
+            | Self::PaymentFailed => None,
+        }
+    }
 }
 
 impl fmt::Display for MeltSagaState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            MeltSagaState::SetupComplete => write!(f, "setup_complete"),
-            MeltSagaState::PaymentAttempted => write!(f, "payment_attempted"),
-            MeltSagaState::PaymentPending => write!(f, "payment_pending"),
-            MeltSagaState::PaymentFailed => write!(f, "payment_failed"),
-            MeltSagaState::Finalizing => write!(f, "finalizing"),
-        }
+        f.write_str(self.as_str())
     }
 }
 
@@ -192,12 +225,12 @@ impl FromStr for MeltSagaState {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         let value = value.to_lowercase();
         match value.as_str() {
-            "setup_complete" => Ok(MeltSagaState::SetupComplete),
-            "payment_attempted" => Ok(MeltSagaState::PaymentAttempted),
-            "payment_pending" => Ok(MeltSagaState::PaymentPending),
-            "payment_failed" => Ok(MeltSagaState::PaymentFailed),
-            "finalizing" => Ok(MeltSagaState::Finalizing),
-            _ => Err(Error::Custom(format!("Invalid melt saga state: {}", value))),
+            "setup_complete" => Ok(Self::SetupComplete),
+            "payment_attempted" => Ok(Self::PaymentAttempted),
+            "payment_pending" => Ok(Self::PaymentPending),
+            "payment_failed" => Ok(Self::PaymentFailed),
+            "finalizing" => Ok(Self::Finalizing(None)),
+            _ => Err(Error::Custom(format!("Invalid melt saga state: {value}"))),
         }
     }
 }
@@ -215,31 +248,63 @@ pub enum SagaStateEnum {
 }
 
 impl SagaStateEnum {
-    /// Create from string given operation kind
-    pub fn new(operation_kind: OperationKind, s: &str) -> Result<Self, Error> {
+    /// Create from database columns, attaching `finalization_data` to `MeltSagaState::Finalizing`.
+    pub fn from_db(
+        operation_kind: OperationKind,
+        s: &str,
+        finalization_data: Option<MeltFinalizationData>,
+    ) -> Result<Self, Error> {
         match operation_kind {
-            OperationKind::Swap => Ok(SagaStateEnum::Swap(SwapSagaState::from_str(s)?)),
-            OperationKind::Melt => Ok(SagaStateEnum::Melt(MeltSagaState::from_str(s)?)),
+            OperationKind::Swap => {
+                if finalization_data.is_some() {
+                    return Err(Error::Custom(
+                        "Swap saga cannot carry melt finalization data".to_string(),
+                    ));
+                }
+                Ok(Self::Swap(SwapSagaState::from_str(s)?))
+            }
+            OperationKind::Melt => {
+                let state = match MeltSagaState::from_str(s)? {
+                    MeltSagaState::Finalizing(_) => MeltSagaState::Finalizing(finalization_data),
+                    other => other,
+                };
+                Ok(Self::Melt(state))
+            }
             OperationKind::Mint | OperationKind::BatchMint => {
                 Err(Error::Custom("Mint saga not implemented yet".to_string()))
             }
         }
     }
 
+    /// Create from string given operation kind
+    pub fn new(operation_kind: OperationKind, s: &str) -> Result<Self, Error> {
+        Self::from_db(operation_kind, s, None)
+    }
+
     /// Get string representation of the state
-    pub fn state(&self) -> &str {
+    pub fn state(&self) -> &'static str {
         match self {
-            SagaStateEnum::Swap(state) => match state {
+            Self::Swap(state) => match state {
                 SwapSagaState::SetupComplete => "setup_complete",
                 SwapSagaState::Signed => "signed",
             },
-            SagaStateEnum::Melt(state) => match state {
-                MeltSagaState::SetupComplete => "setup_complete",
-                MeltSagaState::PaymentAttempted => "payment_attempted",
-                MeltSagaState::PaymentPending => "payment_pending",
-                MeltSagaState::PaymentFailed => "payment_failed",
-                MeltSagaState::Finalizing => "finalizing",
-            },
+            Self::Melt(state) => state.as_str(),
+        }
+    }
+
+    /// Operation kind implied by this state variant.
+    pub fn operation_kind(&self) -> OperationKind {
+        match self {
+            Self::Swap(_) => OperationKind::Swap,
+            Self::Melt(_) => OperationKind::Melt,
+        }
+    }
+
+    /// Returns the persisted melt finalization payload, if this state carries one.
+    pub fn finalization_data(&self) -> Option<&MeltFinalizationData> {
+        match self {
+            Self::Melt(state) => state.finalization_data(),
+            Self::Swap(_) => None,
         }
     }
 }
@@ -249,15 +314,11 @@ impl SagaStateEnum {
 pub struct Saga {
     /// Operation ID (correlation key)
     pub operation_id: Uuid,
-    /// Operation kind (swap, mint, melt)
-    pub operation_kind: OperationKind,
-    /// Current saga state (operation-specific)
+    /// Current saga state (operation-specific, including any state-owned payload)
     pub state: SagaStateEnum,
-    /// Quote ID for melt operations (used for payment status lookup during recovery)
-    /// None for swap operations
-    pub quote_id: Option<String>,
-    /// Exact payment result for resuming melt finalization after TX1 commits.
-    pub finalization_data: Option<MeltFinalizationData>,
+    /// Quote ID for melt operations (immutable after creation; `None` for swap
+    /// operations and legacy pre-quote_id melt rows)
+    quote_id: Option<String>,
     /// Unix timestamp when saga was created
     pub created_at: u64,
     /// Unix timestamp when saga was last updated
@@ -340,12 +401,81 @@ impl Saga {
         let now = unix_time();
         Self {
             operation_id,
-            operation_kind: OperationKind::Swap,
             state: SagaStateEnum::Swap(state),
             quote_id: None,
-            finalization_data: None,
             created_at: now,
             updated_at: now,
+        }
+    }
+
+    /// Create new melt saga
+    pub fn new_melt(operation_id: Uuid, state: MeltSagaState, quote_id: String) -> Self {
+        let now = unix_time();
+        Self {
+            operation_id,
+            state: SagaStateEnum::Melt(state),
+            quote_id: Some(quote_id),
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// Reconstruct a [`Saga`] from persisted database fields.
+    pub fn from_db(
+        operation_id: Uuid,
+        state: SagaStateEnum,
+        quote_id: Option<String>,
+        created_at: u64,
+        updated_at: u64,
+    ) -> Self {
+        let quote_id = match &state {
+            SagaStateEnum::Melt(_) => quote_id,
+            SagaStateEnum::Swap(_) => None,
+        };
+        Self {
+            operation_id,
+            state,
+            quote_id,
+            created_at,
+            updated_at,
+        }
+    }
+
+    /// Override creation and update timestamps (primarily for tests).
+    pub fn with_timestamps(mut self, created_at: u64, updated_at: u64) -> Self {
+        self.created_at = created_at;
+        self.updated_at = updated_at;
+        self
+    }
+
+    /// Operation kind derived from the saga's state.
+    pub fn operation_kind(&self) -> OperationKind {
+        self.state.operation_kind()
+    }
+
+    /// Quote ID associated with a melt saga, if present.
+    pub fn quote_id(&self) -> Option<&str> {
+        self.quote_id.as_deref()
+    }
+
+    /// Persisted melt finalization data, if this saga is in `Finalizing(Some(_))`.
+    pub fn finalization_data(&self) -> Option<&MeltFinalizationData> {
+        self.state.finalization_data()
+    }
+
+    /// Returns the inner [`MeltSagaState`] if this is a melt saga.
+    pub fn melt_state(&self) -> Option<&MeltSagaState> {
+        match &self.state {
+            SagaStateEnum::Melt(state) => Some(state),
+            SagaStateEnum::Swap(_) => None,
+        }
+    }
+
+    /// Returns the inner [`SwapSagaState`] if this is a swap saga.
+    pub fn swap_state(&self) -> Option<&SwapSagaState> {
+        match &self.state {
+            SagaStateEnum::Swap(state) => Some(state),
+            SagaStateEnum::Melt(_) => None,
         }
     }
 
@@ -355,29 +485,9 @@ impl Saga {
         self.updated_at = unix_time();
     }
 
-    /// Create new melt saga
-    pub fn new_melt(operation_id: Uuid, state: MeltSagaState, quote_id: String) -> Self {
-        let now = unix_time();
-        Self {
-            operation_id,
-            operation_kind: OperationKind::Melt,
-            state: SagaStateEnum::Melt(state),
-            quote_id: Some(quote_id),
-            finalization_data: None,
-            created_at: now,
-            updated_at: now,
-        }
-    }
-
     /// Update melt saga state
     pub fn update_melt_state(&mut self, new_state: MeltSagaState) {
         self.state = SagaStateEnum::Melt(new_state);
-        self.updated_at = unix_time();
-    }
-
-    /// Store exact payment data needed to resume melt finalization after TX1.
-    pub fn set_melt_finalization_data(&mut self, finalization_data: MeltFinalizationData) {
-        self.finalization_data = Some(finalization_data);
         self.updated_at = unix_time();
     }
 }

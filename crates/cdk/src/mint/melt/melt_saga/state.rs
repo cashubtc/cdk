@@ -1,5 +1,3 @@
-use cdk_common::nuts::CurrencyUnit;
-use cdk_common::Amount;
 use uuid::Uuid;
 
 use crate::cdk_payment::MakePaymentResponse;
@@ -16,8 +14,8 @@ pub struct Initial {
 /// Setup complete - has quote ready for payment.
 ///
 /// After successful setup (proofs reserved, quote state set to Pending), the saga
-/// transitions to this state. The `attempt_internal_settlement` and `make_payment`
-/// methods are available.
+/// transitions to this state. No payment has been attempted yet. The
+/// `attempt_internal_settlement` and `make_payment` methods are available.
 ///
 /// Input proof Y values, blinded messages, operation, and fee breakdown are
 /// persisted to the database during setup and retrieved from there during
@@ -28,25 +26,28 @@ pub struct SetupComplete {
 
 /// Payment confirmed - has quote and payment result.
 ///
-/// After successful payment (internal or external), the saga transitions to this state.
-/// Only the `finalize` method is available, which delegates to the shared
-/// `finalize_melt_quote` function — the single finalization path that handles
-/// operation recording, saga deletion, and all cleanup atomically.
+/// After successful payment (internal or external), the durable `Finalizing`
+/// handoff is already persisted in the database and the saga transitions to
+/// this state. Only the `finalize` method is available, which delegates to the
+/// shared `finalize_melt_quote` function — the single finalization path that
+/// handles operation recording, saga deletion, and all cleanup atomically.
 pub struct PaymentConfirmed {
     pub quote: MeltQuote,
     pub payment_result: MakePaymentResponse,
 }
 
-/// Result of attempting internal settlement for a melt operation.
+/// Outcome of attempting internal settlement for a melt operation.
 ///
-/// This enum represents the decision point in the melt flow:
-/// - Internal settlement succeeded → skip external payment
-/// - External payment required → proceed with payment backend call
-#[derive(Debug, Clone)]
-pub enum SettlementDecision {
-    /// Payment was settled internally (melt-to-mint on the same mint).
-    /// Contains the amount that was settled.
-    Internal { amount: Amount<CurrencyUnit> },
+/// This typestate branch enforces the invariant that `MeltSaga<SetupComplete>`
+/// never represents an already-settled internal melt:
+/// - Internal settlement committed atomically (mint quote credited, melt quote
+///   marked `Paid`, saga transitioned `SetupComplete -> Finalizing`) → saga
+///   advances directly to [`PaymentConfirmed`]
+/// - Not an internal payment → saga remains in [`SetupComplete`] for external
+///   payment dispatch
+pub enum InternalSettlementOutcome {
+    /// Payment settled internally on this mint; saga is ready for finalization.
+    Settled(Box<super::MeltSaga<PaymentConfirmed>>),
     /// Payment requires external settlement via the payment backend.
-    RequiresExternalPayment,
+    RequiresExternalPayment(Box<super::MeltSaga<SetupComplete>>),
 }

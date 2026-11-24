@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use cdk_common::database::mint::{Acquired, SagaDatabase, SagaTransaction};
 use cdk_common::database::Error;
 use cdk_common::mint;
+use cdk_common::state::check_saga_state_transition;
 use cdk_common::util::unix_time;
 use serde_json;
 
@@ -36,8 +37,6 @@ fn sql_row_to_saga(row: Vec<Column>) -> Result<mint::Saga, Error> {
         .map_err(|e| Error::Internal(format!("Invalid operation kind: {e}")))?;
 
     let state_str = column_as_string!(&state);
-    let state = mint::SagaStateEnum::new(operation_kind, &state_str)
-        .map_err(|e| Error::Internal(format!("Invalid saga state: {e}")))?;
 
     let quote_id = match &quote_id {
         Column::Text(s) => {
@@ -60,18 +59,19 @@ fn sql_row_to_saga(row: Vec<Column>) -> Result<mint::Saga, Error> {
             _ => None,
         };
 
+    let state = mint::SagaStateEnum::from_db(operation_kind, &state_str, finalization_data)
+        .map_err(|e| Error::Internal(format!("Invalid saga state: {e}")))?;
+
     let created_at: u64 = column_as_number!(created_at);
     let updated_at: u64 = column_as_number!(updated_at);
 
-    Ok(mint::Saga {
+    Ok(mint::Saga::from_db(
         operation_id,
-        operation_kind,
         state,
         quote_id,
-        finalization_data,
         created_at,
         updated_at,
-    })
+    ))
 }
 
 #[async_trait]
@@ -128,13 +128,12 @@ where
             "#,
         )?
         .bind("operation_id", saga.operation_id.to_string())
-        .bind("operation_kind", saga.operation_kind.to_string())
+        .bind("operation_kind", saga.operation_kind().to_string())
         .bind("state", saga.state.state())
-        .bind("quote_id", saga.quote_id.as_deref())
+        .bind("quote_id", saga.quote_id())
         .bind(
             "finalization_data",
-            saga.finalization_data
-                .as_ref()
+            saga.finalization_data()
                 .map(serde_json::to_string)
                 .transpose()
                 .map_err(|e| Error::Internal(format!("Failed to serialize melt finalization data: {e}")))?,
@@ -152,39 +151,16 @@ where
         saga: &mut Acquired<mint::Saga>,
         new_state: mint::SagaStateEnum,
     ) -> Result<(), Self::Err> {
+        check_saga_state_transition(&saga.state, &new_state)?;
+
         let current_time = unix_time();
-
-        let affected = query(
-            r#"
-            UPDATE saga_state
-            SET state = :state, updated_at = :updated_at
-            WHERE operation_id = :operation_id AND state = :old_state
-            "#,
-        )?
-        .bind("state", new_state.state())
-        .bind("old_state", saga.state.state())
-        .bind("updated_at", i64::try_from(current_time)?)
-        .bind("operation_id", saga.operation_id.to_string())
-        .execute(&self.inner)
-        .await?;
-
-        if affected != 1 {
-            return Err(Error::ConcurrentUpdate);
-        }
-
-        saga.state = new_state;
-        saga.updated_at = current_time;
-
-        Ok(())
-    }
-
-    async fn update_acquired_saga_with_finalization_data(
-        &mut self,
-        saga: &mut Acquired<mint::Saga>,
-        new_state: mint::SagaStateEnum,
-        finalization_data: Option<&mint::MeltFinalizationData>,
-    ) -> Result<(), Self::Err> {
-        let current_time = unix_time();
+        let finalization_data_json = new_state
+            .finalization_data()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| {
+                Error::Internal(format!("Failed to serialize melt finalization data: {e}"))
+            })?;
 
         let affected = query(
             r#"
@@ -195,15 +171,7 @@ where
         )?
         .bind("state", new_state.state())
         .bind("old_state", saga.state.state())
-        .bind(
-            "finalization_data",
-            finalization_data
-                .map(serde_json::to_string)
-                .transpose()
-                .map_err(|e| {
-                    Error::Internal(format!("Failed to serialize melt finalization data: {e}"))
-                })?,
-        )
+        .bind("finalization_data", finalization_data_json)
         .bind("updated_at", i64::try_from(current_time)?)
         .bind("operation_id", saga.operation_id.to_string())
         .execute(&self.inner)
@@ -214,7 +182,6 @@ where
         }
 
         saga.state = new_state;
-        saga.finalization_data = finalization_data.cloned();
         saga.updated_at = current_time;
 
         Ok(())

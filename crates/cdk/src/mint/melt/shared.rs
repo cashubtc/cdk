@@ -99,10 +99,9 @@ pub(crate) async fn persist_melt_finalization_handoff(
         payment_proof: payment_response.payment_proof.clone(),
     };
 
-    tx.update_acquired_saga_with_finalization_data(
+    tx.update_acquired_saga(
         saga,
-        mint_types::SagaStateEnum::Melt(mint_types::MeltSagaState::Finalizing),
-        Some(&finalization_data),
+        mint_types::SagaStateEnum::Melt(mint_types::MeltSagaState::finalizing(finalization_data)),
     )
     .await?;
 
@@ -289,7 +288,7 @@ async fn rollback_melt_quote_inner(
 
             if matches!(
                 &saga.state,
-                mint_types::SagaStateEnum::Melt(mint_types::MeltSagaState::Finalizing)
+                mint_types::SagaStateEnum::Melt(mint_types::MeltSagaState::Finalizing(_))
             ) {
                 tracing::warn!(
                     "Refusing rollback for melt quote {}: saga {} is already Finalizing",

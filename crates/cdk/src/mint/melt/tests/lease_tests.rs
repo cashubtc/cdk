@@ -289,9 +289,18 @@ async fn committed_completion_preserves_executor_result() {
 
     let response = lease
         .run(async {
-            let (setup, settlement) = setup.attempt_internal_settlement(&request).await?;
-            let PaymentOutcome::Confirmed(confirmed) = setup.make_payment(settlement).await? else {
-                panic!("test payment should be confirmed");
+            let confirmed = match setup.attempt_internal_settlement(&request).await? {
+                crate::mint::melt::melt_saga::InternalSettlementOutcome::Settled(confirmed) => {
+                    confirmed
+                }
+                crate::mint::melt::melt_saga::InternalSettlementOutcome::RequiresExternalPayment(
+                    setup,
+                ) => {
+                    let PaymentOutcome::Confirmed(confirmed) = setup.make_payment().await? else {
+                        panic!("test payment should be confirmed");
+                    };
+                    confirmed
+                }
             };
             let response = confirmed.finalize().await?;
 

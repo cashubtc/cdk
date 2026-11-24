@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use cdk_common::database::DynMintDatabase;
-use cdk_common::mint::{MeltFinalizationData, MeltSagaState, Operation, Saga, SagaStateEnum};
+use cdk_common::mint::{MeltSagaState, Operation, Saga, SagaStateEnum};
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nuts::MeltQuoteState;
 use cdk_common::payment::OutgoingPaymentOptions;
@@ -15,7 +15,8 @@ use tokio::sync::Mutex;
 use tracing::instrument;
 
 use self::compensation::{CompensatingAction, RemoveMeltSetup};
-use self::state::{Initial, PaymentConfirmed, SettlementDecision, SetupComplete};
+pub use self::state::InternalSettlementOutcome;
+use self::state::{Initial, PaymentConfirmed, SetupComplete};
 use crate::cdk_payment::MakePaymentResponse;
 use crate::mint::melt::lease::{check_melt_lease, MELT_LEASE_SECONDS};
 use crate::mint::melt::shared;
@@ -125,9 +126,14 @@ mod tests;
 /// ```text
 /// MeltSaga<Initial>
 ///   └─> setup_melt() -> MeltSaga<SetupComplete>
-///         ├─> attempt_internal_settlement() -> SettlementDecision (conditional)
-///         └─> make_payment(SettlementDecision) -> MeltSaga<PaymentConfirmed>
-///               └─> finalize() -> MeltQuoteBolt11Response
+///         └─> attempt_internal_settlement() -> InternalSettlementOutcome
+///               ├─> Settled(MeltSaga<PaymentConfirmed>)
+///               │     └─> finalize() -> MeltQuoteResponse
+///               └─> RequiresExternalPayment(MeltSaga<SetupComplete>)
+///                     └─> make_payment() -> PaymentOutcome
+///                           ├─> Confirmed(MeltSaga<PaymentConfirmed>)
+///                           │     └─> finalize() -> MeltQuoteResponse
+///                           └─> Pending
 /// ```
 ///
 /// **Benefits:**
@@ -474,12 +480,13 @@ impl MeltSaga<SetupComplete> {
     /// Within a single database transaction:
     /// 1. Locks the melt quote row and verifies it is still `Pending`
     /// 2. Checks if payment request matches a mint quote on this mint
-    /// 3. If not a match or different unit: returns (self, RequiresExternalPayment)
+    /// 3. If not a match or different unit: returns `RequiresExternalPayment(self)`
     /// 4. If match found: validates quote state and amount
-    /// 5. Increments the mint quote's paid amount
-    /// 6. Marks the melt quote `Paid` in the same transaction
-    /// 7. Publishes mint quote payment notification
-    /// 8. Returns (self, Internal{amount})
+    /// 5. Persists `MeltSagaState::Finalizing` with the settlement payload
+    /// 6. Increments the mint quote's paid amount
+    /// 7. Marks the melt quote `Paid` in the same transaction
+    /// 8. Publishes mint quote payment notification
+    /// 9. Transitions directly to `InternalSettlementOutcome::Settled(MeltSaga<PaymentConfirmed>)`
     ///
     /// # Compensation
     ///
@@ -489,8 +496,8 @@ impl MeltSaga<SetupComplete> {
     ///
     /// # Returns
     ///
-    /// - `Ok((self, Internal{amount}))`: Internal settlement succeeded, saga can continue
-    /// - `Ok((self, RequiresExternalPayment))`: Not an internal payment, saga can continue
+    /// - `Ok(InternalSettlementOutcome::Settled(saga))`: Internal settlement committed; ready to finalize
+    /// - `Ok(InternalSettlementOutcome::RequiresExternalPayment(saga))`: Not an internal payment; dispatch externally
     /// - `Err(_)`: Internal settlement attempted but failed (compensations executed, saga consumed)
     ///
     /// # Errors
@@ -502,9 +509,9 @@ impl MeltSaga<SetupComplete> {
     /// - `Internal`: Database error during settlement
     #[instrument(skip_all)]
     pub async fn attempt_internal_settlement(
-        self,
+        mut self,
         melt_request: &MeltRequest<QuoteId>,
-    ) -> Result<(Self, SettlementDecision), Error> {
+    ) -> Result<InternalSettlementOutcome, Error> {
         let mut tx = self.db.begin_transaction().await?;
 
         // Serialize the internal-settlement commit with other transactional
@@ -542,7 +549,9 @@ impl MeltSaga<SetupComplete> {
             Ok(_) => {
                 tx.rollback().await?;
                 tracing::debug!("Not an internal payment or unit mismatch");
-                return Ok((self, SettlementDecision::RequiresExternalPayment));
+                return Ok(InternalSettlementOutcome::RequiresExternalPayment(
+                    Box::new(self),
+                ));
             }
             Err(err) => {
                 tx.rollback().await?;
@@ -584,6 +593,15 @@ impl MeltSaga<SetupComplete> {
         }
 
         let amount = self.state_data.quote.amount();
+        let payment_lookup_id = melt_quote.request_lookup_id.clone().unwrap_or_else(|| {
+            cdk_common::payment::PaymentIdentifier::CustomId(self.state_data.quote.id.to_string())
+        });
+        let payment_result = MakePaymentResponse {
+            status: MeltQuoteState::Paid,
+            total_spent: amount.clone(),
+            payment_proof: None,
+            payment_lookup_id: payment_lookup_id.clone(),
+        };
 
         tracing::info!(
             "Mint quote {} paid {} from internal payment.",
@@ -591,17 +609,14 @@ impl MeltSaga<SetupComplete> {
             amount
         );
 
-        // Update saga state to PaymentAttempted BEFORE internal settlement commits
-        // This ensures crash recovery knows payment may have occurred
+        // Persist the durable Finalizing handoff atomically with the mint-quote
+        // credit and melt-quote Paid update so crash recovery resumes
+        // finalization directly without consulting a payment backend.
         let mut saga = tx
             .get_saga_for_update(&self.operation_id)
             .await?
             .ok_or(Error::Internal)?;
-        tx.update_acquired_saga(
-            &mut saga,
-            SagaStateEnum::Melt(MeltSagaState::PaymentAttempted),
-        )
-        .await?;
+        shared::persist_melt_finalization_handoff(&mut tx, &mut saga, &payment_result).await?;
 
         mint_quote.add_payment(amount.clone(), self.state_data.quote.id.to_string(), None)?;
         tx.update_mint_quote(&mut mint_quote).await?;
@@ -614,18 +629,15 @@ impl MeltSaga<SetupComplete> {
         // Internally-settled melts never reach a payment backend, so persist
         // the synthetic lookup id the settlement response will use.
         if melt_quote.request_lookup_id.is_none() {
-            tx.update_melt_quote_request_lookup_id(
-                &mut melt_quote,
-                &cdk_common::payment::PaymentIdentifier::CustomId(
-                    self.state_data.quote.id.to_string(),
-                ),
-            )
-            .await?;
+            tx.update_melt_quote_request_lookup_id(&mut melt_quote, &payment_lookup_id)
+                .await?;
         }
 
         tx.commit().await?;
         self.pubsub
             .mint_quote_payment(&mint_quote, mint_quote.amount_paid());
+
+        self.state_data.quote.request_lookup_id = Some(payment_lookup_id);
 
         tracing::info!(
             "Melt quote {} paid Mint quote {}",
@@ -633,96 +645,7 @@ impl MeltSaga<SetupComplete> {
             mint_quote.id
         );
 
-        Ok((self, SettlementDecision::Internal { amount }))
-    }
-
-    /// Makes payment via the payment backend or internal settlement.
-    ///
-    /// This is an external operation that happens after `setup_melt` and before `finalize`.
-    /// Durable dispatch and terminal-result markers make it crash recoverable.
-    ///
-    /// # What This Does
-    ///
-    /// 1. Takes a SettlementDecision from attempt_internal_settlement
-    /// 2. If Internal: creates payment result directly
-    /// 3. If RequiresExternalPayment:
-    ///    - Updates saga state to `PaymentAttempted` (for crash recovery)
-    ///    - Calls the payment backend to make payment
-    /// 4. Handles payment result states with idempotent verification
-    /// 5. Transitions to PaymentConfirmed state on success
-    ///
-    /// # Crash Tolerance
-    ///
-    /// For external payments, the saga state is updated to `PaymentAttempted` BEFORE
-    /// calling the payment backend. This write-ahead logging ensures that if the process
-    /// crashes after payment but before finalize, the startup recovery will:
-    /// - See `PaymentAttempted` state
-    /// - Check with the payment backend to determine if payment succeeded
-    /// - Finalize if paid, compensate an authoritative negative result, and
-    ///   leave `Pending`/`Unknown` polling results pending
-    ///
-    /// # Idempotent Payment Verification
-    ///
-    /// External payments are asynchronous, and the payment backend may return different
-    /// states for the same payment query due to:
-    /// - Network latency between payment initiation and confirmation
-    /// - Backend database replication lag
-    /// - Settlement timing of the underlying payment rail
-    ///
-    /// **Critical Principle**: If `check_payment_state()` confirms the payment as Paid,
-    /// we MUST proceed to finalize, regardless of what `make_payment()` initially returned.
-    /// This ensures the saga is idempotent with respect to payment confirmation.
-    ///
-    /// # Failure Handling
-    ///
-    /// If `make_payment` authoritatively returns failed/unpaid, `PaymentFailed`
-    /// is persisted before all registered compensations roll back the setup.
-    ///
-    /// # Errors
-    ///
-    /// - `PaymentFailed`: Payment confirmed as failed/unpaid
-    /// - `PendingQuote`: Payment is pending (will be resolved by startup check)
-    #[instrument(skip_all)]
-    pub async fn make_payment(
-        self,
-        settlement: SettlementDecision,
-    ) -> Result<PaymentOutcome, Error> {
-        let payment_result = match settlement {
-            SettlementDecision::Internal { amount } => self.handle_internal_payment(amount),
-            SettlementDecision::RequiresExternalPayment => {
-                let response = self.attempt_external_payment().await?;
-
-                match response.status {
-                    MeltQuoteState::Paid => response,
-                    MeltQuoteState::Unpaid | MeltQuoteState::Failed => {
-                        tracing::warn!(
-                            quote_id = %self.state_data.quote.id,
-                            saga_id = %self.operation_id,
-                            payment_lookup_id = %response.payment_lookup_id,
-                            payment_status = %response.status,
-                            "payment failed authoritatively; rolling back the melt and releasing reserved proofs",
-                        );
-                        self.compensate_all().await?;
-                        return Err(Error::PaymentFailed);
-                    }
-                    MeltQuoteState::Unknown => {
-                        return Ok(PaymentOutcome::Pending {
-                            #[cfg(feature = "prometheus")]
-                            metrics: self.metrics,
-                        });
-                    }
-                    MeltQuoteState::Pending => {
-                        return Ok(PaymentOutcome::Pending {
-                            #[cfg(feature = "prometheus")]
-                            metrics: self.metrics,
-                        });
-                    }
-                }
-            }
-        };
-
-        // Transition to PaymentConfirmed state
-        Ok(PaymentOutcome::Confirmed(Box::new(MeltSaga {
+        Ok(InternalSettlementOutcome::Settled(Box::new(MeltSaga {
             mint: self.mint,
             db: self.db,
             pubsub: self.pubsub,
@@ -737,30 +660,100 @@ impl MeltSaga<SetupComplete> {
         })))
     }
 
-    fn handle_internal_payment(&self, amount: Amount<CurrencyUnit>) -> MakePaymentResponse {
-        tracing::info!(
-            "Payment settled internally for {} {}",
-            amount,
-            self.state_data.quote.unit
-        );
-        MakePaymentResponse {
-            status: MeltQuoteState::Paid,
-            total_spent: amount,
-            payment_proof: None,
-            payment_lookup_id: self
-                .state_data
-                .quote
-                .request_lookup_id
-                .clone()
-                .unwrap_or_else(|| {
-                    cdk_common::payment::PaymentIdentifier::CustomId(
-                        self.state_data.quote.id.to_string(),
-                    )
-                }),
+    /// Makes an external payment via the configured payment backend.
+    ///
+    /// This is an external operation that happens after `setup_melt` (and after
+    /// `attempt_internal_settlement` returned `RequiresExternalPayment`) and
+    /// before `finalize`. Durable dispatch and terminal-result markers make it
+    /// crash recoverable.
+    ///
+    /// # What This Does
+    ///
+    /// 1. Updates saga state to `PaymentAttempted` (write-ahead marker)
+    /// 2. Calls the payment backend to make payment and verifies ambiguous results
+    /// 3. Classifies the outcome into [`ExternalPaymentObservation`]
+    /// 4. Persists the resulting durable saga state (`Finalizing`, `PaymentPending`,
+    ///    `PaymentFailed`, or keeps `PaymentAttempted` for ambiguous outcomes)
+    /// 5. Transitions to `PaymentConfirmed` on success, returns `Pending`, or
+    ///    compensates on authoritative failure
+    ///
+    /// # Errors
+    ///
+    /// - `PaymentFailed`: Payment confirmed as failed/unpaid
+    /// - `UnitMismatch`: Backend returned a paid response in the wrong unit
+    #[instrument(skip_all)]
+    pub async fn make_payment(self) -> Result<PaymentOutcome, Error> {
+        match self.dispatch_and_persist_external_payment().await? {
+            ExternalPaymentObservation::Paid(payment_result) => {
+                Ok(PaymentOutcome::Confirmed(Box::new(MeltSaga {
+                    mint: self.mint,
+                    db: self.db,
+                    pubsub: self.pubsub,
+                    compensations: self.compensations,
+                    operation_id: self.operation_id,
+                    #[cfg(feature = "prometheus")]
+                    metrics: self.metrics,
+                    state_data: PaymentConfirmed {
+                        quote: self.state_data.quote,
+                        payment_result,
+                    },
+                })))
+            }
+            ExternalPaymentObservation::AuthoritativeFailure(response) => {
+                tracing::warn!(
+                    quote_id = %self.state_data.quote.id,
+                    saga_id = %self.operation_id,
+                    payment_lookup_id = %response.payment_lookup_id,
+                    payment_status = %response.status,
+                    "payment failed authoritatively; rolling back the melt and releasing reserved proofs",
+                );
+                self.compensate_all().await?;
+                Err(Error::PaymentFailed)
+            }
+            ExternalPaymentObservation::Pending(_) | ExternalPaymentObservation::Ambiguous(_) => {
+                Ok(PaymentOutcome::Pending {
+                    #[cfg(feature = "prometheus")]
+                    metrics: self.metrics,
+                })
+            }
         }
     }
 
-    async fn attempt_external_payment(&self) -> Result<MakePaymentResponse, Error> {
+    #[cfg(test)]
+    pub(crate) async fn attempt_external_payment(&self) -> Result<MakePaymentResponse, Error> {
+        let observation = self.dispatch_and_persist_external_payment().await?;
+        Ok(match observation {
+            ExternalPaymentObservation::Paid(resp)
+            | ExternalPaymentObservation::AuthoritativeFailure(resp)
+            | ExternalPaymentObservation::Pending(resp)
+            | ExternalPaymentObservation::Ambiguous(resp) => resp,
+        })
+    }
+
+    async fn dispatch_and_persist_external_payment(
+        &self,
+    ) -> Result<ExternalPaymentObservation, Error> {
+        let observation = self.dispatch_external_payment().await?;
+        match &observation {
+            ExternalPaymentObservation::Paid(payment_result) => {
+                self.persist_paid_payment(payment_result).await?;
+            }
+            ExternalPaymentObservation::AuthoritativeFailure(response) => {
+                self.persist_external_payment_state(response, Some(MeltSagaState::PaymentFailed))
+                    .await?;
+            }
+            ExternalPaymentObservation::Pending(response) => {
+                self.persist_external_payment_state(response, Some(MeltSagaState::PaymentPending))
+                    .await?;
+            }
+            ExternalPaymentObservation::Ambiguous(response) => {
+                self.persist_external_payment_state(response, None).await?;
+            }
+        }
+        Ok(observation)
+    }
+
+    async fn dispatch_external_payment(&self) -> Result<ExternalPaymentObservation, Error> {
         // Get the payment processor for the quote's unit and method
         let payment_backend = self
             .mint
@@ -811,17 +804,8 @@ impl MeltSaga<SetupComplete> {
         // dispatch, payment events, and reconciliation for this quote. Do not
         // hold a database connection across payment-backend network I/O: a few
         // slow payments would otherwise exhaust PostgreSQL dispatch capacity.
-        let (response, acknowledged) = self
-            .execute_payment_and_verify(Arc::clone(payment_backend))
-            .await?;
-        if response.status == MeltQuoteState::Paid {
-            self.persist_paid_payment(&response).await?;
-        } else {
-            self.persist_external_payment_state(&response, acknowledged)
-                .await?;
-        }
-
-        Ok(response)
+        self.execute_payment_and_verify(Arc::clone(payment_backend))
+            .await
     }
 
     async fn execute_payment_and_verify(
@@ -829,7 +813,7 @@ impl MeltSaga<SetupComplete> {
         payment_backend: Arc<
             dyn cdk_common::payment::MintPayment<Err = cdk_common::payment::Error> + Send + Sync,
         >,
-    ) -> Result<(MakePaymentResponse, bool), Error> {
+    ) -> Result<ExternalPaymentObservation, Error> {
         // Make payment with idempotent verification
         let quote = &self.state_data.quote;
         let payment_options = OutgoingPaymentOptions::from_melt_quote_with_fee(quote.clone())?;
@@ -870,17 +854,15 @@ impl MeltSaga<SetupComplete> {
                     payment_lookup_id = %pay.payment_lookup_id,
                     "payment backend returned an authoritative result",
                 );
-                Ok((pay, true))
+                Ok(ExternalPaymentObservation::Paid(pay))
             }
             Ok(pay) => {
                 let response = self.verify_ambiguous_payment(payment_backend, pay).await?;
-                let acknowledged = response.status != MeltQuoteState::Unknown;
-                Ok((response, acknowledged))
+                Ok(ExternalPaymentObservation::from_response(response))
             }
             Err(err) => {
                 let response = self.handle_payment_error(payment_backend, err).await?;
-                let acknowledged = response.status != MeltQuoteState::Unknown;
-                Ok((response, acknowledged))
+                Ok(ExternalPaymentObservation::from_response(response))
             }
         }
     }
@@ -1011,7 +993,7 @@ impl MeltSaga<SetupComplete> {
     async fn persist_external_payment_state(
         &self,
         payment_response: &MakePaymentResponse,
-        acknowledged: bool,
+        next_state: Option<MeltSagaState>,
     ) -> Result<(), Error> {
         let quote_id = &self.state_data.quote.id;
         let payment_lookup_id = &payment_response.payment_lookup_id;
@@ -1037,14 +1019,6 @@ impl MeltSaga<SetupComplete> {
             tx.rollback().await?;
             return Err(Error::UnknownPaymentState);
         }
-
-        let next_state = match (acknowledged, payment_response.status) {
-            (true, MeltQuoteState::Unpaid | MeltQuoteState::Failed) => {
-                Some(MeltSagaState::PaymentFailed)
-            }
-            (true, MeltQuoteState::Pending) => Some(MeltSagaState::PaymentPending),
-            _ => None,
-        };
 
         if let Some(next_state) = next_state.as_ref() {
             tx.update_acquired_saga(&mut saga, SagaStateEnum::Melt(next_state.clone()))
@@ -1116,7 +1090,7 @@ impl MeltSaga<SetupComplete> {
             saga_id = %self.operation_id,
             payment_lookup_id = %payment_response.payment_lookup_id,
             payment_status = %payment_response.status,
-            saga_state = %MeltSagaState::Finalizing,
+            saga_state = %MeltSagaState::Finalizing(None),
             "paid payment persisted; melt is ready for finalization",
         );
 
@@ -1211,42 +1185,10 @@ impl MeltSaga<PaymentConfirmed> {
         let payment_proof = self.state_data.payment_result.payment_proof.clone();
         let payment_lookup_id = &self.state_data.payment_result.payment_lookup_id;
 
-        // Persist Finalizing state so crash recovery knows TX1 may have completed.
-        // This must happen before finalize_melt_quote which will commit TX1 internally.
-        {
-            let mut tx = self.db.begin_transaction().await?;
-            let current = tx
-                .get_melt_quote(&self.state_data.quote.id)
-                .await?
-                .ok_or(Error::UnknownQuote)?;
-            check_melt_lease(&mut tx, &current, &self.state_data.quote.melt_lock).await?;
-            let finalization_data = MeltFinalizationData {
-                total_spent: total_spent.clone(),
-                payment_lookup_id: payment_lookup_id.clone(),
-                payment_proof: payment_proof.clone(),
-            };
-            let mut saga = tx
-                .get_saga_for_update(&self.operation_id)
-                .await?
-                .ok_or(Error::Internal)?;
-            tx.update_acquired_saga_with_finalization_data(
-                &mut saga,
-                SagaStateEnum::Melt(MeltSagaState::Finalizing),
-                Some(&finalization_data),
-            )
-            .await?;
-            tx.commit().await?;
-        }
-
-        tracing::debug!(
-            quote_id = %self.state_data.quote.id,
-            saga_id = %self.operation_id,
-            payment_lookup_id = %payment_lookup_id,
-            saga_state = %MeltSagaState::Finalizing,
-            "melt finalization handoff persisted",
-        );
-
-        // Delegate to the single shared finalization path which handles:
+        // `MeltSaga<PaymentConfirmed>` guarantees the durable `Finalizing`
+        // handoff was already persisted by `attempt_internal_settlement` or
+        // `make_payment`. Delegate straight to the single shared finalization
+        // path which handles:
         // - Core finalization (mark proofs spent, update quote to Paid)
         // - Change signing
         // - Operation recording (add_completed_operation)
@@ -1288,6 +1230,32 @@ impl MeltSaga<PaymentConfirmed> {
         let response = self.state_data.quote.into_response(change);
 
         Ok(response)
+    }
+}
+
+/// Classified result of dispatching an external melt payment.
+///
+/// Replaces the `(MakePaymentResponse, acknowledged: bool)` tuple so dispatch
+/// and persistence share one explicit decision type.
+enum ExternalPaymentObservation {
+    /// Backend confirmed the payment succeeded.
+    Paid(MakePaymentResponse),
+    /// Backend acknowledged an in-flight payment (`Pending`).
+    Pending(MakePaymentResponse),
+    /// Backend authoritatively reported terminal failure (`Failed` / `Unpaid`).
+    AuthoritativeFailure(MakePaymentResponse),
+    /// Backend could not prove the outcome (`Unknown`); keep `PaymentAttempted`.
+    Ambiguous(MakePaymentResponse),
+}
+
+impl ExternalPaymentObservation {
+    fn from_response(response: MakePaymentResponse) -> Self {
+        match response.status {
+            MeltQuoteState::Paid => Self::Paid(response),
+            MeltQuoteState::Pending => Self::Pending(response),
+            MeltQuoteState::Unpaid | MeltQuoteState::Failed => Self::AuthoritativeFailure(response),
+            MeltQuoteState::Unknown => Self::Ambiguous(response),
+        }
     }
 }
 

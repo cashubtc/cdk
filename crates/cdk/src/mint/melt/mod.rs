@@ -43,7 +43,7 @@ pub(crate) mod shared;
 #[cfg(test)]
 mod tests;
 
-use melt_saga::{MeltSaga, PaymentOutcome};
+use melt_saga::{InternalSettlementOutcome, MeltSaga, PaymentOutcome};
 
 fn pending_melt_wait_timeout() -> Duration {
     if cfg!(test) {
@@ -1055,10 +1055,17 @@ impl Mint {
 
             let payment_outcome = lease
                 .run(async {
-                    let (setup_saga, settlement) = setup_saga
+                    match setup_saga
                         .attempt_internal_settlement(&melt_request_owned)
-                        .await?;
-                    setup_saga.make_payment(settlement).await
+                        .await?
+                    {
+                        InternalSettlementOutcome::Settled(payment_saga) => {
+                            Ok(PaymentOutcome::Confirmed(payment_saga))
+                        }
+                        InternalSettlementOutcome::RequiresExternalPayment(setup_saga) => {
+                            setup_saga.make_payment().await
+                        }
+                    }
                 })
                 .await;
 

@@ -325,12 +325,12 @@ async fn paid_response_with_wrong_unit_preserves_paid_handoff() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(
+    assert!(matches!(
         saga.state,
-        cdk_common::mint::SagaStateEnum::Melt(cdk_common::mint::MeltSagaState::Finalizing)
-    );
+        cdk_common::mint::SagaStateEnum::Melt(cdk_common::mint::MeltSagaState::Finalizing(Some(_)))
+    ));
     assert_eq!(
-        saga.finalization_data.unwrap().total_spent,
+        saga.finalization_data().unwrap().total_spent,
         Amount::new(9_000_001, CurrencyUnit::Msat)
     );
     let states = mint
@@ -801,13 +801,16 @@ async fn internal_settlement_without_lookup_id_finalizes_on_demand() {
         )
         .await
         .unwrap();
-    let (payment_saga, _decision) = setup
+    let crate::mint::melt::melt_saga::InternalSettlementOutcome::Settled(confirmed_saga) = setup
         .attempt_internal_settlement(&melt_request)
         .await
-        .unwrap();
+        .unwrap()
+    else {
+        panic!("expected internal settlement");
+    };
 
     // Simulate a crash before finalize: mint quote credited, proofs pending.
-    drop(payment_saga);
+    drop(confirmed_saga);
     assert_eq!(
         mint.localstore()
             .get_mint_quote(mint_quote_response.quote())
