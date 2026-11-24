@@ -689,3 +689,12 @@ Decision: rows loaded whole, not lazy keyed queries. The validation logic keeps 
 - **One test tightened.** `unavailable_or_non_spendable_utxos_and_non_pending_intents_fail_closed` built reorged and quarantined UTXOs by editing JSON and decoding without validation, so the policy rejected them only because it re-validates the state. It now asserts that such a state cannot be loaded at all, and checks the policy only for reserved and spent UTXOs, which can be stored validly.
 - **What changed for cost:** each apply writes only the changed rows. Each apply still loads the whole projection, so reads still grow with retained history. Truncation is the retention question, which is still open.
 - **Remaining in package 6:** retention, the rest of the trait surface, the single apply transaction, and bounded snapshot reads.
+
+### 2026-11-24: package 6, retention (finding and design, nothing deleted)
+
+Decision: checkpoints may truncate logs, history and terminal entities. The investigation found that no deletion is safe yet, so this step is a design: `docs/federation-storage-retention-2026-11-24.md`.
+
+- **Why not yet.** There is no state transfer, so peers must keep journal bodies for any member behind them. Envelopes have no expiry, so journal rows and conflict keys are the replay guard. Terminal entities are replay guards and are hashed into every signed checkpoint, so pruning by local timing would split the members' digests.
+- **Design.** A retention floor fixed by the scheduled checkpoint sequence; terminal entities below the floor excluded from the digest by definition and deleted in the background; spent-UTXO tombstones; Bark readers off the full journal; state transfer verified against the signed materialized-state digest.
+- **Storage contract.** The design document has the per-store table (purpose, authority, readers, retention target) that this package asked for.
+- **Open decisions:** the replay guard (permanent compact index or envelope validity window) and whether to build state transfer.
