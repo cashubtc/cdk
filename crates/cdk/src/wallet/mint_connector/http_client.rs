@@ -353,12 +353,20 @@ where
 
         let transport = self.transport.clone();
 
-        // The mint caches the response from when it first sees the request, so
-        // the replay window opens when the request leaves the client. A request
-        // still queued behind client-side pacing has not used any of it.
-        // `pacing_delay` never overstates the queue, so the deadline can only
-        // close early, never after the mint's cache entry expires.
-        let deadline = Instant::now() + transport.pacing_delay(&url) + retriable_window;
+        // Allow for the current queue estimate. Concurrent reservations and
+        // changes to the limiter configuration can change the actual wait.
+        let started = Instant::now();
+        let deadline = if retriable_window.is_zero() {
+            started
+        } else {
+            started
+                .checked_add(transport.pacing_delay(&url))
+                .ok_or(Error::Timeout)?
+                .checked_add(retriable_window)
+                .ok_or_else(|| {
+                    Error::InvalidMintResponse("Invalid NUT-19 retry window".to_owned())
+                })?
+        };
 
         let mut retry_delay = HTTP_RETRY_INITIAL_BACKOFF;
         loop {
@@ -2049,10 +2057,40 @@ mod tests {
         assert_eq!(post_urls.lock().expect("lock").len(), 1);
     }
 
-    /// Concurrent requests on one client queue behind its rate limiter. The
-    /// NUT-19 window opens when a request leaves that queue, so a request that
-    /// waits longer than the window for its slot must still go out instead of
-    /// failing with `Error::Timeout` before it was ever sent.
+    #[tokio::test]
+    async fn retriable_request_rejects_unrepresentable_window() {
+        let mut info = MintInfo::default();
+        info.nuts.nut19 = nut19::Settings {
+            ttl: Some(u64::MAX),
+            cached_endpoints: vec![nut19::CachedEndpoint::new(
+                nut19::Method::Post,
+                nut19::Path::Swap,
+            )],
+        };
+        let transport = MockTransport {
+            get_response: Arc::new(Mutex::new(Some(
+                serde_json::to_string(&info).expect("mint info"),
+            ))),
+            ..Default::default()
+        };
+        let post_urls = transport.post_urls.clone();
+        let mint_url = MintUrl::from_str("https://mint.example.com").expect("parse url");
+        let client = HttpClient::with_transport(mint_url, transport, None);
+        client.get_mint_info().await.expect("read mint info");
+
+        let result = client
+            .retriable_http_request::<_, serde_json::Value>(
+                nut19::Method::Post,
+                nut19::Path::Swap,
+                None,
+                &serde_json::json!({}),
+            )
+            .await;
+        assert!(matches!(result, Err(Error::InvalidMintResponse(_))));
+        assert!(post_urls.lock().expect("lock").is_empty());
+    }
+
+    /// Requests queued behind earlier reservations get time for the known wait.
     #[tokio::test]
     async fn retriable_request_window_excludes_rate_limiter_queue() {
         const REQUESTS: usize = 4;

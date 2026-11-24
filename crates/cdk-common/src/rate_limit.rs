@@ -316,10 +316,7 @@ impl TokenBucket {
 
     /// How long a slot reserved now would wait, without reserving it.
     ///
-    /// Zero while pacing is disabled or the burst is not yet spent. The
-    /// theoretical arrival time only moves forward while the configuration is
-    /// unchanged, so the wait a request actually gets once it reserves is never
-    /// shorter than this.
+    /// Zero while pacing is disabled or the burst is not yet spent.
     pub fn pending_delay(&self) -> Duration {
         let state = lock(&self.inner.state);
         if !state.enabled {
@@ -1276,9 +1273,6 @@ mod tests {
         );
     }
 
-    // Timing tests use a 200ms emission interval (refill 300/min) so the pace
-    // signal sits well clear of scheduler noise: an unthrottled burst finishes
-    // in well under 100ms, a paced request waits ~200ms.
     #[tokio::test]
     async fn manager_reports_queue_delay_without_reserving() {
         let manager = RateLimiterManager::new(config(1, 60), None);
@@ -1302,6 +1296,9 @@ mod tests {
         assert_eq!(manager.pacing_delay(&url), Duration::ZERO);
     }
 
+    // Timing tests use a 200ms emission interval (refill 300/min) so the pace
+    // signal sits well clear of scheduler noise: an unthrottled burst finishes
+    // in well under 100ms, a paced request waits ~200ms.
     #[tokio::test]
     async fn fresh_bucket_starts_full() {
         let bucket = TokenBucket::new(config(5, 300));
