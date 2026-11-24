@@ -132,10 +132,8 @@ pub fn federation_bark_cpfp_allocation_quote(
     format!("{BARK_CPFP_ALLOCATION_QUOTE_PREFIX}{action_id}-{parent_txid}")
 }
 
-fn invalid_bark(reason: impl Into<String>) -> FederationError {
-    FederationError::ApplicationOperationInvalid {
-        reason: reason.into(),
-    }
+fn invalid_bark(reason: &'static str) -> FederationError {
+    FederationError::ApplicationOperationInvalid { reason }
 }
 
 macro_rules! bark_hash_type {
@@ -160,11 +158,11 @@ macro_rules! bark_hash_type {
             pub fn from_hex(value: &str) -> Result<Self> {
                 let bytes = cdk_common::util::hex::decode(value)?;
                 let bytes: [u8; 32] = bytes.try_into().map_err(|bytes: Vec<u8>| {
-                    invalid_bark(format!(
-                        "{} must contain 32 bytes, found {}",
-                        stringify!($name),
-                        bytes.len()
-                    ))
+                    FederationError::InvalidByteLength {
+                        kind: stringify!($name),
+                        expected: 32,
+                        found: bytes.len(),
+                    }
                 })?;
                 Self::from_bytes(bytes)
             }
@@ -233,12 +231,14 @@ impl FederationBarkVtxoId {
     /// Parse the canonical hexadecimal identifier.
     pub fn from_hex(value: &str) -> Result<Self> {
         let bytes = cdk_common::util::hex::decode(value)?;
-        let bytes: [u8; 36] = bytes.try_into().map_err(|bytes: Vec<u8>| {
-            invalid_bark(format!(
-                "FederationBarkVtxoId must contain 36 bytes, found {}",
-                bytes.len()
-            ))
-        })?;
+        let bytes: [u8; 36] =
+            bytes
+                .try_into()
+                .map_err(|bytes: Vec<u8>| FederationError::InvalidByteLength {
+                    kind: "FederationBarkVtxoId",
+                    expected: 36,
+                    found: bytes.len(),
+                })?;
         Self::from_bytes(bytes)
     }
 
@@ -1706,9 +1706,11 @@ impl FederationBarkOperation {
         }
         let actual = self.canonical_bytes()?.len();
         if actual > FEDERATION_MAX_BARK_OPERATION_BYTES {
-            return Err(invalid_bark(format!(
-                "canonical Bark operation is {actual} bytes, maximum is {FEDERATION_MAX_BARK_OPERATION_BYTES}"
-            )));
+            return Err(FederationError::TooLarge {
+                kind: "canonical Bark operation",
+                actual,
+                max: FEDERATION_MAX_BARK_OPERATION_BYTES,
+            });
         }
         Ok(())
     }
@@ -3274,9 +3276,11 @@ impl FederationBarkAuthorizationReference {
         }
         let actual = self.canonical_bytes()?.len();
         if actual > FEDERATION_MAX_BARK_AUTHORIZATION_BYTES {
-            return Err(invalid_bark(format!(
-                "Bark authorization is {actual} bytes, maximum is {FEDERATION_MAX_BARK_AUTHORIZATION_BYTES}"
-            )));
+            return Err(FederationError::TooLarge {
+                kind: "Bark authorization",
+                actual,
+                max: FEDERATION_MAX_BARK_AUTHORIZATION_BYTES,
+            });
         }
         Ok(())
     }
@@ -3501,9 +3505,11 @@ impl FederationBarkFrostAuthorization {
         }
         let actual = self.canonical_bytes()?.len();
         if actual > FEDERATION_MAX_BARK_AUTHORIZATION_BYTES {
-            return Err(invalid_bark(format!(
-                "Bark FROST authorization is {actual} bytes, maximum is {FEDERATION_MAX_BARK_AUTHORIZATION_BYTES}"
-            )));
+            return Err(FederationError::TooLarge {
+                kind: "Bark FROST authorization",
+                actual,
+                max: FEDERATION_MAX_BARK_AUTHORIZATION_BYTES,
+            });
         }
         Ok(())
     }
@@ -3514,7 +3520,7 @@ impl FederationBarkFrostAuthorization {
             return Err(invalid_bark("Bark FROST authorization exceeds its bound"));
         }
         let value: Self = ciborium::from_reader(bytes)
-            .map_err(|error| invalid_bark(format!("invalid Bark FROST authorization: {error}")))?;
+            .map_err(|_| invalid_bark("Bark FROST authorization does not decode"))?;
         value.validate()?;
         if value.canonical_bytes()? != bytes {
             return Err(invalid_bark(
@@ -3528,14 +3534,14 @@ impl FederationBarkFrostAuthorization {
     pub fn canonical_bytes(&self) -> Result<Vec<u8>> {
         let mut bytes = Vec::new();
         ciborium::into_writer(self, &mut bytes)
-            .map_err(|error| invalid_bark(format!("invalid Bark FROST authorization: {error}")))?;
+            .map_err(|_| invalid_bark("Bark FROST authorization does not encode"))?;
         Ok(bytes)
     }
 
     /// Decode the exact signing derivation.
     pub fn signing_derivation(&self) -> Result<cdk_frost::SigningDerivation> {
         cdk_frost::SigningDerivation::decode(&self.signing_derivation)
-            .map_err(|error| invalid_bark(format!("invalid Bark signing derivation: {error}")))
+            .map_err(|_| invalid_bark("Bark signing derivation is invalid"))
     }
 
     /// Commit to the exact Bark custody request transcript.
@@ -3597,9 +3603,11 @@ impl FederationBarkOperationRecord {
 
 fn ensure_version(version: u16) -> Result<()> {
     if version != FEDERATION_BARK_OPERATION_VERSION {
-        return Err(invalid_bark(format!(
-            "unsupported Bark operation version {version}"
-        )));
+        return Err(FederationError::VersionMismatch {
+            kind: "Bark operation",
+            expected: FEDERATION_BARK_OPERATION_VERSION.into(),
+            found: version.into(),
+        });
     }
     Ok(())
 }
@@ -3655,11 +3663,12 @@ fn ensure_optional_quote(quote: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-fn ensure_count(label: &str, actual: usize, allow_empty: bool) -> Result<()> {
+fn ensure_count(label: &'static str, actual: usize, allow_empty: bool) -> Result<()> {
     if (!allow_empty && actual == 0) || actual > FEDERATION_MAX_BARK_COLLECTION_ENTRIES {
-        return Err(invalid_bark(format!(
-            "{label} count {actual} is outside the accepted bound"
-        )));
+        return Err(FederationError::ApplicationFieldInvalid {
+            field: label,
+            reason: "count is outside the accepted bound",
+        });
     }
     Ok(())
 }
@@ -3668,14 +3677,15 @@ fn ensure_members_sorted_unique(members: &[MemberId]) -> Result<()> {
     ensure_strictly_sorted("Bark member set", members)
 }
 
-fn ensure_strictly_sorted<T>(label: &str, values: &[T]) -> Result<()>
+fn ensure_strictly_sorted<T>(label: &'static str, values: &[T]) -> Result<()>
 where
     T: Ord,
 {
     if values.windows(2).any(|window| window[0] >= window[1]) {
-        return Err(invalid_bark(format!(
-            "{label} must be strictly sorted and unique"
-        )));
+        return Err(FederationError::ApplicationFieldInvalid {
+            field: label,
+            reason: "must be strictly sorted and unique",
+        });
     }
     Ok(())
 }
@@ -3730,7 +3740,7 @@ fn domain_hash(domain: &[u8], value: &[u8]) -> Result<FederationBarkDigest> {
 /// Return Bark's stable application identifier independent of key epoch.
 pub fn federation_bark_application_id() -> Result<FederationFrostApplicationId> {
     let registration = cdk_frost_bark::application_registration_for_epoch(1)
-        .map_err(|error| invalid_bark(error.to_string()))?;
+        .map_err(|_| invalid_bark("Bark application key epoch is not registered"))?;
     FederationFrostApplicationId::from_bytes(registration.id().to_bytes())
 }
 

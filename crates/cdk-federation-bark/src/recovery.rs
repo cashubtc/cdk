@@ -409,7 +409,7 @@ impl FederationBarkCpfpPackage {
                 TapSighashType::Default,
             )
             .map(|sighash| sighash.to_byte_array())
-            .map_err(|error| invalid_bark(error.to_string()))
+            .map_err(|_| invalid_bark("Bark recovery sighash cannot be computed"))
     }
 }
 
@@ -575,20 +575,21 @@ impl FederationBarkCpfpPublication {
                     .next()
                     .filter(|_| witness.len() == 1)
                     .ok_or_else(|| invalid_bark("recovery input witness is not key-path only"))?;
-                let signature = schnorr::Signature::from_slice(signature_bytes)
-                    .map_err(|error| invalid_bark(error.to_string()))?;
+                let signature = schnorr::Signature::from_slice(signature_bytes).map_err(|_| {
+                    invalid_bark("Bark recovery signature is not a valid Schnorr signature")
+                })?;
                 let script = recovery_input.previous_output.script_pubkey.as_bytes();
                 if script.len() != 34 || script[0] != 0x51 || script[1] != 0x20 {
                     return Err(invalid_bark("recovery input is not P2TR"));
                 }
                 let output_key = XOnlyPublicKey::from_slice(&script[2..])
-                    .map_err(|error| invalid_bark(error.to_string()))?;
+                    .map_err(|_| invalid_bark("Bark recovery output key is invalid"))?;
                 secp.verify_schnorr(
                     &signature,
                     &Message::from_digest(package.signing_message(input_index)?),
                     &output_key,
                 )
-                .map_err(|error| invalid_bark(error.to_string()))?;
+                .map_err(|_| invalid_bark("Bark recovery signature does not verify"))?;
             }
         }
         let value = Self {
@@ -846,7 +847,8 @@ impl FederationBarkRecoveryFrostAuthorization {
 
     /// Decode the exact reviewed signing derivation.
     pub fn signing_derivation(&self) -> Result<SigningDerivation> {
-        SigningDerivation::decode(&self.derivation).map_err(|error| invalid_bark(error.to_string()))
+        SigningDerivation::decode(&self.derivation)
+            .map_err(|_| invalid_bark("Bark recovery signing derivation is invalid"))
     }
 
     fn validate(&self) -> Result<()> {

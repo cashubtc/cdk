@@ -79,12 +79,14 @@ impl FromStr for FederationFrostApplicationId {
 
     fn from_str(value: &str) -> Result<Self> {
         let bytes = crate::util::hex::decode(value)?;
-        let bytes: [u8; 32] = bytes.try_into().map_err(|bytes: Vec<u8>| {
-            invalid_config(format!(
-                "application id must be 32 bytes, found {}",
-                bytes.len()
-            ))
-        })?;
+        let bytes: [u8; 32] =
+            bytes
+                .try_into()
+                .map_err(|bytes: Vec<u8>| FederationError::InvalidByteLength {
+                    kind: "FROST application id",
+                    expected: 32,
+                    found: bytes.len(),
+                })?;
         Self::from_bytes(bytes)
     }
 }
@@ -963,7 +965,7 @@ impl FederationFrostWalletConfig {
             parent_fingerprint: Fingerprint::default(),
             child_number: ChildNumber::Normal { index: 0 },
             public_key: PublicKey::from_slice(&application.derived_group_key)
-                .map_err(|error| invalid_config(error.to_string()))?,
+                .map_err(|_| invalid_config("derived group key is not a valid public key"))?,
             chain_code: ChainCode::from(application.chain_code),
         };
         let secp = Secp256k1::verification_only();
@@ -973,10 +975,10 @@ impl FederationFrostWalletConfig {
                 &[
                     ChildNumber::Normal { index: branch },
                     ChildNumber::from_normal_idx(index)
-                        .map_err(|error| invalid_config(error.to_string()))?,
+                        .map_err(|_| invalid_config("derivation index is out of range"))?,
                 ],
             )
-            .map_err(|error| invalid_config(error.to_string()))?;
+            .map_err(|_| invalid_config("child key derivation failed"))?;
         let (internal_key, _) = child.public_key.x_only_public_key();
         Ok(Address::p2tr(&secp, internal_key, None, application.network).script_pubkey())
     }
@@ -1021,18 +1023,16 @@ fn common_member(member: cdk_frost::MemberId) -> Result<MemberId> {
     MemberId::new(member.get())
 }
 
-fn invalid_config(reason: impl Into<String>) -> FederationError {
-    FederationError::FrostConfigurationInvalid {
-        reason: reason.into(),
-    }
+fn invalid_config(reason: &'static str) -> FederationError {
+    FederationError::FrostConfigurationInvalid { reason }
 }
 
 fn frost_error(error: cdk_frost::Error) -> FederationError {
-    invalid_config(error.to_string())
+    FederationError::FrostConfiguration(error)
 }
 
 fn bip32_error(error: cdk_frost_bip32::Error) -> FederationError {
-    invalid_config(error.to_string())
+    FederationError::FrostDerivation(error)
 }
 
 mod point_serde {

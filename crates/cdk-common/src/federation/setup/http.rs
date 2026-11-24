@@ -515,9 +515,10 @@ fn validate_member_list(
         || !members.windows(2).all(|pair| pair[0] < pair[1])
         || members.iter().any(|member| member.get() > member_count)
     {
-        return Err(invalid(format!(
-            "setup status {label} member list is invalid"
-        )));
+        return Err(crate::federation::FederationError::InvalidSetupField {
+            field: label,
+            reason: "member list in setup status is invalid",
+        });
     }
     Ok(())
 }

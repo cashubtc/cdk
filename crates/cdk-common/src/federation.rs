@@ -475,11 +475,31 @@ pub enum FederationError {
         /// Actual byte length.
         found: usize,
     },
+    /// A federation artifact uses an unsupported version.
+    #[error("Unsupported federation {kind} version: expected={expected}, found={found}")]
+    VersionMismatch {
+        /// The versioned artifact.
+        kind: &'static str,
+        /// Version supported by this build.
+        expected: u64,
+        /// Version found.
+        found: u64,
+    },
+    /// A federation artifact exceeds its byte limit.
+    #[error("Federation {kind} is too large: {actual} bytes, maximum {max}")]
+    TooLarge {
+        /// The bounded artifact.
+        kind: &'static str,
+        /// Bytes found.
+        actual: usize,
+        /// Maximum bytes.
+        max: usize,
+    },
     /// Canonical address allocation state or operation is malformed.
     #[error("Federation address allocation is invalid: {reason}")]
     AddressAllocationInvalid {
         /// Stable validation reason without local data.
-        reason: String,
+        reason: &'static str,
     },
     /// One quote was already bound to a different descriptor branch.
     #[error("Federation address allocation conflicts with the existing mapping for quote {quote}")]
@@ -497,25 +517,47 @@ pub enum FederationError {
     #[error("Federation chain observation is invalid: {reason}")]
     ChainObservationInvalid {
         /// Stable validation reason without member-local source details.
-        reason: String,
+        reason: &'static str,
     },
     /// Durable federation wallet UTXO state violates a safety invariant.
     #[error("Federation chain observation state is invalid: {reason}")]
     ChainObservationStateInvalid {
         /// Stable validation reason without member-local source details.
-        reason: String,
+        reason: &'static str,
     },
     /// A typed application consensus operation or authorization is invalid.
     #[error("Federation application operation is invalid: {reason}")]
     ApplicationOperationInvalid {
         /// Stable validation reason without backend database, endpoint, or secret details.
-        reason: String,
+        reason: &'static str,
+    },
+    /// An application operation is invalid within one named context.
+    #[error("Federation application operation is invalid: {context}: {reason}")]
+    ApplicationInvalid {
+        /// Application or state the check belongs to.
+        context: &'static str,
+        /// Which check failed.
+        reason: &'static str,
+    },
+    /// One named field of an application operation is invalid.
+    #[error("Federation application operation is invalid: {field} {reason}")]
+    ApplicationFieldInvalid {
+        /// Which field.
+        field: &'static str,
+        /// Which check failed.
+        reason: &'static str,
+    },
+    /// An application label is empty, too long or uses unsupported characters.
+    #[error("Federation application operation is invalid: application {label} is invalid")]
+    ApplicationLabelInvalid {
+        /// Which label.
+        label: &'static str,
     },
     /// Canonical on-chain intent, batch, or transaction proposal is malformed.
     #[error("Federation on-chain transaction proposal is invalid: {reason}")]
     TransactionProposalInvalid {
         /// Stable validation reason without proposer-local details.
-        reason: String,
+        reason: &'static str,
     },
     /// A finalized operation failed deterministic content validation against
     /// the ordered federation state at the apply boundary. This is a
@@ -524,25 +566,34 @@ pub enum FederationError {
     #[error("Federation operation conflicts with ordered state: {reason}")]
     OperationStateInvalid {
         /// Stable validation reason without member-local source details.
-        reason: String,
+        reason: &'static str,
     },
     /// A public or private FROST wallet configuration failed validation.
     #[error("Invalid federation FROST wallet configuration: {reason}")]
     FrostConfigurationInvalid {
         /// Stable validation reason without secret material.
-        reason: String,
+        reason: &'static str,
     },
+    /// FROST rejected wallet key material.
+    #[error("Invalid federation FROST wallet configuration: {0}")]
+    FrostConfiguration(#[source] cdk_frost::Error),
+    /// FROST BIP32 derivation failed.
+    #[error("Invalid federation FROST wallet configuration: {0}")]
+    FrostDerivation(#[source] cdk_frost_bip32::Error),
     /// An application-aware FROST signing transport message failed validation.
     #[error("Federation FROST signing request is invalid: {reason}")]
     FrostSigningInvalid {
         /// Stable validation reason without nonce or local storage material.
-        reason: String,
+        reason: &'static str,
     },
+    /// FROST rejected a signing message.
+    #[error("Federation FROST signing request is invalid: {0}")]
+    FrostSigning(#[source] cdk_frost::Error),
     /// Deterministic wallet proposer or signing-coordinator scheduling is invalid.
     #[error("Federation wallet liveness schedule is invalid: {reason}")]
     WalletLivenessInvalid {
         /// Stable validation reason without local timing or endpoint data.
-        reason: String,
+        reason: &'static str,
     },
     /// Checkpoint construction, verification or catch-up failed.
     #[error(transparent)]
@@ -557,7 +608,7 @@ pub enum FederationError {
     #[error("Federation database backup manifest is invalid: {reason}")]
     BackupManifestInvalid {
         /// Stable validation reason without secrets or local paths.
-        reason: String,
+        reason: &'static str,
     },
     /// Member IDs are non-zero u16 values.
     #[error("Invalid federation member id: {0}")]
@@ -1263,7 +1314,23 @@ pub enum FederationError {
     #[error("Invalid federation setup: {reason}")]
     InvalidSetup {
         /// Bounded non-secret validation reason.
-        reason: String,
+        reason: &'static str,
+    },
+    /// One named setup field failed validation.
+    #[error("Invalid federation setup: {field} {reason}")]
+    InvalidSetupField {
+        /// Which field.
+        field: &'static str,
+        /// Which check failed.
+        reason: &'static str,
+    },
+    /// A setup artifact is inconsistent about one member.
+    #[error("Invalid federation setup: {reason}: member {member_id}")]
+    InvalidSetupMember {
+        /// Which check failed.
+        reason: &'static str,
+        /// Member concerned.
+        member_id: MemberId,
     },
     /// A multi-operator setup component used an unsupported protocol version.
     #[error(
@@ -1331,7 +1398,7 @@ pub enum FederationError {
     #[error("Invalid federation invite: {reason}")]
     InvalidFederationInvite {
         /// Human-readable parse or validation failure.
-        reason: String,
+        reason: &'static str,
     },
     /// A federation invite code used an unsupported payload version.
     #[error("Federation invite version mismatch: expected={expected}, found={found}")]

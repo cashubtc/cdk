@@ -21,9 +21,10 @@ use crate::{
     FederationBarkVtxoState,
 };
 
-fn invalid_state(reason: &str) -> FederationError {
-    FederationError::ApplicationOperationInvalid {
-        reason: format!("invalid federated Bark state: {reason}"),
+fn invalid_state(reason: &'static str) -> FederationError {
+    FederationError::ApplicationInvalid {
+        context: "invalid federated Bark state",
+        reason,
     }
 }
 

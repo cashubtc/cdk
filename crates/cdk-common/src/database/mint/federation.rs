@@ -485,7 +485,7 @@ pub trait FederationSetupTransaction {
         {
             return Err(Self::Err::from(Error::Federation(
                 crate::federation::FederationError::InvalidSetup {
-                    reason: "setup enrollment does not match consumed invitation".to_string(),
+                    reason: "setup enrollment does not match consumed invitation",
                 },
             )));
         }
@@ -514,8 +514,7 @@ pub trait FederationSetupTransaction {
         {
             return Err(Self::Err::from(Error::Federation(
                 crate::federation::FederationError::InvalidSetup {
-                    reason: "setup enrollment does not match the local enrollment transition"
-                        .to_string(),
+                    reason: "setup enrollment does not match the local enrollment transition",
                 },
             )));
         }
@@ -546,8 +545,7 @@ pub trait FederationSetupTransaction {
         {
             return Err(Self::Err::from(Error::Federation(
                 crate::federation::FederationError::InvalidSetup {
-                    reason: "setup proposal does not match the coordinator publication transition"
-                        .to_string(),
+                    reason: "setup proposal does not match the coordinator publication transition",
                 },
             )));
         }
@@ -579,7 +577,7 @@ pub trait FederationSetupTransaction {
         {
             return Err(Self::Err::from(Error::Federation(
                 crate::federation::FederationError::InvalidSetup {
-                    reason: "setup proposal does not match the local review transition".to_string(),
+                    reason: "setup proposal does not match the local review transition",
                 },
             )));
         }
@@ -611,7 +609,7 @@ pub trait FederationSetupTransaction {
         {
             return Err(Self::Err::from(Error::Federation(
                 crate::federation::FederationError::InvalidSetup {
-                    reason: "setup approval fence does not match local session".to_string(),
+                    reason: "setup approval fence does not match local session",
                 },
             )));
         }
@@ -644,7 +642,7 @@ pub trait FederationSetupTransaction {
         {
             return Err(Self::Err::from(Error::Federation(
                 crate::federation::FederationError::InvalidSetup {
-                    reason: "setup manifest does not match a certification transition".to_string(),
+                    reason: "setup manifest does not match a certification transition",
                 },
             )));
         }
@@ -672,7 +670,7 @@ pub trait FederationSetupTransaction {
         {
             return Err(Self::Err::from(Error::Federation(
                 crate::federation::FederationError::InvalidSetup {
-                    reason: "setup activation does not match local session".to_string(),
+                    reason: "setup activation does not match local session",
                 },
             )));
         }

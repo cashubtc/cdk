@@ -1313,15 +1313,9 @@ fn federation_apply_content_errors_are_definitive_but_corruption_errors_are_not(
     use cdk::federation::FederationError;
 
     for error in [
-        FederationError::OperationStateInvalid {
-            reason: "x".to_string(),
-        },
-        FederationError::ChainObservationInvalid {
-            reason: "x".to_string(),
-        },
-        FederationError::AddressAllocationInvalid {
-            reason: "x".to_string(),
-        },
+        FederationError::OperationStateInvalid { reason: "x" },
+        FederationError::ChainObservationInvalid { reason: "x" },
+        FederationError::AddressAllocationInvalid { reason: "x" },
     ] {
         assert!(
             cdk::Error::from(error).is_definitive_failure(),
@@ -1329,10 +1323,8 @@ fn federation_apply_content_errors_are_definitive_but_corruption_errors_are_not(
         );
     }
     assert!(
-        !cdk::Error::from(FederationError::ChainObservationStateInvalid {
-            reason: "x".to_string(),
-        })
-        .is_definitive_failure(),
+        !cdk::Error::from(FederationError::ChainObservationStateInvalid { reason: "x" })
+            .is_definitive_failure(),
         "genuine local state corruption must stay halt-worthy"
     );
     assert!(

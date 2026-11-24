@@ -109,13 +109,13 @@ impl FederationNode {
             };
             let expected_script = expected_script.ok_or_else(|| {
                 cdk::Error::Federation(FederationError::ChainObservationInvalid {
-                    reason: "deposit scope is not a configured descriptor application".to_string(),
+                    reason: "deposit scope is not a configured descriptor application",
                 })
             })?;
             if deposit.txout.script_pubkey != expected_script {
                 return Err(cdk::Error::Federation(
                     FederationError::ChainObservationInvalid {
-                        reason: "deposit script does not match accepted allocation".to_string(),
+                        reason: "deposit script does not match accepted allocation",
                     },
                 ));
             }

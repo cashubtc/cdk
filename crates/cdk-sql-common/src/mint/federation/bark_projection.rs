@@ -1,15 +1,17 @@
 use super::*;
 
-fn invalid_projection(reason: impl Into<String>) -> Error {
-    cdk_common::federation::FederationError::OperationStateInvalid {
-        reason: reason.into(),
-    }
-    .into()
+fn invalid_projection(reason: &'static str) -> Error {
+    cdk_common::federation::FederationError::OperationStateInvalid { reason }.into()
 }
 
 fn sql_i64(label: &str, value: u64) -> Result<i64, Error> {
-    i64::try_from(value)
-        .map_err(|_| invalid_projection(format!("Bark {label} exceeds the SQL integer range")))
+    i64::try_from(value).map_err(|_| {
+        tracing::warn!(
+            field = label,
+            "Bark projection value exceeds the SQL integer range"
+        );
+        invalid_projection("Bark projection value exceeds the SQL integer range")
+    })
 }
 
 fn phase_label(phase: cdk_federation_bark::FederationBarkSemanticPhase) -> &'static str {
@@ -153,9 +155,13 @@ where
             .await?
             .is_some()
         {
-            return Err(invalid_projection(format!(
-                "Bark {column} is already owned by another action"
-            )));
+            tracing::warn!(
+                column = column,
+                "Bark projection value is already owned by another action"
+            );
+            return Err(invalid_projection(
+                "Bark projection value is already owned by another action",
+            ));
         }
     }
     Ok(())

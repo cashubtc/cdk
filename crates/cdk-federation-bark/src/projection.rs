@@ -105,9 +105,9 @@ impl FederationBarkActionRecord {
             action_kind,
             phase: operation.phase(),
             signing_retry_phase: None,
-            actor: operation.claimed_author().ok_or_else(|| {
+            actor: operation.claimed_author().ok_or({
                 FederationError::ApplicationOperationInvalid {
-                    reason: "Bark action head requires a claimed author".to_string(),
+                    reason: "Bark action head requires a claimed author",
                 }
             })?,
             attempt,
@@ -153,7 +153,7 @@ impl FederationBarkActionRecord {
                 None if operation.preserves_action_actor() => self.actor,
                 None => {
                     return Err(FederationError::ApplicationOperationInvalid {
-                        reason: "Bark action transition has no authority".to_string(),
+                        reason: "Bark action transition has no authority",
                     });
                 }
             },

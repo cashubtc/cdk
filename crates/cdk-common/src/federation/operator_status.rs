@@ -173,11 +173,11 @@ impl FederationWalletTransactionStatus {
         proposal_id: FederationTransactionProposalId,
     ) -> Result<Self> {
         transactions.validate()?;
-        let accepted = transactions
-            .accepted_transaction(proposal_id)
-            .ok_or_else(|| FederationError::TransactionProposalInvalid {
-                reason: "operator status proposal is unknown".to_string(),
-            })?;
+        let accepted = transactions.accepted_transaction(proposal_id).ok_or(
+            FederationError::TransactionProposalInvalid {
+                reason: "operator status proposal is unknown",
+            },
+        )?;
         let phase = transaction_phase(accepted.state);
         let observations = accepted
             .broadcast
@@ -230,9 +230,9 @@ impl FederationWalletOperatorStatus {
         addresses.validate()?;
         chain.validate()?;
         transactions.validate()?;
-        let application = wallet.cdk_onchain_application.as_ref().ok_or_else(|| {
+        let application = wallet.cdk_onchain_application.as_ref().ok_or({
             FederationError::FrostConfigurationInvalid {
-                reason: "CDK on-chain application is not registered".to_string(),
+                reason: "CDK on-chain application is not registered",
             }
         })?;
         let address_scope = FederationAddressAllocationScope {

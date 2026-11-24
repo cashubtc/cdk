@@ -858,7 +858,7 @@ where
             || response.payload.session_id != expected_session.to_bytes()
         {
             return Err(FederationError::FrostSigningInvalid {
-                reason: "aggregate-result acknowledgement bindings are inconsistent".to_string(),
+                reason: "aggregate-result acknowledgement bindings are inconsistent",
             }
             .into());
         }
@@ -893,7 +893,7 @@ where
             || response.payload.session_id != expected_session.to_bytes()
         {
             return Err(FederationError::FrostSigningInvalid {
-                reason: "signing-abort acknowledgement bindings are inconsistent".to_string(),
+                reason: "signing-abort acknowledgement bindings are inconsistent",
             }
             .into());
         }
@@ -998,7 +998,7 @@ where
             || response.payload.session_id != expected_session.to_bytes()
         {
             return Err(FederationError::FrostSigningInvalid {
-                reason: "Bark custody abort acknowledgement is inconsistent".to_string(),
+                reason: "Bark custody abort acknowledgement is inconsistent",
             }
             .into());
         }

@@ -176,7 +176,7 @@ impl FederationBarkRecoveryApplicationConfig {
     ) -> Result<WatchOnlyDescriptors> {
         let package = self.derived_public_package(federation, root)?;
         let adapter = FrostBip32::new(package, self.public.network)
-            .map_err(|error| invalid_bark(error.to_string()))?;
+            .map_err(|_| invalid_bark("Bark recovery BIP32 adapter rejected the public package"))?;
         Ok(adapter.descriptors())
     }
 
@@ -190,17 +190,18 @@ impl FederationBarkRecoveryApplicationConfig {
     ) -> Result<bitcoin::ScriptBuf> {
         let package = self.derived_public_package(federation, root)?;
         let adapter = FrostBip32::new(package, self.public.network)
-            .map_err(|error| invalid_bark(error.to_string()))?;
+            .map_err(|_| invalid_bark("Bark recovery BIP32 adapter rejected the public package"))?;
         let branch = match internal {
             true => WalletBranch::Internal,
             false => WalletBranch::External,
         };
-        let index = WalletIndex::new(index).map_err(|error| invalid_bark(error.to_string()))?;
+        let index = WalletIndex::new(index)
+            .map_err(|_| invalid_bark("Bark recovery wallet index is out of range"))?;
         adapter
             .derive(branch, index)
             .and_then(|key| key.address(self.public.network))
             .map(|address| address.script_pubkey())
-            .map_err(|error| invalid_bark(error.to_string()))
+            .map_err(|_| invalid_bark("Bark recovery address derivation failed"))
     }
 
     /// Deterministic BIP32 chain code for the recovery descriptor root.
@@ -340,15 +341,15 @@ pub fn federation_bark_recovery_application(
 
 fn federation_bark_recovery_registration(epoch: u64) -> Result<ApplicationRegistration> {
     let id = ApplicationId::from_label(FEDERATION_BARK_RECOVERY_APPLICATION_LABEL)
-        .map_err(|error| invalid_bark(error.to_string()))?;
-    let key_epoch =
-        ApplicationKeyEpoch::new(epoch).map_err(|error| invalid_bark(error.to_string()))?;
+        .map_err(|_| invalid_bark("Bark recovery application label is invalid"))?;
+    let key_epoch = ApplicationKeyEpoch::new(epoch)
+        .map_err(|_| invalid_bark("Bark recovery key epoch is invalid"))?;
     let version = ApplicationDerivationVersion::new(FEDERATION_BARK_RECOVERY_DERIVATION_VERSION)
-        .map_err(|error| invalid_bark(error.to_string()))?;
+        .map_err(|_| invalid_bark("Bark recovery derivation version is invalid"))?;
     let authorization_policy =
         Sha256Hash::hash(FEDERATION_BARK_RECOVERY_AUTHORIZATION_DOMAIN).to_byte_array();
     ApplicationRegistration::new(id, key_epoch, version, authorization_policy)
-        .map_err(|error| invalid_bark(error.to_string()))
+        .map_err(|_| invalid_bark("Bark recovery application registration is invalid"))
 }
 
 fn append_bytes(target: &mut Vec<u8>, value: &[u8]) {

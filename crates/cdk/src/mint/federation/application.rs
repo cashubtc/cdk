@@ -1275,7 +1275,7 @@ impl Mint {
             #[cfg(not(feature = "federation-bark"))]
             FederationOperation::Application(_) => {
                 return Err(FederationError::ApplicationOperationInvalid {
-                    reason: "federation application support is disabled".to_owned(),
+                    reason: "federation application support is disabled",
                 }
                 .into())
             }
@@ -1808,8 +1808,7 @@ impl Mint {
             || response.amount_issued != Amount::ZERO
         {
             return Err(FederationError::OperationStateInvalid {
-                reason: "federated on-chain mint quote response does not match its request"
-                    .to_string(),
+                reason: "federated on-chain mint quote response does not match its request",
             }
             .into());
         }
@@ -1824,14 +1823,12 @@ impl Mint {
                 &operation.quote,
             )
             .await?
-            .ok_or_else(|| FederationError::AddressAllocationInvalid {
-                reason: "federated on-chain mint quote has no accepted address allocation"
-                    .to_string(),
+            .ok_or(FederationError::AddressAllocationInvalid {
+                reason: "federated on-chain mint quote has no accepted address allocation",
             })?;
         if allocation.keychain != FederationAddressKeychain::External {
             return Err(FederationError::AddressAllocationInvalid {
-                reason: "federated on-chain mint quote requires an external address allocation"
-                    .to_string(),
+                reason: "federated on-chain mint quote requires an external address allocation",
             }
             .into());
         }
@@ -1850,13 +1847,11 @@ impl Mint {
         let expected_address =
             cdk_common::bitcoin::Address::from_script(script.as_script(), application.network)
                 .map_err(|_| FederationError::OperationStateInvalid {
-                    reason: "federated on-chain mint quote address is not representable"
-                        .to_string(),
+                    reason: "federated on-chain mint quote address is not representable",
                 })?;
         if response.request != expected_address.to_string() {
             return Err(FederationError::OperationStateInvalid {
-                reason: "federated on-chain mint quote address does not match the derived address"
-                    .to_string(),
+                reason: "federated on-chain mint quote address does not match the derived address",
             }
             .into());
         }
@@ -2054,8 +2049,8 @@ impl Mint {
                 CHAIN_OBSERVATION_STATE_KEY,
             )
             .await?
-            .ok_or_else(|| FederationError::ChainObservationStateInvalid {
-                reason: "on-chain payment observation has no wallet UTXO projection".to_string(),
+            .ok_or(FederationError::ChainObservationStateInvalid {
+                reason: "on-chain payment observation has no wallet UTXO projection",
             })?;
         let mut state =
             cdk_common::federation::FederationChainObservationState::from_bytes(&bytes)?;
@@ -2066,8 +2061,7 @@ impl Mint {
             || observation.payment_id != Some(PaymentIdentifier::PaymentId(payment.payment_id))
         {
             return Err(FederationError::ChainObservationStateInvalid {
-                reason: "on-chain payment observation does not match accepted wallet outputs"
-                    .to_string(),
+                reason: "on-chain payment observation does not match accepted wallet outputs",
             }
             .into());
         }
@@ -2579,8 +2573,8 @@ impl Mint {
             .localstore
             .get_melt_saga_by_quote_id(&quote.id)
             .await?
-            .ok_or_else(|| FederationError::OperationStateInvalid {
-                reason: "federation paid melt observation found no pending melt saga".to_string(),
+            .ok_or(FederationError::OperationStateInvalid {
+                reason: "federation paid melt observation found no pending melt saga",
             })?;
         let payment_response =
             melt_quote_payment_response(operation_id, quote, observation, onchain_receipt)?;
@@ -2611,8 +2605,7 @@ impl Mint {
             || observation.payment_id != Some(PaymentIdentifier::QuoteId(quote.id.clone()))
         {
             return Err(FederationError::OperationStateInvalid {
-                reason: "federation on-chain melt observation does not match the quote identity"
-                    .to_string(),
+                reason: "federation on-chain melt observation does not match the quote identity",
             }
             .into());
         }
@@ -2620,10 +2613,9 @@ impl Mint {
             .federation_transaction_state()
             .await?
             .completed_payment_for_quote(&quote.id.to_string())?
-            .ok_or_else(|| FederationError::OperationStateInvalid {
+            .ok_or(FederationError::OperationStateInvalid {
                 reason:
-                    "federation on-chain melt observation has no completed payment in ordered state"
-                        .to_string(),
+                    "federation on-chain melt observation has no completed payment in ordered state",
             })?;
         let melt_operation_id = match self.localstore.get_melt_saga_by_quote_id(&quote.id).await? {
             Some(saga) => saga
@@ -2634,8 +2626,7 @@ impl Mint {
             None if quote.state == cdk_common::MeltQuoteState::Paid => receipt.melt_operation_id,
             None => {
                 return Err(FederationError::OperationStateInvalid {
-                    reason: "federation on-chain melt observation has no accepted melt operation"
-                        .to_string(),
+                    reason: "federation on-chain melt observation has no accepted melt operation",
                 }
                 .into());
             }
@@ -2653,8 +2644,7 @@ impl Mint {
         {
             return Err(FederationError::OperationStateInvalid {
                 reason:
-                    "federation on-chain melt observation total_spent does not match the receipt"
-                        .to_string(),
+                    "federation on-chain melt observation total_spent does not match the receipt",
             }
             .into());
         }
@@ -2662,8 +2652,7 @@ impl Mint {
         if observation.payment_proof.as_deref() != Some(expected_proof.as_str()) {
             return Err(FederationError::OperationStateInvalid {
                 reason:
-                    "federation on-chain melt observation proof does not match the payment outpoint"
-                        .to_string(),
+                    "federation on-chain melt observation proof does not match the payment outpoint",
             }
             .into());
         }

@@ -71,9 +71,9 @@ impl Mint {
                             ADDRESS_ALLOCATION_STATE_KEY,
                         )
                         .await?
-                        .ok_or_else(|| {
+                        .ok_or({
                             cdk_common::federation::FederationError::ChainObservationInvalid {
-                                reason: "deposit has no accepted allocation projection".to_string(),
+                                reason: "deposit has no accepted allocation projection",
                             }
                         })?;
                     let allocations =
@@ -83,15 +83,14 @@ impl Mint {
                             observation.allocation.scope(),
                             &observation.allocation.quote,
                         )
-                        .ok_or_else(|| {
+                        .ok_or({
                             cdk_common::federation::FederationError::ChainObservationInvalid {
-                                reason: "deposit references an unknown address allocation"
-                                    .to_string(),
+                                reason: "deposit references an unknown address allocation",
                             }
                         })?;
-                    let wallet = public.frost_wallet.as_ref().ok_or_else(|| {
+                    let wallet = public.frost_wallet.as_ref().ok_or({
                         cdk_common::federation::FederationError::ChainObservationInvalid {
-                            reason: "deposit requires an accepted FROST wallet config".to_string(),
+                            reason: "deposit requires an accepted FROST wallet config",
                         }
                     })?;
                     let cdk_application = wallet.cdk_onchain_application.as_ref().filter(
@@ -145,10 +144,9 @@ impl Mint {
                             })
                             .transpose()?,
                     };
-                    let (expected_script, minimum_confirmations) = expected.ok_or_else(|| {
+                    let (expected_script, minimum_confirmations) = expected.ok_or({
                         cdk_common::federation::FederationError::ChainObservationInvalid {
-                            reason: "deposit references an unknown descriptor application epoch"
-                                .to_string(),
+                            reason: "deposit references an unknown descriptor application epoch",
                         }
                     })?;
                     state.apply_deposit(

@@ -235,24 +235,20 @@ impl FederationApplicationOperation {
     }
 }
 
-fn validate_application_label(label: &str, value: &str) -> Result<()> {
+fn validate_application_label(label: &'static str, value: &str) -> Result<()> {
     if value.is_empty()
         || value.len() > FEDERATION_MAX_APPLICATION_LABEL_BYTES
         || !value
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
     {
-        return Err(application_operation_invalid(format!(
-            "application {label} is invalid"
-        )));
+        return Err(FederationError::ApplicationLabelInvalid { label });
     }
     Ok(())
 }
 
-fn application_operation_invalid(reason: impl Into<String>) -> FederationError {
-    FederationError::ApplicationOperationInvalid {
-        reason: reason.into(),
-    }
+fn application_operation_invalid(reason: &'static str) -> FederationError {
+    FederationError::ApplicationOperationInvalid { reason }
 }
 
 /// Stable identifier for a canonical federation operation.
@@ -839,15 +835,14 @@ impl FederationMeltQuotePaymentObservation {
                 Ok(())
             }
             (MeltQuoteState::Paid, Some(_)) => Err(FederationError::OperationStateInvalid {
-                reason: "paid melt observation total_spent is outside the authorized quote range"
-                    .to_string(),
+                reason: "paid melt observation total_spent is outside the authorized quote range",
             }),
             (MeltQuoteState::Paid, None) => Err(FederationError::OperationStateInvalid {
-                reason: "paid melt observation is missing exact total_spent".to_string(),
+                reason: "paid melt observation is missing exact total_spent",
             }),
             (_, None) => Ok(()),
             (_, Some(_)) => Err(FederationError::OperationStateInvalid {
-                reason: "non-paid melt observation must not claim total_spent".to_string(),
+                reason: "non-paid melt observation must not claim total_spent",
             }),
         }
     }

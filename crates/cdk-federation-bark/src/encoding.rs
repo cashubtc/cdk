@@ -19,10 +19,8 @@ const SEND_PAYMENT_SUCCEEDED_DOMAIN: &[u8] = b"cdk/bark/send-payment-succeeded/v
 const SEND_PAYMENT_FAILED_DOMAIN: &[u8] = b"cdk/bark/send-payment-failed/v1";
 const SEND_REVOCATION_REQUEST_DOMAIN: &[u8] = b"cdk/bark/send-revocation-request/v1";
 
-fn invalid_result(reason: &str) -> FederationError {
-    FederationError::ApplicationOperationInvalid {
-        reason: reason.to_string(),
-    }
+fn invalid_result(reason: &'static str) -> FederationError {
+    FederationError::ApplicationOperationInvalid { reason }
 }
 
 /// SHA-256 digest of Bark artifact or result bytes.

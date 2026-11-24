@@ -98,10 +98,11 @@ macro_rules! setup_hash_type {
 
             /// Parse from exactly 32 bytes.
             pub fn from_slice(bytes: &[u8]) -> Result<Self> {
-                let bytes = bytes.try_into().map_err(|_| invalid(format!(
-                    "{} must contain exactly 32 bytes",
-                    $label
-                )))?;
+                let bytes = bytes.try_into().map_err(|_| FederationError::InvalidByteLength {
+                    kind: $label,
+                    expected: 32,
+                    found: bytes.len(),
+                })?;
                 Ok(Self(bytes))
             }
 
@@ -646,9 +647,7 @@ impl FromStr for FederationSetupInvitation {
             .ok_or_else(|| invalid("unsupported setup invitation prefix"))?;
         let decoded = bitcoin::base64::engine::general_purpose::URL_SAFE_NO_PAD
             .decode(payload)
-            .map_err(|error| {
-                invalid(format!("setup invitation is not URL-safe base64: {error}"))
-            })?;
+            .map_err(|_| invalid("setup invitation is not URL-safe base64"))?;
         ensure_size(
             "invitation",
             decoded.len(),
@@ -669,13 +668,13 @@ impl FromStr for FederationSetupInvitation {
         let coordinator_url = String::from_utf8(take_length_prefixed(&mut remaining, "URL")?)
             .map_err(|_| invalid("setup invitation URL is not UTF-8"))?;
         let coordinator_url = MintUrl::from_str(&coordinator_url)
-            .map_err(|error| invalid(format!("invalid setup invitation URL: {error}")))?;
+            .map_err(|_| invalid("setup invitation URL is invalid"))?;
         let coordinator_identity = FederationSetupCoordinatorPublicKey::new(
             PublicKey::from_slice(&take_setup_bytes::<33>(
                 &mut remaining,
                 "coordinator identity",
             )?)
-            .map_err(|error| invalid(format!("invalid coordinator identity: {error}")))?,
+            .map_err(|_| invalid("setup invitation coordinator identity is invalid"))?,
         )?;
         let expires_at_unix = u64::from_be_bytes(take_setup_bytes(&mut remaining, "expiry")?);
         let capability_bytes = take_setup_bytes(&mut remaining, "capability")?;
@@ -1204,18 +1203,21 @@ impl FederationSetupProposalBody {
         let mut invitation_ids = BTreeSet::new();
         for expected in 1..=self.threshold_params.member_count {
             let member_id = MemberId::new(expected)?;
-            let enrollment = self
-                .enrollments
-                .get(&member_id)
-                .ok_or_else(|| invalid(format!("proposal is missing member {member_id}")))?;
+            let enrollment = self.enrollments.get(&member_id).ok_or({
+                FederationError::InvalidSetupMember {
+                    reason: "proposal is missing member",
+                    member_id,
+                }
+            })?;
             enrollment.validate(url_policy)?;
             if enrollment.setup_id != self.setup_id
                 || enrollment.member_id != member_id
                 || enrollment.supported_versions != self.required_versions
             {
-                return Err(invalid(format!(
-                    "enrollment binding mismatch for member {member_id}"
-                )));
+                return Err(FederationError::InvalidSetupMember {
+                    reason: "enrollment binding mismatch",
+                    member_id,
+                });
             }
             for url in [
                 enrollment.public_mint_url.to_string(),
@@ -1256,9 +1258,7 @@ impl FederationSetupProposalBody {
         self.checkpoint_policy.validate()?;
 
         if self.keysets.is_empty() || self.keysets.len() > FEDERATION_MAX_SETUP_KEYSETS {
-            return Err(invalid(format!(
-                "setup keyset count must be between 1 and {FEDERATION_MAX_SETUP_KEYSETS}"
-            )));
+            return Err(invalid("setup keyset count is out of range"));
         }
         let mut previous = None;
         for keyset in &self.keysets {
@@ -1493,11 +1493,12 @@ impl FederationSetupApproval {
         deterministic: bool,
     ) -> Result<Self> {
         proposal.validate(url_policy)?;
-        let enrollment = proposal
-            .body
-            .enrollments
-            .get(&member_id)
-            .ok_or_else(|| invalid(format!("proposal has no member {member_id}")))?;
+        let enrollment = proposal.body.enrollments.get(&member_id).ok_or({
+            FederationError::InvalidSetupMember {
+                reason: "proposal has no member",
+                member_id,
+            }
+        })?;
         if identity_secret_key.public_key() != enrollment.identity_public_key {
             return Err(invalid("approval secret does not match enrolled identity"));
         }
@@ -1527,11 +1528,12 @@ impl FederationSetupApproval {
         if self.setup_id != proposal.body.setup_id || self.proposal_hash != proposal.proposal_hash {
             return Err(invalid("approval belongs to another setup or proposal"));
         }
-        let enrollment = proposal
-            .body
-            .enrollments
-            .get(&self.member_id)
-            .ok_or_else(|| invalid(format!("approval has unknown member {}", self.member_id)))?;
+        let enrollment = proposal.body.enrollments.get(&self.member_id).ok_or(
+            FederationError::InvalidSetupMember {
+                reason: "approval has unknown member",
+                member_id: self.member_id,
+            },
+        )?;
         self.signature.verify(
             &approval_transcript(self.setup_id, self.proposal_hash, self.member_id),
             enrollment.identity_public_key,
@@ -1715,11 +1717,12 @@ fn validate_approvals(
         ));
     }
     for member_id in proposal.body.enrollments.keys() {
-        let approval = approvals.get(member_id).ok_or_else(|| {
-            invalid(format!(
-                "manifest is missing approval from member {member_id}"
-            ))
-        })?;
+        let approval = approvals
+            .get(member_id)
+            .ok_or(FederationError::InvalidSetupMember {
+                reason: "manifest is missing approval from member",
+                member_id: *member_id,
+            })?;
         if approval.member_id != *member_id {
             return Err(invalid("manifest approval map key does not match signer"));
         }
@@ -1828,17 +1831,20 @@ fn validate_setup_url(
 ) -> Result<()> {
     let normalized = value.to_string();
     ensure_size(context, normalized.len(), FEDERATION_MAX_SETUP_URL_BYTES)?;
-    let parsed =
-        Url::parse(&normalized).map_err(|_| invalid(format!("{context} URL is not absolute")))?;
+    let parsed = Url::parse(&normalized).map_err(|_| FederationError::InvalidSetupField {
+        field: context,
+        reason: "URL is not absolute",
+    })?;
     if !parsed.username().is_empty()
         || parsed.password().is_some()
         || parsed.query().is_some()
         || parsed.fragment().is_some()
         || parsed.host().is_none()
     {
-        return Err(invalid(format!(
-            "{context} URL must not contain credentials, query, or fragment"
-        )));
+        return Err(FederationError::InvalidSetupField {
+            field: context,
+            reason: "URL must not contain credentials, query, or fragment",
+        });
     }
     match parsed.scheme() {
         "https" => Ok(()),
@@ -1848,12 +1854,16 @@ fn validate_setup_url(
                 Some(Host::Domain(host)) if host.eq_ignore_ascii_case("localhost") => Ok(()),
                 Some(Host::Ipv4(address)) if address.is_loopback() => Ok(()),
                 Some(Host::Ipv6(address)) if address.is_loopback() => Ok(()),
-                Some(_) | None => Err(invalid(format!(
-                    "{context} insecure URL must use a loopback host"
-                ))),
+                Some(_) | None => Err(FederationError::InvalidSetupField {
+                    field: context,
+                    reason: "insecure URL must use a loopback host",
+                }),
             }
         }
-        _ => Err(invalid(format!("{context} URL must use HTTPS or Iroh"))),
+        _ => Err(FederationError::InvalidSetupField {
+            field: context,
+            reason: "URL must use HTTPS or Iroh",
+        }),
     }
 }
 
@@ -1876,7 +1886,10 @@ fn validate_setup_version(component: &'static str, found: u16) -> Result<()> {
 
 fn validate_nonzero_identifier(context: &'static str, value: [u8; 32]) -> Result<()> {
     if value == [0; 32] {
-        return Err(invalid(format!("{context} must not be all zero")));
+        return Err(FederationError::InvalidSetupField {
+            field: context,
+            reason: "must not be all zero",
+        });
     }
     Ok(())
 }
@@ -1892,10 +1905,8 @@ fn ensure_size(artifact: &'static str, found: usize, max: usize) -> Result<()> {
     Ok(())
 }
 
-fn invalid(reason: impl Into<String>) -> FederationError {
-    FederationError::InvalidSetup {
-        reason: reason.into(),
-    }
+fn invalid(reason: &'static str) -> FederationError {
+    FederationError::InvalidSetup { reason }
 }
 
 fn invitation_checksum(public: &[u8], capability: [u8; 32]) -> Result<[u8; 6]> {
@@ -1908,19 +1919,28 @@ fn invitation_checksum(public: &[u8], capability: [u8; 32]) -> Result<[u8; 6]> {
 
 fn take_setup_bytes<const N: usize>(input: &mut &[u8], field: &'static str) -> Result<[u8; N]> {
     if input.len() < N {
-        return Err(invalid(format!("setup invitation {field} is truncated")));
+        return Err(FederationError::InvalidSetupField {
+            field,
+            reason: "is truncated in the setup invitation",
+        });
     }
     let (value, remaining) = input.split_at(N);
     *input = remaining;
     value
         .try_into()
-        .map_err(|_| invalid(format!("setup invitation {field} has an invalid length")))
+        .map_err(|_| FederationError::InvalidSetupField {
+            field,
+            reason: "has an invalid length in the setup invitation",
+        })
 }
 
 fn take_length_prefixed(input: &mut &[u8], field: &'static str) -> Result<Vec<u8>> {
     let length = u32::from_be_bytes(take_setup_bytes(input, field)?) as usize;
     if length > input.len() {
-        return Err(invalid(format!("setup invitation {field} is truncated")));
+        return Err(FederationError::InvalidSetupField {
+            field,
+            reason: "is truncated in the setup invitation",
+        });
     }
     let (value, remaining) = input.split_at(length);
     *input = remaining;
@@ -1940,8 +1960,10 @@ fn append_bytes(output: &mut Vec<u8>, value: &[u8]) -> Result<()> {
 }
 
 fn append_count(output: &mut Vec<u8>, count: usize, context: &'static str) -> Result<()> {
-    let count =
-        u16::try_from(count).map_err(|_| invalid(format!("{context} count does not fit u16")))?;
+    let count = u16::try_from(count).map_err(|_| FederationError::InvalidSetupField {
+        field: context,
+        reason: "count does not fit u16",
+    })?;
     output.extend_from_slice(&count.to_be_bytes());
     Ok(())
 }

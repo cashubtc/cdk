@@ -1245,16 +1245,12 @@ fn quarantine(utxo: &mut FederationWalletUtxo, observer: MemberId) {
     utxo.liability_alarm |= utxo.liability_issued;
 }
 
-fn invalid_observation(reason: &str) -> FederationError {
-    FederationError::ChainObservationInvalid {
-        reason: reason.to_string(),
-    }
+fn invalid_observation(reason: &'static str) -> FederationError {
+    FederationError::ChainObservationInvalid { reason }
 }
 
-fn invalid_state(reason: &str) -> FederationError {
-    FederationError::ChainObservationStateInvalid {
-        reason: reason.to_string(),
-    }
+fn invalid_state(reason: &'static str) -> FederationError {
+    FederationError::ChainObservationStateInvalid { reason }
 }
 
 #[cfg(test)]

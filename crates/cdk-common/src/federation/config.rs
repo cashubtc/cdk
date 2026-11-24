@@ -1517,8 +1517,8 @@ impl FederationInvite {
     pub fn to_invite_code(&self) -> Result<String> {
         self.validate()?;
         let json =
-            serde_json::to_vec(self).map_err(|err| FederationError::InvalidFederationInvite {
-                reason: err.to_string(),
+            serde_json::to_vec(self).map_err(|_| FederationError::InvalidFederationInvite {
+                reason: "invite does not serialize",
             })?;
         let encoded = general_purpose::URL_SAFE_NO_PAD.encode(json);
         Ok(format!("{FEDERATION_INVITE_PREFIX}{encoded}"))
@@ -1536,22 +1536,22 @@ impl FromStr for FederationInvite {
     type Err = FederationError;
 
     fn from_str(value: &str) -> Result<Self> {
-        let payload = value
-            .strip_prefix(FEDERATION_INVITE_PREFIX)
-            .ok_or_else(|| FederationError::InvalidFederationInvite {
-                reason: "unsupported invite prefix".to_string(),
-            })?;
+        let payload = value.strip_prefix(FEDERATION_INVITE_PREFIX).ok_or(
+            FederationError::InvalidFederationInvite {
+                reason: "unsupported invite prefix",
+            },
+        )?;
 
         let decode_config = general_purpose::GeneralPurposeConfig::new()
             .with_decode_padding_mode(bitcoin::base64::engine::DecodePaddingMode::Indifferent);
         let decoded = GeneralPurpose::new(&alphabet::URL_SAFE, decode_config)
             .decode(payload)
-            .map_err(|err| FederationError::InvalidFederationInvite {
-                reason: format!("payload is not URL-safe base64: {err}"),
+            .map_err(|_| FederationError::InvalidFederationInvite {
+                reason: "payload is not URL-safe base64",
             })?;
-        let invite = serde_json::from_slice::<Self>(&decoded).map_err(|err| {
+        let invite = serde_json::from_slice::<Self>(&decoded).map_err(|_| {
             FederationError::InvalidFederationInvite {
-                reason: err.to_string(),
+                reason: "payload is not a valid invite",
             }
         })?;
         invite.validate()?;

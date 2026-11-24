@@ -87,8 +87,7 @@ impl FederationBarkRetryRequest {
         validate_rest_version(self.version)?;
         if !self.acknowledge_side_effects {
             return Err(FederationError::ApplicationOperationInvalid {
-                reason: "Bark action retry requires explicit side-effect acknowledgement"
-                    .to_string(),
+                reason: "Bark action retry requires explicit side-effect acknowledgement",
             });
         }
         Ok(())
@@ -142,8 +141,7 @@ impl FederationBarkRecoveryAddressRequest {
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
         {
             return Err(FederationError::ApplicationOperationInvalid {
-                reason: "Bark recovery reserve id must be 1-64 ASCII letters, digits, '-' or '_'"
-                    .to_string(),
+                reason: "Bark recovery reserve id must be 1-64 ASCII letters, digits, '-' or '_'",
             });
         }
         Ok(())

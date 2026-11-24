@@ -125,7 +125,7 @@ where
             let _ = (entry, operation);
             Err(
                 cdk_common::federation::FederationError::ApplicationOperationInvalid {
-                    reason: "federation application support is disabled".to_owned(),
+                    reason: "federation application support is disabled",
                 }
                 .into(),
             )

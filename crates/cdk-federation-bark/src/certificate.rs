@@ -26,10 +26,8 @@ const BARK_EVIDENCE_ATTESTATION_DOMAIN: &[u8] = b"cdk/federation/bark-evidence-a
 const BARK_EVIDENCE_CERTIFICATE_ID_DOMAIN: &[u8] =
     b"cdk/federation/bark-evidence-certificate-id/v1";
 
-fn invalid_certificate(reason: impl Into<String>) -> FederationError {
-    FederationError::ApplicationOperationInvalid {
-        reason: reason.into(),
-    }
+fn invalid_certificate(reason: &'static str) -> FederationError {
+    FederationError::ApplicationOperationInvalid { reason }
 }
 
 /// Bark evidence family whose complete canonical result one member verified.

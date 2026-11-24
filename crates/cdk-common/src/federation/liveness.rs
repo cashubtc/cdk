@@ -211,10 +211,8 @@ fn unrank_combination(
     Ok(selected)
 }
 
-fn invalid(reason: impl Into<String>) -> FederationError {
-    FederationError::WalletLivenessInvalid {
-        reason: reason.into(),
-    }
+fn invalid(reason: &'static str) -> FederationError {
+    FederationError::WalletLivenessInvalid { reason }
 }
 
 #[cfg(test)]

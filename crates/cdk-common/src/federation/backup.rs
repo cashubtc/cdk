@@ -114,16 +114,18 @@ impl FederationDatabaseBackupManifest {
     /// Validate format and internal relationships before consulting a database.
     pub fn validate_shape(&self) -> Result<()> {
         if self.version != FEDERATION_DATABASE_BACKUP_MANIFEST_VERSION {
-            return Err(backup_manifest_invalid(format!(
-                "manifest version mismatch: expected {}, found {}",
-                FEDERATION_DATABASE_BACKUP_MANIFEST_VERSION, self.version
-            )));
+            return Err(FederationError::VersionMismatch {
+                kind: "database backup manifest",
+                expected: FEDERATION_DATABASE_BACKUP_MANIFEST_VERSION.into(),
+                found: self.version.into(),
+            });
         }
         if self.database_schema_version != FEDERATION_DATABASE_BACKUP_SCHEMA_VERSION {
-            return Err(backup_manifest_invalid(format!(
-                "database schema version mismatch: expected {}, found {}",
-                FEDERATION_DATABASE_BACKUP_SCHEMA_VERSION, self.database_schema_version
-            )));
+            return Err(FederationError::VersionMismatch {
+                kind: "database backup schema",
+                expected: FEDERATION_DATABASE_BACKUP_SCHEMA_VERSION.into(),
+                found: self.database_schema_version.into(),
+            });
         }
         self.durable_frontier.validate_shape()?;
         if !self.durable_frontier.is_fully_terminal() {
@@ -225,10 +227,8 @@ fn ensure_manifest_field(condition: bool, reason: &'static str) -> Result<()> {
     }
 }
 
-fn backup_manifest_invalid(reason: impl Into<String>) -> FederationError {
-    FederationError::BackupManifestInvalid {
-        reason: reason.into(),
-    }
+fn backup_manifest_invalid(reason: &'static str) -> FederationError {
+    FederationError::BackupManifestInvalid { reason }
 }
 
 #[cfg(test)]

@@ -80,8 +80,7 @@ impl FederationAddressAllocationOperation {
         {
             return Err(FederationError::AddressAllocationInvalid {
                 reason:
-                    "quote must be non-empty and bounded and application epoch must be non-zero"
-                        .to_string(),
+                    "quote must be non-empty and bounded and application epoch must be non-zero",
             });
         }
         Ok(())
@@ -423,10 +422,8 @@ fn validate_contiguous_indexes(indexes: &BTreeSet<u32>, next_index: u64) -> Resu
     Ok(())
 }
 
-fn invalid_state(reason: impl Into<String>) -> FederationError {
-    FederationError::AddressAllocationInvalid {
-        reason: reason.into(),
-    }
+fn invalid_state(reason: &'static str) -> FederationError {
+    FederationError::AddressAllocationInvalid { reason }
 }
 
 #[cfg(test)]

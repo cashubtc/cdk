@@ -12,9 +12,10 @@ use crate::federation::{FederationConfigDigest, FederationId, FederationSetupAut
 
 fn validate_sql_timestamp(label: &'static str, timestamp: u64) -> Result<()> {
     if timestamp > i64::MAX as u64 {
-        return Err(invalid(format!(
-            "{label} exceeds the portable setup persistence range"
-        )));
+        return Err(crate::federation::FederationError::InvalidSetupField {
+            field: label,
+            reason: "exceeds the portable setup persistence range",
+        });
     }
     Ok(())
 }

@@ -1505,7 +1505,7 @@ impl FederationCdkOnchainFrostAuthorization {
     /// Decode the exact reviewed signing derivation.
     pub fn signing_derivation(&self) -> Result<cdk_frost::SigningDerivation> {
         cdk_frost::SigningDerivation::decode(&self.derivation)
-            .map_err(|error| invalid(error.to_string()))
+            .map_err(|_| invalid("FROST signing derivation is invalid"))
     }
 
     fn validate(&self) -> Result<()> {
@@ -2634,10 +2634,8 @@ fn append_bytes(bytes: &mut Vec<u8>, value: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn invalid(reason: impl Into<String>) -> FederationError {
-    FederationError::TransactionProposalInvalid {
-        reason: reason.into(),
-    }
+fn invalid(reason: &'static str) -> FederationError {
+    FederationError::TransactionProposalInvalid { reason }
 }
 
 #[cfg(test)]

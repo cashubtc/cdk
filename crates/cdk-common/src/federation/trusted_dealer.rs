@@ -333,7 +333,7 @@ fn trusted_dealer_setup_authorization(
 
 fn append_trusted_dealer_field(output: &mut Vec<u8>, value: &[u8]) -> Result<()> {
     let length = u32::try_from(value.len()).map_err(|_| FederationError::InvalidSetup {
-        reason: "test trusted-dealer field length does not fit u32".to_string(),
+        reason: "test trusted-dealer field length does not fit u32",
     })?;
     output.extend_from_slice(&length.to_be_bytes());
     output.extend_from_slice(value);

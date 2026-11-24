@@ -1583,13 +1583,11 @@ fn ensure_frost_signing_version(version: u16) -> Result<()> {
 }
 
 fn frost_signing_error(error: cdk_frost::Error) -> FederationError {
-    frost_signing_invalid(error.to_string())
+    FederationError::FrostSigning(error)
 }
 
-fn frost_signing_invalid(reason: impl ToString) -> FederationError {
-    FederationError::FrostSigningInvalid {
-        reason: reason.to_string(),
-    }
+fn frost_signing_invalid(reason: &'static str) -> FederationError {
+    FederationError::FrostSigningInvalid { reason }
 }
 
 /// Signed payload used to request a peer status snapshot.

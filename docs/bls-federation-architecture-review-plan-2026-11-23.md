@@ -615,3 +615,17 @@ Verification: the nine federation suites pass. `cdk-bark` now has 36 tests and `
 - **Two values no longer travel in the error.** The SCALE decoder's debug text was copied into `InvalidAlephBftNetworkMessage`; it is still logged where decoding fails, and the error carries a fixed reason. Unit body hashes are typed hashes instead of hex strings.
 - **One predicate replaces a variant.** "Any recovery mismatch" used to be one variant and now spans nine. `FederationAlephBftError::is_recovery_mismatch` keeps the HTTP status mapping (500) and the tests that asked that question in one place.
 - `FederationError` goes from 126 variants to 113. Net change: about 265 lines added.
+
+### 2026-11-24: package 2, eighth step (fixed reasons everywhere)
+
+- **No free-form reasons left.** The twelve remaining `reason: String` fields of `FederationError` become `&'static str`, and every helper that built one takes `&'static str`: application operation, address allocation, chain observation, transaction proposal, operation state, FROST configuration and signing, wallet liveness, backup manifest, setup and invite. About 60 sites formatted values or foreign errors into a reason. They now use:
+  - shared shapes: `VersionMismatch { kind, expected, found }`, `TooLarge { kind, actual, max }` and the existing `InvalidByteLength`;
+  - variants that name the value: `InvalidSetupField`, `InvalidSetupMember`, `ApplicationInvalid { context, reason }`, `ApplicationFieldInvalid` and `ApplicationLabelInvalid`;
+  - source-carrying variants for FROST library errors: `FrostConfiguration`, `FrostDerivation` and `FrostSigning`;
+  - fixed reasons naming the step that failed, for parser, secp256k1 and BIP32 errors whose text added little.
+- **Bark messages unchanged.** The Bark crate's "Bark:" and "invalid federated Bark state:" prefixes are kept by `ApplicationInvalid`'s context.
+- **Projection errors.** `OperationStateInvalid` marks a deterministic rejection, so it gets no sibling variant. The two Bark projection sites that named a column use a fixed reason and log the column instead.
+- **Redactor narrowed.** Every `FederationError` message is now fixed text plus public protocol values. The exceptions are `BackendFailure` and `NodeHalted`, which carry foreign text and are redacted when they are built. `federation_error_response` therefore no longer redacts. The redactor stays where foreign text is logged or replicated: `anyhow`, database and other `cdk::Error` messages, halt reasons, broadcast details and DKG driver status. The remaining `String` fields hold public IDs and hashes in text form.
+- `FederationError` has 123 variants: 145 at the start of package 2, minus 35 moved into the checkpoint, DKG and AlephBFT enums, plus their three wrappers and the ten general shapes added in this step.
+
+Package 2 is done.

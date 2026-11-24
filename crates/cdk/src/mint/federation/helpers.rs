@@ -215,7 +215,7 @@ pub(super) fn ensure_mint_quote_matches(
         || existing.payment_method != expected.payment_method
     {
         return Err(FederationError::OperationStateInvalid {
-            reason: "federation mint quote replay found mismatched local quote".to_string(),
+            reason: "federation mint quote replay found mismatched local quote",
         }
         .into());
     }
@@ -235,8 +235,7 @@ pub(super) fn ensure_melt_quote_matches_payment_observation(
         || quote.fee_reserve() != observation.fee_reserve.with_unit(quote.unit.clone())
     {
         return Err(FederationError::OperationStateInvalid {
-            reason: "federation melt payment observation does not match local quote amounts"
-                .to_string(),
+            reason: "federation melt payment observation does not match local quote amounts",
         }
         .into());
     }
@@ -253,8 +252,7 @@ pub(super) fn ensure_melt_quote_payment_proof_matches(
         && quote.payment_proof != observation.payment_proof
     {
         return Err(FederationError::OperationStateInvalid {
-            reason: "federation melt payment observation found mismatched payment proof"
-                .to_string(),
+            reason: "federation melt payment observation found mismatched payment proof",
         }
         .into());
     }
@@ -276,8 +274,7 @@ pub(super) fn validate_federation_onchain_melt_receipt(
         || receipt.outpoint.txid != receipt.txid
     {
         return Err(FederationError::OperationStateInvalid {
-            reason: "federation on-chain melt receipt does not match the quote or melt operation"
-                .to_string(),
+            reason: "federation on-chain melt receipt does not match the quote or melt operation",
         }
         .into());
     }

@@ -44,7 +44,7 @@ fn validate_atomic_receive_claim_group(
     claimed: &FederationBarkActionTransition,
 ) -> Result<(), cdk::Error> {
     let invalid = || FederationError::ApplicationOperationInvalid {
-        reason: "atomic Bark receive claim is not the exact disclosure successor".to_string(),
+        reason: "atomic Bark receive claim is not the exact disclosure successor",
     };
     if disclosed.phase != FederationBarkSemanticPhase::ReceivePreimageDisclosed
         || claimed.phase != FederationBarkSemanticPhase::ReceiveClaimed

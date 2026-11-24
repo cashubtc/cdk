@@ -221,14 +221,14 @@ impl FederationRuntimeConfig {
     pub fn cdk_onchain_application(
         &self,
     ) -> Result<&cdk_common::federation::FederationFrostApplicationConfig, Error> {
-        let wallet = self.public_config.frost_wallet.as_ref().ok_or_else(|| {
+        let wallet = self.public_config.frost_wallet.as_ref().ok_or({
             FederationError::AddressAllocationInvalid {
-                reason: "federation has no accepted FROST wallet configuration".to_string(),
+                reason: "federation has no accepted FROST wallet configuration",
             }
         })?;
         wallet.cdk_onchain_application.as_ref().ok_or_else(|| {
             FederationError::AddressAllocationInvalid {
-                reason: "federation has no CDK on-chain payment application".to_string(),
+                reason: "federation has no CDK on-chain payment application",
             }
             .into()
         })
@@ -294,9 +294,9 @@ impl FederationRuntimeConfig {
         operation: &FederationAddressAllocationOperation,
     ) -> Result<(), Error> {
         operation.validate()?;
-        let wallet = self.public_config.frost_wallet.as_ref().ok_or_else(|| {
+        let wallet = self.public_config.frost_wallet.as_ref().ok_or({
             FederationError::AddressAllocationInvalid {
-                reason: "federation has no accepted FROST wallet configuration".to_string(),
+                reason: "federation has no accepted FROST wallet configuration",
             }
         })?;
         let cdk_application_matches =
@@ -318,7 +318,7 @@ impl FederationRuntimeConfig {
         let bark_recovery_matches = false;
         if !cdk_application_matches && !bark_recovery_matches {
             return Err(FederationError::AddressAllocationInvalid {
-                reason: "allocation references an unknown descriptor application epoch".to_string(),
+                reason: "allocation references an unknown descriptor application epoch",
             }
             .into());
         }
@@ -729,7 +729,7 @@ impl FederationRuntimeConfig {
             #[cfg(not(feature = "federation-bark"))]
             FederationOperation::Application(_) => {
                 Err(FederationError::ApplicationOperationInvalid {
-                    reason: "federation application support is disabled".to_owned(),
+                    reason: "federation application support is disabled",
                 }
                 .into())
             }

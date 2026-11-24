@@ -111,8 +111,9 @@ pub use cdk_common::federation::{
 
 use cdk_common::federation::FederationError;
 
-fn invalid_bark(reason: impl Into<String>) -> FederationError {
-    FederationError::ApplicationOperationInvalid {
-        reason: format!("Bark: {}", reason.into()),
+fn invalid_bark(reason: &'static str) -> FederationError {
+    FederationError::ApplicationInvalid {
+        context: "Bark",
+        reason,
     }
 }

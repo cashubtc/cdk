@@ -107,7 +107,7 @@ impl FederationSetupProposalReview {
     /// Serialize the bounded machine-readable review as stable pretty JSON.
     pub fn to_pretty_json(&self) -> Result<String> {
         let json = serde_json::to_string_pretty(self)
-            .map_err(|error| invalid(format!("proposal review JSON failed: {error}")))?;
+            .map_err(|_| invalid("proposal review JSON failed"))?;
         ensure_size(
             "proposal review",
             json.len(),

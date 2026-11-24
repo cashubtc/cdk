@@ -198,7 +198,7 @@ pub(super) async fn post_bark_action_retry(
         .cloned()
         .ok_or_else(|| {
             federation_error_response(FederationError::ApplicationOperationInvalid {
-                reason: "operator retry target is not an accepted Bark action".to_string(),
+                reason: "operator retry target is not an accepted Bark action",
             })
         })?;
     let phase_before = action.phase;

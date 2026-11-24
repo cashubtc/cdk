@@ -551,9 +551,6 @@ fn ensure_existing_reservations(
     Ok(())
 }
 
-fn invalid(reason: impl Into<String>) -> Error {
-    FederationError::TransactionProposalInvalid {
-        reason: reason.into(),
-    }
-    .into()
+fn invalid(reason: &'static str) -> Error {
+    FederationError::TransactionProposalInvalid { reason }.into()
 }

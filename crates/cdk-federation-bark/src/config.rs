@@ -165,7 +165,7 @@ pub fn federation_bark_setup_application(
 ) -> Result<FederationSetupFrostApplication> {
     setup.policy.validate()?;
     let registration = application_registration_for_epoch(setup.application_key_epoch)
-        .map_err(|error| invalid_bark(error.to_string()))?;
+        .map_err(|_| invalid_bark("Bark application key epoch is not registered"))?;
     let configuration = FederationBarkPublicConfiguration {
         version: BARK_APPLICATION_CONFIG_VERSION,
         network: setup.network,
@@ -197,7 +197,7 @@ pub fn federation_bark_setup_config(
         return Ok(None);
     };
     let registration = application_registration_for_epoch(*application_key_epoch)
-        .map_err(|error| invalid_bark(error.to_string()))?;
+        .map_err(|_| invalid_bark("Bark application key epoch is not registered"))?;
     let expected_id = FederationFrostApplicationId::from_bytes(registration.id().to_bytes())?;
     if *application_id != expected_id {
         return Ok(None);
@@ -215,7 +215,7 @@ pub fn federation_bark_setup_config(
         application_key_epoch: *application_key_epoch,
         network: public.network,
         ark_server_public_key: PublicKey::from_slice(&public.ark_server_public_key)
-            .map_err(|error| invalid_bark(error.to_string()))?,
+            .map_err(|_| invalid_bark("Ark server public key is invalid"))?,
         policy: public.policy,
     }))
 }
@@ -266,7 +266,7 @@ impl FederationBarkFrostApplicationConfig {
         policy: FederationBarkPolicyConfig,
     ) -> Result<Self> {
         let registration = application_registration_for_epoch(application_key_epoch)
-            .map_err(|error| invalid_bark(error.to_string()))?;
+            .map_err(|_| invalid_bark("Bark application key epoch is not registered"))?;
         let public = FederationBarkPublicConfiguration {
             version: BARK_APPLICATION_CONFIG_VERSION,
             network,
@@ -368,7 +368,7 @@ impl FederationBarkFrostApplicationConfig {
             ));
         }
         FrostBark::new(self.derived_public_package(federation, root)?)
-            .map_err(|error| invalid_bark(error.to_string()))
+            .map_err(|_| invalid_bark("Bark FROST adapter rejected the derived public package"))
     }
 
     /// Validate registration, root derivation, roster, Ark key, and policy.
@@ -379,9 +379,9 @@ impl FederationBarkFrostApplicationConfig {
     ) -> Result<()> {
         self.policy.validate()?;
         PublicKey::from_slice(&self.ark_server_public_key)
-            .map_err(|error| invalid_bark(error.to_string()))?;
+            .map_err(|_| invalid_bark("Ark server public key is invalid"))?;
         let expected = application_registration_for_epoch(self.application_key_epoch)
-            .map_err(|error| invalid_bark(error.to_string()))?;
+            .map_err(|_| invalid_bark("Bark application key epoch is not registered"))?;
         if self.version != BARK_APPLICATION_CONFIG_VERSION
             || self.root_key_epoch != root.root_key_epoch
             || self.derivation_version != BARK_APPLICATION_DERIVATION_VERSION
@@ -447,8 +447,8 @@ pub fn federation_bark_application(
     let Some(wallet) = federation.frost_wallet.as_ref() else {
         return Ok(None);
     };
-    let registration =
-        application_registration_for_epoch(1).map_err(|error| invalid_bark(error.to_string()))?;
+    let registration = application_registration_for_epoch(1)
+        .map_err(|_| invalid_bark("Bark application key epoch is not registered"))?;
     let application_id = FederationFrostApplicationId::from_bytes(registration.id().to_bytes())?;
     wallet
         .extension_application(application_id)

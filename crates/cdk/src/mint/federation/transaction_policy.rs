@@ -525,9 +525,6 @@ fn is_dust(output: &TxOut) -> bool {
     output.value < TxOut::minimal_non_dust(output.script_pubkey.clone()).value
 }
 
-fn invalid(reason: impl Into<String>) -> Error {
-    FederationError::TransactionProposalInvalid {
-        reason: reason.into(),
-    }
-    .into()
+fn invalid(reason: &'static str) -> Error {
+    FederationError::TransactionProposalInvalid { reason }.into()
 }

@@ -1416,16 +1416,16 @@ impl FederationFrostSigningRuntime {
         }
         let public = application.derived_public_package(public_config, &wallet.root)?;
         let adapter = FrostBip32::new(public.clone(), application.network())
-            .map_err(|error| frost_invalid(error.to_string()))?;
+            .map_err(|_| frost_invalid("FROST BIP32 adapter rejected the public package"))?;
         let branch = match selected.allocation.keychain {
             cdk::federation::FederationAddressKeychain::External => WalletBranch::External,
             cdk::federation::FederationAddressKeychain::Internal => WalletBranch::Internal,
         };
         let index = WalletIndex::new(selected.allocation.derivation_index)
-            .map_err(|error| frost_invalid(error.to_string()))?;
+            .map_err(|_| frost_invalid("wallet derivation index is out of range"))?;
         let derived = adapter
             .derive(branch, index)
-            .map_err(|error| frost_invalid(error.to_string()))?;
+            .map_err(|_| frost_invalid("wallet address derivation failed"))?;
         let expected = FederationBarkRecoveryFrostAuthorization::new(
             entry.operation_id,
             action.latest_operation_id,
@@ -1631,11 +1631,15 @@ impl FederationFrostSigningRuntime {
             let adapter = cdk_frost_bark::FrostBark::new(
                 application.derived_public_package(public_config, &wallet.root)?,
             )
-            .map_err(|error| cdk::Error::from(frost_invalid(error)))?;
+            .map_err(|_| {
+                cdk::Error::from(frost_invalid(
+                    "Bark FROST adapter rejected the derived public package",
+                ))
+            })?;
             let locator = cdk_frost_bark::BarkKeyLocator::vtxo(typed.reference.locator.index);
             let derived = adapter
                 .derive(locator)
-                .map_err(|error| cdk::Error::from(frost_invalid(error)))?;
+                .map_err(|_| cdk::Error::from(frost_invalid("Bark VTXO key derivation failed")))?;
             let derivation = typed.signing_derivation()?;
             let expected_protocol = match typed.reference.protocol {
                 FederationBarkCustodyProtocol::Frost => CustodyProtocol::OrdinaryFrost,
@@ -1824,12 +1828,12 @@ async fn validate_cdk_authorization(
         cdk::federation::FederationAddressKeychain::Internal => WalletBranch::Internal,
     };
     let adapter = FrostBip32::new(public.clone(), application.network)
-        .map_err(|error| frost_invalid(error.to_string()))?;
+        .map_err(|_| frost_invalid("FROST BIP32 adapter rejected the public package"))?;
     let index = WalletIndex::new(selected.allocation.derivation_index)
-        .map_err(|error| frost_invalid(error.to_string()))?;
+        .map_err(|_| frost_invalid("wallet derivation index is out of range"))?;
     let derived = adapter
         .derive(branch, index)
-        .map_err(|error| frost_invalid(error.to_string()))?;
+        .map_err(|_| frost_invalid("wallet address derivation failed"))?;
     let expected = FederationCdkOnchainFrostAuthorization::new(
         &accepted,
         input_index,
@@ -1873,13 +1877,11 @@ fn nonce_encryption_key(
 }
 
 fn frost_boundary_error(error: cdk_frost::Error) -> cdk::Error {
-    frost_invalid(error.to_string()).into()
+    cdk::federation::FederationError::FrostSigning(error).into()
 }
 
-fn frost_invalid(reason: impl ToString) -> cdk::federation::FederationError {
-    cdk::federation::FederationError::FrostSigningInvalid {
-        reason: reason.to_string(),
-    }
+fn frost_invalid(reason: &'static str) -> cdk::federation::FederationError {
+    cdk::federation::FederationError::FrostSigningInvalid { reason }
 }
 
 pub fn signing_runtime(state: &FederationNode) -> Option<&FederationFrostSigningRuntime> {

@@ -812,10 +812,15 @@ fn secret_key(value: u16) -> SecretKey {
 
 fn assert_invalid_setup(error: FederationError, expected_reason: &str) {
     match error {
-        FederationError::InvalidSetup { reason } => assert!(
-            reason.contains(expected_reason),
-            "expected `{expected_reason}` in `{reason}`"
-        ),
+        FederationError::InvalidSetup { .. }
+        | FederationError::InvalidSetupField { .. }
+        | FederationError::InvalidSetupMember { .. } => {
+            let message = error.to_string();
+            assert!(
+                message.contains(expected_reason),
+                "expected `{expected_reason}` in `{message}`"
+            );
+        }
         other => panic!("expected invalid setup error, got {other}"),
     }
 }

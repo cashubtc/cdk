@@ -32,10 +32,8 @@ const RECEIVE_SECRET_PREIMAGE_DOMAIN: &[u8] = b"cdk/federation/bark-receive-prei
 const RECEIVE_SECRET_ACK_DOMAIN: &[u8] = b"cdk/federation/bark-receive-secret-ack/v1";
 const ARK_SERVER_DOMAIN: &[u8] = b"cdk/federation/bark-ark-server/v1";
 
-fn invalid_secret(reason: impl Into<String>) -> FederationError {
-    FederationError::ApplicationOperationInvalid {
-        reason: reason.into(),
-    }
+fn invalid_secret(reason: &'static str) -> FederationError {
+    FederationError::ApplicationOperationInvalid { reason }
 }
 
 /// Complete public binding for one protected incoming-payment preimage.
@@ -279,9 +277,11 @@ impl FederationBarkPrepareReceiveSecretRequest {
         }
         let actual = canonical_json_bytes(self)?.len();
         if actual > FEDERATION_MAX_BARK_RECEIVE_SECRET_REQUEST_BYTES {
-            return Err(invalid_secret(format!(
-                "Bark prepare-secret request is {actual} bytes, maximum is {FEDERATION_MAX_BARK_RECEIVE_SECRET_REQUEST_BYTES}"
-            )));
+            return Err(FederationError::TooLarge {
+                kind: "Bark prepare-secret request",
+                actual,
+                max: FEDERATION_MAX_BARK_RECEIVE_SECRET_REQUEST_BYTES,
+            });
         }
         Ok(())
     }

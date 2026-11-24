@@ -449,9 +449,12 @@ fn federation_not_configured() -> Response {
         .into_response()
 }
 
+/// Federation error messages carry fixed reasons and public protocol values;
+/// the two variants that hold foreign text (`BackendFailure`, `NodeHalted`)
+/// are redacted when they are built, so the message needs no redaction here.
 fn federation_error_response(err: FederationError) -> Response {
     let status = federation_error_status(&err);
-    let diagnostic = redact_federation_operator_message(&err.to_string());
+    let diagnostic = err.to_string();
     tracing::warn!(
         status = status.as_u16(),
         "Federation request failed: {diagnostic}"
