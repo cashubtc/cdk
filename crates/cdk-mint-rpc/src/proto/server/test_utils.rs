@@ -26,6 +26,18 @@ pub(super) async fn create_test_rpc_server() -> MintRPCServer {
 /// Tests that drive quote state themselves pass a delay long enough that
 /// the backend never reports a payment of its own.
 pub(super) async fn create_test_rpc_server_with_payment_delay(payment_delay: u64) -> MintRPCServer {
+    create_test_rpc_server_internal(payment_delay, false).await
+}
+
+/// Builds a test server with both BOLT11 and BOLT12 payment processors.
+pub(super) async fn create_test_rpc_server_with_bolt12() -> MintRPCServer {
+    create_test_rpc_server_internal(2, true).await
+}
+
+async fn create_test_rpc_server_internal(
+    payment_delay: u64,
+    include_bolt12: bool,
+) -> MintRPCServer {
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
 
     let mut mint_builder = MintBuilder::new(db.clone());
@@ -35,23 +47,35 @@ pub(super) async fn create_test_rpc_server_with_payment_delay(payment_delay: u64
         percent_fee_reserve: 1.0,
     };
 
-    let fake_backend = FakeWallet::new(
+    let fake_backend = Arc::new(FakeWallet::new(
         fee_reserve,
         HashMap::default(),
         HashSet::default(),
         payment_delay,
         CurrencyUnit::Sat,
-    );
+    ));
 
     mint_builder
         .add_payment_processor(
             CurrencyUnit::Sat,
             PaymentMethod::Known(KnownMethod::Bolt11),
             MintMeltLimits::new(1, 10_000),
-            Arc::new(fake_backend),
+            fake_backend.clone(),
         )
         .await
         .unwrap();
+
+    if include_bolt12 {
+        mint_builder
+            .add_payment_processor(
+                CurrencyUnit::Sat,
+                PaymentMethod::Known(KnownMethod::Bolt12),
+                MintMeltLimits::new(1, 10_000),
+                fake_backend,
+            )
+            .await
+            .unwrap();
+    }
 
     let mnemonic = Mnemonic::generate(12).unwrap();
 
