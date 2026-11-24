@@ -10,8 +10,8 @@ use cdk_common::error::Error;
 use cdk_common::federation::FederationDkgActivationRequest;
 #[cfg(feature = "federation")]
 use cdk_common::federation::{
-    FederationDkgCeremonyState, FederationDkgFinalizedMemberConfig, FederationDkgSetupMethod,
-    FederationError,
+    FederationDkgCeremonyState, FederationDkgError, FederationDkgFinalizedMemberConfig,
+    FederationDkgSetupMethod, FederationError,
 };
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nut02::KeySetVersion;
@@ -248,10 +248,9 @@ impl MintBuilder {
             .filter(|record| record.state != FederationDkgCeremonyState::Aborted)
             .collect::<Vec<_>>();
         if current_ceremonies.len() > 1 {
-            return Err(FederationError::DkgTranscriptMismatch {
-                reason: "multiple unreplaced DKG ceremony lifecycle records are durable"
-                    .to_string(),
-            }
+            return Err(FederationError::Dkg(FederationDkgError::Transcript {
+                reason: "multiple unreplaced DKG ceremony lifecycle records are durable",
+            })
             .into());
         }
         let current_ceremony_id = current_ceremonies.first().map(|record| record.ceremony_id);
@@ -297,7 +296,7 @@ impl MintBuilder {
             Ok(finalized) => {
                 match finalized.validate_activation_records(&setup_public_config, &activations) {
                     Ok(()) => {}
-                    Err(FederationError::MissingDkgActivation { .. }) => {
+                    Err(FederationError::Dkg(FederationDkgError::MissingActivation { .. })) => {
                         tracing::info!(
                             "Federation DKG startup activation waiting for all-member confirmation"
                         );
@@ -318,7 +317,9 @@ impl MintBuilder {
                 );
                 Ok(())
             }
-            Err(FederationError::MissingDkgTranscriptSignature { .. }) => {
+            Err(FederationError::Dkg(FederationDkgError::MissingTranscriptSignature {
+                ..
+            })) => {
                 tracing::info!(
                     "Federation DKG startup activation waiting for complete transcript signatures"
                 );
@@ -1778,7 +1779,9 @@ mod tests {
             .expect_err("finalized config without durable activation evidence must fail");
         assert!(matches!(
             err,
-            Error::Federation(FederationError::MissingDkgActivation { .. })
+            Error::Federation(FederationError::Dkg(
+                FederationDkgError::MissingActivation { .. }
+            ))
         ));
     }
 

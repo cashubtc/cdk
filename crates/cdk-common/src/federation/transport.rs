@@ -18,7 +18,7 @@ use super::{
     FederationCheckpointId, FederationCheckpointKind, FederationCheckpointQuorum,
     FederationCheckpointSignature, FederationCommittedFrontier, FederationConfig,
     FederationConfigDigest, FederationConsensusRuntimeStatus, FederationDkgCeremonyId,
-    FederationDkgKeysetSpec, FederationDkgParticipantCommitment,
+    FederationDkgError, FederationDkgKeysetSpec, FederationDkgParticipantCommitment,
     FederationDkgParticipantCommitmentReveal, FederationDkgTranscriptHash,
     FederationDkgTranscriptSignature, FederationError, FederationId,
     FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
@@ -234,21 +234,23 @@ impl FederationDkgReadinessRequest {
             });
         }
         if self.setup_authorization != public_config.setup_authorization {
-            return Err(FederationError::DkgTranscriptMismatch {
-                reason: "DKG readiness setup authorization mismatch".to_string(),
-            });
+            return Err(FederationDkgError::Transcript {
+                reason: "DKG readiness setup authorization mismatch",
+            }
+            .into());
         }
         self.keyset_spec.validate_for_federation(public_config)?;
         if self.ceremony_id != ceremony_id {
-            return Err(FederationError::DkgTranscriptMismatch {
-                reason: "DKG readiness ceremony ID does not match local configuration".to_string(),
-            });
+            return Err(FederationDkgError::Transcript {
+                reason: "DKG readiness ceremony ID does not match local configuration",
+            }
+            .into());
         }
         if &self.keyset_spec != keyset_spec {
-            return Err(FederationError::DkgTranscriptMismatch {
-                reason: "DKG readiness keyset policy does not match local configuration"
-                    .to_string(),
-            });
+            return Err(FederationDkgError::Transcript {
+                reason: "DKG readiness keyset policy does not match local configuration",
+            }
+            .into());
         }
 
         Ok(())
@@ -2187,10 +2189,11 @@ impl FederationDkgCommitmentRequest {
     ) -> Result<()> {
         ensure_dkg_payload_sender(self.commitment.member_id, sender)?;
         if self.commitment.ceremony_id != ceremony_id {
-            return Err(FederationError::DkgCommitmentMismatch {
+            return Err(FederationDkgError::Commitment {
                 member_id: self.commitment.member_id,
-                reason: "commitment belongs to another ceremony".to_string(),
-            });
+                reason: "commitment belongs to another ceremony",
+            }
+            .into());
         }
         self.commitment.validate_against_config(public_config)
     }
@@ -2231,16 +2234,18 @@ impl FederationDkgRevealRequest {
     ) -> Result<()> {
         ensure_dkg_payload_sender(self.reveal.member_id, sender)?;
         if self.reveal.ceremony_id != ceremony_id {
-            return Err(FederationError::DkgCommitmentMismatch {
+            return Err(FederationDkgError::Commitment {
                 member_id: self.reveal.member_id,
-                reason: "reveal belongs to another ceremony".to_string(),
-            });
+                reason: "reveal belongs to another ceremony",
+            }
+            .into());
         }
         if &self.reveal.keyset_spec != keyset_spec {
-            return Err(FederationError::DkgCommitmentMismatch {
+            return Err(FederationDkgError::Commitment {
                 member_id: self.reveal.member_id,
-                reason: "reveal keyset policy does not match the active ceremony".to_string(),
-            });
+                reason: "reveal keyset policy does not match the active ceremony",
+            }
+            .into());
         }
         if self.reveal.coefficient_commitments.len() != keyset_spec.amounts.len()
             || !self
@@ -2249,10 +2254,11 @@ impl FederationDkgRevealRequest {
                 .keys()
                 .eq(keyset_spec.amounts.iter())
         {
-            return Err(FederationError::DkgCommitmentMismatch {
+            return Err(FederationDkgError::Commitment {
                 member_id: self.reveal.member_id,
-                reason: "reveal amount set does not match the active ceremony".to_string(),
-            });
+                reason: "reveal amount set does not match the active ceremony",
+            }
+            .into());
         }
         self.reveal.validate_against_config(public_config)
     }
@@ -2311,10 +2317,11 @@ impl FederationDkgSecretShareRequest {
             });
         }
         if self.setup_authorization != public_config.setup_authorization {
-            return Err(FederationError::DkgCommitmentMismatch {
+            return Err(FederationDkgError::Commitment {
                 member_id: self.sender,
-                reason: "secret contribution setup authorization mismatch".to_string(),
-            });
+                reason: "secret contribution setup authorization mismatch",
+            }
+            .into());
         }
         public_config
             .member(self.sender)
@@ -2334,19 +2341,22 @@ impl FederationDkgSecretShareRequest {
             });
         }
         if self.secret_shares.is_empty() {
-            return Err(FederationError::DkgCommitmentMismatch {
+            return Err(FederationDkgError::Commitment {
                 member_id: self.sender,
-                reason: "empty local secret contributions".to_string(),
-            });
+                reason: "empty local secret contributions",
+            }
+            .into());
         }
 
         let signer_id = self.receiver.to_bls_signer_id();
         for (amount, secret_share) in &self.secret_shares {
             if secret_share.signer_id() != signer_id {
-                return Err(FederationError::DkgCommitmentMismatch {
+                return Err(FederationDkgError::CommitmentForAmount {
                     member_id: self.sender,
-                    reason: format!("secret contribution signer mismatch for amount {amount}"),
-                });
+                    reason: "secret contribution signer mismatch",
+                    amount: *amount,
+                }
+                .into());
             }
         }
 
@@ -2370,19 +2380,20 @@ impl FederationDkgSecretShareRequest {
             });
         }
         if self.ceremony_id != ceremony_id {
-            return Err(FederationError::DkgCommitmentMismatch {
+            return Err(FederationDkgError::Commitment {
                 member_id: self.sender,
-                reason: "secret contribution belongs to another ceremony".to_string(),
-            });
+                reason: "secret contribution belongs to another ceremony",
+            }
+            .into());
         }
         if self.secret_shares.len() != keyset_spec.amounts.len()
             || !self.secret_shares.keys().eq(keyset_spec.amounts.iter())
         {
-            return Err(FederationError::DkgCommitmentMismatch {
+            return Err(FederationDkgError::Commitment {
                 member_id: self.sender,
-                reason: "secret contribution amount set does not match the active ceremony"
-                    .to_string(),
-            });
+                reason: "secret contribution amount set does not match the active ceremony",
+            }
+            .into());
         }
         self.validate_sender_receiver(public_config, sender, receiver)
     }
@@ -2436,9 +2447,10 @@ impl FederationDkgTranscriptSignatureRequest {
             });
         }
         if self.setup_authorization != public_config.setup_authorization {
-            return Err(FederationError::DkgTranscriptMismatch {
-                reason: "transcript signature setup authorization mismatch".to_string(),
-            });
+            return Err(FederationDkgError::Transcript {
+                reason: "transcript signature setup authorization mismatch",
+            }
+            .into());
         }
         ensure_dkg_payload_sender(self.signer, sender)?;
         let member = public_config
@@ -2502,8 +2514,8 @@ impl FederationDkgActivationRequest {
         let transcript = final_public_config
             .setup_transcript
             .as_ref()
-            .ok_or_else(|| FederationError::DkgTranscriptMismatch {
-                reason: "DKG activation requires a complete setup transcript".to_string(),
+            .ok_or(FederationDkgError::Transcript {
+                reason: "DKG activation requires a complete setup transcript",
             })?;
         if !transcript
             .payload
@@ -2511,11 +2523,11 @@ impl FederationDkgActivationRequest {
             .iter()
             .any(|ceremony| ceremony.ceremony_id() == ceremony_id)
         {
-            return Err(FederationError::DkgTranscriptMismatch {
-                reason: format!(
-                    "DKG activation ceremony {ceremony_id} is absent from the final transcript"
-                ),
-            });
+            return Err(FederationDkgError::TranscriptCeremony {
+                reason: "DKG activation ceremony is absent from the final transcript",
+                ceremony_id,
+            }
+            .into());
         }
         let signer = private_config.member_id;
         let transcript_hash = transcript.transcript_hash;
@@ -2579,9 +2591,10 @@ impl FederationDkgActivationRequest {
         if self.setup_authorization != setup_public_config.setup_authorization
             || final_public_config.setup_authorization != setup_public_config.setup_authorization
         {
-            return Err(FederationError::DkgTranscriptMismatch {
-                reason: "DKG activation setup authorization mismatch".to_string(),
-            });
+            return Err(FederationDkgError::Transcript {
+                reason: "DKG activation setup authorization mismatch",
+            }
+            .into());
         }
 
         let mut expected_setup = final_public_config.clone();
@@ -2589,15 +2602,16 @@ impl FederationDkgActivationRequest {
         expected_setup.setup_transcript = None;
         expected_setup.frost_wallet = None;
         if &expected_setup != setup_public_config {
-            return Err(FederationError::DkgTranscriptMismatch {
-                reason: "DKG activation final config does not extend the setup config".to_string(),
-            });
+            return Err(FederationDkgError::Transcript {
+                reason: "DKG activation final config does not extend the setup config",
+            }
+            .into());
         }
         let transcript = final_public_config
             .setup_transcript
             .as_ref()
-            .ok_or_else(|| FederationError::DkgTranscriptMismatch {
-                reason: "DKG activation requires a complete setup transcript".to_string(),
+            .ok_or(FederationDkgError::Transcript {
+                reason: "DKG activation requires a complete setup transcript",
             })?;
         if !transcript
             .payload
@@ -2605,17 +2619,17 @@ impl FederationDkgActivationRequest {
             .iter()
             .any(|ceremony| ceremony.ceremony_id() == self.ceremony_id)
         {
-            return Err(FederationError::DkgTranscriptMismatch {
-                reason: format!(
-                    "DKG activation ceremony {} is absent from the final transcript",
-                    self.ceremony_id
-                ),
-            });
+            return Err(FederationDkgError::TranscriptCeremony {
+                reason: "DKG activation ceremony is absent from the final transcript",
+                ceremony_id: self.ceremony_id,
+            }
+            .into());
         }
         if self.transcript_hash != transcript.transcript_hash {
-            return Err(FederationError::DkgTranscriptMismatch {
-                reason: "DKG activation transcript hash mismatch".to_string(),
-            });
+            return Err(FederationDkgError::Transcript {
+                reason: "DKG activation transcript hash mismatch",
+            }
+            .into());
         }
         let expected_digest = final_public_config.config_digest_for_validated_config()?;
         if self.final_config_digest != expected_digest {
@@ -2651,9 +2665,10 @@ impl FederationDkgActivationRequest {
             });
         }
         if self.setup_authorization != setup_public_config.setup_authorization {
-            return Err(FederationError::DkgTranscriptMismatch {
-                reason: "DKG activation setup authorization mismatch".to_string(),
-            });
+            return Err(FederationDkgError::Transcript {
+                reason: "DKG activation setup authorization mismatch",
+            }
+            .into());
         }
         let member =
             setup_public_config
@@ -2763,10 +2778,11 @@ impl FederationDkgSetupResponse {
             });
         }
         if self.accepted_member != accepted_member {
-            return Err(FederationError::DkgCommitmentMismatch {
+            return Err(FederationDkgError::Commitment {
                 member_id: accepted_member,
-                reason: "acknowledged member mismatch".to_string(),
-            });
+                reason: "acknowledged member mismatch",
+            }
+            .into());
         }
 
         Ok(())
@@ -3154,10 +3170,11 @@ impl FederationPeerStatus {
 
 fn ensure_dkg_payload_sender(payload_member: MemberId, sender: MemberId) -> Result<()> {
     if payload_member != sender {
-        return Err(FederationError::DkgCommitmentMismatch {
+        return Err(FederationDkgError::Commitment {
             member_id: payload_member,
-            reason: "request sender mismatch".to_string(),
-        });
+            reason: "request sender mismatch",
+        }
+        .into());
     }
 
     Ok(())
@@ -5268,7 +5285,7 @@ mod tests {
         );
         assert!(matches!(
             cross_setup.validate(&config, dkg_ceremony_id(), &keyset_spec),
-            Err(FederationError::DkgTranscriptMismatch { reason })
+            Err(FederationError::Dkg(FederationDkgError::Transcript { reason }))
                 if reason.contains("setup authorization")
         ));
         assert!(request
@@ -5421,7 +5438,7 @@ mod tests {
         );
         assert!(matches!(
             bad_payload.validate_sender(&config, first_private.member_id),
-            Err(FederationError::DkgTranscriptSignatureVerificationFailed { member_id })
+            Err(FederationError::Dkg(FederationDkgError::TranscriptSignatureVerificationFailed { member_id }))
                 if member_id == first_private.member_id
         ));
     }
@@ -5568,7 +5585,7 @@ mod tests {
 
         assert!(matches!(
             sender_mismatch.validate_sender_receiver(&config, first_private.member_id, receiver),
-            Err(FederationError::DkgCommitmentMismatch { member_id, reason })
+            Err(FederationError::Dkg(FederationDkgError::Commitment { member_id, reason }))
                 if member_id == second_private.member_id && reason == "request sender mismatch"
         ));
         assert!(matches!(
@@ -5578,7 +5595,7 @@ mod tests {
         ));
         assert!(matches!(
             signer_mismatch.validate_sender_receiver(&config, first_private.member_id, receiver),
-            Err(FederationError::DkgCommitmentMismatch { member_id, reason })
+            Err(FederationError::Dkg(FederationDkgError::CommitmentForAmount { member_id, reason, .. }))
                 if member_id == first_private.member_id
                     && reason.contains("secret contribution signer mismatch")
         ));
@@ -5620,14 +5637,14 @@ mod tests {
             commitment_request
                 .payload
                 .validate_sender(&config, commitment_request.sender),
-            Err(FederationError::DkgCommitmentMismatch { member_id, reason })
+            Err(FederationError::Dkg(FederationDkgError::Commitment { member_id, reason }))
                 if member_id == second_private.member_id && reason == "request sender mismatch"
         ));
         assert!(matches!(
             reveal_request
                 .payload
                 .validate_sender(&config, reveal_request.sender),
-            Err(FederationError::DkgCommitmentMismatch { member_id, reason })
+            Err(FederationError::Dkg(FederationDkgError::Commitment { member_id, reason }))
                 if member_id == second_private.member_id && reason == "request sender mismatch"
         ));
     }
@@ -5657,9 +5674,8 @@ mod tests {
             .expect("signature verifies");
         assert!(matches!(
             request.payload.validate_sender(&config, request.sender),
-            Err(FederationError::DkgCommitmentMismatch { member_id, reason })
+            Err(FederationError::Dkg(FederationDkgError::CoefficientCountMismatch { member_id, .. }))
                 if member_id == first_private.member_id
-                    && reason.contains("coefficient commitment count mismatch")
         ));
     }
 

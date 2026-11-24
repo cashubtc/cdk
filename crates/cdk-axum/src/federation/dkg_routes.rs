@@ -2,8 +2,8 @@ use axum::extract::{Json, State};
 use axum::response::{IntoResponse, Response};
 use cdk::federation::{
     redact_federation_operator_message, FederationDkgActivationRequest,
-    FederationDkgCommitmentRequest, FederationDkgReadinessRequest, FederationDkgRevealRequest,
-    FederationDkgSecretShareRequest, FederationDkgSetupResponse,
+    FederationDkgCommitmentRequest, FederationDkgError, FederationDkgReadinessRequest,
+    FederationDkgRevealRequest, FederationDkgSecretShareRequest, FederationDkgSetupResponse,
     FederationDkgTranscriptSignatureRequest, FederationFrostDkgConfirmationRequest,
     FederationFrostDkgRound1Request, FederationFrostDkgRound2Record,
     FederationFrostDkgRound2Request, FederationRestMessageKind, FederationSignedRequest,
@@ -253,9 +253,9 @@ pub(super) async fn post_frost_dkg_round1(
         || payload.payload.context.root_key_epoch != dkg_config.root_key_epoch
     {
         return Err(federation_error_response(
-            cdk::federation::FederationError::DkgTranscriptMismatch {
-                reason: "FROST round one belongs to another ceremony or root epoch".to_string(),
-            },
+            cdk::federation::FederationError::Dkg(FederationDkgError::Transcript {
+                reason: "FROST round one belongs to another ceremony or root epoch",
+            }),
         ));
     }
     payload
@@ -288,9 +288,9 @@ pub(super) async fn post_frost_dkg_round2(
         || payload.payload.context.root_key_epoch != dkg_config.root_key_epoch
     {
         return Err(federation_error_response(
-            cdk::federation::FederationError::DkgTranscriptMismatch {
-                reason: "FROST round two belongs to another ceremony or root epoch".to_string(),
-            },
+            cdk::federation::FederationError::Dkg(FederationDkgError::Transcript {
+                reason: "FROST round two belongs to another ceremony or root epoch",
+            }),
         ));
     }
     let package = payload
@@ -324,11 +324,10 @@ pub(super) async fn post_frost_dkg_round2(
                 .map_err(federation_error_response)?;
             if stored != package {
                 return Err(federation_error_response(
-                    cdk::federation::FederationError::DkgTranscriptMismatch {
+                    cdk::federation::FederationError::Dkg(FederationDkgError::Transcript {
                         reason:
-                            "FROST round-two contribution conflicts with the durable retry record"
-                                .to_string(),
-                    },
+                            "FROST round-two contribution conflicts with the durable retry record",
+                    }),
                 ));
             }
             record
@@ -373,9 +372,9 @@ pub(super) async fn post_frost_dkg_confirmation(
         || payload.payload.context.root_key_epoch != dkg_config.root_key_epoch
     {
         return Err(federation_error_response(
-            cdk::federation::FederationError::DkgTranscriptMismatch {
-                reason: "FROST confirmation belongs to another ceremony or root epoch".to_string(),
-            },
+            cdk::federation::FederationError::Dkg(FederationDkgError::Transcript {
+                reason: "FROST confirmation belongs to another ceremony or root epoch",
+            }),
         ));
     }
     let confirmed_public = payload
@@ -396,12 +395,10 @@ pub(super) async fn post_frost_dkg_confirmation(
             .map_err(federation_error_response)?;
         if local_public.encode() != confirmed_public.encode() {
             return Err(federation_error_response(
-                cdk::federation::FederationError::DkgTranscriptMismatch {
-                    reason: format!(
-                        "FROST root confirmation from member {} differs from the local root",
-                        verified.sender
-                    ),
-                },
+                cdk::federation::FederationError::Dkg(FederationDkgError::TranscriptMember {
+                    reason: "FROST root confirmation differs from the local root",
+                    member_id: verified.sender,
+                }),
             ));
         }
     }
@@ -469,9 +466,9 @@ pub(super) async fn post_dkg_activation(
     let dkg_config = active_dkg_config(&state)?;
     if payload.payload.ceremony_id != dkg_config.ceremony_id {
         return Err(federation_error_response(
-            cdk::federation::FederationError::DkgTranscriptMismatch {
-                reason: "DKG activation belongs to another ceremony".to_string(),
-            },
+            cdk::federation::FederationError::Dkg(FederationDkgError::Transcript {
+                reason: "DKG activation belongs to another ceremony",
+            }),
         ));
     }
     let runtime_config = federation_runtime_config(&state)?;

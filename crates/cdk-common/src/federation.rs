@@ -108,12 +108,13 @@ pub use self::consensus::{
 };
 pub use self::dkg::{
     FederationDkgCeremonyId, FederationDkgCeremonyRecord, FederationDkgCeremonyState,
-    FederationDkgCommitmentHash, FederationDkgCommitmentRound, FederationDkgFinalizedMemberConfig,
-    FederationDkgKeysetSpec, FederationDkgKeysetTranscript, FederationDkgMemberKeysetShare,
-    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgParticipantState, FederationDkgPublicCeremony, FederationDkgSetupMethod,
-    FederationDkgSetupState, FederationDkgTranscript, FederationDkgTranscriptHash,
-    FederationDkgTranscriptPayload, FederationDkgTranscriptSignature,
+    FederationDkgCommitmentHash, FederationDkgCommitmentRound, FederationDkgError,
+    FederationDkgFinalizedMemberConfig, FederationDkgKeysetSpec, FederationDkgKeysetTranscript,
+    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
+    FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
+    FederationDkgPublicCeremony, FederationDkgSetupMethod, FederationDkgSetupState,
+    FederationDkgTranscript, FederationDkgTranscriptHash, FederationDkgTranscriptPayload,
+    FederationDkgTranscriptSignature,
 };
 pub use self::dkg_driver::{
     FederationDkgDriverPhase, FederationDkgDriverPlan, FederationDkgDriverProgress,
@@ -545,6 +546,9 @@ pub enum FederationError {
     /// Checkpoint construction, verification or catch-up failed.
     #[error(transparent)]
     Checkpoint(#[from] FederationCheckpointError),
+    /// The dealer-free DKG failed validation.
+    #[error(transparent)]
+    Dkg(#[from] FederationDkgError),
     /// A checkpoint-bound database backup manifest failed validation.
     #[error("Federation database backup manifest is invalid: {reason}")]
     BackupManifestInvalid {
@@ -942,12 +946,6 @@ pub enum FederationError {
         /// Actual coefficient count.
         found: usize,
     },
-    /// Dealer-free DKG needs at least one amount per keyset.
-    #[error("Federation DKG keyset for unit {unit} has no amounts")]
-    EmptyDkgKeyset {
-        /// Unit of the empty keyset.
-        unit: CurrencyUnit,
-    },
     /// The keyset ID does not match its aggregate public keys and metadata.
     #[error("Federated keyset id mismatch: expected={expected}, found={found}")]
     KeysetIdMismatch {
@@ -1307,69 +1305,6 @@ pub enum FederationError {
     /// A federation REST signature could not be decoded as a Schnorr signature.
     #[error("Invalid federation REST signature encoding")]
     InvalidRestSignature,
-    /// A dealer-free DKG roster exceeds the supported resource bound.
-    #[error("Federation DKG member limit exceeded: found={found}, max={max}")]
-    DkgMemberLimitExceeded {
-        /// Configured federation member count.
-        found: usize,
-        /// Maximum supported dealer-free DKG member count.
-        max: usize,
-    },
-    /// A dealer-free DKG keyset exceeds the supported denomination bound.
-    #[error("Federation DKG keyset amount limit exceeded: found={found}, max={max}")]
-    DkgKeysetAmountLimitExceeded {
-        /// Configured denomination count.
-        found: usize,
-        /// Maximum supported denomination count.
-        max: usize,
-    },
-    /// A federation DKG commitment message does not match the expected setup.
-    #[error("Federation DKG commitment mismatch for member {member_id}: {reason}")]
-    DkgCommitmentMismatch {
-        /// Member whose DKG commitment material did not match.
-        member_id: MemberId,
-        /// Human-readable mismatch reason.
-        reason: String,
-    },
-    /// A federation DKG commitment round does not match the public config.
-    #[error("Federation DKG commitment round mismatch: {reason}")]
-    DkgCommitmentRoundMismatch {
-        /// Human-readable mismatch reason.
-        reason: String,
-    },
-    /// A federation DKG transcript signature could not be decoded as a Schnorr signature.
-    #[error("Invalid federation DKG transcript signature encoding")]
-    InvalidDkgTranscriptSignature,
-    /// A federation DKG transcript does not match the public config.
-    #[error("Federation DKG transcript mismatch: {reason}")]
-    DkgTranscriptMismatch {
-        /// Human-readable mismatch reason.
-        reason: String,
-    },
-    /// A finalized DKG transcript is still missing one configured member's signature.
-    #[error(
-        "Federation DKG transcript mismatch: missing transcript signature for member {member_id}"
-    )]
-    MissingDkgTranscriptSignature {
-        /// Configured member whose transcript signature is not durable yet.
-        member_id: MemberId,
-    },
-    /// A finalized DKG ceremony is still missing one configured member's activation.
-    #[error(
-        "Federation DKG transcript mismatch: missing DKG activation for member {member_id} ceremony {ceremony_id}"
-    )]
-    MissingDkgActivation {
-        /// Configured member whose activation is not durable yet.
-        member_id: MemberId,
-        /// Ceremony awaiting that member's activation.
-        ceremony_id: FederationDkgCeremonyId,
-    },
-    /// A federation DKG transcript had an invalid member identity signature.
-    #[error("Federation DKG transcript signature verification failed for member {member_id}")]
-    DkgTranscriptSignatureVerificationFailed {
-        /// Member whose signature failed.
-        member_id: MemberId,
-    },
     /// Signed REST request used an unsupported payload version.
     #[error("Federation REST version mismatch: expected={expected}, found={found}")]
     RestVersionMismatch {
@@ -2492,7 +2427,7 @@ mod tests {
 
         assert!(matches!(
             FederationDkgKeysetSpec::new(CurrencyUnit::Sat, true, 0, None, amounts),
-            Err(FederationError::DkgKeysetAmountLimitExceeded { found, max })
+            Err(FederationError::Dkg(FederationDkgError::KeysetAmountLimitExceeded { found, max }))
                 if found == FEDERATION_MAX_DKG_KEYSET_AMOUNTS + 1
                     && max == FEDERATION_MAX_DKG_KEYSET_AMOUNTS
         ));
@@ -2520,7 +2455,7 @@ mod tests {
 
         assert!(matches!(
             spec.validate_for_federation(&config),
-            Err(FederationError::DkgMemberLimitExceeded { found, max })
+            Err(FederationError::Dkg(FederationDkgError::MemberLimitExceeded { found, max }))
                 if found == FEDERATION_MAX_DKG_MEMBERS + 1
                     && max == FEDERATION_MAX_DKG_MEMBERS
         ));
@@ -2549,7 +2484,7 @@ mod tests {
 
         assert!(matches!(
             round.validate_reveals(&config, &reveals),
-            Err(FederationError::DkgCommitmentMismatch { member_id: id, reason })
+            Err(FederationError::Dkg(FederationDkgError::Commitment { member_id: id, reason }))
                 if id == member_id(1) && reason == "reveal hash mismatch"
         ));
     }
@@ -2578,9 +2513,8 @@ mod tests {
 
         assert!(matches!(
             round.derive_federated_keyset(&config, &reveals),
-            Err(FederationError::DkgCommitmentMismatch { member_id: id, reason })
+            Err(FederationError::Dkg(FederationDkgError::CoefficientCountMismatch { member_id: id, .. }))
                 if id == member_id(1)
-                    && reason.contains("coefficient commitment count mismatch")
         ));
     }
 
@@ -2600,7 +2534,7 @@ mod tests {
 
         assert!(matches!(
             FederationDkgCommitmentRound::new(&config, commitments),
-            Err(FederationError::DkgCommitmentRoundMismatch { reason })
+            Err(FederationError::Dkg(FederationDkgError::CommitmentRound { reason }))
                 if reason == "commitment count mismatch"
         ));
 
@@ -2695,7 +2629,7 @@ mod tests {
             .expect("insert commitment");
         assert!(matches!(
             state.insert_commitment(&config, conflicting_commitment),
-            Err(FederationError::DkgCommitmentMismatch { member_id: id, reason })
+            Err(FederationError::Dkg(FederationDkgError::Commitment { member_id: id, reason }))
                 if id == member_id(1) && reason == "conflicting commitment"
         ));
 
@@ -2704,7 +2638,7 @@ mod tests {
             .expect("insert reveal");
         assert!(matches!(
             state.insert_reveal(&config, conflicting_reveal),
-            Err(FederationError::DkgCommitmentMismatch { member_id: id, reason })
+            Err(FederationError::Dkg(FederationDkgError::Commitment { member_id: id, reason }))
                 if id == member_id(1) && reason == "conflicting reveal"
         ));
     }
@@ -2733,7 +2667,7 @@ mod tests {
 
         assert!(matches!(
             state.insert_commitment(&config, other_commitment),
-            Err(FederationError::DkgCommitmentMismatch { member_id: id, reason })
+            Err(FederationError::Dkg(FederationDkgError::Commitment { member_id: id, reason }))
                 if id == member_id(2) && reason == "commitment belongs to another ceremony"
         ));
         assert_eq!(state.ceremony_id, Some(dkg_ceremony_id()));
@@ -2756,7 +2690,7 @@ mod tests {
 
         assert!(matches!(
             state.insert_reveal(&config, reveal),
-            Err(FederationError::DkgCommitmentMismatch { member_id: id, reason })
+            Err(FederationError::Dkg(FederationDkgError::Commitment { member_id: id, reason }))
                 if id == member_id(1) && reason == "missing prior commitment"
         ));
     }
@@ -3033,7 +2967,7 @@ mod tests {
 
         assert!(matches!(
             state.validate(&setup_config),
-            Err(FederationError::DkgCommitmentMismatch { member_id: id, reason })
+            Err(FederationError::Dkg(FederationDkgError::CommitmentForAmount { member_id: id, reason, .. }))
                 if id == member_id(1)
                     && reason.contains("does not match public commitments")
         ));
@@ -3091,7 +3025,7 @@ mod tests {
 
         assert!(matches!(
             round.validate_reveals(&setup_config, &reveals),
-            Err(FederationError::DkgCommitmentMismatch { member_id: id, reason })
+            Err(FederationError::Dkg(FederationDkgError::Commitment { member_id: id, reason }))
                 if id == member_id(2) && reason == "keyset specification mismatch"
         ));
     }
@@ -3210,7 +3144,7 @@ mod tests {
                 &public_config,
                 &[],
             ),
-            Err(FederationError::DkgTranscriptMismatch { reason })
+            Err(FederationError::Dkg(FederationDkgError::Transcript { reason }))
                 if reason == "Pedersen DKG transcript is missing public ceremonies"
         ));
 
@@ -3245,7 +3179,9 @@ mod tests {
                 std::slice::from_ref(&relabeled_ceremony),
                 transcript.signatures.clone(),
             ),
-            Err(FederationError::DkgTranscriptSignatureVerificationFailed { .. })
+            Err(FederationError::Dkg(
+                FederationDkgError::TranscriptSignatureVerificationFailed { .. }
+            ))
         ));
 
         let mut tampered = transcript;
@@ -3258,7 +3194,7 @@ mod tests {
             .expect("amount commitments")[0] = bls_key(99).public_key_g2();
         assert!(matches!(
             tampered.validate_against_config(&public_config),
-            Err(FederationError::DkgTranscriptMismatch { reason })
+            Err(FederationError::Dkg(FederationDkgError::Transcript { reason }))
                 if reason == "transcript hash does not match payload"
         ));
     }
@@ -3424,7 +3360,7 @@ mod tests {
                 &[keyset_share],
                 &transcript_signatures,
             ),
-            Err(FederationError::MissingDkgTranscriptSignature { member_id: missing })
+            Err(FederationError::Dkg(FederationDkgError::MissingTranscriptSignature { member_id: missing }))
                 if missing == member_id(3)
         ));
     }
@@ -3465,7 +3401,7 @@ mod tests {
                 local_member,
                 &contributions,
             ),
-            Err(FederationError::DkgCommitmentMismatch { member_id: id, reason })
+            Err(FederationError::Dkg(FederationDkgError::CommitmentForAmount { member_id: id, reason, .. }))
                 if id == member_id(1)
                     && reason.contains("local secret contribution mismatch")
         ));
@@ -3482,7 +3418,7 @@ mod tests {
                 local_member,
                 &wrong_ceremony,
             ),
-            Err(FederationError::DkgCommitmentMismatch { member_id: id, reason })
+            Err(FederationError::Dkg(FederationDkgError::Commitment { member_id: id, reason }))
                 if id == member_id(1)
                     && reason == "secret contribution belongs to another ceremony"
         ));
@@ -3512,7 +3448,7 @@ mod tests {
                 local_member,
                 &wrong_signer,
             ),
-            Err(FederationError::DkgCommitmentMismatch { member_id: id, reason })
+            Err(FederationError::Dkg(FederationDkgError::CommitmentForAmount { member_id: id, reason, .. }))
                 if id == member_id(1)
                     && reason.contains("secret contribution signer mismatch")
         ));
@@ -3543,7 +3479,7 @@ mod tests {
 
         assert!(matches!(
             round.derive_federated_keyset(&config, &reveals),
-            Err(FederationError::DkgCommitmentMismatch { member_id: id, reason })
+            Err(FederationError::Dkg(FederationDkgError::Commitment { member_id: id, reason }))
                 if id == member_id(1)
                     && reason == "keyset specification amount set mismatch"
         ));

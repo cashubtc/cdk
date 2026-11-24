@@ -12,10 +12,11 @@ use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use url::{Host, Url};
 
 use super::{
-    FederationCheckpointPolicy, FederationConfig, FederationDkgCeremonyId, FederationDkgKeysetSpec,
-    FederationError, FederationPaymentObservationPolicy, FederationPaymentVerificationPolicy,
-    MemberConfigPublic, MemberId, Result, ThresholdParams, FEDERATION_MAX_DKG_KEYSET_AMOUNTS,
-    FEDERATION_MAX_DKG_MEMBERS, FEDERATION_WALLET_PROTOCOL_VERSION,
+    FederationCheckpointPolicy, FederationConfig, FederationDkgCeremonyId, FederationDkgError,
+    FederationDkgKeysetSpec, FederationError, FederationPaymentObservationPolicy,
+    FederationPaymentVerificationPolicy, MemberConfigPublic, MemberId, Result, ThresholdParams,
+    FEDERATION_MAX_DKG_KEYSET_AMOUNTS, FEDERATION_MAX_DKG_MEMBERS,
+    FEDERATION_WALLET_PROTOCOL_VERSION,
 };
 use crate::mint_url::MintUrl;
 use crate::nuts::nut01::{PublicKey, SecretKey};
@@ -1191,10 +1192,11 @@ impl FederationSetupProposalBody {
             ));
         }
         if member_count > FEDERATION_MAX_DKG_MEMBERS {
-            return Err(FederationError::DkgMemberLimitExceeded {
+            return Err(FederationDkgError::MemberLimitExceeded {
                 found: member_count,
                 max: FEDERATION_MAX_DKG_MEMBERS,
-            });
+            }
+            .into());
         }
 
         let mut urls = BTreeMap::new();
@@ -1262,10 +1264,11 @@ impl FederationSetupProposalBody {
         for keyset in &self.keysets {
             keyset.validate()?;
             if keyset.amounts.len() > FEDERATION_MAX_DKG_KEYSET_AMOUNTS {
-                return Err(FederationError::DkgKeysetAmountLimitExceeded {
+                return Err(FederationDkgError::KeysetAmountLimitExceeded {
                     found: keyset.amounts.len(),
                     max: FEDERATION_MAX_DKG_KEYSET_AMOUNTS,
-                });
+                }
+                .into());
             }
             let canonical = canonical_keyset_bytes(keyset)?;
             if previous.as_ref().is_some_and(|value| value >= &canonical) {

@@ -7,9 +7,9 @@ use cdk::federation::{
     redact_federation_operator_message, FederationConfig, FederationDkgActivationRequest,
     FederationDkgCeremonyId, FederationDkgCeremonyState, FederationDkgCommitmentRequest,
     FederationDkgDriverPhase, FederationDkgDriverPlan, FederationDkgDriverProgress,
-    FederationDkgDriverRecords, FederationDkgKeysetSpec, FederationDkgMemberKeysetShare,
-    FederationDkgReadinessRequest, FederationDkgRevealRequest, FederationDkgSecretShareRequest,
-    FederationDkgTranscriptSignatureRequest, FederationError,
+    FederationDkgDriverRecords, FederationDkgError, FederationDkgKeysetSpec,
+    FederationDkgMemberKeysetShare, FederationDkgReadinessRequest, FederationDkgRevealRequest,
+    FederationDkgSecretShareRequest, FederationDkgTranscriptSignatureRequest, FederationError,
     FederationFrostDkgConfirmationRequest, FederationFrostDkgContext, FederationFrostDkgLocalPhase,
     FederationFrostDkgLocalState, FederationFrostDkgRound1Request, FederationFrostDkgRound2Record,
     FederationFrostDkgRound2Request, FederationFrostRootPrivateConfig,
@@ -167,17 +167,13 @@ impl FederationDkgAutoStartConfig {
     ) -> Result<(), cdk::Error> {
         public_config.validate()?;
         if self.setup_authorization != public_config.setup_authorization {
-            return Err(FederationError::DkgTranscriptMismatch {
-                reason: "DKG auto-start setup authorization does not match the public config"
-                    .to_string(),
-            }
+            return Err(FederationError::Dkg(FederationDkgError::Transcript {
+                reason: "DKG auto-start setup authorization does not match the public config",
+            })
             .into());
         }
         if !public_config.keysets.is_empty() || public_config.setup_transcript.is_some() {
-            return Err(FederationError::DkgTranscriptMismatch {
-                reason: "live DKG start requires a public setup config without finalized keysets or transcript"
-                    .to_string(),
-            }
+            return Err(FederationError::Dkg(FederationDkgError::Transcript { reason: "live DKG start requires a public setup config without finalized keysets or transcript" })
             .into());
         }
         self.keyset_spec.validate_for_federation(public_config)?;
@@ -753,11 +749,10 @@ pub async fn prepare_federation_dkg_participant_state(
     let public_config = runtime_config.public_config().clone();
     let local_member = runtime_config.member_id();
     if !public_config.keysets.is_empty() || public_config.setup_transcript.is_some() {
-        return Err(FederationError::DkgTranscriptMismatch {
+        return Err(FederationError::Dkg(FederationDkgError::Transcript {
             reason:
-                "live DKG setup requires a public config without finalized keysets or transcript"
-                    .to_string(),
-        }
+                "live DKG setup requires a public config without finalized keysets or transcript",
+        })
         .into());
     }
 
@@ -781,11 +776,10 @@ pub async fn prepare_federation_dkg_participant_state(
             .into());
         }
         if participant.participant_state().keyset_spec() != &keyset_spec {
-            return Err(FederationError::DkgCommitmentMismatch {
+            return Err(FederationError::Dkg(FederationDkgError::Commitment {
                 member_id: local_member,
-                reason: "persisted participant keyset policy does not match requested ceremony"
-                    .to_string(),
-            }
+                reason: "persisted participant keyset policy does not match requested ceremony",
+            })
             .into());
         }
         return Ok(participant);
@@ -872,12 +866,10 @@ where
         for candidate in &matching {
             let candidate_public = candidate.validate(public_config, candidate.member_id)?;
             if candidate_public.encode() != public.encode() {
-                return Err(FederationError::DkgTranscriptMismatch {
-                    reason: format!(
-                        "FROST public-root confirmation mismatch from member {}",
-                        candidate.member_id
-                    ),
-                }
+                return Err(FederationError::Dkg(FederationDkgError::TranscriptMember {
+                    reason: "FROST public-root confirmation mismatch",
+                    member_id: candidate.member_id,
+                })
                 .into());
             }
         }
@@ -1747,20 +1739,17 @@ pub async fn complete_federation_dkg_ceremony(
     for confirmation in confirmations {
         let public = confirmation.validate(public_config, confirmation.member_id)?;
         if public.encode() != frost_public || !confirmed_members.insert(confirmation.member_id) {
-            return Err(FederationError::DkgTranscriptMismatch {
-                reason: format!(
-                    "conflicting or duplicate FROST activation confirmation from member {}",
-                    confirmation.member_id
-                ),
-            }
+            return Err(FederationError::Dkg(FederationDkgError::TranscriptMember {
+                reason: "conflicting or duplicate FROST activation confirmation",
+                member_id: confirmation.member_id,
+            })
             .into());
         }
     }
     if confirmed_members != public_config.members.keys().copied().collect() {
-        return Err(FederationError::DkgTranscriptMismatch {
-            reason: "dual DKG completion requires matching FROST confirmation from every member"
-                .to_string(),
-        }
+        return Err(FederationError::Dkg(FederationDkgError::Transcript {
+            reason: "dual DKG completion requires matching FROST confirmation from every member",
+        })
         .into());
     }
     let bls_results = db
@@ -1772,9 +1761,9 @@ pub async fn complete_federation_dkg_ceremony(
         })
         .collect::<Vec<_>>();
     if bls_results.is_empty() {
-        return Err(FederationError::DkgTranscriptMismatch {
-            reason: "dual DKG completion requires a local BLS keyset result".to_string(),
-        }
+        return Err(FederationError::Dkg(FederationDkgError::Transcript {
+            reason: "dual DKG completion requires a local BLS keyset result",
+        })
         .into());
     }
     for bls in bls_results {
@@ -1810,9 +1799,12 @@ pub async fn complete_federation_dkg_ceremony(
             tx.commit().await?;
             Ok(())
         }
-        FederationDkgCeremonyState::Aborted => Err(FederationError::DkgTranscriptMismatch {
-            reason: format!("aborted DKG ceremony {ceremony_id} cannot complete"),
-        }
+        FederationDkgCeremonyState::Aborted => Err(FederationError::Dkg(
+            FederationDkgError::TranscriptCeremony {
+                reason: "aborted DKG ceremony cannot complete",
+                ceremony_id,
+            },
+        )
         .into()),
     }
 }
@@ -2161,9 +2153,9 @@ mod tests {
             assert!(!format!("{failure:?}").contains("private"));
         }
 
-        let validation = anyhow::Error::new(FederationError::DkgTranscriptMismatch {
-            reason: "private response detail".to_string(),
-        });
+        let validation = anyhow::Error::new(FederationError::Dkg(FederationDkgError::Transcript {
+            reason: "private response detail",
+        }));
         let failure = classify_federation_dkg_delivery_failure(&validation);
         assert_eq!(
             failure.kind,

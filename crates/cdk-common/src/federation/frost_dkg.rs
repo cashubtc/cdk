@@ -9,8 +9,8 @@ use cdk_frost::{
 use serde::{Deserialize, Serialize};
 
 use super::{
-    FederationConfig, FederationDkgCeremonyId, FederationDkgMemberKeysetShare, FederationError,
-    FederationId, FederationSetupAuthorizationHash, MemberId, Result,
+    FederationConfig, FederationDkgCeremonyId, FederationDkgError, FederationDkgMemberKeysetShare,
+    FederationError, FederationId, FederationSetupAuthorizationHash, MemberId, Result,
 };
 
 /// Versioned federation metadata bound into every FROST DKG message.
@@ -60,9 +60,10 @@ impl FederationFrostDkgContext {
     /// Validate and convert to the application-neutral crypto boundary.
     pub fn to_frost_context(&self) -> Result<DkgContext> {
         if self.protocol_version != 2 || self.ciphersuite != "secp256k1_sha256_tr_v1" {
-            return Err(FederationError::DkgTranscriptMismatch {
-                reason: "unsupported FROST DKG protocol or ciphersuite".to_string(),
-            });
+            return Err(FederationDkgError::Transcript {
+                reason: "unsupported FROST DKG protocol or ciphersuite",
+            }
+            .into());
         }
         DkgContext::new(
             self.federation_id.to_bytes(),
@@ -84,10 +85,10 @@ impl FederationFrostDkgContext {
             || self.threshold != config.threshold_params.signature_threshold
             || self.participants != config.members.keys().copied().collect()
         {
-            return Err(FederationError::DkgTranscriptMismatch {
-                reason: "FROST DKG roster or threshold differs from BLS federation setup"
-                    .to_string(),
-            });
+            return Err(FederationDkgError::Transcript {
+                reason: "FROST DKG roster or threshold differs from BLS federation setup",
+            }
+            .into());
         }
         self.to_frost_context().map(|_| ())
     }
@@ -122,9 +123,10 @@ impl FederationFrostDkgRound1Request {
         let package = DkgRound1Package::decode(&self.context.to_frost_context()?, &self.package)
             .map_err(frost_error)?;
         if package.sender() != frost_member(self.sender)? {
-            return Err(FederationError::DkgTranscriptMismatch {
-                reason: "FROST round-one sender binding mismatch".to_string(),
-            });
+            return Err(FederationDkgError::Transcript {
+                reason: "FROST round-one sender binding mismatch",
+            }
+            .into());
         }
         Ok(package)
     }
@@ -227,9 +229,10 @@ impl FederationFrostDkgRound2Record {
         if !config.members.contains_key(&self.sender)
             || !config.members.contains_key(&self.receiver)
         {
-            return Err(FederationError::DkgTranscriptMismatch {
-                reason: "sealed FROST round-two sender or receiver is not configured".to_string(),
-            });
+            return Err(FederationDkgError::Transcript {
+                reason: "sealed FROST round-two sender or receiver is not configured",
+            }
+            .into());
         }
         EncryptedSecret::from_bytes(self.encrypted_package.clone()).map_err(frost_error)
     }
@@ -263,9 +266,10 @@ impl FederationFrostDkgRound2Request {
     ) -> Result<DkgRound2Package> {
         self.context.validate_against(config)?;
         if self.sender != signed_sender || self.receiver != expected_receiver {
-            return Err(FederationError::DkgTranscriptMismatch {
-                reason: "FROST round-two sender or receiver binding mismatch".to_string(),
-            });
+            return Err(FederationDkgError::Transcript {
+                reason: "FROST round-two sender or receiver binding mismatch",
+            }
+            .into());
         }
         DkgRound2Package::decode(
             &self.context.to_frost_context()?,
@@ -349,9 +353,10 @@ fn validate_public_root(
             .collect::<Result<BTreeSet<_>>>()?
             != context.participants
     {
-        return Err(FederationError::DkgTranscriptMismatch {
-            reason: "canonical FROST root does not match ceremony metadata".to_string(),
-        });
+        return Err(FederationDkgError::Transcript {
+            reason: "canonical FROST root does not match ceremony metadata",
+        }
+        .into());
     }
     Ok(public)
 }
@@ -375,9 +380,10 @@ impl FederationDualDkgResult {
             || self.bls.member_id != self.frost.member_id
             || self.bls.public_ceremony.ceremony_id() != self.frost.context.ceremony_id
         {
-            return Err(FederationError::DkgTranscriptMismatch {
-                reason: "BLS and FROST DKG results do not form one ceremony".to_string(),
-            });
+            return Err(FederationDkgError::Transcript {
+                reason: "BLS and FROST DKG results do not form one ceremony",
+            }
+            .into());
         }
         self.frost.validate(config)
     }
@@ -388,7 +394,5 @@ fn frost_member(member: MemberId) -> Result<cdk_frost::MemberId> {
 }
 
 fn frost_error(error: cdk_frost::Error) -> FederationError {
-    FederationError::DkgTranscriptMismatch {
-        reason: format!("FROST DKG validation failed: {error}"),
-    }
+    FederationError::Dkg(FederationDkgError::Frost(error))
 }

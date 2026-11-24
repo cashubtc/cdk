@@ -18,8 +18,8 @@ use super::frost_config::FederationFrostWalletConfig;
 use super::operation::{FederationKeysetRotationOperation, FederationPaymentObservationQuorum};
 use super::setup::FederationSetupAuthorizationHash;
 use super::{
-    append_bytes, append_str, FederationCheckpointPolicy, FederationError, Result,
-    FEDERATION_CONFIG_DIGEST_VERSION, FEDERATION_INVITE_PREFIX, FEDERATION_INVITE_VERSION,
+    append_bytes, append_str, FederationCheckpointPolicy, FederationDkgError, FederationError,
+    Result, FEDERATION_CONFIG_DIGEST_VERSION, FEDERATION_INVITE_PREFIX, FEDERATION_INVITE_VERSION,
     FEDERATION_KEYSET_ROTATION_PROOF_VERSION, FEDERATION_MIN_MEMBERS,
     FEDERATION_ROSTER_HASH_VERSION, FEDERATION_WALLET_PROTOCOL_VERSION,
 };
@@ -1375,29 +1375,29 @@ impl MemberConfigPrivate {
                 });
             }
             None if public_config.setup_transcript.is_some() => {
-                return Err(FederationError::DkgTranscriptMismatch {
-                    reason: "private config missing federation id".to_string(),
-                });
+                return Err(FederationDkgError::Transcript {
+                    reason: "private config missing federation id",
+                }
+                .into());
             }
             Some(_) | None => {}
         }
 
         match (&public_config.setup_transcript, self.setup_transcript_hash) {
             (Some(transcript), Some(hash)) if transcript.transcript_hash != hash => {
-                return Err(FederationError::DkgTranscriptMismatch {
-                    reason: "private setup transcript hash mismatch".to_string(),
-                });
+                return Err(FederationDkgError::Transcript {
+                    reason: "private setup transcript hash mismatch",
+                }
+                .into());
             }
             (Some(_), None) => {
-                return Err(FederationError::DkgTranscriptMismatch {
-                    reason: "private config missing setup transcript hash".to_string(),
-                });
+                return Err(FederationDkgError::Transcript {
+                    reason: "private config missing setup transcript hash",
+                }
+                .into());
             }
             (None, Some(_)) => {
-                return Err(FederationError::DkgTranscriptMismatch {
-                    reason: "private config has setup transcript hash but public config has no transcript"
-                        .to_string(),
-                });
+                return Err(FederationDkgError::Transcript { reason: "private config has setup transcript hash but public config has no transcript" }.into());
             }
             (Some(_), Some(_)) | (None, None) => {}
         }

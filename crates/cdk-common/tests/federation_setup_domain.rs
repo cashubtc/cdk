@@ -571,7 +571,7 @@ fn manifest_derives_exact_config_and_authorization_is_mandatory() {
     frost_context.setup_authorization = FederationSetupAuthorizationHash::from_bytes([99; 32]);
     assert!(matches!(
         frost_context.validate_against(&setup_config),
-        Err(FederationError::DkgTranscriptMismatch { .. })
+        Err(FederationError::Dkg(_))
     ));
 
     let mut encoded = serde_json::to_value(&setup_config).expect("config serializes");

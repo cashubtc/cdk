@@ -361,8 +361,8 @@ fn runtime_config_construction_still_rejects_malformed_public_config() {
         .remove(&valid.member_id());
     assert!(matches!(
         FederationRuntimeConfig::new(missing_transcript_signature, private_config),
-        Err(Error::Federation(
-            FederationError::MissingDkgTranscriptSignature { .. }
-        ))
+        Err(Error::Federation(FederationError::Dkg(
+            cdk_common::federation::FederationDkgError::MissingTranscriptSignature { .. }
+        )))
     ));
 }

@@ -6,12 +6,13 @@ use std::sync::Arc;
 
 use super::{
     FederationConfig, FederationConfigDigest, FederationDkgActivationRequest,
-    FederationDkgCeremonyId, FederationDkgCommitmentRequest, FederationDkgFinalizedMemberConfig,
-    FederationDkgKeysetSpec, FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
-    FederationDkgRevealRequest, FederationDkgSecretShareRequest, FederationDkgSetupState,
-    FederationDkgTranscriptSignature, FederationDkgTranscriptSignatureRequest, FederationError,
-    MemberConfigPrivate, MemberId, Result,
+    FederationDkgCeremonyId, FederationDkgCommitmentRequest, FederationDkgError,
+    FederationDkgFinalizedMemberConfig, FederationDkgKeysetSpec, FederationDkgMemberKeysetShare,
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationDkgParticipantState, FederationDkgRevealRequest, FederationDkgSecretShareRequest,
+    FederationDkgSetupState, FederationDkgTranscriptSignature,
+    FederationDkgTranscriptSignatureRequest, FederationError, MemberConfigPrivate, MemberId,
+    Result,
 };
 
 /// Owned participant state carrying a non-serializable validation proof.
@@ -260,10 +261,7 @@ impl FederationDkgDriverRecords {
             });
         }
         if !public_config.keysets.is_empty() || public_config.setup_transcript.is_some() {
-            return Err(FederationError::DkgTranscriptMismatch {
-                reason: "live DKG setup requires a public config without finalized keysets or transcript"
-                    .to_string(),
-            });
+            return Err(FederationDkgError::Transcript { reason: "live DKG setup requires a public config without finalized keysets or transcript" }.into());
         }
 
         let mut setup_state = FederationDkgSetupState::new(public_config);
@@ -282,19 +280,20 @@ impl FederationDkgDriverRecords {
                 local_member,
             )?;
             if contribution.ceremony_id != participant_state.ceremony_id() {
-                return Err(FederationError::DkgCommitmentMismatch {
+                return Err(FederationDkgError::Commitment {
                     member_id: contribution.sender,
-                    reason: "secret contribution belongs to another ceremony".to_string(),
-                });
+                    reason: "secret contribution belongs to another ceremony",
+                }
+                .into());
             }
             match incoming_contributions.insert(contribution.sender, contribution.clone()) {
                 Some(existing) if existing != *contribution => {
-                    return Err(FederationError::DkgCommitmentMismatch {
+                    return Err(FederationDkgError::CommitmentForReceiver {
                         member_id: contribution.sender,
-                        reason: format!(
-                            "conflicting secret-share contribution for receiver {local_member}"
-                        ),
-                    });
+                        reason: "conflicting secret-share contribution",
+                        receiver: local_member,
+                    }
+                    .into());
                 }
                 Some(_) | None => {}
             }
@@ -368,8 +367,8 @@ impl FederationDkgDriverRecords {
         }
 
         let round = setup_state.complete_round(public_config)?.ok_or(
-            FederationError::DkgCommitmentRoundMismatch {
-                reason: "complete DKG records did not produce a commitment round".to_string(),
+            FederationDkgError::CommitmentRound {
+                reason: "complete DKG records did not produce a commitment round",
             },
         )?;
         let matching_keyset_shares = self
@@ -378,12 +377,11 @@ impl FederationDkgDriverRecords {
             .filter(|share| share.public_ceremony.ceremony_id() == participant_state.ceremony_id())
             .collect::<Vec<_>>();
         if matching_keyset_shares.len() > 1 {
-            return Err(FederationError::DkgTranscriptMismatch {
-                reason: format!(
-                    "multiple local keyset shares for ceremony {}",
-                    participant_state.ceremony_id()
-                ),
-            });
+            return Err(FederationDkgError::TranscriptCeremony {
+                reason: "multiple local keyset shares",
+                ceremony_id: participant_state.ceremony_id(),
+            }
+            .into());
         }
         let Some(stored_keyset_share) = matching_keyset_shares.first().copied() else {
             let derived_keyset_share = round.derive_member_keyset_share(
@@ -410,12 +408,11 @@ impl FederationDkgDriverRecords {
             || stored_keyset_share.public_ceremony.commitment_round != round
             || stored_keyset_share.public_ceremony.reveals != setup_state.reveals
         {
-            return Err(FederationError::DkgTranscriptMismatch {
-                reason: format!(
-                    "stored local keyset share does not match durable ceremony {}",
-                    participant_state.ceremony_id()
-                ),
-            });
+            return Err(FederationDkgError::TranscriptCeremony {
+                reason: "stored local keyset share does not match durable ceremony",
+                ceremony_id: participant_state.ceremony_id(),
+            }
+            .into());
         }
 
         let mut final_public_config = public_config.clone();
@@ -435,12 +432,11 @@ impl FederationDkgDriverRecords {
             signature.validate_sender(&final_public_config, signature.signer)?;
             match matching_signatures.insert(signature.signer, *signature) {
                 Some(existing) if existing != *signature => {
-                    return Err(FederationError::DkgTranscriptMismatch {
-                        reason: format!(
-                            "conflicting transcript signature for member {}",
-                            signature.signer
-                        ),
-                    });
+                    return Err(FederationDkgError::TranscriptMember {
+                        reason: "conflicting transcript signature",
+                        member_id: signature.signer,
+                    }
+                    .into());
                 }
                 Some(_) | None => {}
             }
@@ -504,12 +500,11 @@ impl FederationDkgDriverRecords {
             )?;
             match matching_activations.insert(candidate.signer, *candidate) {
                 Some(existing) if existing != *candidate => {
-                    return Err(FederationError::DkgTranscriptMismatch {
-                        reason: format!(
-                            "conflicting DKG activation for member {} ceremony {}",
-                            candidate.signer, candidate.ceremony_id
-                        ),
-                    });
+                    return Err(FederationDkgError::ConflictingActivation {
+                        member_id: candidate.signer,
+                        ceremony_id: candidate.ceremony_id,
+                    }
+                    .into());
                 }
                 Some(_) | None => {}
             }
@@ -587,12 +582,11 @@ impl FederationDkgDriverRecords {
             )?;
             match matching_activations.insert(candidate.signer, *candidate) {
                 Some(existing) if existing != *candidate => {
-                    return Err(FederationError::DkgTranscriptMismatch {
-                        reason: format!(
-                            "conflicting DKG activation for member {} ceremony {}",
-                            candidate.signer, candidate.ceremony_id
-                        ),
-                    });
+                    return Err(FederationDkgError::ConflictingActivation {
+                        member_id: candidate.signer,
+                        ceremony_id: candidate.ceremony_id,
+                    }
+                    .into());
                 }
                 Some(_) | None => {}
             }
@@ -892,7 +886,7 @@ mod tests {
                 &public_config,
                 std::slice::from_ref(&mismatched_keyset_share),
             ),
-            Err(FederationError::DkgTranscriptMismatch { reason })
+            Err(FederationError::Dkg(FederationDkgError::TranscriptKeyset { reason, .. }))
                 if reason.contains("keyset policy mismatch")
         ));
         records.keyset_shares.push(keyset_share.clone());
@@ -1053,7 +1047,7 @@ mod tests {
         };
         assert!(matches!(
             records.plan(&public_config, private_config, participant_state),
-            Err(FederationError::DkgCommitmentMismatch { reason, .. })
+            Err(FederationError::Dkg(FederationDkgError::Commitment { reason, .. }))
                 if reason == "missing prior commitment"
         ));
 
@@ -1063,7 +1057,7 @@ mod tests {
             FederationDkgCeremonyId::from_bytes([92; 32]);
         assert!(matches!(
             records.plan(&public_config, private_config, participant_state),
-            Err(FederationError::DkgCommitmentMismatch { reason, .. })
+            Err(FederationError::Dkg(FederationDkgError::Commitment { reason, .. }))
                 if reason == "secret contribution belongs to another ceremony"
         ));
     }

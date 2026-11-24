@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use cdk::federation::{
-    FederationConfig, FederationDkgActivationRequest, FederationDkgCeremonyId,
+    FederationConfig, FederationDkgActivationRequest, FederationDkgCeremonyId, FederationDkgError,
     FederationDkgFinalizedMemberConfig, FederationDkgMemberKeysetShare,
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
     FederationDkgSecretShareRequest, FederationDkgSetupState, FederationDkgTranscriptHash,
@@ -83,10 +83,10 @@ impl FederationNodeRuntime {
                         && commitment.member_id == reveal.member_id
                 })
                 .ok_or_else(|| {
-                    cdk::Error::Federation(FederationError::DkgCommitmentMismatch {
+                    cdk::Error::Federation(FederationError::Dkg(FederationDkgError::Commitment {
                         member_id: reveal.member_id,
-                        reason: "missing prior commitment".to_string(),
-                    })
+                        reason: "missing prior commitment",
+                    }))
                 })?;
             commitment.validate_reveal(reveal, &public_config)?;
             return self.persist_dkg_sequence(sender, sequence).await;
@@ -208,15 +208,13 @@ impl FederationNodeRuntime {
                 && existing.receiver == contribution.receiver
                 && existing != contribution
         }) {
-            return Err(cdk::Error::Federation(
-                FederationError::DkgCommitmentMismatch {
+            return Err(cdk::Error::Federation(FederationError::Dkg(
+                FederationDkgError::CommitmentForReceiver {
                     member_id: contribution.sender,
-                    reason: format!(
-                        "conflicting secret-share contribution for receiver {}",
-                        contribution.receiver
-                    ),
+                    reason: "conflicting secret-share contribution",
+                    receiver: contribution.receiver,
                 },
-            ));
+            )));
         }
         if existing_contributions
             .iter()
@@ -228,28 +226,28 @@ impl FederationNodeRuntime {
             .load_dkg_setup_state(&public_config, contribution.ceremony_id)
             .await?;
         let ceremony_id = setup_state.ceremony_id.ok_or_else(|| {
-            cdk::Error::Federation(FederationError::DkgCommitmentMismatch {
+            cdk::Error::Federation(FederationError::Dkg(FederationDkgError::Commitment {
                 member_id: contribution.sender,
-                reason: "missing commitment ceremony before secret contribution".to_string(),
-            })
+                reason: "missing commitment ceremony before secret contribution",
+            }))
         })?;
         if contribution.ceremony_id != ceremony_id {
-            return Err(cdk::Error::Federation(
-                FederationError::DkgCommitmentMismatch {
+            return Err(cdk::Error::Federation(FederationError::Dkg(
+                FederationDkgError::Commitment {
                     member_id: contribution.sender,
-                    reason: "secret contribution belongs to another ceremony".to_string(),
+                    reason: "secret contribution belongs to another ceremony",
                 },
-            ));
+            )));
         }
         let sender_reveal = setup_state
             .reveals
             .get(&contribution.sender)
             .cloned()
             .ok_or_else(|| {
-                cdk::Error::Federation(FederationError::DkgCommitmentMismatch {
+                cdk::Error::Federation(FederationError::Dkg(FederationDkgError::Commitment {
                     member_id: contribution.sender,
-                    reason: "missing sender reveal before secret contribution".to_string(),
-                })
+                    reason: "missing sender reveal before secret contribution",
+                }))
             })?;
         let validation_config = public_config.clone();
         let validation_contribution = contribution.clone();
@@ -289,14 +287,12 @@ impl FederationNodeRuntime {
                 && existing.transcript_hash == signature.transcript_hash
                 && existing != signature
         }) {
-            return Err(cdk::Error::Federation(
-                FederationError::DkgTranscriptMismatch {
-                    reason: format!(
-                        "conflicting transcript signature for member {} transcript {}",
-                        signature.signer, signature.transcript_hash
-                    ),
+            return Err(cdk::Error::Federation(FederationError::Dkg(
+                FederationDkgError::TranscriptMember {
+                    reason: "conflicting transcript signature",
+                    member_id: signature.signer,
                 },
-            ));
+            )));
         }
         if existing_signatures
             .iter()
@@ -306,15 +302,12 @@ impl FederationNodeRuntime {
         }
         let expected_hash = self.expected_dkg_transcript_hash(&public_config).await?;
         if signature.transcript_hash != expected_hash {
-            return Err(cdk::Error::Federation(
-                FederationError::DkgTranscriptMismatch {
-                    reason: format!(
-                        "transcript signature hash {} does not match locally derived DKG transcript {}",
-                        signature.transcript_hash,
-                        expected_hash
-                    ),
+            return Err(cdk::Error::Federation(FederationError::Dkg(
+                FederationDkgError::TranscriptHashMismatch {
+                    found: signature.transcript_hash,
+                    expected: expected_hash,
                 },
-            ));
+            )));
         }
 
         let mut tx = db.begin_transaction().await?;
@@ -347,14 +340,12 @@ impl FederationNodeRuntime {
                 && existing.signer == activation.signer
                 && existing != activation
         }) {
-            return Err(cdk::Error::Federation(
-                FederationError::DkgTranscriptMismatch {
-                    reason: format!(
-                        "conflicting DKG activation for member {} ceremony {}",
-                        activation.signer, activation.ceremony_id
-                    ),
+            return Err(cdk::Error::Federation(FederationError::Dkg(
+                FederationDkgError::ConflictingActivation {
+                    member_id: activation.signer,
+                    ceremony_id: activation.ceremony_id,
                 },
-            ));
+            )));
         }
         if existing_activations
             .iter()
@@ -397,11 +388,11 @@ impl FederationNodeRuntime {
             .get_or_init(|| async { finalized.clone() })
             .await;
         if cached.as_ref() != finalized.as_ref() {
-            return Err(cdk::Error::Federation(
-                FederationError::DkgTranscriptMismatch {
-                    reason: "cached finalized DKG config changed during one process".to_string(),
+            return Err(cdk::Error::Federation(FederationError::Dkg(
+                FederationDkgError::Transcript {
+                    reason: "cached finalized DKG config changed during one process",
                 },
-            ));
+            )));
         }
         Ok(())
     }

@@ -362,7 +362,7 @@ mod tests {
     use std::str::FromStr;
 
     use crate::federation::{
-        FederationDkgSetupMethod, FederationDkgTranscriptHash, FederationId,
+        FederationDkgError, FederationDkgSetupMethod, FederationDkgTranscriptHash, FederationId,
         FederationKeysetRotationOperation,
     };
 
@@ -723,7 +723,7 @@ mod tests {
             .retain(|keyset| keyset.id != original_active_keyset);
         assert!(matches!(
             missing_setup_keyset.validate(),
-            Err(FederationError::DkgTranscriptMismatch { reason })
+            Err(FederationError::Dkg(FederationDkgError::TranscriptKeyset { reason, .. }))
                 if reason.contains("is missing from current config")
         ));
     }
@@ -780,7 +780,7 @@ mod tests {
 
         assert!(matches!(
             private_config.validate_against_public(&bundle.public_config),
-            Err(FederationError::DkgTranscriptMismatch { reason })
+            Err(FederationError::Dkg(FederationDkgError::Transcript { reason }))
                 if reason == "private config missing federation id"
         ));
     }
@@ -809,7 +809,7 @@ mod tests {
 
         assert!(matches!(
             private_config.validate_against_public(&bundle.public_config),
-            Err(FederationError::DkgTranscriptMismatch { reason })
+            Err(FederationError::Dkg(FederationDkgError::Transcript { reason }))
                 if reason == "private setup transcript hash mismatch"
         ));
     }
@@ -837,7 +837,7 @@ mod tests {
 
         assert!(matches!(
             private_config.validate_against_public(&bundle.public_config),
-            Err(FederationError::DkgTranscriptMismatch { reason })
+            Err(FederationError::Dkg(FederationDkgError::Transcript { reason }))
                 if reason == "private config missing setup transcript hash"
         ));
     }
@@ -867,7 +867,7 @@ mod tests {
 
         assert!(matches!(
             public_config.validate(),
-            Err(FederationError::DkgTranscriptMismatch { reason })
+            Err(FederationError::Dkg(FederationDkgError::Transcript { reason }))
                 if reason == "transcript hash does not match payload"
         ));
     }
@@ -903,7 +903,7 @@ mod tests {
 
         assert!(matches!(
             public_config.validate(),
-            Err(FederationError::DkgTranscriptSignatureVerificationFailed { member_id: id })
+            Err(FederationError::Dkg(FederationDkgError::TranscriptSignatureVerificationFailed { member_id: id }))
                 if id == member_id(1)
         ));
     }

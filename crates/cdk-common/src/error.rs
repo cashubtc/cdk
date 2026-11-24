@@ -1100,6 +1100,13 @@ impl From<crate::federation::FederationCheckpointError> for Error {
     }
 }
 
+#[cfg(feature = "federation")]
+impl From<crate::federation::FederationDkgError> for Error {
+    fn from(err: crate::federation::FederationDkgError) -> Self {
+        Self::Federation(err.into())
+    }
+}
+
 impl From<crate::nuts::nut10::Error> for Error {
     fn from(err: crate::nuts::nut10::Error) -> Self {
         match err {
