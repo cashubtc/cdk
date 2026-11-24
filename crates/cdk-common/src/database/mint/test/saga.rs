@@ -455,6 +455,8 @@ where
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     tx.add_saga(&swap_saga).await.unwrap();
     tx.add_saga(&melt_saga).await.unwrap();
+    let stored_swap = tx.get_saga(&swap_saga.operation_id).await.unwrap().unwrap();
+    assert_eq!(stored_swap.quote_id(), Some(quote_id.to_string().as_str()));
     tx.commit().await.unwrap();
 
     let retrieved = db.get_melt_saga_by_quote_id(&quote_id).await.unwrap();

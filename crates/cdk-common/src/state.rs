@@ -417,6 +417,13 @@ mod tests {
 
     #[test]
     fn melt_saga_transition_matrix() {
+        // Indices:
+        // 0: SetupComplete
+        // 1: PaymentAttempted
+        // 2: PaymentPending
+        // 3: PaymentFailed
+        // 4: Finalizing(None)   (legacy pre-payload row)
+        // 5: Finalizing(Some(_))
         let all_states = [
             MeltSagaState::SetupComplete,
             MeltSagaState::PaymentAttempted,
@@ -426,32 +433,26 @@ mod tests {
             MeltSagaState::finalizing(sample_finalization_data()),
         ];
 
-        for from in &all_states {
-            for to in &all_states {
-                let expected_ok = matches!(
-                    (from, to),
-                    (
-                        MeltSagaState::SetupComplete,
-                        MeltSagaState::PaymentAttempted | MeltSagaState::Finalizing(Some(_)),
-                    ) | (
-                        MeltSagaState::PaymentAttempted,
-                        MeltSagaState::PaymentPending
-                            | MeltSagaState::PaymentFailed
-                            | MeltSagaState::Finalizing(Some(_)),
-                    ) | (
-                        MeltSagaState::PaymentPending,
-                        MeltSagaState::PaymentFailed | MeltSagaState::Finalizing(Some(_)),
-                    ) | (
-                        MeltSagaState::Finalizing(None),
-                        MeltSagaState::Finalizing(Some(_)),
-                    )
-                );
+        // Independently enumerated DAG edges (from_idx, to_idx).
+        let allowed_edges: &[(usize, usize)] = &[
+            (0, 1), // SetupComplete -> PaymentAttempted
+            (0, 5), // SetupComplete -> Finalizing(Some)
+            (1, 2), // PaymentAttempted -> PaymentPending
+            (1, 3), // PaymentAttempted -> PaymentFailed
+            (1, 5), // PaymentAttempted -> Finalizing(Some)
+            (2, 3), // PaymentPending -> PaymentFailed
+            (2, 5), // PaymentPending -> Finalizing(Some)
+            (4, 5), // Finalizing(None) -> Finalizing(Some) (legacy enrichment)
+        ];
 
+        for (from_idx, from) in all_states.iter().enumerate() {
+            for (to_idx, to) in all_states.iter().enumerate() {
+                let expected_ok = allowed_edges.contains(&(from_idx, to_idx));
                 let result = check_melt_saga_state_transition(from, to);
                 assert_eq!(
                     result.is_ok(),
                     expected_ok,
-                    "transition {from} -> {to} expected ok={expected_ok}, got {result:?}"
+                    "transition [{from_idx}] {from} -> [{to_idx}] {to} expected ok={expected_ok}, got {result:?}"
                 );
             }
         }

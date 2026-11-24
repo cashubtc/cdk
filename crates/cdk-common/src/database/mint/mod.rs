@@ -663,7 +663,7 @@ pub trait SagaTransaction {
     /// Add saga.
     ///
     /// Implementations must reject inserting a payloadless
-    /// [`mint::MeltSagaState::Finalizing(None)`] row with
+    /// [`mint::MeltSagaState::Finalizing`] (`None` payload) row with
     /// [`Error::InvalidStateTransition`].
     async fn add_saga(&mut self, saga: &mint::Saga) -> Result<(), Self::Err>;
 
@@ -671,8 +671,10 @@ pub trait SagaTransaction {
     ///
     /// Implementations must validate the transition via
     /// [`crate::state::check_saga_state_transition`], match both the stored
-    /// `operation_kind` and `state` in the conditional update, and persist any
-    /// state-owned payload (such as [`mint::MeltFinalizationData`] carried by
+    /// `operation_kind` and `state` in the conditional update (and require a
+    /// `NULL` stored payload when enriching a legacy
+    /// [`mint::MeltSagaState::Finalizing`] row), and persist any state-owned
+    /// payload (such as [`mint::MeltFinalizationData`] carried by
     /// [`mint::MeltSagaState::Finalizing`]).
     ///
     /// Returns [`Error::InvalidStateTransition`] if the transition is not

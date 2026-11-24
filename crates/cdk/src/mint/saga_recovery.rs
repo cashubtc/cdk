@@ -356,21 +356,46 @@ async fn complete_finalization_with_data(
             },
         )?;
 
-    super::melt::shared::finalize_melt_quote(
+    apply_finalized_melt_quote(
         mint,
         db,
         pubsub,
         quote,
         total_spent,
         data.payment_proof.clone(),
-        &data.payment_lookup_id,
-        Some(saga.operation_id),
+        data.payment_lookup_id.clone(),
+        saga.operation_id,
+    )
+    .await
+}
+
+/// Runs `shared::finalize_melt_quote` and synchronizes the caller's in-memory `MeltQuote`.
+#[allow(clippy::too_many_arguments)]
+async fn apply_finalized_melt_quote(
+    mint: &Mint,
+    db: &cdk_common::database::DynMintDatabase,
+    pubsub: &PubSubManager,
+    quote: &mut MeltQuote,
+    total_spent: cdk_common::Amount<cdk_common::CurrencyUnit>,
+    payment_proof: Option<String>,
+    payment_lookup_id: cdk_common::payment::PaymentIdentifier,
+    operation_id: uuid::Uuid,
+) -> Result<(), Error> {
+    super::melt::shared::finalize_melt_quote(
+        mint,
+        db,
+        pubsub,
+        quote,
+        total_spent,
+        payment_proof.clone(),
+        &payment_lookup_id,
+        Some(operation_id),
     )
     .await?;
 
     quote.state = MeltQuoteState::Paid;
-    quote.payment_proof = data.payment_proof.clone();
-    quote.request_lookup_id = Some(data.payment_lookup_id.clone());
+    quote.payment_proof = payment_proof;
+    quote.request_lookup_id = Some(payment_lookup_id);
 
     Ok(())
 }
@@ -844,25 +869,17 @@ async fn finalize_paid_melt_outcome(
 
     // finalize_melt_quote handles the rest of the atomic cleanup:
     // operation recording, saga deletion, and melt request cleanup.
-    super::melt::shared::finalize_melt_quote(
+    apply_finalized_melt_quote(
         mint,
         db,
         pubsub,
         quote,
         final_total_spent,
-        final_payment_proof.clone(),
-        &final_lookup_id,
-        Some(saga.operation_id),
+        final_payment_proof,
+        final_lookup_id,
+        saga.operation_id,
     )
-    .await?;
-
-    // Reflect the finalized state in the caller's in-memory copy so responses
-    // built from it are accurate.
-    quote.state = MeltQuoteState::Paid;
-    quote.payment_proof = final_payment_proof;
-    quote.request_lookup_id = Some(final_lookup_id);
-
-    Ok(())
+    .await
 }
 
 #[cfg(test)]

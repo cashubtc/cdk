@@ -405,11 +405,6 @@ impl Mint {
                 "recovering incomplete melt saga",
             );
 
-            // Look up input_ys from the proof table for legacy quote_id fallback
-            let input_ys = self
-                .localstore
-                .get_proof_ys_by_operation_id(&saga.operation_id)
-                .await?;
             // Get quote_id from saga (new field added for efficient lookup)
             let quote_id = match saga.quote_id() {
                 Some(qid) => qid.to_owned(),
@@ -420,6 +415,21 @@ impl Mint {
                     );
 
                     // Fallback: Find quote by matching input_ys (for backward compatibility)
+                    let input_ys = match self
+                        .localstore
+                        .get_proof_ys_by_operation_id(&saga.operation_id)
+                        .await
+                    {
+                        Ok(ys) => ys,
+                        Err(e) => {
+                            tracing::error!(
+                                "Failed to get proof Ys for legacy saga {}: {}. Skipping saga.",
+                                saga.operation_id,
+                                e
+                            );
+                            continue;
+                        }
+                    };
                     let melt_quotes = match self.localstore.get_melt_quotes().await {
                         Ok(quotes) => quotes,
                         Err(e) => {

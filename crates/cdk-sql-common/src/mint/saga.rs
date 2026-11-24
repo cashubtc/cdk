@@ -174,23 +174,37 @@ where
                 Error::Internal(format!("Failed to serialize melt finalization data: {e}"))
             })?;
 
-        let affected = query(
+        let sql = if matches!(
+            saga.state,
+            mint::SagaStateEnum::Melt(mint::MeltSagaState::Finalizing(None))
+        ) {
             r#"
             UPDATE saga_state
             SET state = :state, finalization_data = :finalization_data, updated_at = :updated_at
             WHERE operation_id = :operation_id
               AND operation_kind = :operation_kind
               AND state = :old_state
-            "#,
-        )?
-        .bind("state", new_state.state())
-        .bind("operation_kind", saga.operation_kind().to_string())
-        .bind("old_state", saga.state.state())
-        .bind("finalization_data", finalization_data_json)
-        .bind("updated_at", i64::try_from(current_time)?)
-        .bind("operation_id", saga.operation_id.to_string())
-        .execute(&self.inner)
-        .await?;
+              AND finalization_data IS NULL
+            "#
+        } else {
+            r#"
+            UPDATE saga_state
+            SET state = :state, finalization_data = :finalization_data, updated_at = :updated_at
+            WHERE operation_id = :operation_id
+              AND operation_kind = :operation_kind
+              AND state = :old_state
+            "#
+        };
+
+        let affected = query(sql)?
+            .bind("state", new_state.state())
+            .bind("operation_kind", saga.operation_kind().to_string())
+            .bind("old_state", saga.state.state())
+            .bind("finalization_data", finalization_data_json)
+            .bind("updated_at", i64::try_from(current_time)?)
+            .bind("operation_id", saga.operation_id.to_string())
+            .execute(&self.inner)
+            .await?;
 
         if affected != 1 {
             return Err(Error::ConcurrentUpdate);

@@ -157,7 +157,7 @@ impl FromStr for SwapSagaState {
 }
 
 /// States specific to melt saga
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MeltSagaState {
     /// Setup complete (proofs reserved, quote verified)
@@ -180,6 +180,99 @@ pub enum MeltSagaState {
     Finalizing(Option<MeltFinalizationData>),
 }
 
+impl<'de> Deserialize<'de> for MeltSagaState {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct MeltSagaStateVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for MeltSagaStateVisitor {
+            type Value = MeltSagaState;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a melt saga state string or finalizing map")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                match value {
+                    "setup_complete" => Ok(MeltSagaState::SetupComplete),
+                    "payment_attempted" => Ok(MeltSagaState::PaymentAttempted),
+                    "payment_pending" => Ok(MeltSagaState::PaymentPending),
+                    "payment_failed" => Ok(MeltSagaState::PaymentFailed),
+                    "finalizing" => Ok(MeltSagaState::Finalizing(None)),
+                    other => Err(E::unknown_variant(
+                        other,
+                        &[
+                            "setup_complete",
+                            "payment_attempted",
+                            "payment_pending",
+                            "payment_failed",
+                            "finalizing",
+                        ],
+                    )),
+                }
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let Some(key) = map.next_key::<String>()? else {
+                    return Err(serde::de::Error::custom(
+                        "expected melt saga state variant key",
+                    ));
+                };
+                let state = match key.as_str() {
+                    "finalizing" => {
+                        let data: Option<MeltFinalizationData> = map.next_value()?;
+                        MeltSagaState::Finalizing(data)
+                    }
+                    "setup_complete" => {
+                        let _: serde::de::IgnoredAny = map.next_value()?;
+                        MeltSagaState::SetupComplete
+                    }
+                    "payment_attempted" => {
+                        let _: serde::de::IgnoredAny = map.next_value()?;
+                        MeltSagaState::PaymentAttempted
+                    }
+                    "payment_pending" => {
+                        let _: serde::de::IgnoredAny = map.next_value()?;
+                        MeltSagaState::PaymentPending
+                    }
+                    "payment_failed" => {
+                        let _: serde::de::IgnoredAny = map.next_value()?;
+                        MeltSagaState::PaymentFailed
+                    }
+                    other => {
+                        return Err(serde::de::Error::unknown_variant(
+                            other,
+                            &[
+                                "setup_complete",
+                                "payment_attempted",
+                                "payment_pending",
+                                "payment_failed",
+                                "finalizing",
+                            ],
+                        ));
+                    }
+                };
+                if let Some(extra) = map.next_key::<String>()? {
+                    return Err(serde::de::Error::custom(format!(
+                        "unexpected extra key in melt saga state: {extra}"
+                    )));
+                }
+                Ok(state)
+            }
+        }
+
+        deserializer.deserialize_any(MeltSagaStateVisitor)
+    }
+}
+
 impl MeltSagaState {
     /// Constructs a `Finalizing` state carrying the durable finalization payload.
     pub fn finalizing(data: MeltFinalizationData) -> Self {
@@ -195,11 +288,6 @@ impl MeltSagaState {
             Self::PaymentFailed => "payment_failed",
             Self::Finalizing(_) => "finalizing",
         }
-    }
-
-    /// Returns `true` if this state is terminal until the saga row is deleted.
-    pub fn is_terminal(&self) -> bool {
-        matches!(self, Self::PaymentFailed | Self::Finalizing(_))
     }
 
     /// Returns the persisted finalization payload if this state is `Finalizing(Some(_))`.
@@ -310,7 +398,7 @@ impl SagaStateEnum {
 }
 
 /// Persisted saga for recovery
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Saga {
     /// Operation ID (correlation key)
     pub operation_id: Uuid,
@@ -323,6 +411,64 @@ pub struct Saga {
     pub created_at: u64,
     /// Unix timestamp when saga was last updated
     pub updated_at: u64,
+}
+
+impl<'de> Deserialize<'de> for Saga {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct SagaDe {
+            operation_id: Uuid,
+            #[serde(default)]
+            operation_kind: Option<OperationKind>,
+            state: SagaStateEnum,
+            #[serde(default)]
+            quote_id: Option<String>,
+            #[serde(default)]
+            finalization_data: Option<MeltFinalizationData>,
+            created_at: u64,
+            updated_at: u64,
+        }
+
+        let raw = SagaDe::deserialize(deserializer)?;
+        if let Some(kind) = raw.operation_kind {
+            if kind != raw.state.operation_kind() {
+                return Err(serde::de::Error::custom(format!(
+                    "Saga operation_kind ({kind}) does not match state ({})",
+                    raw.state.operation_kind()
+                )));
+            }
+        }
+
+        let state = match (raw.state, raw.finalization_data) {
+            (SagaStateEnum::Melt(MeltSagaState::Finalizing(None)), Some(data)) => {
+                SagaStateEnum::Melt(MeltSagaState::Finalizing(Some(data)))
+            }
+            (SagaStateEnum::Melt(MeltSagaState::Finalizing(Some(existing))), Some(legacy))
+                if existing != legacy =>
+            {
+                return Err(serde::de::Error::custom(
+                    "Conflicting MeltFinalizationData between state and legacy finalization_data",
+                ));
+            }
+            (SagaStateEnum::Swap(_), Some(_)) => {
+                return Err(serde::de::Error::custom(
+                    "Swap saga cannot carry melt finalization_data",
+                ));
+            }
+            (state, _) => state,
+        };
+
+        Ok(Self {
+            operation_id: raw.operation_id,
+            state,
+            quote_id: raw.quote_id,
+            created_at: raw.created_at,
+            updated_at: raw.updated_at,
+        })
+    }
 }
 
 /// Persisted payment result for resuming melt finalization after a crash.
@@ -428,10 +574,6 @@ impl Saga {
         created_at: u64,
         updated_at: u64,
     ) -> Self {
-        let quote_id = match &state {
-            SagaStateEnum::Melt(_) => quote_id,
-            SagaStateEnum::Swap(_) => None,
-        };
         Self {
             operation_id,
             state,
@@ -441,8 +583,9 @@ impl Saga {
         }
     }
 
-    /// Override creation and update timestamps (primarily for tests).
-    pub fn with_timestamps(mut self, created_at: u64, updated_at: u64) -> Self {
+    /// Override creation and update timestamps for internal database test fixtures.
+    #[cfg(all(feature = "mint", feature = "test"))]
+    pub(crate) fn with_timestamps(mut self, created_at: u64, updated_at: u64) -> Self {
         self.created_at = created_at;
         self.updated_at = updated_at;
         self
@@ -2527,5 +2670,64 @@ mod tests {
         )
         .expect_err("empty onchain fee_options on reload must be rejected");
         assert!(matches!(err, crate::Error::OnchainFeeOptionsEmpty));
+    }
+
+    #[test]
+    fn saga_serialization_roundtrip_and_legacy_compat() {
+        let operation_id = Uuid::new_v4();
+        let data = MeltFinalizationData {
+            total_spent: Amount::from(9_250).with_unit(CurrencyUnit::Sat),
+            payment_lookup_id: PaymentIdentifier::CustomId("lookup-123".to_string()),
+            payment_proof: Some("preimage-abc".to_string()),
+        };
+
+        // Current format round-trip.
+        let current = Saga::new_melt(
+            operation_id,
+            MeltSagaState::finalizing(data.clone()),
+            "quote-1".to_string(),
+        );
+        let serialized = serde_json::to_string(&current).expect("serialize current saga");
+        let roundtripped: Saga =
+            serde_json::from_str(&serialized).expect("deserialize current saga");
+        assert_eq!(roundtripped, current);
+
+        // Legacy standalone MeltSagaState string decodes to Finalizing(None).
+        let legacy_state: MeltSagaState =
+            serde_json::from_str("\"finalizing\"").expect("deserialize legacy finalizing tag");
+        assert_eq!(legacy_state, MeltSagaState::Finalizing(None));
+
+        // Legacy Saga payload with top-level `operation_kind` + `finalization_data`
+        // preserves its payment metadata into `Finalizing(Some(data))`.
+        let legacy_json = serde_json::json!({
+            "operation_id": operation_id,
+            "operation_kind": "melt",
+            "state": { "type": "melt", "finalizing": null },
+            "quote_id": "quote-1",
+            "finalization_data": data,
+            "created_at": 100,
+            "updated_at": 200,
+        })
+        .to_string();
+        let migrated: Saga = serde_json::from_str(&legacy_json).expect("deserialize legacy saga");
+        assert_eq!(migrated.operation_id, operation_id);
+        assert_eq!(migrated.operation_kind(), OperationKind::Melt);
+        assert_eq!(migrated.quote_id(), Some("quote-1"));
+        assert_eq!(migrated.finalization_data(), Some(&data));
+        assert_eq!(migrated.created_at, 100);
+        assert_eq!(migrated.updated_at, 200);
+
+        // Mismatched legacy operation_kind must be rejected.
+        let bad_kind = serde_json::json!({
+            "operation_id": operation_id,
+            "operation_kind": "swap",
+            "state": { "type": "melt", "finalizing": null },
+            "quote_id": "quote-1",
+            "finalization_data": data,
+            "created_at": 100,
+            "updated_at": 200,
+        })
+        .to_string();
+        assert!(serde_json::from_str::<Saga>(&bad_kind).is_err());
     }
 }
