@@ -84,24 +84,46 @@ impl<'de> Deserialize<'de> for QuoteId {
     where
         D: Deserializer<'de>,
     {
-        // Deserialize as plain string first
-        let s = String::deserialize(deserializer)?;
+        struct QuoteIdVisitor;
 
-        // Try UUID first
-        if let Ok(u) = Uuid::parse_str(&s) {
-            return Ok(QuoteId::UUID(u));
+        impl<'de> de::Visitor<'de> for QuoteIdVisitor {
+            type Value = QuoteId;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a UUID string, 16-byte UUID, or valid base64 string")
+            }
+
+            fn visit_str<E>(self, s: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                if let Ok(u) = Uuid::parse_str(s) {
+                    return Ok(QuoteId::UUID(u));
+                }
+
+                if general_purpose::URL_SAFE.decode(s).is_ok() {
+                    return Ok(QuoteId::BASE64(s.to_string()));
+                }
+
+                Err(E::custom(format!(
+                    "QuoteId must be either a UUID (e.g. {}) or a valid base64 string; got: {}",
+                    Uuid::nil(),
+                    s
+                )))
+            }
+
+            fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                let uuid = Uuid::from_slice(v).map_err(|e| {
+                    E::custom(format!("invalid compact UUID bytes for QuoteId: {e}"))
+                })?;
+                Ok(QuoteId::UUID(uuid))
+            }
         }
 
-        if general_purpose::URL_SAFE.decode(&s).is_ok() {
-            return Ok(QuoteId::BASE64(s));
-        }
-
-        // Neither matched — return a helpful error
-        Err(de::Error::custom(format!(
-            "QuoteId must be either a UUID (e.g. {}) or a valid base64 string; got: {}",
-            Uuid::nil(),
-            s
-        )))
+        deserializer.deserialize_any(QuoteIdVisitor)
     }
 }
 
@@ -176,5 +198,21 @@ mod tests {
         let err = serde_json::from_str::<QuoteId>(r#""not a quote id""#).unwrap_err();
 
         assert!(err.to_string().contains("QuoteId must be either a UUID"));
+    }
+
+    #[test]
+    fn test_quote_id_cbor_roundtrip() {
+        let uuid_id =
+            QuoteId::UUID(Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap());
+        let mut uuid_bytes = Vec::new();
+        ciborium::into_writer(&uuid_id, &mut uuid_bytes).unwrap();
+        let decoded_uuid: QuoteId = ciborium::from_reader(uuid_bytes.as_slice()).unwrap();
+        assert_eq!(decoded_uuid, uuid_id);
+
+        let b64_id = QuoteId::BASE64("SGVsbG8gV29ybGQh".to_string());
+        let mut b64_bytes = Vec::new();
+        ciborium::into_writer(&b64_id, &mut b64_bytes).unwrap();
+        let decoded_b64: QuoteId = ciborium::from_reader(b64_bytes.as_slice()).unwrap();
+        assert_eq!(decoded_b64, b64_id);
     }
 }

@@ -1396,6 +1396,7 @@ dependencies = [
  "cashu",
  "cdk-http-client",
  "cdk-prometheus",
+ "ciborium",
  "criterion",
  "futures",
  "getrandom 0.2.17",

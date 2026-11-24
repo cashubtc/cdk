@@ -566,8 +566,6 @@ impl Mint {
                 .run(super::saga_recovery::reconcile_melt_saga_with_lease(
                     &saga,
                     &mut quote,
-                    &self.localstore,
-                    &self.pubsub_manager,
                     self,
                     super::saga_recovery::BackendErrorPolicy::LogAndSkip,
                 ))
@@ -629,8 +627,6 @@ impl Mint {
                 super::saga_recovery::reconcile_melt_saga_with_lease(
                     &saga,
                     quote,
-                    &self.localstore,
-                    &self.pubsub_manager,
                     self,
                     super::saga_recovery::BackendErrorPolicy::Propagate,
                 )

@@ -265,3 +265,38 @@ pub(crate) async fn expire_melt_leases(mint: &Mint) {
         }
     }
 }
+
+/// Advances a persisted melt saga to `target`, stepping through `PaymentAttempted`
+/// first when transitioning from `SetupComplete` to `PaymentPending` or `PaymentFailed`.
+pub(crate) async fn advance_melt_saga_to(
+    mint: &Mint,
+    operation_id: &uuid::Uuid,
+    target: cdk_common::mint::MeltSagaState,
+) {
+    use cdk_common::mint::{MeltSagaState, SagaStateEnum};
+
+    let mut tx = mint.localstore().begin_transaction().await.unwrap();
+    let mut acquired = tx
+        .get_saga_for_update(operation_id)
+        .await
+        .unwrap()
+        .expect("saga should exist");
+    if matches!(
+        acquired.state,
+        SagaStateEnum::Melt(MeltSagaState::SetupComplete)
+    ) && matches!(
+        target,
+        MeltSagaState::PaymentPending | MeltSagaState::PaymentFailed
+    ) {
+        tx.update_acquired_saga(
+            &mut acquired,
+            SagaStateEnum::Melt(MeltSagaState::PaymentAttempted),
+        )
+        .await
+        .unwrap();
+    }
+    tx.update_acquired_saga(&mut acquired, SagaStateEnum::Melt(target))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+}

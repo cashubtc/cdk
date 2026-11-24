@@ -1150,10 +1150,13 @@ impl MeltSaga<PaymentConfirmed> {
     /// payment was already confirmed as Paid. Compensating would return proofs to
     /// the user while the mint has already paid the invoice, causing fund loss.
     ///
-    /// Instead, the error is returned and the saga remains in the database with
-    /// `Finalizing` state. On startup, the recovery process will:
+    /// Instead, the error is returned and the saga remains in the database in
+    /// `Finalizing(Some(data))` state. Recovery (on startup or on-demand quote
+    /// status check) will:
     /// 1. Find the incomplete saga
-    /// 2. Check the payment backend (which will confirm payment as Paid)
+    /// 2. Resume directly from the persisted [`MeltFinalizationData`] without
+    ///    re-querying the payment backend (only legacy payloadless
+    ///    `Finalizing(None)` rows consult internal settlement or the backend)
     /// 3. Retry finalization
     ///
     /// # Errors

@@ -64,6 +64,9 @@ tokio = { workspace = true, default-features = false, features = ["sync"] }
 wasm-bindgen.workspace = true
 wasm-bindgen-futures = "0.4"
 
+[dev-dependencies]
+ciborium.workspace = true
+
 # criterion pulls rayon, which refuses to build for wasm32, and the benches it
 # drives are native-only anyway.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]

@@ -95,11 +95,11 @@ pub(crate) fn plan_melt_recovery(
 pub(crate) async fn reconcile_melt_saga_with_lease(
     saga: &Saga,
     quote: &mut MeltQuote,
-    db: &cdk_common::database::DynMintDatabase,
-    pubsub: &PubSubManager,
     mint: &Mint,
     error_policy: BackendErrorPolicy,
 ) -> Result<(), Error> {
+    let db = &mint.localstore;
+    let pubsub = &mint.pubsub_manager;
     let Some(melt_state) = saga.melt_state() else {
         return Ok(());
     };
@@ -176,7 +176,8 @@ pub(crate) async fn reconcile_melt_saga_with_lease(
             );
             if error_policy
                 .resolve(
-                    complete_finalization_with_data(saga, quote, data, db, pubsub, mint).await,
+                    apply_finalized_melt_quote(mint, db, pubsub, quote, data, saga.operation_id)
+                        .await,
                     |err| {
                         tracing::error!(
                             "Failed to finalize Finalizing saga {}: {}. Will retry.",
@@ -333,18 +334,6 @@ pub(crate) async fn reconcile_melt_saga_with_lease(
         }
         MeltRecoveryStep::Noop => Ok(()),
     }
-}
-
-/// Runs the shared finalization path for a saga already in `Finalizing`.
-async fn complete_finalization_with_data(
-    saga: &Saga,
-    quote: &mut MeltQuote,
-    data: &MeltFinalizationData,
-    db: &cdk_common::database::DynMintDatabase,
-    pubsub: &PubSubManager,
-    mint: &Mint,
-) -> Result<(), Error> {
-    apply_finalized_melt_quote(mint, db, pubsub, quote, data, saga.operation_id).await
 }
 
 /// Normalizes `data.total_spent`, runs `shared::finalize_melt_quote`, and synchronizes
@@ -853,44 +842,13 @@ mod tests {
 
     use super::*;
     use crate::mint::melt::melt_saga::{InternalSettlementOutcome, MeltSaga};
-    use crate::test_helpers::mint::{create_test_mint, mint_test_proofs};
+    use crate::test_helpers::mint::{advance_melt_saga_to, create_test_mint, mint_test_proofs};
 
     fn into_mint_arc<M>(mint: M) -> std::sync::Arc<Mint>
     where
         M: Into<std::sync::Arc<Mint>>,
     {
         mint.into()
-    }
-
-    async fn advance_melt_saga_to(
-        mint: &crate::mint::Mint,
-        operation_id: &uuid::Uuid,
-        target: MeltSagaState,
-    ) {
-        let mut tx = mint.localstore.begin_transaction().await.unwrap();
-        let mut acquired = tx
-            .get_saga_for_update(operation_id)
-            .await
-            .unwrap()
-            .expect("saga should exist");
-        if matches!(
-            acquired.state,
-            SagaStateEnum::Melt(MeltSagaState::SetupComplete)
-        ) && matches!(
-            target,
-            MeltSagaState::PaymentPending | MeltSagaState::PaymentFailed
-        ) {
-            tx.update_acquired_saga(
-                &mut acquired,
-                SagaStateEnum::Melt(MeltSagaState::PaymentAttempted),
-            )
-            .await
-            .unwrap();
-        }
-        tx.update_acquired_saga(&mut acquired, SagaStateEnum::Melt(target))
-            .await
-            .unwrap();
-        tx.commit().await.unwrap();
     }
 
     #[test]
