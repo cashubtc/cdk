@@ -5,7 +5,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::nonce::CustodyProtocol;
-use crate::session::{Backend, Failure, MemorySessionTable, MemoryStoreTable, SessionRecord};
+use crate::session::{Failure, MemorySessionTable, MemoryStoreTable, SessionRecord};
 use crate::{
     ApplicationDerivationVersion, ApplicationId, ApplicationKeyEpoch, ApplicationRegistration,
     EncryptedSecret, Error, MemberId, MemoryNonceStore, NonceBurnReason, RootKeyEpoch,
@@ -590,8 +590,6 @@ impl SessionRecord for VirtualMusigRecord {
     type Tombstone = VirtualMusigTombstone;
     type Reservation = VirtualMusigReservation;
 
-    const VALIDATE_NEW_FIRST: bool = true;
-    const MEMORY_RELEASES_SLOT_BEFORE_BURN: bool = true;
     const KEYED_BY_SESSION: bool = false;
 
     fn key(&self) -> VirtualMusigNonceId {
@@ -649,46 +647,32 @@ impl SessionRecord for VirtualMusigRecord {
         VirtualMusigReservation::Existing(Box::new(record))
     }
 
-    fn error(failure: Failure, backend: Backend) -> Error {
+    fn error(failure: Failure) -> Error {
         let session = |message: &str| Error::InvalidSigningSession(message.to_string());
         let commitment = |message: &str| Error::InvalidCommitment(message.to_string());
         let persistence = |message: &str| Error::NoncePersistence(message.to_string());
-        match (failure, backend) {
-            (Failure::StaleAttempt, Backend::Memory) => session("protocol attempt is stale"),
-            (Failure::StaleAttempt, Backend::Redb) => session("virtual MuSig2 attempt is stale"),
-            (Failure::SignerSetChanged, Backend::Memory) => {
-                session("signer set changed within a protocol attempt")
-            }
-            (Failure::SignerSetChanged, Backend::Redb) => {
+        match failure {
+            Failure::StaleAttempt => session("virtual MuSig2 attempt is stale"),
+            Failure::SignerSetChanged => {
                 session("signer set changed within a virtual MuSig2 attempt")
             }
-            (Failure::ActiveRecordMissing, _) => {
-                persistence("active virtual MuSig2 record is missing")
-            }
-            (Failure::SessionCompacted, _) => {
+            Failure::ActiveRecordMissing => persistence("active virtual MuSig2 record is missing"),
+            Failure::SessionCompacted => {
                 commitment("virtual MuSig2 session is terminal and compacted")
             }
-            (
-                Failure::NotActivated | Failure::SlotClaimed | Failure::KeyClaimed,
-                Backend::Memory,
-            ) => session("virtual MuSig2 attempt was not exclusively activated"),
-            (Failure::NotActivated, Backend::Redb) => {
-                session("virtual MuSig2 attempt was not durably activated")
-            }
-            (Failure::SlotClaimed | Failure::KeyClaimed, Backend::Redb) => {
+            Failure::NotActivated => session("virtual MuSig2 attempt was not durably activated"),
+            Failure::SlotClaimed | Failure::KeyClaimed => {
                 session("virtual MuSig2 slot or nonce is already claimed")
             }
-            (Failure::KeyCompacted, _) => {
-                commitment("virtual MuSig2 nonce is terminal and compacted")
-            }
-            (Failure::RecordDisappeared, _) => persistence("virtual MuSig2 record disappeared"),
-            (Failure::ChangedConcurrently, _) => {
+            Failure::KeyCompacted => commitment("virtual MuSig2 nonce is terminal and compacted"),
+            Failure::RecordDisappeared => persistence("virtual MuSig2 record disappeared"),
+            Failure::ChangedConcurrently => {
                 persistence("virtual MuSig2 record changed concurrently")
             }
-            (Failure::TerminalRecordMissing, _) => {
+            Failure::TerminalRecordMissing => {
                 persistence("terminal virtual MuSig2 record is missing")
             }
-            (Failure::TerminalOrderNonterminal, _) => {
+            Failure::TerminalOrderNonterminal => {
                 persistence("virtual MuSig2 terminal order references active state")
             }
         }
@@ -700,8 +684,6 @@ impl SessionRecord for ThresholdDhRecord {
     type Tombstone = ThresholdDhTombstone;
     type Reservation = ThresholdDhReservation;
 
-    const VALIDATE_NEW_FIRST: bool = true;
-    const MEMORY_RELEASES_SLOT_BEFORE_BURN: bool = true;
     const KEYED_BY_SESSION: bool = true;
 
     fn key(&self) -> SigningSessionId {
@@ -758,44 +740,30 @@ impl SessionRecord for ThresholdDhRecord {
         ThresholdDhReservation::Existing(Box::new(record))
     }
 
-    fn error(failure: Failure, backend: Backend) -> Error {
+    fn error(failure: Failure) -> Error {
         let session = |message: &str| Error::InvalidSigningSession(message.to_string());
         let persistence = |message: &str| Error::NoncePersistence(message.to_string());
-        match (failure, backend) {
-            (Failure::StaleAttempt, Backend::Memory) => session("protocol attempt is stale"),
-            (Failure::StaleAttempt, Backend::Redb) => session("threshold-DH attempt is stale"),
-            (Failure::SignerSetChanged, Backend::Memory) => {
-                session("signer set changed within a protocol attempt")
-            }
-            (Failure::SignerSetChanged, Backend::Redb) => {
+        match failure {
+            Failure::StaleAttempt => session("threshold-DH attempt is stale"),
+            Failure::SignerSetChanged => {
                 session("signer set changed within a threshold-DH attempt")
             }
-            (Failure::ActiveRecordMissing, _) => {
-                persistence("active threshold-DH record is missing")
-            }
-            (Failure::SessionCompacted | Failure::KeyCompacted, _) => {
+            Failure::ActiveRecordMissing => persistence("active threshold-DH record is missing"),
+            Failure::SessionCompacted | Failure::KeyCompacted => {
                 session("threshold-DH session is terminal and compacted")
             }
+            Failure::NotActivated => session("threshold-DH attempt was not durably activated"),
             // Records are keyed by session, so a claimed key is always reported
-            // as an existing or compacted session before this check.
-            (
-                Failure::NotActivated | Failure::SlotClaimed | Failure::KeyClaimed,
-                Backend::Memory,
-            ) => session("threshold-DH attempt was not exclusively activated"),
-            (Failure::NotActivated, Backend::Redb) => {
-                session("threshold-DH attempt was not durably activated")
-            }
-            (Failure::SlotClaimed | Failure::KeyClaimed, Backend::Redb) => {
+            // as an existing or compacted session before the slot check.
+            Failure::SlotClaimed | Failure::KeyClaimed => {
                 session("threshold-DH slot is already claimed")
             }
-            (Failure::RecordDisappeared, _) => persistence("threshold-DH record disappeared"),
-            (Failure::ChangedConcurrently, _) => {
-                persistence("threshold-DH record changed concurrently")
-            }
-            (Failure::TerminalRecordMissing, _) => {
+            Failure::RecordDisappeared => persistence("threshold-DH record disappeared"),
+            Failure::ChangedConcurrently => persistence("threshold-DH record changed concurrently"),
+            Failure::TerminalRecordMissing => {
                 persistence("terminal threshold-DH record is missing")
             }
-            (Failure::TerminalOrderNonterminal, _) => {
+            Failure::TerminalOrderNonterminal => {
                 persistence("threshold-DH terminal order references active state")
             }
         }
@@ -925,7 +893,7 @@ pub(crate) fn validate_dh_transition(
     Ok(())
 }
 
-fn require_protocol(
+pub(crate) fn require_protocol(
     context: &SigningSessionContext,
     expected: CustodyProtocol,
 ) -> Result<(), Error> {

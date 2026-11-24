@@ -146,7 +146,6 @@ impl RedbSessionRecord for VirtualMusigRecord {
         missing_sequence: MISSING_SEQUENCE,
         sequence_overflow: SEQUENCE_OVERFLOW,
     };
-    const REDB_COMBINED_CLAIM_CHECK: bool = true;
 
     fn encode(&self) -> Result<Vec<u8>, Error> {
         self.to_bytes()
@@ -181,7 +180,6 @@ impl RedbSessionRecord for ThresholdDhRecord {
         missing_sequence: MISSING_SEQUENCE,
         sequence_overflow: SEQUENCE_OVERFLOW,
     };
-    const REDB_COMBINED_CLAIM_CHECK: bool = false;
 
     fn encode(&self) -> Result<Vec<u8>, Error> {
         self.to_bytes()

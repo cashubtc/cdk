@@ -118,7 +118,6 @@ impl RedbSessionRecord for NonceRecord {
         missing_sequence: "nonce sequence metadata is missing",
         sequence_overflow: "terminal nonce sequence overflow",
     };
-    const REDB_COMBINED_CLAIM_CHECK: bool = false;
 
     fn encode(&self) -> Result<Vec<u8>, Error> {
         self.to_bytes()

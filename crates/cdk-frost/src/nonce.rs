@@ -6,8 +6,9 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::protocol::require_protocol;
 use crate::protocol::ProtocolMemoryState;
-use crate::session::{Backend, Failure, MemorySessionTable, MemoryStoreTable, SessionRecord};
+use crate::session::{Failure, MemorySessionTable, MemoryStoreTable, SessionRecord};
 use crate::types::{
     ApplicationDerivationVersion, ApplicationId, ApplicationKeyEpoch, SignatureMode,
     MAX_PARTICIPANTS,
@@ -742,8 +743,6 @@ impl SessionRecord for NonceRecord {
     type Tombstone = NonceTombstone;
     type Reservation = NonceReservation;
 
-    const VALIDATE_NEW_FIRST: bool = false;
-    const MEMORY_RELEASES_SLOT_BEFORE_BURN: bool = false;
     const KEYED_BY_SESSION: bool = false;
 
     fn key(&self) -> NonceId {
@@ -781,8 +780,8 @@ impl SessionRecord for NonceRecord {
         )
     }
 
-    fn validate_activation(_context: &SigningSessionContext) -> Result<(), Error> {
-        Ok(())
+    fn validate_activation(context: &SigningSessionContext) -> Result<(), Error> {
+        require_protocol(context, CustodyProtocol::OrdinaryFrost)
     }
 
     fn validate_new(&self) -> Result<(), Error> {
@@ -801,7 +800,7 @@ impl SessionRecord for NonceRecord {
         NonceReservation::Existing(Box::new(record))
     }
 
-    fn error(failure: Failure, backend: Backend) -> Error {
+    fn error(failure: Failure) -> Error {
         let session = |message: &str| Error::InvalidSigningSession(message.to_string());
         let commitment = |message: &str| Error::InvalidCommitment(message.to_string());
         let persistence = |message: &str| Error::NoncePersistence(message.to_string());
@@ -809,12 +808,9 @@ impl SessionRecord for NonceRecord {
             Failure::StaleAttempt => session("signing attempt is stale"),
             Failure::SignerSetChanged => session("signer set changed within an active attempt"),
             Failure::ActiveRecordMissing => persistence("active signing slot has no nonce record"),
-            Failure::SessionCompacted => match backend {
-                Backend::Memory => {
-                    commitment("signing session was already compacted and cannot be retried")
-                }
-                Backend::Redb => commitment("signing session is terminal and cannot be retried"),
-            },
+            Failure::SessionCompacted => {
+                commitment("signing session is terminal and cannot be retried")
+            }
             Failure::NotActivated => session("signing attempt was not durably activated"),
             Failure::SlotClaimed => {
                 session("authorization slot already has an active signing attempt")

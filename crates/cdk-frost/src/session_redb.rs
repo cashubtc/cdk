@@ -8,7 +8,7 @@ use std::marker::PhantomData;
 
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 
-use crate::session::{check_attempt, Backend, Failure, SessionRecord};
+use crate::session::{check_attempt, Failure, SessionRecord};
 use crate::{Error, SigningSessionContext, SigningSessionId};
 
 type BytesTable = TableDefinition<'static, &'static [u8], &'static [u8]>;
@@ -47,12 +47,6 @@ pub(crate) struct RedbTables {
 pub(crate) trait RedbSessionRecord: SessionRecord {
     /// On-disk layout of this record kind.
     const TABLES: RedbTables;
-
-    /// Check the slot and key claims together before reporting either.
-    ///
-    /// When true, the key claim decodes any record already stored at the key,
-    /// and the claim error is reported only after both checks ran.
-    const REDB_COMBINED_CLAIM_CHECK: bool;
 
     /// Encode the complete record.
     fn encode(&self) -> Result<Vec<u8>, Error>;
@@ -130,13 +124,13 @@ where
         let transaction = self.database.begin_write().map_err(persistence)?;
         let slot_key = context.slot_id().to_bytes();
         let current = read_attempt(&transaction, &tables, &slot_key)?;
-        if check_attempt::<R>(current, context, Backend::Redb)? {
+        if check_attempt::<R>(current, context)? {
             return Ok(());
         }
 
         if let Some(active_key) = read_bytes(&transaction, tables.active_slots, &slot_key)? {
             let existing = read_record::<R>(&transaction, &active_key)?
-                .ok_or_else(|| R::error(Failure::ActiveRecordMissing, Backend::Redb))?;
+                .ok_or_else(|| R::error(Failure::ActiveRecordMissing))?;
             let burned = existing.burned_for_replacement()?;
             R::validate_transition(&existing, &burned)?;
             let bytes = burned.encode()?;
@@ -168,9 +162,7 @@ where
 
     /// Reserve a new record, or return the exact existing session.
     pub(crate) fn reserve(&self, record: R) -> Result<R::Reservation, Error> {
-        if R::VALIDATE_NEW_FIRST {
-            record.validate_new()?;
-        }
+        record.validate_new()?;
         let tables = R::TABLES;
         let transaction = self.database.begin_write().map_err(persistence)?;
         let session_key = record.context().session_id().to_bytes();
@@ -181,7 +173,7 @@ where
                 if let Some(existing_key) = read_bytes(&transaction, sessions, &session_key)? {
                     return match read_record::<R>(&transaction, &existing_key)? {
                         Some(existing) => Ok(R::existing(existing)),
-                        None => Err(R::error(Failure::SessionCompacted, Backend::Redb)),
+                        None => Err(R::error(Failure::SessionCompacted)),
                     };
                 }
             }
@@ -190,38 +182,23 @@ where
                     return Ok(R::existing(existing));
                 }
                 if contains(&transaction, tables.tombstones, &record_key)? {
-                    return Err(R::error(Failure::SessionCompacted, Backend::Redb));
+                    return Err(R::error(Failure::SessionCompacted));
                 }
             }
         }
         if read_attempt(&transaction, &tables, &slot_key)?
             != Some((record.context().attempt(), record.context().session_id()))
         {
-            return Err(R::error(Failure::NotActivated, Backend::Redb));
+            return Err(R::error(Failure::NotActivated));
         }
-        if R::REDB_COMBINED_CLAIM_CHECK {
-            let slot_claimed = contains(&transaction, tables.active_slots, &slot_key)?;
-            let key_claimed = read_record::<R>(&transaction, &record_key)?.is_some()
-                || contains(&transaction, tables.tombstones, &record_key)?;
-            if slot_claimed || key_claimed {
-                return Err(R::error(Failure::SlotClaimed, Backend::Redb));
-            }
-            if !R::VALIDATE_NEW_FIRST {
-                record.validate_new()?;
-            }
-        } else {
-            if contains(&transaction, tables.active_slots, &slot_key)? {
-                return Err(R::error(Failure::SlotClaimed, Backend::Redb));
-            }
-            if !R::VALIDATE_NEW_FIRST {
-                record.validate_new()?;
-            }
-            if !R::KEYED_BY_SESSION
-                && (contains(&transaction, tables.records, &record_key)?
-                    || contains(&transaction, tables.tombstones, &record_key)?)
-            {
-                return Err(R::error(Failure::KeyClaimed, Backend::Redb));
-            }
+        if contains(&transaction, tables.active_slots, &slot_key)? {
+            return Err(R::error(Failure::SlotClaimed));
+        }
+        if !R::KEYED_BY_SESSION
+            && (contains(&transaction, tables.records, &record_key)?
+                || contains(&transaction, tables.tombstones, &record_key)?)
+        {
+            return Err(R::error(Failure::KeyClaimed));
         }
         let bytes = record.encode()?;
         {
@@ -288,9 +265,9 @@ where
         let transaction = self.database.begin_write().map_err(persistence)?;
         let record_key = R::key_bytes(expected.key());
         let current = read_record::<R>(&transaction, &record_key)?
-            .ok_or_else(|| R::error(Failure::RecordDisappeared, Backend::Redb))?;
+            .ok_or_else(|| R::error(Failure::RecordDisappeared))?;
         if current != *expected {
-            return Err(R::error(Failure::ChangedConcurrently, Backend::Redb));
+            return Err(R::error(Failure::ChangedConcurrently));
         }
         let bytes = replacement.encode()?;
         {
@@ -349,9 +326,9 @@ where
         };
         for (sequence, record_key) in &terminal {
             let record = read_record::<R>(&transaction, record_key)?
-                .ok_or_else(|| R::error(Failure::TerminalRecordMissing, Backend::Redb))?;
+                .ok_or_else(|| R::error(Failure::TerminalRecordMissing))?;
             if !record.is_terminal() {
-                return Err(R::error(Failure::TerminalOrderNonterminal, Backend::Redb));
+                return Err(R::error(Failure::TerminalOrderNonterminal));
             }
             let tombstone = record.encode_tombstone()?;
             {
@@ -401,7 +378,7 @@ where
             tombstones.get(key).map_err(persistence)?.is_some()
         };
         if compacted {
-            return Err(R::error(Failure::KeyCompacted, Backend::Redb));
+            return Err(R::error(Failure::KeyCompacted));
         }
         Ok(None)
     }

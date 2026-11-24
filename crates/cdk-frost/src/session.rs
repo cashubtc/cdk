@@ -6,25 +6,15 @@
 //! compare-and-swap, and finally compact terminal detail into a permanent
 //! replay tombstone. [`SessionRecord`] captures what differs between the record
 //! kinds, and [`MemorySessionTable`] / [`crate::session_redb::RedbSessionTable`]
-//! implement the six store operations once.
+//! implement the six store operations once, with the same rules in both
+//! backends. Every operation either succeeds completely or leaves the table
+//! unchanged.
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Mutex;
 
 use crate::{Error, SigningSessionContext, SigningSessionId, SigningSlotId};
-
-/// Storage backend reporting a failure.
-///
-/// The record kinds historically worded a few failures differently in memory
-/// and in redb; the backend lets [`SessionRecord::error`] keep that wording.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Backend {
-    /// In-memory tables.
-    Memory,
-    /// Durable redb tables.
-    Redb,
-}
 
 /// Every store failure whose error depends on the record kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,21 +53,9 @@ pub(crate) trait SessionRecord: fmt::Debug + Clone + PartialEq + Sized {
     /// Unique record identifier (the nonce, or the session for keyless kinds).
     type Key: fmt::Debug + Copy + Ord;
     /// Compact replay evidence retained in memory after compaction.
-    type Tombstone: fmt::Debug + Clone;
+    type Tombstone: fmt::Debug + Clone + PartialEq;
     /// Public result of a reservation.
     type Reservation;
-
-    /// Validate new records before taking the store lock or write transaction.
-    ///
-    /// When false, the new record is validated after the activation and slot
-    /// checks, inside the lock or transaction.
-    const VALIDATE_NEW_FIRST: bool;
-
-    /// Release the in-memory active slot before loading the record it owns.
-    ///
-    /// When true, an in-memory activation that fails while burning the older
-    /// record has already released that slot.
-    const MEMORY_RELEASES_SLOT_BEFORE_BURN: bool;
 
     /// Whether the record key is the session identifier itself.
     ///
@@ -118,8 +96,8 @@ pub(crate) trait SessionRecord: fmt::Debug + Clone + PartialEq + Sized {
     /// Reservation result returning an existing record for retry handling.
     fn existing(record: Self) -> Self::Reservation;
 
-    /// Error reported for one failure by one backend.
-    fn error(failure: Failure, backend: Backend) -> Error;
+    /// Error reported for one failure.
+    fn error(failure: Failure) -> Error;
 }
 
 /// Check the durable attempt high-water mark for a slot.
@@ -130,18 +108,15 @@ pub(crate) trait SessionRecord: fmt::Debug + Clone + PartialEq + Sized {
 pub(crate) fn check_attempt<R>(
     current: Option<(u32, SigningSessionId)>,
     context: &SigningSessionContext,
-    backend: Backend,
 ) -> Result<bool, Error>
 where
     R: SessionRecord,
 {
     match current {
-        Some((attempt, _)) if attempt > context.attempt() => {
-            Err(R::error(Failure::StaleAttempt, backend))
-        }
+        Some((attempt, _)) if attempt > context.attempt() => Err(R::error(Failure::StaleAttempt)),
         Some((attempt, session_id)) if attempt == context.attempt() => {
             if session_id != context.session_id() {
-                return Err(R::error(Failure::SignerSetChanged, backend));
+                return Err(R::error(Failure::SignerSetChanged));
             }
             Ok(true)
         }
@@ -150,7 +125,7 @@ where
 }
 
 /// In-memory state for one record kind.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct MemorySessionTable<R>
 where
     R: SessionRecord,
@@ -191,27 +166,26 @@ where
     fn activate_attempt(&mut self, context: &SigningSessionContext) -> Result<(), Error> {
         let slot_id = context.slot_id();
         let current = self.latest_attempts.get(&slot_id).copied();
-        if check_attempt::<R>(current, context, Backend::Memory)? {
+        if check_attempt::<R>(current, context)? {
             return Ok(());
         }
 
-        let active = if R::MEMORY_RELEASES_SLOT_BEFORE_BURN {
-            self.active_slots.remove(&slot_id)
-        } else {
-            self.active_slots.get(&slot_id).copied()
-        };
-        if let Some(key) = active {
-            let existing = self
-                .records
-                .get(&key)
-                .cloned()
-                .ok_or_else(|| R::error(Failure::ActiveRecordMissing, Backend::Memory))?;
-            let burned = existing.burned_for_replacement()?;
-            R::validate_transition(&existing, &burned)?;
-            self.records.insert(key, burned);
-            if !R::MEMORY_RELEASES_SLOT_BEFORE_BURN {
-                self.active_slots.remove(&slot_id);
+        // Every fallible step runs before the first mutation.
+        let burned = match self.active_slots.get(&slot_id).copied() {
+            Some(key) => {
+                let existing = self
+                    .records
+                    .get(&key)
+                    .ok_or_else(|| R::error(Failure::ActiveRecordMissing))?;
+                let burned = existing.burned_for_replacement()?;
+                R::validate_transition(existing, &burned)?;
+                Some((key, burned))
             }
+            None => None,
+        };
+        if let Some((key, burned)) = burned {
+            self.records.insert(key, burned);
+            self.active_slots.remove(&slot_id);
             self.terminal_order.push(key);
         }
         self.latest_attempts
@@ -228,27 +202,24 @@ where
                 return Ok(R::existing(existing.clone()));
             }
             if self.tombstones.contains_key(&key) {
-                return Err(R::error(Failure::SessionCompacted, Backend::Memory));
+                return Err(R::error(Failure::SessionCompacted));
             }
         } else if let Some(existing_key) = self.sessions.get(&session_id) {
             return match self.records.get(existing_key) {
                 Some(existing) => Ok(R::existing(existing.clone())),
-                None => Err(R::error(Failure::SessionCompacted, Backend::Memory)),
+                None => Err(R::error(Failure::SessionCompacted)),
             };
         }
         if self.latest_attempts.get(&slot_id) != Some(&(record.context().attempt(), session_id)) {
-            return Err(R::error(Failure::NotActivated, Backend::Memory));
+            return Err(R::error(Failure::NotActivated));
         }
         if self.active_slots.contains_key(&slot_id) {
-            return Err(R::error(Failure::SlotClaimed, Backend::Memory));
-        }
-        if !R::VALIDATE_NEW_FIRST {
-            record.validate_new()?;
+            return Err(R::error(Failure::SlotClaimed));
         }
         if !R::KEYED_BY_SESSION
             && (self.records.contains_key(&key) || self.tombstones.contains_key(&key))
         {
-            return Err(R::error(Failure::KeyClaimed, Backend::Memory));
+            return Err(R::error(Failure::KeyClaimed));
         }
         // Session-keyed kinds keep this index in memory only, to map a session
         // back to its typed key; it is never consulted for their uniqueness.
@@ -259,10 +230,13 @@ where
     }
 
     fn load_key(&self, key: R::Key) -> Result<Option<R>, Error> {
-        if self.tombstones.contains_key(&key) {
-            return Err(R::error(Failure::KeyCompacted, Backend::Memory));
+        if let Some(record) = self.records.get(&key) {
+            return Ok(Some(record.clone()));
         }
-        Ok(self.records.get(&key).cloned())
+        if self.tombstones.contains_key(&key) {
+            return Err(R::error(Failure::KeyCompacted));
+        }
+        Ok(None)
     }
 
     fn load_session(&self, session_id: SigningSessionId) -> Result<Option<R>, Error> {
@@ -280,9 +254,9 @@ where
         let current = self
             .records
             .get(&key)
-            .ok_or_else(|| R::error(Failure::RecordDisappeared, Backend::Memory))?;
+            .ok_or_else(|| R::error(Failure::RecordDisappeared))?;
         if current != expected {
-            return Err(R::error(Failure::ChangedConcurrently, Backend::Memory));
+            return Err(R::error(Failure::ChangedConcurrently));
         }
         if !expected.is_terminal() && replacement.is_terminal() {
             self.active_slots.remove(&expected.context().slot_id());
@@ -302,18 +276,28 @@ where
 
     fn compact_terminal(&mut self, retain_detailed: usize) -> Result<usize, Error> {
         let compact_count = self.terminal_order.len().saturating_sub(retain_detailed);
-        let keys = self
+        // Every fallible step runs before the first mutation.
+        let tombstones = self
             .terminal_order
-            .drain(..compact_count)
-            .collect::<Vec<_>>();
-        for key in &keys {
-            let record = self
-                .records
-                .remove(key)
-                .ok_or_else(|| R::error(Failure::TerminalRecordMissing, Backend::Memory))?;
-            self.tombstones.insert(*key, record.tombstone());
+            .iter()
+            .take(compact_count)
+            .map(|key| {
+                let record = self
+                    .records
+                    .get(key)
+                    .ok_or_else(|| R::error(Failure::TerminalRecordMissing))?;
+                if !record.is_terminal() {
+                    return Err(R::error(Failure::TerminalOrderNonterminal));
+                }
+                Ok((*key, record.tombstone()))
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        self.terminal_order.drain(..compact_count);
+        for (key, tombstone) in tombstones {
+            self.records.remove(&key);
+            self.tombstones.insert(key, tombstone);
         }
-        Ok(keys.len())
+        Ok(compact_count)
     }
 }
 
@@ -364,9 +348,7 @@ where
 
     /// Reserve a new record, or return the exact existing session.
     pub(crate) fn reserve(&self, record: R) -> Result<R::Reservation, Error> {
-        if R::VALIDATE_NEW_FIRST {
-            record.validate_new()?;
-        }
+        record.validate_new()?;
         self.with_table(|table| table.reserve(record))
     }
 
@@ -394,5 +376,123 @@ where
     /// Compact old terminal detail into replay tombstones.
     pub(crate) fn compact_terminal(&self, retain_detailed: usize) -> Result<usize, Error> {
         self.with_table(|table| table.compact_terminal(retain_detailed))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        ApplicationDerivationVersion, ApplicationId, ApplicationKeyEpoch, ApplicationRegistration,
+        CustodyProtocol, MemberId, NonceBurnReason, RootKeyEpoch, SigningAuthorizationScope,
+        SigningDerivation, ThresholdDhLifecycle, ThresholdDhRecord,
+    };
+
+    fn dh_context(authorization_reference: u8, attempt: u32) -> SigningSessionContext {
+        let registration = ApplicationRegistration::new(
+            ApplicationId::from_label("org.cashubtc.cdk.session-table-test").expect("app id"),
+            ApplicationKeyEpoch::new(1).expect("key epoch"),
+            ApplicationDerivationVersion::new(1).expect("version"),
+            [7; 32],
+        )
+        .expect("registration");
+        let scope = SigningAuthorizationScope::new(
+            [0xf0; 32],
+            RootKeyEpoch::new(1).expect("root epoch"),
+            registration,
+            SigningDerivation::application_key().binding(),
+            [authorization_reference; 32],
+            [9; 32],
+        )
+        .expect("scope");
+        SigningSessionContext::new_for_protocol(
+            scope,
+            attempt,
+            [1, 2].map(|member| MemberId::new(member).expect("member")),
+            CustodyProtocol::ThresholdDh,
+        )
+        .expect("context")
+    }
+
+    fn burned_dh_record(context: SigningSessionContext) -> ThresholdDhRecord {
+        ThresholdDhRecord::pending(context, SigningDerivation::application_key(), [3; 32])
+            .transition(
+                ThresholdDhLifecycle::Burned {
+                    reason: NonceBurnReason::Aborted,
+                },
+                None,
+            )
+            .expect("burned record")
+    }
+
+    #[test]
+    fn failed_memory_activation_leaves_table_unchanged() {
+        let older = dh_context(1, 0);
+        let newer = dh_context(1, 1);
+        let slot = older.slot_id();
+
+        // Active slot whose record is missing.
+        let mut table = MemorySessionTable::<ThresholdDhRecord>::default();
+        table.latest_attempts.insert(slot, (0, older.session_id()));
+        table.active_slots.insert(slot, older.session_id());
+        let before = table.clone();
+        assert!(matches!(
+            table.activate_attempt(&newer),
+            Err(Error::NoncePersistence(_))
+        ));
+        assert_eq!(table, before);
+
+        // Active slot whose record cannot be burned again.
+        table
+            .records
+            .insert(older.session_id(), burned_dh_record(older.clone()));
+        let before = table.clone();
+        assert!(matches!(
+            table.activate_attempt(&newer),
+            Err(Error::NoncePersistence(_))
+        ));
+        assert_eq!(table, before);
+    }
+
+    #[test]
+    fn failed_memory_compaction_leaves_table_unchanged() {
+        let first = dh_context(1, 0);
+        let second = dh_context(2, 0);
+
+        // The second terminal entry has no record.
+        let mut table = MemorySessionTable::<ThresholdDhRecord>::default();
+        table
+            .records
+            .insert(first.session_id(), burned_dh_record(first.clone()));
+        table.terminal_order.push(first.session_id());
+        table.terminal_order.push(second.session_id());
+        let before = table.clone();
+        assert!(matches!(
+            table.compact_terminal(0),
+            Err(Error::NoncePersistence(_))
+        ));
+        assert_eq!(table, before);
+
+        // The second terminal entry is not terminal.
+        table.records.insert(
+            second.session_id(),
+            ThresholdDhRecord::pending(
+                second.clone(),
+                SigningDerivation::application_key(),
+                [4; 32],
+            ),
+        );
+        let before = table.clone();
+        assert!(matches!(
+            table.compact_terminal(0),
+            Err(Error::NoncePersistence(_))
+        ));
+        assert_eq!(table, before);
+
+        // A valid order still compacts.
+        table.terminal_order.pop();
+        assert_eq!(table.compact_terminal(0).expect("compaction"), 1);
+        assert!(table.tombstone(first.session_id()).is_some());
+        assert!(table.terminal_order.is_empty());
     }
 }
