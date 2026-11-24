@@ -1,6 +1,7 @@
 # Federation storage contract and checkpoint retention
 
-Status: design, not implemented. Follows package 6 of
+Status: prerequisites 1, 3 and 4 implemented (validity window, Bark readers,
+state transfer); prerequisites 2, 5 and 6 open. Follows package 6 of
 `bls-federation-architecture-review-plan-2026-11-23.md`.
 
 Decision taken: checkpoints may truncate logs and history, and also terminal
@@ -88,7 +89,8 @@ all record that yet.
    observation cannot recreate a pruned UTXO.
 3. **Bark readers off the full journal.** Reconcile, the recovery driver and the
    operator route read the Bark projection instead.
-4. **State transfer (decision B).** A member below a peer's floor downloads the
+4. **State transfer (decision B, implemented; see "State transfer: built").**
+   A member below a peer's floor downloads the
    checkpoint's materialized state as paged rows, verifies them against the
    signed `materialized_state_digest`, installs them, and replays the suffix.
    This covers the mint database rows the digest already enumerates (quotes,
@@ -189,18 +191,31 @@ public key. Quote public keys and payment identifiers must be added to the
 digest rows. That changes the digest definition, which is acceptable
 (cut-through), and is the first implementation step.
 
-### Digest coverage, table by table (step 1 status)
+### Digest coverage, table by table
 
 | Digest table | Covers what a transfer installs | Change |
 |---|---|---|
-| `transaction`, `chain_observation`, `address_allocation`, `bark_recovery` | Yes | Digest rows are now the stored rows themselves (canonical JSON), so the digest and the transfer use one encoding |
-| Bark actions, VTXOs, derivation allocations, transitions, observations | Yes | Already carried each record's full JSON |
-| `payment_observations` | Yes, via a hash of the full observation | The transfer carries the observation; the installer checks the hash |
-| `mint_quotes` | Yes, for consensus-fixed fields | Added payment lookup id and NUT-20 public key. Creation time and extra fields can differ on the originating member and stay out; the installer leaves them empty |
-| `melt_quotes` | Yes, for consensus-fixed fields | Added expiry, options, creation time, extra fields and fee options. The payment lookup id is rewritten by the paying member's processor and stays out |
-| `proof_states` | Yes | Added the full stored proof (secret, C, witness), which every member stores from the same operation inputs |
-| `blind_signatures` | No, by design | Each member stores its own signature share. The installer recomputes the member's share from its key share; it needs each output's operation id and position, which are consensus-fixed |
-| `completed_operations`, `federation_keysets`, FROST application configs | To check in the installer step | |
+| `transaction`, `chain_observation`, `address_allocation`, `bark_recovery` | Yes | Digest rows are the stored rows themselves (canonical JSON), so the digest and the transfer use one encoding |
+| Bark actions, VTXOs, derivation allocations, reservations, transitions, observations | Yes | Already carried each record's full JSON |
+| `payment_observations` | Yes, via a hash of the full observation | The snapshot row carries the observation as an attachment; the installer re-encodes the row from it and requires equality, which checks the evidence hash |
+| `mint_quotes` | Yes, for consensus-fixed fields | Payment lookup id and NUT-20 public key added. Creation time and extra fields can differ on the originating member and stay out; the installer writes 0 and none. Payments are rebuilt from the payment-observation rows with the apply path's quorum rule |
+| `melt_quotes` | Yes, for consensus-fixed fields | Expiry, options, creation time, extra fields and fee options added in step 1. Now also the request as canonical JSON (its display form does not parse back), the estimated blocks and the selected fee index. The payment lookup id is rewritten by the paying member's processor and stays out; paid time is local and stays out |
+| `proof_states` | Yes | The full stored proof (step 1), and now the quote id and the stored mint operation (UUID and kind), which the apply path sets from the operation. A paid melt's duplicate-request check finds its inputs by quote id |
+| `blind_signatures` | Yes, except the signature itself | Each member stores its own share, so the signature stays out. Added the quote id and the share's operation id, output position and accepted index, all consensus-fixed. The installer recomputes the member's share from its key share |
+| `completed_operations` | Yes | Added the melt payment amount and fee, which the apply path fixes from the accepted observation. Per-keyset fee totals are kept as running sums in `keyset_amounts`, not per operation, and are not restored (issued and redeemed totals are rebuilt by the inserts the apply path uses) |
+| `federation_keysets` | Yes | Unchanged: the row carries the whole keyset and the rotation's operation position |
+| FROST root public configs, FROST application configs | Yes | Unchanged: each row carries the whole config JSON |
+
+Every added field was checked in multi-member tests that compare members'
+digests after real flows (`aleph_value_flow`, `catch_up`, `recovery`,
+`checkpoint`): members still agree.
+
+The key registry (`federation_materialized_state_keys`) is not hashed, only
+enumerated. Its rows are rebuilt from the digest rows. Their operation position
+(the operation that last wrote the row) is not consensus-checked, so it stays
+out of the digest; installed records name the checkpoint position instead.
+`Application` registry keys are not hashed or read by anything and are not
+restored.
 
 ### A snapshot has to be taken at the checkpoint
 
@@ -238,6 +253,130 @@ fifteen tables across the mint, the consensus projections and Bark), the
 snapshot store and its retention, the paged route and client, and tests that a
 transferred member reaches the same digest and serves restore. This is the
 largest piece of the retention work.
+
+## State transfer: built
+
+### One source, one row builder
+
+`get_federation_materialized_state_source` (`FederationApplicationDatabase` and
+`FederationApplicationTransaction`) reads every stored row the digest covers
+through one connection or one transaction: the key registry and the rows it
+names (quotes, completed operations, proofs, signed blind signatures and every
+member's shares for them), all payment observations, the FROST configs and the
+Bark projection rows. `cdk/src/mint/federation/state_transfer.rs` turns it, plus
+the key-value projections, into sorted `FederationStateSnapshotRow`s (digest
+row plus optional attachment). The live digest, the snapshot frozen at capture
+and the installer's check inside its transaction all use this builder.
+
+### Snapshot storage
+
+Scheduled capture (`checkpoint_manager.rs`) already built the rows to get the
+digest. It now stores them in the same transaction as the candidate:
+`federation_state_snapshots` (checkpoint id, sequence, row count, digest) and
+`federation_state_snapshot_rows` (one JSON row per index). The store checks
+that the rows hash to the checkpoint digest, keeps the latest
+`FEDERATION_STATE_SNAPSHOT_RETAINED` (two) scheduled snapshots and deletes older
+ones in that transaction. A recovered capture of the same checkpoint is a no-op.
+
+### Paged transfer
+
+- Route: `POST /federation/v1/state-transfer`, a signed peer request with the
+  new REST kind `StateTransfer` and the catch-up request byte limit. The
+  response is not signed: the rows are trusted only once they hash to the
+  quorum-signed digest, so any peer holding the snapshot can serve it.
+- Pages: `FederationStateTransferRequest { checkpoint_id, next_row_index,
+  limit }`, default 500 rows, at most 5,000, and never above the 8 MiB
+  catch-up page limit (the server halves the page until it fits).
+- Client: `FederationRestPeerClient::fetch_state_transfer_page` checks the
+  version, federation, checkpoint, cursor, row limit, progress and row order.
+  `download_state_snapshot_from_member` pages through a snapshot, requires a
+  stable row count and caps the whole download at
+  `FEDERATION_MAX_STATE_TRANSFER_BYTES` (1 GiB), because the installer holds the
+  snapshot in memory. `transfer_state_from_member` downloads and installs.
+
+### Installer
+
+`Mint::install_federation_state_transfer(quorum, rows)` (`state_install.rs`):
+
+1. Verifies the quorum against the member's config, requires a scheduled
+   checkpoint, requires strictly sorted rows and checks that they hash to the
+   signed digest before anything is written.
+2. Decodes every row into what installs it, refusing unknown tables, rows
+   that do not decode, payment-observation attachments that do not re-encode
+   to their row, and state it cannot install (below).
+3. In one transaction: requires empty federation state (no registry keys,
+   observations, projection or Bark rows), then writes the FROST configs
+   (identical configs already held as key material are no-ops), the
+   projection rows, the Bark rows (inserted by the Bark store's own inserts),
+   completed operations, payment observations, quotes (payments rebuilt from
+   the observations, issuance from the row), spent proofs grouped by their
+   operation, the member's own signature shares recomputed with
+   `MemberConfigPrivate::sign_transferred_blinded_messages` (keyset rotations
+   from the snapshot applied first), the blind signatures and the registry.
+4. Recomputes the digest from what it wrote, inside the transaction, and
+   commits only if it equals the signed digest; otherwise it rolls back and
+   the member stays empty.
+5. In the same transaction, `install_federation_state_transfer_frontier`
+   requires a genesis frontier and no journal or finalized-item rows, stores
+   the quorum and sets the checkpoint as journal, finalized-item and
+   application frontier, trusted checkpoint, audited checkpoint and
+   state-transfer base, and sets the active AlephBFT session.
+
+After the install the caller restarts the runtime. Startup finds a trusted
+checkpoint at the exact frontier and needs no rows below it. Catch-up then
+fetches the suffix with the existing protocol.
+
+Two readers learned about the base:
+
+- The SQL checkpoint digest lookups (`federation_*_digest_at`) answer at the
+  base from its signed cursors, since no local row lies below it.
+- `require_prior_applied_quote_operation` accepts a quote with no journal row
+  if a base exists at or below the operation and the quote row is installed.
+
+### Tests
+
+- `state_transfer::wiped_member_installs_checkpoint_state_then_catches_up_and_restores`
+  (`cdk-axum`): two members apply six operations (two quotes, payments, a mint,
+  a swap); the scheduled checkpoint stores its snapshot; a member with only its
+  key material downloads it over the real route in several pages, is refused a
+  tampered row and a tampered attachment without writing anything, installs,
+  reaches the signed digest with identical rows, restarts from the checkpoint,
+  catches up a suffix that mints a quote created below the checkpoint, reaches
+  the peers' digest, and serves NUT-09 restore and check-state on both sides
+  of the checkpoint. Its recomputed shares combine with a peer's share into the
+  same signatures as any other pair.
+- `state_transfer::scheduled_capture_keeps_the_latest_two_snapshots`.
+- Page validation and digest order unit tests in `cdk-common`.
+
+### Left out, and what must follow
+
+1. **Operation ids and conflict keys of the validity window (must come before
+   any member relies on state transfer).** The installed member holds no
+   journal rows below the checkpoint. If an envelope ordered in the
+   `FEDERATION_OPERATION_VALIDITY_SESSIONS` sessions before the checkpoint is
+   ordered again (a client retry submitted through the installed member, or a
+   resubmitted quote), its peers find the duplicate by operation id or
+   conflict key while the installed member appends it, and its journal forks.
+   The transfer must also carry the journal entries of that window (ids,
+   conflict keys, statuses). They are verifiable: their order and application
+   digests chain to the checkpoint's signed cursors.
+2. **In-flight melts.** A snapshot with a pending melt quote or a pending proof
+   is refused; the member retries from a later checkpoint. Installing one needs
+   the melt request, the pending blinded messages and the saga.
+3. **Unsigned blinded messages** of finished melts (rows without a signature)
+   are not in the digest and are not installed.
+4. **Per-keyset fee totals** (`keyset_amounts.fee_collected`) start from zero.
+5. **Bark lookups below the base.** The Bark projection is installed, but the
+   receive-intent lookup and exit-publication validation read journal entries
+   by operation id, so a Bark action that spans the checkpoint cannot advance
+   on the installed member. Member-local Bark wallet state is out of scope.
+6. **No automatic trigger.** Nothing calls the transfer in production yet:
+   peers still keep full history, so a lagging member replays. The trigger
+   (a peer's floor above the member's frontier) belongs with deletion
+   (prerequisite 6).
+7. **Cost.** Every scheduled capture now writes the whole state as snapshot
+   rows (it already read all of it for the digest), and the snapshot is held
+   in memory during capture and install.
 
 ## Not retained-history work
 
