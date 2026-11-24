@@ -19,15 +19,15 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::canonical::canonical_json_bytes;
 use super::{
+    decode_row, hex_row_key, insert_row, outpoint_row_key, row_kind, unknown_row_kind,
     FederationAllocatedAddressRef, FederationError, FederationFrostApplicationId,
     FederationMaterializedStateRow, FederationOperationConflictKey, FederationOperationId,
-    MemberId, Result, FEDERATION_MAX_DERIVATION_INDEX,
+    FederationStateRows, FederationStateTable, MemberId, Result, FEDERATION_MAX_DERIVATION_INDEX,
 };
 
 const PAYMENT_INTENT_VERSION: u16 = 3;
 const PAYMENT_BATCH_VERSION: u16 = 1;
 const TRANSACTION_PROPOSAL_VERSION: u16 = 2;
-const TRANSACTION_STATE_VERSION: u16 = 3;
 const SIGNED_TRANSACTION_VERSION: u16 = 1;
 const PAYMENT_INTENT_HASH_DOMAIN: &[u8] = b"cdk-federation-onchain-payment-intent-v3";
 const PAYMENT_BATCH_HASH_DOMAIN: &[u8] = b"cdk-federation-onchain-payment-batch-v1";
@@ -1529,11 +1529,9 @@ pub enum FederationTransactionStateOutcome {
     Existing,
 }
 
-/// Versioned consensus projection for outgoing intents and wallet reservations.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// Consensus projection for outgoing intents and wallet reservations.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FederationTransactionState {
-    version: u16,
     intents: BTreeMap<FederationOnchainPaymentIntentId, FederationOnchainPaymentIntentRecord>,
     quote_intents: BTreeMap<String, FederationOnchainPaymentIntentId>,
     accepted_transactions: BTreeMap<FederationTransactionProposalId, FederationAcceptedTransaction>,
@@ -1552,26 +1550,12 @@ impl FederationTransactionState {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            version: TRANSACTION_STATE_VERSION,
             intents: BTreeMap::new(),
             quote_intents: BTreeMap::new(),
             accepted_transactions: BTreeMap::new(),
             batch_owners: BTreeMap::new(),
             utxo_reservations: BTreeMap::new(),
         }
-    }
-
-    /// Decode and fully validate durable transaction state.
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        let state: Self = serde_json::from_slice(bytes)?;
-        state.validate()?;
-        Ok(state)
-    }
-
-    /// Encode fully validated durable transaction state.
-    pub fn to_bytes(&self) -> Result<Vec<u8>> {
-        self.validate()?;
-        Ok(serde_json::to_vec(self)?)
     }
 
     /// Return all payment intents keyed by canonical identity.
@@ -2189,9 +2173,6 @@ impl FederationTransactionState {
 
     /// Validate every identity, ownership index, and sticky reservation.
     pub fn validate(&self) -> Result<()> {
-        if self.version != TRANSACTION_STATE_VERSION {
-            return Err(invalid("unsupported transaction state version"));
-        }
         if self.intents.len() != self.quote_intents.len() {
             return Err(invalid("on-chain intent quote index has the wrong size"));
         }
@@ -2632,6 +2613,129 @@ fn append_bytes(bytes: &mut Vec<u8>, value: &[u8]) -> Result<()> {
     append_len(bytes, value.len())?;
     bytes.extend_from_slice(value);
     Ok(())
+}
+
+const INTENT_ROW: &str = "intent";
+const TRANSACTION_ROW: &str = "transaction";
+const BATCH_OWNER_ROW: &str = "batch";
+const RESERVATION_ROW: &str = "reservation";
+
+/// Stored lineage head of one payment batch.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BatchOwnerRow {
+    batch_id: FederationOnchainBatchId,
+    owner: FederationTransactionProposalId,
+}
+
+/// Stored owner of one sticky wallet UTXO reservation.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReservationRow {
+    outpoint: OutPoint,
+    owner: FederationTransactionProposalId,
+}
+
+impl FederationStateTable for FederationTransactionState {
+    const SECONDARY_NAMESPACE: &'static str = "transaction";
+
+    /// One row per intent, accepted transaction, batch lineage head and UTXO
+    /// reservation. The quote index is not stored; it is rebuilt from intents.
+    fn to_rows(&self) -> Result<FederationStateRows> {
+        self.validate()?;
+        let mut rows = FederationStateRows::new();
+        for (intent_id, record) in &self.intents {
+            insert_row(
+                &mut rows,
+                hex_row_key(INTENT_ROW, &intent_id.to_hex()),
+                record,
+            )?;
+        }
+        for (proposal_id, accepted) in &self.accepted_transactions {
+            insert_row(
+                &mut rows,
+                hex_row_key(TRANSACTION_ROW, &proposal_id.to_hex()),
+                accepted,
+            )?;
+        }
+        for (batch_id, owner) in &self.batch_owners {
+            insert_row(
+                &mut rows,
+                hex_row_key(BATCH_OWNER_ROW, &batch_id.to_hex()),
+                &BatchOwnerRow {
+                    batch_id: *batch_id,
+                    owner: *owner,
+                },
+            )?;
+        }
+        for (outpoint, owner) in &self.utxo_reservations {
+            let outpoint = OutPoint::from_str(outpoint)
+                .map_err(|_| invalid("wallet reservation outpoint is invalid"))?;
+            insert_row(
+                &mut rows,
+                outpoint_row_key(RESERVATION_ROW, &outpoint),
+                &ReservationRow {
+                    outpoint,
+                    owner: *owner,
+                },
+            )?;
+        }
+        Ok(rows)
+    }
+
+    fn from_rows(rows: &FederationStateRows) -> Result<Self> {
+        let mut state = Self::new();
+        for (key, bytes) in rows {
+            match row_kind(key)? {
+                INTENT_ROW => {
+                    let record: FederationOnchainPaymentIntentRecord = decode_row(
+                        key,
+                        bytes,
+                        |record: &FederationOnchainPaymentIntentRecord| {
+                            Ok(hex_row_key(INTENT_ROW, &record.intent_id.to_hex()))
+                        },
+                    )?;
+                    if state
+                        .quote_intents
+                        .insert(record.intent.quote.clone(), record.intent_id)
+                        .is_some()
+                    {
+                        return Err(invalid("two on-chain intents share one quote"));
+                    }
+                    state.intents.insert(record.intent_id, record);
+                }
+                TRANSACTION_ROW => {
+                    let accepted: FederationAcceptedTransaction =
+                        decode_row(key, bytes, |accepted: &FederationAcceptedTransaction| {
+                            Ok(hex_row_key(
+                                TRANSACTION_ROW,
+                                &accepted.proposal.proposal_id()?.to_hex(),
+                            ))
+                        })?;
+                    state
+                        .accepted_transactions
+                        .insert(accepted.proposal.proposal_id()?, accepted);
+                }
+                BATCH_OWNER_ROW => {
+                    let row: BatchOwnerRow = decode_row(key, bytes, |row: &BatchOwnerRow| {
+                        Ok(hex_row_key(BATCH_OWNER_ROW, &row.batch_id.to_hex()))
+                    })?;
+                    state.batch_owners.insert(row.batch_id, row.owner);
+                }
+                RESERVATION_ROW => {
+                    let row: ReservationRow = decode_row(key, bytes, |row: &ReservationRow| {
+                        Ok(outpoint_row_key(RESERVATION_ROW, &row.outpoint))
+                    })?;
+                    state
+                        .utxo_reservations
+                        .insert(row.outpoint.to_string(), row.owner);
+                }
+                _ => return Err(unknown_row_kind()),
+            }
+        }
+        state.validate()?;
+        Ok(state)
+    }
 }
 
 fn invalid(reason: &'static str) -> FederationError {
@@ -3477,8 +3581,8 @@ mod tests {
         for input in &proposal.selected_inputs {
             assert_eq!(state.reservation(input.outpoint), Some(proposal_id));
         }
-        let decoded = FederationTransactionState::from_bytes(
-            &state.to_bytes().expect("serialize transaction state"),
+        let decoded = FederationTransactionState::from_rows(
+            &state.to_rows().expect("serialize transaction state"),
         )
         .expect("decode transaction state");
         assert_eq!(decoded, state);
@@ -3521,16 +3625,11 @@ mod tests {
         )
         .digest()
         .expect("original digest");
-        let mut sighash_tamper = serde_json::to_value(&state).expect("state json");
-        let accepted = sighash_tamper["accepted_transactions"]
-            .as_object_mut()
-            .and_then(|transactions| transactions.values_mut().next())
-            .expect("accepted transaction JSON");
-        accepted["policy_audit"]["taproot_sighashes"][0][0] = serde_json::json!(8);
-        let sighash_tamper = FederationTransactionState::from_bytes(
-            &serde_json::to_vec(&sighash_tamper).expect("sighash tamper bytes"),
-        )
-        .expect("structurally valid sighash tamper");
+        let sighash_tamper =
+            FederationTransactionState::from_rows(&tamper_transaction_row(&state, |accepted| {
+                accepted["policy_audit"]["taproot_sighashes"][0][0] = serde_json::json!(8)
+            }))
+            .expect("structurally valid sighash tamper");
         let tampered_digest = crate::federation::FederationMaterializedStateSnapshot::from_rows(
             sighash_tamper
                 .materialized_rows()
@@ -3540,24 +3639,34 @@ mod tests {
         .expect("tampered digest");
         assert_ne!(tampered_digest, original_digest);
 
-        let mut transaction_tamper = serde_json::to_value(&state).expect("state json");
-        let accepted = transaction_tamper["accepted_transactions"]
-            .as_object_mut()
-            .and_then(|transactions| transactions.values_mut().next())
-            .expect("accepted transaction JSON");
-        accepted["proposal"]["unsigned_transaction"]["output"][0]["value"] =
-            serde_json::json!(999_999);
-        assert!(FederationTransactionState::from_bytes(
-            &serde_json::to_vec(&transaction_tamper).expect("transaction tamper bytes")
-        )
-        .is_err());
+        assert!(
+            FederationTransactionState::from_rows(&tamper_transaction_row(&state, |accepted| {
+                accepted["proposal"]["unsigned_transaction"]["output"][0]["value"] =
+                    serde_json::json!(999_999);
+            }))
+            .is_err()
+        );
 
-        let mut value = serde_json::to_value(&state).expect("state json");
-        value["utxo_reservations"] = serde_json::json!({});
-        assert!(FederationTransactionState::from_bytes(
-            &serde_json::to_vec(&value).expect("tampered state")
-        )
-        .is_err());
+        let mut rows = state.to_rows().expect("state rows");
+        rows.retain(|key, _| !key.starts_with("reservation_"));
+        assert!(FederationTransactionState::from_rows(&rows).is_err());
+    }
+
+    /// Rows of `state` with its one accepted-transaction row edited as JSON.
+    fn tamper_transaction_row<F>(state: &FederationTransactionState, edit: F) -> FederationStateRows
+    where
+        F: FnOnce(&mut serde_json::Value),
+    {
+        let mut rows = state.to_rows().expect("state rows");
+        let row = rows
+            .iter_mut()
+            .find(|(key, _)| key.starts_with("transaction_"))
+            .map(|(_, row)| row)
+            .expect("accepted transaction row");
+        let mut accepted: serde_json::Value = serde_json::from_slice(row).expect("row JSON");
+        edit(&mut accepted);
+        *row = serde_json::to_vec(&accepted).expect("tampered row");
+        rows
     }
 
     #[test]
@@ -3629,7 +3738,7 @@ mod tests {
             .mark_transaction_signed(proposal_id, conflicting)
             .is_err());
         assert_eq!(
-            FederationTransactionState::from_bytes(&state.to_bytes().expect("state bytes"))
+            FederationTransactionState::from_rows(&state.to_rows().expect("state bytes"))
                 .expect("state round trip"),
             state
         );
@@ -3767,8 +3876,8 @@ mod tests {
             ),
             1
         );
-        state = FederationTransactionState::from_bytes(
-            &state.to_bytes().expect("broadcast-not-observed bytes"),
+        state = FederationTransactionState::from_rows(
+            &state.to_rows().expect("broadcast-not-observed bytes"),
         )
         .expect("restart broadcast-not-observed state");
 
@@ -3934,8 +4043,8 @@ mod tests {
             "one confirmed transaction and two completed intents are terminal no-ops"
         );
 
-        let restarted = FederationTransactionState::from_bytes(
-            &state.to_bytes().expect("persist broadcast state"),
+        let restarted = FederationTransactionState::from_rows(
+            &state.to_rows().expect("persist broadcast state"),
         )
         .expect("restart broadcast state");
         assert_eq!(restarted, state);
@@ -4264,8 +4373,8 @@ mod tests {
     #[test]
     fn broadcast_never_accepts_a_second_txid_or_pre_intent_observation() {
         let (state, proposal_id, txid) = signed_transaction_state();
-        let mut state = FederationTransactionState::from_bytes(
-            &state.to_bytes().expect("signed-not-broadcast bytes"),
+        let mut state = FederationTransactionState::from_rows(
+            &state.to_rows().expect("signed-not-broadcast bytes"),
         )
         .expect("restart signed-not-broadcast state");
         let wrong_txid = Txid::from_byte_array([99; 32]);

@@ -130,6 +130,28 @@ pub trait KVStoreTransaction<Error>: DbTransactionFinalizer<Err = Error> {
         primary_namespace: &str,
         secondary_namespace: &str,
     ) -> Result<Vec<String>, Error>;
+
+    /// Read every key and value in a namespace, ordered by key.
+    ///
+    /// Backends that can should override this with a single query; the
+    /// default lists the keys and reads each one.
+    async fn kv_entries(
+        &mut self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+    ) -> Result<Vec<(String, Vec<u8>)>, Error> {
+        let keys = self.kv_list(primary_namespace, secondary_namespace).await?;
+        let mut entries = Vec::with_capacity(keys.len());
+        for key in keys {
+            if let Some(value) = self
+                .kv_read(primary_namespace, secondary_namespace, &key)
+                .await?
+            {
+                entries.push((key, value));
+            }
+        }
+        Ok(entries)
+    }
 }
 
 /// Key-Value Store Database trait
@@ -152,6 +174,28 @@ pub trait KVStoreDatabase {
         primary_namespace: &str,
         secondary_namespace: &str,
     ) -> Result<Vec<String>, Self::Err>;
+
+    /// Read every key and value in a namespace, ordered by key.
+    ///
+    /// Backends should override this with a single query so the result is one
+    /// consistent read; the default lists the keys and reads each one.
+    async fn kv_entries(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+    ) -> Result<Vec<(String, Vec<u8>)>, Self::Err> {
+        let keys = self.kv_list(primary_namespace, secondary_namespace).await?;
+        let mut entries = Vec::with_capacity(keys.len());
+        for key in keys {
+            if let Some(value) = self
+                .kv_read(primary_namespace, secondary_namespace, &key)
+                .await?
+            {
+                entries.push((key, value));
+            }
+        }
+        Ok(entries)
+    }
 }
 
 /// Key-value store capability for atomic compare-and-swap operations.

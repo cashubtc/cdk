@@ -11,11 +11,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::{
-    FederationError, FederationFrostApplicationId, FederationMaterializedStateRow,
-    FederationOperationId, Result,
+    decode_row, digest_row_key, insert_row, row_kind, unknown_row_kind, FederationError,
+    FederationFrostApplicationId, FederationMaterializedStateRow, FederationOperationId,
+    FederationStateRows, FederationStateTable, Result,
 };
 
-const ADDRESS_ALLOCATION_STATE_VERSION: u16 = 1;
 const MAX_QUOTE_ID_BYTES: usize = 256;
 
 /// Largest non-hardened BIP32 child index accepted for descriptor allocation.
@@ -205,10 +205,8 @@ pub struct FederationAddressWalletState {
 }
 
 /// Complete canonical address-allocation projection.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FederationAddressAllocationState {
-    version: u16,
     wallets: BTreeMap<FederationAddressAllocationScope, FederationAddressWalletState>,
 }
 
@@ -223,22 +221,8 @@ impl FederationAddressAllocationState {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            version: ADDRESS_ALLOCATION_STATE_VERSION,
             wallets: BTreeMap::new(),
         }
-    }
-
-    /// Decode and fully validate a durable projection.
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        let state: Self = serde_json::from_slice(bytes)?;
-        state.validate()?;
-        Ok(state)
-    }
-
-    /// Encode the validated projection for atomic persistence.
-    pub fn to_bytes(&self) -> Result<Vec<u8>> {
-        self.validate()?;
-        Ok(serde_json::to_vec(self)?)
     }
 
     /// Apply one accepted operation in journal order.
@@ -360,11 +344,6 @@ impl FederationAddressAllocationState {
 
     /// Validate counters, uniqueness, and contiguous allocation invariants.
     pub fn validate(&self) -> Result<()> {
-        if self.version != ADDRESS_ALLOCATION_STATE_VERSION {
-            return Err(invalid_state(
-                "unsupported address-allocation state version",
-            ));
-        }
         let max_next = u64::from(FEDERATION_MAX_DERIVATION_INDEX) + 1;
         for (scope, wallet) in &self.wallets {
             if scope.application_key_epoch == 0
@@ -397,6 +376,75 @@ impl FederationAddressAllocationState {
             validate_contiguous_indexes(&internal, wallet.internal_next_index)?;
         }
         Ok(())
+    }
+}
+
+/// Stored form of one allocation: its scope and the allocation itself. The
+/// per-scope counters are not stored; they are the allocation counts.
+#[derive(Serialize)]
+#[serde(deny_unknown_fields)]
+struct AllocationRowRef<'a> {
+    scope: FederationAddressAllocationScope,
+    allocation: &'a FederationAddressAllocation,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AllocationRow {
+    scope: FederationAddressAllocationScope,
+    allocation: FederationAddressAllocation,
+}
+
+const ALLOCATION_ROW: &str = "allocation";
+
+fn allocation_row_key(scope: FederationAddressAllocationScope, quote: &str) -> String {
+    digest_row_key(
+        ALLOCATION_ROW,
+        &[scope.to_string().as_bytes(), quote.as_bytes()],
+    )
+}
+
+impl FederationStateTable for FederationAddressAllocationState {
+    const SECONDARY_NAMESPACE: &'static str = "address_allocation";
+
+    fn to_rows(&self) -> Result<FederationStateRows> {
+        self.validate()?;
+        let mut rows = FederationStateRows::new();
+        for (scope, wallet) in &self.wallets {
+            for allocation in wallet.allocations.values() {
+                insert_row(
+                    &mut rows,
+                    allocation_row_key(*scope, &allocation.quote),
+                    &AllocationRowRef {
+                        scope: *scope,
+                        allocation,
+                    },
+                )?;
+            }
+        }
+        Ok(rows)
+    }
+
+    fn from_rows(rows: &FederationStateRows) -> Result<Self> {
+        let mut state = Self::new();
+        for (key, bytes) in rows {
+            if row_kind(key)? != ALLOCATION_ROW {
+                return Err(unknown_row_kind());
+            }
+            let row: AllocationRow = decode_row(key, bytes, |row: &AllocationRow| {
+                Ok(allocation_row_key(row.scope, &row.allocation.quote))
+            })?;
+            let wallet = state.wallets.entry(row.scope).or_default();
+            match row.allocation.keychain {
+                FederationAddressKeychain::External => wallet.external_next_index += 1,
+                FederationAddressKeychain::Internal => wallet.internal_next_index += 1,
+            }
+            wallet
+                .allocations
+                .insert(row.allocation.quote.clone(), row.allocation);
+        }
+        state.validate()?;
+        Ok(state)
     }
 }
 
@@ -580,7 +628,7 @@ mod tests {
             )
             .expect("allocation");
         let restored =
-            FederationAddressAllocationState::from_bytes(&state.to_bytes().expect("serialize"))
+            FederationAddressAllocationState::from_rows(&state.to_rows().expect("serialize"))
                 .expect("restore");
         assert_eq!(restored, state);
         assert_eq!(restored.materialized_rows().expect("rows").len(), 2);

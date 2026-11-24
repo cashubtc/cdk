@@ -443,22 +443,12 @@ impl RbfFederation {
                 .begin_transaction()
                 .await
                 .expect("seed transaction");
-            tx.kv_write(
-                "federation",
-                "transaction",
-                "state_v1",
-                &transactions.to_bytes().expect("transactions"),
-            )
-            .await
-            .expect("seed intents");
-            tx.kv_write(
-                "federation",
-                "chain_observation",
-                "state_v1",
-                &chain.to_bytes().expect("chain"),
-            )
-            .await
-            .expect("seed deposits");
+            cdk_common::federation::write_federation_state(&mut tx, transactions.clone())
+                .await
+                .expect("seed intents");
+            cdk_common::federation::write_federation_state(&mut tx, chain.clone())
+                .await
+                .expect("seed deposits");
             tx.commit().await.expect("commit fixture");
         }
         let change_allocation = states[0]

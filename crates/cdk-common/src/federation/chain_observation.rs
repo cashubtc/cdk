@@ -12,12 +12,12 @@ use bitcoin::{BlockHash, OutPoint, Script, TxOut};
 use serde::{Deserialize, Serialize};
 
 use super::{
+    decode_row, insert_row, outpoint_row_key, row_kind, unknown_row_kind,
     FederationAddressAllocation, FederationAddressAllocationScope, FederationAddressKeychain,
     FederationError, FederationFrostApplicationId, FederationMaterializedStateRow,
-    FederationOperationId, MemberId, Result,
+    FederationOperationId, FederationStateRows, FederationStateTable, MemberId, Result,
 };
 
-const CHAIN_OBSERVATION_STATE_VERSION: u16 = 1;
 const MAX_QUOTE_ID_BYTES: usize = 256;
 const MAX_SOURCE_ID_BYTES: usize = 128;
 const ONCHAIN_QUOTE_PAYMENT_DOMAIN: &[u8] = b"cdk-federation-onchain-quote-payment-v1";
@@ -536,10 +536,8 @@ pub enum FederationChainObservationOutcome {
 }
 
 /// Complete versioned consensus projection for wallet UTXOs.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FederationChainObservationState {
-    version: u16,
     utxos: BTreeMap<String, FederationWalletUtxo>,
 }
 
@@ -554,22 +552,8 @@ impl FederationChainObservationState {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            version: CHAIN_OBSERVATION_STATE_VERSION,
             utxos: BTreeMap::new(),
         }
-    }
-
-    /// Decode and fully validate durable state.
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        let state: Self = serde_json::from_slice(bytes)?;
-        state.validate()?;
-        Ok(state)
-    }
-
-    /// Encode fully validated durable state.
-    pub fn to_bytes(&self) -> Result<Vec<u8>> {
-        self.validate()?;
-        Ok(serde_json::to_vec(self)?)
     }
 
     /// Look up one materialized UTXO.
@@ -1118,9 +1102,6 @@ impl FederationChainObservationState {
 
     /// Validate all durable invariants and fail closed on corrupted state.
     pub fn validate(&self) -> Result<()> {
-        if self.version != CHAIN_OBSERVATION_STATE_VERSION {
-            return Err(invalid_state("unsupported chain-observation state version"));
-        }
         for (key, utxo) in &self.utxos {
             if key != &utxo.outpoint.to_string()
                 || utxo.required_observers == 0
@@ -1243,6 +1224,37 @@ fn quarantine(utxo: &mut FederationWalletUtxo, observer: MemberId) {
     utxo.conflicting_observers.insert(observer);
     utxo.state = FederationWalletUtxoState::Quarantined;
     utxo.liability_alarm |= utxo.liability_issued;
+}
+
+const UTXO_ROW: &str = "utxo";
+
+impl FederationStateTable for FederationChainObservationState {
+    const SECONDARY_NAMESPACE: &'static str = "chain_observation";
+
+    fn to_rows(&self) -> Result<FederationStateRows> {
+        self.validate()?;
+        let mut rows = FederationStateRows::new();
+        for utxo in self.utxos.values() {
+            insert_row(&mut rows, outpoint_row_key(UTXO_ROW, &utxo.outpoint), utxo)?;
+        }
+        Ok(rows)
+    }
+
+    fn from_rows(rows: &FederationStateRows) -> Result<Self> {
+        let mut state = Self::new();
+        for (key, bytes) in rows {
+            if row_kind(key)? != UTXO_ROW {
+                return Err(unknown_row_kind());
+            }
+            let utxo: FederationWalletUtxo =
+                decode_row(key, bytes, |utxo: &FederationWalletUtxo| {
+                    Ok(outpoint_row_key(UTXO_ROW, &utxo.outpoint))
+                })?;
+            state.utxos.insert(utxo.outpoint.to_string(), utxo);
+        }
+        state.validate()?;
+        Ok(state)
+    }
 }
 
 fn invalid_observation(reason: &'static str) -> FederationError {
@@ -1527,7 +1539,7 @@ mod tests {
             FederationChainSourceScope::Independent,
         );
         apply(&mut state, &deep, 2);
-        let bytes = state.to_bytes().expect("state bytes");
+        let bytes = state.to_rows().expect("state bytes");
         assert!(matches!(
             apply(&mut state, &deep, 3),
             FederationChainObservationOutcome::Existing(_)
@@ -1541,7 +1553,7 @@ mod tests {
             apply(&mut state, &stale, 4),
             FederationChainObservationOutcome::Existing(_)
         ));
-        assert_eq!(state.to_bytes().expect("stable bytes"), bytes);
+        assert_eq!(state.to_rows().expect("stable bytes"), bytes);
     }
 
     #[test]
@@ -1922,10 +1934,14 @@ mod tests {
             apply(&mut state, &evidence, observer as u8 + 1);
         }
         let decoded =
-            FederationChainObservationState::from_bytes(&state.to_bytes().expect("state bytes"))
+            FederationChainObservationState::from_rows(&state.to_rows().expect("state bytes"))
                 .expect("state decode");
-        let encoded =
-            String::from_utf8(state.to_bytes().expect("current state")).expect("state JSON");
+        let encoded = state
+            .to_rows()
+            .expect("current state")
+            .into_values()
+            .map(|row| String::from_utf8(row).expect("row JSON"))
+            .collect::<String>();
         assert!(encoded.contains("observation_epoch"));
         assert_eq!(decoded, state);
         assert_eq!(
@@ -2322,8 +2338,8 @@ mod tests {
         apply_with_policy(&mut state, &liar, 2, 2, 2);
 
         // Restart from the durable bytes with only the liar's fields fixed.
-        let bytes = state.to_bytes().expect("serialize liar-first state");
-        let mut replayed = FederationChainObservationState::from_bytes(&bytes)
+        let bytes = state.to_rows().expect("serialize liar-first state");
+        let mut replayed = FederationChainObservationState::from_rows(&bytes)
             .expect("liar-first state must validate after replay");
         let honest = observation(
             2,
@@ -2333,8 +2349,8 @@ mod tests {
         apply_with_policy(&mut replayed, &honest, 2, 2, 3);
 
         // Replay again mid-repair, then finish the honest quorum.
-        let bytes = replayed.to_bytes().expect("serialize mid-repair state");
-        let mut replayed = FederationChainObservationState::from_bytes(&bytes)
+        let bytes = replayed.to_rows().expect("serialize mid-repair state");
+        let mut replayed = FederationChainObservationState::from_rows(&bytes)
             .expect("mid-repair state must validate after replay");
         let honest = observation(
             3,
@@ -2423,9 +2439,9 @@ mod tests {
         assert!(state.spend_reserved_utxos(&[reserved]).is_err());
         assert!(state.reserve_utxos(&[reserved]).is_err());
 
-        let bytes = state.to_bytes().expect("state bytes");
+        let bytes = state.to_rows().expect("state bytes");
         assert_eq!(
-            FederationChainObservationState::from_bytes(&bytes).expect("state replay"),
+            FederationChainObservationState::from_rows(&bytes).expect("state replay"),
             state
         );
     }

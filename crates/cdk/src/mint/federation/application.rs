@@ -1,7 +1,3 @@
-use super::chain_observation::{
-    CHAIN_OBSERVATION_PRIMARY_NAMESPACE, CHAIN_OBSERVATION_SECONDARY_NAMESPACE,
-    CHAIN_OBSERVATION_STATE_KEY,
-};
 use super::configuration_and_admission::{
     FederationProofVerificationContext, FederationRuntimeConfig,
     FEDERATION_EXTERNAL_ACTION_ACTOR_LEASE_ITEMS,
@@ -147,10 +143,6 @@ pub(super) struct FederationBarkResultObservationKey {
 #[cfg(feature = "federation-bark")]
 const FEDERATION_BARK_CERTIFICATE_OBSERVATION_ID_DOMAIN: &[u8] =
     b"cdk/federation/bark-certificate-observation-id/v1";
-#[cfg(feature = "federation-bark")]
-pub(super) const FEDERATION_BARK_RECOVERY_SECONDARY_NAMESPACE: &str = "bark_recovery";
-#[cfg(feature = "federation-bark")]
-pub(super) const FEDERATION_BARK_RECOVERY_STATE_KEY: &str = "state_v1";
 
 #[cfg(feature = "federation-bark")]
 enum FederationBarkRecoveryMutation {
@@ -1495,30 +1487,14 @@ impl Mint {
         entry: &FederationJournalEntry,
         mutation: FederationBarkRecoveryMutation,
     ) -> Result<(), Error> {
-        let chain_bytes = transaction
-            .kv_read(
-                CHAIN_OBSERVATION_PRIMARY_NAMESPACE,
-                CHAIN_OBSERVATION_SECONDARY_NAMESPACE,
-                CHAIN_OBSERVATION_STATE_KEY,
-            )
-            .await?;
-        let mut chain_state = match chain_bytes {
-            Some(bytes) => {
-                cdk_common::federation::FederationChainObservationState::from_bytes(&bytes)?
-            }
-            None => cdk_common::federation::FederationChainObservationState::new(),
-        };
-        let recovery_bytes = transaction
-            .kv_read(
-                CHAIN_OBSERVATION_PRIMARY_NAMESPACE,
-                FEDERATION_BARK_RECOVERY_SECONDARY_NAMESPACE,
-                FEDERATION_BARK_RECOVERY_STATE_KEY,
-            )
-            .await?;
-        let mut recovery_state = match recovery_bytes {
-            Some(bytes) => FederationBarkRecoveryState::from_bytes(&bytes)?,
-            None => FederationBarkRecoveryState::new(),
-        };
+        let mut chain_state = cdk_common::federation::FederationStoredState::<
+            cdk_common::federation::FederationChainObservationState,
+        >::load(transaction)
+        .await?;
+        let mut recovery_state = cdk_common::federation::FederationStoredState::<
+            FederationBarkRecoveryState,
+        >::load(transaction)
+        .await?;
         match mutation {
             FederationBarkRecoveryMutation::Reserve { package_set } => {
                 let outpoints = package_set
@@ -1570,23 +1546,8 @@ impl Mint {
                 }
             }
         }
-        transaction
-            .kv_write(
-                CHAIN_OBSERVATION_PRIMARY_NAMESPACE,
-                CHAIN_OBSERVATION_SECONDARY_NAMESPACE,
-                CHAIN_OBSERVATION_STATE_KEY,
-                &chain_state.to_bytes()?,
-            )
-            .await?;
-        transaction
-            .kv_write(
-                CHAIN_OBSERVATION_PRIMARY_NAMESPACE,
-                FEDERATION_BARK_RECOVERY_SECONDARY_NAMESPACE,
-                FEDERATION_BARK_RECOVERY_STATE_KEY,
-                &recovery_state.to_bytes()?,
-            )
-            .await?;
-        Ok(())
+        chain_state.save(transaction).await?;
+        recovery_state.save(transaction).await
     }
 
     async fn require_prior_applied_melt_quote(
@@ -2042,18 +2003,10 @@ impl Mint {
         {
             return Err(Error::InvalidPaymentRequest);
         }
-        let bytes = tx
-            .kv_read(
-                CHAIN_OBSERVATION_PRIMARY_NAMESPACE,
-                CHAIN_OBSERVATION_SECONDARY_NAMESPACE,
-                CHAIN_OBSERVATION_STATE_KEY,
-            )
-            .await?
-            .ok_or(FederationError::ChainObservationStateInvalid {
-                reason: "on-chain payment observation has no wallet UTXO projection",
-            })?;
-        let mut state =
-            cdk_common::federation::FederationChainObservationState::from_bytes(&bytes)?;
+        let mut state = cdk_common::federation::FederationStoredState::<
+            cdk_common::federation::FederationChainObservationState,
+        >::load(tx)
+        .await?;
         let payment = state
             .quote_payment_at_or_before(&observation.quote, max_operation_index)?
             .ok_or(Error::UnpaidQuote)?;
@@ -2072,13 +2025,7 @@ impl Mint {
                 payment.amount_sat,
                 payment.payment_id,
             )?;
-            tx.kv_write(
-                CHAIN_OBSERVATION_PRIMARY_NAMESPACE,
-                CHAIN_OBSERVATION_SECONDARY_NAMESPACE,
-                CHAIN_OBSERVATION_STATE_KEY,
-                &state.to_bytes()?,
-            )
-            .await?;
+            state.save(tx).await?;
         }
         Ok(())
     }

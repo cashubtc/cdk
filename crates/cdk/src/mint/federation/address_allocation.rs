@@ -2,34 +2,20 @@
 
 use cdk_common::error::Error;
 use cdk_common::federation::{
-    FederationAddressAllocationOperation, FederationAddressAllocationOutcome,
-    FederationAddressAllocationScope, FederationAddressAllocationState, FederationJournalEntry,
+    read_federation_state, FederationAddressAllocationOperation,
+    FederationAddressAllocationOutcome, FederationAddressAllocationScope,
+    FederationAddressAllocationState, FederationJournalEntry, FederationStoredState,
 };
 
 use super::super::Mint;
 use super::application::finish_federation_apply_transaction;
-
-pub(super) const ADDRESS_ALLOCATION_PRIMARY_NAMESPACE: &str = "federation";
-pub(super) const ADDRESS_ALLOCATION_SECONDARY_NAMESPACE: &str = "address_allocation";
-pub(super) const ADDRESS_ALLOCATION_STATE_KEY: &str = "state_v1";
 
 impl Mint {
     /// Load the complete validated address-allocation projection.
     pub async fn federation_address_allocation_state(
         &self,
     ) -> Result<FederationAddressAllocationState, Error> {
-        match self
-            .localstore()
-            .kv_read(
-                ADDRESS_ALLOCATION_PRIMARY_NAMESPACE,
-                ADDRESS_ALLOCATION_SECONDARY_NAMESPACE,
-                ADDRESS_ALLOCATION_STATE_KEY,
-            )
-            .await?
-        {
-            Some(bytes) => Ok(FederationAddressAllocationState::from_bytes(&bytes)?),
-            None => Ok(FederationAddressAllocationState::new()),
-        }
+        read_federation_state(&self.localstore()).await
     }
 
     /// Look up one accepted quote mapping without touching a BDK cursor.
@@ -55,26 +41,11 @@ impl Mint {
             .validate_federated_address_allocation_submission(operation)?;
         let mut transaction = self.localstore().begin_transaction().await?;
         let outcome = async {
-            let bytes = transaction
-                .kv_read(
-                    ADDRESS_ALLOCATION_PRIMARY_NAMESPACE,
-                    ADDRESS_ALLOCATION_SECONDARY_NAMESPACE,
-                    ADDRESS_ALLOCATION_STATE_KEY,
-                )
-                .await?;
-            let mut state = match bytes {
-                Some(bytes) => FederationAddressAllocationState::from_bytes(&bytes)?,
-                None => FederationAddressAllocationState::new(),
-            };
+            let mut state =
+                FederationStoredState::<FederationAddressAllocationState>::load(&mut transaction)
+                    .await?;
             let outcome = state.apply(operation, entry.operation_id, entry.index)?;
-            transaction
-                .kv_write(
-                    ADDRESS_ALLOCATION_PRIMARY_NAMESPACE,
-                    ADDRESS_ALLOCATION_SECONDARY_NAMESPACE,
-                    ADDRESS_ALLOCATION_STATE_KEY,
-                    &state.to_bytes()?,
-                )
-                .await?;
+            state.save(&mut transaction).await?;
             Ok(outcome)
         }
         .await;

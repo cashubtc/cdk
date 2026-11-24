@@ -332,10 +332,17 @@ fn state_with_lifecycle(
     state: &FederationChainObservationState,
     outpoint: OutPoint,
     lifecycle: &str,
-) -> FederationChainObservationState {
-    let mut value = serde_json::to_value(state).expect("state JSON");
-    value["utxos"][outpoint.to_string()]["state"] = serde_json::json!(lifecycle);
-    serde_json::from_value(value).expect("mutated state")
+) -> Result<FederationChainObservationState, cdk_common::federation::FederationError> {
+    use cdk_common::federation::{outpoint_row_key, FederationStateTable};
+
+    let mut rows = state.to_rows().expect("state rows");
+    let row = rows
+        .get_mut(&outpoint_row_key("utxo", &outpoint))
+        .expect("UTXO row");
+    let mut utxo: serde_json::Value = serde_json::from_slice(row).expect("UTXO JSON");
+    utxo["state"] = serde_json::json!(lifecycle);
+    *row = serde_json::to_vec(&utxo).expect("mutated UTXO");
+    FederationChainObservationState::from_rows(&rows)
 }
 
 fn replacement_proposal(
@@ -493,11 +500,17 @@ fn unavailable_or_non_spendable_utxos_and_non_pending_intents_fail_closed() {
     assert!(runtime
         .validate_onchain_transaction_proposal(&state, &records, &unknown)
         .is_err());
-    for lifecycle in ["reserved", "spent", "reorged", "quarantined"] {
-        let unavailable = state_with_lifecycle(&state, accepted.outpoint, lifecycle);
+    for lifecycle in ["reserved", "spent"] {
+        let unavailable = state_with_lifecycle(&state, accepted.outpoint, lifecycle)
+            .expect("unavailable UTXO state");
         assert!(runtime
             .validate_onchain_transaction_proposal(&unavailable, &records, &proposal)
             .is_err());
+    }
+    // Reorged and quarantined UTXOs require evidence, so a stored state that
+    // only flips the lifecycle cannot be loaded and never reaches the policy.
+    for lifecycle in ["reorged", "quarantined"] {
+        assert!(state_with_lifecycle(&state, accepted.outpoint, lifecycle).is_err());
     }
     assert!(runtime
         .validate_onchain_transaction_proposal(&state, &BTreeMap::new(), &proposal)
@@ -713,7 +726,8 @@ fn rbf_replacements_preserve_recipients_inputs_lineage_and_fee_caps() {
             proposal_id: original_id,
         };
     }
-    let reserved_chain = state_with_lifecycle(&chain_state, input.outpoint, "reserved");
+    let reserved_chain = state_with_lifecycle(&chain_state, input.outpoint, "reserved")
+        .expect("reserved chain state");
 
     let valid = replacement_proposal(&runtime, &batch, &original, 500);
     let valid_audit = runtime
@@ -828,14 +842,7 @@ fn rbf_replacements_preserve_recipients_inputs_lineage_and_fee_caps() {
 
 #[tokio::test]
 async fn accepted_proposal_atomically_reserves_replays_restarts_and_gates_signing() {
-    use super::super::chain_observation::{
-        CHAIN_OBSERVATION_PRIMARY_NAMESPACE, CHAIN_OBSERVATION_SECONDARY_NAMESPACE,
-        CHAIN_OBSERVATION_STATE_KEY,
-    };
-    use super::super::transaction_state::{
-        TRANSACTION_STATE_KEY, TRANSACTION_STATE_PRIMARY_NAMESPACE,
-        TRANSACTION_STATE_SECONDARY_NAMESPACE,
-    };
+    use cdk_common::federation::{FederationStateTable, FEDERATION_STATE_PRIMARY_NAMESPACE};
 
     let (runtime, _) = runtime_with_address_application();
     let (mint, localstore) = federated_test_mint(runtime.clone()).await;
@@ -856,24 +863,10 @@ async fn accepted_proposal_atomically_reserves_replays_restarts_and_gates_signin
             .expect("persist pending intent");
     }
     let mut setup = localstore.begin_transaction().await.expect("begin setup");
-    setup
-        .kv_write(
-            CHAIN_OBSERVATION_PRIMARY_NAMESPACE,
-            CHAIN_OBSERVATION_SECONDARY_NAMESPACE,
-            CHAIN_OBSERVATION_STATE_KEY,
-            &chain_state.to_bytes().expect("chain state bytes"),
-        )
+    cdk_common::federation::write_federation_state(&mut setup, chain_state.clone())
         .await
         .expect("write chain state");
-    setup
-        .kv_write(
-            TRANSACTION_STATE_PRIMARY_NAMESPACE,
-            TRANSACTION_STATE_SECONDARY_NAMESPACE,
-            TRANSACTION_STATE_KEY,
-            &transaction_state
-                .to_bytes()
-                .expect("transaction state bytes"),
-        )
+    cdk_common::federation::write_federation_state(&mut setup, transaction_state.clone())
         .await
         .expect("write transaction state");
     setup.commit().await.expect("commit setup state");
@@ -959,24 +952,10 @@ async fn accepted_proposal_atomically_reserves_replays_restarts_and_gates_signin
         .begin_transaction()
         .await
         .expect("begin catch-up setup");
-    catch_up_setup
-        .kv_write(
-            CHAIN_OBSERVATION_PRIMARY_NAMESPACE,
-            CHAIN_OBSERVATION_SECONDARY_NAMESPACE,
-            CHAIN_OBSERVATION_STATE_KEY,
-            &chain_state.to_bytes().expect("catch-up chain bytes"),
-        )
+    cdk_common::federation::write_federation_state(&mut catch_up_setup, chain_state.clone())
         .await
         .expect("write catch-up chain state");
-    catch_up_setup
-        .kv_write(
-            TRANSACTION_STATE_PRIMARY_NAMESPACE,
-            TRANSACTION_STATE_SECONDARY_NAMESPACE,
-            TRANSACTION_STATE_KEY,
-            &transaction_state
-                .to_bytes()
-                .expect("catch-up transaction bytes"),
-        )
+    cdk_common::federation::write_federation_state(&mut catch_up_setup, transaction_state.clone())
         .await
         .expect("write catch-up transaction state");
     catch_up_setup
@@ -1028,31 +1007,35 @@ async fn accepted_proposal_atomically_reserves_replays_restarts_and_gates_signin
         .federation_transaction_state()
         .await
         .expect("durable transaction state");
-    let mut tampered_audit = serde_json::to_value(&durable).expect("transaction state audit JSON");
-    let accepted_transactions = tampered_audit["accepted_transactions"]
-        .as_object_mut()
-        .expect("accepted transaction object");
-    let accepted_value = accepted_transactions
-        .values_mut()
-        .next()
-        .expect("accepted transaction value");
-    let sighash_byte = accepted_value["policy_audit"]["taproot_sighashes"][0][0]
-        .as_u64()
-        .expect("sighash byte");
-    accepted_value["policy_audit"]["taproot_sighashes"][0][0] = serde_json::json!(sighash_byte ^ 1);
     let mut audit_tamper_transaction = localstore
         .begin_transaction()
         .await
         .expect("begin audit tamper");
-    audit_tamper_transaction
-        .kv_write(
-            TRANSACTION_STATE_PRIMARY_NAMESPACE,
-            TRANSACTION_STATE_SECONDARY_NAMESPACE,
-            TRANSACTION_STATE_KEY,
-            &serde_json::to_vec(&tampered_audit).expect("tampered audit bytes"),
+    let (accepted_key, accepted_row) = audit_tamper_transaction
+        .kv_entries(
+            FEDERATION_STATE_PRIMARY_NAMESPACE,
+            FederationTransactionState::SECONDARY_NAMESPACE,
         )
         .await
-        .expect("write tampered audit state");
+        .expect("transaction rows")
+        .into_iter()
+        .find(|(key, _)| key.starts_with("transaction_"))
+        .expect("accepted transaction row");
+    let mut accepted_value: serde_json::Value =
+        serde_json::from_slice(&accepted_row).expect("accepted transaction JSON");
+    let sighash_byte = accepted_value["policy_audit"]["taproot_sighashes"][0][0]
+        .as_u64()
+        .expect("sighash byte");
+    accepted_value["policy_audit"]["taproot_sighashes"][0][0] = serde_json::json!(sighash_byte ^ 1);
+    audit_tamper_transaction
+        .kv_write(
+            FEDERATION_STATE_PRIMARY_NAMESPACE,
+            FederationTransactionState::SECONDARY_NAMESPACE,
+            &accepted_key,
+            &serde_json::to_vec(&accepted_value).expect("tampered audit bytes"),
+        )
+        .await
+        .expect("write tampered audit row");
     audit_tamper_transaction
         .commit()
         .await
@@ -1064,13 +1047,7 @@ async fn accepted_proposal_atomically_reserves_replays_restarts_and_gates_signin
         .is_err());
 
     let mut restore_transaction = localstore.begin_transaction().await.expect("begin restore");
-    restore_transaction
-        .kv_write(
-            TRANSACTION_STATE_PRIMARY_NAMESPACE,
-            TRANSACTION_STATE_SECONDARY_NAMESPACE,
-            TRANSACTION_STATE_KEY,
-            &durable.to_bytes().expect("durable transaction bytes"),
-        )
+    cdk_common::federation::write_federation_state(&mut restore_transaction, durable.clone())
         .await
         .expect("restore transaction state");
     restore_transaction
@@ -1078,18 +1055,26 @@ async fn accepted_proposal_atomically_reserves_replays_restarts_and_gates_signin
         .await
         .expect("commit restored state");
 
-    let mut tampered = serde_json::to_value(durable).expect("transaction state JSON");
-    tampered["utxo_reservations"] = serde_json::json!({});
     let mut tamper_transaction = localstore.begin_transaction().await.expect("begin tamper");
-    tamper_transaction
-        .kv_write(
-            TRANSACTION_STATE_PRIMARY_NAMESPACE,
-            TRANSACTION_STATE_SECONDARY_NAMESPACE,
-            TRANSACTION_STATE_KEY,
-            &serde_json::to_vec(&tampered).expect("tampered bytes"),
+    for key in tamper_transaction
+        .kv_list(
+            FEDERATION_STATE_PRIMARY_NAMESPACE,
+            FederationTransactionState::SECONDARY_NAMESPACE,
         )
         .await
-        .expect("write tampered state");
+        .expect("transaction row keys")
+        .into_iter()
+        .filter(|key| key.starts_with("reservation_"))
+    {
+        tamper_transaction
+            .kv_remove(
+                FEDERATION_STATE_PRIMARY_NAMESPACE,
+                FederationTransactionState::SECONDARY_NAMESPACE,
+                &key,
+            )
+            .await
+            .expect("remove reservation row");
+    }
     tamper_transaction
         .commit()
         .await
@@ -1099,15 +1084,6 @@ async fn accepted_proposal_atomically_reserves_replays_restarts_and_gates_signin
 
 #[tokio::test]
 async fn accepted_replacement_uses_the_existing_operation_and_fresh_signing_path() {
-    use super::super::chain_observation::{
-        CHAIN_OBSERVATION_PRIMARY_NAMESPACE, CHAIN_OBSERVATION_SECONDARY_NAMESPACE,
-        CHAIN_OBSERVATION_STATE_KEY,
-    };
-    use super::super::transaction_state::{
-        TRANSACTION_STATE_KEY, TRANSACTION_STATE_PRIMARY_NAMESPACE,
-        TRANSACTION_STATE_SECONDARY_NAMESPACE,
-    };
-
     let (runtime, _) = runtime_with_address_application();
     let (mint, localstore) = federated_test_mint(runtime.clone()).await;
     let mut chain_state = FederationChainObservationState::new();
@@ -1163,24 +1139,10 @@ async fn accepted_replacement_uses_the_existing_operation_and_fresh_signing_path
         .begin_transaction()
         .await
         .expect("begin replacement setup");
-    setup
-        .kv_write(
-            CHAIN_OBSERVATION_PRIMARY_NAMESPACE,
-            CHAIN_OBSERVATION_SECONDARY_NAMESPACE,
-            CHAIN_OBSERVATION_STATE_KEY,
-            &chain_state.to_bytes().expect("chain state bytes"),
-        )
+    cdk_common::federation::write_federation_state(&mut setup, chain_state.clone())
         .await
         .expect("write reserved chain state");
-    setup
-        .kv_write(
-            TRANSACTION_STATE_PRIMARY_NAMESPACE,
-            TRANSACTION_STATE_SECONDARY_NAMESPACE,
-            TRANSACTION_STATE_KEY,
-            &transaction_state
-                .to_bytes()
-                .expect("transaction state bytes"),
-        )
+    cdk_common::federation::write_federation_state(&mut setup, transaction_state.clone())
         .await
         .expect("write original transaction state");
     setup.commit().await.expect("commit replacement setup");

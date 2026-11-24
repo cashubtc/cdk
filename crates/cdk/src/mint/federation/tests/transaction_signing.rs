@@ -21,10 +21,6 @@ use cdk_common::federation::{
     FederationWalletLivenessSchedule,
 };
 
-use super::super::transaction_state::{
-    TRANSACTION_STATE_KEY, TRANSACTION_STATE_PRIMARY_NAMESPACE,
-    TRANSACTION_STATE_SECONDARY_NAMESPACE,
-};
 use super::address_allocation::runtime_with_address_application;
 use super::*;
 
@@ -209,13 +205,7 @@ pub(super) async fn persist_transaction_state(
     state: &FederationTransactionState,
 ) {
     let mut transaction = store.begin_transaction().await.expect("begin state write");
-    transaction
-        .kv_write(
-            TRANSACTION_STATE_PRIMARY_NAMESPACE,
-            TRANSACTION_STATE_SECONDARY_NAMESPACE,
-            TRANSACTION_STATE_KEY,
-            &state.to_bytes().expect("transaction state bytes"),
-        )
+    cdk_common::federation::write_federation_state(&mut transaction, state.clone())
         .await
         .expect("write transaction state");
     transaction

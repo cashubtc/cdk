@@ -40,13 +40,6 @@ use uuid::Uuid;
 
 use crate::mint::{Mint, QuoteId};
 
-#[cfg(feature = "federation-bark")]
-use super::application::{
-    FEDERATION_BARK_RECOVERY_SECONDARY_NAMESPACE, FEDERATION_BARK_RECOVERY_STATE_KEY,
-};
-#[cfg(feature = "federation-bark")]
-use super::chain_observation::CHAIN_OBSERVATION_PRIMARY_NAMESPACE;
-
 use super::federation_operation_uuid;
 #[cfg(feature = "federation-bark")]
 use cdk_federation_bark::validation::{
@@ -1975,19 +1968,13 @@ impl Mint {
                 for row in bark_projection.materialized_rows()? {
                     snapshot.push(row);
                 }
-                if let Some(bytes) = db
-                    .kv_read(
-                        CHAIN_OBSERVATION_PRIMARY_NAMESPACE,
-                        FEDERATION_BARK_RECOVERY_SECONDARY_NAMESPACE,
-                        FEDERATION_BARK_RECOVERY_STATE_KEY,
-                    )
-                    .await?
+                for row in cdk_common::federation::read_federation_state::<
+                    FederationBarkRecoveryState,
+                >(&db)
+                .await?
+                .materialized_rows()?
                 {
-                    for row in
-                        FederationBarkRecoveryState::from_bytes(&bytes)?.materialized_rows()?
-                    {
-                        snapshot.push(row);
-                    }
+                    snapshot.push(row);
                 }
             }
         }

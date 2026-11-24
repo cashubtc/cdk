@@ -224,6 +224,67 @@ where
     .collect::<Result<Vec<_>, Error>>()
 }
 
+/// Read every entry of a namespace inside a transaction, ordered by key.
+#[cfg(feature = "mint")]
+pub(crate) async fn kv_entries_in_transaction<RM>(
+    conn: &ConnectionWithTransaction<RM::Connection, PooledResource<RM>>,
+    primary_namespace: &str,
+    secondary_namespace: &str,
+) -> Result<Vec<(String, Vec<u8>)>, Error>
+where
+    RM: DatabasePool,
+{
+    validate_kvstore_params(primary_namespace, secondary_namespace, None)?;
+    query(KV_ENTRIES_QUERY)?
+        .bind("primary_namespace", primary_namespace.to_owned())
+        .bind("secondary_namespace", secondary_namespace.to_owned())
+        .fetch_all(conn)
+        .await?
+        .into_iter()
+        .map(kv_entry_from_row)
+        .collect()
+}
+
+/// Read every entry of a namespace in one query, ordered by key.
+#[cfg(feature = "mint")]
+pub(crate) async fn kv_entries<RM>(
+    pool: &Arc<Pool<RM>>,
+    primary_namespace: &str,
+    secondary_namespace: &str,
+) -> Result<Vec<(String, Vec<u8>)>, Error>
+where
+    RM: DatabasePool + 'static,
+{
+    validate_kvstore_params(primary_namespace, secondary_namespace, None)?;
+    let conn = pool.get().await.map_err(|e| Error::Database(Box::new(e)))?;
+    query(KV_ENTRIES_QUERY)?
+        .bind("primary_namespace", primary_namespace.to_owned())
+        .bind("secondary_namespace", secondary_namespace.to_owned())
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(kv_entry_from_row)
+        .collect()
+}
+
+#[cfg(feature = "mint")]
+const KV_ENTRIES_QUERY: &str = r#"
+    SELECT key, value
+    FROM kv_store
+    WHERE primary_namespace = :primary_namespace
+    AND secondary_namespace = :secondary_namespace
+    ORDER BY key
+"#;
+
+#[cfg(feature = "mint")]
+fn kv_entry_from_row(row: Vec<Column>) -> Result<(String, Vec<u8>), Error> {
+    let key = column_as_string!(&row[0]);
+    match &row[1] {
+        Column::Blob(value) => Ok((key, value.clone())),
+        _ => Err(Error::InvalidDbResponse),
+    }
+}
+
 /// Generic implementation of kv_read for database (non-transactional)
 pub(crate) async fn kv_read<RM>(
     pool: &Arc<Pool<RM>>,

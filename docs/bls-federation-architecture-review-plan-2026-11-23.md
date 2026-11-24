@@ -669,3 +669,23 @@ Package 2 is done.
 - **Unchanged:** public API, redb table names and on-disk encodings. In-memory error messages now use the redb wording. Error variants are unchanged.
 - **Inconsistencies recorded, not changed.** The same failure maps to `InvalidCommitment` for one kind and `InvalidSigningSession` for another: key collision, compacted session, and load of a compacted key. A wrong-protocol nonce record fails activation and reservation with different variants. Callers may match on these variants, so aligning them is a separate change.
 - Net change: about 70 lines fewer in the stores (1,402 added, 1,509 removed for the unification, then 231 added and 193 removed for the follow-up, about 110 of which are the regression tests).
+
+### 2026-11-24: package 6, sixth step (consensus state as rows, loaded whole)
+
+Decision: rows loaded whole, not lazy keyed queries. The validation logic keeps working on the in-memory projections; only storage changes.
+
+- **One row per entity.** The four `state_v1` blobs are now one key-value row per entity in their existing namespaces:
+  - `transaction`: one row each per payment intent, accepted transaction, batch lineage head and UTXO reservation;
+  - `chain_observation`: one row per wallet UTXO;
+  - `address_allocation`: one row per allocation;
+  - `bark_recovery`: one row per reserved recovery input.
+- **Derived indexes are not stored.** The quote-to-intent index and the per-scope next-index counters are rebuilt from the rows on load. Validation already required them to match exactly.
+- **One table abstraction.** `FederationStateTable` (`crates/cdk-common/src/federation/state_table.rs`) gives each projection `to_rows` and `from_rows`.
+  - `FederationStoredState` loads a projection inside the apply transaction and writes back only the rows that changed, removing rows that no longer exist.
+  - `read_federation_state` reads a projection outside a transaction.
+  - Every row key must be the key its content would be stored under. Unknown row kinds are rejected.
+- **One query per load.** The KV traits gained `kv_entries`, which reads a whole namespace. SQL backends answer it with one `SELECT`, so a read outside a transaction is still one consistent read, as the single blob was. Other backends fall back to listing keys and reading each one.
+- **Blob encoding deleted.** The four state types no longer have `from_bytes`, `to_bytes`, a `version` field or serde derives. Rows are their only stored form. Tests that seeded or tampered with the blob now write or edit rows.
+- **One test tightened.** `unavailable_or_non_spendable_utxos_and_non_pending_intents_fail_closed` built reorged and quarantined UTXOs by editing JSON and decoding without validation, so the policy rejected them only because it re-validates the state. It now asserts that such a state cannot be loaded at all, and checks the policy only for reserved and spent UTXOs, which can be stored validly.
+- **What changed for cost:** each apply writes only the changed rows. Each apply still loads the whole projection, so reads still grow with retained history. Truncation is the retention question, which is still open.
+- **Remaining in package 6:** retention, the rest of the trait surface, the single apply transaction, and bounded snapshot reads.

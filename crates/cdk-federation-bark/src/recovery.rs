@@ -9,9 +9,10 @@ use bitcoin::{
     absolute, transaction, OutPoint, ScriptBuf, Sequence, TapSighashType, Transaction, TxOut,
 };
 use cdk_common::federation::{
+    decode_row, insert_row, outpoint_row_key, row_kind, unknown_row_kind,
     FederationAllocatedAddressRef, FederationChainObservationState, FederationJournalEntry,
     FederationMaterializedStateRow, FederationOperationId, FederationOperationStatus,
-    FederationWalletUtxoState, MemberId, Result,
+    FederationStateRows, FederationStateTable, FederationWalletUtxoState, MemberId, Result,
 };
 use cdk_frost::{
     ApplicationAuthorization, ApplicationRegistration, AuthorizationRequest,
@@ -35,7 +36,6 @@ const BARK_RECOVERY_FROST_AUTHORIZATION_VERSION: u16 = 2;
 const BARK_RECOVERY_FROST_AUTHORIZATION_DOMAIN: &[u8] =
     b"cdk/federation/bark-recovery-frost-authorization/v1";
 const MAX_RECOVERY_AUTHORIZATION_BYTES: usize = 16 * 1024;
-const BARK_RECOVERY_RESERVATION_STATE_VERSION: u16 = 1;
 
 /// Durable owner of one Bark recovery-wallet fee input.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,10 +53,8 @@ pub struct FederationBarkRecoveryReservation {
 }
 
 /// Bark-owned reservation projection layered over the neutral chain state.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FederationBarkRecoveryState {
-    version: u16,
     reservations: BTreeMap<String, FederationBarkRecoveryReservation>,
 }
 
@@ -71,22 +69,8 @@ impl FederationBarkRecoveryState {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            version: BARK_RECOVERY_RESERVATION_STATE_VERSION,
             reservations: BTreeMap::new(),
         }
-    }
-
-    /// Decode and validate durable projection bytes.
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        let value: Self = serde_json::from_slice(bytes)?;
-        value.validate()?;
-        Ok(value)
-    }
-
-    /// Encode validated durable projection bytes.
-    pub fn to_bytes(&self) -> Result<Vec<u8>> {
-        self.validate()?;
-        Ok(serde_json::to_vec(self)?)
     }
 
     /// Build stable materialized-state rows for checkpoint convergence.
@@ -214,15 +198,52 @@ impl FederationBarkRecoveryState {
     }
 
     fn validate(&self) -> Result<()> {
-        if self.version != BARK_RECOVERY_RESERVATION_STATE_VERSION
-            || self.reservations.iter().any(|(key, reservation)| {
-                key != &reservation.outpoint.to_string()
-                    || reservation.action_id.to_bytes() == [0; 32]
-            })
-        {
+        if self.reservations.iter().any(|(key, reservation)| {
+            key != &reservation.outpoint.to_string() || reservation.action_id.to_bytes() == [0; 32]
+        }) {
             return Err(invalid_bark("Bark recovery reservation state is invalid"));
         }
         Ok(())
+    }
+}
+
+const RESERVATION_ROW: &str = "reservation";
+
+impl FederationStateTable for FederationBarkRecoveryState {
+    const SECONDARY_NAMESPACE: &'static str = "bark_recovery";
+
+    fn to_rows(&self) -> Result<FederationStateRows> {
+        self.validate()?;
+        let mut rows = FederationStateRows::new();
+        for reservation in self.reservations.values() {
+            insert_row(
+                &mut rows,
+                outpoint_row_key(RESERVATION_ROW, &reservation.outpoint),
+                reservation,
+            )?;
+        }
+        Ok(rows)
+    }
+
+    fn from_rows(rows: &FederationStateRows) -> Result<Self> {
+        let mut state = Self::new();
+        for (key, bytes) in rows {
+            if row_kind(key)? != RESERVATION_ROW {
+                return Err(unknown_row_kind());
+            }
+            let reservation: FederationBarkRecoveryReservation = decode_row(
+                key,
+                bytes,
+                |reservation: &FederationBarkRecoveryReservation| {
+                    Ok(outpoint_row_key(RESERVATION_ROW, &reservation.outpoint))
+                },
+            )?;
+            state
+                .reservations
+                .insert(reservation.outpoint.to_string(), reservation);
+        }
+        state.validate()?;
+        Ok(state)
     }
 }
 
@@ -1201,9 +1222,9 @@ mod tests {
             )
             .is_err());
 
-        let bytes = state.to_bytes().expect("state bytes");
+        let bytes = state.to_rows().expect("state bytes");
         assert_eq!(
-            FederationBarkRecoveryState::from_bytes(&bytes).expect("state roundtrip"),
+            FederationBarkRecoveryState::from_rows(&bytes).expect("state roundtrip"),
             state
         );
     }

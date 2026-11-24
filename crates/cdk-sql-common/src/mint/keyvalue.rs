@@ -103,6 +103,19 @@ where
         crate::keyvalue::kv_list_in_transaction(&self.inner, primary_namespace, secondary_namespace)
             .await
     }
+
+    async fn kv_entries(
+        &mut self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+    ) -> Result<Vec<(String, Vec<u8>)>, Error> {
+        crate::keyvalue::kv_entries_in_transaction(
+            &self.inner,
+            primary_namespace,
+            secondary_namespace,
+        )
+        .await
+    }
 }
 
 #[async_trait]
@@ -127,6 +140,14 @@ where
         secondary_namespace: &str,
     ) -> Result<Vec<String>, Error> {
         crate::keyvalue::kv_list(&self.pool, primary_namespace, secondary_namespace).await
+    }
+
+    async fn kv_entries(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+    ) -> Result<Vec<(String, Vec<u8>)>, Error> {
+        crate::keyvalue::kv_entries(&self.pool, primary_namespace, secondary_namespace).await
     }
 }
 

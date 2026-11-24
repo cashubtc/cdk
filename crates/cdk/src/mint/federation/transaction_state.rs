@@ -7,43 +7,25 @@ use cdk_common::bitcoin::Address;
 use cdk_common::database;
 use cdk_common::error::Error;
 use cdk_common::federation::{
-    FederationAcceptedTransaction, FederationAcceptedTransactionState,
+    read_federation_state, FederationAcceptedTransaction, FederationAcceptedTransactionState,
     FederationChainObservationState, FederationError, FederationJournalEntry,
     FederationOnchainPaymentIntent, FederationOnchainPaymentIntentRecord, FederationOperation,
     FederationOperationId, FederationOperationStatus, FederationSignedTransaction,
-    FederationTransactionBroadcastIntent, FederationTransactionBroadcastObservation,
-    FederationTransactionProposal, FederationTransactionProposalId, FederationTransactionScope,
-    FederationTransactionState, FederationTransactionStateOutcome, MemberId,
+    FederationStoredState, FederationTransactionBroadcastIntent,
+    FederationTransactionBroadcastObservation, FederationTransactionProposal,
+    FederationTransactionProposalId, FederationTransactionScope, FederationTransactionState,
+    FederationTransactionStateOutcome, MemberId,
 };
 use cdk_common::mint::{MeltPaymentRequest, MeltQuote};
 
 use super::super::Mint;
 use super::application::finish_federation_apply_transaction;
-use super::chain_observation::{
-    CHAIN_OBSERVATION_PRIMARY_NAMESPACE, CHAIN_OBSERVATION_SECONDARY_NAMESPACE,
-    CHAIN_OBSERVATION_STATE_KEY,
-};
 use super::FederationRuntimeConfig;
-
-pub(super) const TRANSACTION_STATE_PRIMARY_NAMESPACE: &str = "federation";
-pub(super) const TRANSACTION_STATE_SECONDARY_NAMESPACE: &str = "transaction";
-pub(super) const TRANSACTION_STATE_KEY: &str = "state_v1";
 
 impl Mint {
     /// Load the complete validated outgoing transaction projection.
     pub async fn federation_transaction_state(&self) -> Result<FederationTransactionState, Error> {
-        match self
-            .localstore()
-            .kv_read(
-                TRANSACTION_STATE_PRIMARY_NAMESPACE,
-                TRANSACTION_STATE_SECONDARY_NAMESPACE,
-                TRANSACTION_STATE_KEY,
-            )
-            .await?
-        {
-            Some(bytes) => Ok(FederationTransactionState::from_bytes(&bytes)?),
-            None => Ok(FederationTransactionState::new()),
-        }
+        read_federation_state(&self.localstore()).await
     }
 
     pub(super) async fn apply_federation_transaction_proposal(
@@ -57,7 +39,9 @@ impl Mint {
         let mut transaction = self.localstore().begin_transaction().await?;
         let outcome = async {
             let mut state = load_transaction_state(&mut transaction).await?;
-            let mut chain_state = load_chain_state(&mut transaction).await?;
+            let mut chain_state =
+                FederationStoredState::<FederationChainObservationState>::load(&mut transaction)
+                    .await?;
 
             let outcome = match state.accepted_transaction(proposal_id) {
                 Some(existing) => {
@@ -111,22 +95,8 @@ impl Mint {
                 },
             };
 
-            transaction
-                .kv_write(
-                    TRANSACTION_STATE_PRIMARY_NAMESPACE,
-                    TRANSACTION_STATE_SECONDARY_NAMESPACE,
-                    TRANSACTION_STATE_KEY,
-                    &state.to_bytes()?,
-                )
-                .await?;
-            transaction
-                .kv_write(
-                    CHAIN_OBSERVATION_PRIMARY_NAMESPACE,
-                    CHAIN_OBSERVATION_SECONDARY_NAMESPACE,
-                    CHAIN_OBSERVATION_STATE_KEY,
-                    &chain_state.to_bytes()?,
-                )
-                .await?;
+            state.save(&mut transaction).await?;
+            chain_state.save(&mut transaction).await?;
             Ok(outcome)
         }
         .await;
@@ -287,14 +257,7 @@ impl Mint {
                 .clone();
             signed.verify_signatures(&accepted.proposal)?;
             let outcome = state.mark_transaction_signed(signed.proposal_id, signed.clone())?;
-            transaction
-                .kv_write(
-                    TRANSACTION_STATE_PRIMARY_NAMESPACE,
-                    TRANSACTION_STATE_SECONDARY_NAMESPACE,
-                    TRANSACTION_STATE_KEY,
-                    &state.to_bytes()?,
-                )
-                .await?;
+            state.save(&mut transaction).await?;
             Ok(outcome)
         }
         .await;
@@ -394,14 +357,7 @@ impl Mint {
             let mut state = load_transaction_state(&mut transaction).await?;
             let outcome =
                 state.authorize_transaction_broadcast(*intent, entry.operation_id, entry.index)?;
-            transaction
-                .kv_write(
-                    TRANSACTION_STATE_PRIMARY_NAMESPACE,
-                    TRANSACTION_STATE_SECONDARY_NAMESPACE,
-                    TRANSACTION_STATE_KEY,
-                    &state.to_bytes()?,
-                )
-                .await?;
+            state.save(&mut transaction).await?;
             Ok(outcome)
         }
         .await;
@@ -423,14 +379,7 @@ impl Mint {
                 entry.operation_id,
                 entry.index,
             )?;
-            transaction
-                .kv_write(
-                    TRANSACTION_STATE_PRIMARY_NAMESPACE,
-                    TRANSACTION_STATE_SECONDARY_NAMESPACE,
-                    TRANSACTION_STATE_KEY,
-                    &state.to_bytes()?,
-                )
-                .await?;
+            state.save(&mut transaction).await?;
             Ok(outcome)
         }
         .await;
@@ -487,47 +436,13 @@ pub(super) async fn persist_pending_onchain_intent(
     )?;
     let mut state = load_transaction_state(transaction).await?;
     state.add_pending_intent(FederationOnchainPaymentIntentRecord::pending(intent)?)?;
-    transaction
-        .kv_write(
-            TRANSACTION_STATE_PRIMARY_NAMESPACE,
-            TRANSACTION_STATE_SECONDARY_NAMESPACE,
-            TRANSACTION_STATE_KEY,
-            &state.to_bytes()?,
-        )
-        .await?;
-    Ok(())
+    state.save(transaction).await
 }
 
 async fn load_transaction_state(
     transaction: &mut database::mint::DynMintTransaction,
-) -> Result<FederationTransactionState, Error> {
-    match transaction
-        .kv_read(
-            TRANSACTION_STATE_PRIMARY_NAMESPACE,
-            TRANSACTION_STATE_SECONDARY_NAMESPACE,
-            TRANSACTION_STATE_KEY,
-        )
-        .await?
-    {
-        Some(bytes) => Ok(FederationTransactionState::from_bytes(&bytes)?),
-        None => Ok(FederationTransactionState::new()),
-    }
-}
-
-async fn load_chain_state(
-    transaction: &mut database::mint::DynMintTransaction,
-) -> Result<FederationChainObservationState, Error> {
-    match transaction
-        .kv_read(
-            CHAIN_OBSERVATION_PRIMARY_NAMESPACE,
-            CHAIN_OBSERVATION_SECONDARY_NAMESPACE,
-            CHAIN_OBSERVATION_STATE_KEY,
-        )
-        .await?
-    {
-        Some(bytes) => Ok(FederationChainObservationState::from_bytes(&bytes)?),
-        None => Ok(FederationChainObservationState::new()),
-    }
+) -> Result<FederationStoredState<FederationTransactionState>, Error> {
+    FederationStoredState::load(transaction).await
 }
 
 fn ensure_existing_reservations(

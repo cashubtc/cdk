@@ -2,39 +2,20 @@
 
 use cdk_common::error::Error;
 use cdk_common::federation::{
-    FederationAddressAllocationState, FederationChainObservation,
+    read_federation_state, FederationAddressAllocationState, FederationChainObservation,
     FederationChainObservationOutcome, FederationChainObservationState, FederationJournalEntry,
-    FederationPaymentObservationContext,
+    FederationPaymentObservationContext, FederationStoredState,
 };
 
 use super::super::Mint;
-use super::address_allocation::{
-    ADDRESS_ALLOCATION_PRIMARY_NAMESPACE, ADDRESS_ALLOCATION_SECONDARY_NAMESPACE,
-    ADDRESS_ALLOCATION_STATE_KEY,
-};
 use super::application::finish_federation_apply_transaction;
-
-pub(super) const CHAIN_OBSERVATION_PRIMARY_NAMESPACE: &str = "federation";
-pub(super) const CHAIN_OBSERVATION_SECONDARY_NAMESPACE: &str = "chain_observation";
-pub(super) const CHAIN_OBSERVATION_STATE_KEY: &str = "state_v1";
 
 impl Mint {
     /// Load the complete validated consensus wallet UTXO projection.
     pub async fn federation_chain_observation_state(
         &self,
     ) -> Result<FederationChainObservationState, Error> {
-        match self
-            .localstore()
-            .kv_read(
-                CHAIN_OBSERVATION_PRIMARY_NAMESPACE,
-                CHAIN_OBSERVATION_SECONDARY_NAMESPACE,
-                CHAIN_OBSERVATION_STATE_KEY,
-            )
-            .await?
-        {
-            Some(bytes) => Ok(FederationChainObservationState::from_bytes(&bytes)?),
-            None => Ok(FederationChainObservationState::new()),
-        }
+        read_federation_state(&self.localstore()).await
     }
 
     pub(super) async fn apply_federation_chain_observation(
@@ -51,33 +32,17 @@ impl Mint {
             .required_matching_observations();
         let mut transaction = self.localstore().begin_transaction().await?;
         let outcome = async {
-            let bytes = transaction
-                .kv_read(
-                    CHAIN_OBSERVATION_PRIMARY_NAMESPACE,
-                    CHAIN_OBSERVATION_SECONDARY_NAMESPACE,
-                    CHAIN_OBSERVATION_STATE_KEY,
-                )
-                .await?;
-            let mut state = match bytes {
-                Some(bytes) => FederationChainObservationState::from_bytes(&bytes)?,
-                None => FederationChainObservationState::new(),
-            };
+            let mut state =
+                FederationStoredState::<FederationChainObservationState>::load(&mut transaction)
+                    .await?;
             let outcome = match observation {
                 FederationChainObservation::Deposit(observation) => {
-                    let allocation_bytes = transaction
-                        .kv_read(
-                            ADDRESS_ALLOCATION_PRIMARY_NAMESPACE,
-                            ADDRESS_ALLOCATION_SECONDARY_NAMESPACE,
-                            ADDRESS_ALLOCATION_STATE_KEY,
+                    let allocations =
+                        FederationStoredState::<FederationAddressAllocationState>::load(
+                            &mut transaction,
                         )
                         .await?
-                        .ok_or({
-                            cdk_common::federation::FederationError::ChainObservationInvalid {
-                                reason: "deposit has no accepted allocation projection",
-                            }
-                        })?;
-                    let allocations =
-                        FederationAddressAllocationState::from_bytes(&allocation_bytes)?;
+                        .into_inner();
                     let allocation = allocations
                         .allocation(
                             observation.allocation.scope(),
@@ -163,14 +128,7 @@ impl Mint {
                     state.apply_reorg(observation, entry.operation_id, entry.index)?
                 }
             };
-            transaction
-                .kv_write(
-                    CHAIN_OBSERVATION_PRIMARY_NAMESPACE,
-                    CHAIN_OBSERVATION_SECONDARY_NAMESPACE,
-                    CHAIN_OBSERVATION_STATE_KEY,
-                    &state.to_bytes()?,
-                )
-                .await?;
+            state.save(&mut transaction).await?;
             Ok(outcome)
         }
         .await;

@@ -211,7 +211,7 @@ impl FederationRuntimeConfig {
         lifecycle: ProposalLifecycle<'_>,
     ) -> Result<FederationTransactionPolicyAudit, Error> {
         proposal.validate()?;
-        chain_state.to_bytes()?;
+        chain_state.validate()?;
         let application = self.cdk_onchain_application()?;
         let expected_scope = FederationTransactionScope {
             root_key_epoch: application.root_key_epoch,
