@@ -441,9 +441,13 @@ pub fn setup_tracing(
     let tungstenite = "tungstenite=warn";
     let tokio_postgres = "tokio_postgres=warn";
 
-    let env_filter = EnvFilter::new(format!(
+    let default_env_filter = format!(
         "{default_filter},{hyper_filter},{h2_filter},{tower_filter},{tower_http},{rustls},{tungstenite},{tokio_postgres}"
-    ));
+    );
+    // `RUST_LOG`, when set and valid, replaces the built-in target filter.
+    // Each output's configured level still caps what it writes.
+    let env_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_env_filter));
 
     match logging_config.output {
         LoggingOutput::Stderr => {
