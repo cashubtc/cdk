@@ -105,6 +105,29 @@ current in-memory suffix item counts and canonical bytes, active-session backup
 chunk/byte totals, and audit latch. It never includes backup contents, secrets,
 credentials, or filesystem paths.
 
+## Member below every peer's retention floor
+
+Peers delete consensus history and terminal entities below their retention
+floor (see `federation-storage-retention-2026-11-24.md`). An empty member
+catches up by installing a peer's checkpoint state. A member that still holds
+state but was offline past every peer's floor cannot: it halts, and signed
+status reports `sync_state = "reset_required"` with the local journal index.
+
+To return it to service:
+
+1. Stop the member's daemon.
+2. Run `cdk-mintd federation reset-member --confirm-wipe` with the member's
+   usual work directory and configuration. It refuses without
+   `--confirm-wipe`. It deletes the member's federation consensus state and its
+   mint business rows (quotes, proofs, blind signatures, signature shares,
+   sagas) in one transaction, and keeps the federation config, DKG and setup
+   records, FROST key material, keysets and mint configuration. It does not
+   touch the FROST nonce store file.
+3. Start the member. It installs a peer's latest scheduled checkpoint state
+   and catches up the rest.
+
+Nothing is deleted without this command.
+
 ## Audit mismatch recovery
 
 A materialized-state audit mismatch is a durable one-way latch. It is never

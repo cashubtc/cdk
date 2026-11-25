@@ -60,7 +60,7 @@ use cdk_common::database::mint::{
     FederationApplicationTransaction, FederationDkgDatabase, FederationDkgTransaction,
     FederationFrostWalletDatabase, FederationFrostWalletTransaction, FederationJournalDatabase,
     FederationJournalTransaction, FederationMintQuoteState, FederationSetupDatabase,
-    FederationSetupTransaction,
+    FederationSetupTransaction, FederationStoredPaymentObservation,
 };
 use cdk_common::database::Error;
 #[cfg(feature = "federation-bark")]
@@ -308,6 +308,23 @@ fn sql_row_to_federation_payment_observation_record(
         operation_id,
         operation_index,
         observation,
+    })
+}
+
+/// Decode a payment observation row selected with its retirement column last.
+fn sql_row_to_stored_payment_observation(
+    mut row: Vec<Column>,
+) -> Result<FederationStoredPaymentObservation, Error> {
+    let terminal = row.pop().ok_or_else(|| {
+        Error::Internal("payment observation row has no retirement column".to_string())
+    })?;
+    let terminal_operation_index = match terminal {
+        Column::Null => None,
+        column => Some(column_as_number!(column)),
+    };
+    Ok(FederationStoredPaymentObservation {
+        record: sql_row_to_federation_payment_observation_record(row)?,
+        terminal_operation_index,
     })
 }
 

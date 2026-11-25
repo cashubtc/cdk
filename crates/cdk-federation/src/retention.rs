@@ -44,6 +44,35 @@ impl FederationNodeRuntime {
                 break;
             }
         }
+        // Terminal entities retired below the floor are left out of every
+        // later checkpoint's digest, so deleting them here cannot make this
+        // member disagree with a peer that has not.
+        #[cfg(any(test, feature = "test-utils"))]
+        let keep_terminal_entities = self
+            .components
+            .faults
+            .keep_terminal_entities
+            .load(std::sync::atomic::Ordering::Acquire);
+        #[cfg(not(any(test, feature = "test-utils")))]
+        let keep_terminal_entities = false;
+        if let Some(floor) = db
+            .get_federation_retention_floor()
+            .await?
+            .filter(|_| !keep_terminal_entities)
+        {
+            for _ in 0..FEDERATION_RETENTION_MAX_BATCHES_PER_PROMOTION {
+                let batch = mint
+                    .prune_federation_terminal_state(
+                        floor.journal_start,
+                        FEDERATION_RETENTION_PRUNE_BATCH_ROWS,
+                    )
+                    .await?;
+                deleted = deleted.saturating_add(batch);
+                if batch == 0 {
+                    break;
+                }
+            }
+        }
         if deleted > 0 {
             tracing::debug!(
                 deleted,
@@ -51,6 +80,17 @@ impl FederationNodeRuntime {
             );
         }
         Ok(deleted)
+    }
+
+    /// Keep (or again delete) terminal entities below the retention floor
+    /// when history is pruned, so tests can compare a member that deleted
+    /// them with one that did not.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn keep_terminal_entities(&self, keep: bool) {
+        self.components
+            .faults
+            .keep_terminal_entities
+            .store(keep, std::sync::atomic::Ordering::Release);
     }
 
     /// Prune after a promotion; a failure is logged and retried at the next one.
@@ -182,8 +222,10 @@ where
 /// this member needs lies below every peer's retention floor.
 ///
 /// The installer requires empty federation state. A member that already
-/// holds state below every floor cannot be repaired automatically: it is
-/// reported, and an operator must reset it so it can install the transfer.
+/// holds state below every floor cannot be repaired automatically: it halts
+/// with [`crate::FederationSyncStatus::ResetRequired`], and stays halted
+/// until its operator stops it, runs `cdk-mintd federation reset-member`
+/// and starts it again; it then rejoins through this path as an empty member.
 pub async fn install_state_transfer_below_peer_floors<T>(
     state: &FederationNode,
     client: &FederationRestPeerClient<T>,
@@ -195,11 +237,22 @@ where
     let db = state.mint.localstore();
     match db.get_federation_checkpoint_frontier().await {
         Ok(frontier) if frontier == FederationCheckpointFrontier::genesis() => {}
-        Ok(_) => {
+        Ok(frontier) => {
             tracing::error!(
+                journal_next_index = frontier.journal_next_index,
                 "Federation history this member needs is below every peer's retention floor; \
-                 a state transfer needs empty federation state, so this member must be reset"
+                 a state transfer needs empty federation state, so the member halts until its \
+                 operator resets it with `cdk-mintd federation reset-member`"
             );
+            crate::halt_current_federation_aleph_bft_session(
+                state,
+                "member is below every peer's retention floor",
+            )
+            .await;
+            state
+                .federation
+                .mark_reset_required(frontier.journal_next_index)
+                .await;
             return false;
         }
         Err(err) => {

@@ -817,6 +817,22 @@ mod test {
 
     #[cfg(feature = "federation-bark")]
     #[tokio::test]
+    async fn federation_bark_retired_action_guard() {
+        cdk_sql_common::federation_bark_test_support::federation_bark_retired_action_guard(
+            provide_mint_db(unique_federation_test_id(
+                "federation_bark_retired_action_source",
+            ))
+            .await,
+            provide_mint_db(unique_federation_test_id(
+                "federation_bark_retired_action_installed",
+            ))
+            .await,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "federation-bark")]
+    #[tokio::test]
     async fn federation_bark_action_reads() {
         cdk_sql_common::federation_bark_test_support::federation_bark_action_reads(
             provide_mint_db(unique_federation_test_id("federation_bark_action_reads")).await,

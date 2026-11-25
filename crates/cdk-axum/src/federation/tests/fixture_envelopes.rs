@@ -580,16 +580,19 @@ pub(super) async fn submit_melt_payment_observation_from_backend(
                 .await
                 .expect("probe and submit melt payment observation");
             if observed {
+                // The observation may already have paid the quote, which
+                // retires it; the history keeps it.
                 return state
                     .mint
                     .localstore()
-                    .get_federation_payment_observations(
+                    .get_federation_payment_observation_history(
                         FederationPaymentObservationContext::MeltQuote,
                         &quote_id.to_string(),
                     )
                     .await
                     .expect("melt payment observation lookup")
                     .into_iter()
+                    .map(|stored| stored.record)
                     .find(|record| record.observation.observer() == observer)
                     .expect("observer payment record");
             }

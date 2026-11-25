@@ -1,10 +1,11 @@
 # Federation storage contract and checkpoint retention
 
-Status: prerequisites 1, 3 and 4 implemented (validity window, Bark readers,
-state transfer); duplicate and conflict detection bounded by the window;
-deletion of journal entries, conflict keys, finalized items and old scheduled
-checkpoints implemented (see "History deletion: built"). Prerequisites 2 and 5
-and the deletion of terminal entities and payment observations are open. Follows package 6 of
+Status: prerequisites 1 to 6 implemented (validity window, spent-output
+tombstones, Bark readers, state transfer, terminal indexes with the digest
+exclusion rule, deletion); duplicate and conflict detection bounded by the
+window; deletion of journal entries, conflict keys, finalized items and old
+scheduled checkpoints (see "History deletion: built") and of terminal
+entities (see "Terminal entities: built"). Follows package 6 of
 `bls-federation-architecture-review-plan-2026-11-23.md`.
 
 Decision taken: checkpoints may truncate logs and history, and also terminal
@@ -53,12 +54,12 @@ reconcile route read the whole journal from index 0
 | `federation_aleph_bft_finalized_items` | Finalized consensus items | AlephBFT | Startup suffix, catch-up serving, checkpoint capture | Below the retention floor deleted once state transfer exists |
 | `federation_aleph_bft_backups` | Local session backup | Local | Startup | Already pruned before the active session |
 | `federation_checkpoints`, signatures, quorums | Signed frontiers | Quorum | Startup, catch-up, promotion | Already pruned: recovery checkpoints covered by a scheduled quorum. Keep the trusted one and the one at the retention floor |
-| `federation_payment_observations` | Member payment evidence | Consensus order | Apply (quorum finalization), reports, digest | Deleted when the quote is terminal below the floor |
+| `federation_payment_observations` | Member payment evidence | Consensus order | Apply (quorum finalization), reports, digest | Retired when the quote is final (issued Bolt11 mint quote, paid melt quote); deleted below the floor |
 | `federation_signature_shares` | Member shares of blind signatures | Consensus order | NUT-09 restore, retried mint and swap responses | Kept: restore must work for any past output |
 | `federation_materialized_state_keys` | Index of rows in the materialized digest | Consensus order | Snapshot, keyset rotation rebuild | Follows the entities it indexes |
-| Bark actions, vtxos, transitions, observations | Bark projection | Consensus order | Bark drivers, digest | Transitions and observations of terminal actions deleted below the floor |
-| `transaction` rows | Intents, accepted transactions, lineage heads, reservations | Consensus order | Apply, signing authorization, broadcast, digest | Terminal transactions and their intents deleted below the floor |
-| `chain_observation` rows | Wallet UTXOs and evidence | Consensus order | Apply, transaction policy, quote payment, digest | Spent UTXOs reduced to an outpoint tombstone below the floor |
+| Bark actions, vtxos, transitions, observations | Bark projection | Consensus order | Bark drivers, digest | Transitions and observations of retired actions deleted below the floor; the action stays as the replay guard; VTXOs, allocations and VTXO reservations kept |
+| `transaction` rows | Intents, accepted transactions, lineage heads, reservations | Consensus order | Apply, signing authorization, broadcast, digest | A lineage whose transaction confirmed and whose melt quotes are all paid is deleted whole below the floor, with its intents |
+| `chain_observation` rows | Wallet UTXOs and evidence | Consensus order | Apply, transaction policy, quote payment, digest | Spent UTXOs reduced to a permanent tombstone below the floor |
 | `address_allocation` rows | Quote to derivation index | Consensus order | Apply, deposit attribution | Kept: an address can receive another deposit at any time |
 | `bark_recovery` rows | Recovery input reservations | Consensus order | Apply, digest | Published reservations deleted below the floor (the spent UTXO tombstone covers the input) |
 | Payment scheduler entries | Local retry timing | Local | Payment observer | Already deleted when a quote completes |
@@ -79,17 +80,17 @@ The materialized-state digest of checkpoint *n* excludes every entity whose
 terminal operation index is below the floor of checkpoint *n*. Exclusion is
 part of the digest definition, so members agree whatever their local deletion
 timing. Physical deletion can then run in the background at any time after the
-member has promoted checkpoint *n*. This needs every terminal entity to record
-the operation index at which it became terminal; spent UTXOs, confirmed,
-abandoned and replaced transactions, and completed and failed intents do not
-all record that yet.
+member has promoted checkpoint *n*. Every terminal entity records the
+operation index at which it became terminal, and operations stop reading it
+at that index, so a member that deleted it decides every later operation as
+one that did not (see "Terminal entities: built").
 
 ### Prerequisites, in order
 
 1. **Replay guard without journal bodies: validity window (decided, implemented).**
    See "Validity window" below.
-2. **Outpoint tombstones for spent UTXOs**, kept forever, so a replayed deposit
-   observation cannot recreate a pruned UTXO.
+2. **Outpoint tombstones for spent UTXOs (implemented)**, kept forever, so a
+   replayed deposit observation cannot recreate a pruned UTXO.
 3. **Bark readers off the full journal.** Reconcile, the recovery driver and the
    operator route read the Bark projection instead.
 4. **State transfer (decision B, implemented; see "State transfer: built").**
@@ -99,10 +100,11 @@ all record that yet.
    This covers the mint database rows the digest already enumerates (quotes,
    proof states, blind signatures, completed operations, keyset rotations). It
    is a new protocol path with its own limits and tests.
-5. **Terminal-index fields and the digest exclusion rule** (see above).
-6. **Deletion.** Journal and finalized bodies below the floor, then terminal
-   entities, payment observations and Bark history, each in bounded batches in
-   its own transaction.
+5. **Terminal-index fields and the digest exclusion rule (implemented)** (see
+   above).
+6. **Deletion (implemented).** Journal and finalized bodies below the floor,
+   then terminal entities, payment observations and Bark history, each in
+   bounded batches in its own transaction.
 
 Steps 1 to 3 are useful on their own. Steps 4 to 6 must land together: no
 member may delete bodies until every member can install a state transfer.
@@ -152,7 +154,7 @@ an old operation in a fresh session. What then stops it applying twice:
 | `MintQuote`, `MeltQuote` | Any member | Existing quote rows in the mint database |
 | `KeysetRotation` | Any member | Keyset state |
 | `AddressAllocation` | Any member | `apply` returns `Existing` for a known quote |
-| `TransactionSigned`, `TransactionBroadcastIntent` | Any member | `Existing` for a known transaction; rejected once the transaction is pruned |
+| `TransactionSigned`, `TransactionBroadcastIntent` | Any member | `Existing` for a known transaction; rejected once the lineage is terminal, on every member alike |
 
 Each row must be confirmed by a test that replays the operation with a fresh
 stamp before step 6 deletes any journal row. Conflict keys follow the same
@@ -222,8 +224,8 @@ action's current phase before the projection's own no-op check. The
 remaining Bark kinds (`ReceivePrepared`, `ActionPlan`, `ActionTransition`,
 `EvidenceCertificate`) take the same Bark no-op path but have no fixture in
 `cdk` that builds them. The Bark projection guard reads transition and
-observation rows, so deleting those rows for terminal actions (stage 3) needs
-a guard that survives the deletion.
+observation rows; once those rows of a retired action may be deleted, the
+action row itself is the guard (see "Terminal entities: built").
 
 ## Bark readers (prerequisite 3, implemented)
 
@@ -570,8 +572,8 @@ toward the latest known scheduled quorum
 (`probe_peer_history_to_known_checkpoint`) so the pruned answer is seen.
 
 The installer requires empty federation state. A member that holds state below
-every peer's floor is logged as needing a reset; resetting it automatically
-would delete its mint rows and is not done.
+every peer's floor halts instead (decision 9, see "Stale member: halt and
+reset").
 
 ### Tests (`cdk-axum`, `federation::tests::retention`)
 
@@ -591,17 +593,221 @@ would delete its mint rows and is not done.
 
 ### Not deleted yet
 
-- **Payment observations of terminal quotes.** They are rows of the
-  materialized-state digest, so deleting them at local timing would split
-  checkpoint digests. They need the same exclusion rule as terminal entities
-  (prerequisite 5).
-- **Terminal entities** (stage 3, prerequisite 5).
-- The transaction pin is not covered by a test.
-- Apply-time reads of journal entries for entities that are already final
-  (for example a Bark operation naming a finished action's plan) are not
-  pinned. Valid operations do not reach them, and replays of recorded Bark
-  operations return before validation (stage 1), but a crafted operation could
-  see a missing entry on a member that deleted it and a present one elsewhere.
+Payment observations of terminal quotes and terminal entities are deleted by
+stage 3 ("Terminal entities: built"). The transaction pin now has a test.
+Apply-time journal reads of final entities are covered there too: a Bark
+action pins its entries until it is retired, and nothing reads a retired one.
+
+## Terminal entities: built
+
+### One rule: terminal means retired
+
+An entity is terminal from the operation that made it final. From that
+operation on, no operation reads it: the projections retire it when they load
+(`FederationStateTable::retire_terminal_rows`, applied by
+`FederationStoredState::load` and `read_federation_state`), live payment
+observation reads skip retired rows, and an operation naming a retired Bark
+action is applied as a no-op. Terminality is decided by consensus state (quote
+state, projection rows), so every member retires at the same journal index.
+The stored rows stay until history retention deletes them, and a member that
+deleted them and one that did not load the same projections and decide every
+later operation alike.
+
+| Entity | Terminal when | Terminal index | What later operations see | Deleted below the floor | Permanent guard |
+|---|---|---|---|---|---|
+| Payment observation | Its quote is final: a Bolt11 mint quote issued, a melt quote paid | The mint or payment observation that made the quote final | Nothing: live reads skip retired rows, and an observation of a final quote is not recorded | Yes | Quote state |
+| Spent wallet UTXO | Spent: a Bark recovery publication, or a CDK lineage becoming terminal | The spending operation | Its tombstone: outpoint, and quote and output when it counted toward the quote's payment | Full record replaced by the tombstone | Tombstone, never deleted |
+| Outgoing transaction lineage (transactions, batch head, input reservations) and its intents | One transaction confirmed, every melt quote it pays is paid (`settle_completed_intent`) and its inputs are still reserved (`retire_settled_lineage`) | The payment observation that paid the last quote | Nothing; its inputs are spent at that index | Yes, whole | Spent-output tombstones and melt quote state |
+| Bark recovery reservation | Published | The `ExitPublished` operation | Nothing | Yes | Spent-output tombstone |
+| Bark action | A final phase and its quote settled (mint quote paid, melt quote paid or rolled back), or no quote | The later of the final transition and the settlement (`retired_operation_index`) | Any operation naming it is an applied no-op | Its transitions and observations | The action row |
+
+Never deleted: signature shares, address allocations, proofs, blind
+signatures, quotes and completed operations.
+
+### Digest exclusion rule
+
+`get_federation_materialized_state_floor(checkpoint)` is the retention floor
+the checkpoint sets as the latest scheduled checkpoint, before live-state
+pins: the latest scheduled checkpoint below it, or the start of its validity
+window if that is earlier; zero when no scheduled checkpoint lies below it. It
+depends only on the checkpoint sequence and finalized items. The checkpoint's
+materialized-state digest leaves out:
+
+- payment observations retired below the floor;
+- spent UTXOs spent below the floor, which appear as their tombstone row
+  (`retire_rows_below`);
+- transaction lineages terminal below the floor;
+- recovery reservations published below the floor;
+- transitions and observations of Bark actions retired below the floor.
+
+Scheduled and recovery capture compute the floor of the checkpoint being
+captured; the audit uses the floor of the trusted checkpoint. The live digest
+(`federation_materialized_state_snapshot`, operator status) uses the floor of
+the latest scheduled checkpoint. A member deletes only below its stored
+retention floor, which is never above the floor of any checkpoint it captures
+later, so deleted rows are always rows the digest leaves out. Payment
+observation digest rows carry `terminal_operation_index`; the action record
+carries `quote_settled_operation_index`; wallet UTXOs carry
+`spent_operation_index`; intents carry `settled_operation_index`;
+transactions carry `terminal_operation_index`; recovery reservations carry
+`published_operation_index`. All are consensus-fixed.
+
+### State transfer
+
+The frozen snapshot holds the rows at the checkpoint's floor, so an installed
+member holds no entity retired below it, and tombstones arrive as ordinary
+projection rows. The installer installs retired payment observations with
+their terminal index, verifies the recomputed digest with no exclusion (there
+is nothing left to exclude), and rebuilds a mint quote's payments from the
+installed observations; when a final quote's observations were left out, the
+signed paid amount is recorded as one payment.
+
+### Deletion
+
+`Mint::prune_federation_terminal_state(floor, limit)` runs after history
+pruning in `prune_history_below_retention_floor`, below the stored retention
+floor, up to 64 batches of 500 per promotion: each projection in its own
+transaction (oldest terminal entities first, a lineage always whole), then
+retired payment observations and the transitions and observations of retired
+Bark actions in one SQL transaction.
+
+### Spent outputs and quote payments
+
+An on-chain mint quote's payment is cumulative over every output ever paid to
+its address, spent or not, and payments are evaluated at the applying entry's
+index. A spent output never receives evidence again, so its contribution is
+fixed when it is spent; the tombstone keeps exactly that contribution (quote,
+amount, script), and `quote_payment_at_or_before` merges tombstones with live
+outputs in the same outpoint order. The amount and the payment commitment are
+the same whether the full record exists or not. This is why the tombstone is
+not the bare outpoint.
+
+### Replay guards that survive deletion
+
+- **Spent outputs.** A deposit or reorg observation of a spent outpoint
+  returns `Existing(Spent)`; reservation and spending refuse it with the same
+  error as for a spent record.
+- **Payment observations.** An observation of a final quote is not recorded,
+  so replaying a deleted one changes nothing on any member.
+- **Transaction lineages.** A terminal lineage is unknown to every member:
+  signing, broadcast intents and observations for it are rejected alike; a
+  replayed proposal finds its inputs spent. A melt cannot add a new intent for
+  a paid quote (`persist_pending_onchain_intent` requires a pending quote).
+- **Bark.** `apply_bark_operation` (SQL) and `federation_bark_operation_recorded`
+  treat an operation naming a retired action as already applied, before any
+  read of its transitions or observations.
+
+### Apply-time journal reads
+
+- Bark: payment templates for observations of a finished action read the plan
+  entry. The live-state pin now holds every action that is not retired (it
+  held only non-final ones), and nothing reads a retired action.
+- Outgoing transactions: signing reads the accepted proposal entry; the
+  transaction pin holds unfinished transactions, and a terminal lineage is
+  never read.
+- Melt change provenance reads the melt entry of a live saga (saga pin).
+- `require_prior_applied_quote_operation` already accepts a quote created
+  below the floor (stage 2).
+
+### Behaviour changes
+
+- A spent output is frozen: later deposit or reorg evidence for it is not
+  recorded (before, it could mark the output reorged or quarantined and set
+  the liability alarm).
+- A CDK on-chain lineage's inputs stay reserved after confirmation until every
+  quote it pays is paid; then they are spent.
+- Observations of a final quote are not recorded (before, late observations
+  were stored for audit). `get_federation_payment_observation_history` returns
+  every stored observation, retired ones included.
+- Operations naming a retired Bark action are no-ops, so late observations of
+  it are ignored.
+- A paid melt quote whose saga is still finalizing after a crash completes from
+  the saga on any later observation, without a new quorum.
+
+### Not pruned, and why
+
+- Lineages that never confirm, whose melt quotes are never paid, or one of
+  whose inputs left its reservation (a reorg deeper than the confirmation),
+  and their inputs: something may still read them.
+- Unspent, reorged and quarantined outputs: they can still change.
+- Payment observations of Bolt12 and on-chain mint quotes (they can be paid
+  again) and of melt quotes that are not paid.
+- Bark actions bound to a quote that never settles (for example a receive
+  whose quote is never paid). They also keep pinning their journal entries.
+- Bark VTXOs, derivation allocations and VTXO reservations: not terminal
+  entities in this design.
+
+### Tests
+
+- `cdk-axum`, `federation::tests::retention::retired_payment_observations_digest_alike_whether_or_not_deleted`:
+  three members; a Bolt11 quote is created, paid and minted; one member keeps
+  terminal entities (`keep_terminal_entities`), two delete them. After the
+  floor passes the mint, the stored rows differ but every scheduled checkpoint
+  is identical on all three, the live digest equals the latest checkpoint's,
+  and each member passes the audit of its trusted checkpoint. A replay of the
+  deleted observation, re-stamped by its author after its window, is applied
+  as a no-op everywhere. The snapshot served by a member that deleted the rows
+  equals the one served by the member that kept them, installs into a fresh
+  member and reaches the signed digest.
+- `cdk`, `melt::accepted_frost_onchain_melt_materializes_one_pending_payment_intent`
+  (extended): paying the quote retires the lineage and spends its input; the
+  digest at a floor above the settlement is identical before and after
+  deletion; deletion leaves the tombstone and no transaction rows; a replayed
+  payment observation changes nothing.
+- `cdk`, `transaction_signing::unfinished_outgoing_transaction_pins_retained_history`.
+- `cdk-common`: `spent_output_tombstone_decides_alike_whether_or_not_the_record_was_deleted`
+  (replayed deposit and reorg, reservation, spending and quote payment on a
+  kept and a deleted record), `settled_lineage_retires_whole_and_reads_alike_after_deletion`.
+- `cdk-federation-bark`: `recovery_reservations_are_conflict_safe_and_replay_safe`
+  (extended with retirement).
+- Storage conformance (`cdk-sqlite`, `cdk-postgres`),
+  `federation_bark_retired_action_guard`: settling a quote retires the
+  finished action; a late observation is a no-op; only its rows below the
+  floor are deleted, the action stays; a replay of a deleted observation does
+  not recreate it.
+
+## Stale member: halt and reset
+
+Decision 9: a member that still holds federation state but lies below every
+peer's retention floor halts with a clear status, and only an explicit
+operator action deletes anything.
+
+- **Halt.** When every peer answers a sync round with `PeerHistoryPruned` and
+  the local frontier is not genesis, `install_state_transfer_below_peer_floors`
+  stops the AlephBFT live session and sets the typed sync status
+  `FederationSyncStatus::ResetRequired { journal_next_index }`. Operator status
+  shows `sync_state = "reset_required"`, the member is not ready (public
+  requests get `NodeHalted` with the instruction), and later sync rounds return
+  at once. No other status transition (healthy, lagging, catching up, a
+  generic halt or startup revalidation) clears it; restarting without a reset
+  halts again at the first sync round.
+- **Reset.** `cdk-mintd federation reset-member --confirm-wipe`, run while the
+  daemon is stopped, opens the configured database and, in one transaction
+  (`reset_federation_member_state`), deletes the federation consensus state
+  (journal, conflict keys, finalized items, AlephBFT backups, pending
+  operations and session, checkpoints with signatures, quorums, snapshots and
+  frontier, so also the retention floor and state-transfer base), the
+  application state (key registry, payment observations, signature shares,
+  consensus projections, Bark projection, payment schedule and Bark replay
+  markers) and the mint business rows (quotes and their payments and
+  issuances, melt requests, proofs, blind signatures, sagas, completed
+  operations, per-keyset totals). It keeps the federation config snapshot,
+  DKG and setup records, FROST key material, the mint's keysets and
+  configuration, and does not touch the FROST nonce redb file. Without
+  `--confirm-wipe` it refuses before opening anything.
+- **Rejoin.** The next start finds a genesis frontier and empty federation
+  state, so the ordinary empty-member path installs a peer's latest scheduled
+  checkpoint state and catches up the suffix.
+- **Tests.** `cdk-axum`,
+  `retention::member_holding_state_below_every_peer_floor_halts_then_rejoins_after_reset`:
+  a member that took part in the first checkpoint goes offline while its
+  peers prune past it; two sync rounds leave it in `ResetRequired` with its
+  frontier unchanged, and marking it healthy does not clear it; after the
+  reset (key material and config kept, frontier genesis, journal empty) it
+  restarts over the same database, installs the peers' latest checkpoint,
+  catches up a later suffix and matches their digests. `cdk-mintd`:
+  `reset_member_refuses_without_confirmation`,
+  `reset_keeps_key_material_and_leaves_an_empty_genesis_member`.
 
 ## Not retained-history work
 

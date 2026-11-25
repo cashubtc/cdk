@@ -315,6 +315,10 @@ pub struct FederationOnchainPaymentIntentRecord {
     pub intent: FederationOnchainPaymentIntent,
     /// Current consensus lifecycle.
     pub state: FederationOnchainPaymentIntentState,
+    /// Journal index at which the melt quote this intent pays was settled
+    /// from the completed payment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settled_operation_index: Option<u64>,
 }
 
 /// Deterministic values independently recomputed before proposal acceptance.
@@ -345,6 +349,7 @@ impl FederationOnchainPaymentIntentRecord {
             intent_id,
             intent,
             state: FederationOnchainPaymentIntentState::Pending,
+            settled_operation_index: None,
         })
     }
 
@@ -1023,6 +1028,12 @@ pub struct FederationAcceptedTransaction {
     /// Durable broadcast authorization and authenticated member observations.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub broadcast: Option<FederationTransactionBroadcastState>,
+    /// Journal index at which the transaction's replacement lineage became
+    /// terminal: one transaction confirmed and every melt quote it pays was
+    /// settled. Operations no longer read a terminal lineage, and its inputs
+    /// are spent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_operation_index: Option<u64>,
 }
 
 /// Consensus authorization to submit one exact signed transaction to Bitcoin.
@@ -1778,6 +1789,7 @@ impl FederationTransactionState {
                 state: FederationAcceptedTransactionState::Accepted,
                 signed: None,
                 broadcast: None,
+                terminal_operation_index: None,
             },
         );
         self.validate()?;
@@ -1876,6 +1888,7 @@ impl FederationTransactionState {
                 state: FederationAcceptedTransactionState::Accepted,
                 signed: None,
                 broadcast: None,
+                terminal_operation_index: None,
             },
         );
         self.validate()?;
@@ -2109,6 +2122,98 @@ impl FederationTransactionState {
         Ok(FederationTransactionStateOutcome::Updated)
     }
 
+    /// Record that the melt quote `quote` was settled from its completed
+    /// payment by the operation at journal index `operation_index`.
+    ///
+    /// Once every intent of the confirmed lineage is settled, nothing needs
+    /// the lineage any more: the lineage's batch and reserved inputs are
+    /// returned, and the caller spends the inputs in the chain projection and
+    /// then makes the lineage terminal ([`Self::retire_settled_lineage`]). A
+    /// quote without an intent, or one already settled, changes nothing.
+    pub fn settle_completed_intent(
+        &mut self,
+        quote: &str,
+        operation_index: u64,
+    ) -> Result<Option<(FederationOnchainBatchId, Vec<OutPoint>)>> {
+        let Some(intent_id) = self.quote_intents.get(quote).copied() else {
+            return Ok(None);
+        };
+        let record = self
+            .intents
+            .get_mut(&intent_id)
+            .ok_or_else(|| invalid("on-chain quote index is corrupt"))?;
+        if record.settled_operation_index.is_some() {
+            return Ok(None);
+        }
+        if !matches!(
+            record.state,
+            FederationOnchainPaymentIntentState::Completed { .. }
+        ) {
+            return Err(invalid("settled on-chain intent is not completed"));
+        }
+        record.settled_operation_index = Some(operation_index);
+        let (batch_id, intent_ids, inputs) = self
+            .accepted_transactions
+            .values()
+            .find(|accepted| {
+                accepted.state == FederationAcceptedTransactionState::Confirmed
+                    && accepted.proposal.intent_ids.contains(&intent_id)
+            })
+            .map(|winner| {
+                (
+                    winner.proposal.batch_id,
+                    winner.proposal.intent_ids.clone(),
+                    winner
+                        .proposal
+                        .selected_inputs
+                        .iter()
+                        .map(|input| input.outpoint)
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .ok_or_else(|| invalid("completed payment intent has no accepted transaction"))?;
+        let lineage_settled = intent_ids.iter().all(|id| {
+            self.intents
+                .get(id)
+                .is_some_and(|intent| intent.settled_operation_index.is_some())
+        });
+        self.validate()?;
+        Ok(lineage_settled.then_some((batch_id, inputs)))
+    }
+
+    /// Make a confirmed lineage whose every intent is settled terminal at
+    /// `operation_index`: operations no longer read any of its transactions,
+    /// intents or reservations.
+    pub fn retire_settled_lineage(
+        &mut self,
+        batch_id: FederationOnchainBatchId,
+        operation_index: u64,
+    ) -> Result<()> {
+        let winner = self
+            .accepted_transactions
+            .values()
+            .find(|accepted| {
+                accepted.proposal.batch_id == batch_id
+                    && accepted.state == FederationAcceptedTransactionState::Confirmed
+            })
+            .ok_or_else(|| invalid("retired lineage has no confirmed transaction"))?;
+        if !winner.proposal.intent_ids.iter().all(|intent_id| {
+            self.intents
+                .get(intent_id)
+                .is_some_and(|intent| intent.settled_operation_index.is_some())
+        }) {
+            return Err(invalid("retired lineage has unsettled intents"));
+        }
+        for accepted in self
+            .accepted_transactions
+            .values_mut()
+            .filter(|accepted| accepted.proposal.batch_id == batch_id)
+        {
+            accepted.terminal_operation_index = Some(operation_index);
+        }
+        self.validate()
+    }
+
     fn lineage_root(
         &self,
         mut proposal_id: FederationTransactionProposalId,
@@ -2188,6 +2293,37 @@ impl FederationTransactionState {
                 }
                 FederationOnchainPaymentIntentState::Pending
                 | FederationOnchainPaymentIntentState::Failed => {}
+            }
+            if record.settled_operation_index.is_some()
+                && !matches!(
+                    record.state,
+                    FederationOnchainPaymentIntentState::Completed { .. }
+                )
+            {
+                return Err(invalid("settled on-chain intent is not completed"));
+            }
+        }
+        for accepted in self.accepted_transactions.values() {
+            let lineage = self
+                .accepted_transactions
+                .values()
+                .filter(|candidate| candidate.proposal.batch_id == accepted.proposal.batch_id);
+            let terminal_lineage = lineage.clone().all(|candidate| {
+                candidate.terminal_operation_index == accepted.terminal_operation_index
+            });
+            if !terminal_lineage {
+                return Err(invalid("transaction lineage is partly terminal"));
+            }
+            if accepted.terminal_operation_index.is_some()
+                && !accepted.proposal.intent_ids.iter().all(|intent_id| {
+                    self.intents
+                        .get(intent_id)
+                        .is_some_and(|intent| intent.settled_operation_index.is_some())
+                })
+            {
+                return Err(invalid(
+                    "terminal transaction lineage has unsettled intents",
+                ));
             }
         }
         let accepted_batches = self
@@ -2607,8 +2743,89 @@ struct ReservationRow {
     owner: FederationTransactionProposalId,
 }
 
+/// Rows one terminal lineage occupies.
+struct TerminalLineageRows {
+    terminal_operation_index: u64,
+    batch_id: FederationOnchainBatchId,
+    keys: Vec<String>,
+}
+
+/// Remove every row of at most `limit` terminal lineages whose terminal
+/// index `retire` selects, oldest first: their transactions, their batch
+/// head, the reservations of their inputs and their intents.
+fn retire_terminal_lineage_rows<F>(
+    mut rows: FederationStateRows,
+    limit: Option<usize>,
+    retire: F,
+) -> Result<FederationStateRows>
+where
+    F: Fn(u64) -> bool,
+{
+    let mut lineages = BTreeMap::<FederationOnchainBatchId, TerminalLineageRows>::new();
+    for (key, bytes) in &rows {
+        if row_kind(key)? != TRANSACTION_ROW {
+            continue;
+        }
+        let accepted: FederationAcceptedTransaction =
+            decode_row(key, bytes, |accepted: &FederationAcceptedTransaction| {
+                Ok(hex_row_key(
+                    TRANSACTION_ROW,
+                    &accepted.proposal.proposal_id()?.to_hex(),
+                ))
+            })?;
+        let Some(terminal_operation_index) = accepted
+            .terminal_operation_index
+            .filter(|terminal| retire(*terminal))
+        else {
+            continue;
+        };
+        let batch_id = accepted.proposal.batch_id;
+        let lineage = lineages
+            .entry(batch_id)
+            .or_insert_with(|| TerminalLineageRows {
+                terminal_operation_index,
+                batch_id,
+                keys: vec![hex_row_key(BATCH_OWNER_ROW, &batch_id.to_hex())],
+            });
+        lineage.keys.push(key.clone());
+        for input in &accepted.proposal.selected_inputs {
+            lineage
+                .keys
+                .push(outpoint_row_key(RESERVATION_ROW, &input.outpoint));
+        }
+        for intent_id in &accepted.proposal.intent_ids {
+            lineage
+                .keys
+                .push(hex_row_key(INTENT_ROW, &intent_id.to_hex()));
+        }
+    }
+    let mut lineages = lineages.into_values().collect::<Vec<_>>();
+    lineages.sort_by_key(|lineage| (lineage.terminal_operation_index, lineage.batch_id));
+    for lineage in lineages.into_iter().take(limit.unwrap_or(usize::MAX)) {
+        for key in lineage.keys {
+            rows.remove(&key);
+        }
+    }
+    Ok(rows)
+}
+
 impl FederationStateTable for FederationTransactionState {
     const SECONDARY_NAMESPACE: &'static str = "transaction";
+
+    /// A terminal lineage is read no more: it is removed whole, and the
+    /// chain projection's tombstones keep its spent inputs from being
+    /// selected again.
+    fn retire_terminal_rows(rows: FederationStateRows) -> Result<FederationStateRows> {
+        retire_terminal_lineage_rows(rows, None, |_| true)
+    }
+
+    fn retire_rows_below(
+        rows: FederationStateRows,
+        floor: u64,
+        limit: Option<usize>,
+    ) -> Result<FederationStateRows> {
+        retire_terminal_lineage_rows(rows, limit, |terminal| terminal < floor)
+    }
 
     /// One row per intent, accepted transaction, batch lineage head and UTXO
     /// reservation. The quote index is not stored; it is rebuilt from intents.
@@ -3461,6 +3678,7 @@ mod tests {
             state: FederationAcceptedTransactionState::Accepted,
             signed: None,
             broadcast: None,
+            terminal_operation_index: None,
         };
         let reference = FederationFrostSigningAuthorizationReference::new(&accepted, 0)
             .expect("signing authorization reference");
@@ -3761,6 +3979,7 @@ mod tests {
             state: FederationAcceptedTransactionState::Accepted,
             signed: None,
             broadcast: None,
+            terminal_operation_index: None,
         };
         let mut transaction = proposal.unsigned_transaction.clone();
         let input_signatures = keypairs
@@ -4240,6 +4459,122 @@ mod tests {
             )
             .is_err());
         assert_eq!(state, terminal, "a terminal lineage winner cannot flip");
+    }
+
+    /// A confirmed lineage becomes terminal only when every quote it pays is
+    /// settled. It is then read no more, whole: a member that deleted it
+    /// below the retention floor loads the same projection as one that kept
+    /// it.
+    #[test]
+    fn settled_lineage_retires_whole_and_reads_alike_after_deletion() {
+        let (mut state, proposal_id, txid) = signed_transaction_state();
+        let settlement_policy =
+            FederationTransactionSettlementPolicy::new(1, 1).expect("settlement policy");
+        state
+            .authorize_transaction_broadcast(
+                FederationTransactionBroadcastIntent {
+                    proposal_id,
+                    txid,
+                    settlement_policy,
+                },
+                FederationOperationId::from_bytes([60; 32]),
+                60,
+            )
+            .expect("authorize broadcast");
+        // Settling an intent before its transaction confirms is refused.
+        assert!(state
+            .clone()
+            .settle_completed_intent("quote-a", 61)
+            .is_err());
+        state
+            .record_transaction_broadcast_observation(
+                FederationTransactionBroadcastObservation {
+                    proposal_id,
+                    txid,
+                    observer: member(1),
+                    attempt: 1,
+                    result: FederationTransactionBroadcastResult::Confirmed {
+                        block_hash: BlockHash::from_byte_array([11; 32]),
+                        block_height: 101,
+                        confirmation_depth: 1,
+                    },
+                    detail: None,
+                },
+                FederationOperationId::from_bytes([62; 32]),
+                62,
+            )
+            .expect("confirm");
+        let confirmed = &state
+            .accepted_transaction(proposal_id)
+            .expect("confirmed transaction")
+            .proposal;
+        let batch_id = confirmed.batch_id;
+        let inputs = confirmed
+            .selected_inputs
+            .iter()
+            .map(|input| input.outpoint)
+            .collect::<Vec<_>>();
+
+        // One of two quotes settled: the lineage is still read.
+        assert_eq!(
+            state
+                .settle_completed_intent("quote-a", 63)
+                .expect("settle first quote"),
+            None
+        );
+        assert!(state.clone().retire_settled_lineage(batch_id, 63).is_err());
+        assert_eq!(
+            FederationTransactionState::retire_terminal_rows(state.to_rows().expect("rows"))
+                .expect("retired view"),
+            state.to_rows().expect("rows")
+        );
+        assert_eq!(
+            state.settle_completed_intent("quote-a", 64).expect("again"),
+            None,
+            "settling twice changes nothing"
+        );
+        assert_eq!(
+            state
+                .settle_completed_intent("quote-b", 65)
+                .expect("settle second quote"),
+            Some((batch_id, inputs)),
+            "the last settlement releases the lineage's inputs to be spent"
+        );
+        state
+            .retire_settled_lineage(batch_id, 65)
+            .expect("retire the settled lineage");
+        assert!(state
+            .accepted_transactions()
+            .values()
+            .all(|accepted| accepted.terminal_operation_index == Some(65)));
+
+        let stored = state.to_rows().expect("stored rows");
+        let kept = FederationTransactionState::from_rows(
+            &FederationTransactionState::retire_terminal_rows(stored.clone())
+                .expect("retired view"),
+        )
+        .expect("kept member");
+        assert!(kept.accepted_transaction(proposal_id).is_none());
+        assert!(kept.intent_for_quote("quote-a").is_none());
+        assert_eq!(kept.reservation_count(), 0);
+        assert_eq!(kept, FederationTransactionState::new());
+
+        // Deletion below a floor above the terminal index removes every row
+        // of the lineage; at the terminal index it keeps them.
+        let deleted_rows = FederationTransactionState::retire_rows_below(stored.clone(), 66, None)
+            .expect("rows below the floor");
+        assert!(deleted_rows.is_empty());
+        assert_eq!(
+            FederationTransactionState::retire_rows_below(stored.clone(), 65, None)
+                .expect("rows at the terminal index"),
+            stored
+        );
+        let deleted = FederationTransactionState::from_rows(
+            &FederationTransactionState::retire_terminal_rows(deleted_rows)
+                .expect("retired view after deletion"),
+        )
+        .expect("deleting member");
+        assert_eq!(kept, deleted);
     }
 
     #[test]

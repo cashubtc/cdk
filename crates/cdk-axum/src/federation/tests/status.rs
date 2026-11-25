@@ -1534,15 +1534,19 @@ async fn poisoned_melt_quote_cannot_starve_observer_round() {
         .expect("poisoned quote must not abort the observer round");
     assert!(submitted >= 1, "healthy quote must be observed");
 
+    // A paid observation pays the quote and retires; the history keeps it.
     let healthy_observations = state
         .mint
         .localstore()
-        .get_federation_payment_observations(
+        .get_federation_payment_observation_history(
             cdk::federation::FederationPaymentObservationContext::MeltQuote,
             &healthy_quote.to_string(),
         )
         .await
-        .expect("healthy observation rows");
+        .expect("healthy observation rows")
+        .into_iter()
+        .map(|stored| stored.record)
+        .collect::<Vec<_>>();
     assert!(
         healthy_observations.iter().any(|record| matches!(
             &record.observation,

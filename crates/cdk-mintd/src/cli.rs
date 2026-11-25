@@ -400,6 +400,9 @@ pub enum FederationCommand {
     /// Generate test-only trusted-dealer federation material for local regtest.
     #[cfg(feature = "federation-test-utils")]
     TestTrustedDealer(FederationTrustedDealerArgs),
+    /// Wipe a stopped member's federation and mint state so it rejoins by
+    /// state transfer.
+    ResetMember(FederationResetMemberArgs),
     /// Query signed local status from federation members.
     Status(FederationStatusArgs),
     /// Query redacted federated on-chain wallet status.
@@ -667,6 +670,21 @@ pub enum FederationSetupNetworkArg {
     Signet,
     /// Bitcoin regtest.
     Regtest,
+}
+
+/// Arguments for resetting a member below every peer's retention floor.
+///
+/// Run it only while this member's daemon is stopped. It deletes the
+/// member's federation consensus state and mint business rows (quotes,
+/// proofs, signatures) and keeps its key material, configuration and the
+/// FROST nonce store file. On the next start the member is empty and
+/// installs a peer's checkpoint state.
+#[cfg(feature = "federation")]
+#[derive(Debug, Clone, Args)]
+pub struct FederationResetMemberArgs {
+    /// Confirm that this member's federation and mint state is deleted.
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub confirm_wipe: bool,
 }
 
 #[cfg(feature = "federation")]

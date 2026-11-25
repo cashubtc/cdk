@@ -2140,6 +2140,7 @@ mod transition_tests {
             predecessor_operation_id: Some(disclosure_id),
             operation_commitment: digest(23),
             operation: FederationBarkOperation::ActionTransition(retry.clone()),
+            quote_settled_operation_index: None,
         };
         let mut claimed = retry;
         claimed.phase = FederationBarkSemanticPhase::ReceiveClaimed;

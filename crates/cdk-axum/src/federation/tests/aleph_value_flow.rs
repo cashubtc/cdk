@@ -604,6 +604,7 @@ async fn run_aleph_bft_live_one_member_offline_value_window(member_count: u16) {
     );
     assert_eq!(make_payment_calls[offline_index].load(Ordering::SeqCst), 0);
 
+    let mut melt_history = None;
     for state in &session.states[..offline_index] {
         for operation_id in &melt_payment_operation_ids {
             wait_for_applied_operation_with_context(
@@ -634,19 +635,26 @@ async fn run_aleph_bft_live_one_member_offline_value_window(member_count: u16) {
                 Some(cdk::nuts::State::Spent),
             ]
         );
-        assert_eq!(
-            state
-                .mint
-                .localstore()
-                .get_federation_payment_observations(
-                    cdk::federation::FederationPaymentObservationContext::MeltQuote,
-                    &melt_quote_id.to_string(),
-                )
-                .await
-                .expect("connected melt payment observations")
-                .len(),
-            connected_member_count
-        );
+        // The paid quote is final: the observations that paid it are kept,
+        // retired, and the same on every member; later ones are not
+        // recorded.
+        let history = state
+            .mint
+            .localstore()
+            .get_federation_payment_observation_history(
+                cdk::federation::FederationPaymentObservationContext::MeltQuote,
+                &melt_quote_id.to_string(),
+            )
+            .await
+            .expect("connected melt payment observations");
+        assert!(!history.is_empty() && history.len() <= connected_member_count);
+        assert!(history
+            .iter()
+            .all(|stored| stored.terminal_operation_index.is_some()));
+        match &melt_history {
+            Some(first) => assert_eq!(&history, first),
+            None => melt_history = Some(history),
+        }
     }
 
     assert!(session.states[offline_index]
@@ -745,7 +753,7 @@ async fn run_aleph_bft_live_one_member_offline_value_window(member_count: u16) {
         caught_up
             .mint
             .localstore()
-            .get_federation_payment_observations(
+            .get_federation_payment_observation_history(
                 cdk::federation::FederationPaymentObservationContext::MintQuote,
                 &mint_quote_id.to_string(),
             )
@@ -755,17 +763,19 @@ async fn run_aleph_bft_live_one_member_offline_value_window(member_count: u16) {
         connected_member_count
     );
     assert_eq!(
-        caught_up
-            .mint
-            .localstore()
-            .get_federation_payment_observations(
-                cdk::federation::FederationPaymentObservationContext::MeltQuote,
-                &melt_quote_id.to_string(),
-            )
-            .await
-            .expect("caught-up melt payment observations")
-            .len(),
-        connected_member_count
+        Some(
+            caught_up
+                .mint
+                .localstore()
+                .get_federation_payment_observation_history(
+                    cdk::federation::FederationPaymentObservationContext::MeltQuote,
+                    &melt_quote_id.to_string(),
+                )
+                .await
+                .expect("caught-up melt payment observations")
+        ),
+        melt_history,
+        "the catching-up member records the same retired observations"
     );
     assert_eq!(
         caught_up

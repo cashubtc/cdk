@@ -109,6 +109,162 @@ async fn finish_federation_transaction<T>(
     }
 }
 
+/// Whether no operation can change a mint quote's payment state any more.
+///
+/// A Bolt11 invoice is paid once; an issued Bolt11 quote is final. Bolt12
+/// offers and on-chain addresses can be paid again at any time, so their
+/// quotes never become final.
+fn mint_quote_payments_are_final(quote: &MintQuote) -> bool {
+    quote.payment_method == cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt11)
+        && quote.state() == MintQuoteState::Issued
+}
+
+/// Whether the quote a payment observation names is final, so the
+/// observation is not recorded: nothing it says can change the quote.
+///
+/// Quote state is consensus state (every member stores it and the
+/// materialized-state digest covers it), so every member decides alike. A
+/// final quote's earlier observations are retired, and a member may already
+/// have deleted them; recording a replay of one would differ between
+/// members that deleted it and members that did not.
+#[cfg(feature = "federation-bark")]
+async fn payment_observation_quote_is_final(
+    tx: &mut database::mint::DynMintTransaction,
+    observation: &FederationPaymentObservation,
+) -> Result<bool, Error> {
+    let quote_id = quote_id_from_federation(observation.quote())?;
+    Ok(match observation.context() {
+        FederationPaymentObservationContext::MintQuote => tx
+            .get_mint_quote(&quote_id)
+            .await?
+            .is_some_and(|quote| mint_quote_payments_are_final(&quote)),
+        FederationPaymentObservationContext::MeltQuote => tx
+            .get_melt_quote(&quote_id)
+            .await?
+            .is_some_and(|quote| quote.state == cdk_common::MeltQuoteState::Paid),
+    })
+}
+
+/// Record a payment observation unless its quote is final.
+#[cfg(feature = "federation-bark")]
+async fn record_live_payment_observation(
+    tx: &mut database::mint::DynMintTransaction,
+    record: &FederationPaymentObservationRecord,
+) -> Result<(), Error> {
+    if !payment_observation_quote_is_final(tx, &record.observation).await? {
+        tx.add_federation_payment_observation(record).await?;
+    }
+    Ok(())
+}
+
+/// Retire the payment observations of `quote` if it became final, at the
+/// journal index of the operation applying now.
+pub(super) async fn retire_final_mint_quote_observations(
+    tx: &mut database::mint::DynMintTransaction,
+    quote: &MintQuote,
+    operation_index: u64,
+) -> Result<(), Error> {
+    if mint_quote_payments_are_final(quote) {
+        tx.retire_federation_payment_observations(
+            FederationPaymentObservationContext::MintQuote,
+            &quote.id.to_string(),
+            operation_index,
+        )
+        .await?;
+        tx.settle_federation_application_quote(&quote.id.to_string(), operation_index)
+            .await?;
+    }
+    Ok(())
+}
+
+/// Record on the application projection that a Bolt11 mint quote was paid
+/// by the operation at `operation_index`.
+///
+/// The Bark receive bound to it needs no more evidence once the quote is
+/// paid: an invoice is paid once.
+pub(super) async fn settle_paid_mint_quote_application(
+    tx: &mut database::mint::DynMintTransaction,
+    quote: &MintQuote,
+    operation_index: u64,
+) -> Result<(), Error> {
+    if quote.payment_method
+        == cdk_common::PaymentMethod::Known(cdk_common::nut00::KnownMethod::Bolt11)
+        && quote.state() != MintQuoteState::Unpaid
+    {
+        tx.settle_federation_application_quote(&quote.id.to_string(), operation_index)
+            .await?;
+    }
+    Ok(())
+}
+
+/// Settle a melt quote after the payment observation applying at
+/// `operation_index`.
+///
+/// A paid melt quote is final: its payment observations retire. For an
+/// on-chain payment its intent is settled; once every quote the confirmed
+/// transaction pays is settled, the transaction lineage is terminal and its
+/// reserved inputs are spent, leaving tombstones. A pending melt rolled back
+/// by this observation needs no more evidence either: the application
+/// action bound to it is told so, though the quote itself may be melted
+/// again.
+async fn settle_paid_melt_quote(
+    tx: &mut database::mint::DynMintTransaction,
+    quote_id: &QuoteId,
+    previous_state: cdk_common::MeltQuoteState,
+    onchain: bool,
+    operation_index: u64,
+) -> Result<(), Error> {
+    let Some(state) = tx.get_melt_quote(quote_id).await?.map(|quote| quote.state) else {
+        return Ok(());
+    };
+    if previous_state == cdk_common::MeltQuoteState::Pending
+        && matches!(
+            state,
+            cdk_common::MeltQuoteState::Unpaid | cdk_common::MeltQuoteState::Failed
+        )
+    {
+        tx.settle_federation_application_quote(&quote_id.to_string(), operation_index)
+            .await?;
+        return Ok(());
+    }
+    if state != cdk_common::MeltQuoteState::Paid {
+        return Ok(());
+    }
+    tx.retire_federation_payment_observations(
+        FederationPaymentObservationContext::MeltQuote,
+        &quote_id.to_string(),
+        operation_index,
+    )
+    .await?;
+    tx.settle_federation_application_quote(&quote_id.to_string(), operation_index)
+        .await?;
+    if onchain {
+        let mut transactions =
+            FederationStoredState::<FederationTransactionState>::load(tx).await?;
+        if let Some((batch_id, inputs)) =
+            transactions.settle_completed_intent(&quote_id.to_string(), operation_index)?
+        {
+            let mut chain = FederationStoredState::<
+                cdk_common::federation::FederationChainObservationState,
+            >::load(tx)
+            .await?;
+            // An input that left its reservation (a deep reorg) keeps the
+            // lineage readable: it is not made terminal and nothing is spent.
+            if inputs.iter().all(|outpoint| {
+                chain.utxo(*outpoint).is_some_and(|utxo| {
+                    utxo.state == cdk_common::federation::FederationWalletUtxoState::Reserved
+                })
+            }) {
+                chain.spend_reserved_utxos(&inputs, operation_index)?;
+                transactions.retire_settled_lineage(batch_id, operation_index)?;
+                chain.save(tx).await?;
+            }
+        }
+        transactions.save(tx).await?;
+    }
+    Ok(())
+}
+
 pub(super) async fn finish_federation_apply_transaction<T>(
     mut transaction: database::mint::DynMintTransaction,
     entry: &FederationJournalEntry,
@@ -1348,9 +1504,7 @@ impl Mint {
                     .apply_federation_application_operation(entry, application)
                     .await?;
                 for record in &payment_records {
-                    transaction
-                        .add_federation_payment_observation(record)
-                        .await?;
+                    record_live_payment_observation(&mut transaction, record).await?;
                 }
 
                 self.apply_federation_melt_quote_payment_record_in_transaction(
@@ -1379,9 +1533,7 @@ impl Mint {
                     .await?;
             }
             for record in &payment_records {
-                transaction
-                    .add_federation_payment_observation(record)
-                    .await?;
+                record_live_payment_observation(&mut transaction, record).await?;
             }
             let mut paid_notification = None;
             if let Some(FederationPaymentObservation::MintQuote(observation)) =
@@ -1408,6 +1560,7 @@ impl Mint {
                 {
                     paid_notification = Some(((*quote).clone(), amount_paid));
                 }
+                settle_paid_mint_quote_application(&mut transaction, &quote, entry.index).await?;
             }
             Ok(paid_notification)
         }
@@ -1421,7 +1574,8 @@ impl Mint {
     }
 
     /// Whether the Bark projection recorded `entry`'s operation id for its
-    /// action: as the action origin, a transition or an observation.
+    /// action (as the action origin, a transition or an observation), or the
+    /// action is retired.
     #[cfg(feature = "federation-bark")]
     async fn federation_bark_operation_recorded(
         &self,
@@ -1433,7 +1587,10 @@ impl Mint {
         let Some(action) = store.bark_action(action_id).await? else {
             return Ok(false);
         };
-        if action.origin_operation_id == entry.operation_id
+        // A retired action changes no more. Its transitions and observations
+        // may already be deleted, so this is decided from the action alone.
+        if action.retired_operation_index().is_some()
+            || action.origin_operation_id == entry.operation_id
             || store
                 .bark_action_transitions(action_id)
                 .await?
@@ -1586,13 +1743,13 @@ impl Mint {
                     &package_set,
                     registered_operation_id,
                     entry.operation_id,
+                    entry.index,
                 )? {
-                    chain_state.spend_reserved_utxos(&outpoints)?;
-                } else if outpoints.iter().any(|outpoint| {
-                    chain_state.utxo(*outpoint).is_none_or(|utxo| {
-                        utxo.state != cdk_common::federation::FederationWalletUtxoState::Spent
-                    })
-                }) {
+                    chain_state.spend_reserved_utxos(&outpoints, entry.index)?;
+                } else if outpoints
+                    .iter()
+                    .any(|outpoint| !chain_state.is_spent(*outpoint))
+                {
                     return Err(Error::Internal);
                 }
             }
@@ -1984,6 +2141,9 @@ impl Mint {
                 )
                 .await?;
             }
+            if quote.as_deref().is_some_and(mint_quote_payments_are_final) {
+                return Ok(None);
+            }
             tx.add_federation_payment_observation(&record).await?;
             let observations = tx
                 .get_federation_payment_observations(
@@ -1999,6 +2159,7 @@ impl Mint {
                 {
                     paid_notification = Some(((*quote).clone(), amount_paid));
                 }
+                settle_paid_mint_quote_application(&mut tx, &quote, entry.index).await?;
             }
             Ok(paid_notification)
         }
@@ -2276,6 +2437,7 @@ impl Mint {
                         return Err(Error::UnpaidQuote);
                     }
                 }
+                retire_final_mint_quote_observations(&mut tx, quote, entry.index).await?;
             }
 
             #[cfg(test)]
@@ -2529,7 +2691,36 @@ impl Mint {
             .ok_or(Error::UnknownQuote)?
             .inner();
 
+        // A paid quote is final: no observation can change it, so none is
+        // recorded. Its earlier observations are retired and a member may
+        // already have deleted them. A melt saga still finalizing after a
+        // crash completes from its own recorded payment result.
+        if quote.state == cdk_common::MeltQuoteState::Paid {
+            let mut notifications = MeltNotifications::default();
+            if let Some(saga) = tx.get_melt_saga_by_quote_id(&quote_id).await? {
+                if saga.state == SagaStateEnum::Melt(MeltSagaState::Finalizing) {
+                    let melt_operation_id = saga
+                        .federation_operation_id
+                        .as_deref()
+                        .ok_or(Error::Internal)?
+                        .parse::<FederationOperationId>()?;
+                    notifications.extend(
+                        Self::resume_paid_federation_melt_finalization_in_transaction(
+                            tx,
+                            config,
+                            &mut quote,
+                            &saga,
+                            melt_operation_id,
+                        )
+                        .await?,
+                    );
+                }
+            }
+            return Ok(notifications);
+        }
+
         ensure_melt_quote_matches_payment_observation(&quote, observation)?;
+        let previous_state = quote.state;
         let onchain_receipt = self
             .validate_federation_onchain_melt_payment_observation_in_transaction(
                 tx,
@@ -2643,6 +2834,15 @@ impl Mint {
                 }
             }
         }
+
+        settle_paid_melt_quote(
+            tx,
+            &quote_id,
+            previous_state,
+            onchain_receipt.is_some(),
+            entry.index,
+        )
+        .await?;
 
         #[cfg(test)]
         if crate::test_helpers::mint::should_fail_for("FEDERATION_MELT_PAYMENT_APPLY_BEFORE_COMMIT")

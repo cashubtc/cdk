@@ -50,6 +50,12 @@ pub struct FederationBarkRecoveryReservation {
     /// Accepted `ExitPublished` operation which consumed it, when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub published_operation_id: Option<FederationOperationId>,
+    /// Journal index of the `ExitPublished` operation, when present.
+    ///
+    /// A published reservation is terminal: its input is spent and leaves a
+    /// tombstone in the chain projection, so operations no longer read it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_operation_index: Option<u64>,
 }
 
 /// Bark-owned reservation projection layered over the neutral chain state.
@@ -113,6 +119,7 @@ impl FederationBarkRecoveryState {
                     action_id: package_set.action_id,
                     registered_operation_id,
                     published_operation_id: None,
+                    published_operation_index: None,
                 },
             );
         }
@@ -120,12 +127,14 @@ impl FederationBarkRecoveryState {
         Ok(true)
     }
 
-    /// Mark every exact reserved package input consumed by publication.
+    /// Mark every exact reserved package input consumed by the publication
+    /// at journal index `published_operation_index`.
     pub fn publish(
         &mut self,
         package_set: &FederationBarkCpfpPackageSet,
         registered_operation_id: FederationOperationId,
         published_operation_id: FederationOperationId,
+        published_operation_index: u64,
     ) -> Result<bool> {
         package_set.validate()?;
         let outpoints = package_set
@@ -161,10 +170,12 @@ impl FederationBarkRecoveryState {
             }
         }
         for outpoint in outpoints {
-            self.reservations
+            let reservation = self
+                .reservations
                 .get_mut(&outpoint.to_string())
-                .ok_or_else(|| invalid_bark("Bark recovery reservation disappeared"))?
-                .published_operation_id = Some(published_operation_id);
+                .ok_or_else(|| invalid_bark("Bark recovery reservation disappeared"))?;
+            reservation.published_operation_id = Some(published_operation_id);
+            reservation.published_operation_index = Some(published_operation_index);
         }
         self.validate()?;
         Ok(true)
@@ -172,7 +183,10 @@ impl FederationBarkRecoveryState {
 
     fn validate(&self) -> Result<()> {
         if self.reservations.iter().any(|(key, reservation)| {
-            key != &reservation.outpoint.to_string() || reservation.action_id.to_bytes() == [0; 32]
+            key != &reservation.outpoint.to_string()
+                || reservation.action_id.to_bytes() == [0; 32]
+                || reservation.published_operation_id.is_some()
+                    != reservation.published_operation_index.is_some()
         }) {
             return Err(invalid_bark("Bark recovery reservation state is invalid"));
         }
@@ -181,6 +195,44 @@ impl FederationBarkRecoveryState {
 }
 
 const RESERVATION_ROW: &str = "reservation";
+
+fn decode_reservation_row(key: &str, bytes: &[u8]) -> Result<FederationBarkRecoveryReservation> {
+    decode_row(
+        key,
+        bytes,
+        |reservation: &FederationBarkRecoveryReservation| {
+            Ok(outpoint_row_key(RESERVATION_ROW, &reservation.outpoint))
+        },
+    )
+}
+
+/// Remove at most `limit` published reservations whose publication `retire`
+/// selects, oldest publication first.
+fn retire_published_rows<F>(
+    mut rows: FederationStateRows,
+    limit: Option<usize>,
+    retire: F,
+) -> Result<FederationStateRows>
+where
+    F: Fn(u64) -> bool,
+{
+    let mut retired = Vec::new();
+    for (key, bytes) in &rows {
+        if row_kind(key)? != RESERVATION_ROW {
+            return Err(unknown_row_kind());
+        }
+        if let Some(published_at) = decode_reservation_row(key, bytes)?.published_operation_index {
+            if retire(published_at) {
+                retired.push((published_at, key.clone()));
+            }
+        }
+    }
+    retired.sort();
+    for (_, key) in retired.into_iter().take(limit.unwrap_or(usize::MAX)) {
+        rows.remove(&key);
+    }
+    Ok(rows)
+}
 
 impl FederationStateTable for FederationBarkRecoveryState {
     const SECONDARY_NAMESPACE: &'static str = "bark_recovery";
@@ -204,19 +256,27 @@ impl FederationStateTable for FederationBarkRecoveryState {
             if row_kind(key)? != RESERVATION_ROW {
                 return Err(unknown_row_kind());
             }
-            let reservation: FederationBarkRecoveryReservation = decode_row(
-                key,
-                bytes,
-                |reservation: &FederationBarkRecoveryReservation| {
-                    Ok(outpoint_row_key(RESERVATION_ROW, &reservation.outpoint))
-                },
-            )?;
+            let reservation = decode_reservation_row(key, bytes)?;
             state
                 .reservations
                 .insert(reservation.outpoint.to_string(), reservation);
         }
         state.validate()?;
         Ok(state)
+    }
+
+    /// A published reservation is read no more: its input is spent, and the
+    /// chain projection's tombstone keeps any other exit from reserving it.
+    fn retire_terminal_rows(rows: FederationStateRows) -> Result<FederationStateRows> {
+        retire_published_rows(rows, None, |_| true)
+    }
+
+    fn retire_rows_below(
+        rows: FederationStateRows,
+        floor: u64,
+        limit: Option<usize>,
+    ) -> Result<FederationStateRows> {
+        retire_published_rows(rows, limit, |published_at| published_at < floor)
     }
 }
 
@@ -1181,17 +1241,19 @@ mod tests {
             .reserve(&package_set, FederationOperationId::from_bytes([6; 32]))
             .is_err());
 
+        let reserved_rows = state.to_rows().expect("reserved rows");
         assert!(state
-            .publish(&package_set, registered, published)
+            .publish(&package_set, registered, published, 9)
             .expect("initial publication"));
         assert!(!state
-            .publish(&package_set, registered, published)
+            .publish(&package_set, registered, published, 9)
             .expect("publication replay"));
         assert!(state
             .publish(
                 &package_set,
                 registered,
                 FederationOperationId::from_bytes([7; 32]),
+                10,
             )
             .is_err());
 
@@ -1199,6 +1261,30 @@ mod tests {
         assert_eq!(
             FederationBarkRecoveryState::from_rows(&bytes).expect("state roundtrip"),
             state
+        );
+
+        // A published reservation is terminal: operations no longer read it,
+        // and it is deleted only below a retention floor above publication.
+        assert!(
+            FederationBarkRecoveryState::retire_terminal_rows(bytes.clone())
+                .expect("retired view")
+                .is_empty()
+        );
+        assert_eq!(
+            FederationBarkRecoveryState::retire_rows_below(bytes.clone(), 9, None)
+                .expect("rows at the publication"),
+            bytes
+        );
+        assert!(
+            FederationBarkRecoveryState::retire_rows_below(bytes, 10, None)
+                .expect("rows below the floor")
+                .is_empty()
+        );
+        assert_eq!(
+            FederationBarkRecoveryState::retire_terminal_rows(reserved_rows.clone())
+                .expect("unpublished view"),
+            reserved_rows,
+            "an unpublished reservation is still read"
         );
     }
 

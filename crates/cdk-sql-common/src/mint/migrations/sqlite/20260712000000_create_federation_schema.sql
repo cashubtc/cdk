@@ -141,7 +141,10 @@ CREATE TABLE federation_payment_observations (
     quote TEXT NOT NULL,
     observer_member_id INTEGER NOT NULL,
     state TEXT NOT NULL,
-    observation_json TEXT NOT NULL
+    observation_json TEXT NOT NULL,
+    -- Journal index at which the observed quote became terminal; operations
+    -- never read a retired observation again.
+    terminal_operation_index INTEGER
 );
 
 CREATE INDEX idx_federation_payment_observations_member_state
@@ -149,6 +152,9 @@ ON federation_payment_observations (context, quote, observer_member_id, state);
 
 CREATE INDEX idx_federation_payment_observations_quote
 ON federation_payment_observations (context, quote, operation_index);
+
+CREATE INDEX idx_federation_payment_observations_terminal
+ON federation_payment_observations (terminal_operation_index);
 
 CREATE TABLE federation_signature_shares (
     operation_id TEXT NOT NULL,

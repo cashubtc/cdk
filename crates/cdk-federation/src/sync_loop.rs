@@ -134,6 +134,14 @@ async fn run_federation_peer_sync_attempts<T>(
 where
     T: Transport + 'static,
 {
+    // A member below every peer's retention floor waits for its operator.
+    if state
+        .federation_sync_status()
+        .await
+        .is_some_and(|status| status.is_reset_required())
+    {
+        return 0;
+    }
     if let Some(synced) =
         reconcile_replayed_live_session_before_checkpoint_exchange(state, client, peers).await
     {
@@ -236,7 +244,11 @@ where
         || !state.federation.live_session_replay_ready().await
         || matches!(
             state.federation_sync_status().await,
-            Some(crate::FederationSyncStatus::Healthy | crate::FederationSyncStatus::Halted { .. })
+            Some(
+                crate::FederationSyncStatus::Healthy
+                    | crate::FederationSyncStatus::Halted { .. }
+                    | crate::FederationSyncStatus::ResetRequired { .. }
+            )
         )
     {
         return None;
@@ -1136,7 +1148,8 @@ pub fn quorum_reconciliation_is_required(
 ) -> bool {
     match sync_status {
         crate::FederationSyncStatus::Healthy if live_session_active => false,
-        crate::FederationSyncStatus::Halted { .. } => false,
+        crate::FederationSyncStatus::Halted { .. }
+        | crate::FederationSyncStatus::ResetRequired { .. } => false,
         crate::FederationSyncStatus::Healthy
         | crate::FederationSyncStatus::AwaitingQuorum { .. }
         | crate::FederationSyncStatus::Lagging { .. }

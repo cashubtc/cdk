@@ -115,6 +115,17 @@ async fn trusted_checkpoint_id(state: &MintState) -> Option<FederationCheckpoint
 
 /// Order one mint quote in `session` on every member, as one finalized unit.
 async fn order_quote(members: &[&MintState], session: u64) -> FederationOperationId {
+    let envelope = mint_quote_envelope(members[0], &QuoteId::new());
+    order_envelope(members, session, envelope).await
+}
+
+/// Order `envelope`, authored by the first member, in `session` on every
+/// member, as one finalized unit.
+async fn order_envelope(
+    members: &[&MintState],
+    session: u64,
+    envelope: FederationOperationEnvelope,
+) -> FederationOperationId {
     if session > current_session(members[0]).await {
         for state in members {
             state
@@ -133,7 +144,7 @@ async fn order_quote(members: &[&MintState], session: u64) -> FederationOperatio
         .expect("federation config")
         .private_config()
         .clone();
-    let envelope = mint_quote_envelope(members[0], &QuoteId::new())
+    let envelope = envelope
         .for_session(session, &author)
         .expect("stamp operation for its session");
     let operation_id = envelope.operation_id().expect("operation id");
@@ -658,4 +669,412 @@ async fn member_below_every_peer_floor_installs_a_transfer_then_catches_up() {
     assert_eq!(trusted_checkpoint_id(&third).await, Some(newest_id));
     assert_eq!(live_digest(&third).await, live_digest(&first).await);
     assert_eq!(live_digest(&third).await, newest.materialized_state_digest);
+}
+
+/// Order each envelope, authored by the first member, in its session on
+/// every member, and promote each scheduled checkpoint as it is captured.
+async fn order_envelopes_and_promote(
+    members: &[&MintState],
+    envelopes: Vec<(u64, FederationOperationEnvelope)>,
+) -> (Vec<FederationOperationId>, Vec<FederationCheckpointQuorum>) {
+    let mut operations = Vec::with_capacity(envelopes.len());
+    let mut quorums = Vec::new();
+    for (session, envelope) in envelopes {
+        let before = latest_scheduled(members[0]).await;
+        operations.push(order_envelope(members, session, envelope).await);
+        if latest_scheduled(members[0]).await != before {
+            quorums.push(promote_latest_scheduled(members).await);
+        }
+    }
+    (operations, quorums)
+}
+
+async fn mint_payment_history(
+    state: &MintState,
+    quote: &QuoteId,
+) -> Vec<cdk_common::database::mint::FederationStoredPaymentObservation> {
+    state
+        .mint
+        .localstore()
+        .get_federation_payment_observation_history(
+            FederationPaymentObservationContext::MintQuote,
+            &quote.to_string(),
+        )
+        .await
+        .expect("payment observation history")
+}
+
+async fn digest_at(
+    state: &MintState,
+    floor: u64,
+) -> cdk::federation::FederationMaterializedStateDigest {
+    state
+        .mint
+        .federation_materialized_state_snapshot_at(floor)
+        .await
+        .expect("materialized state")
+        .digest()
+        .expect("materialized digest")
+}
+
+/// A Bolt11 quote's payment observation retires when the quote is minted.
+/// Two members delete it once it is below their retention floor; a third
+/// keeps it. All three capture identical checkpoints, pass the audit of
+/// their trusted checkpoint, and decide a replay of the retired observation
+/// alike; a member installing a state transfer from a member that deleted
+/// the observation reaches the signed digest.
+#[tokio::test]
+async fn retired_payment_observations_digest_alike_whether_or_not_deleted() {
+    let (mut public_config, first_private, second_private, third_private) =
+        transport_config_three();
+    public_config.checkpoint_policy = retention_policy();
+    let first =
+        federation_route_state_for_private(public_config.clone(), first_private.clone()).await;
+    let second =
+        federation_route_state_for_private(public_config.clone(), second_private.clone()).await;
+    let third =
+        federation_route_state_for_private(public_config.clone(), third_private.clone()).await;
+    third.federation.keep_terminal_entities(true);
+    let members = [&first, &second, &third];
+
+    let quote = QuoteId::new();
+    let paid = paid_observation_envelope(&first, &quote);
+    let paid_id = paid.operation_id().expect("paid observation id");
+    let (mint, _) = mint_operation_envelope(&first, &quote, b"retention mint output");
+    let sessions = spaced_sessions(0, 3);
+    let (operations, _) = order_envelopes_and_promote(
+        &members,
+        vec![
+            (sessions[0], mint_quote_envelope(&first, &quote)),
+            (sessions[1], paid.clone()),
+            (sessions[2], mint),
+        ],
+    )
+    .await;
+    assert_eq!(operations[1], paid_id);
+    let mint_index = 2;
+    for state in members {
+        let history = mint_payment_history(state, &quote).await;
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].record.operation_id, paid_id);
+        assert_eq!(
+            history[0].terminal_operation_index,
+            Some(mint_index),
+            "the mint that made the quote final retired its observation"
+        );
+        assert!(state
+            .mint
+            .localstore()
+            .get_federation_payment_observations(
+                FederationPaymentObservationContext::MintQuote,
+                &quote.to_string(),
+            )
+            .await
+            .expect("live observations")
+            .is_empty());
+    }
+
+    // More operations move the floor past the mint. Every promotion checks
+    // that the three members captured identical checkpoints.
+    let (_, quorums) =
+        order_and_promote(&members, &spaced_sessions(3, 4 * CHECKPOINT_INTERVAL - 1)).await;
+    let latest = &quorums.last().expect("latest quorum").checkpoint;
+    assert_eq!(latest.journal_next_index, 4 * CHECKPOINT_INTERVAL + 2);
+    for state in members {
+        let floor = retention_floor(state).await.expect("retention floor");
+        assert!(floor.journal_start > mint_index);
+    }
+    assert!(mint_payment_history(&first, &quote).await.is_empty());
+    assert!(mint_payment_history(&second, &quote).await.is_empty());
+    assert_eq!(mint_payment_history(&third, &quote).await.len(), 1);
+    assert_ne!(
+        digest_at(&first, 0).await,
+        digest_at(&third, 0).await,
+        "the stored rows differ"
+    );
+    for state in members {
+        state
+            .federation
+            .audit_trusted_checkpoint_materialized_state()
+            .await
+            .expect("audit of the trusted checkpoint");
+    }
+
+    // A replay of the retired observation, re-stamped by its author after its
+    // validity window, is applied as a no-op on every member: nothing is
+    // recorded, deleted or not.
+    let replay_session = current_session(&first).await + FEDERATION_OPERATION_VALIDITY_SESSIONS + 1;
+    let replay_id = order_envelope(&members, replay_session, paid).await;
+    assert_eq!(replay_id, paid_id);
+    for state in members {
+        let entry = state
+            .mint
+            .localstore()
+            .get_federation_journal_entry_by_operation_id(paid_id)
+            .await
+            .expect("replay lookup")
+            .expect("replay entry");
+        assert_eq!(entry.status(), FederationOperationStatus::Applied);
+        let stored = state
+            .mint
+            .localstore()
+            .get_mint_quote(&quote)
+            .await
+            .expect("quote lookup")
+            .expect("quote");
+        assert_eq!(stored.state(), MintQuoteState::Issued);
+        assert_eq!(stored.amount_paid().value(), 1);
+    }
+    assert!(mint_payment_history(&first, &quote).await.is_empty());
+    assert_eq!(mint_payment_history(&third, &quote).await.len(), 1);
+    let replayed = live_digest(&first).await;
+    assert_eq!(live_digest(&second).await, replayed);
+    assert_eq!(live_digest(&third).await, replayed);
+
+    // One more checkpoint after the replay, then a state transfer from the
+    // member that deleted the observation.
+    let next_session = current_session(&first).await + 1;
+    let (_, more) = order_and_promote(
+        &members,
+        &(next_session..next_session + CHECKPOINT_INTERVAL).collect::<Vec<_>>(),
+    )
+    .await;
+    let quorum = more.last().expect("checkpoint after the replay");
+    let first_member = public_config
+        .member(first_private.member_id)
+        .expect("first member")
+        .clone();
+    let third_member = public_config
+        .member(third_private.member_id)
+        .expect("third member")
+        .clone();
+    let from_first = FederationRestPeerClient::new_with_config(
+        RouterFederationTransport::new(router_for(&first)),
+        &public_config,
+        second_private.clone(),
+        FederationPeerSyncConfig::default(),
+    )
+    .expect("client of the first member");
+    let from_third = FederationRestPeerClient::new_with_config(
+        RouterFederationTransport::new(router_for(&third)),
+        &public_config,
+        second_private.clone(),
+        FederationPeerSyncConfig::default(),
+    )
+    .expect("client of the third member");
+    let rows = from_first
+        .download_state_snapshot_from_member(&first_member, quorum)
+        .await
+        .expect("snapshot from the member that deleted");
+    assert_eq!(
+        rows,
+        from_third
+            .download_state_snapshot_from_member(&third_member, quorum)
+            .await
+            .expect("snapshot from the member that kept"),
+        "both members froze the same rows"
+    );
+    let window = from_first
+        .download_state_transfer_window_from_member(&first_member, quorum)
+        .await
+        .expect("validity window");
+    let fresh =
+        federation_route_state_for_private(public_config.clone(), second_private.clone()).await;
+    fresh
+        .mint
+        .install_federation_state_transfer(quorum, &rows, window)
+        .await
+        .expect("install the transfer");
+    assert_eq!(
+        live_digest(&fresh).await,
+        quorum.checkpoint.materialized_state_digest
+    );
+    let installed = fresh
+        .mint
+        .localstore()
+        .get_mint_quote(&quote)
+        .await
+        .expect("installed quote lookup")
+        .expect("installed quote");
+    assert_eq!(installed.state(), MintQuoteState::Issued);
+    assert_eq!(installed.amount_paid().value(), 1);
+    assert!(mint_payment_history(&fresh, &quote).await.is_empty());
+}
+
+/// A member that still holds federation state but lies below every peer's
+/// retention floor halts with `ResetRequired` instead of installing a state
+/// transfer over its own state, and stays halted. After its operator resets
+/// it, the member restarts empty over the same database, installs a peer's
+/// checkpoint state and catches up to the peers.
+#[tokio::test]
+async fn member_holding_state_below_every_peer_floor_halts_then_rejoins_after_reset() {
+    let (mut public_config, first_private, second_private, third_private) =
+        transport_config_three();
+    public_config.checkpoint_policy = retention_policy();
+    let first =
+        federation_route_state_for_private(public_config.clone(), first_private.clone()).await;
+    let second =
+        federation_route_state_for_private(public_config.clone(), second_private.clone()).await;
+    let third_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("third db"));
+    let third_seed = Mnemonic::generate(12)
+        .expect("mnemonic")
+        .to_seed_normalized("");
+    let third = federation_route_state_for_private_with_db(
+        public_config.clone(),
+        third_private.clone(),
+        third_db.clone(),
+        &third_seed,
+    )
+    .await;
+
+    // The third member takes part in the first checkpoint, then goes offline
+    // while its peers move on and delete the history it would need.
+    order_and_promote(
+        &[&first, &second, &third],
+        &spaced_sessions(0, CHECKPOINT_INTERVAL),
+    )
+    .await;
+    let stale = frontier(&third).await;
+    assert!(stale.journal_next_index > 0, "the third member holds state");
+    let peer_states = [&first, &second];
+    let (_, quorums) = order_and_promote(
+        &peer_states,
+        &spaced_sessions(CHECKPOINT_INTERVAL, 4 * CHECKPOINT_INTERVAL),
+    )
+    .await;
+    let latest = &quorums.last().expect("latest quorum").checkpoint;
+    for state in peer_states {
+        assert!(
+            retention_floor(state)
+                .await
+                .expect("peer floor")
+                .journal_start
+                > stale.journal_next_index
+        );
+    }
+
+    let transport = RouterFederationTransportRegistry::default();
+    for (state, private) in [(&first, &first_private), (&second, &second_private)] {
+        transport.insert(
+            public_config
+                .member(private.member_id)
+                .expect("peer member")
+                .federation_api_url
+                .clone(),
+            router_for(state),
+        );
+    }
+    let client = FederationRestPeerClient::new_with_config(
+        transport,
+        &public_config,
+        third_private.clone(),
+        FederationPeerSyncConfig::default(),
+    )
+    .expect("stale member client");
+    let peers = public_config
+        .members
+        .values()
+        .filter(|member| member.member_id != third_private.member_id)
+        .cloned()
+        .collect::<Vec<_>>();
+
+    // The member halts with a typed status, and further rounds change nothing.
+    let halted = cdk_federation::FederationSyncStatus::ResetRequired {
+        journal_next_index: stale.journal_next_index,
+    };
+    for _ in 0..2 {
+        run_federation_peer_sync_round(&third, &client, &peers).await;
+        let status = third.federation_sync_status().await.expect("sync status");
+        assert_eq!(status, halted);
+        assert!(!status.is_ready());
+        assert_eq!(status.state_name(), "reset_required");
+        assert!(status.not_ready_message().contains("reset-member"));
+        assert_eq!(frontier(&third).await, stale, "nothing was installed");
+    }
+    third.federation.mark_healthy().await;
+    assert_eq!(
+        third.federation_sync_status().await,
+        Some(halted),
+        "only a reset clears it"
+    );
+
+    // The operator stops the member and resets it: federation and mint state
+    // go, key material and the federation config stay.
+    drop(third);
+    let db: cdk_common::database::DynMintDatabase = third_db.clone();
+    let config_before = db
+        .get_federation_config(public_config.federation_id)
+        .await
+        .expect("federation config before reset");
+    let mut tx = db.begin_transaction().await.expect("begin reset");
+    assert!(
+        tx.reset_federation_member_state()
+            .await
+            .expect("reset member state")
+            > 0
+    );
+    tx.commit().await.expect("commit reset");
+    assert_eq!(
+        db.get_federation_checkpoint_frontier()
+            .await
+            .expect("reset frontier"),
+        FederationCheckpointFrontier::genesis()
+    );
+    assert!(db
+        .get_federation_journal_entries()
+        .await
+        .expect("reset journal")
+        .is_empty());
+    assert_eq!(
+        db.get_federation_config(public_config.federation_id)
+            .await
+            .expect("federation config after reset"),
+        config_before
+    );
+
+    // Restarted over the same database, it installs a transfer and catches up.
+    let restarted = federation_route_state_for_private_with_db(
+        public_config.clone(),
+        third_private.clone(),
+        third_db.clone(),
+        &third_seed,
+    )
+    .await;
+    run_federation_peer_sync_round(&restarted, &client, &peers).await;
+    let installed = frontier(&restarted).await;
+    assert_eq!(
+        installed.trusted_checkpoint_id,
+        Some(latest.id().expect("latest checkpoint id"))
+    );
+    assert_eq!(installed.journal_next_index, latest.journal_next_index);
+    assert_eq!(
+        live_digest(&restarted).await,
+        latest.materialized_state_digest
+    );
+
+    let next_op = latest.journal_next_index;
+    let (_, more) =
+        order_and_promote(&peer_states, &spaced_sessions(next_op, CHECKPOINT_INTERVAL)).await;
+    let newest = &more.last().expect("newest quorum").checkpoint;
+    for _ in 0..4 {
+        run_federation_peer_sync_round(&restarted, &client, &peers).await;
+        if frontier(&restarted).await.journal_next_index == newest.journal_next_index {
+            break;
+        }
+    }
+    let peer_frontier = frontier(&first).await;
+    let caught_up = frontier(&restarted).await;
+    assert_eq!(
+        caught_up.journal_next_index,
+        peer_frontier.journal_next_index
+    );
+    assert_eq!(
+        caught_up.application_digest,
+        peer_frontier.application_digest
+    );
+    assert_eq!(live_digest(&restarted).await, live_digest(&first).await);
+    assert!(restarted
+        .federation_sync_status()
+        .await
+        .is_none_or(|status| !status.is_reset_required()));
 }

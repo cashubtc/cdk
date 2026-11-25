@@ -178,12 +178,12 @@ where
         (action_id, quote, payment_hash, action_kind, phase, actor_member_id, attempt,
          origin_operation_id, origin_operation_index, latest_operation_id,
          latest_operation_index, plan_operation_id, predecessor_operation_id,
-         operation_commitment, record_json)
+         operation_commitment, record_json, retired_operation_index)
         VALUES
         (:action_id, :quote, :payment_hash, :action_kind, :phase, :actor_member_id, :attempt,
          :origin_operation_id, :origin_operation_index, :latest_operation_id,
          :latest_operation_index, :plan_operation_id, :predecessor_operation_id,
-         :operation_commitment, :record_json)
+         :operation_commitment, :record_json, :retired_operation_index)
         "#,
     )?
     .bind("action_id", action.action_id.to_string())
@@ -231,6 +231,13 @@ where
         action.operation_commitment.to_string(),
     )
     .bind("record_json", serde_json::to_string(action)?)
+    .bind(
+        "retired_operation_index",
+        action
+            .retired_operation_index()
+            .map(|index| sql_i64("retired operation index", index))
+            .transpose()?,
+    )
     .execute(connection)
     .await?;
     Ok(())
@@ -259,7 +266,8 @@ where
             plan_operation_id = :plan_operation_id,
             predecessor_operation_id = :predecessor_operation_id,
             operation_commitment = :operation_commitment,
-            record_json = :record_json
+            record_json = :record_json,
+            retired_operation_index = :retired_operation_index
         WHERE action_id = :action_id
           AND latest_operation_id = :expected_latest_operation_id
         "#,
@@ -300,6 +308,13 @@ where
         action.operation_commitment.to_string(),
     )
     .bind("record_json", serde_json::to_string(action)?)
+    .bind(
+        "retired_operation_index",
+        action
+            .retired_operation_index()
+            .map(|index| sql_i64("retired operation index", index))
+            .transpose()?,
+    )
     .bind("action_id", action.action_id.to_string())
     .bind(
         "expected_latest_operation_id",
@@ -1178,6 +1193,14 @@ where
     if projection_operation_exists(connection, entry.operation_id).await? {
         return Ok(());
     }
+    // A retired action changes no more, whether this is a replay of an
+    // operation whose row was already deleted or a late one.
+    if get_action(connection, operation.action_id())
+        .await?
+        .is_some_and(|action| action.retired_operation_index().is_some())
+    {
+        return Ok(());
+    }
     if let Some(author) = operation.claimed_author() {
         if entry
             .envelope
@@ -1217,6 +1240,37 @@ where
             let observation = certificate.observation_for(observer);
             apply_observation(connection, entry, operation, &observation).await
         }
+    }
+}
+
+/// Record that `quote` became final at `operation_index` on the action bound
+/// to it, which retires the action once it is in a final phase.
+pub(super) async fn settle_quote_action<C>(
+    connection: &C,
+    quote: &str,
+    operation_index: u64,
+) -> Result<(), Error>
+where
+    C: DatabaseExecutor,
+{
+    let Some(action) = query(
+        r#"
+        SELECT record_json
+        FROM federation_bark_actions
+        WHERE quote = :quote
+        "#,
+    )?
+    .bind("quote", quote)
+    .fetch_one(connection)
+    .await?
+    .map(|row| decode_record::<FederationBarkActionRecord>(row, "Bark action"))
+    .transpose()?
+    else {
+        return Ok(());
+    };
+    match action.with_quote_settled(operation_index) {
+        Some(settled) => update_action(connection, &action, &settled).await,
+        None => Ok(()),
     }
 }
 

@@ -90,6 +90,20 @@ pub struct FederationStoredBlindSignature {
     pub quote_id: Option<String>,
 }
 
+/// One stored payment observation and, once its quote is terminal, the
+/// journal index at which it was retired.
+///
+/// A retired observation is never read by an operation again: the
+/// materialized-state digest of a checkpoint whose retention floor is above
+/// that index leaves it out, and history retention deletes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FederationStoredPaymentObservation {
+    /// The observation.
+    pub record: FederationPaymentObservationRecord,
+    /// Journal index of the operation that retired it.
+    pub terminal_operation_index: Option<u64>,
+}
+
 /// Every stored row the materialized-state digest reads, read through one
 /// connection or transaction.
 ///
@@ -109,8 +123,9 @@ pub struct FederationMaterializedStateSource {
     pub mint_quotes: Vec<FederationMintQuoteState>,
     /// Melt quotes named by the registry that exist.
     pub melt_quotes: Vec<mint::MeltQuote>,
-    /// Every payment observation, in consensus order.
-    pub payment_observations: Vec<FederationPaymentObservationRecord>,
+    /// Every stored payment observation, in consensus order, retired ones
+    /// included.
+    pub payment_observations: Vec<FederationStoredPaymentObservation>,
     /// Proofs named by the registry that exist.
     pub proofs: Vec<FederationStoredProof>,
     /// Signed blind signatures named by the registry that exist.
@@ -276,6 +291,37 @@ pub trait FederationJournalTransaction {
         keep_journal_from: Option<u64>,
     ) -> Result<u64, Self::Err>;
 
+    /// Delete one bounded batch of retired terminal rows below `floor`:
+    /// payment observations retired below it, and the transitions and
+    /// observations of Bark actions retired below it.
+    ///
+    /// `floor` is the retention floor's journal index; rows retired below it
+    /// are excluded from every later checkpoint's materialized-state digest.
+    /// Returns how many rows were deleted.
+    async fn prune_federation_terminal_rows(
+        &mut self,
+        floor: u64,
+        limit: u64,
+    ) -> Result<u64, Self::Err>;
+
+    /// Wipe this member's federation consensus state and mint business rows
+    /// so it starts as an empty member and rejoins by state transfer.
+    ///
+    /// Deleted: the journal and its conflict keys, finalized items, AlephBFT
+    /// backups, pending operations and session state, checkpoints with their
+    /// signatures, quorums, snapshots and frontier (the retention floor and
+    /// state-transfer base with it), the materialized-state key registry,
+    /// payment observations, signature shares, the consensus projections and
+    /// the Bark projection, the federation payment schedule and Bark replay
+    /// markers, and the mint's quotes, proofs, blind signatures, melt
+    /// requests, sagas, completed operations and per-keyset totals.
+    ///
+    /// Kept: the federation config snapshot, DKG and setup records, FROST key
+    /// material, the mint's keysets and its configuration. Files outside the
+    /// database (the FROST nonce store) are not touched. Returns how many rows
+    /// were deleted.
+    async fn reset_federation_member_state(&mut self) -> Result<u64, Self::Err>;
+
     /// Durably latch a materialized-state audit mismatch.
     ///
     /// This operation is intentionally one-way. Ordinary startup, peer
@@ -356,10 +402,39 @@ pub trait FederationApplicationTransaction {
     ///
     /// An observation is identified by its operation id, which hashes its
     /// content. A later entry with the same id (re-ordered after its validity
-    /// window) keeps the first ordering position.
+    /// window) keeps the first ordering position. The apply path never
+    /// records an observation of a final quote, whose earlier observations
+    /// are retired.
     async fn add_federation_payment_observation(
         &mut self,
         observation: &FederationPaymentObservationRecord,
+    ) -> Result<(), Self::Err>;
+
+    /// Retire every live observation of one terminal quote at
+    /// `operation_index`, the journal index of the operation applying now.
+    ///
+    /// Returns how many observations were retired.
+    async fn retire_federation_payment_observations(
+        &mut self,
+        context: FederationPaymentObservationContext,
+        quote: &str,
+        operation_index: u64,
+    ) -> Result<u64, Self::Err>;
+
+    /// Record that `quote` became final at `operation_index` in the
+    /// application projection (the Bark action bound to it), so a bound
+    /// action in a final phase retires. Without an application projection
+    /// this does nothing.
+    async fn settle_federation_application_quote(
+        &mut self,
+        quote: &str,
+        operation_index: u64,
+    ) -> Result<(), Self::Err>;
+
+    /// Install one observation from a state transfer, retired or not.
+    async fn install_federation_payment_observation(
+        &mut self,
+        observation: &FederationStoredPaymentObservation,
     ) -> Result<(), Self::Err>;
 
     /// Persist one local federation threshold signature share.
@@ -382,7 +457,8 @@ pub trait FederationApplicationTransaction {
         Ok(())
     }
 
-    /// Get payment observations for one quote and context inside this transaction.
+    /// Get the live (not retired) payment observations for one quote and
+    /// context inside this transaction.
     async fn get_federation_payment_observations(
         &mut self,
         context: FederationPaymentObservationContext,
@@ -994,6 +1070,21 @@ pub trait FederationJournalDatabase {
         &self,
     ) -> Result<Option<FederationRetentionFloor>, Self::Err>;
 
+    /// The journal index below which `checkpoint`'s materialized-state digest
+    /// leaves out terminal entities.
+    ///
+    /// It is the retention floor `checkpoint` sets once it is the latest
+    /// scheduled checkpoint, before live-state pins: the latest scheduled
+    /// checkpoint below it, or the start of `checkpoint`'s validity window if
+    /// that is earlier, and zero when no scheduled checkpoint lies below it.
+    /// It depends only on the checkpoint sequence and finalized items, so every
+    /// member computes the same value, and it is never below any retention
+    /// floor a member recorded before capturing `checkpoint`.
+    async fn get_federation_materialized_state_floor(
+        &self,
+        checkpoint: &FederationCheckpoint,
+    ) -> Result<u64, Self::Err>;
+
     /// Get all persisted AlephBFT finalized items in accepted item order.
     async fn get_federation_aleph_bft_finalized_items(
         &self,
@@ -1064,14 +1155,23 @@ pub trait FederationApplicationDatabase {
     /// Federation application database error.
     type Err: Into<Error> + From<Error>;
 
-    /// Get payment observations for one quote and context in consensus order.
+    /// Get the live (not retired) payment observations for one quote and
+    /// context in consensus order.
     async fn get_federation_payment_observations(
         &self,
         context: FederationPaymentObservationContext,
         quote: &str,
     ) -> Result<Vec<FederationPaymentObservationRecord>, Self::Err>;
 
-    /// Get all payment observations in consensus order.
+    /// Get every stored payment observation for one quote and context in
+    /// consensus order, retired ones included, for audit.
+    async fn get_federation_payment_observation_history(
+        &self,
+        context: FederationPaymentObservationContext,
+        quote: &str,
+    ) -> Result<Vec<FederationStoredPaymentObservation>, Self::Err>;
+
+    /// Get all live (not retired) payment observations in consensus order.
     async fn get_all_federation_payment_observations(
         &self,
     ) -> Result<Vec<FederationPaymentObservationRecord>, Self::Err>;

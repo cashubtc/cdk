@@ -184,6 +184,7 @@ async fn accepted_frost_onchain_melt_materializes_one_pending_payment_intent() {
             .expect("record threshold confirmation");
     }
     super::transaction_signing::persist_transaction_state(&localstore, &completed_state).await;
+    super::transaction_signing::persist_reserved_inputs(&localstore, &completed_state).await;
     let terminal_observation = mint
         .probe_federation_melt_quote_payment(&quote)
         .await
@@ -242,6 +243,117 @@ async fn accepted_frost_onchain_melt_materializes_one_pending_payment_intent() {
         )
         .await
         .expect("payment observation replay"));
+
+    // Paying the only quote the confirmed transaction pays made its lineage
+    // terminal: no operation reads it again, and its input is spent.
+    let settled_index = last_payment_entry
+        .as_ref()
+        .expect("last payment observation")
+        .index;
+    let input = completed_state
+        .accepted_transaction(signed.proposal_id)
+        .expect("completed transaction")
+        .proposal
+        .selected_inputs[0]
+        .outpoint;
+    let retired = mint
+        .federation_transaction_state()
+        .await
+        .expect("retired transaction view");
+    assert!(retired.intent_for_quote(&quote.to_string()).is_none());
+    assert!(retired.accepted_transaction(signed.proposal_id).is_none());
+    let chain = mint
+        .federation_chain_observation_state()
+        .await
+        .expect("chain view");
+    assert!(chain.utxo(input).is_none());
+    assert!(chain.is_spent(input));
+    assert!(mint
+        .federation_transaction_retention_pin()
+        .await
+        .expect("retention pin")
+        .is_none());
+
+    // The stored rows remain until history retention deletes them below the
+    // floor. The digest at a floor above the settlement is the same before
+    // and after the deletion; at the settlement it still covers them.
+    let floor = settled_index + 1;
+    let before = mint
+        .federation_materialized_state_snapshot_at(floor)
+        .await
+        .expect("digest rows before deletion")
+        .digest()
+        .expect("digest before deletion");
+    let unpruned = mint
+        .federation_materialized_state_snapshot_at(settled_index)
+        .await
+        .expect("digest rows at the settlement")
+        .digest()
+        .expect("digest at the settlement");
+    assert_ne!(before, unpruned);
+    assert!(
+        mint.prune_federation_terminal_state(settled_index, 100)
+            .await
+            .expect("prune at the settlement")
+            == 0
+    );
+    assert!(
+        mint.prune_federation_terminal_state(floor, 100)
+            .await
+            .expect("prune below the floor")
+            > 0
+    );
+    assert_eq!(
+        mint.prune_federation_terminal_state(floor, 100)
+            .await
+            .expect("prune again"),
+        0
+    );
+    assert_eq!(
+        mint.federation_materialized_state_snapshot_at(floor)
+            .await
+            .expect("digest rows after deletion")
+            .digest()
+            .expect("digest after deletion"),
+        before
+    );
+    assert_eq!(
+        mint.federation_materialized_state_snapshot_at(0)
+            .await
+            .expect("stored rows after deletion")
+            .digest()
+            .expect("stored digest after deletion"),
+        before,
+        "nothing below the floor is left to leave out"
+    );
+    let stored_chain = cdk_common::federation::read_federation_state_rows::<
+        cdk_common::federation::FederationChainObservationState,
+    >(&mint.localstore())
+    .await
+    .expect("stored chain rows");
+    assert!(!stored_chain.contains_key(&cdk_common::federation::outpoint_row_key("utxo", &input)));
+    assert!(stored_chain.contains_key(&cdk_common::federation::outpoint_row_key("spent", &input)));
+    assert!(cdk_common::federation::read_federation_state_rows::<
+        cdk_common::federation::FederationTransactionState,
+    >(&mint.localstore())
+    .await
+    .expect("stored transaction rows")
+    .is_empty());
+    // The deleted lineage and spent input decide a replayed observation of
+    // the paid quote exactly as before: applied, changing nothing.
+    let mut replayed = last_payment_entry
+        .clone()
+        .expect("last payment observation");
+    replayed.index = settled_index + 10;
+    persist_and_apply_entry(&mint, &replayed).await;
+    assert_eq!(
+        mint.federation_materialized_state_snapshot_at(floor)
+            .await
+            .expect("digest rows after the replay")
+            .digest()
+            .expect("digest after the replay"),
+        before
+    );
 
     let txid = Txid::from_byte_array([33; 32]);
     let receipt = FederationOnchainMeltPaymentReceipt {
@@ -2327,8 +2439,9 @@ async fn assert_paid_melt_evidence_applied(fixture: &PaidFederationMeltAwaitingE
     assert!(stored_melt_request(localstore, &fixture.quote)
         .await
         .is_none());
+    // The quote is paid and final: its observation is stored, retired.
     let observations = localstore
-        .get_federation_payment_observations(
+        .get_federation_payment_observation_history(
             FederationPaymentObservationContext::MeltQuote,
             &fixture.quote.to_string(),
         )
@@ -2336,8 +2449,12 @@ async fn assert_paid_melt_evidence_applied(fixture: &PaidFederationMeltAwaitingE
         .expect("payment observations after apply");
     assert_eq!(observations.len(), 1);
     assert_eq!(
-        observations[0].operation_id,
+        observations[0].record.operation_id,
         fixture.payment_entry.operation_id
+    );
+    assert_eq!(
+        observations[0].terminal_operation_index,
+        Some(fixture.payment_entry.index)
     );
     assert_eq!(
         localstore
@@ -3255,18 +3372,28 @@ async fn real_policy_melt_payment_observations_finalize_from_stored_quorum() {
         Some("paid-preimage".to_string())
     );
 
-    let observations_after_conflict = localstore
+    // The paid quote is final: its quorum observations retired when it was
+    // paid, and the later conflicting observation is not recorded.
+    assert!(localstore
         .get_federation_payment_observations(
             FederationPaymentObservationContext::MeltQuote,
             &quote.to_string(),
         )
         .await
-        .expect("conflicting melt observation rows");
-    assert_eq!(observations_after_conflict.len(), 3);
-    assert_eq!(
-        observations_after_conflict[2].observation.observer(),
-        MemberId::new(3).expect("member three")
-    );
+        .expect("live melt observation rows")
+        .is_empty());
+    let history = localstore
+        .get_federation_payment_observation_history(
+            FederationPaymentObservationContext::MeltQuote,
+            &quote.to_string(),
+        )
+        .await
+        .expect("melt observation history");
+    assert_eq!(history.len(), 2);
+    assert!(history.iter().all(|stored| {
+        stored.terminal_operation_index.is_some()
+            && stored.record.observation.observer() != MemberId::new(3).expect("member three")
+    }));
 }
 
 #[tokio::test]
@@ -3502,14 +3629,16 @@ async fn stale_pending_melt_observation_after_paid_settlement_is_idempotent() {
             .expect("proof states after stale pending"),
         vec![Some(State::Spent), Some(State::Spent)]
     );
+    // The stale observation of the paid, final quote is not recorded.
     let observations = localstore
-        .get_federation_payment_observations(
+        .get_federation_payment_observation_history(
             FederationPaymentObservationContext::MeltQuote,
             &quote.to_string(),
         )
         .await
         .expect("observation rows");
-    assert_eq!(observations.len(), 2);
+    assert_eq!(observations.len(), 1);
+    assert!(observations[0].terminal_operation_index.is_some());
 }
 
 #[tokio::test]

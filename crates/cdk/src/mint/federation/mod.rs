@@ -8,6 +8,7 @@ mod address_allocation;
 mod chain_observation;
 #[cfg(feature = "federation-bark")]
 mod projection;
+mod retention;
 mod state_install;
 mod state_transfer;
 mod transaction_policy;

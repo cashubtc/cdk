@@ -341,6 +341,9 @@ fn state_with_lifecycle(
         .expect("UTXO row");
     let mut utxo: serde_json::Value = serde_json::from_slice(row).expect("UTXO JSON");
     utxo["state"] = serde_json::json!(lifecycle);
+    if lifecycle == "spent" {
+        utxo["spent_operation_index"] = serde_json::json!(1);
+    }
     *row = serde_json::to_vec(&utxo).expect("mutated UTXO");
     FederationChainObservationState::from_rows(&rows)
 }
@@ -392,6 +395,7 @@ pub(super) fn structurally_signed(
         state: FederationAcceptedTransactionState::Accepted,
         signed: None,
         broadcast: None,
+        terminal_operation_index: None,
     };
     let mut transaction = accepted.proposal.unsigned_transaction.clone();
     let input_signatures = transaction

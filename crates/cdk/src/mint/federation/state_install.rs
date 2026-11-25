@@ -9,7 +9,9 @@
 use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
 
-use cdk_common::database::mint::{Acquired, DynMintTransaction};
+use cdk_common::database::mint::{
+    Acquired, DynMintTransaction, FederationStoredPaymentObservation,
+};
 use cdk_common::error::Error;
 use cdk_common::federation::{
     ensure_federation_state_snapshot_rows_sorted, federation_state_snapshot_digest,
@@ -50,13 +52,14 @@ struct InstallPlan {
     keysets: Vec<(u64, FederationOperationId, FederatedKeyset)>,
     mint_quotes: Vec<(String, Option<MintQuoteInstall>)>,
     melt_quotes: Vec<(String, Option<MeltQuote>)>,
-    payment_observations: Vec<FederationPaymentObservationRecord>,
+    payment_observations: Vec<FederationStoredPaymentObservation>,
     proofs: Vec<(PublicKey, Option<ProofInstall>)>,
     blind_signatures: Vec<(PublicKey, Option<BlindSignatureInstall>)>,
 }
 
 struct MintQuoteInstall {
     quote: MintQuote,
+    amount_paid: Amount<CurrencyUnit>,
     amount_issued: Amount<CurrencyUnit>,
 }
 
@@ -293,11 +296,13 @@ fn mint_quote(
         Vec::new(),
         None,
     );
+    let amount_paid = Amount::new(parsed(row, "amount_paid")?, unit.clone());
     let amount_issued = Amount::new(parsed(row, "amount_issued")?, unit);
     Ok((
         row.key.clone(),
         Some(MintQuoteInstall {
             quote,
+            amount_paid,
             amount_issued,
         }),
     ))
@@ -340,26 +345,29 @@ fn melt_quote(row: &FederationMaterializedStateRow) -> Result<(String, Option<Me
 
 fn payment_observation(
     snapshot_row: &FederationStateSnapshotRow,
-) -> Result<FederationPaymentObservationRecord, Error> {
+) -> Result<FederationStoredPaymentObservation, Error> {
     let attachment = snapshot_row
         .attachment
         .as_deref()
         .ok_or_else(|| transfer_invalid("payment observation row has no observation"))?;
     let observation: FederationPaymentObservation = serde_json::from_str(attachment)
         .map_err(|_| transfer_invalid("payment observation attachment does not decode"))?;
-    let record = FederationPaymentObservationRecord {
-        operation_id: parsed(&snapshot_row.row, "operation_id")?,
-        operation_index: parsed(&snapshot_row.row, "operation_index")?,
-        observation,
+    let stored = FederationStoredPaymentObservation {
+        record: FederationPaymentObservationRecord {
+            operation_id: parsed(&snapshot_row.row, "operation_id")?,
+            operation_index: parsed(&snapshot_row.row, "operation_index")?,
+            observation,
+        },
+        terminal_operation_index: optional_parsed(&snapshot_row.row, "terminal_operation_index")?,
     };
     // Re-encoding checks the attachment against the row's evidence hash and
     // every other field the row carries.
-    if payment_observation_row(&record)? != snapshot_row.row {
+    if payment_observation_row(&stored)? != snapshot_row.row {
         return Err(transfer_invalid(
             "payment observation attachment does not match its row",
         ));
     }
-    Ok(record)
+    Ok(stored)
 }
 
 fn proof(row: &FederationMaterializedStateRow) -> Result<(PublicKey, Option<ProofInstall>), Error> {
@@ -619,8 +627,8 @@ impl Mint {
             });
         }
 
-        for record in &plan.payment_observations {
-            tx.add_federation_payment_observation(record).await?;
+        for stored in &plan.payment_observations {
+            tx.install_federation_payment_observation(stored).await?;
         }
 
         for (quote, install) in &plan.mint_quotes {
@@ -628,15 +636,34 @@ impl Mint {
                 let mut stored = Acquired::from(install.quote.clone());
                 tx.add_mint_quote(install.quote.clone()).await?;
                 // Payments are rebuilt from the installed observations with
-                // the quorum rule the apply path uses.
-                let observations = tx
-                    .get_federation_payment_observations(
-                        FederationPaymentObservationContext::MintQuote,
-                        quote,
-                    )
-                    .await?;
+                // the quorum rule the apply path uses. A terminal quote's
+                // observations may be retired below the checkpoint's floor and
+                // left out of the snapshot; the signed paid amount then stands
+                // for the payments they recorded.
+                let observations = plan
+                    .payment_observations
+                    .iter()
+                    .filter(|stored| {
+                        stored.record.observation.context()
+                            == FederationPaymentObservationContext::MintQuote
+                            && stored.record.observation.quote() == quote
+                    })
+                    .map(|stored| stored.record.clone())
+                    .collect::<Vec<_>>();
                 self.apply_mint_payment_observations_to_quote(tx, &mut stored, &observations)
                     .await?;
+                if install.amount_paid > stored.amount_paid() {
+                    let unrecorded = install
+                        .amount_paid
+                        .checked_sub(&stored.amount_paid())
+                        .map_err(|_| Error::AmountOverflow)?;
+                    stored.add_payment(
+                        unrecorded,
+                        format!("federation:state-transfer:{quote}"),
+                        Some(0),
+                    )?;
+                    tx.update_mint_quote(&mut stored).await?;
+                }
                 // Issuing more than the rebuilt payments cover fails here.
                 if install.amount_issued.value() > 0 {
                     stored.add_issuance(install.amount_issued.clone())?;

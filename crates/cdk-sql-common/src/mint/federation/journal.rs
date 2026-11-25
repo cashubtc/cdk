@@ -571,16 +571,8 @@ where
     if stored.is_some_and(|stored| !stored.retains_window_of(latest)) {
         return Ok(stored);
     }
-    let window = federation_state_transfer_window_start(&transaction.inner, latest).await?;
     let (mut journal_start, mut item_start) =
-        if previous.finalized_next_item_index <= window.item_start {
-            (
-                previous.journal_next_index,
-                previous.finalized_next_item_index,
-            )
-        } else {
-            (window.journal_start, window.item_start)
-        };
+        federation_unpinned_retention_floor(&transaction.inner, latest, previous).await?;
     if let Some(keep) = keep_journal_from.filter(|keep| *keep < journal_start) {
         journal_start = keep;
         let pinned_item = query(
@@ -637,8 +629,10 @@ where
 /// Earliest journal entry that live mint state still reads by operation id.
 ///
 /// A melt saga finalizes against its operation's entry, and a Bark action
-/// reads its plan entries until it reaches a final phase. Labels are those
-/// the Bark projection stores; the table exists whether or not Bark is built.
+/// reads its plan entries until it is retired (a final phase, and its bound
+/// quote settled): observations of a finished payment still read the plan
+/// until the quote is paid. A retired action is never read again. The table
+/// exists whether or not Bark is built.
 async fn federation_live_state_retention_pin<C>(connection: &C) -> Result<Option<u64>, Error>
 where
     C: DatabaseExecutor,
@@ -654,13 +648,7 @@ where
         r#"
         SELECT MIN(origin_operation_index)
         FROM federation_bark_actions
-        WHERE phase NOT IN (
-            'receive_claimed',
-            'payment_succeeded',
-            'revocation_completed',
-            'refresh_completed',
-            'exit_confirmed'
-        )
+        WHERE retired_operation_index IS NULL
         "#,
     ] {
         let pin = query(sql)?
@@ -676,6 +664,138 @@ where
         pins.extend(pin);
     }
     Ok(pins.into_iter().min())
+}
+
+/// Tables a member reset empties, children before the rows they reference.
+/// Every table exists whether or not Bark is built.
+const FEDERATION_MEMBER_RESET_TABLES: &[&str] = &[
+    // Federation consensus history and checkpoints.
+    "federation_journal_conflict_keys",
+    "federation_journal_entries",
+    "federation_aleph_bft_finalized_items",
+    "federation_aleph_bft_backups",
+    "federation_aleph_bft_pending_operations",
+    "federation_aleph_bft_session_state",
+    "federation_checkpoint_signatures",
+    "federation_checkpoint_quorums",
+    "federation_checkpoints",
+    "federation_checkpoint_state",
+    "federation_state_snapshot_rows",
+    "federation_state_snapshots",
+    // Federation application state.
+    "federation_materialized_state_keys",
+    "federation_payment_observations",
+    "federation_signature_shares",
+    "federation_bark_transitions",
+    "federation_bark_observations",
+    "federation_bark_reservations",
+    "federation_bark_derivation_allocations",
+    "federation_bark_vtxos",
+    "federation_bark_actions",
+    // Mint business rows.
+    "mint_quote_payments",
+    "mint_quote_issued",
+    "melt_request",
+    "proof",
+    "blind_signature",
+    "saga_state",
+    "completed_operations",
+    "keyset_amounts",
+    "melt_quote",
+    "mint_quote",
+];
+
+/// Key-value namespaces a member reset empties: the consensus projections,
+/// the federation payment schedule and the Bark replay markers.
+const FEDERATION_MEMBER_RESET_KV_NAMESPACES: &[&str] =
+    &["federation", "cdk_federation", "cdk_bark"];
+
+async fn reset_federation_member_state_rows<C>(connection: &C) -> Result<u64, Error>
+where
+    C: DatabaseExecutor,
+{
+    let mut deleted = 0_u64;
+    for table in FEDERATION_MEMBER_RESET_TABLES {
+        let rows = query(&format!("DELETE FROM {table}"))?
+            .execute(connection)
+            .await?;
+        deleted = deleted.saturating_add(u64::try_from(rows).unwrap_or(u64::MAX));
+    }
+    for namespace in FEDERATION_MEMBER_RESET_KV_NAMESPACES {
+        let rows = query(
+            r#"
+            DELETE FROM kv_store
+            WHERE primary_namespace = :primary_namespace
+            "#,
+        )?
+        .bind("primary_namespace", *namespace)
+        .execute(connection)
+        .await?;
+        deleted = deleted.saturating_add(u64::try_from(rows).unwrap_or(u64::MAX));
+    }
+    Ok(deleted)
+}
+
+/// Delete one bounded batch of retired terminal rows below `floor`.
+///
+/// Every row deleted here is retired below the retention floor, so every
+/// later checkpoint's materialized-state digest already leaves it out and no
+/// operation reads it.
+async fn prune_federation_terminal_rows_below<C>(
+    connection: &C,
+    floor: u64,
+    limit: u64,
+) -> Result<u64, Error>
+where
+    C: DatabaseExecutor,
+{
+    let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+    let rows = query(
+        r#"
+        DELETE FROM federation_payment_observations
+        WHERE operation_id IN (
+            SELECT operation_id
+            FROM federation_payment_observations
+            WHERE terminal_operation_index < :floor
+            ORDER BY terminal_operation_index ASC, operation_id ASC
+            LIMIT :limit
+        )
+        "#,
+    )?
+    .bind("floor", floor as i64)
+    .bind("limit", limit)
+    .execute(connection)
+    .await?;
+    let mut deleted = u64::try_from(rows).unwrap_or(u64::MAX);
+    // Transitions and observations of Bark actions retired below the floor;
+    // the action row stays as the guard against replays. The tables exist
+    // whether or not Bark is built.
+    for table in [
+        "federation_bark_transitions",
+        "federation_bark_observations",
+    ] {
+        let sql = format!(
+            r#"
+            DELETE FROM {table}
+            WHERE operation_id IN (
+                SELECT r.operation_id
+                FROM {table} AS r
+                INNER JOIN federation_bark_actions AS a
+                    ON a.action_id = r.action_id
+                WHERE a.retired_operation_index < :floor
+                ORDER BY r.operation_index ASC
+                LIMIT :limit
+            )
+            "#
+        );
+        let rows = query(&sql)?
+            .bind("floor", floor as i64)
+            .bind("limit", limit)
+            .execute(connection)
+            .await?;
+        deleted = deleted.saturating_add(u64::try_from(rows).unwrap_or(u64::MAX));
+    }
+    Ok(deleted)
 }
 
 /// Delete one bounded batch of consensus history below the retention floor.
@@ -1060,6 +1180,26 @@ async fn federation_state_transfer_window_start<C>(
 where
     C: DatabaseExecutor,
 {
+    let (item_start, journal_start) =
+        federation_validity_window_positions(connection, checkpoint).await?;
+    Ok(FederationStateTransferWindowBounds {
+        item_start,
+        journal_start,
+        item_base_digest: federation_finalized_item_digest_at(connection, item_start).await?,
+        application_base_digest: federation_application_digest_at(connection, journal_start)
+            .await?,
+    })
+}
+
+/// First finalized item and journal entry of the validity window before
+/// `checkpoint`, including the one older item that proves it complete.
+async fn federation_validity_window_positions<C>(
+    connection: &C,
+    checkpoint: &FederationCheckpoint,
+) -> Result<(u64, u64), Error>
+where
+    C: DatabaseExecutor,
+{
     let item_end = checkpoint.finalized_next_item_index;
     let floor = checkpoint
         .aleph_bft_session
@@ -1107,13 +1247,85 @@ where
     .map(|column| Ok::<u64, Error>(column_as_number!(column)))
     .transpose()?
     .unwrap_or(checkpoint.journal_next_index);
-    Ok(FederationStateTransferWindowBounds {
-        item_start,
-        journal_start,
-        item_base_digest: federation_finalized_item_digest_at(connection, item_start).await?,
-        application_base_digest: federation_application_digest_at(connection, journal_start)
-            .await?,
+    Ok((item_start, journal_start))
+}
+
+/// Journal and finalized-item positions of the retention floor that
+/// `latest` sets over `previous`, the scheduled checkpoint before it, before
+/// any live-state pin: `previous`, or the start of `latest`'s validity window
+/// if that is earlier.
+async fn federation_unpinned_retention_floor<C>(
+    connection: &C,
+    latest: &FederationCheckpoint,
+    previous: &FederationCheckpoint,
+) -> Result<(u64, u64), Error>
+where
+    C: DatabaseExecutor,
+{
+    let (window_item_start, window_journal_start) =
+        federation_validity_window_positions(connection, latest).await?;
+    Ok(if previous.finalized_next_item_index <= window_item_start {
+        (
+            previous.journal_next_index,
+            previous.finalized_next_item_index,
+        )
+    } else {
+        (window_journal_start, window_item_start)
     })
+}
+
+/// Journal index below which `checkpoint`'s materialized-state digest leaves
+/// out terminal entities: the retention floor it sets as the latest
+/// scheduled checkpoint, before pins, or zero with no scheduled checkpoint
+/// below it.
+async fn federation_materialized_state_floor<C>(
+    connection: &C,
+    checkpoint: &FederationCheckpoint,
+) -> Result<u64, Error>
+where
+    C: DatabaseExecutor,
+{
+    let checkpoint_id = checkpoint
+        .id()
+        .map_err(|e| Error::Internal(format!("Invalid federation checkpoint: {e}")))?;
+    let previous = query(
+        r#"
+        SELECT checkpoint_id, checkpoint_json
+        FROM federation_checkpoints
+        WHERE checkpoint_kind = :checkpoint_kind
+          AND checkpoint_id <> :checkpoint_id
+          AND finalized_next_item_index < :finalized_next_item_index
+          AND journal_next_index <= :journal_next_index
+        ORDER BY
+            scheduled_checkpoint_sequence DESC,
+            finalized_next_item_index DESC,
+            checkpoint_id DESC
+        LIMIT 1
+        "#,
+    )?
+    .bind(
+        "checkpoint_kind",
+        checkpoint_kind_to_str(FederationCheckpointKind::Scheduled),
+    )
+    .bind("checkpoint_id", checkpoint_id.to_string())
+    .bind(
+        "finalized_next_item_index",
+        checkpoint.finalized_next_item_index as i64,
+    )
+    .bind("journal_next_index", checkpoint.journal_next_index as i64)
+    .fetch_one(connection)
+    .await?
+    .map(sql_row_to_federation_checkpoint)
+    .transpose()?;
+    match previous {
+        Some(previous) => Ok(federation_unpinned_retention_floor(
+            connection, checkpoint, &previous,
+        )
+        .await?
+        .0),
+        // A state-transfer base stands for the scheduled checkpoint below it.
+        None => Ok(0),
+    }
 }
 
 /// Store a verified validity window below an installed checkpoint, as the
@@ -2150,6 +2362,18 @@ where
         prune_federation_history_below_floor(self, limit, keep_journal_from).await
     }
 
+    async fn prune_federation_terminal_rows(
+        &mut self,
+        floor: u64,
+        limit: u64,
+    ) -> Result<u64, Self::Err> {
+        prune_federation_terminal_rows_below(&self.inner, floor, limit).await
+    }
+
+    async fn reset_federation_member_state(&mut self) -> Result<u64, Self::Err> {
+        reset_federation_member_state_rows(&self.inner).await
+    }
+
     async fn latch_federation_materialized_state_audit_mismatch(
         &mut self,
     ) -> Result<(), Self::Err> {
@@ -3149,6 +3373,18 @@ where
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
         federation_retention_floor(&*conn).await
+    }
+
+    async fn get_federation_materialized_state_floor(
+        &self,
+        checkpoint: &FederationCheckpoint,
+    ) -> Result<u64, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        federation_materialized_state_floor(&*conn, checkpoint).await
     }
 
     async fn get_federation_aleph_bft_finalized_items(
