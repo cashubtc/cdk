@@ -144,7 +144,7 @@ jobs:
         id: groups
         run: |
           examples=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: builtins.substring 0 8 n == "example-") (builtins.attrNames attrs)' --json)
-          checks=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: n != "pr-unit-tests" && n != "pr-feature-tests" && n != "pre-commit-check" && n != "workspace-clippy-all-targets" && n != "doc-tests" && n != "strict-docs" && n != "ffi-tests" && builtins.substring 0 8 n != "example-" && builtins.substring 0 5 n != "msrv-" && builtins.substring 0 5 n != "wasm-" && builtins.substring 0 16 n != "rusqlite-compat-") (builtins.attrNames attrs)' --json)
+          checks=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: n != "pr-unit-tests" && n != "pr-feature-tests" && n != "pre-commit-check" && n != "workspace-clippy-all-targets" && n != "doc-tests" && n != "strict-docs" && n != "ffi-tests" && n != "postgres-tests" && builtins.substring 0 8 n != "example-" && builtins.substring 0 5 n != "msrv-" && builtins.substring 0 5 n != "wasm-" && builtins.substring 0 16 n != "rusqlite-compat-") (builtins.attrNames attrs)' --json)
           msrv_checks=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: builtins.substring 0 5 n == "msrv-") (builtins.attrNames attrs)' --json)
           wasm_checks=$(nix eval .#checks.x86_64-linux --apply 'attrs: builtins.filter (n: builtins.substring 0 5 n == "wasm-") (builtins.attrNames attrs)' --json)
           # PRs retain workspace unit tests and core feature boundaries. Other
@@ -269,8 +269,21 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@v5
+      # The check starts its own PostgreSQL server inside the build sandbox.
       - name: Run clippy and Postgres tests
-        run: nix develop --fallback -i -L .#stable --command bash -c "start-postgres && cargo clippy -p cdk-postgres -- -D warnings && cargo test -p cdk-postgres -- --test-threads 8 && CDK_REQUIRE_POSTGRES_TESTS=1 cargo test -p cdk --lib second_replica && cargo test -p cdk-integration-tests --test signatory_rotation"
+        run: |
+          set -o pipefail
+          nix build -L .#checks.x86_64-linux.postgres-tests --no-link --print-out-paths | tee "$RUNNER_TEMP/cdk-cache-paths.txt"
+      # Push the check output so re-runs and rebased PRs substitute it instead
+      # of recompiling.
+      - name: Push to Attic cache
+        # Never push from fork PRs (secrets are withheld there anyway; belt and braces).
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
+        env:
+          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
+          ATTIC_CACHE: ${{ vars.ATTIC_CACHE }}
+        run: nix shell .#attic-client --command misc/attic_push.sh "$RUNNER_TEMP/cdk-cache-paths.txt"
 
 # Tests for cdk-supabase that require a local Supabase stack (PostgREST + GoTrue + PostgreSQL)
   supabase-tests:
