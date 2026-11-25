@@ -44,6 +44,35 @@ impl FederationNodeRuntime {
                 break;
             }
         }
+        // Terminal entities retired below the floor are left out of every
+        // later checkpoint's digest, so deleting them here cannot make this
+        // member disagree with a peer that has not.
+        #[cfg(any(test, feature = "test-utils"))]
+        let keep_terminal_entities = self
+            .components
+            .faults
+            .keep_terminal_entities
+            .load(std::sync::atomic::Ordering::Acquire);
+        #[cfg(not(any(test, feature = "test-utils")))]
+        let keep_terminal_entities = false;
+        if let Some(floor) = db
+            .get_federation_retention_floor()
+            .await?
+            .filter(|_| !keep_terminal_entities)
+        {
+            for _ in 0..FEDERATION_RETENTION_MAX_BATCHES_PER_PROMOTION {
+                let batch = mint
+                    .prune_federation_terminal_state(
+                        floor.journal_start,
+                        FEDERATION_RETENTION_PRUNE_BATCH_ROWS,
+                    )
+                    .await?;
+                deleted = deleted.saturating_add(batch);
+                if batch == 0 {
+                    break;
+                }
+            }
+        }
         if deleted > 0 {
             tracing::debug!(
                 deleted,
@@ -51,6 +80,17 @@ impl FederationNodeRuntime {
             );
         }
         Ok(deleted)
+    }
+
+    /// Keep (or again delete) terminal entities below the retention floor
+    /// when history is pruned, so tests can compare a member that deleted
+    /// them with one that did not.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn keep_terminal_entities(&self, keep: bool) {
+        self.components
+            .faults
+            .keep_terminal_entities
+            .store(keep, std::sync::atomic::Ordering::Release);
     }
 
     /// Prune after a promotion; a failure is logged and retried at the next one.

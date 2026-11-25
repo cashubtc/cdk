@@ -131,6 +131,167 @@ where
     assert_eq!(second, first);
 }
 
+fn observation_entry(
+    journal: &mut InMemoryFederationJournal,
+    observation_epoch: u64,
+) -> cdk_common::federation::FederationJournalEntry {
+    let observation =
+        crate::FederationBarkOperation::MemberObservation(crate::FederationBarkMemberObservation {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id: FederationBarkActionId::from_bytes([1; 32]).expect("action ID"),
+            quote: Some("bark-projection-quote".to_string()),
+            observer: member_id(),
+            observation_epoch,
+            source_scope: digest(8),
+            payment_hash: None,
+            status: crate::FederationBarkObservationStatus::Pending,
+            amount: Amount::ZERO,
+            fee: Amount::ZERO,
+            result_hash: digest(9),
+        });
+    let envelope = FederationOperationEnvelope::new(
+        federation_id(),
+        federation_bark_application_operation(observation).expect("Bark application operation"),
+    )
+    .authorize(&private_member())
+    .expect("authorize Bark observation");
+    match journal.append(envelope).expect("append Bark observation") {
+        FederationJournalAppendOutcome::Appended(entry) => entry,
+        FederationJournalAppendOutcome::Duplicate(_) => panic!("unique observation"),
+    }
+}
+
+async fn apply_entry<DB>(db: &DB, entry: &cdk_common::federation::FederationJournalEntry)
+where
+    DB: Database<DatabaseError>,
+{
+    let FederationOperation::Application(application) = &entry.envelope.operation else {
+        panic!("application operation");
+    };
+    let mut transaction = Database::begin_transaction(db)
+        .await
+        .expect("begin Bark apply");
+    transaction
+        .apply_federation_application_operation(entry, application)
+        .await
+        .expect("apply Bark operation");
+    transaction.commit().await.expect("commit Bark apply");
+}
+
+/// Assert that a retired action guards against replays and late operations
+/// whether or not its transitions and observations were deleted, and that
+/// only those rows are deleted below the retention floor.
+///
+/// `source` records a receive and one observation of it. `installed` holds
+/// the same rows with the action finished and its quote settled, as a state
+/// transfer installs them.
+pub async fn federation_bark_retired_action_guard<DB>(source: DB, installed: DB)
+where
+    DB: Database<DatabaseError> + crate::FederationBarkStore,
+{
+    let action_id = FederationBarkActionId::from_bytes([1; 32]).expect("action ID");
+    let mut journal = InMemoryFederationJournal::new();
+    let intent = FederationOperationEnvelope::new(
+        federation_id(),
+        federation_bark_application_operation(crate::FederationBarkOperation::ReceiveIntent(
+            receive_intent(),
+        ))
+        .expect("Bark application operation"),
+    )
+    .authorize(&private_member())
+    .expect("authorize Bark operation");
+    let intent_entry = match journal.append(intent).expect("append receive") {
+        FederationJournalAppendOutcome::Appended(entry) => entry,
+        FederationJournalAppendOutcome::Duplicate(_) => panic!("unique receive"),
+    };
+    let observed = observation_entry(&mut journal, 1);
+    apply_entry(&source, &intent_entry).await;
+    apply_entry(&source, &observed).await;
+
+    // Settling the quote of an unfinished action only records it.
+    let mut transaction = Database::begin_transaction(&source)
+        .await
+        .expect("begin settle");
+    transaction
+        .settle_federation_application_quote("bark-projection-quote", 1)
+        .await
+        .expect("settle quote");
+    transaction.commit().await.expect("commit settle");
+    let action = source
+        .bark_action(action_id)
+        .await
+        .expect("action read")
+        .expect("action");
+    assert_eq!(action.quote_settled_operation_index, Some(1));
+    assert_eq!(action.retired_operation_index(), None);
+    let snapshot = source.bark_projection_snapshot().await.expect("snapshot");
+    assert_eq!(snapshot.observations.len(), 1);
+
+    // The same rows with the action finished: retired at index 1.
+    let mut finished = snapshot.clone();
+    finished.actions[0].phase = crate::FederationBarkSemanticPhase::ReceiveClaimed;
+    assert_eq!(finished.actions[0].retired_operation_index(), Some(1));
+    let mut transaction = Database::begin_transaction(&installed)
+        .await
+        .expect("begin install");
+    transaction
+        .install_federation_application_rows(
+            &finished.materialized_rows().expect("Bark rows to install"),
+        )
+        .await
+        .expect("install Bark rows");
+    transaction.commit().await.expect("commit install");
+    assert_eq!(
+        installed
+            .bark_projection_snapshot()
+            .await
+            .expect("installed snapshot"),
+        finished
+    );
+
+    // A late observation of the retired action changes nothing.
+    let late = observation_entry(&mut journal, 2);
+    apply_entry(&installed, &late).await;
+    assert_eq!(
+        installed
+            .bark_projection_snapshot()
+            .await
+            .expect("snapshot after a late observation"),
+        finished
+    );
+
+    // Its rows are deleted only below the floor, and the action stays.
+    for (floor, deleted) in [(1, 0), (2, 1), (2, 0)] {
+        let mut transaction = Database::begin_transaction(&installed)
+            .await
+            .expect("begin prune");
+        assert_eq!(
+            transaction
+                .prune_federation_terminal_rows(floor, 100)
+                .await
+                .expect("prune retired rows"),
+            deleted
+        );
+        transaction.commit().await.expect("commit prune");
+    }
+    let pruned = installed
+        .bark_projection_snapshot()
+        .await
+        .expect("pruned snapshot");
+    assert!(pruned.observations.is_empty());
+    assert_eq!(pruned.actions, finished.actions);
+
+    // A replay of the deleted observation does not bring it back.
+    apply_entry(&installed, &observed).await;
+    assert_eq!(
+        installed
+            .bark_projection_snapshot()
+            .await
+            .expect("snapshot after a replay"),
+        pruned
+    );
+}
+
 /// Compare focused action reads with complete snapshots at increasing history sizes.
 ///
 /// Reports elapsed read time and returned row counts without timing assertions.

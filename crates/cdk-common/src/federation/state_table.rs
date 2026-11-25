@@ -27,6 +27,13 @@ pub const FEDERATION_STATE_PRIMARY_NAMESPACE: &str = "federation";
 pub type FederationStateRows = BTreeMap<String, Vec<u8>>;
 
 /// A consensus state projection stored as one row per entity.
+///
+/// Terminal entities record the journal index of the operation that made
+/// them terminal. Operations never read them again: [`Self::retire_terminal_rows`]
+/// removes them, or reduces them to a permanent guard, before any operation
+/// loads the projection. The stored rows stay until history retention deletes
+/// them below the retention floor ([`Self::retire_rows_below`]), so a member
+/// that deleted them and one that did not load the same projection.
 pub trait FederationStateTable: Sized {
     /// Secondary key-value namespace holding this projection's rows.
     const SECONDARY_NAMESPACE: &'static str;
@@ -37,6 +44,27 @@ pub trait FederationStateTable: Sized {
     /// Decode every row and validate the rebuilt projection. Every row key must
     /// be the key its content would be stored under.
     fn from_rows(rows: &FederationStateRows) -> Result<Self>;
+
+    /// The rows operations read: every terminal entity is removed, or replaced
+    /// by the guard that outlives it. Rows already reduced to a guard pass
+    /// through unchanged, so the result does not depend on what was deleted.
+    fn retire_terminal_rows(rows: FederationStateRows) -> Result<FederationStateRows> {
+        Ok(rows)
+    }
+
+    /// The stored rows with at most `limit` terminal entities whose terminal
+    /// index is below `floor` removed or reduced to their guard (all of them
+    /// when `limit` is `None`).
+    ///
+    /// The materialized-state digest of a checkpoint covers the rows this
+    /// returns for that checkpoint's floor; history retention writes them.
+    fn retire_rows_below(
+        rows: FederationStateRows,
+        _floor: u64,
+        _limit: Option<usize>,
+    ) -> Result<FederationStateRows> {
+        Ok(rows)
+    }
 
     /// State-digest rows: one per stored row, carrying its exact stored bytes,
     /// so the signed digest covers everything a state transfer installs.
@@ -57,17 +85,103 @@ pub trait FederationStateTable: Sized {
     }
 }
 
-/// Read and validate a whole projection outside a database transaction.
+/// Read and validate a whole projection outside a database transaction, as
+/// operations see it (terminal entities retired).
 pub async fn read_federation_state<S>(db: &DynMintDatabase) -> std::result::Result<S, Error>
 where
     S: FederationStateTable,
 {
-    let rows = db
+    let rows = read_federation_state_rows::<S>(db).await?;
+    Ok(S::from_rows(&S::retire_terminal_rows(rows)?)?)
+}
+
+/// Read every stored row of a projection, terminal entities included.
+pub async fn read_federation_state_rows<S>(
+    db: &DynMintDatabase,
+) -> std::result::Result<FederationStateRows, Error>
+where
+    S: FederationStateTable,
+{
+    Ok(db
         .kv_entries(FEDERATION_STATE_PRIMARY_NAMESPACE, S::SECONDARY_NAMESPACE)
         .await?
         .into_iter()
-        .collect();
-    Ok(S::from_rows(&rows)?)
+        .collect())
+}
+
+/// Read every stored row of a projection inside a transaction, terminal
+/// entities included.
+pub async fn load_federation_state_rows<S>(
+    transaction: &mut DynMintTransaction,
+) -> std::result::Result<FederationStateRows, Error>
+where
+    S: FederationStateTable,
+{
+    Ok(transaction
+        .kv_entries(FEDERATION_STATE_PRIMARY_NAMESPACE, S::SECONDARY_NAMESPACE)
+        .await?
+        .into_iter()
+        .collect())
+}
+
+/// Materialized-state digest rows of a projection's stored rows, for a
+/// checkpoint whose retention floor is `floor`.
+///
+/// Terminal entities below the floor are excluded (or appear as their
+/// guard) whether or not this member already deleted them.
+pub fn federation_state_rows_at_floor<S>(
+    rows: FederationStateRows,
+    floor: u64,
+) -> Result<Vec<FederationMaterializedStateRow>>
+where
+    S: FederationStateTable,
+{
+    S::from_rows(&S::retire_rows_below(rows, floor, None)?)?.materialized_rows()
+}
+
+/// Delete at most `limit` terminal entities below `floor` from a stored
+/// projection inside `transaction`, writing the guards that replace them.
+///
+/// Returns how many rows changed.
+pub async fn retire_federation_state_below<S>(
+    transaction: &mut DynMintTransaction,
+    floor: u64,
+    limit: usize,
+) -> std::result::Result<u64, Error>
+where
+    S: FederationStateTable,
+{
+    let stored = load_federation_state_rows::<S>(transaction).await?;
+    let retired = S::retire_rows_below(stored.clone(), floor, Some(limit))?;
+    // The retained rows must still form a valid projection.
+    S::from_rows(&retired)?;
+    let mut changed = 0_u64;
+    for (key, value) in &retired {
+        if stored.get(key) != Some(value) {
+            transaction
+                .kv_write(
+                    FEDERATION_STATE_PRIMARY_NAMESPACE,
+                    S::SECONDARY_NAMESPACE,
+                    key,
+                    value,
+                )
+                .await?;
+            changed = changed.saturating_add(1);
+        }
+    }
+    for key in stored.keys() {
+        if !retired.contains_key(key) {
+            transaction
+                .kv_remove(
+                    FEDERATION_STATE_PRIMARY_NAMESPACE,
+                    S::SECONDARY_NAMESPACE,
+                    key,
+                )
+                .await?;
+            changed = changed.saturating_add(1);
+        }
+    }
+    Ok(changed)
 }
 
 /// A projection loaded inside a database transaction, together with the rows
@@ -82,13 +196,14 @@ impl<S> FederationStoredState<S>
 where
     S: FederationStateTable,
 {
-    /// Read and validate every row of the projection.
+    /// Read and validate the projection as operations see it.
+    ///
+    /// Terminal entities are retired first. Their stored rows are left
+    /// alone: [`Self::save`] compares against the retired rows, so it neither
+    /// deletes a terminal entity nor writes its guard unless an operation
+    /// changes them.
     pub async fn load(transaction: &mut DynMintTransaction) -> std::result::Result<Self, Error> {
-        let stored = transaction
-            .kv_entries(FEDERATION_STATE_PRIMARY_NAMESPACE, S::SECONDARY_NAMESPACE)
-            .await?
-            .into_iter()
-            .collect();
+        let stored = S::retire_terminal_rows(load_federation_state_rows::<S>(transaction).await?)?;
         let state = S::from_rows(&stored)?;
         Ok(Self { state, stored })
     }

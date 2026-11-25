@@ -13,11 +13,17 @@ CREATE TABLE federation_bark_actions (
     plan_operation_id TEXT,
     predecessor_operation_id TEXT,
     operation_commitment TEXT NOT NULL,
-    record_json TEXT NOT NULL
+    record_json TEXT NOT NULL,
+    -- Journal index from which the action is retired (final phase, bound
+    -- quote final); its transitions and observations are no longer read.
+    retired_operation_index INTEGER
 );
 
 CREATE INDEX idx_federation_bark_actions_phase
 ON federation_bark_actions (phase, latest_operation_index);
+
+CREATE INDEX idx_federation_bark_actions_retired
+ON federation_bark_actions (retired_operation_index);
 
 CREATE TABLE federation_bark_vtxos (
     vtxo_id TEXT PRIMARY KEY NOT NULL,

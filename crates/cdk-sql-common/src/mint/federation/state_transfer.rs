@@ -116,7 +116,7 @@ where
 
     let payment_observations = query(
         r#"
-        SELECT operation_id, operation_index, observation_json
+        SELECT operation_id, operation_index, observation_json, terminal_operation_index
         FROM federation_payment_observations
         ORDER BY operation_index ASC, observer_member_id ASC
         "#,
@@ -124,8 +124,8 @@ where
     .fetch_all(connection)
     .await?
     .into_iter()
-    .map(sql_row_to_federation_payment_observation_record)
-    .collect::<Result<Vec<_>, _>>()?;
+    .map(sql_row_to_stored_payment_observation)
+    .collect::<Result<Vec<_>, Error>>()?;
 
     Ok(FederationMaterializedStateSource {
         frost_root_public_configs: super::frost_wallet::fetch_root_public_configs(connection)

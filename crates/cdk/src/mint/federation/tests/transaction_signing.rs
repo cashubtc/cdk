@@ -200,6 +200,80 @@ pub(super) fn signed_fixture_for_intent(
     (state, signed)
 }
 
+/// Materialize every input of every accepted transaction in `state` as a
+/// reserved wallet output in the chain projection, as acceptance leaves it.
+pub(super) async fn persist_reserved_inputs(
+    store: &Arc<MintSqliteDatabase>,
+    state: &FederationTransactionState,
+) {
+    use cdk_common::federation::{
+        outpoint_row_key, FederationChainObservation, FederationChainObservationEvidence,
+        FederationChainObservationState, FederationChainSourceDescriptor,
+        FederationChainSourceScope, FederationDepositConfirmation, FederationDepositObservation,
+        FederationStateTable, FederationWalletUtxo, FederationWalletUtxoState, MemberId,
+    };
+
+    let observer = MemberId::new(1).expect("member id");
+    let mut rows = cdk_common::federation::FederationStateRows::new();
+    for accepted in state.accepted_transactions().values() {
+        for input in &accepted.proposal.selected_inputs {
+            let confirmation = FederationDepositConfirmation {
+                block_hash: bitcoin::BlockHash::from_byte_array([41; 32]),
+                block_height: 100,
+                confirmation_depth: 6,
+            };
+            let observation = FederationDepositObservation {
+                allocation: input.allocation.clone(),
+                outpoint: input.outpoint,
+                txout: input.previous_output.clone(),
+                confirmation: Some(confirmation),
+                observation_epoch: 0,
+                observer,
+                source: FederationChainSourceDescriptor::new(
+                    FederationChainSourceScope::Independent,
+                    "fixture",
+                )
+                .expect("chain source"),
+            };
+            let utxo = FederationWalletUtxo {
+                outpoint: input.outpoint,
+                txout: input.previous_output.clone(),
+                allocation: input.allocation.clone(),
+                block: Some((confirmation.block_hash, confirmation.block_height)),
+                state: FederationWalletUtxoState::Reserved,
+                required_observers: 1,
+                minimum_confirmations: 1,
+                observation_epoch: 0,
+                observations: [(
+                    observer,
+                    FederationChainObservationEvidence {
+                        observation: FederationChainObservation::Deposit(observation),
+                        operation_id: FederationOperationId::from_bytes([42; 32]),
+                        operation_index: 1,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                reorg_observations: Default::default(),
+                conflicting_observers: Default::default(),
+                liability_issued: false,
+                liability_alarm: false,
+                spent_operation_index: None,
+            };
+            rows.insert(
+                outpoint_row_key("utxo", &input.outpoint),
+                serde_json::to_vec(&utxo).expect("UTXO row"),
+            );
+        }
+    }
+    let chain = FederationChainObservationState::from_rows(&rows).expect("chain state");
+    let mut transaction = store.begin_transaction().await.expect("begin chain write");
+    cdk_common::federation::write_federation_state(&mut transaction, chain)
+        .await
+        .expect("write chain state");
+    transaction.commit().await.expect("commit chain state");
+}
+
 pub(super) async fn persist_transaction_state(
     store: &Arc<MintSqliteDatabase>,
     state: &FederationTransactionState,
@@ -212,6 +286,46 @@ pub(super) async fn persist_transaction_state(
         .commit()
         .await
         .expect("commit transaction state");
+}
+
+/// An outgoing transaction that is neither confirmed, abandoned nor replaced
+/// still reads its accepted proposal entry, so it holds history retention at
+/// that entry; a finished one does not.
+#[tokio::test]
+async fn unfinished_outgoing_transaction_pins_retained_history() {
+    let (runtime, application_id) = runtime_with_address_application();
+    let (state, signed) = signed_fixture(application_id);
+    let (mint, store) = federated_test_mint(runtime).await;
+    assert_eq!(
+        mint.federation_transaction_retention_pin()
+            .await
+            .expect("pin without transactions"),
+        None
+    );
+
+    persist_transaction_state(&store, &state).await;
+    let accepted_index = state
+        .accepted_transaction(signed.proposal_id)
+        .expect("accepted transaction")
+        .accepted_operation_index;
+    assert_eq!(
+        mint.federation_transaction_retention_pin()
+            .await
+            .expect("pin of a signed transaction"),
+        Some(accepted_index)
+    );
+
+    let mut abandoned = state.clone();
+    abandoned
+        .abandon_transaction(signed.proposal_id)
+        .expect("abandon transaction");
+    persist_transaction_state(&store, &abandoned).await;
+    assert_eq!(
+        mint.federation_transaction_retention_pin()
+            .await
+            .expect("pin of an abandoned transaction"),
+        None
+    );
 }
 
 #[tokio::test]

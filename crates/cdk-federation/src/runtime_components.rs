@@ -337,4 +337,5 @@ pub struct FederationRuntimeFaultHarness {
     pub suppress_next_scheduled_checkpoint_capture: Arc<AtomicBool>,
     pub suppress_next_recovery_checkpoint_capture: Arc<AtomicBool>,
     pub fail_next_checkpoint_promotion: Arc<AtomicBool>,
+    pub keep_terminal_entities: Arc<AtomicBool>,
 }

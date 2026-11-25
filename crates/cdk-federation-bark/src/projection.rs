@@ -54,9 +54,47 @@ pub struct FederationBarkActionRecord {
     pub operation_commitment: FederationBarkDigest,
     /// Complete current operation for independent replay.
     pub operation: FederationBarkOperation,
+    /// Journal index at which the bound quote became final (an issued mint
+    /// quote or a paid melt quote), once it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quote_settled_operation_index: Option<u64>,
 }
 
 impl FederationBarkActionRecord {
+    /// Journal index from which the action is retired: it reached a final
+    /// phase and, when it is bound to a quote, that quote is final too.
+    ///
+    /// Nothing can change a retired action: an operation naming it is
+    /// already applied, whether it is a replay or a late observation. Its
+    /// transitions and observations are no longer read, so history retention
+    /// deletes them below the retention floor and keeps the action as the
+    /// guard.
+    #[must_use]
+    pub fn retired_operation_index(&self) -> Option<u64> {
+        if !self.phase.is_final() {
+            return None;
+        }
+        match &self.quote {
+            None => Some(self.latest_operation_index),
+            Some(_) => self
+                .quote_settled_operation_index
+                .map(|settled| settled.max(self.latest_operation_index)),
+        }
+    }
+
+    /// The action with its bound quote settled at `operation_index`, unless
+    /// it was settled already.
+    #[must_use]
+    pub fn with_quote_settled(&self, operation_index: u64) -> Option<Self> {
+        if self.quote.is_none() || self.quote_settled_operation_index.is_some() {
+            return None;
+        }
+        Some(Self {
+            quote_settled_operation_index: Some(operation_index),
+            ..self.clone()
+        })
+    }
+
     /// The action's phase, or the retried phase while a signing retry is pending.
     #[must_use]
     pub fn effective_phase(&self) -> FederationBarkSemanticPhase {
@@ -119,6 +157,7 @@ impl FederationBarkActionRecord {
             predecessor_operation_id,
             operation_commitment: operation.commitment()?,
             operation: operation.clone(),
+            quote_settled_operation_index: None,
         })
     }
 
@@ -166,6 +205,7 @@ impl FederationBarkActionRecord {
             predecessor_operation_id,
             operation_commitment: operation.commitment()?,
             operation: operation.clone(),
+            quote_settled_operation_index: self.quote_settled_operation_index,
         })
     }
 
@@ -657,6 +697,7 @@ mod tests {
                     result_hash: FederationBarkDigest::from_bytes([4; 32]).expect("result"),
                 },
             ),
+            quote_settled_operation_index: None,
         }
     }
 

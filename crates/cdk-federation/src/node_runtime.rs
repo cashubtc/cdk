@@ -161,19 +161,26 @@ pub fn runtime_unavailable(component: &'static str) -> cdk::Error {
     FederationError::RuntimeUnavailable { component }.into()
 }
 
+/// The digest of the current materialized state for a checkpoint whose
+/// retention floor is `floor`.
 pub async fn materialized_state_digest_with_metrics(
     mint: &Mint,
     member_id: MemberId,
+    floor: u64,
 ) -> Result<FederationMaterializedStateDigest, cdk::Error> {
-    Ok(materialized_state_snapshot_with_metrics(mint, member_id)
-        .await?
-        .1)
+    Ok(
+        materialized_state_snapshot_with_metrics(mint, member_id, floor)
+            .await?
+            .1,
+    )
 }
 
-/// The current materialized state as frozen snapshot rows, with their digest.
+/// The current materialized state as frozen snapshot rows, with their
+/// digest, for a checkpoint whose retention floor is `floor`.
 pub async fn materialized_state_snapshot_with_metrics(
     mint: &Mint,
     member_id: MemberId,
+    floor: u64,
 ) -> Result<
     (
         Vec<cdk::federation::FederationStateSnapshotRow>,
@@ -185,7 +192,7 @@ pub async fn materialized_state_snapshot_with_metrics(
     let started_at = std::time::Instant::now();
     #[cfg(feature = "prometheus")]
     let load_started_at = std::time::Instant::now();
-    let rows = mint.federation_state_snapshot_rows().await;
+    let rows = mint.federation_state_snapshot_rows_at(floor).await;
     #[cfg(feature = "prometheus")]
     cdk_prometheus::METRICS.record_federation_performance_operation(
         cdk_prometheus::FederationPerformanceOperation::MaterializedStateLoad,

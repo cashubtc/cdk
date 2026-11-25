@@ -6595,15 +6595,22 @@ async fn successful_federation_melt_quote_check_records_terminal_payment_observa
             cdk::federation::FederationOperationKind::MeltQuotePayment,
         ]
     );
+    // The paid quote is final: its observation is kept, retired.
     let observations = state
         .mint
         .localstore()
-        .get_federation_payment_observations(
+        .get_federation_payment_observation_history(
             cdk::federation::FederationPaymentObservationContext::MeltQuote,
             &quote_id.to_string(),
         )
         .await
-        .expect("melt payment observations");
+        .expect("melt payment observations")
+        .into_iter()
+        .map(|stored| {
+            assert!(stored.terminal_operation_index.is_some());
+            stored.record
+        })
+        .collect::<Vec<_>>();
     assert_eq!(observations.len(), 1);
     let local_member = state
         .mint
@@ -8037,15 +8044,22 @@ async fn pending_federated_melt_public_quote_check_observes_only_terminal_settle
         .expect("settled change signature lookup")[0]
         .is_some());
 
+    // The settled quote is final: its observation is kept, retired.
     let observations = state
         .mint
         .localstore()
-        .get_federation_payment_observations(
+        .get_federation_payment_observation_history(
             cdk::federation::FederationPaymentObservationContext::MeltQuote,
             &quote_id.to_string(),
         )
         .await
-        .expect("settled melt payment observations");
+        .expect("settled melt payment observations")
+        .into_iter()
+        .map(|stored| {
+            assert!(stored.terminal_operation_index.is_some());
+            stored.record
+        })
+        .collect::<Vec<_>>();
     assert_eq!(observations.len(), 1);
     assert!(matches!(
         &observations[0].observation,
@@ -8484,15 +8498,22 @@ async fn failed_federation_melt_quote_check_records_terminal_failed_observation(
             cdk::federation::FederationOperationKind::MeltQuotePayment,
         ]
     );
+    // A failed melt quote is not final: its observation stays live.
     let observations = state
         .mint
         .localstore()
-        .get_federation_payment_observations(
+        .get_federation_payment_observation_history(
             cdk::federation::FederationPaymentObservationContext::MeltQuote,
             &quote_id.to_string(),
         )
         .await
-        .expect("melt payment observations");
+        .expect("melt payment observations")
+        .into_iter()
+        .map(|stored| {
+            assert!(stored.terminal_operation_index.is_none());
+            stored.record
+        })
+        .collect::<Vec<_>>();
     assert_eq!(observations.len(), 1);
     let local_member = state
         .mint

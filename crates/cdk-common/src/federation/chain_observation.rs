@@ -341,6 +341,58 @@ pub struct FederationWalletUtxo {
     pub liability_issued: bool,
     /// Sticky alarm when unsafe evidence arrives after liability issuance.
     pub liability_alarm: bool,
+    /// Journal index of the operation that spent the output.
+    ///
+    /// A spent output is terminal: operations see only its
+    /// [`FederationSpentWalletUtxo`] tombstone from then on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spent_operation_index: Option<u64>,
+}
+
+/// Permanent tombstone of a spent wallet output.
+///
+/// Once an output is spent, operations read only this: a replayed or late
+/// deposit or reorg observation of the outpoint changes nothing, and the
+/// output can never be reserved again. It also keeps the output's share of
+/// its quote's cumulative on-chain payment, which counts every output ever
+/// paid to the quote's address, spent or not. History retention deletes the
+/// full record below the retention floor and keeps this.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationSpentWalletUtxo {
+    /// Spent output.
+    pub outpoint: OutPoint,
+    /// The output's contribution to its quote's payment, when it counted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quote_payment: Option<FederationSpentWalletUtxoPayment>,
+}
+
+/// A spent output's contribution to its quote's cumulative on-chain payment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationSpentWalletUtxoPayment {
+    /// Quote that owns the output's address allocation.
+    pub quote: String,
+    /// Exact accepted amount and script.
+    pub txout: TxOut,
+}
+
+impl FederationSpentWalletUtxo {
+    /// The tombstone a spent output leaves.
+    ///
+    /// A spent output never receives evidence again, so its contribution to
+    /// any later payment evaluation is fixed: the one it has at any index.
+    fn of(utxo: &FederationWalletUtxo) -> Self {
+        Self {
+            outpoint: utxo.outpoint,
+            quote_payment: utxo_is_spendable_at_or_before(utxo, u64::MAX).then(|| {
+                FederationSpentWalletUtxoPayment {
+                    quote: utxo.allocation.quote.clone(),
+                    txout: utxo.txout.clone(),
+                }
+            }),
+        }
+    }
 }
 
 /// Immutable UTXO field set that member observers vote on with their
@@ -539,6 +591,7 @@ pub enum FederationChainObservationOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FederationChainObservationState {
     utxos: BTreeMap<String, FederationWalletUtxo>,
+    spent: BTreeMap<String, FederationSpentWalletUtxo>,
 }
 
 impl Default for FederationChainObservationState {
@@ -553,10 +606,12 @@ impl FederationChainObservationState {
     pub fn new() -> Self {
         Self {
             utxos: BTreeMap::new(),
+            spent: BTreeMap::new(),
         }
     }
 
-    /// Look up one materialized UTXO.
+    /// Look up one materialized UTXO. A spent output reduced to its
+    /// tombstone has none.
     #[must_use]
     pub fn utxo(&self, outpoint: OutPoint) -> Option<&FederationWalletUtxo> {
         self.utxos.get(&outpoint.to_string())
@@ -565,6 +620,24 @@ impl FederationChainObservationState {
     /// Iterate over materialized UTXOs in canonical outpoint order.
     pub fn utxos(&self) -> impl Iterator<Item = &FederationWalletUtxo> {
         self.utxos.values()
+    }
+
+    /// Look up the tombstone of a spent output.
+    #[must_use]
+    pub fn spent_utxo(&self, outpoint: OutPoint) -> Option<&FederationSpentWalletUtxo> {
+        self.spent.get(&outpoint.to_string())
+    }
+
+    /// Whether the output was spent: its full record is spent, or only its
+    /// tombstone is left. Both decide every operation the same way.
+    #[must_use]
+    pub fn is_spent(&self, outpoint: OutPoint) -> bool {
+        let key = outpoint.to_string();
+        self.spent.contains_key(&key)
+            || self
+                .utxos
+                .get(&key)
+                .is_some_and(|utxo| utxo.state == FederationWalletUtxoState::Spent)
     }
 
     /// Return the canonical cumulative payment for a quote at a journal boundary.
@@ -598,19 +671,35 @@ impl FederationChainObservationState {
         engine.input(&(quote.len() as u64).to_be_bytes());
         engine.input(quote.as_bytes());
 
-        for utxo in self.utxos.values().filter(|utxo| {
-            utxo.allocation.quote == quote
-                && utxo_is_spendable_at_or_before(utxo, max_operation_index)
-        }) {
+        // A spent output counts through its tombstone whether or not its
+        // full record still exists, in the same canonical outpoint order.
+        let mut contributions = self
+            .utxos
+            .iter()
+            .filter(|(_, utxo)| {
+                utxo.allocation.quote == quote
+                    && utxo_is_spendable_at_or_before(utxo, max_operation_index)
+            })
+            .map(|(key, utxo)| (key, (utxo.outpoint, &utxo.txout)))
+            .chain(self.spent.iter().filter_map(|(key, spent)| {
+                spent
+                    .quote_payment
+                    .as_ref()
+                    .filter(|payment| payment.quote == quote)
+                    .map(|payment| (key, (spent.outpoint, &payment.txout)))
+            }))
+            .collect::<Vec<_>>();
+        contributions.sort_by(|left, right| left.0.cmp(right.0));
+        for (_, (outpoint, txout)) in contributions {
             amount_sat = amount_sat
-                .checked_add(utxo.txout.value.to_sat())
+                .checked_add(txout.value.to_sat())
                 .ok_or_else(|| invalid_state("on-chain quote payment amount overflow"))?;
-            outpoints.push(utxo.outpoint);
-            engine.input(&utxo.outpoint.txid.to_byte_array());
-            engine.input(&utxo.outpoint.vout.to_be_bytes());
-            engine.input(&utxo.txout.value.to_sat().to_be_bytes());
-            engine.input(&(utxo.txout.script_pubkey.len() as u64).to_be_bytes());
-            engine.input(utxo.txout.script_pubkey.as_bytes());
+            outpoints.push(outpoint);
+            engine.input(&outpoint.txid.to_byte_array());
+            engine.input(&outpoint.vout.to_be_bytes());
+            engine.input(&txout.value.to_sat().to_be_bytes());
+            engine.input(&(txout.script_pubkey.len() as u64).to_be_bytes());
+            engine.input(txout.script_pubkey.as_bytes());
         }
 
         if outpoints.is_empty() {
@@ -644,7 +733,10 @@ impl FederationChainObservationState {
             ));
         }
         for outpoint in &payment.outpoints {
-            self.mark_liability_issued(*outpoint)?;
+            // A spent output's liability no longer decides anything.
+            if !self.is_spent(*outpoint) {
+                self.mark_liability_issued(*outpoint)?;
+            }
         }
         Ok(payment.outpoints)
     }
@@ -672,6 +764,13 @@ impl FederationChainObservationState {
             return Err(invalid_state("deposit quorum policy is invalid"));
         }
         self.validate()?;
+        // A spent output is final: a replayed or late observation of it
+        // changes nothing and can never recreate it.
+        if self.is_spent(observation.outpoint) {
+            return Ok(FederationChainObservationOutcome::Existing(
+                FederationWalletUtxoState::Spent,
+            ));
+        }
 
         let key = observation.outpoint.to_string();
         if !self.utxos.contains_key(&key) && observation.observation_epoch != 0 {
@@ -707,6 +806,7 @@ impl FederationChainObservationState {
                 conflicting_observers: BTreeSet::new(),
                 liability_issued: false,
                 liability_alarm: false,
+                spent_operation_index: None,
             });
 
         if utxo.required_observers != required_observers
@@ -877,6 +977,11 @@ impl FederationChainObservationState {
     ) -> Result<FederationChainObservationOutcome> {
         observation.validate()?;
         self.validate()?;
+        if self.is_spent(observation.outpoint) {
+            return Ok(FederationChainObservationOutcome::Existing(
+                FederationWalletUtxoState::Spent,
+            ));
+        }
         let utxo = self
             .utxos
             .get_mut(&observation.outpoint.to_string())
@@ -947,6 +1052,9 @@ impl FederationChainObservationState {
     ///
     /// Milestone 9 calls this only from its accepted mint-payment projection.
     pub fn mark_liability_issued(&mut self, outpoint: OutPoint) -> Result<()> {
+        if self.spent.contains_key(&outpoint.to_string()) {
+            return Ok(());
+        }
         let utxo = self
             .utxos
             .get_mut(&outpoint.to_string())
@@ -978,6 +1086,11 @@ impl FederationChainObservationState {
             return Err(invalid_state("wallet reservation set contains duplicates"));
         }
         for outpoint in outpoints {
+            if self.is_spent(*outpoint) {
+                return Err(invalid_state(
+                    "reservation references a non-spendable wallet UTXO",
+                ));
+            }
             let utxo = self
                 .utxos
                 .get(&outpoint.to_string())
@@ -998,12 +1111,18 @@ impl FederationChainObservationState {
         self.validate()
     }
 
-    /// Atomically mark an exact set of sticky reservations as spent.
+    /// Atomically mark an exact set of sticky reservations as spent by the
+    /// operation at journal index `operation_index`.
     ///
     /// Application-specific reservation ownership must be checked by the
     /// caller in the same durable transaction before invoking this neutral
-    /// lifecycle transition.
-    pub fn spend_reserved_utxos(&mut self, outpoints: &[OutPoint]) -> Result<()> {
+    /// lifecycle transition. A spent output is terminal: later operations see
+    /// only its tombstone.
+    pub fn spend_reserved_utxos(
+        &mut self,
+        outpoints: &[OutPoint],
+        operation_index: u64,
+    ) -> Result<()> {
         if outpoints.is_empty() {
             return Err(invalid_state("wallet spent reservation set is empty"));
         }
@@ -1014,6 +1133,11 @@ impl FederationChainObservationState {
             ));
         }
         for outpoint in outpoints {
+            if self.is_spent(*outpoint) {
+                return Err(invalid_state(
+                    "spent reservation references a non-reserved wallet UTXO",
+                ));
+            }
             let utxo = self
                 .utxos
                 .get(&outpoint.to_string())
@@ -1025,10 +1149,12 @@ impl FederationChainObservationState {
             }
         }
         for outpoint in outpoints {
-            self.utxos
+            let utxo = self
+                .utxos
                 .get_mut(&outpoint.to_string())
-                .ok_or_else(|| invalid_state("spent reservation wallet UTXO disappeared"))?
-                .state = FederationWalletUtxoState::Spent;
+                .ok_or_else(|| invalid_state("spent reservation wallet UTXO disappeared"))?;
+            utxo.state = FederationWalletUtxoState::Spent;
+            utxo.spent_operation_index = Some(operation_index);
         }
         self.validate()
     }
@@ -1104,6 +1230,30 @@ impl FederationChainObservationState {
             if utxo.liability_alarm && !utxo.liability_issued {
                 return Err(invalid_state("liability alarm has no issued liability"));
             }
+            if (utxo.state == FederationWalletUtxoState::Spent)
+                != utxo.spent_operation_index.is_some()
+            {
+                return Err(invalid_state(
+                    "wallet UTXO spend position does not match its state",
+                ));
+            }
+        }
+        for (key, spent) in &self.spent {
+            if key != &spent.outpoint.to_string() || self.utxos.contains_key(key) {
+                return Err(invalid_state(
+                    "spent wallet UTXO tombstone identity mismatch",
+                ));
+            }
+            if spent.quote_payment.as_ref().is_some_and(|payment| {
+                payment.quote.is_empty()
+                    || payment.quote.len() > MAX_QUOTE_ID_BYTES
+                    || payment.txout.value.to_sat() == 0
+                    || payment.txout.script_pubkey.is_empty()
+            }) {
+                return Err(invalid_state(
+                    "spent wallet UTXO tombstone payment is invalid",
+                ));
+            }
         }
         Ok(())
     }
@@ -1160,6 +1310,52 @@ fn quarantine(utxo: &mut FederationWalletUtxo, observer: MemberId) {
 }
 
 const UTXO_ROW: &str = "utxo";
+const SPENT_ROW: &str = "spent";
+
+fn decode_utxo_row(key: &str, bytes: &[u8]) -> Result<FederationWalletUtxo> {
+    decode_row(key, bytes, |utxo: &FederationWalletUtxo| {
+        Ok(outpoint_row_key(UTXO_ROW, &utxo.outpoint))
+    })
+}
+
+/// Replace every spent output whose spend `retire` selects by its
+/// tombstone row, at most `limit` of them.
+fn retire_spent_rows<F>(
+    mut rows: FederationStateRows,
+    limit: Option<usize>,
+    retire: F,
+) -> Result<FederationStateRows>
+where
+    F: Fn(u64) -> bool,
+{
+    let mut retired = Vec::new();
+    for (key, bytes) in &rows {
+        if row_kind(key)? != UTXO_ROW {
+            continue;
+        }
+        let utxo = decode_utxo_row(key, bytes)?;
+        if utxo.state != FederationWalletUtxoState::Spent {
+            continue;
+        }
+        let spent_at = utxo
+            .spent_operation_index
+            .ok_or_else(|| invalid_state("spent wallet UTXO has no spend position"))?;
+        if retire(spent_at) {
+            retired.push((spent_at, key.clone(), utxo));
+        }
+    }
+    // Oldest spends first, so a bounded batch always retires a prefix.
+    retired.sort_by(|left, right| (left.0, &left.1).cmp(&(right.0, &right.1)));
+    for (_, key, utxo) in retired.into_iter().take(limit.unwrap_or(usize::MAX)) {
+        rows.remove(&key);
+        insert_row(
+            &mut rows,
+            outpoint_row_key(SPENT_ROW, &utxo.outpoint),
+            &FederationSpentWalletUtxo::of(&utxo),
+        )?;
+    }
+    Ok(rows)
+}
 
 impl FederationStateTable for FederationChainObservationState {
     const SECONDARY_NAMESPACE: &'static str = "chain_observation";
@@ -1170,23 +1366,49 @@ impl FederationStateTable for FederationChainObservationState {
         for utxo in self.utxos.values() {
             insert_row(&mut rows, outpoint_row_key(UTXO_ROW, &utxo.outpoint), utxo)?;
         }
+        for spent in self.spent.values() {
+            insert_row(
+                &mut rows,
+                outpoint_row_key(SPENT_ROW, &spent.outpoint),
+                spent,
+            )?;
+        }
         Ok(rows)
     }
 
     fn from_rows(rows: &FederationStateRows) -> Result<Self> {
         let mut state = Self::new();
         for (key, bytes) in rows {
-            if row_kind(key)? != UTXO_ROW {
-                return Err(unknown_row_kind());
+            match row_kind(key)? {
+                UTXO_ROW => {
+                    let utxo = decode_utxo_row(key, bytes)?;
+                    state.utxos.insert(utxo.outpoint.to_string(), utxo);
+                }
+                SPENT_ROW => {
+                    let spent: FederationSpentWalletUtxo =
+                        decode_row(key, bytes, |spent: &FederationSpentWalletUtxo| {
+                            Ok(outpoint_row_key(SPENT_ROW, &spent.outpoint))
+                        })?;
+                    state.spent.insert(spent.outpoint.to_string(), spent);
+                }
+                _ => return Err(unknown_row_kind()),
             }
-            let utxo: FederationWalletUtxo =
-                decode_row(key, bytes, |utxo: &FederationWalletUtxo| {
-                    Ok(outpoint_row_key(UTXO_ROW, &utxo.outpoint))
-                })?;
-            state.utxos.insert(utxo.outpoint.to_string(), utxo);
         }
         state.validate()?;
         Ok(state)
+    }
+
+    /// Every spent output is read through its tombstone.
+    fn retire_terminal_rows(rows: FederationStateRows) -> Result<FederationStateRows> {
+        retire_spent_rows(rows, None, |_| true)
+    }
+
+    fn retire_rows_below(
+        rows: FederationStateRows,
+        floor: u64,
+        limit: Option<usize>,
+    ) -> Result<FederationStateRows> {
+        retire_spent_rows(rows, limit, |spent_at| spent_at < floor)
     }
 }
 
@@ -2363,16 +2585,16 @@ mod tests {
             FederationWalletUtxoState::Reserved
         );
         assert!(state.reserve_utxos(&[reserved]).is_err());
-        assert!(state.spend_reserved_utxos(&[outpoint(99)]).is_err());
+        assert!(state.spend_reserved_utxos(&[outpoint(99)], 7).is_err());
 
         state
-            .spend_reserved_utxos(&[reserved])
+            .spend_reserved_utxos(&[reserved], 7)
             .expect("spend exact reservation");
         assert_eq!(
             state.utxo(reserved).expect("spent UTXO").state,
             FederationWalletUtxoState::Spent
         );
-        assert!(state.spend_reserved_utxos(&[reserved]).is_err());
+        assert!(state.spend_reserved_utxos(&[reserved], 8).is_err());
         assert!(state.reserve_utxos(&[reserved]).is_err());
 
         let bytes = state.to_rows().expect("state bytes");
@@ -2380,5 +2602,108 @@ mod tests {
             FederationChainObservationState::from_rows(&bytes).expect("state replay"),
             state
         );
+    }
+
+    /// A spent output is read through its tombstone whether its full record
+    /// is still stored or was deleted below the retention floor, and no
+    /// replayed or late observation brings it back.
+    #[test]
+    fn spent_output_tombstone_decides_alike_whether_or_not_the_record_was_deleted() {
+        let mut state = FederationChainObservationState::new();
+        for (operation, observer) in [(2, 1), (3, 2)] {
+            apply(
+                &mut state,
+                &observation(
+                    observer,
+                    Some(block(9, 100, 2)),
+                    FederationChainSourceScope::Independent,
+                ),
+                operation,
+            );
+        }
+        let spent = outpoint(3);
+        let payment_before = state
+            .quote_payment_at_or_before("quote-1", u64::MAX)
+            .expect("payment before spend")
+            .expect("paid quote");
+        state.reserve_utxos(&[spent]).expect("reserve");
+        state.spend_reserved_utxos(&[spent], 7).expect("spend");
+        let stored = state.to_rows().expect("stored rows");
+
+        // A member that kept the record and one that deleted it below a
+        // floor above the spend load the same projection.
+        let kept = FederationChainObservationState::from_rows(
+            &FederationChainObservationState::retire_terminal_rows(stored.clone())
+                .expect("retired view"),
+        )
+        .expect("kept member");
+        let deleted_rows =
+            FederationChainObservationState::retire_rows_below(stored.clone(), 8, None)
+                .expect("rows below the floor");
+        assert!(!deleted_rows.contains_key(&outpoint_row_key(UTXO_ROW, &spent)));
+        assert!(deleted_rows.contains_key(&outpoint_row_key(SPENT_ROW, &spent)));
+        let deleted = FederationChainObservationState::from_rows(
+            &FederationChainObservationState::retire_terminal_rows(deleted_rows.clone())
+                .expect("retired view after deletion"),
+        )
+        .expect("deleting member");
+        assert_eq!(kept, deleted);
+        assert!(kept.utxo(spent).is_none());
+        assert!(kept.is_spent(spent));
+        // A floor at or below the spend keeps the full record.
+        assert_eq!(
+            FederationChainObservationState::retire_rows_below(stored, 7, None)
+                .expect("rows at the spend"),
+            state.to_rows().expect("unchanged rows")
+        );
+
+        // The quote's cumulative payment still counts the spent output.
+        assert_eq!(
+            kept.quote_payment_at_or_before("quote-1", u64::MAX)
+                .expect("payment after spend"),
+            Some(payment_before)
+        );
+
+        for mut holder in [kept.clone(), deleted] {
+            // Replayed deposit evidence of the spent output changes nothing.
+            let replay = observation(
+                1,
+                Some(block(9, 100, 6)),
+                FederationChainSourceScope::Independent,
+            );
+            assert_eq!(
+                apply(&mut holder, &replay, 20),
+                FederationChainObservationOutcome::Existing(FederationWalletUtxoState::Spent)
+            );
+            let mut recovery = replay.clone();
+            recovery.observation_epoch = 1;
+            assert_eq!(
+                apply(&mut holder, &recovery, 21),
+                FederationChainObservationOutcome::Existing(FederationWalletUtxoState::Spent)
+            );
+            // So does a reorg of its block.
+            let reorg = FederationDepositReorgObservation {
+                outpoint: spent,
+                disconnected_block_hash: BlockHash::from_byte_array([9; 32]),
+                disconnected_block_height: 100,
+                observation_epoch: 0,
+                observer: member(2),
+                source: FederationChainSourceDescriptor::new(
+                    FederationChainSourceScope::Independent,
+                    "source-2",
+                )
+                .expect("source"),
+            };
+            assert_eq!(
+                holder
+                    .apply_reorg(&reorg, FederationOperationId::from_bytes([22; 32]), 22)
+                    .expect("reorg of a spent output"),
+                FederationChainObservationOutcome::Existing(FederationWalletUtxoState::Spent)
+            );
+            // It can be neither reserved nor spent again.
+            assert!(holder.reserve_utxos(&[spent]).is_err());
+            assert!(holder.spend_reserved_utxos(&[spent], 23).is_err());
+            assert_eq!(holder, kept);
+        }
     }
 }

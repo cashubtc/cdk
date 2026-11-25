@@ -13,8 +13,8 @@ use cdk::federation::{
     FederationCheckpointFetchResponse, FederationCheckpointId, FederationCheckpointKind,
     FederationCheckpointQuorum, FederationCheckpointQuorumResponse, FederationCheckpointSignature,
     FederationCheckpointSignatureResponse, FederationCheckpointSummary,
-    FederationCheckpointSummaryResponse, FederationError, FederationRecoveryBarrier,
-    FEDERATION_REST_API_VERSION,
+    FederationCheckpointSummaryResponse, FederationError, FederationMaterializedStateDigest,
+    FederationRecoveryBarrier, FEDERATION_REST_API_VERSION,
 };
 
 use super::node_runtime::{
@@ -299,8 +299,22 @@ impl FederationNodeRuntime {
         // The live database moves past the checkpoint at once, so the rows a
         // state transfer serves are frozen here, from the same read that
         // produces the signed digest.
+        // Terminal entities retired below the new checkpoint's floor are left
+        // out of its digest. The floor depends on the checkpoint's position,
+        // not on its digest.
+        let floor = db
+            .get_federation_materialized_state_floor(
+                &boundary.scheduled_checkpoint_for_validated_config(
+                    public_config,
+                    latest_scheduled,
+                    FederationMaterializedStateDigest::from_bytes([0; 32]),
+                    batch_canonical_bytes,
+                )?,
+            )
+            .await?;
         let (snapshot_rows, materialized_state_digest) =
-            materialized_state_snapshot_with_metrics(mint, runtime_config.member_id()).await?;
+            materialized_state_snapshot_with_metrics(mint, runtime_config.member_id(), floor)
+                .await?;
         let checkpoint = boundary.scheduled_checkpoint_for_validated_config(
             public_config,
             latest_scheduled,
@@ -475,8 +489,11 @@ impl FederationNodeRuntime {
             }.into());
         }
 
+        let floor = db
+            .get_federation_materialized_state_floor(checkpoint)
+            .await?;
         let materialized_state_digest =
-            materialized_state_digest_with_metrics(mint, runtime_config.member_id()).await?;
+            materialized_state_digest_with_metrics(mint, runtime_config.member_id(), floor).await?;
         if materialized_state_digest != checkpoint.materialized_state_digest {
             let mut tx = db.begin_transaction().await?;
             tx.latch_federation_materialized_state_audit_mismatch()
@@ -944,8 +961,17 @@ impl FederationNodeRuntime {
 
         #[cfg(feature = "prometheus")]
         let checkpoint_started_at = std::time::Instant::now();
+        let floor = db
+            .get_federation_materialized_state_floor(
+                &boundary.recovery_checkpoint_for_validated_config(
+                    public_config,
+                    latest_scheduled,
+                    FederationMaterializedStateDigest::from_bytes([0; 32]),
+                )?,
+            )
+            .await?;
         let materialized_state_digest =
-            materialized_state_digest_with_metrics(mint, runtime_config.member_id()).await?;
+            materialized_state_digest_with_metrics(mint, runtime_config.member_id(), floor).await?;
         let checkpoint = boundary.recovery_checkpoint_for_validated_config(
             public_config,
             latest_scheduled,

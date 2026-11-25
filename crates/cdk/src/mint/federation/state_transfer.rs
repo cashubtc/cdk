@@ -12,16 +12,17 @@ use std::collections::{BTreeSet, HashMap};
 use bitcoin::hashes::{sha256, Hash};
 use cdk_common::database::mint::{
     DynMintDatabase, DynMintTransaction, FederationMaterializedStateSource,
-    FederationMintQuoteState, FederationStoredBlindSignature, FederationStoredProof,
+    FederationMintQuoteState, FederationStoredBlindSignature, FederationStoredPaymentObservation,
+    FederationStoredProof,
 };
 use cdk_common::error::Error;
 use cdk_common::federation::{
-    read_federation_state, sort_federation_state_snapshot_rows, FederatedKeyset,
-    FederationAddressAllocationState, FederationChainObservationState, FederationCheckpointError,
+    federation_state_rows_at_floor, load_federation_state_rows, read_federation_state_rows,
+    sort_federation_state_snapshot_rows, FederatedKeyset, FederationAddressAllocationState,
+    FederationChainObservationState, FederationCheckpoint, FederationCheckpointError,
     FederationError, FederationMaterializedStateKey, FederationMaterializedStateRow,
-    FederationMaterializedStateSnapshot, FederationOperationId, FederationPaymentObservationRecord,
-    FederationSignatureShareRecord, FederationStateSnapshotRow, FederationStateTable,
-    FederationStoredState, FederationTransactionState, MemberId,
+    FederationMaterializedStateSnapshot, FederationOperationId, FederationSignatureShareRecord,
+    FederationStateSnapshotRow, FederationStateTable, FederationTransactionState, MemberId,
 };
 use cdk_common::mint::{MeltQuote, Operation};
 use cdk_common::{Amount, CurrencyUnit};
@@ -55,26 +56,65 @@ enum StateReader<'a> {
 }
 
 impl StateReader<'_> {
-    async fn projection_rows<S>(&mut self) -> Result<Vec<FederationMaterializedStateRow>, Error>
+    /// Digest rows of one projection's stored rows at `floor`.
+    async fn projection_rows<S>(
+        &mut self,
+        floor: u64,
+    ) -> Result<Vec<FederationMaterializedStateRow>, Error>
     where
         S: FederationStateTable,
     {
-        let state = match self {
-            Self::Database(db) => read_federation_state::<S>(db).await?,
-            Self::Transaction(tx) => FederationStoredState::<S>::load(tx).await?.into_inner(),
+        let rows = match self {
+            Self::Database(db) => read_federation_state_rows::<S>(db).await?,
+            Self::Transaction(tx) => load_federation_state_rows::<S>(tx).await?,
         };
-        Ok(state.materialized_rows()?)
+        Ok(federation_state_rows_at_floor::<S>(rows, floor)?)
     }
 }
 
 impl Mint {
-    /// Build the deterministic federation materialized-state snapshot.
+    /// Build the deterministic federation materialized-state snapshot of the
+    /// current state, under the retention floor of the latest scheduled
+    /// checkpoint (see [`Self::federation_current_materialized_state_floor`]).
     #[instrument(skip_all)]
     pub async fn federation_materialized_state_snapshot(
         &self,
     ) -> Result<FederationMaterializedStateSnapshot, Error> {
+        let floor = self.federation_current_materialized_state_floor().await?;
+        self.federation_materialized_state_snapshot_at(floor).await
+    }
+
+    /// The materialized-state floor of the latest scheduled checkpoint, or
+    /// zero before the first one.
+    ///
+    /// A member deletes terminal entities only below a floor at or below
+    /// this one, so members in the same state compute the same digest at it
+    /// whatever each of them already deleted.
+    pub async fn federation_current_materialized_state_floor(&self) -> Result<u64, Error> {
+        let db = self.localstore();
+        match db
+            .get_latest_federation_checkpoint(
+                cdk_common::federation::FederationCheckpointKind::Scheduled,
+            )
+            .await?
+        {
+            Some(checkpoint) => Ok(db
+                .get_federation_materialized_state_floor(&checkpoint)
+                .await?),
+            None => Ok(0),
+        }
+    }
+
+    /// Build the materialized-state snapshot a checkpoint whose retention
+    /// floor is `floor` covers: terminal entities retired below `floor` are
+    /// left out, whether or not this member already deleted them.
+    #[instrument(skip_all)]
+    pub async fn federation_materialized_state_snapshot_at(
+        &self,
+        floor: u64,
+    ) -> Result<FederationMaterializedStateSnapshot, Error> {
         Ok(FederationMaterializedStateSnapshot::from_rows(
-            self.federation_state_snapshot_rows()
+            self.federation_state_snapshot_rows_at(floor)
                 .await?
                 .into_iter()
                 .map(|row| row.row),
@@ -82,25 +122,55 @@ impl Mint {
     }
 
     /// The current materialized state as frozen snapshot rows, sorted, with
-    /// the attachments a state transfer needs.
-    ///
-    /// Their digest is the materialized-state digest a checkpoint signs.
+    /// the attachments a state transfer needs, under the retention floor of
+    /// the latest scheduled checkpoint.
     #[instrument(skip_all)]
     pub async fn federation_state_snapshot_rows(
         &self,
     ) -> Result<Vec<FederationStateSnapshotRow>, Error> {
+        let floor = self.federation_current_materialized_state_floor().await?;
+        self.federation_state_snapshot_rows_at(floor).await
+    }
+
+    /// The current materialized state as frozen snapshot rows for a
+    /// checkpoint whose retention floor is `floor`.
+    ///
+    /// Their digest is the materialized-state digest that checkpoint signs.
+    #[instrument(skip_all)]
+    pub async fn federation_state_snapshot_rows_at(
+        &self,
+        floor: u64,
+    ) -> Result<Vec<FederationStateSnapshotRow>, Error> {
         let db = self.localstore();
         let source = db.get_federation_materialized_state_source().await?;
-        self.state_rows_from_source(StateReader::Database(&db), source)
+        self.state_rows_from_source(StateReader::Database(&db), source, floor)
             .await
     }
 
+    /// The materialized-state rows `checkpoint` covers, from the current
+    /// state: the checkpoint's own retention floor decides which terminal
+    /// entities are left out.
+    #[instrument(skip_all)]
+    pub async fn federation_state_snapshot_rows_for(
+        &self,
+        checkpoint: &FederationCheckpoint,
+    ) -> Result<Vec<FederationStateSnapshotRow>, Error> {
+        let floor = self
+            .localstore()
+            .get_federation_materialized_state_floor(checkpoint)
+            .await?;
+        self.federation_state_snapshot_rows_at(floor).await
+    }
+
+    /// Rows a state-transfer install wrote, inside its transaction. Installed
+    /// rows hold nothing below the transferred checkpoint's floor, so none is
+    /// left out.
     pub(super) async fn state_rows_in_transaction(
         &self,
         tx: &mut DynMintTransaction,
     ) -> Result<Vec<FederationStateSnapshotRow>, Error> {
         let source = tx.get_federation_materialized_state_source().await?;
-        self.state_rows_from_source(StateReader::Transaction(tx), source)
+        self.state_rows_from_source(StateReader::Transaction(tx), source, 0)
             .await
     }
 
@@ -108,6 +178,7 @@ impl Mint {
         &self,
         mut reader: StateReader<'_>,
         source: FederationMaterializedStateSource,
+        floor: u64,
     ) -> Result<Vec<FederationStateSnapshotRow>, Error> {
         let member_id = self
             .federation_config()
@@ -135,25 +206,25 @@ impl Mint {
             ));
         }
         let mut projection_rows = reader
-            .projection_rows::<FederationAddressAllocationState>()
+            .projection_rows::<FederationAddressAllocationState>(floor)
             .await?;
         projection_rows.extend(
             reader
-                .projection_rows::<FederationChainObservationState>()
+                .projection_rows::<FederationChainObservationState>(floor)
                 .await?,
         );
         projection_rows.extend(
             reader
-                .projection_rows::<FederationTransactionState>()
+                .projection_rows::<FederationTransactionState>(floor)
                 .await?,
         );
         #[cfg(feature = "federation-bark")]
         if let Some(runtime) = self.federation_config() {
             if federation_bark_application(runtime.public_config())?.is_some() {
-                projection_rows.extend(source.application_rows.iter().cloned());
+                projection_rows.extend(bark_rows_at_floor(&source.application_rows, floor)?);
                 projection_rows.extend(
                     reader
-                        .projection_rows::<FederationBarkRecoveryState>()
+                        .projection_rows::<FederationBarkRecoveryState>(floor)
                         .await?,
                 );
             }
@@ -163,10 +234,66 @@ impl Mint {
                 .into_iter()
                 .map(FederationStateSnapshotRow::new),
         );
-        rows.extend(materialized_entity_rows(&source, member_id)?);
+        rows.extend(materialized_entity_rows(&source, member_id, floor)?);
         sort_federation_state_snapshot_rows(&mut rows);
         Ok(rows)
     }
+}
+
+/// Bark projection rows a checkpoint with retention floor `floor` covers:
+/// the transitions and observations of an action retired below the floor are
+/// left out. The action itself stays; it guards against replays.
+#[cfg(feature = "federation-bark")]
+fn bark_rows_at_floor(
+    rows: &[FederationMaterializedStateRow],
+    floor: u64,
+) -> Result<Vec<FederationMaterializedStateRow>, Error> {
+    use cdk_federation_bark::{
+        FederationBarkActionRecord, FederationBarkObservationRecord, FederationBarkTransitionRecord,
+    };
+
+    fn payload<T>(row: &FederationMaterializedStateRow) -> Result<T, Error>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        let json = row
+            .fields
+            .get("payload_json")
+            .ok_or_else(|| transfer_invalid("Bark row has no payload"))?;
+        serde_json::from_str(json).map_err(|_| transfer_invalid("Bark row payload does not decode"))
+    }
+
+    let mut retired = HashMap::new();
+    for row in rows
+        .iter()
+        .filter(|row| row.table == "federation_bark_actions")
+    {
+        let action: FederationBarkActionRecord = payload(row)?;
+        if let Some(index) = action
+            .retired_operation_index()
+            .filter(|index| *index < floor)
+        {
+            retired.insert(action.action_id, index);
+        }
+    }
+    let mut kept = Vec::with_capacity(rows.len());
+    for row in rows {
+        let action_id = match row.table.as_str() {
+            "federation_bark_transitions" => {
+                Some(payload::<FederationBarkTransitionRecord>(row)?.action_id)
+            }
+            "federation_bark_observations" => Some(
+                payload::<FederationBarkObservationRecord>(row)?
+                    .operation
+                    .action_id(),
+            ),
+            _ => None,
+        };
+        if action_id.is_none_or(|action_id| !retired.contains_key(&action_id)) {
+            kept.push(row.clone());
+        }
+    }
+    Ok(kept)
 }
 
 /// Digest rows of the mint entities named by the key registry, and of every
@@ -174,6 +301,7 @@ impl Mint {
 fn materialized_entity_rows(
     source: &FederationMaterializedStateSource,
     member_id: Option<MemberId>,
+    floor: u64,
 ) -> Result<Vec<FederationStateSnapshotRow>, Error> {
     let mut mint_quotes = BTreeSet::new();
     let mut melt_quotes = BTreeSet::new();
@@ -261,10 +389,16 @@ fn materialized_entity_rows(
         rows.push(FederationStateSnapshotRow::new(row));
     }
 
-    for record in &source.payment_observations {
+    // Observations retired below the floor are left out: their quote was
+    // already terminal there.
+    for stored in source.payment_observations.iter().filter(|stored| {
+        stored
+            .terminal_operation_index
+            .is_none_or(|terminal| terminal >= floor)
+    }) {
         rows.push(FederationStateSnapshotRow::with_attachment(
-            payment_observation_row(record)?,
-            serde_json::to_string(&record.observation)?,
+            payment_observation_row(stored)?,
+            serde_json::to_string(&stored.record.observation)?,
         ));
     }
 
@@ -448,8 +582,9 @@ fn melt_quote_row(quote: &MeltQuote) -> Result<FederationMaterializedStateRow, E
 }
 
 pub(super) fn payment_observation_row(
-    record: &FederationPaymentObservationRecord,
+    stored: &FederationStoredPaymentObservation,
 ) -> Result<FederationMaterializedStateRow, Error> {
+    let record = &stored.record;
     let key = format!(
         "{}:{}:{}:{}",
         record.observation.context(),
@@ -466,7 +601,14 @@ pub(super) fn payment_observation_row(
             .with_field("operation_id", record.operation_id.to_string())
             .with_field("observer", record.observation.observer().to_string())
             .with_field("state", record.observation.state_label())
-            .with_field("evidence_hash", sha256::Hash::hash(&canonical).to_string()),
+            .with_field("evidence_hash", sha256::Hash::hash(&canonical).to_string())
+            .with_field(
+                "terminal_operation_index",
+                stored
+                    .terminal_operation_index
+                    .map(|index| index.to_string())
+                    .unwrap_or_default(),
+            ),
     )
 }
 

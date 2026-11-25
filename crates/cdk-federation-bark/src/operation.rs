@@ -1168,6 +1168,20 @@ impl FederationBarkSemanticPhase {
         )
     }
 
+    /// Whether the action can never leave this phase: no transition leads
+    /// out of it and no signing retry is allowed in it.
+    #[must_use]
+    pub const fn is_final(self) -> bool {
+        matches!(
+            self,
+            Self::ReceiveClaimed
+                | Self::PaymentSucceeded
+                | Self::RevocationCompleted
+                | Self::RefreshCompleted
+                | Self::ExitConfirmed
+        )
+    }
+
     /// Whether custody work in this phase may move to a new signing attempt.
     #[must_use]
     pub const fn allows_signing_retry(self) -> bool {

@@ -11,32 +11,58 @@ where
         &mut self,
         observation: &FederationPaymentObservationRecord,
     ) -> Result<(), Self::Err> {
-        query(
+        insert_payment_observation(&self.inner, observation, None).await
+    }
+
+    async fn retire_federation_payment_observations(
+        &mut self,
+        context: FederationPaymentObservationContext,
+        quote: &str,
+        operation_index: u64,
+    ) -> Result<u64, Self::Err> {
+        let rows = query(
             r#"
-            INSERT INTO federation_payment_observations
-            (operation_id, operation_index, context, quote, observer_member_id, state, observation_json)
-            VALUES
-            (:operation_id, :operation_index, :context, :quote, :observer_member_id, :state, :observation_json)
-            ON CONFLICT (operation_id) DO NOTHING
+            UPDATE federation_payment_observations
+            SET terminal_operation_index = :operation_index
+            WHERE context = :context
+              AND quote = :quote
+              AND terminal_operation_index IS NULL
             "#,
         )?
-        .bind("operation_id", observation.operation_id.to_string())
-        .bind("operation_index", observation.operation_index as i64)
-        .bind(
-            "context",
-            payment_observation_context_to_str(observation.observation.context()),
-        )
-        .bind("quote", observation.observation.quote())
-        .bind(
-            "observer_member_id",
-            i64::from(observation.observation.observer().get()),
-        )
-        .bind("state", observation.observation.state_label())
-        .bind("observation_json", serde_json::to_string(&observation.observation)?)
+        .bind("operation_index", operation_index as i64)
+        .bind("context", payment_observation_context_to_str(context))
+        .bind("quote", quote)
         .execute(&self.inner)
         .await?;
+        Ok(u64::try_from(rows).unwrap_or(u64::MAX))
+    }
 
-        Ok(())
+    async fn settle_federation_application_quote(
+        &mut self,
+        quote: &str,
+        operation_index: u64,
+    ) -> Result<(), Self::Err> {
+        #[cfg(feature = "federation-bark")]
+        {
+            super::bark_projection::settle_quote_action(&self.inner, quote, operation_index).await
+        }
+        #[cfg(not(feature = "federation-bark"))]
+        {
+            let _ = (quote, operation_index);
+            Ok(())
+        }
+    }
+
+    async fn install_federation_payment_observation(
+        &mut self,
+        observation: &FederationStoredPaymentObservation,
+    ) -> Result<(), Self::Err> {
+        insert_payment_observation(
+            &self.inner,
+            &observation.record,
+            observation.terminal_operation_index,
+        )
+        .await
     }
 
     async fn add_federation_signature_share(
@@ -89,6 +115,7 @@ where
             FROM federation_payment_observations
             WHERE context = :context
               AND quote = :quote
+              AND terminal_operation_index IS NULL
             ORDER BY operation_index ASC, observer_member_id ASC
             "#,
         )?
@@ -168,6 +195,7 @@ where
             FROM federation_payment_observations
             WHERE context = :context
               AND quote = :quote
+              AND terminal_operation_index IS NULL
             ORDER BY operation_index ASC, observer_member_id ASC
             "#,
         )?
@@ -177,6 +205,34 @@ where
         .await?
         .into_iter()
         .map(sql_row_to_federation_payment_observation_record)
+        .collect()
+    }
+
+    async fn get_federation_payment_observation_history(
+        &self,
+        context: FederationPaymentObservationContext,
+        quote: &str,
+    ) -> Result<Vec<FederationStoredPaymentObservation>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT operation_id, operation_index, observation_json, terminal_operation_index
+            FROM federation_payment_observations
+            WHERE context = :context
+              AND quote = :quote
+            ORDER BY operation_index ASC, observer_member_id ASC
+            "#,
+        )?
+        .bind("context", payment_observation_context_to_str(context))
+        .bind("quote", quote)
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_stored_payment_observation)
         .collect()
     }
 
@@ -192,6 +248,7 @@ where
             r#"
             SELECT operation_id, operation_index, observation_json
             FROM federation_payment_observations
+            WHERE terminal_operation_index IS NULL
             ORDER BY operation_index ASC, observer_member_id ASC
             "#,
         )?
@@ -323,4 +380,48 @@ where
         .map(sql_row_to_federation_signature_share_record)
         .collect()
     }
+}
+
+async fn insert_payment_observation<C>(
+    connection: &C,
+    observation: &FederationPaymentObservationRecord,
+    terminal_operation_index: Option<u64>,
+) -> Result<(), Error>
+where
+    C: DatabaseExecutor,
+{
+    query(
+        r#"
+        INSERT INTO federation_payment_observations
+        (operation_id, operation_index, context, quote, observer_member_id, state,
+         observation_json, terminal_operation_index)
+        VALUES
+        (:operation_id, :operation_index, :context, :quote, :observer_member_id, :state,
+         :observation_json, :terminal_operation_index)
+        ON CONFLICT (operation_id) DO NOTHING
+        "#,
+    )?
+    .bind("operation_id", observation.operation_id.to_string())
+    .bind("operation_index", observation.operation_index as i64)
+    .bind(
+        "context",
+        payment_observation_context_to_str(observation.observation.context()),
+    )
+    .bind("quote", observation.observation.quote())
+    .bind(
+        "observer_member_id",
+        i64::from(observation.observation.observer().get()),
+    )
+    .bind("state", observation.observation.state_label())
+    .bind(
+        "observation_json",
+        serde_json::to_string(&observation.observation)?,
+    )
+    .bind(
+        "terminal_operation_index",
+        terminal_operation_index.map(|index| index as i64),
+    )
+    .execute(connection)
+    .await?;
+    Ok(())
 }

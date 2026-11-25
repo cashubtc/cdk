@@ -71,7 +71,8 @@ pub use self::chain_observation::{
     FederationChainObservationOutcome, FederationChainObservationState,
     FederationChainSourceDescriptor, FederationChainSourceScope, FederationChainSourceSummary,
     FederationDepositConfirmation, FederationDepositObservation, FederationDepositReorgObservation,
-    FederationOnchainQuotePayment, FederationWalletUtxo, FederationWalletUtxoState,
+    FederationOnchainQuotePayment, FederationSpentWalletUtxo, FederationSpentWalletUtxoPayment,
+    FederationWalletUtxo, FederationWalletUtxoState,
 };
 pub use self::checkpoint::{
     federation_checkpoint_batch_canonical_bytes, FederationAlephBftRecoveryCursor,
@@ -212,9 +213,11 @@ pub use self::signing::{
     FederationBlindSignatureShareSet, FederationSignatureShareRecord,
 };
 pub use self::state_table::{
-    decode_row, digest_row_key, hex_row_key, insert_row, outpoint_row_key, read_federation_state,
-    row_kind, unknown_row_kind, write_federation_state, FederationStateRows, FederationStateTable,
-    FederationStoredState, FEDERATION_STATE_PRIMARY_NAMESPACE,
+    decode_row, digest_row_key, federation_state_rows_at_floor, hex_row_key, insert_row,
+    load_federation_state_rows, outpoint_row_key, read_federation_state,
+    read_federation_state_rows, retire_federation_state_below, row_kind, unknown_row_kind,
+    write_federation_state, FederationStateRows, FederationStateTable, FederationStoredState,
+    FEDERATION_STATE_PRIMARY_NAMESPACE,
 };
 pub use self::state_transfer::{
     ensure_federation_state_snapshot_rows_sorted, federation_state_snapshot_digest,
