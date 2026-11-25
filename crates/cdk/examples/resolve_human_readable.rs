@@ -30,13 +30,13 @@ async fn main() -> anyhow::Result<()> {
     let bip353_address = "tsk@thesimplekid.com";
     let seed = random::<[u8; 64]>();
     let localstore = Arc::new(memory::empty().await?);
-    let wallet = Wallet::new(
+    let wallet = Arc::new(Wallet::new(
         "https://testnut.cashudevkit.org",
         CurrencyUnit::Sat,
         localstore,
         seed,
         None,
-    )?;
+    )?);
 
     println!("Resolving human-readable address: {}", bip353_address);
 

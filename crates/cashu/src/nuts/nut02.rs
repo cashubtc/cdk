@@ -17,7 +17,6 @@ use bitcoin::key::Secp256k1;
 #[cfg(feature = "mint")]
 use bitcoin::secp256k1;
 use serde::{Deserialize, Deserializer, Serialize};
-use serde_with::{serde_as, VecSkipError};
 use thiserror::Error;
 
 use super::nut01::Keys;
@@ -25,6 +24,7 @@ use super::nut01::Keys;
 use super::nut01::{MintKeyPair, MintKeys};
 use crate::nuts::nut00::CurrencyUnit;
 use crate::util::hex;
+use crate::util::serde_helpers::deserialize_vec_skip_invalid;
 use crate::{ensure_cdk, Amount};
 
 /// NUT02 Error
@@ -491,11 +491,10 @@ impl From<ShortKeysetId> for String {
 
 /// Mint Keysets [NUT-02]
 /// Ids of mints keyset ids
-#[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeysetResponse {
     /// set of public key ids that the mint generates
-    #[serde_as(as = "VecSkipError<_>")]
+    #[serde(deserialize_with = "deserialize_vec_skip_invalid")]
     pub keysets: Vec<KeySetInfo>,
 }
 
@@ -789,6 +788,7 @@ impl From<&MintKeys> for Id {
 
 #[cfg(test)]
 mod test {
+    use std::collections::BTreeMap;
     use std::str::FromStr;
 
     use bitcoin::secp256k1::rand::{self, RngCore};
@@ -938,7 +938,52 @@ mod test {
     fn test_deserialization_of_keyset_response() {
         let h = r#"{"keysets":[{"id":"009a1f293253e41e","unit":"sat","active":true, "input_fee_ppk": 100},{"id":"eGnEWtdJ0PIM","unit":"sat","active":true},{"id":"003dfdf4e5e35487","unit":"sat","active":true},{"id":"0066ad1a4b6fc57c","unit":"sat","active":true},{"id":"00f7ca24d44c3e5e","unit":"sat","active":true},{"id":"001fcea2931f2d85","unit":"sat","active":true},{"id":"00d095959d940edb","unit":"sat","active":true},{"id":"000d7f730d657125","unit":"sat","active":true},{"id":"0007208d861d7295","unit":"sat","active":true},{"id":"00bfdf8889b719dd","unit":"sat","active":true},{"id":"00ca9b17da045f21","unit":"sat","active":true}]}"#;
 
-        let _keyset_response: KeysetResponse = serde_json::from_str(h).unwrap();
+        let keyset_response: KeysetResponse = serde_json::from_str(h).unwrap();
+        assert_eq!(keyset_response.keysets.len(), 10);
+        assert_eq!(
+            keyset_response.keysets[1].id,
+            Id::from_str("003dfdf4e5e35487").unwrap()
+        );
+    }
+
+    #[test]
+    fn test_keyset_response_skips_invalid_cbor_entry() {
+        let valid: KeySetInfo =
+            serde_json::from_str(r#"{"id":"009a1f293253e41e","unit":"sat","active":true}"#)
+                .unwrap();
+        let positional = (
+            valid.id,
+            &valid.unit,
+            valid.active,
+            valid.input_fee_ppk,
+            valid.final_expiry,
+        );
+        let mut cbor = Vec::new();
+        ciborium::into_writer(
+            &BTreeMap::from([("keysets", (u128::MAX, &valid, positional))]),
+            &mut cbor,
+        )
+        .unwrap();
+
+        let response: KeysetResponse = ciborium::from_reader(cbor.as_slice()).unwrap();
+        assert_eq!(response.keysets, vec![valid.clone(), valid]);
+    }
+
+    #[test]
+    fn test_keys_response_skips_duplicate_denominations() {
+        let key = "02194603ffa36356f4a56b7df9371fc3192472351453ec7398b8da8117e7c3e104";
+        let json = format!(
+            r#"{{"keysets":[
+                {{"id":"009a1f293253e41e","unit":"sat","keys":{{"1":"{key}","1":"{key}"}}}},
+                {{"id":"003dfdf4e5e35487","unit":"sat","keys":{{"1":"{key}"}}}}
+            ]}}"#
+        );
+        let response: KeysResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(response.keysets.len(), 1);
+        assert_eq!(
+            response.keysets[0].id,
+            Id::from_str("003dfdf4e5e35487").unwrap()
+        );
     }
 
     #[test]

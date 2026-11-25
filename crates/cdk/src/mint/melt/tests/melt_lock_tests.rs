@@ -48,7 +48,7 @@ fn fake_invoice(pay_state: MeltQuoteState, check_state: MeltQuoteState) -> Bolt1
 async fn create_mint_with_check_state(
     invoice: &Bolt11Invoice,
     check_state: MeltQuoteState,
-) -> Mint {
+) -> Arc<Mint> {
     create_mint_with_check_error(invoice, check_state, false).await
 }
 
@@ -56,7 +56,7 @@ async fn create_mint_with_check_error(
     invoice: &Bolt11Invoice,
     check_state: MeltQuoteState,
     check_error: bool,
-) -> Mint {
+) -> Arc<Mint> {
     let payment_states = HashMap::from([(
         invoice.payment_hash().to_string(),
         (
@@ -114,12 +114,12 @@ struct PendingMeltSetup {
 
 /// Runs TX1 of the melt saga and drops the saga, leaving the quote Pending
 /// with the execution lock armed, as an interrupted executor would.
-async fn setup_interrupted_melt(mint: &Mint, invoice: &Bolt11Invoice) -> PendingMeltSetup {
+async fn setup_interrupted_melt(mint: &Arc<Mint>, invoice: &Bolt11Invoice) -> PendingMeltSetup {
     setup_interrupted_melt_with_outputs(mint, invoice, None).await
 }
 
 async fn setup_interrupted_melt_with_outputs(
-    mint: &Mint,
+    mint: &Arc<Mint>,
     invoice: &Bolt11Invoice,
     outputs: Option<Vec<cdk_common::BlindedMessage>>,
 ) -> PendingMeltSetup {
@@ -142,11 +142,7 @@ async fn setup_interrupted_melt_with_outputs(
     let input_ys = proofs.ys().unwrap();
     let melt_request = MeltRequest::new(quote.id.clone(), proofs, outputs);
     let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
-    let saga = MeltSaga::new(
-        Arc::new(mint.clone()),
-        mint.localstore(),
-        mint.pubsub_manager(),
-    );
+    let saga = MeltSaga::new(Arc::clone(mint), mint.localstore(), mint.pubsub_manager());
     let setup_saga = saga
         .setup_melt(
             &melt_request,

@@ -187,7 +187,7 @@ impl MintPayment for NoEventPendingBackend {
 
 async fn create_pending_test_mint(
     backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync>,
-) -> Result<Mint, Error> {
+) -> Result<Arc<Mint>, Error> {
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await?);
     build_pending_test_mint(db, backend).await
 }
@@ -195,7 +195,7 @@ async fn create_pending_test_mint(
 async fn build_pending_test_mint<DB>(
     db: Arc<DB>,
     backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync>,
-) -> Result<Mint, Error>
+) -> Result<Arc<Mint>, Error>
 where
     DB: cdk_common::database::MintDatabase<cdk_common::database::Error>
         + cdk_common::database::MintKeysDatabase<Err = cdk_common::database::Error>
@@ -569,7 +569,7 @@ async fn pending_melt_wait_resolves_via_external_successful_event() {
     let pending = mint.melt(&melt_request).await.unwrap();
 
     // Simulate an async event arriving while the wait loop is running.
-    let event_mint = Arc::new(mint.clone());
+    let event_mint = Arc::clone(&mint);
     let event_localstore = mint.localstore();
     let event_pubsub = mint.pubsub_manager();
     let event_quote_id = quote.id.clone();
@@ -789,7 +789,7 @@ async fn internal_settlement_without_lookup_id_finalizes_on_demand() {
 
     let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
     let saga = crate::mint::melt::melt_saga::MeltSaga::new(
-        Arc::new(mint.clone()),
+        Arc::clone(&mint),
         mint.localstore(),
         mint.pubsub_manager(),
     );
@@ -866,7 +866,7 @@ async fn payment_attempt_without_lookup_id_releases_proofs_at_startup() {
 
     let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
     let saga = crate::mint::melt::melt_saga::MeltSaga::new(
-        Arc::new(mint.clone()),
+        Arc::clone(&mint),
         mint.localstore(),
         mint.pubsub_manager(),
     );
@@ -962,7 +962,7 @@ async fn startup_defers_stalled_payment_checks_and_recovers_later() {
         let melt_request = create_test_melt_request(&proofs, &quote);
         let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
         let saga = crate::mint::melt::melt_saga::MeltSaga::new(
-            Arc::new(mint.clone()),
+            Arc::clone(&mint),
             mint.localstore(),
             mint.pubsub_manager(),
         );

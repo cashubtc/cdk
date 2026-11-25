@@ -4,15 +4,20 @@
 //! without requiring external dependencies like payment backends.
 
 use std::sync::Arc;
+use std::time::Duration;
 
-use cdk_common::nuts::{Proofs, ProofsMethods};
+use cdk_common::nuts::{BlindSignature, BlindedMessage, Proofs, ProofsMethods};
 use cdk_common::{Amount, CurrencyUnit, MintRequest, QuoteId, State, SwapRequest};
+use cdk_signatory::signatory::{
+    ReconstructDleqArguments, RotateKeyArguments, Signatory, SignatoryKeySet, SignatoryKeysets,
+};
 
 use super::SwapSaga;
 use crate::mint::swap::Mint;
 use crate::mint::{MintInput, Verification};
 use crate::test_helpers::mint::{
-    clear_fail_for, create_test_blinded_messages, create_test_mint, set_fail_for,
+    clear_fail_for, create_test_blinded_messages, create_test_mint,
+    create_test_mint_with_signatory, set_fail_for,
 };
 
 /// Helper to create a verification result for testing
@@ -3202,8 +3207,6 @@ async fn test_saga_deletion_failure_handling() {
 /// become `UNSPENT` instead of staying on the last `PENDING` event.
 #[tokio::test]
 async fn test_swap_saga_compensation_publishes_unspent_inputs() {
-    use std::time::Duration;
-
     use cdk_common::nuts::nut17::{Kind, NotificationPayload};
     use cdk_common::subscription::{Params, SubId};
 
@@ -3254,4 +3257,143 @@ async fn test_swap_saga_compensation_publishes_unspent_inputs() {
         last_states.insert(proof_state.y, proof_state.state);
     }
     assert!(ys.iter().all(|y| last_states[y] == State::Unspent));
+}
+
+/// A single armed pause point for a `BlindSignGate::blind_sign` call.
+struct SignGate {
+    reached: tokio::sync::oneshot::Sender<()>,
+    release: tokio::sync::oneshot::Receiver<()>,
+}
+
+/// Delegates to the real signatory but can hold the next `blind_sign` call
+/// open, parking a swap between its setup and finalize transactions.
+struct BlindSignGate {
+    inner: Arc<dyn Signatory + Send + Sync>,
+    gate: tokio::sync::Mutex<Option<SignGate>>,
+}
+
+impl BlindSignGate {
+    /// Arm the next `blind_sign` call to pause. Returns a receiver that fires
+    /// once the call is parked, and a sender that releases it.
+    async fn arm(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (reached_tx, reached_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        *self.gate.lock().await = Some(SignGate {
+            reached: reached_tx,
+            release: release_rx,
+        });
+        (reached_rx, release_tx)
+    }
+}
+
+#[async_trait::async_trait]
+impl Signatory for BlindSignGate {
+    fn name(&self) -> String {
+        self.inner.name()
+    }
+
+    async fn blind_sign(
+        &self,
+        blinded_messages: Vec<BlindedMessage>,
+    ) -> Result<Vec<BlindSignature>, cdk_common::Error> {
+        let gate = self.gate.lock().await.take();
+        if let Some(gate) = gate {
+            let _ = gate.reached.send(());
+            let _ = gate.release.await;
+        }
+        self.inner.blind_sign(blinded_messages).await
+    }
+
+    async fn verify_proofs(&self, proofs: Proofs) -> Result<(), cdk_common::Error> {
+        self.inner.verify_proofs(proofs).await
+    }
+
+    async fn keysets(&self) -> Result<SignatoryKeysets, cdk_common::Error> {
+        self.inner.keysets().await
+    }
+
+    async fn subscribe_keysets(
+        &self,
+    ) -> Result<tokio::sync::watch::Receiver<SignatoryKeysets>, cdk_common::Error> {
+        self.inner.subscribe_keysets().await
+    }
+
+    async fn rotate_keyset(
+        &self,
+        args: RotateKeyArguments,
+    ) -> Result<SignatoryKeySet, cdk_common::Error> {
+        self.inner.rotate_keyset(args).await
+    }
+
+    async fn reconstruct_dleq(
+        &self,
+        args: Vec<ReconstructDleqArguments>,
+    ) -> Result<Vec<BlindSignature>, cdk_common::Error> {
+        self.inner.reconstruct_dleq(args).await
+    }
+}
+
+/// Tests that a swap completes even when the caller drops its future, as
+/// happens when an HTTP client disconnects mid-request.
+///
+/// The caller's future is dropped while blind signing is parked, after the
+/// setup transaction has committed. The swap must still finalize instead of
+/// leaving the inputs pending until the next mint restart.
+#[tokio::test]
+async fn test_swap_completes_when_caller_is_dropped() {
+    let gate_slot = Arc::new(std::sync::Mutex::new(None));
+    let mint = create_test_mint_with_signatory(|inner| {
+        let gate = Arc::new(BlindSignGate {
+            inner,
+            gate: tokio::sync::Mutex::new(None),
+        });
+        *gate_slot.lock().expect("gate slot") = Some(Arc::clone(&gate));
+        gate
+    })
+    .await
+    .unwrap();
+    let gate = gate_slot.lock().expect("gate slot").take().expect("gate");
+
+    let amount = Amount::from(100);
+    let (input_proofs, _) = create_swap_inputs(&mint, amount).await;
+    let (outputs, _) = create_test_blinded_messages(&mint, amount).await.unwrap();
+    let ys = input_proofs.ys().unwrap();
+
+    let (reached, release) = gate.arm().await;
+
+    // Drop the caller's future once signing is parked.
+    tokio::select! {
+        _ = mint.process_swap_request(SwapRequest::new(input_proofs, outputs)) => {
+            panic!("swap must not finish while signing is gated");
+        }
+        reached = reached => reached.expect("swap reached the signing gate"),
+    }
+
+    release.send(()).expect("release the signing gate");
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let states = mint.localstore().get_proofs_states(&ys).await.unwrap();
+            if states.iter().all(|state| *state == Some(State::Spent)) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("dropped swap must still finalize and spend its inputs");
+
+    assert!(
+        mint.localstore()
+            .get_incomplete_sagas(cdk_common::mint::OperationKind::Swap)
+            .await
+            .unwrap()
+            .is_empty(),
+        "finalized swap must not leave a saga behind"
+    );
 }

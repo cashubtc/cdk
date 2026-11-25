@@ -179,7 +179,7 @@ impl MintPayment for ControllableBackend {
     }
 }
 
-async fn create_mint_with_backend(backend: Arc<ControllableBackend>) -> Mint {
+async fn create_mint_with_backend(backend: Arc<ControllableBackend>) -> Arc<Mint> {
     let localstore = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
     create_mint_with_store(backend, localstore).await
 }
@@ -187,7 +187,7 @@ async fn create_mint_with_backend(backend: Arc<ControllableBackend>) -> Mint {
 async fn create_mint_with_store(
     backend: Arc<ControllableBackend>,
     localstore: Arc<cdk_sqlite::mint::MintSqliteDatabase>,
-) -> Mint {
+) -> Arc<Mint> {
     create_mint_with_store_and_signatory(backend, localstore, None).await
 }
 
@@ -195,7 +195,7 @@ async fn create_mint_with_store_and_signatory(
     backend: Arc<ControllableBackend>,
     localstore: Arc<cdk_sqlite::mint::MintSqliteDatabase>,
     signatory: Option<Arc<dyn Signatory + Send + Sync>>,
-) -> Mint {
+) -> Arc<Mint> {
     let mut mint_builder = MintBuilder::new(localstore.clone());
     mint_builder
         .add_payment_processor(

@@ -16,6 +16,9 @@ use cdk_common::{
     Amount, MintQuoteBolt11Request, MintQuoteBolt11Response, MintQuoteState, MintRequest,
 };
 use cdk_fake_wallet::FakeWallet;
+use cdk_signatory::db_signatory::DbSignatory;
+use cdk_signatory::embedded;
+use cdk_signatory::signatory::Signatory;
 use tokio::time::sleep;
 
 use crate::mint::{Mint, MintBuilder, MintMeltLimits};
@@ -87,7 +90,16 @@ pub(crate) fn take_fail_for(operation: &str) -> bool {
 ///     // Use the mint for testing
 /// }
 /// ```
-pub async fn create_test_mint() -> Result<Mint, Error> {
+pub async fn create_test_mint() -> Result<Arc<Mint>, Error> {
+    create_test_mint_with_signatory(|signatory| signatory).await
+}
+
+/// Like [`create_test_mint`], but passes the mint's signatory through `wrap`
+/// before building, so a test can intercept signatory calls.
+pub async fn create_test_mint_with_signatory<F>(wrap: F) -> Result<Arc<Mint>, Error>
+where
+    F: FnOnce(Arc<dyn Signatory + Send + Sync>) -> Arc<dyn Signatory + Send + Sync>,
+{
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await?);
 
     let mut mint_builder = MintBuilder::new(db.clone());
@@ -123,9 +135,18 @@ pub async fn create_test_mint() -> Result<Mint, Error> {
 
     let quote_ttl = QuoteTTL::new(10000, 10000);
 
-    let mint = mint_builder
-        .build_with_seed(db.clone(), &mnemonic.to_seed_normalized(""))
-        .await?;
+    let signatory = Arc::new(
+        DbSignatory::new(
+            db.clone(),
+            &mnemonic.to_seed_normalized(""),
+            mint_builder.supported_units().clone(),
+            HashMap::new(),
+        )
+        .await?,
+    );
+    let signatory = wrap(Arc::new(embedded::Service::new(signatory)));
+
+    let mint = mint_builder.build_with_signatory(signatory).await?;
 
     mint.set_quote_ttl(quote_ttl).await?;
 

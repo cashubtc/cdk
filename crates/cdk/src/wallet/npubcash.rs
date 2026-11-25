@@ -464,7 +464,7 @@ impl Wallet {
     /// * `spending_conditions` - Optional spending conditions for the minted proofs
     /// * `poll_interval` - How often to check for new quotes
     pub fn npubcash_proof_stream(
-        &self,
+        self: &Arc<Self>,
         split_target: cdk_common::amount::SplitTarget,
         spending_conditions: Option<crate::nuts::SpendingConditions>,
         poll_interval: std::time::Duration,

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use cdk_common::SpendingConditionVerification;
 use swap_saga::SwapSaga;
 use tracing::instrument;
@@ -12,11 +14,34 @@ mod tests;
 
 impl Mint {
     /// Process Swap
+    ///
+    /// The swap runs in a detached task so it completes even if the caller's
+    /// future is dropped (for example, when an HTTP client disconnects).
+    /// Abandoning it between the setup and finalize transactions would leave
+    /// the inputs pending until the next mint restart.
     #[instrument(skip_all)]
     pub async fn process_swap_request(
-        &self,
+        self: &Arc<Self>,
         swap_request: SwapRequest,
     ) -> Result<SwapResponse, Error> {
+        let mint = Arc::clone(self);
+        let task = tokio::spawn(tracing::Instrument::in_current_span(async move {
+            mint.run_swap(swap_request).await
+        }));
+
+        match task.await {
+            Ok(result) => result,
+            Err(err) => match err.try_into_panic() {
+                Ok(panic) => std::panic::resume_unwind(panic),
+                Err(err) => {
+                    tracing::error!("Swap task failed to join: {}", err);
+                    Err(Error::Internal)
+                }
+            },
+        }
+    }
+
+    async fn run_swap(&self, swap_request: SwapRequest) -> Result<SwapResponse, Error> {
         #[cfg(feature = "prometheus")]
         let metrics = super::MintMetricGuard::new("process_swap_request");
 
