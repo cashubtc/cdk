@@ -126,6 +126,17 @@ jobs:
         run: |
           nix build .#deps-ci --no-link --print-out-paths > "$RUNNER_TEMP/cdk-deps-paths.txt"
           nix shell .#attic-client --command misc/attic_push.sh "$RUNNER_TEMP/cdk-deps-paths.txt"
+      # The PR-only checks never run on trusted events, and fork PRs cannot
+      # push, so their dependency layers are built and pushed here instead.
+      - name: Push PR check dependency layers to Attic
+        if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+        continue-on-error: true
+        env:
+          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
+          ATTIC_CACHE: ${{ vars.ATTIC_CACHE }}
+        run: |
+          nix build .#deps-ci-pr-unit-tests .#deps-ci-pr-feature-tests --no-link --print-out-paths > "$RUNNER_TEMP/cdk-pr-deps-paths.txt"
+          nix shell .#attic-client --command misc/attic_push.sh "$RUNNER_TEMP/cdk-pr-deps-paths.txt"
 
   # Discover CI check groups from flake - single source of truth
   discover_ci_groups:
@@ -189,7 +200,9 @@ jobs:
             echo "::endgroup::"
           done
 
-  # Dynamic clippy + test matrix - uses the ci-profile dependency cache from Attic
+  # Dynamic clippy + test matrix - uses the ci-profile dependency cache from Attic,
+  # plus a per-check dependency layer (`deps-ci-<check>`) for the dependencies
+  # whose features differ from the workspace-wide build.
   # Each check runs both clippy and unit tests for that crate/feature combination
   clippy-and-test:
     name: "Check: ${{ matrix.check }}"
@@ -207,6 +220,17 @@ jobs:
         run: |
           set -o pipefail
           nix build -L .#checks.x86_64-linux.${{ matrix.check }} --no-link --print-out-paths | tee "$RUNNER_TEMP/cdk-cache-paths.txt"
+      # The check builds on its own dependency layer. Pushed even when the
+      # check fails, so the next run can reuse it.
+      - name: Push dependency layer to Attic
+        if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        continue-on-error: true
+        env:
+          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
+          ATTIC_CACHE: ${{ vars.ATTIC_CACHE }}
+        run: |
+          nix build .#deps-ci-${{ matrix.check }} --no-link --print-out-paths > "$RUNNER_TEMP/cdk-deps-paths.txt"
+          nix shell .#attic-client --command misc/attic_push.sh "$RUNNER_TEMP/cdk-deps-paths.txt"
       # Push per-revision check outputs so re-runs and rebased PRs substitute
       # them instead of recompiling.
       - name: Push to Attic cache
@@ -274,6 +298,17 @@ jobs:
         run: |
           set -o pipefail
           nix build -L .#checks.x86_64-linux.postgres-tests --no-link --print-out-paths | tee "$RUNNER_TEMP/cdk-cache-paths.txt"
+      # The check builds on its own dependency layer. Pushed even when the
+      # check fails, so the next run can reuse it.
+      - name: Push dependency layer to Attic
+        if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        continue-on-error: true
+        env:
+          ATTIC_TOKEN: ${{ secrets.ATTIC_TOKEN }}
+          ATTIC_CACHE: ${{ vars.ATTIC_CACHE }}
+        run: |
+          nix build .#deps-ci-postgres-tests --no-link --print-out-paths > "$RUNNER_TEMP/cdk-deps-paths.txt"
+          nix shell .#attic-client --command misc/attic_push.sh "$RUNNER_TEMP/cdk-deps-paths.txt"
       # Push the check output so re-runs and rebased PRs substitute it instead
       # of recompiling.
       - name: Push to Attic cache
