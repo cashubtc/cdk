@@ -832,3 +832,39 @@ Verification: `cargo fmt`; clippy with `-D warnings` for `cdk-common` (`federati
 - **Not done.** `build_dist.sh` needs macOS, Docker and code signing and was only syntax-checked. An existing `~/.fed-cdk-tui` directory's `federation.json` is not imported; rejoining through the same member restores the same local mint URL and its proofs.
 
 Verification: `cargo fmt`; `cargo clippy -p cdk-fed-tui --all-targets -- -D warnings` under the workspace lints, plus the clippy, build and test runs listed for the third step, with the same results (`cdk` 1,074 with the seventh registry test; `cdk-axum` again 478 of 479 with only the latency probe failing, which passes alone); `cdk-fed-tui` 24; `cargo metadata --locked`.
+
+### 2026-11-25: package 8, fifth step (supported feature matrix in CI)
+
+- **Supported set.** These crate and feature combinations are supported; each is a `flake.nix` clippy-and-test entry (the `federation-*` groups of `clippyAndTestChecks`, which the CI `clippy-and-test` matrix runs on pushes, releases and manual runs; pull requests keep their smaller subset):
+
+  | Group | Combination |
+  | --- | --- |
+  | `federation-domain` | `cdk-common` `federation,test` |
+  | | `cdk-federation-bark` (default) |
+  | | `cdk-sql-common` `federation-bark` (added) |
+  | | `cdk-sqlite` `federation-bark` |
+  | | `cdk-bark` `federation-bark` (added) |
+  | | `cdk` `--no-default-features` `mint,wallet,federation` |
+  | | `cdk` `mint,wallet,federation,federation-bark` (added) |
+  | | `cdk` `--no-default-features` `wallet,iroh` (added) |
+  | `federation-custody` | `cdk-frost`, `cdk-frost-bip32`, `cdk-frost-bark`; `cdk-bitcoin-wallet` all features |
+  | `federation-runtime` | `cdk-federation` `test-utils,federation-bdk,federation-bark,iroh,prometheus` (added; its tests ran nowhere in CI) |
+  | | `cdk-axum` `--no-default-features` with `federation`, `federation-bdk`, `federation-bark`, and `federation-bdk,federation-bark,iroh` |
+  | `federation-binaries` | `cdk-mintd` `--no-default-features` with `sqlite,cln,federation`, `sqlite,federation-bdk,federation-bark`, `sqlite,federation-test-utils` |
+  | | `cdk-mintd` `--no-default-features` `sqlite,info-page,federation-bdk,federation-bark,iroh,prometheus` (added; the production build in `deploy_nocean_multi_operator_federation.sh`) |
+  | | `cdk-mintd` `--no-default-features` `sqlite,federation-test-utils,federation-bark` (added) |
+  | | `cdk-cli` `--no-default-features` `federation,iroh` |
+  | | `cdk-ffi` `--no-default-features`, and with `federation` |
+  | | `cdk-fed-tui` (added) |
+
+  `cdk-axum` with `prometheus` is built and tested through the production `cdk-mintd` entry and clippy-checked locally, but has no entry of its own: with `prometheus` on, the seven-member AlephBFT latency probe takes 10.3 to 10.7 s against its 10 s bound even when run alone, so a test entry would fail. The standalone `cdk` default build stays in `core-sdk-baseline`. `checkall.sh` and `testall.sh`, the local scripts these entries come from, are a subset of this table.
+- **TUI in CI.** `cdk-fed-tui` is a workspace member, so the pull-request `quick-check` (workspace clippy, all targets) lints it, `pr-unit-tests` now runs its tests (`cargo test --bins -p cdk-fed-tui`), and `federation-binaries` runs clippy and its tests. `mkClippyAndTest` runs `--bins` tests for it as for `cdk-cli`, since it has no library target. The MSRV dependency build excludes it, as it does `cdk-cli`.
+- **Removed.** `cdk-integration-tests/federation-bdk`: no code, recipe, script or CI job enabled it.
+- **Fixed.** The production `cdk-mintd` build (`sqlite,info-page,federation-bdk,federation-bark,iroh,prometheus`) failed clippy: the `MetricsMintPayment` import is used only by the Lightning, fake-wallet and gRPC backends, none of which that build enables. The call sites now use the full path.
+- **Kept, with reasons.**
+  - `cdk-sqlite/federation` and `cdk-sql-common/federation` in the wallet front ends' features (`cdk-cli`, `cdk-ffi`, `cdk-fed-tui`). The wallets do not use federation storage, but `cdk-common/federation` enables `cdk-common/mint`, and `cdk-sqlite` builds its mint store by default, so without these features the mint store fails to implement the federation traits. Building the TUI without them reproduced that failure.
+  - `cdk-postgres/federation` and `federation-bark`. No supported combination reaches them (they follow `cdk-mintd`'s `postgres` feature), but they gate the Postgres federation storage itself; removing them removes a storage backend, which this plan does not do. They are not in CI because the Postgres tests need a server. Flagged for a decision.
+  - `cdk-bark/federation-test-utils`, `cdk-federation-bark/test-util`, `cdk-federation/test-utils`: test-only switches used by the supported test entries.
+- **Not done.** Pull requests still run only the core feature groups plus workspace clippy and unit tests; the federation groups run on pushes and releases, as before. The groups grew (`federation-runtime` now also runs the `cdk-federation` suite); their 45-minute job limit was not measured in CI.
+
+Verification: every added entry was run as `mkClippyAndTest` runs it (clippy with `-D warnings`, then `cargo test --lib`, or `--bins` for the TUI): `cdk-sql-common` `federation-bark` (15), `cdk-bark` `federation-bark` (36), `cdk` `wallet,iroh` (522), production `cdk-mintd` (239), `cdk-mintd` `sqlite,federation-test-utils,federation-bark` (298), `cdk-fed-tui` (24); `cdk-federation` (115) and `cdk` with `mint,wallet,federation,federation-bark` (1,074) ran in the suite below. Then the full set of the third step again, all passing (`cdk-axum` 479 of 479 this time), workspace clippy with all targets (with `clippy::manual_is_multiple_of` allowed: the local clippy flags it in `cashu` and `cdk-ldk-node` code this change does not touch), `cargo metadata --locked`, and the flake evaluates.

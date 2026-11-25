@@ -38,8 +38,6 @@ use cdk_axum::cache::HttpCache;
 use cdk_common::common::QuoteTTL;
 use cdk_common::database::DynMintDatabase;
 // internal crate modules
-#[cfg(feature = "prometheus")]
-use cdk_common::payment::MetricsMintPayment;
 use cdk_common::payment::MintPayment;
 #[cfg(feature = "iroh")]
 use cdk_iroh::IrohServer;
@@ -1570,7 +1568,7 @@ async fn configure_payment_backends(
                     )
                     .await?;
                 #[cfg(feature = "prometheus")]
-                let cln = MetricsMintPayment::new(cln);
+                let cln = cdk_common::payment::MetricsMintPayment::new(cln);
 
                 mint_builder = configure_backend_for_unit(
                     settings,
@@ -1596,7 +1594,7 @@ async fn configure_payment_backends(
                     )
                     .await?;
                 #[cfg(feature = "prometheus")]
-                let lnd = MetricsMintPayment::new(lnd);
+                let lnd = cdk_common::payment::MetricsMintPayment::new(lnd);
 
                 mint_builder = configure_backend_for_unit(
                     settings,
@@ -1626,7 +1624,7 @@ async fn configure_payment_backends(
                     )
                     .await?;
                 #[cfg(feature = "prometheus")]
-                let fake = MetricsMintPayment::new(fake);
+                let fake = cdk_common::payment::MetricsMintPayment::new(fake);
 
                 let fake = Arc::new(fake);
                 #[cfg(all(feature = "federation-test-utils", feature = "federation-bdk"))]
@@ -1677,7 +1675,7 @@ async fn configure_payment_backends(
                     .setup(settings, backend_entry.unit.clone(), None, _work_dir, None)
                     .await?;
                 #[cfg(feature = "prometheus")]
-                let processor = MetricsMintPayment::new(processor);
+                let processor = cdk_common::payment::MetricsMintPayment::new(processor);
 
                 mint_builder = configure_backend_for_unit(
                     settings,
@@ -1958,7 +1956,7 @@ async fn configure_onchain_backend_with_wallet_info(
                             .setup(settings, unit.clone(), None, _work_dir, _kv_store.clone())
                             .await?;
                         #[cfg(feature = "prometheus")]
-                        let fake = MetricsMintPayment::new(fake);
+                        let fake = cdk_common::payment::MetricsMintPayment::new(fake);
 
                         mint_builder = configure_backend_for_methods(
                             settings,
