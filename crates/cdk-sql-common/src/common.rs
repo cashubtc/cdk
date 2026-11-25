@@ -79,6 +79,17 @@ pub async fn migrate<C>(
 where
     C: DatabaseExecutor,
 {
+    if db_prefix == "postgres" {
+        // Serialize the migration ledger and its DDL for this schema. The
+        // caller holds the transaction through the final migration record.
+        query(
+            "SELECT pg_catalog.pg_advisory_xact_lock(\
+             pg_catalog.hashtextextended('cdk:migrations:' || pg_catalog.current_schema(), 0))",
+        )?
+        .execute(conn)
+        .await?;
+    }
+
     query(
         r#"
            CREATE TABLE IF NOT EXISTS migrations (

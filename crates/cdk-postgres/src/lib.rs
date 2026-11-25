@@ -201,15 +201,40 @@ impl PostgresConnection {
         let result_clone = result.clone();
         let notify_clone = notify.clone();
 
-        async fn select_schema(conn: &Client, schema: &str) -> Result<(), Error> {
-            conn.batch_execute(&format!(
-                r#"
-                    CREATE SCHEMA IF NOT EXISTS "{schema}";
-                    SET search_path TO "{schema}"
-                    "#
-            ))
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))
+        async fn select_schema(
+            conn: &mut Client,
+            schema: &str,
+        ) -> Result<(), tokio_postgres::Error> {
+            let existing = conn
+                .query_opt(
+                    "SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname = $1::text",
+                    &[&schema],
+                )
+                .await?;
+            if existing.is_none() {
+                let tx = conn.transaction().await?;
+                tx.execute(
+                    "SELECT pg_catalog.pg_advisory_xact_lock(\
+                     pg_catalog.hashtextextended('cdk:schema:' || $1::text, 0))",
+                    &[&schema],
+                )
+                .await?;
+                let create: String = tx
+                    .query_one(
+                        "SELECT pg_catalog.format('CREATE SCHEMA IF NOT EXISTS %I', $1::text)",
+                        &[&schema],
+                    )
+                    .await?
+                    .try_get(0)?;
+                tx.batch_execute(&create).await?;
+                tx.commit().await?;
+            }
+            conn.execute(
+                "SELECT pg_catalog.set_config('search_path', pg_catalog.quote_ident($1::text), false)",
+                &[&schema],
+            )
+            .await?;
+            Ok(())
         }
 
         tokio::spawn(async move {
@@ -225,7 +250,7 @@ impl PostgresConnection {
                 };
             match tls {
                 SslMode::NoTls(tls) => {
-                    let (client, connection) = match connection_config.connect(tls).await {
+                    let (mut client, connection) = match connection_config.connect(tls).await {
                         Ok((client, connection)) => (client, connection),
                         Err(err) => {
                             *error_clone.lock().await =
@@ -243,8 +268,8 @@ impl PostgresConnection {
                     });
 
                     if let Some(schema) = config.schema.as_ref() {
-                        if let Err(err) = select_schema(&client, schema).await {
-                            *error_clone.lock().await = Some(err);
+                        if let Err(err) = select_schema(&mut client, schema).await {
+                            *error_clone.lock().await = Some(Error::Database(Box::new(err)));
                             stale.store(true, std::sync::atomic::Ordering::Release);
                             notify_clone.notify_waiters();
                             return;
@@ -255,7 +280,7 @@ impl PostgresConnection {
                     notify_clone.notify_waiters();
                 }
                 SslMode::NativeTls(tls) => {
-                    let (client, connection) = match connection_config.connect(tls).await {
+                    let (mut client, connection) = match connection_config.connect(tls).await {
                         Ok((client, connection)) => (client, connection),
                         Err(err) => {
                             *error_clone.lock().await =
@@ -273,8 +298,8 @@ impl PostgresConnection {
                     });
 
                     if let Some(schema) = config.schema.as_ref() {
-                        if let Err(err) = select_schema(&client, schema).await {
-                            *error_clone.lock().await = Some(err);
+                        if let Err(err) = select_schema(&mut client, schema).await {
+                            *error_clone.lock().await = Some(Error::Database(Box::new(err)));
                             stale.store(true, std::sync::atomic::Ordering::Release);
                             notify_clone.notify_waiters();
                             return;
@@ -392,6 +417,29 @@ mod test {
     }
 
     mint_db_test!(provide_mint_db);
+
+    #[tokio::test]
+    async fn concurrent_auth_database_initialization_shares_one_migration_ledger() {
+        let url = std::env::var("CDK_MINTD_DATABASE_URL")
+            .or_else(|_| std::env::var("PG_DB_URL"))
+            .unwrap_or_else(|_| {
+                "host=localhost user=cdk_user password=cdk_password dbname=cdk_mint port=5432"
+                    .to_owned()
+            });
+        let schema = format!("test_auth_bootstrap_{}", uuid::Uuid::new_v4().simple());
+        let config = format!("{url} schema={schema}");
+        let config = config.as_str();
+        let (first, second, third, fourth) = tokio::join!(
+            MintPgAuthDatabase::new(config),
+            MintPgAuthDatabase::new(config),
+            MintPgAuthDatabase::new(config),
+            MintPgAuthDatabase::new(config),
+        );
+        first.expect("first auth database initialization");
+        second.expect("second auth database initialization");
+        third.expect("third auth database initialization");
+        fourth.expect("fourth auth database initialization");
+    }
 
     #[tokio::test]
     async fn mint_state_notifications_follow_committed_quote_changes() {
