@@ -18,8 +18,6 @@ const STREAM_CONNECTION_BACKOFF: Duration = Duration::from_millis(2_000);
 
 const STREAM_CONNECTION_MAX_BACKOFF: Duration = Duration::from_millis(30_000);
 
-const STREAM_RETRY_IDLE_SLEEP: Duration = Duration::from_millis(100);
-
 const INTERNAL_POLL_SIZE: usize = 1_000;
 
 const POLL_SLEEP: Duration = Duration::from_millis(2_000);
@@ -194,9 +192,9 @@ where
             }
 
             if stream_supported
-                && (!instance.prefer_polling || !poll_supported)
+                && !instance.prefer_polling
                 && retry_at
-                    .map(|retry_at| retry_at <= Instant::now())
+                    .map(|retry_at| retry_at < Instant::now())
                     .unwrap_or(true)
             {
                 let (sender, receiver) = mpsc::channel(INTERNAL_POLL_SIZE);
@@ -214,7 +212,7 @@ where
                         .collect::<Vec<_>>()
                 };
 
-                let stream_result = instance
+                if let Err(err) = instance
                     .transport
                     .stream(
                         receiver,
@@ -225,41 +223,21 @@ where
                             cached_events: instance.cached_events.clone(),
                         },
                     )
-                    .await;
-
-                let still_subscribed = !instance.remote_subscriptions.read().is_empty();
-                match stream_result {
-                    Ok(()) if still_subscribed => {
-                        tracing::warn!("Long connection ended; retrying after {:?}", backoff);
+                    .await
+                {
+                    if matches!(&err, Error::NotSupported | Error::Terminal(_)) {
+                        stream_supported = false;
+                    } else {
                         retry_at = Some(Instant::now() + backoff);
                         backoff = backoff.saturating_mul(2).min(STREAM_CONNECTION_MAX_BACKOFF);
                     }
-                    Ok(()) => {
-                        retry_at = None;
-                        backoff = STREAM_CONNECTION_BACKOFF;
-                    }
-                    Err(err) => {
-                        if still_subscribed {
-                            retry_at = Some(Instant::now() + backoff);
-                            backoff = backoff.saturating_mul(2).min(STREAM_CONNECTION_MAX_BACKOFF);
-                        } else {
-                            retry_at = None;
-                            backoff = STREAM_CONNECTION_BACKOFF;
-                        }
-
-                        if matches!(&err, Error::NotSupported | Error::Terminal(_)) {
-                            stream_supported = false;
-                        }
-                        tracing::error!("Long connection failed with error {:?}", err);
-                    }
+                    tracing::error!("Long connection failed with error {:?}", err);
+                } else {
+                    backoff = STREAM_CONNECTION_BACKOFF;
                 }
 
                 // remove sender to stream, as there is no stream
                 let _ = instance.stream_ctrl.write().take();
-            }
-
-            if instance.remote_subscriptions.read().is_empty() {
-                continue;
             }
 
             if poll_supported {
@@ -272,7 +250,6 @@ where
                         .collect::<Vec<_>>()
                 };
 
-                let mut poll_not_supported = false;
                 if let Err(err) = instance
                     .transport
                     .poll(
@@ -287,27 +264,11 @@ where
                 {
                     if matches!(&err, Error::NotSupported | Error::Terminal(_)) {
                         poll_supported = false;
-                        poll_not_supported = true;
                     }
                     tracing::error!("Polling failed with error {:?}", err);
                 }
-                if poll_not_supported {
-                    continue;
-                }
 
                 sleep(POLL_SLEEP).await;
-                continue;
-            }
-
-            if let Some(retry_at) = retry_at {
-                let delay = retry_at
-                    .saturating_duration_since(Instant::now())
-                    .min(STREAM_RETRY_IDLE_SLEEP);
-                if !delay.is_zero() {
-                    sleep(delay).await;
-                }
-            } else {
-                sleep(STREAM_RETRY_IDLE_SLEEP).await;
             }
         }
     }
@@ -529,7 +490,7 @@ mod tests {
 
     use super::{
         InternalRelay, RemoteActiveConsumer, StreamCtrl, SubscribeMessage, Transport,
-        INTERNAL_POLL_SIZE, STREAM_CONNECTION_BACKOFF, STREAM_RETRY_IDLE_SLEEP,
+        INTERNAL_POLL_SIZE,
     };
     use crate::pub_sub::remote_consumer::Consumer;
     use crate::pub_sub::test::{CustomPubSub, IndexTest, Message};
@@ -763,97 +724,6 @@ mod tests {
 
     // ===== Tests =====
 
-    struct EndingStreamTransport {
-        name_ctr: AtomicUsize,
-        stream_calls: Arc<AtomicUsize>,
-    }
-
-    impl EndingStreamTransport {
-        fn new() -> (Self, Arc<AtomicUsize>) {
-            let stream_calls = Arc::new(AtomicUsize::new(0));
-            (
-                Self {
-                    name_ctr: AtomicUsize::new(1),
-                    stream_calls: Arc::clone(&stream_calls),
-                },
-                stream_calls,
-            )
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl Transport for EndingStreamTransport {
-        type Spec = CustomPubSub;
-
-        fn new_name(&self) -> <Self::Spec as Spec>::SubscriptionId {
-            format!(
-                "ending-sub-{}",
-                self.name_ctr.fetch_add(1, Ordering::Relaxed)
-            )
-        }
-
-        async fn stream(
-            &self,
-            _subscribe_changes: mpsc::Receiver<StreamCtrl<Self::Spec>>,
-            _topics: Vec<SubscribeMessage<Self::Spec>>,
-            _reply_to: InternalRelay<Self::Spec>,
-        ) -> Result<(), Error> {
-            self.stream_calls.fetch_add(1, Ordering::SeqCst);
-            Ok(())
-        }
-
-        async fn poll(
-            &self,
-            _topics: Vec<SubscribeMessage<Self::Spec>>,
-            _reply_to: InternalRelay<Self::Spec>,
-        ) -> Result<(), Error> {
-            Err(Error::NotSupported)
-        }
-    }
-
-    // ===== Helpers =====
-
-    async fn drive_until_stream_calls(calls: &AtomicUsize, expected: usize) {
-        for _ in 0..20 {
-            if calls.load(Ordering::SeqCst) >= expected {
-                return;
-            }
-            tokio::time::advance(STREAM_RETRY_IDLE_SLEEP).await;
-            tokio::task::yield_now().await;
-        }
-
-        panic!(
-            "timed out waiting for {expected} stream calls, observed {}",
-            calls.load(Ordering::SeqCst)
-        );
-    }
-
-    // ===== Tests =====
-
-    #[tokio::test(start_paused = true)]
-    async fn ended_stream_without_poll_backs_off_before_reconnecting() {
-        let (transport, stream_calls) = EndingStreamTransport::new();
-        let consumer = Consumer::new(transport, false, ());
-        let _sub = consumer
-            .subscribe(SubscriptionReq::Foo("t".to_owned(), 7))
-            .expect("subscribe ok");
-
-        drive_until_stream_calls(&stream_calls, 1).await;
-        assert_eq!(stream_calls.load(Ordering::SeqCst), 1);
-
-        tokio::time::advance(STREAM_CONNECTION_BACKOFF - Duration::from_millis(1)).await;
-        tokio::task::yield_now().await;
-        assert_eq!(
-            stream_calls.load(Ordering::SeqCst),
-            1,
-            "ended stream must not reconnect before the backoff expires"
-        );
-
-        tokio::time::advance(Duration::from_millis(1)).await;
-        drive_until_stream_calls(&stream_calls, 2).await;
-        assert_eq!(stream_calls.load(Ordering::SeqCst), 2);
-    }
-
     #[tokio::test]
     async fn stream_delivery_and_unsubscribe_on_drop() {
         // stream supported, poll supported (doesn't matter; prefer long)
@@ -1085,29 +955,6 @@ mod tests {
 
         tokio::time::advance(Duration::from_secs(2)).await;
         wait_for_attempts(&attempts, 3).await;
-    }
-
-    #[tokio::test]
-    async fn uses_stream_when_preferred_polling_is_not_supported() {
-        let (transport, events_tx, mut ctrl_rx) = TestTransport::new(true, false);
-        let consumer = Consumer::new(transport, true, ());
-
-        let mut sub = consumer
-            .subscribe(SubscriptionReq::Foo("t".to_owned(), 7))
-            .expect("subscribe ok");
-
-        let _ = expect_ctrl(
-            &mut ctrl_rx,
-            1000,
-            |m| matches!(m, StreamCtrl::Subscribe((_, idx)) if *idx == IndexTest::Foo(7)),
-        )
-        .await;
-
-        events_tx.send(Message { foo: 7, bar: 11 }).await.unwrap();
-        let got = recv_next::<TestTransport>(&mut sub, 1000)
-            .await
-            .expect("event relayed via stream");
-        assert_eq!(got, Message { foo: 7, bar: 11 });
     }
 
     #[tokio::test]

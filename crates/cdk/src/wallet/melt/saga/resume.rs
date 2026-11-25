@@ -152,7 +152,7 @@ impl Wallet {
                     self.complete_melt_from_restore(saga_id, data, &quote_status)
                         .await
                 }
-                MeltQuoteState::Failed => {
+                MeltQuoteState::Unpaid | MeltQuoteState::Failed => {
                     // Safety: refuse to compensate while the mint still
                     // reports a payment proof (Lightning preimage or
                     // Onchain outpoint). Treat it as pending so the next
@@ -181,41 +181,6 @@ impl Wallet {
                     Ok(Some(FinalizedMelt::new(
                         data.quote_id.clone(),
                         quote_status.state(),
-                        None,
-                        data.amount,
-                        Amount::ZERO,
-                        None,
-                    )))
-                }
-                MeltQuoteState::Unpaid => {
-                    if quote_status.payment_proof().is_some() {
-                        tracing::warn!(
-                            "Melt saga {} - payment reported Unpaid but mint holds \
-                             a payment proof; keeping pending to avoid loss",
-                            saga_id
-                        );
-                        return Ok(None);
-                    }
-
-                    let quote_expired = self
-                        .localstore
-                        .get_melt_quote(&data.quote_id)
-                        .await?
-                        .is_some_and(|quote| quote.expiry <= unix_time());
-                    if !quote_expired {
-                        tracing::info!(
-                            "Melt saga {} - payment remains Unpaid before quote expiry; \
-                             keeping the ambiguous request pending",
-                            saga_id
-                        );
-                        return Ok(None);
-                    }
-
-                    tracing::info!("Melt saga {} - unpaid quote expired, compensating", saga_id);
-                    self.compensate_melt(saga_id).await?;
-                    Ok(Some(FinalizedMelt::new(
-                        data.quote_id.clone(),
-                        MeltQuoteState::Unpaid,
                         None,
                         data.amount,
                         Amount::ZERO,
@@ -847,7 +812,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_recover_melt_melt_requested_quote_paid() {
-        // Mock: quote Paid -> complete melt.
+        // Mock: quote Paid → complete melt, get change
         let db = create_test_db().await;
         let mint_url = test_mint_url();
         let keyset_id = test_keyset_id();
@@ -1077,79 +1042,6 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_recover_melt_requested_paid_with_pending_inputs() {
-        let db = create_test_db().await;
-        let mint_url = test_mint_url();
-        let keyset_id = test_keyset_id();
-        let saga_id = uuid::Uuid::new_v4();
-        let quote_id = format!("test_melt_quote_{}", uuid::Uuid::new_v4());
-
-        let mut proof_info = test_proof_info(keyset_id, 100, mint_url.clone(), State::Pending);
-        proof_info.used_by_operation = Some(saga_id);
-        let proof_y = proof_info.y;
-        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
-
-        let saga = WalletSaga::new(
-            saga_id,
-            WalletSagaState::Melt(MeltSagaState::MeltRequested),
-            Amount::from(100),
-            mint_url.clone(),
-            CurrencyUnit::Sat,
-            OperationData::Melt(MeltOperationData {
-                quote_id: quote_id.clone(),
-                amount: Amount::from(100),
-                fee_reserve: Amount::from(10),
-                counter_start: None,
-                counter_end: None,
-                change_amount: None,
-                metadata: HashMap::new(),
-                final_proof_ys: None,
-                change_blinded_messages: None,
-            }),
-        );
-        db.add_saga(saga).await.unwrap();
-
-        let mut melt_quote = test_melt_quote();
-        melt_quote.id = quote_id.clone();
-        melt_quote.state = MeltQuoteState::Pending;
-        melt_quote.used_by_operation = Some(saga_id.to_string());
-        db.add_melt_quote(melt_quote).await.unwrap();
-
-        let mock_client = Arc::new(MockMintConnector::new());
-        mock_client.set_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
-            quote: quote_id.clone(),
-            state: MeltQuoteState::Paid,
-            expiry: 9999999999,
-            fee_reserve: Amount::from(10),
-            amount: Amount::from(100),
-            request: Some("lnbc100...".to_string()),
-            payment_preimage: Some("preimage123".to_string()),
-            change: None,
-            unit: Some(CurrencyUnit::Sat),
-            method: PaymentMethod::BOLT11,
-        }));
-
-        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
-        let finalized = wallet
-            .resume_melt_saga(&db.get_saga(&saga_id).await.unwrap().unwrap())
-            .await
-            .unwrap()
-            .expect("paid pending-input melt should finalize");
-
-        assert_eq!(finalized.state(), MeltQuoteState::Paid);
-
-        let stored_input = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
-        assert_eq!(stored_input.len(), 1);
-        assert_eq!(stored_input[0].state, State::Spent);
-
-        let quote = db.get_melt_quote(&quote_id).await.unwrap().unwrap();
-        assert_eq!(quote.state, MeltQuoteState::Paid);
-        assert_eq!(quote.payment_proof.as_deref(), Some("preimage123"));
-        assert_eq!(quote.used_by_operation, None);
-        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -2143,7 +2035,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_recover_melt_melt_requested_unpaid_waits_until_quote_expires() {
+    async fn test_recover_melt_melt_requested_quote_unpaid() {
+        // Mock: quote Unpaid → compensate
         let db = create_test_db().await;
         let mint_url = test_mint_url();
         let keyset_id = test_keyset_id();
@@ -2185,7 +2078,7 @@ mod tests {
         // Mock: quote is Unpaid
         let mock_client = Arc::new(MockMintConnector::new());
         mock_client.set_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
-            quote: quote_id.clone(),
+            quote: quote_id,
             state: MeltQuoteState::Unpaid,
             expiry: 9999999999,
             fee_reserve: Amount::from(10),
@@ -2197,40 +2090,18 @@ mod tests {
             method: PaymentMethod::BOLT11,
         }));
 
-        let wallet = create_test_wallet_with_mock(db.clone(), mock_client.clone()).await;
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
         let result = wallet
             .resume_melt_saga(&db.get_saga(&saga_id).await.unwrap().unwrap())
             .await
             .unwrap();
 
-        assert!(result.is_none());
-        let reserved = db.get_reserved_proofs(&saga_id).await.unwrap();
-        assert_eq!(reserved.len(), 1);
-        assert!(db.get_saga(&saga_id).await.unwrap().is_some());
-
-        let mut expired_quote = db.get_melt_quote(&quote_id).await.unwrap().unwrap();
-        expired_quote.expiry = 0;
-        db.add_melt_quote(expired_quote).await.unwrap();
-        mock_client.set_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
-            quote: quote_id,
-            state: MeltQuoteState::Unpaid,
-            expiry: 0,
-            fee_reserve: Amount::from(10),
-            amount: Amount::from(100),
-            request: Some("lnbc100...".to_string()),
-            payment_preimage: None,
-            change: None,
-            unit: Some(CurrencyUnit::Sat),
-            method: PaymentMethod::BOLT11,
-        }));
-
-        let result = wallet
-            .resume_melt_saga(&db.get_saga(&saga_id).await.unwrap().unwrap())
-            .await
-            .unwrap()
-            .expect("expired unpaid melt should compensate");
+        // Verify compensation
+        assert!(result.is_some());
+        let finalized = result.unwrap();
         assert!(
-            result.state() == MeltQuoteState::Unpaid || result.state() == MeltQuoteState::Failed
+            finalized.state() == MeltQuoteState::Unpaid
+                || finalized.state() == MeltQuoteState::Failed
         );
 
         // Proofs should be released

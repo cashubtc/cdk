@@ -756,7 +756,7 @@ update-msrv-lock:
         cargo_update icu_provider --precise 2.1.1
         cargo_update icu_locale_core --precise 2.1.1
         cp "$lock_dir/Cargo.lock" Cargo.lock.msrv
-        echo "Updated Cargo.lock.msrv for MSRV 1.85.0"
+        echo "Updated Cargo.lock.msrv for MSRV 1.91.0"
     '
 
 itest db suite="all":

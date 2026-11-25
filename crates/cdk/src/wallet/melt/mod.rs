@@ -353,7 +353,7 @@ impl<'a> PendingMelt<'a> {
                     );
                     WaitStep::Continue(self)
                 }
-                MeltQuoteState::Failed => {
+                MeltQuoteState::Failed | MeltQuoteState::Unpaid => {
                     if response.payment_proof().is_some() {
                         tracing::warn!(
                             "Melt quote {} reported {:?} via WS and \
@@ -362,32 +362,6 @@ impl<'a> PendingMelt<'a> {
                             quote_id,
                             ws_state,
                             response.state()
-                        );
-                        return WaitStep::Continue(self);
-                    }
-
-                    match self.saga.handle_failure().await {
-                        Ok(()) => WaitStep::Terminal(Err(Error::PaymentFailed)),
-                        Err(error) => WaitStep::Terminal(Err(error)),
-                    }
-                }
-                MeltQuoteState::Unpaid => {
-                    if response.payment_proof().is_some() {
-                        tracing::warn!(
-                            "Melt quote {} reported {:?} via WS and \
-                             Unpaid via HTTP but carries a payment proof; \
-                             continuing to wait to avoid proof loss",
-                            quote_id,
-                            ws_state
-                        );
-                        return WaitStep::Continue(self);
-                    }
-                    if self.saga.quote().expiry > unix_time() {
-                        tracing::warn!(
-                            "Melt quote {} reported {:?} via WS and Unpaid via HTTP \
-                             before expiry; keeping the ambiguous request pending",
-                            quote_id,
-                            ws_state
                         );
                         return WaitStep::Continue(self);
                     }
@@ -1256,8 +1230,6 @@ impl Wallet {
         tracing::info!("Found {} pending melt(s) to check", melt_sagas.len());
 
         let mut results = Vec::new();
-        let mut skipped = 0usize;
-        let mut failures = Vec::new();
 
         for saga in melt_sagas {
             match self.resume_melt_saga(&saga).await {
@@ -1266,21 +1238,13 @@ impl Wallet {
                     results.push(melted);
                 }
                 Ok(None) => {
-                    skipped = skipped.saturating_add(1);
                     tracing::debug!("Melt {} still pending or compensated early", saga.id);
                 }
                 Err(e) => {
                     tracing::error!("Failed to finalize melt {}: {}", saga.id, e);
-                    failures.push(format!("{}: {}", saga.id, e));
+                    // Continue with other sagas instead of failing entirely
                 }
             }
-        }
-
-        if results.is_empty() && skipped == 0 && !failures.is_empty() {
-            return Err(Error::Custom(format!(
-                "failed to finalize pending melts: {}",
-                failures.join("; ")
-            )));
         }
 
         Ok(results)
@@ -3558,69 +3522,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ambiguous_melt_response_keeps_saga_until_paid_without_resubmission() {
-        let db = create_test_db().await;
-        let mint_url = test_mint_url();
-        let keyset_id = crate::wallet::test_utils::test_keyset_id();
-        let proof_info = crate::wallet::test_utils::test_proof_info(keyset_id, 1011, mint_url);
-        let proof_y = proof_info.y;
-        let proof = proof_info.proof.clone();
-        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
-
-        let quote = test_melt_quote();
-        let quote_id = quote.id.clone();
-        db.add_melt_quote(quote).await.unwrap();
-
-        let mock_client = Arc::new(MockMintConnector::new());
-        mock_client.reset_default_mint_state();
-        mock_client.set_post_melt_response(Err(Error::Custom(
-            "response lost after submission".to_string(),
-        )));
-        mock_client.set_melt_quote_status_response(Ok(bolt11_status(
-            &quote_id,
-            MeltQuoteState::Unpaid,
-            None,
-        )));
-        let wallet = create_test_wallet_with_mock(db.clone(), mock_client.clone()).await;
-
-        let prepared = wallet
-            .prepare_melt_proofs(&quote_id, vec![proof], HashMap::new())
-            .await
-            .unwrap();
-        let operation_id = prepared.operation_id();
-        let outcome = prepared.confirm_prefer_async().await.unwrap();
-        assert!(matches!(outcome, MeltOutcome::Pending(_)));
-        assert_eq!(mock_client.post_melt_call_count(), 1);
-
-        let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
-        assert_eq!(stored[0].state, State::Pending);
-        assert_eq!(stored[0].used_by_operation, Some(operation_id));
-        assert!(db.get_saga(&operation_id).await.unwrap().is_some());
-
-        mock_client.set_melt_quote_status_response(Ok(bolt11_status(
-            &quote_id,
-            MeltQuoteState::Paid,
-            Some("preimage123".to_string()),
-        )));
-        mock_client._set_restore_response(Ok(RestoreResponse {
-            outputs: Vec::new(),
-            signatures: Vec::new(),
-        }));
-
-        let report = wallet.recover_incomplete_sagas().await.unwrap();
-        assert_eq!(report.recovered, 1);
-        assert_eq!(report.compensated, 0);
-        assert_eq!(report.failed, 0);
-        assert_eq!(mock_client.post_melt_call_count(), 1);
-
-        let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
-        assert_eq!(stored[0].state, State::Spent);
-        assert!(db.get_saga(&operation_id).await.unwrap().is_none());
-        let stored_quote = db.get_melt_quote(&quote_id).await.unwrap().unwrap();
-        assert_eq!(stored_quote.state, MeltQuoteState::Paid);
-    }
-
-    #[tokio::test]
     async fn test_reconcile_non_paid_status_http_paid_finalizes() {
         let (db, proof_y, operation_id, mock_client, pending) = pending_bolt11_melt(false).await;
         let quote_id = pending.saga.quote().id.clone();
@@ -3684,75 +3585,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_finalize_pending_melts_finalizes_melt_requested_paid_quote() {
-        let db = create_test_db().await;
-        let mint_url = test_mint_url();
-        let keyset_id = test_keyset_id();
-        let operation_id = uuid::Uuid::new_v4();
-        let quote_id = format!("test_melt_quote_{}", uuid::Uuid::new_v4());
-
-        let mut proof_info = test_proof_info(keyset_id, 120, mint_url.clone(), State::Pending);
-        proof_info.used_by_operation = Some(operation_id);
-        let proof_y = proof_info.y;
-        db.update_proofs(vec![proof_info], vec![]).await.unwrap();
-
-        let mut quote = test_melt_quote();
-        quote.id = quote_id.clone();
-        quote.amount = Amount::from(100);
-        quote.fee_reserve = Amount::from(20);
-        quote.state = MeltQuoteState::Unpaid;
-        quote.used_by_operation = Some(operation_id.to_string());
-        db.add_melt_quote(quote.clone()).await.unwrap();
-
-        let saga = WalletSaga::new(
-            operation_id,
-            WalletSagaState::Melt(MeltSagaState::MeltRequested),
-            quote.amount,
-            mint_url,
-            CurrencyUnit::Sat,
-            OperationData::Melt(MeltOperationData {
-                quote_id: quote_id.clone(),
-                amount: quote.amount,
-                fee_reserve: quote.fee_reserve,
-                counter_start: None,
-                counter_end: None,
-                change_amount: None,
-                metadata: Default::default(),
-                final_proof_ys: None,
-                change_blinded_messages: None,
-            }),
-        );
-        db.add_saga(saga).await.unwrap();
-
-        let mock_client = Arc::new(MockMintConnector::new());
-        mock_client.set_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
-            payment_preimage: Some("preimage123".to_string()),
-            ..bolt11_status(&quote_id, MeltQuoteState::Paid, None)
-        }));
-        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
-
-        let finalized = wallet.finalize_pending_melts().await.unwrap();
-        assert_eq!(finalized.len(), 1);
-        assert_eq!(finalized[0].quote_id(), quote_id);
-        assert_eq!(finalized[0].state(), MeltQuoteState::Paid);
-        assert_eq!(finalized[0].payment_proof(), Some("preimage123"));
-
-        let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
-        assert_eq!(stored.len(), 1);
-        assert_eq!(stored[0].state, State::Spent);
-
-        let stored_quote = db.get_melt_quote(&quote_id).await.unwrap().unwrap();
-        assert_eq!(stored_quote.state, MeltQuoteState::Paid);
-        assert_eq!(stored_quote.payment_proof.as_deref(), Some("preimage123"));
-        assert_eq!(stored_quote.used_by_operation, None);
-        assert!(db.get_saga(&operation_id).await.unwrap().is_none());
-
-        let transactions = db.list_transactions(None, None, None).await.unwrap();
-        assert_eq!(transactions.len(), 1);
-        assert_eq!(transactions[0].ys, vec![proof_y]);
-    }
-
-    #[tokio::test]
     async fn test_reconcile_non_paid_status_http_pending_keeps_waiting() {
         let (db, proof_y, operation_id, mock_client, pending) = pending_bolt11_melt(false).await;
         let quote_id = pending.saga.quote().id.clone();
@@ -3792,7 +3624,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_reconcile_non_paid_status_http_unpaid_waits_until_expiry() {
+    async fn test_reconcile_non_paid_status_http_unpaid_without_proof_fails() {
         let (db, proof_y, operation_id, mock_client, pending) = pending_bolt11_melt(false).await;
         let quote_id = pending.saga.quote().id.clone();
 
@@ -3802,29 +3634,14 @@ mod tests {
             None,
         )));
 
-        let mut pending = match pending.reconcile_melt_status(MeltQuoteState::Failed).await {
-            WaitStep::Continue(pending) => pending,
-            WaitStep::Terminal(_) => panic!("unexpired unpaid quote must remain pending"),
-        };
-
-        let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
-        assert_eq!(stored[0].state, State::Pending);
-        assert!(db.get_saga(&operation_id).await.unwrap().is_some());
-
-        pending.saga.state_data.quote.expiry = 0;
-        mock_client.set_melt_quote_status_response(Ok(bolt11_status(
-            &quote_id,
-            MeltQuoteState::Unpaid,
-            None,
-        )));
-
-        match pending.reconcile_melt_status(MeltQuoteState::Unpaid).await {
+        match pending.reconcile_melt_status(MeltQuoteState::Failed).await {
             WaitStep::Terminal(result) => {
                 assert!(matches!(result, Err(Error::PaymentFailed)));
             }
-            WaitStep::Continue(_) => panic!("expired unpaid quote should fail"),
+            WaitStep::Continue(_) => panic!("expected terminal failure"),
         }
 
+        // Proofs released back to Unspent and the saga cleaned up.
         let stored = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
         assert_eq!(stored[0].state, State::Unspent);
         assert!(db.get_saga(&operation_id).await.unwrap().is_none());

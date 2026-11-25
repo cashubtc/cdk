@@ -1,13 +1,14 @@
 //! bitreq-based backend implementation
 
+use std::sync::Arc;
+
+use bitreq::RequestExt;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use super::url_for_debug;
 use crate::error::HttpError;
 use crate::response::{RawResponse, Response};
-
-const DEFAULT_BITREQ_REQUEST_TIMEOUT_SECS: u64 = 300;
 
 #[derive(Clone)]
 pub(crate) struct ProxyConfig {
@@ -61,9 +62,9 @@ pub(crate) fn apply_proxy_if_needed(
 /// HTTP client wrapper
 #[derive(Clone)]
 pub struct HttpClient {
+    inner: Arc<bitreq::Client>,
     proxy_config: Option<ProxyConfig>,
     no_redirects: bool,
-    request_timeout_secs: Option<u64>,
 }
 
 impl std::fmt::Debug for HttpClient {
@@ -77,23 +78,23 @@ impl HttpClient {
     pub fn new() -> Self {
         super::install_rustls_crypto_provider();
         Self {
+            inner: Arc::new(bitreq::Client::new(10)),
             proxy_config: None,
             no_redirects: false,
-            request_timeout_secs: Some(DEFAULT_BITREQ_REQUEST_TIMEOUT_SECS),
         }
     }
 
     /// Create an HTTP client from pre-built parts
     pub(crate) fn from_parts(
+        client: Arc<bitreq::Client>,
         proxy_config: Option<ProxyConfig>,
         no_redirects: bool,
-        request_timeout_secs: Option<u64>,
     ) -> Self {
         super::install_rustls_crypto_provider();
         Self {
+            inner: client,
             proxy_config,
             no_redirects,
-            request_timeout_secs,
         }
     }
 
@@ -105,29 +106,21 @@ impl HttpClient {
     /// Apply proxy and redirect settings to a request
     fn configure_request(&self, request: bitreq::Request, url: &str) -> Response<bitreq::Request> {
         let request = apply_proxy_if_needed(request, url, &self.proxy_config)?;
-        let request = if self.no_redirects {
+        Ok(if self.no_redirects {
             request.with_max_redirects(0)
         } else {
             request
-        };
-        Ok(match self.request_timeout_secs {
-            Some(timeout_secs) => request.with_timeout(timeout_secs),
-            None => request,
         })
-    }
-
-    async fn send_request(request: bitreq::Request) -> Response<bitreq::Response> {
-        tokio::task::spawn_blocking(move || request.send())
-            .await
-            .map_err(|err| HttpError::Other(format!("HTTP request task failed: {err}")))?
-            .map_err(HttpError::from)
     }
 
     /// GET request, returns JSON deserialized to R
     pub async fn fetch<R: DeserializeOwned>(&self, url: &str) -> Response<R> {
         let request = bitreq::get(url);
         let request = self.configure_request(request, url)?;
-        let response = Self::send_request(request).await?;
+        let response = request
+            .send_async_with_client(&self.inner)
+            .await
+            .map_err(HttpError::from)?;
         RawResponse::new(response.status_code as u16, response.into_bytes()).json_or_status_error()
     }
 
@@ -139,7 +132,10 @@ impl HttpClient {
     ) -> Response<R> {
         let request = bitreq::post(url).with_json(body).map_err(HttpError::from)?;
         let request = self.configure_request(request, url)?;
-        let response = Self::send_request(request).await?;
+        let response: bitreq::Response = request
+            .send_async_with_client(&self.inner)
+            .await
+            .map_err(HttpError::from)?;
 
         RawResponse::new(response.status_code as u16, response.into_bytes()).json_or_status_error()
     }
@@ -156,7 +152,10 @@ impl HttpClient {
             .with_body(form_str.into_bytes())
             .with_header("Content-Type", "application/x-www-form-urlencoded");
         let request = self.configure_request(request, url)?;
-        let response = Self::send_request(request).await?;
+        let response: bitreq::Response = request
+            .send_async_with_client(&self.inner)
+            .await
+            .map_err(HttpError::from)?;
 
         RawResponse::new(response.status_code as u16, response.into_bytes()).json_or_status_error()
     }
@@ -171,7 +170,10 @@ impl HttpClient {
             .with_json(body)
             .map_err(HttpError::from)?;
         let request = self.configure_request(request, url)?;
-        let response = Self::send_request(request).await?;
+        let response: bitreq::Response = request
+            .send_async_with_client(&self.inner)
+            .await
+            .map_err(HttpError::from)?;
 
         RawResponse::new(response.status_code as u16, response.into_bytes()).json_or_status_error()
     }
@@ -180,7 +182,10 @@ impl HttpClient {
     pub async fn get_raw(&self, url: &str) -> Response<RawResponse> {
         let request = bitreq::get(url);
         let request = self.configure_request(request, url)?;
-        let response = Self::send_request(request).await?;
+        let response = request
+            .send_async_with_client(&self.inner)
+            .await
+            .map_err(HttpError::from)?;
         Ok(RawResponse::new(
             response.status_code as u16,
             response.into_bytes(),
@@ -192,9 +197,9 @@ impl HttpClient {
         BitreqRequestBuilder::new(
             bitreq::post(url),
             url,
+            self.inner.clone(),
             self.proxy_config.clone(),
             self.no_redirects,
-            self.request_timeout_secs,
         )
     }
 
@@ -203,9 +208,9 @@ impl HttpClient {
         BitreqRequestBuilder::new(
             bitreq::get(url),
             url,
+            self.inner.clone(),
             self.proxy_config.clone(),
             self.no_redirects,
-            self.request_timeout_secs,
         )
     }
 
@@ -214,9 +219,9 @@ impl HttpClient {
         BitreqRequestBuilder::new(
             bitreq::patch(url),
             url,
+            self.inner.clone(),
             self.proxy_config.clone(),
             self.no_redirects,
-            self.request_timeout_secs,
         )
     }
 
@@ -225,9 +230,9 @@ impl HttpClient {
         BitreqRequestBuilder::new(
             bitreq::put(url),
             url,
+            self.inner.clone(),
             self.proxy_config.clone(),
             self.no_redirects,
-            self.request_timeout_secs,
         )
     }
 }
@@ -237,9 +242,9 @@ pub struct BitreqRequestBuilder {
     inner: bitreq::Request,
     error: Option<HttpError>,
     url: String,
+    client: Arc<bitreq::Client>,
     proxy_config: Option<ProxyConfig>,
     no_redirects: bool,
-    request_timeout_secs: Option<u64>,
 }
 
 impl std::fmt::Debug for BitreqRequestBuilder {
@@ -256,17 +261,17 @@ impl BitreqRequestBuilder {
     pub(crate) fn new(
         inner: bitreq::Request,
         url: &str,
+        client: Arc<bitreq::Client>,
         proxy_config: Option<ProxyConfig>,
         no_redirects: bool,
-        request_timeout_secs: Option<u64>,
     ) -> Self {
         Self {
             inner,
             error: None,
             url: url.to_string(),
+            client,
             proxy_config,
             no_redirects,
-            request_timeout_secs,
         }
     }
     /// Add a header to the request.
@@ -275,9 +280,9 @@ impl BitreqRequestBuilder {
             inner: self.inner.with_header(key.as_ref(), value.as_ref()),
             error: self.error,
             url: self.url,
+            client: self.client,
             proxy_config: self.proxy_config,
             no_redirects: self.no_redirects,
-            request_timeout_secs: self.request_timeout_secs,
         }
     }
 
@@ -326,11 +331,10 @@ impl BitreqRequestBuilder {
         } else {
             request
         };
-        let request = match self.request_timeout_secs {
-            Some(timeout_secs) => request.with_timeout(timeout_secs),
-            None => request,
-        };
-        let response = HttpClient::send_request(request).await?;
+        let response = request
+            .send_async_with_client(&self.client)
+            .await
+            .map_err(HttpError::from)?;
         Ok(RawResponse::new(
             response.status_code as u16,
             response.into_bytes(),
@@ -348,14 +352,10 @@ impl BitreqRequestBuilder {
         } else {
             request
         };
-        let request = match self.request_timeout_secs {
-            Some(timeout_secs) => request.with_timeout(timeout_secs),
-            None => request,
-        }
-        .with_max_body_size(max_response_bytes);
-        let response = tokio::task::spawn_blocking(move || request.send())
+        let response = request
+            .with_max_body_size(max_response_bytes)
+            .send_async_with_client(&self.client)
             .await
-            .map_err(|err| HttpError::Other(format!("HTTP request task failed: {err}")))?
             .map_err(|err| match err {
                 bitreq::Error::BodyOverflow => HttpError::ResponseTooLarge {
                     actual: max_response_bytes.saturating_add(1),
@@ -380,34 +380,21 @@ impl BitreqRequestBuilder {
         } else {
             request
         };
-        let request = match self.request_timeout_secs {
-            Some(timeout_secs) => request.with_timeout(timeout_secs),
-            None => request,
-        };
-        let response = HttpClient::send_request(request).await?;
+        let response = request
+            .send_async_with_client(&self.client)
+            .await
+            .map_err(HttpError::from)?;
 
         RawResponse::new(response.status_code as u16, response.into_bytes()).json_or_status_error()
     }
 }
 
 /// HTTP client builder for configuring proxy and TLS settings
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct HttpClientBuilder {
     proxy: Option<ProxyConfig>,
     accept_invalid_certs: bool,
     no_redirects: bool,
-    request_timeout_secs: Option<u64>,
-}
-
-impl Default for HttpClientBuilder {
-    fn default() -> Self {
-        Self {
-            proxy: None,
-            accept_invalid_certs: false,
-            no_redirects: false,
-            request_timeout_secs: Some(DEFAULT_BITREQ_REQUEST_TIMEOUT_SECS),
-        }
-    }
 }
 
 impl HttpClientBuilder {
@@ -420,12 +407,6 @@ impl HttpClientBuilder {
     /// Disable automatic HTTP redirect following
     pub fn no_redirects(mut self) -> Self {
         self.no_redirects = true;
-        self
-    }
-
-    /// Set the per-request timeout in seconds.
-    pub fn request_timeout_secs(mut self, timeout_secs: Option<u64>) -> Self {
-        self.request_timeout_secs = timeout_secs;
         self
     }
 
@@ -465,9 +446,9 @@ impl HttpClientBuilder {
         }
 
         Ok(HttpClient::from_parts(
+            Arc::new(bitreq::Client::new(10)),
             self.proxy,
             self.no_redirects,
-            self.request_timeout_secs,
         ))
     }
 }

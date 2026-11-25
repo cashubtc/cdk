@@ -465,19 +465,16 @@ fn command_needs_federation_wallet_activation(command: &Commands) -> bool {
     )
 }
 
+/// Federation registry commands manage local configuration only and do not
+/// need startup recovery of wallet operations.
 fn command_needs_wallet_recovery(command: &Commands) -> bool {
-    match command {
-        Commands::DecodeToken(_)
-        | Commands::MintInfo(_)
-        | Commands::DecodeRequest(_)
-        | Commands::UpdateMintUrl(_)
-        | Commands::MintBlindAuth(_)
-        | Commands::CatLogin(_)
-        | Commands::CatDeviceLogin(_) => false,
-        #[cfg(feature = "federation")]
-        Commands::Federation(_) => false,
-        _ => true,
+    #[cfg(feature = "federation")]
+    if matches!(command, Commands::Federation(_)) {
+        return false;
     }
+    #[cfg(not(feature = "federation"))]
+    let _ = command;
+    true
 }
 
 #[cfg(test)]
@@ -524,39 +521,6 @@ mod tests {
             cli.proxy.as_ref().map(url::Url::as_str),
             Some("http://127.0.0.1:8080/")
         );
-    }
-
-    #[test]
-    fn mint_info_skips_wallet_recovery() {
-        let cli = Cli::parse_from(["cdk-cli", "mint-info", "https://mint.example.com"]);
-
-        assert!(!command_needs_wallet_recovery(&cli.command));
-    }
-
-    #[test]
-    fn parses_non_interactive_onchain_melt_quote_index() {
-        let cli = Cli::parse_from([
-            "cdk-cli",
-            "--non-interactive",
-            "melt",
-            "--method",
-            "onchain",
-            "--mint-url",
-            "https://mint.example.com",
-            "--address",
-            "bcrt1ptest",
-            "--amount",
-            "1000",
-            "--network",
-            "regtest",
-            "--onchain-quote-index",
-            "0",
-        ]);
-
-        let Commands::Melt(melt) = cli.command else {
-            panic!("expected melt command");
-        };
-        assert_eq!(melt.onchain_quote_index, Some(0));
     }
 
     #[cfg(feature = "federation")]
@@ -646,18 +610,15 @@ mod tests {
         assert!(!command_needs_federation_wallet_activation(
             &federation_list.command
         ));
-        for command in [&decode_token.command, &decode_request.command] {
-            assert!(!command_needs_federation_wallet_activation(command));
-            assert!(!command_needs_wallet_recovery(command));
-        }
         for command in [
+            &decode_token.command,
+            &decode_request.command,
             &update_mint_url.command,
             &mint_blind_auth.command,
             &cat_login.command,
             &cat_device_login.command,
         ] {
             assert!(!command_needs_federation_wallet_activation(command));
-            assert!(!command_needs_wallet_recovery(command));
         }
         assert!(!command_needs_wallet_recovery(&federation_list.command));
     }
