@@ -6,7 +6,7 @@ use cdk::types::QuoteTTL;
 use cdk_common::payment::WaitPaymentResponse;
 use tonic::{Request, Response, Status};
 
-use super::MintRPCServer;
+use super::{config_update_status, MintRPCServer};
 use crate::quote::quote_service_server::QuoteService;
 
 impl MintRPCServer {
@@ -37,19 +37,10 @@ impl MintRPCServer {
         mint_ttl: Option<u64>,
         melt_ttl: Option<u64>,
     ) -> Result<QuoteTTL, Status> {
-        let current_ttl = self.quote_ttl().await?;
-
-        let quote_ttl = QuoteTTL {
-            mint_ttl: mint_ttl.unwrap_or(current_ttl.mint_ttl),
-            melt_ttl: melt_ttl.unwrap_or(current_ttl.melt_ttl),
-        };
-
         self.mint
-            .set_quote_ttl(quote_ttl)
+            .update_quote_ttl(mint_ttl, melt_ttl)
             .await
-            .map_err(|err| Status::internal(err.to_string()))?;
-
-        Ok(quote_ttl)
+            .map_err(config_update_status)
     }
 
     /// Records a payment against a mint quote as though the payment backend

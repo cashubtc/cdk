@@ -36,6 +36,7 @@ mod check_spendable;
 mod issue;
 mod keysets;
 mod melt;
+mod operator_config;
 mod payment_backend;
 mod proofs;
 mod saga_recovery;

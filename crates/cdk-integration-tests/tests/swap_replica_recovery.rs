@@ -1,6 +1,8 @@
 //! PostgreSQL-backed swap coordination with an HTTP wallet client.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::{mpsc, Mutex as StdMutex};
 use std::time::Duration;
 
 use anyhow::{ensure, Context, Result};
@@ -119,6 +121,84 @@ async fn fund_wallet(wallet: &Wallet, amount: Amount) -> Result<Proofs> {
     })
     .await??;
     Ok(wallet.mint(&quote.id, Default::default(), None).await?)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires a PostgreSQL test database"]
+async fn concurrent_replica_config_updates_preserve_both_changes() -> Result<()> {
+    let url = std::env::var("CDK_MINTD_DATABASE_URL")
+        .or_else(|_| std::env::var("PG_DB_URL"))
+        .context("set CDK_MINTD_DATABASE_URL or PG_DB_URL")?;
+    let config = format!(
+        "{url} schema=replica_config_{}",
+        uuid::Uuid::new_v4().simple()
+    );
+    let db_a = Arc::new(MintPgDatabase::new(config.as_str()).await?);
+    let db_b = Arc::new(MintPgDatabase::new(config.as_str()).await?);
+    let mint_url = "http://127.0.0.1:8085";
+    let mint_a = builder(db_a.clone(), mint_url)
+        .await?
+        .build_with_seed(db_a, &[42; 64])
+        .await?;
+    let mint_b = builder(db_b.clone(), mint_url)
+        .await?
+        .build_with_seed(db_b, &[42; 64])
+        .await?;
+
+    let (arrived_a, await_a) = mpsc::channel();
+    let (arrived_b, await_b) = mpsc::channel();
+    let await_a = StdMutex::new(await_a);
+    let await_b = StdMutex::new(await_b);
+    let a = mint_a.clone();
+    let b = mint_b.clone();
+    let update_a = tokio::spawn(async move {
+        let entered = AtomicBool::new(false);
+        a.update_mint_info(|info| {
+            if !entered.swap(true, Ordering::Relaxed) {
+                arrived_a.send(()).expect("signal first read");
+                await_b
+                    .lock()
+                    .expect("gate")
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("peer read");
+            }
+            info.name = Some("Replica mint".to_owned());
+        })
+        .await
+    });
+    let update_b = tokio::spawn(async move {
+        let entered = AtomicBool::new(false);
+        b.update_mint_info(|info| {
+            if !entered.swap(true, Ordering::Relaxed) {
+                arrived_b.send(()).expect("signal first read");
+                await_a
+                    .lock()
+                    .expect("gate")
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("peer read");
+            }
+            info.motd = Some("Concurrent replica update".to_owned());
+        })
+        .await
+    });
+    let (left, right) = tokio::join!(update_a, update_b);
+    left??;
+    right??;
+
+    for mint in [&mint_a, &mint_b] {
+        let info = mint.mint_info().await?;
+        ensure!(info.name.as_deref() == Some("Replica mint"));
+        ensure!(info.motd.as_deref() == Some("Concurrent replica update"));
+    }
+    let (left, right) = tokio::join!(
+        mint_a.update_quote_ttl(Some(61), None),
+        mint_b.update_quote_ttl(None, Some(62)),
+    );
+    left?;
+    right?;
+    ensure!(mint_a.quote_ttl().await? == QuoteTTL::new(61, 62));
+    ensure!(mint_b.quote_ttl().await? == QuoteTTL::new(61, 62));
+    Ok(())
 }
 
 #[tokio::test]

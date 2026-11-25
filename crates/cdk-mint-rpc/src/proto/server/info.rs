@@ -3,30 +3,20 @@
 use cdk::nuts::MintInfo;
 use tonic::{Request, Response, Status};
 
-use super::MintRPCServer;
+use super::{config_update_status, MintRPCServer};
 use crate::info::mint_info_service_server::MintInfoService;
 
 impl MintRPCServer {
-    /// Applies a mutation to the mint's info and returns the info in effect
-    /// after the update
-    async fn update_mint_info_with(
-        &self,
-        mutate: impl FnOnce(&mut MintInfo) + Send,
-    ) -> Result<MintInfo, Status> {
-        let mut info = self
-            .mint
-            .mint_info()
-            .await
-            .map_err(|err| Status::internal(err.to_string()))?;
-
-        mutate(&mut info);
-
+    /// Applies a mutation to shared mint info and returns its result.
+    pub(super) async fn update_mint_info_with<F, R>(&self, mutate: F) -> Result<R, Status>
+    where
+        F: Fn(&mut MintInfo) -> R + Send + Sync,
+        R: Send,
+    {
         self.mint
-            .set_mint_info(info.clone())
+            .update_mint_info(mutate)
             .await
-            .map_err(|err| Status::internal(err.to_string()))?;
-
-        Ok(info)
+            .map_err(config_update_status)
     }
 }
 
@@ -84,10 +74,9 @@ impl MintInfoService for MintRPCServer {
     ) -> Result<Response<crate::info::UpdateNameResponse>, Status> {
         self.ensure_mutation_allowed().await?;
         let name = non_empty(request.into_inner().name);
-        let info = self.update_mint_info_with(|info| info.name = name).await?;
-        Ok(Response::new(crate::info::UpdateNameResponse {
-            name: info.name,
-        }))
+        self.update_mint_info_with(|info| info.name.clone_from(&name))
+            .await?;
+        Ok(Response::new(crate::info::UpdateNameResponse { name }))
     }
 
     /// Sets the mint's message of the day
@@ -97,10 +86,9 @@ impl MintInfoService for MintRPCServer {
     ) -> Result<Response<crate::info::UpdateMotdResponse>, Status> {
         self.ensure_mutation_allowed().await?;
         let motd = non_empty(request.into_inner().motd);
-        let info = self.update_mint_info_with(|info| info.motd = motd).await?;
-        Ok(Response::new(crate::info::UpdateMotdResponse {
-            motd: info.motd,
-        }))
+        self.update_mint_info_with(|info| info.motd.clone_from(&motd))
+            .await?;
+        Ok(Response::new(crate::info::UpdateMotdResponse { motd }))
     }
 
     /// Sets the mint's short description
@@ -110,11 +98,10 @@ impl MintInfoService for MintRPCServer {
     ) -> Result<Response<crate::info::UpdateShortDescriptionResponse>, Status> {
         self.ensure_mutation_allowed().await?;
         let description = non_empty(request.into_inner().description);
-        let info = self
-            .update_mint_info_with(|info| info.description = description)
+        self.update_mint_info_with(|info| info.description.clone_from(&description))
             .await?;
         Ok(Response::new(crate::info::UpdateShortDescriptionResponse {
-            description: info.description,
+            description,
         }))
     }
 
@@ -125,11 +112,10 @@ impl MintInfoService for MintRPCServer {
     ) -> Result<Response<crate::info::UpdateLongDescriptionResponse>, Status> {
         self.ensure_mutation_allowed().await?;
         let long_description = non_empty(request.into_inner().long_description);
-        let info = self
-            .update_mint_info_with(|info| info.description_long = long_description)
+        self.update_mint_info_with(|info| info.description_long.clone_from(&long_description))
             .await?;
         Ok(Response::new(crate::info::UpdateLongDescriptionResponse {
-            long_description: info.description_long,
+            long_description,
         }))
     }
 
@@ -140,11 +126,10 @@ impl MintInfoService for MintRPCServer {
     ) -> Result<Response<crate::info::UpdateIconUrlResponse>, Status> {
         self.ensure_mutation_allowed().await?;
         let icon_url = non_empty(request.into_inner().icon_url);
-        let info = self
-            .update_mint_info_with(|info| info.icon_url = icon_url)
+        self.update_mint_info_with(|info| info.icon_url.clone_from(&icon_url))
             .await?;
         Ok(Response::new(crate::info::UpdateIconUrlResponse {
-            icon_url: info.icon_url,
+            icon_url,
         }))
     }
 
@@ -155,12 +140,9 @@ impl MintInfoService for MintRPCServer {
     ) -> Result<Response<crate::info::UpdateTosUrlResponse>, Status> {
         self.ensure_mutation_allowed().await?;
         let tos_url = non_empty(request.into_inner().tos_url);
-        let info = self
-            .update_mint_info_with(|info| info.tos_url = tos_url)
+        self.update_mint_info_with(|info| info.tos_url.clone_from(&tos_url))
             .await?;
-        Ok(Response::new(crate::info::UpdateTosUrlResponse {
-            tos_url: info.tos_url,
-        }))
+        Ok(Response::new(crate::info::UpdateTosUrlResponse { tos_url }))
     }
 
     /// Adds a mint URL
@@ -175,17 +157,16 @@ impl MintInfoService for MintRPCServer {
                 "URL must not be empty".to_string(),
             ));
         }
-        let info = self
+        let urls = self
             .update_mint_info_with(|info| {
                 let urls = info.urls.get_or_insert_with(Vec::new);
                 if !urls.contains(&url) {
-                    urls.push(url);
+                    urls.push(url.clone());
                 }
+                urls.clone()
             })
             .await?;
-        Ok(Response::new(crate::info::AddUrlResponse {
-            urls: info.urls.unwrap_or_default(),
-        }))
+        Ok(Response::new(crate::info::AddUrlResponse { urls }))
     }
 
     /// Removes a mint URL
@@ -195,16 +176,15 @@ impl MintInfoService for MintRPCServer {
     ) -> Result<Response<crate::info::RemoveUrlResponse>, Status> {
         self.ensure_mutation_allowed().await?;
         let url = request.into_inner().url;
-        let info = self
+        let urls = self
             .update_mint_info_with(|info| {
                 let mut urls = info.urls.take().unwrap_or_default();
                 urls.retain(|u| u != &url);
-                info.urls = if urls.is_empty() { None } else { Some(urls) };
+                info.urls = (!urls.is_empty()).then(|| urls.clone());
+                urls
             })
             .await?;
-        Ok(Response::new(crate::info::RemoveUrlResponse {
-            urls: info.urls.unwrap_or_default(),
-        }))
+        Ok(Response::new(crate::info::RemoveUrlResponse { urls }))
     }
 
     /// Adds a contact entry
@@ -225,17 +205,16 @@ impl MintInfoService for MintRPCServer {
             ));
         }
         let contact = cdk::nuts::ContactInfo::new(request.method, request.info);
-        let info = self
+        let contact = self
             .update_mint_info_with(|info| {
                 let contacts = info.contact.get_or_insert_with(Vec::new);
                 if !contacts.contains(&contact) {
-                    contacts.push(contact);
+                    contacts.push(contact.clone());
                 }
+                info_contacts(Some(contacts.clone()))
             })
             .await?;
-        Ok(Response::new(crate::info::AddContactResponse {
-            contact: info_contacts(info.contact),
-        }))
+        Ok(Response::new(crate::info::AddContactResponse { contact }))
     }
 
     /// Removes a contact entry
@@ -246,7 +225,7 @@ impl MintInfoService for MintRPCServer {
         self.ensure_mutation_allowed().await?;
         let request = request.into_inner();
         let contact = cdk::nuts::ContactInfo::new(request.method, request.info);
-        let info = self
+        let contact = self
             .update_mint_info_with(|info| {
                 if let Some(contacts) = info.contact.as_mut() {
                     contacts.retain(|c| c != &contact);
@@ -254,10 +233,11 @@ impl MintInfoService for MintRPCServer {
                 if info.contact.as_ref().is_some_and(Vec::is_empty) {
                     info.contact = None;
                 }
+                info_contacts(info.contact.clone())
             })
             .await?;
         Ok(Response::new(crate::info::RemoveContactResponse {
-            contact: info_contacts(info.contact),
+            contact,
         }))
     }
 }

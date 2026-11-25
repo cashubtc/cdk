@@ -264,6 +264,13 @@ fn page_limit(requested: u32, default: u32, maximum: u32) -> Result<usize, Statu
     Ok(limit as usize)
 }
 
+fn config_update_status(error: cdk::Error) -> tonic::Status {
+    match error {
+        cdk::Error::ConcurrentUpdate => tonic::Status::aborted(error.to_string()),
+        _ => tonic::Status::internal(error.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::net::TcpListener;
