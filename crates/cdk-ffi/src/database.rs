@@ -2256,7 +2256,10 @@ pub fn create_cdk_database_from_ffi(
 
 #[cfg(test)]
 mod tests {
-    use cdk::nuts::{Proof as CdkProof, SecretKey as CdkSecretKey, State};
+    use cdk::nuts::{
+        CurrencyUnit as CdkCurrencyUnit, KeySetInfo as CdkKeySetInfo, Proof as CdkProof,
+        SecretKey as CdkSecretKey, State,
+    };
     use cdk::types::ProofInfo as CdkProofInfo;
 
     use super::*;
@@ -2401,6 +2404,42 @@ mod tests {
         assert_eq!(
             encode_proof_info(ffi).unwrap(),
             serde_json::to_string(&expected).unwrap()
+        );
+    }
+
+    /// A keyset's expiry decides whether the wallet still spends from it, so a
+    /// host database that stored one through these conversions handed back a
+    /// keyset that never expires.
+    #[tokio::test]
+    async fn keyset_conversion_paths_preserve_the_final_expiry() {
+        let native = cdk_sqlite::wallet::memory::empty().await.unwrap();
+        let foreign = FfiWalletDatabaseWrapper::new(native);
+        let bridge = WalletDatabaseBridge::new(foreign.clone());
+        let mint_url = MintUrl::new("https://mint.example.com".to_string()).unwrap();
+        let expected = CdkKeySetInfo {
+            id: "00916bbf7ef91a36".parse().unwrap(),
+            unit: CdkCurrencyUnit::Sat,
+            active: true,
+            input_fee_ppk: 100,
+            final_expiry: Some(1_900_000_000),
+        };
+
+        foreign.add_mint(mint_url.clone(), None).await.unwrap();
+        foreign
+            .add_mint_keysets(mint_url.clone(), vec![expected.clone().into()])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            bridge
+                .get_mint_keysets(mint_url.try_into().unwrap())
+                .await
+                .unwrap(),
+            Some(vec![expected.clone()])
+        );
+        assert_eq!(
+            bridge.get_keyset_by_id(&expected.id).await.unwrap(),
+            Some(expected)
         );
     }
 
