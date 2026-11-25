@@ -1,0 +1,41 @@
+[package]
+name = "cdk-fed-tui"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+publish = false
+description = "Federated CDK Cashu wallet and member activity dashboard"
+
+[[bin]]
+name = "fed-cdk-tui"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+arboard = { version = "3.6.1", default-features = false }
+bip39.workspace = true
+cdk = { workspace = true, features = ["wallet", "federation", "iroh"] }
+cdk-common = { workspace = true, features = ["wallet", "federation"] }
+cdk-http-client = { workspace = true, features = ["bitreq"] }
+cdk-iroh.workspace = true
+cdk-sqlite = { workspace = true, features = ["wallet", "federation"] }
+clap.workspace = true
+crossterm = { workspace = true, features = ["bracketed-paste"] }
+home.workspace = true
+rand.workspace = true
+ratatui = { version = "0.29.0", default-features = false, features = ["crossterm"] }
+serde_json.workspace = true
+tempfile = "3"
+tokio = { workspace = true, features = ["fs", "rt-multi-thread", "macros", "sync", "time"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+cdk-common = { workspace = true, features = ["test"] }
+
+[lints]
+workspace = true

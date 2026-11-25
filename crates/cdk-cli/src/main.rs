@@ -265,10 +265,10 @@ async fn main() -> Result<()> {
     };
 
     #[cfg(feature = "federation")]
+    let federation_registry = cdk::wallet::FederationRegistry::new(localstore.clone());
+    #[cfg(feature = "federation")]
     {
-        let federation_registry =
-            sub_commands::federation::FederationWalletRegistry::load(&work_dir)?;
-        utils::set_federation_registry(federation_registry)?;
+        utils::set_federation_registry(federation_registry.list().await?)?;
         if command_needs_federation_wallet_activation(&args.command) {
             utils::activate_federation_wallets(&wallet_repository).await?;
         }
@@ -298,8 +298,12 @@ async fn main() -> Result<()> {
         }
         #[cfg(feature = "federation")]
         Commands::Federation(sub_command_args) => {
-            sub_commands::federation::federation(&work_dir, &wallet_repository, sub_command_args)
-                .await
+            sub_commands::federation::federation(
+                &federation_registry,
+                &wallet_repository,
+                sub_command_args,
+            )
+            .await
         }
         Commands::Melt(sub_command_args) => {
             sub_commands::melt::pay(&wallet_repository, sub_command_args, &default_unit).await

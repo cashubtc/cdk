@@ -386,12 +386,12 @@
         );
 
         # MSRV dependencies (separate cache due to different toolchain)
-        # Exclude cdk-redb (and its dependents) and cdk-cli from MSRV coverage
+        # Exclude cdk-redb (and its dependents), cdk-cli and cdk-fed-tui from MSRV coverage
         workspaceDepsMsrv = craneLibMsrv.buildDepsOnly (
           commonCraneArgsMsrv
           // {
             pname = "cdk-deps-msrv";
-            cargoExtraArgs = "--workspace --exclude cdk-redb --exclude cdk-integration-tests --exclude cdk-ffi-dart --exclude cdk-ffi-swift --exclude cdk-ffi-kotlin --exclude cdk-cli";
+            cargoExtraArgs = "--workspace --exclude cdk-redb --exclude cdk-integration-tests --exclude cdk-ffi-dart --exclude cdk-ffi-swift --exclude cdk-ffi-kotlin --exclude cdk-cli --exclude cdk-fed-tui";
           }
         );
 
@@ -439,7 +439,7 @@
                   (cargoArgs: ''
                     echo "Running check with args: ${cargoArgs}"
                     cargo clippy ${cargoArgs} -- -D warnings
-                    cargo test ${if builtins.match ".*cdk-cli.*" cargoArgs != null then "--bins" else "--lib"} ${cargoArgs}
+                    cargo test ${if builtins.match ".*(cdk-cli|cdk-fed-tui).*" cargoArgs != null then "--bins" else "--lib"} ${cargoArgs}
                   '')
                   cargoArgsList
               );
@@ -802,11 +802,18 @@
             "-p cdk -p cdk-http-client --no-default-features --features cdk/mint,cdk-http-client/reqwest"
           ];
 
+          # Supported federation feature combinations. The list is recorded in
+          # docs/bls-federation-architecture-review-plan-2026-11-23.md
+          # (package 8, feature matrix); keep the two in step.
           "federation-domain" = [
             "-p cdk-common --features federation,test"
             "-p cdk-federation-bark"
+            "-p cdk-sql-common --features federation-bark"
             "-p cdk-sqlite --features federation-bark"
+            "-p cdk-bark --features federation-bark"
             "-p cdk --no-default-features --features mint,wallet,federation"
+            "-p cdk --features mint,wallet,federation,federation-bark"
+            "-p cdk --no-default-features --features wallet,iroh"
           ];
 
           "federation-custody" = [
@@ -815,6 +822,7 @@
           ];
 
           "federation-runtime" = [
+            "-p cdk-federation --features test-utils,federation-bdk,federation-bark,iroh,prometheus"
             "-p cdk-axum --no-default-features --features federation"
             "-p cdk-axum --no-default-features --features federation-bdk"
             "-p cdk-axum --no-default-features --features federation-bark"
@@ -824,10 +832,13 @@
           "federation-binaries" = [
             "-p cdk-mintd --no-default-features --features sqlite,cln,federation"
             "-p cdk-mintd --no-default-features --features sqlite,federation-bdk,federation-bark"
+            "-p cdk-mintd --no-default-features --features sqlite,info-page,federation-bdk,federation-bark,iroh,prometheus"
             "-p cdk-mintd --no-default-features --features sqlite,federation-test-utils"
+            "-p cdk-mintd --no-default-features --features sqlite,federation-test-utils,federation-bark"
             "-p cdk-cli --no-default-features --features federation,iroh"
             "-p cdk-ffi --no-default-features"
             "-p cdk-ffi --no-default-features --features federation"
+            "-p cdk-fed-tui"
           ];
 
           "storage-and-cli" = [
@@ -1612,6 +1623,7 @@
                 buildPhaseCargoCommand = ''
                   cargo test --lib --workspace --exclude cdk-postgres --exclude cdk-integration-tests
                   cargo test --bins -p cdk-cli
+                  cargo test --bins -p cdk-fed-tui
                   cargo test --lib -p cdk-nostr --all-features
                 '';
                 doCheck = false;

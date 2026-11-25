@@ -509,7 +509,7 @@ impl App {
                     self.rebuild_members();
                     self.operation_ended("join");
                     self.modal = None;
-                    let join_url = runtime.local_mint_url().to_string();
+                    let join_url = runtime.primary_mint_url().to_string();
                     self.push_activity(ActivityEntry {
                         kind: "join",
                         member_url: Some(join_url.as_str()),
@@ -527,7 +527,7 @@ impl App {
             AppEvent::PrimarySwitched(result) => match result {
                 Ok(runtime) => {
                     let selected = self.selected_member;
-                    let primary_url = runtime.local_mint_url().to_string();
+                    let primary_url = runtime.primary_mint_url().to_string();
                     self.runtime = Some(runtime);
                     self.monitor_generation = self.monitor_generation.saturating_add(1);
                     self.rebuild_members();
@@ -830,7 +830,7 @@ impl App {
                 if self.can_start_operation()
                     && matches!(self.tab, Tab::Overview | Tab::Members) =>
             {
-                let primary = self.local_mint_url();
+                let primary = self.primary_mint_url();
                 match switch_primary_target(&self.members, self.selected_member, primary.as_deref())
                 {
                     Some(url) => return vec![AppCommand::SwitchPrimary(url)],
@@ -1162,10 +1162,10 @@ impl App {
         self.runtime.as_ref().map(|runtime| runtime.federation_id())
     }
 
-    pub fn local_mint_url(&self) -> Option<String> {
+    pub fn primary_mint_url(&self) -> Option<String> {
         self.runtime
             .as_ref()
-            .map(|runtime| runtime.local_mint_url().to_string())
+            .map(|runtime| runtime.primary_mint_url().to_string())
     }
 
     pub fn threshold_summary(&self) -> Option<(u16, u16, u16)> {
@@ -1631,6 +1631,7 @@ mod tests {
             payment_proof: None,
             payment_method: None,
             saga_id: None,
+            status: cdk_common::wallet::TransactionStatus::Completed,
         }
     }
 }

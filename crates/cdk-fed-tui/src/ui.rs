@@ -61,7 +61,7 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .map(|id| short(&id, 20))
         .unwrap_or_else(|| "not connected".to_string());
     let mint_url = app
-        .local_mint_url()
+        .primary_mint_url()
         .map(|url| short(&url, 30))
         .unwrap_or_default();
     let healthy = app.healthy_members();
@@ -234,7 +234,7 @@ fn render_overview(frame: &mut Frame<'_>, area: Rect, app: &App) {
         frame,
         chunks[1],
         app.selected_member(),
-        app.local_mint_url(),
+        app.primary_mint_url(),
     );
 }
 
@@ -251,7 +251,7 @@ fn render_members(frame: &mut Frame<'_>, area: Rect, app: &App) {
         frame,
         chunks[1],
         app.selected_member(),
-        app.local_mint_url(),
+        app.primary_mint_url(),
     );
 }
 
@@ -270,7 +270,7 @@ fn render_member_table(frame: &mut Frame<'_>, area: Rect, app: &App, compact: bo
 
     let rows = app.members.values().enumerate().map(|(index, member)| {
         let selected = index == app.selected_member;
-        let is_primary = app.local_mint_url().as_deref() == Some(member.url.as_str());
+        let is_primary = app.primary_mint_url().as_deref() == Some(member.url.as_str());
         let state = if member.online {
             "● READY"
         } else {

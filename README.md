@@ -55,6 +55,7 @@ The project is split up into several crates in the `crates/` directory:
     * [**cdk-mint-rpc**](./crates/cdk-mint-rpc/): Mint management gRPC server and cli.
 * Binaries:
     * [**cdk-cli**](./crates/cdk-cli/): Cashu wallet CLI.
+    * [**cdk-fed-tui**](./crates/cdk-fed-tui/): Federated wallet and member dashboard TUI (`fed-cdk-tui`).
     * [**cdk-mintd**](./crates/cdk-mintd/): Cashu Mint Binary.
     * [**cdk-mint-cli**](./crates/cdk-mint-rpc/): Cashu Mint management gRPC client cli.
 

@@ -277,9 +277,7 @@ mod tests {
 
     use super::*;
     #[cfg(feature = "federation")]
-    use crate::sub_commands::federation::{
-        FederationWalletRegistry, StoredFederationConnectorPolicy,
-    };
+    use crate::test_support::registered_federation;
 
     async fn test_repository() -> WalletRepository {
         let localstore: Arc<dyn WalletDatabase<cdk_database::Error> + Send + Sync> = Arc::new(
@@ -399,15 +397,8 @@ mod tests {
             .expect("member two")
             .public_mint_url
             .clone();
-        let mut registry = FederationWalletRegistry::default();
-        registry
-            .upsert(
-                public_config,
-                local_mint_url,
-                StoredFederationConnectorPolicy::default(),
-            )
-            .expect("upsert federation registry");
-        crate::utils::set_federation_registry(registry).expect("set federation registry");
+        let federation = registered_federation(public_config, Some(local_mint_url)).await;
+        crate::utils::set_federation_registry(vec![federation]).expect("set federation registry");
 
         let token = token_for_mint(member_two_url);
         let err = receive_token(&repository, &token, &[], &[], false, &CurrencyUnit::Usd)

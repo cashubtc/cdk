@@ -60,6 +60,7 @@ mod keyset_discovery;
 mod mint_quotes;
 mod quote_fallback;
 mod quote_status;
+mod registry;
 mod restore_and_check_state;
 mod signature_aggregation;
 mod threshold_responses;
