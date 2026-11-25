@@ -807,3 +807,55 @@ Decision: the replay guard is a validity window, not a permanent index.
 - **Trigger.** A sync round in which every peer answers `PeerHistoryPruned` installs a peer's latest scheduled checkpoint state (`install_state_transfer_below_peer_floors`), restarts the consensus runtime at it, and catches up the suffix in later rounds. A member with no stored next checkpoint probes the peer toward the latest known quorum so it sees the answer. Only an empty member can install; a member holding state below every floor is logged as needing a reset.
 - **Tests** (`cdk-axum`, `federation::tests::retention`): `pruning_keeps_the_floor_checkpoint_and_the_validity_window`, `unfinished_melt_saga_pins_the_retention_floor`, `member_below_every_peer_floor_installs_a_transfer_then_catches_up`.
 - **Not done.** Payment observations of terminal quotes are digest rows, so they move to stage 3 with the digest exclusion rule. No automatic reset of a non-empty member below every floor. The transaction pin has no test. Apply-time reads of journal entries of already final entities are not pinned (design document, "Not deleted yet").
+
+### 2026-11-25: package 0 (standalone changes split out, repository weight removed)
+
+- **Split out.** Each change below is one commit on a local branch cut from `origin/main` (not pushed). Each branch passes clippy and the tests of the crates it touches, and the change is reverted here:
+  - `claude/split-bitreq-blocking`: bitreq requests run in `spawn_blocking` with a 300-second default timeout. Federation peer clients use the reqwest backend.
+  - `claude/split-tor-native-tls`: the Tor transport's arti TLS backend (`native-tls` instead of `rustls`, which pulled `ring` 0.16). The federation does not use Tor.
+  - `claude/split-fake-wallet-repayment-queue`: lazy secondary repayment worker, cancellation on drop, 30-to-180-second delay, and any-amount detection that was always false on `main`.
+  - `claude/split-wallet-ambiguous-melt`: after an ambiguous melt POST, `Unpaid` or `Unknown` keeps the saga until paid, failed or expired. Generic; a federated wallet that loses a melt response has the same exposure as a standalone one until it lands.
+  - `claude/split-finalize-pending-melts-errors`: `finalize_pending_melts` returns an error when every pending melt fails.
+  - `claude/split-pubsub-reconnect-backoff`: the remote pub/sub consumer backs off before reconnecting an ended stream.
+  - `claude/split-payment-event-stream-backoff`: the payment processor server waits before resubscribing to an ended event stream (with the mint's empty-stream retry test).
+  - `claude/split-mintd-rust-log`: `cdk-mintd` honours `RUST_LOG`.
+  - `claude/split-prometheus-without-protobuf`: `prometheus` without its protobuf feature.
+  - `claude/split-wallet-receive-idempotent`: `receive_proofs` returns the stored amount for proofs already received.
+  - `claude/split-cli-wallet-options`: `mint --split-target`, `melt --onchain-quote-index`, `send --count`, minting stops at the requested amount, reliable progress-task shutdown, and no startup recovery for commands that do not touch proofs.
+- **Kept as prerequisites.**
+  - MSRV 1.91: `cdk-common`'s `federation` feature depends on `cdk-frost`, which needs `redb` 3 (Rust 1.89; checked with Rust 1.85 and the Iroh crates removed), and the Iroh transport the federation uses needs `iroh` 1.0 (Rust 1.91). Iroh in the lockfile also forces `time` 0.3.47 (Rust 1.88) on every crate. `AGENTS.md` already says 1.91.0; the MSRV lockfile recipe now says so too.
+  - Saga rollback: `rollback_melt_quote_in_transaction` returns an error when the saga row cannot be deleted. On `main` this was logged and the rollback committed anyway. The federated apply runs the rollback inside its own transaction, where a failed statement must abort the whole transaction, so best-effort deletion cannot be kept there. For a standalone mint the effect is that such a failure leaves the melt pending for the next recovery pass instead of committing.
+  - `cdk-http-client`: `send_bounded`, `http_post_bounded`, `HttpError::ResponseTooLarge` (catch-up and Iroh) and `ws::connect_stream` (Iroh). `tokio` is now a plain native dependency, because `connect_stream` needs its I/O traits and had compiled only through the bitreq feature. Note that `main` has since added its own `ResponseTooLarge { limit }`, which conflicts with this variant.
+  - Fake wallet `with_shared_incoming_payment_dir` (multi-process federation tests), wallet `confirm_paid_melt_notification`, the BLS transaction-identifier encoding, `cdk-cli check-state` (federation smoke recipes), and skipping startup recovery for `federation` registry commands.
+  - Item 3 of package 0 was already done on 2026-11-23: `federation_smoke` compiles only with `federation-test-utils` and `sqlite`. No production federation build of `cdk-mintd`, including default features with `federation-bdk,federation-bark`, enables `cdk/wallet`.
+- **Removed, archived on `claude/federation-archive` (10a81131c).**
+  - `docs/bls-federation-presentation*` (seven directories and the zip), the 60 CSV files in `docs/benchmarks` and `docs/nocean-invite-code.txt`.
+  - The Nocean deploy, control, operator and smoke scripts, the systemd unit, the second-Signet store scripts, `sync-private-repo.sh` and `wallet-nocean-test.sh`.
+  - The benchmark runners and analysis scripts, the Signet Bark harness (`run_local_bark_federation.sh` with its renderer and analyser), and `update-mobile-bindings.sh` with `scripts/mobile-bindings`.
+  - Kept: the scripts the justfile and CI call, `run_federation_setup_matrix.sh`, `run_iroh_federation_e2e.sh` and `scripts/fed-cdk-tui`. Several plan documents and the deployment runbook (`docs/deploy-distributed-cdk-federation`) still name removed scripts; they are left for the documentation step.
+- **Found, not split.**
+  - Ambiguous (tied to federation or BLS):
+    - `is_definitive_failure`: HTTP 429 is now ambiguous and `RequestAlreadyPaid` is definitive.
+    - Batch-mint signature check order.
+    - `Unknown` melt quotes can no longer change state.
+    - Wallet keyset refresh replaces the cached keysets, and `retry_on_inactive_keyset` always retries once. Both came with federation admission.
+    - V2 keyset unit validation in the wallet and signatory.
+    - `ProofV4` omits a null DLEQ.
+    - `Amount` accepts decimal strings.
+    - The `cdk-bdk` engine move.
+    - SQLite write gate, `Locked` mapping and synchronous rollback.
+    - SQL commit/rollback connection handling, which `main` has since fixed differently.
+    - Workspace `serde_json/preserve_order`.
+    - The non-federation `iroh` feature and `info.http_enabled`.
+    - FFI `MintInfo.is_federation`.
+    - The signatory constants schema bump.
+    - `cdk-mint-rpc` and the fake-wallet rotation default to V3. In a standalone build, a rotation entry without a version now fails at startup.
+    - `cdk-mintd -c` lost `global = true`.
+  - Standalone, not moved:
+    - Wallet proof preparation (SQL filters in `get_proofs` and `BTreeMap` selection). `main` has since rewritten both files, so it needs to be redone there rather than moved.
+    - `.gitleaksignore` and the Postgres notes in `DEVELOPMENT.md`.
+  - Migration hazards for the merge:
+    - `20260707170000_allow_failed_melt_quote_state.sql` rebuilds `melt_quote` on SQLite. A database already on `main`'s later migrations would lose `melt_lock` columns and regain dropped indexes.
+    - The branch edits `main`'s existing `20260924000000_normalize_transaction_ys.sql` in place; that edit needs a new migration.
+
+Verification: `cargo fmt`; clippy with `-D warnings` on `cdk-common`, `cdk`, `cdk-federation` and `cdk-axum` (three feature sets); the 15 production builds in the check script; unit tests of `cdk-common` with `federation,test` (494, plus 23 in its integration targets), `cdk-federation-bark` (40), `cdk-bark` (36), `cdk-sqlite` with `federation-bark` (195), `cdk` with federation and Bark (1,062), `cdk` wallet Iroh (2), `cdk-federation` with all features (115), `cdk-axum` with `federation-bdk,federation-bark,iroh` (479) and `cdk-mintd` with `federation-test-utils,federation-bark` (298). Standalone suites touched by the reverts: `cdk` lib with default features (785), `cdk-fake-wallet` (11), `cdk-http-client` (63), `cdk-cli` (24, and 53 with `federation,iroh`), `cdk-payment-processor` (11), `cdk-sql-common` with `prometheus` (19) and `cdk-mintd` lib (200). `registry_load_rejects_missing_current_fields` in `cdk-cli` failed once in a full run and passed in three reruns; it builds its temporary directory name from the clock.
