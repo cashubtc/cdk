@@ -177,6 +177,7 @@ impl FederationNodeRuntime {
             .consensus()
             .ok_or_else(|| runtime_unavailable("consensus"))?;
         *consensus.lock().await = checkpoint_runtime;
+        self.prune_history_after_promotion().await;
         #[cfg(feature = "prometheus")]
         {
             let member = runtime_config.member_id().to_string();

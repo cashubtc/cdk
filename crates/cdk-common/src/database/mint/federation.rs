@@ -22,13 +22,13 @@ use crate::federation::{
     FederationId, FederationJournalEntry, FederationJournalTip,
     FederationMaterializedStateKeyRecord, FederationMaterializedStateRow,
     FederationOperationConflictKey, FederationOperationId, FederationPaymentObservationContext,
-    FederationPaymentObservationRecord, FederationSetupActivation, FederationSetupApproval,
-    FederationSetupCoordinatorPhase, FederationSetupEnrollment, FederationSetupId,
-    FederationSetupInvitationId, FederationSetupInvitationRecord, FederationSetupManifest,
-    FederationSetupParticipantPhase, FederationSetupProposal, FederationSetupSession,
-    FederationSetupUrlPolicy, FederationSignatureShareRecord, FederationStateSnapshotInfo,
-    FederationStateSnapshotRow, FederationStateTransferWindowBounds, MemberId,
-    VerifiedFederationCheckpointQuorum, VerifiedFederationStateTransferWindow,
+    FederationPaymentObservationRecord, FederationRetentionFloor, FederationSetupActivation,
+    FederationSetupApproval, FederationSetupCoordinatorPhase, FederationSetupEnrollment,
+    FederationSetupId, FederationSetupInvitationId, FederationSetupInvitationRecord,
+    FederationSetupManifest, FederationSetupParticipantPhase, FederationSetupProposal,
+    FederationSetupSession, FederationSetupUrlPolicy, FederationSignatureShareRecord,
+    FederationStateSnapshotInfo, FederationStateSnapshotRow, FederationStateTransferWindowBounds,
+    MemberId, VerifiedFederationCheckpointQuorum, VerifiedFederationStateTransferWindow,
 };
 use crate::mint::{self, MintQuote as MintMintQuote};
 use crate::nuts::{
@@ -259,6 +259,22 @@ pub trait FederationJournalTransaction {
     /// are always retained. The pruning decision and deletions run in the
     /// caller's transaction.
     async fn prune_federation_checkpoints(&mut self) -> Result<u64, Self::Err>;
+
+    /// Advance the retention floor and delete one bounded batch below it.
+    ///
+    /// The floor is the scheduled checkpoint before the latest one covered by
+    /// the trusted checkpoint, capped at the start of the latest one's
+    /// validity window and at `keep_journal_from`, the earliest journal entry
+    /// that live state still reads. It never moves back. Each call deletes at
+    /// most `limit` journal entries (with their conflict keys), `limit`
+    /// finalized items and `limit` scheduled checkpoints below the floor
+    /// checkpoint, and returns how many rows it deleted. The floor checkpoint
+    /// and the trusted and audited checkpoints are kept.
+    async fn prune_federation_history(
+        &mut self,
+        limit: u64,
+        keep_journal_from: Option<u64>,
+    ) -> Result<u64, Self::Err>;
 
     /// Durably latch a materialized-state audit mismatch.
     ///
@@ -971,6 +987,12 @@ pub trait FederationJournalDatabase {
     async fn get_federation_state_transfer_base(
         &self,
     ) -> Result<Option<FederationCheckpoint>, Self::Err>;
+
+    /// Get the retention floor: this member holds no journal entries or
+    /// finalized items below it.
+    async fn get_federation_retention_floor(
+        &self,
+    ) -> Result<Option<FederationRetentionFloor>, Self::Err>;
 
     /// Get all persisted AlephBFT finalized items in accepted item order.
     async fn get_federation_aleph_bft_finalized_items(

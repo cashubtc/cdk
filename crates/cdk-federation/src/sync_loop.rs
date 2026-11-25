@@ -156,6 +156,8 @@ where
     // cannot age the evidence collected after it.
     let round_started_at = Instant::now();
     let mut synced = 0;
+    let mut attempted = 0_usize;
+    let mut pruned = 0_usize;
     let mut peer_statuses = Vec::with_capacity(peers.len());
     for peer in peers {
         let now = Instant::now();
@@ -168,6 +170,7 @@ where
                 continue;
             }
         }
+        attempted += 1;
         match client.sync_once_from_member(state, peer).await {
             Ok(status) => {
                 synced += 1;
@@ -183,6 +186,9 @@ where
                 );
             }
             Err(err) => {
+                if crate::retention::is_peer_history_pruned(&err) {
+                    pruned += 1;
+                }
                 let reconnect_after = backoff.as_mut().map(|backoff| {
                     backoff.record_failure(peer.member_id, client.sync_config, Instant::now())
                 });
@@ -206,6 +212,12 @@ where
                 }
             }
         }
+    }
+    // Every peer deleted the history this member needs: install a peer's
+    // checkpoint state, then catch up the suffix in the next rounds.
+    if attempted > 0 && pruned == attempted {
+        crate::retention::install_state_transfer_below_peer_floors(state, client, peers).await;
+        return synced;
     }
     apply_checkpoint_discovered_during_peer_sync(state, client, peers, &peer_statuses).await;
     reconcile_federation_startup_with_quorum(state, client, round_started_at, &peer_statuses).await;
@@ -1490,6 +1502,22 @@ where
 
             while peer_requires_catch_up(&local_status, &peer_status)? {
                 let Some(target) = next_local_checkpoint_catch_up_target(state).await? else {
+                    // Peers delete the scheduled checkpoints below their floor,
+                    // so a missing next checkpoint may mean pruned history.
+                    if let Err(err) = crate::retention::probe_peer_history_to_known_checkpoint(
+                        state, self, member,
+                    )
+                    .await
+                    {
+                        state
+                            .mark_federation_lagging(
+                                member.member_id,
+                                local_status.operation_count,
+                                peer_status.operation_count,
+                            )
+                            .await;
+                        return Err(err);
+                    }
                     state.federation.request_recovery_checkpoint().await;
                     state
                         .mark_federation_lagging(

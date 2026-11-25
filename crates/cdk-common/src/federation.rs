@@ -25,6 +25,7 @@ mod operation;
 mod operator_status;
 mod payment_advancement;
 mod recovery;
+mod retention;
 mod setup;
 mod signing;
 mod state_table;
@@ -180,6 +181,7 @@ pub use self::recovery::{
     FederationRecoveryAction, FederationRecoveryActionCount, FederationRecoveryPhase,
     FederationWalletRecoveryStatus,
 };
+pub use self::retention::{FederationRetentionFloor, FEDERATION_RETENTION_PRUNE_BATCH_ROWS};
 pub use self::setup::{
     FederationSetupActivation, FederationSetupApproval, FederationSetupAuthorizationHash,
     FederationSetupBitcoinNetwork, FederationSetupCoordinatorPhase,

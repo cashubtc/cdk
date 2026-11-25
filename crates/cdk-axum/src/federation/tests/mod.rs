@@ -139,6 +139,7 @@ mod operation_results;
 mod operations;
 mod peer_client;
 mod recovery;
+mod retention;
 mod state_transfer;
 mod status;
 

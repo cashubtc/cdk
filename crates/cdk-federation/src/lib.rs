@@ -78,6 +78,8 @@ pub mod payment_schedule;
 #[doc(hidden)]
 pub mod peer_client;
 #[doc(hidden)]
+pub mod retention;
+#[doc(hidden)]
 pub mod runtime_components;
 #[doc(hidden)]
 pub mod services;

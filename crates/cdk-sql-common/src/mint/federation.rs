@@ -85,14 +85,14 @@ use cdk_common::federation::{
     FederationMaterializedStateKeyRecord, FederationOperationConflictKey,
     FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
     FederationPaymentObservation, FederationPaymentObservationContext,
-    FederationPaymentObservationRecord, FederationSetupActivation, FederationSetupApproval,
-    FederationSetupCoordinatorPhase, FederationSetupEnrollment, FederationSetupId,
-    FederationSetupInvitationId, FederationSetupInvitationRecord, FederationSetupInvitationState,
-    FederationSetupLocalRole, FederationSetupManifest, FederationSetupParticipantPhase,
-    FederationSetupProposal, FederationSetupSession, FederationSignatureShareRecord,
-    FederationStateSnapshotInfo, FederationStateSnapshotRow, FederationStateTransferWindowBounds,
-    MemberId, VerifiedFederationCheckpointQuorum, VerifiedFederationStateTransferWindow,
-    FEDERATION_OPERATION_VALIDITY_SESSIONS,
+    FederationPaymentObservationRecord, FederationRetentionFloor, FederationSetupActivation,
+    FederationSetupApproval, FederationSetupCoordinatorPhase, FederationSetupEnrollment,
+    FederationSetupId, FederationSetupInvitationId, FederationSetupInvitationRecord,
+    FederationSetupInvitationState, FederationSetupLocalRole, FederationSetupManifest,
+    FederationSetupParticipantPhase, FederationSetupProposal, FederationSetupSession,
+    FederationSignatureShareRecord, FederationStateSnapshotInfo, FederationStateSnapshotRow,
+    FederationStateTransferWindowBounds, MemberId, VerifiedFederationCheckpointQuorum,
+    VerifiedFederationStateTransferWindow, FEDERATION_OPERATION_VALIDITY_SESSIONS,
 };
 use cdk_common::quote_id::QuoteId;
 use cdk_common::PublicKey;

@@ -486,6 +486,10 @@ fn federation_error_status(err: &FederationError) -> StatusCode {
         FederationError::Checkpoint(FederationCheckpointError::AuditNotLocal { .. }) => {
             StatusCode::FORBIDDEN
         }
+        // The peer must install a state transfer; its client recognises GONE.
+        FederationError::Checkpoint(FederationCheckpointError::BelowRetentionFloor { .. }) => {
+            StatusCode::GONE
+        }
         FederationError::PendingConsensusMempoolFull { .. }
         | FederationError::ResponseWaiterLimitExceeded { .. } => StatusCode::TOO_MANY_REQUESTS,
         FederationError::ConsensusQuorumUnavailable { .. }

@@ -142,6 +142,21 @@ pub(super) async fn state_transfer_window_page(
     checkpoint
         .validate_against_validated_config(runtime_config.public_config())
         .map_err(federation_error_response)?;
+    if let Some(floor) = db
+        .get_federation_retention_floor()
+        .await
+        .map_err(|err| anyhow_response(err.into()))?
+    {
+        if !floor.retains_window_of(&checkpoint) {
+            return Err(federation_error_response(
+                FederationCheckpointError::BelowRetentionFloor {
+                    requested: checkpoint.finalized_next_item_index,
+                    floor: floor.item_start,
+                }
+                .into(),
+            ));
+        }
+    }
     let bounds = db
         .get_federation_state_transfer_window_bounds(&checkpoint)
         .await

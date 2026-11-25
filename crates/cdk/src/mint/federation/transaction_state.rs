@@ -28,6 +28,29 @@ impl Mint {
         read_federation_state(&self.localstore()).await
     }
 
+    /// Earliest journal entry an unfinished outgoing transaction still reads.
+    ///
+    /// Signing and broadcast read a transaction's accepted proposal entry
+    /// until the transaction is confirmed, abandoned or replaced, so history
+    /// deletion must keep it.
+    pub async fn federation_transaction_retention_pin(&self) -> Result<Option<u64>, Error> {
+        Ok(self
+            .federation_transaction_state()
+            .await?
+            .accepted_transactions()
+            .values()
+            .filter(|accepted| {
+                !matches!(
+                    accepted.state,
+                    FederationAcceptedTransactionState::Confirmed
+                        | FederationAcceptedTransactionState::Abandoned
+                        | FederationAcceptedTransactionState::Replaced { .. }
+                )
+            })
+            .map(|accepted| accepted.accepted_operation_index)
+            .min())
+    }
+
     pub(super) async fn apply_federation_transaction_proposal(
         &self,
         entry: &FederationJournalEntry,

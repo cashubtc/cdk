@@ -174,7 +174,9 @@ where
             self.transport
                 .http_post(federation_endpoint(member, endpoint)?, None, payload);
         match time::timeout(timeout, request).await {
-            Ok(result) => Ok(result?.json_or_status_error()?),
+            Ok(result) => Ok(result
+                .and_then(|response| response.json_or_status_error())
+                .map_err(peer_history_error)?),
             Err(_) => Err(FederationRestPeerClientError::RequestTimeout {
                 member_id: member.member_id,
                 operation: operation.to_string(),
@@ -229,7 +231,7 @@ where
                 })
                 .into(),
             ),
-            Ok(result) => Ok(result?),
+            Ok(result) => Ok(result.map_err(peer_history_error)?),
             Err(_) => Err(FederationRestPeerClientError::RequestTimeout {
                 member_id: member.member_id,
                 operation: operation.to_string(),
@@ -1331,6 +1333,17 @@ where
         }
 
         Ok(())
+    }
+}
+
+/// Map a peer's GONE answer to a typed error: the requested history lies
+/// below its retention floor, so the caller must install a state transfer.
+fn peer_history_error(error: HttpError) -> anyhow::Error {
+    match error {
+        HttpError::Status { status: 410, .. } => {
+            FederationError::Checkpoint(FederationCheckpointError::PeerHistoryPruned).into()
+        }
+        error => error.into(),
     }
 }
 

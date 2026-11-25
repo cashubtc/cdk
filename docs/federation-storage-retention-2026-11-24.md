@@ -1,7 +1,10 @@
 # Federation storage contract and checkpoint retention
 
 Status: prerequisites 1, 3 and 4 implemented (validity window, Bark readers,
-state transfer); prerequisites 2, 5 and 6 open. Follows package 6 of
+state transfer); duplicate and conflict detection bounded by the window;
+deletion of journal entries, conflict keys, finalized items and old scheduled
+checkpoints implemented (see "History deletion: built"). Prerequisites 2 and 5
+and the deletion of terminal entities and payment observations are open. Follows package 6 of
 `bls-federation-architecture-review-plan-2026-11-23.md`.
 
 Decision taken: checkpoints may truncate logs and history, and also terminal
@@ -494,6 +497,111 @@ checkpoint, and the installer stores it as history:
 7. **Cost.** Every scheduled capture now writes the whole state as snapshot
    rows (it already read all of it for the digest), and the snapshot is held
    in memory during capture and install.
+
+## History deletion: built
+
+### Floor
+
+`prune_federation_history` (SQL, in one transaction per batch) first advances
+the retention floor, stored as `FederationRetentionFloor` in
+`federation_checkpoint_state.retention_floor_json`:
+
+- Take the two latest scheduled checkpoints with a stored quorum that the
+  trusted checkpoint covers. With fewer than two there is no floor.
+- The floor is the earlier one's journal and finalized-item positions, or the
+  start of the latest one's validity window
+  (`federation_state_transfer_window_start`, including the one older item that
+  proves the window complete) if that is earlier.
+- It is lowered to the earliest journal entry live state still reads by
+  operation id: a melt saga's operation, an unfinished Bark action's origin,
+  and (passed in by `Mint::federation_transaction_retention_pin`) an outgoing
+  transaction that is not confirmed, abandoned or replaced.
+- It never moves back. The digests just before it (order, finalized-item,
+  application) are recorded while those rows still exist, and the
+  `federation_*_digest_at` lookups fall back to them.
+
+A state-transfer install records its window start as the installed member's
+floor.
+
+Without the pins, the floor is a function of the scheduled checkpoint sequence
+and the finalized items, so members that promoted the same checkpoints agree.
+The pins only hold a floor lower; they never let a member serve less.
+
+### Deletion
+
+After a promotion (`checkpoint_manager.rs`, `checkpoint_catch_up.rs`),
+`FederationNodeRuntime::prune_history_below_retention_floor` runs up to 64
+batches of `FEDERATION_RETENTION_PRUNE_BATCH_ROWS` (500), each in its own
+transaction: journal entries with their conflict keys, finalized items, and
+scheduled checkpoints (with signatures and quorums) older than the floor
+checkpoint, except the trusted and audited ones. Later promotions continue
+where it stopped. A failure is logged and retried at the next promotion.
+
+### Readers
+
+- **Catch-up serving.** A request whose journal or finalized-item cursor is
+  below the floor gets `FederationCheckpointError::BelowRetentionFloor`, sent
+  as HTTP 410. The peer client turns 410 into `PeerHistoryPruned`.
+- **State-transfer window serving.** A checkpoint whose window reaches below
+  the floor gets the same answer; the latest scheduled checkpoint's window is
+  always kept.
+- **Startup suffix verification** starts at the trusted checkpoint, which is at
+  or above the floor, and registers only entries inside each item's window.
+- **Point lookups at apply.** `require_prior_applied_quote_operation` accepts a
+  stored quote whose creating entry lies below the floor, as it already did
+  below a state-transfer base. Bark plan lookups, transaction signing and melt
+  change provenance read entries of live entities, which the pins keep.
+- **Bark readers** read from their replay marker, so their reads stay bounded.
+  A marker below the floor (a new Bark scope, or a runtime whose replay kept
+  failing for a whole checkpoint interval) reads from the floor and skips the
+  deleted entries. Rebuilding such a Bark wallet from the Bark projection
+  instead of the journal is not done.
+
+### Automatic state transfer
+
+When every peer attempted in a sync round answers a catch-up with
+`PeerHistoryPruned`, the round calls `install_state_transfer_below_peer_floors`:
+it fetches a peer's latest scheduled quorum, downloads the snapshot and window,
+installs them, and restarts the consensus runtime at that checkpoint
+(`adopt_installed_state_transfer`). The next rounds catch up the suffix with the
+ordinary protocol. Because a member with no stored next scheduled checkpoint
+never sent a catch-up request, `sync_once_from_member` first probes the peer
+toward the latest known scheduled quorum
+(`probe_peer_history_to_known_checkpoint`) so the pruned answer is seen.
+
+The installer requires empty federation state. A member that holds state below
+every peer's floor is logged as needing a reset; resetting it automatically
+would delete its mint rows and is not done.
+
+### Tests (`cdk-axum`, `federation::tests::retention`)
+
+- `pruning_keeps_the_floor_checkpoint_and_the_validity_window`: the floor equals
+  the previous scheduled checkpoint and is at or below the latest window start,
+  on both members; exactly the rows from the floor up remain; older scheduled
+  checkpoints and quorums are gone, the floor and latest are kept; pruning is
+  idempotent; catch-up below the floor gets 410 and from the floor returns
+  everything; the latest window serves and installs, an older one is refused;
+  a later checkpoint captured on pruned history keeps members' digests equal.
+- `unfinished_melt_saga_pins_the_retention_floor`: a pending melt saga holds the
+  floor at its entry until it is gone.
+- `member_below_every_peer_floor_installs_a_transfer_then_catches_up`: two peers
+  prune; an empty third member gets `PeerHistoryPruned` from both, installs a
+  transfer in one sync round and catches up a later suffix to the peers' tip
+  and digests.
+
+### Not deleted yet
+
+- **Payment observations of terminal quotes.** They are rows of the
+  materialized-state digest, so deleting them at local timing would split
+  checkpoint digests. They need the same exclusion rule as terminal entities
+  (prerequisite 5).
+- **Terminal entities** (stage 3, prerequisite 5).
+- The transaction pin is not covered by a test.
+- Apply-time reads of journal entries for entities that are already final
+  (for example a Bark operation naming a finished action's plan) are not
+  pinned. Valid operations do not reach them, and replays of recorded Bark
+  operations return before validation (stage 1), but a crafted operation could
+  see a missing entry on a member that deleted it and a present one elsewhere.
 
 ## Not retained-history work
 

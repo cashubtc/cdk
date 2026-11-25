@@ -104,6 +104,32 @@ async fn durable_catch_up_response(
             .into(),
         ));
     }
+    if let Some(floor) = state
+        .mint
+        .localstore()
+        .get_federation_retention_floor()
+        .await
+        .map_err(|err| anyhow_response(err.into()))?
+    {
+        if !floor.retains_journal_from(request.next_index) {
+            return Err(federation_error_response(
+                FederationCheckpointError::BelowRetentionFloor {
+                    requested: request.next_index,
+                    floor: floor.journal_start,
+                }
+                .into(),
+            ));
+        }
+        if !floor.retains_items_from(request.aleph_bft_next_item_index) {
+            return Err(federation_error_response(
+                FederationCheckpointError::BelowRetentionFloor {
+                    requested: request.aleph_bft_next_item_index,
+                    floor: floor.item_start,
+                }
+                .into(),
+            ));
+        }
+    }
     let limit = request.effective_limit(
         DEFAULT_FEDERATION_CATCH_UP_LIMIT,
         MAX_FEDERATION_CATCH_UP_LIMIT,

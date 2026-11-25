@@ -1665,13 +1665,25 @@ impl Mint {
         if applied_before {
             return Ok(());
         }
-        // A quote installed by a state transfer was created below the
-        // transfer base, whose journal rows this member does not hold. Its
-        // stored row is the proof that the creating operation was applied.
-        let Some(base) = self.localstore.get_federation_state_transfer_base().await? else {
+        // A quote created below the first journal entry this member holds
+        // (a state transfer base, or the retention floor once older entries
+        // are deleted) has no journal row here. Operations apply in order, so
+        // its stored row is the proof that the creating operation was
+        // applied before `max_operation_index`.
+        let transfer_base = self
+            .localstore
+            .get_federation_state_transfer_base()
+            .await?
+            .map(|base| base.journal_next_index);
+        let retention_floor = self
+            .localstore
+            .get_federation_retention_floor()
+            .await?
+            .map(|floor| floor.journal_start);
+        let Some(history_start) = transfer_base.max(retention_floor) else {
             return Err(Error::UnknownQuote);
         };
-        if base.journal_next_index > max_operation_index {
+        if history_start > max_operation_index {
             return Err(Error::UnknownQuote);
         }
         let installed = match &quote_key {

@@ -1139,6 +1139,9 @@ impl FederationNodeRuntime {
         if should_promote && checkpoint.kind == FederationCheckpointKind::Recovery {
             self.clear_recovery_checkpoint_request().await;
         }
+        if should_promote {
+            self.prune_history_after_promotion().await;
+        }
         Ok(FederationCheckpointQuorumResponse {
             version: FEDERATION_REST_API_VERSION,
             federation_id: runtime_config.federation_id(),

@@ -62,6 +62,19 @@ pub enum FederationCheckpointError {
     /// A checkpoint signature is not a valid Schnorr signature.
     #[error("Invalid federation checkpoint signature")]
     InvalidSignature,
+    /// Requested consensus history lies below this member's retention floor
+    /// and was deleted; the requester must install a state transfer.
+    #[error("Federation history below retention floor: requested={requested}, floor={floor}")]
+    BelowRetentionFloor {
+        /// Requested journal or finalized-item position.
+        requested: u64,
+        /// First position this member still holds.
+        floor: u64,
+    },
+    /// A peer deleted the history this member asked for; it must install a
+    /// state transfer instead of replaying.
+    #[error("Federation peer history pruned below the requested position")]
+    PeerHistoryPruned,
     /// A checkpoint state transfer page, snapshot or install violates a protocol invariant.
     #[error("Federation state transfer is invalid: {reason}")]
     StateTransferInvalid {

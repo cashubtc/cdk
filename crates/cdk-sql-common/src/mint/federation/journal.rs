@@ -445,6 +445,410 @@ where
     .transpose()
 }
 
+/// Retention floor recorded by history pruning or a state transfer, if any.
+async fn federation_retention_floor<C>(
+    connection: &C,
+) -> Result<Option<FederationRetentionFloor>, Error>
+where
+    C: DatabaseExecutor,
+{
+    let Some(row) = query(
+        r#"
+        SELECT retention_floor_json
+        FROM federation_checkpoint_state
+        WHERE state_key = :state_key
+        "#,
+    )?
+    .bind("state_key", FEDERATION_CHECKPOINT_STATE_KEY)
+    .fetch_one(connection)
+    .await?
+    else {
+        return Ok(None);
+    };
+    unpack_into!(let (floor_json) = row);
+    column_as_nullable_string!(&floor_json)
+        .map(|json| {
+            serde_json::from_str(&json)
+                .map_err(|e| Error::Internal(format!("Invalid federation retention floor: {e}")))
+        })
+        .transpose()
+}
+
+async fn store_federation_retention_floor<RM>(
+    transaction: &SQLTransaction<RM>,
+    floor: &FederationRetentionFloor,
+) -> Result<(), Error>
+where
+    RM: DatabasePool + 'static,
+{
+    query(
+        r#"
+        UPDATE federation_checkpoint_state
+        SET retention_floor_json = :floor_json
+        WHERE state_key = :state_key
+        "#,
+    )?
+    .bind("state_key", FEDERATION_CHECKPOINT_STATE_KEY)
+    .bind("floor_json", serde_json::to_string(floor)?)
+    .execute(&transaction.inner)
+    .await?;
+    Ok(())
+}
+
+/// Session that finalized the item at `item_index`, if it is stored.
+async fn federation_finalized_item_session<C>(
+    connection: &C,
+    item_index: u64,
+) -> Result<Option<u64>, Error>
+where
+    C: DatabaseExecutor,
+{
+    query(
+        r#"
+        SELECT session
+        FROM federation_aleph_bft_finalized_items
+        WHERE accepted_item_index = :accepted_item_index
+        "#,
+    )?
+    .bind("accepted_item_index", item_index as i64)
+    .fetch_one(connection)
+    .await?
+    .and_then(|row| row.into_iter().next())
+    .map(|column| Ok::<u64, Error>(column_as_number!(column)))
+    .transpose()
+}
+
+/// Advance the retention floor if the scheduled checkpoint sequence moved.
+///
+/// The floor is the scheduled checkpoint before the latest one the trusted
+/// checkpoint covers, or the start of the latest one's validity window if
+/// that is earlier, and never above `keep_journal_from`. It never moves back,
+/// and it is recorded with the digests just before it while those rows exist.
+async fn advance_federation_retention_floor<RM>(
+    transaction: &SQLTransaction<RM>,
+    trusted: &FederationCheckpoint,
+    stored: Option<FederationRetentionFloor>,
+    keep_journal_from: Option<u64>,
+) -> Result<Option<FederationRetentionFloor>, Error>
+where
+    RM: DatabasePool + 'static,
+{
+    let checkpoints = query(
+        r#"
+        SELECT c.checkpoint_id, c.checkpoint_json
+        FROM federation_checkpoints AS c
+        INNER JOIN federation_checkpoint_quorums AS q
+            ON q.checkpoint_id = c.checkpoint_id
+        WHERE c.checkpoint_kind = :checkpoint_kind
+          AND c.journal_next_index <= :journal_next_index
+          AND c.finalized_next_item_index <= :finalized_next_item_index
+        ORDER BY
+            c.scheduled_checkpoint_sequence DESC,
+            c.finalized_next_item_index DESC,
+            c.checkpoint_id DESC
+        LIMIT 2
+        "#,
+    )?
+    .bind(
+        "checkpoint_kind",
+        checkpoint_kind_to_str(FederationCheckpointKind::Scheduled),
+    )
+    .bind("journal_next_index", trusted.journal_next_index as i64)
+    .bind(
+        "finalized_next_item_index",
+        trusted.finalized_next_item_index as i64,
+    )
+    .fetch_all(&transaction.inner)
+    .await?
+    .into_iter()
+    .map(sql_row_to_federation_checkpoint)
+    .collect::<Result<Vec<_>, _>>()?;
+    let (Some(latest), Some(previous)) = (checkpoints.first(), checkpoints.get(1)) else {
+        return Ok(stored);
+    };
+    // A window that reaches below the floor cannot be measured from the rows
+    // that are left; keep the floor until the checkpoints move on.
+    if stored.is_some_and(|stored| !stored.retains_window_of(latest)) {
+        return Ok(stored);
+    }
+    let window = federation_state_transfer_window_start(&transaction.inner, latest).await?;
+    let (mut journal_start, mut item_start) =
+        if previous.finalized_next_item_index <= window.item_start {
+            (
+                previous.journal_next_index,
+                previous.finalized_next_item_index,
+            )
+        } else {
+            (window.journal_start, window.item_start)
+        };
+    if let Some(keep) = keep_journal_from.filter(|keep| *keep < journal_start) {
+        journal_start = keep;
+        let pinned_item = query(
+            r#"
+            SELECT ordered_item_index
+            FROM federation_journal_entries
+            WHERE operation_index = :operation_index
+            "#,
+        )?
+        .bind("operation_index", keep as i64)
+        .fetch_one(&transaction.inner)
+        .await?
+        .and_then(|row| row.into_iter().next())
+        .and_then(|column| match column {
+            Column::Null => None,
+            column => Some(column),
+        })
+        .map(|column| Ok::<u64, Error>(column_as_number!(column)))
+        .transpose()?;
+        if let Some(pinned_item) = pinned_item {
+            item_start = item_start.min(pinned_item);
+        }
+    }
+    if let Some(stored) = stored {
+        if journal_start <= stored.journal_start && item_start <= stored.item_start {
+            return Ok(Some(stored));
+        }
+        journal_start = journal_start.max(stored.journal_start);
+        item_start = item_start.max(stored.item_start);
+    }
+    let floor = FederationRetentionFloor {
+        checkpoint_id: previous
+            .id()
+            .map_err(|e| Error::Internal(format!("Invalid federation checkpoint: {e}")))?,
+        journal_start,
+        item_start,
+        item_start_session: federation_finalized_item_session(&transaction.inner, item_start)
+            .await?
+            .unwrap_or(latest.aleph_bft_session),
+        journal_base_digest: federation_journal_digest_at(&transaction.inner, journal_start)
+            .await?,
+        item_base_digest: federation_finalized_item_digest_at(&transaction.inner, item_start)
+            .await?,
+        application_base_digest: federation_application_digest_at(
+            &transaction.inner,
+            journal_start,
+        )
+        .await?,
+    };
+    store_federation_retention_floor(transaction, &floor).await?;
+    Ok(Some(floor))
+}
+
+/// Earliest journal entry that live mint state still reads by operation id.
+///
+/// A melt saga finalizes against its operation's entry, and a Bark action
+/// reads its plan entries until it reaches a final phase. Labels are those
+/// the Bark projection stores; the table exists whether or not Bark is built.
+async fn federation_live_state_retention_pin<C>(connection: &C) -> Result<Option<u64>, Error>
+where
+    C: DatabaseExecutor,
+{
+    let mut pins = Vec::with_capacity(2);
+    for sql in [
+        r#"
+        SELECT MIN(j.operation_index)
+        FROM saga_state AS s
+        INNER JOIN federation_journal_entries AS j
+            ON j.operation_id = s.federation_operation_id
+        "#,
+        r#"
+        SELECT MIN(origin_operation_index)
+        FROM federation_bark_actions
+        WHERE phase NOT IN (
+            'receive_claimed',
+            'payment_succeeded',
+            'revocation_completed',
+            'refresh_completed',
+            'exit_confirmed'
+        )
+        "#,
+    ] {
+        let pin = query(sql)?
+            .fetch_one(connection)
+            .await?
+            .and_then(|row| row.into_iter().next())
+            .and_then(|column| match column {
+                Column::Null => None,
+                column => Some(column),
+            })
+            .map(|column| Ok::<u64, Error>(column_as_number!(column)))
+            .transpose()?;
+        pins.extend(pin);
+    }
+    Ok(pins.into_iter().min())
+}
+
+/// Delete one bounded batch of consensus history below the retention floor.
+async fn prune_federation_history_below_floor<RM>(
+    transaction: &SQLTransaction<RM>,
+    limit: u64,
+    keep_journal_from: Option<u64>,
+) -> Result<u64, Error>
+where
+    RM: DatabasePool + 'static,
+{
+    let frontier = federation_checkpoint_frontier_for_update(transaction).await?;
+    let Some(trusted_id) = frontier.trusted_checkpoint_id else {
+        return Ok(0);
+    };
+    let Some(trusted) = query(
+        r#"
+        SELECT checkpoint_id, checkpoint_json
+        FROM federation_checkpoints
+        WHERE checkpoint_id = :checkpoint_id
+        "#,
+    )?
+    .bind("checkpoint_id", trusted_id.to_string())
+    .fetch_one(&transaction.inner)
+    .await?
+    .map(sql_row_to_federation_checkpoint)
+    .transpose()?
+    else {
+        return Ok(0);
+    };
+    let stored = federation_retention_floor(&transaction.inner).await?;
+    let keep_journal_from = keep_journal_from
+        .into_iter()
+        .chain(federation_live_state_retention_pin(&transaction.inner).await?)
+        .min();
+    let Some(floor) =
+        advance_federation_retention_floor(transaction, &trusted, stored, keep_journal_from)
+            .await?
+    else {
+        return Ok(0);
+    };
+    let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+    let mut deleted = 0_u64;
+
+    let journal_batch_end = query(
+        r#"
+        SELECT MAX(operation_index)
+        FROM (
+            SELECT operation_index
+            FROM federation_journal_entries
+            WHERE operation_index < :floor
+            ORDER BY operation_index ASC
+            LIMIT :limit
+        ) AS batch
+        "#,
+    )?
+    .bind("floor", floor.journal_start as i64)
+    .bind("limit", limit)
+    .fetch_one(&transaction.inner)
+    .await?
+    .and_then(|row| row.into_iter().next())
+    .and_then(|column| match column {
+        Column::Null => None,
+        column => Some(column),
+    })
+    .map(|column| Ok::<u64, Error>(column_as_number!(column)))
+    .transpose()?;
+    if let Some(end) = journal_batch_end {
+        query(
+            r#"
+            DELETE FROM federation_journal_conflict_keys
+            WHERE operation_index <= :end
+            "#,
+        )?
+        .bind("end", end as i64)
+        .execute(&transaction.inner)
+        .await?;
+        let rows = query(
+            r#"
+            DELETE FROM federation_journal_entries
+            WHERE operation_index <= :end
+            "#,
+        )?
+        .bind("end", end as i64)
+        .execute(&transaction.inner)
+        .await?;
+        deleted = deleted.saturating_add(u64::try_from(rows).unwrap_or(u64::MAX));
+    }
+
+    let item_batch_end = query(
+        r#"
+        SELECT MAX(accepted_item_index)
+        FROM (
+            SELECT accepted_item_index
+            FROM federation_aleph_bft_finalized_items
+            WHERE accepted_item_index < :floor
+            ORDER BY accepted_item_index ASC
+            LIMIT :limit
+        ) AS batch
+        "#,
+    )?
+    .bind("floor", floor.item_start as i64)
+    .bind("limit", limit)
+    .fetch_one(&transaction.inner)
+    .await?
+    .and_then(|row| row.into_iter().next())
+    .and_then(|column| match column {
+        Column::Null => None,
+        column => Some(column),
+    })
+    .map(|column| Ok::<u64, Error>(column_as_number!(column)))
+    .transpose()?;
+    if let Some(end) = item_batch_end {
+        let rows = query(
+            r#"
+            DELETE FROM federation_aleph_bft_finalized_items
+            WHERE accepted_item_index <= :end
+            "#,
+        )?
+        .bind("end", end as i64)
+        .execute(&transaction.inner)
+        .await?;
+        deleted = deleted.saturating_add(u64::try_from(rows).unwrap_or(u64::MAX));
+    }
+
+    let floor_checkpoint = query(
+        r#"
+        SELECT scheduled_checkpoint_sequence
+        FROM federation_checkpoints
+        WHERE checkpoint_id = :checkpoint_id
+        "#,
+    )?
+    .bind("checkpoint_id", floor.checkpoint_id.to_string())
+    .fetch_one(&transaction.inner)
+    .await?
+    .and_then(|row| row.into_iter().next())
+    .map(|column| Ok::<u64, Error>(column_as_number!(column)))
+    .transpose()?;
+    if let Some(floor_sequence) = floor_checkpoint {
+        let rows = query(
+            r#"
+            SELECT checkpoint_id
+            FROM federation_checkpoints
+            WHERE checkpoint_kind = :checkpoint_kind
+              AND scheduled_checkpoint_sequence < :sequence
+            ORDER BY scheduled_checkpoint_sequence ASC, checkpoint_id ASC
+            LIMIT :limit
+            "#,
+        )?
+        .bind(
+            "checkpoint_kind",
+            checkpoint_kind_to_str(FederationCheckpointKind::Scheduled),
+        )
+        .bind("sequence", floor_sequence as i64)
+        .bind("limit", limit)
+        .fetch_all(&transaction.inner)
+        .await?;
+        for row in rows {
+            unpack_into!(let (checkpoint_id) = row);
+            let checkpoint_id = FederationCheckpointId::from_hex(column_as_string!(&checkpoint_id))
+                .map_err(|e| Error::Internal(format!("Invalid federation checkpoint ID: {e}")))?;
+            if frontier.trusted_checkpoint_id != Some(checkpoint_id)
+                && frontier.latest_audited_checkpoint_id != Some(checkpoint_id)
+            {
+                deleted = deleted.saturating_add(
+                    delete_federation_checkpoint(transaction, checkpoint_id).await?,
+                );
+            }
+        }
+    }
+    Ok(deleted)
+}
+
 /// Window bounds stored by a state transfer, if this member installed one.
 async fn federation_state_transfer_window_bounds<C>(
     connection: &C,
@@ -517,6 +921,11 @@ where
             match next {
                 Some(row) => row.into_iter().next(),
                 None => {
+                    if let Some(floor) = federation_retention_floor(connection).await? {
+                        if floor.journal_start == next_index {
+                            return Ok(floor.journal_base_digest);
+                        }
+                    }
                     return match federation_state_transfer_base(connection).await? {
                         Some(base) if base.journal_next_index == next_index => {
                             Ok(base.journal_order_digest)
@@ -559,6 +968,11 @@ where
     .fetch_one(connection)
     .await?;
     let Some(row) = row else {
+        if let Some(floor) = federation_retention_floor(connection).await? {
+            if floor.journal_start == next_index {
+                return Ok(floor.application_base_digest);
+            }
+        }
         if let Some(window) = federation_state_transfer_window_bounds(connection).await? {
             if window.journal_start == next_index {
                 return Ok(window.application_base_digest);
@@ -606,6 +1020,11 @@ where
     .fetch_one(connection)
     .await?;
     let Some(row) = row else {
+        if let Some(floor) = federation_retention_floor(connection).await? {
+            if floor.item_start == next_index {
+                return Ok(floor.item_base_digest);
+            }
+        }
         if let Some(window) = federation_state_transfer_window_bounds(connection).await? {
             if window.item_start == next_index {
                 return Ok(window.item_base_digest);
@@ -1691,6 +2110,29 @@ where
         .execute(&self.inner)
         .await?;
         install_federation_state_transfer_window(self, window).await?;
+        // The member holds nothing below its window: that is its retention
+        // floor, so peers asking for older history are told to transfer too.
+        let bounds = window.bounds();
+        let floor = FederationRetentionFloor {
+            checkpoint_id: checkpoint
+                .id()
+                .map_err(|e| Error::Internal(format!("Invalid federation checkpoint: {e}")))?,
+            journal_start: bounds.journal_start,
+            item_start: bounds.item_start,
+            item_start_session: window
+                .items()
+                .first()
+                .map_or(checkpoint.aleph_bft_session, |(item, _)| item.session),
+            journal_base_digest: window
+                .entries()
+                .first()
+                .map_or(checkpoint.journal_order_digest, |(entry, _)| {
+                    entry.previous_order_digest
+                }),
+            item_base_digest: bounds.item_base_digest,
+            application_base_digest: bounds.application_base_digest,
+        };
+        store_federation_retention_floor(self, &floor).await?;
         self.set_federation_aleph_bft_active_session(checkpoint.aleph_bft_session)
             .await?;
         Ok(())
@@ -1698,6 +2140,14 @@ where
 
     async fn prune_federation_checkpoints(&mut self) -> Result<u64, Self::Err> {
         prune_federation_checkpoint_retention(self).await
+    }
+
+    async fn prune_federation_history(
+        &mut self,
+        limit: u64,
+        keep_journal_from: Option<u64>,
+    ) -> Result<u64, Self::Err> {
+        prune_federation_history_below_floor(self, limit, keep_journal_from).await
     }
 
     async fn latch_federation_materialized_state_audit_mismatch(
@@ -2688,6 +3138,17 @@ where
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
         federation_state_transfer_base(&*conn).await
+    }
+
+    async fn get_federation_retention_floor(
+        &self,
+    ) -> Result<Option<FederationRetentionFloor>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        federation_retention_floor(&*conn).await
     }
 
     async fn get_federation_aleph_bft_finalized_items(
