@@ -12,7 +12,7 @@ readme = "README.md"
 
 [features]
 default = ["bitreq"]
-bitreq = ["dep:bitreq"]
+bitreq = ["dep:bitreq", "dep:tokio"]
 reqwest = ["dep:reqwest"]
 bip353 = ["dep:dnssec-prover", "dep:tokio"]
 tor = [
@@ -51,7 +51,7 @@ reqwest = { version = "0.13", default-features = false, features = ["form", "jso
 rustls.workspace = true
 tls-api = { version = "0.9", optional = true }
 tls-api-native-tls = { version = "0.9", optional = true }
-tokio = { workspace = true, features = ["sync", "time"], optional = true }
+tokio = { workspace = true, features = ["rt", "sync", "time"], optional = true }
 tor-rtcompat = { version = "0.19.0", optional = true, features = ["tokio", "rustls"] }
 tokio-tungstenite = { workspace = true, features = [
     "rustls", "rustls-tls-native-roots", "connect"
