@@ -40,10 +40,10 @@ pub trait WalletDatabase: Send + Sync {
     async fn get_mint_keysets(
         &self,
         mint_url: MintUrl,
-    ) -> Result<Option<Vec<KeySetInfo>>, FfiError>;
+    ) -> Result<Option<Vec<WalletKeySetInfo>>, FfiError>;
 
     /// Get mint keyset by id
-    async fn get_keyset_by_id(&self, keyset_id: Id) -> Result<Option<KeySetInfo>, FfiError>;
+    async fn get_keyset_by_id(&self, keyset_id: Id) -> Result<Option<WalletKeySetInfo>, FfiError>;
 
     /// Get mint quote from storage
     async fn get_mint_quote(&self, quote_id: String) -> Result<Option<MintQuote>, FfiError>;
@@ -76,12 +76,18 @@ pub trait WalletDatabase: Send + Sync {
     /// Get proofs by Y values
     async fn get_proofs_by_ys(&self, ys: Vec<PublicKey>) -> Result<Vec<ProofInfo>, FfiError>;
 
-    /// Get balance efficiently using SQL aggregation
+    /// Get balance efficiently using SQL aggregation, leaving out every proof
+    /// on a keyset in `exclude_keyset_ids`
+    ///
+    /// The exclusion is a parameter so a caller that hides unspendable proofs
+    /// still gets one aggregate, instead of loading every row to filter the
+    /// sum itself.
     async fn get_balance(
         &self,
         mint_url: Option<MintUrl>,
         unit: Option<CurrencyUnit>,
         state: Option<Vec<ProofState>>,
+        exclude_keyset_ids: Option<Vec<Id>>,
     ) -> Result<u64, FfiError>;
 
     /// Get transaction from storage
@@ -214,7 +220,7 @@ pub trait WalletDatabase: Send + Sync {
     async fn add_mint_keysets(
         &self,
         mint_url: MintUrl,
-        keysets: Vec<KeySetInfo>,
+        keysets: Vec<WalletKeySetInfo>,
     ) -> Result<(), FfiError>;
 
     /// Add mint quote to storage
@@ -389,7 +395,7 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
     async fn get_mint_keysets(
         &self,
         mint_url: cdk::mint_url::MintUrl,
-    ) -> Result<Option<Vec<cdk::nuts::KeySetInfo>>, cdk::cdk_database::Error> {
+    ) -> Result<Option<Vec<cdk::wallet::WalletKeySetInfo>>, cdk::cdk_database::Error> {
         let ffi_mint_url = mint_url.into();
         let result = self
             .ffi_db
@@ -412,7 +418,7 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
     async fn get_keyset_by_id(
         &self,
         keyset_id: &cdk::nuts::Id,
-    ) -> Result<Option<cdk::nuts::KeySetInfo>, cdk::cdk_database::Error> {
+    ) -> Result<Option<cdk::wallet::WalletKeySetInfo>, cdk::cdk_database::Error> {
         let ffi_id = (*keyset_id).into();
         let result = self
             .ffi_db
@@ -574,13 +580,16 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
         mint_url: Option<cdk::mint_url::MintUrl>,
         unit: Option<cdk::nuts::CurrencyUnit>,
         state: Option<Vec<cdk::nuts::State>>,
+        exclude_keyset_ids: Option<Vec<cdk::nuts::Id>>,
     ) -> Result<u64, cdk::cdk_database::Error> {
         let ffi_mint_url = mint_url.map(Into::into);
         let ffi_unit = unit.map(Into::into);
         let ffi_state = state.map(|s| s.into_iter().map(Into::into).collect());
+        let ffi_exclude_keyset_ids =
+            exclude_keyset_ids.map(|ids| ids.into_iter().map(Into::into).collect());
 
         self.ffi_db
-            .get_balance(ffi_mint_url, ffi_unit, ffi_state)
+            .get_balance(ffi_mint_url, ffi_unit, ffi_state, ffi_exclude_keyset_ids)
             .await
             .map_err(into_database_error)
     }
@@ -800,10 +809,10 @@ impl CdkWalletDatabase<cdk::cdk_database::Error> for WalletDatabaseBridge {
     async fn add_mint_keysets(
         &self,
         mint_url: cdk::mint_url::MintUrl,
-        keysets: Vec<cdk::nuts::KeySetInfo>,
+        keysets: Vec<cdk::wallet::WalletKeySetInfo>,
     ) -> Result<(), cdk::cdk_database::Error> {
         let ffi_mint_url = mint_url.into();
-        let ffi_keysets: Vec<KeySetInfo> = keysets.into_iter().map(Into::into).collect();
+        let ffi_keysets: Vec<WalletKeySetInfo> = keysets.into_iter().map(Into::into).collect();
         self.ffi_db
             .add_mint_keysets(ffi_mint_url, ffi_keysets)
             .await
@@ -1166,7 +1175,7 @@ where
     async fn get_mint_keysets(
         &self,
         mint_url: MintUrl,
-    ) -> Result<Option<Vec<KeySetInfo>>, FfiError> {
+    ) -> Result<Option<Vec<WalletKeySetInfo>>, FfiError> {
         let cdk_mint_url = mint_url.try_into()?;
         let result = self
             .inner
@@ -1177,7 +1186,7 @@ where
         Ok(result.map(|keysets| keysets.into_iter().map(Into::into).collect()))
     }
 
-    async fn get_keyset_by_id(&self, keyset_id: Id) -> Result<Option<KeySetInfo>, FfiError> {
+    async fn get_keyset_by_id(&self, keyset_id: Id) -> Result<Option<WalletKeySetInfo>, FfiError> {
         let cdk_id = keyset_id.try_into()?;
         let result = self
             .inner
@@ -1283,13 +1292,21 @@ where
         mint_url: Option<MintUrl>,
         unit: Option<CurrencyUnit>,
         state: Option<Vec<ProofState>>,
+        exclude_keyset_ids: Option<Vec<Id>>,
     ) -> Result<u64, FfiError> {
         let cdk_mint_url = mint_url.map(|u| u.try_into()).transpose()?;
         let cdk_unit = unit.map(Into::into);
         let cdk_state = state.map(|s| s.into_iter().map(Into::into).collect());
+        let cdk_exclude_keyset_ids = exclude_keyset_ids
+            .map(|ids| {
+                ids.into_iter()
+                    .map(TryInto::try_into)
+                    .collect::<Result<Vec<_>, FfiError>>()
+            })
+            .transpose()?;
 
         self.inner
-            .get_balance(cdk_mint_url, cdk_unit, cdk_state)
+            .get_balance(cdk_mint_url, cdk_unit, cdk_state, cdk_exclude_keyset_ids)
             .compat()
             .await
             .map_err(FfiError::internal)
@@ -1563,10 +1580,10 @@ where
     async fn add_mint_keysets(
         &self,
         mint_url: MintUrl,
-        keysets: Vec<KeySetInfo>,
+        keysets: Vec<WalletKeySetInfo>,
     ) -> Result<(), FfiError> {
         let cdk_mint_url = mint_url.try_into()?;
-        let cdk_keysets: Vec<cdk::nuts::KeySetInfo> = keysets
+        let cdk_keysets: Vec<cdk::wallet::WalletKeySetInfo> = keysets
             .into_iter()
             .map(TryInto::try_into)
             .collect::<Result<_, _>>()?;
@@ -1812,14 +1829,14 @@ macro_rules! impl_ffi_wallet_database {
             async fn get_mint_keysets(
                 &self,
                 mint_url: MintUrl,
-            ) -> Result<Option<Vec<KeySetInfo>>, FfiError> {
+            ) -> Result<Option<Vec<WalletKeySetInfo>>, FfiError> {
                 self.inner.get_mint_keysets(mint_url).await
             }
 
             async fn get_keyset_by_id(
                 &self,
                 keyset_id: Id,
-            ) -> Result<Option<KeySetInfo>, FfiError> {
+            ) -> Result<Option<WalletKeySetInfo>, FfiError> {
                 self.inner.get_keyset_by_id(keyset_id).await
             }
 
@@ -1870,8 +1887,11 @@ macro_rules! impl_ffi_wallet_database {
                 mint_url: Option<MintUrl>,
                 unit: Option<CurrencyUnit>,
                 state: Option<Vec<ProofState>>,
+                exclude_keyset_ids: Option<Vec<Id>>,
             ) -> Result<u64, FfiError> {
-                self.inner.get_balance(mint_url, unit, state).await
+                self.inner
+                    .get_balance(mint_url, unit, state, exclude_keyset_ids)
+                    .await
             }
 
             async fn get_transaction(
@@ -2016,7 +2036,7 @@ macro_rules! impl_ffi_wallet_database {
             async fn add_mint_keysets(
                 &self,
                 mint_url: MintUrl,
-                keysets: Vec<KeySetInfo>,
+                keysets: Vec<WalletKeySetInfo>,
             ) -> Result<(), FfiError> {
                 self.inner.add_mint_keysets(mint_url, keysets).await
             }
@@ -2382,6 +2402,40 @@ mod tests {
         assert_eq!(json, serde_json::to_string(&expected).unwrap());
         let decoded: CdkProofInfo = decode_proof_info(json).unwrap().try_into().unwrap();
         assert_eq!(decoded, expected);
+    }
+
+    /// An FFI wallet reads its keysets back through two conversions, and a
+    /// `final_expiry` lost on either leg leaves every reloaded keyset looking
+    /// like it never expires.
+    #[tokio::test]
+    async fn keyset_conversion_paths_preserve_final_expiry() {
+        let native = cdk_sqlite::wallet::memory::empty().await.unwrap();
+        let foreign = FfiWalletDatabaseWrapper::new(native);
+        let bridge = WalletDatabaseBridge::new(foreign.clone());
+
+        let mint_url: cdk::mint_url::MintUrl = "https://mint.example.com".parse().unwrap();
+        let expected = cdk::wallet::WalletKeySetInfo::listed(cdk::nuts::KeySetInfo {
+            id: "00916bbf7ef91a36".parse().unwrap(),
+            unit: cdk::nuts::CurrencyUnit::Sat,
+            active: true,
+            input_fee_ppk: 0,
+            final_expiry: Some(1_900_000_000),
+        });
+
+        bridge.add_mint(mint_url.clone(), None).await.unwrap();
+        bridge
+            .add_mint_keysets(mint_url.clone(), vec![expected.clone()])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            bridge.get_mint_keysets(mint_url).await.unwrap(),
+            Some(vec![expected.clone()])
+        );
+        assert_eq!(
+            bridge.get_keyset_by_id(&expected.keyset.id).await.unwrap(),
+            Some(expected)
+        );
     }
 
     #[test]

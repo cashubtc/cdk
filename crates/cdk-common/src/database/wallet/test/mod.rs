@@ -68,14 +68,14 @@ fn test_mint_url_2() -> MintUrl {
 }
 
 /// Create test keyset info
-fn test_keyset_info(keyset_id: Id, _mint_url: &MintUrl) -> KeySetInfo {
-    KeySetInfo {
+fn test_keyset_info(keyset_id: Id, _mint_url: &MintUrl) -> WalletKeySetInfo {
+    WalletKeySetInfo::listed(KeySetInfo {
         id: keyset_id,
         unit: CurrencyUnit::Sat,
         active: true,
         input_fee_ppk: 0,
         final_expiry: None,
-    }
+    })
 }
 
 /// Create a test proof
@@ -279,12 +279,160 @@ where
     // Get keyset by ID
     let retrieved = db.get_keyset_by_id(&keyset_id).await.unwrap();
     assert!(retrieved.is_some());
-    assert_eq!(retrieved.unwrap().id, keyset_id);
+    assert_eq!(retrieved.unwrap().keyset.id, keyset_id);
 
     // Get keysets for mint
     let keysets = db.get_mint_keysets(mint_url).await.unwrap();
     assert!(keysets.is_some());
     assert!(!keysets.unwrap().is_empty());
+}
+
+/// A mint can set an expiry on a keyset it already announced, and a v1 keyset
+/// id does not change when it does, so the upsert has to refresh the field.
+pub async fn keyset_upsert_refreshes_final_expiry<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mint_url = test_mint_url();
+    let keyset_id = test_keyset_id();
+    let mut keyset_info = test_keyset_info(keyset_id, &mint_url);
+
+    db.add_mint(mint_url.clone(), None).await.unwrap();
+    db.add_mint_keysets(mint_url.clone(), vec![keyset_info.clone()])
+        .await
+        .unwrap();
+    assert_eq!(
+        db.get_keyset_by_id(&keyset_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .keyset
+            .final_expiry,
+        None
+    );
+
+    keyset_info.keyset.final_expiry = Some(1_900_000_000);
+    db.add_mint_keysets(mint_url.clone(), vec![keyset_info.clone()])
+        .await
+        .unwrap();
+    assert_eq!(
+        db.get_keyset_by_id(&keyset_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .keyset
+            .final_expiry,
+        Some(1_900_000_000)
+    );
+
+    let keysets = db
+        .get_mint_keysets(mint_url.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(keysets.len(), 1);
+    assert_eq!(keysets[0].keyset.final_expiry, Some(1_900_000_000));
+
+    keyset_info.keyset.final_expiry = None;
+    db.add_mint_keysets(mint_url, vec![keyset_info])
+        .await
+        .unwrap();
+    assert_eq!(
+        db.get_keyset_by_id(&keyset_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .keyset
+            .final_expiry,
+        None
+    );
+}
+
+/// Test that the wallet-local unlisted marker round-trips and can be cleared
+pub async fn keyset_unlisted_marker_round_trip<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mint_url = test_mint_url();
+    let keyset_id = test_keyset_id();
+    let mut keyset_info = test_keyset_info(keyset_id, &mint_url);
+
+    db.add_mint(mint_url.clone(), None).await.unwrap();
+    db.add_mint_keysets(mint_url.clone(), vec![keyset_info.clone()])
+        .await
+        .unwrap();
+
+    let stored = db.get_keyset_by_id(&keyset_id).await.unwrap().unwrap();
+    assert!(!stored.is_unlisted());
+
+    keyset_info.unlisted_at = Some(1_700_000_000);
+    keyset_info.keyset.active = false;
+    db.add_mint_keysets(mint_url.clone(), vec![keyset_info.clone()])
+        .await
+        .unwrap();
+
+    let stored = db.get_keyset_by_id(&keyset_id).await.unwrap().unwrap();
+    assert_eq!(stored.unlisted_at, Some(1_700_000_000));
+    assert!(!stored.keyset.active);
+
+    keyset_info.unlisted_at = None;
+    keyset_info.keyset.active = true;
+    db.add_mint_keysets(mint_url, vec![keyset_info])
+        .await
+        .unwrap();
+
+    let stored = db.get_keyset_by_id(&keyset_id).await.unwrap().unwrap();
+    assert!(
+        !stored.is_unlisted(),
+        "a mint that lists the keyset again must clear the marker"
+    );
+}
+
+/// Test that a refreshed keyset carries the mint's current final expiry
+///
+/// A v00 keyset id is derived from the keys alone, so the mint can change the
+/// expiry of a keyset the wallet already stored.
+pub async fn keyset_expiry_is_refreshed<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mint_url = test_mint_url();
+    let keyset_id = test_keyset_id();
+    let mut keyset_info = test_keyset_info(keyset_id, &mint_url);
+
+    db.add_mint(mint_url.clone(), None).await.unwrap();
+    db.add_mint_keysets(mint_url.clone(), vec![keyset_info.clone()])
+        .await
+        .unwrap();
+
+    let stored = db.get_keyset_by_id(&keyset_id).await.unwrap().unwrap();
+    assert_eq!(stored.keyset.final_expiry, None);
+    assert!(!stored.is_expired());
+
+    keyset_info.keyset.final_expiry = Some(1);
+    db.add_mint_keysets(mint_url.clone(), vec![keyset_info.clone()])
+        .await
+        .unwrap();
+
+    let stored = db.get_keyset_by_id(&keyset_id).await.unwrap().unwrap();
+    assert_eq!(
+        stored.keyset.final_expiry,
+        Some(1),
+        "an expiry the mint set after the first insert must be stored"
+    );
+    assert!(stored.is_expired());
+
+    keyset_info.keyset.final_expiry = None;
+    db.add_mint_keysets(mint_url, vec![keyset_info])
+        .await
+        .unwrap();
+
+    let stored = db.get_keyset_by_id(&keyset_id).await.unwrap().unwrap();
+    assert_eq!(
+        stored.keyset.final_expiry, None,
+        "a mint that lifts an expiry must clear the stored one"
+    );
+    assert!(!stored.is_expired());
 }
 
 /// Test getting keyset by ID in transaction
@@ -886,11 +1034,14 @@ where
         .unwrap();
 
     // Get total balance
-    let balance = db.get_balance(None, None, None).await.unwrap();
+    let balance = db.get_balance(None, None, None, None).await.unwrap();
     assert_eq!(balance, 300);
 
     // Get balance by mint
-    let balance = db.get_balance(Some(mint_url), None, None).await.unwrap();
+    let balance = db
+        .get_balance(Some(mint_url), None, None, None)
+        .await
+        .unwrap();
     assert_eq!(balance, 300);
 }
 
@@ -910,17 +1061,62 @@ where
 
     // Get balance by state
     let balance = db
-        .get_balance(None, None, Some(vec![State::Unspent]))
+        .get_balance(None, None, Some(vec![State::Unspent]), None)
         .await
         .unwrap();
     assert_eq!(balance, 100);
 
     // Get balance by different state
     let balance = db
-        .get_balance(None, None, Some(vec![State::Spent]))
+        .get_balance(None, None, Some(vec![State::Spent]), None)
         .await
         .unwrap();
     assert_eq!(balance, 0);
+}
+
+/// The wallet hides proofs on an expired keyset, so the aggregate has to drop
+/// them itself: filtering the sum in the wallet means loading every proof.
+pub async fn get_balance_excluding_keysets<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mint_url = test_mint_url();
+    let kept = test_keyset_id();
+    let excluded = test_keyset_id_2();
+
+    db.update_proofs(
+        vec![
+            test_proof_info(kept, 100, mint_url.clone()),
+            test_proof_info(excluded, 200, mint_url.clone()),
+        ],
+        vec![],
+    )
+    .await
+    .unwrap();
+
+    let balance = db
+        .get_balance(None, None, None, Some(vec![excluded]))
+        .await
+        .unwrap();
+    assert_eq!(balance, 100);
+
+    let balance = db
+        .get_balance(None, None, None, Some(vec![kept, excluded]))
+        .await
+        .unwrap();
+    assert_eq!(balance, 0);
+
+    let balance = db
+        .get_balance(None, None, None, Some(vec![]))
+        .await
+        .unwrap();
+    assert_eq!(balance, 300);
+
+    let balance = db
+        .get_balance(None, None, Some(vec![State::Unspent]), Some(vec![excluded]))
+        .await
+        .unwrap();
+    assert_eq!(balance, 100);
 }
 
 // =============================================================================
@@ -1970,6 +2166,9 @@ macro_rules! wallet_db_test {
             remove_mint,
             update_mint_url,
             add_and_get_keysets,
+            keyset_upsert_refreshes_final_expiry,
+            keyset_unlisted_marker_round_trip,
+            keyset_expiry_is_refreshed,
             get_keyset_by_id_in_transaction,
             add_and_get_keys,
             get_keys_in_transaction,
@@ -1992,6 +2191,7 @@ macro_rules! wallet_db_test {
             filter_proofs_by_state,
             get_balance,
             get_balance_by_state,
+            get_balance_excluding_keysets,
             increment_keyset_counter,
             keyset_counter_isolation,
             increment_derivation_counter,

@@ -581,10 +581,10 @@ mod tests {
     use std::sync::Arc;
 
     use bip39::Mnemonic;
-    use cdk_common::nuts::{CurrencyUnit, PaymentMethod, State};
+    use cdk_common::nuts::{CurrencyUnit, KeySetInfo, PaymentMethod, State};
     use cdk_common::wallet::{
         MeltOperationData, MeltSagaState, OperationData, Transaction, TransactionDirection,
-        TransactionStatus, WalletSaga, WalletSagaState,
+        TransactionStatus, WalletKeySetInfo, WalletSaga, WalletSagaState,
     };
     use cdk_common::{Amount, MeltQuoteBolt11Response, MeltQuoteState, RestoreResponse};
 
@@ -1617,13 +1617,13 @@ mod tests {
         db.add_mint(mint_url.clone(), None).await.unwrap();
         db.add_mint_keysets(
             mint_url.clone(),
-            vec![cdk_common::nuts::KeySetInfo {
+            vec![WalletKeySetInfo::listed(KeySetInfo {
                 id: keyset.id,
                 unit: keyset.unit.clone(),
                 active: keyset.active.unwrap_or(true),
                 input_fee_ppk: keyset.input_fee_ppk,
                 final_expiry: keyset.final_expiry,
-            }],
+            })],
         )
         .await
         .unwrap();

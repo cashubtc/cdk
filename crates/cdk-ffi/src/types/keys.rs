@@ -15,6 +15,11 @@ pub struct KeySetInfo {
     pub active: bool,
     /// Input fee per thousand (ppk)
     pub input_fee_ppk: u64,
+    /// Unix timestamp past which the mint rejects this keyset on both inputs
+    /// and outputs, absent when the keyset has no final expiry
+    #[uniffi(default = None)]
+    #[serde(default)]
+    pub final_expiry: Option<u64>,
 }
 
 impl From<cdk::nuts::KeySetInfo> for KeySetInfo {
@@ -24,6 +29,7 @@ impl From<cdk::nuts::KeySetInfo> for KeySetInfo {
             unit: keyset.unit.into(),
             active: keyset.active,
             input_fee_ppk: keyset.input_fee_ppk,
+            final_expiry: keyset.final_expiry,
         }
     }
 }
@@ -39,8 +45,38 @@ impl TryFrom<KeySetInfo> for cdk::nuts::KeySetInfo {
                 .map_err(|e| FfiError::internal(format!("Invalid keyset ID: {}", e)))?,
             unit: keyset.unit.into(),
             active: keyset.active,
-            final_expiry: None,
+            final_expiry: keyset.final_expiry,
             input_fee_ppk: keyset.input_fee_ppk,
+        })
+    }
+}
+
+/// FFI-compatible WalletKeySetInfo: a keyset plus the wallet's own bookkeeping
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct WalletKeySetInfo {
+    /// The keyset as the mint describes it
+    pub keyset: KeySetInfo,
+    /// When the mint first stopped listing this keyset, if it has
+    #[uniffi(default = None)]
+    pub unlisted_at: Option<u64>,
+}
+
+impl From<cdk::wallet::WalletKeySetInfo> for WalletKeySetInfo {
+    fn from(keyset: cdk::wallet::WalletKeySetInfo) -> Self {
+        Self {
+            keyset: keyset.keyset.into(),
+            unlisted_at: keyset.unlisted_at,
+        }
+    }
+}
+
+impl TryFrom<WalletKeySetInfo> for cdk::wallet::WalletKeySetInfo {
+    type Error = FfiError;
+
+    fn try_from(keyset: WalletKeySetInfo) -> Result<Self, Self::Error> {
+        Ok(Self {
+            keyset: keyset.keyset.try_into()?,
+            unlisted_at: keyset.unlisted_at,
         })
     }
 }
@@ -246,5 +282,35 @@ impl TryFrom<Id> for cdk::nuts::Id {
         use std::str::FromStr;
 
         Self::from_str(&id.hex).map_err(|e| FfiError::internal(format!("Invalid ID hex: {}", e)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cdk::nuts::{CurrencyUnit as CdkCurrencyUnit, KeySetInfo as CdkKeySetInfo};
+
+    use super::*;
+
+    const KEYSET_ID: &str = "00916bbf7ef91a36";
+
+    /// The conversion used to hardcode a missing expiry, so a keyset read back
+    /// through a foreign database left the wallet believing it never expires.
+    #[test]
+    fn key_set_info_conversion_preserves_final_expiry() {
+        for final_expiry in [Some(1_900_000_000), Some(0), None] {
+            let expected = CdkKeySetInfo {
+                id: KEYSET_ID.parse().unwrap(),
+                unit: CdkCurrencyUnit::Sat,
+                active: true,
+                input_fee_ppk: 100,
+                final_expiry,
+            };
+
+            let ffi: KeySetInfo = expected.clone().into();
+            assert_eq!(ffi.final_expiry, final_expiry);
+
+            let converted: CdkKeySetInfo = ffi.try_into().unwrap();
+            assert_eq!(converted, expected);
+        }
     }
 }

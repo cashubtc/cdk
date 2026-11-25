@@ -36,7 +36,7 @@ impl Wallet {
             nut00::Error::DuplicateProofs.into()
         );
 
-        self.retry_on_inactive_keyset(|| async {
+        self.retry_on_stale_keyset(|| async {
             let saga = ReceiveSaga::new(self);
             let saga = saga
                 .prepare(proofs.clone(), opts.clone(), memo.clone(), token.clone())

@@ -15,7 +15,7 @@ use uuid::Uuid;
 use crate::mint_quote::quote_state_from_amounts;
 use crate::mint_url::MintUrl;
 use crate::nuts::{
-    CurrencyUnit, MeltQuoteState, MintQuoteState, SecretKey, SpendingConditions, State,
+    CurrencyUnit, KeySetInfo, MeltQuoteState, MintQuoteState, SecretKey, SpendingConditions, State,
 };
 use crate::{Amount, Error};
 
@@ -46,6 +46,56 @@ impl WalletKey {
     /// Create new [`WalletKey`]
     pub fn new(mint_url: MintUrl, unit: CurrencyUnit) -> Self {
         Self { mint_url, unit }
+    }
+}
+
+/// A keyset as the wallet stores it: the mint's NUT-02 record plus the
+/// wallet's own bookkeeping about it.
+///
+/// Mirrors [`crate::mint::MintKeySetInfo`] on the mint side. Fields the mint
+/// never sends belong here rather than on [`KeySetInfo`], which is the wire
+/// type the mint itself serves.
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WalletKeySetInfo {
+    /// The keyset as the mint describes it.
+    ///
+    /// Flattened, so a record written before this type existed still reads
+    /// back: redb stores these as JSON blobs with no schema to migrate.
+    #[serde(flatten)]
+    pub keyset: KeySetInfo,
+    /// When the mint first stopped listing this keyset in `GET /v1/keysets`.
+    ///
+    /// A mint that is reset or restored from an older backup drops a keyset it
+    /// once served. It then answers anything built on that keyset with error
+    /// 12001, so its proofs cannot be spent, but they are kept because the
+    /// mint may yet restore a backup that knows the keyset again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unlisted_at: Option<u64>,
+}
+
+impl WalletKeySetInfo {
+    /// Wrap a keyset the mint currently lists.
+    pub fn listed(keyset: KeySetInfo) -> Self {
+        Self {
+            keyset,
+            unlisted_at: None,
+        }
+    }
+
+    /// Whether the mint has stopped listing this keyset.
+    pub fn is_unlisted(&self) -> bool {
+        self.unlisted_at.is_some()
+    }
+
+    /// Whether the mint will still accept this keyset.
+    ///
+    /// A keyset the mint has stopped listing counts as expired until it lists
+    /// it again: the mint answers anything built on it with error 12001, the
+    /// same practical effect as the 12003 it gives past `final_expiry`. The
+    /// marker lifts on its own, because a refresh replaces the entry with the
+    /// mint's own record.
+    pub fn is_expired(&self) -> bool {
+        self.is_unlisted() || self.keyset.is_expired()
     }
 }
 
@@ -1333,5 +1383,52 @@ mod tests {
             serde_json::from_value(value).expect("deserialize legacy transaction");
 
         assert_eq!(decoded.status, TransactionStatus::Completed);
+    }
+
+    /// Stores that keep a keyset as a JSON blob wrote the bare [`KeySetInfo`]
+    /// before `unlisted_at` existed, and redb has no schema to migrate.
+    #[test]
+    fn a_keyset_stored_before_the_marker_existed_still_reads() {
+        let stored = r#"{
+            "id": "00deadbeef123456",
+            "unit": "sat",
+            "active": true,
+            "input_fee_ppk": 100,
+            "final_expiry": null
+        }"#;
+
+        let keyset: WalletKeySetInfo =
+            serde_json::from_str(stored).expect("deserialize a pre-marker keyset");
+
+        assert_eq!(keyset.keyset.id, Id::from_str("00deadbeef123456").unwrap());
+        assert_eq!(keyset.keyset.input_fee_ppk, 100);
+        assert_eq!(keyset.unlisted_at, None);
+        assert!(!keyset.is_expired());
+    }
+
+    #[test]
+    fn the_marker_round_trips_alongside_the_mint_s_own_fields() {
+        let keyset = WalletKeySetInfo {
+            keyset: KeySetInfo {
+                id: Id::from_str("00deadbeef123456").unwrap(),
+                unit: CurrencyUnit::Sat,
+                active: false,
+                input_fee_ppk: 0,
+                final_expiry: None,
+            },
+            unlisted_at: Some(1_700_000_000),
+        };
+
+        let json = serde_json::to_value(&keyset).expect("serialize keyset");
+        assert_eq!(
+            json.get("id").and_then(|id| id.as_str()),
+            Some("00deadbeef123456"),
+            "the mint's fields stay at the top level, or older readers break"
+        );
+
+        let decoded: WalletKeySetInfo = serde_json::from_value(json).expect("deserialize keyset");
+
+        assert_eq!(decoded, keyset);
+        assert!(decoded.is_expired());
     }
 }

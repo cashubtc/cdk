@@ -12,11 +12,11 @@ use cdk_common::database::{validate_kvstore_params, WalletDatabase};
 use cdk_common::mint_url::MintUrl;
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{
-    self, MintQuote, ProofInfo, Transaction, TransactionDirection, TransactionId,
+    self, MintQuote, ProofInfo, Transaction, TransactionDirection, TransactionId, WalletKeySetInfo,
 };
 use cdk_common::{
-    database, Amount, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, PublicKey,
-    SpendingConditions, State,
+    database, Amount, CurrencyUnit, Id, KeySet, Keys, MintInfo, PublicKey, SpendingConditions,
+    State,
 };
 use redb::{Database, MultimapTableDefinition, ReadableDatabase, ReadableTable, TableDefinition};
 use tracing::instrument;
@@ -244,7 +244,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
     async fn get_mint_keysets(
         &self,
         mint_url: MintUrl,
-    ) -> Result<Option<Vec<KeySetInfo>>, database::Error> {
+    ) -> Result<Option<Vec<WalletKeySetInfo>>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Into::<Error>::into)?;
         let table = read_txn
             .open_multimap_table(MINT_KEYSETS_TABLE)
@@ -282,7 +282,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
     async fn get_keyset_by_id(
         &self,
         keyset_id: &Id,
-    ) -> Result<Option<KeySetInfo>, database::Error> {
+    ) -> Result<Option<WalletKeySetInfo>, database::Error> {
         let read_txn = self.db.begin_read().map_err(Into::<Error>::into)?;
         let table = read_txn.open_table(KEYSETS_TABLE).map_err(Error::from)?;
 
@@ -291,7 +291,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
             .map_err(Error::from)?
         {
             Some(keyset) => {
-                let keyset: KeySetInfo =
+                let keyset: WalletKeySetInfo =
                     serde_json::from_str(keyset.value()).map_err(Error::from)?;
 
                 Ok(Some(keyset))
@@ -458,11 +458,17 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
         mint_url: Option<MintUrl>,
         unit: Option<CurrencyUnit>,
         state: Option<Vec<State>>,
+        exclude_keyset_ids: Option<Vec<Id>>,
     ) -> Result<u64, database::Error> {
         // For redb, we still need to fetch all proofs and sum them
         // since redb doesn't have SQL aggregation
+        let excluded = exclude_keyset_ids.unwrap_or_default();
         let proofs = self.get_proofs(mint_url, unit, state, None).await?;
-        Ok(proofs.iter().map(|p| u64::from(p.proof.amount)).sum())
+        Ok(proofs
+            .iter()
+            .filter(|p| !excluded.contains(&p.proof.keyset_id))
+            .map(|p| u64::from(p.proof.amount))
+            .sum())
     }
 
     #[instrument(skip(self))]
@@ -826,7 +832,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
     async fn add_mint_keysets(
         &self,
         mint_url: MintUrl,
-        keysets: Vec<KeySetInfo>,
+        keysets: Vec<WalletKeySetInfo>,
     ) -> Result<(), database::Error> {
         let write_txn = self.db.begin_write().map_err(Error::from)?;
         {
@@ -844,14 +850,17 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
                 // Check if keyset already exists
                 let existing_keyset = {
                     let existing_keyset = keysets_table
-                        .get(keyset.id.to_bytes().as_slice())
+                        .get(keyset.keyset.id.to_bytes().as_slice())
                         .map_err(Error::from)?;
 
                     existing_keyset.map(|r| r.value().to_string())
                 };
 
                 let existing = u32_table
-                    .insert(u32::from(keyset.id), keyset.id.to_string().as_str())
+                    .insert(
+                        u32::from(keyset.keyset.id),
+                        keyset.keyset.id.to_string().as_str(),
+                    )
                     .map_err(Error::from)?;
 
                 match existing {
@@ -859,7 +868,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
                     Some(id) => {
                         let id = Id::from_str(id.value())?;
 
-                        if id == keyset.id {
+                        if id == keyset.keyset.id {
                             existing_u32 = false;
                         } else {
                             existing_u32 = true;
@@ -869,17 +878,20 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
                 }
 
                 let keyset = if let Some(existing_keyset) = existing_keyset {
-                    let mut existing_keyset: KeySetInfo = serde_json::from_str(&existing_keyset)?;
+                    let mut existing_keyset: WalletKeySetInfo =
+                        serde_json::from_str(&existing_keyset)?;
 
-                    existing_keyset.active = keyset.active;
-                    existing_keyset.input_fee_ppk = keyset.input_fee_ppk;
+                    existing_keyset.keyset.active = keyset.keyset.active;
+                    existing_keyset.keyset.input_fee_ppk = keyset.keyset.input_fee_ppk;
+                    existing_keyset.keyset.final_expiry = keyset.keyset.final_expiry;
+                    existing_keyset.unlisted_at = keyset.unlisted_at;
 
                     existing_keyset
                 } else {
                     table
                         .insert(
                             mint_url.to_string().as_str(),
-                            keyset.id.to_bytes().as_slice(),
+                            keyset.keyset.id.to_bytes().as_slice(),
                         )
                         .map_err(Error::from)?;
 
@@ -888,7 +900,7 @@ impl WalletDatabase<database::Error> for WalletRedbDatabase {
 
                 keysets_table
                     .insert(
-                        keyset.id.to_bytes().as_slice(),
+                        keyset.keyset.id.to_bytes().as_slice(),
                         serde_json::to_string(&keyset)
                             .map_err(Error::from)?
                             .as_str(),

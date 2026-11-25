@@ -188,6 +188,17 @@ impl Wallet {
         Ok(balance.into())
     }
 
+    /// Get total balance held on expired keysets
+    ///
+    /// The mint no longer accepts these proofs, so they are left out of
+    /// `total_balance`. It spans the unspent, pending and reserved states, so
+    /// those three balances plus this one count every stored proof in one of
+    /// them exactly once.
+    pub async fn total_expired_balance(&self) -> Result<Amount, FfiError> {
+        let balance = self.inner.total_expired_balance().await?;
+        Ok(balance.into())
+    }
+
     /// Get mint info from mint
     pub async fn fetch_mint_info(&self) -> Result<Option<MintInfo>, FfiError> {
         let info = self.inner.fetch_mint_info().await?;
@@ -743,6 +754,37 @@ impl Wallet {
         Ok(all_proofs)
     }
 
+    /// Get proofs by states, including proofs on expired keysets
+    ///
+    /// The mint rejects expired-keyset proofs as inputs, so they are left out of
+    /// `get_proofs_by_states` and of `total_balance`, and counted by
+    /// `total_expired_balance`. This returns them so a caller can show funds
+    /// that are stranded.
+    pub async fn get_all_proofs_by_states(
+        &self,
+        states: Vec<ProofState>,
+    ) -> Result<Proofs, FfiError> {
+        let states = states.into_iter().map(Into::into).collect();
+        let proofs = self.inner.get_all_proofs_with(Some(states), None).await?;
+        Ok(proofs.into_iter().map(Into::into).collect())
+    }
+
+    /// Keep only the proofs the mint can still accept as inputs.
+    ///
+    /// Past a keyset's final expiry, and for a keyset the mint has stopped
+    /// listing, the mint rejects anything built on it, inputs included, so one
+    /// such proof fails the whole operation. Call this before assembling an
+    /// explicit proof set for `swap`, `prepare_melt_proofs` or a token;
+    /// `prepare_send` and `prepare_melt` filter internally already.
+    pub async fn retain_spendable_proofs(&self, proofs: Proofs) -> Result<Proofs, FfiError> {
+        let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
+            proofs.into_iter().map(|p| p.try_into()).collect();
+
+        let spendable = self.inner.retain_spendable_proofs(cdk_proofs?).await?;
+
+        Ok(spendable.into_iter().map(Into::into).collect())
+    }
+
     /// Check if proofs are spent
     pub async fn check_proofs_spent(&self, proofs: Proofs) -> Result<Vec<bool>, FfiError> {
         let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
@@ -1237,16 +1279,25 @@ pub fn mnemonic_to_entropy(mnemonic: String) -> Result<Vec<u8>, FfiError> {
 
 #[cfg(test)]
 mod tests {
+    use cdk_common::mint_url::MintUrl;
+    use cdk_common::nuts::{Id, KeySetInfo as CdkKeySetInfo, SecretKey};
+    use cdk_common::util::unix_time;
+    use cdk_common::wallet::WalletKeySetInfo as CdkWalletKeySetInfo;
+    use cdk_common::CurrencyUnit as CdkCurrencyUnit;
+
     use super::*;
     use crate::database::custom_wallet_store;
     use crate::sqlite::WalletSqliteDatabase;
 
     const MNEMONIC: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    const MINT_URL: &str = "https://mint.example.com";
+    const LIVE_KEYSET: &str = "009a1f293253e41e";
+    const DOOMED_KEYSET: &str = "00ad268c4d1f5826";
 
     fn wallet_with(rate_limit: Option<RateLimit>) -> Result<Wallet, FfiError> {
         let db = WalletSqliteDatabase::new_in_memory().expect("in-memory wallet db should open");
         Wallet::new(
-            "https://mint.example.com".to_string(),
+            MINT_URL.to_string(),
             CurrencyUnit::Sat,
             MNEMONIC.to_string(),
             custom_wallet_store(db),
@@ -1270,6 +1321,135 @@ mod tests {
             .await
             .expect("empty quote store should mint zero");
         assert!(minted.is_zero());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn expired_keyset_proof_listing_is_available_on_wallet() {
+        let wallet = test_wallet();
+
+        let proofs = wallet
+            .get_all_proofs_by_states(vec![ProofState::Unspent, ProofState::Pending])
+            .await
+            .expect("empty proof store should list nothing");
+        assert!(proofs.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn total_expired_balance_is_available_on_wallet() {
+        let wallet = test_wallet();
+
+        let balance = wallet
+            .total_expired_balance()
+            .await
+            .expect("empty proof store should have no expired balance");
+        assert_eq!(balance.value, 0);
+    }
+
+    fn keyset_id(hex: &str) -> Id {
+        Id::from_str(hex).expect("literal is a valid keyset id")
+    }
+
+    fn stored_keyset(
+        hex: &str,
+        final_expiry: Option<u64>,
+        unlisted_at: Option<u64>,
+    ) -> CdkWalletKeySetInfo {
+        CdkWalletKeySetInfo {
+            keyset: CdkKeySetInfo {
+                id: keyset_id(hex),
+                unit: CdkCurrencyUnit::Sat,
+                active: true,
+                input_fee_ppk: 0,
+                final_expiry,
+            },
+            unlisted_at,
+        }
+    }
+
+    fn proof_on(hex: &str) -> Proof {
+        Proof {
+            amount: Amount::new(1),
+            secret: "a-spendable-secret".to_string(),
+            c: SecretKey::generate().public_key().to_string(),
+            keyset_id: hex.to_string(),
+            witness: None,
+            dleq: None,
+            p2pk_e: None,
+        }
+    }
+
+    /// A fresh wallet has never refreshed its metadata cache, so the filter
+    /// reads the stored keysets and the test needs no mint.
+    async fn seed_keysets(wallet: &Wallet, keysets: Vec<CdkWalletKeySetInfo>) {
+        let mint_url = MintUrl::from_str(MINT_URL).expect("literal is a valid mint url");
+        let store = &wallet.inner().localstore;
+
+        store
+            .add_mint(mint_url.clone(), None)
+            .await
+            .expect("mint row should be written");
+        store
+            .add_mint_keysets(mint_url, keysets)
+            .await
+            .expect("keysets should be written");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn retain_spendable_proofs_drops_an_expired_keyset() {
+        let wallet = test_wallet();
+        seed_keysets(
+            &wallet,
+            vec![
+                stored_keyset(LIVE_KEYSET, None, None),
+                stored_keyset(DOOMED_KEYSET, Some(unix_time() - 1), None),
+            ],
+        )
+        .await;
+
+        let spendable = wallet
+            .retain_spendable_proofs(vec![proof_on(LIVE_KEYSET), proof_on(DOOMED_KEYSET)])
+            .await
+            .expect("filtering should not fail");
+
+        assert_eq!(spendable.len(), 1);
+        assert_eq!(spendable[0].keyset_id, LIVE_KEYSET);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn retain_spendable_proofs_drops_an_unlisted_keyset() {
+        let wallet = test_wallet();
+        seed_keysets(
+            &wallet,
+            vec![
+                stored_keyset(LIVE_KEYSET, None, None),
+                stored_keyset(DOOMED_KEYSET, None, Some(unix_time())),
+            ],
+        )
+        .await;
+
+        let spendable = wallet
+            .retain_spendable_proofs(vec![proof_on(LIVE_KEYSET), proof_on(DOOMED_KEYSET)])
+            .await
+            .expect("filtering should not fail");
+
+        assert_eq!(
+            spendable.len(),
+            1,
+            "an unlisted keyset is only visible to the wallet, so this half of the filter cannot be reproduced by an FFI consumer"
+        );
+        assert_eq!(spendable[0].keyset_id, LIVE_KEYSET);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn retain_spendable_proofs_keeps_everything_with_no_stored_keysets() {
+        let wallet = test_wallet();
+
+        let spendable = wallet
+            .retain_spendable_proofs(vec![proof_on(LIVE_KEYSET), proof_on(DOOMED_KEYSET)])
+            .await
+            .expect("an empty keyset store is not an error");
+
+        assert_eq!(spendable.len(), 2);
     }
 
     #[test]

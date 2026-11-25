@@ -23,8 +23,8 @@ use super::nut01::Keys;
 #[cfg(feature = "mint")]
 use super::nut01::{MintKeyPair, MintKeys};
 use crate::nuts::nut00::CurrencyUnit;
-use crate::util::hex;
 use crate::util::serde_helpers::deserialize_vec_skip_invalid;
+use crate::util::{hex, unix_time};
 use crate::{ensure_cdk, Amount};
 
 /// NUT02 Error
@@ -521,7 +521,26 @@ pub struct KeySet {
     pub final_expiry: Option<u64>,
 }
 
+/// Whether a keyset's `final_expiry` has passed at `now`.
+///
+/// A missing expiry and a zero one mean the same thing, no final expiry, since
+/// zero is what Nutshell announces for a keyset that never expires and the value
+/// NUT-02 leaves out of the keyset ID. The comparison is strict, so a keyset
+/// whose expiry is exactly `now` is still usable, and `now` is a parameter
+/// rather than a clock read so that boundary is testable.
+pub fn expiry_has_passed(final_expiry: Option<u64>, now: u64) -> bool {
+    matches!(final_expiry, Some(expiry) if expiry != 0 && expiry < now)
+}
+
 impl KeySet {
+    /// Returns true if `final_expiry` is set, non-zero and strictly in the past.
+    ///
+    /// The mint refuses an expired keyset on both inputs and outputs, so the
+    /// wallet must not spend from it or request outputs on it.
+    pub fn is_expired(&self) -> bool {
+        expiry_has_passed(self.final_expiry, unix_time())
+    }
+
     /// Verify the keyset ID canonically matches its keys and metadata.
     pub fn verify_id(&self) -> Result<(), Error> {
         let keys_id = match self.id.version {
@@ -585,6 +604,16 @@ pub struct KeySetInfo {
     /// Expiry of the keyset
     #[serde(skip_serializing_if = "Option::is_none")]
     pub final_expiry: Option<u64>,
+}
+
+impl KeySetInfo {
+    /// Returns true if `final_expiry` is set, non-zero and strictly in the past.
+    ///
+    /// The mint refuses an expired keyset on both inputs and outputs, so the
+    /// wallet must not spend from it or request outputs on it.
+    pub fn is_expired(&self) -> bool {
+        expiry_has_passed(self.final_expiry, unix_time())
+    }
 }
 
 /// List of [KeySetInfo]
@@ -793,10 +822,12 @@ mod test {
 
     use bitcoin::secp256k1::rand::{self, RngCore};
 
-    use super::{KeySet, KeySetInfo, KeySetVersion, Keys, KeysetResponse, ShortKeysetId};
+    use super::{
+        expiry_has_passed, KeySet, KeySetInfo, KeySetVersion, Keys, KeysetResponse, ShortKeysetId,
+    };
     use crate::nuts::nut02::{Error, Id};
     use crate::nuts::KeysResponse;
-    use crate::util::hex;
+    use crate::util::{hex, unix_time};
     use crate::CurrencyUnit;
 
     const SHORT_KEYSET_ID: &str = "00456a94ab4e1c46";
@@ -1530,6 +1561,66 @@ mod test {
             "expected IncorrectKeysetId, got {:?}",
             res
         );
+    }
+
+    fn keyset_info_with_expiry(final_expiry: Option<u64>) -> KeySetInfo {
+        KeySetInfo {
+            id: Id::from_str("009a1f293253e41e").unwrap(),
+            unit: CurrencyUnit::Sat,
+            active: true,
+            input_fee_ppk: 0,
+            final_expiry,
+        }
+    }
+
+    /// The rule takes `now` so the strict comparison is pinned without a clock
+    /// read. Every per-type test below goes through this same function.
+    #[test]
+    fn expiry_boundary_is_strict() {
+        let now = 1_900_000_000;
+        assert!(!expiry_has_passed(Some(now + 1), now));
+        assert!(!expiry_has_passed(Some(now), now));
+        assert!(expiry_has_passed(Some(now - 1), now));
+    }
+
+    /// Nutshell announces a zero expiry for a keyset that never expires, and
+    /// NUT-02 leaves zero out of the keyset ID for the same reason. Read as an
+    /// epoch timestamp, it stranded every proof on such a keyset.
+    #[test]
+    fn a_zero_expiry_never_passes() {
+        assert!(!expiry_has_passed(Some(0), 1_900_000_000));
+        assert!(!expiry_has_passed(None, 1_900_000_000));
+        assert!(!keyset_info_with_expiry(Some(0)).is_expired());
+    }
+
+    #[test]
+    fn test_keyset_info_is_expired() {
+        assert!(!keyset_info_with_expiry(None).is_expired());
+        assert!(!keyset_info_with_expiry(Some(unix_time() + 1_000_000)).is_expired());
+        assert!(keyset_info_with_expiry(Some(unix_time() - 1)).is_expired());
+    }
+
+    #[test]
+    fn test_keyset_is_expired() {
+        let keys: Keys = serde_json::from_str(SHORT_KEYSET).unwrap();
+        let mut keyset = KeySet {
+            id: Id::from_str("009a1f293253e41e").unwrap(),
+            unit: CurrencyUnit::Sat,
+            active: Some(true),
+            keys,
+            input_fee_ppk: 0,
+            final_expiry: None,
+        };
+        assert!(!keyset.is_expired());
+
+        keyset.final_expiry = Some(0);
+        assert!(!keyset.is_expired());
+
+        keyset.final_expiry = Some(unix_time() + 1_000_000);
+        assert!(!keyset.is_expired());
+
+        keyset.final_expiry = Some(unix_time() - 1);
+        assert!(keyset.is_expired());
     }
 
     #[test]

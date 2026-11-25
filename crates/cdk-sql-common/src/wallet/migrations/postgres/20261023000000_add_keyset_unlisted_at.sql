@@ -1,0 +1,1 @@
+ALTER TABLE keyset ADD COLUMN unlisted_at BIGINT DEFAULT NULL;
