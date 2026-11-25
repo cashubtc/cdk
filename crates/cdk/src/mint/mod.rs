@@ -1526,19 +1526,27 @@ impl Mint {
 #[cfg(test)]
 mod tests {
 
+    use std::pin::Pin;
     use std::str::FromStr;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
+    use async_trait::async_trait;
     use cdk_common::melt::MeltQuoteRequest;
     use cdk_common::mint::{OperationKind, SagaStateEnum};
     use cdk_common::nut00::KnownMethod;
     use cdk_common::nuts::MeltQuoteBolt11Request;
-    use cdk_common::payment::{MakePaymentResponse, PaymentIdentifier};
+    use cdk_common::payment::{
+        self, CreateIncomingPaymentResponse, Event, IncomingPaymentOptions, MakePaymentResponse,
+        MintPayment, OutgoingPaymentOptions, PaymentIdentifier, PaymentQuoteResponse,
+        SettingsResponse, WaitPaymentResponse,
+    };
     use cdk_common::PaymentMethod;
     use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
     use cdk_signatory::db_signatory::DbSignatory;
     use cdk_signatory::signatory::{RotateKeyArguments, SignatoryKeysets};
     use cdk_sqlite::mint::memory::new_with_state;
+    use futures::Stream;
     use tokio::sync::watch;
 
     use super::*;
@@ -2201,6 +2209,127 @@ mod tests {
         .await
         .map(Arc::new)
         .unwrap()
+    }
+
+    #[derive(Debug, Default)]
+    struct EmptyEventStreamProcessor {
+        wait_calls: AtomicUsize,
+    }
+
+    impl EmptyEventStreamProcessor {
+        fn wait_calls(&self) -> usize {
+            self.wait_calls.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl MintPayment for EmptyEventStreamProcessor {
+        type Err = payment::Error;
+
+        async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
+            Ok(SettingsResponse {
+                unit: CurrencyUnit::Sat.to_string(),
+                bolt11: None,
+                bolt12: None,
+                onchain: None,
+                custom: HashMap::new(),
+            })
+        }
+
+        async fn create_incoming_payment_request(
+            &self,
+            _options: IncomingPaymentOptions,
+        ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
+            Err(payment::Error::UnsupportedPaymentOption)
+        }
+
+        async fn get_payment_quote(
+            &self,
+            _unit: &CurrencyUnit,
+            _options: OutgoingPaymentOptions,
+        ) -> Result<PaymentQuoteResponse, Self::Err> {
+            Err(payment::Error::UnsupportedPaymentOption)
+        }
+
+        async fn make_payment(
+            &self,
+            _unit: &CurrencyUnit,
+            _options: OutgoingPaymentOptions,
+        ) -> Result<MakePaymentResponse, Self::Err> {
+            Err(payment::Error::UnsupportedPaymentOption)
+        }
+
+        async fn wait_payment_event(
+            &self,
+        ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, Self::Err> {
+            self.wait_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::pin(futures::stream::empty()))
+        }
+
+        fn is_payment_event_stream_active(&self) -> bool {
+            false
+        }
+
+        fn cancel_payment_event_stream(&self) {}
+
+        async fn check_incoming_payment_status(
+            &self,
+            _payment_identifier: &PaymentIdentifier,
+        ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
+            Ok(Vec::new())
+        }
+
+        async fn check_outgoing_payment(
+            &self,
+            _payment_identifier: &PaymentIdentifier,
+        ) -> Result<MakePaymentResponse, Self::Err> {
+            Err(payment::Error::UnsupportedPaymentOption)
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn ended_payment_event_stream_retries_with_backoff() {
+        let mut supported_units = HashMap::new();
+        let amounts: Vec<u64> = (0..8).map(|i| 2u64.pow(i)).collect();
+        supported_units.insert(CurrencyUnit::default(), (0, amounts));
+        let mint = Arc::new(
+            create_mint(MintConfig {
+                supported_units,
+                ..Default::default()
+            })
+            .await,
+        );
+        let processor_handle = Arc::new(EmptyEventStreamProcessor::default());
+        let processor: DynMintPayment = processor_handle.clone();
+        let shutdown = Arc::new(Notify::new());
+        let task = tokio::spawn(Mint::wait_for_processor_payments(
+            "test-processor".to_owned(),
+            Arc::clone(&mint),
+            processor,
+            mint.localstore(),
+            mint.pubsub_manager(),
+            Arc::clone(&shutdown),
+        ));
+
+        tokio::task::yield_now().await;
+        assert_eq!(processor_handle.wait_calls(), 1);
+
+        tokio::time::advance(Duration::from_millis(249)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            processor_handle.wait_calls(),
+            1,
+            "payment stream reconnect must wait for the retry delay"
+        );
+
+        tokio::time::advance(Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(processor_handle.wait_calls(), 2);
+
+        shutdown.notify_waiters();
+        task.await
+            .expect("payment wait task join")
+            .expect("shutdown");
     }
 
     #[tokio::test]

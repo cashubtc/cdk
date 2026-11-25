@@ -24,6 +24,8 @@ use crate::proto::{TryFromProtoAmount, *};
 
 type ResponseStream = Pin<Box<dyn Stream<Item = Result<PaymentEventResponse, Status>> + Send>>;
 
+const PAYMENT_EVENT_STREAM_RETRY_DELAY: Duration = Duration::from_secs(5);
+
 /// Payment Processor
 #[derive(Clone)]
 pub struct PaymentProcessorServer {
@@ -613,10 +615,11 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                                     return;
                                 }
                             }
+                            sleep(PAYMENT_EVENT_STREAM_RETRY_DELAY).await;
                         }
                         Err(err) => {
                             tracing::warn!("Could not get invoice stream: {}", err);
-                            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                            sleep(PAYMENT_EVENT_STREAM_RETRY_DELAY).await;
                         }
                     }
                 }
