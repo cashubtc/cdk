@@ -8,6 +8,8 @@ use std::time::Duration;
 
 use cdk_common::database::DynMintDatabase;
 #[cfg(feature = "federation")]
+use cdk_common::database::DynMintTransaction;
+#[cfg(feature = "federation")]
 use cdk_common::federation::{FederationMeltQuoteMetadata, FederationOperationId};
 use cdk_common::melt::MeltQuoteRequest;
 use cdk_common::mint::MeltPaymentRequest;
@@ -1324,6 +1326,10 @@ impl Mint {
         Ok(())
     }
 
+    /// Finish a federated melt whose saga already recorded a paid outcome.
+    ///
+    /// Runs [`Self::resume_paid_federation_melt_finalization_in_transaction`]
+    /// in one transaction and publishes after it commits.
     #[cfg(feature = "federation")]
     pub(crate) async fn resume_paid_federation_melt_finalization(
         &self,
@@ -1331,6 +1337,47 @@ impl Mint {
         saga: &cdk_common::mint::Saga,
         federation_operation_id: FederationOperationId,
     ) -> Result<(), Error> {
+        // Rebuilding the effective config reads the database, so load it
+        // before the transaction holds the connection.
+        let config = self
+            .effective_federation_config()
+            .await?
+            .ok_or(Error::Internal)?;
+        let mut tx = self.localstore.begin_transaction().await?;
+        let outcome = Self::resume_paid_federation_melt_finalization_in_transaction(
+            &mut tx,
+            &config,
+            quote,
+            saga,
+            federation_operation_id,
+        )
+        .await;
+        match outcome {
+            Ok(notifications) => {
+                tx.commit().await?;
+                notifications.publish(&self.pubsub_manager);
+                Ok(())
+            }
+            Err(err) => {
+                tx.rollback().await?;
+                Err(err)
+            }
+        }
+    }
+
+    /// Finish a federated melt whose saga is `Finalizing`, inside `tx`.
+    ///
+    /// Validates that the saga belongs to `federation_operation_id` and
+    /// finalizes from its recorded payment result. The caller commits and then
+    /// publishes the returned notifications.
+    #[cfg(feature = "federation")]
+    pub(crate) async fn resume_paid_federation_melt_finalization_in_transaction(
+        tx: &mut DynMintTransaction,
+        config: &super::federation::FederationRuntimeConfig,
+        quote: &mut MeltQuote,
+        saga: &cdk_common::mint::Saga,
+        federation_operation_id: FederationOperationId,
+    ) -> Result<shared::MeltNotifications, Error> {
         let operation_id = federation_operation_id.to_string();
         if saga.federation_operation_id.as_deref() != Some(operation_id.as_str()) {
             return Err(Error::Internal);
@@ -1353,13 +1400,12 @@ impl Mint {
             total_spent: finalization_data.total_spent,
         };
 
-        crate::mint::saga_recovery::process_melt_saga_outcome(
+        crate::mint::saga_recovery::finalize_paid_federation_melt_outcome_in_transaction(
+            tx,
+            config,
             saga,
             quote,
             &payment_response,
-            &self.localstore,
-            &self.pubsub_manager,
-            self,
         )
         .await
     }

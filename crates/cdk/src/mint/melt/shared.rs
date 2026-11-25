@@ -20,6 +20,8 @@ use cdk_common::{Amount, CurrencyUnit, Error, PublicKey, QuoteId};
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::METRICS;
 
+#[cfg(feature = "federation")]
+use crate::mint::federation::FederationRuntimeConfig;
 use crate::mint::subscription::PubSubManager;
 use crate::mint::verification::KeysetView;
 use crate::mint::MeltQuote;
@@ -228,9 +230,54 @@ async fn rollback_melt_quote_inner(
     operation_id: &uuid::Uuid,
     required_saga_state: Option<mint_types::MeltSagaState>,
 ) -> Result<(), Error> {
+    let outcome = rollback_melt_quote_in_transaction(
+        &mut tx,
+        quote_id,
+        input_ys,
+        blinded_secrets,
+        operation_id,
+        required_saga_state,
+    )
+    .await;
+
+    match outcome {
+        Ok(Some(notifications)) => {
+            tx.commit().await?;
+            notifications.publish(pubsub);
+            Ok(())
+        }
+        Ok(None) => {
+            tx.rollback().await?;
+            Ok(())
+        }
+        Err(err) => {
+            tx.rollback().await?;
+            Err(err)
+        }
+    }
+}
+
+/// Rolls back a melt quote inside a caller-supplied transaction.
+///
+/// This performs every write of [`rollback_melt_quote`] but neither commits
+/// nor publishes. It returns `Ok(None)` when there is nothing to roll back
+/// (no artifacts, or the owning saga no longer exists), and the notifications
+/// to publish after the caller commits otherwise.
+///
+/// The refusals ([`Error::UnknownPaymentState`] and [`Error::PaidQuote`]) are
+/// returned before this function writes anything, so a caller may treat them
+/// as a refusal and keep using the transaction. Any other error must roll the
+/// transaction back.
+pub(crate) async fn rollback_melt_quote_in_transaction(
+    tx: &mut DynMintTransaction,
+    quote_id: &QuoteId,
+    input_ys: &[PublicKey],
+    blinded_secrets: &[PublicKey],
+    operation_id: &uuid::Uuid,
+    required_saga_state: Option<mint_types::MeltSagaState>,
+) -> Result<Option<MeltNotifications>, Error> {
     if input_ys.is_empty() && blinded_secrets.is_empty() {
-        tx.rollback().await?;
-        return Ok(());
+        return Ok(None);
     }
 
     tracing::info!(
@@ -256,8 +303,7 @@ async fn rollback_melt_quote_inner(
                 quote_id,
                 operation_id
             );
-            tx.rollback().await?;
-            return Ok(());
+            return Ok(None);
         }
         Some(saga) => {
             if let Some(required_state) = required_saga_state {
@@ -268,7 +314,6 @@ async fn rollback_melt_quote_inner(
                         operation_id,
                         saga.state.state()
                     );
-                    tx.rollback().await?;
                     return Err(Error::UnknownPaymentState);
                 }
             }
@@ -282,18 +327,17 @@ async fn rollback_melt_quote_inner(
                     quote_id,
                     operation_id
                 );
-                tx.rollback().await?;
                 return Err(Error::UnknownPaymentState);
             }
         }
     }
 
-    let quote_option = if let Some(mut quote) = locked_quotes.target {
-        match quote.state {
+    let quote_option = match locked_quotes.target {
+        Some(mut quote) => match quote.state {
             MeltQuoteState::Pending => {
                 tx.update_melt_quote_state(&mut quote, MeltQuoteState::Unpaid, None)
                     .await?;
-                Some(quote)
+                Some(quote.inner())
             }
             MeltQuoteState::Unpaid | MeltQuoteState::Failed => {
                 // Already in a non-pending state; fall through to saga / melt-request
@@ -301,7 +345,6 @@ async fn rollback_melt_quote_inner(
                 None
             }
             MeltQuoteState::Paid => {
-                tx.rollback().await?;
                 return Err(Error::PaidQuote);
             }
             state => {
@@ -310,12 +353,10 @@ async fn rollback_melt_quote_inner(
                     quote_id,
                     state
                 );
-                tx.rollback().await?;
                 return Err(Error::UnknownPaymentState);
             }
-        }
-    } else {
-        None
+        },
+        None => None,
     };
 
     // Finalization locks melt-request and blinded-signature rows before proofs.
@@ -354,18 +395,23 @@ async fn rollback_melt_quote_inner(
         return Err(Error::Internal);
     }
 
-    tx.commit().await?;
-
-    // Publish proof state changes
+    let mut notifications = MeltNotifications::default();
     if proofs_recovered {
-        for pk in input_ys.iter() {
-            pubsub.proof_state((*pk, State::Unspent));
-        }
+        notifications
+            .proof_states
+            .extend(input_ys.iter().map(|pk| (*pk, State::Unspent)));
     }
 
     let quote_reset = quote_option.is_some();
     if let Some(quote) = quote_option {
-        pubsub.melt_quote_status(&quote, None, None, MeltQuoteState::Unpaid);
+        notifications
+            .quote_statuses
+            .push(MeltQuoteStatusNotification {
+                quote,
+                payment_proof: None,
+                change: None,
+                state: MeltQuoteState::Unpaid,
+            });
     }
 
     tracing::info!(
@@ -375,10 +421,73 @@ async fn rollback_melt_quote_inner(
         proof_count = input_ys.len(),
         proofs_recovered,
         change_output_count = blinded_secrets.len(),
-        "melt rollback committed; reservation cleanup completed",
+        "melt rollback staged; reservation cleanup commits with the transaction",
     );
 
-    Ok(())
+    Ok(Some(notifications))
+}
+
+/// Pub/sub notifications produced by a melt state change.
+///
+/// Melt functions that work inside a caller-supplied transaction return this
+/// value instead of publishing. The caller publishes it only after the
+/// transaction commits, so subscribers never see state that was rolled back.
+#[derive(Debug, Default)]
+#[must_use = "melt notifications must be published after the transaction commits"]
+pub(crate) struct MeltNotifications {
+    proof_states: Vec<(PublicKey, State)>,
+    quote_statuses: Vec<MeltQuoteStatusNotification>,
+    #[cfg(feature = "prometheus")]
+    confirmed_payments: Vec<(MeltQuote, Amount<CurrencyUnit>)>,
+}
+
+#[derive(Debug)]
+struct MeltQuoteStatusNotification {
+    quote: MeltQuote,
+    payment_proof: Option<String>,
+    change: Option<Vec<BlindSignature>>,
+    state: MeltQuoteState,
+}
+
+impl MeltNotifications {
+    /// Append the notifications of a later state change.
+    #[cfg(feature = "federation")]
+    pub(crate) fn extend(&mut self, other: Self) {
+        self.proof_states.extend(other.proof_states);
+        self.quote_statuses.extend(other.quote_statuses);
+        #[cfg(feature = "prometheus")]
+        self.confirmed_payments.extend(other.confirmed_payments);
+    }
+
+    /// Publish the notifications. Call only after the transaction committed.
+    pub(crate) fn publish(self, pubsub: &PubSubManager) {
+        for proof_state in self.proof_states {
+            pubsub.proof_state(proof_state);
+        }
+
+        for status in self.quote_statuses {
+            if status.state == MeltQuoteState::Paid {
+                tracing::info!(
+                    quote_id = %status.quote.id,
+                    payment_lookup_id = ?status.quote.request_lookup_id,
+                    quote_amount = %status.quote.amount(),
+                    change_signature_count = status.change.as_ref().map_or(0, Vec::len),
+                    "melt finalized; quote is paid and input proofs are spent",
+                );
+            }
+            pubsub.melt_quote_status(
+                &status.quote,
+                status.payment_proof,
+                status.change,
+                status.state,
+            );
+        }
+
+        #[cfg(feature = "prometheus")]
+        for (quote, total_spent) in self.confirmed_payments {
+            record_confirmed_payment_metrics(&quote, &total_spent);
+        }
+    }
 }
 
 enum MeltCleanupTransaction {
@@ -622,6 +731,24 @@ async fn federation_signature_share_provenance_for_operation(
 }
 
 #[cfg(feature = "federation")]
+async fn federation_signature_share_provenance_in_transaction(
+    tx: &mut DynMintTransaction,
+    federation_operation_id: FederationOperationId,
+) -> Result<FederationSignatureShareProvenance, Error> {
+    let entry = tx
+        .get_federation_journal_entry_by_operation_id(federation_operation_id)
+        .await?
+        .ok_or_else(|| {
+            Error::Custom(
+                "federation operation must be accepted in the journal before signing change"
+                    .to_string(),
+            )
+        })?;
+
+    Ok(FederationSignatureShareProvenance::new(entry))
+}
+
+#[cfg(feature = "federation")]
 impl PreparedFederationMeltChange {
     fn empty() -> Self {
         Self {
@@ -651,8 +778,8 @@ pub(crate) struct FederationMeltChange {
 }
 
 #[cfg(feature = "federation")]
-async fn prepare_federation_melt_change(
-    mint: &super::super::Mint,
+fn prepare_federation_melt_change(
+    config: &FederationRuntimeConfig,
     quote_id: &QuoteId,
     federation_operation_id: FederationOperationId,
     signature_share_provenance: FederationSignatureShareProvenance,
@@ -697,10 +824,6 @@ async fn prepare_federation_melt_change(
         return Ok(PreparedFederationMeltChange::empty());
     }
 
-    let config = mint
-        .effective_federation_config()
-        .await?
-        .ok_or(Error::Internal)?;
     let fee_and_amounts = get_keyset_fee_and_amounts(&config.keysets(), &change_outputs);
     let mut amounts: Vec<Amount> = change_target.split(&fee_and_amounts)?;
 
@@ -741,30 +864,26 @@ async fn prepare_federation_melt_change(
     })
 }
 
+/// Signs federated melt change and stores the shares and signatures in `tx`.
+///
+/// Federated change shares are computed locally from the accepted journal
+/// entry, so no external call is made while the transaction is open.
 #[cfg(feature = "federation")]
-pub(crate) async fn process_federation_melt_change(
-    mint: &super::super::Mint,
-    db: &DynMintDatabase,
+pub(crate) async fn add_federation_melt_change(
+    tx: &mut DynMintTransaction,
+    config: &FederationRuntimeConfig,
     quote_id: &QuoteId,
     federation_operation_id: FederationOperationId,
     signature_share_provenance: FederationSignatureShareProvenance,
     change: FederationMeltChange,
-) -> Result<
-    (
-        Option<Vec<BlindSignature>>,
-        Box<dyn database::MintTransaction<database::Error> + Send + Sync>,
-    ),
-    Error,
-> {
+) -> Result<Option<Vec<BlindSignature>>, Error> {
     let prepared_change = prepare_federation_melt_change(
-        mint,
+        config,
         quote_id,
         federation_operation_id,
         signature_share_provenance,
         change,
-    )
-    .await?;
-    let mut tx = db.begin_transaction().await?;
+    )?;
 
     if !prepared_change.signature_share_records.is_empty() {
         tx.add_federation_signature_shares(&prepared_change.signature_share_records)
@@ -780,7 +899,7 @@ pub(crate) async fn process_federation_melt_change(
         .await?;
     }
 
-    Ok((prepared_change.change_sigs, tx))
+    Ok(prepared_change.change_sigs)
 }
 
 /// Loads a melt quote and acquires exclusive locks on all related quotes.
@@ -894,6 +1013,53 @@ pub async fn load_melt_quotes_exclusively(
 pub(crate) async fn finalize_melt_core(
     mut tx: Box<dyn database::MintTransaction<database::Error> + Send + Sync>,
     pubsub: &PubSubManager,
+    quote: Acquired<MeltQuote>,
+    input_ys: &[PublicKey],
+    inputs_amount: Amount<CurrencyUnit>,
+    inputs_fee: Amount<CurrencyUnit>,
+    total_spent: Amount<CurrencyUnit>,
+    payment_proof: Option<String>,
+    payment_lookup_id: &cdk_common::payment::PaymentIdentifier,
+) -> Result<(Proofs, MeltQuote), Error> {
+    let outcome = finalize_melt_core_in_transaction(
+        &mut tx,
+        quote,
+        input_ys,
+        inputs_amount,
+        inputs_fee,
+        total_spent,
+        payment_proof,
+        payment_lookup_id,
+    )
+    .await;
+
+    let finalized = match outcome {
+        Ok(finalized) => finalized,
+        Err(err) => {
+            tx.rollback().await?;
+            return Err(err);
+        }
+    };
+
+    tx.commit().await?;
+
+    // Publish proof state changes
+    for pk in input_ys.iter() {
+        pubsub.proof_state((*pk, State::Spent));
+    }
+
+    Ok(finalized)
+}
+
+/// Core melt finalization inside a caller-supplied transaction.
+///
+/// Performs the writes of [`finalize_melt_core`] (amount validation, quote
+/// `Paid`, lookup-id update, inputs `Spent`) without committing, rolling
+/// back, or publishing. The caller publishes the spent proof states after it
+/// commits.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn finalize_melt_core_in_transaction(
+    tx: &mut DynMintTransaction,
     mut quote: Acquired<MeltQuote>,
     input_ys: &[PublicKey],
     inputs_amount: Amount<CurrencyUnit>,
@@ -910,28 +1076,15 @@ pub(crate) async fn finalize_melt_core(
             quote.amount(),
             quote.id
         );
-        tx.rollback().await?;
         return Err(Error::IncorrectQuoteAmount);
     }
 
     // Validate inputs amount
-    let net_inputs = match inputs_amount.checked_sub(&inputs_fee) {
-        Ok(net_inputs) => net_inputs,
-        Err(err) => {
-            tx.rollback().await?;
-            return Err(err.into());
-        }
-    };
+    let net_inputs = inputs_amount.checked_sub(&inputs_fee)?;
 
     // Convert total_spent to the same unit as net_inputs for comparison.
     // Backends should return total_spent in the quote's unit, but we convert defensively.
-    let total_spent = match total_spent.convert_to_ceil(net_inputs.unit()) {
-        Ok(total_spent) => total_spent,
-        Err(err) => {
-            tx.rollback().await?;
-            return Err(err.into());
-        }
-    };
+    let total_spent = total_spent.convert_to_ceil(net_inputs.unit())?;
 
     tracing::debug!(
         "Melt validation for quote {}: inputs_amount={}, inputs_fee={}, net_inputs={}, total_spent={}, quote_amount={}, fee_reserve={}",
@@ -964,13 +1117,8 @@ pub(crate) async fn finalize_melt_core(
     }
 
     // Update quote state to Paid
-    if let Err(err) = tx
-        .update_melt_quote_state(&mut quote, MeltQuoteState::Paid, payment_proof.clone())
-        .await
-    {
-        tx.rollback().await?;
-        return Err(err.into());
-    }
+    tx.update_melt_quote_state(&mut quote, MeltQuoteState::Paid, payment_proof)
+        .await?;
 
     quote.state = MeltQuoteState::Paid;
 
@@ -982,34 +1130,13 @@ pub(crate) async fn finalize_melt_core(
             payment_lookup_id
         );
 
-        if let Err(err) = tx
-            .update_melt_quote_request_lookup_id(&mut quote, payment_lookup_id)
-            .await
-        {
-            tx.rollback().await?;
-            return Err(err.into());
-        }
+        tx.update_melt_quote_request_lookup_id(&mut quote, payment_lookup_id)
+            .await?;
     }
 
-    let mut proofs = match tx.get_proofs(input_ys).await {
-        Ok(proofs) => proofs,
-        Err(err) => {
-            tx.rollback().await?;
-            return Err(err.into());
-        }
-    };
+    let mut proofs = tx.get_proofs(input_ys).await?;
 
-    if let Err(err) = Mint::update_proofs_state(&mut tx, &mut proofs, State::Spent).await {
-        tx.rollback().await?;
-        return Err(err);
-    }
-
-    tx.commit().await?;
-
-    // Publish proof state changes
-    for pk in input_ys.iter() {
-        pubsub.proof_state((*pk, State::Spent));
-    }
+    Mint::update_proofs_state(tx, &mut proofs, State::Spent).await?;
 
     // Clone the proofs out of the Acquired wrapper so that no database
     // row locks are held after this function returns.
@@ -1018,8 +1145,10 @@ pub(crate) async fn finalize_melt_core(
 
 /// High-level melt finalization that handles the complete workflow.
 ///
-/// This is the **single finalization path** for all melt operations — both the
-/// normal saga flow and all recovery/async paths. It orchestrates:
+/// This is the **single finalization path** for standalone melt operations —
+/// both the normal saga flow and all recovery/async paths. Federated melts use
+/// [`finalize_federation_melt_quote`], which does the same work in one
+/// transaction. It orchestrates:
 /// 1. Getting melt request info and input proof Y values
 /// 2. Core finalization (mark proofs spent, update quote to Paid)
 /// 3. Processing change (if needed)
@@ -1063,12 +1192,22 @@ pub async fn finalize_melt_quote(
         payment_proof,
         payment_lookup_id,
         operation_id,
-        #[cfg(feature = "federation")]
-        None,
     )
     .await
 }
 
+/// Finalizes a paid federated melt in one database transaction.
+///
+/// Begins a transaction, runs [`finalize_federation_melt_in_transaction`],
+/// commits, and only then publishes. Every federated finalization caller uses
+/// this function or the in-transaction function directly, so the quote, the
+/// inputs, the change shares, the completed operation and the saga cleanup
+/// either all commit or none do.
+///
+/// # Returns
+///
+/// The change signatures, if any. When an earlier run already finalized the
+/// melt, the stored change signatures are returned.
 #[cfg(feature = "federation")]
 #[allow(clippy::too_many_arguments)]
 pub async fn finalize_federation_melt_quote(
@@ -1082,18 +1221,320 @@ pub async fn finalize_federation_melt_quote(
     operation_id: Option<uuid::Uuid>,
     federation_operation_id: FederationOperationId,
 ) -> Result<Option<Vec<BlindSignature>>, Error> {
-    finalize_melt_quote_inner(
-        mint,
-        db,
-        pubsub,
+    // Load the config before the transaction opens: rebuilding it reads the
+    // database, which must not happen while this transaction holds the
+    // connection.
+    let config = mint
+        .effective_federation_config()
+        .await?
+        .ok_or(Error::Internal)?;
+
+    let mut tx = db.begin_transaction().await?;
+    let outcome = finalize_federation_melt_in_transaction(
+        &mut tx,
+        &config,
         quote,
         total_spent,
         payment_proof,
         payment_lookup_id,
         operation_id,
-        Some(federation_operation_id),
+        federation_operation_id,
     )
-    .await
+    .await;
+    let finalization = match outcome {
+        Ok(finalization) => finalization,
+        Err(err) => {
+            tx.rollback().await?;
+            return Err(err);
+        }
+    };
+    tx.commit().await?;
+
+    if finalization.is_already_completed() {
+        let sigs = db.get_blind_signatures_for_quote(&quote.id).await?;
+        return Ok(if sigs.is_empty() { None } else { Some(sigs) });
+    }
+
+    let change_sigs = finalization.change_signatures().map(<[_]>::to_vec);
+    finalization.publish(pubsub);
+    Ok(change_sigs)
+}
+
+/// What a federated melt finalization publishes after its transaction commits.
+///
+/// Returned by [`finalize_federation_melt_in_transaction`]. It carries the
+/// proof Ys this finalization moved to `Spent`, the paid quote, its payment
+/// proof and the change signatures.
+#[cfg(feature = "federation")]
+#[derive(Debug)]
+#[must_use = "a federated melt finalization must be published after the transaction commits"]
+pub(crate) struct FederationMeltFinalization {
+    spent_ys: Vec<PublicKey>,
+    /// `None` when an earlier run already completed the finalization.
+    finalized: Option<FinalizedFederationMelt>,
+}
+
+#[cfg(feature = "federation")]
+#[derive(Debug)]
+struct FinalizedFederationMelt {
+    quote: MeltQuote,
+    payment_proof: Option<String>,
+    change_sigs: Option<Vec<BlindSignature>>,
+    #[cfg(feature = "prometheus")]
+    confirmed_total_spent: Option<Amount<CurrencyUnit>>,
+}
+
+#[cfg(feature = "federation")]
+impl FederationMeltFinalization {
+    fn already_completed() -> Self {
+        Self {
+            spent_ys: Vec::new(),
+            finalized: None,
+        }
+    }
+
+    /// Whether an earlier run had already finalized the melt.
+    pub(crate) fn is_already_completed(&self) -> bool {
+        self.finalized.is_none()
+    }
+
+    /// Change signatures created by this finalization.
+    pub(crate) fn change_signatures(&self) -> Option<&[BlindSignature]> {
+        self.finalized
+            .as_ref()
+            .and_then(|finalized| finalized.change_sigs.as_deref())
+    }
+
+    /// Convert into notifications that can be merged with other melt changes.
+    pub(crate) fn into_notifications(self) -> MeltNotifications {
+        let mut notifications = MeltNotifications::default();
+        notifications
+            .proof_states
+            .extend(self.spent_ys.into_iter().map(|y| (y, State::Spent)));
+        if let Some(finalized) = self.finalized {
+            #[cfg(feature = "prometheus")]
+            if let Some(total_spent) = finalized.confirmed_total_spent {
+                notifications
+                    .confirmed_payments
+                    .push((finalized.quote.clone(), total_spent));
+            }
+            notifications
+                .quote_statuses
+                .push(MeltQuoteStatusNotification {
+                    quote: finalized.quote,
+                    payment_proof: finalized.payment_proof,
+                    change: finalized.change_sigs,
+                    state: MeltQuoteState::Paid,
+                });
+        }
+        notifications
+    }
+
+    /// Publish the spent proofs and the paid quote. Call only after commit.
+    pub(crate) fn publish(self, pubsub: &PubSubManager) {
+        self.into_notifications().publish(pubsub);
+    }
+}
+
+/// Finalizes a paid federated melt inside a caller-supplied transaction.
+///
+/// This is the single federated finalization implementation. Within `tx` it:
+/// 1. Locks the quote and loads the melt request
+/// 2. Validates amounts like [`finalize_melt_core`]
+/// 3. Sets the quote `Paid` and spends the inputs
+/// 4. Computes the local change shares and stores shares and signatures
+/// 5. Records the completed operation with its fee breakdown
+/// 6. Deletes the melt request and the saga
+///
+/// It never commits, rolls back or publishes. The caller commits and then
+/// publishes the returned [`FederationMeltFinalization`]. If the caller rolls
+/// back, nothing of the finalization remains.
+///
+/// Idempotent branches: a quote already `Paid` with the same settlement
+/// continues with change and cleanup, and a missing melt request or missing
+/// inputs mean an earlier run completed, which only deletes the saga.
+///
+/// `config` must be loaded before `tx` was opened.
+#[cfg(feature = "federation")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn finalize_federation_melt_in_transaction(
+    tx: &mut DynMintTransaction,
+    config: &FederationRuntimeConfig,
+    quote: &MeltQuote,
+    total_spent: Amount<CurrencyUnit>,
+    payment_proof: Option<String>,
+    payment_lookup_id: &cdk_common::payment::PaymentIdentifier,
+    operation_id: Option<uuid::Uuid>,
+    federation_operation_id: FederationOperationId,
+) -> Result<FederationMeltFinalization, Error> {
+    tracing::debug!("Finalizing federated melt quote {}", quote.id);
+
+    let total_spent = total_spent_for_quote_unit(&total_spent, &quote.unit)?;
+
+    let settlement_matches = |stored_quote: &MeltQuote| {
+        stored_quote.request_lookup_id.as_ref() == Some(payment_lookup_id)
+            && stored_quote.payment_proof == payment_proof
+    };
+
+    let locked_quote = load_melt_quotes_exclusively(tx, &quote.id).await?;
+
+    let Some(melt_request_info) = tx.get_melt_request_and_blinded_messages(&quote.id).await? else {
+        if locked_quote.state == MeltQuoteState::Paid && !settlement_matches(&locked_quote) {
+            return Err(Error::PaidQuote);
+        }
+
+        tracing::warn!(
+            "No melt request found for quote {} - may have been completed already",
+            quote.id
+        );
+        // Melt request already cleaned up (completed in a prior run). Delete
+        // the saga if present so recovery doesn't retry.
+        if let Some(op_id) = operation_id {
+            tx.delete_saga(&op_id).await?;
+        }
+        return Ok(FederationMeltFinalization::already_completed());
+    };
+
+    let input_ys = tx.get_proof_ys_by_quote_id(&quote.id).await?;
+    if input_ys.is_empty() {
+        tracing::warn!(
+            "No input proofs found for quote {} - may have been completed already",
+            quote.id
+        );
+        if let Some(op_id) = operation_id {
+            tx.delete_saga(&op_id).await?;
+        }
+        return Ok(FederationMeltFinalization::already_completed());
+    }
+
+    #[cfg(feature = "prometheus")]
+    let should_record_payment_metrics = locked_quote.state != MeltQuoteState::Paid;
+
+    // A quote already Paid with the same settlement only needs its remaining
+    // Pending inputs spent before change and cleanup.
+    let (proofs, finalized_quote, spent_ys) = if locked_quote.state == MeltQuoteState::Paid {
+        let locked_quote = locked_quote.inner();
+        if !settlement_matches(&locked_quote) {
+            return Err(Error::PaidQuote);
+        }
+
+        tracing::info!(
+            "Melt quote {} already Paid, skipping to change/cleanup",
+            quote.id
+        );
+        let mut proofs_with_state = tx.get_proofs(&input_ys).await?;
+        let spend_pending = proofs_with_state.state == State::Pending;
+        if spend_pending {
+            Mint::update_proofs_state(tx, &mut proofs_with_state, State::Spent).await?;
+        }
+        let spent_ys = if spend_pending {
+            input_ys.clone()
+        } else {
+            Vec::new()
+        };
+        (proofs_with_state.to_vec(), locked_quote, spent_ys)
+    } else {
+        let (proofs, finalized_quote) = finalize_melt_core_in_transaction(
+            tx,
+            locked_quote,
+            &input_ys,
+            melt_request_info.inputs_amount.clone(),
+            melt_request_info.inputs_fee.clone(),
+            total_spent.clone(),
+            payment_proof.clone(),
+            payment_lookup_id,
+        )
+        .await?;
+        (proofs, finalized_quote, input_ys.clone())
+    };
+
+    let fee_breakdown = match operation_id {
+        Some(_) => Some(crate::mint::verification::calculate_proofs_fee(
+            &config.keysets(),
+            &proofs,
+        )?),
+        None => None,
+    };
+
+    let signature_share_provenance =
+        federation_signature_share_provenance_in_transaction(tx, federation_operation_id).await?;
+    let change_sigs = add_federation_melt_change(
+        tx,
+        config,
+        &finalized_quote.id,
+        federation_operation_id,
+        signature_share_provenance,
+        FederationMeltChange {
+            inputs_amount: melt_request_info.inputs_amount.clone(),
+            total_spent: total_spent.clone(),
+            inputs_fee: melt_request_info.inputs_fee.clone(),
+            outputs: melt_request_info.change_outputs.clone(),
+        },
+    )
+    .await?;
+
+    tx.delete_melt_request(&finalized_quote.id).await?;
+
+    if let (Some(op_id), Some(fee_breakdown)) = (operation_id, fee_breakdown.as_ref()) {
+        let change_amount = match change_sigs.as_ref() {
+            Some(sigs) => Amount::try_sum(sigs.iter().map(|sig| sig.amount))?,
+            None => Amount::ZERO,
+        };
+
+        // An accepted federation operation provides order but no wall-clock
+        // time, so completion time is recorded as unknown (zero).
+        let mut operation = mint_types::Operation::new(
+            op_id,
+            mint_types::OperationKind::Melt,
+            Amount::ZERO,
+            melt_request_info.inputs_amount.clone().into(),
+            fee_breakdown.total,
+            Some(0),
+            Some(finalized_quote.payment_method.clone()),
+        );
+        operation.add_change(change_amount);
+
+        let payment_fee = total_spent.checked_sub(&finalized_quote.amount())?;
+        operation.set_payment_details(finalized_quote.amount().into(), payment_fee.into());
+
+        tx.add_completed_operation(&operation, &fee_breakdown.per_keyset)
+            .await?;
+    }
+
+    if let Some(op_id) = operation_id {
+        tx.delete_saga(&op_id).await?;
+    }
+
+    #[cfg(test)]
+    if crate::test_helpers::mint::should_fail_for("FEDERATION_MELT_FINALIZE_BEFORE_COMMIT") {
+        return Err(Error::Internal);
+    }
+
+    tracing::debug!(
+        quote_id = %finalized_quote.id,
+        saga_id = ?operation_id,
+        payment_lookup_id = %payment_lookup_id,
+        quote_amount = %finalized_quote.amount(),
+        fee_reserve = %finalized_quote.fee_reserve(),
+        input_fee = %melt_request_info.inputs_fee,
+        inputs_amount = %melt_request_info.inputs_amount,
+        total_spent = %total_spent,
+        proof_count = input_ys.len(),
+        requested_change_output_count = melt_request_info.change_outputs.len(),
+        change_signature_count = change_sigs.as_ref().map_or(0, Vec::len),
+        "federated melt finalization staged; it takes effect when the transaction commits",
+    );
+
+    Ok(FederationMeltFinalization {
+        spent_ys,
+        finalized: Some(FinalizedFederationMelt {
+            quote: finalized_quote,
+            payment_proof,
+            change_sigs,
+            #[cfg(feature = "prometheus")]
+            confirmed_total_spent: should_record_payment_metrics.then_some(total_spent),
+        }),
+    })
 }
 
 #[cfg(feature = "federation")]
@@ -1129,8 +1570,12 @@ pub(crate) async fn finalize_federation_internal_melt_quote(
     let total_spent = quote.amount();
     let signature_share_provenance =
         federation_signature_share_provenance_for_operation(db, federation_operation_id).await?;
+    let config = mint
+        .effective_federation_config()
+        .await?
+        .ok_or(Error::Internal)?;
     let prepared_change = prepare_federation_melt_change(
-        mint,
+        &config,
         &quote.id,
         federation_operation_id,
         signature_share_provenance,
@@ -1140,12 +1585,7 @@ pub(crate) async fn finalize_federation_internal_melt_quote(
             inputs_fee: melt_request_info.inputs_fee.clone(),
             outputs: melt_request_info.change_outputs.clone(),
         },
-    )
-    .await?;
-    let config = mint
-        .effective_federation_config()
-        .await?
-        .ok_or(Error::Internal)?;
+    )?;
 
     let mut tx = db.begin_transaction().await?;
     let mut mint_quote = match tx.get_mint_quote_by_request(&request).await? {
@@ -1326,7 +1766,6 @@ async fn finalize_melt_quote_inner(
     payment_proof: Option<String>,
     payment_lookup_id: &cdk_common::payment::PaymentIdentifier,
     operation_id: Option<uuid::Uuid>,
-    #[cfg(feature = "federation")] federation_operation_id: Option<FederationOperationId>,
 ) -> Result<Option<Vec<BlindSignature>>, Error> {
     tracing::debug!("Finalizing melt quote {}", quote.id);
 
@@ -1461,66 +1900,7 @@ async fn finalize_melt_quote_inner(
         (proofs, quote)
     };
 
-    #[cfg(feature = "federation")]
-    let federation_fee_breakdown = if operation_id.is_some() && federation_operation_id.is_some() {
-        let config = mint
-            .effective_federation_config()
-            .await?
-            .ok_or(Error::Internal)?;
-        Some(crate::mint::verification::calculate_proofs_fee(
-            &config.keysets(),
-            &proofs,
-        )?)
-    } else {
-        None
-    };
-
-    #[cfg(feature = "federation")]
-    let signature_share_provenance = match federation_operation_id {
-        Some(federation_operation_id) => Some(
-            federation_signature_share_provenance_for_operation(db, federation_operation_id)
-                .await?,
-        ),
-        None => None,
-    };
-
-    #[cfg(feature = "federation")]
-    // Preserve standalone completion time when this is not a federation melt.
-    // An accepted federation operation provides order but no wall-clock time.
-    let federation_completed_at = signature_share_provenance.as_ref().map(|_| 0);
-
     // Process change (if needed) - opens new transaction.
-    #[cfg(feature = "federation")]
-    let change_result = if let Some(federation_operation_id) = federation_operation_id {
-        let signature_share_provenance = signature_share_provenance.ok_or(Error::Internal)?;
-        let (change_sigs, tx) = process_federation_melt_change(
-            mint,
-            db,
-            &quote.id,
-            federation_operation_id,
-            signature_share_provenance,
-            FederationMeltChange {
-                inputs_amount: melt_request_info.inputs_amount.clone(),
-                total_spent: total_spent.clone(),
-                inputs_fee: melt_request_info.inputs_fee.clone(),
-                outputs: melt_request_info.change_outputs.clone(),
-            },
-        )
-        .await?;
-        MeltChangeResult::Ready { change_sigs, tx }
-    } else {
-        process_melt_change(
-            mint,
-            db,
-            &quote.id,
-            melt_request_info.inputs_amount.clone(),
-            total_spent.clone(),
-            melt_request_info.inputs_fee.clone(),
-            melt_request_info.change_outputs.clone(),
-        )
-        .await?
-    };
-    #[cfg(not(feature = "federation"))]
     let change_result = process_melt_change(
         mint,
         db,
@@ -1558,30 +1938,13 @@ async fn finalize_melt_quote_inner(
     // We reuse the cloned proofs from TX1 / recovery so TX2 can atomically
     // persist the completed operation with the rest of the post-payment work.
     let fee_breakdown = if operation_id.is_some() {
-        #[cfg(feature = "federation")]
-        {
-            if let Some(fee_breakdown) = federation_fee_breakdown.as_ref() {
-                Some(fee_breakdown.clone())
-            } else {
-                Some(match mint.get_proofs_fee(&proofs).await {
-                    Ok(fee_breakdown) => fee_breakdown,
-                    Err(err) => {
-                        tx.rollback().await?;
-                        return Err(err);
-                    }
-                })
+        Some(match mint.get_proofs_fee(&proofs).await {
+            Ok(fee_breakdown) => fee_breakdown,
+            Err(err) => {
+                tx.rollback().await?;
+                return Err(err);
             }
-        }
-        #[cfg(not(feature = "federation"))]
-        {
-            Some(match mint.get_proofs_fee(&proofs).await {
-                Ok(fee_breakdown) => fee_breakdown,
-                Err(err) => {
-                    tx.rollback().await?;
-                    return Err(err);
-                }
-            })
-        }
+        })
     } else {
         None
     };
@@ -1607,9 +1970,6 @@ async fn finalize_melt_quote_inner(
             Amount::ZERO,
             melt_request_info.inputs_amount.clone().into(),
             fee_breakdown.total,
-            #[cfg(feature = "federation")]
-            federation_completed_at,
-            #[cfg(not(feature = "federation"))]
             None,
             Some(quote.payment_method.clone()),
         );
@@ -1639,15 +1999,6 @@ async fn finalize_melt_quote_inner(
             tx.rollback().await?;
             return Err(err.into());
         }
-    }
-
-    #[cfg(all(test, feature = "federation"))]
-    if federation_operation_id.is_some()
-        && crate::test_helpers::mint::should_fail_for(
-            "FEDERATION_MELT_FINALIZE_BEFORE_CLEANUP_COMMIT",
-        )
-    {
-        return Err(Error::Internal);
     }
 
     // Commit TX2 (change signatures + operation record + melt request + saga cleanup)

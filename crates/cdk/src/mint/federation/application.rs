@@ -17,6 +17,7 @@ use super::helpers::{
 use super::projection;
 use super::transaction_state::persist_pending_onchain_intent;
 use crate::mint::melt::ensure_melt_quote_matches_request;
+use crate::mint::melt::shared::MeltNotifications;
 use crate::mint::swap::{plan_swap, SwapPlan};
 use crate::mint::verification::{self, Verification};
 use crate::mint::Mint;
@@ -35,8 +36,8 @@ use cdk_common::federation::{
     FederationOnchainMeltPaymentReceipt, FederationOperation, FederationOperationConflictKey,
     FederationOperationId, FederationOperationStatus, FederationPaymentObservation,
     FederationPaymentObservationContext, FederationPaymentObservationRecord,
-    FederationPaymentObservationReport, FederationSignatureShareRecord, FederationSwapOperation,
-    MemberId,
+    FederationPaymentObservationReport, FederationSignatureShareRecord, FederationStoredState,
+    FederationSwapOperation, FederationTransactionState, MemberId,
 };
 use cdk_common::mint::{
     MeltQuote, MeltSagaState, MintQuote, Operation, OperationKind, SagaStateEnum,
@@ -1318,33 +1319,43 @@ impl Mint {
             .cloned();
         let recovery_mutation = self.federation_bark_recovery_mutation(operation).await?;
 
-        if let Some(FederationPaymentObservation::MeltQuote(observation)) =
-            representative.as_ref().map(|record| &record.observation)
+        if let Some((representative, FederationPaymentObservation::MeltQuote(observation))) =
+            representative
+                .as_ref()
+                .map(|record| (record, &record.observation))
         {
+            // Bark melt payment evidence: the projection rows, every
+            // observation and the melt outcome commit together with the
+            // applied mark, or not at all.
+            let config = self
+                .effective_federation_config()
+                .await?
+                .ok_or(Error::Internal)?;
             let mut transaction = self.localstore.begin_transaction().await?;
-            let outcome: Result<(), Error> = async {
+            let outcome = async {
                 transaction
                     .apply_federation_application_operation(entry, application)
-                    .await
-                    .map_err(Error::from)?;
+                    .await?;
                 for record in &payment_records {
                     transaction
                         .add_federation_payment_observation(record)
-                        .await
-                        .map_err(Error::from)?;
+                        .await?;
                 }
-                Ok(())
-            }
-            .await;
-            finish_federation_transaction(transaction, entry, "bark_payment_evidence", outcome)
-                .await?;
-            return self
-                .apply_federation_melt_quote_payment_record(
+
+                self.apply_federation_melt_quote_payment_record_in_transaction(
+                    &mut transaction,
+                    &config,
                     entry,
                     observation,
-                    representative.as_ref().ok_or(Error::Internal)?,
+                    representative,
                 )
-                .await;
+                .await
+            }
+            .await;
+            let notifications =
+                finish_federation_apply_transaction(transaction, entry, outcome).await?;
+            notifications.publish(&self.pubsub_manager);
+            return Ok(());
         }
 
         let mut transaction = self.localstore.begin_transaction().await?;
@@ -2406,44 +2417,89 @@ impl Mint {
             .await
     }
 
+    /// Apply one melt payment observation in one transaction.
+    ///
+    /// The observation, the melt outcome it triggers (finalization, rollback
+    /// or quote state update) and the applied mark commit together.
+    /// Notifications are published only after the commit. Any error rolls
+    /// back everything, including the observation row, and leaves the entry
+    /// unapplied so replay retries it.
     async fn apply_federation_melt_quote_payment_record(
         &self,
         entry: &FederationJournalEntry,
         observation: &FederationMeltQuotePaymentObservation,
         record: &FederationPaymentObservationRecord,
     ) -> Result<(), Error> {
+        // Rebuilding the effective config reads the database, so load it
+        // before the transaction holds the connection.
+        let config = self
+            .effective_federation_config()
+            .await?
+            .ok_or(Error::Internal)?;
+        let mut transaction = self.localstore.begin_transaction().await?;
+        let outcome = self
+            .apply_federation_melt_quote_payment_record_in_transaction(
+                &mut transaction,
+                &config,
+                entry,
+                observation,
+                record,
+            )
+            .await;
+        let notifications =
+            finish_federation_apply_transaction(transaction, entry, outcome).await?;
+        notifications.publish(&self.pubsub_manager);
+        Ok(())
+    }
+
+    /// Add a melt payment observation and apply its outcome inside `tx`.
+    ///
+    /// Takes the same branch decisions as a standalone apply would, reading
+    /// the quote and the saga inside `tx`. Returns the notifications to
+    /// publish after the caller commits.
+    async fn apply_federation_melt_quote_payment_record_in_transaction(
+        &self,
+        tx: &mut database::mint::DynMintTransaction,
+        config: &FederationRuntimeConfig,
+        entry: &FederationJournalEntry,
+        observation: &FederationMeltQuotePaymentObservation,
+        record: &FederationPaymentObservationRecord,
+    ) -> Result<MeltNotifications, Error> {
         let operation_id = entry.operation_id;
         let quote_id = quote_id_from_federation(&observation.quote)?;
-        let mut quote = self
-            .localstore
+
+        // Take the quote lock before any row lock, matching finalization and
+        // rollback.
+        tx.lock_quotes(std::slice::from_ref(&quote_id)).await?;
+        let mut quote = tx
             .get_melt_quote(&quote_id)
             .await?
-            .ok_or(Error::UnknownQuote)?;
+            .ok_or(Error::UnknownQuote)?
+            .inner();
 
         ensure_melt_quote_matches_payment_observation(&quote, observation)?;
         let onchain_receipt = self
-            .validate_federation_onchain_melt_payment_observation(&quote, observation)
+            .validate_federation_onchain_melt_payment_observation_in_transaction(
+                tx,
+                &quote,
+                observation,
+            )
             .await?;
 
-        let can_finalize = {
-            let mut tx = self.localstore.begin_transaction().await?;
-            let outcome = async {
-                tx.add_federation_payment_observation(record).await?;
-                let observations = tx
-                    .get_federation_payment_observations(
-                        FederationPaymentObservationContext::MeltQuote,
-                        &observation.quote,
-                    )
-                    .await?;
-                self.federation_payment_observation_can_finalize_at_or_before(
-                    &record.observation,
-                    &observations,
-                    record.operation_index,
-                )
-            }
-            .await;
-            finish_federation_transaction(tx, entry, "payment_observation", outcome).await?
-        };
+        tx.add_federation_payment_observation(record).await?;
+        let observations = tx
+            .get_federation_payment_observations(
+                FederationPaymentObservationContext::MeltQuote,
+                &observation.quote,
+            )
+            .await?;
+        let can_finalize = self.federation_payment_observation_can_finalize_at_or_before(
+            &record.observation,
+            &observations,
+            record.operation_index,
+        )?;
+
+        let mut notifications = MeltNotifications::default();
         if quote.state == cdk_common::MeltQuoteState::Paid
             && observation.state != cdk_common::MeltQuoteState::Paid
         {
@@ -2452,11 +2508,7 @@ impl Mint {
             // above so operators can audit observer lag or disagreement.
         } else if quote.state == cdk_common::MeltQuoteState::Unpaid
             && observation.state == cdk_common::MeltQuoteState::Pending
-            && self
-                .localstore
-                .get_melt_saga_by_quote_id(&quote_id)
-                .await?
-                .is_none()
+            && tx.get_melt_saga_by_quote_id(&quote_id).await?.is_none()
         {
             // Failed melt recovery rolls the quote back to unpaid and clears
             // saga state. Late pending observations from other members must not
@@ -2465,45 +2517,51 @@ impl Mint {
             if can_finalize {
                 match observation.state {
                     cdk_common::MeltQuoteState::Paid => {
-                        self.apply_paid_melt_quote_payment_observation(
-                            operation_id,
-                            &mut quote,
-                            observation,
-                            onchain_receipt.as_ref(),
-                        )
-                        .await?;
-                    }
-                    cdk_common::MeltQuoteState::Unpaid | cdk_common::MeltQuoteState::Failed => {
-                        if let Some(saga) =
-                            self.localstore.get_melt_saga_by_quote_id(&quote_id).await?
-                        {
-                            let payment_response = melt_quote_payment_response(
+                        notifications.extend(
+                            Self::apply_paid_melt_quote_payment_observation_in_transaction(
+                                tx,
+                                config,
                                 operation_id,
-                                &quote,
+                                &mut quote,
                                 observation,
                                 onchain_receipt.as_ref(),
-                            )?;
-                            crate::mint::saga_recovery::process_federation_melt_saga_outcome(
-                                &saga,
-                                &mut quote,
-                                &payment_response,
-                                &self.localstore,
-                                &self.pubsub_manager,
-                                self,
                             )
-                            .await?;
-                        } else {
-                            self.update_melt_quote_payment_observation_state(
-                                entry,
-                                &quote_id,
-                                observation,
-                            )
-                            .await?;
+                            .await?,
+                        );
+                    }
+                    cdk_common::MeltQuoteState::Unpaid | cdk_common::MeltQuoteState::Failed => {
+                        match tx.get_melt_saga_by_quote_id(&quote_id).await? {
+                            Some(saga) => {
+                                let payment_response = melt_quote_payment_response(
+                                    operation_id,
+                                    &quote,
+                                    observation,
+                                    onchain_receipt.as_ref(),
+                                )?;
+                                notifications.extend(
+                                    crate::mint::saga_recovery::process_federation_melt_saga_outcome_in_transaction(
+                                        tx,
+                                        config,
+                                        &saga,
+                                        &mut quote,
+                                        &payment_response,
+                                    )
+                                    .await?,
+                                );
+                            }
+                            None => {
+                                Self::update_melt_quote_payment_observation_state_in_transaction(
+                                    tx,
+                                    &quote_id,
+                                    observation,
+                                )
+                                .await?;
+                            }
                         }
                     }
                     cdk_common::MeltQuoteState::Pending | cdk_common::MeltQuoteState::Unknown => {
-                        self.update_melt_quote_payment_observation_state(
-                            entry,
+                        Self::update_melt_quote_payment_observation_state_in_transaction(
+                            tx,
                             &quote_id,
                             observation,
                         )
@@ -2514,55 +2572,84 @@ impl Mint {
         } else if can_finalize {
             ensure_melt_quote_payment_proof_matches(&quote, observation)?;
             if observation.state == cdk_common::MeltQuoteState::Paid {
-                if let Some(saga) = self.localstore.get_melt_saga_by_quote_id(&quote_id).await? {
+                if let Some(saga) = tx.get_melt_saga_by_quote_id(&quote_id).await? {
                     let melt_operation_id = saga
                         .federation_operation_id
                         .as_deref()
                         .ok_or(Error::Internal)?
                         .parse::<FederationOperationId>()?;
-                    self.resume_paid_federation_melt_finalization(
-                        &mut quote,
-                        &saga,
-                        melt_operation_id,
-                    )
-                    .await?;
+                    notifications.extend(
+                        Self::resume_paid_federation_melt_finalization_in_transaction(
+                            tx,
+                            config,
+                            &mut quote,
+                            &saga,
+                            melt_operation_id,
+                        )
+                        .await?,
+                    );
                 }
             }
         }
 
-        let transaction = self.localstore.begin_transaction().await?;
-        finish_federation_apply_transaction(transaction, entry, Ok(())).await
+        #[cfg(test)]
+        if crate::test_helpers::mint::should_fail_for("FEDERATION_MELT_PAYMENT_APPLY_BEFORE_COMMIT")
+        {
+            return Err(Error::Internal);
+        }
+
+        Ok(notifications)
     }
 
-    async fn apply_paid_melt_quote_payment_observation(
-        &self,
+    async fn apply_paid_melt_quote_payment_observation_in_transaction(
+        tx: &mut database::mint::DynMintTransaction,
+        config: &FederationRuntimeConfig,
         operation_id: FederationOperationId,
         quote: &mut MeltQuote,
         observation: &FederationMeltQuotePaymentObservation,
         onchain_receipt: Option<&FederationOnchainMeltPaymentReceipt>,
-    ) -> Result<(), Error> {
-        let saga = self
-            .localstore
-            .get_melt_saga_by_quote_id(&quote.id)
-            .await?
-            .ok_or(FederationError::OperationStateInvalid {
+    ) -> Result<MeltNotifications, Error> {
+        let saga = tx.get_melt_saga_by_quote_id(&quote.id).await?.ok_or(
+            FederationError::OperationStateInvalid {
                 reason: "federation paid melt observation found no pending melt saga",
-            })?;
+            },
+        )?;
         let payment_response =
             melt_quote_payment_response(operation_id, quote, observation, onchain_receipt)?;
-        crate::mint::saga_recovery::process_federation_melt_saga_outcome(
+        crate::mint::saga_recovery::process_federation_melt_saga_outcome_in_transaction(
+            tx,
+            config,
             &saga,
             quote,
             &payment_response,
-            &self.localstore,
-            &self.pubsub_manager,
-            self,
         )
         .await
     }
 
+    /// Validate an on-chain melt payment observation outside any transaction.
+    #[cfg(test)]
     pub(super) async fn validate_federation_onchain_melt_payment_observation(
         &self,
+        quote: &MeltQuote,
+        observation: &FederationMeltQuotePaymentObservation,
+    ) -> Result<Option<FederationOnchainMeltPaymentReceipt>, Error> {
+        let mut tx = self.localstore.begin_transaction().await?;
+        let outcome = self
+            .validate_federation_onchain_melt_payment_observation_in_transaction(
+                &mut tx,
+                quote,
+                observation,
+            )
+            .await;
+        tx.rollback().await?;
+        outcome
+    }
+
+    /// Validate an on-chain melt payment observation against the ordered
+    /// transaction state and the melt saga, both read inside `tx`.
+    async fn validate_federation_onchain_melt_payment_observation_in_transaction(
+        &self,
+        tx: &mut database::mint::DynMintTransaction,
         quote: &MeltQuote,
         observation: &FederationMeltQuotePaymentObservation,
     ) -> Result<Option<FederationOnchainMeltPaymentReceipt>, Error> {
@@ -2581,15 +2668,14 @@ impl Mint {
             }
             .into());
         }
-        let receipt = self
-            .federation_transaction_state()
+        let receipt = FederationStoredState::<FederationTransactionState>::load(tx)
             .await?
             .completed_payment_for_quote(&quote.id.to_string())?
             .ok_or(FederationError::OperationStateInvalid {
                 reason:
                     "federation on-chain melt observation has no completed payment in ordered state",
             })?;
-        let melt_operation_id = match self.localstore.get_melt_saga_by_quote_id(&quote.id).await? {
+        let melt_operation_id = match tx.get_melt_saga_by_quote_id(&quote.id).await? {
             Some(saga) => saga
                 .federation_operation_id
                 .as_deref()
@@ -2631,9 +2717,8 @@ impl Mint {
         Ok(Some(receipt))
     }
 
-    async fn update_melt_quote_payment_observation_state(
-        &self,
-        entry: &FederationJournalEntry,
+    async fn update_melt_quote_payment_observation_state_in_transaction(
+        tx: &mut database::mint::DynMintTransaction,
         quote_id: &QuoteId,
         observation: &FederationMeltQuotePaymentObservation,
     ) -> Result<(), Error> {
@@ -2645,27 +2730,22 @@ impl Mint {
             return Ok(());
         }
 
-        let mut tx = self.localstore.begin_transaction().await?;
-        let outcome = async {
-            let mut quote = tx
-                .get_melt_quote(quote_id)
-                .await?
-                .ok_or(Error::UnknownQuote)?;
-            ensure_melt_quote_matches_payment_observation(&quote, observation)?;
-            if quote.state != observation.state {
-                tx.update_melt_quote_state(
-                    &mut quote,
-                    observation.state,
-                    observation.payment_proof.clone(),
-                )
-                .await?;
-            } else {
-                ensure_melt_quote_payment_proof_matches(&quote, observation)?;
-            }
-            Ok(())
+        let mut quote = tx
+            .get_melt_quote(quote_id)
+            .await?
+            .ok_or(Error::UnknownQuote)?;
+        ensure_melt_quote_matches_payment_observation(&quote, observation)?;
+        if quote.state != observation.state {
+            tx.update_melt_quote_state(
+                &mut quote,
+                observation.state,
+                observation.payment_proof.clone(),
+            )
+            .await?;
+        } else {
+            ensure_melt_quote_payment_proof_matches(&quote, observation)?;
         }
-        .await;
-        finish_federation_transaction(tx, entry, "melt_quote_state", outcome).await
+        Ok(())
     }
 
     async fn apply_federation_melt(

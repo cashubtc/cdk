@@ -4,12 +4,18 @@
 //! to process melt saga outcomes consistently.
 
 #[cfg(feature = "federation")]
-use cdk_common::federation::FederationOperationId;
+use cdk_common::database::DynMintTransaction;
+#[cfg(feature = "federation")]
+use cdk_common::federation::{FederationError, FederationOperationId};
 use cdk_common::mint::{MeltFinalizationData, MeltQuote, MeltSagaState, Saga, SagaStateEnum};
 use cdk_common::nuts::MeltQuoteState;
 use cdk_common::payment::MakePaymentResponse;
 use tracing::instrument;
 
+#[cfg(feature = "federation")]
+use crate::mint::federation::FederationRuntimeConfig;
+#[cfg(feature = "federation")]
+use crate::mint::melt::shared::MeltNotifications;
 use crate::mint::subscription::PubSubManager;
 use crate::mint::Mint;
 use crate::Error;
@@ -50,32 +56,6 @@ pub(crate) async fn process_melt_saga_outcome(
     pubsub: &PubSubManager,
     mint: &Mint,
 ) -> Result<(), Error> {
-    process_melt_saga_outcome_inner(saga, quote, payment_response, db, pubsub, mint, false).await
-}
-
-/// Apply an authoritative observation already finalized by federation quorum.
-/// Non-actor members may still have SetupComplete because they never dispatch.
-#[cfg(feature = "federation")]
-pub(crate) async fn process_federation_melt_saga_outcome(
-    saga: &Saga,
-    quote: &mut MeltQuote,
-    payment_response: &MakePaymentResponse,
-    db: &cdk_common::database::DynMintDatabase,
-    pubsub: &PubSubManager,
-    mint: &Mint,
-) -> Result<(), Error> {
-    process_melt_saga_outcome_inner(saga, quote, payment_response, db, pubsub, mint, true).await
-}
-
-async fn process_melt_saga_outcome_inner(
-    saga: &Saga,
-    quote: &mut MeltQuote,
-    payment_response: &MakePaymentResponse,
-    db: &cdk_common::database::DynMintDatabase,
-    pubsub: &PubSubManager,
-    mint: &Mint,
-    finalized_federation_observation: bool,
-) -> Result<(), Error> {
     match payment_response.status {
         MeltQuoteState::Paid => {
             finalize_paid_melt_outcome(saga, quote, payment_response, db, pubsub, mint).await
@@ -105,14 +85,7 @@ async fn process_melt_saga_outcome_inner(
                 }
             }
 
-            persist_permanent_payment_failure(
-                saga,
-                quote,
-                db,
-                payment_response,
-                finalized_federation_observation,
-            )
-            .await?;
+            persist_permanent_payment_failure(saga, quote, db, payment_response).await?;
 
             recover_recorded_payment_failure(saga, quote, db, pubsub).await
         }
@@ -135,6 +108,82 @@ async fn process_melt_saga_outcome_inner(
                 "payment status is unknown; quote and proofs remain pending because payment failure is not authoritative",
             );
             Ok(())
+        }
+    }
+}
+
+/// Apply an authoritative observation already finalized by federation quorum
+/// inside the caller's transaction.
+///
+/// Non-actor members may still have `SetupComplete` because they never
+/// dispatch. Every branch takes the same decision as the standalone outcome
+/// processor, but writes only through `tx` and never commits. The caller
+/// commits and then publishes the returned notifications.
+///
+/// Unlike the standalone processor, an error while checking for internal
+/// settlement is returned: the shared transaction cannot continue after a
+/// failed statement, so the caller rolls back and replay retries.
+#[cfg(feature = "federation")]
+pub(crate) async fn process_federation_melt_saga_outcome_in_transaction(
+    tx: &mut DynMintTransaction,
+    config: &FederationRuntimeConfig,
+    saga: &Saga,
+    quote: &mut MeltQuote,
+    payment_response: &MakePaymentResponse,
+) -> Result<MeltNotifications, Error> {
+    match payment_response.status {
+        MeltQuoteState::Paid => {
+            finalize_paid_federation_melt_outcome_in_transaction(
+                tx,
+                config,
+                saga,
+                quote,
+                payment_response,
+            )
+            .await
+        }
+        MeltQuoteState::Unpaid | MeltQuoteState::Failed => {
+            if let Some(internal_response) =
+                Mint::internal_melt_settlement_response_tx(tx, quote).await?
+            {
+                return finalize_paid_federation_melt_outcome_in_transaction(
+                    tx,
+                    config,
+                    saga,
+                    quote,
+                    &internal_response,
+                )
+                .await;
+            }
+
+            persist_permanent_payment_failure_in_transaction(
+                tx,
+                saga,
+                quote,
+                payment_response,
+                true,
+            )
+            .await?;
+
+            recover_recorded_payment_failure_in_transaction(tx, saga, quote).await
+        }
+        MeltQuoteState::Pending => {
+            persist_payment_lookup_id_in_transaction(tx, saga, quote, payment_response).await?;
+            tracing::trace!(
+                "Melt quote {} (saga {}) payment remains Pending",
+                quote.id,
+                saga.operation_id
+            );
+            Ok(MeltNotifications::default())
+        }
+        MeltQuoteState::Unknown => {
+            tracing::trace!(
+                quote_id = %quote.id,
+                saga_id = %saga.operation_id,
+                payment_lookup_id = %payment_response.payment_lookup_id,
+                "payment status is unknown; quote and proofs remain pending because payment failure is not authoritative",
+            );
+            Ok(MeltNotifications::default())
         }
     }
 }
@@ -169,11 +218,40 @@ async fn persist_permanent_payment_failure(
     quote: &mut MeltQuote,
     db: &cdk_common::database::DynMintDatabase,
     payment_response: &MakePaymentResponse,
-    finalized_federation_observation: bool,
 ) -> Result<(), Error> {
     let mut tx = db.begin_transaction().await?;
+    match persist_permanent_payment_failure_in_transaction(
+        &mut tx,
+        stale_saga,
+        quote,
+        payment_response,
+        false,
+    )
+    .await
+    {
+        Ok(()) => {
+            tx.commit().await?;
+            Ok(())
+        }
+        Err(err) => {
+            tx.rollback().await?;
+            Err(err)
+        }
+    }
+}
+
+/// Record an authoritative payment failure as `PaymentFailed` inside `tx`.
+///
+/// A saga that no longer exists, already failed, or is in a state that must
+/// not record a failure is left unchanged.
+async fn persist_permanent_payment_failure_in_transaction(
+    tx: &mut cdk_common::database::DynMintTransaction,
+    stale_saga: &Saga,
+    quote: &mut MeltQuote,
+    payment_response: &MakePaymentResponse,
+    finalized_federation_observation: bool,
+) -> Result<(), Error> {
     let Some(mut current_saga) = tx.get_saga_for_update(&stale_saga.operation_id).await? else {
-        tx.rollback().await?;
         return Ok(());
     };
 
@@ -183,7 +261,6 @@ async fn persist_permanent_payment_failure(
                 && current_saga.federation_operation_id.is_some() => {}
         SagaStateEnum::Melt(MeltSagaState::PaymentAttempted | MeltSagaState::PaymentPending) => {}
         SagaStateEnum::Melt(MeltSagaState::PaymentFailed) => {
-            tx.rollback().await?;
             return Ok(());
         }
         SagaStateEnum::Melt(MeltSagaState::SetupComplete | MeltSagaState::Finalizing)
@@ -194,7 +271,6 @@ async fn persist_permanent_payment_failure(
                 stale_saga.operation_id,
                 current_saga.state.state()
             );
-            tx.rollback().await?;
             return Ok(());
         }
     }
@@ -216,7 +292,6 @@ async fn persist_permanent_payment_failure(
         SagaStateEnum::Melt(MeltSagaState::PaymentFailed),
     )
     .await?;
-    tx.commit().await?;
     quote.request_lookup_id = Some(payment_response.payment_lookup_id.clone());
     Ok(())
 }
@@ -281,6 +356,74 @@ pub(crate) async fn recover_recorded_payment_failure(
     }
 
     Ok(())
+}
+
+/// Compensate a melt inside `tx` only when a durable authoritative failure
+/// was recorded.
+///
+/// Returns the rollback notifications to publish after the caller commits.
+#[cfg(feature = "federation")]
+async fn recover_recorded_payment_failure_in_transaction(
+    tx: &mut DynMintTransaction,
+    stale_saga: &Saga,
+    quote: &mut MeltQuote,
+) -> Result<MeltNotifications, Error> {
+    let Some(saga) = tx.get_melt_saga_by_quote_id(&quote.id).await? else {
+        *quote = tx
+            .get_melt_quote(&quote.id)
+            .await?
+            .ok_or(Error::UnknownQuote)?
+            .inner();
+        return Ok(MeltNotifications::default());
+    };
+
+    if saga.operation_id != stale_saga.operation_id
+        || saga.state != SagaStateEnum::Melt(MeltSagaState::PaymentFailed)
+    {
+        tracing::warn!(
+            "Ignoring negative payment observation for melt quote {} because saga {} is {}",
+            quote.id,
+            saga.operation_id,
+            saga.state.state()
+        );
+        return Ok(MeltNotifications::default());
+    }
+
+    let input_ys = tx.get_proof_ys_by_operation_id(&saga.operation_id).await?;
+    let blinded_secrets = tx
+        .get_blinded_secrets_by_operation_id(&saga.operation_id)
+        .await?;
+    let rollback = super::melt::shared::rollback_melt_quote_in_transaction(
+        tx,
+        &quote.id,
+        &input_ys,
+        &blinded_secrets,
+        &saga.operation_id,
+        Some(MeltSagaState::PaymentFailed),
+    )
+    .await;
+
+    match rollback {
+        Ok(notifications) => {
+            *quote = tx
+                .get_melt_quote(&quote.id)
+                .await?
+                .ok_or(Error::UnknownQuote)?
+                .inner();
+            Ok(notifications.unwrap_or_default())
+        }
+        Err(Error::UnknownPaymentState) => {
+            // The refusal happens before any write, so the transaction
+            // remains usable.
+            tracing::info!(
+                "Rollback refused for melt quote {}; finalization owns terminality (saga {})",
+                quote.id,
+                saga.operation_id
+            );
+            Ok(MeltNotifications::default())
+        }
+        Err(err) => Err(err),
+    }
 }
 
 /// Persists a backend-provided lookup id so later checks can recover a pending
@@ -464,6 +607,92 @@ async fn finalize_paid_melt_outcome(
     quote.request_lookup_id = Some(payment_response.payment_lookup_id.clone());
 
     Ok(())
+}
+
+/// Finalize a paid federated melt outcome inside `tx`.
+///
+/// The standalone path persists a `Finalizing` handoff in its own transaction
+/// before finalizing. Here the handoff and the finalization would commit
+/// together, and the finalization deletes the saga, so no handoff is written.
+#[cfg(feature = "federation")]
+pub(crate) async fn finalize_paid_federation_melt_outcome_in_transaction(
+    tx: &mut DynMintTransaction,
+    config: &FederationRuntimeConfig,
+    saga: &Saga,
+    quote: &mut MeltQuote,
+    payment_response: &MakePaymentResponse,
+) -> Result<MeltNotifications, Error> {
+    tracing::info!(
+        "Finalizing paid melt quote {} (saga {})",
+        quote.id,
+        saga.operation_id
+    );
+
+    let total_spent =
+        super::melt::shared::total_spent_for_quote_unit(&payment_response.total_spent, &quote.unit)
+            .map_err(|e| {
+                tracing::error!(
+                    "Failed to convert recovered total_spent for quote {}: {:?}",
+                    quote.id,
+                    e
+                );
+                Error::UnitMismatch
+            })?;
+
+    // The saga row is the recovery record for this melt. If it is already
+    // gone, either finalization completed earlier (idempotent re-delivery of a
+    // paid outcome) or a concurrent path removed the record; only the former
+    // may succeed silently.
+    if tx.get_saga_for_update(&saga.operation_id).await?.is_none() {
+        return match tx.get_melt_quote(&quote.id).await? {
+            Some(current) if current.state == MeltQuoteState::Paid => {
+                tracing::info!(
+                    "Melt quote {} already finalized; ignoring paid outcome for missing saga {}",
+                    quote.id,
+                    saga.operation_id
+                );
+                *quote = current.inner();
+                Ok(MeltNotifications::default())
+            }
+            _ => {
+                tracing::error!(
+                    "Paid outcome for melt quote {} but saga {} is missing and quote is not Paid",
+                    quote.id,
+                    saga.operation_id
+                );
+                Err(Error::Internal)
+            }
+        };
+    }
+
+    let federation_operation_id = saga
+        .federation_operation_id
+        .as_deref()
+        .ok_or(FederationError::OperationStateInvalid {
+            reason:
+                "federation melt payment evidence found a melt saga without a federation operation",
+        })?
+        .parse::<FederationOperationId>()?;
+
+    let finalization = super::melt::shared::finalize_federation_melt_in_transaction(
+        tx,
+        config,
+        quote,
+        total_spent,
+        payment_response.payment_proof.clone(),
+        &payment_response.payment_lookup_id,
+        Some(saga.operation_id),
+        federation_operation_id,
+    )
+    .await?;
+
+    // Reflect the finalized state in the caller's in-memory copy so responses
+    // built from it are accurate.
+    quote.state = MeltQuoteState::Paid;
+    quote.payment_proof = payment_response.payment_proof.clone();
+    quote.request_lookup_id = Some(payment_response.payment_lookup_id.clone());
+
+    Ok(finalization.into_notifications())
 }
 
 #[cfg(test)]

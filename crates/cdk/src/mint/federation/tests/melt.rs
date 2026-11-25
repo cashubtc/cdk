@@ -677,7 +677,7 @@ async fn later_melt_quote_does_not_retroactively_authorize_older_melt() {
 }
 
 #[tokio::test]
-async fn process_federation_melt_change_signs_rotated_keyset() {
+async fn add_federation_melt_change_signs_rotated_keyset() {
     let runtime_config = runtime_config_with_inactive_rotation_keyset();
     let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
     let mut journal = InMemoryFederationJournal::new();
@@ -722,10 +722,14 @@ async fn process_federation_melt_change_signs_rotated_keyset() {
     let signature_share_provenance =
         super::super::super::melt::shared::FederationSignatureShareProvenance::new(entry);
 
-    let db = mint.localstore();
-    let (change_sigs, tx) = super::super::super::melt::shared::process_federation_melt_change(
-        &mint,
-        &db,
+    let mut tx = mint
+        .localstore()
+        .begin_transaction()
+        .await
+        .expect("change transaction");
+    let change_sigs = super::super::super::melt::shared::add_federation_melt_change(
+        &mut tx,
+        &effective,
         &quote,
         operation_id,
         signature_share_provenance,
@@ -737,7 +741,7 @@ async fn process_federation_melt_change_signs_rotated_keyset() {
         },
     )
     .await
-    .expect("process federated change");
+    .expect("add federated change");
     tx.commit().await.expect("commit change signatures");
 
     let signatures = localstore
@@ -2091,8 +2095,22 @@ async fn accepted_federation_melt_persists_reserve_before_payment_attempt() {
     );
 }
 
-#[tokio::test]
-async fn paid_federation_melt_replays_finalizing_cleanup_without_second_payment() {
+/// A reserved federated melt whose paid payment observation is accepted in
+/// the journal but not yet applied.
+struct PaidFederationMeltAwaitingEvidence {
+    runtime_config: FederationRuntimeConfig,
+    localstore: Arc<MintSqliteDatabase>,
+    make_payment_calls: Arc<AtomicUsize>,
+    quote: QuoteId,
+    input_ys: Vec<PublicKey>,
+    change_output: BlindedMessage,
+    melt_entry: FederationJournalEntry,
+    payment_entry: FederationJournalEntry,
+}
+
+async fn paid_federation_melt_awaiting_evidence(
+    label: &str,
+) -> (Mint, PaidFederationMeltAwaitingEvidence) {
     let runtime_config = runtime_config();
     let (mint, localstore, expected_reserve, make_payment_calls) =
         federated_test_mint_with_reserve_checking_payment_response(
@@ -2116,22 +2134,13 @@ async fn paid_federation_melt_replays_finalizing_cleanup_without_second_payment(
     let (melt_envelope, (input_ys, change_output)) =
         locally_authored_melt_operation(&runtime_config, |attempt| {
             let proofs = vec![
-                proof_for_runtime(
-                    &runtime_config,
-                    &format!("paid-finalizing-{attempt}-input-one"),
-                ),
-                proof_for_runtime(
-                    &runtime_config,
-                    &format!("paid-finalizing-{attempt}-input-two"),
-                ),
-                proof_for_runtime(
-                    &runtime_config,
-                    &format!("paid-finalizing-{attempt}-input-three"),
-                ),
+                proof_for_runtime(&runtime_config, &format!("{label}-{attempt}-input-one")),
+                proof_for_runtime(&runtime_config, &format!("{label}-{attempt}-input-two")),
+                proof_for_runtime(&runtime_config, &format!("{label}-{attempt}-input-three")),
             ];
-            let input_ys = proofs.ys().expect("paid finalizing input ys");
+            let input_ys = proofs.ys().expect("paid melt input ys");
             let mut change_output =
-                output_for_runtime(&runtime_config, b"paid finalizing change output");
+                output_for_runtime(&runtime_config, format!("{label} change output").as_bytes());
             change_output.amount = Amount::ZERO;
             (
                 MeltRequest::new(quote.clone(), proofs, Some(vec![change_output.clone()])),
@@ -2148,7 +2157,7 @@ async fn paid_federation_melt_replays_finalizing_cleanup_without_second_payment(
     assert_eq!(
         mint.apply_federation_journal_entries(std::slice::from_ref(&melt_entry))
             .await
-            .expect("reserve paid finalizing melt"),
+            .expect("reserve paid melt"),
         vec![melt_entry.operation_id]
     );
     assert_eq!(make_payment_calls.load(Ordering::Relaxed), 0);
@@ -2165,160 +2174,320 @@ async fn paid_federation_melt_replays_finalizing_cleanup_without_second_payment(
     );
     persist_journal_entry(&localstore, &payment_entry).await;
 
-    crate::test_helpers::mint::set_fail_for("FEDERATION_MELT_FINALIZE_BEFORE_CLEANUP_COMMIT");
-    let result = mint
-        .apply_federation_journal_entries(std::slice::from_ref(&payment_entry))
-        .await;
-    crate::test_helpers::mint::clear_fail_for("FEDERATION_MELT_FINALIZE_BEFORE_CLEANUP_COMMIT");
-    assert!(matches!(result, Err(Error::Internal)));
-    assert_eq!(make_payment_calls.load(Ordering::Relaxed), 1);
+    (
+        mint,
+        PaidFederationMeltAwaitingEvidence {
+            runtime_config,
+            localstore,
+            make_payment_calls,
+            quote,
+            input_ys,
+            change_output,
+            melt_entry,
+            payment_entry,
+        },
+    )
+}
 
-    let paid_quote = localstore
-        .get_melt_quote(&quote)
+async fn stored_melt_request(
+    localstore: &Arc<MintSqliteDatabase>,
+    quote: &QuoteId,
+) -> Option<cdk_common::database::mint::MeltRequestInfo> {
+    let mut tx = localstore
+        .begin_transaction()
         .await
-        .expect("paid quote lookup after cleanup failure")
-        .expect("paid quote after cleanup failure");
-    assert_eq!(paid_quote.state, MeltQuoteState::Paid);
+        .expect("melt request read transaction");
+    let request = tx
+        .get_melt_request_and_blinded_messages(quote)
+        .await
+        .expect("melt request lookup");
+    tx.rollback()
+        .await
+        .expect("rollback melt request read transaction");
+    request
+}
+
+/// A failed apply of paid melt evidence must leave no trace: the quote stays
+/// pending, the inputs stay pending, and neither the observation, the change,
+/// the completed operation nor the applied mark exist.
+async fn assert_paid_melt_evidence_left_no_effect(
+    fixture: &PaidFederationMeltAwaitingEvidence,
+    saga_before: &cdk_common::mint::Saga,
+) {
+    let localstore = &fixture.localstore;
+    let quote = localstore
+        .get_melt_quote(&fixture.quote)
+        .await
+        .expect("quote lookup after failed apply")
+        .expect("quote after failed apply");
+    assert_eq!(quote.state, MeltQuoteState::Pending);
     assert_eq!(
         localstore
-            .get_proofs_states(&input_ys)
+            .get_proofs_states(&fixture.input_ys)
             .await
-            .expect("proof states after cleanup failure"),
-        vec![Some(State::Spent), Some(State::Spent), Some(State::Spent)]
+            .expect("proof states after failed apply"),
+        vec![
+            Some(State::Pending),
+            Some(State::Pending),
+            Some(State::Pending)
+        ]
     );
     let saga = localstore
-        .get_melt_saga_by_quote_id(&quote)
+        .get_melt_saga_by_quote_id(&fixture.quote)
         .await
-        .expect("saga lookup after cleanup failure")
-        .expect("finalizing saga after cleanup failure");
-    assert_eq!(saga.state, SagaStateEnum::Melt(MeltSagaState::Finalizing));
-    let finalization_data = saga
-        .finalization_data
-        .as_ref()
-        .expect("persisted finalization data");
-    assert_eq!(
-        finalization_data.total_spent,
-        Amount::new(2, CurrencyUnit::Sat)
-    );
-    assert_eq!(
-        Some(finalization_data.payment_lookup_id.clone()),
-        paid_quote.request_lookup_id
-    );
-    let federation_operation_id = melt_entry.operation_id.to_string();
-    assert_eq!(
-        saga.federation_operation_id.as_deref(),
-        Some(federation_operation_id.as_str())
-    );
+        .expect("saga lookup after failed apply")
+        .expect("saga after failed apply");
+    assert_eq!(saga.operation_id, saga_before.operation_id);
+    assert_eq!(saga.state, saga_before.state);
+    assert_eq!(saga.finalization_data, saga_before.finalization_data);
+    assert!(stored_melt_request(localstore, &fixture.quote)
+        .await
+        .is_some());
+    assert!(localstore
+        .get_federation_payment_observations(
+            FederationPaymentObservationContext::MeltQuote,
+            &fixture.quote.to_string(),
+        )
+        .await
+        .expect("payment observations after failed apply")
+        .is_empty());
     assert_eq!(
         localstore
-            .get_blind_signatures(&[change_output.blinded_secret])
+            .get_blind_signatures(&[fixture.change_output.blinded_secret])
             .await
-            .expect("change signature after cleanup failure"),
+            .expect("change signature after failed apply"),
         vec![None]
     );
     assert!(localstore
-        .get_federation_signature_shares_for_output(melt_entry.operation_id, 0)
+        .get_federation_signature_shares_for_output(fixture.melt_entry.operation_id, 0)
         .await
-        .expect("change share after cleanup failure")
+        .expect("change share after failed apply")
         .is_empty());
-    let operation_uuid = super::super::federation_operation_uuid(melt_entry.operation_id);
+    let operation_uuid = super::super::federation_operation_uuid(fixture.melt_entry.operation_id);
     assert!(localstore
         .get_completed_operation(&operation_uuid)
         .await
-        .expect("completed melt after cleanup failure")
+        .expect("completed melt after failed apply")
         .is_none());
     assert_eq!(
         localstore
-            .get_federation_journal_entry_by_operation_id(payment_entry.operation_id)
+            .get_federation_journal_entry_by_operation_id(fixture.payment_entry.operation_id)
             .await
-            .expect("payment journal lookup after cleanup failure")
-            .expect("payment journal entry after cleanup failure")
+            .expect("payment journal lookup after failed apply")
+            .expect("payment journal entry after failed apply")
             .status(),
         FederationOperationStatus::Accepted
     );
+}
 
-    drop(mint);
-    let restarted =
-        restart_federated_test_mint(runtime_config.clone(), Arc::clone(&localstore)).await;
+/// Every effect of a paid melt observation that reaches quorum is present.
+async fn assert_paid_melt_evidence_applied(fixture: &PaidFederationMeltAwaitingEvidence) {
+    let localstore = &fixture.localstore;
+    let quote = localstore
+        .get_melt_quote(&fixture.quote)
+        .await
+        .expect("quote lookup after apply")
+        .expect("quote after apply");
+    assert_eq!(quote.state, MeltQuoteState::Paid);
     assert_eq!(
-        restarted
-            .apply_federation_journal_entries(std::slice::from_ref(&payment_entry))
+        localstore
+            .get_proofs_states(&fixture.input_ys)
             .await
-            .expect("restart replay paid finalizing melt"),
-        vec![payment_entry.operation_id]
-    );
-    assert_eq!(
-        make_payment_calls.load(Ordering::Relaxed),
-        1,
-        "finalizing replay must not call the payment backend again"
+            .expect("proof states after apply"),
+        vec![Some(State::Spent), Some(State::Spent), Some(State::Spent)]
     );
     assert!(localstore
-        .get_melt_saga_by_quote_id(&quote)
+        .get_blind_signatures(&[fixture.change_output.blinded_secret])
         .await
-        .expect("saga lookup after replay")
-        .is_none());
-    assert!(localstore
-        .get_blind_signatures(&[change_output.blinded_secret])
-        .await
-        .expect("change signature after replay")[0]
+        .expect("change signature after apply")[0]
         .is_some());
     assert_eq!(
         localstore
-            .get_federation_signature_shares_for_output(melt_entry.operation_id, 0)
+            .get_federation_signature_shares_for_output(fixture.melt_entry.operation_id, 0)
             .await
-            .expect("change share after replay")
+            .expect("change share after apply")
             .len(),
         1
     );
+    let operation_uuid = super::super::federation_operation_uuid(fixture.melt_entry.operation_id);
     let completed_operation = localstore
         .get_completed_operation(&operation_uuid)
         .await
-        .expect("completed melt after replay")
-        .expect("completed melt operation after replay");
+        .expect("completed melt after apply")
+        .expect("completed melt operation after apply");
     assert_eq!(
         completed_operation.kind(),
         cdk_common::mint::OperationKind::Melt
     );
+    assert!(localstore
+        .get_melt_saga_by_quote_id(&fixture.quote)
+        .await
+        .expect("saga lookup after apply")
+        .is_none());
+    assert!(stored_melt_request(localstore, &fixture.quote)
+        .await
+        .is_none());
+    let observations = localstore
+        .get_federation_payment_observations(
+            FederationPaymentObservationContext::MeltQuote,
+            &fixture.quote.to_string(),
+        )
+        .await
+        .expect("payment observations after apply");
+    assert_eq!(observations.len(), 1);
+    assert_eq!(
+        observations[0].operation_id,
+        fixture.payment_entry.operation_id
+    );
     assert_eq!(
         localstore
-            .get_federation_journal_entry_by_operation_id(melt_entry.operation_id)
+            .get_federation_journal_entry_by_operation_id(fixture.payment_entry.operation_id)
             .await
-            .expect("melt journal lookup after replay")
-            .expect("melt journal entry after replay")
+            .expect("payment journal lookup after apply")
+            .expect("payment journal entry after apply")
             .status(),
         FederationOperationStatus::Applied
     );
+    assert_eq!(
+        localstore
+            .get_federation_journal_entry_by_operation_id(fixture.melt_entry.operation_id)
+            .await
+            .expect("melt journal lookup after apply")
+            .expect("melt journal entry after apply")
+            .status(),
+        FederationOperationStatus::Applied
+    );
+}
+
+#[tokio::test]
+async fn paid_federation_melt_evidence_applies_in_one_transaction() {
+    let (mint, fixture) =
+        paid_federation_melt_awaiting_evidence("paid-evidence-one-transaction").await;
+    let saga_before = fixture
+        .localstore
+        .get_melt_saga_by_quote_id(&fixture.quote)
+        .await
+        .expect("saga lookup before apply")
+        .expect("saga before apply");
+    let mut quote_events = mint
+        .pubsub_manager()
+        .subscribe(cdk_common::subscription::Params {
+            kind: cdk_common::nut17::Kind::Bolt11MeltQuote,
+            filters: vec![fixture.quote.to_string()],
+            id: Arc::new(cdk_common::subscription::SubId::from(
+                "paid-evidence-one-transaction",
+            )),
+        })
+        .expect("subscribe to melt quote");
+    let snapshot = tokio::time::timeout(std::time::Duration::from_secs(5), quote_events.recv())
+        .await
+        .expect("melt quote snapshot timeout")
+        .expect("melt quote snapshot");
+    match snapshot.into_inner() {
+        cdk_common::NotificationPayload::MeltQuoteBolt11Response(response) => {
+            assert_eq!(response.state, MeltQuoteState::Pending);
+        }
+        payload => panic!("unexpected melt quote snapshot: {payload:?}"),
+    }
+
+    // Fail after the observation row is written and the melt is finalized,
+    // just before the apply transaction commits.
+    crate::test_helpers::mint::set_fail_for("FEDERATION_MELT_PAYMENT_APPLY_BEFORE_COMMIT");
+    let result = mint
+        .apply_federation_journal_entries(std::slice::from_ref(&fixture.payment_entry))
+        .await;
+    crate::test_helpers::mint::clear_fail_for("FEDERATION_MELT_PAYMENT_APPLY_BEFORE_COMMIT");
+    assert!(matches!(result, Err(Error::Internal)));
+    assert_paid_melt_evidence_left_no_effect(&fixture, &saga_before).await;
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(200), quote_events.recv())
+            .await
+            .is_err(),
+        "a rolled-back apply must not publish melt quote events"
+    );
+
+    assert_eq!(
+        mint.apply_federation_journal_entries(std::slice::from_ref(&fixture.payment_entry))
+            .await
+            .expect("replay paid melt evidence"),
+        vec![fixture.payment_entry.operation_id]
+    );
+    assert_eq!(
+        fixture.make_payment_calls.load(Ordering::Relaxed),
+        1,
+        "replaying paid evidence must not call the payment backend again"
+    );
+    assert_paid_melt_evidence_applied(&fixture).await;
+
+    let paid_event = tokio::time::timeout(std::time::Duration::from_secs(5), quote_events.recv())
+        .await
+        .expect("paid melt quote event timeout")
+        .expect("paid melt quote event");
+    match paid_event.into_inner() {
+        cdk_common::NotificationPayload::MeltQuoteBolt11Response(response) => {
+            assert_eq!(response.state, MeltQuoteState::Paid);
+            assert_eq!(response.change.map(|change| change.len()), Some(1));
+        }
+        payload => panic!("unexpected paid melt quote payload: {payload:?}"),
+    }
+}
+
+#[tokio::test]
+async fn paid_federation_melt_failure_before_commit_leaves_melt_pending_and_replays() {
+    let (mint, fixture) =
+        paid_federation_melt_awaiting_evidence("paid-finalize-before-commit").await;
+    let saga_before = fixture
+        .localstore
+        .get_melt_saga_by_quote_id(&fixture.quote)
+        .await
+        .expect("saga lookup before apply")
+        .expect("saga before apply");
+
+    // Fail inside the single finalization transaction after every write.
+    crate::test_helpers::mint::set_fail_for("FEDERATION_MELT_FINALIZE_BEFORE_COMMIT");
+    let result = mint
+        .apply_federation_journal_entries(std::slice::from_ref(&fixture.payment_entry))
+        .await;
+    crate::test_helpers::mint::clear_fail_for("FEDERATION_MELT_FINALIZE_BEFORE_COMMIT");
+    assert!(matches!(result, Err(Error::Internal)));
+    assert_eq!(fixture.make_payment_calls.load(Ordering::Relaxed), 1);
+    assert_paid_melt_evidence_left_no_effect(&fixture, &saga_before).await;
+
+    drop(mint);
+    let restarted = restart_federated_test_mint(
+        fixture.runtime_config.clone(),
+        Arc::clone(&fixture.localstore),
+    )
+    .await;
+    assert_eq!(
+        restarted
+            .apply_federation_journal_entries(std::slice::from_ref(&fixture.payment_entry))
+            .await
+            .expect("restart replay paid melt"),
+        vec![fixture.payment_entry.operation_id]
+    );
+    assert_eq!(
+        fixture.make_payment_calls.load(Ordering::Relaxed),
+        1,
+        "replay must not call the payment backend again"
+    );
+    assert_paid_melt_evidence_applied(&fixture).await;
 
     drop(restarted);
-    let restarted_again =
-        restart_federated_test_mint(runtime_config, Arc::clone(&localstore)).await;
+    let restarted_again = restart_federated_test_mint(
+        fixture.runtime_config.clone(),
+        Arc::clone(&fixture.localstore),
+    )
+    .await;
     assert!(
         restarted_again
-            .apply_federation_journal_entries(std::slice::from_ref(&payment_entry))
+            .apply_federation_journal_entries(std::slice::from_ref(&fixture.payment_entry))
             .await
             .expect("second restart replay of completed melt")
             .is_empty(),
         "an already-applied payment observation must remain terminal after repeated restart"
     );
-    let quote_after_second_restart = localstore
-        .get_melt_quote(&quote)
-        .await
-        .expect("quote lookup after second restart")
-        .expect("paid quote after second restart");
-    assert_eq!(quote_after_second_restart.state, MeltQuoteState::Paid);
-    assert!(localstore
-        .get_melt_saga_by_quote_id(&quote)
-        .await
-        .expect("saga lookup after second restart")
-        .is_none());
-    assert_eq!(
-        localstore
-            .get_federation_signature_shares_for_output(melt_entry.operation_id, 0)
-            .await
-            .expect("change share after second restart")
-            .len(),
-        1
-    );
+    assert_paid_melt_evidence_applied(&fixture).await;
 }
 
 #[tokio::test]
@@ -2379,14 +2548,15 @@ async fn failed_federation_melt_rolls_back_atomically_and_replays() {
             .expect("proof states after rollback failure"),
         vec![Some(State::Pending), Some(State::Pending)]
     );
+    let saga_after_failure = localstore
+        .get_melt_saga_by_quote_id(&quote)
+        .await
+        .expect("saga lookup after rollback failure")
+        .expect("saga after rollback failure");
+    assert_eq!(saga_after_failure.operation_id, saga.operation_id);
     assert_eq!(
-        localstore
-            .get_melt_saga_by_quote_id(&quote)
-            .await
-            .expect("saga lookup after rollback failure")
-            .expect("saga after rollback failure")
-            .operation_id,
-        saga.operation_id
+        saga_after_failure.state, saga.state,
+        "the PaymentFailed record rolls back with the failed apply"
     );
     let melt_request_after_failure = {
         let mut tx = localstore
@@ -2412,8 +2582,8 @@ async fn failed_federation_melt_rolls_back_atomically_and_replays() {
             .await
             .expect("payment observations after rollback failure")
             .len(),
-        1,
-        "the accepted observation remains durable for replay"
+        0,
+        "the observation rolls back with the failed apply; replay records it again"
     );
     assert_eq!(
         localstore
