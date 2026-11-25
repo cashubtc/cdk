@@ -5,6 +5,7 @@
 use std::collections::HashSet;
 use std::str::FromStr;
 
+use cdk_common::wallet::{TransactionDirection, TransactionId, TransactionStatus};
 use tracing::instrument;
 
 use crate::nuts::nut00::{self, ProofsMethods};
@@ -37,6 +38,18 @@ impl Wallet {
         );
 
         self.retry_on_inactive_keyset(|| async {
+            // A completed incoming transaction for exactly these proofs means
+            // they were already received, for example by a call whose
+            // response was lost. Return its amount instead of swapping again.
+            let transaction_id = TransactionId::from_proofs(proofs.clone())?;
+            if let Some(transaction) = self.get_transaction(transaction_id).await? {
+                if transaction.direction == TransactionDirection::Incoming
+                    && transaction.status == TransactionStatus::Completed
+                {
+                    return Ok(transaction.amount);
+                }
+            }
+
             let saga = ReceiveSaga::new(self);
             let saga = saga
                 .prepare(proofs.clone(), opts.clone(), memo.clone(), token.clone())
@@ -136,5 +149,52 @@ impl Wallet {
     ) -> Result<Amount, Error> {
         let token_str = Token::try_from(binary_token)?.to_string();
         self.receive(token_str.as_str(), opts).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use cdk_common::util::unix_time;
+    use cdk_common::wallet::{Transaction, TransactionDirection};
+
+    use super::*;
+    use crate::wallet::test_utils::{
+        create_test_db, create_test_wallet, test_keyset_id, test_mint_url, test_proof_info,
+    };
+
+    #[tokio::test]
+    async fn receive_proofs_returns_existing_legacy_incoming_transaction() {
+        let db = create_test_db().await;
+        let wallet = create_test_wallet(db.clone()).await;
+        let proof = test_proof_info(test_keyset_id(), 100, test_mint_url());
+        let expected = Amount::from(99);
+        db.add_transaction(Transaction {
+            status: TransactionStatus::Completed,
+            mint_url: test_mint_url(),
+            direction: TransactionDirection::Incoming,
+            amount: expected,
+            fee: Amount::from(1),
+            unit: crate::nuts::CurrencyUnit::Sat,
+            ys: vec![proof.y],
+            timestamp: unix_time(),
+            memo: None,
+            metadata: HashMap::new(),
+            quote_id: None,
+            payment_request: None,
+            payment_proof: None,
+            payment_method: None,
+            saga_id: None,
+        })
+        .await
+        .expect("existing receive transaction");
+
+        let amount = wallet
+            .receive_proofs(vec![proof.proof], ReceiveOptions::default(), None, None)
+            .await
+            .expect("idempotent receive result");
+
+        assert_eq!(amount, expected);
     }
 }
