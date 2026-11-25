@@ -170,6 +170,12 @@ pub trait FederationJournalTransaction {
         entry: &FederationJournalEntry,
     ) -> Result<(), Self::Err>;
 
+    /// Get one accepted federation journal entry by operation ID inside this transaction.
+    async fn get_federation_journal_entry_by_operation_id(
+        &mut self,
+        operation_id: FederationOperationId,
+    ) -> Result<Option<FederationJournalEntry>, Self::Err>;
+
     /// Persist one legal post-consensus application state.
     async fn set_federation_operation_application_state(
         &mut self,

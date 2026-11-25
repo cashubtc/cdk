@@ -1122,6 +1122,20 @@ where
         Ok(())
     }
 
+    async fn get_federation_journal_entry_by_operation_id(
+        &mut self,
+        operation_id: FederationOperationId,
+    ) -> Result<Option<FederationJournalEntry>, Self::Err> {
+        query(federation_journal_entry_select!(
+            "WHERE operation_id = :operation_id"
+        ))?
+        .bind("operation_id", operation_id.to_string())
+        .fetch_one(&self.inner)
+        .await?
+        .map(sql_row_to_federation_journal_entry)
+        .transpose()
+    }
+
     async fn add_federation_journal_entry(
         &mut self,
         entry: &FederationJournalEntry,

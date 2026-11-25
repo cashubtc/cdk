@@ -393,6 +393,64 @@ where
     assert_eq!(retrieved.quote_id, Some(quote_id.to_string()));
 }
 
+/// Test reading a melt saga by quote id inside a transaction
+pub async fn get_melt_saga_by_quote_id_in_transaction<DB>(db: DB)
+where
+    DB: Database<Error>,
+{
+    let quote_id = crate::QuoteId::new();
+    let melt_saga = Saga {
+        operation_id: uuid::Uuid::new_v4(),
+        operation_kind: OperationKind::Melt,
+        state: SagaStateEnum::Melt(MeltSagaState::PaymentAttempted),
+        quote_id: Some(quote_id.to_string()),
+        finalization_data: None,
+        federation_operation_id: None,
+        created_at: 1234567890,
+        updated_at: 1234567890,
+    };
+    let swap_saga = Saga {
+        operation_id: uuid::Uuid::new_v4(),
+        operation_kind: OperationKind::Swap,
+        state: SagaStateEnum::Swap(SwapSagaState::SetupComplete),
+        quote_id: Some(quote_id.to_string()),
+        finalization_data: None,
+        federation_operation_id: None,
+        created_at: 1234567890,
+        updated_at: 1234567890,
+    };
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_saga(&swap_saga).await.unwrap();
+    assert!(tx
+        .get_melt_saga_by_quote_id(&quote_id)
+        .await
+        .unwrap()
+        .is_none());
+
+    // The transaction sees its own uncommitted melt saga.
+    tx.add_saga(&melt_saga).await.unwrap();
+    let retrieved = tx
+        .get_melt_saga_by_quote_id(&quote_id)
+        .await
+        .unwrap()
+        .expect("melt saga inside transaction");
+    assert_eq!(retrieved.operation_id, melt_saga.operation_id);
+    assert_eq!(retrieved.state, melt_saga.state);
+    assert!(tx
+        .get_melt_saga_by_quote_id(&crate::QuoteId::new())
+        .await
+        .unwrap()
+        .is_none());
+    tx.rollback().await.unwrap();
+
+    assert!(db
+        .get_melt_saga_by_quote_id(&quote_id)
+        .await
+        .unwrap()
+        .is_none());
+}
+
 /// Test melt-specific quote lookup ignores non-melt sagas with the same quote id
 pub async fn get_melt_saga_by_quote_id_filters_non_melt<DB>(db: DB)
 where

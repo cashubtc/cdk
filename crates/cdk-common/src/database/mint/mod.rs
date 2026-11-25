@@ -556,6 +556,12 @@ pub trait SignaturesTransaction {
         &mut self,
         blinded_messages: &[PublicKey],
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err>;
+
+    /// Get blinded secrets (B values) by operation id inside this transaction
+    async fn get_blinded_secrets_by_operation_id(
+        &mut self,
+        operation_id: &uuid::Uuid,
+    ) -> Result<Vec<PublicKey>, Self::Err>;
 }
 
 #[async_trait]
@@ -650,6 +656,15 @@ pub trait SagaTransaction {
 
     /// Delete saga
     async fn delete_saga(&mut self, operation_id: &uuid::Uuid) -> Result<(), Self::Err>;
+
+    /// Get the melt saga associated with a melt quote id inside this transaction.
+    ///
+    /// The row is read, not locked. Callers that mutate the saga must acquire
+    /// it with [`Self::get_saga_for_update`].
+    async fn get_melt_saga_by_quote_id(
+        &mut self,
+        quote_id: &QuoteId,
+    ) -> Result<Option<mint::Saga>, Self::Err>;
 }
 
 #[async_trait]

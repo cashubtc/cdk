@@ -259,6 +259,34 @@ where
             .map(|y| blinded_signatures.remove(y))
             .collect())
     }
+
+    async fn get_blinded_secrets_by_operation_id(
+        &mut self,
+        operation_id: &uuid::Uuid,
+    ) -> Result<Vec<PublicKey>, Self::Err> {
+        query(
+            r#"
+            SELECT
+                blinded_message
+            FROM
+                blind_signature
+            WHERE
+                operation_id = :operation_id
+            "#,
+        )?
+        .bind("operation_id", operation_id.to_string())
+        .fetch_all(&self.inner)
+        .await?
+        .into_iter()
+        .map(|row| -> Result<PublicKey, Error> {
+            Ok(column_as_string!(
+                &row[0],
+                PublicKey::from_hex,
+                PublicKey::from_slice
+            ))
+        })
+        .collect::<Result<Vec<_>, _>>()
+    }
 }
 
 #[async_trait]

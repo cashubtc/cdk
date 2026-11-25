@@ -283,6 +283,36 @@ where
 
         Ok(())
     }
+
+    async fn get_melt_saga_by_quote_id(
+        &mut self,
+        quote_id: &cdk_common::QuoteId,
+    ) -> Result<Option<mint::Saga>, Self::Err> {
+        Ok(query(
+            r#"
+            SELECT
+                operation_id,
+                operation_kind,
+                state,
+                quote_id,
+                finalization_data,
+                federation_operation_id,
+                created_at,
+                updated_at
+            FROM
+                saga_state
+            WHERE
+                quote_id = :quote_id
+                AND operation_kind = :operation_kind
+            "#,
+        )?
+        .bind("quote_id", quote_id.to_string())
+        .bind("operation_kind", mint::OperationKind::Melt.to_string())
+        .fetch_one(&self.inner)
+        .await?
+        .map(sql_row_to_saga)
+        .transpose()?)
+    }
 }
 
 #[async_trait]

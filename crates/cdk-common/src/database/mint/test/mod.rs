@@ -449,6 +449,7 @@ macro_rules! mint_db_test {
             delete_nonexistent_saga,
             saga_with_quote_id,
             get_melt_saga_by_quote_id,
+            get_melt_saga_by_quote_id_in_transaction,
             get_melt_saga_by_quote_id_filters_non_melt,
             saga_transaction_rollback,
             multiple_sagas_different_states,
