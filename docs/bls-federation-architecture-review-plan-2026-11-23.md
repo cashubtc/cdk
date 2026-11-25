@@ -167,6 +167,8 @@ Packages are ordered so that each one shrinks the surface the next has to move. 
 
 ### 0. Separate what does not belong
 
+**Approved 2026-11-25:** split the standalone changes out of this branch.
+
 - Move the presentation directories, the zip, the benchmark CSVs and the invite code file out of the branch, or into one clearly marked archive location.
 - Split the standalone behavior changes (bitreq, wallet melt compensation, fake-wallet delay, saga rollback, MSRV) into their own changes against `main`, each with its own justification, or revert them here.
 - Gate `federation_smoke` on `federation-test-utils` or move it to `cdk-integration-tests`; drop `cdk/wallet` from the daemon's `federation` feature.
@@ -280,13 +282,14 @@ Done when no consensus encoding has two definitions and `cdk-axum` contains no c
 ## Decisions needed
 
 1. Replace feature-selected key types with additive ones (package 3)? **Decided 2026-11-23:** yes, following the upstream `bls` branch: one unconditional `PublicKey`/`SecretKey` enum and BLS v3 always compiled, instead of the curve-tagged field type proposed above, so the protocol types do not fork from upstream.
-2. Allow the validate/plan/commit split in shared mint code, possibly landed on `main` first (package 4)?
+2. Allow the validate/plan/commit split in shared mint code, possibly landed on `main` first (package 4)? **Decided 2026-11-25:** no. Shared standalone mint code stays untouched. The federated commit paths, the duplicate share-table write and the two quote-and-settings adapters stay; the custody trait is not built. Instead, a parity test runs the same request vectors through the standalone and federated swap, mint and melt paths and asserts identical signatures, fees, spent proofs, quote states and errors.
 3. Bark as a typed, feature-gated operation variant, or a real trait object injected into the builder? Either way the global registry goes. **Decided 2026-11-23:** a typed, feature-gated variant. **Revised during package 5:** `cdk-common` cannot name the Bark crate's types, so Bark uses the existing generic `Application` variant instead; the global registry is gone either way.
 4. Crate layout: only extract `cdk-federation` from `cdk-axum`, or also move the pure domain out of `cdk-common` into a core crate? **Decided 2026-11-23:** only extract `cdk-federation`.
-5. Canonical encoding: keep sorted JSON behind one module, or move consensus hashing to one binary encoding?
-6. Persist the wallet's federation registry through `WalletDatabase`? This is new persisted information.
-7. `scripts/fed-cdk-tui`: promote to a crate on the shared registry, or move out of the repository? Same question for the archived documents.
-8. Keep FROST nonces in redb apart from SQL? If yes, document the reason and a "never restore from backup" rule.
+5. Canonical encoding: keep sorted JSON behind one module, or move consensus hashing to one binary encoding? **Decided 2026-11-25:** keep canonical JSON in `canonical.rs`, pinned by golden vectors; revisit only if hashing shows in a profile. `serde_json`'s `preserve_order` also stays enabled workspace-wide.
+6. Persist the wallet's federation registry through `WalletDatabase`? This is new persisted information. **Decided 2026-11-25:** persist it, in a federation namespace of the wallet KV store every backend already implements; no `WalletDatabase` trait change and no new migrations. Rediscovery refreshes it.
+7. `scripts/fed-cdk-tui`: promote to a crate on the shared registry, or move out of the repository? Same question for the archived documents. **Decided 2026-11-25:** promote the TUI to a workspace crate on the shared registry, built and linted in CI. Under `docs/`, keep only condensed current design documents for shipped behaviour; dated plans, ledgers and reviews move to an archive outside the PR.
+8. Keep FROST nonces in redb apart from SQL? If yes, document the reason and a "never restore from backup" rule. **Decided 2026-11-25:** yes. Keep the separate redb file and document, in the operator docs and beside the code, that it is never restored from backup: an operator deletes it and regenerates nonces instead.
+9. Added 2026-11-25: what does a member do when it still holds federation state but is below every peer's retention floor? **Decided 2026-11-25:** it halts with a clear status. A `cdk-mintd` reset subcommand, run by the operator, wipes federation and mint rows (keeping key material and the FROST nonce file) and rejoins by state transfer. Nothing is deleted without that explicit action.
 
 ## Verification and completion
 
