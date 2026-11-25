@@ -812,3 +812,20 @@ Decision: the replay guard is a validity window, not a permanent index.
 
 - **Documented, not moved.** The nonce stores stay in their own redb files under the FROST protocol storage root (`frost-nonces/root-<epoch>.redb`). The rule and its reason (a restored store offers consumed nonces again, and a nonce used for two messages reveals the key share) are in `cdk-frost`'s README, the `nonce_redb` module docs, `FederationFrostSigningRuntime::open`, the `frost_protocol_storage_root` config field and the operator workflow in `docs/federation.md`. A lost or suspect file is deleted, never restored.
 - **Also fixed:** `docs/federation.md` still named envelope version 6; it is 7.
+
+### 2026-11-25: package 4, parity test
+
+Decision 2 keeps two implementations of the swap, mint and melt rules, so this step adds the parity test that guards them. Test code only; no production code changed.
+
+- **Test.** `crates/cdk/src/mint/federation/tests/parity.rs` (`cdk`, `mint::federation::tests::parity`, 15 tests). Each vector runs on a standalone mint and on a federation member with the same amounts (powers of two to 128), the same input fee (100 ppk) and the same scripted payment backend. The standalone side uses `process_swap_request`, `process_mint_request`, `get_mint_quote`, `get_melt_quote` and `melt`. The federated side uses `prepare_mint_quote`, `prepare_melt_quote`, the payment probes and `apply_federation_journal_entries` on raw envelopes, ordered directly so the application rule decides rather than admission or consensus conflict keys.
+- **Compared per step.** Signatures by output position (signed or not, amount, keyset by activation order, and whether the unblinded proof verifies; bytes and keyset ids differ because the keys differ, and the federation uses threshold 1 so a member's share is the aggregate signature). Every completed operation's amounts, fee, payment amount and payment fee. Input proof states. Mint quote state, amount, paid and issued; melt quote state, amount, fee reserve and payment proof. Error variant, message and whether a member would record it as a definitive rejection.
+- **Vectors.** Valid swap; swap without the fee; insufficient inputs; overpaid fee; double spend; duplicate outputs; duplicate inputs; outputs on an unknown keyset; a keyset rotation (outputs on the inactive keyset, inputs from it); mint on an unpaid quote; mint on a paid quote, then on the issued quote; outputs below and above the quote amount; melt with fee reserve and change; melt with insufficient inputs.
+- **Excluded, by design.** Idempotent replay of the same operation, consensus duplicate and conflict keys, admission checks, deterministic operation ids and completion time zero, DLEQ proofs, and batch mints (a standalone mint needs NUT-29 configured; batch limits run at admission in federation mode).
+- **Divergences found**, each pinned by an `expected_divergence_*` assertion that also checks every other dimension agrees:
+  - Outputs on an unknown keyset: both reject without state change, but federated application returns a federation error instead of `UnknownKeySet`, and the two are classified differently by the apply-rejection rule.
+  - Outputs on an inactive keyset: both reject definitively without state change; the federated error kind differs from `InactiveKeyset`.
+  - A Bolt11 mint whose outputs are below the quote amount: a standalone mint rejects it (`TransactionUnbalanced`); federated application signs it and leaves the remainder mintable.
+  - A Bolt11 mint above the quote amount: both reject without state change; federated application reports `UnpaidQuote` instead of `TransactionUnbalanced`.
+- **Not fixed.** These are business-rule and error-kind differences in federated application; fixing them changes production code and is left for a follow-up decision.
+
+Verification: `cargo fmt --all`; `cargo clippy -p cdk --features mint,wallet,federation,federation-bark --all-targets -- -D warnings`; `cdk` lib tests with `mint,wallet,federation,federation-bark` (1,082 passed) and with default features (790 passed); `cdk` tests build with `mint,federation` and no default features.
