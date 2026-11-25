@@ -492,7 +492,7 @@ mod tests {
 
             for metric in family.get_metric() {
                 if labels_match(metric, labels) {
-                    return metric.get_counter().get_value();
+                    return metric.get_counter().value();
                 }
             }
         }
@@ -508,7 +508,7 @@ mod tests {
 
             for metric in family.get_metric() {
                 if labels_match(metric, labels) {
-                    return metric.get_gauge().get_value();
+                    return metric.get_gauge().value();
                 }
             }
         }
@@ -524,7 +524,7 @@ mod tests {
 
             for metric in family.get_metric() {
                 if labels_match(metric, labels) {
-                    return metric.get_histogram().get_sample_count() as f64;
+                    return metric.get_histogram().sample_count() as f64;
                 }
             }
         }

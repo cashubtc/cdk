@@ -701,11 +701,9 @@ pub fn setup_tracing(
     let tungstenite = "tungstenite=warn";
     let tokio_postgres = "tokio_postgres=warn";
 
-    let default_env_filter = format!(
+    let env_filter = EnvFilter::new(format!(
         "{default_filter},{hyper_filter},{h2_filter},{tower_filter},{tower_http},{rustls},{tungstenite},{tokio_postgres}"
-    );
-    let env_filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_env_filter));
+    ));
 
     match logging_config.output {
         LoggingOutput::Stderr => {
