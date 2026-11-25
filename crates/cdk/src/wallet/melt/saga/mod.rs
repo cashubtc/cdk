@@ -10,7 +10,7 @@
 //!                         │                   │                 │
 //!                         │                   └─────────────────┤
 //!                         │                                     ├─ quote Paid ─────────► [completed]
-//!                         │                                     ├─ quote Failed/expired Unpaid ► [compensated]
+//!                         │                                     ├─ quote Unpaid/Failed ► [compensated]
 //!                         │                                     └─ quote Pending ──────► [skipped]
 //!                         │
 //!                         └─ recovery ────────────────────────────────────────────────► [compensated]
@@ -1081,7 +1081,9 @@ impl<'a> MeltSaga<'a, MeltRequested> {
 
                 match self.wallet.internal_check_melt_status(&quote_info.id).await {
                     Ok(response) => match response.state() {
-                        MeltQuoteState::Failed => {
+                        MeltQuoteState::Failed
+                        | MeltQuoteState::Unknown
+                        | MeltQuoteState::Unpaid => {
                             // Safety invariant across all payment methods: if
                             // the mint has a `payment_proof` for this quote,
                             // an irreversible settlement artifact has been
@@ -1124,25 +1126,6 @@ impl<'a> MeltSaga<'a, MeltRequested> {
                             );
                             self.handle_failure().await?;
                             return Err(Error::PaymentFailed);
-                        }
-                        MeltQuoteState::Unknown | MeltQuoteState::Unpaid => {
-                            tracing::info!(
-                                "Quote {} status is {:?} after an ambiguous melt response - \
-                                 keeping proofs pending",
-                                quote_info.id,
-                                response.state()
-                            );
-                            self.handle_pending().await;
-                            return Ok(MeltSagaResult::Pending(Box::new(MeltSaga {
-                                wallet: self.wallet,
-                                compensations: self.compensations,
-                                state_data: PaymentPending {
-                                    operation_id: self.state_data.operation_id,
-                                    quote: self.state_data.quote,
-                                    final_proofs: self.state_data.final_proofs.clone(),
-                                    premint_secrets: self.state_data.premint_secrets.clone(),
-                                },
-                            })));
                         }
                         MeltQuoteState::Paid => {
                             tracing::info!(
