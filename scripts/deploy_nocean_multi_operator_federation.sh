@@ -401,8 +401,7 @@ build_linux_binaries() {
             if [[ "$MINTD_ONLY" != "1" ]]; then
                 cargo build --locked --release -p cdk-cli \
                     --no-default-features --features federation,iroh
-                cargo build --locked --release \
-                    --manifest-path scripts/fed-cdk-tui/Cargo.toml
+                cargo build --locked --release -p cdk-fed-tui
             fi
             "$CARGO_TARGET_DIR/release/cdk-mintd" federation setup create --help >/dev/null
             if [[ "$MINTD_ONLY" != "1" ]]; then
@@ -686,7 +685,7 @@ write_report() {
         crates/cdk-mintd/src/lib.rs \
         crates/cdk/src/wallet/federation.rs \
         crates/cdk-cli/Cargo.toml \
-        scripts/fed-cdk-tui \
+        crates/cdk-fed-tui \
         scripts/deploy_nocean_multi_operator_federation.sh \
         scripts/nocean_federation_operator.sh \
         scripts/nocean_federation_wallet_smoke.sh)" ]]; then

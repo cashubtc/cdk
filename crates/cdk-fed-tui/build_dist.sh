@@ -5,6 +5,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 MANIFEST="${SCRIPT_DIR}/Cargo.toml"
+PACKAGE="cdk-fed-tui"
 DIST_DIR="${SCRIPT_DIR}/dist"
 VERSION="$(awk -F '"' '/^version = / { print $2; exit }' "${MANIFEST}")"
 RUST_VERSION="$(rustc --version | awk '{ print $2 }')"
@@ -38,9 +39,10 @@ if [[ -z "${VERSION}" ]]; then
 fi
 
 echo "==> Checking fed-cdk-tui ${VERSION}"
-cargo fmt --manifest-path "${MANIFEST}" -- --check
-cargo test --manifest-path "${MANIFEST}" --locked
-cargo clippy --manifest-path "${MANIFEST}" --all-targets --locked -- -D warnings
+cd "${REPO_ROOT}"
+cargo fmt -p "${PACKAGE}" -- --check
+cargo test -p "${PACKAGE}" --locked
+cargo clippy -p "${PACKAGE}" --all-targets --locked -- -D warnings
 
 MACOS_TARGET_DIR="${BUILD_ROOT}/macos-arm64"
 LINUX_CACHE_DIR="${BUILD_ROOT}/cargo-registry"
@@ -51,7 +53,7 @@ env \
     CARGO_TARGET_DIR="${MACOS_TARGET_DIR}" \
     RUSTFLAGS="--remap-path-prefix=${HOME}=/build-home --remap-path-prefix=${REPO_ROOT}=/src" \
     cargo build \
-        --manifest-path "${MANIFEST}" \
+        -p "${PACKAGE}" \
         --release \
         --target aarch64-apple-darwin \
         --locked
@@ -72,7 +74,7 @@ build_linux() {
         -v "${LINUX_CACHE_DIR}:/usr/local/cargo/registry" \
         -w /src \
         "${LINUX_IMAGE}" \
-        sh -c 'cargo build --manifest-path scripts/fed-cdk-tui/Cargo.toml --release --locked && strip /target/release/fed-cdk-tui'
+        sh -c 'cargo build -p cdk-fed-tui --release --locked && strip /target/release/fed-cdk-tui'
 }
 
 # Build sequentially. This avoids overcommitting Docker Desktop while the

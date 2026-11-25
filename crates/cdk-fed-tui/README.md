@@ -31,15 +31,15 @@ has exposed its private consensus internals.
 
 ## Build
 
-The TUI is a standalone Rust workspace. Building it does not add anything to
-CDK's root workspace or modify CDK's root lockfile.
-
-From the CDK repository root:
+The TUI is the `cdk-fed-tui` crate in CDK's workspace; it builds the
+`fed-cdk-tui` binary. From the CDK repository root:
 
 ```bash
-cd scripts/fed-cdk-tui
-cargo build --release
+cargo build --release -p cdk-fed-tui
 ```
+
+`build_dist.sh` in this directory checks the crate and packages macOS and
+Linux release archives into `crates/cdk-fed-tui/dist`.
 
 Run it with the default wallet directory, `~/.fed-cdk-tui`:
 
@@ -50,7 +50,9 @@ target/release/fed-cdk-tui
 On first launch, paste a federation member URL, the path to a public federation
 config, or a `cashufed` invite into the join dialog. Member-URL discovery fetches
 `GET /federation/v1/config` and verifies it against that member's `GET /v1/info`
-response before creating the wallet. You can also import at startup:
+response before creating the wallet. Discovery, validation and the member-URL
+aliases come from the CDK wallet's federation registry, the same code `cdk-cli`
+and the FFI bindings use. You can also import at startup:
 
 ```bash
 target/release/fed-cdk-tui \
@@ -155,9 +157,10 @@ All wallet operations are coordinated through the primary member, marked with
 `★` in the members table. To move the primary role to another member — for
 example when it is slow or unreachable — select the member on the overview or
 members view and press `u`. The new primary is validated against the roster,
-persisted to `federation.json`, and the wallet runtime is rebuilt against the
-same seed and database; in-flight operations finish against the old
-coordinator while new ones use the new one.
+stored as the federation's quote coordinator in the wallet database, and the
+wallet runtime is rebuilt against the same seed, database and local mint URL;
+in-flight operations finish against the old coordinator while new ones use the
+new one.
 
 ## Send And Receive Between Two Wallets
 
@@ -183,9 +186,8 @@ The default directory contains:
 
 | File | Purpose |
 |---|---|
-| `federation.json` | Validated public roster and selected local mint URL |
 | `seed` | BIP39 wallet seed, created with private file permissions |
-| `wallet.sqlite` | Proofs, quotes, counters, and saga state |
+| `wallet.sqlite` | Proofs, quotes, counters, saga state, and the federation registry (validated public roster, local mint URL, primary member) |
 | `wallet.sqlite-wal`, `wallet.sqlite-shm` | SQLite runtime files when present |
 | `fed-cdk-tui.log` | Library warnings and errors, appended on every launch |
 
@@ -193,8 +195,8 @@ Tracing output is written to the log file instead of the terminal so library
 warnings can never corrupt the display. Set `RUST_LOG=debug` (or `trace`)
 before launching for verbose diagnostics in that file.
 
-On Unix, the wallet directory is restricted to mode `0700`; the seed and
-federation configuration are written with mode `0600`.
+On Unix, the wallet directory is restricted to mode `0700`; the seed is written
+with mode `0600`.
 
 Back up the seed before funding a wallet that matters. Deleting the seed and
 database can permanently destroy access to its eCash.

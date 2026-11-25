@@ -1,3 +1,6 @@
+//! Wallet runtime: one federation per data directory, kept in the wallet
+//! database's federation registry.
+
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -14,73 +17,84 @@ use bip39::Mnemonic;
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::{self, WalletDatabase};
 use cdk::mint_url::MintUrl;
-use cdk::nuts::nut00::KnownMethod;
-use cdk::nuts::nut00::ProofsMethods;
+use cdk::nuts::nut00::{KnownMethod, ProofsMethods};
 use cdk::nuts::{CurrencyUnit, MeltQuoteState, MintInfo, PaymentMethod};
 use cdk::wallet::types::SendKind;
 use cdk::wallet::{
-    FederatedMintConnector, FederatedMintConnectorConfig, HttpTransport, ReceiveOptions,
-    SendOptions, Wallet, WalletBuilder,
+    FederationConnectorPolicy, FederationImportOptions, FederationRegistry, FederationSource,
+    ReceiveOptions, RegisteredFederation, SendOptions, Wallet, WalletBuilder,
 };
 use cdk::{Amount, StreamExt};
-use cdk_common::federation::{FederationConfig, FederationInvite};
+use cdk_common::federation::FederationConfig;
 use cdk_http_client::Async;
 use cdk_iroh::IrohTransport;
 use cdk_sqlite::WalletSqliteDatabase;
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use crate::app::{AppEvent, PendingQuote, QuoteKind};
 
-const CONFIG_VERSION: u16 = 1;
-const CONFIG_FILE: &str = "federation.json";
 const SEED_FILE: &str = "seed";
 const DATABASE_FILE: &str = "wallet.sqlite";
 
+/// Transport shared by discovery, wallet requests, WebSockets and probes.
 pub type WalletTransport = IrohTransport<Async>;
 
+type LocalStore = Arc<dyn WalletDatabase<cdk_database::Error> + Send + Sync>;
+
+/// What the user asked to join.
 #[derive(Debug, Clone)]
 pub enum JoinSource {
+    /// Path to a `federation-public.json` file.
     ConfigPath(PathBuf),
-    Invite(String),
-    MintUrl(MintUrl),
+    /// A member URL or an invite.
+    Federation(FederationSource),
 }
 
 impl JoinSource {
+    /// Interpret pasted text as an invite, a member URL, or a config path.
     pub fn parse(value: String) -> Self {
-        let value = value.trim();
-        if value.starts_with("cashufed") {
-            return Self::Invite(value.to_string());
+        match FederationSource::parse_invite_or_url(&value) {
+            Some(source) => Self::Federation(source),
+            None => Self::ConfigPath(PathBuf::from(value.trim())),
         }
-        match MintUrl::from_str(value) {
-            Ok(mint_url) => Self::MintUrl(mint_url),
-            Err(_) => Self::ConfigPath(PathBuf::from(value)),
+    }
+
+    fn into_federation_source(self) -> Result<FederationSource> {
+        match self {
+            Self::Federation(source) => Ok(source),
+            Self::ConfigPath(path) => {
+                let encoded = fs::read_to_string(&path)
+                    .with_context(|| format!("could not read {}", path.display()))?;
+                let public_config = serde_json::from_str::<FederationConfig>(&encoded)
+                    .with_context(|| format!("could not parse {}", path.display()))?;
+                Ok(FederationSource::PublicConfig(Box::new(public_config)))
+            }
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct StoredFederation {
-    version: u16,
-    local_mint_url: MintUrl,
-    public_config: FederationConfig,
-}
-
+/// A joined federation with its wallet.
 #[derive(Debug, Clone)]
 pub struct WalletRuntime {
     wallet: Wallet,
-    stored: StoredFederation,
+    federation: RegisteredFederation,
+    registry: FederationRegistry,
+    localstore: LocalStore,
     payment_capabilities: PaymentCapabilities,
     data_dir: PathBuf,
     transport: WalletTransport,
 }
 
+/// Payment methods the federation advertises for sat.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PaymentCapabilities {
+    /// BOLT11 minting.
     pub mint_bolt11: bool,
+    /// On-chain minting.
     pub mint_onchain: bool,
+    /// BOLT11 melting.
     pub melt_bolt11: bool,
+    /// On-chain melting.
     pub melt_onchain: bool,
 }
 
@@ -108,103 +122,140 @@ impl PaymentCapabilities {
     }
 }
 
+/// Member-call policy for the dashboard: deployment-tested 90-second
+/// timeouts so a slow consensus round does not cause quote fallback churn.
+fn dashboard_policy(
+    quote_coordinator: Option<cdk_common::federation::MemberId>,
+) -> FederationConnectorPolicy {
+    FederationConnectorPolicy {
+        quote_coordinator_member_id: quote_coordinator,
+        member_fallback_timeout_secs: 90,
+        member_request_timeout_secs: 90,
+        quote_status_member_timeout_secs: 90,
+        quote_visibility_attempts: 120,
+        quote_visibility_retry_delay_ms: 100,
+        ..FederationConnectorPolicy::default()
+    }
+}
+
+/// Import a federation into a data directory's registry.
+///
+/// A directory holds one federation: joining another one is refused so eCash
+/// from two federations never shares a database. A first join makes the
+/// joined member the primary quote coordinator.
+async fn register_join<T>(
+    registry: &FederationRegistry,
+    source: FederationSource,
+    transport: &T,
+) -> Result<RegisteredFederation>
+where
+    T: cdk::wallet::HttpTransport,
+{
+    let before = registry.list().await?;
+    let federation = registry
+        .import_with_transport(source, FederationImportOptions::default(), transport)
+        .await?;
+    let federation_id = federation.federation_id();
+    let was_registered = before
+        .iter()
+        .any(|existing| existing.federation_id() == federation_id);
+    if let Some(other) = before
+        .iter()
+        .find(|existing| existing.federation_id() != federation_id)
+    {
+        if !was_registered {
+            registry.remove(federation_id).await?;
+        }
+        bail!(
+            "wallet already belongs to federation {}; refusing to join federation {} over it. Use --data-dir for a separate wallet or `reset` to delete this one",
+            other.federation_id(),
+            federation_id
+        );
+    }
+    if was_registered {
+        return Ok(federation);
+    }
+    let coordinator = federation.member_id_for_mint_url(federation.local_mint_url());
+    Ok(registry
+        .set_connector_policy(federation_id, dashboard_policy(coordinator))
+        .await?)
+}
+
+/// Policy that makes `mint_url`'s member the primary quote coordinator.
+fn primary_policy(
+    federation: &RegisteredFederation,
+    mint_url: &MintUrl,
+) -> Result<FederationConnectorPolicy> {
+    let member_id = federation
+        .member_id_for_mint_url(mint_url)
+        .ok_or_else(|| anyhow!("mint URL {mint_url} is not in the federation roster"))?;
+    Ok(FederationConnectorPolicy {
+        quote_coordinator_member_id: Some(member_id),
+        ..*federation.connector_policy()
+    })
+}
+
+/// Public mint URL of the member that coordinates quotes.
+fn primary_member_url(federation: &RegisteredFederation) -> Option<MintUrl> {
+    let members = &federation.public_config().members;
+    match federation.connector_policy().quote_coordinator_member_id {
+        Some(member_id) => members.get(&member_id),
+        None => members.values().next(),
+    }
+    .map(|member| member.public_mint_url.clone())
+}
+
 impl WalletRuntime {
+    /// Open the federation stored in `data_dir`, if any.
     pub async fn load(data_dir: &Path) -> Result<Option<Self>> {
-        let config_path = data_dir.join(CONFIG_FILE);
-        if !config_path.exists() {
+        if !data_dir.join(DATABASE_FILE).exists() {
             return Ok(None);
         }
-
-        let encoded = fs::read_to_string(&config_path)
-            .with_context(|| format!("could not read {}", config_path.display()))?;
-        let stored: StoredFederation = serde_json::from_str(&encoded)
-            .with_context(|| format!("could not parse {}", config_path.display()))?;
-        stored.validate()?;
-        Self::build(data_dir, stored, WalletTransport::default())
-            .await
-            .map(Some)
+        let (registry, localstore) = open_registry(data_dir).await?;
+        let mut federations = registry.list().await?;
+        let federation = match federations.len() {
+            0 => return Ok(None),
+            1 => federations.remove(0),
+            count => bail!(
+                "wallet at {} holds {count} federations; expected one",
+                data_dir.display()
+            ),
+        };
+        Self::build(
+            data_dir,
+            registry,
+            localstore,
+            federation,
+            WalletTransport::default(),
+        )
+        .await
+        .map(Some)
     }
 
+    /// Join a federation and open its wallet.
     pub async fn join(data_dir: &Path, source: JoinSource) -> Result<Self> {
         fs::create_dir_all(data_dir)?;
         secure_directory(data_dir)?;
         let transport = WalletTransport::default();
-
-        let (public_config, discovery_mint_url) = match source {
-            JoinSource::ConfigPath(path) => {
-                let encoded = fs::read_to_string(&path)
-                    .with_context(|| format!("could not read {}", path.display()))?;
-                let public_config = serde_json::from_str::<FederationConfig>(&encoded)
-                    .with_context(|| format!("could not parse {}", path.display()))?;
-                (public_config, None)
-            }
-            JoinSource::Invite(invite) => (FederationInvite::from_str(&invite)?.config, None),
-            JoinSource::MintUrl(mint_url) => {
-                let public_config = discover_public_config(&mint_url, &transport).await?;
-                (public_config, Some(mint_url))
-            }
-        };
-
-        public_config.validate()?;
-        public_config.validate_wallet_runtime_metadata()?;
-        reject_conflicting_stored_federation(data_dir, &public_config)?;
-        let local_mint_url = match discovery_mint_url {
-            Some(mint_url) => mint_url,
-            None => public_config
-                .members
-                .values()
-                .next()
-                .map(|member| member.public_mint_url.clone())
-                .ok_or_else(|| anyhow!("federation roster is empty"))?,
-        };
-        let stored = StoredFederation {
-            version: CONFIG_VERSION,
-            local_mint_url,
-            public_config,
-        };
-        stored.validate()?;
-
-        let runtime = Self::build(data_dir, stored.clone(), transport).await?;
-        persist_config(data_dir, &stored)?;
-        Ok(runtime)
+        let (registry, localstore) = open_registry(data_dir).await?;
+        let federation =
+            register_join(&registry, source.into_federation_source()?, &transport).await?;
+        Self::build(data_dir, registry, localstore, federation, transport).await
     }
 
     async fn build(
         data_dir: &Path,
-        stored: StoredFederation,
+        registry: FederationRegistry,
+        localstore: LocalStore,
+        federation: RegisteredFederation,
         transport: WalletTransport,
     ) -> Result<Self> {
         let seed = load_or_create_seed(data_dir)?;
-        let database = WalletSqliteDatabase::new(data_dir.join(DATABASE_FILE)).await?;
-        let localstore: Arc<dyn WalletDatabase<cdk_database::Error> + Send + Sync> =
-            Arc::new(database);
-
-        let quote_coordinator_member_id = stored
-            .public_config
-            .members
-            .iter()
-            .find(|(_, member)| member.public_mint_url == stored.local_mint_url)
-            .map(|(member_id, _)| *member_id);
-        let connector_config = FederatedMintConnectorConfig {
-            quote_coordinator_member_id,
-            member_fallback_timeout: Duration::from_secs(90),
-            member_request_timeout: Duration::from_secs(90),
-            quote_status_member_timeout: Duration::from_secs(90),
-            fanout_concurrency: stored.public_config.members.len(),
-            quote_visibility_attempts: 120,
-            quote_visibility_retry_delay: Duration::from_millis(100),
-            ..FederatedMintConnectorConfig::default()
-        };
-        let connector =
-            FederatedMintConnector::from_validated_public_config_urls_with_transport_and_config(
-                stored.public_config.clone(),
-                transport.clone(),
-                connector_config,
-            )?;
+        let connector = federation.connector_with_transport(transport.clone())?;
         let wallet = WalletBuilder::new()
-            .mint_url(stored.local_mint_url.clone())
+            .mint_url(federation.local_mint_url().clone())
             .unit(CurrencyUnit::Sat)
-            .localstore(localstore)
+            .localstore(localstore.clone())
             .seed(seed)
             .shared_client(Arc::new(connector))
             .build()?;
@@ -214,176 +265,69 @@ impl WalletRuntime {
         let payment_capabilities = PaymentCapabilities::from_mint_info(&mint_info);
         Ok(Self {
             wallet,
-            stored,
+            federation,
+            registry,
+            localstore,
             payment_capabilities,
             data_dir: data_dir.to_path_buf(),
             transport,
         })
     }
 
-    pub async fn switch_primary(&self, new_local_mint_url: MintUrl) -> Result<Self> {
-        let stored = self.stored.with_primary(new_local_mint_url)?;
-        let runtime = Self::build(&self.data_dir, stored.clone(), self.transport.clone()).await?;
-        persist_config(&self.data_dir, &stored)?;
-        Ok(runtime)
+    /// Make another member the primary quote coordinator. The wallet keeps
+    /// its local mint URL, so its proofs and quotes stay where they are.
+    pub async fn switch_primary(&self, mint_url: MintUrl) -> Result<Self> {
+        let policy = primary_policy(&self.federation, &mint_url)?;
+        let federation = self
+            .registry
+            .set_connector_policy(self.federation.federation_id(), policy)
+            .await?;
+        Self::build(
+            &self.data_dir,
+            self.registry.clone(),
+            self.localstore.clone(),
+            federation,
+            self.transport.clone(),
+        )
+        .await
     }
 
+    /// Validated public federation config.
     pub fn public_config(&self) -> FederationConfig {
-        self.stored.public_config.clone()
+        self.federation.public_config().clone()
     }
 
+    /// Federation ID.
     pub fn federation_id(&self) -> String {
-        self.stored.public_config.federation_id.to_string()
+        self.federation.federation_id().to_string()
     }
 
-    pub fn local_mint_url(&self) -> &MintUrl {
-        &self.stored.local_mint_url
+    /// Public mint URL of the primary quote coordinator.
+    pub fn primary_mint_url(&self) -> MintUrl {
+        primary_member_url(&self.federation)
+            .unwrap_or_else(|| self.federation.local_mint_url().clone())
     }
 
+    /// The federated wallet.
     pub fn wallet(&self) -> Wallet {
         self.wallet.clone()
     }
 
+    /// Advertised payment methods.
     pub fn payment_capabilities(&self) -> PaymentCapabilities {
         self.payment_capabilities
     }
 
+    /// Shared transport.
     pub fn transport(&self) -> WalletTransport {
         self.transport.clone()
     }
 }
 
-async fn discover_public_config(
-    mint_url: &MintUrl,
-    transport: &WalletTransport,
-) -> Result<FederationConfig> {
-    let config_url = mint_url.join_paths(&["federation", "v1", "config"])?;
-    let public_config: FederationConfig = fetch_json(transport, config_url).await?;
-    let info_url = mint_url.join_paths(&["v1", "info"])?;
-    let mint_info: MintInfo = fetch_json(transport, info_url).await?;
-    validate_discovered_public_config(mint_url, public_config, &mint_info)
-}
-
-async fn fetch_json<T>(transport: &WalletTransport, url: url::Url) -> Result<T>
-where
-    T: DeserializeOwned,
-{
-    let response = transport
-        .http_get_raw(url.clone(), None)
-        .await
-        .with_context(|| format!("could not fetch {url}"))?;
-    let status = response.status();
-    if !response.is_success() {
-        bail!("GET {url} returned HTTP {status}");
-    }
-    response
-        .json()
-        .await
-        .with_context(|| format!("could not decode JSON from {url}"))
-}
-
-fn validate_discovered_public_config(
-    mint_url: &MintUrl,
-    public_config: FederationConfig,
-    mint_info: &MintInfo,
-) -> Result<FederationConfig> {
-    public_config.validate()?;
-    if !public_config.keysets.iter().any(|keyset| keyset.active) {
-        bail!("federation public config does not contain an active keyset");
-    }
-
-    let mut matching_members = public_config
-        .members
-        .iter()
-        .filter(|(_, member)| &member.public_mint_url == mint_url);
-    let Some((member_id, _)) = matching_members.next() else {
-        bail!("federation public config does not contain discovery mint URL {mint_url}");
-    };
-    if matching_members.next().is_some() {
-        bail!("federation public config contains discovery mint URL {mint_url} more than once");
-    }
-
-    let federation_info = mint_info.federation.as_ref().ok_or_else(|| {
-        anyhow!("discovery member mint info does not advertise federation metadata")
-    })?;
-    let config_digest = public_config.config_digest_for_validated_config()?;
-    public_config.validate_member_mint_info_with_config_digest(
-        *member_id,
-        federation_info,
-        config_digest,
-    )?;
-    Ok(public_config)
-}
-
-impl StoredFederation {
-    fn validate(&self) -> Result<()> {
-        if self.version != CONFIG_VERSION {
-            bail!(
-                "unsupported federation wallet config version {}",
-                self.version
-            );
-        }
-        self.public_config.validate()?;
-        self.public_config.validate_wallet_runtime_metadata()?;
-        if !self
-            .public_config
-            .members
-            .values()
-            .any(|member| member.public_mint_url == self.local_mint_url)
-        {
-            bail!("local mint URL is not in the federation roster");
-        }
-        Ok(())
-    }
-
-    fn with_primary(&self, new_local_mint_url: MintUrl) -> Result<Self> {
-        if !self
-            .public_config
-            .members
-            .values()
-            .any(|member| member.public_mint_url == new_local_mint_url)
-        {
-            bail!("mint URL {new_local_mint_url} is not in the federation roster");
-        }
-        let stored = Self {
-            local_mint_url: new_local_mint_url,
-            ..self.clone()
-        };
-        stored.validate()?;
-        Ok(stored)
-    }
-}
-
-fn reject_conflicting_stored_federation(
-    data_dir: &Path,
-    public_config: &FederationConfig,
-) -> Result<()> {
-    let config_path = data_dir.join(CONFIG_FILE);
-    if !config_path.exists() {
-        return Ok(());
-    }
-    let encoded = fs::read_to_string(&config_path)
-        .with_context(|| format!("could not read {}", config_path.display()))?;
-    let existing: StoredFederation = serde_json::from_str(&encoded)
-        .with_context(|| format!("could not parse {}", config_path.display()))?;
-    if existing.public_config.federation_id != public_config.federation_id {
-        bail!(
-            "wallet at {} already belongs to federation {}; refusing to join federation {} over it. Use --data-dir for a separate wallet or `reset` to delete this one",
-            data_dir.display(),
-            existing.public_config.federation_id,
-            public_config.federation_id
-        );
-    }
-    Ok(())
-}
-
-fn persist_config(data_dir: &Path, stored: &StoredFederation) -> Result<()> {
-    let path = data_dir.join(CONFIG_FILE);
-    let temporary = data_dir.join(format!("{CONFIG_FILE}.tmp"));
-    let encoded = serde_json::to_vec_pretty(stored)?;
-    write_private_file(&temporary, &encoded)?;
-    fs::rename(&temporary, &path)?;
-    Ok(())
+async fn open_registry(data_dir: &Path) -> Result<(FederationRegistry, LocalStore)> {
+    let database = WalletSqliteDatabase::new(data_dir.join(DATABASE_FILE)).await?;
+    let localstore: LocalStore = Arc::new(database);
+    Ok((FederationRegistry::new(localstore.clone()), localstore))
 }
 
 fn load_or_create_seed(data_dir: &Path) -> Result<[u8; 64]> {
@@ -538,7 +482,7 @@ pub fn spawn_quote_action(
     tx: mpsc::UnboundedSender<AppEvent>,
 ) {
     tokio::spawn(async move {
-        let member_url = runtime.local_mint_url().to_string();
+        let member_url = runtime.primary_mint_url().to_string();
         let result = async {
             let wallet = runtime.wallet();
             match kind {
@@ -629,7 +573,7 @@ pub fn spawn_onchain_mint(
     tx: mpsc::UnboundedSender<AppEvent>,
 ) {
     tokio::spawn(async move {
-        let member_url = runtime.local_mint_url().to_string();
+        let member_url = runtime.primary_mint_url().to_string();
         let result = async {
             let wallet = runtime.wallet();
             tx.send(AppEvent::OperationProgress {
@@ -713,7 +657,7 @@ pub fn spawn_bolt11_mint(
     tx: mpsc::UnboundedSender<AppEvent>,
 ) {
     tokio::spawn(async move {
-        let member_url = runtime.local_mint_url().to_string();
+        let member_url = runtime.primary_mint_url().to_string();
         let result = async {
             let wallet = runtime.wallet();
             tx.send(AppEvent::OperationProgress {
@@ -794,7 +738,7 @@ pub fn spawn_bolt11_mint(
 
 pub fn spawn_send(runtime: Arc<WalletRuntime>, amount: u64, tx: mpsc::UnboundedSender<AppEvent>) {
     tokio::spawn(async move {
-        let member_url = runtime.local_mint_url().to_string();
+        let member_url = runtime.primary_mint_url().to_string();
         let result = async {
             let wallet = runtime.wallet();
             let options = SendOptions {
@@ -843,7 +787,7 @@ pub fn spawn_onchain_melt(
     tx: mpsc::UnboundedSender<AppEvent>,
 ) {
     tokio::spawn(async move {
-        let member_url = runtime.local_mint_url().to_string();
+        let member_url = runtime.primary_mint_url().to_string();
         let result = async {
             let wallet = runtime.wallet();
             let quotes = wallet
@@ -889,7 +833,7 @@ pub fn spawn_bolt11_melt(
     tx: mpsc::UnboundedSender<AppEvent>,
 ) {
     tokio::spawn(async move {
-        let member_url = runtime.local_mint_url().to_string();
+        let member_url = runtime.primary_mint_url().to_string();
         let result = async {
             cdk::Bolt11Invoice::from_str(&invoice)
                 .map_err(|err| anyhow!("invalid BOLT11 invoice: {err}"))?;
@@ -931,7 +875,7 @@ async fn finish_operation(
     runtime: Arc<WalletRuntime>,
     tx: mpsc::UnboundedSender<AppEvent>,
 ) {
-    let member_url = Some(runtime.local_mint_url().to_string());
+    let member_url = Some(runtime.primary_mint_url().to_string());
     match result {
         Ok(message) => {
             tx.send(AppEvent::OperationFinished {
@@ -983,8 +927,8 @@ mod tests {
     use cdk::nuts::nut05::{MeltMethodOptions, MeltMethodSettings};
     use cdk::Amount;
     use cdk_common::federation::{
-        generate_trusted_dealer_configs, FederationConfigDigest, MemberId, ThresholdParams,
-        TrustedDealerKeysetSpec, TrustedDealerMember,
+        generate_trusted_dealer_configs, MemberId, ThresholdParams, TrustedDealerKeysetSpec,
+        TrustedDealerMember,
     };
     use cdk_common::SecretKey;
 
@@ -1117,7 +1061,7 @@ mod tests {
     fn join_source_detects_invites_and_paths() {
         assert!(matches!(
             JoinSource::parse(" cashufed1example ".to_string()),
-            JoinSource::Invite(value) if value == "cashufed1example"
+            JoinSource::Federation(FederationSource::Invite(value)) if value == "cashufed1example"
         ));
         assert!(matches!(
             JoinSource::parse(" federation-public.json ".to_string()),
@@ -1125,129 +1069,101 @@ mod tests {
         ));
         assert!(matches!(
             JoinSource::parse(" https://mint.example.com ".to_string()),
-            JoinSource::MintUrl(url) if url.to_string() == "https://mint.example.com"
+            JoinSource::Federation(FederationSource::MemberUrl(url))
+                if url.to_string() == "https://mint.example.com"
         ));
     }
 
-    #[test]
-    fn discovered_public_config_accepts_matching_source_member() {
-        let public_config = valid_public_config();
-        let source_url = public_config
-            .member(member_id(2))
-            .expect("source member")
-            .public_mint_url
-            .clone();
-        let mint_info = MintInfo::new().federation(
-            public_config
-                .mint_info_for_member(member_id(2))
-                .expect("member federation info"),
+    async fn memory_registry() -> FederationRegistry {
+        let localstore: LocalStore = Arc::new(
+            cdk_sqlite::wallet::memory::empty()
+                .await
+                .expect("wallet memory db"),
         );
-
-        let validated =
-            validate_discovered_public_config(&source_url, public_config.clone(), &mint_info)
-                .expect("matching discovery metadata");
-
-        assert_eq!(validated, public_config);
+        FederationRegistry::new(localstore)
     }
 
-    #[test]
-    fn discovered_public_config_rejects_unlisted_source_url() {
+    fn config_source(public_config: FederationConfig) -> FederationSource {
+        FederationSource::PublicConfig(Box::new(public_config))
+    }
+
+    #[tokio::test]
+    async fn first_join_uses_the_dashboard_policy_and_rejoin_keeps_it() {
+        let registry = memory_registry().await;
+        let transport = Async::default();
         let public_config = valid_public_config();
-        let source_url = MintUrl::from_str("https://unknown.example.com").expect("source URL");
-        let mint_info = MintInfo::new().federation(
-            public_config
-                .mint_info_for_member(member_id(1))
-                .expect("member federation info"),
-        );
+        let joined = register_join(&registry, config_source(public_config.clone()), &transport)
+            .await
+            .expect("join");
+        let policy = joined.connector_policy();
+        assert_eq!(policy.member_request_timeout_secs, 90);
+        assert_eq!(policy.quote_coordinator_member_id, Some(member_id(1)));
 
-        let err = validate_discovered_public_config(&source_url, public_config, &mint_info)
-            .expect_err("unlisted source rejected");
-
-        assert!(err
-            .to_string()
-            .contains("does not contain discovery mint URL"));
+        let switched = registry
+            .set_connector_policy(
+                joined.federation_id(),
+                primary_policy(&joined, &member_url(&joined, 2)).expect("roster member"),
+            )
+            .await
+            .expect("switch primary");
+        let rejoined = register_join(&registry, config_source(public_config), &transport)
+            .await
+            .expect("rejoin");
+        assert_eq!(rejoined, switched);
+        assert_eq!(primary_member_url(&rejoined), Some(member_url(&joined, 2)));
     }
 
-    #[test]
-    fn discovered_public_config_rejects_mismatched_mint_info_digest() {
-        let public_config = valid_public_config();
-        let source_url = public_config
-            .member(member_id(1))
-            .expect("source member")
-            .public_mint_url
-            .clone();
-        let mut federation_info = public_config
-            .mint_info_for_member(member_id(1))
-            .expect("member federation info");
-        federation_info.config_digest = FederationConfigDigest::from_bytes([42; 32]).to_string();
-        let mint_info = MintInfo::new().federation(federation_info);
-
-        let err = validate_discovered_public_config(&source_url, public_config, &mint_info)
-            .expect_err("mismatched digest rejected");
-
-        assert!(err.to_string().contains("config digest"));
-    }
-
-    #[test]
-    fn join_rejects_a_different_federation_over_an_existing_wallet() {
-        let data_dir =
-            std::env::temp_dir().join(format!("fed-cdk-tui-test-{}", rand::random::<u64>()));
-        fs::create_dir_all(&data_dir).expect("create test data dir");
-        let stored = StoredFederation {
-            version: CONFIG_VERSION,
-            local_mint_url: valid_public_config()
-                .member(member_id(1))
-                .expect("member")
-                .public_mint_url
-                .clone(),
-            public_config: valid_public_config(),
-        };
-        persist_config(&data_dir, &stored).expect("persist stored federation");
-
-        reject_conflicting_stored_federation(&data_dir, &stored.public_config)
-            .expect("same federation is accepted");
+    #[tokio::test]
+    async fn join_rejects_a_different_federation_over_an_existing_wallet() {
+        let registry = memory_registry().await;
+        let transport = Async::default();
+        let joined = register_join(&registry, config_source(valid_public_config()), &transport)
+            .await
+            .expect("join");
 
         let other_config = distinct_public_config();
         assert_ne!(
-            stored.public_config.federation_id, other_config.federation_id,
+            joined.federation_id(),
+            other_config.federation_id,
             "trusted dealer configs must have distinct federation ids"
         );
-        let err = reject_conflicting_stored_federation(&data_dir, &other_config)
+        let err = register_join(&registry, config_source(other_config), &transport)
+            .await
             .expect_err("different federation rejected");
 
         assert!(err.to_string().contains("already belongs to federation"));
-
-        fs::remove_dir_all(&data_dir).expect("remove test data dir");
+        assert_eq!(registry.list().await.expect("list"), vec![joined]);
     }
 
-    #[test]
-    fn with_primary_accepts_roster_member_and_rejects_strangers() {
-        let public_config = valid_public_config();
-        let stored = StoredFederation {
-            version: CONFIG_VERSION,
-            local_mint_url: public_config
-                .member(member_id(1))
-                .expect("member")
-                .public_mint_url
-                .clone(),
-            public_config: public_config.clone(),
-        };
+    #[tokio::test]
+    async fn primary_policy_accepts_roster_members_and_rejects_strangers() {
+        let registry = memory_registry().await;
+        let joined = register_join(
+            &registry,
+            config_source(valid_public_config()),
+            &Async::default(),
+        )
+        .await
+        .expect("join");
 
-        let member_two_url = public_config
-            .member(member_id(2))
-            .expect("member")
-            .public_mint_url
-            .clone();
-        let switched = stored
-            .with_primary(member_two_url.clone())
-            .expect("roster member accepted");
-        assert_eq!(switched.local_mint_url, member_two_url);
-        assert_eq!(switched.public_config, public_config);
+        let policy = primary_policy(&joined, &member_url(&joined, 3)).expect("roster member");
+        assert_eq!(policy.quote_coordinator_member_id, Some(member_id(3)));
+        assert_eq!(
+            policy.member_request_timeout_secs,
+            joined.connector_policy().member_request_timeout_secs
+        );
 
         let stranger = MintUrl::from_str("https://stranger.example.com").expect("mint url");
-        let err = stored
-            .with_primary(stranger)
-            .expect_err("non-roster member rejected");
+        let err = primary_policy(&joined, &stranger).expect_err("non-roster member rejected");
         assert!(err.to_string().contains("not in the federation roster"));
+    }
+
+    fn member_url(federation: &RegisteredFederation, id: u16) -> MintUrl {
+        federation
+            .public_config()
+            .member(member_id(id))
+            .expect("member")
+            .public_mint_url
+            .clone()
     }
 }

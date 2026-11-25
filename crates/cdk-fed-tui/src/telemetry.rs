@@ -235,7 +235,7 @@ fn advertised_melt_methods(info: &MintInfo) -> Vec<String> {
 
 async fn fetch(transport: &WalletTransport, url: url::Url) -> HttpObservation {
     let started = Instant::now();
-    match tokio::time::timeout(Duration::from_secs(8), transport.http_get_raw(url, None)).await {
+    match tokio::time::timeout(Duration::from_secs(8), transport.http_get(url, None)).await {
         Ok(Ok(response)) => {
             let status = response.status();
             match response.bytes().await {

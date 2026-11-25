@@ -16,6 +16,7 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use app::{App, AppCommand, AppEvent};
 use cdk::mint_url::MintUrl;
+use cdk::wallet::FederationSource;
 use clap::{Parser, Subcommand};
 use crossterm::event;
 use crossterm::execute;
@@ -119,8 +120,12 @@ async fn main() -> Result<()> {
 
     let join_source = match (cli.federation_config, cli.invite, cli.mint_url) {
         (Some(path), None, None) => Some(JoinSource::ConfigPath(path)),
-        (None, Some(invite), None) => Some(JoinSource::Invite(invite)),
-        (None, None, Some(mint_url)) => Some(JoinSource::MintUrl(mint_url)),
+        (None, Some(invite), None) => {
+            Some(JoinSource::Federation(FederationSource::Invite(invite)))
+        }
+        (None, None, Some(mint_url)) => Some(JoinSource::Federation(FederationSource::MemberUrl(
+            mint_url,
+        ))),
         (None, None, None) => None,
         _ => unreachable!("clap rejects conflicting join sources"),
     };
@@ -140,8 +145,11 @@ async fn check_iroh_federation(mint_url: MintUrl) -> Result<()> {
     let directory = tempfile::Builder::new()
         .prefix("fed-cdk-tui-check-")
         .tempdir()?;
-    let runtime =
-        WalletRuntime::join(directory.path(), JoinSource::MintUrl(mint_url.clone())).await?;
+    let runtime = WalletRuntime::join(
+        directory.path(),
+        JoinSource::Federation(FederationSource::MemberUrl(mint_url.clone())),
+    )
+    .await?;
     let public_config = runtime.public_config();
     let all_members_use_iroh = public_config
         .members
@@ -379,7 +387,7 @@ async fn execute_app_command(
         }
         AppCommand::Bolt11Mint(amount) => {
             if let Some(runtime) = app.runtime() {
-                let member_url = runtime.local_mint_url().to_string();
+                let member_url = runtime.primary_mint_url().to_string();
                 app.operation_started(
                     "mint-bolt11",
                     &format!("mint_quote bolt11 amount={amount} via {member_url}"),
@@ -390,7 +398,7 @@ async fn execute_app_command(
         }
         AppCommand::OnchainMint(amount) => {
             if let Some(runtime) = app.runtime() {
-                let member_url = runtime.local_mint_url().to_string();
+                let member_url = runtime.primary_mint_url().to_string();
                 app.operation_started(
                     "mint-onchain",
                     &format!("mint_quote onchain amount={amount} via {member_url}"),
@@ -401,7 +409,7 @@ async fn execute_app_command(
         }
         AppCommand::Bolt11Melt(invoice) => {
             if let Some(runtime) = app.runtime() {
-                let member_url = runtime.local_mint_url().to_string();
+                let member_url = runtime.primary_mint_url().to_string();
                 app.operation_started(
                     "melt-bolt11",
                     &format!("melt_quote bolt11 via {member_url}"),
@@ -412,7 +420,7 @@ async fn execute_app_command(
         }
         AppCommand::OnchainMelt { address, amount } => {
             if let Some(runtime) = app.runtime() {
-                let member_url = runtime.local_mint_url().to_string();
+                let member_url = runtime.primary_mint_url().to_string();
                 app.operation_started(
                     "melt-onchain",
                     &format!("melt_quote onchain amount={amount} via {member_url}"),
@@ -423,7 +431,7 @@ async fn execute_app_command(
         }
         AppCommand::Send(amount) => {
             if let Some(runtime) = app.runtime() {
-                let member_url = runtime.local_mint_url().to_string();
+                let member_url = runtime.primary_mint_url().to_string();
                 app.operation_started(
                     "send",
                     &format!("Preparing {amount} sat token via {member_url}"),
@@ -434,7 +442,7 @@ async fn execute_app_command(
         }
         AppCommand::Receive(token) => {
             if let Some(runtime) = app.runtime() {
-                let member_url = runtime.local_mint_url().to_string();
+                let member_url = runtime.primary_mint_url().to_string();
                 app.operation_started(
                     "receive",
                     &format!("Validating and swapping incoming token via {member_url}"),
@@ -445,7 +453,7 @@ async fn execute_app_command(
         }
         AppCommand::QuoteAction { kind, quote_id } => {
             if let Some(runtime) = app.runtime() {
-                let member_url = runtime.local_mint_url().to_string();
+                let member_url = runtime.primary_mint_url().to_string();
                 app.operation_started(
                     kind.operation(),
                     &format!("checking {} quote via {member_url}", kind.label()),

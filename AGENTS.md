@@ -1,7 +1,7 @@
 # AGENTS.md - Cashu Development Kit (CDK)
 
 Rust workspace (edition 2021) implementing the Cashu e-cash protocol.
-31 crates in `crates/`, stable Rust (see `rust-toolchain.toml`), MSRV 1.91.0.
+33 crates in `crates/`, stable Rust (see `rust-toolchain.toml`), MSRV 1.91.0.
 
 ## Security fixes
 
@@ -209,7 +209,7 @@ impl fmt::Display for MyType { ... }
 
 ## Project Structure
 
-24 workspace crates in `crates/`, grouped by role:
+The main workspace crates in `crates/`, grouped by role:
 
 **Foundation**
 - `cashu` -- core Cashu protocol types, crypto, NUT specs (`nuts/nut00`–`nut27`)
@@ -243,6 +243,7 @@ impl fmt::Display for MyType { ... }
 **Binaries**
 - `cdk-mintd` -- mint daemon (wires all crates together)
 - `cdk-cli` -- CLI wallet with subcommands (mint, melt, send, receive, etc.)
+- `cdk-fed-tui` -- federated wallet and member dashboard TUI (binary `fed-cdk-tui`, `publish = false`), built on the wallet's federation registry
 
 **Other**
 - `cdk-ffi` -- UniFFI bindings for cross-language use
