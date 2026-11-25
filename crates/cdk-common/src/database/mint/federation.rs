@@ -304,6 +304,24 @@ pub trait FederationJournalTransaction {
         limit: u64,
     ) -> Result<u64, Self::Err>;
 
+    /// Wipe this member's federation consensus state and mint business rows
+    /// so it starts as an empty member and rejoins by state transfer.
+    ///
+    /// Deleted: the journal and its conflict keys, finalized items, AlephBFT
+    /// backups, pending operations and session state, checkpoints with their
+    /// signatures, quorums, snapshots and frontier (the retention floor and
+    /// state-transfer base with it), the materialized-state key registry,
+    /// payment observations, signature shares, the consensus projections and
+    /// the Bark projection, the federation payment schedule and Bark replay
+    /// markers, and the mint's quotes, proofs, blind signatures, melt
+    /// requests, sagas, completed operations and per-keyset totals.
+    ///
+    /// Kept: the federation config snapshot, DKG and setup records, FROST key
+    /// material, the mint's keysets and its configuration. Files outside the
+    /// database (the FROST nonce store) are not touched. Returns how many rows
+    /// were deleted.
+    async fn reset_federation_member_state(&mut self) -> Result<u64, Self::Err>;
+
     /// Durably latch a materialized-state audit mismatch.
     ///
     /// This operation is intentionally one-way. Ordinary startup, peer

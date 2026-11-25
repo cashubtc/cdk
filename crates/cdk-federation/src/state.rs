@@ -953,6 +953,14 @@ pub enum FederationSyncStatus {
     Halted {
         reason: String,
     },
+    /// The member still holds federation state, but the history it needs to
+    /// catch up lies below every peer's retention floor. It stays halted
+    /// until an operator resets it (`cdk-mintd federation reset-member`),
+    /// after which it rejoins by state transfer.
+    ResetRequired {
+        /// The member's local journal frontier when it halted.
+        journal_next_index: u64,
+    },
 }
 
 impl FederationSyncStatus {
@@ -967,13 +975,17 @@ impl FederationSyncStatus {
             Self::Lagging { .. } => "lagging",
             Self::CatchingUp { .. } => "catching_up",
             Self::Halted { .. } => "halted",
+            Self::ResetRequired { .. } => "reset_required",
         }
     }
 
     pub fn peer(&self) -> Option<MemberId> {
         match self {
             Self::Lagging { peer, .. } | Self::CatchingUp { peer } => Some(*peer),
-            Self::Healthy | Self::AwaitingQuorum { .. } | Self::Halted { .. } => None,
+            Self::Healthy
+            | Self::AwaitingQuorum { .. }
+            | Self::Halted { .. }
+            | Self::ResetRequired { .. } => None,
         }
     }
 
@@ -983,6 +995,7 @@ impl FederationSyncStatus {
                 local_operation_count,
                 ..
             } => Some(*local_operation_count),
+            Self::ResetRequired { journal_next_index } => Some(*journal_next_index),
             Self::Healthy
             | Self::AwaitingQuorum { .. }
             | Self::CatchingUp { .. }
@@ -999,7 +1012,8 @@ impl FederationSyncStatus {
             Self::Healthy
             | Self::AwaitingQuorum { .. }
             | Self::CatchingUp { .. }
-            | Self::Halted { .. } => None,
+            | Self::Halted { .. }
+            | Self::ResetRequired { .. } => None,
         }
     }
 
@@ -1009,7 +1023,8 @@ impl FederationSyncStatus {
             Self::Healthy
             | Self::Lagging { .. }
             | Self::CatchingUp { .. }
-            | Self::Halted { .. } => None,
+            | Self::Halted { .. }
+            | Self::ResetRequired { .. } => None,
         }
     }
 
@@ -1035,7 +1050,18 @@ impl FederationSyncStatus {
                     redact_federation_operator_message(reason)
                 )
             }
+            Self::ResetRequired { journal_next_index } => format!(
+                "federation member is halted: its history (local journal at {journal_next_index}) \
+                 is below every peer's retention floor; stop it, run \
+                 `cdk-mintd federation reset-member --confirm-wipe` and start it again \
+                 to rejoin by state transfer"
+            ),
         }
+    }
+
+    /// Whether the member waits for an operator reset.
+    pub fn is_reset_required(&self) -> bool {
+        matches!(self, Self::ResetRequired { .. })
     }
 }
 
@@ -1076,7 +1102,7 @@ impl FederationSyncState {
         expected: &FederationSyncStatus,
         next: FederationSyncStatus,
     ) {
-        if &self.status != expected {
+        if &self.status != expected || self.status.is_reset_required() {
             return;
         }
         self.status = match next {
@@ -1100,6 +1126,9 @@ impl FederationSyncState {
         local_operation_count: u64,
         peer_operation_count: u64,
     ) {
+        if self.status.is_reset_required() {
+            return;
+        }
         #[cfg(any(test, feature = "test-utils"))]
         {
             self.transition_stats.lagging = self.transition_stats.lagging.saturating_add(1);
@@ -1115,13 +1144,17 @@ impl FederationSyncState {
         match self.status {
             FederationSyncStatus::Lagging { .. }
             | FederationSyncStatus::CatchingUp { .. }
-            | FederationSyncStatus::Halted { .. } => return,
+            | FederationSyncStatus::Halted { .. }
+            | FederationSyncStatus::ResetRequired { .. } => return,
             FederationSyncStatus::Healthy | FederationSyncStatus::AwaitingQuorum { .. } => {}
         }
         self.status = FederationSyncStatus::AwaitingQuorum { operation_count };
     }
 
     pub fn mark_catching_up(&mut self, peer: MemberId) {
+        if self.status.is_reset_required() {
+            return;
+        }
         #[cfg(any(test, feature = "test-utils"))]
         {
             self.transition_stats.catching_up = self.transition_stats.catching_up.saturating_add(1);
@@ -1130,6 +1163,9 @@ impl FederationSyncState {
     }
 
     pub fn mark_healthy(&mut self) {
+        if self.status.is_reset_required() {
+            return;
+        }
         self.status = FederationSyncStatus::Healthy;
     }
 
@@ -1140,8 +1176,17 @@ impl FederationSyncState {
     }
 
     pub fn mark_halted(&mut self, reason: String) {
+        if self.status.is_reset_required() {
+            return;
+        }
         let reason = redact_federation_operator_message(&reason);
         self.status = FederationSyncStatus::Halted { reason };
+    }
+
+    /// Halt until an operator resets the member. Nothing but a restart
+    /// after the reset clears it.
+    pub fn mark_reset_required(&mut self, journal_next_index: u64) {
+        self.status = FederationSyncStatus::ResetRequired { journal_next_index };
     }
 }
 

@@ -101,6 +101,8 @@ mod federation_inspect;
 mod federation_operator;
 #[cfg(feature = "federation")]
 mod federation_payment_observations;
+#[cfg(feature = "federation")]
+mod federation_reset;
 #[cfg(all(feature = "federation", any(test, feature = "federation-test-utils")))]
 mod federation_setup;
 #[cfg(feature = "federation")]
@@ -262,6 +264,9 @@ pub async fn run_cli_command(args: &CLIArgs) -> Result<bool> {
                 cli::FederationCommand::SmokeOperations(smoke) => {
                     let transport = federation_operator_transport(args).await?;
                     federation_smoke::run_smoke_operations_command(smoke, transport).await?;
+                }
+                cli::FederationCommand::ResetMember(reset) => {
+                    federation_reset::run_reset_member_command(args, reset).await?;
                 }
                 cli::FederationCommand::Status(status) => {
                     federation_status::run_status_command(args, status).await?;

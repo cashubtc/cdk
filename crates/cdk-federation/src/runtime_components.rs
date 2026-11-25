@@ -204,6 +204,11 @@ impl FederationReadinessCoordinator {
     pub async fn mark_halted(&self, reason: String) {
         self.update(|sync| sync.mark_halted(reason)).await;
     }
+
+    pub async fn mark_reset_required(&self, journal_next_index: u64) {
+        self.update(|sync| sync.mark_reset_required(journal_next_index))
+            .await;
+    }
 }
 
 /// Owns DKG ceremony configuration and per-member admission state.

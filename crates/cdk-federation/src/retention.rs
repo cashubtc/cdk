@@ -222,8 +222,10 @@ where
 /// this member needs lies below every peer's retention floor.
 ///
 /// The installer requires empty federation state. A member that already
-/// holds state below every floor cannot be repaired automatically: it is
-/// reported, and an operator must reset it so it can install the transfer.
+/// holds state below every floor cannot be repaired automatically: it halts
+/// with [`crate::FederationSyncStatus::ResetRequired`], and stays halted
+/// until its operator stops it, runs `cdk-mintd federation reset-member`
+/// and starts it again; it then rejoins through this path as an empty member.
 pub async fn install_state_transfer_below_peer_floors<T>(
     state: &FederationNode,
     client: &FederationRestPeerClient<T>,
@@ -235,11 +237,22 @@ where
     let db = state.mint.localstore();
     match db.get_federation_checkpoint_frontier().await {
         Ok(frontier) if frontier == FederationCheckpointFrontier::genesis() => {}
-        Ok(_) => {
+        Ok(frontier) => {
             tracing::error!(
+                journal_next_index = frontier.journal_next_index,
                 "Federation history this member needs is below every peer's retention floor; \
-                 a state transfer needs empty federation state, so this member must be reset"
+                 a state transfer needs empty federation state, so the member halts until its \
+                 operator resets it with `cdk-mintd federation reset-member`"
             );
+            crate::halt_current_federation_aleph_bft_session(
+                state,
+                "member is below every peer's retention floor",
+            )
+            .await;
+            state
+                .federation
+                .mark_reset_required(frontier.journal_next_index)
+                .await;
             return false;
         }
         Err(err) => {

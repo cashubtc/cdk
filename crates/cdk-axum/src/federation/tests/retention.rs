@@ -900,3 +900,181 @@ async fn retired_payment_observations_digest_alike_whether_or_not_deleted() {
     assert_eq!(installed.amount_paid().value(), 1);
     assert!(mint_payment_history(&fresh, &quote).await.is_empty());
 }
+
+/// A member that still holds federation state but lies below every peer's
+/// retention floor halts with `ResetRequired` instead of installing a state
+/// transfer over its own state, and stays halted. After its operator resets
+/// it, the member restarts empty over the same database, installs a peer's
+/// checkpoint state and catches up to the peers.
+#[tokio::test]
+async fn member_holding_state_below_every_peer_floor_halts_then_rejoins_after_reset() {
+    let (mut public_config, first_private, second_private, third_private) =
+        transport_config_three();
+    public_config.checkpoint_policy = retention_policy();
+    let first =
+        federation_route_state_for_private(public_config.clone(), first_private.clone()).await;
+    let second =
+        federation_route_state_for_private(public_config.clone(), second_private.clone()).await;
+    let third_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("third db"));
+    let third_seed = Mnemonic::generate(12)
+        .expect("mnemonic")
+        .to_seed_normalized("");
+    let third = federation_route_state_for_private_with_db(
+        public_config.clone(),
+        third_private.clone(),
+        third_db.clone(),
+        &third_seed,
+    )
+    .await;
+
+    // The third member takes part in the first checkpoint, then goes offline
+    // while its peers move on and delete the history it would need.
+    order_and_promote(
+        &[&first, &second, &third],
+        &spaced_sessions(0, CHECKPOINT_INTERVAL),
+    )
+    .await;
+    let stale = frontier(&third).await;
+    assert!(stale.journal_next_index > 0, "the third member holds state");
+    let peer_states = [&first, &second];
+    let (_, quorums) = order_and_promote(
+        &peer_states,
+        &spaced_sessions(CHECKPOINT_INTERVAL, 4 * CHECKPOINT_INTERVAL),
+    )
+    .await;
+    let latest = &quorums.last().expect("latest quorum").checkpoint;
+    for state in peer_states {
+        assert!(
+            retention_floor(state)
+                .await
+                .expect("peer floor")
+                .journal_start
+                > stale.journal_next_index
+        );
+    }
+
+    let transport = RouterFederationTransportRegistry::default();
+    for (state, private) in [(&first, &first_private), (&second, &second_private)] {
+        transport.insert(
+            public_config
+                .member(private.member_id)
+                .expect("peer member")
+                .federation_api_url
+                .clone(),
+            router_for(state),
+        );
+    }
+    let client = FederationRestPeerClient::new_with_config(
+        transport,
+        &public_config,
+        third_private.clone(),
+        FederationPeerSyncConfig::default(),
+    )
+    .expect("stale member client");
+    let peers = public_config
+        .members
+        .values()
+        .filter(|member| member.member_id != third_private.member_id)
+        .cloned()
+        .collect::<Vec<_>>();
+
+    // The member halts with a typed status, and further rounds change nothing.
+    let halted = cdk_federation::FederationSyncStatus::ResetRequired {
+        journal_next_index: stale.journal_next_index,
+    };
+    for _ in 0..2 {
+        run_federation_peer_sync_round(&third, &client, &peers).await;
+        let status = third.federation_sync_status().await.expect("sync status");
+        assert_eq!(status, halted);
+        assert!(!status.is_ready());
+        assert_eq!(status.state_name(), "reset_required");
+        assert!(status.not_ready_message().contains("reset-member"));
+        assert_eq!(frontier(&third).await, stale, "nothing was installed");
+    }
+    third.federation.mark_healthy().await;
+    assert_eq!(
+        third.federation_sync_status().await,
+        Some(halted),
+        "only a reset clears it"
+    );
+
+    // The operator stops the member and resets it: federation and mint state
+    // go, key material and the federation config stay.
+    drop(third);
+    let db: cdk_common::database::DynMintDatabase = third_db.clone();
+    let config_before = db
+        .get_federation_config(public_config.federation_id)
+        .await
+        .expect("federation config before reset");
+    let mut tx = db.begin_transaction().await.expect("begin reset");
+    assert!(
+        tx.reset_federation_member_state()
+            .await
+            .expect("reset member state")
+            > 0
+    );
+    tx.commit().await.expect("commit reset");
+    assert_eq!(
+        db.get_federation_checkpoint_frontier()
+            .await
+            .expect("reset frontier"),
+        FederationCheckpointFrontier::genesis()
+    );
+    assert!(db
+        .get_federation_journal_entries()
+        .await
+        .expect("reset journal")
+        .is_empty());
+    assert_eq!(
+        db.get_federation_config(public_config.federation_id)
+            .await
+            .expect("federation config after reset"),
+        config_before
+    );
+
+    // Restarted over the same database, it installs a transfer and catches up.
+    let restarted = federation_route_state_for_private_with_db(
+        public_config.clone(),
+        third_private.clone(),
+        third_db.clone(),
+        &third_seed,
+    )
+    .await;
+    run_federation_peer_sync_round(&restarted, &client, &peers).await;
+    let installed = frontier(&restarted).await;
+    assert_eq!(
+        installed.trusted_checkpoint_id,
+        Some(latest.id().expect("latest checkpoint id"))
+    );
+    assert_eq!(installed.journal_next_index, latest.journal_next_index);
+    assert_eq!(
+        live_digest(&restarted).await,
+        latest.materialized_state_digest
+    );
+
+    let next_op = latest.journal_next_index;
+    let (_, more) =
+        order_and_promote(&peer_states, &spaced_sessions(next_op, CHECKPOINT_INTERVAL)).await;
+    let newest = &more.last().expect("newest quorum").checkpoint;
+    for _ in 0..4 {
+        run_federation_peer_sync_round(&restarted, &client, &peers).await;
+        if frontier(&restarted).await.journal_next_index == newest.journal_next_index {
+            break;
+        }
+    }
+    let peer_frontier = frontier(&first).await;
+    let caught_up = frontier(&restarted).await;
+    assert_eq!(
+        caught_up.journal_next_index,
+        peer_frontier.journal_next_index
+    );
+    assert_eq!(
+        caught_up.application_digest,
+        peer_frontier.application_digest
+    );
+    assert_eq!(live_digest(&restarted).await, live_digest(&first).await);
+    assert!(restarted
+        .federation_sync_status()
+        .await
+        .is_none_or(|status| !status.is_reset_required()));
+}

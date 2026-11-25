@@ -666,6 +666,76 @@ where
     Ok(pins.into_iter().min())
 }
 
+/// Tables a member reset empties, children before the rows they reference.
+/// Every table exists whether or not Bark is built.
+const FEDERATION_MEMBER_RESET_TABLES: &[&str] = &[
+    // Federation consensus history and checkpoints.
+    "federation_journal_conflict_keys",
+    "federation_journal_entries",
+    "federation_aleph_bft_finalized_items",
+    "federation_aleph_bft_backups",
+    "federation_aleph_bft_pending_operations",
+    "federation_aleph_bft_session_state",
+    "federation_checkpoint_signatures",
+    "federation_checkpoint_quorums",
+    "federation_checkpoints",
+    "federation_checkpoint_state",
+    "federation_state_snapshot_rows",
+    "federation_state_snapshots",
+    // Federation application state.
+    "federation_materialized_state_keys",
+    "federation_payment_observations",
+    "federation_signature_shares",
+    "federation_bark_transitions",
+    "federation_bark_observations",
+    "federation_bark_reservations",
+    "federation_bark_derivation_allocations",
+    "federation_bark_vtxos",
+    "federation_bark_actions",
+    // Mint business rows.
+    "mint_quote_payments",
+    "mint_quote_issued",
+    "melt_request",
+    "proof",
+    "blind_signature",
+    "saga_state",
+    "completed_operations",
+    "keyset_amounts",
+    "melt_quote",
+    "mint_quote",
+];
+
+/// Key-value namespaces a member reset empties: the consensus projections,
+/// the federation payment schedule and the Bark replay markers.
+const FEDERATION_MEMBER_RESET_KV_NAMESPACES: &[&str] =
+    &["federation", "cdk_federation", "cdk_bark"];
+
+async fn reset_federation_member_state_rows<C>(connection: &C) -> Result<u64, Error>
+where
+    C: DatabaseExecutor,
+{
+    let mut deleted = 0_u64;
+    for table in FEDERATION_MEMBER_RESET_TABLES {
+        let rows = query(&format!("DELETE FROM {table}"))?
+            .execute(connection)
+            .await?;
+        deleted = deleted.saturating_add(u64::try_from(rows).unwrap_or(u64::MAX));
+    }
+    for namespace in FEDERATION_MEMBER_RESET_KV_NAMESPACES {
+        let rows = query(
+            r#"
+            DELETE FROM kv_store
+            WHERE primary_namespace = :primary_namespace
+            "#,
+        )?
+        .bind("primary_namespace", *namespace)
+        .execute(connection)
+        .await?;
+        deleted = deleted.saturating_add(u64::try_from(rows).unwrap_or(u64::MAX));
+    }
+    Ok(deleted)
+}
+
 /// Delete one bounded batch of retired terminal rows below `floor`.
 ///
 /// Every row deleted here is retired below the retention floor, so every
@@ -2298,6 +2368,10 @@ where
         limit: u64,
     ) -> Result<u64, Self::Err> {
         prune_federation_terminal_rows_below(&self.inner, floor, limit).await
+    }
+
+    async fn reset_federation_member_state(&mut self) -> Result<u64, Self::Err> {
+        reset_federation_member_state_rows(&self.inner).await
     }
 
     async fn latch_federation_materialized_state_audit_mismatch(

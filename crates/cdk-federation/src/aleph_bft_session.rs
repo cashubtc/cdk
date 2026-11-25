@@ -228,6 +228,9 @@ pub enum FederationAlephBftLiveSessionStartupDecision {
     MissingConsensusRuntime,
     /// A live session inbound queue is already installed.
     AlreadyStarted,
+    /// The member holds state below every peer's retention floor and waits
+    /// for an operator reset; it takes no part in consensus.
+    ResetRequired,
     /// AlephBFT is configured, but no remote peer can participate.
     NoRemotePeers {
         /// Local federation member.
@@ -251,6 +254,13 @@ pub async fn federation_aleph_bft_live_session_startup_decision(
     let Some(config) = state.mint.federation_config() else {
         return Ok(FederationAlephBftLiveSessionStartupDecision::NoFederationConfig);
     };
+    if state
+        .federation_sync_status()
+        .await
+        .is_some_and(|status| status.is_reset_required())
+    {
+        return Ok(FederationAlephBftLiveSessionStartupDecision::ResetRequired);
+    }
     if state
         .federation
         .aleph_bft_live_session
@@ -1035,7 +1045,10 @@ fn spawn_federation_aleph_bft_replay_readiness_watcher(
             .is_none_or(|current| current.generation() != handle.generation())
             || matches!(
                 state.federation_sync_status().await,
-                Some(crate::FederationSyncStatus::Halted { .. })
+                Some(
+                    crate::FederationSyncStatus::Halted { .. }
+                        | crate::FederationSyncStatus::ResetRequired { .. }
+                )
             )
         {
             return;

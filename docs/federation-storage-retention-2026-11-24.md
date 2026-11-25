@@ -572,8 +572,8 @@ toward the latest known scheduled quorum
 (`probe_peer_history_to_known_checkpoint`) so the pruned answer is seen.
 
 The installer requires empty federation state. A member that holds state below
-every peer's floor is logged as needing a reset; resetting it automatically
-would delete its mint rows and is not done.
+every peer's floor halts instead (decision 9, see "Stale member: halt and
+reset").
 
 ### Tests (`cdk-axum`, `federation::tests::retention`)
 
@@ -765,6 +765,49 @@ not the bare outpoint.
   finished action; a late observation is a no-op; only its rows below the
   floor are deleted, the action stays; a replay of a deleted observation does
   not recreate it.
+
+## Stale member: halt and reset
+
+Decision 9: a member that still holds federation state but lies below every
+peer's retention floor halts with a clear status, and only an explicit
+operator action deletes anything.
+
+- **Halt.** When every peer answers a sync round with `PeerHistoryPruned` and
+  the local frontier is not genesis, `install_state_transfer_below_peer_floors`
+  stops the AlephBFT live session and sets the typed sync status
+  `FederationSyncStatus::ResetRequired { journal_next_index }`. Operator status
+  shows `sync_state = "reset_required"`, the member is not ready (public
+  requests get `NodeHalted` with the instruction), and later sync rounds return
+  at once. No other status transition (healthy, lagging, catching up, a
+  generic halt or startup revalidation) clears it; restarting without a reset
+  halts again at the first sync round.
+- **Reset.** `cdk-mintd federation reset-member --confirm-wipe`, run while the
+  daemon is stopped, opens the configured database and, in one transaction
+  (`reset_federation_member_state`), deletes the federation consensus state
+  (journal, conflict keys, finalized items, AlephBFT backups, pending
+  operations and session, checkpoints with signatures, quorums, snapshots and
+  frontier, so also the retention floor and state-transfer base), the
+  application state (key registry, payment observations, signature shares,
+  consensus projections, Bark projection, payment schedule and Bark replay
+  markers) and the mint business rows (quotes and their payments and
+  issuances, melt requests, proofs, blind signatures, sagas, completed
+  operations, per-keyset totals). It keeps the federation config snapshot,
+  DKG and setup records, FROST key material, the mint's keysets and
+  configuration, and does not touch the FROST nonce redb file. Without
+  `--confirm-wipe` it refuses before opening anything.
+- **Rejoin.** The next start finds a genesis frontier and empty federation
+  state, so the ordinary empty-member path installs a peer's latest scheduled
+  checkpoint state and catches up the suffix.
+- **Tests.** `cdk-axum`,
+  `retention::member_holding_state_below_every_peer_floor_halts_then_rejoins_after_reset`:
+  a member that took part in the first checkpoint goes offline while its
+  peers prune past it; two sync rounds leave it in `ResetRequired` with its
+  frontier unchanged, and marking it healthy does not clear it; after the
+  reset (key material and config kept, frontier genesis, journal empty) it
+  restarts over the same database, installs the peers' latest checkpoint,
+  catches up a later suffix and matches their digests. `cdk-mintd`:
+  `reset_member_refuses_without_confirmation`,
+  `reset_keeps_key_material_and_leaves_an_empty_genesis_member`.
 
 ## Not retained-history work
 

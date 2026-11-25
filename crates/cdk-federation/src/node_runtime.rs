@@ -417,6 +417,10 @@ fn federation_not_ready_error(status: FederationSyncStatus) -> cdk::Error {
             reason: cdk::federation::redact_federation_operator_message(&reason),
         }
         .into(),
+        status @ FederationSyncStatus::ResetRequired { .. } => FederationError::NodeHalted {
+            reason: status.not_ready_message(),
+        }
+        .into(),
     }
 }
 
@@ -638,7 +642,8 @@ impl FederationNodeRuntime {
             FederationSyncStatus::Healthy | FederationSyncStatus::AwaitingQuorum { .. } => {}
             FederationSyncStatus::Lagging { .. }
             | FederationSyncStatus::CatchingUp { .. }
-            | FederationSyncStatus::Halted { .. } => return,
+            | FederationSyncStatus::Halted { .. }
+            | FederationSyncStatus::ResetRequired { .. } => return,
         }
 
         let frontier = match mint.localstore().get_federation_checkpoint_frontier().await {
@@ -726,6 +731,15 @@ impl FederationNodeRuntime {
 
     pub async fn mark_halted(&self, reason: String) {
         self.components.readiness.mark_halted(reason).await
+    }
+
+    /// Halt until an operator resets this member: it holds state, but the
+    /// history it needs lies below every peer's retention floor.
+    pub async fn mark_reset_required(&self, journal_next_index: u64) {
+        self.components
+            .readiness
+            .mark_reset_required(journal_next_index)
+            .await
     }
 
     pub async fn ensure_ready_for_authoritative_read(&self) -> Result<(), cdk::Error> {
