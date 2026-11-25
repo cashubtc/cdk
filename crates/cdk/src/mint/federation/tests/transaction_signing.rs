@@ -24,7 +24,7 @@ use cdk_common::federation::{
 use super::address_allocation::runtime_with_address_application;
 use super::*;
 
-fn signed_fixture(
+pub(super) fn signed_fixture(
     application_id: FederationFrostApplicationId,
 ) -> (FederationTransactionState, FederationSignedTransaction) {
     let scope = FederationTransactionScope {

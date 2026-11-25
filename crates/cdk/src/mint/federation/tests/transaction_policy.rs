@@ -26,7 +26,7 @@ use super::address_allocation::runtime_with_address_application;
 use super::*;
 
 #[derive(Debug, Clone, Copy)]
-struct ProposalOptions {
+pub(super) struct ProposalOptions {
     fee_sat: u64,
     version: Version,
     lock_time: LockTime,
@@ -82,7 +82,7 @@ fn wallet_script(
         .expect("wallet script")
 }
 
-fn spendable_input(
+pub(super) fn spendable_input(
     runtime: &FederationRuntimeConfig,
     state: &mut FederationChainObservationState,
     marker: u8,
@@ -179,7 +179,7 @@ fn unaccepted_input(
     }
 }
 
-fn intents(
+pub(super) fn intents(
     runtime: &FederationRuntimeConfig,
 ) -> (
     FederationOnchainPaymentBatch,
@@ -229,7 +229,7 @@ fn intents(
     (batch, records)
 }
 
-fn build_proposal(
+pub(super) fn build_proposal(
     runtime: &FederationRuntimeConfig,
     batch: &FederationOnchainPaymentBatch,
     selected_inputs: Vec<FederationTransactionInput>,
@@ -345,7 +345,7 @@ fn state_with_lifecycle(
     FederationChainObservationState::from_rows(&rows)
 }
 
-fn replacement_proposal(
+pub(super) fn replacement_proposal(
     runtime: &FederationRuntimeConfig,
     batch: &FederationOnchainPaymentBatch,
     original: &FederationTransactionProposal,
@@ -380,7 +380,7 @@ fn replacement_proposal(
     .expect("replacement proposal")
 }
 
-fn structurally_signed(
+pub(super) fn structurally_signed(
     proposal: FederationTransactionProposal,
     policy_audit: FederationTransactionPolicyAudit,
 ) -> FederationAcceptedTransaction {

@@ -3181,3 +3181,124 @@ fn consensus_runtime_advances_sessions_for_units_and_finalization() {
     assert_eq!(unit.operation_ids, vec![operation_id]);
     assert_eq!(adapter.finalize_unit(unit).expect("finalize").len(), 1);
 }
+
+#[test]
+fn duplicate_and_conflict_guards_cover_only_the_validity_window_on_every_member() {
+    let (config, private_members) = consensus_config_three();
+    let window = super::super::FEDERATION_OPERATION_VALIDITY_SESSIONS;
+    let federation_id = config.federation_id;
+    let stamped = |envelope: &FederationOperationEnvelope, session: u64| {
+        envelope
+            .clone()
+            .for_session(session, &private_members[0])
+            .expect("stamp envelope")
+    };
+    let replayed = mint_quote_envelope_with_amount(federation_id, "replayed", 5);
+    let claimed = mint_quote_envelope_with_amount(federation_id, "claimed", 10);
+    let conflicting = mint_quote_envelope_with_amount(federation_id, "claimed", 11);
+    let replay_unit = |session: u64| {
+        aleph_operation_unit(
+            federation_id,
+            member_id_value(2),
+            session,
+            0,
+            vec![stamped(&replayed, session), stamped(&conflicting, session)],
+        )
+    };
+
+    let mut history =
+        FederationConsensusRuntime::authenticated_aleph_bft(&config, member_id_value(1), 0)
+            .expect("authenticated runtime");
+    history
+        .finalize_unit(aleph_operation_unit(
+            federation_id,
+            member_id_value(2),
+            0,
+            0,
+            vec![stamped(&replayed, 0), stamped(&claimed, 0)],
+        ))
+        .expect("finalize session zero");
+    assert_eq!(history.journal().len(), 2);
+
+    // In the last session of the window both guards still hold.
+    let mut inside = history.clone();
+    inside.begin_session(window).expect("last window session");
+    let responses = inside
+        .finalize_unit(replay_unit(window))
+        .expect("finalize inside the window");
+    assert_eq!(responses.len(), 2);
+    assert_eq!(
+        inside.finalized_items()[2].status,
+        FederationAlephBftFinalizedItemStatus::DuplicateOperation
+    );
+    assert_eq!(responses[0].outcome.entry().index, 0);
+    assert_eq!(inside.journal().len(), 3);
+    assert_eq!(
+        inside.journal().entries()[2].status(),
+        FederationOperationStatus::Rejected
+    );
+
+    // One session later the session-zero entries no longer guard. A member
+    // holding them and a member holding nothing before the checkpoint decide
+    // the same: both operations are appended as new, accepted entries.
+    let mut full = history.clone();
+    full.begin_session(window + 1)
+        .expect("first session after the window");
+    full.finalize_unit(replay_unit(window + 1))
+        .expect("finalize after the window with full history");
+
+    let boundary = super::super::FederationCheckpointBoundary {
+        journal_next_index: 2,
+        journal_order_digest: history.journal().latest_order_digest(),
+        finalized_next_item_index: 2,
+        finalized_item_digest: super::super::FederationFinalizedItemDigest::from_bytes([41; 32]),
+        application_digest: super::super::FederationApplicationDigest::from_bytes([42; 32]),
+        aleph_bft_session: 0,
+        next_unit_finalization_index: 1,
+        next_unit_index_by_member: BTreeMap::from([
+            (member_id_value(1), 0),
+            (member_id_value(2), 1),
+            (member_id_value(3), 0),
+        ]),
+    };
+    let checkpoint = boundary
+        .recovery_checkpoint(
+            &config,
+            None,
+            super::super::FederationMaterializedStateDigest::from_bytes([43; 32]),
+        )
+        .expect("recovery checkpoint");
+    let mut bare = FederationConsensusRuntime::checkpoint_base_for_test(
+        &config,
+        member_id_value(1),
+        &checkpoint,
+    )
+    .expect("checkpoint runtime without history");
+    bare.begin_session(window + 1)
+        .expect("first session after the window");
+    bare.finalize_unit(replay_unit(window + 1))
+        .expect("finalize after the window without history");
+
+    assert_eq!(
+        finalized_item_fingerprint(&full)[2..],
+        finalized_item_fingerprint(&bare)[..]
+    );
+    assert_eq!(
+        journal_fingerprint(&full)[2..],
+        journal_fingerprint(&bare)[..]
+    );
+    let appended = journal_fingerprint(&bare);
+    assert_eq!(appended.len(), 2);
+    assert_eq!(appended[0].0, 2);
+    assert_eq!(
+        appended[0].1,
+        replayed.operation_id().expect("operation id").to_string()
+    );
+    assert!(appended
+        .iter()
+        .all(|entry| entry.2 == FederationOperationStatus::Accepted));
+    assert_eq!(
+        full.journal().latest_order_digest(),
+        bare.journal().latest_order_digest()
+    );
+}

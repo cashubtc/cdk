@@ -17,14 +17,7 @@ where
             (operation_id, operation_index, context, quote, observer_member_id, state, observation_json)
             VALUES
             (:operation_id, :operation_index, :context, :quote, :observer_member_id, :state, :observation_json)
-            ON CONFLICT (operation_id)
-            DO UPDATE SET
-                operation_index = EXCLUDED.operation_index,
-                context = EXCLUDED.context,
-                quote = EXCLUDED.quote,
-                observer_member_id = EXCLUDED.observer_member_id,
-                state = EXCLUDED.state,
-                observation_json = EXCLUDED.observation_json
+            ON CONFLICT (operation_id) DO NOTHING
             "#,
         )?
         .bind("operation_id", observation.operation_id.to_string())
@@ -61,8 +54,7 @@ where
                 blinded_message = EXCLUDED.blinded_message,
                 amount = EXCLUDED.amount,
                 keyset_id = EXCLUDED.keyset_id,
-                signature_share = EXCLUDED.signature_share,
-                share_json = EXCLUDED.share_json
+                signature_share = EXCLUDED.signature_share
             WHERE federation_signature_shares.blinded_message = EXCLUDED.blinded_message
               AND federation_signature_shares.amount = EXCLUDED.amount
               AND federation_signature_shares.keyset_id = EXCLUDED.keyset_id

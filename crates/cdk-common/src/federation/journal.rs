@@ -14,9 +14,9 @@ use serde::{Deserialize, Serialize};
 use super::canonical::append_hash_bytes;
 use super::canonical::impl_fixed_bytes;
 use super::{
-    FederatedKeyset, FederationCheckpointError, FederationError, FederationOperation,
-    FederationOperationConflictKey, FederationOperationEnvelope, FederationOperationId, MemberId,
-    Result,
+    federation_operation_guards_session, FederatedKeyset, FederationCheckpointError,
+    FederationError, FederationOperation, FederationOperationConflictKey,
+    FederationOperationEnvelope, FederationOperationId, MemberId, Result,
 };
 use crate::error::ErrorResponse;
 use crate::PublicKey;
@@ -554,6 +554,22 @@ impl FederationJournalEntry {
         application_reserves_conflict_keys(&self.application)
     }
 
+    /// AlephBFT session that ordered this entry, when it carries consensus evidence.
+    #[must_use]
+    pub fn ordered_session(&self) -> Option<u64> {
+        self.consensus_evidence.map(|evidence| evidence.session)
+    }
+
+    /// Whether this entry still guards duplicates and conflicts for a unit
+    /// finalized in `session`.
+    ///
+    /// See [`federation_operation_guards_session`]: only operations ordered in
+    /// the validity window before `session` count, on every member.
+    #[must_use]
+    pub fn guards_session(&self, session: u64) -> bool {
+        federation_operation_guards_session(self.ordered_session(), session)
+    }
+
     /// Derive the bounded set of authoritative materialized row keys written by this operation.
     ///
     /// Storage calls this only when the operation reaches `Applied`, in the
@@ -702,14 +718,47 @@ impl FederationJournalAppendOutcome {
     }
 }
 
+/// Latest journal entry that reserved one conflict key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FederationConflictKeyHolder {
+    operation_id: FederationOperationId,
+    index: u64,
+    ordered_session: Option<u64>,
+}
+
+impl FederationConflictKeyHolder {
+    fn for_entry(entry: &FederationJournalEntry) -> Self {
+        Self {
+            operation_id: entry.operation_id,
+            index: entry.index,
+            ordered_session: entry.ordered_session(),
+        }
+    }
+
+    /// Whether this holder guards an operation ordered in `session`; `None`
+    /// means the session is unknown and every holder guards.
+    fn guards(&self, session: Option<u64>) -> bool {
+        session.is_none_or(|session| {
+            federation_operation_guards_session(self.ordered_session, session)
+        })
+    }
+}
+
 /// Deterministic in-memory journal used until durable storage is wired.
+///
+/// Duplicate and conflict decisions for finalized operations consider only
+/// entries ordered within the validity window before the deciding unit's
+/// session (see [`federation_operation_guards_session`]), so they do not
+/// depend on how much older history a member still holds. An operation id or
+/// conflict key may therefore appear again once its earlier entry has left
+/// the window; lookups return the latest entry.
 #[derive(Debug, Clone)]
 pub struct InMemoryFederationJournal {
     base_next_index: u64,
     entries: Vec<FederationJournalEntry>,
     operation_indices: BTreeMap<FederationOperationId, usize>,
     historical_entries: BTreeMap<FederationOperationId, FederationJournalEntry>,
-    conflict_keys: HashMap<FederationOperationConflictKey, FederationOperationId>,
+    conflict_keys: HashMap<FederationOperationConflictKey, FederationConflictKeyHolder>,
     latest_order_digest: FederationJournalDigest,
 }
 
@@ -875,7 +924,11 @@ impl InMemoryFederationJournal {
                 return Err(FederationError::JournalConflictKeysMismatch { index: entry.index });
             }
 
-            if journal.operation_indices.contains_key(&entry.operation_id) {
+            let entry_session = entry.ordered_session();
+            if journal
+                .guarding_entry_by_operation_id(entry.operation_id, entry_session)
+                .is_some()
+            {
                 return Err(FederationError::ConflictingOperation {
                     conflict_key: format!("operation_id:{}", entry.operation_id),
                     existing_operation_id: entry.operation_id.to_string(),
@@ -884,8 +937,9 @@ impl InMemoryFederationJournal {
             }
 
             for conflict_key in &conflict_keys {
+                let holder = journal.guarding_conflict_key_holder(conflict_key, entry_session);
                 if application_reserves_conflict_keys(&entry.application) {
-                    if let Some(existing_operation_id) = journal.conflict_keys.get(conflict_key) {
+                    if let Some(existing_operation_id) = holder {
                         let finalized_mint_conflict = entry.consensus_evidence.is_some()
                             && matches!(&entry.envelope.operation, FederationOperation::Mint(_));
                         if !finalized_mint_conflict {
@@ -896,9 +950,7 @@ impl InMemoryFederationJournal {
                             });
                         }
                     }
-                } else if journal.base_next_index == 0
-                    && !journal.conflict_keys.contains_key(conflict_key)
-                {
+                } else if journal.base_next_index == 0 && holder.is_none() {
                     return Err(FederationError::ConflictingOperation {
                         conflict_key: serde_json::to_string(conflict_key)?,
                         existing_operation_id: "none".to_string(),
@@ -911,12 +963,7 @@ impl InMemoryFederationJournal {
                 .operation_indices
                 .insert(entry.operation_id, journal.entries.len());
             if application_reserves_conflict_keys(&entry.application) {
-                for conflict_key in conflict_keys {
-                    journal
-                        .conflict_keys
-                        .entry(conflict_key)
-                        .or_insert(entry.operation_id);
-                }
+                journal.reserve_conflict_keys(&entry);
             }
             journal.latest_order_digest = entry.order_digest;
             journal.entries.push(entry);
@@ -925,7 +972,7 @@ impl InMemoryFederationJournal {
         Ok(journal)
     }
 
-    /// Return an entry by operation ID.
+    /// Return the latest entry with an operation ID.
     #[must_use]
     pub fn entry_by_operation_id(
         &self,
@@ -935,6 +982,55 @@ impl InMemoryFederationJournal {
             .get(&operation_id)
             .and_then(|index| self.entries.get(*index))
             .or_else(|| self.historical_entries.get(&operation_id))
+    }
+
+    /// Return the latest entry with an operation ID if it still guards
+    /// duplicates for an operation ordered in `session` (`None`: any entry).
+    fn guarding_entry_by_operation_id(
+        &self,
+        operation_id: FederationOperationId,
+        session: Option<u64>,
+    ) -> Option<&FederationJournalEntry> {
+        self.entry_by_operation_id(operation_id)
+            .filter(|entry| session.is_none_or(|session| entry.guards_session(session)))
+    }
+
+    /// Return the operation holding `conflict_key` if it still guards an
+    /// operation ordered in `session` (`None`: any holder).
+    fn guarding_conflict_key_holder(
+        &self,
+        conflict_key: &FederationOperationConflictKey,
+        session: Option<u64>,
+    ) -> Option<FederationOperationId> {
+        self.conflict_keys
+            .get(conflict_key)
+            .filter(|holder| holder.guards(session))
+            .map(|holder| holder.operation_id)
+    }
+
+    /// Record `entry` as the latest holder of each of its conflict keys.
+    fn reserve_conflict_keys(&mut self, entry: &FederationJournalEntry) {
+        let holder = FederationConflictKeyHolder::for_entry(entry);
+        for conflict_key in &entry.conflict_keys {
+            match self.conflict_keys.get(conflict_key) {
+                Some(existing) if existing.index >= holder.index => {}
+                _ => {
+                    self.conflict_keys.insert(conflict_key.clone(), holder);
+                }
+            }
+        }
+    }
+
+    /// Forget hydrated historical entries and conflict holders that no longer
+    /// guard any unit finalized in `session` or later.
+    ///
+    /// Retained suffix entries stay: they carry order digests and catch-up
+    /// history.
+    pub fn forget_guards_before_session(&mut self, session: u64) {
+        self.historical_entries
+            .retain(|_, entry| entry.guards_session(session));
+        self.conflict_keys
+            .retain(|_, holder| holder.guards(Some(session)));
     }
 
     /// Register one indexed durable entry before the trusted retained suffix.
@@ -954,13 +1050,15 @@ impl InMemoryFederationJournal {
             return Err(FederationError::JournalConflictKeysMismatch { index: entry.index });
         }
         if let Some(existing) = self.entry_by_operation_id(entry.operation_id) {
-            if serde_json::to_vec(existing)? == serde_json::to_vec(&entry)? {
-                return Ok(());
+            if existing.index == entry.index {
+                if serde_json::to_vec(existing)? == serde_json::to_vec(&entry)? {
+                    return Ok(());
+                }
+                return Err(FederationCheckpointError::RetainedOperationMismatch {
+                    operation_id: entry.operation_id,
+                }
+                .into());
             }
-            return Err(FederationCheckpointError::RetainedOperationMismatch {
-                operation_id: entry.operation_id,
-            }
-            .into());
         }
         if entry.index >= self.base_next_index {
             return Err(FederationCheckpointError::RetainedOperationMissing {
@@ -971,13 +1069,16 @@ impl InMemoryFederationJournal {
         }
 
         if entry.reserves_conflict_keys() {
-            for conflict_key in &entry.conflict_keys {
-                self.conflict_keys
-                    .entry(conflict_key.clone())
-                    .or_insert(entry.operation_id);
+            self.reserve_conflict_keys(&entry);
+        }
+        // An operation id may repeat once its earlier entry left the validity
+        // window; only the latest entry can still guard.
+        match self.historical_entries.get(&entry.operation_id) {
+            Some(existing) if existing.index > entry.index => {}
+            _ => {
+                self.historical_entries.insert(entry.operation_id, entry);
             }
         }
-        self.historical_entries.insert(entry.operation_id, entry);
         Ok(())
     }
 
@@ -1036,9 +1137,10 @@ impl InMemoryFederationJournal {
 
         for (envelope, consensus_evidence) in operations {
             let operation_id = envelope.operation_id()?;
-            if let Some(entry) = self
-                .entry_by_operation_id(operation_id)
-                .or_else(|| prepared_entries.get(&operation_id))
+            let session = Some(consensus_evidence.session);
+            if let Some(entry) = prepared_entries
+                .get(&operation_id)
+                .or_else(|| self.guarding_entry_by_operation_id(operation_id, session))
                 .cloned()
             {
                 outcomes.push(FederationJournalAppendOutcome::Duplicate(entry));
@@ -1048,7 +1150,8 @@ impl InMemoryFederationJournal {
             envelope.operation.balance_audit()?;
             let conflict_keys = envelope.operation.conflict_keys();
             let has_conflict = conflict_keys.iter().any(|conflict_key| {
-                self.conflict_keys.contains_key(conflict_key)
+                self.guarding_conflict_key_holder(conflict_key, session)
+                    .is_some()
                     || prepared_conflict_keys.contains_key(conflict_key)
             });
             let mint_operation = matches!(&envelope.operation, FederationOperation::Mint(_));
@@ -1103,11 +1206,7 @@ impl InMemoryFederationJournal {
             debug_assert_eq!(entry.previous_order_digest, self.latest_order_digest);
             let retained_index = self.entries.len();
             if application_reserves_conflict_keys(&entry.application) {
-                for conflict_key in &entry.conflict_keys {
-                    self.conflict_keys
-                        .entry(conflict_key.clone())
-                        .or_insert(entry.operation_id);
-                }
+                self.reserve_conflict_keys(&entry);
             }
             self.operation_indices
                 .insert(entry.operation_id, retained_index);
@@ -1131,7 +1230,9 @@ impl InMemoryFederationJournal {
         let conflict_keys = envelope.operation.conflict_keys();
 
         for conflict_key in &conflict_keys {
-            if let Some(existing_operation_id) = self.conflict_keys.get(conflict_key) {
+            if let Some(existing_operation_id) =
+                self.guarding_conflict_key_holder(conflict_key, None)
+            {
                 return Err(FederationError::ConflictingOperation {
                     conflict_key: serde_json::to_string(conflict_key)?,
                     existing_operation_id: existing_operation_id.to_string(),
@@ -1158,15 +1259,20 @@ impl InMemoryFederationJournal {
         consensus_evidence: FederationJournalConsensusEvidence,
     ) -> Result<FederationJournalAppendOutcome> {
         let operation_id = envelope.operation_id()?;
-        if let Some(entry) = self.entry_by_operation_id(operation_id).cloned() {
+        let session = Some(consensus_evidence.session);
+        if let Some(entry) = self
+            .guarding_entry_by_operation_id(operation_id, session)
+            .cloned()
+        {
             return Ok(FederationJournalAppendOutcome::Duplicate(entry));
         }
 
         envelope.operation.balance_audit()?;
         let conflict_keys = envelope.operation.conflict_keys();
-        let has_conflict = conflict_keys
-            .iter()
-            .any(|conflict_key| self.conflict_keys.contains_key(conflict_key));
+        let has_conflict = conflict_keys.iter().any(|conflict_key| {
+            self.guarding_conflict_key_holder(conflict_key, session)
+                .is_some()
+        });
         let mint_operation = matches!(&envelope.operation, FederationOperation::Mint(_));
         let status = if has_conflict && !mint_operation {
             FederationOperationStatus::Rejected
@@ -1213,11 +1319,7 @@ impl InMemoryFederationJournal {
         self.entries.push(entry.clone());
         self.operation_indices.insert(operation_id, retained_index);
         if application_reserves_conflict_keys(&application) {
-            for conflict_key in conflict_keys {
-                self.conflict_keys
-                    .entry(conflict_key)
-                    .or_insert(operation_id);
-            }
+            self.reserve_conflict_keys(&entry);
         }
         self.latest_order_digest = order_digest;
         entry

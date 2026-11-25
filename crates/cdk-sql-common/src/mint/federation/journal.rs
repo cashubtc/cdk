@@ -251,6 +251,7 @@ where
                 operation_index = EXCLUDED.operation_index,
                 operation_id = EXCLUDED.operation_id,
                 record_json = EXCLUDED.record_json
+            WHERE federation_materialized_state_keys.operation_id <> EXCLUDED.operation_id
             "#,
         )?
         .bind("state_kind", record.kind_label())
@@ -665,28 +666,25 @@ where
     .unwrap_or(item_end);
     // One older item proves that nothing of the window is left out.
     let item_start = first_in_window.saturating_sub(1);
+    // Entries are matched to items by the item index in their consensus
+    // evidence: an operation id may repeat across the window boundary.
     let journal_start = query(
         r#"
-        SELECT j.operation_index
-        FROM federation_aleph_bft_finalized_items AS i
-        INNER JOIN federation_journal_entries AS j
-            ON j.operation_id = i.operation_id
-        WHERE i.accepted_item_index >= :item_start
-          AND i.accepted_item_index < :item_end
-          AND i.status = :status
-        ORDER BY i.accepted_item_index ASC
-        LIMIT 1
+        SELECT MIN(operation_index)
+        FROM federation_journal_entries
+        WHERE ordered_item_index >= :item_start
+          AND ordered_item_index < :item_end
         "#,
     )?
     .bind("item_start", item_start as i64)
     .bind("item_end", item_end as i64)
-    .bind(
-        "status",
-        aleph_bft_finalized_item_status_to_str(FederationAlephBftFinalizedItemStatus::Accepted),
-    )
     .fetch_one(connection)
     .await?
     .and_then(|row| row.into_iter().next())
+    .and_then(|column| match column {
+        Column::Null => None,
+        column => Some(column),
+    })
     .map(|column| Ok::<u64, Error>(column_as_number!(column)))
     .transpose()?
     .unwrap_or(checkpoint.journal_next_index);
@@ -774,12 +772,24 @@ where
         query(
             r#"
             INSERT INTO federation_journal_entries
-            (operation_index, operation_id, envelope_json, conflict_keys_json, previous_order_digest, order_digest, consensus_evidence_json, rejection_json, application_digest, status)
+            (operation_index, operation_id, envelope_json, conflict_keys_json, previous_order_digest, order_digest, consensus_evidence_json, ordered_session, ordered_item_index, rejection_json, application_digest, status)
             VALUES
-            (:operation_index, :operation_id, :envelope_json, :conflict_keys_json, :previous_order_digest, :order_digest, :consensus_evidence_json, :rejection_json, :application_digest, :status)
+            (:operation_index, :operation_id, :envelope_json, :conflict_keys_json, :previous_order_digest, :order_digest, :consensus_evidence_json, :ordered_session, :ordered_item_index, :rejection_json, :application_digest, :status)
             "#,
         )?
         .bind("operation_index", entry.index as i64)
+        .bind(
+            "ordered_session",
+            entry
+                .consensus_evidence
+                .map(|evidence| evidence.session as i64),
+        )
+        .bind(
+            "ordered_item_index",
+            entry
+                .consensus_evidence
+                .map(|evidence| evidence.item_index as i64),
+        )
         .bind("operation_id", entry.operation_id.to_string())
         .bind("envelope_json", serde_json::to_string(&entry.envelope)?)
         .bind(
@@ -815,12 +825,13 @@ where
                 query(
                     r#"
                     INSERT INTO federation_journal_conflict_keys
-                    (conflict_key_json, operation_id)
-                    VALUES (:conflict_key_json, :operation_id)
-                    ON CONFLICT (conflict_key_json) DO NOTHING
+                    (conflict_key_json, operation_index, operation_id)
+                    VALUES (:conflict_key_json, :operation_index, :operation_id)
+                    ON CONFLICT (conflict_key_json, operation_index) DO NOTHING
                     "#,
                 )?
                 .bind("conflict_key_json", serde_json::to_string(conflict_key)?)
+                .bind("operation_index", entry.index as i64)
                 .bind("operation_id", entry.operation_id.to_string())
                 .execute(&transaction.inner)
                 .await?;
@@ -1127,7 +1138,7 @@ where
         operation_id: FederationOperationId,
     ) -> Result<Option<FederationJournalEntry>, Self::Err> {
         query(federation_journal_entry_select!(
-            "WHERE operation_id = :operation_id"
+            "WHERE operation_id = :operation_id ORDER BY operation_index DESC LIMIT 1"
         ))?
         .bind("operation_id", operation_id.to_string())
         .fetch_one(&self.inner)
@@ -1143,12 +1154,24 @@ where
         query(
             r#"
             INSERT INTO federation_journal_entries
-            (operation_index, operation_id, envelope_json, conflict_keys_json, previous_order_digest, order_digest, consensus_evidence_json, rejection_json, application_digest, status)
+            (operation_index, operation_id, envelope_json, conflict_keys_json, previous_order_digest, order_digest, consensus_evidence_json, ordered_session, ordered_item_index, rejection_json, application_digest, status)
             VALUES
-            (:operation_index, :operation_id, :envelope_json, :conflict_keys_json, :previous_order_digest, :order_digest, :consensus_evidence_json, :rejection_json, NULL, :status)
+            (:operation_index, :operation_id, :envelope_json, :conflict_keys_json, :previous_order_digest, :order_digest, :consensus_evidence_json, :ordered_session, :ordered_item_index, :rejection_json, NULL, :status)
             "#,
         )?
         .bind("operation_index", entry.index as i64)
+        .bind(
+            "ordered_session",
+            entry
+                .consensus_evidence
+                .map(|evidence| evidence.session as i64),
+        )
+        .bind(
+            "ordered_item_index",
+            entry
+                .consensus_evidence
+                .map(|evidence| evidence.item_index as i64),
+        )
         .bind("operation_id", entry.operation_id.to_string())
         .bind("envelope_json", serde_json::to_string(&entry.envelope)?)
         .bind(
@@ -1184,12 +1207,13 @@ where
                 query(
                     r#"
                     INSERT INTO federation_journal_conflict_keys
-                    (conflict_key_json, operation_id)
-                    VALUES (:conflict_key_json, :operation_id)
-                    ON CONFLICT (conflict_key_json) DO NOTHING
+                    (conflict_key_json, operation_index, operation_id)
+                    VALUES (:conflict_key_json, :operation_index, :operation_id)
+                    ON CONFLICT (conflict_key_json, operation_index) DO NOTHING
                     "#,
                 )?
                 .bind("conflict_key_json", serde_json::to_string(conflict_key)?)
+                .bind("operation_index", entry.index as i64)
                 .bind("operation_id", entry.operation_id.to_string())
                 .execute(&self.inner)
                 .await?;
@@ -1212,6 +1236,8 @@ where
             SELECT operation_index, status, rejection_json, application_digest
             FROM federation_journal_entries
             WHERE operation_id = :operation_id
+            ORDER BY operation_index DESC
+            LIMIT 1
             FOR UPDATE
             "#,
         )?
@@ -1242,9 +1268,9 @@ where
 
         if matches!(application, FederationApplicationState::Applied {}) {
             let entry = query(federation_journal_entry_select!(
-                "WHERE operation_id = :operation_id FOR UPDATE"
+                "WHERE operation_index = :operation_index FOR UPDATE"
             ))?
-            .bind("operation_id", operation_id.to_string())
+            .bind("operation_index", operation_index as i64)
             .fetch_one(&self.inner)
             .await?
             .map(sql_row_to_federation_journal_entry)
@@ -1261,10 +1287,10 @@ where
             r#"
             UPDATE federation_journal_entries
             SET status = :status, rejection_json = :rejection_json
-            WHERE operation_id = :operation_id
+            WHERE operation_index = :operation_index
             "#,
         )?
-        .bind("operation_id", operation_id.to_string())
+        .bind("operation_index", operation_index as i64)
         .bind("status", status_to_str(application.status()))
         .bind(
             "rejection_json",
@@ -2133,7 +2159,7 @@ where
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
         query(federation_journal_entry_select!(
-            "WHERE operation_id = :operation_id"
+            "WHERE operation_id = :operation_id ORDER BY operation_index DESC LIMIT 1"
         ))?
         .bind("operation_id", operation_id.to_string())
         .fetch_one(&*conn)
@@ -2152,13 +2178,63 @@ where
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
         query(federation_journal_entry_select!(
-            "WHERE operation_id = (
-                SELECT operation_id
+            "WHERE operation_index = (
+                SELECT MAX(operation_index)
                 FROM federation_journal_conflict_keys
                 WHERE conflict_key_json = :conflict_key_json
             )"
         ))?
         .bind("conflict_key_json", serde_json::to_string(conflict_key)?)
+        .fetch_one(&*conn)
+        .await?
+        .map(sql_row_to_federation_journal_entry)
+        .transpose()
+    }
+
+    async fn get_federation_journal_entry_by_operation_id_before(
+        &self,
+        operation_id: FederationOperationId,
+        next_index: u64,
+    ) -> Result<Option<FederationJournalEntry>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query(federation_journal_entry_select!(
+            "WHERE operation_id = :operation_id
+               AND operation_index < :next_index
+             ORDER BY operation_index DESC
+             LIMIT 1"
+        ))?
+        .bind("operation_id", operation_id.to_string())
+        .bind("next_index", next_index as i64)
+        .fetch_one(&*conn)
+        .await?
+        .map(sql_row_to_federation_journal_entry)
+        .transpose()
+    }
+
+    async fn get_federation_journal_entry_by_conflict_key_before(
+        &self,
+        conflict_key: &FederationOperationConflictKey,
+        next_index: u64,
+    ) -> Result<Option<FederationJournalEntry>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query(federation_journal_entry_select!(
+            "WHERE operation_index = (
+                SELECT MAX(operation_index)
+                FROM federation_journal_conflict_keys
+                WHERE conflict_key_json = :conflict_key_json
+                  AND operation_index < :next_index
+            )"
+        ))?
+        .bind("conflict_key_json", serde_json::to_string(conflict_key)?)
+        .bind("next_index", next_index as i64)
         .fetch_one(&*conn)
         .await?
         .map(sql_row_to_federation_journal_entry)

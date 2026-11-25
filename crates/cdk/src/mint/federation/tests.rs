@@ -58,6 +58,7 @@ mod melt;
 mod mint;
 mod payment_observation;
 mod quote;
+mod replay_window;
 mod runtime;
 mod swap;
 mod transaction_policy;

@@ -22,7 +22,7 @@ use cdk::federation::{
     FederationError, FederationJournalEntry, FederationMaterializedStateDigest,
     FederationOperationId, FederationOperationStatus, MemberConfigPublic, MemberId,
 };
-use cdk::mint::{FederationRuntimeConfig, Mint};
+use cdk::mint::{is_definitive_federation_apply_rejection, FederationRuntimeConfig, Mint};
 
 /// Required handles shared by setup and active member operation.
 #[allow(missing_debug_implementations)]
@@ -260,18 +260,6 @@ pub async fn mark_federation_operation_apply_failure(
     let status =
         persist_federation_operation_apply_failure(mint, operation_id, Some(&rejection)).await?;
     Ok((status, cdk::Error::from(rejection)))
-}
-
-fn is_definitive_federation_apply_rejection(error: &cdk::Error) -> bool {
-    // Wallet proof-release policy is deliberately conservative for spent or
-    // reserved inputs. At ordered application, those states instead identify a
-    // deterministic losing operation: its transaction rolled back, and replay
-    // must record the rejection and continue beyond it.
-    error.is_definitive_failure()
-        || matches!(
-            error,
-            cdk::Error::PendingQuote | cdk::Error::TokenAlreadySpent | cdk::Error::TokenPending
-        )
 }
 
 pub async fn apply_federation_journal_entry_for_replay(
@@ -829,7 +817,7 @@ impl FederationNodeRuntime {
 
 #[cfg(test)]
 mod tests {
-    use super::is_definitive_federation_apply_rejection;
+    use cdk::mint::is_definitive_federation_apply_rejection;
 
     #[test]
     fn ordered_conflicts_are_rejections_without_releasing_wallet_proofs() {

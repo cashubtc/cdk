@@ -1,13 +1,19 @@
 ALTER TABLE saga_state ADD COLUMN federation_operation_id TEXT;
 
+-- An operation id may repeat once its earlier entry has left the operation
+-- validity window, so it is indexed but not unique; lookups take the latest.
 CREATE TABLE federation_journal_entries (
     operation_index INTEGER PRIMARY KEY,
-    operation_id TEXT NOT NULL UNIQUE,
+    operation_id TEXT NOT NULL,
     envelope_json TEXT NOT NULL,
     conflict_keys_json TEXT NOT NULL,
     previous_order_digest TEXT NOT NULL,
     order_digest TEXT NOT NULL,
     consensus_evidence_json TEXT,
+    -- Session and finalized-item index from the consensus evidence, so the
+    -- validity window and retention floor are found without parsing JSON.
+    ordered_session INTEGER,
+    ordered_item_index INTEGER,
     rejection_json TEXT,
     application_digest TEXT,
     status TEXT NOT NULL CHECK (
@@ -16,13 +22,26 @@ CREATE TABLE federation_journal_entries (
     CHECK (status = 'rejected' OR rejection_json IS NULL)
 );
 
-CREATE INDEX idx_federation_journal_operation_id
-ON federation_journal_entries (operation_id);
+CREATE INDEX idx_federation_journal_ordered_session
+ON federation_journal_entries (ordered_session);
 
+CREATE INDEX idx_federation_journal_ordered_item_index
+ON federation_journal_entries (ordered_item_index);
+
+CREATE INDEX idx_federation_journal_operation_id
+ON federation_journal_entries (operation_id, operation_index);
+
+-- Every entry that reserved a conflict key. Lookups take the latest holder;
+-- only holders inside the validity window guard new operations.
 CREATE TABLE federation_journal_conflict_keys (
-    conflict_key_json TEXT PRIMARY KEY,
-    operation_id TEXT NOT NULL REFERENCES federation_journal_entries(operation_id)
+    conflict_key_json TEXT NOT NULL,
+    operation_index INTEGER NOT NULL REFERENCES federation_journal_entries(operation_index),
+    operation_id TEXT NOT NULL,
+    PRIMARY KEY (conflict_key_json, operation_index)
 );
+
+CREATE INDEX idx_federation_journal_conflict_keys_index
+ON federation_journal_conflict_keys (operation_index);
 
 CREATE TABLE federation_dkg_member_sequences (
     member_id INTEGER PRIMARY KEY,

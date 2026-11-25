@@ -11,7 +11,7 @@ use super::address_allocation::{
 };
 use super::*;
 
-fn confirmed_observation(
+pub(super) fn confirmed_observation(
     runtime: &FederationRuntimeConfig,
     application_id: cdk_common::federation::FederationFrostApplicationId,
     allocation: &cdk_common::federation::FederationAddressAllocation,

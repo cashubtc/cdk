@@ -170,13 +170,13 @@ pub trait FederationJournalTransaction {
         entry: &FederationJournalEntry,
     ) -> Result<(), Self::Err>;
 
-    /// Get one accepted federation journal entry by operation ID inside this transaction.
+    /// Get the latest accepted federation journal entry with an operation ID inside this transaction.
     async fn get_federation_journal_entry_by_operation_id(
         &mut self,
         operation_id: FederationOperationId,
     ) -> Result<Option<FederationJournalEntry>, Self::Err>;
 
-    /// Persist one legal post-consensus application state.
+    /// Persist one legal post-consensus application state of the latest entry with an operation ID.
     async fn set_federation_operation_application_state(
         &mut self,
         operation_id: FederationOperationId,
@@ -337,12 +337,18 @@ pub trait FederationApplicationTransaction {
     type Err: Into<Error> + From<Error>;
 
     /// Persist one payment observation extracted from an accepted federation operation.
+    ///
+    /// An observation is identified by its operation id, which hashes its
+    /// content. A later entry with the same id (re-ordered after its validity
+    /// window) keeps the first ordering position.
     async fn add_federation_payment_observation(
         &mut self,
         observation: &FederationPaymentObservationRecord,
     ) -> Result<(), Self::Err>;
 
     /// Persist one local federation threshold signature share.
+    ///
+    /// Storing an identical share again keeps its first accepted position.
     async fn add_federation_signature_share(
         &mut self,
         share: &FederationSignatureShareRecord,
@@ -822,16 +828,34 @@ pub trait FederationJournalDatabase {
     /// Get scalar metadata for the latest accepted federation journal entry.
     async fn get_federation_journal_tip(&self) -> Result<Option<FederationJournalTip>, Self::Err>;
 
-    /// Get one accepted federation journal entry by operation ID.
+    /// Get the latest accepted federation journal entry with an operation ID.
+    ///
+    /// An operation id repeats only after its earlier entry has left the
+    /// operation validity window, so the latest entry is the one that can
+    /// still guard duplicates.
     async fn get_federation_journal_entry_by_operation_id(
         &self,
         operation_id: FederationOperationId,
     ) -> Result<Option<FederationJournalEntry>, Self::Err>;
 
-    /// Get the first accepted federation journal entry reserving a conflict key.
+    /// Get the latest accepted federation journal entry reserving a conflict key.
     async fn get_federation_journal_entry_by_conflict_key(
         &self,
         conflict_key: &FederationOperationConflictKey,
+    ) -> Result<Option<FederationJournalEntry>, Self::Err>;
+
+    /// Get the latest accepted entry with an operation ID ordered before `next_index`.
+    async fn get_federation_journal_entry_by_operation_id_before(
+        &self,
+        operation_id: FederationOperationId,
+        next_index: u64,
+    ) -> Result<Option<FederationJournalEntry>, Self::Err>;
+
+    /// Get the latest accepted entry reserving a conflict key ordered before `next_index`.
+    async fn get_federation_journal_entry_by_conflict_key_before(
+        &self,
+        conflict_key: &FederationOperationConflictKey,
+        next_index: u64,
     ) -> Result<Option<FederationJournalEntry>, Self::Err>;
 
     /// Get accepted federation journal entries starting at `next_index`.

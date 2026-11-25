@@ -55,19 +55,26 @@ pub async fn historical_entries_referenced_by_finalized_items(
         let FederationConsensusItem::Operation(envelope) = &finalized_item.item else {
             continue;
         };
+        // Only entries inside the item's validity window can guard it.
         let operation_id = envelope.operation_id()?;
         if let Some(entry) = db
-            .get_federation_journal_entry_by_operation_id(operation_id)
+            .get_federation_journal_entry_by_operation_id_before(
+                operation_id,
+                checkpoint_journal_next_index,
+            )
             .await?
-            .filter(|entry| entry.index < checkpoint_journal_next_index)
+            .filter(|entry| entry.guards_session(finalized_item.session))
         {
             historical_entries.insert(entry.index, entry);
         }
         for conflict_key in envelope.operation.conflict_keys() {
             if let Some(entry) = db
-                .get_federation_journal_entry_by_conflict_key(&conflict_key)
+                .get_federation_journal_entry_by_conflict_key_before(
+                    &conflict_key,
+                    checkpoint_journal_next_index,
+                )
                 .await?
-                .filter(|entry| entry.index < checkpoint_journal_next_index)
+                .filter(|entry| entry.guards_session(finalized_item.session))
             {
                 historical_entries.insert(entry.index, entry);
             }

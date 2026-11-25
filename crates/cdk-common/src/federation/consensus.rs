@@ -13,14 +13,15 @@ use super::canonical::canonical_json_bytes;
 use super::canonical::impl_fixed_bytes;
 use super::journal::PreparedFederationJournalFinalization;
 use super::{
-    FederationAlephBftRecoveryCursor, FederationApplicationState, FederationCheckpoint,
-    FederationCheckpointError, FederationCheckpointId, FederationConfig, FederationError,
-    FederationId, FederationJournalCatchUpRequest, FederationJournalConsensusEvidence,
-    FederationJournalEntry, FederationOperationConflictKey, FederationOperationEnvelope,
-    FederationOperationId, FederationOperationStatus, FederationPeerStatus,
-    FederationRestMessageKind, FederationSignedRequest, FederationSubmitOperationRequest,
-    FederationSubmitOperationResponse, InMemoryFederationJournal, MemberId, Result,
-    ThresholdParams, VerifiedFederationCheckpointQuorum, VerifiedFederationSuffix,
+    federation_operation_guards_session, FederationAlephBftRecoveryCursor,
+    FederationApplicationState, FederationCheckpoint, FederationCheckpointError,
+    FederationCheckpointId, FederationConfig, FederationError, FederationId,
+    FederationJournalCatchUpRequest, FederationJournalConsensusEvidence, FederationJournalEntry,
+    FederationOperationConflictKey, FederationOperationEnvelope, FederationOperationId,
+    FederationOperationStatus, FederationPeerStatus, FederationRestMessageKind,
+    FederationSignedRequest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
+    InMemoryFederationJournal, MemberId, Result, ThresholdParams,
+    VerifiedFederationCheckpointQuorum, VerifiedFederationSuffix,
     FEDERATION_MAX_OPERATION_ENVELOPE_BYTES,
 };
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
@@ -1715,6 +1716,19 @@ impl FederationAlephBftUnitDataProvider {
     }
 }
 
+/// Whether an accepted operation id still guards a unit finalized in `session`.
+fn operation_id_guards_session(
+    finalized_operation_ids: &BTreeMap<FederationOperationId, Option<u64>>,
+    operation_id: FederationOperationId,
+    session: u64,
+) -> bool {
+    finalized_operation_ids
+        .get(&operation_id)
+        .is_some_and(|ordered_session| {
+            federation_operation_guards_session(*ordered_session, session)
+        })
+}
+
 /// Converts verified AlephBFT unit payloads into deterministic accepted items.
 #[derive(Debug, Clone)]
 pub(crate) struct FederationAlephBftFinalizationHandler {
@@ -1726,7 +1740,10 @@ pub(crate) struct FederationAlephBftFinalizationHandler {
     allowed_members: Option<BTreeSet<MemberId>>,
     operation_config: Option<FederationConfig>,
     finalized_units: BTreeSet<(u64, MemberId, u64)>,
-    finalized_operation_ids: BTreeSet<FederationOperationId>,
+    /// Accepted operation ids with the session that ordered them (`None`
+    /// when unknown). Only ids that still guard the current session count as
+    /// duplicates; see [`federation_operation_guards_session`].
+    finalized_operation_ids: BTreeMap<FederationOperationId, Option<u64>>,
     next_unit_index_by_member: BTreeMap<MemberId, u64>,
     replay_floor_by_member: BTreeMap<MemberId, u64>,
 }
@@ -1762,7 +1779,7 @@ impl FederationAlephBftFinalizationHandler {
             allowed_members: None,
             operation_config: None,
             finalized_units: BTreeSet::new(),
-            finalized_operation_ids: BTreeSet::new(),
+            finalized_operation_ids: BTreeMap::new(),
             next_unit_index_by_member: BTreeMap::new(),
             replay_floor_by_member: BTreeMap::new(),
         })
@@ -1811,7 +1828,7 @@ impl FederationAlephBftFinalizationHandler {
             allowed_members: Some(allowed_members),
             operation_config: Some(config.clone()),
             finalized_units: BTreeSet::new(),
-            finalized_operation_ids: BTreeSet::new(),
+            finalized_operation_ids: BTreeMap::new(),
             next_unit_index_by_member: checkpoint.next_unit_index_by_member.clone(),
             replay_floor_by_member: checkpoint.next_unit_index_by_member.clone(),
         })
@@ -1832,7 +1849,7 @@ impl FederationAlephBftFinalizationHandler {
         let mut finalized_units = BTreeSet::new();
         let mut finalized_unit_metadata = BTreeMap::new();
         let mut finalized_unit_items = BTreeMap::new();
-        let mut finalized_operation_ids = BTreeSet::new();
+        let mut finalized_operation_ids = BTreeMap::new();
         let mut last_unit_key = None;
         let mut closed_unit_keys = BTreeSet::new();
         let mut next_item_index_by_unit = BTreeMap::new();
@@ -1944,15 +1961,25 @@ impl FederationAlephBftFinalizationHandler {
 
             match (finalized_item.status, finalized_item.operation_id) {
                 (FederationAlephBftFinalizedItemStatus::Accepted, Some(operation_id)) => {
-                    if !finalized_operation_ids.insert(operation_id) {
+                    if operation_id_guards_session(
+                        &finalized_operation_ids,
+                        operation_id,
+                        finalized_item.session,
+                    ) {
                         return Err(FederationAlephBftError::RecoveryMismatch {
                             reason: "accepted finalized item repeats an operation id",
                         }
                         .into());
                     }
+                    finalized_operation_ids.insert(operation_id, Some(finalized_item.session));
                 }
                 (FederationAlephBftFinalizedItemStatus::DuplicateOperation, Some(operation_id)) => {
-                    if finalized_operation_ids.insert(operation_id) && checkpoint.is_none() {
+                    if !operation_id_guards_session(
+                        &finalized_operation_ids,
+                        operation_id,
+                        finalized_item.session,
+                    ) && checkpoint.is_none()
+                    {
                         return Err(FederationAlephBftError::RecoveryMismatch {
                             reason: "duplicate operation finalized before its accepted item",
                         }
@@ -2160,8 +2187,19 @@ impl FederationAlephBftFinalizationHandler {
         self.next_item_index
     }
 
-    fn register_finalized_operation_id(&mut self, operation_id: FederationOperationId) {
-        self.finalized_operation_ids.insert(operation_id);
+    fn register_finalized_operation_id(
+        &mut self,
+        operation_id: FederationOperationId,
+        ordered_session: Option<u64>,
+    ) {
+        match self.finalized_operation_ids.get(&operation_id) {
+            Some(Some(existing)) if ordered_session.is_some_and(|session| session <= *existing) => {
+            }
+            _ => {
+                self.finalized_operation_ids
+                    .insert(operation_id, ordered_session);
+            }
+        }
     }
 
     /// Return the count of allowed unit submitters when this handler is roster-bound.
@@ -2190,6 +2228,10 @@ impl FederationAlephBftFinalizationHandler {
         for replay_floor in self.replay_floor_by_member.values_mut() {
             *replay_floor = 0;
         }
+        // Ids ordered before the validity window never guard again.
+        self.finalized_operation_ids.retain(|_, ordered_session| {
+            federation_operation_guards_session(*ordered_session, session)
+        });
         Ok(())
     }
 
@@ -2293,8 +2335,11 @@ impl FederationAlephBftFinalizationHandler {
                     FederationAlephBftFinalizedItemStatus::RejectedInvalidOperation
                 }
                 (_, Some(operation_id)) => {
-                    if self.finalized_operation_ids.contains(&operation_id)
-                        || !prepared_operation_ids.insert(operation_id)
+                    if operation_id_guards_session(
+                        &self.finalized_operation_ids,
+                        operation_id,
+                        self.session,
+                    ) || !prepared_operation_ids.insert(operation_id)
                     {
                         FederationAlephBftFinalizedItemStatus::DuplicateOperation
                     } else {
@@ -2345,7 +2390,8 @@ impl FederationAlephBftFinalizationHandler {
         for finalized_item in &outcome.items {
             if finalized_item.status == FederationAlephBftFinalizedItemStatus::Accepted {
                 if let Some(operation_id) = finalized_item.operation_id {
-                    self.finalized_operation_ids.insert(operation_id);
+                    self.finalized_operation_ids
+                        .insert(operation_id, Some(outcome.session));
                 }
             }
         }
@@ -2754,9 +2800,10 @@ impl FederationConsensusRuntime {
         entry: FederationJournalEntry,
     ) -> Result<()> {
         let operation_id = entry.operation_id;
+        let ordered_session = entry.ordered_session();
         self.journal.register_historical_entry(entry)?;
         self.finalization_handler
-            .register_finalized_operation_id(operation_id);
+            .register_finalized_operation_id(operation_id, ordered_session);
         Ok(())
     }
 
@@ -2894,6 +2941,7 @@ impl FederationConsensusRuntime {
         }
 
         self.finalization_handler.begin_session(session)?;
+        self.journal.forget_guards_before_session(session);
         self.data_provider.begin_session(session);
         Ok(())
     }
@@ -2908,6 +2956,7 @@ impl FederationConsensusRuntime {
             .collect::<Vec<_>>();
 
         self.finalization_handler.begin_session(session)?;
+        self.journal.forget_guards_before_session(session);
         self.data_provider.begin_session(session);
         self.pending_finalization_units.clear();
         self.pending_finalization_operation_ids.clear();

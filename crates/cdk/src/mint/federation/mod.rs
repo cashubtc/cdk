@@ -25,5 +25,25 @@ pub use self::transaction_policy::{
 };
 pub use cdk_common::federation::FederationTransactionPolicyAudit;
 
+use crate::Error;
+
+/// Whether an apply error is a deterministic rejection of an ordered operation.
+///
+/// Every member applies the same accepted order to the same state, so such an
+/// error is recorded as the operation's rejection and application continues
+/// past it. Any other error leaves the operation `Failed` for retry.
+///
+/// Wallet proof-release policy is deliberately conservative for spent or
+/// reserved inputs. At ordered application, those states instead identify a
+/// deterministic losing operation: its transaction rolled back, and replay
+/// records the rejection and continues beyond it.
+pub fn is_definitive_federation_apply_rejection(error: &Error) -> bool {
+    error.is_definitive_failure()
+        || matches!(
+            error,
+            Error::PendingQuote | Error::TokenAlreadySpent | Error::TokenPending
+        )
+}
+
 #[cfg(test)]
 mod tests;

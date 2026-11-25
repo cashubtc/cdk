@@ -879,6 +879,9 @@ impl FederationNodeRuntime {
         let _application = self.components.operation.lock().await;
         let db = self.active_mint()?.localstore();
         let mut durable_entries = BTreeMap::new();
+        // Duplicate and conflict decisions read only entries ordered inside
+        // the unit's validity window, so every member decides alike whatever
+        // older history it still holds.
         for item in &payload.items {
             let FederationConsensusItem::Operation(envelope) = item else {
                 continue;
@@ -887,6 +890,7 @@ impl FederationNodeRuntime {
             if let Some(entry) = db
                 .get_federation_journal_entry_by_operation_id(operation_id)
                 .await?
+                .filter(|entry| entry.guards_session(payload.session))
             {
                 durable_entries.insert(entry.index, entry);
             }
@@ -894,6 +898,7 @@ impl FederationNodeRuntime {
                 if let Some(entry) = db
                     .get_federation_journal_entry_by_conflict_key(&conflict_key)
                     .await?
+                    .filter(|entry| entry.guards_session(payload.session))
                 {
                     durable_entries.insert(entry.index, entry);
                 }
@@ -907,7 +912,7 @@ impl FederationNodeRuntime {
             if consensus
                 .journal()
                 .entry_by_operation_id(entry.operation_id)
-                .is_none()
+                .is_none_or(|known| known.index < entry.index)
             {
                 consensus.register_historical_journal_entry(entry)?;
             }

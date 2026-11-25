@@ -881,6 +881,23 @@ impl FederationChainObservationState {
             .utxos
             .get_mut(&observation.outpoint.to_string())
             .ok_or_else(|| invalid_observation("reorg references an unknown wallet outpoint"))?;
+        // Stale or already recorded evidence changes nothing. Checked before
+        // the block anchor: an operation re-ordered after its validity window
+        // may name a block the output has since left, and must not
+        // quarantine the output it already reorged.
+        if observation.observation_epoch < utxo.observation_epoch
+            || utxo
+                .reorg_observations
+                .get(&observation.observer)
+                .is_some_and(|existing| {
+                    matches!(
+                        &existing.observation,
+                        FederationChainObservation::Reorg(recorded) if recorded == observation
+                    )
+                })
+        {
+            return Ok(FederationChainObservationOutcome::Existing(utxo.state));
+        }
         if utxo.block
             != Some((
                 observation.disconnected_block_hash,
@@ -890,9 +907,6 @@ impl FederationChainObservationState {
             quarantine(utxo, observation.observer);
             self.validate()?;
             return Ok(FederationChainObservationOutcome::Quarantined);
-        }
-        if observation.observation_epoch < utxo.observation_epoch {
-            return Ok(FederationChainObservationOutcome::Existing(utxo.state));
         }
         if observation.observation_epoch > utxo.observation_epoch {
             return Err(invalid_observation(

@@ -1282,6 +1282,17 @@ impl Mint {
         operation: &FederationBarkOperation,
     ) -> Result<(), Error> {
         operation.validate()?;
+        if self
+            .federation_bark_operation_recorded(entry, operation)
+            .await?
+        {
+            // The projection already holds this exact operation, committed
+            // together with its payment and recovery effects. An operation
+            // re-ordered after its validity window is already applied; its
+            // validation against the action's current phase would fail.
+            let transaction = self.localstore.begin_transaction().await?;
+            return finish_federation_apply_transaction(transaction, entry, Ok(())).await;
+        }
         self.validate_federation_bark_operation_submission(operation, Some(entry.index))
             .await?;
         if let FederationBarkOperation::ReceiveIntent(intent) = operation {
@@ -1407,6 +1418,35 @@ impl Mint {
             self.pubsub_manager.mint_quote_payment(&quote, amount_paid);
         }
         Ok(())
+    }
+
+    /// Whether the Bark projection recorded `entry`'s operation id for its
+    /// action: as the action origin, a transition or an observation.
+    #[cfg(feature = "federation-bark")]
+    async fn federation_bark_operation_recorded(
+        &self,
+        entry: &FederationJournalEntry,
+        operation: &FederationBarkOperation,
+    ) -> Result<bool, Error> {
+        let store = self.federation_bark_store()?;
+        let action_id = operation.action_id();
+        let Some(action) = store.bark_action(action_id).await? else {
+            return Ok(false);
+        };
+        if action.origin_operation_id == entry.operation_id
+            || store
+                .bark_action_transitions(action_id)
+                .await?
+                .iter()
+                .any(|transition| transition.operation_id == entry.operation_id)
+        {
+            return Ok(true);
+        }
+        Ok(store
+            .bark_action_observations(action_id)
+            .await?
+            .iter()
+            .any(|observation| observation.operation_id == entry.operation_id))
     }
 
     #[cfg(feature = "federation-bark")]

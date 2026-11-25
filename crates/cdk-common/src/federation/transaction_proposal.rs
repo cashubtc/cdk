@@ -1947,17 +1947,10 @@ impl FederationTransactionState {
                     "broadcast intent conflicts with durable settlement policy",
                 ));
             }
-            if matches!(
-                accepted.state,
-                FederationAcceptedTransactionState::BroadcastPending
-                    | FederationAcceptedTransactionState::Broadcast
-                    | FederationAcceptedTransactionState::Confirmed
-            ) {
-                return Ok(FederationTransactionStateOutcome::Existing);
-            }
-            return Err(invalid(
-                "broadcast intent conflicts with transaction lifecycle",
-            ));
+            // The authorization is already durable. This also holds once the
+            // transaction was replaced or abandoned, where an intent
+            // re-ordered after its validity window must change nothing.
+            return Ok(FederationTransactionStateOutcome::Existing);
         }
         if accepted.state != FederationAcceptedTransactionState::Signed {
             return Err(invalid(
@@ -1989,12 +1982,22 @@ impl FederationTransactionState {
         if operation_index == 0 {
             return Err(invalid("broadcast observation operation index is zero"));
         }
-        let observed_batch_id = self
+        let observed = self
             .accepted_transactions
             .get(&observed_proposal_id)
-            .ok_or_else(|| invalid("broadcast observation references an unknown transaction"))?
-            .proposal
-            .batch_id;
+            .ok_or_else(|| invalid("broadcast observation references an unknown transaction"))?;
+        // An exact recorded observation is already applied, whatever the
+        // lineage did since: an observation re-ordered after its validity
+        // window must change nothing.
+        if observed.broadcast.as_ref().is_some_and(|broadcast| {
+            broadcast
+                .observations
+                .iter()
+                .any(|existing| existing.observation == observation)
+        }) {
+            return Ok(FederationTransactionStateOutcome::Existing);
+        }
+        let observed_batch_id = observed.proposal.batch_id;
         if self
             .accepted_transactions
             .iter()
@@ -2004,7 +2007,7 @@ impl FederationTransactionState {
                     && accepted.state == FederationAcceptedTransactionState::Confirmed
             })
         {
-            return Err(invalid(
+            return Err(conflicts_with_ordered_state(
                 "transaction lineage already has a different terminal winner",
             ));
         }
@@ -2049,7 +2052,9 @@ impl FederationTransactionState {
                     ));
                 }
                 Some(existing) if existing.observation.attempt > record.observation.attempt => {
-                    return Err(invalid("broadcast observation attempt is stale"));
+                    return Err(conflicts_with_ordered_state(
+                        "broadcast observation attempt is stale",
+                    ));
                 }
                 Some(existing) => *existing = record.clone(),
                 None => broadcast.observations.push(record.clone()),
@@ -2706,6 +2711,12 @@ impl FederationStateTable for FederationTransactionState {
 
 fn invalid(reason: &'static str) -> FederationError {
     FederationError::TransactionProposalInvalid { reason }
+}
+
+/// A deterministic per-operation rejection against ordered state, so the
+/// entry is rejected instead of left failed and retried.
+fn conflicts_with_ordered_state(reason: &'static str) -> FederationError {
+    FederationError::OperationStateInvalid { reason }
 }
 
 #[cfg(test)]

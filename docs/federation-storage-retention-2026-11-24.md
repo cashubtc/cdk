@@ -155,6 +155,73 @@ Each row must be confirmed by a test that replays the operation with a fresh
 stamp before step 6 deletes any journal row. Conflict keys follow the same
 window: they can be deleted together with the operation ids.
 
+### Window-bounded duplicate and conflict detection (implemented)
+
+Every member now decides duplicates and conflicts from the same data: only
+entries ordered in session `S - FEDERATION_OPERATION_VALIDITY_SESSIONS` or
+later guard a unit finalized in session `S`
+(`federation_operation_guards_session`). The bound comes from the finalized
+unit's session and each entry's consensus evidence, never from local timing
+or from how much history a member holds.
+
+- **Finalization handler.** Accepted operation ids keep the session that
+  ordered them; an id only marks an item `DuplicateOperation` while it guards
+  the unit's session. Ids that no longer guard are dropped when a session
+  begins, so the set is bounded by the window.
+- **Journal.** `prepare_finalized_appends` treats an id or a conflict key as
+  taken only if its latest holder guards the unit's session. Conflict keys map
+  to their latest reserving entry. The in-memory hydrated guards are dropped
+  with the window.
+- **Durable lookups.** The finalization path and startup suffix verification
+  register only stored entries that guard the item's session.
+- **Storage.** An operation id may now repeat in `federation_journal_entries`
+  (no unique constraint); lookups and application-state updates use the
+  latest entry. `federation_journal_conflict_keys` keeps every holder, keyed by
+  `(conflict_key_json, operation_index)`, and lookups take the latest. Journal
+  rows carry `ordered_session` and `ordered_item_index` columns from their
+  evidence, which the window bounds use instead of joining on operation id.
+- **Content-addressed rows keep their first position.** A payment observation
+  re-inserted with the same operation id, an identical signature share, and a
+  materialized-state key re-recorded by the same operation id keep their
+  first ordering position, so an already applied replay changes nothing.
+
+Replay tests (`cdk`, `mint::federation::tests::replay_window`) apply each kind,
+then a copy re-stamped in the first session after its window by a member
+allowed to stamp it, appended at a later index with the same operation id.
+Each replay must end `Applied` or in a definitive rejection (never `Failed`,
+which would stall application), and the materialized-state rows must not
+change:
+
+| Kind (replay author) | Result | Guard |
+|---|---|---|
+| `MintQuote` (any) | Already applied | Existing quote row |
+| `MintQuotePayment` (observer) | Already applied, paid amount unchanged | Observation row by operation id; quorum per observer |
+| `Mint` (any) | Rejected | Issued quote |
+| `MeltQuote` (any) | Already applied | Existing quote row |
+| `Melt` (any), after payment | Already applied | Paid melt quote |
+| `MeltQuotePayment` (observer), after payment | Already applied | Observation row; paid quote |
+| `Swap` (any) | Already applied, shares keep their first index | Spent proofs and existing signatures for the operation |
+| `KeysetRotation` (any) | Already applied | Keyset state |
+| `AddressAllocation` (any) | Already applied | Quote mapping (`Existing`) |
+| `ChainObservation::Deposit` (observer), also after the output was reserved and after a reorg and reconfirmation | Already applied | Per-observer evidence: same epoch and depth, or an older epoch |
+| `ChainObservation::Reorg` (observer), also after reconfirmation in another block | Already applied (fix) | Stale epoch or the exact recorded reorg, checked before the block anchor |
+| `TransactionProposal` (proposer), also after replacement and confirmation | Already applied | Known proposal; reservations stay with the lineage |
+| `TransactionSigned` (any), after confirmation | Already applied | Equal signed transaction |
+| `TransactionBroadcastIntent` (any), after Confirmed, Replaced, Abandoned | Already applied (fix) | Existing broadcast record with the same policy |
+| `TransactionBroadcastObservation` (observer) | Already applied (fix); a superseded attempt is rejected | Exact recorded observation; latest attempt per observer |
+| Bark `ReceiveIntent`, `MemberObservation` (author) | Already applied (fix) | Operation id recorded in the Bark projection |
+
+The three fixes: a replayed reorg used to fail the block-anchor check and
+quarantine a reconfirmed output; a replayed broadcast intent or observation
+failed with a non-definitive error once the lineage moved on, which stalls
+application; and a replayed Bark operation failed validation against the
+action's current phase before the projection's own no-op check. The
+remaining Bark kinds (`ReceivePrepared`, `ActionPlan`, `ActionTransition`,
+`EvidenceCertificate`) take the same Bark no-op path but have no fixture in
+`cdk` that builds them. The Bark projection guard reads transition and
+observation rows, so deleting those rows for terminal actions (stage 3) needs
+a guard that survives the deletion.
+
 ## Bark readers (prerequisite 3, implemented)
 
 Startup, readiness, the operator reconcile route and the post-apply hook all
@@ -398,7 +465,8 @@ checkpoint, and the installer stores it as history:
 
 ### Left out, and what must follow
 
-1. **Duplicates and conflicts older than the validity window.** The window
+1. **Duplicates and conflicts older than the validity window (resolved by
+   window-bounded detection above).** The window
    (above) makes the installed member decide like its peers for every
    operation ordered in the last `FEDERATION_OPERATION_VALIDITY_SESSIONS`
    sessions before the checkpoint. Peers still keep their whole journal and

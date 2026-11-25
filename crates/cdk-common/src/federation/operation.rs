@@ -45,6 +45,30 @@ const FEDERATION_OPERATION_AUTHORIZATION_VERSION: &[u8] =
 /// the window; older replays are rejected by the window itself.
 pub const FEDERATION_OPERATION_VALIDITY_SESSIONS: u64 = 16;
 
+/// First AlephBFT session whose ordered operations still guard duplicates and
+/// conflicts for a unit finalized in `session`.
+///
+/// Every member decides duplicates by operation id and conflicts by conflict
+/// key using only operations ordered in this session or later. The bound
+/// depends only on the finalized unit's session, so a member that holds only
+/// the window (after a state transfer or after deleting older history)
+/// decides exactly as a member that holds everything.
+#[must_use]
+pub fn federation_operation_window_start_session(session: u64) -> u64 {
+    session.saturating_sub(FEDERATION_OPERATION_VALIDITY_SESSIONS)
+}
+
+/// Whether an operation ordered in `ordered_session` still guards duplicates
+/// and conflicts for a unit finalized in `session`.
+///
+/// Operations without an ordering session (test journals built without
+/// consensus evidence) always guard.
+#[must_use]
+pub fn federation_operation_guards_session(ordered_session: Option<u64>, session: u64) -> bool {
+    ordered_session
+        .is_none_or(|ordered| ordered >= federation_operation_window_start_session(session))
+}
+
 /// Current federation operation envelope format, shared by every operation kind.
 pub const FEDERATION_OPERATION_VERSION: u16 = 7;
 

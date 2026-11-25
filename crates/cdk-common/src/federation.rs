@@ -151,6 +151,7 @@ pub use self::liveness::{
     FEDERATION_WALLET_SIGNING_ATTEMPT_LEASE_MILLIS,
 };
 pub use self::operation::{
+    federation_operation_guards_session, federation_operation_window_start_session,
     FederationApplicationConflictKey, FederationApplicationOperation,
     FederationApplicationStateKey, FederationKeysetRotationOperation, FederationMeltOperation,
     FederationMeltQuoteMetadata, FederationMeltQuoteOperation,
