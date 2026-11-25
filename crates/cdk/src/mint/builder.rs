@@ -282,6 +282,12 @@ impl MintBuilder {
         self
     }
 
+    /// Mark the mint's ecash as not backed by real funds
+    pub fn with_demo(mut self, demo: bool) -> Self {
+        self.mint_info.demo = demo.then_some(true);
+        self
+    }
+
     /// Set description
     pub fn with_description(mut self, description: String) -> Self {
         self.mint_info.description = Some(description);

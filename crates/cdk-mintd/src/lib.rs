@@ -1309,7 +1309,8 @@ async fn configure_payment_backends(
                     mint_melt_limits,
                     Arc::new(fake),
                 )
-                .await?;
+                .await?
+                .with_demo(true);
 
                 configure_fake_wallet_keyset_rotations = true;
             }
@@ -1481,6 +1482,8 @@ async fn configure_onchain_backend_with_wallet_info(
             OnchainBackend::None => {}
             #[cfg(feature = "fakewallet")]
             OnchainBackend::FakeWallet => {
+                mint_builder = mint_builder.with_demo(true);
+
                 let has_payment_backend = settings
                     .payment_backend
                     .iter()
@@ -1956,6 +1959,8 @@ async fn reconcile_canonical_configuration(
     );
     let mut stored_mint_info = mint.mint_info().await?;
     stored_mint_info.version = Some(mint_version);
+    // Follows the configured backends, not what an earlier run stored.
+    stored_mint_info.demo = configured_mint_info.demo;
     mint.set_mint_info(stored_mint_info).await?;
     tracing::info!("Preserving RPC-managed mint info from the database.");
     Ok(())
@@ -3090,6 +3095,38 @@ engine = "sqlite"
 
     #[cfg(feature = "sqlite")]
     #[tokio::test]
+    async fn preserve_mode_refreshes_demo_from_configuration() {
+        use cdk_sqlite::mint::memory;
+
+        let database = Arc::new(memory::empty().await.expect("in-memory database"));
+        let mut builder = MintBuilder::new(database.clone());
+        builder
+            .configure_unit(CurrencyUnit::Sat, Default::default())
+            .expect("configure unit");
+        let mint = builder
+            .build_with_seed(database.clone(), &[7; 32])
+            .await
+            .expect("build mint");
+        let stored_info = MintBuilder::new(database.clone())
+            .with_name("rpc-managed".to_owned())
+            .current_mint_info();
+        mint.set_mint_info(stored_info)
+            .await
+            .expect("set stored mint info");
+
+        for demo in [Some(true), None] {
+            let mut configured = MintBuilder::new(database.clone()).current_mint_info();
+            configured.demo = demo;
+            reconcile_canonical_configuration(&mint, configured, QuoteTTL::new(1, 2), true)
+                .await
+                .expect("preserve RPC-managed canonical values");
+            let info = mint.mint_info().await.expect("mint info");
+            assert_eq!(info.demo, demo);
+            assert_eq!(info.name.as_deref(), Some("rpc-managed"));
+        }
+    }
+
+    #[tokio::test]
     async fn preserve_mode_seeds_empty_mint_and_missing_quote_ttl() {
         use cdk_sqlite::mint::memory;
 
@@ -3772,6 +3809,7 @@ backend = "fakewallet"
                 .expect("dispatcher should succeed");
 
         let mint_info = builder.current_mint_info();
+        assert_eq!(mint_info.demo, Some(true));
         let units: Vec<_> = mint_info
             .nuts
             .nut04
@@ -3917,6 +3955,7 @@ backend = "fakewallet"
             mint_info.nuts.nut04.methods.is_empty(),
             "PaymentBackendType::None should not register any methods"
         );
+        assert_eq!(mint_info.demo, None);
     }
 
     #[cfg(all(feature = "fakewallet", feature = "sqlite"))]
@@ -3980,6 +4019,7 @@ backend = "fakewallet"
                 .expect("fakewallet onchain should succeed");
 
         let mint_info = builder.current_mint_info();
+        assert_eq!(mint_info.demo, Some(true));
         let methods: Vec<_> = mint_info
             .nuts
             .nut04

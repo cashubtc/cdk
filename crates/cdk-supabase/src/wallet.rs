@@ -2604,6 +2604,7 @@ impl TryInto<MintInfo> for MintTable {
             tos_url: self.tos_url,
             // Not persisted: a runtime hint the mint recomputes, refreshed with /v1/info.
             max_array_length: None,
+            demo: None,
         })
     }
 }

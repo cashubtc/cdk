@@ -643,6 +643,8 @@ pub struct MintInfo {
     pub tos_url: Option<String>,
     /// max length the mint accepts for any array in a request
     pub max_array_length: Option<u64>,
+    /// `true` if the mint's ecash is not backed by real funds
+    pub demo: Option<bool>,
 }
 
 impl From<cdk::nuts::MintInfo> for MintInfo {
@@ -663,6 +665,7 @@ impl From<cdk::nuts::MintInfo> for MintInfo {
             time: info.time,
             tos_url: info.tos_url,
             max_array_length: info.max_array_length,
+            demo: info.demo,
         }
     }
 }
@@ -687,6 +690,7 @@ impl TryFrom<MintInfo> for cdk::nuts::MintInfo {
             time: info.time,
             tos_url: info.tos_url,
             max_array_length: info.max_array_length,
+            demo: info.demo,
         })
     }
 }
@@ -1116,6 +1120,7 @@ mod tests {
             time: None,
             tos_url: None,
             max_array_length: None,
+            demo: None,
         };
 
         let result = cdk::nuts::MintInfo::try_from(ffi_mint_info);
