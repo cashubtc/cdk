@@ -56,6 +56,7 @@ mod chain_observation;
 mod keyset;
 mod melt;
 mod mint;
+mod parity;
 mod payment_observation;
 mod quote;
 mod replay_window;
