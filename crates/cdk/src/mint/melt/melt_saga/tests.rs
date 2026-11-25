@@ -25,7 +25,7 @@ use cdk_common::{
 };
 use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
 
-use crate::mint::melt::melt_saga::{MeltSaga, PaymentOutcome};
+use crate::mint::melt::melt_saga::{InternalSettlementOutcome, MeltSaga, PaymentOutcome};
 use crate::mint::melt::shared::{
     finalize_melt_quote, process_melt_change, rollback_melt_quote, MeltChangeResult,
 };
@@ -419,7 +419,7 @@ async fn test_saga_state_persistence_after_setup() {
         "Operation ID should match"
     );
     assert_eq!(
-        persisted_saga.operation_kind,
+        persisted_saga.operation_kind(),
         OperationKind::Melt,
         "Operation kind should be Melt"
     );
@@ -517,15 +517,17 @@ async fn test_saga_deletion_on_success() {
     // Verify saga exists
     assert_saga_exists(&mint, &operation_id).await;
 
-    // Attempt internal settlement (will fail, go to external payment)
-    let (payment_saga, decision) = setup_saga
+    // Attempt internal settlement (will fall through to external payment)
+    let InternalSettlementOutcome::RequiresExternalPayment(payment_saga) = setup_saga
         .attempt_internal_settlement(&melt_request)
         .await
-        .unwrap();
+        .unwrap()
+    else {
+        panic!("Expected external payment");
+    };
 
     // Make payment (FakeWallet will return success based on FakeInvoiceDescription)
-    let PaymentOutcome::Confirmed(confirmed_saga) =
-        payment_saga.make_payment(decision).await.unwrap()
+    let PaymentOutcome::Confirmed(confirmed_saga) = payment_saga.make_payment().await.unwrap()
     else {
         panic!("Expected Confirmed outcome");
     };
@@ -533,12 +535,15 @@ async fn test_saga_deletion_on_success() {
     // A paid backend result must be durably handed off before make_payment
     // returns and releases the process-local quote guard.
     let finalizing_saga = assert_saga_exists(&mint, &operation_id).await;
-    assert_eq!(
-        finalizing_saga.state,
-        SagaStateEnum::Melt(MeltSagaState::Finalizing)
+    assert!(
+        matches!(
+            finalizing_saga.state,
+            SagaStateEnum::Melt(MeltSagaState::Finalizing(Some(_)))
+        ),
+        "paid dispatch must persist Finalizing with finalization_data"
     );
     assert!(
-        finalizing_saga.finalization_data.is_some(),
+        finalizing_saga.finalization_data().is_some(),
         "paid dispatch must persist the data needed for recovery"
     );
 
@@ -583,12 +588,14 @@ async fn test_completed_operation_recorded_on_finalize() {
         .unwrap();
     let operation_id = setup_saga.operation_id;
 
-    let (payment_saga, decision) = setup_saga
+    let InternalSettlementOutcome::RequiresExternalPayment(payment_saga) = setup_saga
         .attempt_internal_settlement(&melt_request)
         .await
-        .unwrap();
-    let PaymentOutcome::Confirmed(confirmed_saga) =
-        payment_saga.make_payment(decision).await.unwrap()
+        .unwrap()
+    else {
+        panic!("Expected external payment");
+    };
+    let PaymentOutcome::Confirmed(confirmed_saga) = payment_saga.make_payment().await.unwrap()
     else {
         panic!("Expected Confirmed outcome");
     };
@@ -780,10 +787,9 @@ async fn test_finalizing_recovery_uses_persisted_payment_fee() {
         .await
         .unwrap()
         .expect("saga should exist");
-    tx.update_acquired_saga_with_finalization_data(
+    tx.update_acquired_saga(
         &mut saga,
-        SagaStateEnum::Melt(MeltSagaState::Finalizing),
-        Some(&finalization_data),
+        SagaStateEnum::Melt(MeltSagaState::finalizing(finalization_data.clone())),
     )
     .await
     .unwrap();
@@ -810,9 +816,62 @@ async fn test_finalizing_recovery_uses_persisted_payment_fee() {
     assert_saga_not_exists(&mint, &operation_id).await;
 }
 
+fn into_mint_arc<M>(mint: M) -> std::sync::Arc<crate::mint::Mint>
+where
+    M: Into<std::sync::Arc<crate::mint::Mint>>,
+{
+    mint.into()
+}
+
 #[tokio::test]
 async fn test_finalizing_recovery_without_metadata_uses_internal_settlement() {
-    let mint = create_test_mint().await.unwrap();
+    use crate::mint::{MintBuilder, MintMeltLimits};
+    use crate::types::{FeeReserve, QuoteTTL};
+
+    let db_path = std::env::temp_dir().join(format!(
+        "cdk-legacy-internal-finalizing-{}.db",
+        uuid::Uuid::new_v4()
+    ));
+    let db = std::sync::Arc::new(
+        cdk_sqlite::mint::MintSqliteDatabase::new(&db_path)
+            .await
+            .unwrap(),
+    );
+    let backend = cdk_fake_wallet::FakeWallet::new(
+        FeeReserve {
+            min_fee_reserve: 1.into(),
+            percent_fee_reserve: 1.0,
+        },
+        std::collections::HashMap::default(),
+        std::collections::HashSet::default(),
+        2,
+        CurrencyUnit::Sat,
+    );
+    let mut mint_builder = MintBuilder::new(db.clone());
+    mint_builder
+        .add_payment_processor(
+            CurrencyUnit::Sat,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            MintMeltLimits::new(1, 10_000),
+            std::sync::Arc::new(backend),
+        )
+        .await
+        .unwrap();
+    let mnemonic = bip39::Mnemonic::generate(12).unwrap();
+    let mint = into_mint_arc(
+        mint_builder
+            .with_name("test mint".to_string())
+            .with_description("test mint".to_string())
+            .with_urls(vec!["https://test-mint".to_string()])
+            .build_with_seed(db.clone(), &mnemonic.to_seed_normalized(""))
+            .await
+            .unwrap(),
+    );
+    mint.set_quote_ttl(QuoteTTL::new(10000, 10000))
+        .await
+        .unwrap();
+    mint.start().await.unwrap();
+
     let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
     let mint_quote_response: cdk_common::MintQuoteBolt11Response<_> = mint
         .get_mint_quote(
@@ -865,31 +924,23 @@ async fn test_finalizing_recovery_without_metadata_uses_internal_settlement() {
         .unwrap();
 
     let operation_id = setup_saga.operation_id;
-    let (payment_saga, decision) = setup_saga
+    let InternalSettlementOutcome::Settled(confirmed_saga) = setup_saga
         .attempt_internal_settlement(&melt_request)
         .await
-        .unwrap();
-    match decision {
-        crate::mint::melt::melt_saga::state::SettlementDecision::Internal { .. } => {}
-        _ => panic!("expected internal settlement"),
-    }
-
-    let PaymentOutcome::Confirmed(confirmed_saga) =
-        payment_saga.make_payment(decision).await.unwrap()
+        .unwrap()
     else {
-        panic!("Expected Confirmed outcome");
+        panic!("expected internal settlement");
     };
 
-    let mut tx = mint.localstore.begin_transaction().await.unwrap();
-    let mut saga = tx
-        .get_saga_for_update(&operation_id)
-        .await
-        .unwrap()
-        .expect("saga should exist");
-    tx.update_acquired_saga(&mut saga, SagaStateEnum::Melt(MeltSagaState::Finalizing))
-        .await
+    // Simulate a legacy stored Finalizing row without finalization_data.
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute(
+            "UPDATE saga_state SET finalization_data = NULL WHERE operation_id = ?1",
+            [operation_id.to_string()],
+        )
         .unwrap();
-    tx.commit().await.unwrap();
+    }
 
     drop(confirmed_saga);
 
@@ -914,6 +965,149 @@ async fn test_finalizing_recovery_without_metadata_uses_internal_settlement() {
         .unwrap()
         .expect("Mint quote should still exist");
     assert_eq!(paid_mint_quote.state(), MintQuoteState::Paid);
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn test_startup_recovery_legacy_null_quote_id_internal_settlement() {
+    use crate::mint::{MintBuilder, MintMeltLimits};
+    use crate::types::{FeeReserve, QuoteTTL};
+
+    for (legacy_state, clear_finalization_data) in
+        [("payment_attempted", true), ("finalizing", true)]
+    {
+        let db_path = std::env::temp_dir().join(format!(
+            "cdk-legacy-null-qid-{legacy_state}-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let db = std::sync::Arc::new(
+            cdk_sqlite::mint::MintSqliteDatabase::new(&db_path)
+                .await
+                .unwrap(),
+        );
+        let backend = cdk_fake_wallet::FakeWallet::new(
+            FeeReserve {
+                min_fee_reserve: 1.into(),
+                percent_fee_reserve: 1.0,
+            },
+            std::collections::HashMap::default(),
+            std::collections::HashSet::default(),
+            2,
+            CurrencyUnit::Sat,
+        );
+        let mut mint_builder = MintBuilder::new(db.clone());
+        mint_builder
+            .add_payment_processor(
+                CurrencyUnit::Sat,
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                MintMeltLimits::new(1, 10_000),
+                std::sync::Arc::new(backend),
+            )
+            .await
+            .unwrap();
+        let mnemonic = bip39::Mnemonic::generate(12).unwrap();
+        let mint = into_mint_arc(
+            mint_builder
+                .with_name("test mint".to_string())
+                .with_description("test mint".to_string())
+                .with_urls(vec!["https://test-mint".to_string()])
+                .build_with_seed(db.clone(), &mnemonic.to_seed_normalized(""))
+                .await
+                .unwrap(),
+        );
+        mint.set_quote_ttl(QuoteTTL::new(10000, 10000))
+            .await
+            .unwrap();
+        mint.start().await.unwrap();
+
+        let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+        let input_ys = proofs.ys().unwrap();
+        let mint_quote_response: cdk_common::MintQuoteBolt11Response<_> = mint
+            .get_mint_quote(
+                MintQuoteBolt11Request {
+                    amount: Amount::from(4_000),
+                    unit: CurrencyUnit::Sat,
+                    description: None,
+                    pubkey: None,
+                }
+                .into(),
+            )
+            .await
+            .unwrap()
+            .into();
+        let mint_quote_id = cdk_common::QuoteId::from_str(&mint_quote_response.quote).unwrap();
+        let mint_quote = mint
+            .localstore
+            .get_mint_quote(&mint_quote_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let melt_quote_response = mint
+            .get_melt_quote(MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
+                request: mint_quote.request.to_string().parse().unwrap(),
+                unit: CurrencyUnit::Sat,
+                options: None,
+            }))
+            .await
+            .unwrap();
+        let melt_quote = mint
+            .localstore
+            .get_melt_quote(melt_quote_response.quote().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        let melt_request = create_test_melt_request(&proofs, &melt_quote);
+        let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
+        let setup_saga = MeltSaga::new(
+            std::sync::Arc::clone(&mint),
+            mint.localstore(),
+            mint.pubsub_manager(),
+        )
+        .setup_melt(
+            &melt_request,
+            verification,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+        )
+        .await
+        .unwrap();
+        let operation_id = setup_saga.operation_id;
+        let InternalSettlementOutcome::Settled(confirmed_saga) = setup_saga
+            .attempt_internal_settlement(&melt_request)
+            .await
+            .unwrap()
+        else {
+            panic!("expected internal settlement");
+        };
+        drop(confirmed_saga);
+
+        // Seed a legacy row with quote_id = NULL and the target legacy state.
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            if clear_finalization_data {
+                conn.execute(
+                    "UPDATE saga_state SET quote_id = NULL, state = ?1, finalization_data = NULL WHERE operation_id = ?2",
+                    [legacy_state, &operation_id.to_string()],
+                )
+                .unwrap();
+            }
+        }
+
+        crate::test_helpers::mint::expire_melt_leases(&mint).await;
+        mint.recover_from_incomplete_melt_sagas().await.unwrap();
+
+        assert_saga_not_exists(&mint, &operation_id).await;
+        assert_proofs_state(&mint, &input_ys, Some(State::Spent)).await;
+        let recovered_quote = mint
+            .localstore
+            .get_melt_quote(&melt_quote.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered_quote.state, MeltQuoteState::Paid);
+
+        let _ = std::fs::remove_file(&db_path);
+    }
 }
 
 /// Test: Saga remains in database if finalize fails
@@ -1283,39 +1477,43 @@ async fn test_crash_recovery_internal_settlement() {
         .unwrap();
     let operation_id = setup_saga.operation_id;
 
-    // STEP 5: Attempt internal settlement - this will commit and update saga state
-    let (payment_saga, decision) = setup_saga
+    // STEP 5: Attempt internal settlement - this will commit and update saga state to Finalizing
+    let confirmed_saga = match setup_saga
         .attempt_internal_settlement(&melt_request)
         .await
-        .unwrap();
-
-    // Verify internal settlement was detected
-    match decision {
-        crate::mint::melt::melt_saga::state::SettlementDecision::Internal { amount } => {
+        .unwrap()
+    {
+        InternalSettlementOutcome::Settled(confirmed) => {
             assert_eq!(
-                amount,
+                confirmed.state_data.payment_result.total_spent,
                 Amount::from(4_000).with_unit(cdk_common::CurrencyUnit::Sat),
                 "Internal settlement amount should match"
             );
+            confirmed
         }
-        _ => panic!("Expected internal settlement decision"),
-    }
+        InternalSettlementOutcome::RequiresExternalPayment(_) => {
+            panic!("Expected internal settlement outcome")
+        }
+    };
 
-    // STEP 6: Simulate crash - drop saga WITHOUT calling make_payment/finalize
-    drop(payment_saga);
+    // STEP 6: Simulate crash - drop saga WITHOUT calling finalize
+    drop(confirmed_saga);
 
     // STEP 7: Verify pre-recovery state
-    // Saga should exist in PaymentAttempted state (updated by internal settlement)
+    // Saga should exist in Finalizing state with durable finalization data
     let persisted_saga = assert_saga_exists(&mint, &operation_id).await;
     match &persisted_saga.state {
-        cdk_common::mint::SagaStateEnum::Melt(state) => {
+        cdk_common::mint::SagaStateEnum::Melt(MeltSagaState::Finalizing(Some(data))) => {
             assert_eq!(
-                *state,
-                MeltSagaState::PaymentAttempted,
-                "Saga should be in PaymentAttempted state after internal settlement"
+                data.total_spent,
+                Amount::from(4_000).with_unit(cdk_common::CurrencyUnit::Sat),
+                "Persisted finalization data should match internal settlement amount"
             );
         }
-        _ => panic!("Expected Melt saga state"),
+        other => panic!(
+            "Saga should be in Finalizing(Some(_)) state after internal settlement, got {:?}",
+            other
+        ),
     }
 
     // Proofs should still be Pending
@@ -1530,14 +1728,13 @@ async fn test_status_poll_waits_for_internal_melt_finalization() {
     let (_, melt_quote, melt_request, setup_saga, input_ys) =
         setup_internal_melt(&mint, Some(outputs)).await;
     let operation_id = setup_saga.operation_id;
-    let (payment_saga, decision) = setup_saga
+    let InternalSettlementOutcome::Settled(confirmed_saga) = setup_saga
         .attempt_internal_settlement(&melt_request)
         .await
-        .unwrap();
-    assert!(matches!(
-        decision,
-        crate::mint::melt::melt_saga::state::SettlementDecision::Internal { .. }
-    ));
+        .unwrap()
+    else {
+        panic!("expected internal settlement");
+    };
 
     let stored = mint
         .localstore
@@ -1563,11 +1760,6 @@ async fn test_status_poll_waits_for_internal_melt_finalization() {
     assert_eq!(stored.state, MeltQuoteState::Paid);
     assert_eq!(stored.melt_lock, operation_id.to_string());
 
-    let PaymentOutcome::Confirmed(confirmed_saga) =
-        payment_saga.make_payment(decision).await.unwrap()
-    else {
-        panic!("internal settlement should confirm payment");
-    };
     confirmed_saga.finalize().await.unwrap();
 
     let finalized = mint
@@ -1604,14 +1796,13 @@ async fn test_rollback_refused_after_internal_settlement() {
         setup_internal_melt(&mint, None).await;
     let operation_id = setup_saga.operation_id;
 
-    let (payment_saga, decision) = setup_saga
+    let InternalSettlementOutcome::Settled(confirmed_saga) = setup_saga
         .attempt_internal_settlement(&melt_request)
         .await
-        .expect("internal settlement should succeed");
-    assert!(matches!(
-        decision,
-        crate::mint::melt::melt_saga::state::SettlementDecision::Internal { .. }
-    ));
+        .expect("internal settlement should succeed")
+    else {
+        panic!("expected internal settlement");
+    };
 
     // The melt quote is Paid together with the mint quote credit
     let settled_quote = mint
@@ -1622,7 +1813,7 @@ async fn test_rollback_refused_after_internal_settlement() {
         .expect("Melt quote should exist");
     assert_eq!(settled_quote.state, MeltQuoteState::Paid);
 
-    // Rollback of a Paid quote must be refused and must not release proofs
+    // Rollback of a Finalizing / Paid quote must be refused and must not release proofs
     let blinded_secrets = mint
         .localstore
         .get_blinded_secrets_by_operation_id(&operation_id)
@@ -1638,19 +1829,16 @@ async fn test_rollback_refused_after_internal_settlement() {
     )
     .await;
     assert!(
-        matches!(result, Err(crate::Error::PaidQuote)),
-        "rollback of a settled (Paid) melt quote must be refused"
+        matches!(
+            result,
+            Err(crate::Error::PaidQuote | crate::Error::UnknownPaymentState)
+        ),
+        "rollback of a settled (Paid/Finalizing) melt quote must be refused, got {:?}",
+        result
     );
     assert_proofs_state(&mint, &input_ys, Some(State::Pending)).await;
 
     // Finalize completes through the already-Paid path and spends the proofs
-    let PaymentOutcome::Confirmed(confirmed_saga) = payment_saga
-        .make_payment(decision)
-        .await
-        .expect("payment should succeed")
-    else {
-        panic!("Expected Confirmed outcome");
-    };
     confirmed_saga
         .finalize()
         .await
@@ -2192,13 +2380,16 @@ async fn test_saga_deleted_after_payment_failure() {
     assert_proofs_state(&mint, &input_ys, Some(State::Pending)).await;
 
     // STEP 4: Attempt internal settlement (will return RequiresExternalPayment)
-    let (payment_saga, decision) = setup_saga
+    let InternalSettlementOutcome::RequiresExternalPayment(payment_saga) = setup_saga
         .attempt_internal_settlement(&melt_request)
         .await
-        .unwrap();
+        .unwrap()
+    else {
+        panic!("Expected external payment");
+    };
 
     // STEP 5: Make payment - this should FAIL and trigger compensate_all()
-    let result = payment_saga.make_payment(decision).await;
+    let result = payment_saga.make_payment().await;
 
     // Payment should fail
     assert!(
@@ -2261,10 +2452,13 @@ async fn test_authoritative_failure_is_durable_before_compensation() {
         .await
         .unwrap();
     let operation_id = setup_saga.operation_id;
-    let (payment_saga, _decision) = setup_saga
+    let InternalSettlementOutcome::RequiresExternalPayment(payment_saga) = setup_saga
         .attempt_internal_settlement(&melt_request)
         .await
-        .unwrap();
+        .unwrap()
+    else {
+        panic!("Expected external payment");
+    };
 
     let response = payment_saga.attempt_external_payment().await.unwrap();
 
@@ -2321,10 +2515,13 @@ async fn test_failed_recheck_after_unknown_dispatch_is_durable_before_compensati
         .await
         .unwrap();
     let operation_id = setup_saga.operation_id;
-    let (payment_saga, _decision) = setup_saga
+    let InternalSettlementOutcome::RequiresExternalPayment(payment_saga) = setup_saga
         .attempt_internal_settlement(&melt_request)
         .await
-        .unwrap();
+        .unwrap()
+    else {
+        panic!("Expected external payment");
+    };
 
     let response = payment_saga.attempt_external_payment().await.unwrap();
 
@@ -2381,10 +2578,13 @@ async fn test_failed_recheck_after_error_is_durable_before_compensation() {
         .await
         .unwrap();
     let operation_id = setup_saga.operation_id;
-    let (payment_saga, _decision) = setup_saga
+    let InternalSettlementOutcome::RequiresExternalPayment(payment_saga) = setup_saga
         .attempt_internal_settlement(&melt_request)
         .await
-        .unwrap();
+        .unwrap()
+    else {
+        panic!("Expected external payment");
+    };
 
     let response = payment_saga.attempt_external_payment().await.unwrap();
 
@@ -2442,12 +2642,15 @@ async fn test_payment_error_with_pending_check_does_not_compensate() {
         .await
         .unwrap();
     let operation_id = setup_saga.operation_id;
-    let (payment_saga, decision) = setup_saga
+    let InternalSettlementOutcome::RequiresExternalPayment(payment_saga) = setup_saga
         .attempt_internal_settlement(&melt_request)
         .await
-        .unwrap();
+        .unwrap()
+    else {
+        panic!("Expected external payment");
+    };
 
-    let outcome = payment_saga.make_payment(decision).await.unwrap();
+    let outcome = payment_saga.make_payment().await.unwrap();
 
     assert!(matches!(outcome, PaymentOutcome::Pending { .. }));
     let pending_saga = assert_saga_exists(&mint, &operation_id).await;
@@ -2511,14 +2714,17 @@ async fn assert_payment_error_with_terminal_follow_up_compensates(follow_up_stat
         .await
         .unwrap();
     let operation_id = setup_saga.operation_id;
-    let (payment_saga, decision) = setup_saga
+    let InternalSettlementOutcome::RequiresExternalPayment(payment_saga) = setup_saga
         .attempt_internal_settlement(&melt_request)
         .await
-        .unwrap();
+        .unwrap()
+    else {
+        panic!("Expected external payment");
+    };
 
     // A terminal follow-up is authoritative by backend contract: the payment
     // can never settle, so the melt fails and the setup is compensated.
-    let err = match payment_saga.make_payment(decision).await {
+    let err = match payment_saga.make_payment().await {
         Ok(_) => panic!("terminal follow-up should fail the melt"),
         Err(err) => err,
     };
@@ -2580,12 +2786,15 @@ async fn test_unknown_dispatch_with_unpaid_check_compensates() {
         .await
         .unwrap();
     let operation_id = setup_saga.operation_id;
-    let (payment_saga, decision) = setup_saga
+    let InternalSettlementOutcome::RequiresExternalPayment(payment_saga) = setup_saga
         .attempt_internal_settlement(&melt_request)
         .await
-        .unwrap();
+        .unwrap()
+    else {
+        panic!("Expected external payment");
+    };
 
-    let err = match payment_saga.make_payment(decision).await {
+    let err = match payment_saga.make_payment().await {
         Ok(_) => panic!("authoritative Unpaid follow-up should fail the melt"),
         Err(err) => err,
     };
@@ -2656,7 +2865,7 @@ async fn test_saga_content_validation() {
 
     // STEP 5: Verify operation_kind is Melt
     assert_eq!(
-        persisted_saga.operation_kind,
+        persisted_saga.operation_kind(),
         OperationKind::Melt,
         "Operation kind must be Melt"
     );
@@ -2876,7 +3085,7 @@ async fn test_get_incomplete_sagas_filters_by_kind() {
     );
 
     assert_eq!(
-        melt_sagas[0].operation_kind,
+        melt_sagas[0].operation_kind(),
         OperationKind::Melt,
         "Returned saga should have Melt kind"
     );
@@ -2892,7 +3101,7 @@ async fn test_get_incomplete_sagas_filters_by_kind() {
     assert_eq!(swap_sagas.len(), 1, "Should return exactly one swap saga");
 
     assert_eq!(
-        swap_sagas[0].operation_kind,
+        swap_sagas[0].operation_kind(),
         OperationKind::Swap,
         "Returned saga should have Swap kind"
     );
@@ -3311,13 +3520,15 @@ async fn test_quote_already_paid() {
         .await
         .unwrap();
 
-    let (payment_saga, decision) = setup_saga1
+    let InternalSettlementOutcome::RequiresExternalPayment(payment_saga) = setup_saga1
         .attempt_internal_settlement(&melt_request1)
         .await
-        .unwrap();
+        .unwrap()
+    else {
+        panic!("Expected external payment");
+    };
 
-    let PaymentOutcome::Confirmed(confirmed_saga) =
-        payment_saga.make_payment(decision).await.unwrap()
+    let PaymentOutcome::Confirmed(confirmed_saga) = payment_saga.make_payment().await.unwrap()
     else {
         panic!("Expected Confirmed outcome");
     };
@@ -3528,12 +3739,15 @@ async fn test_finalize_melt_quote_duplicate_success_is_idempotent() {
         .unwrap();
 
     let operation_id = setup_saga.operation_id;
-    let (payment_saga, decision) = setup_saga
+    let InternalSettlementOutcome::RequiresExternalPayment(payment_saga) = setup_saga
         .attempt_internal_settlement(&melt_request)
         .await
-        .unwrap();
+        .unwrap()
+    else {
+        panic!("Expected external payment");
+    };
     let crate::mint::melt::melt_saga::PaymentOutcome::Confirmed(confirmed_saga) =
-        payment_saga.make_payment(decision).await.unwrap()
+        payment_saga.make_payment().await.unwrap()
     else {
         panic!("Expected Confirmed")
     };
@@ -3588,12 +3802,14 @@ async fn test_concurrent_duplicate_melt_finalization_is_idempotent() {
         .unwrap();
 
     let operation_id = setup_saga.operation_id;
-    let (payment_saga, decision) = setup_saga
+    let InternalSettlementOutcome::RequiresExternalPayment(payment_saga) = setup_saga
         .attempt_internal_settlement(&melt_request)
         .await
-        .unwrap();
-    let PaymentOutcome::Confirmed(confirmed_saga) =
-        payment_saga.make_payment(decision).await.unwrap()
+        .unwrap()
+    else {
+        panic!("Expected external payment");
+    };
+    let PaymentOutcome::Confirmed(confirmed_saga) = payment_saga.make_payment().await.unwrap()
     else {
         panic!("Expected Confirmed")
     };
@@ -3669,12 +3885,14 @@ async fn test_stale_melt_cleanup_observes_completed_finalization() {
         .unwrap();
 
     let operation_id = setup_saga.operation_id;
-    let (payment_saga, decision) = setup_saga
+    let InternalSettlementOutcome::RequiresExternalPayment(payment_saga) = setup_saga
         .attempt_internal_settlement(&melt_request)
         .await
-        .unwrap();
-    let PaymentOutcome::Confirmed(confirmed_saga) =
-        payment_saga.make_payment(decision).await.unwrap()
+        .unwrap()
+    else {
+        panic!("Expected external payment");
+    };
+    let PaymentOutcome::Confirmed(confirmed_saga) = payment_saga.make_payment().await.unwrap()
     else {
         panic!("Expected Confirmed")
     };
@@ -3745,12 +3963,15 @@ async fn test_finalize_melt_quote_conflicting_success_is_rejected() {
         .await
         .unwrap();
 
-    let (payment_saga, decision) = setup_saga
+    let InternalSettlementOutcome::RequiresExternalPayment(payment_saga) = setup_saga
         .attempt_internal_settlement(&melt_request)
         .await
-        .unwrap();
+        .unwrap()
+    else {
+        panic!("Expected external payment");
+    };
     let crate::mint::melt::melt_saga::PaymentOutcome::Confirmed(confirmed_saga) =
-        payment_saga.make_payment(decision).await.unwrap()
+        payment_saga.make_payment().await.unwrap()
     else {
         panic!("Expected Confirmed")
     };
@@ -4002,12 +4223,15 @@ async fn test_unknown_follow_up_after_payment_error_keeps_proofs_pending() {
         .await
         .unwrap();
     let operation_id = setup_saga.operation_id;
-    let (payment_saga, decision) = setup_saga
+    let InternalSettlementOutcome::RequiresExternalPayment(payment_saga) = setup_saga
         .attempt_internal_settlement(&melt_request)
         .await
-        .unwrap();
+        .unwrap()
+    else {
+        panic!("Expected external payment");
+    };
 
-    let _result = payment_saga.make_payment(decision).await;
+    let _result = payment_saga.make_payment().await;
 
     // SECURITY: Unknown is not a confirmed failure. The saga must remain
     // recoverable and the proofs must stay reserved until the backend reports
@@ -4550,30 +4774,29 @@ async fn test_saga_drop_after_payment() {
     assert_proofs_state(&mint, &input_ys, Some(State::Pending)).await;
 
     // Attempt internal settlement
-    let (payment_saga, decision) = setup_saga
+    let InternalSettlementOutcome::RequiresExternalPayment(payment_saga) = setup_saga
         .attempt_internal_settlement(&melt_request)
         .await
-        .unwrap();
+        .unwrap()
+    else {
+        panic!("Expected external payment");
+    };
 
     // Make payment
-    let PaymentOutcome::Confirmed(confirmed_saga) =
-        payment_saga.make_payment(decision).await.unwrap()
+    let PaymentOutcome::Confirmed(confirmed_saga) = payment_saga.make_payment().await.unwrap()
     else {
         panic!("Expected Confirmed outcome");
     };
 
     // STEP 3: Verify the paid result is durably handed off for finalization
     let saga_in_db = assert_saga_exists(&mint, &operation_id).await;
-    match &saga_in_db.state {
-        cdk_common::mint::SagaStateEnum::Melt(state) => {
-            assert_eq!(
-                *state,
-                MeltSagaState::Finalizing,
-                "Saga state should be Finalizing after a confirmed payment"
-            );
-        }
-        _ => panic!("Expected Melt saga state"),
-    }
+    assert!(
+        matches!(
+            saga_in_db.state,
+            cdk_common::mint::SagaStateEnum::Melt(MeltSagaState::Finalizing(Some(_)))
+        ),
+        "Saga state should be Finalizing(Some(_)) after a confirmed payment"
+    );
 
     // STEP 4: Drop before finalize (simulates crash after payment)
     drop(confirmed_saga);
@@ -4653,28 +4876,27 @@ async fn test_finalizing_state_resumes_paid_melt() {
     }
 
     // Attempt internal settlement and make payment
-    let (payment_saga, decision) = setup_saga
+    let InternalSettlementOutcome::RequiresExternalPayment(payment_saga) = setup_saga
         .attempt_internal_settlement(&melt_request)
         .await
-        .unwrap();
-    let PaymentOutcome::Confirmed(confirmed_saga) =
-        payment_saga.make_payment(decision).await.unwrap()
+        .unwrap()
+    else {
+        panic!("Expected external payment");
+    };
+    let PaymentOutcome::Confirmed(confirmed_saga) = payment_saga.make_payment().await.unwrap()
     else {
         panic!("Expected Confirmed outcome");
     };
 
     // STEP 3: Verify state transitioned to Finalizing
     let saga_after_payment = assert_saga_exists(&mint, &operation_id).await;
-    match &saga_after_payment.state {
-        cdk_common::mint::SagaStateEnum::Melt(state) => {
-            assert_eq!(
-                *state,
-                MeltSagaState::Finalizing,
-                "State should be Finalizing after make_payment"
-            );
-        }
-        _ => panic!("Expected Melt saga state"),
-    }
+    assert!(
+        matches!(
+            saga_after_payment.state,
+            cdk_common::mint::SagaStateEnum::Melt(MeltSagaState::Finalizing(Some(_)))
+        ),
+        "State should be Finalizing(Some(_)) after make_payment"
+    );
 
     // STEP 4: Drop saga (simulate crash after payment but before finalize)
     drop(confirmed_saga);
@@ -5053,13 +5275,16 @@ async fn test_duplicate_lookup_id_prevents_second_pending() {
     // Continue through the payment flow to release any transaction locks
     // The quote will stay in PENDING state because FakeWallet returns Paid
     // but we don't call finalize()
-    let (payment_saga1, decision1) = setup_saga1
+    let InternalSettlementOutcome::RequiresExternalPayment(payment_saga1) = setup_saga1
         .attempt_internal_settlement(&melt_request1)
         .await
-        .unwrap();
+        .unwrap()
+    else {
+        panic!("Expected external payment");
+    };
 
     // Make payment but don't finalize - keeps quote in PENDING
-    let confirmed_saga1 = payment_saga1.make_payment(decision1).await.unwrap();
+    let confirmed_saga1 = payment_saga1.make_payment().await.unwrap();
 
     // Drop the saga to release resources (simulates crash before finalize)
     drop(confirmed_saga1);
@@ -5213,12 +5438,14 @@ async fn test_paid_lookup_id_prevents_pending() {
         .unwrap();
 
     // Complete the full melt flow for quote1
-    let (payment_saga, decision) = setup_saga1
+    let InternalSettlementOutcome::RequiresExternalPayment(payment_saga) = setup_saga1
         .attempt_internal_settlement(&melt_request1)
         .await
-        .unwrap();
-    let PaymentOutcome::Confirmed(confirmed_saga) =
-        payment_saga.make_payment(decision).await.unwrap()
+        .unwrap()
+    else {
+        panic!("Expected external payment");
+    };
+    let PaymentOutcome::Confirmed(confirmed_saga) = payment_saga.make_payment().await.unwrap()
     else {
         panic!("Expected Confirmed outcome");
     };

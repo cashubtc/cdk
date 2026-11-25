@@ -164,16 +164,7 @@ async fn setup_interrupted_melt_with_outputs(
 }
 
 async fn set_saga_state(mint: &Mint, operation_id: &uuid::Uuid, state: MeltSagaState) {
-    let mut tx = mint.localstore().begin_transaction().await.unwrap();
-    let mut saga = tx
-        .get_saga_for_update(operation_id)
-        .await
-        .unwrap()
-        .expect("saga should exist");
-    tx.update_acquired_saga(&mut saga, SagaStateEnum::Melt(state))
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
+    crate::test_helpers::mint::advance_melt_saga_to(mint, operation_id, state).await;
 }
 
 async fn stored_quote(mint: &Mint, quote_id: &QuoteId) -> MeltQuote {
@@ -561,10 +552,9 @@ async fn status_poll_replays_finalizing_handoff_after_lease_expires() {
             .await
             .unwrap()
             .unwrap();
-        tx.update_acquired_saga_with_finalization_data(
+        tx.update_acquired_saga(
             &mut saga,
-            SagaStateEnum::Melt(MeltSagaState::Finalizing),
-            Some(&finalization_data),
+            SagaStateEnum::Melt(MeltSagaState::finalizing(finalization_data.clone())),
         )
         .await
         .unwrap();

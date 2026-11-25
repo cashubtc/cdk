@@ -660,28 +660,31 @@ pub trait SagaTransaction {
         operation_id: &uuid::Uuid,
     ) -> Result<Option<Acquired<mint::Saga>>, Self::Err>;
 
-    /// Add saga
+    /// Add saga.
+    ///
+    /// Implementations must reject inserting a payloadless
+    /// [`mint::MeltSagaState::Finalizing`] (`None` payload) row with
+    /// [`Error::InvalidStateTransition`].
     async fn add_saga(&mut self, saga: &mint::Saga) -> Result<(), Self::Err>;
 
     /// Update the state of an acquired saga.
     ///
-    /// Returns [`Error::ConcurrentUpdate`] if the stored saga no longer exists or its state no
-    /// longer matches, after which the caller must not commit the transaction.
+    /// Implementations must validate the transition via
+    /// [`crate::state::check_saga_state_transition`], match both the stored
+    /// `operation_kind` and `state` in the conditional update (and require a
+    /// `NULL` stored payload when enriching a legacy
+    /// [`mint::MeltSagaState::Finalizing`] row), and persist any state-owned
+    /// payload (such as [`mint::MeltFinalizationData`] carried by
+    /// [`mint::MeltSagaState::Finalizing`]).
+    ///
+    /// Returns [`Error::InvalidStateTransition`] if the transition is not
+    /// allowed, or [`Error::ConcurrentUpdate`] if the stored saga no longer
+    /// exists or its kind/state no longer matches (after which the caller must
+    /// not commit the transaction).
     async fn update_acquired_saga(
         &mut self,
         saga: &mut Acquired<mint::Saga>,
         new_state: mint::SagaStateEnum,
-    ) -> Result<(), Self::Err>;
-
-    /// Update an acquired saga state and optional finalization metadata.
-    ///
-    /// Returns [`Error::ConcurrentUpdate`] if the stored saga no longer exists or its state no
-    /// longer matches, after which the caller must not commit the transaction.
-    async fn update_acquired_saga_with_finalization_data(
-        &mut self,
-        saga: &mut Acquired<mint::Saga>,
-        new_state: mint::SagaStateEnum,
-        finalization_data: Option<&mint::MeltFinalizationData>,
     ) -> Result<(), Self::Err>;
 
     /// Delete saga

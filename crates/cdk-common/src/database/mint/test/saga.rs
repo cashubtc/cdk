@@ -13,15 +13,8 @@ where
     DB: Database<Error>,
 {
     let operation_id = uuid::Uuid::new_v4();
-    let saga = Saga {
-        operation_id,
-        operation_kind: OperationKind::Swap,
-        state: SagaStateEnum::Swap(SwapSagaState::SetupComplete),
-        quote_id: None,
-        finalization_data: None,
-        created_at: 1234567890,
-        updated_at: 1234567890,
-    };
+    let saga = Saga::new_swap(operation_id, SwapSagaState::SetupComplete)
+        .with_timestamps(1234567890, 1234567890);
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     tx.add_saga(&saga).await.unwrap();
@@ -32,10 +25,10 @@ where
     assert!(retrieved.is_some());
     let retrieved = retrieved.unwrap();
     assert_eq!(retrieved.operation_id, saga.operation_id);
-    assert_eq!(retrieved.operation_kind, saga.operation_kind);
+    assert_eq!(retrieved.operation_kind(), saga.operation_kind());
     assert_eq!(retrieved.state, saga.state);
-    assert_eq!(retrieved.quote_id, saga.quote_id);
-    assert_eq!(retrieved.finalization_data, saga.finalization_data);
+    assert_eq!(retrieved.quote_id(), saga.quote_id());
+    assert_eq!(retrieved.finalization_data(), saga.finalization_data());
     tx.commit().await.unwrap();
 }
 
@@ -45,15 +38,8 @@ where
     DB: Database<Error>,
 {
     let operation_id = uuid::Uuid::new_v4();
-    let saga = Saga {
-        operation_id,
-        operation_kind: OperationKind::Swap,
-        state: SagaStateEnum::Swap(SwapSagaState::SetupComplete),
-        quote_id: None,
-        finalization_data: None,
-        created_at: 1234567890,
-        updated_at: 1234567890,
-    };
+    let saga = Saga::new_swap(operation_id, SwapSagaState::SetupComplete)
+        .with_timestamps(1234567890, 1234567890);
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     tx.add_saga(&saga).await.unwrap();
@@ -65,21 +51,18 @@ where
     tx.rollback().await.unwrap();
 }
 
-/// A melt saga in `SetupComplete`, already stored in the database.
-async fn stored_melt_saga<DB>(db: &DB) -> uuid::Uuid
+/// A melt saga in `PaymentAttempted`, already stored in the database.
+async fn stored_attempted_melt_saga<DB>(db: &DB) -> uuid::Uuid
 where
     DB: Database<Error>,
 {
     let operation_id = uuid::Uuid::new_v4();
-    let saga = Saga {
+    let saga = Saga::new_melt(
         operation_id,
-        operation_kind: OperationKind::Melt,
-        state: SagaStateEnum::Melt(MeltSagaState::SetupComplete),
-        quote_id: Some("test_quote_id".to_string()),
-        finalization_data: None,
-        created_at: 1234567890,
-        updated_at: 1234567890,
-    };
+        MeltSagaState::PaymentAttempted,
+        "test_quote_id".to_string(),
+    )
+    .with_timestamps(1234567890, 1234567890);
 
     let mut tx = Database::begin_transaction(db).await.unwrap();
     tx.add_saga(&saga).await.unwrap();
@@ -111,21 +94,22 @@ where
     saga
 }
 
+fn sample_finalization_data() -> MeltFinalizationData {
+    MeltFinalizationData {
+        total_spent: Amount::from(9_123).with_unit(CurrencyUnit::Sat),
+        payment_lookup_id: PaymentIdentifier::CustomId("lookup_123".to_string()),
+        payment_proof: Some("proof_123".to_string()),
+    }
+}
+
 /// Test updating saga state
 pub async fn update_saga_state<DB>(db: DB)
 where
     DB: Database<Error>,
 {
     let operation_id = uuid::Uuid::new_v4();
-    let saga = Saga {
-        operation_id,
-        operation_kind: OperationKind::Swap,
-        state: SagaStateEnum::Swap(SwapSagaState::SetupComplete),
-        quote_id: None,
-        finalization_data: None,
-        created_at: 1234567890,
-        updated_at: 1234567890,
-    };
+    let saga = Saga::new_swap(operation_id, SwapSagaState::SetupComplete)
+        .with_timestamps(1234567890, 1234567890);
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     tx.add_saga(&saga).await.unwrap();
@@ -155,12 +139,13 @@ pub async fn update_acquired_saga_refuses_stale_state<DB>(db: DB)
 where
     DB: Database<Error>,
 {
-    let operation_id = stored_melt_saga(&db).await;
+    let operation_id = stored_attempted_melt_saga(&db).await;
     let mut stale = stale_saga(&db, &operation_id).await;
+    let finalization_data = sample_finalization_data();
     move_saga(
         &db,
         &operation_id,
-        SagaStateEnum::Melt(MeltSagaState::Finalizing),
+        SagaStateEnum::Melt(MeltSagaState::finalizing(finalization_data.clone())),
     )
     .await;
 
@@ -177,7 +162,10 @@ where
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     let stored = tx.get_saga(&operation_id).await.unwrap().unwrap();
-    assert_eq!(stored.state, SagaStateEnum::Melt(MeltSagaState::Finalizing));
+    assert_eq!(
+        stored.state,
+        SagaStateEnum::Melt(MeltSagaState::finalizing(finalization_data))
+    );
     tx.commit().await.unwrap();
 }
 
@@ -187,21 +175,14 @@ where
     DB: Database<Error>,
 {
     let operation_id = uuid::Uuid::new_v4();
-    let saga = Saga {
+    let saga = Saga::new_melt(
         operation_id,
-        operation_kind: OperationKind::Melt,
-        state: SagaStateEnum::Melt(MeltSagaState::SetupComplete),
-        quote_id: Some("test_quote_id".to_string()),
-        finalization_data: None,
-        created_at: 1234567890,
-        updated_at: 1234567890,
-    };
+        MeltSagaState::SetupComplete,
+        "test_quote_id".to_string(),
+    )
+    .with_timestamps(1234567890, 1234567890);
 
-    let finalization_data = MeltFinalizationData {
-        total_spent: Amount::from(9_123).with_unit(CurrencyUnit::Sat),
-        payment_lookup_id: PaymentIdentifier::CustomId("lookup_123".to_string()),
-        payment_proof: Some("proof_123".to_string()),
-    };
+    let finalization_data = sample_finalization_data();
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     tx.add_saga(&saga).await.unwrap();
@@ -213,10 +194,9 @@ where
         .await
         .unwrap()
         .expect("saga should exist");
-    tx.update_acquired_saga_with_finalization_data(
+    tx.update_acquired_saga(
         &mut saga,
-        SagaStateEnum::Melt(MeltSagaState::Finalizing),
-        Some(&finalization_data),
+        SagaStateEnum::Melt(MeltSagaState::finalizing(finalization_data.clone())),
     )
     .await
     .unwrap();
@@ -226,9 +206,9 @@ where
     let retrieved = tx.get_saga(&operation_id).await.unwrap().unwrap();
     assert_eq!(
         retrieved.state,
-        SagaStateEnum::Melt(MeltSagaState::Finalizing)
+        SagaStateEnum::Melt(MeltSagaState::finalizing(finalization_data.clone()))
     );
-    assert_eq!(retrieved.finalization_data, Some(finalization_data));
+    assert_eq!(retrieved.finalization_data(), Some(&finalization_data));
     tx.commit().await.unwrap();
 }
 
@@ -237,7 +217,7 @@ pub async fn update_acquired_saga_with_finalization_data_refuses_stale_state<DB>
 where
     DB: Database<Error>,
 {
-    let operation_id = stored_melt_saga(&db).await;
+    let operation_id = stored_attempted_melt_saga(&db).await;
     let mut stale = stale_saga(&db, &operation_id).await;
     move_saga(
         &db,
@@ -246,18 +226,13 @@ where
     )
     .await;
 
-    let finalization_data = MeltFinalizationData {
-        total_spent: Amount::from(9_123).with_unit(CurrencyUnit::Sat),
-        payment_lookup_id: PaymentIdentifier::CustomId("lookup_123".to_string()),
-        payment_proof: Some("proof_123".to_string()),
-    };
+    let finalization_data = sample_finalization_data();
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     let err = tx
-        .update_acquired_saga_with_finalization_data(
+        .update_acquired_saga(
             &mut stale,
-            SagaStateEnum::Melt(MeltSagaState::Finalizing),
-            Some(&finalization_data),
+            SagaStateEnum::Melt(MeltSagaState::finalizing(finalization_data)),
         )
         .await
         .unwrap_err();
@@ -270,73 +245,102 @@ where
         stored.state,
         SagaStateEnum::Melt(MeltSagaState::PaymentFailed)
     );
-    assert_eq!(stored.finalization_data, None);
+    assert_eq!(stored.finalization_data(), None);
     tx.commit().await.unwrap();
 }
 
-/// Test updating saga state preserves existing finalization data.
-pub async fn update_saga_preserves_finalization_data<DB>(db: DB)
+/// Illegal saga state transitions are rejected before modifying the row.
+pub async fn update_acquired_saga_refuses_invalid_transition<DB>(db: DB)
 where
     DB: Database<Error>,
 {
     let operation_id = uuid::Uuid::new_v4();
-    let saga = Saga {
+    let saga = Saga::new_melt(
         operation_id,
-        operation_kind: OperationKind::Melt,
-        state: SagaStateEnum::Melt(MeltSagaState::SetupComplete),
-        quote_id: Some("test_quote_id".to_string()),
-        finalization_data: None,
-        created_at: 1234567890,
-        updated_at: 1234567890,
-    };
-
-    let finalization_data = MeltFinalizationData {
-        total_spent: Amount::from(9_123).with_unit(CurrencyUnit::Sat),
-        payment_lookup_id: PaymentIdentifier::CustomId("lookup_123".to_string()),
-        payment_proof: Some("proof_123".to_string()),
-    };
+        MeltSagaState::SetupComplete,
+        "test_quote_id".to_string(),
+    )
+    .with_timestamps(1234567890, 1234567890);
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     tx.add_saga(&saga).await.unwrap();
     tx.commit().await.unwrap();
 
+    // SetupComplete -> PaymentFailed is invalid (must go through PaymentAttempted)
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    let mut saga = tx
+    let mut acquired = tx
         .get_saga_for_update(&operation_id)
         .await
         .unwrap()
         .expect("saga should exist");
-    tx.update_acquired_saga_with_finalization_data(
-        &mut saga,
-        SagaStateEnum::Melt(MeltSagaState::Finalizing),
-        Some(&finalization_data),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let err = tx
+        .update_acquired_saga(
+            &mut acquired,
+            SagaStateEnum::Melt(MeltSagaState::PaymentFailed),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::InvalidStateTransition(_)), "{err}");
+    tx.rollback().await.unwrap();
 
+    // Advance legally to Finalizing
+    let finalization_data = sample_finalization_data();
+    move_saga(
+        &db,
+        &operation_id,
+        SagaStateEnum::Melt(MeltSagaState::finalizing(finalization_data.clone())),
+    )
+    .await;
+
+    // Finalizing -> PaymentAttempted regression is rejected
     let mut tx = Database::begin_transaction(&db).await.unwrap();
-    let mut saga = tx
+    let mut acquired = tx
         .get_saga_for_update(&operation_id)
         .await
         .unwrap()
         .expect("saga should exist");
-    tx.update_acquired_saga(
-        &mut saga,
-        SagaStateEnum::Melt(MeltSagaState::PaymentAttempted),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let err = tx
+        .update_acquired_saga(
+            &mut acquired,
+            SagaStateEnum::Melt(MeltSagaState::PaymentAttempted),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::InvalidStateTransition(_)), "{err}");
+    tx.rollback().await.unwrap();
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     let retrieved = tx.get_saga(&operation_id).await.unwrap().unwrap();
     assert_eq!(
         retrieved.state,
-        SagaStateEnum::Melt(MeltSagaState::PaymentAttempted)
+        SagaStateEnum::Melt(MeltSagaState::finalizing(finalization_data.clone()))
     );
-    assert_eq!(retrieved.finalization_data, Some(finalization_data));
+    assert_eq!(retrieved.finalization_data(), Some(&finalization_data));
     tx.commit().await.unwrap();
+
+    // PaymentFailed -> Finalizing is also rejected
+    let failed_op = stored_attempted_melt_saga(&db).await;
+    move_saga(
+        &db,
+        &failed_op,
+        SagaStateEnum::Melt(MeltSagaState::PaymentFailed),
+    )
+    .await;
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut acquired = tx
+        .get_saga_for_update(&failed_op)
+        .await
+        .unwrap()
+        .expect("saga should exist");
+    let err = tx
+        .update_acquired_saga(
+            &mut acquired,
+            SagaStateEnum::Melt(MeltSagaState::finalizing(finalization_data)),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::InvalidStateTransition(_)), "{err}");
+    tx.rollback().await.unwrap();
 }
 
 /// Test deleting saga
@@ -345,15 +349,8 @@ where
     DB: Database<Error>,
 {
     let operation_id = uuid::Uuid::new_v4();
-    let saga = Saga {
-        operation_id,
-        operation_kind: OperationKind::Swap,
-        state: SagaStateEnum::Swap(SwapSagaState::SetupComplete),
-        quote_id: None,
-        finalization_data: None,
-        created_at: 1234567890,
-        updated_at: 1234567890,
-    };
+    let saga = Saga::new_swap(operation_id, SwapSagaState::SetupComplete)
+        .with_timestamps(1234567890, 1234567890);
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     tx.add_saga(&saga).await.unwrap();
@@ -379,35 +376,18 @@ pub async fn get_incomplete_swap_sagas<DB>(db: DB)
 where
     DB: Database<Error>,
 {
-    let saga1 = Saga {
-        operation_id: uuid::Uuid::new_v4(),
-        operation_kind: OperationKind::Swap,
-        state: SagaStateEnum::Swap(SwapSagaState::SetupComplete),
-        quote_id: None,
-        finalization_data: None,
-        created_at: 1234567890,
-        updated_at: 1234567890,
-    };
+    let saga1 = Saga::new_swap(uuid::Uuid::new_v4(), SwapSagaState::SetupComplete)
+        .with_timestamps(1234567890, 1234567890);
 
-    let saga2 = Saga {
-        operation_id: uuid::Uuid::new_v4(),
-        operation_kind: OperationKind::Swap,
-        state: SagaStateEnum::Swap(SwapSagaState::Signed),
-        quote_id: None,
-        finalization_data: None,
-        created_at: 1234567891,
-        updated_at: 1234567891,
-    };
+    let saga2 = Saga::new_swap(uuid::Uuid::new_v4(), SwapSagaState::Signed)
+        .with_timestamps(1234567891, 1234567891);
 
-    let saga3 = Saga {
-        operation_id: uuid::Uuid::new_v4(),
-        operation_kind: OperationKind::Melt,
-        state: SagaStateEnum::Melt(MeltSagaState::SetupComplete),
-        quote_id: Some("test_quote_id".to_string()),
-        finalization_data: None,
-        created_at: 1234567892,
-        updated_at: 1234567892,
-    };
+    let saga3 = Saga::new_melt(
+        uuid::Uuid::new_v4(),
+        MeltSagaState::SetupComplete,
+        "test_quote_id".to_string(),
+    )
+    .with_timestamps(1234567892, 1234567892);
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     tx.add_saga(&saga1).await.unwrap();
@@ -434,15 +414,12 @@ where
     DB: Database<Error>,
 {
     let quote_id = crate::QuoteId::new();
-    let saga = Saga {
-        operation_id: uuid::Uuid::new_v4(),
-        operation_kind: OperationKind::Melt,
-        state: SagaStateEnum::Melt(MeltSagaState::SetupComplete),
-        quote_id: Some(quote_id.to_string()),
-        finalization_data: None,
-        created_at: 1234567890,
-        updated_at: 1234567890,
-    };
+    let saga = Saga::new_melt(
+        uuid::Uuid::new_v4(),
+        MeltSagaState::SetupComplete,
+        quote_id.to_string(),
+    )
+    .with_timestamps(1234567890, 1234567890);
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     tx.add_saga(&saga).await.unwrap();
@@ -452,44 +429,41 @@ where
     assert!(retrieved.is_some());
     let retrieved = retrieved.unwrap();
     assert_eq!(retrieved.operation_id, saga.operation_id);
-    assert_eq!(retrieved.quote_id, Some(quote_id.to_string()));
+    assert_eq!(retrieved.quote_id(), Some(quote_id.to_string().as_str()));
 }
 
-/// Test melt-specific quote lookup ignores non-melt sagas with the same quote id
+/// Test melt-specific quote lookup ignores non-melt sagas even when `quote_id` collides
 pub async fn get_melt_saga_by_quote_id_filters_non_melt<DB>(db: DB)
 where
     DB: Database<Error>,
 {
     let quote_id = crate::QuoteId::new();
-    let swap_saga = Saga {
-        operation_id: uuid::Uuid::new_v4(),
-        operation_kind: OperationKind::Swap,
-        state: SagaStateEnum::Swap(SwapSagaState::SetupComplete),
-        quote_id: Some(quote_id.to_string()),
-        finalization_data: None,
-        created_at: 1234567890,
-        updated_at: 1234567890,
-    };
-    let melt_saga = Saga {
-        operation_id: uuid::Uuid::new_v4(),
-        operation_kind: OperationKind::Melt,
-        state: SagaStateEnum::Melt(MeltSagaState::SetupComplete),
-        quote_id: Some(quote_id.to_string()),
-        finalization_data: None,
-        created_at: 1234567891,
-        updated_at: 1234567891,
-    };
+    let swap_saga = Saga::from_db(
+        uuid::Uuid::new_v4(),
+        SagaStateEnum::Swap(SwapSagaState::SetupComplete),
+        Some(quote_id.to_string()),
+        1234567890,
+        1234567890,
+    );
+    let melt_saga = Saga::new_melt(
+        uuid::Uuid::new_v4(),
+        MeltSagaState::SetupComplete,
+        quote_id.to_string(),
+    )
+    .with_timestamps(1234567891, 1234567891);
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     tx.add_saga(&swap_saga).await.unwrap();
     tx.add_saga(&melt_saga).await.unwrap();
+    let stored_swap = tx.get_saga(&swap_saga.operation_id).await.unwrap().unwrap();
+    assert_eq!(stored_swap.quote_id(), Some(quote_id.to_string().as_str()));
     tx.commit().await.unwrap();
 
     let retrieved = db.get_melt_saga_by_quote_id(&quote_id).await.unwrap();
     assert!(retrieved.is_some());
     let retrieved = retrieved.unwrap();
     assert_eq!(retrieved.operation_id, melt_saga.operation_id);
-    assert_eq!(retrieved.quote_id, Some(quote_id.to_string()));
+    assert_eq!(retrieved.quote_id(), Some(quote_id.to_string().as_str()));
 }
 
 /// Test getting incomplete sagas for melt operation
@@ -497,35 +471,22 @@ pub async fn get_incomplete_melt_sagas<DB>(db: DB)
 where
     DB: Database<Error>,
 {
-    let saga1 = Saga {
-        operation_id: uuid::Uuid::new_v4(),
-        operation_kind: OperationKind::Melt,
-        state: SagaStateEnum::Melt(MeltSagaState::SetupComplete),
-        quote_id: Some("melt_quote_1".to_string()),
-        finalization_data: None,
-        created_at: 1234567890,
-        updated_at: 1234567890,
-    };
+    let saga1 = Saga::new_melt(
+        uuid::Uuid::new_v4(),
+        MeltSagaState::SetupComplete,
+        "melt_quote_1".to_string(),
+    )
+    .with_timestamps(1234567890, 1234567890);
 
-    let saga2 = Saga {
-        operation_id: uuid::Uuid::new_v4(),
-        operation_kind: OperationKind::Melt,
-        state: SagaStateEnum::Melt(MeltSagaState::PaymentAttempted),
-        quote_id: Some("melt_quote_2".to_string()),
-        finalization_data: None,
-        created_at: 1234567891,
-        updated_at: 1234567891,
-    };
+    let saga2 = Saga::new_melt(
+        uuid::Uuid::new_v4(),
+        MeltSagaState::PaymentAttempted,
+        "melt_quote_2".to_string(),
+    )
+    .with_timestamps(1234567891, 1234567891);
 
-    let saga3 = Saga {
-        operation_id: uuid::Uuid::new_v4(),
-        operation_kind: OperationKind::Swap,
-        state: SagaStateEnum::Swap(SwapSagaState::SetupComplete),
-        quote_id: None,
-        finalization_data: None,
-        created_at: 1234567892,
-        updated_at: 1234567892,
-    };
+    let saga3 = Saga::new_swap(uuid::Uuid::new_v4(), SwapSagaState::SetupComplete)
+        .with_timestamps(1234567892, 1234567892);
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     tx.add_saga(&saga1).await.unwrap();
@@ -592,15 +553,12 @@ where
 {
     let operation_id = uuid::Uuid::new_v4();
     let quote_id = "test_melt_quote_123";
-    let saga = Saga {
+    let saga = Saga::new_melt(
         operation_id,
-        operation_kind: OperationKind::Melt,
-        state: SagaStateEnum::Melt(MeltSagaState::SetupComplete),
-        quote_id: Some(quote_id.to_string()),
-        finalization_data: None,
-        created_at: 1234567890,
-        updated_at: 1234567890,
-    };
+        MeltSagaState::SetupComplete,
+        quote_id.to_string(),
+    )
+    .with_timestamps(1234567890, 1234567890);
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     tx.add_saga(&saga).await.unwrap();
@@ -608,7 +566,7 @@ where
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     let retrieved = tx.get_saga(&operation_id).await.unwrap().unwrap();
-    assert_eq!(retrieved.quote_id, Some(quote_id.to_string()));
+    assert_eq!(retrieved.quote_id(), Some(quote_id));
     tx.commit().await.unwrap();
 }
 
@@ -618,15 +576,8 @@ where
     DB: Database<Error>,
 {
     let operation_id = uuid::Uuid::new_v4();
-    let saga = Saga {
-        operation_id,
-        operation_kind: OperationKind::Swap,
-        state: SagaStateEnum::Swap(SwapSagaState::SetupComplete),
-        quote_id: None,
-        finalization_data: None,
-        created_at: 1234567890,
-        updated_at: 1234567890,
-    };
+    let saga = Saga::new_swap(operation_id, SwapSagaState::SetupComplete)
+        .with_timestamps(1234567890, 1234567890);
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
     tx.add_saga(&saga).await.unwrap();
@@ -644,42 +595,22 @@ where
     DB: Database<Error>,
 {
     let sagas = vec![
-        Saga {
-            operation_id: uuid::Uuid::new_v4(),
-            operation_kind: OperationKind::Swap,
-            state: SagaStateEnum::Swap(SwapSagaState::SetupComplete),
-            quote_id: None,
-            finalization_data: None,
-            created_at: 1234567890,
-            updated_at: 1234567890,
-        },
-        Saga {
-            operation_id: uuid::Uuid::new_v4(),
-            operation_kind: OperationKind::Swap,
-            state: SagaStateEnum::Swap(SwapSagaState::Signed),
-            quote_id: None,
-            finalization_data: None,
-            created_at: 1234567891,
-            updated_at: 1234567891,
-        },
-        Saga {
-            operation_id: uuid::Uuid::new_v4(),
-            operation_kind: OperationKind::Melt,
-            state: SagaStateEnum::Melt(MeltSagaState::SetupComplete),
-            quote_id: Some("quote1".to_string()),
-            finalization_data: None,
-            created_at: 1234567892,
-            updated_at: 1234567892,
-        },
-        Saga {
-            operation_id: uuid::Uuid::new_v4(),
-            operation_kind: OperationKind::Melt,
-            state: SagaStateEnum::Melt(MeltSagaState::PaymentAttempted),
-            quote_id: Some("quote2".to_string()),
-            finalization_data: None,
-            created_at: 1234567893,
-            updated_at: 1234567893,
-        },
+        Saga::new_swap(uuid::Uuid::new_v4(), SwapSagaState::SetupComplete)
+            .with_timestamps(1234567890, 1234567890),
+        Saga::new_swap(uuid::Uuid::new_v4(), SwapSagaState::Signed)
+            .with_timestamps(1234567891, 1234567891),
+        Saga::new_melt(
+            uuid::Uuid::new_v4(),
+            MeltSagaState::SetupComplete,
+            "quote1".to_string(),
+        )
+        .with_timestamps(1234567892, 1234567892),
+        Saga::new_melt(
+            uuid::Uuid::new_v4(),
+            MeltSagaState::PaymentAttempted,
+            "quote2".to_string(),
+        )
+        .with_timestamps(1234567893, 1234567893),
     ];
 
     let mut tx = Database::begin_transaction(&db).await.unwrap();
@@ -694,10 +625,176 @@ where
         assert!(retrieved.is_some());
         let retrieved = retrieved.unwrap();
         assert_eq!(retrieved.operation_id, saga.operation_id);
-        assert_eq!(retrieved.operation_kind, saga.operation_kind);
+        assert_eq!(retrieved.operation_kind(), saga.operation_kind());
         assert_eq!(retrieved.state, saga.state);
-        assert_eq!(retrieved.quote_id, saga.quote_id);
-        assert_eq!(retrieved.finalization_data, saga.finalization_data);
+        assert_eq!(retrieved.quote_id(), saga.quote_id());
+        assert_eq!(retrieved.finalization_data(), saga.finalization_data());
         tx.commit().await.unwrap();
     }
+}
+
+/// Test that fresh saga writes cannot create a payloadless `Finalizing(None)` row.
+pub async fn add_saga_rejects_payloadless_finalizing<DB>(db: DB)
+where
+    DB: Database<Error>,
+{
+    let operation_id = uuid::Uuid::new_v4();
+    let invalid_saga = Saga::new_melt(
+        operation_id,
+        MeltSagaState::Finalizing(None),
+        "quote_payloadless".to_string(),
+    )
+    .with_timestamps(1234567890, 1234567890);
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let err = tx.add_saga(&invalid_saga).await.unwrap_err();
+    assert!(
+        matches!(err, Error::InvalidStateTransition(_)),
+        "expected InvalidStateTransition on payloadless Finalizing insert, got {err:?}"
+    );
+    tx.rollback().await.unwrap();
+
+    // Also verify transitioning an existing saga to Finalizing(None) is rejected.
+    let valid_saga = Saga::new_melt(
+        operation_id,
+        MeltSagaState::SetupComplete,
+        "quote_payloadless".to_string(),
+    )
+    .with_timestamps(1234567890, 1234567890);
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_saga(&valid_saga).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut acquired = tx
+        .get_saga_for_update(&operation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let err = tx
+        .update_acquired_saga(
+            &mut acquired,
+            SagaStateEnum::Melt(MeltSagaState::Finalizing(None)),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::InvalidStateTransition(_)),
+        "expected InvalidStateTransition on transition to Finalizing(None), got {err:?}"
+    );
+    tx.rollback().await.unwrap();
+}
+
+/// Test that mutating an acquired swap saga's in-memory kind cannot update the stored row.
+pub async fn update_acquired_saga_refuses_cross_kind_snapshot_mutation<DB>(db: DB)
+where
+    DB: Database<Error>,
+{
+    let operation_id = uuid::Uuid::new_v4();
+    let swap_saga = Saga::new_swap(operation_id, SwapSagaState::SetupComplete)
+        .with_timestamps(1234567890, 1234567890);
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_saga(&swap_saga).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut acquired = tx
+        .get_saga_for_update(&operation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    // Mutate the in-memory snapshot from Swap(SetupComplete) to Melt(SetupComplete),
+    // which shares the `setup_complete` state tag. The SQL update must still check
+    // `operation_kind` and reject the cross-kind update.
+    acquired.state = SagaStateEnum::Melt(MeltSagaState::SetupComplete);
+    let err = tx
+        .update_acquired_saga(
+            &mut acquired,
+            SagaStateEnum::Melt(MeltSagaState::PaymentAttempted),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::ConcurrentUpdate),
+        "expected ConcurrentUpdate on cross-kind snapshot mutation, got {err:?}"
+    );
+    tx.rollback().await.unwrap();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let stored = tx.get_saga(&operation_id).await.unwrap().unwrap();
+    assert_eq!(stored.operation_kind(), OperationKind::Swap);
+    assert_eq!(
+        stored.state,
+        SagaStateEnum::Swap(SwapSagaState::SetupComplete)
+    );
+    tx.commit().await.unwrap();
+}
+
+/// Verify that a pre-seeded legacy `Finalizing(None)` row can be enriched once
+/// and rejects a second overwrite from a stale `Finalizing(None)` snapshot.
+pub async fn legacy_finalizing_enrichment_rejects_second_overwrite<DB>(
+    db: &DB,
+    operation_id: uuid::Uuid,
+) where
+    DB: Database<Error>,
+{
+    let mut stale_tx = Database::begin_transaction(db).await.unwrap();
+    let mut stale_snapshot = stale_tx
+        .get_saga_for_update(&operation_id)
+        .await
+        .unwrap()
+        .expect("legacy row exists");
+    assert_eq!(
+        stale_snapshot.state,
+        SagaStateEnum::Melt(MeltSagaState::Finalizing(None))
+    );
+    stale_tx.rollback().await.unwrap();
+
+    let first_data = MeltFinalizationData {
+        total_spent: Amount::from(9_100).with_unit(CurrencyUnit::Sat),
+        payment_lookup_id: PaymentIdentifier::CustomId("first-lookup".to_string()),
+        payment_proof: Some("first-preimage".to_string()),
+    };
+    let second_data = MeltFinalizationData {
+        total_spent: Amount::from(9_200).with_unit(CurrencyUnit::Sat),
+        payment_lookup_id: PaymentIdentifier::CustomId("second-lookup".to_string()),
+        payment_proof: Some("second-preimage".to_string()),
+    };
+
+    // First enrichment commits successfully.
+    let mut tx1 = Database::begin_transaction(db).await.unwrap();
+    let mut acquired1 = tx1
+        .get_saga_for_update(&operation_id)
+        .await
+        .unwrap()
+        .expect("legacy row exists");
+    tx1.update_acquired_saga(
+        &mut acquired1,
+        SagaStateEnum::Melt(MeltSagaState::finalizing(first_data.clone())),
+    )
+    .await
+    .expect("first enrichment should succeed");
+    tx1.commit().await.unwrap();
+
+    // Second enrichment using the stale Finalizing(None) snapshot must fail
+    // with ConcurrentUpdate and preserve the first payload.
+    let mut tx2 = Database::begin_transaction(db).await.unwrap();
+    let err = tx2
+        .update_acquired_saga(
+            &mut stale_snapshot,
+            SagaStateEnum::Melt(MeltSagaState::finalizing(second_data)),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::ConcurrentUpdate),
+        "expected ConcurrentUpdate on stale enrichment, got {err:?}"
+    );
+    tx2.rollback().await.unwrap();
+
+    let mut verify_tx = Database::begin_transaction(db).await.unwrap();
+    let stored = verify_tx.get_saga(&operation_id).await.unwrap().unwrap();
+    assert_eq!(stored.finalization_data(), Some(&first_data));
+    verify_tx.commit().await.unwrap();
 }

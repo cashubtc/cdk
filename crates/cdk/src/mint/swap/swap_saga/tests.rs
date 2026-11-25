@@ -1651,7 +1651,7 @@ async fn test_saga_content_validation() {
     // Validate content
     use cdk_common::mint::{OperationKind, SagaStateEnum, SwapSagaState};
     assert_eq!(saga.operation_id, operation_id);
-    assert_eq!(saga.operation_kind, OperationKind::Swap);
+    assert_eq!(saga.operation_kind(), OperationKind::Swap);
     assert_eq!(
         saga.state,
         SagaStateEnum::Swap(SwapSagaState::SetupComplete)

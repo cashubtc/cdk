@@ -412,6 +412,52 @@ mod test {
     }
 
     #[tokio::test]
+    async fn legacy_finalizing_enrichment_rejects_second_overwrite() {
+        use cdk_sql_common::stmt::query;
+
+        let test_id = format!(
+            "test_legacy_enrichment_{}",
+            uuid::Uuid::new_v4().to_string().replace('-', "_")
+        );
+        let db_url = std::env::var("CDK_MINTD_DATABASE_URL")
+            .or_else(|_| std::env::var("PG_DB_URL"))
+            .unwrap_or(
+                "host=localhost user=cdk_user password=cdk_password dbname=cdk_mint port=5432"
+                    .to_owned(),
+            );
+        let scoped_url = format!("{db_url} schema={test_id}");
+        let db = MintPgDatabase::new(scoped_url.as_str())
+            .await
+            .expect("database");
+
+        let operation_id = uuid::Uuid::new_v4();
+        {
+            let pool = cdk_sql_common::pool::Pool::<PgConnectionPool>::new(PgConfig::from(
+                scoped_url.as_str(),
+            ));
+            let conn = pool.get().await.expect("pg connection");
+            query(
+                r#"
+                INSERT INTO saga_state
+                (operation_id, operation_kind, state, quote_id, finalization_data, created_at, updated_at)
+                VALUES (:operation_id, 'melt', 'finalizing', 'quote-legacy', NULL, 100, 100)
+                "#,
+            )
+            .expect("query")
+            .bind("operation_id", operation_id.to_string())
+            .execute(&*conn)
+            .await
+            .expect("seed legacy finalizing row");
+        }
+
+        cdk_common::database::mint::test::legacy_finalizing_enrichment_rejects_second_overwrite(
+            &db,
+            operation_id,
+        )
+        .await;
+    }
+
+    #[tokio::test]
     async fn quote_lock_batch_excludes_concurrent_transaction() {
         use std::sync::Arc;
         use std::time::Duration;

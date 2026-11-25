@@ -198,4 +198,53 @@ mod test {
 
         let _ = remove_file(&file);
     }
+
+    #[tokio::test]
+    async fn legacy_finalizing_enrichment_rejects_second_overwrite() {
+        let file = std::env::temp_dir().join(format!(
+            "cdk-legacy-enrichment-race-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+
+        #[cfg(not(feature = "sqlcipher"))]
+        let db = MintSqliteDatabase::new(&file)
+            .await
+            .expect("mint sqlite database");
+        #[cfg(feature = "sqlcipher")]
+        let db = MintSqliteDatabase::new((file.clone(), "test".parse().expect("non-empty key")))
+            .await
+            .expect("mint sqlite database");
+
+        let operation_id = uuid::Uuid::new_v4();
+        {
+            #[cfg(not(feature = "sqlcipher"))]
+            let config: Config = file.clone().into();
+            #[cfg(feature = "sqlcipher")]
+            let config: Config = (file.clone(), "test".parse().expect("non-empty key")).into();
+
+            let pool = Pool::<SqliteConnectionManager>::new(config);
+            let conn = pool.get().await.expect("valid connection");
+            query(
+                r#"
+                INSERT INTO saga_state
+                (operation_id, operation_kind, state, quote_id, finalization_data, created_at, updated_at)
+                VALUES (:operation_id, 'melt', 'finalizing', 'quote-legacy', NULL, 100, 100)
+                "#,
+            )
+            .expect("query")
+            .bind("operation_id", operation_id.to_string())
+            .execute(&*conn)
+            .await
+            .expect("seed legacy finalizing row");
+        }
+
+        cdk_common::database::mint::test::legacy_finalizing_enrichment_rejects_second_overwrite(
+            &db,
+            operation_id,
+        )
+        .await;
+
+        drop(db);
+        let _ = remove_file(&file);
+    }
 }
