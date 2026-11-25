@@ -435,7 +435,15 @@ pub(super) fn expected_federation_mint_amounts(
     outputs_amount: Amount<CurrencyUnit>,
 ) -> Result<Vec<Amount<CurrencyUnit>>, Error> {
     match input {
-        MintInput::Single(_) => Ok(vec![outputs_amount]),
+        // Bolt11 invoices are paid in full, so a Bolt11 mint issues exactly
+        // the quote amount, as a standalone mint requires. Other methods may
+        // issue part of what was paid.
+        MintInput::Single(_) => match quotes.first() {
+            Some(quote) if quote.payment_method.is_bolt11() => {
+                Ok(vec![quote.amount.clone().ok_or(Error::AmountUndefined)?])
+            }
+            _ => Ok(vec![outputs_amount]),
+        },
         MintInput::Batch(request) => quotes
             .iter()
             .enumerate()
@@ -445,6 +453,9 @@ pub(super) fn expected_federation_mint_amounts(
                 }
                 if quote.state() == MintQuoteState::Issued {
                     return Ok(quote.amount_issued());
+                }
+                if quote.payment_method.is_bolt11() {
+                    return quote.amount.clone().ok_or(Error::AmountUndefined);
                 }
 
                 match &request.quote_amounts {

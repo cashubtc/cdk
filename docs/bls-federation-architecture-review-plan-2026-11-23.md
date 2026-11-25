@@ -829,3 +829,9 @@ Decision 2 keeps two implementations of the swap, mint and melt rules, so this s
 - **Not fixed.** These are business-rule and error-kind differences in federated application; fixing them changes production code and is left for a follow-up decision.
 
 Verification: `cargo fmt --all`; `cargo clippy -p cdk --features mint,wallet,federation,federation-bark --all-targets -- -D warnings`; `cdk` lib tests with `mint,wallet,federation,federation-bark` (1,082 passed) and with default features (790 passed); `cdk` tests build with `mint,federation` and no default features.
+
+### 2026-11-25: package 4, divergences found by the parity test fixed
+
+- **Keyset errors.** Federated output validation now reports `Error::UnknownKeySet` and `Error::InactiveKeyset`, the errors a standalone mint uses, instead of the federation's own variants (`FederationKeysets::check_output`). Every federated output-validation error (unknown keyset, unsupported amount, wrong keyset version, non-BLS blinded secret) is now a definitive rejection. The keyset view used at apply time is rebuilt from applied keyset rotations in journal order, so these outcomes are the same on every member.
+- **Bolt11 mint amount.** A federated Bolt11 mint must issue exactly the quote amount, single or batch, as `process_mint_request` requires (`expected_federation_mint_amounts`). Below or above the quote amount is `TransactionUnbalanced` with the standalone message. Other payment methods keep partial single mints.
+- **Tests.** The four `expected_divergence_*` assertions in `parity.rs` are now plain parity assertions; all 15 vectors agree on every compared dimension. `cdk-common` gains `federation_output_validation_errors_are_definitive`.

@@ -143,14 +143,21 @@ impl KeysetView for FederationKeysets<'_> {
     }
 
     fn check_output(&self, output: &BlindedMessage) -> Result<(), Error> {
-        match self.outputs {
-            FederationOutputPolicy::Issued => self.config.validate_blinded_output(output)?,
+        let checked = match self.outputs {
+            FederationOutputPolicy::Issued => self.config.validate_blinded_output(output),
             FederationOutputPolicy::MeltChange => {
-                self.config.validate_blinded_change_output(output)?
+                self.config.validate_blinded_change_output(output)
             }
         };
 
-        Ok(())
+        // Report keyset rules with the errors a standalone mint uses, so
+        // wallets see the same error for the same request in both modes.
+        match checked {
+            Ok(_) => Ok(()),
+            Err(FederationError::UnknownFederatedKeyset { .. }) => Err(Error::UnknownKeySet),
+            Err(FederationError::InactiveFederatedKeyset { .. }) => Err(Error::InactiveKeyset),
+            Err(err) => Err(err.into()),
+        }
     }
 }
 

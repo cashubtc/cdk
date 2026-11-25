@@ -48,17 +48,12 @@
 //! - **Errors.** The error variant, its message, and whether a member would
 //!   record it as a definitive rejection (`is_definitive_federation_apply_rejection`).
 //!
-//! # Known divergences
+//! # Divergences fixed
 //!
-//! Vectors where the two implementations disagree end in an
-//! `expected_divergence_*` assertion that pins the current federated
-//! behaviour and checks that every other dimension still agrees:
-//!
-//! - outputs on an unknown keyset: federated error kind, not definitive;
-//! - outputs on an inactive keyset: federated error kind;
-//! - a Bolt11 mint below the quote amount: accepted by federated application;
-//! - a Bolt11 mint above the quote amount: `UnpaidQuote` instead of
-//!   `TransactionUnbalanced`.
+//! The first run of this test found four, all in federated application and
+//! fixed there: outputs on an unknown or inactive keyset now report the
+//! standalone errors (and every output-validation failure is a definitive
+//! rejection), and a Bolt11 mint must issue exactly the quote amount.
 //!
 //! # Excluded on purpose
 //!
@@ -328,13 +323,6 @@ impl ErrorKind {
             definitive: is_definitive_federation_apply_rejection(error),
         }
     }
-}
-
-/// The variant of every federation-specific error.
-fn federation_error_variant() -> Discriminant<Error> {
-    std::mem::discriminant(&Error::Federation(FederationError::RuntimeUnavailable {
-        component: "parity",
-    }))
 }
 
 /// One output after a request: its amount and the activation position of
@@ -1073,25 +1061,6 @@ fn assert_parity(standalone: &[Observed], federated: &[Observed]) {
     }
 }
 
-/// Assert that both runs agree on everything but the result of step `name`.
-///
-/// Used only by expected-divergence assertions, which check the two results
-/// themselves.
-fn assert_parity_except_result(standalone: &[Observed], federated: &[Observed], name: &str) {
-    let without_result = |run: &[Observed]| {
-        run.iter()
-            .cloned()
-            .map(|mut observed| {
-                if observed.step == name {
-                    observed.result = Ok(());
-                }
-                observed
-            })
-            .collect::<Vec<_>>()
-    };
-    assert_parity(&without_result(standalone), &without_result(federated));
-}
-
 fn step<'a>(run: &'a [Observed], name: &str) -> &'a Observed {
     run.iter()
         .find(|observed| observed.step == name)
@@ -1299,40 +1268,7 @@ async fn swap_to_unknown_keyset() {
     let swap = step(&standalone, "swap");
     assert_error(swap, &Error::UnknownKeySet);
     assert_eq!(swap.input_states, vec![None; 2]);
-    expected_divergence_federated_unknown_keyset_error_is_not_a_definitive_rejection(
-        &standalone,
-        &federated,
-    );
-}
-
-/// Expected divergence: both paths reject an output on an unknown keyset
-/// without changing state, but federated application reports the
-/// federation's own error (`FederationError::UnknownFederatedKeyset`, raised
-/// by `FederationKeysets::check_output` before the shared keyset rule)
-/// instead of `Error::UnknownKeySet`. Unlike `UnknownKeySet`, that error is
-/// not a definitive apply rejection, so a member would record such an
-/// ordered operation as failed and retry it instead of rejecting it.
-fn expected_divergence_federated_unknown_keyset_error_is_not_a_definitive_rejection(
-    standalone: &[Observed],
-    federated: &[Observed],
-) {
-    assert_parity_except_result(standalone, federated, "swap");
-    let standalone = step(standalone, "swap")
-        .result
-        .as_ref()
-        .expect_err("standalone rejects");
-    let federated = step(federated, "swap")
-        .result
-        .as_ref()
-        .expect_err("federated rejects");
-    assert_eq!(
-        standalone.variant,
-        std::mem::discriminant(&Error::UnknownKeySet)
-    );
-    assert!(standalone.definitive);
-    assert_eq!(federated.variant, federation_error_variant());
-    assert!(federated.message.starts_with("Unknown federated keyset"));
-    assert!(!federated.definitive);
+    assert_parity(&standalone, &federated);
 }
 
 const INACTIVE_OUTPUTS: &str = "outputs on inactive keyset";
@@ -1385,35 +1321,7 @@ async fn swap_across_keyset_rotation() {
     );
     assert_eq!(accepted.input_states, vec![Some(State::Spent); 2]);
     assert_ok(step(&standalone, "second inactive-keyset input"));
-    expected_divergence_federated_inactive_keyset_error_kind(&standalone, &federated);
-}
-
-/// Expected divergence: both paths reject outputs on an inactive keyset as a
-/// definitive rejection without changing state, but federated application
-/// reports `FederationError::InactiveFederatedKeyset` (raised by
-/// `FederationKeysets::check_output`) instead of `Error::InactiveKeyset`, so
-/// the error a wallet sees differs.
-fn expected_divergence_federated_inactive_keyset_error_kind(
-    standalone: &[Observed],
-    federated: &[Observed],
-) {
-    assert_parity_except_result(standalone, federated, INACTIVE_OUTPUTS);
-    let standalone = step(standalone, INACTIVE_OUTPUTS)
-        .result
-        .as_ref()
-        .expect_err("standalone rejects");
-    let federated = step(federated, INACTIVE_OUTPUTS)
-        .result
-        .as_ref()
-        .expect_err("federated rejects");
-    assert_eq!(
-        standalone.variant,
-        std::mem::discriminant(&Error::InactiveKeyset)
-    );
-    assert_eq!(federated.variant, federation_error_variant());
-    assert!(federated.message.ends_with("is inactive"));
-    assert!(standalone.definitive);
-    assert!(federated.definitive);
+    assert_parity(&standalone, &federated);
 }
 
 /// A mint attempt on a quote, observed with the quote.
@@ -1525,42 +1433,7 @@ async fn mint_outputs_below_quote_amount() {
         "Inputs: `15`, Outputs: `12`, Expected Fee: `0`"
     );
     assert_eq!(mismatch.mint_quote, Some(paid_unissued_quote()));
-    expected_divergence_federated_bolt11_mint_issues_less_than_quote_amount(&federated);
-}
-
-/// Expected divergence: a standalone mint requires a Bolt11 mint to issue
-/// exactly the quote amount (`process_mint_request`). Federated application
-/// takes a single mint's amount from its outputs
-/// (`expected_federation_mint_amounts`) and only bounds issued plus new
-/// amount by the payment quorum, so it signs outputs below the quote amount
-/// and leaves the remainder mintable.
-fn expected_divergence_federated_bolt11_mint_issues_less_than_quote_amount(federated: &[Observed]) {
-    let federated = step(federated, BELOW_QUOTE);
-    assert_ok(federated);
-    assert_eq!(
-        federated.outputs,
-        SignedOutputs {
-            outputs: vec![Some((8, 0)), Some((4, 0))],
-            proofs_verify: true,
-        }
-    );
-    assert_eq!(
-        federated.mint_quote,
-        Some(MintQuoteSummary {
-            state: MintQuoteState::Paid,
-            amount: Some(15),
-            amount_paid: 15,
-            amount_issued: 12,
-        })
-    );
-    assert!(federated.operations.contains(&OperationSummary {
-        kind: OperationKind::Mint.to_string(),
-        total_issued: 12,
-        total_redeemed: 0,
-        fee_collected: 0,
-        payment_amount: None,
-        payment_fee: None,
-    }));
+    assert_parity(&standalone, &federated);
 }
 
 #[tokio::test]
@@ -1582,29 +1455,7 @@ async fn mint_outputs_above_quote_amount() {
         "Inputs: `15`, Outputs: `16`, Expected Fee: `0`"
     );
     assert_eq!(mismatch.mint_quote, Some(paid_unissued_quote()));
-    expected_divergence_federated_bolt11_mint_above_quote_amount_reports_unpaid(
-        &standalone,
-        &federated,
-    );
-}
-
-/// Expected divergence: both paths reject outputs above the quote amount
-/// without changing state, but federated application reaches the rule
-/// through the payment quorum check (issued plus new amount is not covered),
-/// so it reports `Error::UnpaidQuote` on a paid quote where a standalone mint
-/// reports `Error::TransactionUnbalanced`.
-fn expected_divergence_federated_bolt11_mint_above_quote_amount_reports_unpaid(
-    standalone: &[Observed],
-    federated: &[Observed],
-) {
-    assert_parity_except_result(standalone, federated, ABOVE_QUOTE);
-    let federated = step(federated, ABOVE_QUOTE);
-    assert_error(federated, &Error::UnpaidQuote);
-    assert_eq!(federated.mint_quote, Some(paid_unissued_quote()));
-    assert!(federated
-        .result
-        .as_ref()
-        .is_err_and(|error| error.definitive));
+    assert_parity(&standalone, &federated);
 }
 
 /// Melt `inputs` against a fresh 10 sat quote with blank change outputs.

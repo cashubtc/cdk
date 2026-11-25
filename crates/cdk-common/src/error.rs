@@ -788,6 +788,27 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[test]
+    fn federation_output_validation_errors_are_definitive() {
+        let keyset_id = Id::from_bytes(&[0, 1, 2, 3, 4, 5, 6, 7]).expect("valid keyset id");
+        let errors = [
+            crate::federation::FederationError::UnknownFederatedKeyset { keyset_id },
+            crate::federation::FederationError::UnknownFederatedKeysetAmount {
+                keyset_id,
+                amount: Amount::from(3),
+            },
+            crate::federation::FederationError::InvalidFederatedKeysetVersion { keyset_id },
+            crate::federation::FederationError::InvalidFederationBlindedSecret {
+                keyset_id,
+                amount: Amount::from(4),
+            },
+        ];
+        for error in errors {
+            assert!(Error::Federation(error).is_definitive_failure());
+        }
+    }
+
+    #[cfg(feature = "federation")]
+    #[test]
     fn federation_inactive_keyset_maps_to_keyset_inactive() {
         let keyset_id = Id::from_bytes(&[0, 1, 2, 3, 4, 5, 6, 7]).expect("valid keyset id");
         let err = Error::Federation(
@@ -976,6 +997,10 @@ impl Error {
             #[cfg(feature = "federation")]
             Self::Federation(
                 crate::federation::FederationError::InactiveFederatedKeyset { .. }
+                | crate::federation::FederationError::UnknownFederatedKeyset { .. }
+                | crate::federation::FederationError::UnknownFederatedKeysetAmount { .. }
+                | crate::federation::FederationError::InvalidFederatedKeysetVersion { .. }
+                | crate::federation::FederationError::InvalidFederationBlindedSecret { .. }
                 | crate::federation::FederationError::RejectedOperation { .. }
                 | crate::federation::FederationError::OperationStateInvalid { .. }
                 | crate::federation::FederationError::ChainObservationInvalid { .. }
