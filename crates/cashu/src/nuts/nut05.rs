@@ -269,13 +269,8 @@ impl Serialize for MeltMethodSettings {
         if self.method_name.is_some() {
             num_fields += 1;
         }
-
-        let mut amountless_in_top_level = false;
-        if let Some(MeltMethodOptions::Bolt11 { amountless }) = &self.options {
-            if *amountless {
-                num_fields += 1;
-                amountless_in_top_level = true;
-            }
+        if self.options.is_some() {
+            num_fields += 1;
         }
 
         let mut state = serializer.serialize_struct("MeltMethodSettings", num_fields)?;
@@ -295,9 +290,8 @@ impl Serialize for MeltMethodSettings {
             state.serialize_field("max_amount", max_amount)?;
         }
 
-        // If there's an amountless flag in Bolt11 options, add it at the top level
-        if amountless_in_top_level {
-            state.serialize_field("amountless", &true)?;
+        if let Some(options) = &self.options {
+            state.serialize_field("options", options)?;
         }
 
         state.end()
@@ -754,6 +748,14 @@ mod tests {
                 max_amount: None,
                 options: Some(MeltMethodOptions::Bolt11 { amountless: true }),
             },
+            MeltMethodSettings {
+                method: PaymentMethod::Known(KnownMethod::Bolt11),
+                unit: CurrencyUnit::Sat,
+                method_name: None,
+                min_amount: None,
+                max_amount: None,
+                options: Some(MeltMethodOptions::Bolt11 { amountless: false }),
+            },
         ];
 
         for settings in settings {
@@ -769,7 +771,7 @@ mod tests {
 
     #[test]
     fn test_melt_method_settings_top_level_amountless() {
-        // Create JSON with top-level amountless
+        // Create JSON with legacy top-level amountless
         let json_str = r#"{
             "method": "bolt11",
             "unit": "sat",
@@ -796,11 +798,16 @@ mod tests {
         }
 
         // Serialize it back
-        let serialized = to_string(&settings).unwrap();
-        let parsed: serde_json::Value = from_str(&serialized).unwrap();
-
-        // Verify the amountless is at the top level
-        assert_eq!(parsed["amountless"], json!(true));
+        assert_eq!(
+            serde_json::to_value(&settings).unwrap(),
+            json!({
+                "method": "bolt11",
+                "unit": "sat",
+                "min_amount": 0,
+                "max_amount": 10000,
+                "options": {"amountless": true}
+            })
+        );
     }
 
     #[test]
