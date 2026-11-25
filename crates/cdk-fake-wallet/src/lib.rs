@@ -202,17 +202,10 @@ async fn convert_currency_amount(
 /// Secondary repayment queue manager for any-amount invoices
 #[derive(Debug, Clone)]
 struct SecondaryRepaymentQueue {
-    inner: Arc<SecondaryRepaymentQueueInner>,
-}
-
-#[derive(Debug)]
-struct SecondaryRepaymentQueueInner {
     queue: Arc<Mutex<VecDeque<PaymentIdentifier>>>,
     max_size: usize,
     sender: tokio::sync::mpsc::Sender<WaitPaymentResponse>,
     unit: CurrencyUnit,
-    cancel_token: CancellationToken,
-    worker_started: AtomicBool,
 }
 
 impl SecondaryRepaymentQueue {
@@ -222,29 +215,25 @@ impl SecondaryRepaymentQueue {
         unit: CurrencyUnit,
     ) -> Self {
         let queue = Arc::new(Mutex::new(VecDeque::new()));
-        Self {
-            inner: Arc::new(SecondaryRepaymentQueueInner {
-                queue,
-                max_size,
-                sender,
-                unit,
-                cancel_token: CancellationToken::new(),
-                worker_started: AtomicBool::new(false),
-            }),
-        }
+        let repayment_queue = Self {
+            queue: queue.clone(),
+            max_size,
+            sender,
+            unit,
+        };
+
+        // Start the background secondary repayment processor
+        repayment_queue.start_secondary_repayment_processor();
+
+        repayment_queue
     }
 
     /// Add a payment to the secondary repayment queue
     async fn enqueue_for_repayment(&self, payment: PaymentIdentifier) {
-        if self.inner.max_size == 0 {
-            tracing::debug!("Secondary repayment queue disabled, dropping payment");
-            return;
-        }
-
-        let mut queue = self.inner.queue.lock().await;
+        let mut queue = self.queue.lock().await;
 
         // If queue is at max capacity, remove the oldest item
-        if queue.len() >= self.inner.max_size {
+        if queue.len() >= self.max_size {
             if let Some(dropped) = queue.pop_front() {
                 tracing::debug!(
                     "Secondary repayment queue at capacity, dropping oldest payment: {:?}",
@@ -258,23 +247,13 @@ impl SecondaryRepaymentQueue {
             "Added payment to secondary repayment queue, current size: {}",
             queue.len()
         );
-        drop(queue);
-
-        self.start_secondary_repayment_processor();
     }
 
     /// Start the background task that randomly processes secondary repayments from the queue
     fn start_secondary_repayment_processor(&self) {
-        if self
-            .inner
-            .worker_started
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_err()
-        {
-            return;
-        }
-
-        let inner = self.inner.clone();
+        let queue = self.queue.clone();
+        let sender = self.sender.clone();
+        let unit = self.unit.clone();
 
         tokio::spawn(async move {
             use bitcoin::secp256k1::rand::rngs::OsRng;
@@ -283,15 +262,12 @@ impl SecondaryRepaymentQueue {
 
             loop {
                 // Wait for a random interval between 30 seconds and 3 minutes (180 seconds)
-                let delay_secs = rng.gen_range(30..=180);
-                tokio::select! {
-                    _ = inner.cancel_token.cancelled() => break,
-                    _ = time::sleep(time::Duration::from_secs(delay_secs)) => {}
-                }
+                let delay_secs = rng.gen_range(1..=3);
+                time::sleep(time::Duration::from_secs(delay_secs)).await;
 
                 // Try to process a random payment from the queue without removing it
                 let payment_to_process = {
-                    let q = inner.queue.lock().await;
+                    let q = queue.lock().await;
                     if q.is_empty() {
                         None
                     } else {
@@ -306,12 +282,12 @@ impl SecondaryRepaymentQueue {
                     let random_amount: u64 = rng.gen_range(1..=1000);
 
                     // Create amount based on unit, ensuring minimum of 1 sat worth
-                    let secondary_amount = match &inner.unit {
-                        CurrencyUnit::Sat => Amount::new(random_amount, inner.unit.clone()),
+                    let secondary_amount = match &unit {
+                        CurrencyUnit::Sat => Amount::new(random_amount, unit.clone()),
                         CurrencyUnit::Msat => {
-                            Amount::new(u64::max(random_amount * 1000, 1000), inner.unit.clone())
+                            Amount::new(u64::max(random_amount * 1000, 1000), unit.clone())
                         }
-                        _ => Amount::new(u64::max(random_amount, 1), inner.unit.clone()), // fallback
+                        _ => Amount::new(u64::max(random_amount, 1), unit.clone()), // fallback
                     };
 
                     // Generate a unique payment identifier for this secondary payment
@@ -348,25 +324,16 @@ impl SecondaryRepaymentQueue {
                         payment_id: unique_payment_id.to_string(),
                     };
 
-                    if let Err(e) = inner.sender.send(secondary_response).await {
+                    if let Err(e) = sender.send(secondary_response).await {
                         tracing::error!(
                             "Failed to send secondary repayment notification for {:?}: {}",
                             unique_payment_id,
                             e
                         );
-                        break;
                     }
                 }
             }
         });
-    }
-}
-
-impl Drop for SecondaryRepaymentQueue {
-    fn drop(&mut self) {
-        if self.inner.worker_started.load(Ordering::SeqCst) && Arc::strong_count(&self.inner) <= 2 {
-            self.inner.cancel_token.cancel();
-        }
     }
 }
 
@@ -1110,8 +1077,7 @@ impl MintPayment for FakeWallet {
         let incoming_payment = self.incoming_payments.clone();
         let shared_incoming_payment_dir = self.shared_incoming_payment_dir.clone();
 
-        let is_any_amount = amount.value() == 0;
-        let final_amount = if is_any_amount {
+        let final_amount = if amount.value() == 0 {
             // For any-amount invoices, generate a random amount for the initial payment
             use bitcoin::secp256k1::rand::rngs::OsRng;
             use bitcoin::secp256k1::rand::Rng;
@@ -1122,6 +1088,9 @@ impl MintPayment for FakeWallet {
         } else {
             amount
         };
+
+        // Check if this is an any-amount invoice before moving final_amount
+        let is_any_amount = final_amount.value() == 0;
 
         // Schedule the immediate payment (original behavior maintained)
         tokio::spawn(async move {
@@ -1330,9 +1299,9 @@ mod tests {
     use cdk_common::mint::{MeltPaymentRequest, MeltQuote};
     use cdk_common::nuts::PaymentMethod;
     use cdk_common::payment::{
-        Bolt11IncomingPaymentOptions, Bolt11OutgoingPaymentOptions, Bolt12IncomingPaymentOptions,
-        CustomIncomingPaymentOptions, CustomOutgoingPaymentOptions, IncomingPaymentOptions,
-        MintPayment, OnchainOutgoingPaymentOptions, OutgoingPaymentOptions, PaymentIdentifier,
+        Bolt11IncomingPaymentOptions, Bolt11OutgoingPaymentOptions, CustomIncomingPaymentOptions,
+        CustomOutgoingPaymentOptions, IncomingPaymentOptions, MintPayment,
+        OnchainOutgoingPaymentOptions, OutgoingPaymentOptions, PaymentIdentifier,
     };
     use lightning::offers::offer::Offer;
 
@@ -1436,71 +1405,6 @@ mod tests {
             extra_json,
             quote_id: cdk_common::QuoteId::new(),
         }))
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn fixed_amount_invoices_do_not_start_idle_secondary_repayment_worker() {
-        let wallet = test_wallet();
-        assert!(!wallet
-            .secondary_repayment_queue
-            .inner
-            .worker_started
-            .load(Ordering::SeqCst));
-
-        wallet
-            .create_incoming_payment_request(IncomingPaymentOptions::Bolt11(
-                Bolt11IncomingPaymentOptions {
-                    description: None,
-                    amount: Amount::new(10, CurrencyUnit::Sat),
-                    unix_expiry: None,
-                },
-            ))
-            .await
-            .expect("fixed amount invoice should be created");
-
-        tokio::task::yield_now().await;
-
-        assert!(!wallet
-            .secondary_repayment_queue
-            .inner
-            .worker_started
-            .load(Ordering::SeqCst));
-    }
-
-    #[tokio::test]
-    async fn any_amount_invoices_start_secondary_repayment_worker() {
-        let wallet = test_wallet();
-
-        wallet
-            .create_incoming_payment_request(IncomingPaymentOptions::Bolt12(Box::new(
-                Bolt12IncomingPaymentOptions {
-                    description: None,
-                    amount: None,
-                    unix_expiry: None,
-                },
-            )))
-            .await
-            .expect("any amount invoice should be created");
-
-        assert!(wallet
-            .secondary_repayment_queue
-            .inner
-            .worker_started
-            .load(Ordering::SeqCst));
-        assert_eq!(
-            wallet
-                .secondary_repayment_queue
-                .inner
-                .queue
-                .lock()
-                .await
-                .len(),
-            1
-        );
-
-        let cancel_token = wallet.secondary_repayment_queue.inner.cancel_token.clone();
-        drop(wallet);
-        assert!(cancel_token.is_cancelled());
     }
 
     #[tokio::test]
