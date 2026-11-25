@@ -47,6 +47,9 @@ pub struct MintSubCommand {
     /// (0 = wait indefinitely; use this for onchain or slow payments)
     #[arg(long, default_value = "30")]
     wait_duration: u64,
+    /// Prefer proofs whose denominations add up to this amount
+    #[arg(long)]
+    split_target: Option<u64>,
 }
 
 pub async fn mint(
@@ -60,6 +63,12 @@ pub async fn mint(
     let wallet = get_or_create_wallet(wallet_repository, &mint_url, unit).await?;
 
     let payment_method = PaymentMethod::from_str(&sub_command_args.method)?;
+    let requested_amount = sub_command_args.amount.map(Amount::from);
+    let split_target = match sub_command_args.split_target {
+        Some(0) => bail!("Split target must be greater than zero"),
+        Some(amount) => SplitTarget::Value(Amount::from(amount)),
+        None => SplitTarget::default(),
+    };
 
     let quote = match &sub_command_args.quote_id {
         None => match payment_method {
@@ -185,7 +194,7 @@ pub async fn mint(
 
     let mut amount_minted = Amount::ZERO;
 
-    let mut proof_streams = wallet.proof_stream(quote, SplitTarget::default(), None);
+    let mut proof_streams = wallet.proof_stream(quote, split_target, None);
 
     // `wait_duration` is an *idle* timeout: it bounds how long we wait without
     // any new proofs being issued, and resets each time a batch arrives. A
@@ -210,6 +219,9 @@ pub async fn mint(
                 let batch = proofs.total_amount()?;
                 amount_minted += batch;
                 println!("Minted {batch} {unit} (total: {amount_minted} {unit})");
+                if requested_amount.is_some_and(|target| amount_minted >= target) {
+                    break;
+                }
             }
             // The stream surfaced an error.
             Ok(Some(Err(err))) => {
@@ -233,10 +245,10 @@ pub async fn mint(
     }
 
     // Stop and await the progress task so the CLI exits cleanly.
-    stop_progress.notify_waiters();
-    if let Some(handle) = progress_handle {
-        let _ = handle.await;
-    }
+    // There is exactly one progress task. `notify_one` retains a permit when
+    // that task is between `recv` events, whereas `notify_waiters` can lose the
+    // shutdown signal before the task polls `notified()` again.
+    stop_progress_task(stop_progress, progress_handle).await;
 
     if let Some(err) = mint_error {
         return Err(err.into());
@@ -252,6 +264,20 @@ pub async fn mint(
     );
 
     Ok(())
+}
+
+async fn stop_progress_task(
+    stop: Arc<Notify>,
+    progress_handle: Option<tokio::task::JoinHandle<()>>,
+) {
+    stop.notify_one();
+    if let Some(handle) = progress_handle {
+        // The subscription transport may not yield promptly after its stop
+        // notification. Progress is diagnostic only, so abort it rather than
+        // letting a completed or failed mint command hang indefinitely.
+        handle.abort();
+        let _ = handle.await;
+    }
 }
 
 /// Spawns a background task that prints human-readable progress updates for
@@ -349,4 +375,24 @@ async fn spawn_progress_task(
             }
         }
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn blocked_progress_task_is_stopped_after_terminal_mint_result() {
+        let stop = Arc::new(Notify::new());
+        let handle = tokio::spawn(future::pending());
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            stop_progress_task(stop, Some(handle)),
+        )
+        .await
+        .expect("progress shutdown is bounded");
+    }
 }

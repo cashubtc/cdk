@@ -289,16 +289,18 @@ async fn main() -> Result<()> {
         builder.build().await?
     };
 
-    let wallets = wallet_repository.get_wallets().await;
+    if command_needs_wallet_recovery(&args.command) {
+        let wallets = wallet_repository.get_wallets().await;
 
-    for wallet in wallets {
-        // Recover from incomplete operations (required after wallet creation)
-        let recovery = wallet.recover_incomplete_sagas().await?;
-        if !recovery.is_empty() {
-            println!(
-                "Recovered {} operations, {} compensated, {} skipped, {} failed",
-                recovery.recovered, recovery.compensated, recovery.skipped, recovery.failed
-            );
+        for wallet in wallets {
+            // Recover from incomplete operations (required after wallet creation)
+            let recovery = wallet.recover_incomplete_sagas().await?;
+            if !recovery.is_empty() {
+                println!(
+                    "Recovered {} operations, {} compensated, {} skipped, {} failed",
+                    recovery.recovered, recovery.compensated, recovery.skipped, recovery.failed
+                );
+            }
         }
     }
 
@@ -450,6 +452,22 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Whether a command may touch wallet proofs, and so needs startup recovery
+/// of incomplete operations first. Commands that only decode input, read
+/// mint information or manage settings and auth skip the network round trips.
+fn command_needs_wallet_recovery(command: &Commands) -> bool {
+    !matches!(
+        command,
+        Commands::DecodeToken(_)
+            | Commands::MintInfo(_)
+            | Commands::DecodeRequest(_)
+            | Commands::UpdateMintUrl(_)
+            | Commands::MintBlindAuth(_)
+            | Commands::CatLogin(_)
+            | Commands::CatDeviceLogin(_)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -541,5 +559,38 @@ mod tests {
             panic!("redb cannot use the password");
         };
         assert!(!error.to_string().contains("pass-value"), "{error}");
+    }
+
+    #[test]
+    fn mint_info_skips_wallet_recovery() {
+        let cli = Cli::parse_from(["cdk-cli", "mint-info", "https://mint.example.com"]);
+
+        assert!(!command_needs_wallet_recovery(&cli.command));
+    }
+
+    #[test]
+    fn parses_non_interactive_onchain_melt_quote_index() {
+        let cli = Cli::parse_from([
+            "cdk-cli",
+            "--non-interactive",
+            "melt",
+            "--method",
+            "onchain",
+            "--mint-url",
+            "https://mint.example.com",
+            "--address",
+            "bcrt1ptest",
+            "--amount",
+            "1000",
+            "--network",
+            "regtest",
+            "--onchain-quote-index",
+            "0",
+        ]);
+
+        let Commands::Melt(melt) = cli.command else {
+            panic!("expected melt command");
+        };
+        assert_eq!(melt.onchain_quote_index, Some(0));
     }
 }
