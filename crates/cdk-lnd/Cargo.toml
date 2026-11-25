@@ -27,7 +27,6 @@ hyper = { version = "1.6.0", features = ["http2", "client"] }
 hyper-util = { version = "0.1.14", features = ["client"] }
 hyper-rustls = { version = "0.27.7", default-features = false, features = ["http2", "tls12", "ring"] }
 rustls.workspace = true
-rustls-pemfile = "2.2.0"
 
 [build-dependencies]
 tonic-prost-build.workspace = true
