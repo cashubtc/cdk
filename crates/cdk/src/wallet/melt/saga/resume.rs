@@ -188,6 +188,25 @@ impl Wallet {
                     )))
                 }
                 MeltQuoteState::Pending | MeltQuoteState::Unknown => {
+                    // A status check returns the persisted quote when recovery
+                    // has to wait. Keep a confirmed pending state visible there.
+                    if quote_status.state() == MeltQuoteState::Pending {
+                        let owner = saga_id.to_string();
+                        if let Some(mut quote) =
+                            self.localstore.get_melt_quote(&data.quote_id).await?
+                        {
+                            if quote.used_by_operation.as_deref() == Some(owner.as_str())
+                                && quote.state == MeltQuoteState::Unpaid
+                            {
+                                quote.state = MeltQuoteState::Pending;
+                                match self.localstore.add_melt_quote(quote).await {
+                                    Ok(()) | Err(cdk_common::database::Error::ConcurrentUpdate) => {
+                                    }
+                                    Err(err) => return Err(err.into()),
+                                }
+                            }
+                        }
+                    }
                     // Still pending or unknown - skip and retry later
                     tracing::info!("Melt saga {} - payment pending/unknown, skipping", saga_id);
                     Ok(None)

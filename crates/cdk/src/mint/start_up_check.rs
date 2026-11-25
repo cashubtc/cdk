@@ -14,7 +14,8 @@ use cdk_common::{PublicKey, QuoteId, State};
 
 use super::{Error, Mint};
 use crate::mint::melt::lease::MeltLease;
-use crate::mint::swap::swap_saga::compensation::{CompensatingAction, RemoveSwapSetup};
+use crate::mint::swap::swap_saga::compensation::RemoveSwapSetup;
+use crate::mint::swap::swap_saga::SWAP_RECOVERY_LEASE;
 use crate::mint::{MeltQuote, MeltQuoteState};
 use crate::types::PaymentProcessorKey;
 
@@ -250,14 +251,26 @@ impl Mint {
             .await?;
 
         if incomplete_sagas.is_empty() {
-            tracing::info!("No incomplete swap sagas found to recover.");
             return Ok(());
         }
 
-        let total_sagas = incomplete_sagas.len();
-        tracing::info!("Found {} incomplete swap sagas to recover.", total_sagas);
+        let database_time = if self.localstore.uses_swap_recovery_leases() {
+            let mut tx = self.localstore.begin_transaction().await?;
+            let now = tx.melt_lease_time().await?;
+            tx.rollback().await?;
+            Some(now)
+        } else {
+            None
+        };
 
         for saga in incomplete_sagas {
+            if database_time.is_some_and(|now| {
+                now < saga
+                    .updated_at
+                    .saturating_add(SWAP_RECOVERY_LEASE.as_secs())
+            }) {
+                continue;
+            }
             tracing::info!(
                 "Recovering saga {} in state '{}' (created: {}, updated: {})",
                 saga.operation_id,
@@ -293,25 +306,19 @@ impl Mint {
             };
 
             // Execute compensation (includes saga deletion)
-            if let Err(e) = compensation
-                .execute(&self.localstore, &self.pubsub_manager)
+            match compensation
+                .recover(&self.localstore, &self.pubsub_manager)
                 .await
             {
-                tracing::error!(
+                Ok(true) => tracing::info!("Successfully recovered saga {}", saga.operation_id),
+                Ok(false) => {}
+                Err(e) => tracing::error!(
                     "Failed to compensate saga {}: {}. Continuing...",
                     saga.operation_id,
                     e
-                );
-                continue;
+                ),
             }
-
-            tracing::info!("Successfully recovered saga {}", saga.operation_id);
         }
-
-        tracing::info!(
-            "Successfully recovered {} incomplete swap sagas.",
-            total_sagas
-        );
 
         Ok(())
     }

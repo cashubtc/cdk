@@ -45,6 +45,7 @@ impl Mint {
     /// Verify Blind auth
     #[instrument(skip(self, token))]
     pub async fn verify_blind_auth(&self, token: &BlindAuthToken) -> Result<(), Error> {
+        self.refresh_shared_keysets().await?;
         let keysets = self.keysets.load();
         let keyset = keysets
             .iter()

@@ -90,6 +90,11 @@ where
 pub async fn get_auth_keysets(
     State(state): State<MintState>,
 ) -> Result<Json<KeysetResponse>, Response> {
+    state
+        .mint
+        .refresh_shared_keysets()
+        .await
+        .map_err(into_response)?;
     Ok(Json(state.mint.auth_keysets()))
 }
 
@@ -99,6 +104,11 @@ pub async fn get_auth_keysets(
 pub async fn get_blind_auth_keys(
     State(state): State<MintState>,
 ) -> Result<Json<KeysResponse>, Response> {
+    state
+        .mint
+        .refresh_shared_keysets()
+        .await
+        .map_err(into_response)?;
     let pubkeys = state.mint.auth_pubkeys().map_err(|err| {
         tracing::error!("Could not get keys: {}", err);
         into_response(err)

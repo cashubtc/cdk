@@ -27,6 +27,10 @@ mnemonic = "env:CDK_MINTD_MNEMONIC"
 # remote [signatory]; that process takes --keyset-refresh-interval-ms instead.
 # keyset_refresh_interval_ms = 5000
 
+# Enable committed NUT-17 state updates between mintd replicas using PostgreSQL.
+# All replicas must use a direct or session-pooled connection to the mint database.
+# postgres_state_notifications = true
+
 [info.quote_ttl]
 # Prefer explicit fields over inline tables for readability and reviewable edits
 mint_ttl = 600

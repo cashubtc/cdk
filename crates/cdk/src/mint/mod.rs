@@ -76,6 +76,7 @@ pub struct Mint {
     oidc_client: Option<OidcClient>,
     /// In-memory keyset
     keysets: Arc<ArcSwap<Vec<SignatoryKeySet>>>,
+    shared_keysets: Option<keysets::SharedKeysets>,
     /// Serializes writes to `keysets`.
     ///
     /// Both a mint-initiated `rotate_keyset` and the signatory subscription
@@ -115,6 +116,8 @@ struct TaskState {
     supervisor_handle: Option<JoinHandle<Result<(), Error>>>,
     /// Handle to the keyset drain task
     keyset_drain_handle: Option<JoinHandle<()>>,
+    /// Database state notification receiver for replicated mints.
+    database_notifications: Option<subscription::DatabaseNotificationTask>,
     /// Keyset subscription retained from construction, drained once by the first
     /// `start()`. `None` after it has been taken; a restart re-subscribes.
     keyset_updates: Option<watch::Receiver<SignatoryKeysets>>,
@@ -407,6 +410,7 @@ impl Mint {
             auth_localstore,
             keysets: Arc::new(ArcSwap::new(keysets.keysets.into())),
             keyset_store_lock: Arc::new(Mutex::new(())),
+            shared_keysets: None,
             melt_quote_locks: Arc::new(Mutex::new(HashMap::new())),
             task_state: Arc::new(Mutex::new(TaskState {
                 keyset_updates: Some(keyset_updates),
@@ -455,6 +459,9 @@ impl Mint {
         if task_state.shutdown_notify.is_some() {
             return Err(Error::Internal); // Already started
         }
+
+        // Establish the listener before serving requests or accepting subscriptions.
+        let database_notifications = self.pubsub_manager.start_database_notifications().await?;
 
         // Start all payment processors first
         tracing::info!("Starting payment processors...");
@@ -580,6 +587,7 @@ impl Mint {
         task_state.shutdown_notify = Some(shutdown_notify);
         task_state.supervisor_handle = Some(supervisor_handle);
         task_state.keyset_drain_handle = keyset_drain_handle;
+        task_state.database_notifications = database_notifications;
 
         // Give the background task a tiny bit of time to start waiting
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -604,6 +612,10 @@ impl Mint {
         let shutdown_notify = task_state.shutdown_notify.take();
         let supervisor_handle = task_state.supervisor_handle.take();
         let keyset_drain_handle = task_state.keyset_drain_handle.take();
+        if let Some(handle) = task_state.database_notifications.take() {
+            handle.stop().await;
+            self.pubsub_manager.enable_database_notifications();
+        }
 
         // If nothing to stop, return early
         let (shutdown_notify, supervisor_handle) = match (shutdown_notify, supervisor_handle) {
@@ -910,6 +922,19 @@ impl Mint {
         shutdown: Arc<Notify>,
     ) -> Result<(), Error> {
         let mut join_set = JoinSet::new();
+
+        if localstore.uses_swap_recovery_leases() {
+            let mint = Arc::clone(&mint);
+            join_set.spawn(async move {
+                let cadence = swap::swap_saga::SWAP_RECOVERY_INTERVAL;
+                loop {
+                    tokio::time::sleep(cadence).await;
+                    if let Err(err) = mint.recover_from_incomplete_sagas().await {
+                        tracing::error!("Failed to recover incomplete swap sagas: {err}");
+                    }
+                }
+            });
+        }
 
         // Group processors by unique instance (using Arc pointer equality)
         let mut seen_processors = Vec::new();
@@ -1446,7 +1471,12 @@ impl Mint {
                     .map(|a| a.blind_signature.clone())
                     .collect();
 
-                match self.signatory.reconstruct_dleq(dleq_args).await {
+                let reconstructed = async {
+                    self.refresh_shared_keysets().await?;
+                    self.signatory.reconstruct_dleq(dleq_args).await
+                }
+                .await;
+                match reconstructed {
                     Ok(signatures) => signatures,
                     Err(Error::SignatureMissingOrInvalid) => {
                         tracing::error!(

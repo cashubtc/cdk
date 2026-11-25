@@ -7,7 +7,7 @@ The cdk-payment-processor is a Rust crate that provides both a binary and a libr
 ### Library Components
 - **Payment Processor Server**: Handles interaction with payment processor backend implementations
 - **Client**: Used by mintd to query the server for payment information
-- **Backend Implementations**: Supports CLN, LND, and a fake wallet (for testing)
+- **Backend Implementations**: Supports CLN, LND, BDK with Bitcoin Core, and a fake wallet (for testing)
 
 ### Features
 - Modular backend system supporting multiple payment backend implementations
@@ -30,7 +30,7 @@ The server requires different environment variables depending on your chosen pay
 
 #### Core Settings
 ```sh
-# Choose backend: CLN, LND, or FAKEWALLET
+# Choose backend: CLN, LND, BDK, or FAKEWALLET
 export CDK_PAYMENT_PROCESSOR_BACKEND="CLN"
 
 # Server configuration
@@ -67,6 +67,30 @@ export CDK_PAYMENT_PROCESSOR_LND_CERT_FILE="/path/to/tls.cert"
 export CDK_PAYMENT_PROCESSOR_LND_MACAROON_FILE="/path/to/macaroon"
 ```
 
+##### On-chain Bitcoin (BDK)
+
+To serve on-chain payments from multiple mintd replicas, run one BDK payment
+processor with a persistent volume and point every mintd replica at it using
+`[grpc_processor]` and a `grpcprocessor` payment backend for `sat`. The BDK
+process owns address allocation, chain synchronization, and withdrawal batching
+for that wallet. Use a deployment strategy that stops the old BDK process
+before starting its replacement.
+
+| Environment variable | Value |
+| --- | --- |
+| `CDK_PAYMENT_PROCESSOR_BACKEND` | `BDK` |
+| `CDK_PAYMENT_PROCESSOR_BDK_WORK_DIR` | Persistent directory for the BDK wallet and withdrawal intent database |
+| `CDK_PAYMENT_PROCESSOR_BDK_MNEMONIC` | BIP39 wallet mnemonic, supplied as a secret |
+| `CDK_PAYMENT_PROCESSOR_BDK_NETWORK` | Bitcoin network, such as `bitcoin` or `regtest` |
+| `CDK_PAYMENT_PROCESSOR_BDK_BITCOIN_RPC_HOST` | Bitcoin Core RPC host |
+| `CDK_PAYMENT_PROCESSOR_BDK_BITCOIN_RPC_PORT` | Bitcoin Core RPC port |
+| `CDK_PAYMENT_PROCESSOR_BDK_BITCOIN_RPC_USER` | Bitcoin Core RPC username |
+| `CDK_PAYMENT_PROCESSOR_BDK_BITCOIN_RPC_PASSWORD` | Bitcoin Core RPC password, supplied as a secret |
+| `CDK_PAYMENT_PROCESSOR_BDK_INIT_MODE` | Set `new` for initial bootstrap. The default `existing` checks the persisted wallet identity and requires the intent database. |
+| `CDK_PAYMENT_PROCESSOR_BDK_NUM_CONFS` | Required on-chain confirmations, default `6` |
+| `CDK_PAYMENT_PROCESSOR_BDK_SYNC_INTERVAL_SECS` | Chain sync interval, default `30` |
+| `CDK_PAYMENT_PROCESSOR_BDK_POLL_INTERVAL_SECS` | Withdrawal batch poll interval, default `30` |
+
 ### Building and Running
 
 Build and run the binary with your chosen backend:
@@ -77,6 +101,9 @@ cargo run --bin cdk-payment-processor --no-default-features --features cln
 
 # For LND backend
 cargo run --bin cdk-payment-processor --no-default-features --features lnd
+
+# For BDK with Bitcoin Core
+cargo run --bin cdk-payment-processor --no-default-features --features bdk
 
 # For fake wallet (testing only)
 cargo run --bin cdk-payment-processor --no-default-features --features fake

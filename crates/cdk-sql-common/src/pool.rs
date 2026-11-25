@@ -92,6 +92,19 @@ pub trait DatabasePool: Debug {
     ///
     /// The pool runs this on a blocking worker when a Tokio runtime is available.
     fn drop(_resource: Self::Connection) {}
+
+    /// Open the backend's committed mint state stream, if available.
+    #[cfg(feature = "mint")]
+    fn subscribe_to_mint_state(
+        _config: &Self::Config,
+    ) -> impl std::future::Future<
+        Output = Result<
+            Option<cdk_common::database::mint::MintStateChanges>,
+            cdk_common::database::Error,
+        >,
+    > + Send {
+        std::future::ready(Ok(None))
+    }
 }
 
 /// Generic connection pool of resources R
@@ -211,6 +224,11 @@ impl<RM> Pool<RM>
 where
     RM: DatabasePool + 'static,
 {
+    #[cfg(feature = "mint")]
+    pub(crate) fn config(&self) -> &RM::Config {
+        &self.config
+    }
+
     /// Creates a new pool
     pub fn new(config: RM::Config) -> Arc<Self> {
         let max_size = config.max_size();

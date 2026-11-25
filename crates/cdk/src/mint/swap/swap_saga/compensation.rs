@@ -4,6 +4,7 @@ use cdk_common::{Error, PublicKey, State};
 use tracing::instrument;
 use uuid::Uuid;
 
+use super::SWAP_RECOVERY_LEASE;
 use crate::mint::subscription::PubSubManager;
 
 #[async_trait]
@@ -31,12 +32,36 @@ pub struct RemoveSwapSetup {
     pub operation_id: Uuid,
 }
 
-#[async_trait]
-impl CompensatingAction for RemoveSwapSetup {
+impl RemoveSwapSetup {
+    pub(in crate::mint) async fn recover(
+        &self,
+        db: &DynMintDatabase,
+        pubsub: &PubSubManager,
+    ) -> Result<bool, Error> {
+        self.remove(db, pubsub, true).await
+    }
+
     #[instrument(skip_all)]
-    async fn execute(&self, db: &DynMintDatabase, pubsub: &PubSubManager) -> Result<(), Error> {
-        if self.blinded_secrets.is_empty() && self.input_ys.is_empty() {
-            return Ok(());
+    async fn remove(
+        &self,
+        db: &DynMintDatabase,
+        pubsub: &PubSubManager,
+        recovering: bool,
+    ) -> Result<bool, Error> {
+        let mut tx = db.begin_transaction().await?;
+        let Some(saga) = tx.get_saga_for_update(&self.operation_id).await? else {
+            tx.rollback().await?;
+            return Ok(false);
+        };
+        if recovering
+            && db.uses_swap_recovery_leases()
+            && tx.melt_lease_time().await?
+                < saga
+                    .updated_at
+                    .saturating_add(SWAP_RECOVERY_LEASE.as_secs())
+        {
+            tx.rollback().await?;
+            return Ok(false);
         }
 
         tracing::info!(
@@ -45,8 +70,6 @@ impl CompensatingAction for RemoveSwapSetup {
             self.input_ys.len(),
             self.operation_id
         );
-
-        let mut tx = db.begin_transaction().await?;
 
         // Remove blinded messages (outputs)
         if !self.blinded_secrets.is_empty() {
@@ -58,16 +81,7 @@ impl CompensatingAction for RemoveSwapSetup {
             tx.remove_proofs(&self.input_ys, None).await?;
         }
 
-        // Delete saga state record
-        if let Err(e) = tx.delete_saga(&self.operation_id).await {
-            tracing::warn!(
-                "Failed to delete saga {} during compensation: {}",
-                self.operation_id,
-                e
-            );
-            // Continue anyway - saga cleanup is best-effort
-        }
-
+        tx.delete_saga(&self.operation_id).await?;
         tx.commit().await?;
 
         // Setup published the inputs as pending; tell subscribers they are
@@ -76,6 +90,14 @@ impl CompensatingAction for RemoveSwapSetup {
             pubsub.proof_state((*y, State::Unspent));
         }
 
+        Ok(true)
+    }
+}
+
+#[async_trait]
+impl CompensatingAction for RemoveSwapSetup {
+    async fn execute(&self, db: &DynMintDatabase, pubsub: &PubSubManager) -> Result<(), Error> {
+        self.remove(db, pubsub, false).await?;
         Ok(())
     }
 

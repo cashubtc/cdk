@@ -595,6 +595,11 @@ fn validate_payment_backends(settings: &config::Settings) -> Result<()> {
 }
 
 fn validate_database_config(settings: &config::Settings) -> Result<()> {
+    if settings.info.postgres_state_notifications
+        && settings.database.engine != DatabaseEngine::Postgres
+    {
+        bail!("info.postgres_state_notifications requires the PostgreSQL database engine");
+    }
     if settings.database.engine == DatabaseEngine::Postgres {
         let pg_config = settings.database.postgres.as_ref().ok_or_else(|| {
             anyhow!("PostgreSQL configuration is required when using PostgreSQL engine")
@@ -2661,6 +2666,10 @@ async fn run_mintd_with_database_and_shutdown(
     .await?;
 
     tracing::debug!("Mint built from builder.");
+
+    if settings.info.postgres_state_notifications {
+        mint.pubsub_manager().enable_database_notifications();
+    }
 
     start_services_with_shutdown(
         mint.clone(),

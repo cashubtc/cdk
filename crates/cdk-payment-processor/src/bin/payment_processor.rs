@@ -3,14 +3,14 @@
 use std::collections::HashSet;
 use std::env;
 use std::path::PathBuf;
-#[cfg(any(feature = "cln", feature = "lnd", feature = "fake"))]
+#[cfg(any(feature = "bdk", feature = "cln", feature = "lnd", feature = "fake"))]
 use std::sync::Arc;
 
-#[cfg(any(feature = "cln", feature = "lnd", feature = "fake"))]
+#[cfg(any(feature = "bdk", feature = "cln", feature = "lnd", feature = "fake"))]
 use anyhow::bail;
 #[cfg(any(feature = "cln", feature = "lnd", feature = "fake"))]
 use cdk_common::common::FeeReserve;
-#[cfg(any(feature = "cln", feature = "lnd", feature = "fake"))]
+#[cfg(any(feature = "bdk", feature = "cln", feature = "lnd", feature = "fake"))]
 use cdk_common::payment::{self, MintPayment};
 use cdk_common::Amount;
 #[cfg(feature = "fake")]
@@ -19,9 +19,13 @@ use cdk_fake_wallet::FakeWallet;
 use cdk_sqlite::MintSqliteDatabase;
 use clap::Parser;
 use serde::{Deserialize, Serialize};
-#[cfg(any(feature = "cln", feature = "lnd", feature = "fake"))]
+#[cfg(any(feature = "bdk", feature = "cln", feature = "lnd", feature = "fake"))]
 use tokio::signal;
 use tracing_subscriber::EnvFilter;
+
+#[cfg(feature = "bdk")]
+#[path = "payment_processor/bdk.rs"]
+mod bdk;
 
 /// Common CLI arguments for CDK binaries
 #[derive(Parser, Debug)]
@@ -91,7 +95,7 @@ async fn main() -> anyhow::Result<()> {
     // Initialize logging based on CLI arguments
     init_logging(args.common.enable_logging, args.common.log_level);
 
-    #[cfg(any(feature = "cln", feature = "lnd", feature = "fake"))]
+    #[cfg(any(feature = "bdk", feature = "cln", feature = "lnd", feature = "fake"))]
     {
         let backend: String = env::var(ENV_PAYMENT_BACKEND)?;
         let listen_addr: String = env::var(ENV_LISTEN_HOST)?;
@@ -102,6 +106,8 @@ async fn main() -> anyhow::Result<()> {
 
         let payment_backend: Arc<dyn MintPayment<Err = payment::Error> + Send + Sync> =
             match backend.to_uppercase().as_str() {
+                #[cfg(feature = "bdk")]
+                "BDK" => Arc::new(self::bdk::from_env().await?),
                 #[cfg(feature = "cln")]
                 "CLN" => {
                     let cln_settings = Cln::default().from_env();
@@ -164,19 +170,39 @@ async fn main() -> anyhow::Result<()> {
             };
 
         let mut server = cdk_payment_processor::PaymentProcessorServer::new(
-            payment_backend,
+            payment_backend.clone(),
             &listen_addr,
             listen_port,
         )?;
 
-        server.start(tls_dir).await?;
+        payment_backend.start().await?;
+        if let Err(err) = server.start(tls_dir).await {
+            let _ = payment_backend.stop().await;
+            return Err(err);
+        }
 
-        // Wait for shutdown signal
-        signal::ctrl_c().await?;
-
-        server.stop().await?;
+        let shutdown = wait_for_shutdown().await;
+        let server_stop = server.stop().await;
+        let backend_stop = payment_backend.stop().await;
+        shutdown?;
+        server_stop?;
+        backend_stop?;
     }
     Ok(())
+}
+
+#[cfg(any(feature = "bdk", feature = "cln", feature = "lnd", feature = "fake"))]
+async fn wait_for_shutdown() -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let mut terminate = signal::unix::signal(signal::unix::SignalKind::terminate())?;
+        tokio::select! {
+            result = signal::ctrl_c() => result,
+            _ = terminate.recv() => Ok(()),
+        }
+    }
+    #[cfg(not(unix))]
+    signal::ctrl_c().await
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

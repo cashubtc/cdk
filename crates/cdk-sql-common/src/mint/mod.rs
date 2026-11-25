@@ -182,6 +182,16 @@ impl<RM> MintDatabase<Error> for SQLMintDatabase<RM>
 where
     RM: DatabasePool + 'static,
 {
+    fn uses_swap_recovery_leases(&self) -> bool {
+        RM::Connection::name() == "postgres"
+    }
+
+    async fn subscribe_to_state_changes(
+        &self,
+    ) -> Result<Option<cdk_common::database::mint::MintStateChanges>, Error> {
+        RM::subscribe_to_mint_state(self.pool.config()).await
+    }
+
     async fn close(&self) -> Result<(), Error> {
         self.pool
             .close()

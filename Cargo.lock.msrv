@@ -1731,7 +1731,10 @@ version = "0.18.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bip39",
+ "bitcoin",
  "cashu",
+ "cdk-bdk",
  "cdk-cln",
  "cdk-common",
  "cdk-fake-wallet",

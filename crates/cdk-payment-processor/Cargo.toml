@@ -17,6 +17,7 @@ path = "src/bin/payment_processor.rs"
 [features]
 default = ["cln", "fake", "lnd"]
 bench = []
+bdk = ["dep:bip39", "dep:bitcoin", "dep:cdk-bdk", "cdk-bdk/bitcoin-rpc", "dep:cdk-sqlite"]
 cln = ["dep:cdk-cln", "dep:cdk-sqlite"]
 fake = ["dep:cdk-fake-wallet"]
 lnd = ["dep:cdk-lnd"]
@@ -24,7 +25,10 @@ lnd = ["dep:cdk-lnd"]
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
+bip39 = { workspace = true, optional = true }
+bitcoin = { workspace = true, optional = true }
 cashu.workspace = true
+cdk-bdk = { workspace = true, optional = true }
 cdk-common = { workspace = true, features = ["mint", "grpc"] }
 cdk-http-client = { workspace = true, features = ["bitreq"] }
 cdk-cln = { workspace = true, optional = true }

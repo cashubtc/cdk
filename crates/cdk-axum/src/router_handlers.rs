@@ -94,6 +94,11 @@ post_cache_wrapper!(post_swap, SwapRequest, SwapResponse);
 pub(crate) async fn get_keys(
     State(state): State<MintState>,
 ) -> Result<Json<KeysResponse>, Response> {
+    state
+        .mint
+        .refresh_shared_keysets()
+        .await
+        .map_err(into_response)?;
     Ok(Json(state.mint.pubkeys()))
 }
 
@@ -105,6 +110,11 @@ pub(crate) async fn get_keyset_pubkeys(
     State(state): State<MintState>,
     Path(keyset_id): Path<Id>,
 ) -> Result<Json<KeysResponse>, Response> {
+    state
+        .mint
+        .refresh_shared_keysets()
+        .await
+        .map_err(into_response)?;
     let pubkeys = state.mint.keyset_pubkeys(&keyset_id).map_err(|err| {
         tracing::error!("Could not get keyset pubkeys: {}", err);
         into_response(err)
@@ -120,6 +130,11 @@ pub(crate) async fn get_keyset_pubkeys(
 pub(crate) async fn get_keysets(
     State(state): State<MintState>,
 ) -> Result<Json<KeysetResponse>, Response> {
+    state
+        .mint
+        .refresh_shared_keysets()
+        .await
+        .map_err(into_response)?;
     Ok(Json(state.mint.keysets()))
 }
 

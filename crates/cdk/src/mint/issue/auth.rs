@@ -37,6 +37,7 @@ impl Mint {
         }
 
         if !mint_auth_request.outputs.is_empty() {
+            self.refresh_shared_keysets().await?;
             self.verify_outputs_keyset(&mint_auth_request.outputs)?;
         }
 

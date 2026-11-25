@@ -125,14 +125,17 @@ pub trait MintServer: Send + Sync {
 #[async_trait]
 impl MintServer for Arc<Mint> {
     async fn get_mint_keys(&self) -> Result<Vec<KeySet>, Error> {
+        self.refresh_shared_keysets().await?;
         Ok(self.pubkeys().keysets)
     }
 
     async fn get_mint_keyset(&self, keyset_id: Id) -> Result<KeySet, Error> {
+        self.refresh_shared_keysets().await?;
         self.keyset(&keyset_id).ok_or(Error::UnknownKeySet)
     }
 
     async fn get_mint_keysets(&self) -> Result<KeysetResponse, Error> {
+        self.refresh_shared_keysets().await?;
         Ok(self.keysets())
     }
 

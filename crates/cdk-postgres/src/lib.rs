@@ -17,6 +17,8 @@ use tokio::time::timeout;
 use tokio_postgres::{Client, Error as PgError, NoTls};
 
 mod db;
+#[cfg(feature = "mint")]
+mod notifications;
 mod tls;
 mod value;
 
@@ -163,6 +165,13 @@ impl DatabasePool for PgConnectionPool {
     type Connection = PostgresConnection;
 
     type Error = PgError;
+
+    #[cfg(feature = "mint")]
+    async fn subscribe_to_mint_state(
+        config: &Self::Config,
+    ) -> Result<Option<cdk_common::database::mint::MintStateChanges>, Error> {
+        notifications::subscribe(config).await.map(Some)
+    }
 
     fn new_resource(
         config: &Self::Config,
@@ -383,6 +392,85 @@ mod test {
     }
 
     mint_db_test!(provide_mint_db);
+
+    #[tokio::test]
+    async fn mint_state_notifications_follow_committed_quote_changes() {
+        use cdk_common::database::mint::MintStateChange;
+        use cdk_common::database::MintDatabase;
+        use cdk_common::mint::MintQuote;
+        use cdk_common::payment::PaymentIdentifier;
+        use cdk_common::{Amount, CurrencyUnit, PaymentMethod};
+        use futures_util::StreamExt;
+
+        let schema = format!("test_mint_notifications_{}", uuid::Uuid::new_v4().simple());
+        let writer = provide_mint_db(schema.clone()).await;
+        let observer = provide_mint_db(schema).await;
+        let mut changes = observer
+            .subscribe_to_state_changes()
+            .await
+            .unwrap()
+            .unwrap();
+        let id = QuoteId::new();
+        let amount = Amount::new(100, CurrencyUnit::Sat);
+        let quote = MintQuote::new(
+            Some(id.clone()),
+            id.to_string(),
+            CurrencyUnit::Sat,
+            Some(amount.clone()),
+            0,
+            PaymentIdentifier::CustomId(id.to_string()),
+            None,
+            Amount::new(0, CurrencyUnit::Sat),
+            Amount::new(0, CurrencyUnit::Sat),
+            PaymentMethod::BOLT11,
+            0,
+            0,
+            vec![],
+            vec![],
+            None,
+        );
+        let mut tx = MintDatabase::begin_transaction(&writer).await.unwrap();
+        tx.add_mint_quote(quote).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let mut tx = MintDatabase::begin_transaction(&writer).await.unwrap();
+        let mut quote = tx.get_mint_quote(&id).await.unwrap().unwrap();
+        quote
+            .add_payment(
+                Amount::new(50, CurrencyUnit::Sat),
+                "rolled-back".to_owned(),
+                None,
+            )
+            .unwrap();
+        tx.update_mint_quote(&mut quote).await.unwrap();
+        tx.rollback().await.unwrap();
+
+        let mut tx = MintDatabase::begin_transaction(&writer).await.unwrap();
+        let mut quote = tx.get_mint_quote(&id).await.unwrap().unwrap();
+        quote
+            .add_payment(amount.clone(), "paid".to_owned(), None)
+            .unwrap();
+        tx.update_mint_quote(&mut quote).await.unwrap();
+        tx.commit().await.unwrap();
+
+        let mut tx = MintDatabase::begin_transaction(&writer).await.unwrap();
+        let mut quote = tx.get_mint_quote(&id).await.unwrap().unwrap();
+        quote.add_issuance(amount).unwrap();
+        tx.update_mint_quote(&mut quote).await.unwrap();
+        tx.commit().await.unwrap();
+
+        for issued in [Amount::ZERO, Amount::from(100)] {
+            let event = timeout(Duration::from_secs(3), changes.next())
+                .await
+                .expect("timely state notification")
+                .expect("open notification stream")
+                .expect("valid notification");
+            assert_eq!(
+                event,
+                MintStateChange::MintQuote(id.clone(), Amount::from(100), issued)
+            );
+        }
+    }
 
     #[tokio::test]
     async fn mint_pool_accepts_single_connection_configuration() {

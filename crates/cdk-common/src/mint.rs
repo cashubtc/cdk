@@ -816,13 +816,19 @@ impl MintQuote {
 
     /// Compute quote state
     fn compute_quote_state(&self) -> MintQuoteState {
-        let zero_amount = Amount::new(0, self.unit.clone());
+        Self::state_from_totals(
+            self.amount_paid.clone().into(),
+            self.amount_issued.clone().into(),
+        )
+    }
 
-        if self.amount_paid == zero_amount && self.amount_issued == zero_amount {
+    /// Compute the quote state for committed payment and issuance totals.
+    pub fn state_from_totals(amount_paid: Amount, amount_issued: Amount) -> MintQuoteState {
+        if amount_paid == Amount::ZERO && amount_issued == Amount::ZERO {
             return MintQuoteState::Unpaid;
         }
 
-        match self.amount_paid.value().cmp(&self.amount_issued.value()) {
+        match amount_paid.cmp(&amount_issued) {
             std::cmp::Ordering::Less => {
                 tracing::error!("We should not have issued more then has been paid");
                 MintQuoteState::Issued
