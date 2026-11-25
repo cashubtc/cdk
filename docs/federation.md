@@ -31,7 +31,7 @@ Start with the [ordinary-CDK concept map and operation walkthroughs](federation-
 
 ## Current records
 
-All operation kinds use envelope version 6. Bark payloads use their current version 2. Incoming Bark claims require certified receive evidence in the claim plan; replay applies that evidence from the accepted plan. The earlier standalone HTLC-ready transition cannot authorize a claim.
+All operation kinds use envelope version 7. Bark payloads use their current version 2. Incoming Bark claims require certified receive evidence in the claim plan; replay applies that evidence from the accepted plan. The earlier standalone HTLC-ready transition cannot authorize a claim.
 
 Private status has a required `application_operators` map and an explicit `onchain_wallets` array, including when empty. Digest health is the typed checkpoint audit flag; presentation text cannot change health decisions. Pending AlephBFT storage requires the current wrapper. Bark allocations store one VTXO collection and its materialized amount.
 
@@ -50,6 +50,8 @@ Use `cdk-mintd --work-dir <member-dir> config init --new-mint --file <runtime.to
 Production setup proceeds through `federation setup create`, protected invitations, `join`, `propose`, independent `review`/`approve`, `serve`, and `activate`. Each member approves the exact manifest hash. Dealer-free BLS/FROST completion and final-config confirmations precede activation. Keep private configuration and secret references protected; copying a public config does not authorize membership.
 
 Use `federation status`, `federation digest-compare`, `federation wallet-status`, and Bark operator commands with explicit public/private config files or the member work directory. Recovery/rebroadcast actions require the command's explicit acknowledgement. A digest halt requires investigation; changing display text or restarting a worker does not clear divergence.
+
+FROST signing nonces live in redb files under the FROST protocol storage root (`frost-nonces/root-<epoch>.redb`), deliberately apart from the mint's SQL database. Exclude them from backups and never restore them: a restored nonce store offers consumed nonces again, and a nonce used for two different messages reveals the member's key share. If a nonce file is lost or suspect, stop the member and delete it; the member generates fresh nonces, and a signing session that referenced a deleted nonce must be started again. Restoring the SQL database from a backup is unaffected by this rule.
 
 The daemon starts prepared federation services when listeners are ready. A failed essential worker stops serving. Shutdown first stops scheduling and waits up to 30 seconds for tracked work, then aborts remaining tasks and joins the AlephBFT session. Recovery inspects durable payment/signing/broadcast identities; workers do not automatically restart external actions on failure.
 

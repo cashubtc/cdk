@@ -1540,6 +1540,10 @@ pub struct FederationBarkWallet {
     /// Optional protected-secret database; defaults below the Bark data directory.
     pub receive_secret_database_path: Option<PathBuf>,
     /// Durable FROST protocol storage root required by custody workers.
+    ///
+    /// Holds the FROST nonce stores (`frost-nonces/`). Exclude this directory
+    /// from backups and never restore it: a restored nonce store can reuse
+    /// nonces and leak the member's key share. Delete it instead if lost.
     pub frost_protocol_storage_root: Option<PathBuf>,
     /// Hex-encoded 64-byte operational seed, never used for VTXO custody.
     pub operational_seed_hex: Option<String>,

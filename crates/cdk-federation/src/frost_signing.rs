@@ -868,6 +868,10 @@ impl std::fmt::Debug for FederationFrostSigningRuntime {
 
 impl FederationFrostSigningRuntime {
     /// Open durable nonce stores, root shares, and reviewed application adapters.
+    ///
+    /// Nonce stores live in `<storage_root>/frost-nonces/root-<epoch>.redb`,
+    /// apart from the mint's SQL database. They must never be restored from a
+    /// backup; see `cdk-frost`'s README.
     pub async fn open(mint: &Mint, storage_root: &Path) -> anyhow::Result<Option<Self>> {
         let Some(runtime) = mint.federation_config() else {
             return Ok(None);

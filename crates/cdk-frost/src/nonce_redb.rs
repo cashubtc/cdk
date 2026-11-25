@@ -1,4 +1,10 @@
 //! Durable redb implementation of the participant-local nonce store.
+//!
+//! The store lives in its own file, never in the mint's SQL database, and must
+//! never be restored from a backup: a restored copy would offer consumed nonces
+//! again, and a nonce used for two different messages reveals the key share.
+//! If the file is lost or suspect, delete it; the member generates fresh nonces.
+//! See the crate README.
 
 use std::fmt;
 use std::path::Path;
