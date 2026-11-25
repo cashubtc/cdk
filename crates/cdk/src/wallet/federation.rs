@@ -34,8 +34,14 @@ use crate::nuts::{
 };
 use crate::{Amount, Error};
 
+mod registry;
 mod validation;
 
+pub use self::registry::{
+    FederationConnectorPolicy, FederationImportOptions, FederationRegistry,
+    FederationRegistryError, FederationSource, RegisteredFederation, FEDERATION_KV_NAMESPACE,
+    FEDERATION_REGISTRY_ENTRY_VERSION, FEDERATION_REGISTRY_KV_NAMESPACE,
+};
 use self::validation::{
     federated_keyset_to_keyset, federated_keyset_to_keyset_info, validate_member_active_keysets,
     validate_member_advertised_keyset,

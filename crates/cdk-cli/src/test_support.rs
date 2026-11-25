@@ -5,6 +5,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use cdk::cdk_database::{self, WalletDatabase};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut01::{BlsG1PublicKey, BlsSecretKey};
 use cdk::nuts::{
@@ -14,7 +15,10 @@ use cdk::nuts::{
     RestoreResponse, State, SwapRequest, SwapResponse,
 };
 use cdk::wallet::federation::FederatedMintConnector;
-use cdk::wallet::{AuthWallet, LnurlPayInvoiceResponse, LnurlPayResponse, MintConnector};
+use cdk::wallet::{
+    AuthWallet, FederationImportOptions, FederationRegistry, FederationSource,
+    LnurlPayInvoiceResponse, LnurlPayResponse, MintConnector, RegisteredFederation,
+};
 use cdk::{
     Amount, Error, MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse, MintQuoteRequest,
     MintQuoteResponse,
@@ -375,7 +379,65 @@ pub fn test_bls_signature(label: &[u8]) -> PublicKey {
     PublicKey::from(BlsG1PublicKey::hash_to_curve(label))
 }
 
-#[cfg(feature = "npubcash")]
 pub fn federation_public_config() -> cdk_common::federation::FederationConfig {
     test_bundle().public_config.clone()
+}
+
+/// The `mintN.example.com` federation that tests install in the process-wide
+/// federation cache. Every such test installs this same config, so tests that
+/// run in parallel see the same aliases; the scripted fixture above uses other
+/// URLs and never resolves through the cache.
+pub fn example_public_config() -> cdk_common::federation::FederationConfig {
+    let member = |member_id: MemberId| {
+        TrustedDealerMember::new(
+            member_id,
+            MintUrl::from_str(&format!("https://mint{}.example.com", member_id.get()))
+                .expect("public mint url"),
+            MintUrl::from_str(&format!("https://fed{}.example.com", member_id.get()))
+                .expect("federation api url"),
+            identity_secret(member_id),
+        )
+    };
+    generate_trusted_dealer_configs(
+        ThresholdParams::with_bft_consensus(3, 2).expect("params"),
+        vec![
+            member(member_id(1)),
+            member(member_id(2)),
+            member(member_id(3)),
+        ],
+        vec![TrustedDealerKeysetSpec::new(
+            CurrencyUnit::Sat,
+            true,
+            0,
+            None,
+            BTreeMap::from([
+                (Amount::from(1), vec![bls_key(1), bls_key(2)]),
+                (Amount::from(2), vec![bls_key(3), bls_key(4)]),
+            ]),
+        )],
+    )
+    .expect("trusted dealer configs")
+    .public_config
+}
+
+/// Import a public config into a fresh in-memory registry and return its entry.
+pub async fn registered_federation(
+    public_config: cdk_common::federation::FederationConfig,
+    local_mint_url: Option<MintUrl>,
+) -> RegisteredFederation {
+    let localstore: Arc<dyn WalletDatabase<cdk_database::Error> + Send + Sync> = Arc::new(
+        cdk_sqlite::wallet::memory::empty()
+            .await
+            .expect("wallet memory db"),
+    );
+    FederationRegistry::new(localstore)
+        .import(
+            FederationSource::PublicConfig(Box::new(public_config)),
+            FederationImportOptions {
+                local_mint_url,
+                connector_policy: None,
+            },
+        )
+        .await
+        .expect("import federation")
 }

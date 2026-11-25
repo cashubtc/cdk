@@ -133,8 +133,11 @@ cdk-cli mint-info https://mint2.example.com
 
 The CLI fetches `GET /federation/v1/config`, validates the complete v3/BLS public
 federation config, and verifies the contacted member's federation identity and
-config digest against `GET /v1/info` before storing the public wallet metadata.
-Config-file and invite-code imports remain available for offline workflows:
+config digest against `GET /v1/info` before storing the public wallet metadata
+in the wallet database's federation registry. Every member URL maps to the
+imported federation; running `federation add` again through any member refreshes
+the stored config. Config-file and invite-code imports remain available for
+offline workflows:
 
 ```bash
 cdk-cli federation add --public-config federation-public.json

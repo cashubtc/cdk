@@ -94,7 +94,11 @@ pub use cdk_common::wallet::{
     SendOptions,
 };
 #[cfg(feature = "federation")]
-pub use federation::{FederatedMintConnector, FederatedMintConnectorConfig};
+pub use federation::{
+    FederatedMintConnector, FederatedMintConnectorConfig, FederationConnectorPolicy,
+    FederationImportOptions, FederationRegistry, FederationRegistryError, FederationSource,
+    RegisteredFederation,
+};
 pub use melt::{MeltConfirmOptions, MeltOutcome, PendingMelt, PreparedMelt};
 pub use mint_connector::transport::Transport as HttpTransport;
 pub use mint_connector::{

@@ -18,8 +18,10 @@ pub async fn mint_info(
 ) -> Result<()> {
     if let Some(mint_url) = &sub_command_args.mint_url {
         #[cfg(feature = "federation")]
-        if let Some(federation_wallet) = crate::utils::federation_wallet_for_mint_url(mint_url)? {
-            let info = federation_wallet.mint_connector()?.get_mint_info().await?;
+        if let Some(federation) = crate::utils::federation_wallet_for_mint_url(mint_url)? {
+            let info = crate::utils::federation_mint_connector(&federation)?
+                .get_mint_info()
+                .await?;
             println!("{}", escape_json(&serde_json::to_string_pretty(&info)?));
             return Ok(());
         }

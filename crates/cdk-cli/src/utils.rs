@@ -11,14 +11,12 @@ use cdk::mint_url::MintUrl;
 use cdk::nuts::CurrencyUnit;
 use cdk::wallet::WalletRepository;
 #[cfg(feature = "federation")]
-use cdk::wallet::{Wallet, WalletConfig};
-
-#[cfg(feature = "federation")]
-use crate::sub_commands::federation::{FederationWalletRegistry, StoredFederationWallet};
+use cdk::wallet::{MintConnector, RegisteredFederation, Wallet, WalletConfig};
 
 static NON_INTERACTIVE: AtomicBool = AtomicBool::new(false);
+/// Federations loaded from the wallet's federation registry at startup.
 #[cfg(feature = "federation")]
-static FEDERATION_REGISTRY: OnceLock<RwLock<Option<Arc<FederationWalletRegistry>>>> =
+static FEDERATION_REGISTRY: OnceLock<RwLock<Option<Arc<Vec<RegisteredFederation>>>>> =
     OnceLock::new();
 
 pub fn set_non_interactive(enabled: bool) {
@@ -58,14 +56,9 @@ pub async fn get_or_create_wallet(
     unit: &CurrencyUnit,
 ) -> Result<cdk::wallet::Wallet> {
     #[cfg(feature = "federation")]
-    if let Some(federation_wallet) = federation_wallet_for_mint_url(mint_url)? {
-        return create_or_replace_federation_wallet(
-            wallet_repository,
-            mint_url,
-            unit,
-            &federation_wallet,
-        )
-        .await;
+    if let Some(federation) = federation_wallet_for_mint_url(mint_url)? {
+        return create_or_replace_federation_wallet(wallet_repository, mint_url, unit, &federation)
+            .await;
     }
 
     match wallet_repository.get_wallet(mint_url, unit).await {
@@ -100,36 +93,37 @@ pub fn is_configured_federation_mint_url(mint_url: &MintUrl) -> Result<bool> {
 }
 
 #[cfg(feature = "federation")]
-/// Return the imported federation wallet that matches a local or member mint URL.
-pub fn federation_wallet_for_mint_url(
-    mint_url: &MintUrl,
-) -> Result<Option<StoredFederationWallet>> {
-    let Some(registry) = federation_registry()? else {
+/// Return the imported federation that a local or member mint URL is an alias of.
+pub fn federation_wallet_for_mint_url(mint_url: &MintUrl) -> Result<Option<RegisteredFederation>> {
+    let Some(federations) = federation_registry()? else {
         return Ok(None);
     };
-    Ok(registry.find_by_mint_url(mint_url).cloned())
+    Ok(federations
+        .iter()
+        .find(|federation| federation.matches_mint_url(mint_url))
+        .cloned())
 }
 
 #[cfg(feature = "federation")]
-/// Install the in-memory federation registry used by wallet helpers.
-pub fn set_federation_registry(registry: FederationWalletRegistry) -> Result<()> {
+/// Install the registered federations used by wallet helpers.
+pub fn set_federation_registry(federations: Vec<RegisteredFederation>) -> Result<()> {
     let lock = FEDERATION_REGISTRY.get_or_init(|| RwLock::new(None));
     let mut guard = lock
         .write()
         .map_err(|_| anyhow!("Federation registry lock is poisoned"))?;
-    *guard = Some(Arc::new(registry));
+    *guard = Some(Arc::new(federations));
     Ok(())
 }
 
 #[cfg(feature = "federation")]
 /// Activate all imported federation wallet configs in a wallet repository.
 pub async fn activate_federation_wallets(wallet_repository: &WalletRepository) -> Result<()> {
-    let Some(registry) = federation_registry()? else {
+    let Some(federations) = federation_registry()? else {
         return Ok(());
     };
 
-    for wallet in &registry.wallets {
-        activate_federation_wallet(wallet_repository, wallet).await?;
+    for federation in federations.iter() {
+        activate_federation_wallet(wallet_repository, federation).await?;
     }
 
     Ok(())
@@ -139,16 +133,12 @@ pub async fn activate_federation_wallets(wallet_repository: &WalletRepository) -
 /// Activate one imported federation wallet config in a wallet repository.
 pub async fn activate_federation_wallet(
     wallet_repository: &WalletRepository,
-    federation_wallet: &StoredFederationWallet,
+    federation: &RegisteredFederation,
 ) -> Result<()> {
-    let config: WalletConfig = federation_wallet.wallet_config()?;
-    for unit in federation_wallet.active_units() {
+    let config = federation_wallet_config(federation)?;
+    for unit in federation.active_units() {
         wallet_repository
-            .set_mint_config(
-                federation_wallet.local_mint_url.clone(),
-                unit,
-                config.clone(),
-            )
+            .set_mint_config(federation.local_mint_url().clone(), unit, config.clone())
             .await?;
     }
 
@@ -156,7 +146,20 @@ pub async fn activate_federation_wallet(
 }
 
 #[cfg(feature = "federation")]
-fn federation_registry() -> Result<Option<Arc<FederationWalletRegistry>>> {
+/// Build the federated connector for an imported federation.
+pub fn federation_mint_connector(
+    federation: &RegisteredFederation,
+) -> Result<Arc<dyn MintConnector + Send + Sync>> {
+    Ok(Arc::new(federation.connector()?) as Arc<dyn MintConnector + Send + Sync>)
+}
+
+#[cfg(feature = "federation")]
+fn federation_wallet_config(federation: &RegisteredFederation) -> Result<WalletConfig> {
+    Ok(WalletConfig::new().with_mint_connector(federation_mint_connector(federation)?))
+}
+
+#[cfg(feature = "federation")]
+fn federation_registry() -> Result<Option<Arc<Vec<RegisteredFederation>>>> {
     let Some(lock) = FEDERATION_REGISTRY.get() else {
         return Ok(None);
     };
@@ -171,17 +174,17 @@ async fn create_or_replace_federation_wallet(
     wallet_repository: &WalletRepository,
     mint_url: &MintUrl,
     unit: &CurrencyUnit,
-    federation_wallet: &StoredFederationWallet,
+    federation: &RegisteredFederation,
 ) -> Result<Wallet> {
-    if !federation_wallet.supports_unit(unit) {
+    if !federation.supports_unit(unit) {
         bail!(
             "Federation {} does not advertise an active {} keyset",
-            federation_wallet.federation_id(),
+            federation.federation_id(),
             unit
         );
     }
 
-    let config: WalletConfig = federation_wallet.wallet_config()?;
+    let config = federation_wallet_config(federation)?;
     wallet_repository
         .set_mint_config(mint_url.clone(), unit.clone(), config)
         .await
@@ -205,9 +208,7 @@ mod federation_tests {
     use cdk_common::SecretKey;
 
     use super::*;
-    use crate::sub_commands::federation::{
-        FederationWalletRegistry, StoredFederationConnectorPolicy,
-    };
+    use crate::test_support::registered_federation;
 
     fn member_id(id: u16) -> MemberId {
         MemberId::new(id).expect("valid member id")
@@ -282,8 +283,8 @@ mod federation_tests {
         format!("{:?}", wallet.mint_connector())
     }
 
-    #[test]
-    fn standalone_command_guard_rejects_imported_federation_urls() {
+    #[tokio::test]
+    async fn standalone_command_guard_rejects_imported_federation_urls() {
         let public_config = valid_public_config();
         let local_mint_url = public_config
             .members
@@ -291,15 +292,8 @@ mod federation_tests {
             .expect("member one")
             .public_mint_url
             .clone();
-        let mut registry = FederationWalletRegistry::default();
-        registry
-            .upsert(
-                public_config,
-                local_mint_url.clone(),
-                StoredFederationConnectorPolicy::default(),
-            )
-            .expect("upsert");
-        set_federation_registry(registry).expect("set federation registry");
+        let federation = registered_federation(public_config, None).await;
+        set_federation_registry(vec![federation]).expect("set federation registry");
 
         let err = ensure_standalone_mint_command(&local_mint_url, "cat-login")
             .expect_err("federation auth must fail closed");
@@ -331,15 +325,8 @@ mod federation_tests {
         let standalone_url =
             MintUrl::from_str("https://standalone.example.com").expect("standalone url");
 
-        let mut registry = FederationWalletRegistry::default();
-        registry
-            .upsert(
-                public_config,
-                local_mint_url.clone(),
-                StoredFederationConnectorPolicy::default(),
-            )
-            .expect("upsert");
-        set_federation_registry(registry).expect("set federation registry");
+        let federation = registered_federation(public_config, Some(local_mint_url.clone())).await;
+        set_federation_registry(vec![federation]).expect("set federation registry");
 
         let repository = test_repository().await;
         activate_federation_wallets(&repository)
@@ -404,20 +391,10 @@ mod federation_tests {
             .expect("member one")
             .public_mint_url
             .clone();
-        let mut registry = FederationWalletRegistry::default();
-        registry
-            .upsert(
-                public_config,
-                local_mint_url.clone(),
-                StoredFederationConnectorPolicy::default(),
-            )
-            .expect("upsert");
-        let federation_wallet = registry
-            .find_by_mint_url(&local_mint_url)
-            .expect("stored federation wallet");
+        let federation = registered_federation(public_config, Some(local_mint_url.clone())).await;
         let repository = test_repository().await;
 
-        activate_federation_wallet(&repository, federation_wallet)
+        activate_federation_wallet(&repository, &federation)
             .await
             .expect("activate federation wallet");
 

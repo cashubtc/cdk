@@ -390,13 +390,10 @@ mod tests {
     #[cfg(feature = "federation")]
     #[tokio::test]
     async fn wallet_helpers_use_federation_connector_for_imported_member_urls() {
-        use crate::sub_commands::federation::{
-            FederationWalletRegistry, StoredFederationConnectorPolicy,
-        };
-        use crate::test_support::{federation_public_config, member_id};
+        use crate::test_support::{example_public_config, member_id, registered_federation};
         use crate::utils::set_federation_registry;
 
-        let public_config = federation_public_config();
+        let public_config = example_public_config();
         let local_mint_url = public_config
             .members
             .get(&member_id(1))
@@ -415,15 +412,8 @@ mod tests {
             .expect("member three")
             .public_mint_url
             .clone();
-        let mut registry = FederationWalletRegistry::default();
-        registry
-            .upsert(
-                public_config,
-                local_mint_url,
-                StoredFederationConnectorPolicy::default(),
-            )
-            .expect("upsert");
-        set_federation_registry(registry).expect("set federation registry");
+        let federation = registered_federation(public_config, Some(local_mint_url)).await;
+        set_federation_registry(vec![federation]).expect("set federation registry");
         let localstore = Arc::new(
             cdk_sqlite::wallet::memory::empty()
                 .await
