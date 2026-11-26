@@ -6,11 +6,22 @@ use cdk_common::federation::{
     FederationDkgKeysetSpec, FederationDkgTranscript, FederationDkgTranscriptSignature, MemberId,
     ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
 };
+use cdk_common::federation::{
+    FederationDkgCeremonyRecord, FederationDkgDriverPhase, FederationDkgParticipantCommitment,
+    FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
+    FederationDkgSecretShareRequest,
+};
 #[cfg(feature = "federation-bdk")]
 use cdk_common::federation::{FederationFrostDkgContext, FederationFrostRootRecord};
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::nut01::{evaluate_secret_key_coefficients, BlsSecretKey};
 use cdk_common::{Amount, CurrencyUnit, SecretKey};
+use cdk_federation::setup::ceremony::{publish_final_config_pair, FinalConfigExportFault};
+use cdk_federation::setup::finalize::write_final_config_file;
+#[cfg(feature = "federation-bark")]
+use cdk_federation_bark::{
+    federation_bark_application, federation_bark_recovery_application, FederationBarkPolicyConfig,
+};
 #[cfg(feature = "federation-bdk")]
 use cdk_frost::{advance_dkg, finish_dkg, start_dkg, SecretEncryptionKey};
 
@@ -443,7 +454,7 @@ fn dkg_status_report_marks_missing_activation_not_ready() {
 #[test]
 fn dkg_status_report_summarizes_persisted_setup_records_without_secrets() {
     let fixture = dkg_completion_fixture(member_id(2));
-    let setup_summary = DkgSetupRecordSummary {
+    let setup_summary = FederationDkgRecordSummary {
         ceremony_lifecycle: Vec::new(),
         participant_states: 1,
         commitments: 3,
@@ -544,11 +555,11 @@ fn merge_dkg_records_appends_database_records_to_file_records() {
         &mut keyset_shares,
         &mut transcript_signatures,
         &mut activations,
-        DkgCompletionRecords {
+        FederationDkgCompletionRecords {
             keyset_shares: vec![fixture.keyset_share.clone()],
             transcript_signatures: fixture.transcript_signatures[1..].to_vec(),
             activations: fixture.activations[1..].to_vec(),
-            ..DkgCompletionRecords::default()
+            ..FederationDkgCompletionRecords::default()
         },
     );
 
@@ -577,11 +588,11 @@ fn merge_dkg_records_deduplicates_database_records_already_supplied_from_files()
         &mut keyset_shares,
         &mut transcript_signatures,
         &mut activations,
-        DkgCompletionRecords {
+        FederationDkgCompletionRecords {
             keyset_shares: vec![fixture.keyset_share.clone()],
             transcript_signatures: fixture.transcript_signatures.clone(),
             activations: fixture.activations.clone(),
-            ..DkgCompletionRecords::default()
+            ..FederationDkgCompletionRecords::default()
         },
     );
 
@@ -659,33 +670,24 @@ async fn activated_config_pair_is_atomic_idempotent_and_rejects_mismatch() {
     let root = tempfile::TempDir::new().expect("activation directory");
     let activation_dir = root.path().join("activated");
 
-    let first = crate::federation_setup_command::publish_final_config_pair(
-        &activation_dir,
-        &finalized,
-        crate::federation_setup_command::FinalConfigExportFault::None,
-    )
-    .await
-    .expect("atomic config pair publication");
-    let second = crate::federation_setup_command::publish_final_config_pair(
-        &activation_dir,
-        &finalized,
-        crate::federation_setup_command::FinalConfigExportFault::None,
-    )
-    .await
-    .expect("idempotent config pair publication");
+    let first =
+        publish_final_config_pair(&activation_dir, &finalized, FinalConfigExportFault::None)
+            .await
+            .expect("atomic config pair publication");
+    let second =
+        publish_final_config_pair(&activation_dir, &finalized, FinalConfigExportFault::None)
+            .await
+            .expect("idempotent config pair publication");
     assert_eq!(first, second);
 
     write_final_config_file(&first.0, &fixture.setup_public_config, true, false)
         .expect("replace public config with mismatched valid setup config");
-    crate::federation_setup_command::publish_final_config_pair(
-        &activation_dir,
-        &finalized,
-        crate::federation_setup_command::FinalConfigExportFault::None,
-    )
-    .await
-    .expect_err("mismatched activated config must fail closed");
+    publish_final_config_pair(&activation_dir, &finalized, FinalConfigExportFault::None)
+        .await
+        .expect_err("mismatched activated config must fail closed");
 }
 
+#[cfg(feature = "federation-test-utils")]
 #[tokio::test]
 async fn partial_activated_config_export_is_not_published() {
     let fixture = dkg_completion_fixture(member_id(1));
@@ -699,10 +701,10 @@ async fn partial_activated_config_export_is_not_published() {
     let root = tempfile::TempDir::new().expect("activation directory");
     let activation_dir = root.path().join("activated");
 
-    crate::federation_setup_command::publish_final_config_pair(
+    publish_final_config_pair(
         &activation_dir,
         &finalized,
-        crate::federation_setup_command::FinalConfigExportFault::FailPublicWrite,
+        FinalConfigExportFault::FailPublicWrite,
     )
     .await
     .expect_err("partial export must fail");
@@ -732,7 +734,7 @@ fn completed_dual_dkg_bootstraps_one_cdk_onchain_application() {
     attach_initial_frost_cdk_wallet(
         &mut finalized,
         std::slice::from_ref(&root),
-        FrostCdkBootstrap {
+        FederationFrostCdkBootstrap {
             network: bitcoin::Network::Regtest,
             minimum_confirmations: 1,
             fee_policy_version: 1,
@@ -763,7 +765,7 @@ fn completed_dual_dkg_bootstraps_one_cdk_onchain_application() {
     let err = attach_initial_frost_cdk_wallet(
         &mut finalized,
         std::slice::from_ref(&root),
-        FrostCdkBootstrap {
+        FederationFrostCdkBootstrap {
             network: bitcoin::Network::Regtest,
             minimum_confirmations: 1,
             fee_policy_version: 1,
@@ -789,7 +791,7 @@ fn completed_dual_dkg_registers_bark_under_the_same_sealed_root() {
     attach_initial_frost_cdk_wallet(
         &mut finalized,
         std::slice::from_ref(&root),
-        FrostCdkBootstrap {
+        FederationFrostCdkBootstrap {
             network: bitcoin::Network::Regtest,
             minimum_confirmations: 1,
             fee_policy_version: 1,
@@ -817,7 +819,7 @@ fn completed_dual_dkg_registers_bark_under_the_same_sealed_root() {
     let wrong_network_error = attach_initial_frost_bark_application(
         &mut wrong_network,
         std::slice::from_ref(&root),
-        FrostBarkBootstrap {
+        FederationFrostBarkBootstrap {
             network: bitcoin::Network::Signet,
             ark_server_public_key: server,
             application_key_epoch: 1,
@@ -842,7 +844,7 @@ fn completed_dual_dkg_registers_bark_under_the_same_sealed_root() {
     attach_initial_frost_bark_application(
         &mut finalized,
         std::slice::from_ref(&root),
-        FrostBarkBootstrap {
+        FederationFrostBarkBootstrap {
             network: bitcoin::Network::Regtest,
             ark_server_public_key: server,
             application_key_epoch: 1,
@@ -898,7 +900,7 @@ fn completed_dual_dkg_registers_bark_under_the_same_sealed_root() {
     let error = attach_initial_frost_bark_application(
         &mut finalized,
         std::slice::from_ref(&root),
-        FrostBarkBootstrap {
+        FederationFrostBarkBootstrap {
             network: bitcoin::Network::Regtest,
             ark_server_public_key: server,
             application_key_epoch: 1,
@@ -931,7 +933,7 @@ fn frost_cdk_bootstrap_fails_closed_without_exactly_one_dual_dkg_root() {
     let err = attach_initial_frost_cdk_wallet(
         &mut finalized,
         &[],
-        FrostCdkBootstrap {
+        FederationFrostCdkBootstrap {
             network: bitcoin::Network::Regtest,
             minimum_confirmations: 1,
             fee_policy_version: 1,
@@ -961,7 +963,7 @@ fn finalized_dkg_config_export_requires_complete_records() {
 #[test]
 fn dkg_status_report_shows_partial_database_setup_progress_without_marking_ready() {
     let fixture = dkg_completion_fixture(member_id(2));
-    let setup_summary = DkgSetupRecordSummary {
+    let setup_summary = FederationDkgRecordSummary {
         ceremony_lifecycle: Vec::new(),
         participant_states: 1,
         commitments: 2,
@@ -1020,7 +1022,7 @@ fn dkg_status_report_shows_partial_database_setup_progress_without_marking_ready
 fn dkg_progress_report_uses_record_counts_without_finalization() {
     let fixture = dkg_completion_fixture(member_id(2));
     let records =
-        DkgCompletionRecords {
+        FederationDkgCompletionRecords {
             participant_states: vec![dkg_participant_state_for_status(
                 &fixture.setup_public_config,
                 member_id(2),
@@ -1032,9 +1034,9 @@ fn dkg_progress_report_uses_record_counts_without_finalization() {
             keyset_shares: vec![fixture.keyset_share],
             transcript_signatures: fixture.transcript_signatures,
             activations: fixture.activations,
-            ..DkgCompletionRecords::default()
+            ..FederationDkgCompletionRecords::default()
         };
-    let summary = DkgSetupRecordSummary::from_record_counts(&records);
+    let summary = FederationDkgRecordSummary::from_record_counts(&records);
     let report = dkg_progress_report(
         &fixture.setup_public_config,
         &fixture.setup_private_config,
@@ -1080,11 +1082,11 @@ fn dkg_progress_report_exposes_aborted_and_replacement_lifecycle() {
         keyset_spec,
         Some(old_id),
     );
-    let records = DkgCompletionRecords {
+    let records = FederationDkgCompletionRecords {
         ceremonies: vec![aborted, replacement],
-        ..DkgCompletionRecords::default()
+        ..FederationDkgCompletionRecords::default()
     };
-    let summary = DkgSetupRecordSummary::from_record_counts(&records);
+    let summary = FederationDkgRecordSummary::from_record_counts(&records);
     let report = dkg_progress_report(
         &fixture.setup_public_config,
         &fixture.setup_private_config,
@@ -1174,7 +1176,7 @@ async fn read_database_records_loads_persisted_dkg_completion_records() {
     assert_eq!(records.keyset_shares, vec![fixture.keyset_share]);
     assert_eq!(records.transcript_signatures, fixture.transcript_signatures);
     assert_eq!(records.activations, fixture.activations);
-    let setup_summary = DkgSetupRecordSummary::from_records(
+    let setup_summary = FederationDkgRecordSummary::from_records(
         &records,
         &fixture.setup_public_config,
         &fixture.setup_private_config,

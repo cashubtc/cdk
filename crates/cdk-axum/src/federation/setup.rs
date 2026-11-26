@@ -1,11 +1,10 @@
-//! Bounded setup-only coordinator HTTP service and authenticated client.
+//! HTTP routes of the setup-only coordinator.
+//!
+//! The coordinator itself, its typed client and its errors live in
+//! `cdk_federation::setup`; this module maps requests and errors to HTTP.
 
-use core::future::Future;
-use std::collections::BTreeMap;
-use std::net::{IpAddr, SocketAddr};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Weak};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::net::SocketAddr;
+use std::sync::Arc;
 
 use axum::body::Body;
 use axum::error_handling::HandleErrorLayer;
@@ -15,754 +14,85 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
-use cdk_common::database::mint::{Database, DynMintDatabase};
 use cdk_common::federation::{
-    FederationError, FederationSetupApproval, FederationSetupCoordinatorPhase,
-    FederationSetupCoordinatorPublicKey, FederationSetupCorrelationNonce,
-    FederationSetupEnrollment, FederationSetupEnrollmentAcknowledgement, FederationSetupId,
-    FederationSetupInvitation, FederationSetupInvitationId, FederationSetupInvitationRecord,
-    FederationSetupInvitationState, FederationSetupManifest, FederationSetupProposal,
-    FederationSetupResponseBody, FederationSetupResponseRouteKind, FederationSetupSession,
-    FederationSetupSignedResponse, FederationSetupStatus, FederationSetupUrlPolicy,
-    FEDERATION_MAX_SETUP_ARTIFACT_BYTES, FEDERATION_MAX_SETUP_ENROLLMENT_BYTES,
-    FEDERATION_MAX_SETUP_INVITATION_BYTES, FEDERATION_MAX_SETUP_STATUS_BYTES,
-    FEDERATION_SETUP_CORRELATION_HEADER, FEDERATION_SETUP_PROTOCOL_VERSION,
+    FederationSetupApproval, FederationSetupEnrollment, FEDERATION_MAX_SETUP_ARTIFACT_BYTES,
+    FEDERATION_MAX_SETUP_ENROLLMENT_BYTES, FEDERATION_MAX_SETUP_STATUS_BYTES,
+    FEDERATION_SETUP_CORRELATION_HEADER,
 };
-use cdk_common::SecretKey;
-use cdk_http_client::{HttpClient, HttpError};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use thiserror::Error;
-use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, Semaphore};
+use cdk_federation::setup::{
+    FederationSetupCoordinatorService, FederationSetupHttpError, FederationSetupHttpErrorCode,
+    FederationSetupRequestAuthorization, FederationSetupRequestSource,
+    FEDERATION_SETUP_APPROVALS_PATH, FEDERATION_SETUP_APPROVAL_REQUEST_BYTES,
+    FEDERATION_SETUP_ENROLLMENTS_PATH, FEDERATION_SETUP_ERROR_RESPONSE_BYTES,
+    FEDERATION_SETUP_MANIFEST_PATH, FEDERATION_SETUP_PROPOSAL_PATH, FEDERATION_SETUP_STATUS_PATH,
+};
+use serde::Serialize;
 use tower::{BoxError, ServiceBuilder};
-use url::Url;
-use uuid::Uuid;
 
-const SETUP_ENROLLMENTS_PATH: &str = "/federation/setup/v1/enrollments";
-const SETUP_PROPOSAL_PATH: &str = "/federation/setup/v1/proposal";
-const SETUP_APPROVALS_PATH: &str = "/federation/setup/v1/approvals";
-const SETUP_MANIFEST_PATH: &str = "/federation/setup/v1/manifest";
-const SETUP_STATUS_PATH: &str = "/federation/setup/v1/status";
-const SETUP_APPROVAL_REQUEST_BYTES: usize = 4 * 1024;
-const SETUP_ERROR_RESPONSE_BYTES: usize = 4 * 1024;
+/// A setup error as an HTTP response.
+#[derive(Debug)]
+struct SetupErrorResponse(FederationSetupHttpError);
 
-/// Stable structured error codes returned by the setup-only API.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FederationSetupHttpErrorCode {
-    /// Invitation is absent or malformed.
-    InvalidInvitation,
-    /// Invitation has expired.
-    Expired,
-    /// One-use authorization was replayed with different content.
-    Replay,
-    /// Immutable or compare-and-set state conflicts.
-    Conflict,
-    /// Requested setup artifact is not yet available.
-    NotReady,
-    /// A member or coordinator signature is invalid.
-    InvalidSignature,
-    /// Request or artifact uses an unsupported protocol version.
-    UnsupportedVersion,
-    /// Request is structurally invalid.
-    InvalidRequest,
-    /// Durable state could not be read or written.
-    StorageFailure,
-    /// Bounded admission was saturated.
-    RateLimited,
-    /// Request deadline elapsed while owned work continued safely.
-    Timeout,
-    /// Coordinator is shutting down.
-    Unavailable,
-}
-
-/// Redacted setup HTTP failure.
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
-#[error("federation setup HTTP error: {code:?}")]
-pub struct FederationSetupHttpError {
-    /// Stable machine-readable code.
-    pub code: FederationSetupHttpErrorCode,
-    message: &'static str,
-}
-
-impl FederationSetupHttpError {
-    const fn new(code: FederationSetupHttpErrorCode, message: &'static str) -> Self {
-        Self { code, message }
-    }
-
-    fn invalid_invitation() -> Self {
-        Self::new(
-            FederationSetupHttpErrorCode::InvalidInvitation,
-            "setup invitation authentication failed",
-        )
-    }
-
-    fn storage() -> Self {
-        Self::new(
-            FederationSetupHttpErrorCode::StorageFailure,
-            "setup durable state is unavailable",
-        )
-    }
-
-    fn from_federation(error: FederationError) -> Self {
-        match error {
-            FederationError::SetupVersionMismatch { .. } => Self::new(
-                FederationSetupHttpErrorCode::UnsupportedVersion,
-                "unsupported setup protocol version",
-            ),
-            FederationError::InvalidSetupSignature { .. }
-            | FederationError::SetupSignatureVerificationFailed { .. } => Self::new(
-                FederationSetupHttpErrorCode::InvalidSignature,
-                "setup signature validation failed",
-            ),
-            FederationError::SetupPersistenceConflict { .. }
-            | FederationError::SetupProposalHashMismatch { .. }
-            | FederationError::SetupManifestHashMismatch { .. } => Self::new(
-                FederationSetupHttpErrorCode::Conflict,
-                "setup artifact conflicts with durable state",
-            ),
-            _ => Self::new(
-                FederationSetupHttpErrorCode::InvalidRequest,
-                "setup request validation failed",
-            ),
-        }
-    }
-
-    const fn status(&self) -> StatusCode {
-        match self.code {
-            FederationSetupHttpErrorCode::InvalidInvitation
-            | FederationSetupHttpErrorCode::InvalidSignature => StatusCode::UNAUTHORIZED,
-            FederationSetupHttpErrorCode::Expired => StatusCode::GONE,
-            FederationSetupHttpErrorCode::Replay | FederationSetupHttpErrorCode::Conflict => {
-                StatusCode::CONFLICT
-            }
-            FederationSetupHttpErrorCode::NotReady => StatusCode::TOO_EARLY,
-            FederationSetupHttpErrorCode::UnsupportedVersion => StatusCode::UPGRADE_REQUIRED,
-            FederationSetupHttpErrorCode::InvalidRequest => StatusCode::BAD_REQUEST,
-            FederationSetupHttpErrorCode::StorageFailure => StatusCode::INTERNAL_SERVER_ERROR,
-            FederationSetupHttpErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
-            FederationSetupHttpErrorCode::Timeout => StatusCode::GATEWAY_TIMEOUT,
-            FederationSetupHttpErrorCode::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
-        }
+impl From<FederationSetupHttpError> for SetupErrorResponse {
+    fn from(error: FederationSetupHttpError) -> Self {
+        Self(error)
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FederationSetupHttpErrorBody {
-    code: FederationSetupHttpErrorCode,
-    message: String,
-}
-
-impl IntoResponse for FederationSetupHttpError {
+impl IntoResponse for SetupErrorResponse {
     fn into_response(self) -> Response {
-        let status = self.status();
-        let body = FederationSetupHttpErrorBody {
-            code: self.code,
-            message: self.message.to_owned(),
-        };
-        no_store((status, Json(body)).into_response())
+        let status =
+            StatusCode::from_u16(self.0.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        no_store((status, Json(self.0.body())).into_response())
     }
 }
 
-/// Resource and deadline policy for a setup-only coordinator service.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FederationSetupCoordinatorServiceConfig {
-    /// Maximum wall time a caller waits for one owned operation.
-    pub request_deadline: Duration,
-    /// Maximum concurrent requests from one source address.
-    pub per_source_concurrency: usize,
-    /// Maximum concurrent requests for one invitation.
-    pub per_invitation_concurrency: usize,
-    /// Maximum concurrent requests across this setup coordinator.
-    pub global_concurrency: usize,
-    /// Maximum distinct source buckets retained in memory.
-    pub max_source_buckets: usize,
-}
-
-impl Default for FederationSetupCoordinatorServiceConfig {
-    fn default() -> Self {
-        Self {
-            request_deadline: Duration::from_secs(5),
-            per_source_concurrency: 4,
-            per_invitation_concurrency: 1,
-            global_concurrency: 32,
-            max_source_buckets: 256,
-        }
-    }
-}
-
-impl FederationSetupCoordinatorServiceConfig {
-    fn validate(self) -> Result<Self, FederationSetupHttpError> {
-        if self.request_deadline.is_zero()
-            || self.per_source_concurrency == 0
-            || self.per_invitation_concurrency == 0
-            || self.global_concurrency == 0
-            || self.max_source_buckets == 0
-        {
-            return Err(FederationSetupHttpError::new(
-                FederationSetupHttpErrorCode::InvalidRequest,
-                "setup coordinator resource policy is invalid",
-            ));
-        }
-        Ok(self)
-    }
-}
-
-/// Setup-only coordinator state. It cannot expose wallet or runtime routes.
-#[allow(missing_debug_implementations)]
-pub struct FederationSetupCoordinatorService {
-    database: DynMintDatabase,
-    setup_id: FederationSetupId,
-    member_count: u16,
-    coordinator_secret_key: SecretKey,
-    coordinator_identity: FederationSetupCoordinatorPublicKey,
-    url_policy: FederationSetupUrlPolicy,
-    config: FederationSetupCoordinatorServiceConfig,
-    global_admission: Arc<Semaphore>,
-    source_admission: Mutex<BTreeMap<SetupRequestSource, Weak<Semaphore>>>,
-    invitation_admission: Mutex<BTreeMap<FederationSetupInvitationId, Weak<Semaphore>>>,
-    approval_admission: Arc<Semaphore>,
-    shutting_down: AtomicBool,
-    active_tasks: AtomicUsize,
-    idle: Notify,
-    faults: Arc<dyn SetupOperationFaults>,
-}
-
-/// Fault points in one coordinator operation. Production injects none; tests
-/// delay operations or fail storage through their own implementation.
-#[async_trait::async_trait]
-trait SetupOperationFaults: Send + Sync {
-    /// Run before the operation body; an error ends the operation.
-    async fn before_operation(&self) -> Result<(), FederationSetupHttpError> {
-        Ok(())
-    }
-}
-
-/// The production coordinator: no injected faults.
-struct NoSetupOperationFaults;
-
-impl SetupOperationFaults for NoSetupOperationFaults {}
-
-impl FederationSetupCoordinatorService {
-    /// Construct a bounded coordinator for one locally created setup.
-    pub fn new(
-        database: DynMintDatabase,
-        setup_id: FederationSetupId,
-        member_count: u16,
-        coordinator_secret_key: SecretKey,
-        url_policy: FederationSetupUrlPolicy,
-        config: FederationSetupCoordinatorServiceConfig,
-    ) -> Result<Self, FederationSetupHttpError> {
-        let config = config.validate()?;
-        if member_count == 0 {
-            return Err(FederationSetupHttpError::new(
-                FederationSetupHttpErrorCode::InvalidRequest,
-                "setup coordinator member count is invalid",
-            ));
-        }
-        let coordinator_identity =
-            FederationSetupCoordinatorPublicKey::new(coordinator_secret_key.public_key())
-                .map_err(FederationSetupHttpError::from_federation)?;
-        Ok(Self {
-            database,
-            setup_id,
-            member_count,
-            coordinator_secret_key,
-            coordinator_identity,
-            url_policy,
-            config,
-            global_admission: Arc::new(Semaphore::new(config.global_concurrency)),
-            source_admission: Mutex::new(BTreeMap::new()),
-            invitation_admission: Mutex::new(BTreeMap::new()),
-            approval_admission: Arc::new(Semaphore::new(1)),
-            shutting_down: AtomicBool::new(false),
-            active_tasks: AtomicUsize::new(0),
-            idle: Notify::new(),
-            faults: Arc::new(NoSetupOperationFaults),
-        })
-    }
-
-    /// Reject new work and wait until every detached timed-out operation finishes.
-    pub async fn shutdown(&self) {
-        self.shutting_down.store(true, Ordering::Release);
-        loop {
-            // Register before observing the count: the last task can finish
-            // between that load and awaiting its notify_waiters notification.
-            let idle = self.idle.notified();
-            tokio::pin!(idle);
-            idle.as_mut().enable();
-            if self.active_tasks.load(Ordering::Acquire) == 0 {
-                break;
-            }
-            idle.await;
-        }
-    }
-
-    async fn run_owned<T, F, Fut>(
-        self: Arc<Self>,
-        source: SetupRequestSource,
-        invitation_id: FederationSetupInvitationId,
-        operation: F,
-    ) -> Result<T, FederationSetupHttpError>
-    where
-        T: Send + 'static,
-        F: FnOnce(Arc<Self>) -> Fut + Send + 'static,
-        Fut: Future<Output = Result<T, FederationSetupHttpError>> + Send + 'static,
-    {
-        self.active_tasks.fetch_add(1, Ordering::AcqRel);
-        let active = ActiveTaskGuard {
-            service: self.clone(),
-        };
-        if self.shutting_down.load(Ordering::Acquire) {
-            return Err(FederationSetupHttpError::new(
-                FederationSetupHttpErrorCode::Unavailable,
-                "setup coordinator is shutting down",
-            ));
-        }
-        let permits = self.try_admit(source, invitation_id).await?;
-        let service = self.clone();
-        let mut task = tokio::spawn(async move {
-            let _active = active;
-            let _permits = permits;
-            service.faults.before_operation().await?;
-            operation(service).await
-        });
-        match tokio::time::timeout(self.config.request_deadline, &mut task).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(_)) => Err(FederationSetupHttpError::storage()),
-            Err(_) => Err(FederationSetupHttpError::new(
-                FederationSetupHttpErrorCode::Timeout,
-                "setup request deadline elapsed",
-            )),
-        }
-    }
-
-    async fn try_admit(
-        &self,
-        source: SetupRequestSource,
-        invitation_id: FederationSetupInvitationId,
-    ) -> Result<SetupAdmission, FederationSetupHttpError> {
-        let global = self
-            .global_admission
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| rate_limited())?;
-        let source_semaphore = {
-            let mut sources = self.source_admission.lock().await;
-            sources.retain(|_, semaphore| semaphore.strong_count() != 0);
-            match sources.get(&source).and_then(Weak::upgrade) {
-                Some(semaphore) => semaphore,
-                None if sources.len() >= self.config.max_source_buckets => {
-                    return Err(rate_limited());
-                }
-                None => {
-                    let semaphore = Arc::new(Semaphore::new(self.config.per_source_concurrency));
-                    sources.insert(source, Arc::downgrade(&semaphore));
-                    semaphore
-                }
-            }
-        };
-        let source = source_semaphore
-            .try_acquire_owned()
-            .map_err(|_| rate_limited())?;
-        let invitation_semaphore = {
-            let mut invitations = self.invitation_admission.lock().await;
-            invitations.retain(|_, semaphore| semaphore.strong_count() != 0);
-            match invitations.get(&invitation_id).and_then(Weak::upgrade) {
-                Some(semaphore) => semaphore,
-                None => {
-                    let semaphore =
-                        Arc::new(Semaphore::new(self.config.per_invitation_concurrency));
-                    invitations.insert(invitation_id, Arc::downgrade(&semaphore));
-                    semaphore
-                }
-            }
-        };
-        let invitation = invitation_semaphore
-            .try_acquire_owned()
-            .map_err(|_| rate_limited())?;
-        Ok(SetupAdmission {
-            _global: global,
-            _source: source,
-            _invitation: invitation,
-        })
-    }
-
-    async fn authenticate(
-        &self,
-        invitation: FederationSetupInvitation,
-        require_consumed: bool,
-    ) -> Result<AuthenticatedInvitation, FederationSetupHttpError> {
-        let now = current_unix_time()?;
-        let credential_expired = invitation.expires_at_unix <= now;
-        let validation_time = match credential_expired {
-            true => invitation.expires_at_unix.saturating_sub(1),
-            false => now,
-        };
-        invitation
-            .validate(validation_time, self.url_policy)
-            .map_err(FederationSetupHttpError::from_federation)?;
-        if invitation.setup_id != self.setup_id
-            || invitation.coordinator_identity != self.coordinator_identity
-        {
-            return Err(FederationSetupHttpError::invalid_invitation());
-        }
-        let record = self
-            .database
-            .get_federation_setup_invitation(invitation.setup_id, invitation.invitation_id)
-            .await
-            .map_err(|_| FederationSetupHttpError::storage())?
-            .ok_or_else(FederationSetupHttpError::invalid_invitation)?;
-        if credential_expired && record.state != FederationSetupInvitationState::Consumed {
-            return Err(FederationSetupHttpError::new(
-                FederationSetupHttpErrorCode::Expired,
-                "setup invitation is expired",
-            ));
-        }
-        if record.member_id != invitation.member_id
-            || record.expires_at_unix != invitation.expires_at_unix
-            || record.capability_hash != invitation.capability_hash()
-        {
-            return Err(FederationSetupHttpError::invalid_invitation());
-        }
-        match record.state {
-            FederationSetupInvitationState::Available if !require_consumed => {}
-            FederationSetupInvitationState::Consumed => {}
-            FederationSetupInvitationState::Expired => {
-                return Err(FederationSetupHttpError::new(
-                    FederationSetupHttpErrorCode::Expired,
-                    "setup invitation is expired",
-                ));
-            }
-            FederationSetupInvitationState::Available => {
-                return Err(FederationSetupHttpError::new(
-                    FederationSetupHttpErrorCode::Replay,
-                    "setup invitation has not completed enrollment",
-                ));
-            }
-        }
-        Ok(AuthenticatedInvitation { invitation, record })
-    }
-
-    async fn enroll(
-        &self,
-        authenticated: AuthenticatedInvitation,
-        enrollment: FederationSetupEnrollment,
-    ) -> Result<FederationSetupEnrollment, FederationSetupHttpError> {
-        enrollment
-            .validate(self.url_policy)
-            .map_err(FederationSetupHttpError::from_federation)?;
-        if enrollment.setup_id != authenticated.invitation.setup_id
-            || enrollment.invitation_id != authenticated.invitation.invitation_id
-            || enrollment.member_id != authenticated.invitation.member_id
-        {
-            return Err(FederationSetupHttpError::new(
-                FederationSetupHttpErrorCode::InvalidRequest,
-                "setup enrollment does not match its invitation",
-            ));
-        }
-        if authenticated.record.state == FederationSetupInvitationState::Consumed {
-            return self.exact_enrollment_replay(&enrollment).await;
-        }
-        let consumed = authenticated
-            .record
-            .consumed()
-            .map_err(FederationSetupHttpError::from_federation)?;
-        let mut transaction = Database::begin_transaction(&*self.database)
-            .await
-            .map_err(|_| FederationSetupHttpError::storage())?;
-        let result = transaction
-            .consume_federation_setup_invitation(&authenticated.record, &consumed, &enrollment)
-            .await;
-        if result.is_ok() {
-            transaction
-                .commit()
-                .await
-                .map_err(|_| FederationSetupHttpError::storage())?;
-            return Ok(enrollment);
-        }
-        let _ = transaction.rollback().await;
-        self.exact_enrollment_replay(&enrollment).await
-    }
-
-    async fn exact_enrollment_replay(
-        &self,
-        enrollment: &FederationSetupEnrollment,
-    ) -> Result<FederationSetupEnrollment, FederationSetupHttpError> {
-        let existing = self
-            .database
-            .get_federation_setup_enrollments(self.setup_id)
-            .await
-            .map_err(|_| FederationSetupHttpError::storage())?
-            .into_iter()
-            .find(|existing| {
-                existing.member_id == enrollment.member_id
-                    || existing.invitation_id == enrollment.invitation_id
-            });
-        match existing {
-            Some(existing) if existing == *enrollment => Ok(existing),
-            Some(_) => Err(FederationSetupHttpError::new(
-                FederationSetupHttpErrorCode::Replay,
-                "setup invitation was consumed by a different enrollment",
-            )),
-            None => Err(FederationSetupHttpError::new(
-                FederationSetupHttpErrorCode::Conflict,
-                "setup invitation state conflicts with enrollment storage",
-            )),
-        }
-    }
-
-    async fn proposal(&self) -> Result<FederationSetupProposal, FederationSetupHttpError> {
-        let proposal = self
-            .database
-            .get_federation_setup_proposal(self.setup_id)
-            .await
-            .map_err(|_| FederationSetupHttpError::storage())?
-            .ok_or_else(not_ready)?;
-        proposal
-            .validate(self.url_policy)
-            .map_err(FederationSetupHttpError::from_federation)?;
-        Ok(proposal)
-    }
-
-    async fn approve(
-        &self,
-        authenticated: AuthenticatedInvitation,
-        approval: FederationSetupApproval,
-    ) -> Result<FederationSetupApproval, FederationSetupHttpError> {
-        let _approval_serial = self
-            .approval_admission
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| rate_limited())?;
-        let proposal = self.proposal().await?;
-        if authenticated.invitation.member_id != approval.member_id {
-            return Err(FederationSetupHttpError::new(
-                FederationSetupHttpErrorCode::InvalidSignature,
-                "setup approval signer does not match its invitation",
-            ));
-        }
-        approval
-            .validate(&proposal)
-            .map_err(FederationSetupHttpError::from_federation)?;
-        let existing = self
-            .database
-            .get_federation_setup_approvals(self.setup_id)
-            .await
-            .map_err(|_| FederationSetupHttpError::storage())?;
-        if let Some(existing) = existing
-            .iter()
-            .find(|existing| existing.member_id == approval.member_id)
-        {
-            return match existing == &approval {
-                true => Ok(existing.clone()),
-                false => Err(FederationSetupHttpError::new(
-                    FederationSetupHttpErrorCode::Conflict,
-                    "setup member already approved different content",
-                )),
-            };
-        }
-        let mut approvals = existing
-            .into_iter()
-            .map(|existing| (existing.member_id, existing))
-            .collect::<BTreeMap<_, _>>();
-        approvals.insert(approval.member_id, approval.clone());
-        let certification = match approvals.len() == proposal.body.enrollments.len() {
-            true => {
-                let manifest = FederationSetupManifest::certify(
-                    proposal,
-                    approvals,
-                    &self.coordinator_secret_key,
-                    self.url_policy,
-                )
-                .map_err(FederationSetupHttpError::from_federation)?;
-                let session = self.session().await?;
-                let certified = session
-                    .with_coordinator_phase(
-                        FederationSetupCoordinatorPhase::Certified,
-                        current_unix_time()?,
-                    )
-                    .map_err(FederationSetupHttpError::from_federation)?;
-                Some((manifest, session, certified))
-            }
-            false => None,
-        };
-        let mut transaction = Database::begin_transaction(&*self.database)
-            .await
-            .map_err(|_| FederationSetupHttpError::storage())?;
-        transaction
-            .add_federation_setup_approval(&approval)
-            .await
-            .map_err(|_| FederationSetupHttpError::storage())?;
-        if let Some((manifest, session, certified)) = certification {
-            transaction
-                .store_federation_setup_manifest(&session, &certified, &manifest)
-                .await
-                .map_err(|_| FederationSetupHttpError::storage())?;
-        }
-        transaction
-            .commit()
-            .await
-            .map_err(|_| FederationSetupHttpError::storage())?;
-        Ok(approval)
-    }
-
-    async fn manifest(&self) -> Result<FederationSetupManifest, FederationSetupHttpError> {
-        let manifest = self
-            .database
-            .get_federation_setup_manifest(self.setup_id)
-            .await
-            .map_err(|_| FederationSetupHttpError::storage())?
-            .ok_or_else(not_ready)?;
-        manifest
-            .validate(self.url_policy)
-            .map_err(FederationSetupHttpError::from_federation)?;
-        Ok(manifest)
-    }
-
-    async fn status(&self) -> Result<FederationSetupStatus, FederationSetupHttpError> {
-        let session = self.session().await?;
-        let enrollments = self
-            .database
-            .get_federation_setup_enrollments(self.setup_id)
-            .await
-            .map_err(|_| FederationSetupHttpError::storage())?;
-        let approvals = self
-            .database
-            .get_federation_setup_approvals(self.setup_id)
-            .await
-            .map_err(|_| FederationSetupHttpError::storage())?;
-        let proposal = self
-            .database
-            .get_federation_setup_proposal(self.setup_id)
-            .await
-            .map_err(|_| FederationSetupHttpError::storage())?;
-        let manifest = self
-            .database
-            .get_federation_setup_manifest(self.setup_id)
-            .await
-            .map_err(|_| FederationSetupHttpError::storage())?;
-        let status = FederationSetupStatus {
-            version: FEDERATION_SETUP_PROTOCOL_VERSION,
-            setup_id: self.setup_id,
-            coordinator_phase: session.coordinator_phase.ok_or_else(|| {
-                FederationSetupHttpError::new(
-                    FederationSetupHttpErrorCode::Conflict,
-                    "setup coordinator lifecycle is missing",
-                )
-            })?,
-            member_count: self.member_count,
-            enrolled_members: enrollments
-                .into_iter()
-                .map(|enrollment| enrollment.member_id)
-                .collect(),
-            approved_members: approvals
-                .into_iter()
-                .map(|approval| approval.member_id)
-                .collect(),
-            proposal_hash: proposal.map(|proposal| proposal.proposal_hash),
-            manifest_hash: manifest.map(|manifest| manifest.manifest_hash),
-        };
-        status
-            .validate()
-            .map_err(FederationSetupHttpError::from_federation)?;
-        Ok(status)
-    }
-
-    /// Read validated local coordinator progress without network authentication.
-    pub async fn local_status(&self) -> Result<FederationSetupStatus, FederationSetupHttpError> {
-        self.status().await
-    }
-
-    async fn session(&self) -> Result<FederationSetupSession, FederationSetupHttpError> {
-        self.database
-            .get_federation_setup_session(self.setup_id)
-            .await
-            .map_err(|_| FederationSetupHttpError::storage())?
-            .ok_or_else(|| {
-                FederationSetupHttpError::new(
-                    FederationSetupHttpErrorCode::Conflict,
-                    "setup coordinator lifecycle is missing",
-                )
-            })
-    }
-
-    #[cfg(test)]
-    fn with_faults(mut self, faults: Arc<dyn SetupOperationFaults>) -> Self {
-        self.faults = faults;
-        self
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum SetupRequestSource {
-    Ip(IpAddr),
-    #[cfg(feature = "iroh")]
-    Iroh(cdk_iroh::EndpointId),
-}
+/// The connection a setup request arrived on.
+struct SetupRequestSource(FederationSetupRequestSource);
 
 impl<S> FromRequestParts<S> for SetupRequestSource
 where
     S: Send + Sync,
 {
-    type Rejection = FederationSetupHttpError;
+    type Rejection = SetupErrorResponse;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
         if let Some(ConnectInfo(source)) = parts.extensions.get::<ConnectInfo<SocketAddr>>() {
-            return Ok(Self::Ip(source.ip()));
+            return Ok(Self(FederationSetupRequestSource::Ip(source.ip())));
         }
         #[cfg(feature = "iroh")]
         if let Some(connection) = parts.extensions.get::<cdk_iroh::IrohConnectionInfo>() {
-            return Ok(Self::Iroh(connection.remote_endpoint_id));
+            return Ok(Self(FederationSetupRequestSource::Iroh(
+                connection.remote_endpoint_id,
+            )));
         }
         Err(FederationSetupHttpError::new(
             FederationSetupHttpErrorCode::InvalidRequest,
             "setup connection identity is unavailable",
-        ))
+        )
+        .into())
     }
-}
-
-struct ActiveTaskGuard {
-    service: Arc<FederationSetupCoordinatorService>,
-}
-
-impl Drop for ActiveTaskGuard {
-    fn drop(&mut self) {
-        if self.service.active_tasks.fetch_sub(1, Ordering::AcqRel) == 1 {
-            self.service.idle.notify_waiters();
-        }
-    }
-}
-
-struct SetupAdmission {
-    _global: OwnedSemaphorePermit,
-    _source: OwnedSemaphorePermit,
-    _invitation: OwnedSemaphorePermit,
-}
-
-struct AuthenticatedInvitation {
-    invitation: FederationSetupInvitation,
-    record: FederationSetupInvitationRecord,
 }
 
 /// Create the isolated router containing only the five setup protocol routes.
 pub fn create_federation_setup_router(service: Arc<FederationSetupCoordinatorService>) -> Router {
-    let request_deadline = service.config.request_deadline;
+    let request_deadline = service.request_deadline();
     Router::new()
         .route(
-            SETUP_ENROLLMENTS_PATH,
+            FEDERATION_SETUP_ENROLLMENTS_PATH,
             post(post_enrollment).layer(DefaultBodyLimit::max(
-                FEDERATION_MAX_SETUP_ENROLLMENT_BYTES + SETUP_ERROR_RESPONSE_BYTES,
+                FEDERATION_MAX_SETUP_ENROLLMENT_BYTES + FEDERATION_SETUP_ERROR_RESPONSE_BYTES,
             )),
         )
-        .route(SETUP_PROPOSAL_PATH, get(get_proposal))
+        .route(FEDERATION_SETUP_PROPOSAL_PATH, get(get_proposal))
         .route(
-            SETUP_APPROVALS_PATH,
-            post(post_approval).layer(DefaultBodyLimit::max(SETUP_APPROVAL_REQUEST_BYTES)),
+            FEDERATION_SETUP_APPROVALS_PATH,
+            post(post_approval).layer(DefaultBodyLimit::max(
+                FEDERATION_SETUP_APPROVAL_REQUEST_BYTES,
+            )),
         )
-        .route(SETUP_MANIFEST_PATH, get(get_manifest))
-        .route(SETUP_STATUS_PATH, get(get_status))
+        .route(FEDERATION_SETUP_MANIFEST_PATH, get(get_manifest))
+        .route(FEDERATION_SETUP_STATUS_PATH, get(get_status))
         .fallback(setup_not_found)
         .layer(
             ServiceBuilder::new()
@@ -777,200 +107,92 @@ async fn add_no_store(request: Request<Body>, next: Next) -> Response {
     no_store(next.run(request).await)
 }
 
-async fn handle_setup_timeout(error: BoxError) -> FederationSetupHttpError {
+async fn handle_setup_timeout(error: BoxError) -> SetupErrorResponse {
     match error.is::<tower::timeout::error::Elapsed>() {
-        true => FederationSetupHttpError::new(
-            FederationSetupHttpErrorCode::Timeout,
-            "setup request deadline elapsed",
-        ),
-        false => FederationSetupHttpError::storage(),
+        true => FederationSetupHttpError::timeout().into(),
+        false => FederationSetupHttpError::storage().into(),
     }
 }
 
 async fn post_enrollment(
     State(service): State<Arc<FederationSetupCoordinatorService>>,
-    source: SetupRequestSource,
+    SetupRequestSource(source): SetupRequestSource,
     headers: HeaderMap,
     Json(enrollment): Json<FederationSetupEnrollment>,
-) -> Result<Response, FederationSetupHttpError> {
-    let (invitation, correlation_nonce) = request_authorization(&headers)?;
-    let invitation_id = invitation.invitation_id;
+) -> Result<Response, SetupErrorResponse> {
     let response = service
-        .clone()
-        .run_owned(source, invitation_id, move |service| async move {
-            let authenticated = service.authenticate(invitation, false).await?;
-            let enrollment = service.enroll(authenticated, enrollment).await?;
-            let acknowledgement = FederationSetupEnrollmentAcknowledgement::sign(
-                &enrollment,
-                correlation_nonce,
-                &service.coordinator_secret_key,
-            )
-            .map_err(FederationSetupHttpError::from_federation)?;
-            sign_response(
-                &service,
-                FederationSetupResponseRouteKind::EnrollmentAck,
-                correlation_nonce,
-                acknowledgement,
-            )
-        })
+        .enroll_request(source, request_authorization(&headers)?, enrollment)
         .await?;
     bounded_json_response(response, FEDERATION_MAX_SETUP_ENROLLMENT_BYTES)
 }
 
 async fn get_proposal(
     State(service): State<Arc<FederationSetupCoordinatorService>>,
-    source: SetupRequestSource,
+    SetupRequestSource(source): SetupRequestSource,
     headers: HeaderMap,
-) -> Result<Response, FederationSetupHttpError> {
-    let (invitation, correlation_nonce) = request_authorization(&headers)?;
-    let invitation_id = invitation.invitation_id;
+) -> Result<Response, SetupErrorResponse> {
     let response = service
-        .clone()
-        .run_owned(source, invitation_id, move |service| async move {
-            service.authenticate(invitation, true).await?;
-            let proposal = service.proposal().await?;
-            sign_response(
-                &service,
-                FederationSetupResponseRouteKind::Proposal,
-                correlation_nonce,
-                proposal,
-            )
-        })
+        .proposal_request(source, request_authorization(&headers)?)
         .await?;
     bounded_json_response(response, FEDERATION_MAX_SETUP_ARTIFACT_BYTES)
 }
 
 async fn post_approval(
     State(service): State<Arc<FederationSetupCoordinatorService>>,
-    source: SetupRequestSource,
+    SetupRequestSource(source): SetupRequestSource,
     headers: HeaderMap,
     Json(approval): Json<FederationSetupApproval>,
-) -> Result<Response, FederationSetupHttpError> {
-    let (invitation, correlation_nonce) = request_authorization(&headers)?;
-    let invitation_id = invitation.invitation_id;
+) -> Result<Response, SetupErrorResponse> {
     let response = service
-        .clone()
-        .run_owned(source, invitation_id, move |service| async move {
-            let authenticated = service.authenticate(invitation, true).await?;
-            let approval = service.approve(authenticated, approval).await?;
-            sign_response(
-                &service,
-                FederationSetupResponseRouteKind::ApprovalAck,
-                correlation_nonce,
-                approval,
-            )
-        })
+        .approval_request(source, request_authorization(&headers)?, approval)
         .await?;
-    bounded_json_response(response, SETUP_APPROVAL_REQUEST_BYTES)
+    bounded_json_response(response, FEDERATION_SETUP_APPROVAL_REQUEST_BYTES)
 }
 
 async fn get_manifest(
     State(service): State<Arc<FederationSetupCoordinatorService>>,
-    source: SetupRequestSource,
+    SetupRequestSource(source): SetupRequestSource,
     headers: HeaderMap,
-) -> Result<Response, FederationSetupHttpError> {
-    let (invitation, correlation_nonce) = request_authorization(&headers)?;
-    let invitation_id = invitation.invitation_id;
+) -> Result<Response, SetupErrorResponse> {
     let response = service
-        .clone()
-        .run_owned(source, invitation_id, move |service| async move {
-            service.authenticate(invitation, true).await?;
-            let manifest = service.manifest().await?;
-            sign_response(
-                &service,
-                FederationSetupResponseRouteKind::Manifest,
-                correlation_nonce,
-                manifest,
-            )
-        })
+        .manifest_request(source, request_authorization(&headers)?)
         .await?;
     bounded_json_response(response, FEDERATION_MAX_SETUP_ARTIFACT_BYTES)
 }
 
 async fn get_status(
     State(service): State<Arc<FederationSetupCoordinatorService>>,
-    source: SetupRequestSource,
+    SetupRequestSource(source): SetupRequestSource,
     headers: HeaderMap,
-) -> Result<Response, FederationSetupHttpError> {
-    let (invitation, correlation_nonce) = request_authorization(&headers)?;
-    let invitation_id = invitation.invitation_id;
+) -> Result<Response, SetupErrorResponse> {
     let response = service
-        .clone()
-        .run_owned(source, invitation_id, move |service| async move {
-            service.authenticate(invitation, true).await?;
-            let status = service.status().await?;
-            sign_response(
-                &service,
-                FederationSetupResponseRouteKind::Status,
-                correlation_nonce,
-                status,
-            )
-        })
+        .status_request(source, request_authorization(&headers)?)
         .await?;
     bounded_json_response(response, FEDERATION_MAX_SETUP_STATUS_BYTES)
 }
 
-async fn setup_not_found() -> FederationSetupHttpError {
+async fn setup_not_found() -> SetupErrorResponse {
     FederationSetupHttpError::new(
         FederationSetupHttpErrorCode::InvalidRequest,
         "unknown setup-only route",
     )
-}
-
-fn sign_response<T>(
-    service: &FederationSetupCoordinatorService,
-    route_kind: FederationSetupResponseRouteKind,
-    correlation_nonce: FederationSetupCorrelationNonce,
-    body: T,
-) -> Result<FederationSetupSignedResponse<T>, FederationSetupHttpError>
-where
-    T: FederationSetupResponseBody,
-{
-    FederationSetupSignedResponse::sign(
-        route_kind,
-        correlation_nonce,
-        body,
-        &service.coordinator_secret_key,
-    )
-    .map_err(FederationSetupHttpError::from_federation)
+    .into()
 }
 
 fn request_authorization(
     headers: &HeaderMap,
-) -> Result<(FederationSetupInvitation, FederationSetupCorrelationNonce), FederationSetupHttpError>
-{
-    let authorization = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .ok_or_else(FederationSetupHttpError::invalid_invitation)?;
-    if authorization.len() > FEDERATION_MAX_SETUP_INVITATION_BYTES + 7 {
-        return Err(FederationSetupHttpError::invalid_invitation());
-    }
-    let invitation = authorization
-        .strip_prefix("Bearer ")
-        .ok_or_else(FederationSetupHttpError::invalid_invitation)?
-        .parse()
-        .map_err(|_| FederationSetupHttpError::invalid_invitation())?;
-    let correlation_nonce = headers
-        .get(FEDERATION_SETUP_CORRELATION_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .ok_or_else(|| {
-            FederationSetupHttpError::new(
-                FederationSetupHttpErrorCode::InvalidRequest,
-                "setup correlation nonce is missing",
-            )
-        })?
-        .parse()
-        .map_err(|_| {
-            FederationSetupHttpError::new(
-                FederationSetupHttpErrorCode::InvalidRequest,
-                "setup correlation nonce is invalid",
-            )
-        })?;
-    Ok((invitation, correlation_nonce))
+) -> Result<FederationSetupRequestAuthorization, FederationSetupHttpError> {
+    FederationSetupRequestAuthorization::from_headers(
+        headers
+            .get(header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok()),
+        headers
+            .get(FEDERATION_SETUP_CORRELATION_HEADER)
+            .and_then(|value| value.to_str().ok()),
+    )
 }
 
-fn bounded_json_response<T>(value: T, max: usize) -> Result<Response, FederationSetupHttpError>
+fn bounded_json_response<T>(value: T, max: usize) -> Result<Response, SetupErrorResponse>
 where
     T: Serialize,
 {
@@ -979,7 +201,8 @@ where
         return Err(FederationSetupHttpError::new(
             FederationSetupHttpErrorCode::StorageFailure,
             "setup response exceeds its configured bound",
-        ));
+        )
+        .into());
     }
     let mut response = Response::new(Body::from(body));
     response.headers_mut().insert(
@@ -994,503 +217,6 @@ fn no_store(mut response: Response) -> Response {
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     response
-}
-
-fn rate_limited() -> FederationSetupHttpError {
-    FederationSetupHttpError::new(
-        FederationSetupHttpErrorCode::RateLimited,
-        "setup request admission is saturated",
-    )
-}
-
-fn not_ready() -> FederationSetupHttpError {
-    FederationSetupHttpError::new(
-        FederationSetupHttpErrorCode::NotReady,
-        "setup artifact is not ready",
-    )
-}
-
-fn current_unix_time() -> Result<u64, FederationSetupHttpError> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .map_err(|_| FederationSetupHttpError::storage())
-}
-
-#[cfg(feature = "iroh")]
-fn setup_iroh_headers(
-    authorization: &str,
-    nonce: FederationSetupCorrelationNonce,
-    json: bool,
-) -> Result<Vec<(axum::http::HeaderName, axum::http::HeaderValue)>, HttpError> {
-    let authorization = axum::http::HeaderValue::from_str(authorization)
-        .map_err(|_| HttpError::Other("invalid setup authorization header".to_string()))?;
-    let nonce = axum::http::HeaderValue::from_str(&nonce.to_string())
-        .map_err(|_| HttpError::Other("invalid setup correlation header".to_string()))?;
-    let mut headers = vec![
-        (axum::http::header::AUTHORIZATION, authorization),
-        (
-            axum::http::HeaderName::from_static(FEDERATION_SETUP_CORRELATION_HEADER),
-            nonce,
-        ),
-    ];
-    if json {
-        headers.push((
-            axum::http::header::CONTENT_TYPE,
-            axum::http::HeaderValue::from_static("application/json"),
-        ));
-    }
-    Ok(headers)
-}
-
-/// Authenticated, no-redirect client for the setup-only coordinator API.
-#[derive(Debug, Clone)]
-pub struct FederationSetupHttpClient {
-    client: HttpClient,
-    #[cfg(feature = "iroh")]
-    iroh_client: Option<cdk_iroh::IrohClient>,
-    request_deadline: Duration,
-    retry_attempts: usize,
-}
-
-impl Default for FederationSetupHttpClient {
-    fn default() -> Self {
-        Self {
-            client: HttpClient::builder()
-                .no_redirects()
-                .build()
-                .expect("default no-redirect setup client"),
-            #[cfg(feature = "iroh")]
-            iroh_client: None,
-            request_deadline: Duration::from_secs(7),
-            retry_attempts: 3,
-        }
-    }
-}
-
-impl FederationSetupHttpClient {
-    /// Create an authenticated setup client backed by the mint-owned Iroh node.
-    #[cfg(feature = "iroh")]
-    #[must_use]
-    pub fn with_iroh_node(node: cdk_iroh::IrohNode) -> Self {
-        Self {
-            iroh_client: Some(cdk_iroh::IrohClient::new(node)),
-            ..Self::default()
-        }
-    }
-    /// Enroll an invitation's exact signed member record.
-    pub async fn enroll(
-        &self,
-        invitation: &FederationSetupInvitation,
-        enrollment: &FederationSetupEnrollment,
-    ) -> Result<FederationSetupEnrollment, FederationSetupHttpError> {
-        let nonce = random_correlation_nonce()?;
-        let response: FederationSetupSignedResponse<FederationSetupEnrollmentAcknowledgement> =
-            self.post(
-                invitation,
-                SETUP_ENROLLMENTS_PATH,
-                nonce,
-                enrollment,
-                FEDERATION_MAX_SETUP_ENROLLMENT_BYTES,
-            )
-            .await?;
-        response
-            .validate(
-                FederationSetupResponseRouteKind::EnrollmentAck,
-                nonce,
-                invitation.coordinator_identity,
-            )
-            .map_err(FederationSetupHttpError::from_federation)?;
-        response
-            .body
-            .validate(enrollment, nonce, invitation.coordinator_identity)
-            .map_err(FederationSetupHttpError::from_federation)?;
-        Ok(enrollment.clone())
-    }
-
-    /// Fetch and authenticate the immutable setup proposal.
-    pub async fn proposal(
-        &self,
-        invitation: &FederationSetupInvitation,
-    ) -> Result<FederationSetupProposal, FederationSetupHttpError> {
-        let nonce = random_correlation_nonce()?;
-        let response: FederationSetupSignedResponse<FederationSetupProposal> = self
-            .get(
-                invitation,
-                SETUP_PROPOSAL_PATH,
-                nonce,
-                FEDERATION_MAX_SETUP_ARTIFACT_BYTES,
-            )
-            .await?;
-        response
-            .validate(
-                FederationSetupResponseRouteKind::Proposal,
-                nonce,
-                invitation.coordinator_identity,
-            )
-            .map_err(FederationSetupHttpError::from_federation)?;
-        response
-            .body
-            .validate(url_policy_for(invitation))
-            .map_err(FederationSetupHttpError::from_federation)?;
-        if response.body.body.setup_id != invitation.setup_id
-            || response.body.body.coordinator_identity != invitation.coordinator_identity
-            || !response
-                .body
-                .body
-                .enrollments
-                .contains_key(&invitation.member_id)
-        {
-            return Err(FederationSetupHttpError::new(
-                FederationSetupHttpErrorCode::Conflict,
-                "setup proposal does not match the invitation",
-            ));
-        }
-        Ok(response.body)
-    }
-
-    /// Submit and authenticate acknowledgement of one durable approval.
-    pub async fn approve(
-        &self,
-        invitation: &FederationSetupInvitation,
-        approval: &FederationSetupApproval,
-    ) -> Result<FederationSetupApproval, FederationSetupHttpError> {
-        let nonce = random_correlation_nonce()?;
-        let response: FederationSetupSignedResponse<FederationSetupApproval> = self
-            .post(
-                invitation,
-                SETUP_APPROVALS_PATH,
-                nonce,
-                approval,
-                SETUP_APPROVAL_REQUEST_BYTES,
-            )
-            .await?;
-        response
-            .validate(
-                FederationSetupResponseRouteKind::ApprovalAck,
-                nonce,
-                invitation.coordinator_identity,
-            )
-            .map_err(FederationSetupHttpError::from_federation)?;
-        if response.body != *approval {
-            return Err(FederationSetupHttpError::new(
-                FederationSetupHttpErrorCode::Conflict,
-                "setup approval acknowledgement changed the approval",
-            ));
-        }
-        Ok(response.body)
-    }
-
-    /// Fetch and authenticate the complete certified manifest.
-    pub async fn manifest(
-        &self,
-        invitation: &FederationSetupInvitation,
-    ) -> Result<FederationSetupManifest, FederationSetupHttpError> {
-        let nonce = random_correlation_nonce()?;
-        let response: FederationSetupSignedResponse<FederationSetupManifest> = self
-            .get(
-                invitation,
-                SETUP_MANIFEST_PATH,
-                nonce,
-                FEDERATION_MAX_SETUP_ARTIFACT_BYTES,
-            )
-            .await?;
-        response
-            .validate(
-                FederationSetupResponseRouteKind::Manifest,
-                nonce,
-                invitation.coordinator_identity,
-            )
-            .map_err(FederationSetupHttpError::from_federation)?;
-        response
-            .body
-            .validate(url_policy_for(invitation))
-            .map_err(FederationSetupHttpError::from_federation)?;
-        if response.body.proposal.body.setup_id != invitation.setup_id
-            || response.body.proposal.body.coordinator_identity != invitation.coordinator_identity
-        {
-            return Err(FederationSetupHttpError::new(
-                FederationSetupHttpErrorCode::Conflict,
-                "setup manifest does not match the invitation",
-            ));
-        }
-        Ok(response.body)
-    }
-
-    /// Fetch authenticated aggregate setup progress.
-    pub async fn status(
-        &self,
-        invitation: &FederationSetupInvitation,
-    ) -> Result<FederationSetupStatus, FederationSetupHttpError> {
-        let nonce = random_correlation_nonce()?;
-        let response: FederationSetupSignedResponse<FederationSetupStatus> = self
-            .get(
-                invitation,
-                SETUP_STATUS_PATH,
-                nonce,
-                FEDERATION_MAX_SETUP_STATUS_BYTES,
-            )
-            .await?;
-        response
-            .validate(
-                FederationSetupResponseRouteKind::Status,
-                nonce,
-                invitation.coordinator_identity,
-            )
-            .map_err(FederationSetupHttpError::from_federation)?;
-        response
-            .body
-            .validate()
-            .map_err(FederationSetupHttpError::from_federation)?;
-        if response.body.setup_id != invitation.setup_id {
-            return Err(FederationSetupHttpError::new(
-                FederationSetupHttpErrorCode::Conflict,
-                "setup status does not match the invitation",
-            ));
-        }
-        Ok(response.body)
-    }
-
-    async fn get<T>(
-        &self,
-        invitation: &FederationSetupInvitation,
-        path: &str,
-        nonce: FederationSetupCorrelationNonce,
-        max_response_bytes: usize,
-    ) -> Result<T, FederationSetupHttpError>
-    where
-        T: DeserializeOwned,
-    {
-        let url = setup_url(invitation, path)?;
-        let authorization = format!(
-            "Bearer {}",
-            invitation
-                .to_invitation_code()
-                .map_err(FederationSetupHttpError::from_federation)?
-        );
-        self.retry_request(|| self.get_once(url.clone(), &authorization, nonce, max_response_bytes))
-            .await
-    }
-
-    async fn post<P, T>(
-        &self,
-        invitation: &FederationSetupInvitation,
-        path: &str,
-        nonce: FederationSetupCorrelationNonce,
-        payload: &P,
-        max_response_bytes: usize,
-    ) -> Result<T, FederationSetupHttpError>
-    where
-        P: Serialize + Sync,
-        T: DeserializeOwned,
-    {
-        let url = setup_url(invitation, path)?;
-        let authorization = format!(
-            "Bearer {}",
-            invitation
-                .to_invitation_code()
-                .map_err(FederationSetupHttpError::from_federation)?
-        );
-        let body = serde_json::to_vec(payload).map_err(|_| {
-            FederationSetupHttpError::new(
-                FederationSetupHttpErrorCode::InvalidRequest,
-                "setup request serialization failed",
-            )
-        })?;
-        self.retry_request(|| {
-            self.post_once(
-                url.clone(),
-                &authorization,
-                nonce,
-                body.clone(),
-                max_response_bytes,
-            )
-        })
-        .await
-    }
-
-    async fn get_once(
-        &self,
-        url: Url,
-        authorization: &str,
-        nonce: FederationSetupCorrelationNonce,
-        max_response_bytes: usize,
-    ) -> Result<cdk_http_client::RawResponse, HttpError> {
-        #[cfg(feature = "iroh")]
-        if url.scheme() == "iroh" {
-            let client = self.iroh_client.as_ref().ok_or_else(|| {
-                HttpError::Other("setup Iroh endpoint is not initialized".to_string())
-            })?;
-            return client
-                .request_raw(
-                    axum::http::Method::GET,
-                    url,
-                    &setup_iroh_headers(authorization, nonce, false)?,
-                    bytes::Bytes::new(),
-                    max_response_bytes,
-                )
-                .await
-                .map_err(HttpError::from);
-        }
-        self.client
-            .get(url.as_str())
-            .header(header::AUTHORIZATION.as_str(), authorization)
-            .header(FEDERATION_SETUP_CORRELATION_HEADER, nonce.to_string())
-            .send_bounded(max_response_bytes)
-            .await
-    }
-
-    async fn post_once(
-        &self,
-        url: Url,
-        authorization: &str,
-        nonce: FederationSetupCorrelationNonce,
-        body: Vec<u8>,
-        max_response_bytes: usize,
-    ) -> Result<cdk_http_client::RawResponse, HttpError> {
-        #[cfg(feature = "iroh")]
-        if url.scheme() == "iroh" {
-            let client = self.iroh_client.as_ref().ok_or_else(|| {
-                HttpError::Other("setup Iroh endpoint is not initialized".to_string())
-            })?;
-            return client
-                .request_raw(
-                    axum::http::Method::POST,
-                    url,
-                    &setup_iroh_headers(authorization, nonce, true)?,
-                    bytes::Bytes::from(body),
-                    max_response_bytes,
-                )
-                .await
-                .map_err(HttpError::from);
-        }
-        let payload: serde_json::Value = serde_json::from_slice(&body)?;
-        self.client
-            .post(url.as_str())
-            .header(header::AUTHORIZATION.as_str(), authorization)
-            .header(FEDERATION_SETUP_CORRELATION_HEADER, nonce.to_string())
-            .json(&payload)
-            .send_bounded(max_response_bytes)
-            .await
-    }
-
-    async fn retry_request<T, F, Fut>(&self, mut request: F) -> Result<T, FederationSetupHttpError>
-    where
-        T: DeserializeOwned,
-        F: FnMut() -> Fut,
-        Fut: Future<Output = Result<cdk_http_client::RawResponse, HttpError>>,
-    {
-        let mut delay = Duration::from_millis(100);
-        for attempt in 0..self.retry_attempts {
-            let result = tokio::time::timeout(self.request_deadline, request()).await;
-            match result {
-                Ok(Ok(response)) if response.is_success() => {
-                    return response.json().await.map_err(map_transport_error);
-                }
-                Ok(Ok(response)) => {
-                    let status = response.status();
-                    let body = response
-                        .json::<FederationSetupHttpErrorBody>()
-                        .await
-                        .map_err(map_transport_error)?;
-                    let error = FederationSetupHttpError::new(body.code, safe_message(body.code));
-                    if status < 500 || attempt + 1 == self.retry_attempts {
-                        return Err(error);
-                    }
-                }
-                Ok(Err(error)) => {
-                    if attempt + 1 == self.retry_attempts {
-                        return Err(map_transport_error(error));
-                    }
-                }
-                Err(_) => {
-                    if attempt + 1 == self.retry_attempts {
-                        return Err(FederationSetupHttpError::new(
-                            FederationSetupHttpErrorCode::Timeout,
-                            "setup request deadline elapsed",
-                        ));
-                    }
-                }
-            }
-            tokio::time::sleep(delay).await;
-            delay = (delay * 2).min(Duration::from_secs(1));
-        }
-        Err(FederationSetupHttpError::new(
-            FederationSetupHttpErrorCode::Unavailable,
-            "setup coordinator is unavailable",
-        ))
-    }
-}
-
-fn setup_url(
-    invitation: &FederationSetupInvitation,
-    path: &str,
-) -> Result<Url, FederationSetupHttpError> {
-    let mut url = Url::parse(&invitation.coordinator_url.to_string()).map_err(|_| {
-        FederationSetupHttpError::new(
-            FederationSetupHttpErrorCode::InvalidInvitation,
-            "setup coordinator URL is invalid",
-        )
-    })?;
-    url.set_path(path);
-    url.set_query(None);
-    url.set_fragment(None);
-    Ok(url)
-}
-
-fn random_correlation_nonce() -> Result<FederationSetupCorrelationNonce, FederationSetupHttpError> {
-    let first = Uuid::new_v4();
-    let second = Uuid::new_v4();
-    let mut bytes = [0; 32];
-    bytes[..16].copy_from_slice(first.as_bytes());
-    bytes[16..].copy_from_slice(second.as_bytes());
-    FederationSetupCorrelationNonce::from_bytes(bytes)
-        .map_err(FederationSetupHttpError::from_federation)
-}
-
-fn url_policy_for(invitation: &FederationSetupInvitation) -> FederationSetupUrlPolicy {
-    match invitation
-        .coordinator_url
-        .to_string()
-        .starts_with("http://")
-    {
-        true => FederationSetupUrlPolicy::AllowInsecureLocalhost,
-        false => FederationSetupUrlPolicy::RequireSecureTransport,
-    }
-}
-
-fn map_transport_error(error: HttpError) -> FederationSetupHttpError {
-    match error {
-        HttpError::Timeout => FederationSetupHttpError::new(
-            FederationSetupHttpErrorCode::Timeout,
-            "setup request deadline elapsed",
-        ),
-        HttpError::ResponseTooLarge { .. } => FederationSetupHttpError::new(
-            FederationSetupHttpErrorCode::InvalidRequest,
-            "setup response exceeds its configured bound",
-        ),
-        _ => FederationSetupHttpError::new(
-            FederationSetupHttpErrorCode::Unavailable,
-            "setup coordinator is unavailable",
-        ),
-    }
-}
-
-const fn safe_message(code: FederationSetupHttpErrorCode) -> &'static str {
-    match code {
-        FederationSetupHttpErrorCode::InvalidInvitation => "setup invitation authentication failed",
-        FederationSetupHttpErrorCode::Expired => "setup invitation is expired",
-        FederationSetupHttpErrorCode::Replay => "setup request replay conflicts with durable state",
-        FederationSetupHttpErrorCode::Conflict => "setup artifact conflicts with durable state",
-        FederationSetupHttpErrorCode::NotReady => "setup artifact is not ready",
-        FederationSetupHttpErrorCode::InvalidSignature => "setup signature validation failed",
-        FederationSetupHttpErrorCode::UnsupportedVersion => "unsupported setup protocol version",
-        FederationSetupHttpErrorCode::InvalidRequest => "setup request validation failed",
-        FederationSetupHttpErrorCode::StorageFailure => "setup durable state is unavailable",
-        FederationSetupHttpErrorCode::RateLimited => "setup request admission is saturated",
-        FederationSetupHttpErrorCode::Timeout => "setup request deadline elapsed",
-        FederationSetupHttpErrorCode::Unavailable => "setup coordinator is unavailable",
-    }
 }
 
 #[cfg(test)]
@@ -1513,6 +239,24 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::sync::oneshot;
 
+    use std::net::SocketAddr;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use cdk_common::database::mint::{Database, DynMintDatabase};
+    use cdk_common::federation::{
+        FederationSetupCoordinatorPhase, FederationSetupCoordinatorPublicKey,
+        FederationSetupCorrelationNonce, FederationSetupId, FederationSetupInvitation,
+        FederationSetupInvitationId, FederationSetupInvitationRecord, FederationSetupProposal,
+        FederationSetupSession, FederationSetupUrlPolicy,
+    };
+    use cdk_common::SecretKey;
+    use cdk_federation::setup::{
+        FederationSetupCoordinatorServiceConfig, FederationSetupHttpClient,
+        FederationSetupOperationFaults,
+    };
+    use url::Url;
+
     use super::*;
 
     /// Injected operation delay and storage failure for the coordinator.
@@ -1533,7 +277,7 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl SetupOperationFaults for TestSetupOperationFaults {
+    impl FederationSetupOperationFaults for TestSetupOperationFaults {
         async fn before_operation(&self) -> Result<(), FederationSetupHttpError> {
             if let Some(delay) = *self.delay.lock().await {
                 tokio::time::sleep(delay).await;
@@ -1789,7 +533,7 @@ mod tests {
 
         let nonce = FederationSetupCorrelationNonce::from_bytes([4; 32]).expect("nonce");
         let response = reqwest::Client::new()
-            .post(setup_url(fixture.invitation(2), SETUP_ENROLLMENTS_PATH).expect("URL"))
+            .post(setup_url(fixture.invitation(2), FEDERATION_SETUP_ENROLLMENTS_PATH).expect("URL"))
             .header(
                 header::AUTHORIZATION,
                 format!(
@@ -1816,7 +560,7 @@ mod tests {
         );
 
         let response = reqwest::Client::new()
-            .get(setup_url(fixture.invitation(2), SETUP_STATUS_PATH).expect("URL"))
+            .get(setup_url(fixture.invitation(2), FEDERATION_SETUP_STATUS_PATH).expect("URL"))
             .header(FEDERATION_SETUP_CORRELATION_HEADER, nonce.to_string())
             .send()
             .await
@@ -1852,7 +596,7 @@ mod tests {
             .await
             .expect("slow client connection");
         let slow_request = format!(
-            "POST {SETUP_ENROLLMENTS_PATH} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {}\r\n{FEDERATION_SETUP_CORRELATION_HEADER}: {}\r\nContent-Type: application/json\r\nContent-Length: 1024\r\nConnection: close\r\n\r\n{{",
+            "POST {FEDERATION_SETUP_ENROLLMENTS_PATH} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {}\r\n{FEDERATION_SETUP_CORRELATION_HEADER}: {}\r\nContent-Type: application/json\r\nContent-Length: 1024\r\nConnection: close\r\n\r\n{{",
             fixture
                 .invitation(2)
                 .to_invitation_code()
@@ -1863,7 +607,7 @@ mod tests {
             .write_all(slow_request.as_bytes())
             .await
             .expect("partial slow request");
-        let mut slow_response = vec![0; SETUP_ERROR_RESPONSE_BYTES];
+        let mut slow_response = vec![0; FEDERATION_SETUP_ERROR_RESPONSE_BYTES];
         let response_bytes =
             tokio::time::timeout(Duration::from_secs(1), slow_client.read(&mut slow_response))
                 .await
@@ -1879,11 +623,9 @@ mod tests {
             .faults
             .set_operation_delay(Some(Duration::from_millis(150)))
             .await;
-        let client = FederationSetupHttpClient {
-            request_deadline: Duration::from_secs(1),
-            retry_attempts: 1,
-            ..FederationSetupHttpClient::default()
-        };
+        let client = FederationSetupHttpClient::default()
+            .with_request_deadline(Duration::from_secs(1))
+            .with_retry_attempts(1);
         let timeout = client
             .enroll(fixture.invitation(2), fixture.enrollment(2))
             .await
@@ -1898,7 +640,7 @@ mod tests {
         let started = tokio::time::Instant::now();
         fixture.service.shutdown().await;
         assert!(started.elapsed() >= Duration::from_millis(75));
-        assert_eq!(fixture.service.active_tasks.load(Ordering::Acquire), 0);
+        assert_eq!(fixture.service.active_tasks(), 0);
         let unavailable = client
             .enroll(fixture.invitation(2), fixture.enrollment(2))
             .await
@@ -1920,10 +662,7 @@ mod tests {
             .faults
             .set_operation_delay(Some(Duration::from_millis(100)))
             .await;
-        let client = FederationSetupHttpClient {
-            retry_attempts: 1,
-            ..FederationSetupHttpClient::default()
-        };
+        let client = FederationSetupHttpClient::default().with_retry_attempts(1);
         let (first, second) = tokio::join!(
             client.enroll(fixture.invitation(2), fixture.enrollment(2)),
             client.enroll(fixture.invitation(2), fixture.enrollment(2)),
@@ -1943,24 +682,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn admission_maps_do_not_retain_inactive_untrusted_keys() {
-        let fixture = setup_http_fixture(FederationSetupCoordinatorServiceConfig::default()).await;
-        for marker in 1_u8..=64 {
-            let source = IpAddr::from([198, 51, 100, marker]);
-            let invitation_id = FederationSetupInvitationId::from_bytes([marker; 32]);
-            let admission = fixture
-                .service
-                .try_admit(SetupRequestSource::Ip(source), invitation_id)
-                .await
-                .expect("inactive admission key");
-            drop(admission);
-        }
-        assert_eq!(fixture.service.source_admission.lock().await.len(), 1);
-        assert_eq!(fixture.service.invitation_admission.lock().await.len(), 1);
-        fixture.stop().await;
-    }
-
-    #[tokio::test]
     async fn setup_client_never_follows_redirects_with_invitation_credentials() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -1970,7 +691,7 @@ mod tests {
         let captured = redirected_requests.clone();
         let router = Router::new()
             .route(
-                SETUP_ENROLLMENTS_PATH,
+                FEDERATION_SETUP_ENROLLMENTS_PATH,
                 post(|| async { axum::response::Redirect::temporary("/captured") }),
             )
             .route(
@@ -1991,10 +712,7 @@ mod tests {
         let fixture = setup_http_fixture(FederationSetupCoordinatorServiceConfig::default()).await;
         let mut invitation = fixture.invitation(2).clone();
         invitation.coordinator_url = mint_url(&format!("http://{address}"));
-        let client = FederationSetupHttpClient {
-            retry_attempts: 1,
-            ..FederationSetupHttpClient::default()
-        };
+        let client = FederationSetupHttpClient::default().with_retry_attempts(1);
         client
             .enroll(&invitation, fixture.enrollment(2))
             .await
@@ -2140,7 +858,7 @@ mod tests {
     async fn publish_proposal(fixture: &SetupHttpFixture) -> FederationSetupProposal {
         let enrollments = fixture
             .database
-            .get_federation_setup_enrollments(fixture.service.setup_id)
+            .get_federation_setup_enrollments(fixture.service.setup_id())
             .await
             .expect("enrollments")
             .into_iter()
@@ -2149,8 +867,8 @@ mod tests {
         let network = FederationSetupBitcoinNetwork::Regtest;
         let proposal = FederationSetupProposal::sign(
             FederationSetupProposalBody::new(
-                fixture.service.setup_id,
-                fixture.service.coordinator_identity,
+                fixture.service.setup_id(),
+                fixture.service.coordinator_identity(),
                 enrollments,
                 ThresholdParams::new(3, 2, 3).expect("thresholds"),
                 FederationSetupProtocolVersions::default(),
@@ -2201,6 +919,19 @@ mod tests {
             .expect("publish proposal");
         transaction.commit().await.expect("commit proposal");
         proposal
+    }
+
+    fn current_unix_time() -> Result<u64, FederationSetupHttpError> {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .map_err(|_| FederationSetupHttpError::storage())
+    }
+
+    fn setup_url(invitation: &FederationSetupInvitation, path: &str) -> Option<Url> {
+        let mut url = Url::parse(&invitation.coordinator_url.to_string()).ok()?;
+        url.set_path(path);
+        Some(url)
     }
 
     fn member_id(value: u16) -> MemberId {

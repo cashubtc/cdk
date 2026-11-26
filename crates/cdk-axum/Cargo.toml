@@ -58,21 +58,15 @@ redis = { version = "0.31.0", default-features = false, features = [
 ], optional = true }
 
 [dev-dependencies]
-aleph-bft.workspace = true
-cdk-bitcoin-wallet = { workspace = true, features = ["bitcoin-rpc", "esplora"] }
-cdk-frost.workspace = true
-parity-scale-codec.workspace = true
 cdk = { workspace = true, features = ["mint", "wallet", "bip353"] }
 cdk-common = { workspace = true, features = ["test"] }
 cdk-federation = { workspace = true, features = ["test-utils"] }
 cdk-fake-wallet = { workspace = true }
-cdk-frost-bip32 = { workspace = true }
 cdk-sqlite = { workspace = true, features = ["mint", "federation"] }
 cdk-signatory = { workspace = true }
 bip39 = { workspace = true }
 tower = { workspace = true, features = ["util"] }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
-musig2.workspace = true
 tempfile = "3"
 reqwest.workspace = true
 

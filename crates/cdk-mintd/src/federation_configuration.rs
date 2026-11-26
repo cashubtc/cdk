@@ -13,14 +13,15 @@ use cdk_common::federation::{
     FederationDkgSetupMethod, FederationPaymentObservationContext,
     FederationPaymentVerificationPolicy, MemberConfigPrivate,
 };
+use cdk_federation::setup::ceremony::load_certified_dkg_handoff;
+pub(crate) use cdk_federation::setup::files::read_federation_json;
 #[cfg(feature = "federation-bark")]
 use cdk_federation_bark::FederationBarkReceiveAntiDosPolicy;
-use serde::de::DeserializeOwned;
 
 use crate::cli::CLIArgs;
 #[cfg(feature = "federation-bark")]
 use crate::config::PaymentBackendType;
-use crate::{config, federation_setup_command, get_work_directory, load_stored_settings};
+use crate::{config, get_work_directory, load_stored_settings};
 
 pub(crate) fn configure_federation(
     settings: &config::Settings,
@@ -76,7 +77,7 @@ pub(crate) fn configured_federation_runtime(
         let setup_config_path = federation.setup_config_path.as_deref().ok_or_else(|| {
             anyhow!("federation.setup_config_path must be set when DKG is enabled")
         })?;
-        let handoff = federation_setup_command::load_certified_dkg_handoff(setup_config_path)?;
+        let handoff = load_certified_dkg_handoff(setup_config_path)?;
         return FederationRuntimeConfig::new(handoff.public_config, handoff.private_config)
             .context("invalid manifest-derived federation runtime config");
     }
@@ -775,7 +776,7 @@ pub(crate) fn federation_dkg_auto_start_config(
         .setup_config_path
         .as_deref()
         .ok_or_else(|| anyhow!("federation.setup_config_path must be set when DKG is enabled"))?;
-    let handoff = federation_setup_command::load_certified_dkg_handoff(setup_config_path)?;
+    let handoff = load_certified_dkg_handoff(setup_config_path)?;
     let driver = cdk_axum::FederationDkgDriverRunConfig {
         max_ticks: federation.dkg.max_ticks,
         retry_delay: std::time::Duration::from_millis(federation.dkg.retry_delay_ms),
@@ -858,16 +859,6 @@ pub(crate) async fn reconcile_federation_dkg_ceremony(
     tx.commit().await?;
 
     Ok(())
-}
-
-pub(crate) fn read_federation_json<T>(path: &Path, label: &str) -> Result<T>
-where
-    T: DeserializeOwned,
-{
-    let contents = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read {label} from {}", path.display()))?;
-    serde_json::from_str(&contents)
-        .with_context(|| format!("failed to parse {label} JSON from {}", path.display()))
 }
 
 pub(crate) async fn federation_config_paths(
