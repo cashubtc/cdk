@@ -92,7 +92,7 @@ fn test_p2bk_test_vectors() {
         .mul_tweak(&crate::SECP256K1, &ephemeral_secret_key.as_scalar())
         .unwrap();
     assert_eq!(
-        hex::encode(shared.x_only_public_key().0.serialize()),
+        hex::encode(shared.x_only_public_key().serialize()),
         expected_shared_secret
     );
 

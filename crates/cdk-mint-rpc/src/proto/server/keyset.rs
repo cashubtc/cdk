@@ -3,8 +3,7 @@
 use std::str::FromStr;
 
 use cdk::mint::MintKeySetInfo;
-use cdk::nuts::nut02::KeySetVersion;
-use cdk::nuts::CurrencyUnit;
+use cdk::nuts::{CurrencyUnit, KeySetVersion};
 use tonic::{Request, Response, Status};
 
 use super::MintRPCServer;
@@ -52,13 +51,18 @@ impl KeysetService for MintRPCServer {
             .map(|raw| match KeysetVersion::try_from(raw) {
                 Ok(KeysetVersion::V1) => Ok(KeySetVersion::Version00),
                 Ok(KeysetVersion::V2) => Ok(KeySetVersion::Version01),
+                Ok(KeysetVersion::V3) => Ok(KeySetVersion::Version02),
                 Ok(KeysetVersion::Unspecified) | Err(_) => Err(Status::invalid_argument(format!(
                     "Invalid keyset version: {raw}"
                 ))),
             })
             .transpose()?;
         if let (Some(version), Some(use_v2)) = (requested, request.use_keyset_v2) {
-            if (version == KeySetVersion::Version01) != use_v2 {
+            let legacy_version = match use_v2 {
+                true => KeySetVersion::Version01,
+                false => KeySetVersion::Version00,
+            };
+            if version != legacy_version {
                 return Err(Status::invalid_argument(
                     "keyset_version and use_keyset_v2 must select the same version",
                 ));
@@ -66,6 +70,7 @@ impl KeysetService for MintRPCServer {
         }
         let keyset_version = requested.unwrap_or(match request.use_keyset_v2 {
             Some(false) => KeySetVersion::Version00,
+            // V3 (BLS) is opt-in; an unspecified version keeps creating V2.
             Some(true) | None => KeySetVersion::Version01,
         });
 
@@ -126,6 +131,7 @@ mod tests {
             (None, Some(true), KeySetVersion::Version01),
             (Some(KeysetVersion::V1), None, KeySetVersion::Version00),
             (Some(KeysetVersion::V2), None, KeySetVersion::Version01),
+            (Some(KeysetVersion::V3), None, KeySetVersion::Version02),
             (
                 Some(KeysetVersion::V1),
                 Some(false),
@@ -161,7 +167,12 @@ mod tests {
     async fn test_conflicting_keyset_versions_do_not_rotate() {
         let server = create_test_rpc_server().await;
         let before = server.mint.pubkeys();
-        for (version, legacy) in [(KeysetVersion::V1, true), (KeysetVersion::V2, false)] {
+        for (version, legacy) in [
+            (KeysetVersion::V1, true),
+            (KeysetVersion::V2, false),
+            (KeysetVersion::V3, true),
+            (KeysetVersion::V3, false),
+        ] {
             let error = KeysetService::rotate_next_keyset(
                 &server,
                 Request::new(crate::keyset::RotateNextKeysetRequest {
@@ -188,7 +199,7 @@ mod tests {
     async fn test_invalid_keyset_version_does_not_rotate() {
         let server = create_test_rpc_server().await;
         let before = server.mint.pubkeys();
-        for version in [KeysetVersion::Unspecified as i32, -1, 3, i32::MAX] {
+        for version in [KeysetVersion::Unspecified as i32, -1, 4, i32::MAX] {
             let error = KeysetService::rotate_next_keyset(
                 &server,
                 Request::new(crate::keyset::RotateNextKeysetRequest {

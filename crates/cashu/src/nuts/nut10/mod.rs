@@ -484,7 +484,7 @@ mod tests {
             amount: Amount::ONE,
             keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
             secret,
-            c: pubkey,
+            c: pubkey.into(),
             witness: None,
             dleq: None,
             p2pk_e: None,

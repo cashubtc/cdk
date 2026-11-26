@@ -2,7 +2,8 @@
 
 use std::collections::HashMap;
 
-use cashu::{BlindedMessage, PublicKey};
+use cashu::nuts::nut01::ProofId;
+use cashu::BlindedMessage;
 use serde::{Deserialize, Serialize};
 
 use crate::{Amount, Error};
@@ -65,7 +66,7 @@ pub struct MeltOperationData {
     /// correct transaction inputs even after a pre-melt swap or after inputs
     /// were already marked spent before a crash.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub final_proof_ys: Option<Vec<PublicKey>>,
+    pub final_proof_ys: Option<Vec<ProofId>>,
     /// Blinded messages for change recovery
     ///
     /// Stored so that if a crash occurs after the mint accepts the melt,

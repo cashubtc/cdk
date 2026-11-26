@@ -104,6 +104,50 @@ impl TryFrom<PublicKey> for cdk::nuts::PublicKey {
     }
 }
 
+impl From<cdk::nuts::DhkePoint> for PublicKey {
+    fn from(point: cdk::nuts::DhkePoint) -> Self {
+        Self {
+            hex: point.to_string(),
+        }
+    }
+}
+
+impl From<cdk::nuts::ProofId> for PublicKey {
+    fn from(id: cdk::nuts::ProofId) -> Self {
+        Self {
+            hex: id.to_string(),
+        }
+    }
+}
+
+impl TryFrom<PublicKey> for cdk::nuts::ProofId {
+    type Error = FfiError;
+
+    fn try_from(key: PublicKey) -> Result<Self, Self::Error> {
+        key.hex
+            .parse()
+            .map_err(|e| FfiError::internal(format!("Invalid proof identifier: {}", e)))
+    }
+}
+
+impl From<cdk::nuts::MintPublicKey> for PublicKey {
+    fn from(key: cdk::nuts::MintPublicKey) -> Self {
+        Self {
+            hex: key.to_string(),
+        }
+    }
+}
+
+impl TryFrom<PublicKey> for cdk::nuts::MintPublicKey {
+    type Error = FfiError;
+
+    fn try_from(key: PublicKey) -> Result<Self, Self::Error> {
+        key.hex
+            .parse()
+            .map_err(|e| FfiError::internal(format!("Invalid mint public key: {}", e)))
+    }
+}
+
 /// FFI-compatible Keys
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct Keys {
@@ -134,8 +178,8 @@ impl TryFrom<Keys> for cdk::nuts::Keys {
         let mut keys_map = BTreeMap::new();
         for (amount_u64, pubkey_hex) in keys.keys {
             let amount = cdk::Amount::from(amount_u64);
-            let pubkey = cdk::nuts::PublicKey::from_str(&pubkey_hex)
-                .map_err(|e| FfiError::internal(format!("Invalid public key: {}", e)))?;
+            let pubkey = cdk::nuts::MintPublicKey::from_str(&pubkey_hex)
+                .map_err(|e| FfiError::internal(format!("Invalid mint public key: {}", e)))?;
             keys_map.insert(amount, pubkey);
         }
 
@@ -299,7 +343,7 @@ mod tests {
             id: KEYSET_ID.parse().unwrap(),
             unit: CdkCurrencyUnit::Sat,
             active: Some(true),
-            keys: CdkKeys::new(once((Amount::from(1), key)).collect()),
+            keys: CdkKeys::new(once((Amount::from(1), key.into())).collect()),
             input_fee_ppk: 100,
             final_expiry,
         }

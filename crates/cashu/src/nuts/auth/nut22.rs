@@ -9,10 +9,11 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::nut21::ProtectedEndpoint;
-use crate::dhke::hash_to_curve;
+use crate::dhke::hash_secret_to_curve;
+use crate::nuts::nut01::{DhkePoint, ProofId};
 use crate::secret::Secret;
 use crate::util::hex;
-use crate::{BlindedMessage, Id, Proof, ProofDleq, PublicKey};
+use crate::{BlindedMessage, Id, Proof, ProofDleq};
 
 /// NUT22 Error
 #[derive(Debug, Error)]
@@ -115,7 +116,7 @@ pub enum AuthToken {
     /// Clear Auth token
     ClearAuth(String),
     /// Blind Auth token
-    BlindAuth(BlindAuthToken),
+    BlindAuth(Box<BlindAuthToken>),
 }
 
 impl fmt::Display for AuthToken {
@@ -147,7 +148,7 @@ pub enum AuthRequired {
 }
 
 /// Auth Proofs
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AuthProof {
     /// `Keyset id`
     #[serde(rename = "id")]
@@ -156,15 +157,44 @@ pub struct AuthProof {
     pub secret: Secret,
     /// Unblinded signature
     #[serde(rename = "C")]
-    pub c: PublicKey,
+    pub c: DhkePoint,
     /// Auth Proof Dleq
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub dleq: Option<ProofDleq>,
+}
+
+impl<'de> Deserialize<'de> for AuthProof {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct EncodedAuthProof {
+            #[serde(rename = "id")]
+            keyset_id: Id,
+            secret: Secret,
+            #[serde(rename = "C")]
+            c: String,
+            #[serde(default)]
+            dleq: Option<ProofDleq>,
+        }
+
+        let encoded = EncodedAuthProof::deserialize(deserializer)?;
+        let c = DhkePoint::from_hex_for_version(encoded.c, encoded.keyset_id.get_version())
+            .map_err(serde::de::Error::custom)?;
+        Ok(Self {
+            keyset_id: encoded.keyset_id,
+            secret: encoded.secret,
+            c,
+            dleq: encoded.dleq,
+        })
+    }
 }
 
 impl AuthProof {
     /// Y of AuthProof
-    pub fn y(&self) -> Result<PublicKey, Error> {
-        Ok(hash_to_curve(self.secret.as_bytes())?)
+    pub fn y(&self) -> Result<ProofId, Error> {
+        Ok(hash_secret_to_curve(&self.secret, self.keyset_id.get_version())?.into())
     }
 }
 
@@ -283,9 +313,15 @@ mod tests {
         AuthProof {
             keyset_id: Id::from_bytes(&[0, 1, 2, 3, 4, 5, 6, 7]).expect("valid id"),
             secret: Secret::generate(),
-            c: secret_key.public_key(),
+            c: secret_key.public_key().into(),
             dleq: None,
         }
+    }
+
+    #[test]
+    fn auth_proof_without_dleq_omits_the_field() {
+        let json = serde_json::to_value(test_auth_proof()).expect("serialize");
+        assert!(json.get("dleq").is_none());
     }
 
     #[test]
@@ -322,10 +358,13 @@ mod tests {
             "Clear-auth"
         );
         assert_eq!(
-            AuthToken::BlindAuth(blind_auth.clone()).to_string(),
+            AuthToken::BlindAuth(Box::new(blind_auth.clone())).to_string(),
             blind_auth_string
         );
-        assert_eq!(AuthToken::BlindAuth(blind_auth).header_key(), "Blind-auth");
+        assert_eq!(
+            AuthToken::BlindAuth(Box::new(blind_auth)).header_key(),
+            "Blind-auth"
+        );
     }
 
     #[test]

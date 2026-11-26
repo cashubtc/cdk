@@ -9,7 +9,7 @@ use core::fmt;
 use cdk_common::wallet::{KeysetLoadPolicy, WalletSaga};
 use uuid::Uuid;
 
-use crate::nuts::{PreSwap, Proofs, PublicKey, SpendingConditions};
+use crate::nuts::{PreSwap, ProofId, Proofs, SpendingConditions};
 use crate::Amount;
 
 /// Initial state - operation ID assigned but no work done yet.
@@ -34,7 +34,7 @@ pub struct Prepared {
     /// included (None means swap all)
     pub send_amount: Option<Amount>,
     /// Y values of input proofs (for cleanup)
-    pub input_ys: Vec<PublicKey>,
+    pub input_ys: Vec<ProofId>,
     /// Spending conditions for output proofs
     pub spending_conditions: Option<SpendingConditions>,
     /// Pre-swap data (request and secrets)

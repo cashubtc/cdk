@@ -490,6 +490,16 @@ mod tests {
     use crate::nut01::PublicKey;
 
     #[test]
+    fn p2pk_without_conditions_rejects_bls_data_key() {
+        let bls_key = crate::nuts::DhkePoint::from(
+            crate::nuts::nut01::BlsG1PublicKey::hash_to_curve(b"not a p2pk key"),
+        )
+        .to_hex();
+
+        assert!(PublicKey::from_hex(bls_key).is_err());
+    }
+
+    #[test]
     fn test_duplicate_tags_are_rejected() {
         let pk1 = "026562efcfadc8e86d44da6a8adf80633d974302e62c850774db1fb36ff4cc7198";
         let pk2 = "02a4ed09e9b22c0563f2043593902973d040054ff03be93c990264177d65123982";

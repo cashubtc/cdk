@@ -11,11 +11,13 @@ use bitcoin::base64::{alphabet, Engine as _};
 use bitcoin::hashes::sha256;
 use serde::{Deserialize, Serialize};
 
-use super::{Error, Proof, ProofV3, ProofV4, Proofs};
+use super::{deserialize_v4_pubkey_option, Error, Proof, ProofV3, ProofV4, Proofs, Witness};
 use crate::mint_url::MintUrl;
 use crate::nut02::ShortKeysetId;
 use crate::nuts::nut10::SpendingConditions;
-use crate::nuts::{CurrencyUnit, Id, Kind, PublicKey};
+use crate::nuts::nut12::ProofDleq;
+use crate::nuts::{CurrencyUnit, DhkePoint, Id, Kind, PublicKey};
+use crate::secret::Secret;
 use crate::{ensure_cdk, Amount, KeySetInfo};
 
 /// Token Enum
@@ -579,7 +581,7 @@ impl TryFrom<TokenV3> for TokenV4 {
 }
 
 /// Token V4 Token
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TokenV4Token {
     /// `Keyset id`
     #[serde(
@@ -591,6 +593,69 @@ pub struct TokenV4Token {
     /// Proofs
     #[serde(rename = "p")]
     pub proofs: Vec<ProofV4>,
+}
+
+impl<'de> Deserialize<'de> for TokenV4Token {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        /// A V4 proof with `c` still encoded. The proof does not carry its
+        /// keyset id, so `c` is decoded once the token's keyset version, and
+        /// with it the curve, is known.
+        #[derive(Deserialize)]
+        struct EncodedProofV4 {
+            #[serde(rename = "a")]
+            amount: Amount,
+            #[serde(rename = "s")]
+            secret: Secret,
+            c: Vec<u8>,
+            #[serde(rename = "w", alias = "witness", default)]
+            witness: Option<Witness>,
+            #[serde(rename = "d", default)]
+            dleq: Option<ProofDleq>,
+            #[serde(
+                rename = "pe",
+                default,
+                deserialize_with = "deserialize_v4_pubkey_option"
+            )]
+            p2pk_e: Option<PublicKey>,
+        }
+
+        #[derive(Deserialize)]
+        struct EncodedTokenV4Token {
+            #[serde(rename = "i", deserialize_with = "deserialize_v4_keyset_id")]
+            keyset_id: ShortKeysetId,
+            #[serde(rename = "p")]
+            proofs: Vec<EncodedProofV4>,
+        }
+
+        let encoded = EncodedTokenV4Token::deserialize(deserializer)?;
+        let version = encoded.keyset_id.get_version();
+        let proofs = encoded
+            .proofs
+            .into_iter()
+            .map(|proof| {
+                let c = DhkePoint::from_slice_for_version(&proof.c, version).map_err(|err| {
+                    serde::de::Error::custom(format!(
+                        "invalid proof signature for keyset version {version}: {err}"
+                    ))
+                })?;
+                Ok(ProofV4 {
+                    amount: proof.amount,
+                    secret: proof.secret,
+                    c,
+                    witness: proof.witness,
+                    dleq: proof.dleq,
+                    p2pk_e: proof.p2pk_e,
+                })
+            })
+            .collect::<Result<Vec<_>, D::Error>>()?;
+        Ok(Self {
+            keyset_id: encoded.keyset_id,
+            proofs,
+        })
+    }
 }
 
 fn serialize_v4_keyset_id<S>(keyset_id: &ShortKeysetId, serializer: S) -> Result<S::Ok, S::Error>
@@ -631,6 +696,8 @@ mod tests {
     use super::*;
     use crate::dhke::hash_to_curve;
     use crate::mint_url::MintUrl;
+    use crate::nuts::nut01::{BlsG1PublicKey, DhkePoint};
+    use crate::nuts::nut02::KeySetVersion;
     use crate::nuts::nut10::{Conditions, SpendingConditions};
     use crate::nuts::nut11::SigFlag;
     use crate::secret::Secret;
@@ -790,8 +857,35 @@ mod tests {
         let token_v3 =
             TokenV3::from_str(token_v3_str).expect("TokenV3 should be created from string");
         let token_v4 = TokenV4::try_from(token_v3).expect("TokenV3 should be converted to TokenV4");
-        let token_v4_expected = "cashuBpGFtd2h0dHBzOi8vODMzMy5zcGFjZTozMzM4YXVjc2F0YWRqVGhhbmsgeW91LmF0gaJhaUgAmh8pMlPkHmFwgqRhYQJhc3hANDA3OTE1YmMyMTJiZTYxYTc3ZTNlNmQyYWViNGM3Mjc5ODBiZGE1MWNkMDZhNmFmYzI5ZTI4NjE3NjhhNzgzN2FjWCECvJCXmX2Br7LMc0a15DRak0a9KlBut5WFmKcvDPhRY-phZPakYWEIYXN4QGZlMTUxMDkzMTRlNjFkNzc1NmIwZjhlZTBmMjNhNjI0YWNhYTNmNGUwNDJmNjE0MzNjNzI4YzcwNTdiOTMxYmVhY1ghAp6OUFC4kKfWwJaNsWvB1dX6BA6h3ihPbsadYSmfZxBZYWT2";
+        let token_v4_expected = "cashuBpGFtd2h0dHBzOi8vODMzMy5zcGFjZTozMzM4YXVjc2F0YWRqVGhhbmsgeW91LmF0gaJhaUgAmh8pMlPkHmFwgqNhYQJhc3hANDA3OTE1YmMyMTJiZTYxYTc3ZTNlNmQyYWViNGM3Mjc5ODBiZGE1MWNkMDZhNmFmYzI5ZTI4NjE3NjhhNzgzN2FjWCECvJCXmX2Br7LMc0a15DRak0a9KlBut5WFmKcvDPhRY-qjYWEIYXN4QGZlMTUxMDkzMTRlNjFkNzc1NmIwZjhlZTBmMjNhNjI0YWNhYTNmNGUwNDJmNjE0MzNjNzI4YzcwNTdiOTMxYmVhY1ghAp6OUFC4kKfWwJaNsWvB1dX6BA6h3ihPbsadYSmfZxBZ";
         assert_eq!(token_v4.to_string(), token_v4_expected);
+    }
+
+    #[test]
+    fn test_token_v4_omits_empty_dleq() {
+        let mint_url = MintUrl::from_str("https://example.com").unwrap();
+        let keyset_id =
+            Id::from_bytes(&[vec![KeySetVersion::Version02.to_byte()], vec![1; 32]].concat())
+                .expect("valid keyset id");
+        let proof = Proof {
+            amount: Amount::from(1),
+            keyset_id,
+            secret: Secret::generate(),
+            c: BlsG1PublicKey::hash_to_curve(b"signature").into(),
+            witness: None,
+            dleq: None,
+            p2pk_e: None,
+        };
+
+        let token = Token::new(
+            mint_url,
+            vec![proof].into_iter().collect(),
+            None,
+            CurrencyUnit::Sat,
+        );
+        let raw = token.to_raw_bytes().expect("token serializes");
+
+        assert!(!raw.windows(3).any(|window| window == [0x61, 0x64, 0xf6]));
     }
 
     #[test]
@@ -868,9 +962,10 @@ mod tests {
             amount: Amount::from(10),
             keyset_id,
             secret: secret.clone(),
-            c: "02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"
-                .parse()
-                .unwrap(),
+            c: crate::nuts::DhkePoint::from_hex_any_curve(
+                "02bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea",
+            )
+            .unwrap(),
             witness: None,
             dleq: None,
             p2pk_e: None,
@@ -910,9 +1005,10 @@ mod tests {
             amount: Amount::from(10),
             keyset_id,
             secret: Secret::generate(),
-            c: "03bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea"
-                .parse()
-                .unwrap(), // Different C value
+            c: crate::nuts::DhkePoint::from_hex_any_curve(
+                "03bc9097997d81afb2cc7346b5e4345a9346bd2a506eb7958598a72f0cf85163ea",
+            )
+            .unwrap(), // Different C value
             witness: None,
             dleq: None,
             p2pk_e: None,
@@ -1351,7 +1447,7 @@ mod tests {
         );
         assert_eq!(
             p2pk.c,
-            PublicKey::from_hex(
+            DhkePoint::from_hex_any_curve(
                 "0381855ddcc434a9a90b3564f29ef78e7271f8544d0056763b418b00e88525c0ff"
             )
             .unwrap()
@@ -1367,7 +1463,7 @@ mod tests {
                     "6178978456c42eee8eefb50830fc3146be27b05619f04e3490dc596005f0cc78"
                 )
                 .unwrap(),
-                r: crate::nuts::SecretKey::from_hex(
+                r: crate::nuts::BlindingFactor::from_hex(
                     "d26a55aa39ca50957fdaf54036b01053b0de42048b96a6fb2a167e03f00d0a0f"
                 )
                 .unwrap(),
@@ -1395,7 +1491,7 @@ mod tests {
         );
         assert_eq!(
             htlc.c,
-            PublicKey::from_hex(
+            DhkePoint::from_hex_any_curve(
                 "0270aba098c920adafa1ce75acefb06d8cc541ef80270f70cc7b66375b789ed9be"
             )
             .unwrap()
@@ -1411,7 +1507,7 @@ mod tests {
                     "bd6ed079b954151898cadac38c3b8d3371c20d67e8c5f06af3cee4152ac317b4"
                 )
                 .unwrap(),
-                r: crate::nuts::SecretKey::from_hex(
+                r: crate::nuts::BlindingFactor::from_hex(
                     "e8349cf88e5a9f025f0072bf8a2db48d394bad9f7be3d8023f9ee90de1c1924d"
                 )
                 .unwrap(),
@@ -1535,5 +1631,66 @@ mod tests {
         ] {
             assert!(TokenV4::from_str(&nut28_token_with_pe(Some(pe))).is_err());
         }
+    }
+
+    #[test]
+    fn token_v4_rejects_proofs_on_the_wrong_curve() {
+        use crate::nuts::nut01::BlsG1PublicKey;
+        use crate::nuts::nut02::KeySetVersion;
+        use crate::nuts::DhkePoint;
+
+        let secp: DhkePoint = crate::nuts::SecretKey::generate().public_key().into();
+        let bls: DhkePoint = BlsG1PublicKey::hash_to_curve(b"signature").into();
+        let legacy_id = Id::from_str("009a1f293253e41e").unwrap();
+        let mut v3_id_bytes = [1u8; 33];
+        v3_id_bytes[0] = KeySetVersion::Version02.to_byte();
+        let v3_id = Id::from_bytes(&v3_id_bytes).unwrap();
+
+        let roundtrip = |keyset_id: Id, c: DhkePoint| {
+            let proof = Proof::new(Amount::from(1), keyset_id, Secret::generate(), c);
+            let token = TokenV4Token::new(keyset_id, vec![proof]);
+            let mut cbor = Vec::new();
+            ciborium::into_writer(&token, &mut cbor).expect("encode");
+            ciborium::from_reader::<TokenV4Token, _>(cbor.as_slice())
+        };
+
+        roundtrip(legacy_id, secp).expect("secp256k1 point on a legacy keyset");
+        roundtrip(v3_id, bls).expect("BLS point on a v3 keyset");
+        assert!(roundtrip(legacy_id, bls).is_err());
+        assert!(roundtrip(v3_id, secp).is_err());
+    }
+
+    #[test]
+    fn token_v4_rejects_uncompressed_secp256k1_signatures() {
+        use ciborium::Value;
+
+        let key = crate::nuts::SecretKey::generate().public_key();
+        let keyset_id = Id::from_str("009a1f293253e41e").unwrap();
+        let token_with_c = |c: Vec<u8>| {
+            let token = Value::Map(vec![
+                (
+                    Value::Text("i".to_string()),
+                    Value::Bytes(keyset_id.to_bytes()),
+                ),
+                (
+                    Value::Text("p".to_string()),
+                    Value::Array(vec![Value::Map(vec![
+                        (Value::Text("a".to_string()), Value::Integer(1.into())),
+                        (
+                            Value::Text("s".to_string()),
+                            Value::Text(Secret::generate().to_string()),
+                        ),
+                        (Value::Text("c".to_string()), Value::Bytes(c)),
+                    ])]),
+                ),
+            ]);
+            let mut cbor = Vec::new();
+            ciborium::into_writer(&token, &mut cbor).expect("encode");
+            ciborium::from_reader::<TokenV4Token, _>(cbor.as_slice())
+        };
+
+        let decoded = token_with_c(key.to_bytes().to_vec()).expect("compressed signature");
+        assert_eq!(decoded.proofs[0].c, key.into());
+        assert!(token_with_c(key.to_uncompressed_bytes().to_vec()).is_err());
     }
 }

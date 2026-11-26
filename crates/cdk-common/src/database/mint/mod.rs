@@ -12,8 +12,8 @@ use crate::mint::{
     self, MeltQuote, MintKeySetInfo, MintQuote as MintMintQuote, Operation, ProofsWithState,
 };
 use crate::nuts::{
-    BlindSignature, BlindedMessage, CurrencyUnit, Id, MeltQuoteState, Proof, Proofs, PublicKey,
-    State,
+    BlindSignature, BlindedMessage, CurrencyUnit, DhkePoint, Id, MeltQuoteState, Proof, ProofId,
+    Proofs, State,
 };
 use crate::payment::PaymentIdentifier;
 
@@ -229,7 +229,7 @@ pub trait QuotesTransaction {
     /// Delete blinded_messages by their blinded secrets
     async fn delete_blinded_messages(
         &mut self,
-        blinded_secrets: &[PublicKey],
+        blinded_secrets: &[DhkePoint],
     ) -> Result<(), Self::Err>;
 
     /// Get melt_request and associated blinded_messages by quote_id
@@ -515,15 +515,12 @@ pub trait ProofsTransaction {
     ) -> Result<(), Self::Err>;
 
     /// get proofs states
-    async fn get_proofs(
-        &mut self,
-        ys: &[PublicKey],
-    ) -> Result<Acquired<ProofsWithState>, Self::Err>;
+    async fn get_proofs(&mut self, ys: &[ProofId]) -> Result<Acquired<ProofsWithState>, Self::Err>;
 
     /// Remove [`Proofs`]
     async fn remove_proofs(
         &mut self,
-        ys: &[PublicKey],
+        ys: &[ProofId],
         quote_id: Option<QuoteId>,
     ) -> Result<(), Self::Err>;
 
@@ -531,13 +528,13 @@ pub trait ProofsTransaction {
     async fn get_proof_ys_by_quote_id(
         &mut self,
         quote_id: &QuoteId,
-    ) -> Result<Vec<PublicKey>, Self::Err>;
+    ) -> Result<Vec<ProofId>, Self::Err>;
 
     /// Get proof ys by operation id
     async fn get_proof_ys_by_operation_id(
         &mut self,
         operation_id: &uuid::Uuid,
-    ) -> Result<Vec<PublicKey>, Self::Err>;
+    ) -> Result<Vec<ProofId>, Self::Err>;
 }
 
 /// Mint Proof Database trait
@@ -547,14 +544,12 @@ pub trait ProofsDatabase {
     type Err: Into<Error> + From<Error>;
 
     /// Get [`Proofs`] by ys
-    async fn get_proofs_by_ys(&self, ys: &[PublicKey]) -> Result<Vec<Option<Proof>>, Self::Err>;
+    async fn get_proofs_by_ys(&self, ys: &[ProofId]) -> Result<Vec<Option<Proof>>, Self::Err>;
     /// Get ys by quote id
-    async fn get_proof_ys_by_quote_id(
-        &self,
-        quote_id: &QuoteId,
-    ) -> Result<Vec<PublicKey>, Self::Err>;
+    async fn get_proof_ys_by_quote_id(&self, quote_id: &QuoteId)
+        -> Result<Vec<ProofId>, Self::Err>;
     /// Get [`Proofs`] state
-    async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err>;
+    async fn get_proofs_states(&self, ys: &[ProofId]) -> Result<Vec<Option<State>>, Self::Err>;
 
     /// Get [`Proofs`] by state
     async fn get_proofs_by_keyset_id(
@@ -569,7 +564,7 @@ pub trait ProofsDatabase {
     async fn get_proof_ys_by_operation_id(
         &self,
         operation_id: &uuid::Uuid,
-    ) -> Result<Vec<PublicKey>, Self::Err>;
+    ) -> Result<Vec<ProofId>, Self::Err>;
 }
 
 #[async_trait]
@@ -585,7 +580,7 @@ pub trait SignaturesTransaction {
     /// earlier messages in the batch and their keyset totals may already be written.
     async fn add_blind_signatures(
         &mut self,
-        blinded_messages: &[PublicKey],
+        blinded_messages: &[DhkePoint],
         blind_signatures: &[BlindSignature],
         quote_id: Option<QuoteId>,
     ) -> Result<(), Self::Err>;
@@ -593,7 +588,7 @@ pub trait SignaturesTransaction {
     /// Get [`BlindSignature`]s
     async fn get_blind_signatures(
         &mut self,
-        blinded_messages: &[PublicKey],
+        blinded_messages: &[DhkePoint],
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err>;
 }
 
@@ -606,7 +601,7 @@ pub trait SignaturesDatabase {
     /// Get [`BlindSignature`]s
     async fn get_blind_signatures(
         &self,
-        blinded_messages: &[PublicKey],
+        blinded_messages: &[DhkePoint],
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err>;
 
     /// Get [`BlindSignature`]s for keyset_id
@@ -626,7 +621,7 @@ pub trait SignaturesDatabase {
     async fn get_blind_signatures_and_secret_for_quote(
         &self,
         quote_id: &QuoteId,
-    ) -> Result<Vec<(BlindSignature, PublicKey)>, Self::Err>;
+    ) -> Result<Vec<(BlindSignature, DhkePoint)>, Self::Err>;
 
     /// Get total amount issued by keyset id
     async fn get_total_issued(&self) -> Result<HashMap<Id, Amount>, Self::Err>;
@@ -635,7 +630,7 @@ pub trait SignaturesDatabase {
     async fn get_blinded_secrets_by_operation_id(
         &self,
         operation_id: &uuid::Uuid,
-    ) -> Result<Vec<PublicKey>, Self::Err>;
+    ) -> Result<Vec<DhkePoint>, Self::Err>;
 }
 
 #[async_trait]

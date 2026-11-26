@@ -1,9 +1,10 @@
 use std::collections::HashSet;
 
+use cdk_common::nuts::nut01;
 use cdk_common::nuts::nut17::MAX_CUSTOM_KIND_LEN;
 use cdk_common::{
-    database, Amount, BlindedMessage, CurrencyUnit, Id, PaymentMethod, Proofs, ProofsMethods,
-    PublicKey,
+    database, Amount, BlindedMessage, CurrencyUnit, DhkePoint, Id, PaymentMethod, ProofId, Proofs,
+    ProofsMethods,
 };
 use tracing::instrument;
 
@@ -43,7 +44,7 @@ pub(crate) fn validate_custom_payment_method(method: &PaymentMethod) -> Result<(
 pub struct Verification {
     /// Verified amount with unit
     pub amount: Amount<CurrencyUnit>,
-    ys: Vec<PublicKey>,
+    ys: Vec<ProofId>,
 }
 
 impl Verification {
@@ -56,17 +57,17 @@ impl Verification {
     }
 
     /// Y values of the verified inputs, in input order. Empty for outputs.
-    pub fn ys(&self) -> &[PublicKey] {
+    pub fn ys(&self) -> &[ProofId] {
         &self.ys
     }
 
     /// Build from Ys the caller has already computed from the inputs, in order
-    pub(crate) fn from_parts(amount: Amount<CurrencyUnit>, ys: Vec<PublicKey>) -> Self {
+    pub(crate) fn from_parts(amount: Amount<CurrencyUnit>, ys: Vec<ProofId>) -> Self {
         Self { amount, ys }
     }
 
     /// Split into the amount and the input Ys
-    pub(crate) fn into_parts(self) -> (Amount<CurrencyUnit>, Vec<PublicKey>) {
+    pub(crate) fn into_parts(self) -> (Amount<CurrencyUnit>, Vec<ProofId>) {
         (self.amount, self.ys)
     }
 }
@@ -75,8 +76,11 @@ impl Mint {
     /// Verify that the inputs to the transaction are unique
     ///
     /// Takes the precomputed Y values of the inputs (see [`ProofsMethods::ys`]).
+    /// Inputs are compared by their curve-specific `Y`, as spent state is. The
+    /// same secret on a secp256k1 and a BLS12-381 keyset counts as two
+    /// distinct inputs; see [`ProofId`].
     #[instrument(skip_all)]
-    pub fn check_inputs_unique(ys: &[PublicKey]) -> Result<(), Error> {
+    pub fn check_inputs_unique(ys: &[ProofId]) -> Result<(), Error> {
         if ys.iter().collect::<HashSet<_>>().len() != ys.len() {
             tracing::debug!("Transaction attempted with duplicate inputs");
             return Err(Error::DuplicateInputs);
@@ -93,7 +97,7 @@ impl Mint {
         if outputs
             .iter()
             .map(|o| &o.blinded_secret)
-            .collect::<HashSet<&PublicKey>>()
+            .collect::<HashSet<&DhkePoint>>()
             .len()
             .ne(&output_count)
         {
@@ -121,7 +125,8 @@ impl Mint {
 
     /// Verify output keyset
     ///
-    /// Checks that the outputs are all of the same unit and the keyset is active
+    /// Checks that the outputs are all of the same unit, the keyset is active,
+    /// and each blinded message is on the curve its keyset version signs over.
     #[instrument(skip_all)]
     pub fn verify_outputs_keyset(&self, outputs: &[BlindedMessage]) -> Result<CurrencyUnit, Error> {
         let mut keyset_units = HashSet::new();
@@ -154,6 +159,22 @@ impl Mint {
                     );
                     return Err(Error::UnknownKeySet);
                 }
+            }
+        }
+
+        // Only interpret the point kind after establishing that every referenced
+        // keyset exists. This keeps unknown-keyset handling independent of point
+        // validation and avoids doing version-selected crypto work prematurely.
+        for output in outputs {
+            if !output
+                .blinded_secret
+                .is_for_version(output.keyset_id.get_version())
+            {
+                tracing::debug!(
+                    "Transaction attempted with an output on the wrong curve for keyset {}.",
+                    output.keyset_id
+                );
+                return Err(Error::NUT01(nut01::Error::WrongKeyKind));
             }
         }
 
@@ -274,6 +295,9 @@ impl Mint {
 
         // Check proof content lengths (secret and witness) are within limits
         for proof in inputs {
+            // NUT-00: a v3 proof carrying a DLEQ proof is malformed.
+            proof.ensure_dleq_allowed()?;
+
             let secret_len = proof.secret.len();
             if secret_len > MAX_PROOF_CONTENT_LEN {
                 tracing::warn!(
@@ -304,9 +328,9 @@ impl Mint {
             }
         }
 
+        let unit = self.verify_inputs_keyset(inputs).await?;
         let ys = inputs.ys()?;
         Mint::check_inputs_unique(&ys)?;
-        let unit = self.verify_inputs_keyset(inputs).await?;
 
         if unit == CurrencyUnit::Auth {
             return Err(Error::UnsupportedUnit);

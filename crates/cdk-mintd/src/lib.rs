@@ -5245,14 +5245,14 @@ backend = "fakewallet"
 "#
         );
 
-        for invalid in ["1", "v1 ", "v3", ""] {
+        for invalid in ["1", "v1 ", "v4", ""] {
             let error = load_settings_with_env("cdk_mintd_invalid_keyset_version", &config, || {
                 std::env::set_var(crate::env_vars::ENV_KEYSET_VERSION, invalid);
             })
             .expect_err("invalid version must not fall back to configured selectors");
             let message = error.to_string();
             assert!(message.contains("CDK_MINTD_KEYSET_VERSION"), "{message}");
-            assert!(message.contains("expected v1 or v2"), "{message}");
+            assert!(message.contains("expected v1, v2 or v3"), "{message}");
         }
 
         #[cfg(unix)]

@@ -4,7 +4,7 @@ use tracing::instrument;
 use super::nut21::ProtectedEndpoint;
 use super::{
     AuthProof, AuthRequired, AuthToken, BlindAuthToken, BlindSignature, BlindedMessage,
-    CurrencyUnit, Error, Mint,
+    CurrencyUnit, Error, Mint, Proof,
 };
 
 impl Mint {
@@ -59,9 +59,11 @@ impl Mint {
             return Err(Error::ExpiredKeyset);
         }
 
-        self.signatory
-            .verify_proofs(vec![token.auth_proof.clone().into()])
-            .await
+        let proof: Proof = token.auth_proof.clone().into();
+        // NUT-00: a v3 proof carrying a DLEQ proof is malformed.
+        proof.ensure_dleq_allowed()?;
+
+        self.signatory.verify_proofs(vec![proof]).await
     }
 
     /// Verify Auth
@@ -467,7 +469,7 @@ mod tests {
         let proof = AuthProof {
             keyset_id,
             secret: Secret::generate(),
-            c: SecretKey::generate().public_key(),
+            c: SecretKey::generate().public_key().into(),
             dleq: None,
         };
         let y = proof.y().expect("proof y");
@@ -489,6 +491,63 @@ mod tests {
             .await
             .expect("proof state");
         assert_eq!(states, vec![Some(State::Spent)]);
+    }
+
+    #[tokio::test]
+    async fn verify_blind_auth_rejects_v3_token_with_dleq() {
+        use cdk_common::dhke::{blind_secret, construct_proofs};
+        use cdk_common::nuts::nut02::KeySetVersion;
+        use cdk_common::nuts::{nut12, BlindingFactor, ProofDleq};
+
+        let mint = create_auth_enabled_mint().await;
+        mint.rotate_keyset_by_version(
+            CurrencyUnit::Auth,
+            vec![1],
+            0,
+            KeySetVersion::Version02,
+            None,
+        )
+        .await
+        .expect("rotate auth keyset to v3");
+        let keyset = mint
+            .auth_pubkeys()
+            .expect("auth pubkeys")
+            .keysets
+            .pop()
+            .expect("auth keyset");
+        assert_eq!(keyset.id.get_version(), KeySetVersion::Version02);
+
+        let (secret, _) = Secret::generate_for_version(KeySetVersion::Version02);
+        let (blinded_secret, r) =
+            blind_secret(&secret, None, KeySetVersion::Version02).expect("blind secret");
+        let output = BlindedMessage::new(Amount::from(1), keyset.id, blinded_secret);
+        let signature = mint
+            .auth_blind_sign(&output)
+            .await
+            .expect("blind signature");
+        let proof = construct_proofs(vec![signature], vec![r], vec![secret], &keyset.keys)
+            .expect("proof")
+            .pop()
+            .expect("one proof");
+        let auth_proof = AuthProof::try_from(proof).expect("auth proof");
+
+        let mut with_dleq = auth_proof.clone();
+        with_dleq.dleq = Some(ProofDleq::new(
+            SecretKey::generate(),
+            SecretKey::generate(),
+            BlindingFactor::generate(),
+        ));
+        let result = mint
+            .verify_blind_auth(&BlindAuthToken::new(with_dleq))
+            .await;
+        assert!(
+            matches!(result, Err(Error::NUT12(nut12::Error::UnexpectedDleqProof))),
+            "expected UnexpectedDleqProof, got: {result:?}"
+        );
+
+        mint.verify_blind_auth(&BlindAuthToken::new(auth_proof))
+            .await
+            .expect("the same token without a DLEQ verifies");
     }
 
     #[tokio::test]

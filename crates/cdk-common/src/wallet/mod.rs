@@ -7,6 +7,7 @@ use std::str::FromStr;
 use bitcoin::bip32::DerivationPath;
 use bitcoin::hashes::{sha256, Hash, HashEngine};
 use cashu::amount::SplitTarget;
+use cashu::nuts::nut01::ProofId;
 use cashu::util::hex;
 use cashu::{nut00, PaymentMethod, Proof, Proofs, PublicKey};
 use serde::{Deserialize, Serialize};
@@ -55,7 +56,7 @@ pub struct ProofInfo {
     /// Proof
     pub proof: Proof,
     /// y
-    pub y: PublicKey,
+    pub y: ProofId,
     /// Mint Url
     pub mint_url: MintUrl,
     /// Proof State
@@ -621,7 +622,7 @@ pub struct Transaction {
     /// Currency Unit
     pub unit: CurrencyUnit,
     /// Proof Ys
-    pub ys: Vec<PublicKey>,
+    pub ys: Vec<ProofId>,
     /// Unix timestamp
     pub timestamp: u64,
     /// Memo
@@ -803,12 +804,12 @@ impl TransactionId {
     /// Create a legacy proof-derived [`TransactionId`].
     ///
     /// Saga-managed transactions use [`Self::from_saga_id`] instead.
-    pub fn new(ys: Vec<PublicKey>) -> Self {
+    pub fn new(ys: Vec<ProofId>) -> Self {
         let mut ys = ys;
         ys.sort();
         let mut hasher = sha256::Hash::engine();
         for y in ys {
-            hasher.input(&y.to_bytes());
+            hasher.input(y.as_bytes());
         }
         let hash = sha256::Hash::from_engine(hasher);
         Self(hash.to_byte_array())
@@ -821,7 +822,7 @@ impl TransactionId {
         let ys = proofs
             .iter()
             .map(|proof| proof.y())
-            .collect::<Result<Vec<PublicKey>, nut00::Error>>()?;
+            .collect::<Result<Vec<ProofId>, nut00::Error>>()?;
         Ok(Self::new(ys))
     }
 
@@ -1047,7 +1048,7 @@ mod tests {
 
     #[test]
     fn saga_managed_transactions_with_the_same_ys_have_distinct_ids() {
-        let ys = vec![SecretKey::generate().public_key()];
+        let ys = vec![SecretKey::generate().public_key().into()];
         let transaction = Transaction {
             mint_url: MintUrl::from_str("https://mint.example.com").expect("valid mint URL"),
             direction: TransactionDirection::Outgoing,
@@ -1312,7 +1313,7 @@ mod tests {
             amount: Amount::from(10),
             fee: Amount::ZERO,
             unit: CurrencyUnit::Sat,
-            ys: vec![SecretKey::generate().public_key()],
+            ys: vec![SecretKey::generate().public_key().into()],
             timestamp: 42,
             memo: None,
             metadata: HashMap::new(),

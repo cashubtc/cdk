@@ -9,7 +9,7 @@ use super::DbTransactionFinalizer;
 use crate::database::Error;
 use crate::mint::MintKeySetInfo;
 use crate::nuts::nut07::State;
-use crate::nuts::{AuthProof, BlindSignature, Id, PublicKey};
+use crate::nuts::{AuthProof, BlindSignature, DhkePoint, Id, ProofId};
 
 /// Mint Database transaction
 #[async_trait]
@@ -29,14 +29,14 @@ pub trait MintAuthTransaction<Error>: DbTransactionFinalizer<Err = Error> {
     /// Update [`AuthProof`]s state
     async fn update_proof_state(
         &mut self,
-        y: &PublicKey,
+        y: &ProofId,
         proofs_state: State,
     ) -> Result<Option<State>, Error>;
 
     /// Add [`BlindSignature`]
     async fn add_blind_signatures(
         &mut self,
-        blinded_messages: &[PublicKey],
+        blinded_messages: &[DhkePoint],
         blind_signatures: &[BlindSignature],
     ) -> Result<(), Error>;
 
@@ -81,12 +81,12 @@ pub trait MintAuthDatabase {
     async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err>;
 
     /// Get [`AuthProof`] state
-    async fn get_proofs_states(&self, ys: &[PublicKey]) -> Result<Vec<Option<State>>, Self::Err>;
+    async fn get_proofs_states(&self, ys: &[ProofId]) -> Result<Vec<Option<State>>, Self::Err>;
 
     /// Get [`BlindSignature`]s
     async fn get_blind_signatures(
         &self,
-        blinded_messages: &[PublicKey],
+        blinded_messages: &[DhkePoint],
     ) -> Result<Vec<Option<BlindSignature>>, Self::Err>;
 
     /// Get auth for protected_endpoint

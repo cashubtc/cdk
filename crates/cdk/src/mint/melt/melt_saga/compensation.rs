@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use cdk_common::database::DynMintDatabase;
-use cdk_common::{Error, PublicKey, QuoteId};
+use cdk_common::{DhkePoint, Error, ProofId, QuoteId};
 use tracing::instrument;
 use uuid::Uuid;
 
@@ -36,9 +36,9 @@ pub trait CompensatingAction: Send + Sync {
 /// This restores the database to its pre-melt state, allowing the user to retry.
 pub struct RemoveMeltSetup {
     /// Y values (public keys) from the input proofs
-    pub input_ys: Vec<PublicKey>,
+    pub input_ys: Vec<ProofId>,
     /// Blinded secrets (B values) from the change output blinded messages
-    pub blinded_secrets: Vec<PublicKey>,
+    pub blinded_secrets: Vec<DhkePoint>,
     /// Quote ID to reset state
     pub quote_id: QuoteId,
     /// Operation ID (saga ID) to delete
