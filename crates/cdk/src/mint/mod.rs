@@ -433,6 +433,17 @@ impl Mint {
     /// - Payment processor initialization and startup
     /// - Invoice payment monitoring across all configured payment processors
     pub async fn start(self: &Arc<Self>) -> Result<(), Error> {
+        // Hold the task state for the whole startup, so a concurrent `start()`
+        // or `stop()` waits for this one to finish.
+        let mut task_state = self.task_state.lock().await;
+
+        // Prevent starting if already running. This has to come before saga
+        // recovery: a running mint may have operations in flight, and
+        // recovery must not act on those.
+        if task_state.shutdown_notify.is_some() {
+            return Err(Error::Internal); // Already started
+        }
+
         // Recover from incomplete swap sagas
         // This cleans up incomplete swap operations using persisted saga state
         if let Err(e) = self.recover_from_incomplete_sagas().await {
@@ -449,24 +460,10 @@ impl Mint {
             // Don't fail startup
         }
 
-        let mut task_state = self.task_state.lock().await;
-
-        // Prevent starting if already running
-        if task_state.shutdown_notify.is_some() {
-            return Err(Error::Internal); // Already started
-        }
-
         // Start all payment processors first
         tracing::info!("Starting payment processors...");
-        let mut seen_processors = Vec::new();
-        for (key, processor) in self.payment_processors.iter() {
-            // Skip if we've already spawned a task for this processor instance
-            if seen_processors.iter().any(|p| Arc::ptr_eq(p, processor)) {
-                continue;
-            }
-
-            seen_processors.push(Arc::clone(processor));
-
+        let processors = Self::unique_payment_processors(&self.payment_processors);
+        for (index, &(key, processor)) in processors.iter().enumerate() {
             tracing::info!("Starting payment wait task for {:?}", key);
 
             match processor.start().await {
@@ -474,8 +471,15 @@ impl Mint {
                     tracing::debug!("Successfully started payment processor for {:?}", key);
                 }
                 Err(e) => {
-                    // Log the error but continue with other processors
                     tracing::error!("Failed to start payment processor for {:?}: {}", key, e);
+
+                    // The failing processor may have partially started.
+                    if let Err(stop_err) =
+                        Self::stop_payment_processors(&processors[..=index]).await
+                    {
+                        tracing::error!("Failed to stop payment processors: {}", stop_err);
+                    }
+
                     return Err(e.into());
                 }
             }
@@ -598,8 +602,20 @@ impl Mint {
     /// Returns `Ok(())` when all background services have shut down cleanly, or an
     /// `Error` if there was an issue during shutdown.
     pub async fn stop(&self) -> Result<(), Error> {
-        let mut task_state = self.task_state.lock().await;
+        let task_state = Arc::clone(&self.task_state).lock_owned().await;
+        let processors = Arc::clone(&self.payment_processors);
+        // The worker keeps the lifecycle lock until shutdown finishes, even
+        // when the caller drops its stop future.
+        tokio::spawn(Self::stop_background_services(task_state, processors))
+            .await
+            .map_err(|_| Error::Internal)?
+    }
 
+    async fn stop_background_services(
+        mut task_state: tokio::sync::OwnedMutexGuard<TaskState>,
+        processors: Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
+    ) -> Result<(), Error> {
+        let processors = Self::unique_payment_processors(&processors);
         // Take the handles out of the state
         let shutdown_notify = task_state.shutdown_notify.take();
         let supervisor_handle = task_state.supervisor_handle.take();
@@ -611,12 +627,9 @@ impl Mint {
             _ => {
                 tracing::debug!("Stop called but no background services were running");
                 // Still try to stop payment processors
-                return self.stop_payment_processors().await;
+                return Self::stop_payment_processors(&processors).await;
             }
         };
-
-        // Drop the lock before waiting
-        drop(task_state);
 
         tracing::info!("Stopping mint background services...");
 
@@ -643,24 +656,29 @@ impl Mint {
         }
 
         // Stop all payment processors
-        self.stop_payment_processors().await?;
+        Self::stop_payment_processors(&processors).await?;
 
         result
     }
 
-    /// Stop all payment processors
-    async fn stop_payment_processors(&self) -> Result<(), Error> {
-        tracing::info!("Stopping payment processors...");
-        let mut seen_processors = Vec::new();
-
-        for (key, processor) in self.payment_processors.iter() {
-            // Skip if we've already spawned a task for this processor instance
-            if seen_processors.iter().any(|p| Arc::ptr_eq(p, processor)) {
-                continue;
+    fn unique_payment_processors(
+        processors: &HashMap<PaymentProcessorKey, DynMintPayment>,
+    ) -> Vec<(&PaymentProcessorKey, &DynMintPayment)> {
+        let mut unique: Vec<(&PaymentProcessorKey, &DynMintPayment)> = Vec::new();
+        for (key, processor) in processors {
+            if !unique.iter().any(|&(_, seen)| Arc::ptr_eq(seen, processor)) {
+                unique.push((key, processor));
             }
+        }
+        unique
+    }
 
-            seen_processors.push(Arc::clone(processor));
-
+    async fn stop_payment_processors(
+        processors: &[(&PaymentProcessorKey, &DynMintPayment)],
+    ) -> Result<(), Error> {
+        tracing::info!("Stopping payment processors...");
+        let mut result = Ok(());
+        for &(key, processor) in processors {
             match processor.stop().await {
                 Ok(()) => {
                     tracing::debug!("Successfully stopped payment processor for {:?}", key);
@@ -668,11 +686,12 @@ impl Mint {
                 Err(e) => {
                     // Log the error but continue with other processors
                     tracing::error!("Failed to stop payment processor for {:?}: {}", key, e);
+                    result = Err(e.into());
                 }
             }
         }
         tracing::info!("Payment processor shutdown completed");
-        Ok(())
+        result
     }
 
     /// Get all custom payment methods supported by registered payment processors
@@ -1527,19 +1546,20 @@ impl Mint {
 mod tests {
 
     use std::str::FromStr;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
     use cdk_common::melt::MeltQuoteRequest;
     use cdk_common::mint::{OperationKind, SagaStateEnum};
     use cdk_common::nut00::KnownMethod;
     use cdk_common::nuts::MeltQuoteBolt11Request;
-    use cdk_common::payment::{MakePaymentResponse, PaymentIdentifier};
+    use cdk_common::payment::{self, MakePaymentResponse, MintPayment, PaymentIdentifier};
     use cdk_common::PaymentMethod;
     use cdk_fake_wallet::{create_fake_invoice, FakeInvoiceDescription};
     use cdk_signatory::db_signatory::DbSignatory;
     use cdk_signatory::signatory::{RotateKeyArguments, SignatoryKeysets};
     use cdk_sqlite::mint::memory::new_with_state;
-    use tokio::sync::watch;
+    use tokio::sync::{watch, Notify};
 
     use super::*;
     use crate::mint::melt::melt_saga::{MeltSaga, PaymentOutcome};
@@ -1558,6 +1578,7 @@ mod tests {
         seed: &'a [u8],
         mint_info: MintInfo,
         supported_units: HashMap<CurrencyUnit, (u64, Vec<u64>)>,
+        payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
     }
 
     /// A stand-in for the in-memory signatory whose keyset subscription is
@@ -2194,7 +2215,7 @@ mod tests {
             MintInfo::default(),
             signatory,
             localstore,
-            HashMap::new(),
+            config.payment_processors,
             1000,
             1000,
         )
@@ -2730,6 +2751,206 @@ mod tests {
         // Should be able to start again after stopping
         mint.start().await.expect("Should be able to restart");
         mint.stop().await.expect("Final stop should work");
+    }
+
+    /// A second `start()` on a running mint is rejected before saga recovery
+    /// runs, so recovery never acts on the running mint's operations.
+    #[tokio::test]
+    async fn start_on_running_mint_does_not_run_saga_recovery() {
+        let mint = create_test_mint().await.unwrap();
+        let proofs = mint_test_proofs(&mint, Amount::from(10_000)).await.unwrap();
+        let quote = create_test_melt_quote(&mint, Amount::from(9_000)).await;
+        let melt_request = create_test_melt_request(&proofs, &quote);
+
+        let verification = mint.verify_inputs(melt_request.inputs()).await.unwrap();
+        let saga = MeltSaga::new(Arc::clone(&mint), mint.localstore(), mint.pubsub_manager());
+        let setup_saga = saga
+            .setup_melt(
+                &melt_request,
+                verification,
+                PaymentMethod::Known(KnownMethod::Bolt11),
+            )
+            .await
+            .unwrap();
+        let operation_id = assert_single_melt_saga_operation_id(&mint).await;
+
+        // Recovery only claims a saga whose lease has lapsed. Expire it, so
+        // that recovery would resolve this saga if it ran.
+        drop(setup_saga);
+        crate::test_helpers::mint::expire_melt_leases(&mint).await;
+
+        assert!(matches!(mint.start().await, Err(Error::Internal)));
+
+        assert_eq!(
+            assert_single_melt_saga_operation_id(&mint).await,
+            operation_id
+        );
+
+        // Recovery does resolve this saga when it runs, so the saga surviving
+        // `start()` above shows that recovery was skipped.
+        mint.recover_from_incomplete_melt_sagas().await.unwrap();
+        let sagas = mint
+            .localstore
+            .get_incomplete_sagas(OperationKind::Melt)
+            .await
+            .unwrap();
+        assert!(sagas.is_empty());
+    }
+
+    #[derive(Default)]
+    struct LifecycleBackend {
+        fail_second_attempt: Option<Arc<AtomicUsize>>,
+        starts: AtomicUsize,
+        stops: AtomicUsize,
+        stop_gate: Option<(Notify, Notify)>,
+    }
+
+    #[async_trait::async_trait]
+    impl MintPayment for LifecycleBackend {
+        type Err = payment::Error;
+
+        async fn start(&self) -> Result<(), Self::Err> {
+            self.starts.fetch_add(1, Ordering::SeqCst);
+            if let Some(attempts) = &self.fail_second_attempt {
+                if attempts.fetch_add(1, Ordering::SeqCst) == 1 {
+                    return Err(payment::Error::Custom("start failed".to_string()));
+                }
+            }
+            Ok(())
+        }
+
+        async fn stop(&self) -> Result<(), Self::Err> {
+            if self.stops.fetch_add(1, Ordering::SeqCst) == 0 {
+                if let Some((entered, release)) = &self.stop_gate {
+                    entered.notify_one();
+                    release.notified().await;
+                }
+            }
+            Ok(())
+        }
+
+        async fn get_settings(&self) -> Result<payment::SettingsResponse, Self::Err> {
+            unimplemented!()
+        }
+
+        async fn create_incoming_payment_request(
+            &self,
+            _options: payment::IncomingPaymentOptions,
+        ) -> Result<payment::CreateIncomingPaymentResponse, Self::Err> {
+            unimplemented!()
+        }
+
+        async fn get_payment_quote(
+            &self,
+            _unit: &CurrencyUnit,
+            _options: payment::OutgoingPaymentOptions,
+        ) -> Result<payment::PaymentQuoteResponse, Self::Err> {
+            unimplemented!()
+        }
+
+        async fn make_payment(
+            &self,
+            _unit: &CurrencyUnit,
+            _options: payment::OutgoingPaymentOptions,
+        ) -> Result<MakePaymentResponse, Self::Err> {
+            unimplemented!()
+        }
+
+        async fn wait_payment_event(
+            &self,
+        ) -> Result<Pin<Box<dyn Stream<Item = payment::Event> + Send>>, Self::Err> {
+            Ok(Box::pin(futures::stream::pending()))
+        }
+
+        fn is_payment_event_stream_active(&self) -> bool {
+            false
+        }
+
+        fn cancel_payment_event_stream(&self) {}
+
+        async fn check_incoming_payment_status(
+            &self,
+            _payment_identifier: &PaymentIdentifier,
+        ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
+            unimplemented!()
+        }
+
+        async fn check_outgoing_payment(
+            &self,
+            _payment_identifier: &PaymentIdentifier,
+        ) -> Result<MakePaymentResponse, Self::Err> {
+            unimplemented!()
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_start_stops_only_attempted_payment_processors() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let mut backends = Vec::new();
+        let mut payment_processors: HashMap<PaymentProcessorKey, DynMintPayment> = HashMap::new();
+        for unit in [CurrencyUnit::Sat, CurrencyUnit::Msat, CurrencyUnit::Usd] {
+            let backend = Arc::new(LifecycleBackend {
+                fail_second_attempt: Some(Arc::clone(&attempts)),
+                ..Default::default()
+            });
+            backends.push(Arc::clone(&backend));
+            payment_processors.insert(
+                PaymentProcessorKey::new(unit, PaymentMethod::Known(KnownMethod::Bolt11)),
+                backend,
+            );
+        }
+        let mint = create_mint(MintConfig {
+            payment_processors,
+            ..Default::default()
+        })
+        .await;
+
+        assert!(mint.start().await.is_err());
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        for backend in backends {
+            assert_eq!(
+                backend.stops.load(Ordering::SeqCst),
+                backend.starts.load(Ordering::SeqCst)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn restart_waits_for_processor_stop_after_caller_cancellation() {
+        let backend = Arc::new(LifecycleBackend {
+            stop_gate: Some((Notify::new(), Notify::new())),
+            ..Default::default()
+        });
+        let mut payment_processors: HashMap<PaymentProcessorKey, DynMintPayment> = HashMap::new();
+        payment_processors.insert(
+            PaymentProcessorKey::new(CurrencyUnit::Sat, PaymentMethod::Known(KnownMethod::Bolt11)),
+            backend.clone(),
+        );
+        let mint = create_mint(MintConfig {
+            payment_processors,
+            ..Default::default()
+        })
+        .await;
+        mint.start().await.unwrap();
+
+        let stop = tokio::spawn({
+            let mint = Arc::clone(&mint);
+            async move { mint.stop().await }
+        });
+        let (entered, release) = backend.stop_gate.as_ref().unwrap();
+        entered.notified().await;
+        stop.abort();
+        assert!(stop.await.unwrap_err().is_cancelled());
+
+        assert!(mint.task_state.try_lock().is_err());
+        let restart = mint.start();
+        tokio::pin!(restart);
+        assert!(futures::poll!(&mut restart).is_pending());
+        assert_eq!(backend.starts.load(Ordering::SeqCst), 1);
+        release.notify_one();
+        restart.await.unwrap();
+        assert_eq!(backend.starts.load(Ordering::SeqCst), 2);
+        mint.stop().await.unwrap();
     }
 
     #[tokio::test]

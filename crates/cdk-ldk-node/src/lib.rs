@@ -579,6 +579,9 @@ impl CdkLdkNode {
     /// - Cancelling any active wait_invoice streams
     /// - Stopping the underlying LDK node
     ///
+    /// Stopping a node that is not running succeeds, so this is safe to call
+    /// more than once or after a failed start.
+    ///
     /// # Returns
     /// Returns `Ok(())` on successful shutdown, error otherwise
     ///
@@ -598,9 +601,17 @@ impl CdkLdkNode {
 
         // Stop the LDK node
         tracing::info!("Stopping LDK node");
-        self.inner.stop()?;
-        tracing::info!("CdkLdkNode stopped successfully");
-        Ok(())
+        match self.inner.stop() {
+            Ok(()) => {
+                tracing::info!("CdkLdkNode stopped successfully");
+                Ok(())
+            }
+            Err(ldk_node::NodeError::NotRunning) => {
+                tracing::debug!("LDK node was not running");
+                Ok(())
+            }
+            Err(err) => Err(err.into()),
+        }
     }
 
     /// Handle payment received event
